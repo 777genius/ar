@@ -1,6 +1,6 @@
 {
   "name": "@777genius/subscription-runtime",
-  "version": "0.1.0-main.3",
+  "version": "0.1.0-main.4",
   "description": "Provider-neutral subscription runtime for backend workers, Codex subscription execution, and pluggable session custody.",
   "license": "UNLICENSED",
   "type": "module",
@@ -119,14 +119,6 @@
   },
   "dependencies": {
     "libsodium-wrappers": "^0.8.4"
-  },
-  "peerDependencies": {
-    "claude-runtime": "0.0.0"
-  },
-  "peerDependenciesMeta": {
-    "claude-runtime": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "@types/node": "^22.19.0",
