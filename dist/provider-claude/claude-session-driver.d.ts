@@ -1,8 +1,8 @@
-import type { ProviderFailure, ProviderSessionDriver, RedactorPort, RefreshedSession, RunnerPort, SessionArtifact, SessionValidationResult, WorkspaceHandle } from "@vioxen/subscription-runtime/core";
+import type { ProviderFailure, ProviderSessionDriver, RedactorPort, RefreshedSession, RunnerPort, SessionArtifact, SessionValidationResult, WorkspaceHandle } from "@777genius/subscription-runtime/core";
 export declare class ClaudeSessionDriver implements ProviderSessionDriver {
     readonly providerId = "claude";
     readonly supportedArtifactKinds: readonly SessionArtifact["kind"][];
-    readonly capabilities: import("@vioxen/subscription-runtime/core").ProviderCapabilities;
+    readonly capabilities: import("@777genius/subscription-runtime/core").ProviderCapabilities;
     validateSession(input: {
         readonly session: SessionArtifact;
         readonly redactor: RedactorPort;

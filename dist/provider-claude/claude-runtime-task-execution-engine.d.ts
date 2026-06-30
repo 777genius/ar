@@ -1,4 +1,4 @@
-import type { ProviderTaskEvent } from "@vioxen/subscription-runtime/core";
+import type { ProviderTaskEvent } from "@777genius/subscription-runtime/core";
 import type { ClaudeTaskEngineInput, ClaudeTaskExecutionEngine, ClaudeTaskExecutionResult } from "./claude-task-agent-driver.js";
 import { type ClaudeBgRuntimeContextOptions } from "./claude-bg-runtime-context.js";
 export type ClaudeRuntimeTaskExecutionEngineOptions = ClaudeBgRuntimeContextOptions & {

@@ -1,4 +1,4 @@
-import { assertProviderTaskSystemPrompt, } from "@vioxen/subscription-runtime/core";
+import { assertProviderTaskSystemPrompt, } from "@777genius/subscription-runtime/core";
 import { codexJsonAgentCapabilities, codexJsonAgentId, codexProviderId, defaultCodexModel, } from "./capabilities.js";
 import { classifyCodexFailure } from "./failure-classifier.js";
 import { PackagedCodexJsonExecutionEngine, codexSandboxModeForPermissionMode, codexExecutionFailure, } from "./codex-json-execution-engine.js";

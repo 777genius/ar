@@ -4,7 +4,7 @@ import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { agentTaskProtocolVersion, agentTaskRequestToProviderTask, makeFailedAgentTaskResult, parseAgentTaskRequest, providerTaskResultToAgentTaskResult, } from "@vioxen/subscription-runtime/agent-task";
+import { agentTaskProtocolVersion, agentTaskRequestToProviderTask, makeFailedAgentTaskResult, parseAgentTaskRequest, providerTaskResultToAgentTaskResult, } from "@777genius/subscription-runtime/agent-task";
 import { FileBackendClaudeWorker, } from "../worker-claude/file-backend-claude-worker.js";
 import { FileBackendCodexWorker, } from "../worker-codex/file-backend-codex-worker.js";
 export async function runSubscriptionAgentTaskCli(argv = process.argv.slice(2), io = defaultIo, workerFactory = createDefaultWorker) {

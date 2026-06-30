@@ -1,4 +1,4 @@
-import { assertProviderTaskSystemPrompt, } from "@vioxen/subscription-runtime/core";
+import { assertProviderTaskSystemPrompt, } from "@777genius/subscription-runtime/core";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

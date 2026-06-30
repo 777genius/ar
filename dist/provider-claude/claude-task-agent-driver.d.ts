@@ -1,4 +1,4 @@
-import { type AgentDriver, type ProviderFailure, type ProviderTask, type ProviderTaskEvent, type ProviderTaskControls, type ProviderTaskResult, type ProviderTaskTelemetry, type RedactorPort, type RunnerPort, type SessionArtifact, type StreamingAgentDriver, type WorkspaceHandle } from "@vioxen/subscription-runtime/core";
+import { type AgentDriver, type ProviderFailure, type ProviderTask, type ProviderTaskEvent, type ProviderTaskControls, type ProviderTaskResult, type ProviderTaskTelemetry, type RedactorPort, type RunnerPort, type SessionArtifact, type StreamingAgentDriver, type WorkspaceHandle } from "@777genius/subscription-runtime/core";
 import { type ClaudeOAuthSession } from "./claude-session-codec.js";
 export type ClaudeTaskExecutionResult = {
     readonly outputText: string;
@@ -55,7 +55,7 @@ export declare class ClaudeTaskAgentDriver implements AgentDriver, StreamingAgen
     private readonly options;
     readonly agentId = "claude-bg-task";
     readonly providerId = "claude";
-    readonly capabilities: import("@vioxen/subscription-runtime/core").AgentCapabilities;
+    readonly capabilities: import("@777genius/subscription-runtime/core").AgentCapabilities;
     private readonly model;
     constructor(options: ClaudeTaskAgentDriverOptions);
     runTask(input: {

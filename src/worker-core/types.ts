@@ -4,7 +4,7 @@ import type {
   ProviderTaskResult,
   RuntimeEvent,
   RuntimeWarning,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 
 export type SubscriptionWorkerState =
   | "created"

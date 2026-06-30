@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { validateCodexAuthJsonBytes, } from "@vioxen/subscription-runtime/provider-codex";
-import { LocalFileWorkerAccountCapacityStore } from "@vioxen/subscription-runtime/store-local-file";
-import { accountCapacityAwareWorkerFactory, BoundedSubscriptionWorkerPool, LocalFileAttemptJournal, LocalFileWorkspaceLockStore, SafeExecutionRunner, SubscriptionWorkerError, } from "@vioxen/subscription-runtime/worker-core";
+import { validateCodexAuthJsonBytes, } from "@777genius/subscription-runtime/provider-codex";
+import { LocalFileWorkerAccountCapacityStore } from "@777genius/subscription-runtime/store-local-file";
+import { accountCapacityAwareWorkerFactory, BoundedSubscriptionWorkerPool, LocalFileAttemptJournal, LocalFileWorkspaceLockStore, SafeExecutionRunner, SubscriptionWorkerError, } from "@777genius/subscription-runtime/worker-core";
 import { FileBackendCodexWorker, } from "./file-backend-codex-worker.js";
 const defaultMaxAccountCycles = 3;
 export class FileBackendCodexSafeExecutor {

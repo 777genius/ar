@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import type { ProviderTask, ProviderTaskTelemetry, RuntimeWarning } from "@vioxen/subscription-runtime/core";
+import type { ProviderTask, ProviderTaskTelemetry, RuntimeWarning } from "@777genius/subscription-runtime/core";
 type ProviderName = "claude" | "codex";
 export type SubscriptionAgentTaskCliIo = {
     readStdin(): Promise<string>;

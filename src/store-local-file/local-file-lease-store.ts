@@ -7,7 +7,7 @@ import type {
   LeaseStoreCapabilities,
   LeaseStorePort,
   WritebackCommitResult,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 
 const storageVersion = "local-file-lease-store-v1";
 

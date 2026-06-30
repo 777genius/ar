@@ -17,7 +17,7 @@ if (typeof packageJson.name !== "string" || packageJson.name.length === 0) {
 }
 
 const currentPackageName = packageJson.name;
-const legacyPackageNames = ["@777genius/subscription-runtime"];
+const legacyPackageNames = ["@vioxen/subscription-runtime"];
 const runtimePackageNames = [currentPackageName, ...legacyPackageNames];
 const runtimePackagePattern = runtimePackageNames.map(escapeRegExp).join("|");
 

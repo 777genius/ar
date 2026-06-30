@@ -1,4 +1,4 @@
-import type { WorkerAccountCapacityStore, WorkerAccountLimitSignal, WorkerCapacitySnapshot } from "@vioxen/subscription-runtime/worker-core";
+import type { WorkerAccountCapacityStore, WorkerAccountLimitSignal, WorkerCapacitySnapshot } from "@777genius/subscription-runtime/worker-core";
 export type LocalFileWorkerAccountCapacityStoreOptions = {
     readonly rootDir: string;
 };

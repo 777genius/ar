@@ -14,7 +14,7 @@ import {
   type SessionArtifact,
   type StreamingAgentDriver,
   type WorkspaceHandle,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   claudeBgTaskAgentCapabilities,
   claudeBgTaskAgentId,

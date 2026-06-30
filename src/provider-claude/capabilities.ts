@@ -2,7 +2,7 @@ import type {
   AgentCapabilities,
   ProviderCapabilities,
   ProviderEnvironmentPolicy,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 
 export const claudeProviderId = "claude";
 export const claudeBgTaskAgentId = "claude-bg-task";

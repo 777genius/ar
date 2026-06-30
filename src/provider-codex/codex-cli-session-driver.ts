@@ -10,7 +10,7 @@ import type {
   SessionRefreshPolicy,
   SessionValidationResult,
   WorkspaceHandle,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

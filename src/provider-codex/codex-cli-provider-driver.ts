@@ -9,7 +9,7 @@ import type {
   SessionValidationResult,
   SubscriptionProviderDriver,
   WorkspaceHandle,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   CodexCliAgentDriver,
   type CodexCliAgentDriverOptions,

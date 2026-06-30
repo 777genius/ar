@@ -1,4 +1,4 @@
-import type { AgentToolCall, AgentUsage, RedactorPort, RuntimeWarning } from "@vioxen/subscription-runtime/core";
+import type { AgentToolCall, AgentUsage, RedactorPort, RuntimeWarning } from "@777genius/subscription-runtime/core";
 export type ClaudeRuntimeEventLike = {
     readonly type: "assistant_message";
     readonly text: string;

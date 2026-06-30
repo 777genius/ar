@@ -11,13 +11,13 @@ import type {
   WorkerAccountCapacityStore,
   WorkerAccountLimitSignal,
   WorkerCapacitySnapshot,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import {
   isPersistableWorkerAccountAvailability,
   normalizeWorkerAccountCapacitySignal,
   normalizeWorkerAccountId,
   shouldKeepExistingWorkerAccountCapacity,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 
 const storageVersion = "local-file-worker-account-capacity-v1";
 

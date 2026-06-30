@@ -2,7 +2,7 @@ import type {
   AgentCapabilities,
   ProviderEnvironmentPolicy,
   ProviderCapabilities,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 
 export const codexProviderId = "codex";
 export const codexAgentId = "codex-cli";

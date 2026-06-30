@@ -6,12 +6,12 @@ import { execPath } from "node:process";
 import type {
   RunnerPort,
   WorkspacePort,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   BoundedSubscriptionWorkerPool,
   InMemoryWorkerAccountCapacityStore,
   accountCapacityAwareWorkerFactory,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import { describe, expect, it } from "vitest";
 import { FileBackendCodexSafeExecutor, FileBackendCodexWorker } from "../index";
 import { NodeProcessRunner } from "../node-process-runner";

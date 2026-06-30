@@ -4,7 +4,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import type {
   WorkspaceHandle,
   WorkspacePort,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 
 export class TempWorkspace implements WorkspacePort {
   readonly workspaceId = "temp-workspace";

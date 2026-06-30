@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, } from "node:fs";
 import { dirname, join } from "node:path";
-import { isPersistableWorkerAccountAvailability, normalizeWorkerAccountCapacitySignal, normalizeWorkerAccountId, shouldKeepExistingWorkerAccountCapacity, } from "@vioxen/subscription-runtime/worker-core";
+import { isPersistableWorkerAccountAvailability, normalizeWorkerAccountCapacitySignal, normalizeWorkerAccountId, shouldKeepExistingWorkerAccountCapacity, } from "@777genius/subscription-runtime/worker-core";
 const storageVersion = "local-file-worker-account-capacity-v1";
 export class LocalFileWorkerAccountCapacityStore {
     options;

@@ -1,6 +1,6 @@
-import { type ClockPort, type ObservabilityPort, type ProviderTask, type ProviderTaskTelemetry, type RuntimeDeps } from "@vioxen/subscription-runtime/core";
-import { type ClaudeTaskExecutionEngine } from "@vioxen/subscription-runtime/provider-claude";
-import { type CapacityAwareSubscriptionWorker, type SubscriptionWorkerHealth, type SubscriptionWorkerPrewarmResult, type SubscriptionWorkerState, type WorkerCapacitySnapshot } from "@vioxen/subscription-runtime/worker-core";
+import { type ClockPort, type ObservabilityPort, type ProviderTask, type ProviderTaskTelemetry, type RuntimeDeps } from "@777genius/subscription-runtime/core";
+import { type ClaudeTaskExecutionEngine } from "@777genius/subscription-runtime/provider-claude";
+import { type CapacityAwareSubscriptionWorker, type SubscriptionWorkerHealth, type SubscriptionWorkerPrewarmResult, type SubscriptionWorkerState, type WorkerCapacitySnapshot } from "@777genius/subscription-runtime/worker-core";
 import { type ClaudeRateLimitTelemetrySource, type ClaudeRateLimitWindowName } from "./rate-limit-telemetry.js";
 import { type ClaudeLogicalThreadState, type ClaudeLogicalThreadStore, type ClaudeTranscriptBundleStore } from "./thread-handoff.js";
 export type ClaudeWorkerCapacityPolicy = {

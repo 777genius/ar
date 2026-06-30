@@ -1,4 +1,4 @@
-import type { ProviderFailure, ProviderCapabilities, ProviderSessionDriver, RedactorPort, RefreshedSession, SessionFreshnessAssessment, SessionArtifact, SessionRefreshPolicy, SessionValidationResult, WorkspaceHandle } from "@vioxen/subscription-runtime/core";
+import type { ProviderFailure, ProviderCapabilities, ProviderSessionDriver, RedactorPort, RefreshedSession, SessionFreshnessAssessment, SessionArtifact, SessionRefreshPolicy, SessionValidationResult, WorkspaceHandle } from "@777genius/subscription-runtime/core";
 export type CodexCliSessionDriverOptions = {
     readonly codexBinaryPath?: string;
     readonly model?: string;
