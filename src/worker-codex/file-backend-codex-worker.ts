@@ -16,7 +16,7 @@ import {
   type SessionArtifact,
   type SessionEnvelope,
   assertProviderTaskSystemPrompt,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   CodexAppServerExecutionEngine,
   CodexCliAgentDriver,
@@ -33,8 +33,8 @@ import {
   codexAuthJsonFromArtifact,
   readCodexAuthJsonFreshness,
   validateCodexAuthJsonBytes,
-} from "@vioxen/subscription-runtime/provider-codex";
-import { createLocalFileBackendRuntimeAdapters } from "@vioxen/subscription-runtime/store-local-file";
+} from "@777genius/subscription-runtime/provider-codex";
+import { createLocalFileBackendRuntimeAdapters } from "@777genius/subscription-runtime/store-local-file";
 import {
   SubscriptionWorkerError,
   type CapacityAwareSubscriptionWorker,
@@ -42,7 +42,7 @@ import {
   type SubscriptionWorkerPrewarmResult,
   type SubscriptionWorkerState,
   type WorkerCapacitySnapshot,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import { NodeProcessRunner } from "../worker-local/node-process-runner";
 import { NullWorkerObservability } from "../worker-local/observability";
 import {

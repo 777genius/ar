@@ -1,4 +1,4 @@
-import type { AgentCapabilities, ProviderCapabilities, ProviderEnvironmentPolicy } from "@vioxen/subscription-runtime/core";
+import type { AgentCapabilities, ProviderCapabilities, ProviderEnvironmentPolicy } from "@777genius/subscription-runtime/core";
 export declare const claudeProviderId = "claude";
 export declare const claudeBgTaskAgentId = "claude-bg-task";
 export declare const claudeSessionFormatVersion = "claude-oauth-session-v1";

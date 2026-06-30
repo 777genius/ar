@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   DefaultRedactor,
   providerTaskSystemPromptMaxBytes,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   agentDriverContract,
   providerSessionDriverContract,
@@ -15,7 +15,7 @@ import type {
   ProcessResult,
   RunnerPort,
   RunnerCapabilities,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   CodexCliAgentDriver,
   CodexCliProviderDriver,

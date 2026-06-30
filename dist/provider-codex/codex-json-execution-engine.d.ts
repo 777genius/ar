@@ -1,4 +1,4 @@
-import type { ProviderTaskControls, ProviderTaskResult, RedactorPort, RunnerPort, SessionArtifact } from "@vioxen/subscription-runtime/core";
+import type { ProviderTaskControls, ProviderTaskResult, RedactorPort, RunnerPort, SessionArtifact } from "@777genius/subscription-runtime/core";
 export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type CodexServiceTier = string;
 export type CodexSandboxMode = "read-only" | "workspace-write";

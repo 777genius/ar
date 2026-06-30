@@ -3,7 +3,7 @@ import type {
   AgentUsage,
   RedactorPort,
   RuntimeWarning,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 
 const diagnosticDetailPreviewLimit = 2000;
 

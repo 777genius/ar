@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
-import { createSubscriptionRuntime, DefaultRedactor, DeterministicIdGenerator, assertProviderTaskSystemPrompt, } from "@vioxen/subscription-runtime/core";
-import { ClaudeRuntimeTaskExecutionEngine, ClaudeSessionDriver, ClaudeTaskAgentDriver, claudeRuntimeResumeSessionIdMetadataKey, claudeRuntimeThreadIdMetadataKey, sessionArtifactFromClaudeOAuth, validateClaudeSessionArtifact, } from "@vioxen/subscription-runtime/provider-claude";
-import { createLocalFileBackendRuntimeAdapters } from "@vioxen/subscription-runtime/store-local-file";
-import { SubscriptionWorkerError, } from "@vioxen/subscription-runtime/worker-core";
+import { createSubscriptionRuntime, DefaultRedactor, DeterministicIdGenerator, assertProviderTaskSystemPrompt, } from "@777genius/subscription-runtime/core";
+import { ClaudeRuntimeTaskExecutionEngine, ClaudeSessionDriver, ClaudeTaskAgentDriver, claudeRuntimeResumeSessionIdMetadataKey, claudeRuntimeThreadIdMetadataKey, sessionArtifactFromClaudeOAuth, validateClaudeSessionArtifact, } from "@777genius/subscription-runtime/provider-claude";
+import { createLocalFileBackendRuntimeAdapters } from "@777genius/subscription-runtime/store-local-file";
+import { SubscriptionWorkerError, } from "@777genius/subscription-runtime/worker-core";
 import { NodeProcessRunner } from "../worker-local/node-process-runner.js";
 import { NullWorkerObservability } from "../worker-local/observability.js";
 import { StableWorkerWorkspace } from "../worker-local/temp-workspace.js";

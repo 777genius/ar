@@ -1,4 +1,4 @@
-import { providerTaskSystemPromptValidationError, } from "@vioxen/subscription-runtime/core";
+import { providerTaskSystemPromptValidationError, } from "@777genius/subscription-runtime/core";
 import { agentTaskProtocolVersion, AgentTaskProtocolError, makeAgentTaskFailure, } from "./types.js";
 const providerTaskKinds = new Set([
     "review",

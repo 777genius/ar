@@ -1,4 +1,4 @@
-import { type ProviderFailureCode, type ProviderTask, type ProviderTaskEvent, type ProviderTaskResult, type ProviderTaskTelemetry, type RuntimeWarning } from "@vioxen/subscription-runtime/core";
+import { type ProviderFailureCode, type ProviderTask, type ProviderTaskEvent, type ProviderTaskResult, type ProviderTaskTelemetry, type RuntimeWarning } from "@777genius/subscription-runtime/core";
 import { type AgentTaskEvent, type AgentTaskRequest, type AgentTaskResult, type JsonValue } from "./types.js";
 export declare function createAgentTaskRequest(input: Omit<AgentTaskRequest, "protocolVersion">): AgentTaskRequest;
 export declare function parseAgentTaskRequest(value: unknown): AgentTaskRequest;

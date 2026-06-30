@@ -1,4 +1,4 @@
-import { assertProviderTaskSystemPrompt, } from "@vioxen/subscription-runtime/core";
+import { assertProviderTaskSystemPrompt, } from "@777genius/subscription-runtime/core";
 import { claudeBgTaskAgentCapabilities, claudeBgTaskAgentId, claudeProviderId, } from "./capabilities.js";
 import { validateClaudeSessionArtifact, } from "./claude-session-codec.js";
 import { classifyClaudeFailure } from "./failure-classifier.js";

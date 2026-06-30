@@ -1,4 +1,4 @@
-import type { ProviderFailure, RuntimeWarning, SessionArtifact } from "@vioxen/subscription-runtime/core";
+import type { ProviderFailure, RuntimeWarning, SessionArtifact } from "@777genius/subscription-runtime/core";
 export type ClaudeOAuthSession = {
     readonly authMode: "oauth";
     readonly oauthToken: string;

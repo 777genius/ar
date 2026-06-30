@@ -1,4 +1,4 @@
-import type { AgentCapabilities, ProviderEnvironmentPolicy, ProviderCapabilities } from "@vioxen/subscription-runtime/core";
+import type { AgentCapabilities, ProviderEnvironmentPolicy, ProviderCapabilities } from "@777genius/subscription-runtime/core";
 export declare const codexProviderId = "codex";
 export declare const codexAgentId = "codex-cli";
 export declare const codexJsonAgentId = "codex-json";

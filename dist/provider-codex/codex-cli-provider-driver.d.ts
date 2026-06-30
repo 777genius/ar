@@ -1,4 +1,4 @@
-import type { AgentCapabilities, ProviderCapabilities, ProviderFailure, ProviderTask, ProviderTaskResult, RefreshedSession, SessionArtifact, SessionValidationResult, SubscriptionProviderDriver, WorkspaceHandle } from "@vioxen/subscription-runtime/core";
+import type { AgentCapabilities, ProviderCapabilities, ProviderFailure, ProviderTask, ProviderTaskResult, RefreshedSession, SessionArtifact, SessionValidationResult, SubscriptionProviderDriver, WorkspaceHandle } from "@777genius/subscription-runtime/core";
 import { CodexCliAgentDriver, type CodexCliAgentDriverOptions } from "./codex-cli-agent-driver.js";
 import { CodexCliSessionDriver, type CodexCliSessionDriverOptions } from "./codex-cli-session-driver.js";
 export type CodexCliProviderDriverOptions = CodexCliSessionDriverOptions & CodexCliAgentDriverOptions;

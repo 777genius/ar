@@ -12,7 +12,7 @@ const cases = [
   {
     name: "current package scope violation",
     files: {
-      "src/core/bad.ts": "import '@vioxen/subscription-runtime/provider-claude';\n",
+      "src/core/bad.ts": "import '@777genius/subscription-runtime/provider-claude';\n",
     },
     expectPass: false,
     expectText: "core must stay provider and adapter neutral",
@@ -28,7 +28,7 @@ const cases = [
   {
     name: "legacy package scope violation",
     files: {
-      "src/provider-claude/bad.ts": "import '@777genius/subscription-runtime/core';\n",
+      "src/provider-claude/bad.ts": "import '@vioxen/subscription-runtime/core';\n",
     },
     expectPass: false,
     expectText: "legacy package scope",
@@ -36,14 +36,14 @@ const cases = [
   {
     name: "allowed core import",
     files: {
-      "src/provider-claude/good.ts": "import type { ProviderFailure } from '@vioxen/subscription-runtime/core';\n",
+      "src/provider-claude/good.ts": "import type { ProviderFailure } from '@777genius/subscription-runtime/core';\n",
     },
     expectPass: true,
   },
   {
     name: "worker-core rejects provider implementations",
     files: {
-      "src/worker-core/bad.ts": "import '@vioxen/subscription-runtime/provider-codex';\n",
+      "src/worker-core/bad.ts": "import '@777genius/subscription-runtime/provider-codex';\n",
     },
     expectPass: false,
     expectText: "worker-core must stay provider and adapter neutral",
@@ -51,7 +51,7 @@ const cases = [
   {
     name: "agent-task rejects provider implementations",
     files: {
-      "src/agent-task/bad.ts": "import '@vioxen/subscription-runtime/provider-claude';\n",
+      "src/agent-task/bad.ts": "import '@777genius/subscription-runtime/provider-claude';\n",
     },
     expectPass: false,
     expectText: "agent-task must stay provider and adapter neutral",
@@ -59,7 +59,7 @@ const cases = [
   {
     name: "agent-task rejects dynamic provider imports",
     files: {
-      "src/agent-task/bad.ts": "await import('@vioxen/subscription-runtime/provider-claude');\n",
+      "src/agent-task/bad.ts": "await import('@777genius/subscription-runtime/provider-claude');\n",
     },
     expectPass: false,
     expectText: "agent-task must stay provider and adapter neutral",
@@ -67,14 +67,14 @@ const cases = [
   {
     name: "queue-core allows worker-core types",
     files: {
-      "src/queue-core/good.ts": "import type { BoundedSubscriptionWorkerPool } from '@vioxen/subscription-runtime/worker-core';\n",
+      "src/queue-core/good.ts": "import type { BoundedSubscriptionWorkerPool } from '@777genius/subscription-runtime/worker-core';\n",
     },
     expectPass: true,
   },
   {
     name: "queue-core rejects concrete workers",
     files: {
-      "src/queue-core/bad.ts": "import '@vioxen/subscription-runtime/worker-claude';\n",
+      "src/queue-core/bad.ts": "import '@777genius/subscription-runtime/worker-claude';\n",
     },
     expectPass: false,
     expectText: "queue-core must stay queue and provider implementation neutral",
@@ -82,7 +82,7 @@ const cases = [
   {
     name: "claude worker rejects codex implementation",
     files: {
-      "src/worker-claude/bad.ts": "import '@vioxen/subscription-runtime/provider-codex';\n",
+      "src/worker-claude/bad.ts": "import '@777genius/subscription-runtime/provider-codex';\n",
     },
     expectPass: false,
     expectText:
@@ -97,7 +97,7 @@ for (const testCase of cases) {
   try {
     await writeFile(
       join(fixtureDir, "package.json"),
-      JSON.stringify({ name: "@vioxen/subscription-runtime" }),
+      JSON.stringify({ name: "@777genius/subscription-runtime" }),
     );
     for (const [relativePath, content] of Object.entries(testCase.files)) {
       const fullPath = join(fixtureDir, relativePath);

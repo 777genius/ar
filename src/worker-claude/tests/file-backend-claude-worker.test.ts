@@ -19,23 +19,23 @@ import type {
   SessionEnvelope,
   SessionStorePort,
   WorkspacePort,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   sessionArtifactFromClaudeOAuth,
   validateClaudeSessionArtifact,
-} from "@vioxen/subscription-runtime/provider-claude";
+} from "@777genius/subscription-runtime/provider-claude";
 import type {
   ClaudeTaskEngineInput,
   ClaudeTaskExecutionEngine,
   ClaudeTaskExecutionResult,
-} from "@vioxen/subscription-runtime/provider-claude";
+} from "@777genius/subscription-runtime/provider-claude";
 import {
   BoundedSubscriptionWorkerPool,
   InMemoryWorkerAccountCapacityStore,
   accountCapacityAwareWorkerFactory,
   type SubscriptionWorker,
   type WorkerPoolScheduler,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import {
   FileBackendClaudeWorker,
   FileClaudeLogicalThreadStore,

@@ -6,7 +6,7 @@ import {
   type ProcessResult,
   type RunnerCapabilities,
   type RunnerPort,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   agentDriverContract,
   providerSessionDriverContract,
@@ -58,7 +58,7 @@ describe("Claude provider adapter", () => {
     expect(claudeProviderManifest).toMatchObject({
       adapterId: "provider.claude-bg",
       adapterKind: "combined-provider",
-      packageName: "@vioxen/subscription-runtime/provider-claude",
+      packageName: "@777genius/subscription-runtime/provider-claude",
       capabilities: {
         agent: {
           agentId: "claude-bg-task",

@@ -2,7 +2,7 @@ import type {
   ProviderFailure,
   RuntimeWarning,
   SessionArtifact,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import { claudeProviderId, claudeSessionFormatVersion } from "./capabilities";
 import { classifyClaudeFailure } from "./failure-classifier";
 

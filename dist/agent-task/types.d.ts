@@ -1,4 +1,4 @@
-import type { AgentToolCall, AgentUsage, ProviderFailure, ProviderFailureCode, ProviderTaskControls, ProviderTaskEvent, ProviderTaskKind, ProviderTaskResult, ProviderTaskTelemetry, RuntimeWarning } from "@vioxen/subscription-runtime/core";
+import type { AgentToolCall, AgentUsage, ProviderFailure, ProviderFailureCode, ProviderTaskControls, ProviderTaskEvent, ProviderTaskKind, ProviderTaskResult, ProviderTaskTelemetry, RuntimeWarning } from "@777genius/subscription-runtime/core";
 export declare const agentTaskProtocolVersion: 1;
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonArray;

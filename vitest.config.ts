@@ -1,22 +1,22 @@
 import { defineConfig } from "vitest/config";
 
 const alias = {
-  "@vioxen/subscription-runtime/core": "/src/core/index.ts",
-  "@vioxen/subscription-runtime/provider-codex":
+  "@777genius/subscription-runtime/core": "/src/core/index.ts",
+  "@777genius/subscription-runtime/provider-codex":
     "/src/provider-codex/index.ts",
-  "@vioxen/subscription-runtime/provider-claude":
+  "@777genius/subscription-runtime/provider-claude":
     "/src/provider-claude/index.ts",
-  "@vioxen/subscription-runtime/worker-core": "/src/worker-core/index.ts",
-  "@vioxen/subscription-runtime/worker-codex": "/src/worker-codex/index.ts",
-  "@vioxen/subscription-runtime/queue-core": "/src/queue-core/index.ts",
-  "@vioxen/subscription-runtime/queue-bullmq": "/src/queue-bullmq/index.ts",
-  "@vioxen/subscription-runtime/store-local-file":
+  "@777genius/subscription-runtime/worker-core": "/src/worker-core/index.ts",
+  "@777genius/subscription-runtime/worker-codex": "/src/worker-codex/index.ts",
+  "@777genius/subscription-runtime/queue-core": "/src/queue-core/index.ts",
+  "@777genius/subscription-runtime/queue-bullmq": "/src/queue-bullmq/index.ts",
+  "@777genius/subscription-runtime/store-local-file":
     "/src/store-local-file/index.ts",
-  "@vioxen/subscription-runtime/store-github-actions-secret":
+  "@777genius/subscription-runtime/store-github-actions-secret":
     "/src/store-github-actions-secret/index.ts",
-  "@vioxen/subscription-runtime/runner-github-action":
+  "@777genius/subscription-runtime/runner-github-action":
     "/src/runner-github-action/index.ts",
-  "@vioxen/subscription-runtime/testing": "/src/testing/index.ts",
+  "@777genius/subscription-runtime/testing": "/src/testing/index.ts",
 };
 
 export default defineConfig({

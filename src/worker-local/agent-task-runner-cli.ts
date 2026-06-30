@@ -13,13 +13,13 @@ import {
   type AgentTaskEvent,
   type AgentTaskRequest,
   type AgentTaskResult,
-} from "@vioxen/subscription-runtime/agent-task";
+} from "@777genius/subscription-runtime/agent-task";
 import type {
   ProviderTask,
   ProviderTaskResult,
   ProviderTaskTelemetry,
   RuntimeWarning,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   FileBackendClaudeWorker,
 } from "../worker-claude/file-backend-claude-worker";

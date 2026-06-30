@@ -1,4 +1,4 @@
-import type { ProviderFailure } from "@vioxen/subscription-runtime/core";
+import type { ProviderFailure } from "@777genius/subscription-runtime/core";
 import { classifyCodexRuntimeFailure } from "./codex-cli-domain";
 
 export function classifyCodexFailure(error: unknown): ProviderFailure {

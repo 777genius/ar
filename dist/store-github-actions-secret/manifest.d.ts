@@ -4,7 +4,7 @@ export declare const githubActionsSecretStoreManifest: {
     packageName: string;
     packageVersion: string;
     protocolVersion: 1;
-    capabilities: import("@vioxen/subscription-runtime/core").SessionStoreCapabilities;
+    capabilities: import("@777genius/subscription-runtime/core").SessionStoreCapabilities;
     custody: "no-plaintext-backend";
     experimental: false;
     minimumCoreVersion: string;

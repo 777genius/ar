@@ -1,4 +1,4 @@
-import { type AttemptJournal, type SafeExecutionPolicy, type SafeExecutionRunResult, type TaskEffectMode, type WorkerAccountCapacityStore, type WorkerPoolHealth, type WorkerPoolStats, type WorkspaceLockStore } from "@vioxen/subscription-runtime/worker-core";
+import { type AttemptJournal, type SafeExecutionPolicy, type SafeExecutionRunResult, type TaskEffectMode, type WorkerAccountCapacityStore, type WorkerPoolHealth, type WorkerPoolStats, type WorkspaceLockStore } from "@777genius/subscription-runtime/worker-core";
 import { type FileBackendCodexWorkerJob, type FileBackendCodexWorkerOptions, type FileBackendCodexWorkerResult } from "./file-backend-codex-worker.js";
 export type FileBackendCodexSafeExecutorAccount = {
     readonly worker: Omit<FileBackendCodexWorkerOptions, "workspace" | "workspacePath">;

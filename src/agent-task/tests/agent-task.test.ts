@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { ProviderTaskEvent } from "@vioxen/subscription-runtime/core";
+import type { ProviderTaskEvent } from "@777genius/subscription-runtime/core";
 import {
   agentTaskProtocolVersion,
   agentTaskRoundMemberFingerprint,

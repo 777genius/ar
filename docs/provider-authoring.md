@@ -1,7 +1,7 @@
 # Provider Authoring
 
 New providers should implement the provider session and agent ports from
-`@vioxen/subscription-runtime/core`.
+`@777genius/subscription-runtime/core`.
 
 Rules:
 
@@ -9,7 +9,7 @@ Rules:
 - no queue or HTTP framework dependencies in providers;
 - no backend storage decisions in providers;
 - expose a provider module through a subpath export, for example
-  `@vioxen/subscription-runtime/provider-claude`.
+  `@777genius/subscription-runtime/provider-claude`.
 
 Provider task adapters should follow `docs/pluggable-agent-runtime.md`:
 

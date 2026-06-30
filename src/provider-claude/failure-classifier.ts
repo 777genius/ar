@@ -1,4 +1,4 @@
-import type { ProviderFailure } from "@vioxen/subscription-runtime/core";
+import type { ProviderFailure } from "@777genius/subscription-runtime/core";
 
 export function classifyClaudeFailure(error: unknown): ProviderFailure {
   const message = error instanceof Error ? error.message : String(error);

@@ -1,4 +1,4 @@
-import type { RedactorPort, RunnerPort } from "@vioxen/subscription-runtime/core";
+import type { RedactorPort, RunnerPort } from "@777genius/subscription-runtime/core";
 import type { CodexExecutionProfile } from "./codex-execution-profile.js";
 import type { CodexExecutionEngine, CodexExecutionPrewarmResult, CodexExecutionResult, CodexMaterializedSession, CodexReasoningEffort, CodexSandboxMode, CodexServiceTier } from "./codex-json-execution-engine.js";
 export type CodexAppServerExecutionEngineOptions = {

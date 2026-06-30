@@ -1,4 +1,4 @@
-import type { AgentCapabilities, ProviderCapabilities, ProviderFailure, ProviderTask, ProviderTaskEvent, ProviderTaskResult, RefreshedSession, RunnerPort, SessionArtifact, SessionValidationResult, SubscriptionProviderDriver, WorkspaceHandle } from "@vioxen/subscription-runtime/core";
+import type { AgentCapabilities, ProviderCapabilities, ProviderFailure, ProviderTask, ProviderTaskEvent, ProviderTaskResult, RefreshedSession, RunnerPort, SessionArtifact, SessionValidationResult, SubscriptionProviderDriver, WorkspaceHandle } from "@777genius/subscription-runtime/core";
 import { ClaudeSessionDriver } from "./claude-session-driver.js";
 import { ClaudeTaskAgentDriver, type ClaudeTaskAgentDriverOptions } from "./claude-task-agent-driver.js";
 export type ClaudeBgProviderDriverOptions = ClaudeTaskAgentDriverOptions;

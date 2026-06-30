@@ -16,7 +16,7 @@ import {
   type SessionEnvelope,
   type SessionArtifact,
   assertProviderTaskSystemPrompt,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   ClaudeRuntimeTaskExecutionEngine,
   ClaudeSessionDriver,
@@ -26,8 +26,8 @@ import {
   sessionArtifactFromClaudeOAuth,
   validateClaudeSessionArtifact,
   type ClaudeTaskExecutionEngine,
-} from "@vioxen/subscription-runtime/provider-claude";
-import { createLocalFileBackendRuntimeAdapters } from "@vioxen/subscription-runtime/store-local-file";
+} from "@777genius/subscription-runtime/provider-claude";
+import { createLocalFileBackendRuntimeAdapters } from "@777genius/subscription-runtime/store-local-file";
 import {
   SubscriptionWorkerError,
   type CapacityAwareSubscriptionWorker,
@@ -35,7 +35,7 @@ import {
   type SubscriptionWorkerPrewarmResult,
   type SubscriptionWorkerState,
   type WorkerCapacitySnapshot,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import { NodeProcessRunner } from "../worker-local/node-process-runner";
 import { NullWorkerObservability } from "../worker-local/observability";
 import { StableWorkerWorkspace } from "../worker-local/temp-workspace";

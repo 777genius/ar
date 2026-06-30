@@ -1,4 +1,4 @@
-import { type AgentDriver, type ProviderFailure, type ProviderTask, type ProviderTaskResult, type RedactorPort, type SessionArtifact, type WorkspaceHandle } from "@vioxen/subscription-runtime/core";
+import { type AgentDriver, type ProviderFailure, type ProviderTask, type ProviderTaskResult, type RedactorPort, type SessionArtifact, type WorkspaceHandle } from "@777genius/subscription-runtime/core";
 import { type CodexExecutionEngine, type CodexReasoningEffort, type CodexServiceTier } from "./codex-json-execution-engine.js";
 import { type CodexSessionMaterializer, type CodexSessionPrewarmResult } from "./codex-session-materializer.js";
 type CodexJsonAgentDriverBaseOptions = {
@@ -19,7 +19,7 @@ export declare class CodexJsonAgentDriver implements AgentDriver {
     private readonly options;
     readonly agentId = "codex-json";
     readonly providerId = "codex";
-    readonly capabilities: import("@vioxen/subscription-runtime/core").AgentCapabilities;
+    readonly capabilities: import("@777genius/subscription-runtime/core").AgentCapabilities;
     private readonly engine;
     private readonly model;
     private readonly reasoningEffort;

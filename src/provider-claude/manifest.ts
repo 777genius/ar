@@ -1,4 +1,4 @@
-import type { RuntimeAdapterManifest } from "@vioxen/subscription-runtime/core";
+import type { RuntimeAdapterManifest } from "@777genius/subscription-runtime/core";
 import {
   claudeBgTaskAgentCapabilities,
   claudeSessionCapabilities,
@@ -7,7 +7,7 @@ import {
 export const claudeProviderManifest = {
   adapterId: "provider.claude-bg",
   adapterKind: "combined-provider",
-  packageName: "@vioxen/subscription-runtime/provider-claude",
+  packageName: "@777genius/subscription-runtime/provider-claude",
   packageVersion: "0.0.0",
   protocolVersion: 1,
   capabilities: {
