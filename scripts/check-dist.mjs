@@ -1,19 +1,58 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
+import { access, readFile } from "node:fs/promises";
+import { join } from "node:path";
 
-run("npm", ["run", "build"]);
-const status = spawnSync("git", ["status", "--porcelain", "--", "dist"], {
-  encoding: "utf8",
-});
-if (status.status !== 0) process.exit(status.status ?? 1);
-if (status.stdout.trim()) {
-  console.error("dist is not up to date. Run npm run build and commit dist.");
-  console.error(status.stdout);
+const rootDir = new URL("..", import.meta.url).pathname;
+const packageJson = JSON.parse(await readFile(join(rootDir, "package.json"), "utf8"));
+const requiredDistFiles = new Set();
+
+addDistPath(packageJson.main);
+addDistPath(packageJson.types);
+
+for (const exportTarget of Object.values(packageJson.exports ?? {})) {
+  collectExportDistPaths(exportTarget);
+}
+
+for (const binTarget of Object.values(packageJson.bin ?? {})) {
+  addDistPath(binTarget);
+}
+
+const missing = [];
+for (const distFile of [...requiredDistFiles].sort()) {
+  try {
+    await access(join(rootDir, distFile));
+  } catch {
+    missing.push(distFile);
+  }
+}
+
+if (missing.length > 0) {
+  console.error("dist is missing package entrypoints. Run npm run build.");
+  for (const distFile of missing) {
+    console.error(`- ${distFile}`);
+  }
   process.exit(1);
 }
-console.log("dist is up to date.");
 
-function run(command, args) {
-  const result = spawnSync(command, args, { stdio: "inherit" });
-  if (result.status !== 0) process.exit(result.status ?? 1);
+console.log(`dist contains ${requiredDistFiles.size} package entrypoints.`);
+
+function collectExportDistPaths(exportTarget) {
+  if (typeof exportTarget === "string") {
+    addDistPath(exportTarget);
+    return;
+  }
+
+  if (!exportTarget || typeof exportTarget !== "object") return;
+
+  for (const value of Object.values(exportTarget)) {
+    collectExportDistPaths(value);
+  }
+}
+
+function addDistPath(value) {
+  if (typeof value !== "string") return;
+  const normalized = value.startsWith("./") ? value.slice(2) : value;
+  if (normalized.startsWith("dist/")) {
+    requiredDistFiles.add(normalized);
+  }
 }

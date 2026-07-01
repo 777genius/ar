@@ -13,6 +13,7 @@ import {
 } from "../../core/testing/contracts";
 import {
   ClaudeBgProviderDriver,
+  ClaudeCliTaskExecutionEngine,
   ClaudeRuntimeTaskExecutionEngine,
   ClaudeSessionDriver,
   ClaudeTaskAgentDriver,
@@ -473,6 +474,110 @@ describe("Claude provider adapter", () => {
     });
   });
 
+  it("runs Claude CLI fallback with isolated explicit OAuth auth", async () => {
+    const runner = new RecordingRunner({
+      stdout: '{"verdict":"APPROVE"}\n',
+      stderr: "diagnostic\n",
+      durationMs: 42,
+    });
+    const engine = new ClaudeCliTaskExecutionEngine({
+      baseEnv: {
+        PATH: "/usr/bin",
+        HOME: "/Users/real-home",
+        CLAUDE_CODE_OAUTH_TOKEN: "must-not-inherit",
+        GITHUB_TOKEN: "must-not-pass",
+      },
+      claudePath: "/usr/local/bin/claude",
+      timeoutMs: 1234,
+    });
+    const redactor = new DefaultRedactor();
+    redactor.registerSecret("claude-oauth-secret", "claude-token");
+
+    const result = await engine.run({
+      allowedTools: ["Read", "Grep"],
+      appendSystemPrompt: "system",
+      abortSignal: new AbortController().signal,
+      maxTurns: 1,
+      mcpConfig: ['{"mcpServers":{}}'],
+      model: "sonnet",
+      outputSchemaName: "review-verdict",
+      permissionMode: "read-only",
+      prompt: "review",
+      redactor,
+      runner,
+      session: {
+        authMode: "oauth",
+        configDir: "/tmp/claude-config",
+        oauthToken: "claude-oauth-secret",
+      },
+      strictMcpConfig: true,
+      workspacePath: "/tmp/workspace",
+    });
+
+    expect(result).toMatchObject({
+      outputText: '{"verdict":"APPROVE"}',
+      structuredOutput: { verdict: "APPROVE" },
+      telemetry: { durationMs: 42 },
+    });
+    expect(result.warnings.map((warning) => warning.code)).toEqual([
+      "claude_cli_max_turns_unsupported",
+      "claude_cli_stderr",
+    ]);
+    expect(runner.lastRun).toMatchObject({
+      command: "/usr/local/bin/claude",
+      cwd: "/tmp/workspace",
+      timeoutMs: 1234,
+      env: {
+        PATH: "/usr/bin",
+        HOME: "/tmp/claude-config",
+        CLAUDE_CONFIG_DIR: "/tmp/claude-config",
+        CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth-secret",
+        CI: "true",
+      },
+    });
+    expect(runner.lastRun?.env.GITHUB_TOKEN).toBeUndefined();
+    expect(runner.lastRun?.args).toEqual([
+      "--print",
+      "--safe-mode",
+      "--no-session-persistence",
+      "--output-format",
+      "text",
+      "--model",
+      "sonnet",
+      "--permission-mode",
+      "dontAsk",
+      "--append-system-prompt",
+      "system",
+      "--allowedTools",
+      "Read,Grep",
+      "--mcp-config",
+      '{"mcpServers":{}}',
+      "--strict-mcp-config",
+      "review",
+    ]);
+  });
+
+  it("rejects write-capable allowed tools when Claude CLI fallback is read-only", async () => {
+    const engine = new ClaudeCliTaskExecutionEngine();
+    await expect(
+      engine.run({
+        allowedTools: ["Read", "Bash"],
+        abortSignal: new AbortController().signal,
+        model: "sonnet",
+        permissionMode: "read-only",
+        prompt: "review",
+        redactor: new DefaultRedactor(),
+        runner: new RecordingRunner({ stdout: "", stderr: "", durationMs: 0 }),
+        session: {
+          authMode: "oauth",
+          configDir: "/tmp/claude-config",
+          oauthToken: "claude-oauth-secret",
+        },
+        workspacePath: "/tmp/workspace",
+      }),
+    ).rejects.toThrow("claude_read_only_allowed_tools_unsafe:Bash");
+  });
+
   it("rejects write-capable allowed tools when Claude permission mode is read-only", async () => {
     const engine = new ClaudeRuntimeTaskExecutionEngine({
       runtimeModuleLoader: async () => fakeRuntimeModule,
@@ -881,6 +986,23 @@ class StaticRunner implements RunnerPort {
 
   async run(): Promise<ProcessResult> {
     return { exitCode: 0, stdout: "", stderr: "", durationMs: 1 };
+  }
+}
+
+class RecordingRunner implements RunnerPort {
+  readonly runnerId = "claude-recording-runner";
+  readonly capabilities = runnerCapabilities;
+  lastRun?: Parameters<RunnerPort["run"]>[0];
+
+  constructor(
+    private readonly result: Omit<ProcessResult, "exitCode"> & {
+      readonly exitCode?: number;
+    },
+  ) {}
+
+  async run(input: Parameters<RunnerPort["run"]>[0]): Promise<ProcessResult> {
+    this.lastRun = input;
+    return { exitCode: 0, ...this.result };
   }
 }
 
