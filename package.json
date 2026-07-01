@@ -1,6 +1,6 @@
 {
   "name": "@777genius/subscription-runtime",
-  "version": "0.1.0-main.4",
+  "version": "0.1.0-main.5",
   "description": "Provider-neutral subscription runtime for backend workers, Codex subscription execution, and pluggable session custody.",
   "license": "UNLICENSED",
   "type": "module",
