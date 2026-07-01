@@ -1,2 +1,0 @@
-export * from "../core/testing/fakes.js";
-//# sourceMappingURL=index.js.map

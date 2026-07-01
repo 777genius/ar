@@ -9,7 +9,7 @@ const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-consumer-"));
 
 try {
   run("npm", ["run", "build"], { cwd: rootDir });
-  const pack = spawnSync("npm", ["pack", "--json"], {
+  const pack = spawnSync("npm", ["pack", "--json", "--ignore-scripts"], {
     cwd: rootDir,
     encoding: "utf8",
   });

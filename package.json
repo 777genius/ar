@@ -107,7 +107,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/rewrite-dist-esm-imports.mjs",
+    "clean:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean:dist && tsc -p tsconfig.build.json && node scripts/rewrite-dist-esm-imports.mjs",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "smoke:worker-claude": "npm run build && node scripts/smoke-claude-worker.mjs",
@@ -115,7 +117,7 @@
     "check:boundaries": "node scripts/check-boundaries.mjs && node scripts/check-boundaries-self-test.mjs",
     "check:dist": "node scripts/check-dist.mjs",
     "check:packed-consumer": "node scripts/check-packed-consumer.mjs",
-    "check": "npm run typecheck && npm test && npm run build && npm run check:boundaries && npm pack --dry-run && npm run check:packed-consumer"
+    "check": "npm run typecheck && npm run build && npm run check:dist && npm test && npm run check:boundaries && npm pack --dry-run && npm run check:packed-consumer"
   },
   "dependencies": {
     "libsodium-wrappers": "^0.8.4"
