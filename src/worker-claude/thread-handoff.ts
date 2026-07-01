@@ -459,9 +459,19 @@ async function isThreadLockStale(lockPath: string, now: Date): Promise<boolean> 
   const record = await readThreadLockRecord(lockPath);
   const lastSeenAtMs = record
     ? Date.parse(record.heartbeatAt ?? record.acquiredAt)
-    : (await stat(lockPath)).mtimeMs;
+    : await threadLockMtimeMs(lockPath);
+  if (lastSeenAtMs === null) return true;
   if (Number.isNaN(lastSeenAtMs)) return true;
   return now.getTime() - lastSeenAtMs >= defaultThreadLockTtlMs;
+}
+
+async function threadLockMtimeMs(lockPath: string): Promise<number | null> {
+  try {
+    return (await stat(lockPath)).mtimeMs;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return null;
+    throw error;
+  }
 }
 
 async function readThreadLockRecord(
