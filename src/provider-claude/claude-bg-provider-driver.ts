@@ -11,7 +11,7 @@ import type {
   SessionValidationResult,
   SubscriptionProviderDriver,
   WorkspaceHandle,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import { ClaudeSessionDriver } from "./claude-session-driver";
 import {
   ClaudeTaskAgentDriver,

@@ -13,7 +13,7 @@ import {
   type SessionStoreCapabilities,
   type SessionStorePort,
   type SessionWriteResult,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 
 const storageVersion = "local-encrypted-file-store-v1";
 const encryptionAlgorithm = "aes-256-gcm";

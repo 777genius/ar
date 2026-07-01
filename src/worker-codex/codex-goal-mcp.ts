@@ -10,12 +10,12 @@ import {
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
-import { LocalFileWorkerControlInboxStore } from "@vioxen/subscription-runtime/store-local-file";
+import { DefaultRedactor } from "@777genius/subscription-runtime/core";
+import { LocalFileWorkerControlInboxStore } from "@777genius/subscription-runtime/store-local-file";
 import {
   watchClaudeRuns,
   type ClaudeRunWatchArgs,
-} from "@vioxen/subscription-runtime/worker-local";
+} from "@777genius/subscription-runtime/worker-local";
 import {
   RunObservationService,
   InterruptAndContinueWorkerUseCase,
@@ -36,7 +36,7 @@ import {
   type WorkerControlSignal,
   type WorkerControlSignalView,
   type WorkerControlTarget,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import {
   codexGoalJobToArgs,
   createCodexGoalJob,

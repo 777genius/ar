@@ -3,11 +3,11 @@ import { createHash } from "node:crypto";
 import { access, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import { DefaultRedactor } from "@777genius/subscription-runtime/core";
 import {
   readCodexAuthJsonFreshness,
   validateCodexAuthJsonBytes,
-} from "@vioxen/subscription-runtime/provider-codex";
+} from "@777genius/subscription-runtime/provider-codex";
 import {
   GitPatchPreserver,
   StrictResultRecorder,
@@ -19,8 +19,8 @@ import {
   type RuntimeRecommendedAction,
   type RuntimeResultEnvelope,
   type RuntimeResultStatus,
-} from "@vioxen/subscription-runtime/worker-core";
-import { LocalFileWorkerAccountCapacityStore } from "@vioxen/subscription-runtime/store-local-file";
+} from "@777genius/subscription-runtime/worker-core";
+import { LocalFileWorkerAccountCapacityStore } from "@777genius/subscription-runtime/store-local-file";
 import {
   codexGoalOutputPath,
   codexGoalProgressPath,

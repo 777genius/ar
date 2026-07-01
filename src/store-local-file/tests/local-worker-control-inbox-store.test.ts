@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   WorkerControlService,
   type WorkerControlDeliveryReceipt,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import { LocalFileWorkerControlInboxStore } from "../index";
 
 describe("LocalFileWorkerControlInboxStore", () => {

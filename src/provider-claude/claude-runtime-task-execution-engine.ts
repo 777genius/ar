@@ -4,7 +4,7 @@ import type {
   ProviderTaskEvent,
   ProviderTaskTelemetry,
   RuntimeWarning,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import type {
   ClaudeTaskEngineInput,
   ClaudeTaskExecutionEngine,

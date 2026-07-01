@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import type {
   RunObservationHistoryEntry,
   RunObservationHistoryStorePort,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 
 const storageVersion = "local-run-observation-history-v1";
 

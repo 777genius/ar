@@ -10,11 +10,11 @@ import { describe, expect, it } from "vitest";
 import {
   LocalFileWorkerAccountCapacityStore,
   LocalFileWorkerControlInboxStore,
-} from "@vioxen/subscription-runtime/store-local-file";
+} from "@777genius/subscription-runtime/store-local-file";
 import {
   InMemoryActiveAttemptRegistry,
   type WorkerControlDeliveryReceipt,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import {
   buildCodexGoalBrief,
   createCodexGoalMcpServer,

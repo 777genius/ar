@@ -14,7 +14,7 @@ import {
   type ProviderTaskResult,
   type ProviderTaskTelemetry,
   type RuntimeWarning,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   agentTaskProtocolVersion,
   AgentTaskProtocolError,

@@ -2,7 +2,7 @@ import type {
   ProviderTaskControls,
   ProviderTaskTelemetry,
   RuntimeWarning,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import type {
   ClaudeTaskEngineInput,
   ClaudeTaskExecutionEngine,

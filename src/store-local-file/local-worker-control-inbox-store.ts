@@ -13,8 +13,8 @@ import type {
   WorkerControlInboxStore,
   WorkerControlSignal,
   WorkerControlTarget,
-} from "@vioxen/subscription-runtime/worker-core";
-import { workerControlTargetMatches } from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
+import { workerControlTargetMatches } from "@777genius/subscription-runtime/worker-core";
 
 const storageVersion = "local-file-worker-control-inbox-v1";
 

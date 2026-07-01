@@ -1,7 +1,7 @@
 # Provider Authoring
 
 New providers should implement the provider session and agent ports from
-`@vioxen/subscription-runtime/core`.
+`@777genius/subscription-runtime/core`.
 
 Rules:
 
@@ -9,10 +9,10 @@ Rules:
 - no queue or HTTP framework dependencies in providers;
 - no backend storage decisions in providers;
 - expose a provider module through a subpath export, for example
-  `@vioxen/subscription-runtime/provider-claude`.
+  `@777genius/subscription-runtime/provider-claude`.
 
 Provider account diagnostics are implemented through provider-neutral ports in
-`@vioxen/subscription-runtime/account-diagnostics`. A provider should expose a
+`@777genius/subscription-runtime/account-diagnostics`. A provider should expose a
 registry, safe identity reader and optional health/live probe adapter without
 returning raw tokens, OAuth payloads or auth files. See
 `docs/account-diagnostics.md`.

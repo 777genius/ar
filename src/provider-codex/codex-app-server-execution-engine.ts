@@ -11,7 +11,7 @@ import type {
   ProviderFailure,
   RedactorPort,
   RunnerPort,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import { pruneCodexChildEnv } from "./codex-cli-domain";
 import type {
   CodexExecutionProfile,

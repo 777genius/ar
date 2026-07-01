@@ -3,7 +3,7 @@ import type {
   RuntimeWarning,
   SessionArtifact,
   SessionValidationResult,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   compactCodexAuthJson,
   validateCodexAuthJsonBytes,

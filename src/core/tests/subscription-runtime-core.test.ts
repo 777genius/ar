@@ -39,7 +39,7 @@ import {
 const fakeProviderManifest = {
   adapterId: "provider.fake",
   adapterKind: "combined-provider",
-  packageName: "@vioxen/subscription-runtime-provider-fake",
+  packageName: "@777genius/subscription-runtime-provider-fake",
   packageVersion: "0.0.0",
   protocolVersion: 1,
   capabilities: {
@@ -53,7 +53,7 @@ const fakeProviderManifest = {
 const fakeStoreManifest = {
   adapterId: "store.memory",
   adapterKind: "store",
-  packageName: "@vioxen/subscription-runtime-store-memory",
+  packageName: "@777genius/subscription-runtime-store-memory",
   packageVersion: "0.0.0",
   protocolVersion: 1,
   capabilities: fakeStoreCapabilities,
@@ -65,7 +65,7 @@ const fakeStoreManifest = {
 const fakeRunnerManifest = {
   adapterId: "runner.memory",
   adapterKind: "runner",
-  packageName: "@vioxen/subscription-runtime-runner-memory",
+  packageName: "@777genius/subscription-runtime-runner-memory",
   packageVersion: "0.0.0",
   protocolVersion: 1,
   capabilities: fakeRunnerCapabilities,

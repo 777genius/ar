@@ -11,7 +11,7 @@ import type {
   ProviderTaskResult,
   ProviderTaskTelemetry,
   RuntimeWarning,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 
 export const agentTaskProtocolVersion = 1 as const;
 

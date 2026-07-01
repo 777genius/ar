@@ -8,7 +8,7 @@ import type {
   SessionArtifact,
   SessionValidationResult,
   WorkspaceHandle,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   claudeProviderId,
   claudeSessionCapabilities,

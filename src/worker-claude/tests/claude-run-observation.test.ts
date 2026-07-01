@@ -2,12 +2,12 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { RunObservationService } from "@vioxen/subscription-runtime/worker-core";
+import { RunObservationService } from "@777genius/subscription-runtime/worker-core";
 import type {
   ClaudeTaskEngineInput,
   ClaudeTaskExecutionEngine,
   ClaudeTaskExecutionResult,
-} from "@vioxen/subscription-runtime/provider-claude";
+} from "@777genius/subscription-runtime/provider-claude";
 import {
   ClaudeRunObservationAdapter,
   FileBackendClaudeWorker,

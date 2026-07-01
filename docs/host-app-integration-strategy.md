@@ -11,7 +11,7 @@ This document defines how `qa-rig`, `hib-pr-reviewer`,
 ```txt
 host app
   -> host-local adapter
-    -> @vioxen/subscription-runtime/agent-task
+    -> @777genius/subscription-runtime/agent-task
       -> runtime composition root
         -> worker-core / queue-core
           -> worker-claude | worker-codex
@@ -27,17 +27,17 @@ cooldown or account capacity state.
 
 Preferred app imports:
 
-- `@vioxen/subscription-runtime/agent-task`
+- `@777genius/subscription-runtime/agent-task`
 - `@quanta/contracts` for universal bus envelopes and subjects
 - host-local wrapper modules that expose the app's own port names
 
 Provider/runtime imports are composition-root only:
 
-- `@vioxen/subscription-runtime/provider-*`
-- `@vioxen/subscription-runtime/worker-*`
-- `@vioxen/subscription-runtime/queue-*`
-- `@vioxen/subscription-runtime/store-*`
-- `@vioxen/subscription-runtime/runner-*`
+- `@777genius/subscription-runtime/provider-*`
+- `@777genius/subscription-runtime/worker-*`
+- `@777genius/subscription-runtime/queue-*`
+- `@777genius/subscription-runtime/store-*`
+- `@777genius/subscription-runtime/runner-*`
 
 Existing direct adapters in `quanta-pr-reviewer` are transitional. New host-app
 integrations should use `agent-task` first, then let the runtime composition

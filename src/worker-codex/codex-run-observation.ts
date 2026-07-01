@@ -1,11 +1,11 @@
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import { DefaultRedactor } from "@777genius/subscription-runtime/core";
 import {
   LocalFileRunObservationHistoryStore,
   LocalFileWorkerControlInboxStore,
-} from "@vioxen/subscription-runtime/store-local-file";
+} from "@777genius/subscription-runtime/store-local-file";
 import {
   decideRunObservation,
   actionForRuntimeState,
@@ -26,7 +26,7 @@ import {
   type RunObservationSnapshot,
   type RunObservationStatus,
   type RunObservationWarning,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import {
   codexGoalJobToArgs,
   listCodexGoalJobs,

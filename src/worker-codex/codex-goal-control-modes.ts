@@ -1,4 +1,4 @@
-import type { ProviderTaskControls } from "@vioxen/subscription-runtime/core";
+import type { ProviderTaskControls } from "@777genius/subscription-runtime/core";
 
 export type CodexGoalEditMode = NonNullable<ProviderTaskControls["editMode"]>;
 export type CodexGoalProviderSandboxMode = NonNullable<

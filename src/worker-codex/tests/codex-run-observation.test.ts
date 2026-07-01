@@ -8,11 +8,11 @@ import {
   LocalFileWorkerAccountCapacityStore,
   LocalFileWorkerControlInboxStore,
   LocalFileRunObservationHistoryStore,
-} from "@vioxen/subscription-runtime/store-local-file";
+} from "@777genius/subscription-runtime/store-local-file";
 import {
   RunObservationService,
   WorkerControlService,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import { createCodexGoalJob, type CodexGoalJobManifestInput } from "../codex-goal-jobs";
 import { CodexRunObservationAdapter } from "../codex-run-observation";
 

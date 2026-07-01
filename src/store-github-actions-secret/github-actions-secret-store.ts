@@ -5,7 +5,7 @@ import {
   type SessionStoreCapabilities,
   type SessionStorePort,
   type SessionWriteResult,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   encryptGitHubSecretValue,
   type GitHubRepositoryPublicKey,

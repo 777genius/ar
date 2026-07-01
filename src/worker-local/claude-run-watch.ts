@@ -3,7 +3,7 @@ import {
   decideRunObservation,
   type RunObservationSnapshot,
   type RunObservationWarning,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import { ClaudeRunObservationAdapter } from "../worker-claude/claude-run-observation";
 
 export type ClaudeRunWatchArgs = {

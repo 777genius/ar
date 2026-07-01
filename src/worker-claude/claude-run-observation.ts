@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import { DefaultRedactor } from "@777genius/subscription-runtime/core";
 import {
   decideRunObservation,
   type RunArtifactSummary,
@@ -14,7 +14,7 @@ import {
   type RunObservationSnapshot,
   type RunObservationStatus,
   type RunObservationWarning,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import {
   FileClaudeRunArtifactStore,
   type ClaudeRunArtifactPaths,

@@ -7,7 +7,7 @@ import type {
   RedactorPort,
   RunnerPort,
   SessionArtifact,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

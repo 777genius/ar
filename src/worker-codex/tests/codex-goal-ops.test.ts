@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { LocalFileWorkerAccountCapacityStore } from "@vioxen/subscription-runtime/store-local-file";
+import { LocalFileWorkerAccountCapacityStore } from "@777genius/subscription-runtime/store-local-file";
 import { codexGoalAccountSlots, type CodexGoalRunConfig } from "../codex-goal-runner";
 import {
   buildCodexGoalNoTmuxCommand,

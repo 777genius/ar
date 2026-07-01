@@ -1,7 +1,7 @@
 import type {
   WorkerAccountCapacityStore,
   WorkerCapacitySnapshot,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import type {
   ProviderAccountCapacityReaderPort,
   ProviderAccountDiagnosticSignal,

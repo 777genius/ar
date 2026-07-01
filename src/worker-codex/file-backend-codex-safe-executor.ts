@@ -4,11 +4,11 @@ import { join } from "node:path";
 import {
   validateCodexAuthJsonBytes,
   type ValidatedCodexAuthJson,
-} from "@vioxen/subscription-runtime/provider-codex";
+} from "@777genius/subscription-runtime/provider-codex";
 import {
   LocalFileWorkerAccountCapacityStore,
   LocalFileWorkerControlInboxStore,
-} from "@vioxen/subscription-runtime/store-local-file";
+} from "@777genius/subscription-runtime/store-local-file";
 import {
   accountCapacityAwareWorkerFactory,
   type ActiveAttemptRegistry,
@@ -30,7 +30,7 @@ import {
   type WorkerPoolSlotSnapshot,
   type WorkerPoolStats,
   type WorkspaceLockStore,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import {
   FileBackendCodexWorker,
   type FileBackendCodexWorkerJob,

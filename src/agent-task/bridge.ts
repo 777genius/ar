@@ -2,7 +2,7 @@ import { pathToFileURL } from "node:url";
 import type {
   ProviderTaskEvent,
   ProviderTaskResult,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   parseAgentTaskEvent,
   parseAgentTaskRequest,

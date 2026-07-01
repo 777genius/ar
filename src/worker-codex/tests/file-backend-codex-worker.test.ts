@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import type {
   RunnerPort,
   WorkspacePort,
-} from "@vioxen/subscription-runtime/core";
+} from "@777genius/subscription-runtime/core";
 import {
   BoundedSubscriptionWorkerPool,
   InMemoryActiveAttemptRegistry,
@@ -16,8 +16,8 @@ import {
   InterruptAndContinueWorkerUseCase,
   WorkerControlService,
   accountCapacityAwareWorkerFactory,
-} from "@vioxen/subscription-runtime/worker-core";
-import { LocalFileWorkerControlInboxStore } from "@vioxen/subscription-runtime/store-local-file";
+} from "@777genius/subscription-runtime/worker-core";
+import { LocalFileWorkerControlInboxStore } from "@777genius/subscription-runtime/store-local-file";
 import { describe, expect, it } from "vitest";
 import { FileBackendCodexSafeExecutor, FileBackendCodexWorker } from "../index";
 import { NodeProcessRunner } from "../node-process-runner";

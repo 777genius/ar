@@ -14,13 +14,13 @@ rewriting the host application.
 Install the published package from GitHub Packages:
 
 ```ini
-@vioxen:registry=https://npm.pkg.github.com
+@777genius:registry=https://npm.pkg.github.com
 ```
 
 ```json
 {
   "dependencies": {
-    "@vioxen/subscription-runtime": "0.1.0-main.1"
+    "@777genius/subscription-runtime": "0.1.0-main.6"
   }
 }
 ```
@@ -28,13 +28,13 @@ Install the published package from GitHub Packages:
 Use subpath exports:
 
 ```ts
-import { createSubscriptionRuntime } from "@vioxen/subscription-runtime/core";
-import { FileBackendCodexWorker } from "@vioxen/subscription-runtime/worker-codex";
+import { createSubscriptionRuntime } from "@777genius/subscription-runtime/core";
+import { FileBackendCodexWorker } from "@777genius/subscription-runtime/worker-codex";
 import {
   ClaudeRuntimeTaskExecutionEngine,
   ClaudeTaskAgentDriver,
-} from "@vioxen/subscription-runtime/provider-claude";
-import { createLocalFileBackendRuntimeAdapters } from "@vioxen/subscription-runtime/store-local-file";
+} from "@777genius/subscription-runtime/provider-claude";
+import { createLocalFileBackendRuntimeAdapters } from "@777genius/subscription-runtime/store-local-file";
 ```
 
 Inspect account availability without running provider tasks:
@@ -260,7 +260,7 @@ Example composition:
 import {
   ClaudeBgProviderDriver,
   ClaudeRuntimeTaskExecutionEngine,
-} from "@vioxen/subscription-runtime/provider-claude";
+} from "@777genius/subscription-runtime/provider-claude";
 
 const claudeDriver = new ClaudeBgProviderDriver({
   engine: new ClaudeRuntimeTaskExecutionEngine(),
@@ -842,7 +842,7 @@ Why it matters:
 
 - a library that works only inside its original monorepo is not a real
   reusable package;
-- consumers should import `@vioxen/subscription-runtime/worker-codex`, not
+- consumers should import `@777genius/subscription-runtime/worker-codex`, not
   internal source paths;
 - the packaging model has to work in local dev, CI and Docker.
 
@@ -1184,11 +1184,11 @@ The package has to work outside its own source tree. Packed-consumer checks
 verify that a real external project can import public subpaths from the built
 package:
 
-- `@vioxen/subscription-runtime/core`;
-- `@vioxen/subscription-runtime/provider-codex`;
-- `@vioxen/subscription-runtime/worker-core`;
-- `@vioxen/subscription-runtime/worker-codex`;
-- `@vioxen/subscription-runtime/store-local-file`;
+- `@777genius/subscription-runtime/core`;
+- `@777genius/subscription-runtime/provider-codex`;
+- `@777genius/subscription-runtime/worker-core`;
+- `@777genius/subscription-runtime/worker-codex`;
+- `@777genius/subscription-runtime/store-local-file`;
 - queue and runner modules.
 
 This catches mistakes that normal TypeScript tests inside the repository can
@@ -1378,13 +1378,13 @@ generated mirror repositories.
 That choice keeps consumer setup simple:
 
 ```ini
-@vioxen:registry=https://npm.pkg.github.com
+@777genius:registry=https://npm.pkg.github.com
 ```
 
 ```json
 {
   "dependencies": {
-    "@vioxen/subscription-runtime": "0.1.0-main.1"
+    "@777genius/subscription-runtime": "0.1.0-main.6"
   }
 }
 ```
@@ -1471,8 +1471,8 @@ Docker deployment, multiple consumers and future providers.
 ## Backend Codex Worker
 
 ```ts
-import { BoundedSubscriptionWorkerPool } from "@vioxen/subscription-runtime/worker-core";
-import { FileBackendCodexWorker } from "@vioxen/subscription-runtime/worker-codex";
+import { BoundedSubscriptionWorkerPool } from "@777genius/subscription-runtime/worker-core";
+import { FileBackendCodexWorker } from "@777genius/subscription-runtime/worker-codex";
 
 const pool = new BoundedSubscriptionWorkerPool({
   poolId: "codex-workers",

@@ -114,7 +114,7 @@ Escape hatches remain available:
 - `--no-tmux`: run in the current process;
 - `--no-require-git-workspace`: allow non-git sandbox workspaces;
 - direct TypeScript API: use `runCodexGoal()` from
-  `@vioxen/subscription-runtime/worker-codex`;
+  `@777genius/subscription-runtime/worker-codex`;
 - manual runner: keep using a custom `run-goal.mjs` when a host app needs full
   control.
 
@@ -269,7 +269,7 @@ Use the SDK MCP client when a host or agent cannot access native MCP tools but
 still wants the same control plane:
 
 ```ts
-import { callCodexGoalMcpTool } from "@vioxen/subscription-runtime/worker-codex";
+import { callCodexGoalMcpTool } from "@777genius/subscription-runtime/worker-codex";
 
 const brief = await callCodexGoalMcpTool({
   name: "codex_goal_brief",
@@ -281,7 +281,7 @@ Use `runCodexGoal()` when a host app wants the same Codex goal behavior but
 needs to customize process supervision, notifications, job storage or UI:
 
 ```ts
-import { runCodexGoal, codexGoalAccountSlots } from "@vioxen/subscription-runtime/worker-codex";
+import { runCodexGoal, codexGoalAccountSlots } from "@777genius/subscription-runtime/worker-codex";
 
 await runCodexGoal({
   jobRootDir: "/Users/me/.cache/subscription-runtime/my-job",
@@ -842,7 +842,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { FileBackendCodexSafeExecutor } from "@vioxen/subscription-runtime/worker-codex";
+import { FileBackendCodexSafeExecutor } from "@777genius/subscription-runtime/worker-codex";
 
 const root = process.env.SUBSCRIPTION_RUNTIME_JOB_ROOT;
 const authRoot = process.env.SUBSCRIPTION_RUNTIME_CODEX_AUTH_ROOT;

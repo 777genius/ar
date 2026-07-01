@@ -4,16 +4,16 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import type { ProviderTaskControls } from "@vioxen/subscription-runtime/core";
+import type { ProviderTaskControls } from "@777genius/subscription-runtime/core";
 import type {
   CodexReasoningEffort,
   CodexServiceTier,
-} from "@vioxen/subscription-runtime/provider-codex";
+} from "@777genius/subscription-runtime/provider-codex";
 import type {
   SafeExecutionPolicy,
   SafeExecutionRunResult,
   TaskEffectMode,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import {
   GitPatchPreserver,
   normalizeWorkerReport,
@@ -23,7 +23,7 @@ import {
   type RuntimeResultEnvelopeInput,
   type RuntimeResultStatus,
   type WorkerReport,
-} from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/worker-core";
 import {
   FileBackendCodexSafeExecutor,
   type FileBackendCodexSafeExecutorOptions,

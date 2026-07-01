@@ -2,7 +2,7 @@
 
 Status: implemented
 
-`@vioxen/subscription-runtime/agent-task` is the app-facing adapter kit for
+`@777genius/subscription-runtime/agent-task` is the app-facing adapter kit for
 systems that need to call a subscription-runtime worker without importing a
 provider, worker, queue, store or runner implementation.
 
@@ -25,7 +25,7 @@ import {
   runAgentTaskBridge,
   streamAgentTaskBridge,
   assertAgentTaskCertification,
-} from "@vioxen/subscription-runtime/agent-task";
+} from "@777genius/subscription-runtime/agent-task";
 ```
 
 The package exposes two CLIs.
@@ -170,14 +170,14 @@ sensitive review evidence by design.
 
 ## Boundary Rule
 
-Apps using this bridge should import `@vioxen/subscription-runtime/agent-task`
+Apps using this bridge should import `@777genius/subscription-runtime/agent-task`
 or a host-local adapter wrapper. They should not import:
 
-- `@vioxen/subscription-runtime/provider-*`
-- `@vioxen/subscription-runtime/worker-*`
-- `@vioxen/subscription-runtime/queue-*`
-- `@vioxen/subscription-runtime/store-*`
-- `@vioxen/subscription-runtime/runner-*`
+- `@777genius/subscription-runtime/provider-*`
+- `@777genius/subscription-runtime/worker-*`
+- `@777genius/subscription-runtime/queue-*`
+- `@777genius/subscription-runtime/store-*`
+- `@777genius/subscription-runtime/runner-*`
 
 Provider selection belongs in runtime wiring, not in app review logic.
 

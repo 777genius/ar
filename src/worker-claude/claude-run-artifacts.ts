@@ -14,8 +14,8 @@ import {
   type ClockPort,
   type ProviderTaskTelemetry,
   type RuntimeWarning,
-} from "@vioxen/subscription-runtime/core";
-import type { WorkerCapacitySnapshot } from "@vioxen/subscription-runtime/worker-core";
+} from "@777genius/subscription-runtime/core";
+import type { WorkerCapacitySnapshot } from "@777genius/subscription-runtime/worker-core";
 
 export const claudeRunArtifactSchemaVersion = 1;
 
