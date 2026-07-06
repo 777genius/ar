@@ -1,0 +1,103 @@
+name: Sync Canonical
+
+on:
+  workflow_dispatch:
+    inputs:
+      canonical_ref:
+        description: Canonical branch, tag or SHA to sync.
+        required: false
+        default: main
+        type: string
+      package_version:
+        description: Optional package version override for this mirror sync.
+        required: false
+        type: string
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-canonical
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve base package version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          echo "PRIVATE_MIRROR_BASE_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Fetch canonical
+        env:
+          CANONICAL_REPO_TOKEN: ${{ secrets.CANONICAL_REPO_TOKEN }}
+          CANONICAL_REF: ${{ inputs.canonical_ref || 'main' }}
+        run: |
+          if [ -n "$CANONICAL_REPO_TOKEN" ]; then
+            git remote add canonical "https://x-access-token:${CANONICAL_REPO_TOKEN}@github.com/vioxen/subscription-runtime.git"
+          else
+            git remote add canonical "https://github.com/vioxen/subscription-runtime.git"
+          fi
+          git fetch canonical "$CANONICAL_REF"
+
+      - name: Merge canonical into sync branch
+        run: |
+          git checkout -B sync/canonical-main
+          git merge --no-edit -X theirs FETCH_HEAD
+
+      - name: Apply private package overlay
+        env:
+          PRIVATE_MIRROR_BASE_VERSION: ${{ env.PRIVATE_MIRROR_BASE_VERSION }}
+          PRIVATE_MIRROR_PACKAGE_VERSION: ${{ inputs.package_version || '' }}
+        run: |
+          node scripts/private-mirror/apply-package-overlay.mjs
+          npm install --package-lock-only --ignore-scripts
+
+      - name: Verify overlay
+        run: |
+          npm ci
+          npm run typecheck
+          npm run check:boundaries
+
+      - name: Commit sync branch
+        id: commit
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "chore: sync canonical runtime"
+          git push origin sync/canonical-main --force-with-lease
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update sync PR
+        if: ${{ steps.commit.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          existing_pr="$(gh pr list --head sync/canonical-main --base main --state open --json number --jq '.[0].number // empty')"
+          body="Automated private mirror sync from canonical runtime source."
+          if [ -n "$existing_pr" ]; then
+            gh pr edit "$existing_pr" --title "chore: sync canonical runtime" --body "$body"
+          else
+            gh pr create --base main --head sync/canonical-main --title "chore: sync canonical runtime" --body "$body"
+          fi

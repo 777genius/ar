@@ -30,7 +30,7 @@ jobs:
           node-version: 22
           cache: npm
           registry-url: https://npm.pkg.github.com
-          scope: "@vioxen"
+          scope: "@777genius"
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
