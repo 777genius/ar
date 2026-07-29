@@ -156,6 +156,28 @@ that can authorize a compatible transport fallback. `execution_failed` never
 replays the task through another backend. `cleanup_unconfirmed` reports pending
 provider process/session/tool-server authority and is always fail-closed.
 
+Protocol v3 adds durable autonomous Goal continuation through a logical
+`thread.id` and caller-stable `executionId`. Exact replay of a completed
+execution is allowed only while its Git-visible workspace effect still matches
+the durable receipt. That effect is defined as:
+
+- the current `HEAD`;
+- staged and unstaged tracked diffs;
+- nonignored untracked paths, modes, file contents and symlink targets.
+
+Git-ignored files and other filesystem state intentionally remain outside this
+contract. Hosts must keep every task-relevant durable effect tracked or
+nonignored; otherwise a change to ignored state cannot invalidate a replay.
+The fingerprint is replay evidence, not a workspace snapshot or rollback
+mechanism.
+
+Logical-thread file locks are deliberately non-reclaiming. A process crash
+leaves the thread busy until an operator reconciles the workspace and durable
+execution record, then removes the orphaned lock. The runtime does not use a
+time-based stale-lock takeover because it cannot prove that provider or
+workspace side effects stopped, and automatic reclamation could duplicate
+those effects.
+
 The module runner validates the request at the runtime boundary, so JS callers
 and older TypeScript builds get the same protocol validation as the CLI. It does
 not silently borrow the interactive Claude or Codex profile. Pass credentials

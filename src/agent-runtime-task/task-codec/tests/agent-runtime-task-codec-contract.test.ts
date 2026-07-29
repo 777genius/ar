@@ -16,9 +16,15 @@ import {
   parseAgentRuntimeTaskResult,
   providerTaskResultToAgentRuntimeTaskResult,
   createAgentRuntimeTaskRequestV2,
+  createAgentRuntimeTaskRequestV3,
 } from "../../codec";
 import { compareAgentRuntimeTaskRoundMembers } from "../../rounds";
-import { agentRuntimeTaskProtocolVersion } from "../../types";
+import {
+  AgentRuntimeFailureLifecycleState,
+  AgentRuntimeThreadOutcome,
+  agentRuntimeTaskProtocolVersion,
+  agentRuntimeTaskProtocolVersionV3,
+} from "../../types";
 
 describe("agent-runtime-task codec contract", () => {
   it("exports high-level host controls from the public agent-runtime-task entrypoint", () => {
@@ -314,13 +320,13 @@ describe("agent-runtime-task codec contract", () => {
   it("rejects legacy or malformed codec inputs with protocol errors", () => {
     expect(() =>
       parseAgentRuntimeTaskRequest({
-        protocolVersion: agentRuntimeTaskProtocolVersion + 2,
+        protocolVersion: agentRuntimeTaskProtocolVersionV3 + 1,
         task: {
           kind: "review",
           prompt: "Review this.",
         },
       }),
-    ).toThrow("request.protocolVersion must be 1 or 2");
+    ).toThrow("request.protocolVersion must be 1, 2, or 3");
 
     expect(() =>
       parseAgentRuntimeTaskRequest({
@@ -364,6 +370,166 @@ describe("agent-runtime-task codec contract", () => {
       },
     });
     expect(agentRuntimeTaskRequestToProviderTask(request).metadata).toBeUndefined();
+  });
+
+  it("round-trips a v3 logical-thread Goal without changing the v2 shape", () => {
+    const request = createAgentRuntimeTaskRequestV3({
+      executionId: "execution-1",
+      thread: { id: "thread-1" },
+      timeoutMs: 60_000,
+      task: {
+        kind: "structured-prompt",
+        prompt: "Continue the deterministic fixture.",
+        execution: {
+          mode: AgentRuntimeExecutionMode.Goal,
+          completionCondition: "The fixture is complete.",
+        },
+      },
+    });
+
+    expect(parseAgentRuntimeTaskRequest(request)).toEqual(request);
+    expect(agentRuntimeTaskRequestToProviderTask(request)).toMatchObject({
+      execution: {
+        mode: AgentRuntimeExecutionMode.Goal,
+        completionCondition: "The fixture is complete.",
+      },
+    });
+    expect(() =>
+      parseAgentRuntimeTaskRequest({
+        protocolVersion: 2,
+        executionId: "execution-1",
+        thread: { id: "thread-1" },
+        task: {
+          kind: "structured-prompt",
+          prompt: "Do not expand v2.",
+          execution: { mode: AgentRuntimeExecutionMode.SingleRun },
+        },
+      }),
+    ).toThrow("request.executionId is unsupported");
+  });
+
+  it("requires Goal, stable identities and terminal thread evidence in v3", () => {
+    expect(() =>
+      createAgentRuntimeTaskRequestV3({
+        executionId: "execution-1",
+        thread: { id: "thread-1" },
+        task: {
+          kind: "structured-prompt",
+          prompt: "Single run is not continuable.",
+          execution: { mode: AgentRuntimeExecutionMode.SingleRun },
+        },
+      }),
+    ).toThrow("request.task.execution.mode must be goal");
+    expect(() =>
+      parseAgentRuntimeTaskRequest({
+        protocolVersion: 3,
+        executionId: "",
+        thread: { id: "thread-1" },
+        task: {
+          kind: "structured-prompt",
+          prompt: "Invalid identity.",
+          execution: {
+            mode: AgentRuntimeExecutionMode.Goal,
+            completionCondition: "done",
+          },
+        },
+      }),
+    ).toThrow("request.executionId must be a non-empty string");
+    expect(() =>
+      providerTaskResultToAgentRuntimeTaskResult({
+        status: "completed",
+        outputText: "missing thread evidence",
+        warnings: [],
+      }, { protocolVersion: 3 }),
+    ).toThrow("result.thread is required");
+
+    const completed = providerTaskResultToAgentRuntimeTaskResult({
+      status: "completed",
+      outputText: "done",
+      warnings: [],
+    }, {
+      protocolVersion: 3,
+      thread: {
+        id: "thread-1",
+        outcome: AgentRuntimeThreadOutcome.Continued,
+      },
+    });
+    expect(parseAgentRuntimeTaskResult(completed)).toEqual(completed);
+  });
+
+  it("fails v3 waiting-for-input results closed with an explicit lifecycle", () => {
+    const result = providerTaskResultToAgentRuntimeTaskResult({
+      status: "waiting_for_input",
+      runId: "run-1",
+      outputText: "Need input.",
+      request: {
+        id: "input-1",
+        kind: "decision_required",
+        question: "Continue?",
+        audience: "orchestrator",
+      },
+      resumeHandle: {
+        runId: "run-1",
+        providerId: "codex",
+        workspacePath: "/workspace",
+      },
+      telemetry: {
+        durationMs: 42,
+        providerSessionId: "provider-session-must-not-leak",
+      },
+      warnings: [
+        {
+          code: "control-warning",
+          safeMessage: "Control warning.",
+        },
+        {
+          code: "worker-warning",
+          safeMessage: "Worker warning.",
+        },
+      ],
+    }, {
+      protocolVersion: 3,
+      failureLifecycle: {
+        state: AgentRuntimeFailureLifecycleState.ExecutionFailed,
+        taskStarted: true,
+      },
+    });
+
+    expect(result).toMatchObject({
+      protocolVersion: 3,
+      status: "failed",
+      failure: { code: "provider_output_invalid" },
+      lifecycle: {
+        state: AgentRuntimeFailureLifecycleState.ExecutionFailed,
+        taskStarted: true,
+      },
+      telemetry: { durationMs: 42 },
+      warnings: [
+        { code: "control-warning" },
+        { code: "worker-warning" },
+      ],
+    });
+    expect(result.telemetry).not.toHaveProperty("providerSessionId");
+    expect(() =>
+      parseAgentRuntimeTaskResult({
+        protocolVersion: 3,
+        status: "waiting_for_input",
+        runId: "run-1",
+        outputText: "",
+        request: {
+          id: "input-1",
+          kind: "decision_required",
+          question: "Continue?",
+          audience: "orchestrator",
+        },
+        resumeHandle: {
+          runId: "run-1",
+          providerId: "codex",
+          workspacePath: "/workspace",
+        },
+        warnings: [],
+      }),
+    ).toThrow("waiting_for_input is unsupported for protocolVersion 3");
   });
 
   it("rejects v2 execution on the frozen v1 request shape", () => {

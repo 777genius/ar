@@ -12,6 +12,7 @@ import type {
   ProcessResult,
   ProviderCapabilities,
   ProviderFailure,
+  ProviderLogicalThreadExecution,
   ProviderTask,
   ProviderTaskEvent,
   ProviderTaskResult,
@@ -83,6 +84,7 @@ export interface AgentDriver {
     readonly redactor: RedactorPort;
     readonly abortSignal: AbortSignal;
     readonly onTaskStarted?: () => Promise<void> | void;
+    readonly logicalThread?: ProviderLogicalThreadExecution;
   }): Promise<ProviderTaskResult>;
 
   classifyRunFailure(error: unknown): ProviderFailure;

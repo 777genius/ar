@@ -8,6 +8,8 @@ import {
   type ProviderTaskEvent,
   type ProviderTaskControls,
   type ProviderTaskResult,
+  ProviderLogicalThreadOutcome,
+  type ProviderLogicalThreadExecution,
   type RedactorPort,
   type RunnerPort,
   type SessionArtifact,
@@ -91,6 +93,7 @@ export class ClaudeTaskAgentDriver implements AgentDriver, StreamingAgentDriver 
     readonly redactor: RedactorPort;
     readonly abortSignal: AbortSignal;
     readonly onTaskStarted?: () => Promise<void> | void;
+    readonly logicalThread?: ProviderLogicalThreadExecution;
   }): Promise<ProviderTaskResult> {
     assertProviderTaskSystemPrompt(input.task.systemPrompt, "task.systemPrompt");
 
@@ -107,6 +110,22 @@ export class ClaudeTaskAgentDriver implements AgentDriver, StreamingAgentDriver 
       );
       await input.onTaskStarted?.();
       const result = await this.options.engine.run(prepared.engineInput);
+      if (input.logicalThread !== undefined) {
+        const checkpoint = result.telemetry?.providerSessionId;
+        if (!checkpoint) {
+          throw new Error("claude_logical_thread_checkpoint_missing");
+        }
+        await input.logicalThread.onCheckpoint({
+          checkpoint,
+          outcome:
+            input.logicalThread.previousCheckpoint === undefined
+              ? ProviderLogicalThreadOutcome.StartedFresh
+              : ProviderLogicalThreadOutcome.Continued,
+        });
+      }
+      const telemetry = input.logicalThread === undefined
+        ? result.telemetry
+        : withoutProviderSessionId(result.telemetry);
       return redactProviderTaskResult({
         status: "completed",
         outputText: result.outputText,
@@ -116,13 +135,20 @@ export class ClaudeTaskAgentDriver implements AgentDriver, StreamingAgentDriver 
         telemetry: {
           durationMs: Date.now() - startedAt,
           finishReason: "completed",
-          ...result.telemetry,
+          ...telemetry,
         },
         warnings: [...prepared.warnings, ...result.warnings],
       }, input.redactor);
     } catch (error) {
+      const failure = classifyClaudeFailure(error, {
+        redactor: input.redactor,
+      });
+      input.redactor.assertNoKnownSecret(
+        JSON.stringify(failure),
+        "claude task failure",
+      );
       return failedClaudeTask(
-        classifyClaudeFailure(error, { redactor: input.redactor }),
+        failure,
         startedAt,
       );
     }
@@ -203,6 +229,14 @@ export class ClaudeTaskAgentDriver implements AgentDriver, StreamingAgentDriver 
   async dispose(): Promise<void> {
     await this.options.engine.dispose?.();
   }
+}
+
+function withoutProviderSessionId(
+  telemetry: ProviderTaskResult["telemetry"],
+): ProviderTaskResult["telemetry"] {
+  if (telemetry?.providerSessionId === undefined) return telemetry;
+  const { providerSessionId: _providerSessionId, ...rest } = telemetry;
+  return rest;
 }
 
 function missingClaudeSessionFailure(): ProviderFailure {

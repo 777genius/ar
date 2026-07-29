@@ -22,25 +22,27 @@ import {
   agentRuntimeTaskProtocolVersion,
   agentRuntimeTaskProtocolVersionV1,
   agentRuntimeTaskProtocolVersionV2,
+  agentRuntimeTaskProtocolVersionV3,
   AgentRuntimeFailureLifecycleState,
   AgentRuntimeTaskProtocolError,
   makeAgentRuntimeTaskFailure,
-  type AgentRuntimeTaskContext,
   type AgentRuntimeTaskControls,
   type AgentRuntimeTaskEvent,
   type AgentRuntimeTaskPayload,
   type AgentRuntimeTaskPayloadV1,
   type AgentRuntimeTaskPayloadV2,
+  type AgentRuntimeTaskPayloadV3,
   type AgentRuntimeTaskProtocolVersion,
   type AgentRuntimeTaskRequest,
   type AgentRuntimeTaskRequestV1,
   type AgentRuntimeTaskRequestV2,
+  type AgentRuntimeTaskRequestV3,
   type AgentRuntimeTaskResult,
   type AgentRuntimeTaskResultV1,
   type AgentRuntimeTaskResultV2,
+  type AgentRuntimeTaskResultV3,
+  type AgentRuntimeThreadResult,
   type AgentRuntimeFailureLifecycle,
-  type AgentRuntimeTaskRoundContext,
-  type AgentRuntimeTaskRoundMemberIdentity,
   type JsonObject,
   type JsonValue,
 } from "../domain/agent-runtime-task-contracts";
@@ -66,6 +68,15 @@ import {
   parseFailureLifecycle,
   parseTaskExecution,
 } from "./agent-runtime-task-v2-codec";
+import { optionalContextField } from "./agent-runtime-task-context-codec";
+import {
+  parseLogicalThread,
+  parseThreadResult,
+} from "./agent-runtime-task-logical-thread-codec";
+import {
+  parseWarning,
+  parseWarnings,
+} from "./agent-runtime-task-warning-codec";
 
 export { parseJsonValue } from "./agent-runtime-task-validation";
 
@@ -115,16 +126,45 @@ export function createAgentRuntimeTaskRequestV2(
   }) as AgentRuntimeTaskRequestV2;
 }
 
+export function createAgentRuntimeTaskRequestV3(
+  input: Omit<AgentRuntimeTaskRequestV3, "protocolVersion">,
+): AgentRuntimeTaskRequestV3 {
+  return parseAgentRuntimeTaskRequest({
+    protocolVersion: agentRuntimeTaskProtocolVersionV3,
+    ...input,
+  }) as AgentRuntimeTaskRequestV3;
+}
+
 export function parseAgentRuntimeTaskRequest(value: unknown): AgentRuntimeTaskRequest {
   const input = objectAt(value, "request");
-  assertOnlyKeys(
-    input,
-    ["protocolVersion", "runId", "providerInstanceId", "cwd", "timeoutMs", "task", "context"],
-    "request",
-  );
   const protocolVersion = parseProtocolVersion(
     input.protocolVersion,
     "request.protocolVersion",
+  );
+  assertOnlyKeys(
+    input,
+    protocolVersion === agentRuntimeTaskProtocolVersionV3
+      ? [
+          "protocolVersion",
+          "runId",
+          "executionId",
+          "thread",
+          "providerInstanceId",
+          "cwd",
+          "timeoutMs",
+          "task",
+          "context",
+        ]
+      : [
+          "protocolVersion",
+          "runId",
+          "providerInstanceId",
+          "cwd",
+          "timeoutMs",
+          "task",
+          "context",
+        ],
+    "request",
   );
   const common = {
     ...optionalStringField(input, "runId", "request.runId"),
@@ -149,6 +189,25 @@ export function parseAgentRuntimeTaskRequest(value: unknown): AgentRuntimeTaskRe
       task: common.task as AgentRuntimeTaskPayloadV1,
     };
   }
+  if (protocolVersion === agentRuntimeTaskProtocolVersionV3) {
+    const task = common.task as AgentRuntimeTaskPayloadV3;
+    if (task.execution.mode !== AgentRuntimeExecutionMode.Goal) {
+      throw protocolError(
+        "agent_runtime_task_request_invalid",
+        "request.task.execution.mode must be goal for protocolVersion 3",
+      );
+    }
+    return {
+      ...common,
+      protocolVersion,
+      executionId: nonEmptyStringAt(
+        input.executionId,
+        "request.executionId",
+      ),
+      thread: parseLogicalThread(input.thread, "request.thread"),
+      task,
+    };
+  }
   return {
     ...common,
     protocolVersion,
@@ -162,7 +221,7 @@ export function agentRuntimeTaskRequestToProviderTask(
   return {
     kind: request.task.kind,
     prompt: request.task.prompt,
-    execution: request.protocolVersion === agentRuntimeTaskProtocolVersionV2
+    execution: request.protocolVersion !== agentRuntimeTaskProtocolVersionV1
       ? request.task.execution
       : { mode: AgentRuntimeExecutionMode.SingleRun },
     ...(request.task.systemPrompt !== undefined
@@ -183,11 +242,21 @@ export function providerTaskResultToAgentRuntimeTaskResult(
   options: {
     readonly protocolVersion?: AgentRuntimeTaskProtocolVersion;
     readonly failureLifecycle?: AgentRuntimeFailureLifecycle;
+    readonly thread?: AgentRuntimeThreadResult;
   } = {},
 ): AgentRuntimeTaskResult {
   const protocolVersion =
     options.protocolVersion ?? agentRuntimeTaskProtocolVersionV1;
   if (result.status === "completed") {
+    if (
+      protocolVersion === agentRuntimeTaskProtocolVersionV3 &&
+      options.thread === undefined
+    ) {
+      throw protocolError(
+        "agent_runtime_task_result_invalid",
+        "result.thread is required for protocolVersion 3",
+      );
+    }
     return {
       protocolVersion,
       status: AgentRuntimeTaskResultStatus.Completed,
@@ -204,9 +273,27 @@ export function providerTaskResultToAgentRuntimeTaskResult(
       warnings: result.warnings.map((warning, index) =>
         parseWarning(warning, `result.warnings[${index}]`),
       ),
+      ...(options.thread === undefined ? {} : { thread: options.thread }),
     } as AgentRuntimeTaskResult;
   }
   if (result.status === "waiting_for_input") {
+    if (protocolVersion === agentRuntimeTaskProtocolVersionV3) {
+      const {
+        providerSessionId: _providerSessionId,
+        ...safeTelemetry
+      } = result.telemetry ?? {};
+      return makeFailedAgentRuntimeTaskResult({
+        protocolVersion,
+        code: "provider_output_invalid",
+        safeMessage:
+          "Autonomous logical-thread goals cannot wait for interactive input.",
+        warnings: result.warnings,
+        ...(result.telemetry === undefined ? {} : { telemetry: safeTelemetry }),
+        ...(options.failureLifecycle === undefined
+          ? {}
+          : { lifecycle: options.failureLifecycle }),
+      });
+    }
     return {
       protocolVersion,
       status: AgentRuntimeTaskResultStatus.WaitingForInput,
@@ -232,7 +319,7 @@ export function providerTaskResultToAgentRuntimeTaskResult(
     protocolVersion,
     status: AgentRuntimeTaskResultStatus.Failed,
     failure: parseFailure(result.failure, "result.failure"),
-    ...(protocolVersion === agentRuntimeTaskProtocolVersionV2
+    ...(protocolVersion !== agentRuntimeTaskProtocolVersionV1
       ? {
           lifecycle: options.failureLifecycle ?? {
             state: AgentRuntimeFailureLifecycleState.ExecutionFailed,
@@ -292,6 +379,9 @@ export function parseAgentRuntimeTaskResult(value: unknown): AgentRuntimeTaskRes
   );
   const status = stringAt(input.status, "result.status");
   if (status === AgentRuntimeTaskResultStatus.Completed) {
+    const thread = protocolVersion === agentRuntimeTaskProtocolVersionV3
+      ? parseThreadResult(input.thread, "result.thread")
+      : undefined;
     return {
       protocolVersion,
       status: AgentRuntimeTaskResultStatus.Completed,
@@ -306,6 +396,7 @@ export function parseAgentRuntimeTaskResult(value: unknown): AgentRuntimeTaskRes
           }),
       ...optionalTelemetryField(input, "telemetry", "result.telemetry"),
       warnings: parseWarnings(input.warnings, "result.warnings"),
+      ...(thread === undefined ? {} : { thread }),
     } as AgentRuntimeTaskResult;
   }
   if (status === AgentRuntimeTaskResultStatus.Failed) {
@@ -313,7 +404,7 @@ export function parseAgentRuntimeTaskResult(value: unknown): AgentRuntimeTaskRes
       protocolVersion,
       status: AgentRuntimeTaskResultStatus.Failed,
       failure: parseFailure(input.failure, "result.failure"),
-      ...(protocolVersion === agentRuntimeTaskProtocolVersionV2
+      ...(protocolVersion !== agentRuntimeTaskProtocolVersionV1
         ? { lifecycle: parseFailureLifecycle(input.lifecycle, "result.lifecycle") }
         : {}),
       ...optionalTelemetryField(input, "telemetry", "result.telemetry"),
@@ -321,6 +412,12 @@ export function parseAgentRuntimeTaskResult(value: unknown): AgentRuntimeTaskRes
     } as AgentRuntimeTaskResult;
   }
   if (status === AgentRuntimeTaskResultStatus.WaitingForInput) {
+    if (protocolVersion === agentRuntimeTaskProtocolVersionV3) {
+      throw protocolError(
+        "agent_runtime_task_result_invalid",
+        "result.status waiting_for_input is unsupported for protocolVersion 3",
+      );
+    }
     return {
       protocolVersion,
       status: AgentRuntimeTaskResultStatus.WaitingForInput,
@@ -488,7 +585,7 @@ export function makeFailedAgentRuntimeTaskResult(input: {
     protocolVersion,
     status: AgentRuntimeTaskResultStatus.Failed,
     failure: makeAgentRuntimeTaskFailure(input.code, input.safeMessage, input),
-    ...(protocolVersion === agentRuntimeTaskProtocolVersionV2
+    ...(protocolVersion !== agentRuntimeTaskProtocolVersionV1
       ? {
           lifecycle: input.lifecycle ?? {
             state: AgentRuntimeFailureLifecycleState.PreflightFailed,
@@ -511,7 +608,7 @@ function parseAgentRuntimeTaskPayload(
   const input = objectAt(value, path);
   assertOnlyKeys(
     input,
-    protocolVersion === agentRuntimeTaskProtocolVersionV2
+    protocolVersion !== agentRuntimeTaskProtocolVersionV1
       ? [
           "kind",
           "prompt",
@@ -567,78 +664,6 @@ function parseAgentRuntimeTaskPayload(
     ...base,
     execution: parseTaskExecution(input.execution, `${path}.execution`),
   } satisfies AgentRuntimeTaskPayloadV2;
-}
-
-function parseContext(value: unknown, path: string): AgentRuntimeTaskContext {
-  const input = objectAt(value, path);
-  assertOnlyKeys(
-    input,
-    ["application", "purpose", "correlationId", "metadata", "round"],
-    path,
-  );
-  return {
-    ...optionalStringField(input, "application", `${path}.application`),
-    ...optionalStringField(input, "purpose", `${path}.purpose`),
-    ...optionalStringField(input, "correlationId", `${path}.correlationId`),
-    ...optionalMetadataField(input, "metadata", `${path}.metadata`),
-    ...optionalRoundContextField(input, "round", `${path}.round`),
-  };
-}
-
-function parseRoundContext(value: unknown, path: string): AgentRuntimeTaskRoundContext {
-  const input = objectAt(value, path);
-  assertOnlyKeys(
-    input,
-    ["roundId", "roundIndex", "totalRounds", "member", "adversaryOf"],
-    path,
-  );
-  return {
-    ...optionalStringField(input, "roundId", `${path}.roundId`),
-    ...optionalPositiveIntegerField(input, "roundIndex", `${path}.roundIndex`),
-    ...optionalPositiveIntegerField(input, "totalRounds", `${path}.totalRounds`),
-    member: parseRoundMemberIdentity(input.member, `${path}.member`),
-    ...optionalRoundMemberIdentityField(
-      input,
-      "adversaryOf",
-      `${path}.adversaryOf`,
-    ),
-  };
-}
-
-function parseRoundMemberIdentity(
-  value: unknown,
-  path: string,
-): AgentRuntimeTaskRoundMemberIdentity {
-  const input = objectAt(value, path);
-  assertOnlyKeys(
-    input,
-    ["id", "adapterId", "agentType", "provider", "model", "independenceGroup", "label"],
-    path,
-  );
-  return {
-    id: nonEmptyStringAt(input.id, `${path}.id`),
-    adapterId: nonEmptyStringAt(input.adapterId, `${path}.adapterId`),
-    agentType: nonEmptyStringAt(input.agentType, `${path}.agentType`),
-    provider: nonEmptyStringAt(input.provider, `${path}.provider`),
-    model: nonEmptyStringAt(input.model, `${path}.model`),
-    independenceGroup: nonEmptyStringAt(
-      input.independenceGroup,
-      `${path}.independenceGroup`,
-    ),
-    ...optionalStringField(input, "label", `${path}.label`),
-  };
-}
-
-function parseWarnings(value: unknown, path: string): readonly RuntimeWarning[] {
-  if (!Array.isArray(value)) {
-    throw protocolError(
-      "agent_runtime_task_result_invalid",
-      `${path} must be an array`,
-    );
-  }
-  return value.map((warning, index) =>
-    parseWarning(warning, `${path}[${index}]`),
-  );
 }
 
 function parseManagedRunInputRequest(
@@ -700,15 +725,6 @@ function parseManagedRunResumeHandle(
       "providerState",
       `${path}.providerState`,
     ),
-  };
-}
-
-function parseWarning(value: unknown, path: string): RuntimeWarning {
-  const input = objectAt(value, path);
-  return {
-    code: stringAt(input.code, `${path}.code`),
-    safeMessage: stringAt(input.safeMessage, `${path}.safeMessage`),
-    ...optionalMetadataField(input, "details", `${path}.details`),
   };
 }
 
@@ -801,38 +817,12 @@ function parseToolCall(value: unknown, path: string): AgentToolCall {
   } as AgentToolCall;
 }
 
-function optionalContextField(
-  input: Record<string, unknown>,
-  key: string,
-  path: string,
-): { readonly context?: AgentRuntimeTaskContext } {
-  return input[key] === undefined ? {} : { context: parseContext(input[key], path) };
-}
-
 function optionalControlsField(
   input: Record<string, unknown>,
   key: string,
   path: string,
 ): { readonly controls?: AgentRuntimeTaskControls } {
   return input[key] === undefined ? {} : { controls: parseControls(input[key], path) };
-}
-
-function optionalRoundContextField(
-  input: Record<string, unknown>,
-  key: string,
-  path: string,
-): { readonly round?: AgentRuntimeTaskRoundContext } {
-  return input[key] === undefined ? {} : { round: parseRoundContext(input[key], path) };
-}
-
-function optionalRoundMemberIdentityField(
-  input: Record<string, unknown>,
-  key: string,
-  path: string,
-): { readonly adversaryOf?: AgentRuntimeTaskRoundMemberIdentity } {
-  return input[key] === undefined
-    ? {}
-    : { adversaryOf: parseRoundMemberIdentity(input[key], path) };
 }
 
 function optionalTelemetryField(

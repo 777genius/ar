@@ -19,7 +19,7 @@ import {
 } from "../agent-runtime-task-runner";
 
 describe("local AgentRuntimeTaskRunner module API", () => {
-  it.each([undefined, 3])(
+  it.each([undefined, 4])(
     "rejects protocol version %s without constructing a provider worker",
     async (protocolVersion) => {
       let factoryCalls = 0;

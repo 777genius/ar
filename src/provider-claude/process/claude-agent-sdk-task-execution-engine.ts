@@ -151,7 +151,13 @@ export class ClaudeAgentSdkTaskExecutionEngine
           oauthToken: input.session.oauthToken,
         }),
         ...permissionOptions(input),
-        persistSession: false,
+        ...(input.runtimeThread?.resumeSessionId === undefined
+          ? {}
+          : {
+              resume: input.runtimeThread.resumeSessionId,
+              forkSession: true,
+            }),
+        persistSession: input.runtimeThread !== undefined,
         sandbox: sandboxOptions(input),
         settingSources: [],
       };

@@ -110,6 +110,36 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
     }
   });
 
+  it("forks a persisted SDK session for typed logical-thread continuation", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-thread-"));
+    let captured: Options | undefined;
+    try {
+      const engine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: ({ options }: { options: Options }) => {
+            captured = options;
+            return successfulQuery();
+          },
+        }),
+      });
+
+      await engine.run(taskInput(workspace, {
+        runtimeThread: {
+          threadId: "logical-thread-1",
+          resumeSessionId: "source-session-1",
+        },
+      }));
+
+      expect(captured).toMatchObject({
+        resume: "source-session-1",
+        forkSession: true,
+        persistSession: true,
+      });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("restricts read-only tasks to read tools and disables sandbox only for acknowledged full access", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-"));
     const captures: Options[] = [];

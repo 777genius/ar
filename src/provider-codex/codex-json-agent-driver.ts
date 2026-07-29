@@ -5,6 +5,7 @@ import {
   type AgentCapabilities,
   type ManagedRunResumeHandle,
   type ProviderFailure,
+  type ProviderLogicalThreadExecution,
   type ProviderTask,
   type ProviderTaskResult,
   type RedactorPort,
@@ -121,6 +122,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     readonly redactor: RedactorPort;
     readonly abortSignal: AbortSignal;
     readonly onTaskStarted?: () => Promise<void> | void;
+    readonly logicalThread?: ProviderLogicalThreadExecution;
   }): Promise<ProviderTaskResult> {
     assertProviderTaskSystemPrompt(input.task.systemPrompt, "task.systemPrompt");
 
@@ -175,7 +177,17 @@ export class CodexJsonAgentDriver implements AgentDriver {
         abortSignal: input.abortSignal,
       };
       await input.onTaskStarted?.();
-      const result = await this.engine.run(engineInput);
+      const logicalThreadResult =
+        input.logicalThread === undefined
+          ? undefined
+          : await this.runLogicalThread({
+              engineInput,
+              logicalThread: input.logicalThread,
+            });
+      const result =
+        logicalThreadResult === undefined
+          ? await this.engine.run(engineInput)
+          : logicalThreadResult;
       if (result.status === "waiting_for_input") {
         this.managedRunSessions.set(result.runId, materialized);
         materialized = null;
@@ -217,7 +229,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
         warnings: [...result.warnings, ...snapshot.warnings],
       };
     } catch (error) {
-      const failure = codexExecutionFailure(error);
+      const failure = codexExecutionFailure(error, input.redactor);
       return {
         ...failure,
         telemetry: {
@@ -228,6 +240,32 @@ export class CodexJsonAgentDriver implements AgentDriver {
     } finally {
       await materialized?.release();
     }
+  }
+
+  private async runLogicalThread(input: {
+    readonly engineInput: Parameters<CodexExecutionEngine["run"]>[0];
+    readonly logicalThread: ProviderLogicalThreadExecution;
+  }) {
+    if (!this.engine.runLogicalThread) {
+      throw new Error("codex_logical_thread_unsupported");
+    }
+    if (input.logicalThread.previousCheckpoint !== undefined) {
+      input.engineInput.redactor.registerSecret(
+        input.logicalThread.previousCheckpoint,
+        "codex-provider-checkpoint",
+      );
+    }
+    const result = await this.engine.runLogicalThread({
+      ...input.engineInput,
+      ...(input.logicalThread.previousCheckpoint === undefined
+        ? {}
+        : { previousCheckpoint: input.logicalThread.previousCheckpoint }),
+    });
+    await input.logicalThread.onCheckpoint({
+      checkpoint: result.providerCheckpoint,
+      outcome: result.outcome,
+    });
+    return result;
   }
 
   async resumeManagedRun(input: {
@@ -336,7 +374,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     } catch (error) {
       this.managedRunSessions.delete(input.runId);
       ownsMaterialized = true;
-      const failure = codexExecutionFailure(error);
+      const failure = codexExecutionFailure(error, input.redactor);
       return {
         ...failure,
         telemetry: {

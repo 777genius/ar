@@ -17,6 +17,8 @@ import type {
 import { resolveCodexExecutionProfile } from "./codex-execution-profile";
 import type {
   CodexExecutionEngine,
+  CodexExecutionInput,
+  CodexLogicalThreadExecutionResult,
   CodexExecutionPrewarmResult,
   CodexExecutionResult,
   CodexMaterializedSession,
@@ -71,6 +73,7 @@ import {
   isManagedRunResumeValidationError,
 } from "./app-server/application/app-server-managed-run-mapper";
 import { AppServerSlotPool } from "./app-server/application/app-server-slot-pool";
+import { runCodexAppServerLogicalThread } from "./app-server/application/app-server-logical-thread-runner";
 import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
 
 export type {
@@ -186,22 +189,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     });
   }
 
-  async run(input: {
-    readonly runId?: string;
-    readonly prompt: string;
-    readonly goalObjective?: string;
-    readonly systemPrompt?: string;
-    readonly session: CodexMaterializedSession;
-    readonly workspacePath: string;
-    readonly runner: RunnerPort;
-    readonly redactor: RedactorPort;
-    readonly model: string;
-    readonly reasoningEffort: CodexReasoningEffort;
-    readonly serviceTier?: CodexServiceTier;
-    readonly sandboxMode?: CodexSandboxMode;
-    readonly outputSchema?: unknown;
-    readonly abortSignal: AbortSignal;
-  }): Promise<CodexExecutionResult> {
+  async run(input: CodexExecutionInput): Promise<CodexExecutionResult> {
     try {
       const result = await this.runViaAppServer(input);
       if (result.status === "waiting_for_input") return result;
@@ -219,6 +207,32 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         warnings: [appServerFallbackWarning(error), ...fallbackResult.warnings],
       };
     }
+  }
+
+  async runLogicalThread(
+    input: CodexExecutionInput & {
+      readonly previousCheckpoint?: string;
+    },
+  ): Promise<CodexLogicalThreadExecutionResult> {
+    return await runCodexAppServerLogicalThread(input, {
+      goalMode: this.options.goalMode ?? false,
+      timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
+      maxGoalTurns: this.options.maxGoalTurns ?? defaultMaxGoalTurns,
+      goalContinuePrompt:
+        this.options.goalContinuePrompt ?? defaultGoalContinuePrompt,
+      runGoal: async (goalInput) =>
+        await (await this.slotPool.ensureSlot(input)).goalRunner
+          .runLogicalThreadGoal(goalInput),
+      redact: (result, schemaWarnings) =>
+        this.redactAppServerResult({
+          result,
+          schemaWarnings,
+          redactor: input.redactor,
+        }),
+      parse: async (result, parseInput) =>
+        await this.parseStructuredOutputIfRequested(result, parseInput),
+      disposeSession: () => this.slotPool.disposeSessionSlot(input.session),
+    });
   }
 
   async resume(input: {

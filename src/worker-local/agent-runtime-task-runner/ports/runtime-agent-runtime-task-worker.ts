@@ -1,6 +1,7 @@
 import type {
   ManagedRunInputRequest,
   ManagedRunResumeHandle,
+  ProviderLogicalThreadExecution,
   ProviderTask,
   ProviderTaskTelemetry,
   RuntimeWarning,
@@ -20,8 +21,16 @@ export type AgentRuntimeTaskWorker = {
   start(): Promise<void>;
   seedClaudeOAuth?(input: { readonly oauthToken: string }): Promise<void>;
   seedCodexAuthJsonFile?(authJsonPath: string): Promise<void>;
-  run(job: AgentRuntimeTaskWorkerJob): Promise<AgentRuntimeTaskWorkerResult>;
+  run(
+    job: AgentRuntimeTaskWorkerJob,
+    options?: AgentRuntimeTaskWorkerRunOptions,
+  ): Promise<AgentRuntimeTaskWorkerResult>;
   dispose?(): Promise<void>;
+};
+
+export type AgentRuntimeTaskWorkerRunOptions = {
+  readonly abortSignal?: AbortSignal;
+  readonly onProviderTaskStarted?: () => Promise<void> | void;
 };
 
 export type AgentRuntimeTaskWorkerJob = {
@@ -34,6 +43,7 @@ export type AgentRuntimeTaskWorkerJob = {
   readonly execution?: ProviderTask["execution"];
   readonly abortSignal?: AbortSignal;
   readonly metadata?: Readonly<Record<string, string>>;
+  readonly logicalThread?: ProviderLogicalThreadExecution;
 };
 
 export type AgentRuntimeTaskWorkerResult = {

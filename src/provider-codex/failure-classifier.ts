@@ -1,6 +1,7 @@
 import type { ProviderFailure } from "@vioxen/subscription-runtime/core";
 import { classifyCodexRuntimeFailure } from "./codex-cli-domain";
 import { CodexAppServerTurnError } from "./app-server/application/app-server-client";
+import { CodexAppServerThreadForkError } from "./app-server/application/app-server-thread-fork-error";
 import { codexAppServerBudgetExceededError } from "./app-server/domain/app-server-errors";
 import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
 
@@ -142,6 +143,11 @@ function codexFailureDetails(
   error: unknown,
   message: string,
 ): Readonly<Record<string, string>> | undefined {
+  if (error instanceof CodexAppServerThreadForkError) {
+    return {
+      sourceThreadUnavailable: String(error.sourceThreadUnavailable),
+    };
+  }
   const details: Record<string, string> =
     error instanceof CodexAppServerTurnError ? { ...error.details() } : {};
   const process = processFailureLike(error);

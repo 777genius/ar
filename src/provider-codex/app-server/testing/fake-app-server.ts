@@ -4,6 +4,8 @@ export type FakeAppServerFactoryOptions = {
   readonly failThreadStart?: boolean;
   readonly failThreadStartNumbers?: readonly number[];
   readonly threadStartError?: string;
+  readonly threadForkError?: string;
+  readonly suppressThreadForkResponse?: boolean;
   readonly availableModels?: readonly {
     readonly model: string;
     readonly supportedReasoningEfforts?: readonly string[];
@@ -206,6 +208,19 @@ export class FakeAppServerProcess extends EventEmitter {
             request.id,
             this.options.threadStartError ?? "fake thread start failure",
           );
+          continue;
+        }
+        const threadId = `thread-${this.nextThreadId}`;
+        this.nextThreadId += 1;
+        this.respond(request.id, {
+          thread: { id: threadId },
+        });
+        continue;
+      }
+      if (request.method === "thread/fork") {
+        if (this.options.suppressThreadForkResponse) continue;
+        if (this.options.threadForkError) {
+          this.respondError(request.id, this.options.threadForkError);
           continue;
         }
         const threadId = `thread-${this.nextThreadId}`;

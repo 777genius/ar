@@ -291,11 +291,14 @@ describe("FileBackendClaudeWorker", () => {
         engines[afterConflictEngineIndex]?.records.find(
           (record) => record.prompt === "after conflict",
         );
+      const expectedSessionId =
+        afterConflictEngineIndex === 0 ? "session-a2" : "session-b2";
 
       expect(afterConflict.thread).toMatchObject({
         generation: 3,
-        latestSessionId: afterConflict.telemetry?.providerSessionId,
+        latestSessionId: expectedSessionId,
       });
+      expect(afterConflict.telemetry?.providerSessionId).toBeUndefined();
       expect(await transcriptBundleIds(rootDir)).toEqual([
         afterConflict.thread.latestBundleId,
       ]);

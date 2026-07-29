@@ -38,6 +38,7 @@ import {
   safeMessage,
   throwIfAborted,
 } from "../domain/app-server-errors";
+import { CodexAppServerThreadForkError } from "./app-server-thread-fork-error";
 import {
   codexAppServerRolloutBudgetConfig,
   type CodexAppServerRolloutBudget,
@@ -71,7 +72,7 @@ export {
   type AppServerTurnFailureDetails,
   type AppServerTurnFailurePhase,
 } from "./app-server-turn-failure";
-export { turnFailureError };
+export { CodexAppServerThreadForkError, turnFailureError };
 
 export type AppServerTurnResult = {
   readonly outputText: string;
@@ -330,6 +331,27 @@ export class CodexAppServerClient {
       );
     }
 
+    const threadId = nestedString(response.result, ["thread", "id"]);
+    if (!threadId) throw new Error("codex_app_server_thread_id_missing");
+    return threadId;
+  }
+
+  async forkThread(input: {
+    readonly threadId: string;
+    readonly timeoutMs: number;
+    readonly abortSignal: AbortSignal;
+  }): Promise<string> {
+    throwIfAborted(input.abortSignal);
+    const response = await this.send(
+      "thread/fork",
+      { threadId: input.threadId },
+      input,
+    );
+    if (response.error) {
+      throw new CodexAppServerThreadForkError(
+        response.error.message ?? "unknown",
+      );
+    }
     const threadId = nestedString(response.result, ["thread", "id"]);
     if (!threadId) throw new Error("codex_app_server_thread_id_missing");
     return threadId;

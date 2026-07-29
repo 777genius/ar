@@ -1,6 +1,7 @@
 import {
   agentRuntimeTaskProtocolVersionV1,
   agentRuntimeTaskProtocolVersionV2,
+  agentRuntimeTaskProtocolVersionV3,
   AgentRuntimeTaskProtocolError,
   type AgentRuntimeTaskProtocolVersion,
   type JsonValue,
@@ -12,11 +13,12 @@ export function parseProtocolVersion(
 ): AgentRuntimeTaskProtocolVersion {
   if (
     value !== agentRuntimeTaskProtocolVersionV1 &&
-    value !== agentRuntimeTaskProtocolVersionV2
+    value !== agentRuntimeTaskProtocolVersionV2 &&
+    value !== agentRuntimeTaskProtocolVersionV3
   ) {
     throw protocolError(
       "agent_runtime_task_protocol_version_invalid",
-      `${path} must be ${agentRuntimeTaskProtocolVersionV1} or ${agentRuntimeTaskProtocolVersionV2}`,
+      `${path} must be ${agentRuntimeTaskProtocolVersionV1}, ${agentRuntimeTaskProtocolVersionV2}, or ${agentRuntimeTaskProtocolVersionV3}`,
     );
   }
   return value;

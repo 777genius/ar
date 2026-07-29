@@ -685,6 +685,22 @@ export type RunContext = {
   readonly attempt: number;
   readonly abortSignal: AbortSignal;
   readonly onProviderTaskStarted?: () => Promise<void> | void;
+  readonly logicalThread?: ProviderLogicalThreadExecution;
+};
+
+export enum ProviderLogicalThreadOutcome {
+  StartedFresh = "started_fresh",
+  Continued = "continued",
+  RecoveredFresh = "recovered_fresh",
+}
+
+export type ProviderLogicalThreadExecution = {
+  readonly threadId: string;
+  readonly previousCheckpoint?: string;
+  readonly onCheckpoint: (input: {
+    readonly checkpoint: string;
+    readonly outcome: ProviderLogicalThreadOutcome;
+  }) => Promise<void> | void;
 };
 
 export type SessionFreshnessAssessment =

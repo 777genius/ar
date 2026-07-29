@@ -5,6 +5,7 @@ import type {
   AgentUsage,
   ProviderTaskControls,
   ProviderTaskResult,
+  ProviderLogicalThreadOutcome,
   ManagedRunInputRequest,
   ManagedRunResumeHandle,
   RedactorPort,
@@ -76,6 +77,29 @@ export type CodexExecutionResult =
   | CodexExecutionCompletedResult
   | CodexExecutionWaitingForInputResult;
 
+export type CodexExecutionInput = {
+  readonly runId?: string;
+  readonly prompt: string;
+  readonly goalObjective?: string;
+  readonly systemPrompt?: string;
+  readonly session: CodexMaterializedSession;
+  readonly workspacePath: string;
+  readonly runner: RunnerPort;
+  readonly redactor: RedactorPort;
+  readonly model: string;
+  readonly reasoningEffort: CodexReasoningEffort;
+  readonly serviceTier?: CodexServiceTier;
+  readonly sandboxMode?: CodexSandboxMode;
+  readonly outputSchema?: unknown;
+  readonly abortSignal: AbortSignal;
+};
+
+export type CodexLogicalThreadExecutionResult =
+  CodexExecutionCompletedResult & {
+    readonly providerCheckpoint: string;
+    readonly outcome: ProviderLogicalThreadOutcome;
+  };
+
 export type CodexExecutionPrewarmResult = {
   readonly kind: string;
   readonly reusable: boolean;
@@ -97,22 +121,12 @@ export type CodexExecutionEngine = {
     readonly taskExecutionCapabilities?: readonly AgentRuntimeTaskExecutionCapability[];
     readonly turnLimitEnforcement?: AgentRuntimeTurnLimitEnforcementCode;
   };
-  run(input: {
-    readonly runId?: string;
-    readonly prompt: string;
-    readonly goalObjective?: string;
-    readonly systemPrompt?: string;
-    readonly session: CodexMaterializedSession;
-    readonly workspacePath: string;
-    readonly runner: RunnerPort;
-    readonly redactor: RedactorPort;
-    readonly model: string;
-    readonly reasoningEffort: CodexReasoningEffort;
-    readonly serviceTier?: CodexServiceTier;
-    readonly sandboxMode?: CodexSandboxMode;
-    readonly outputSchema?: unknown;
-    readonly abortSignal: AbortSignal;
-  }): Promise<CodexExecutionResult>;
+  run(input: CodexExecutionInput): Promise<CodexExecutionResult>;
+  runLogicalThread?(
+    input: CodexExecutionInput & {
+      readonly previousCheckpoint?: string;
+    },
+  ): Promise<CodexLogicalThreadExecutionResult>;
   resume?(input: {
     readonly runId: string;
     readonly requestId: string;
@@ -398,10 +412,32 @@ function assertProviderSandboxModeAllowed(
 
 export function codexExecutionFailure(
   error: unknown,
+  redactor?: RedactorPort,
 ): Extract<ProviderTaskResult, { readonly status: "failed" }> {
+  const failure = classifyCodexFailure(error);
+  const sanitized = redactor === undefined
+    ? failure
+    : {
+        ...failure,
+        safeMessage: redactor.redact(failure.safeMessage),
+        ...(failure.details === undefined
+          ? {}
+          : {
+              details: Object.fromEntries(
+                Object.entries(failure.details).map(([key, value]) => [
+                  key,
+                  redactor.redact(value),
+                ]),
+              ),
+            }),
+      };
+  redactor?.assertNoKnownSecret(
+    JSON.stringify(sanitized),
+    "codex execution failure",
+  );
   return {
     status: "failed",
-    failure: classifyCodexFailure(error),
+    failure: sanitized,
     warnings: [],
   };
 }

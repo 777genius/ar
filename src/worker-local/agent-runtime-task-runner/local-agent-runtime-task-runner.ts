@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import {
   AgentRuntimeFailureCode,
   AgentRuntimeTaskProtocolError,
+  agentRuntimeTaskResultToProviderTaskResult,
   agentRuntimeTaskRequestToProviderTask,
   makeFailedAgentRuntimeTaskResult,
   parseAgentRuntimeTaskRequest,
@@ -12,16 +13,18 @@ import {
   type AgentRuntimeTaskRequest,
   type AgentRuntimeTaskRequestV1,
   type AgentRuntimeTaskRequestV2,
+  type AgentRuntimeTaskRequestV3,
   type AgentRuntimeTaskResult,
   type AgentRuntimeTaskResultV1,
   type AgentRuntimeTaskResultV2,
+  type AgentRuntimeTaskResultV3,
   agentRuntimeTaskProtocolVersionV1,
   agentRuntimeTaskProtocolVersionV2,
+  agentRuntimeTaskProtocolVersionV3,
 } from "@vioxen/subscription-runtime/agent-runtime-task";
 import type {
   AgentCapabilities,
   ProviderTask,
-  ProviderTaskResult,
   RuntimeWarning,
 } from "@vioxen/subscription-runtime/core";
 import {
@@ -36,6 +39,7 @@ import {
   claudeBgTaskAgentCapabilities,
 } from "@vioxen/subscription-runtime/provider-claude";
 import {
+  defaultCodexModel,
   pruneCodexChildEnv,
 } from "@vioxen/subscription-runtime/provider-codex";
 import {
@@ -67,7 +71,6 @@ import type {
   AgentRuntimeTaskWorker,
   AgentRuntimeTaskWorkerFactory,
   AgentRuntimeTaskWorkerFactoryInput,
-  AgentRuntimeTaskWorkerResult,
 } from "./ports";
 import {
   validateRunnerControls,
@@ -102,6 +105,20 @@ import {
   runWorkerTaskWithTimeout,
   throwIfAborted,
 } from "./execution-lifecycle";
+import {
+  LogicalThreadCoordinator,
+  logicalThreadCompatibilityHash,
+  logicalThreadTimeoutAbortReason,
+} from "../../agent-runtime-task-runner/logical-thread";
+import { FileLogicalThreadStore } from "./file-logical-thread-store";
+import {
+  runLogicalThreadWorkerExecution,
+  workerResultToProviderTaskResult,
+} from "./logical-thread-worker-execution";
+import {
+  ProviderRuntimeUnavailableError,
+  providerRuntimeUnavailableResult,
+} from "./provider-runtime-unavailable";
 
 export { AuthSourceKind, ClaudeAgentRuntimeBackend };
 export type {
@@ -191,12 +208,18 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
   private disposed = false;
   private readonly activeRuns = new Set<ActiveRun>();
   private readonly codexRuntimeFeatureProbe: CodexRuntimeFeatureProbe;
+  private readonly logicalThreadCoordinator: LogicalThreadCoordinator;
 
   constructor(
     private readonly input: CreateLocalAgentRuntimeTaskRunnerInput,
   ) {
     this.codexRuntimeFeatureProbe =
       input.codexRuntimeFeatureProbe ?? new CodexCliRuntimeFeatureProbe();
+    this.logicalThreadCoordinator = new LogicalThreadCoordinator(
+      new FileLogicalThreadStore({
+        rootDir: join(input.stateRootDir, "agent-runtime-logical-threads"),
+      }),
+    );
   }
 
   run(
@@ -207,6 +230,10 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
     request: AgentRuntimeTaskRequestV2,
     options?: AgentRuntimeTaskRunnerRunOptions,
   ): Promise<AgentRuntimeTaskResultV2>;
+  run(
+    request: AgentRuntimeTaskRequestV3,
+    options?: AgentRuntimeTaskRunnerRunOptions,
+  ): Promise<AgentRuntimeTaskResultV3>;
   run(
     request: AgentRuntimeTaskRequest,
     options?: AgentRuntimeTaskRunnerRunOptions,
@@ -238,7 +265,7 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
     markTaskStarted: () => void,
   ): Promise<AgentRuntimeTaskResult> {
     const strictCleanupLifecycle =
-      request.protocolVersion === agentRuntimeTaskProtocolVersionV2;
+      request.protocolVersion !== agentRuntimeTaskProtocolVersionV1;
     if (this.disposed) {
       return makeFailedAgentRuntimeTaskResult({
         code: AgentRuntimeFailureCode.BackendUnavailable,
@@ -398,7 +425,69 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
             ...(strictCleanupLifecycle
               ? { settlementTimeoutMs: this.input.cleanupTimeoutMs ?? 5_000 }
               : {}),
+            ...(taskRequest.protocolVersion === agentRuntimeTaskProtocolVersionV3
+              ? {
+                  authoritativeTimeoutAbortReason: logicalThreadTimeoutAbortReason,
+                }
+              : {}),
             run: async (abortSignal) => {
+              if (
+                taskRequest.protocolVersion ===
+                agentRuntimeTaskProtocolVersionV3
+              ) {
+                return await runLogicalThreadWorkerExecution({
+                  coordinator: this.logicalThreadCoordinator,
+                  request: taskRequest,
+                  compatibilityHash: logicalThreadCompatibilityHash({
+                    provider: this.input.provider,
+                    providerInstanceId:
+                      providerInstanceIdForRequest(this.input, taskRequest),
+                    backend: runtimeBackendIdentity(
+                      this.input,
+                      codexExecutionPlan,
+                    ),
+                    model: resolvedTaskModel(this.input, task),
+                    workspace: cwd,
+                    kind: task.kind,
+                    execution: task.execution,
+                    systemPrompt: task.systemPrompt,
+                    outputSchemaName: task.outputSchemaName,
+                    controls: task.controls,
+                  }),
+                  task,
+                  worker,
+                  warnings: controls.warnings,
+                  signal: abortSignal,
+                  cwd,
+                  markTaskStarted,
+                  startWorker: async () => {
+                    await worker.start();
+                    throwIfAborted(abortSignal);
+                    await seedWorker({
+                      authSource,
+                      provider: this.input.provider,
+                      worker,
+                    });
+                    throwIfAborted(abortSignal);
+                  },
+                  startupFailure: (error) =>
+                    agentRuntimeTaskResultToProviderTaskResult(
+                      makeWorkerStartupFailureResult(
+                        this.input.provider,
+                        error,
+                        controls.warnings,
+                      ),
+                    ),
+                  taskFailure: (error) =>
+                    agentRuntimeTaskResultToProviderTaskResult(
+                      makeWorkerTaskFailureResult(
+                        this.input.provider,
+                        error,
+                        controls.warnings,
+                      ),
+                    ),
+                });
+              }
               await worker.start();
               throwIfAborted(abortSignal);
               await seedWorker({
@@ -527,10 +616,10 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
     readonly codexExecutionPlan?: CodexExecutionPlan;
     readonly timeoutMs?: number;
   }): AgentRuntimeTaskWorker {
-    const providerInstanceId =
-      this.input.providerInstanceId ??
-      input.request.providerInstanceId ??
-      `${this.input.provider}:default`;
+    const providerInstanceId = providerInstanceIdForRequest(
+      this.input,
+      input.request,
+    );
     const workerFactory =
       this.input.workerFactory ?? createDefaultAgentRuntimeTaskWorker;
     const env = this.input.provider === AgentRuntimeTaskProvider.Claude
@@ -562,6 +651,40 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
   }
 }
 
+function providerInstanceIdForRequest(
+  input: CreateLocalAgentRuntimeTaskRunnerInput,
+  request: AgentRuntimeTaskRequest,
+): string {
+  return input.providerInstanceId ??
+    request.providerInstanceId ??
+    `${input.provider}:default`;
+}
+
+function runtimeBackendIdentity(
+  input: CreateLocalAgentRuntimeTaskRunnerInput,
+  codexExecutionPlan: CodexExecutionPlan | undefined,
+): string {
+  if (input.provider === AgentRuntimeTaskProvider.Claude) {
+    return input.claudeBackend ?? ClaudeAgentRuntimeBackend.AgentSdk;
+  }
+  return codexExecutionPlan?.execution.mode === AgentRuntimeExecutionMode.Goal
+    ? "app-server-goal"
+    : codexExecutionPlan === undefined
+      ? "packaged-exec"
+      : "app-server";
+}
+
+function resolvedTaskModel(
+  input: CreateLocalAgentRuntimeTaskRunnerInput,
+  task: ProviderTask,
+): string {
+  return task.controls?.model ??
+    input.model ??
+    (input.provider === AgentRuntimeTaskProvider.Codex
+      ? defaultCodexModel
+      : "sonnet");
+}
+
 function protocolVersionForRequest(request: AgentRuntimeTaskRequest) {
   const protocolVersion = (request as { readonly protocolVersion?: unknown })
     .protocolVersion;
@@ -571,9 +694,12 @@ function protocolVersionForRequest(request: AgentRuntimeTaskRequest) {
   if (protocolVersion === agentRuntimeTaskProtocolVersionV2) {
     return agentRuntimeTaskProtocolVersionV2;
   }
+  if (protocolVersion === agentRuntimeTaskProtocolVersionV3) {
+    return agentRuntimeTaskProtocolVersionV3;
+  }
   throw new AgentRuntimeTaskProtocolError(
     "agent_runtime_task_protocol_version_invalid",
-    "Agent runtime task protocol version must be 1 or 2.",
+    "Agent runtime task protocol version must be 1, 2 or 3.",
   );
 }
 
@@ -719,37 +845,17 @@ async function runWorkerTask(input: {
       abortSignal: input.abortSignal,
     });
     return appendWarnings(
-      providerTaskResultToAgentRuntimeTaskResult(toProviderTaskResult(result)),
+      providerTaskResultToAgentRuntimeTaskResult(
+        workerResultToProviderTaskResult(result),
+      ),
       input.warnings,
     );
   } catch (error) {
-    const providerFailure = providerFailureResult(error, input.warnings);
-    if (providerFailure) return providerFailure;
-    const unavailable = providerRuntimeUnavailableResult(
+    return makeWorkerTaskFailureResult(
       input.provider,
       error,
       input.warnings,
     );
-    if (unavailable) return unavailable;
-    return makeFailedAgentRuntimeTaskResult({
-      code: AgentRuntimeFailureCode.UnknownRuntimeFailure,
-      safeMessage: isSubscriptionWorkerError(error)
-        ? error.message
-        : "Agent runtime worker task failed.",
-      ...optionalFailureDetails(errorDetails(error)),
-      warnings: input.warnings,
-    });
-  }
-}
-
-class ProviderRuntimeUnavailableError extends Error {
-  constructor(
-    readonly provider: ProviderName,
-    readonly missing: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = "ProviderRuntimeUnavailableError";
   }
 }
 
@@ -765,6 +871,23 @@ function makeWorkerStartupFailureResult(
       safeMessage: isSubscriptionWorkerError(error)
         ? error.message
         : "Agent runtime worker startup failed.",
+      ...optionalFailureDetails(errorDetails(error)),
+      warnings,
+    });
+}
+
+function makeWorkerTaskFailureResult(
+  provider: ProviderName,
+  error: unknown,
+  warnings: readonly RuntimeWarning[],
+): AgentRuntimeTaskResult {
+  return providerFailureResult(error, warnings) ??
+    providerRuntimeUnavailableResult(provider, error, warnings) ??
+    makeFailedAgentRuntimeTaskResult({
+      code: AgentRuntimeFailureCode.UnknownRuntimeFailure,
+      safeMessage: isSubscriptionWorkerError(error)
+        ? error.message
+        : "Agent runtime worker task failed.",
       ...optionalFailureDetails(errorDetails(error)),
       warnings,
     });
@@ -788,75 +911,6 @@ function providerFailureResult(
     ...optionalFailureDetails(errorDetails(error)),
     warnings,
   });
-}
-
-function providerRuntimeUnavailableResult(
-  provider: ProviderName,
-  error: unknown,
-  warnings: readonly RuntimeWarning[],
-): AgentRuntimeTaskResult | undefined {
-  const unavailable = classifyProviderRuntimeUnavailable(provider, error);
-  if (!unavailable) return undefined;
-  return makeFailedAgentRuntimeTaskResult({
-    code: AgentRuntimeFailureCode.ProviderRuntimeUnavailable,
-    safeMessage: unavailable.safeMessage,
-    details: {
-      provider,
-      missing: unavailable.missing,
-    },
-    warnings,
-  });
-}
-
-function classifyProviderRuntimeUnavailable(
-  provider: ProviderName,
-  error: unknown,
-): { readonly missing: string; readonly safeMessage: string } | undefined {
-  if (error instanceof ProviderRuntimeUnavailableError) {
-    return {
-      missing: error.missing,
-      safeMessage: `${provider} runtime is unavailable.`,
-    };
-  }
-  const message = errorMessage(error);
-  if (
-    provider === AgentRuntimeTaskProvider.Claude &&
-    message.includes("@anthropic-ai/claude-agent-sdk") &&
-    (message.includes("Cannot find package") ||
-      message.includes("Cannot find module") ||
-      message.includes("ERR_MODULE_NOT_FOUND"))
-  ) {
-    return {
-      missing: "claude-agent-sdk",
-      safeMessage: "Claude Agent SDK is unavailable.",
-    };
-  }
-  if (
-    provider === AgentRuntimeTaskProvider.Claude &&
-    (message.includes("CLAUDE_RUNTIME_DIST_DIR") ||
-      message.includes("Cannot find package 'claude-runtime'") ||
-      message.includes('Cannot find package "claude-runtime"') ||
-      message.includes("Cannot find module 'claude-runtime'") ||
-      message.includes('Cannot find module "claude-runtime"') ||
-      (message.includes("ERR_MODULE_NOT_FOUND") && message.includes("claude-runtime")))
-  ) {
-    return {
-      missing: "claude-runtime",
-      safeMessage: "Claude runtime is unavailable.",
-    };
-  }
-  if (
-    provider === AgentRuntimeTaskProvider.Codex &&
-    message.includes("ENOENT") &&
-    message.toLowerCase().includes("codex")
-  ) {
-    return { missing: "codex", safeMessage: "Codex runtime is unavailable." };
-  }
-  return undefined;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function capabilitiesForProvider(
@@ -942,36 +996,5 @@ function appendWarnings(
   return {
     ...result,
     warnings: [...warnings, ...result.warnings],
-  };
-}
-
-function toProviderTaskResult(
-  result: AgentRuntimeTaskWorkerResult,
-): ProviderTaskResult {
-  if (result.status === "waiting_for_input") {
-    if (!result.runId || !result.request || !result.resumeHandle) {
-      throw new Error("agent_runtime_task_waiting_result_invalid");
-    }
-    return {
-      status: "waiting_for_input",
-      runId: result.runId,
-      outputText: result.outputText,
-      ...(result.structuredOutput === undefined
-        ? {}
-        : { structuredOutput: result.structuredOutput }),
-      request: result.request,
-      resumeHandle: result.resumeHandle,
-      ...(result.telemetry ? { telemetry: result.telemetry } : {}),
-      warnings: result.warnings,
-    };
-  }
-  return {
-    status: "completed",
-    outputText: result.outputText,
-    ...(result.structuredOutput === undefined
-      ? {}
-      : { structuredOutput: result.structuredOutput }),
-    ...(result.telemetry ? { telemetry: result.telemetry } : {}),
-    warnings: result.warnings,
   };
 }

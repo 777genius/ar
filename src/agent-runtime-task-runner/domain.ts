@@ -2,9 +2,11 @@ import type {
   AgentRuntimeTaskRequest,
   AgentRuntimeTaskRequestV1,
   AgentRuntimeTaskRequestV2,
+  AgentRuntimeTaskRequestV3,
   AgentRuntimeTaskResult,
   AgentRuntimeTaskResultV1,
   AgentRuntimeTaskResultV2,
+  AgentRuntimeTaskResultV3,
 } from "@vioxen/subscription-runtime/agent-runtime-task";
 
 export enum AgentRuntimeTaskProvider {
@@ -36,6 +38,10 @@ export type AgentRuntimeTaskRunner = {
     request: AgentRuntimeTaskRequestV2,
     options?: AgentRuntimeTaskRunnerRunOptions,
   ): Promise<AgentRuntimeTaskResultV2>;
+  run(
+    request: AgentRuntimeTaskRequestV3,
+    options?: AgentRuntimeTaskRunnerRunOptions,
+  ): Promise<AgentRuntimeTaskResultV3>;
   run(
     request: AgentRuntimeTaskRequest,
     options?: AgentRuntimeTaskRunnerRunOptions,

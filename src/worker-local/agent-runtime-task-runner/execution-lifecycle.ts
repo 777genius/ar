@@ -3,6 +3,7 @@ import {
   AgentRuntimeFailureLifecycleState,
   AgentRuntimePendingAuthority,
   agentRuntimeTaskProtocolVersionV1,
+  agentRuntimeTaskProtocolVersionV3,
   agentRuntimeTaskRequestToProviderTask,
   makeFailedAgentRuntimeTaskResult,
   type AgentRuntimeTaskProtocolVersion,
@@ -18,6 +19,7 @@ export async function runWorkerTaskWithTimeout(input: {
   readonly reportedTimeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly settlementTimeoutMs?: number;
+  readonly authoritativeTimeoutAbortReason?: (timeoutMs: number) => unknown;
   readonly run: (abortSignal: AbortSignal) => Promise<AgentRuntimeTaskResult>;
 }): Promise<AgentRuntimeTaskResult> {
   const abortController = new AbortController();
@@ -37,12 +39,13 @@ export async function runWorkerTaskWithTimeout(input: {
     if (input.timeoutMs !== undefined) {
       races.push(new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
-          abortController.abort();
-          reject(
-            new AgentRuntimeTaskTimeoutError(
-              input.reportedTimeoutMs ?? input.timeoutMs!,
-            ),
+          const error = new AgentRuntimeTaskTimeoutError(
+            input.reportedTimeoutMs ?? input.timeoutMs!,
           );
+          abortController.abort(
+            input.authoritativeTimeoutAbortReason?.(error.timeoutMs),
+          );
+          reject(error);
         }, input.timeoutMs);
       }));
     }
@@ -61,20 +64,27 @@ export async function runWorkerTaskWithTimeout(input: {
     return await Promise.race(races);
   } catch (error) {
     if (error instanceof AgentRuntimeTaskTimeoutError) {
-      if (
-        run && input.settlementTimeoutMs !== undefined &&
-        !(await settlesWithin(run, input.settlementTimeoutMs))
-      ) {
-        return makeCleanupUnconfirmedResult(
-          AgentRuntimeCleanupUnconfirmedReason.TaskSettlement,
-        );
+      if (run && input.settlementTimeoutMs !== undefined) {
+        const settlement = await settleWithin(run, input.settlementTimeoutMs);
+        if (settlement.status === PromiseSettlementStatus.Pending) {
+          return makeCleanupUnconfirmedResult(
+            AgentRuntimeCleanupUnconfirmedReason.TaskSettlement,
+          );
+        }
+        if (
+          input.authoritativeTimeoutAbortReason &&
+          settlement.status === PromiseSettlementStatus.Fulfilled
+        ) {
+          return settlement.value;
+        }
       }
       return makeTimeoutAgentRuntimeTaskResult(error.timeoutMs);
     }
     if (error instanceof AgentRuntimeTaskCancelledError) {
       if (
         run && input.settlementTimeoutMs !== undefined &&
-        !(await settlesWithin(run, input.settlementTimeoutMs))
+        (await settleWithin(run, input.settlementTimeoutMs)).status ===
+          PromiseSettlementStatus.Pending
       ) {
         return makeCleanupUnconfirmedResult(
           AgentRuntimeCleanupUnconfirmedReason.TaskSettlement,
@@ -216,6 +226,12 @@ export function resultForProtocol(
       },
     } as AgentRuntimeTaskResult;
   }
+  if (
+    protocolVersion === agentRuntimeTaskProtocolVersionV3 &&
+    result.protocolVersion === agentRuntimeTaskProtocolVersionV3
+  ) {
+    return result;
+  }
   return {
     ...result,
     protocolVersion,
@@ -255,19 +271,44 @@ export function pendingAuthoritiesForRequest(
   }
 }
 
-async function settlesWithin(
-  promise: Promise<unknown>,
+enum PromiseSettlementStatus {
+  Fulfilled = "fulfilled",
+  Rejected = "rejected",
+  Pending = "pending",
+}
+
+type PromiseSettlement<T> =
+  | {
+      readonly status: PromiseSettlementStatus.Fulfilled;
+      readonly value: T;
+    }
+  | {
+      readonly status:
+        | PromiseSettlementStatus.Rejected
+        | PromiseSettlementStatus.Pending;
+    };
+
+async function settleWithin<T>(
+  promise: Promise<T>,
   timeoutMs: number,
-): Promise<boolean> {
+): Promise<PromiseSettlement<T>> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       promise.then(
-        () => true,
-        () => true,
+        (value) => ({
+          status: PromiseSettlementStatus.Fulfilled,
+          value,
+        }) as const,
+        () => ({ status: PromiseSettlementStatus.Rejected }) as const,
       ),
-      new Promise<false>((resolve) => {
-        timeout = setTimeout(() => resolve(false), timeoutMs);
+      new Promise<{
+        readonly status: PromiseSettlementStatus.Pending;
+      }>((resolve) => {
+        timeout = setTimeout(
+          () => resolve({ status: PromiseSettlementStatus.Pending }),
+          timeoutMs,
+        );
       }),
     ]);
   } finally {

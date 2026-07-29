@@ -682,6 +682,9 @@ class RuntimeKernel {
             taskKind: input.task.kind,
           });
         },
+        ...(input.runContext.logicalThread === undefined
+          ? {}
+          : { logicalThread: input.runContext.logicalThread }),
       });
       this.emit(
         "provider.task.completed",

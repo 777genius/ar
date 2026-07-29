@@ -21,10 +21,12 @@ import {
 
 export const agentRuntimeTaskProtocolVersionV1 = 1 as const;
 export const agentRuntimeTaskProtocolVersionV2 = 2 as const;
+export const agentRuntimeTaskProtocolVersionV3 = 3 as const;
 export const agentRuntimeTaskProtocolVersion = agentRuntimeTaskProtocolVersionV1;
 export type AgentRuntimeTaskProtocolVersion =
   | typeof agentRuntimeTaskProtocolVersionV1
-  | typeof agentRuntimeTaskProtocolVersionV2;
+  | typeof agentRuntimeTaskProtocolVersionV2
+  | typeof agentRuntimeTaskProtocolVersionV3;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
@@ -53,9 +55,12 @@ export type AgentRuntimeTaskPayloadV2 = AgentRuntimeTaskPayloadV1 & {
   readonly execution: AgentRuntimeTaskExecution;
 };
 
+export type AgentRuntimeTaskPayloadV3 = AgentRuntimeTaskPayloadV2;
+
 export type AgentRuntimeTaskPayload =
   | AgentRuntimeTaskPayloadV1
-  | AgentRuntimeTaskPayloadV2;
+  | AgentRuntimeTaskPayloadV2
+  | AgentRuntimeTaskPayloadV3;
 
 export type AgentRuntimeTaskRequestV1 = AgentRuntimeTaskRequestBase<
   AgentRuntimeTaskPayloadV1
@@ -69,9 +74,22 @@ export type AgentRuntimeTaskRequestV2 = AgentRuntimeTaskRequestBase<
   readonly protocolVersion: typeof agentRuntimeTaskProtocolVersionV2;
 };
 
+export type AgentRuntimeLogicalThread = {
+  readonly id: string;
+};
+
+export type AgentRuntimeTaskRequestV3 = AgentRuntimeTaskRequestBase<
+  AgentRuntimeTaskPayloadV3
+> & {
+  readonly protocolVersion: typeof agentRuntimeTaskProtocolVersionV3;
+  readonly executionId: string;
+  readonly thread: AgentRuntimeLogicalThread;
+};
+
 export type AgentRuntimeTaskRequest =
   | AgentRuntimeTaskRequestV1
-  | AgentRuntimeTaskRequestV2;
+  | AgentRuntimeTaskRequestV2
+  | AgentRuntimeTaskRequestV3;
 
 export type AgentRuntimeTaskToolPolicy = {
   readonly allow?: readonly AgentRuntimeToolName[];
@@ -152,6 +170,17 @@ type AgentRuntimeTaskFailedResult = {
       readonly warnings: readonly RuntimeWarning[];
     };
 
+export enum AgentRuntimeThreadOutcome {
+  StartedFresh = "started_fresh",
+  Continued = "continued",
+  RecoveredFresh = "recovered_fresh",
+}
+
+export type AgentRuntimeThreadResult = {
+  readonly id: string;
+  readonly outcome: AgentRuntimeThreadOutcome;
+};
+
 export enum AgentRuntimeFailureLifecycleState {
   PreflightFailed = "preflight_failed",
   ExecutionFailed = "execution_failed",
@@ -202,9 +231,29 @@ export type AgentRuntimeTaskResultV2 =
       typeof agentRuntimeTaskProtocolVersionV2
     >;
 
+type AgentRuntimeTaskCompletedResult = Extract<
+  AgentRuntimeTaskSuccessfulResult,
+  { readonly status: AgentRuntimeTaskResultStatus.Completed }
+>;
+
+export type AgentRuntimeTaskResultV3 =
+  | WithProtocolVersion<
+      AgentRuntimeTaskCompletedResult & {
+        readonly thread: AgentRuntimeThreadResult;
+      },
+      typeof agentRuntimeTaskProtocolVersionV3
+    >
+  | WithProtocolVersion<
+      AgentRuntimeTaskFailedResult & {
+        readonly lifecycle: AgentRuntimeFailureLifecycle;
+      },
+      typeof agentRuntimeTaskProtocolVersionV3
+    >;
+
 export type AgentRuntimeTaskResult =
   | AgentRuntimeTaskResultV1
-  | AgentRuntimeTaskResultV2;
+  | AgentRuntimeTaskResultV2
+  | AgentRuntimeTaskResultV3;
 
 type AgentRuntimeTaskEventPayload<TResult extends AgentRuntimeTaskResult> =
   | {
@@ -253,9 +302,15 @@ export type AgentRuntimeTaskEventV2 = WithProtocolVersion<
   typeof agentRuntimeTaskProtocolVersionV2
 >;
 
+export type AgentRuntimeTaskEventV3 = WithProtocolVersion<
+  AgentRuntimeTaskEventPayload<AgentRuntimeTaskResultV3>,
+  typeof agentRuntimeTaskProtocolVersionV3
+>;
+
 export type AgentRuntimeTaskEvent =
   | AgentRuntimeTaskEventV1
-  | AgentRuntimeTaskEventV2;
+  | AgentRuntimeTaskEventV2
+  | AgentRuntimeTaskEventV3;
 
 export type AgentRuntimeTaskBridgeRunResult = {
   readonly request: AgentRuntimeTaskRequest;

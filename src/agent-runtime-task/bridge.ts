@@ -9,7 +9,7 @@ import {
 import {
   AgentRuntimeFailureLifecycleState,
   AgentRuntimeTaskProtocolError,
-  agentRuntimeTaskProtocolVersionV2,
+  agentRuntimeTaskProtocolVersionV1,
   makeAgentRuntimeTaskFailure,
   parseAgentRuntimeTaskEvent,
   parseAgentRuntimeTaskRequest,
@@ -354,7 +354,7 @@ function makeBridgeFailure(
     protocolVersion,
     status: AgentRuntimeTaskResultStatus.Failed,
     failure: makeAgentRuntimeTaskFailure(code, safeMessage),
-    ...(protocolVersion === agentRuntimeTaskProtocolVersionV2
+    ...(protocolVersion !== agentRuntimeTaskProtocolVersionV1
       ? {
           lifecycle: taskStarted
             ? {

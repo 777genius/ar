@@ -9,6 +9,7 @@ import {
   type ObservabilityPort,
   type ProviderTask,
   type ProviderTaskTelemetry,
+  type ProviderLogicalThreadExecution,
   type RedactorPort,
   type RefreshThenRunResult,
   type RuntimeDeps,
@@ -18,8 +19,6 @@ import {
   ClaudeRuntimeTaskExecutionEngine,
   ClaudeSessionDriver,
   ClaudeTaskAgentDriver,
-  claudeRuntimeResumeSessionIdMetadataKey,
-  claudeRuntimeThreadIdMetadataKey,
   sessionArtifactFromClaudeOAuth,
   validateClaudeSessionArtifact,
   type ClaudeTaskExecutionEngine,
@@ -119,6 +118,7 @@ export type FileBackendClaudeWorkerJob = {
   readonly controls?: ProviderTask["controls"];
   readonly abortSignal?: AbortSignal;
   readonly metadata?: Readonly<Record<string, string>>;
+  readonly logicalThread?: ProviderLogicalThreadExecution;
   readonly controlTarget?: WorkerControlTarget;
 };
 
@@ -545,8 +545,11 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
           attempt: 1,
           abortSignal,
           ...(input.onProviderTaskStarted
-            ? { onProviderTaskStarted: input.onProviderTaskStarted }
-            : {}),
+              ? { onProviderTaskStarted: input.onProviderTaskStarted }
+              : {}),
+          ...(job.logicalThread === undefined
+            ? {}
+            : { logicalThread: job.logicalThread }),
         },
       });
 
@@ -654,23 +657,22 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
             });
           }
 
+          let latestSessionId: string | undefined;
           const result = await this.runProviderTask({
             ...job,
-            metadata: {
-              ...(job.metadata ?? {}),
-              [claudeRuntimeThreadIdMetadataKey]: job.threadId,
+            logicalThread: {
+              threadId: job.threadId,
               ...(current?.latestSessionId === undefined
                 ? {}
-                : {
-                    [claudeRuntimeResumeSessionIdMetadataKey]:
-                      current.latestSessionId,
-                  }),
+                : { previousCheckpoint: current.latestSessionId }),
+              onCheckpoint: ({ checkpoint }) => {
+                latestSessionId = checkpoint;
+              },
             },
           }, {
             ...options,
             workspaceId: workspacePath,
           });
-          const latestSessionId = result.telemetry?.providerSessionId;
           if (!latestSessionId) {
             throw new SubscriptionWorkerError(
               "subscription_worker_run_failed",

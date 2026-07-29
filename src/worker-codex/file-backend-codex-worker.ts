@@ -9,6 +9,7 @@ import {
   type ManagedRunResumeHandle,
   type ObservabilityPort,
   type ProviderFailure,
+  type ProviderLogicalThreadExecution,
   type ProviderTask,
   type RefreshThenRunResult,
   type RedactorPort,
@@ -110,6 +111,7 @@ export type FileBackendCodexWorkerJob = {
   readonly execution?: ProviderTask["execution"];
   readonly abortSignal?: AbortSignal;
   readonly metadata?: Readonly<Record<string, string>>;
+  readonly logicalThread?: ProviderLogicalThreadExecution;
   readonly recoveryPacket?: ManagedRunRecoveryPacket;
 };
 
@@ -315,8 +317,11 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
               attempt,
               abortSignal,
               ...(options.onProviderTaskStarted
-                ? { onProviderTaskStarted: options.onProviderTaskStarted }
-                : {}),
+                  ? { onProviderTaskStarted: options.onProviderTaskStarted }
+                  : {}),
+              ...(job.logicalThread === undefined
+                ? {}
+                : { logicalThread: job.logicalThread }),
             },
           });
         } catch (error) {

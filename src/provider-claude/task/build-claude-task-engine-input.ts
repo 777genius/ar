@@ -2,6 +2,7 @@ import type {
   ProviderTask,
   ProviderTaskControls,
   ProviderTaskResult,
+  ProviderLogicalThreadExecution,
   RedactorPort,
   RunnerPort,
   SessionArtifact,
@@ -40,6 +41,7 @@ export type ClaudeTaskEnginePreparationInput = {
   readonly runner: RunnerPort;
   readonly redactor: RedactorPort;
   readonly abortSignal: AbortSignal;
+  readonly logicalThread?: ProviderLogicalThreadExecution;
 };
 
 export type PreparedClaudeTaskEngineInput = {
@@ -54,6 +56,22 @@ export function prepareClaudeTaskEngineInput(
 ): PreparedClaudeTaskEngineInput {
   const validation = validateClaudeSessionArtifact(input.session);
   registerClaudeSecrets(input.redactor, validation.session.oauthToken);
+  const runtimeThread = input.logicalThread === undefined
+    ? runtimeThreadFromMetadata(input.task.metadata)
+    : {
+        threadId: input.logicalThread.threadId,
+        ...(input.logicalThread.previousCheckpoint === undefined
+          ? {}
+          : {
+              resumeSessionId: input.logicalThread.previousCheckpoint,
+            }),
+      };
+  if (runtimeThread?.resumeSessionId) {
+    input.redactor.registerSecret(
+      runtimeThread.resumeSessionId,
+      "claude-provider-checkpoint",
+    );
+  }
   let engineInput: ClaudeTaskEngineInput = {
     prompt: executionPrompt(input.task),
     execution: input.task.execution ?? {
@@ -94,7 +112,7 @@ export function prepareClaudeTaskEngineInput(
     providerSandboxMode,
     strictMcpConfig: options.strictMcpConfig,
     outputSchemaName,
-    runtimeThread: runtimeThreadFromMetadata(input.task.metadata),
+    runtimeThread,
   });
   return {
     engineInput,

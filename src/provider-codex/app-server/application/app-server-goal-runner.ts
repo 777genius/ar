@@ -4,6 +4,9 @@ import type {
   ManagedRunResumeHandle,
   ManagedRunStorePort,
 } from "@vioxen/subscription-runtime/core";
+import {
+  ProviderLogicalThreadOutcome,
+} from "@vioxen/subscription-runtime/core";
 import type {
   CodexReasoningEffort,
   CodexSandboxMode,
@@ -27,7 +30,10 @@ import {
   usageField,
 } from "../domain/app-server-usage";
 import type { CodexAppServerClient } from "./app-server-client";
-import { turnFailureError } from "./app-server-client";
+import {
+  CodexAppServerThreadForkError,
+  turnFailureError,
+} from "./app-server-client";
 import {
   assertManagedRunCanResume,
   managedRunFailureFromError,
@@ -78,6 +84,93 @@ export class AppServerGoalRunner {
       firstPrompt: input.prompt,
       warnings,
     });
+  }
+
+  async runLogicalThreadGoal(input: {
+    readonly runId?: string;
+    readonly prompt: string;
+    readonly goalObjective?: string;
+    readonly systemPrompt?: string;
+    readonly previousCheckpoint?: string;
+    readonly workspacePath: string;
+    readonly model: string;
+    readonly reasoningEffort: CodexReasoningEffort;
+    readonly serviceTier?: CodexServiceTier;
+    readonly sandboxMode: CodexSandboxMode;
+    readonly outputSchema?: unknown;
+    readonly timeoutMs: number;
+    readonly abortSignal: AbortSignal;
+    readonly maxGoalTurns: number;
+    readonly goalContinuePrompt: string;
+  }): Promise<{
+    readonly status: "completed";
+    readonly outputText: string;
+    readonly usage?: AgentUsage;
+    readonly warnings: readonly AppServerWarning[];
+    readonly providerCheckpoint: string;
+    readonly outcome: ProviderLogicalThreadOutcome;
+  }> {
+    const warnings = this.options.client.drainWarnings();
+    const runId = normalizeRunId(input.runId);
+    let outcome = ProviderLogicalThreadOutcome.StartedFresh;
+    let threadId: string;
+    if (input.previousCheckpoint === undefined) {
+      threadId = await this.options.client.startThread({
+        ...input,
+        goalMode: true,
+      });
+    } else {
+      try {
+        threadId = await this.options.client.forkThread({
+          threadId: input.previousCheckpoint,
+          timeoutMs: input.timeoutMs,
+          abortSignal: input.abortSignal,
+        });
+        outcome = ProviderLogicalThreadOutcome.Continued;
+      } catch (error) {
+        if (input.abortSignal.aborted) throw error;
+        if (
+          !(error instanceof CodexAppServerThreadForkError) ||
+          !error.sourceThreadUnavailable
+        ) {
+          throw error;
+        }
+        threadId = await this.options.client.startThread({
+          ...input,
+          goalMode: true,
+        });
+        outcome = ProviderLogicalThreadOutcome.RecoveredFresh;
+        warnings.push({
+          code: "codex_app_server_thread_recovered_fresh",
+          safeMessage:
+            "Codex source thread was unavailable; execution started fresh before any turn.",
+        });
+      }
+    }
+    await this.options.client.setGoal({
+      threadId,
+      objective: input.goalObjective ?? input.prompt,
+      status: "active",
+      timeoutMs: input.timeoutMs,
+      abortSignal: input.abortSignal,
+    });
+    const result = await this.continueGoal({
+      ...input,
+      runId,
+      threadId,
+      firstPrompt: input.prompt,
+      warnings,
+      allowWaitingForInput: false,
+    });
+    if (result.status === "waiting_for_input") {
+      throw new Error("codex_logical_thread_goal_waiting_for_input_invalid");
+    }
+    return {
+      ...result,
+      status: "completed",
+      providerCheckpoint: threadId,
+      outcome,
+    };
   }
 
   async resumeGoal(input: {
@@ -147,6 +240,7 @@ export class AppServerGoalRunner {
     readonly maxGoalTurns: number;
     readonly goalContinuePrompt: string;
     readonly warnings: AppServerWarning[];
+    readonly allowWaitingForInput?: boolean;
   }): Promise<AppServerRunResult> {
     let outputText = "";
     let turnUsage: AgentUsage | undefined;
@@ -200,6 +294,11 @@ export class AppServerGoalRunner {
         };
       }
       if (goal.status === "blocked" || goal.status === "paused") {
+        if (input.allowWaitingForInput === false) {
+          throw new Error(
+            "codex_logical_thread_goal_waiting_for_input_invalid",
+          );
+        }
         return this.waitForGoalInput({
           runId: input.runId,
           threadId: input.threadId,
