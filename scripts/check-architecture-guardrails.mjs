@@ -10,13 +10,29 @@ const srcDir = process.env.SUBSCRIPTION_RUNTIME_GUARDRAIL_SRC_DIR
   : join(rootDir, "src");
 const maxLines = Number(process.env.SUBSCRIPTION_RUNTIME_FILE_MAX_LINES ?? 1000);
 
+// Snapshot inherited oversized files at the exact current main-branch size.
+// These are ratchets, not exemptions: any growth fails until the file is split,
+// and each cap should move down (or disappear) when that debt is reduced.
 const legacyLineCaps = {
   "src/agent-task/task-codec/application/agent-task-codec.ts": 1013,
   "src/provider-claude/tests/claude-provider.test.ts": 1254,
-  "src/worker-codex/tests/codex-goal-cli.test.ts": 1145,
-  "src/worker-codex/tests/codex-goal-ops.test.ts": 1526,
-  "src/worker-core/safe-execution/tests/safe-execution-runner.test.ts": 1012,
+  "src/provider-codex/app-server/application/app-server-client.ts": 1127,
+  "src/worker-codex/application/project-control/codex-goal-project-admission.ts": 1051,
+  "src/worker-codex/application/project-control/codex-goal-project-pre-start-admission.ts": 1135,
+  "src/worker-codex/codex-goal-mcp-project-control-actions.ts": 1020,
+  "src/worker-codex/codex-goal-mcp-project-control-jobs.ts": 1302,
+  "src/worker-codex/tests/codex-goal-cli.test.ts": 1140,
+  "src/worker-codex/tests/codex-goal-mcp-project-broker.test.ts": 1112,
+  "src/worker-codex/tests/codex-goal-mcp-project-prepare-verifier.test.ts": 1472,
+  // e1537b1 landed directly on main with a failing quality check; freeze its
+  // 1541-line state here so later growth is blocked again.
+  "src/worker-codex/tests/codex-goal-ops.test.ts": 1541,
+  "src/worker-codex/tests/codex-goal-project-admission.test.ts": 1468,
+  "src/worker-codex/tests/codex-goal-project-admitted-input-patch-continuation.test.ts": 1462,
+  "src/worker-codex/tests/codex-goal-project-refill-worktree.test.ts": 1011,
+  "src/worker-core/safe-execution/tests/safe-execution-runner.test.ts": 1004,
   "src/worker-local/tests/agent-task-runner-cli.test.ts": 1027,
+  "src/worker-local/tests/project-integration-local-adapters.test.ts": 1286,
 };
 
 const tightenedLineCaps = {

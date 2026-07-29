@@ -26,6 +26,15 @@ const cases = [
     expectText: "exceeds hard cap",
   },
   {
+    name: "inherited oversized file cannot grow past its frozen cap",
+    files: {
+      "src/worker-codex/codex-goal-mcp-project-control-actions.ts":
+        Array.from({ length: 1021 }, (_, index) => `// ${index}`).join("\n") + "\n",
+    },
+    expectPass: false,
+    expectText: "legacy file grew",
+  },
+  {
     name: "split files over tightened cap fail",
     files: {
       "src/worker-codex/file-backend-codex-worker.ts": Array.from({ length: 621 }, (_, index) => `// ${index}`).join("\n") + "\n",
