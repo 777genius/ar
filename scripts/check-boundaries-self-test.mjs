@@ -93,6 +93,22 @@ const cases = [
     expectText: "agent-task must stay provider and adapter neutral",
   },
   {
+    name: "agent-runtime-task rejects provider implementations",
+    files: {
+      "src/agent-runtime-task/bad.ts": "import '@vioxen/subscription-runtime/provider-claude';\n",
+    },
+    expectPass: false,
+    expectText: "agent-runtime-task must stay provider and adapter neutral",
+  },
+  {
+    name: "agent-runtime-task rejects dynamic provider imports",
+    files: {
+      "src/agent-runtime-task/bad.ts": "await import('@vioxen/subscription-runtime/provider-claude');\n",
+    },
+    expectPass: false,
+    expectText: "agent-runtime-task must stay provider and adapter neutral",
+  },
+  {
     name: "account diagnostics allows worker-core capacity types",
     files: {
       "src/account-diagnostics/good.ts": "import type { WorkerAccountCapacityStore } from '@vioxen/subscription-runtime/worker-core';\n",

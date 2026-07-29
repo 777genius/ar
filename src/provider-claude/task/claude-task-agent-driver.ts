@@ -1,5 +1,7 @@
 import {
   assertProviderTaskSystemPrompt,
+  AgentRuntimeTurnLimitEnforcement,
+  type AgentCapabilities,
   type AgentDriver,
   type ProviderFailure,
   type ProviderTask,
@@ -54,11 +56,31 @@ export {
 export class ClaudeTaskAgentDriver implements AgentDriver, StreamingAgentDriver {
   readonly agentId = claudeBgTaskAgentId;
   readonly providerId = claudeProviderId;
-  readonly capabilities = claudeBgTaskAgentCapabilities;
+  readonly capabilities: AgentCapabilities;
   private readonly model: string;
 
   constructor(private readonly options: ClaudeTaskAgentDriverOptions) {
     this.model = options.model ?? "sonnet";
+    const budgetCapabilities = options.engine.capabilities.budgetCapabilities;
+    const taskExecutionCapabilities =
+      options.engine.capabilities.taskExecutionCapabilities;
+    const accessBoundaryMode =
+      options.engine.capabilities.accessBoundaryMode ?? "unsupported";
+    const turnLimitEnforcement =
+      options.engine.capabilities.turnLimitEnforcement ??
+      AgentRuntimeTurnLimitEnforcement.Unsupported;
+    this.capabilities = !budgetCapabilities &&
+        !taskExecutionCapabilities &&
+        accessBoundaryMode === "unsupported" &&
+        turnLimitEnforcement === AgentRuntimeTurnLimitEnforcement.ProviderNative
+      ? claudeBgTaskAgentCapabilities
+      : {
+          ...claudeBgTaskAgentCapabilities,
+          ...(budgetCapabilities ? { budgetCapabilities } : {}),
+          ...(taskExecutionCapabilities ? { taskExecutionCapabilities } : {}),
+          accessBoundaryMode,
+          turnLimitEnforcement,
+        };
   }
 
   async runTask(input: {

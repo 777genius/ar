@@ -7,6 +7,7 @@ import type {
   SessionEnvelope,
   SessionWriteResult,
 } from "../domain/types";
+import { AgentRuntimeExecutionMode } from "../domain/types";
 import type { RuntimeDeps } from "../ports";
 
 export function combineSessionAndAgent(input: {
@@ -115,12 +116,39 @@ export function unsupportedTaskFailure(input: {
   readonly agentDriver: RuntimeDeps["agentDriver"];
   readonly task: ProviderTask;
 }): Extract<ProviderTaskResult, { readonly status: "failed" }> | null {
-  if (input.agentDriver.capabilities.taskModes.includes(input.task.kind)) {
-    return null;
+  if (!input.agentDriver.capabilities.taskModes.includes(input.task.kind)) {
+    return failedTask(
+      "task_mode_unsupported",
+      "Selected agent does not support the requested task mode.",
+    ) as Extract<ProviderTaskResult, { readonly status: "failed" }>;
   }
 
-  return failedTask(
-    "task_mode_unsupported",
-    "Selected agent does not support the requested task mode.",
-  ) as Extract<ProviderTaskResult, { readonly status: "failed" }>;
+  const execution = input.task.execution ?? {
+    mode: AgentRuntimeExecutionMode.SingleRun,
+  };
+  const executionCapabilities =
+    input.agentDriver.capabilities.taskExecutionCapabilities ?? [{
+      mode: AgentRuntimeExecutionMode.SingleRun,
+    }];
+  const executionCapability = executionCapabilities.find(
+    (capability) => capability.mode === execution.mode,
+  );
+  if (!executionCapability) {
+    return failedTask(
+      "task_mode_unsupported",
+      "Selected agent does not support the requested execution mode.",
+    ) as Extract<ProviderTaskResult, { readonly status: "failed" }>;
+  }
+  if (
+    execution.mode === AgentRuntimeExecutionMode.Goal &&
+    executionCapability.maxCompletionConditionChars !== undefined &&
+    execution.completionCondition.length >
+      executionCapability.maxCompletionConditionChars
+  ) {
+    return failedTask(
+      "task_request_invalid",
+      "Goal completion condition exceeds provider capability.",
+    ) as Extract<ProviderTaskResult, { readonly status: "failed" }>;
+  }
+  return null;
 }

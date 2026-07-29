@@ -837,9 +837,9 @@ function usage(): string {
   subscription-runtime-codex-goal doctor-control
   subscription-runtime-codex-goal project-control-operation-run --operation-file <file> [--json|--text]
   subscription-runtime-codex-goal overview [--registry-root <dir>] [--job-prefix <prefix>]
-  subscription-runtime-codex-goal run-watch [jobId] [--provider codex|claude|agent-task] [--registry-root <dir>] [--state-root <dir>] [--include-log-tail] [--include-changed-files] [--json|--text]
-  subscription-runtime-codex-goal events [jobId] [--provider codex|claude|local|agent-task|unknown] [--registry-root <dir>] [--event-root <dir>] [--cursor <cursor>] [--type <event-type>] [--limit 100]
-  subscription-runtime-codex-goal state <jobId> [--provider codex|claude|local|agent-task|unknown] [--registry-root <dir>] [--event-root <dir>]
+  subscription-runtime-codex-goal run-watch [jobId] [--provider codex|claude|agent-runtime-task] [--registry-root <dir>] [--state-root <dir>] [--include-log-tail] [--include-changed-files] [--json|--text]
+  subscription-runtime-codex-goal events [jobId] [--provider codex|claude|local|agent-runtime-task|unknown] [--registry-root <dir>] [--event-root <dir>] [--cursor <cursor>] [--type <event-type>] [--limit 100]
+  subscription-runtime-codex-goal state <jobId> [--provider codex|claude|local|agent-runtime-task|unknown] [--registry-root <dir>] [--event-root <dir>]
   subscription-runtime-codex-goal event-compaction-plan [--registry-root <dir>] [--event-root <dir>] [--compact-delivered] [--keep-latest-per-run 100] [--drop-invalid-lines]
   subscription-runtime-codex-goal event-compact --confirm [--registry-root <dir>] [--event-root <dir>] [--compact-delivered] [--keep-latest-per-run 100] [--drop-invalid-lines] [--force]
   subscription-runtime-codex-goal project-events [jobId] [--provider codex] [--registry-root <dir>] [--event-root <dir>] [--host-id <id>] [--include-changed-files]

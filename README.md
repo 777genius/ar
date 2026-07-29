@@ -95,7 +95,9 @@ by the packed-consumer gate.
 | Subpath | Responsibility |
 | --- | --- |
 | `@vioxen/subscription-runtime/core` | Provider-neutral runtime policy, session lifecycle, task/result contracts, redaction and ports |
-| `@vioxen/subscription-runtime/agent-task` | Versioned agent-task codec, bridge, streaming events and handler contract |
+| `@vioxen/subscription-runtime/agent-task` | Legacy v1 agent-task codec, bridge, streaming events and handler contract |
+| `@vioxen/subscription-runtime/agent-runtime-task` | Additive agent-runtime-task v1/v2 codec, goal controls, bridge and certification |
+| `@vioxen/subscription-runtime/agent-runtime-task-runner` | Public local runner API for agent-runtime-task providers |
 | `@vioxen/subscription-runtime/account-diagnostics` | Provider-neutral account identity, availability, reset and capacity read models |
 | `@vioxen/subscription-runtime/provider-codex` | Codex auth, CLI/app-server execution, model catalog, failure classification and materialization |
 | `@vioxen/subscription-runtime/provider-claude` | Claude session, provider driver and task execution adapters |
@@ -186,6 +188,8 @@ The package publishes these executables:
 | `subscription-runtime-account-status` | Safe account, auth and capacity diagnostics |
 | `subscription-runtime-agent-task` | Run a versioned agent-task request through a handler module |
 | `subscription-runtime-run-agent-task` | Execute an agent-task request through configured subscription workers |
+| `subscription-runtime-agent-runtime-task` | Run an agent-runtime-task request through a handler module |
+| `subscription-runtime-run-agent-runtime-task` | Execute an agent-runtime-task request through the public local runner |
 | `subscription-runtime-openai-codex-bridge` | Serve an OpenAI-compatible Codex-backed HTTP bridge |
 | `subscription-runtime-codex-goal` | Manage durable Codex goal jobs and controlled worker operations |
 | `subscription-runtime-codex-goal-mcp` | Expose goal jobs, run events, account facts and project-control tools over MCP |
@@ -279,7 +283,8 @@ For adapter-level guarantees, see
 | Backend deployment shape | [Backend Workers](docs/backend-workers.md) |
 | Codex authentication | [Codex Auth](docs/codex-auth.md) |
 | Account status and quota facts | [Account Diagnostics](docs/account-diagnostics.md), [Agent Account Observability](docs/agent-account-observability.md) |
-| Agent-task protocol and handlers | [Agent Task Bridge](docs/agent-task-bridge.md) |
+| Legacy agent-task v1 protocol and handlers | [Agent Task Bridge](docs/agent-task-bridge.md) |
+| Agent-runtime-task protocol, goals and runner | [Agent Runtime Task Bridge](docs/agent-runtime-task-bridge.md) |
 | Run events and read models | [Run Event API](docs/run-event-api.md) |
 | Worker access and project admission | [Project Access Boundaries](docs/project-access-boundaries.md) |
 | Codex goal MCP and operations | [Codex Worker Agent Quickstart](docs/codex-worker-agent-quickstart.md), [Codex Worker Pool Operations](docs/codex-worker-pool-operations.md) |

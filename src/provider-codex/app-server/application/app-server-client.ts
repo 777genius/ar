@@ -33,7 +33,16 @@ import {
   mergeAgentUsage,
   readUsageFromRecords,
 } from "../domain/app-server-usage";
-import { safeMessage, throwIfAborted } from "../domain/app-server-errors";
+import {
+  codexAppServerProviderError,
+  safeMessage,
+  throwIfAborted,
+} from "../domain/app-server-errors";
+import {
+  codexAppServerRolloutBudgetConfig,
+  type CodexAppServerRolloutBudget,
+} from "../domain/app-server-rollout-budget";
+import { codexAppServerToolConfig } from "../domain/app-server-tool-config";
 import { isCodexAppServerReconnectProgressMessage } from "../protocol/app-server-event-parser";
 import { readGoal } from "../protocol/app-server-goal-protocol";
 import { readCodexModelCatalogPage } from "../protocol/app-server-model-catalog";
@@ -55,6 +64,14 @@ import {
   stringArrayField,
   stringField,
 } from "../protocol/app-server-content-parser";
+import { turnFailureError } from "./app-server-turn-failure";
+
+export {
+  CodexAppServerTurnError,
+  type AppServerTurnFailureDetails,
+  type AppServerTurnFailurePhase,
+} from "./app-server-turn-failure";
+export { turnFailureError };
 
 export type AppServerTurnResult = {
   readonly outputText: string;
@@ -62,59 +79,6 @@ export type AppServerTurnResult = {
   readonly completed: boolean;
   readonly error: Error | null;
 };
-
-export type AppServerTurnFailurePhase =
-  | "turn_start_rejected"
-  | "turn_error_before_output"
-  | "turn_error_after_output";
-
-export type AppServerTurnFailureDetails = {
-  readonly phase: AppServerTurnFailurePhase;
-  readonly turnNumber: number;
-  readonly outputObserved: boolean;
-  readonly outputCharCount: number;
-  readonly elapsedMs: number;
-};
-
-export class CodexAppServerTurnError extends Error {
-  readonly code = "codex_app_server_turn_error" as const;
-  readonly failureDetails: AppServerTurnFailureDetails;
-
-  constructor(input: {
-    readonly cause: unknown;
-    readonly phase: AppServerTurnFailurePhase;
-    readonly turnNumber: number | undefined;
-    readonly outputText?: string;
-    readonly elapsedMs: number;
-  }) {
-    const outputCharCount = boundedTurnMetric(input.outputText?.length ?? 0);
-    const failureDetails: AppServerTurnFailureDetails = {
-      phase: input.phase,
-      turnNumber: boundedTurnNumber(input.turnNumber),
-      outputObserved: outputCharCount > 0,
-      outputCharCount,
-      elapsedMs: boundedTurnMetric(input.elapsedMs),
-    };
-    super(
-      `codex_app_server_turn_error:${safeMessage(input.cause)}:details=${JSON.stringify(
-        failureDetails,
-      )}`,
-      { cause: input.cause },
-    );
-    this.name = "CodexAppServerTurnError";
-    this.failureDetails = failureDetails;
-  }
-
-  details(): Readonly<Record<string, string>> {
-    return {
-      phase: this.failureDetails.phase,
-      turnNumber: String(this.failureDetails.turnNumber),
-      outputObserved: String(this.failureDetails.outputObserved),
-      outputCharCount: String(this.failureDetails.outputCharCount),
-      elapsedMs: String(this.failureDetails.elapsedMs),
-    };
-  }
-}
 
 type TurnState = {
   outputText: string;
@@ -157,6 +121,7 @@ export class CodexAppServerClient {
       readonly executionProfile: ResolvedCodexExecutionProfile;
       readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
       readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+      readonly rolloutBudget?: CodexAppServerRolloutBudget;
       readonly timeoutMs: number;
       readonly startupTimeoutMs: number;
       readonly reconnectGraceMs: number;
@@ -288,16 +253,11 @@ export class CodexAppServerClient {
         ? {}
         : { systemPrompt: input.systemPrompt }),
     });
-    const features = {
-      apps: false,
-      hooks: false,
-      memories: false,
-      multi_agent: false,
-      shell_snapshot: false,
-      skill_mcp_dependency_install: false,
-      ...(input.serviceTier === "fast" ? { fast_mode: true } : {}),
-      ...(input.goalMode ? { goals: true } : {}),
-    };
+    const toolConfig = codexAppServerToolConfig({
+      nativeToolSurface: this.options.nativeToolSurface,
+      fastMode: input.serviceTier === "fast",
+      goalMode: input.goalMode === true,
+    });
     const response = await this.send(
       "thread/start",
       {
@@ -321,7 +281,11 @@ export class CodexAppServerClient {
               : "on-request",
           sandbox_mode: threadPolicy.sandboxMode,
           web_search: "disabled",
-          features,
+          ...toolConfig,
+          features: {
+            ...(readRecord(toolConfig.features) ?? {}),
+            ...codexAppServerRolloutBudgetConfig(this.options.rolloutBudget),
+          },
           apps: {
             _default: {
               enabled: false,
@@ -794,11 +758,12 @@ export class CodexAppServerClient {
         readUsageFromRecords(turn, params, record),
       );
       const status = readRecord(turn?.status);
-      if (status?.type === "failed") {
-        state.error = new Error(
-          `codex_app_server_turn_failed:${safeMessage(
-            turn?.error ?? status ?? params ?? record,
-          )}`,
+      const statusType = stringField(turn, "status") ??
+        stringField(status, "type");
+      if (statusType === "failed") {
+        state.error = codexAppServerProviderError(
+          "codex_app_server_turn_failed",
+          turn?.error ?? status ?? params ?? record,
         );
       }
       this.resolveTurn(state);
@@ -830,12 +795,16 @@ export class CodexAppServerClient {
     }
     if (record.method === "error") {
       const turnId = stringField(params, "turnId");
-      const message = safeMessage(params?.error ?? params ?? record);
+      const errorPayload = params?.error ?? params ?? record;
+      const message = safeMessage(errorPayload);
       if (isCodexAppServerReconnectProgressMessage(message)) {
         this.deferTurnsForReconnectProgress(turnId, message);
         return;
       }
-      const error = new Error(`codex_app_server_error:${message}`);
+      const error = codexAppServerProviderError(
+        "codex_app_server_error",
+        errorPayload,
+      );
       if (!turnId) {
         for (const turn of this.turns.values()) {
           turn.error = error;
@@ -1098,30 +1067,4 @@ function createTurnState(): TurnState {
     waiters: [],
     reconnectGraceTimer: null,
   };
-}
-
-export function turnFailureError(
-  error: unknown,
-  input: {
-    readonly phase: AppServerTurnFailurePhase;
-    readonly turnNumber: number | undefined;
-    readonly outputText?: string;
-    readonly elapsedMs: number;
-  },
-): CodexAppServerTurnError {
-  if (error instanceof CodexAppServerTurnError) return error;
-  return new CodexAppServerTurnError({
-    cause: error,
-    ...input,
-  });
-}
-
-function boundedTurnNumber(value: number | undefined): number {
-  if (value === undefined || !Number.isFinite(value)) return 1;
-  return Math.max(1, Math.min(10_000, Math.trunc(value)));
-}
-
-function boundedTurnMetric(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.trunc(value)));
 }

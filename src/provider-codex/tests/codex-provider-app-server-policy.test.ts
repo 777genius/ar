@@ -52,6 +52,11 @@ import {
   FakeAppServerFactory,
 } from "../app-server/testing/fake-app-server";
 import {
+  codexAppServerBudgetExceededError,
+  CodexAppServerErrorKind,
+  CodexAppServerProviderError,
+} from "../app-server/domain/app-server-errors";
+import {
   RecordingJsonEngine,
   RecordingManagedRunStore,
   RefreshingRunner,
@@ -63,6 +68,116 @@ import {
 } from "./codex-provider-test-support";
 
 describe("Codex provider app-server adapter", () => {
+  it("finds nested budget errors and terminates cyclic cause chains", () => {
+    const budgetError = new CodexAppServerProviderError(
+      CodexAppServerErrorKind.SessionBudgetExceeded,
+      "budget exhausted",
+    );
+    const wrapped = new Error("turn failed", {
+      cause: new Error("provider failed", { cause: budgetError }),
+    });
+    expect(codexAppServerBudgetExceededError(wrapped)).toBe(budgetError);
+
+    const first = new Error("first");
+    const second = new Error("second", { cause: first });
+    Object.defineProperty(first, "cause", { value: second });
+    expect(codexAppServerBudgetExceededError(first)).toBeNull();
+  });
+
+  it("maps weighted-token budgets to native rollout_budget config", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-budget-test-"));
+    const fakeFactory = new FakeAppServerFactory();
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        cleanThreadPrewarm: false,
+        rolloutBudget: { weightedTokenLimit: 100_000 },
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "structured-prompt", prompt: "budgeted task" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(driver.capabilities.budgetCapabilities).toEqual([
+        { metric: "weighted_tokens", enforcement: "provider_native" },
+      ]);
+      const threadStart = fakeFactory.requests.find(
+        (request) => request.method === "thread/start",
+      );
+      expect(threadStart?.params).toMatchObject({
+        config: {
+          features: {
+            rollout_budget: {
+              enabled: true,
+              limit_tokens: 100_000,
+              reminder_at_remaining_tokens: [75_000, 50_000, 25_000],
+              sampling_token_weight: 1,
+              prefill_token_weight: 1,
+            },
+          },
+        },
+      });
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes native sessionBudgetExceeded errors without retrying", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-budget-error-"));
+    const fakeFactory = new FakeAppServerFactory({
+      completeTurnWithError: {
+        message: "Session rollout budget was exhausted.",
+        codexErrorInfo: "sessionBudgetExceeded",
+      },
+    });
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        cleanThreadPrewarm: false,
+        rolloutBudget: { weightedTokenLimit: 100 },
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "structured-prompt", prompt: "exhaust budget" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result).toMatchObject({
+        status: "failed",
+        failure: {
+          code: "budget_exceeded",
+          retryable: false,
+          reconnectRequired: false,
+        },
+        telemetry: { finishReason: "budget_exceeded" },
+      });
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("fully prewarms reusable app-server slots before the first task", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-app-warm-test-"));
     const cacheRoot = await mkdtemp(join(tmpdir(), "codex-app-warm-root-"));
@@ -196,6 +311,56 @@ describe("Codex provider app-server adapter", () => {
       expect(threadStart?.params?.developerInstructions).toContain(
         "strict valid JSON only",
       );
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("disables native tools while leaving MCP tools available", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-mcp-only-test-"));
+    const fakeFactory = new FakeAppServerFactory();
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        cleanThreadPrewarm: false,
+        nativeToolSurface: "disabled",
+        executionProfile: {
+          kind: "custom",
+          developerInstructions: "Use the configured MCP tools.",
+          disableTools: false,
+          historyMode: "none",
+        },
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "structured-prompt", prompt: "use mcp" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      const threadStart = fakeFactory.requests.find(
+        (request) => request.method === "thread/start",
+      );
+      expect(threadStart?.params).toMatchObject({
+        environments: [],
+        config: {
+          features: {
+            shell_tool: false,
+            unified_exec: false,
+          },
+          tools: { view_image: false },
+        },
+      });
+      expect(threadStart?.params).not.toHaveProperty("dynamicTools");
     } finally {
       await driver.dispose();
       await rm(workspace, { recursive: true, force: true });

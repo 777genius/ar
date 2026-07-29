@@ -1,9 +1,20 @@
 import type { ProviderFailure } from "@vioxen/subscription-runtime/core";
 import { classifyCodexRuntimeFailure } from "./codex-cli-domain";
 import { CodexAppServerTurnError } from "./app-server/application/app-server-client";
+import { codexAppServerBudgetExceededError } from "./app-server/domain/app-server-errors";
 import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
 
 export function classifyCodexFailure(error: unknown): ProviderFailure {
+  const budgetExceededError = codexAppServerBudgetExceededError(error);
+  if (budgetExceededError) {
+    return {
+      code: "budget_exceeded",
+      retryable: false,
+      reconnectRequired: false,
+      safeMessage: "Codex task exhausted its weighted-token budget.",
+      causeCategory: budgetExceededError.kind,
+    };
+  }
   if (isCodexModelUnavailableError(error)) {
     return {
       code: "model_unavailable",
@@ -88,6 +99,15 @@ export function classifyCodexFailure(error: unknown): ProviderFailure {
         retryable: true,
         reconnectRequired: false,
         safeMessage: "Codex app-server goal slice exhausted.",
+        causeCategory: state,
+        ...(details === undefined ? {} : { details }),
+      };
+    case "budget_exceeded":
+      return {
+        code: "budget_exceeded",
+        retryable: false,
+        reconnectRequired: false,
+        safeMessage: "Codex task exhausted its weighted-token budget.",
         causeCategory: state,
         ...(details === undefined ? {} : { details }),
       };

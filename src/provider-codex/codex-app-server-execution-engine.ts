@@ -4,6 +4,12 @@ import type {
   RedactorPort,
   RunnerPort,
 } from "@vioxen/subscription-runtime/core";
+import {
+  AgentRuntimeBudgetEnforcement,
+  AgentRuntimeBudgetMetric,
+  AgentRuntimeExecutionMode,
+  AgentRuntimeTurnLimitEnforcement,
+} from "@vioxen/subscription-runtime/core";
 import type {
   CodexExecutionProfile,
   ResolvedCodexExecutionProfile,
@@ -34,6 +40,10 @@ import type {
   CodexAppServerCommandApprovalPolicy,
   CodexAppServerNativeToolSurface,
 } from "./app-server/domain/app-server-types";
+import type {
+  CodexAppServerRolloutBudget,
+} from "./app-server/domain/app-server-rollout-budget";
+import { codexAppServerRolloutBudgetConfig } from "./app-server/domain/app-server-rollout-budget";
 import {
   defaultGoalContinuePrompt,
   defaultMaxGoalTurns,
@@ -47,6 +57,7 @@ import {
   assertOutputWithinBounds,
   assertPositiveInteger,
   isAbortLikeError,
+  isCodexAppServerBudgetExceededError,
   parseStructuredOutput,
 } from "./app-server/domain/app-server-errors";
 import {
@@ -71,6 +82,7 @@ export type {
   CodexAppServerCommandApprovalInput,
   CodexAppServerCommandApprovalPolicy,
   CodexAppServerNativeToolSurface,
+  CodexAppServerRolloutBudget,
 };
 
 export type CodexAppServerExecutionEngineOptions = {
@@ -90,16 +102,12 @@ export type CodexAppServerExecutionEngineOptions = {
   readonly runStore?: ManagedRunStorePort;
   readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
   readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+  readonly rolloutBudget?: CodexAppServerRolloutBudget;
 };
 
 export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   readonly kind: "app-server-pool" | "app-server-goal";
-  readonly capabilities = {
-    supportsStructuredOutput: true,
-    supportsJsonEvents: true,
-    supportsThreadResume: false,
-    requiresSchemaFile: false,
-  } as const;
+  readonly capabilities: CodexExecutionEngine["capabilities"];
 
   private readonly executionProfile: ResolvedCodexExecutionProfile;
   private readonly runStore: ManagedRunStorePort;
@@ -114,6 +122,38 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       options.startupTimeoutMs,
       "codex_app_server_startup_timeout_invalid",
     );
+    codexAppServerRolloutBudgetConfig(options.rolloutBudget);
+    this.capabilities = {
+      supportsStructuredOutput: true,
+      supportsJsonEvents: true,
+      supportsThreadResume: false,
+      requiresSchemaFile: false,
+      taskExecutionCapabilities: [
+        { mode: AgentRuntimeExecutionMode.SingleRun },
+        ...(options.goalMode
+          ? [{
+              mode: AgentRuntimeExecutionMode.Goal,
+              maxCompletionConditionChars: 4_000,
+            } as const]
+          : []),
+      ],
+      ...(options.goalMode
+        ? {
+            turnLimitEnforcement:
+              AgentRuntimeTurnLimitEnforcement.ProviderNative,
+          }
+        : {}),
+      ...(options.rolloutBudget
+        ? {
+            budgetCapabilities: [
+              {
+                metric: AgentRuntimeBudgetMetric.WeightedTokens,
+                enforcement: AgentRuntimeBudgetEnforcement.ProviderNative,
+              },
+            ],
+          }
+        : {}),
+    };
     this.kind = options.goalMode ? "app-server-goal" : "app-server-pool";
     this.executionProfile = resolveCodexExecutionProfile(
       options.executionProfile,
@@ -132,6 +172,9 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ...(options.nativeToolSurface === undefined
         ? {}
         : { nativeToolSurface: options.nativeToolSurface }),
+      ...(options.rolloutBudget === undefined
+        ? {}
+        : { rolloutBudget: options.rolloutBudget }),
       cleanThreadPrewarm: options.cleanThreadPrewarm ?? true,
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.startupTimeoutMs === undefined
@@ -166,6 +209,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     } catch (error) {
       await this.slotPool.disposeSessionSlot(input.session);
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
+      if (isCodexAppServerBudgetExceededError(error)) throw error;
       if (isCodexModelUnavailableError(error)) throw error;
       if (!this.options.fallback) throw error;
 

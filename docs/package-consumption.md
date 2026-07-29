@@ -27,3 +27,18 @@ npm update @vioxen/subscription-runtime
 ```
 
 Then rebuild and commit the lockfile.
+
+## Release Source And Mirrors
+
+The package version is the contract consumed by host apps. When a host app needs
+new public exports, publish the new `@vioxen/subscription-runtime` version
+first, then update the host app dependency and lockfile from the published
+artifact.
+
+The preferred release policy is:
+
+- the organization repository is the canonical source for reviewed runtime code;
+- mirrors may publish the same commit to GitHub Packages for npm consumption;
+- release tags must stay synchronized across the canonical repo and mirror;
+- consumers should never pin a floating branch for production dependency
+  resolution.

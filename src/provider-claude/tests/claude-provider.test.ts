@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AgentRuntimeTurnLimitEnforcement,
   DefaultRedactor,
   providerTaskSystemPromptMaxBytes,
   type ProviderFailure,
@@ -30,7 +31,6 @@ import {
   type ClaudeTaskEngineInput,
   type ClaudeTaskExecutionEngine,
 } from "../index";
-
 const validSession = sessionArtifactFromClaudeOAuth({
   oauthToken: "claude-oauth-secret",
   configDir: "/tmp/claude-config",
@@ -407,7 +407,6 @@ describe("Claude provider adapter", () => {
     });
     expect(engine.records[0]?.prompt).toBe("review pull request");
   });
-
   it("streams through the combined provider driver", async () => {
     const engine = new StreamingClaudeEngine();
     const driver = new ClaudeBgProviderDriver({ engine });
@@ -1041,6 +1040,7 @@ class RecordingClaudeEngine implements ClaudeTaskExecutionEngine {
     supportsUsage: true,
     supportsProviderRunId: true,
     supportsCleanup: true,
+    turnLimitEnforcement: AgentRuntimeTurnLimitEnforcement.ProviderNative,
   };
   readonly records: ClaudeTaskEngineInput[] = [];
 
@@ -1079,7 +1079,6 @@ class RecordingClaudeEngine implements ClaudeTaskExecutionEngine {
     };
   }
 }
-
 class StreamingClaudeEngine extends RecordingClaudeEngine {
   override readonly capabilities = {
     supportsStreaming: true,
@@ -1087,6 +1086,7 @@ class StreamingClaudeEngine extends RecordingClaudeEngine {
     supportsUsage: true,
     supportsProviderRunId: true,
     supportsCleanup: true,
+    turnLimitEnforcement: AgentRuntimeTurnLimitEnforcement.ProviderNative,
   };
 
   async *stream(input: ClaudeTaskEngineInput): AsyncIterable<ProviderTaskEvent> {

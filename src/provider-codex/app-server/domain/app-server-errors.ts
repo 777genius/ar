@@ -8,6 +8,62 @@ import {
   type AppServerWarning,
 } from "./app-server-types";
 
+export enum CodexAppServerErrorKind {
+  SessionBudgetExceeded = "session_budget_exceeded",
+  Unknown = "unknown",
+}
+
+export class CodexAppServerProviderError extends Error {
+  constructor(
+    readonly kind: CodexAppServerErrorKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = "CodexAppServerProviderError";
+  }
+}
+
+export function codexAppServerProviderError(
+  prefix: string,
+  payload: unknown,
+): CodexAppServerProviderError {
+  const record = readRecord(payload);
+  const nestedError = readRecord(record?.error);
+  const rawCode = stringValue(record?.codexErrorInfo) ??
+    stringValue(nestedError?.codexErrorInfo);
+  const kind = rawCode === "sessionBudgetExceeded"
+    ? CodexAppServerErrorKind.SessionBudgetExceeded
+    : CodexAppServerErrorKind.Unknown;
+  return new CodexAppServerProviderError(
+    kind,
+    `${prefix}:${safeMessage(payload)}`,
+  );
+}
+
+export function isCodexAppServerBudgetExceededError(
+  error: unknown,
+): boolean {
+  return codexAppServerBudgetExceededError(error) !== null;
+}
+
+export function codexAppServerBudgetExceededError(
+  error: unknown,
+): CodexAppServerProviderError | null {
+  const seen = new Set<Error>();
+  let current = error;
+  while (current instanceof Error && !seen.has(current)) {
+    if (
+      current instanceof CodexAppServerProviderError &&
+      current.kind === CodexAppServerErrorKind.SessionBudgetExceeded
+    ) {
+      return current;
+    }
+    seen.add(current);
+    current = current.cause;
+  }
+  return null;
+}
+
 export function cleanThreadPrewarmWarning(error: unknown): AppServerWarning {
   return {
     code: "codex_app_server_clean_thread_prewarm_failed",
@@ -82,4 +138,8 @@ export function safeMessage(error: unknown): string {
   const nested = record ? readRecord(record.error) : null;
   if (typeof nested?.message === "string") return nested.message.slice(-1000);
   return "unknown";
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
 }

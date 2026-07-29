@@ -27,6 +27,7 @@ export const attemptFailureReasons = [
   "provider_output_invalid",
   "runtime_interrupted",
   "goal_slice_exhausted",
+  "budget_exceeded",
   "model_unavailable",
   "user_abort",
   "unknown_error",
@@ -180,6 +181,7 @@ export function shouldContinueSafeExecutionAfterFailure(input: {
             : true,
       };
     case "permission_required":
+    case "budget_exceeded":
     case "user_abort":
       return { allowed: false };
   }
@@ -193,7 +195,8 @@ export function safeExecutionFinalStatusForFailure(
     reason === "unknown_error" ||
     reason === "permission_required" ||
     reason === "model_unavailable" ||
-    reason === "provider_output_invalid"
+    reason === "provider_output_invalid" ||
+    reason === "budget_exceeded"
   ) {
     return "failed";
   }
@@ -520,6 +523,12 @@ function classifyWorkerFailureCode(
         safeMessage,
         retryable: true,
         ...optionalFailureDetails(details),
+      };
+    case "budget_exceeded":
+      return {
+        reason: "budget_exceeded",
+        safeMessage,
+        retryable: false,
       };
     case "model_unavailable":
       return {

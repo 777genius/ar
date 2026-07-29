@@ -122,6 +122,9 @@ export function classifyCodexRuntimeFailure(message: string): string {
   if (isCodexInvalidOutputFailure(normalized)) {
     return "provider_output_invalid";
   }
+  if (isCodexBudgetExceededFailure(normalized)) {
+    return "budget_exceeded";
+  }
   if (isCodexQuotaOrRateLimitFailure(normalized)) {
     return "quota_limited";
   }
@@ -154,6 +157,14 @@ export function classifyCodexRuntimeFailure(message: string): string {
     return "permission_required";
   }
   return "unknown_auth_state";
+}
+
+function isCodexBudgetExceededFailure(normalizedMessage: string): boolean {
+  return (
+    normalizedMessage.includes("sessionbudgetexceeded") ||
+    normalizedMessage.includes("session_budget_exceeded") ||
+    normalizedMessage.includes("session budget exceeded")
+  );
 }
 
 function isCodexReconnectableAuthShapeFailure(

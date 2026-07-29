@@ -109,7 +109,7 @@ duplicating provider/runtime internals.
 
 ### 2. Worker control must be durable
 
-Long agent tasks can run for hours. The operator, MCP server, CLI process, host
+Long agent runtime tasks can run for hours. The operator, MCP server, CLI process, host
 app, or orchestrator can restart while the worker keeps running.
 
 Control messages therefore need to be stored durably as runtime facts:

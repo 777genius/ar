@@ -1,6 +1,8 @@
 import {
+  AgentRuntimeExecutionMode,
   assertProviderTaskSystemPrompt,
   type AgentDriver,
+  type AgentCapabilities,
   type ManagedRunResumeHandle,
   type ProviderFailure,
   type ProviderTask,
@@ -58,7 +60,7 @@ export type CodexJsonAgentDriverOptions = CodexJsonAgentDriverBaseOptions &
 export class CodexJsonAgentDriver implements AgentDriver {
   readonly agentId = codexJsonAgentId;
   readonly providerId = codexProviderId;
-  readonly capabilities = codexJsonAgentCapabilities;
+  readonly capabilities: AgentCapabilities;
   private readonly engine: CodexExecutionEngine;
   private readonly model: string;
   private readonly reasoningEffort: CodexReasoningEffort;
@@ -79,6 +81,30 @@ export class CodexJsonAgentDriver implements AgentDriver {
             ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
             ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
           });
+    const engineCapabilities = this.engine.capabilities;
+    this.capabilities =
+      !engineCapabilities.budgetCapabilities &&
+        !engineCapabilities.taskExecutionCapabilities &&
+        !engineCapabilities.turnLimitEnforcement
+        ? codexJsonAgentCapabilities
+        : {
+            ...codexJsonAgentCapabilities,
+            ...(engineCapabilities.budgetCapabilities
+              ? { budgetCapabilities: engineCapabilities.budgetCapabilities }
+              : {}),
+            ...(engineCapabilities.taskExecutionCapabilities
+              ? {
+                  taskExecutionCapabilities:
+                    engineCapabilities.taskExecutionCapabilities,
+                }
+              : {}),
+            ...(engineCapabilities.turnLimitEnforcement
+              ? {
+                  turnLimitEnforcement:
+                    engineCapabilities.turnLimitEnforcement,
+                }
+              : {}),
+          };
     this.model = options.model ?? defaultCodexModel;
     this.reasoningEffort = options.reasoningEffort ?? "low";
     this.serviceTier = options.serviceTier;
@@ -481,6 +507,9 @@ async function snapshotSessionUpdate(input: {
 }
 
 function readTaskGoalObjective(task: ProviderTask): string | null {
+  if (task.execution?.mode === AgentRuntimeExecutionMode.Goal) {
+    return task.execution.completionCondition;
+  }
   const value = task.metadata?.codexGoalObjective;
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -502,9 +531,11 @@ function finishReasonForFailure(
   | "max_turns"
   | "cancelled"
   | "timeout"
+  | "budget_exceeded"
   | "provider_error" {
   if (code === "task_cancelled") return "cancelled";
   if (code === "task_timeout") return "timeout";
   if (code === "goal_slice_exhausted") return "max_turns";
+  if (code === "budget_exceeded") return "budget_exceeded";
   return "provider_error";
 }

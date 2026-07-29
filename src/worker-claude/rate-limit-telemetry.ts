@@ -57,6 +57,9 @@ export class FileClaudeRateLimitTelemetry
               this.snapshotPath,
             )} node ${shellQuote(this.scriptPath)}`,
           },
+          worktree: {
+            bgIsolation: "none",
+          },
         },
         null,
         2,

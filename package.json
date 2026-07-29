@@ -1,6 +1,6 @@
 {
   "name": "@vioxen/subscription-runtime",
-  "version": "0.1.0-main.2",
+  "version": "0.1.0-main.25",
   "description": "Provider-neutral subscription runtime for backend workers, Codex subscription execution, and pluggable session custody.",
   "license": "UNLICENSED",
   "type": "module",
@@ -32,6 +32,16 @@
       "types": "./dist/agent-task/index.d.ts",
       "import": "./dist/agent-task/index.js",
       "default": "./dist/agent-task/index.js"
+    },
+    "./agent-runtime-task": {
+      "types": "./dist/agent-runtime-task/index.d.ts",
+      "import": "./dist/agent-runtime-task/index.js",
+      "default": "./dist/agent-runtime-task/index.js"
+    },
+    "./agent-runtime-task-runner": {
+      "types": "./dist/agent-runtime-task-runner/index.d.ts",
+      "import": "./dist/agent-runtime-task-runner/index.js",
+      "default": "./dist/agent-runtime-task-runner/index.js"
     },
     "./account-diagnostics": {
       "types": "./dist/account-diagnostics/index.d.ts",
@@ -118,12 +128,14 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "subscription-runtime-codex-goal": "./dist/worker-codex/codex-goal-cli.js",
-    "subscription-runtime-codex-goal-mcp": "./dist/worker-codex/codex-goal-mcp.js",
-    "subscription-runtime-openai-codex-bridge": "./dist/openai-compatible-codex/cli.js",
-    "subscription-runtime-agent-task": "./dist/agent-task/cli.js",
-    "subscription-runtime-account-status": "./dist/worker-local/account-diagnostics-cli.js",
-    "subscription-runtime-run-agent-task": "./dist/worker-local/agent-task-runner-cli.js"
+    "subscription-runtime-codex-goal": "dist/worker-codex/codex-goal-cli.js",
+    "subscription-runtime-codex-goal-mcp": "dist/worker-codex/codex-goal-mcp.js",
+    "subscription-runtime-openai-codex-bridge": "dist/openai-compatible-codex/cli.js",
+    "subscription-runtime-agent-task": "dist/agent-task/cli.js",
+    "subscription-runtime-agent-runtime-task": "dist/agent-runtime-task/cli.js",
+    "subscription-runtime-account-status": "dist/worker-local/account-diagnostics-cli.js",
+    "subscription-runtime-run-agent-task": "dist/worker-local/agent-task-runner-cli.js",
+    "subscription-runtime-run-agent-runtime-task": "dist/worker-local/agent-runtime-task-runner-cli.js"
   },
   "files": [
     "dist",
@@ -145,6 +157,11 @@
     "test:packages": "npm run --prefix packages/agent-account-observability test",
     "e2e:live-workers": "npm run build && node scripts/e2e-live-workers/run.mjs",
     "e2e:live-workers:dist": "node scripts/e2e-live-workers/run.mjs",
+    "e2e:live-agent-runtime-task": "npm run build && node scripts/e2e-live-workers/agent-runtime-task-module.mjs --allow-live",
+    "e2e:live-agent-runtime-goal": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live",
+    "e2e:live-agent-runtime-goal:codex": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live --provider=codex",
+    "e2e:live-agent-runtime-goal:claude": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live --provider=claude",
+    "e2e:live-codex-bounded-workspace": "npm run build && node scripts/e2e-live-workers/codex-bounded-workspace.mjs --allow-live",
     "ops:codex-account-quota": "node scripts/ops/codex-account-quota-table.mjs",
     "ops:sync-codex-auth": "node scripts/ops/sync-codex-auth-to-host.mjs",
     "smoke:worker-claude": "npm run build && node scripts/smoke-claude-worker.mjs",
@@ -165,13 +182,9 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "claude-runtime": "0.0.0",
     "vitest": "^4.1.5"
   },
   "peerDependenciesMeta": {
-    "claude-runtime": {
-      "optional": true
-    },
     "vitest": {
       "optional": true
     }
@@ -179,5 +192,8 @@
   "devDependencies": {
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.173"
   }
 }

@@ -63,6 +63,47 @@ import {
 } from "./codex-provider-test-support";
 
 describe("Codex provider app-server adapter", () => {
+  it("never falls back after native rollout budget exhaustion", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-budget-no-fallback-"));
+    const fakeFactory = new FakeAppServerFactory({
+      emitCodexErrorOnTurn: {
+        message: "Session rollout budget was exhausted.",
+        codexErrorInfo: "sessionBudgetExceeded",
+      },
+    });
+    const fallback = new RecordingJsonEngine("must not run");
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        fallback,
+        rolloutBudget: { weightedTokenLimit: 100 },
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "respect budget" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result).toMatchObject({
+        status: "failed",
+        failure: { code: "budget_exceeded", retryable: false },
+      });
+      expect(fallback.prompts).toEqual([]);
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("reports the account model catalog and skips fallback for unavailable models", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-model-catalog-test-"));
     const fakeFactory = new FakeAppServerFactory({
@@ -722,6 +763,58 @@ describe("Codex provider app-server adapter", () => {
         readFile(join(prewarm.codexHome, "auth.json"), "utf8"),
       ).rejects.toThrow();
     } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(cacheRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves custom worker-cache config across reused tasks", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-custom-cache-test-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "codex-custom-cache-root-"));
+    const configToml = [
+      'cli_auth_credentials_store = "file"',
+      'approval_policy = "never"',
+      'sandbox_mode = "read-only"',
+      "",
+      "[features]",
+      "shell_tool = false",
+      "",
+    ].join("\n");
+    const materializer = new CodexWorkerCacheSessionMaterializer({
+      cacheKey: "provider-account:codex-test:slot:custom-config",
+      rootDir: cacheRoot,
+      configToml,
+    });
+    const driver = new CodexJsonAgentDriver({
+      engine: new RecordingJsonEngine(),
+      sessionMaterializer: materializer,
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const prewarm = await driver.prewarmSession({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        redactor: new DefaultRedactor(),
+      });
+
+      for (const prompt of ["first", "second"]) {
+        const result = await driver.runTask({
+          session: sessionArtifactFromCodexAuthJson(validAuthJson),
+          task: { kind: "review", prompt },
+          workspace: { path: workspace },
+          runner: new StaticRunner(""),
+          redactor: new DefaultRedactor(),
+          abortSignal: new AbortController().signal,
+        });
+        expect(result.status).toBe("completed");
+      }
+
+      await expect(
+        readFile(join(prewarm.codexHome, "config.toml"), "utf8"),
+      ).resolves.toBe(configToml);
+    } finally {
+      await driver.dispose();
       await rm(workspace, { recursive: true, force: true });
       await rm(cacheRoot, { recursive: true, force: true });
     }

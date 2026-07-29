@@ -2,6 +2,9 @@ import type {
   ManagedRunStorePort,
 } from "@vioxen/subscription-runtime/core";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
+import type {
+  CodexAppServerRolloutBudget,
+} from "../domain/app-server-rollout-budget";
 import type { CodexMaterializedSession } from "../../codex-json-execution-engine";
 import type {
   CodexAppServerChildProcessSignaler,
@@ -42,6 +45,7 @@ export class AppServerSlotPool {
       readonly executionProfile: ResolvedCodexExecutionProfile;
       readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
       readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+      readonly rolloutBudget?: CodexAppServerRolloutBudget;
       readonly cleanThreadPrewarm: boolean;
       readonly timeoutMs?: number;
       readonly startupTimeoutMs?: number;
@@ -85,6 +89,9 @@ export class AppServerSlotPool {
       ...(this.options.nativeToolSurface === undefined
         ? {}
         : { nativeToolSurface: this.options.nativeToolSurface }),
+      ...(this.options.rolloutBudget === undefined
+        ? {}
+        : { rolloutBudget: this.options.rolloutBudget }),
       timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
       startupTimeoutMs: appServerStartupTimeoutMs({
         ...(this.options.timeoutMs === undefined

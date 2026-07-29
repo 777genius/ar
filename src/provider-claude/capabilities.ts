@@ -1,7 +1,14 @@
 import type {
   AgentCapabilities,
+  AgentRuntimeTaskExecutionCapability,
   ProviderCapabilities,
   ProviderEnvironmentPolicy,
+} from "@vioxen/subscription-runtime/core";
+import {
+  AgentRuntimeBudgetEnforcement,
+  AgentRuntimeBudgetMetric,
+  AgentRuntimeExecutionMode,
+  AgentRuntimeTurnLimitEnforcement,
 } from "@vioxen/subscription-runtime/core";
 
 export const claudeProviderId = "claude";
@@ -64,7 +71,9 @@ export const claudeBgTaskAgentCapabilities: AgentCapabilities = {
   taskModes: ["review", "structured-prompt", "health-check"],
   historyMode: "none",
   executionModes: ["task"],
+  taskExecutionCapabilities: [{ mode: AgentRuntimeExecutionMode.SingleRun }],
   toolPolicyMode: "provider-enforced",
+  accessBoundaryMode: "unsupported",
   outputModes: ["text", "json"],
   supportsReviewTasks: true,
   supportsStructuredOutput: true,
@@ -78,5 +87,24 @@ export const claudeBgTaskAgentCapabilities: AgentCapabilities = {
   supportsProviderRunId: true,
   supportsAbort: true,
   supportsCleanup: true,
+  turnLimitEnforcement: AgentRuntimeTurnLimitEnforcement.ProviderNative,
   maxRuntimeMs: 30 * 60 * 1000,
+};
+
+export const claudeAgentSdkTaskAgentCapabilities: AgentCapabilities = {
+  ...claudeBgTaskAgentCapabilities,
+  taskExecutionCapabilities: [
+    { mode: AgentRuntimeExecutionMode.SingleRun },
+    {
+      mode: AgentRuntimeExecutionMode.Goal,
+      maxCompletionConditionChars: 4_000,
+    },
+  ] satisfies readonly AgentRuntimeTaskExecutionCapability[],
+  accessBoundaryMode: "provider-enforced",
+  budgetCapabilities: [
+    {
+      metric: AgentRuntimeBudgetMetric.Usd,
+      enforcement: AgentRuntimeBudgetEnforcement.ProviderNative,
+    },
+  ],
 };

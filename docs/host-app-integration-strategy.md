@@ -11,7 +11,7 @@ This document defines how `qa-rig`, `hib-pr-reviewer`,
 ```txt
 host app
   -> host-local adapter
-    -> @vioxen/subscription-runtime/agent-task
+    -> @vioxen/subscription-runtime/agent-runtime-task
       -> runtime composition root
         -> worker-core / queue-core
           -> worker-claude | worker-codex
@@ -27,7 +27,7 @@ cooldown or account capacity state.
 
 Preferred app imports:
 
-- `@vioxen/subscription-runtime/agent-task`
+- `@vioxen/subscription-runtime/agent-runtime-task`
 - `@quanta/contracts` for universal bus envelopes and subjects
 - host-local wrapper modules that expose the app's own port names
 
@@ -40,7 +40,7 @@ Provider/runtime imports are composition-root only:
 - `@vioxen/subscription-runtime/runner-*`
 
 Existing direct adapters in `quanta-pr-reviewer` are transitional. New host-app
-integrations should use `agent-task` first, then let the runtime composition
+integrations should use `agent-runtime-task` first, then let the runtime composition
 root pick Claude, Codex or a future provider.
 
 ## Round Member Contract
@@ -72,7 +72,7 @@ context: {
 }
 ```
 
-Adapter tests should call `assertAgentTaskCertification` with:
+Adapter tests should call `assertAgentRuntimeTaskCertification` with:
 
 - `requireRoundMemberIdentity: true`
 - `requireRoundMemberIndependence: true`
@@ -117,9 +117,9 @@ processes scheduling the same Claude accounts, use a shared capacity store.
 
 | Repository | Runtime responsibility |
 | --- | --- |
-| `subscription-runtime` | Ports, `agent-task`, provider adapters, worker pools, account capacity, queue/store adapters. |
-| `quanta-pr-reviewer` | PR review orchestration and local transitional adapters. Target state is round members over `agent-task`. |
-| `hib-pr-reviewer` | Review production and current Claude SDK reviewer. Target state is agent-task round-member adapter plus universal bus publish. |
+| `subscription-runtime` | Ports, `agent-runtime-task`, provider adapters, worker pools, account capacity, queue/store adapters. |
+| `quanta-pr-reviewer` | PR review orchestration and local transitional adapters. Target state is round members over `agent-runtime-task`. |
+| `hib-pr-reviewer` | Review production and current Claude SDK reviewer. Target state is agent-runtime-task round-member adapter plus universal bus publish. |
 | `qa-rig` | QA execution. Target state is request-run bridge for PR-correlated QA plus universal result publish. |
 | `quanta-orchestrator` | Bus consumers/gates and loop coordination. Should consume contracts, not provider runtime details. |
 | control-layer apps | Deployment/composition snapshots. They should import host adapters or pinned submodules, not provider glue. |
@@ -127,10 +127,10 @@ processes scheduling the same Claude accounts, use a shared capacity store.
 ## Rollout Order
 
 1. Land `subscription-runtime` provider, worker-pool, account-capacity and
-   `agent-task` contracts.
+   `agent-runtime-task` contracts.
 2. Keep existing `quanta-pr-reviewer` direct subscription-runtime adapters as a
    verified transitional path.
-3. Add host-local `agent-task` wrappers for `quanta-pr-reviewer` and
+3. Add host-local `agent-runtime-task` wrappers for `quanta-pr-reviewer` and
    `hib-pr-reviewer` round members.
 4. Add a PR-correlated QA request-run bridge in `qa-rig`, then keep
    `quanta-orchestrator` consuming universal QA results.
@@ -144,8 +144,8 @@ processes scheduling the same Claude accounts, use a shared capacity store.
 1. Boundary hardening only - add docs and static checks first.
    🎯 9   🛡️ 7   🧠 3   Approx. 100-250 LOC.
 
-2. Staged agent-task migration - keep current direct adapters working, but make
-   all new round-member adapters go through `agent-task`.
+2. Staged agent-runtime-task migration - keep current direct adapters working, but make
+   all new round-member adapters go through `agent-runtime-task`.
    🎯 9   🛡️ 9   🧠 6   Approx. 400-900 LOC per reviewer app.
 
 3. Central remote runtime service - all apps enqueue work through

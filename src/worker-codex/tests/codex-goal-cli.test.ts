@@ -994,7 +994,7 @@ describe("codex goal cli", () => {
       "agent-run-watch",
       "run-a",
       "--provider-kind",
-      "agent-task",
+      "agent-runtime-task",
       "--limit",
       "4",
     ], fakeIo());
@@ -1004,7 +1004,7 @@ describe("codex goal cli", () => {
     });
     if (runWatch.kind !== "mcp-tool") return;
     expect(JSON.parse(runWatch.argsJson ?? "{}")).toEqual({
-      providerKind: "agent-task",
+      providerKind: "agent-runtime-task",
       jobId: "run-a",
       limit: 4,
     });

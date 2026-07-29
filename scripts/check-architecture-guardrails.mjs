@@ -15,6 +15,7 @@ const maxLines = Number(process.env.SUBSCRIPTION_RUNTIME_FILE_MAX_LINES ?? 1000)
 // and each cap should move down (or disappear) when that debt is reduced.
 const legacyLineCaps = {
   "src/agent-task/task-codec/application/agent-task-codec.ts": 1013,
+  "src/agent-runtime-task/task-codec/application/agent-runtime-task-codec.ts": 1007,
   "src/provider-claude/tests/claude-provider.test.ts": 1254,
   "src/provider-codex/app-server/application/app-server-client.ts": 1127,
   "src/worker-codex/application/project-control/codex-goal-project-admission.ts": 1051,
@@ -32,6 +33,7 @@ const legacyLineCaps = {
   "src/worker-codex/tests/codex-goal-project-refill-worktree.test.ts": 1011,
   "src/worker-core/safe-execution/tests/safe-execution-runner.test.ts": 1004,
   "src/worker-local/tests/agent-task-runner-cli.test.ts": 1027,
+  "src/worker-local/tests/agent-runtime-task-runner-cli.test.ts": 984,
   "src/worker-local/tests/project-integration-local-adapters.test.ts": 1286,
 };
 

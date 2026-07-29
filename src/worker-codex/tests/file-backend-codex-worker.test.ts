@@ -13,6 +13,10 @@ import type {
   WorkspacePort,
 } from "@vioxen/subscription-runtime/core";
 import {
+  AgentRuntimeExecutionMode,
+  AgentRuntimeTool,
+} from "@vioxen/subscription-runtime/core";
+import {
   AccessBoundary,
   BoundedSubscriptionWorkerPool,
   InMemoryActiveAttemptRegistry,
@@ -485,6 +489,15 @@ describe("FileBackendCodexWorker", () => {
       model: "gpt-test",
       encryptionKey: new Uint8Array(32).fill(14),
       executionEngine: "app-server-goal",
+      boundedWorkspaceTools: {
+        allowedTools: [
+          AgentRuntimeTool.ReadFile,
+          AgentRuntimeTool.SearchFiles,
+          AgentRuntimeTool.EditFile,
+          AgentRuntimeTool.WriteFile,
+        ],
+      },
+      maxGoalTurns: 20,
       appServerProcessFactory: appServer.create,
       clock,
     });
@@ -495,6 +508,10 @@ describe("FileBackendCodexWorker", () => {
       await expect(
         worker.run({
           prompt: "finish the persistent goal",
+          execution: {
+            mode: AgentRuntimeExecutionMode.Goal,
+            completionCondition: "The requested workspace edit is complete.",
+          },
           controls: { editMode: "allow-edits" },
         }),
       ).resolves.toMatchObject({
@@ -502,7 +519,7 @@ describe("FileBackendCodexWorker", () => {
       });
 
       expect(appServer.goalObjectives).toEqual([
-        "finish the persistent goal",
+        "The requested workspace edit is complete.",
       ]);
       expect(appServer.prompts).toEqual(["finish the persistent goal"]);
       expect(appServer.threadCwds).toContain(callerWorkspace);

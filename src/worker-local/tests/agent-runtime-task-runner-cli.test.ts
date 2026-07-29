@@ -1,0 +1,984 @@
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import {
+  runSubscriptionAgentRuntimeTaskCli,
+  type AgentRuntimeTaskWorker,
+  type AgentRuntimeTaskWorkerFactory,
+  type AgentRuntimeTaskWorkerFactoryInput,
+  type AgentRuntimeTaskWorkerJob,
+  type AgentRuntimeTaskWorkerResult,
+} from "../agent-runtime-task-runner-cli";
+import {
+  fakeAgentRuntimeTaskCliIo as fakeIo,
+  validCodexAuthJson,
+  writeFakeCodexBinary,
+} from "./agent-runtime-task-runner-cli-test-support";
+
+describe("subscription runtime agent-runtime-task runner CLI", () => {
+  it("runs a Claude AgentRuntimeTaskRequest through the selected worker", async () => {
+    const calls: {
+      factory?: AgentRuntimeTaskWorkerFactoryInput;
+      seed?: string;
+      job?: AgentRuntimeTaskWorkerJob;
+    } = {};
+    const stdout: string[] = [];
+    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+      [
+        "--provider",
+        "claude",
+        "--format",
+        "result-json",
+        "--state-root",
+        "/tmp/runtime-state",
+        "--provider-instance",
+        "claude-a",
+        "--model",
+        "sonnet",
+      ],
+      fakeIo({
+        stdout,
+        stdin: JSON.stringify({
+          protocolVersion: 1,
+          runId: "run-1",
+          task: {
+            kind: "structured-prompt",
+            prompt: "classify this failure",
+            systemPrompt: "return strict JSON",
+            controls: {
+              model: "opus",
+              maxTurns: 1,
+              accessBoundary: "read_only",
+            },
+          },
+        }),
+        env: {
+          PATH: "/usr/bin",
+          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          CLAUDE_CODE_OAUTH_TOKEN: "claude-token",
+          CLAUDE_RUNTIME_DIST_DIR: "/tmp/claude-background-dist-must-not-auto-select",
+        },
+      }),
+      fakeFactory(calls),
+    );
+
+    expect(exitCode).toBe(0);
+    expect(calls.factory).toMatchObject({
+      provider: "claude",
+      providerInstanceId: "claude-a",
+      model: "sonnet",
+      claudeBackend: "agent-sdk",
+    });
+    expect(calls.factory?.env).toMatchObject({
+      PATH: "/usr/bin",
+    });
+    expect(calls.factory?.env).not.toHaveProperty("SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY");
+    expect(calls.factory?.env).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(calls.seed).toBe("claude-token");
+    expect(calls.job).toMatchObject({
+      runId: "run-1",
+      prompt: "classify this failure",
+      systemPrompt: "return strict JSON",
+      kind: "structured-prompt",
+      controls: {
+        model: "opus",
+        maxTurns: 1,
+        accessBoundary: "read_only",
+        editMode: "read-only",
+      },
+    });
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      protocolVersion: 1,
+      status: "completed",
+      outputText: "worker:classify this failure",
+      structuredOutput: { ok: true },
+      telemetry: { finishReason: "completed" },
+    });
+  });
+
+  it("emits event-ndjson and supports ephemeral state without an encryption env", async () => {
+    const stdout: string[] = [];
+    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+      ["--provider", "codex", "--ephemeral"],
+      fakeIo({
+        stdout,
+        stdin: JSON.stringify({
+          protocolVersion: 1,
+          task: {
+            kind: "review",
+            prompt: "review this",
+          },
+        }),
+        env: {
+          CODEX_AUTH_JSON_PATH: "/tmp/auth.json",
+        },
+      }),
+      fakeFactory({}),
+    );
+
+    expect(exitCode).toBe(0);
+    const events = stdout.join("").trim().split("\n").map((line) => JSON.parse(line));
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ protocolVersion: 1, type: "started" });
+    expect(events[1]).toMatchObject({
+      protocolVersion: 1,
+      type: "completed",
+      result: {
+        status: "completed",
+        outputText: "worker:review this",
+      },
+    });
+  });
+
+  it("runs the default packaged Codex worker in the borrowed request cwd without deleting it", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-codex-cli-"));
+    const workspaceDir = join(tempDir, "workspace");
+    const authPath = join(tempDir, "auth.json");
+    const codexPath = join(tempDir, "fake-codex.mjs");
+    const canaryPath = join(workspaceDir, "canary.txt");
+    await mkdir(workspaceDir);
+    await writeFile(canaryPath, "safe", "utf8");
+    await writeFile(authPath, validCodexAuthJson(), "utf8");
+    await writeFakeCodexBinary(codexPath);
+
+    try {
+      const stdout: string[] = [];
+      const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+        [
+          "--provider",
+          "codex",
+          "--ephemeral",
+          "--codex-binary",
+          codexPath,
+          "--format",
+          "result-json",
+        ],
+        fakeIo({
+          cwd: workspaceDir,
+          stdout,
+          stdin: JSON.stringify({
+            protocolVersion: 1,
+            cwd: ".",
+            providerInstanceId: "codex:e2e",
+            task: {
+              kind: "structured-prompt",
+              prompt: "hello-from-sandbox",
+            },
+          }),
+          env: {
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            CODEX_AUTH_JSON_PATH: authPath,
+          },
+        }),
+      );
+
+      expect(exitCode, stdout.join("")).toBe(0);
+      expect(JSON.parse(stdout.join(""))).toMatchObject({
+        protocolVersion: 1,
+        status: "completed",
+        outputText: `fake-codex-exec-ok:${await realpath(workspaceDir)}:hello-from-sandbox`,
+      });
+      await expect(access(canaryPath)).resolves.toBeUndefined();
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses fail-closed app-server execution for bounded Codex file tools", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-codex-tools-"));
+    const workspaceDir = join(tempDir, "workspace");
+    const authPath = join(tempDir, "auth.json");
+    const codexPath = join(tempDir, "fake-codex.mjs");
+    await mkdir(workspaceDir);
+    await writeFile(join(workspaceDir, "file.txt"), "safe", "utf8");
+    await writeFile(authPath, validCodexAuthJson(), "utf8");
+    await writeFakeCodexBinary(codexPath, { fallbackExecFails: true });
+
+    try {
+      const stdout: string[] = [];
+      const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+        [
+          "--provider",
+          "codex",
+          "--ephemeral",
+          "--codex-binary",
+          codexPath,
+          "--format",
+          "result-json",
+        ],
+        fakeIo({
+          cwd: workspaceDir,
+          stdout,
+          stdin: JSON.stringify({
+            protocolVersion: 1,
+            cwd: ".",
+            providerInstanceId: "codex:bounded-tools",
+            task: {
+              kind: "structured-prompt",
+              prompt: "use bounded file tools",
+              controls: {
+                accessBoundary: "isolated_workspace_write",
+                toolPolicy: {
+                  allow: ["read_file", "edit_file"],
+                  deny: ["shell", "web_access", "delegate_agent"],
+                  onUnsupported: "fail",
+                },
+              },
+            },
+          }),
+          env: {
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            CODEX_AUTH_JSON_PATH: authPath,
+          },
+        }),
+      );
+
+      expect(exitCode, stdout.join("")).toBe(0);
+      expect(JSON.parse(stdout.join(""))).toMatchObject({
+        protocolVersion: 1,
+        status: "completed",
+        outputText: expect.stringContaining("fake-codex-ok:"),
+      });
+      await expect(access(join(workspaceDir, "file.txt"))).resolves.toBeUndefined();
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("never falls back to packaged exec when bounded Codex tool enforcement fails", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-codex-tools-fail-"));
+    const workspaceDir = join(tempDir, "workspace");
+    const authPath = join(tempDir, "auth.json");
+    const codexPath = join(tempDir, "fake-codex.mjs");
+    await mkdir(workspaceDir);
+    await writeFile(authPath, validCodexAuthJson(), "utf8");
+    await writeFakeCodexBinary(codexPath, { appServerTurnFails: true });
+
+    try {
+      const stdout: string[] = [];
+      const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+        [
+          "--provider",
+          "codex",
+          "--ephemeral",
+          "--codex-binary",
+          codexPath,
+          "--format",
+          "result-json",
+        ],
+        fakeIo({
+          cwd: workspaceDir,
+          stdout,
+          stdin: JSON.stringify({
+            protocolVersion: 1,
+            task: {
+              kind: "structured-prompt",
+              prompt: "must stay contained",
+              controls: {
+                accessBoundary: "isolated_workspace_write",
+                toolPolicy: {
+                  allow: ["read_file", "edit_file"],
+                  onUnsupported: "fail",
+                },
+              },
+            },
+          }),
+          env: {
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            CODEX_AUTH_JSON_PATH: authPath,
+          },
+        }),
+      );
+
+      expect(exitCode).toBe(1);
+      const encoded = stdout.join("");
+      expect(encoded).not.toContain("fake-codex-exec-ok");
+      expect(JSON.parse(encoded)).toMatchObject({
+        status: "failed",
+      });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the borrowed request cwd when the default Codex worker fails", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-codex-cli-"));
+    const workspaceDir = join(tempDir, "workspace");
+    const authPath = join(tempDir, "auth.json");
+    const codexPath = join(tempDir, "fake-codex.mjs");
+    const canaryPath = join(workspaceDir, "canary.txt");
+    await mkdir(workspaceDir);
+    await writeFile(canaryPath, "safe", "utf8");
+    await writeFile(authPath, validCodexAuthJson(), "utf8");
+    await writeFakeCodexBinary(codexPath, {
+      appServerTurnFails: true,
+      fallbackExecFails: true,
+    });
+
+    try {
+      const stdout: string[] = [];
+      const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+        [
+          "--provider",
+          "codex",
+          "--ephemeral",
+          "--codex-binary",
+          codexPath,
+          "--format",
+          "result-json",
+        ],
+        fakeIo({
+          cwd: workspaceDir,
+          stdout,
+          stdin: JSON.stringify({
+            protocolVersion: 1,
+            cwd: ".",
+            providerInstanceId: "codex:e2e",
+            task: {
+              kind: "structured-prompt",
+              prompt: "must-fail",
+            },
+          }),
+          env: {
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            CODEX_AUTH_JSON_PATH: authPath,
+          },
+        }),
+      );
+
+      expect(exitCode).toBe(1);
+      const encodedResult = stdout.join("");
+      expect(encodedResult).not.toContain("forced fallback failure");
+      expect(JSON.parse(encodedResult)).toMatchObject({
+        protocolVersion: 1,
+        status: "failed",
+        failure: {
+          code: "unknown_runtime_failure",
+          details: {
+            subscriptionWorkerCode: "subscription_worker_run_failed",
+          },
+        },
+      });
+      await expect(access(canaryPath)).resolves.toBeUndefined();
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs the Codex exec fallback in the borrowed request cwd", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-codex-cli-"));
+    const workspaceDir = join(tempDir, "workspace");
+    const authPath = join(tempDir, "auth.json");
+    const codexPath = join(tempDir, "fake-codex.mjs");
+    const canaryPath = join(workspaceDir, "canary.txt");
+    await mkdir(workspaceDir);
+    await writeFile(canaryPath, "safe", "utf8");
+    await writeFile(authPath, validCodexAuthJson(), "utf8");
+    await writeFakeCodexBinary(codexPath, {
+      appServerTurnFails: true,
+    });
+
+    try {
+      const stdout: string[] = [];
+      const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+        [
+          "--provider",
+          "codex",
+          "--ephemeral",
+          "--codex-binary",
+          codexPath,
+          "--format",
+          "result-json",
+        ],
+        fakeIo({
+          cwd: workspaceDir,
+          stdout,
+          stdin: JSON.stringify({
+            protocolVersion: 1,
+            cwd: ".",
+            providerInstanceId: "codex:e2e",
+            task: {
+              kind: "structured-prompt",
+              prompt: "hello-from-fallback",
+            },
+          }),
+          env: {
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            CODEX_AUTH_JSON_PATH: authPath,
+          },
+        }),
+      );
+
+      const result = JSON.parse(stdout.join("")) as {
+        readonly status: string;
+        readonly outputText?: string;
+      };
+      expect(exitCode, stdout.join("")).toBe(0);
+      expect(result.status).toBe("completed");
+      expect(result.outputText).toContain(`fake-codex-exec-ok:${await realpath(workspaceDir)}:`);
+      expect(result.outputText).toContain("hello-from-fallback");
+      await expect(access(canaryPath)).resolves.toBeUndefined();
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses request timeout unless the CLI timeout overrides it", async () => {
+    const request = JSON.stringify({
+      protocolVersion: 1,
+      timeoutMs: 45_000,
+      task: {
+        kind: "structured-prompt",
+        prompt: "hello",
+      },
+    });
+
+    const requestCalls: {
+      factory?: AgentRuntimeTaskWorkerFactoryInput;
+    } = {};
+    const requestExitCode = await runSubscriptionAgentRuntimeTaskCli(
+      ["--provider", "claude", "--state-root", "/tmp/runtime-state"],
+      fakeIo({
+        stdin: request,
+        env: {
+          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        },
+      }),
+      fakeFactory(requestCalls),
+    );
+
+    expect(requestExitCode).toBe(0);
+    expect(requestCalls.factory?.timeoutMs).toBeGreaterThan(40_000);
+    expect(requestCalls.factory?.timeoutMs).toBeLessThanOrEqual(45_000);
+
+    const overrideCalls: {
+      factory?: AgentRuntimeTaskWorkerFactoryInput;
+    } = {};
+    const overrideExitCode = await runSubscriptionAgentRuntimeTaskCli(
+      [
+        "--provider",
+        "claude",
+        "--state-root",
+        "/tmp/runtime-state",
+        "--timeout-ms",
+        "120000",
+      ],
+      fakeIo({
+        stdin: request,
+        env: {
+          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        },
+      }),
+      fakeFactory(overrideCalls),
+    );
+
+    expect(overrideExitCode).toBe(0);
+    expect(overrideCalls.factory?.timeoutMs).toBeGreaterThan(45_000);
+    expect(overrideCalls.factory?.timeoutMs).toBeLessThanOrEqual(120_000);
+  });
+
+  it("returns a timeout result when the worker run never resolves", async () => {
+    const stdout: string[] = [];
+    let aborted = false;
+    let disposed = false;
+    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+      [
+        "--provider",
+        "claude",
+        "--state-root",
+        "/tmp/runtime-state",
+        "--format",
+        "result-json",
+      ],
+      fakeIo({
+        stdout,
+        stdin: JSON.stringify({
+          protocolVersion: 1,
+          timeoutMs: 5,
+          task: {
+            kind: "structured-prompt",
+            prompt: "never finishes",
+          },
+        }),
+        env: {
+          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        },
+      }),
+      () => ({
+        async start() {},
+        async run(job) {
+          job.abortSignal?.addEventListener("abort", () => {
+            aborted = true;
+          });
+          return await new Promise<AgentRuntimeTaskWorkerResult>(() => {});
+        },
+        async dispose() {
+          disposed = true;
+        },
+      }),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(aborted).toBe(true);
+    expect(disposed).toBe(true);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      status: "failed",
+      failure: {
+        code: "task_timeout",
+      },
+    });
+  });
+
+  it("returns a timeout result when the worker start never resolves", async () => {
+    const stdout: string[] = [];
+    let runCalled = false;
+    let disposed = false;
+    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+      [
+        "--provider",
+        "claude",
+        "--state-root",
+        "/tmp/runtime-state",
+        "--format",
+        "result-json",
+      ],
+      fakeIo({
+        stdout,
+        stdin: JSON.stringify({
+          protocolVersion: 1,
+          timeoutMs: 5,
+          task: {
+            kind: "structured-prompt",
+            prompt: "never starts",
+          },
+        }),
+        env: {
+          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        },
+      }),
+      () => ({
+        async start() {
+          return await new Promise<void>(() => {});
+        },
+        async run() {
+          runCalled = true;
+          return {
+            outputText: "unexpected",
+            warnings: [],
+          };
+        },
+        async dispose() {
+          disposed = true;
+        },
+      }),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(runCalled).toBe(false);
+    expect(disposed).toBe(true);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      status: "failed",
+      failure: {
+        code: "task_timeout",
+      },
+    });
+  });
+
+  it("returns a timeout result when worker auth seeding never resolves", async () => {
+    const stdout: string[] = [];
+    let runCalled = false;
+    let disposed = false;
+    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+      [
+        "--provider",
+        "claude",
+        "--state-root",
+        "/tmp/runtime-state",
+        "--format",
+        "result-json",
+      ],
+      fakeIo({
+        stdout,
+        stdin: JSON.stringify({
+          protocolVersion: 1,
+          timeoutMs: 5,
+          task: {
+            kind: "structured-prompt",
+            prompt: "never seeds",
+          },
+        }),
+        env: {
+          CLAUDE_CODE_OAUTH_TOKEN: "token",
+          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        },
+      }),
+      () => ({
+        async start() {},
+        async seedClaudeOAuth() {
+          return await new Promise<void>(() => {});
+        },
+        async run() {
+          runCalled = true;
+          return {
+            outputText: "unexpected",
+            warnings: [],
+          };
+        },
+        async dispose() {
+          disposed = true;
+        },
+      }),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(runCalled).toBe(false);
+    expect(disposed).toBe(true);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      status: "failed",
+      failure: {
+        code: "task_timeout",
+      },
+    });
+  });
+
+  it("emits event-ndjson timeout results", async () => {
+    const stdout: string[] = [];
+    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+      ["--provider", "claude", "--state-root", "/tmp/runtime-state"],
+      fakeIo({
+        stdout,
+        stdin: JSON.stringify({
+          protocolVersion: 1,
+          timeoutMs: 5,
+          task: {
+            kind: "structured-prompt",
+            prompt: "never finishes",
+          },
+        }),
+        env: {
+          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        },
+      }),
+      () => ({
+        async start() {},
+        async run() {
+          return await new Promise<AgentRuntimeTaskWorkerResult>(() => {});
+        },
+      }),
+    );
+
+    expect(exitCode).toBe(1);
+    const events = stdout.join("").trim().split("\n").map((line) => JSON.parse(line));
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: "started" });
+    expect(events[1]).toMatchObject({
+      type: "completed",
+      result: {
+        status: "failed",
+        failure: {
+          code: "task_timeout",
+        },
+      },
+    });
+  });
+
+  it("keeps the task result when worker dispose never resolves", async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+      [
+        "--provider",
+        "claude",
+        "--state-root",
+        "/tmp/runtime-state",
+        "--format",
+        "result-json",
+      ],
+      fakeIo({
+        stdout,
+        stderr,
+        stdin: JSON.stringify({
+          protocolVersion: 1,
+          timeoutMs: 5,
+          task: {
+            kind: "structured-prompt",
+            prompt: "finishes before cleanup hangs",
+          },
+        }),
+        env: {
+          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        },
+      }),
+      () => ({
+        async start() {},
+        async run() {
+          return {
+            outputText: "done",
+            warnings: [],
+          };
+        },
+        async dispose() {
+          return await new Promise<void>(() => {});
+        },
+      }),
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      status: "completed",
+      outputText: "done",
+    });
+    expect(stderr.join("")).toContain("subscription_worker_dispose_timeout:5");
+  });
+
+  it("keeps the task result when worker dispose fails", async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+      [
+        "--provider",
+        "claude",
+        "--state-root",
+        "/tmp/runtime-state",
+        "--format",
+        "result-json",
+      ],
+      fakeIo({
+        stdout,
+        stderr,
+        stdin: JSON.stringify({
+          protocolVersion: 1,
+          task: {
+            kind: "structured-prompt",
+            prompt: "finishes before cleanup fails",
+          },
+        }),
+        env: {
+          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        },
+      }),
+      () => ({
+        async start() {},
+        async run() {
+          return {
+            outputText: "done",
+            warnings: [],
+          };
+        },
+        async dispose() {
+          throw new Error("dispose exploded");
+        },
+      }),
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      status: "completed",
+      outputText: "done",
+    });
+    expect(stderr.join("")).toContain("dispose exploded");
+  });
+
+  it("keeps the task result when worker dispose throws synchronously", async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+      [
+        "--provider",
+        "claude",
+        "--state-root",
+        "/tmp/runtime-state",
+        "--format",
+        "result-json",
+      ],
+      fakeIo({
+        stdout,
+        stderr,
+        stdin: JSON.stringify({
+          protocolVersion: 1,
+          task: {
+            kind: "structured-prompt",
+            prompt: "finishes before cleanup throws",
+          },
+        }),
+        env: {
+          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        },
+      }),
+      () => ({
+        async start() {},
+        async run() {
+          return {
+            outputText: "done",
+            warnings: [],
+          };
+        },
+        dispose() {
+          throw new Error("dispose sync exploded");
+        },
+      }),
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      status: "completed",
+      outputText: "done",
+    });
+    expect(stderr.join("")).toContain("dispose sync exploded");
+  });
+
+  it("fails before constructing a durable worker when the encryption key env is missing", async () => {
+    let factoryCalled = false;
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
+      [
+        "--provider",
+        "claude",
+        "--format",
+        "result-json",
+        "--state-root",
+        "/tmp/runtime-state",
+      ],
+      fakeIo({
+        stdout,
+        stderr,
+        stdin: JSON.stringify({
+          protocolVersion: 1,
+          task: {
+            kind: "structured-prompt",
+            prompt: "hello",
+          },
+        }),
+        env: {},
+      }),
+      () => {
+        factoryCalled = true;
+        throw new Error("should not construct");
+      },
+    );
+
+    expect(exitCode).toBe(2);
+    expect(factoryCalled).toBe(false);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      protocolVersion: 1,
+      status: "failed",
+      failure: {
+        code: "unknown_runtime_failure",
+        safeMessage: "SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY is required",
+      },
+    });
+    expect(stderr.join("")).toContain("SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY is required");
+  });
+
+  it("propagates parent cancellation and disposes the active worker", async () => {
+    const abortController = new AbortController();
+    const stdout: string[] = [];
+    let markStarted = (): void => {};
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let disposed = false;
+
+    const run = runSubscriptionAgentRuntimeTaskCli(
+      [
+        "--provider",
+        "claude",
+        "--format",
+        "result-json",
+        "--state-root",
+        "/tmp/runtime-state",
+      ],
+      fakeIo({
+        stdout,
+        stdin: JSON.stringify({
+          protocolVersion: 1,
+          task: {
+            kind: "structured-prompt",
+            prompt: "wait for cancellation",
+          },
+        }),
+        env: {
+          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        },
+      }),
+      () => ({
+        async start() {},
+        async run(job) {
+          markStarted();
+          return await new Promise((_, reject) => {
+            job.abortSignal?.addEventListener(
+              "abort",
+              () => reject(new Error("cancelled by parent signal")),
+              { once: true },
+            );
+          });
+        },
+        async dispose() {
+          disposed = true;
+        },
+      }),
+      { signal: abortController.signal },
+    );
+
+    await started;
+    abortController.abort();
+
+    await expect(run).resolves.toBe(1);
+    expect(disposed).toBe(true);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      status: "failed",
+      failure: { code: "task_cancelled" },
+    });
+  });
+
+});
+
+function fakeFactory(calls: {
+  factory?: AgentRuntimeTaskWorkerFactoryInput;
+  seed?: string;
+  job?: AgentRuntimeTaskWorkerJob;
+}): AgentRuntimeTaskWorkerFactory {
+  return (input) => {
+    calls.factory = input;
+    const worker: AgentRuntimeTaskWorker = {
+      async start() {},
+      async seedClaudeOAuth(seed) {
+        calls.seed = seed.oauthToken;
+      },
+      async seedCodexAuthJsonFile(path) {
+        calls.seed = path;
+      },
+      async run(job) {
+        calls.job = job;
+        return {
+          outputText: `worker:${job.prompt}`,
+          structuredOutput: { ok: true },
+          telemetry: { finishReason: "completed" },
+          warnings: [],
+        };
+      },
+      async dispose() {},
+    };
+    return worker;
+  };
+}

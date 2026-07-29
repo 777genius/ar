@@ -175,7 +175,7 @@ export interface AgentDriver {
   readonly providerId: string;
   readonly capabilities: AgentCapabilities;
 
-  runTask(input: AgentTaskInput): Promise<ProviderTaskResult>;
+  runTask(input: AgentRuntimeTaskInput): Promise<ProviderTaskResult>;
   classifyRunFailure(error: unknown): ProviderFailure;
 }
 ```
@@ -189,7 +189,7 @@ Only add this when a host needs live progress, not just final results:
 
 ```ts
 export interface StreamingAgentDriver extends AgentDriver {
-  streamTask(input: AgentTaskInput): AsyncIterable<ProviderTaskEvent>;
+  streamTask(input: AgentRuntimeTaskInput): AsyncIterable<ProviderTaskEvent>;
 }
 ```
 

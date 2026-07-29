@@ -3,6 +3,7 @@ import {
   DefaultRedactor,
   type AgentUsage,
   type ClockPort,
+  type AgentRuntimeToolName,
   type ManagedRunInputRequest,
   type ManagedRunRecoveryPacket,
   type ManagedRunResumeHandle,
@@ -76,6 +77,13 @@ export type FileBackendCodexWorkerOptions = {
   readonly executionEngine?: CodexWorkerExecutionEngine;
   readonly appServerProcessFactory?: CodexAppServerProcessFactory;
   readonly executionProfile?: CodexExecutionProfile;
+  readonly boundedWorkspaceTools?: {
+    readonly allowedTools: readonly AgentRuntimeToolName[];
+  };
+  readonly rolloutBudget?: {
+    readonly weightedTokenLimit: number;
+  };
+  readonly maxGoalTurns?: number;
   readonly cleanThreadPrewarm?: boolean;
   readonly outputSchemas?: Readonly<Record<string, unknown>>;
   readonly observability?: ObservabilityPort;
@@ -99,6 +107,7 @@ export type FileBackendCodexWorkerJob = {
   readonly kind?: ProviderTask["kind"];
   readonly outputSchemaName?: string;
   readonly controls?: ProviderTask["controls"];
+  readonly execution?: ProviderTask["execution"];
   readonly abortSignal?: AbortSignal;
   readonly metadata?: Readonly<Record<string, string>>;
   readonly recoveryPacket?: ManagedRunRecoveryPacket;
@@ -295,6 +304,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
                 ? { outputSchemaName: job.outputSchemaName }
                 : {}),
               ...(job.controls ? { controls: job.controls } : {}),
+              ...(job.execution ? { execution: job.execution } : {}),
               metadata: {
                 ...(job.metadata ?? {}),
                 codexManagedRunId: runId,
@@ -535,6 +545,21 @@ function assertWorkerOptions(options: FileBackendCodexWorkerOptions): void {
   }
   if (options.workspace && options.workspacePath) {
     throw new Error("file_backend_codex_workspace_conflict");
+  }
+  if (options.boundedWorkspaceTools) {
+    if (!options.workspacePath) {
+      throw new Error("file_backend_codex_bounded_workspace_path_required");
+    }
+    if (
+      options.executionEngine !== undefined &&
+      options.executionEngine !== "app-server" &&
+      options.executionEngine !== "app-server-goal"
+    ) {
+      throw new Error("file_backend_codex_bounded_workspace_engine_invalid");
+    }
+    if (options.executionProfile !== undefined) {
+      throw new Error("file_backend_codex_bounded_workspace_profile_conflict");
+    }
   }
   if (
     options.executionEngine !== undefined &&

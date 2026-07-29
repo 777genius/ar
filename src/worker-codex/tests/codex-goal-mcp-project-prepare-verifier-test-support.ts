@@ -1,9 +1,24 @@
+import { createHash } from "node:crypto";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
+  AccessBoundary,
   type InMemoryAttemptJournal,
+  NetworkAccessMode,
+  ReviewDecisionStatus,
   type ProjectAccessScope,
 } from "@vioxen/subscription-runtime/worker-core";
+import {
+  captureReviewedWorkerOutput,
+  commitReviewedWorkerOutputReviewAttestation,
+  localReviewedWorkerOutputDeps,
+} from "../reviewed-worker-output";
+import {
+  callToolJson,
+  git,
+  gitStdout,
+} from "./codex-goal-mcp-test-support";
 
 export function projectScope(input: {
   readonly root: string;
@@ -104,4 +119,286 @@ export async function recordUnavailableAttempt(input: {
     reason: "account_unavailable",
     now,
   });
+}
+
+export async function createApprovedReviewedOutput(input: {
+  readonly root: string;
+  readonly sourceWorkspacePath: string;
+  readonly reviewedRoot: string;
+  readonly workerJobId: string;
+  readonly changedFile: string;
+  readonly content: string;
+  readonly advanceBase?: boolean;
+}) {
+  const workspacePath = join(input.root, "worktrees", input.workerJobId);
+  await git(input.root, ["clone", input.sourceWorkspacePath, workspacePath]);
+  if (input.advanceBase) {
+    await git(workspacePath, ["config", "user.email", "test@example.com"]);
+    await git(workspacePath, ["config", "user.name", "Test User"]);
+    await writeFile(join(workspacePath, ".different-base"), "different\n");
+    await writeFile(join(workspacePath, input.changedFile), "base\n");
+    await git(workspacePath, ["add", ".different-base", input.changedFile]);
+    await git(workspacePath, ["commit", "-m", "test: different base"]);
+  }
+  await writeFile(join(workspacePath, input.changedFile), input.content);
+  const patch = await gitStdout(workspacePath, [
+    "diff",
+    "--binary",
+    "HEAD",
+    "--",
+  ]);
+  const deps = localReviewedWorkerOutputDeps({ rootDir: input.reviewedRoot });
+  const snapshot = await captureReviewedWorkerOutput(deps, {
+    projectId: "project",
+    controllerJobId: "project-controller",
+    workerJobId: input.workerJobId,
+    taskId: input.workerJobId,
+    workspacePath,
+    expectedPatchSha256: createHash("sha256").update(patch).digest("hex"),
+    decision: ReviewDecisionStatus.Approved,
+    reviewedBy: "project-controller",
+    reason: "approved",
+    approvedFiles: [input.changedFile],
+    requiredChecks: [],
+  });
+  const markerContent = `approved:${input.workerJobId}`;
+  await commitReviewedWorkerOutputReviewAttestation({
+    store: deps.store,
+    markerVerifier: {
+      async verify() {
+        return {
+          markerSha256: createHash("sha256")
+            .update(markerContent)
+            .digest("hex"),
+          markerContent,
+        };
+      },
+    },
+    snapshot,
+    reviewMarkerPath: `/evidence/${input.workerJobId}.json`,
+  });
+  return snapshot;
+}
+
+export async function createProducerJob(input: {
+  readonly client: Client;
+  readonly root: string;
+  readonly registryRootDir: string;
+  readonly producerJobRoot: string;
+  readonly producerWorkspacePath: string;
+}): Promise<void> {
+  const result = await callToolJson(input.client, "codex_goal_create_job", {
+    registryRootDir: input.registryRootDir,
+    jobId: "project-producer",
+    jobRootDir: input.producerJobRoot,
+    authRootDir: join(input.root, "auth"),
+    workspacePath: input.producerWorkspacePath,
+    promptPath: join(input.producerJobRoot, "prompt.md"),
+    taskId: "project-producer",
+    accounts: ["account-a"],
+    accessBoundary: AccessBoundary.IsolatedWorkspaceWrite,
+    networkAccess: NetworkAccessMode.Restricted,
+    projectAccessScope: {
+      projectId: "project",
+      workspaceRoots: [input.producerWorkspacePath],
+      isolatedWorkspaceRoot: input.producerWorkspacePath,
+      registryRoot: input.registryRootDir,
+      authRoot: join(input.root, "auth"),
+      allowedAccountIds: ["account-a"],
+      deniedRoots: [join(input.root, "real-user-project")],
+    },
+  });
+  if (result.ok !== true) throw new Error(JSON.stringify(result));
+}
+
+export async function createControllerJob(input: {
+  readonly client: Client;
+  readonly root: string;
+  readonly registryRootDir: string;
+  readonly controllerJobRoot: string;
+  readonly sourceWorkspacePath: string;
+  readonly allowedAccountIds?: readonly string[];
+}): Promise<void> {
+  const result = await callToolJson(input.client, "codex_goal_create_job", {
+    registryRootDir: input.registryRootDir,
+    jobId: "project-controller",
+    jobRootDir: input.controllerJobRoot,
+    authRootDir: join(input.root, "auth"),
+    workspacePath: input.sourceWorkspacePath,
+    promptPath: join(input.controllerJobRoot, "prompt.md"),
+    taskId: "project-controller",
+    accounts: [input.allowedAccountIds?.[0] ?? "account-a"],
+    accessBoundary: AccessBoundary.ProjectScopedControl,
+    networkAccess: NetworkAccessMode.Restricted,
+    projectAccessScope: projectScope(input),
+  });
+  if (result.ok !== true) throw new Error(JSON.stringify(result));
+}
+
+export async function prepareVerifier(input: {
+  readonly client: Client;
+  readonly root: string;
+  readonly registryRootDir: string;
+  readonly sourceWorkspacePath: string;
+  readonly verifierWorkspacePath: string;
+  readonly producerBase: string;
+  readonly canonicalSha: string;
+  readonly patchSha256: string;
+  readonly executionMode: "sync" | "bounded";
+  readonly jobId?: string;
+  readonly baseBranch?: string;
+  readonly expectedSourceCommit?: string;
+  readonly accounts?: readonly string[];
+  readonly ownedPaths?: readonly string[];
+}): Promise<Record<string, unknown>> {
+  const jobId = input.jobId ?? "project-verifier";
+  const response = await input.client.callTool({
+    name: "codex_goal_project_prepare_verifier",
+    arguments: {
+      registryRootDir: input.registryRootDir,
+      controllerJobId: "project-controller",
+      producerJobId: "project-producer",
+      jobId,
+      taskId: jobId,
+      sourceWorkspacePath: input.sourceWorkspacePath,
+      baseBranch: input.baseBranch ?? "origin/main",
+      ...(input.expectedSourceCommit
+        ? { expectedSourceCommit: input.expectedSourceCommit }
+        : {}),
+      newBranch: "review/verifier",
+      workspacePath: input.verifierWorkspacePath,
+      promptBody: "Review immutable producer output.\n",
+      accounts: input.accounts ?? ["account-a"],
+      workerRole: "reviewer",
+      preStartAdmission: {
+        mode: "serial-builtin",
+        contract: {
+          kind: "worker-launch",
+          format: 1,
+          canonicalSha: input.canonicalSha,
+          baseSha: input.producerBase,
+          phaseStartSha: input.canonicalSha,
+          packetRevision: "review-r1",
+          controllerPacket: "controller.md",
+          lanePacket: "lane.md",
+          phaseId: "phase-01",
+          laneId: "review",
+          inputPatchHash: input.patchSha256,
+          reviewKind: "review",
+          ownedPaths: input.ownedPaths ?? ["feature.txt"],
+          mandatoryDocs: ["README.md", "controller.md", "lane.md"],
+          mandatoryScripts: [],
+          mandatoryFixtures: [],
+          requiredChecks: [{
+            id: "focused",
+            cwd: "checks",
+            command: "cd .. && git diff --check",
+          }],
+          executionPolicy: {
+            mode: "sandbox-only",
+            sandboxRoot: input.verifierWorkspacePath,
+            forbiddenRealProjects: [join(input.root, "real-user-project")],
+          },
+        },
+      },
+      confirmPreStartAdmission: true,
+      startWorker: false,
+      executionMode: input.executionMode,
+      confirmRefill: true,
+    },
+  });
+  const text = (
+    response as { readonly content?: readonly { readonly text?: string }[] }
+  ).content?.[0]?.text;
+  if (!text?.startsWith("{")) throw new Error(text ?? "missing response");
+  const result = JSON.parse(text) as Record<string, unknown>;
+  if (result.ok !== true) throw new Error(JSON.stringify(result));
+  return result;
+}
+
+export async function prepareRemediation(input: {
+  readonly client: Client;
+  readonly root: string;
+  readonly registryRootDir: string;
+  readonly sourceWorkspacePath: string;
+  readonly remediationWorkspacePath: string;
+  readonly producerBase: string;
+  readonly canonicalSha: string;
+  readonly patchSha256: string;
+}): Promise<Record<string, unknown>> {
+  const response = await input.client.callTool({
+    name: "codex_goal_project_refill_worker",
+    arguments: {
+      registryRootDir: input.registryRootDir,
+      controllerJobId: "project-controller",
+      producerJobId: "project-producer",
+      jobId: "project-remediation",
+      taskId: "project-remediation",
+      sourceWorkspacePath: input.sourceWorkspacePath,
+      baseBranch: "origin/main",
+      newBranch: "review/remediation",
+      workspacePath: input.remediationWorkspacePath,
+      promptBody: "Remediate immutable rejected producer output.\n",
+      accounts: ["account-a"],
+      workerRole: "producer",
+      preStartAdmission: {
+        mode: "serial-builtin",
+        contract: {
+          kind: "worker-launch",
+          format: 1,
+          canonicalSha: input.canonicalSha,
+          baseSha: input.producerBase,
+          phaseStartSha: input.canonicalSha,
+          packetRevision: "remediation-r1",
+          controllerPacket: "controller.md",
+          lanePacket: "lane.md",
+          phaseId: "phase-01",
+          laneId: "remediation",
+          inputPatchHash: input.patchSha256,
+          reviewKind: "implementation",
+          ownedPaths: ["feature.txt"],
+          mandatoryDocs: ["README.md", "controller.md", "lane.md"],
+          mandatoryScripts: [],
+          mandatoryFixtures: [],
+          requiredChecks: [{
+            id: "focused",
+            cwd: "checks",
+            command: "cd .. && git diff --check",
+          }],
+          executionPolicy: {
+            mode: "sandbox-only",
+            sandboxRoot: input.remediationWorkspacePath,
+            forbiddenRealProjects: [join(input.root, "real-user-project")],
+          },
+        },
+      },
+      confirmPreStartAdmission: true,
+      startWorker: false,
+      executionMode: "sync",
+      confirmRefill: true,
+    },
+  });
+  const text = (
+    response as { readonly content?: readonly { readonly text?: string }[] }
+  ).content?.[0]?.text;
+  if (!text?.startsWith("{")) throw new Error(text ?? "missing response");
+  const result = JSON.parse(text) as Record<string, unknown>;
+  if (result.ok !== true) throw new Error(JSON.stringify(result));
+  return result;
+}
+
+export async function revision(workspacePath: string): Promise<string> {
+  return (await gitStdout(workspacePath, ["rev-parse", "HEAD"])).trim();
+}
+
+export async function stagedPatchSha256(
+  workspacePath: string,
+): Promise<string> {
+  const patch = await gitStdout(workspacePath, [
+    "diff",
+    "--cached",
+    "--binary",
+    "--no-ext-diff",
+  ]);
+  return createHash("sha256").update(patch).digest("hex");
 }

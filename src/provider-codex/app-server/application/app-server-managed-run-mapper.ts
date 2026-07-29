@@ -4,7 +4,7 @@ import type {
   ProviderFailure,
 } from "@vioxen/subscription-runtime/core";
 import { isAbortLikeError } from "../domain/app-server-errors";
-import { CodexAppServerTurnError } from "./app-server-client";
+import { classifyCodexFailure } from "../../failure-classifier";
 
 export async function assertManagedRunCanResume(input: {
   readonly runStore: ManagedRunStorePort;
@@ -67,8 +67,9 @@ export async function failManagedRunForProviderOutput(input: {
 }
 
 export function managedRunFailureFromError(error: unknown): ProviderFailure {
-  const details =
-    error instanceof CodexAppServerTurnError ? error.details() : undefined;
+  const classified = classifyCodexFailure(error);
+  if (classified.code === "budget_exceeded") return classified;
+  const details = classified.details;
   if (isAbortLikeError(error)) {
     return {
       code: "task_cancelled",

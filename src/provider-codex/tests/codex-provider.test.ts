@@ -125,6 +125,11 @@ describe("Codex provider adapter", () => {
     ).toBe("goal_slice_exhausted");
     expect(
       classifyCodexRuntimeFailure(
+        "codex_error_info:sessionBudgetExceeded:budget exhausted",
+      ),
+    ).toBe("budget_exceeded");
+    expect(
+      classifyCodexRuntimeFailure(
         "codex_app_server_turn_aborted:replaced:turn-2",
       ),
     ).toBe("unknown_auth_state");
@@ -234,7 +239,7 @@ describe("Codex provider adapter", () => {
     expect(codexAgentCapabilities.agentId).toBe("codex-cli");
     expect(codexAgentCapabilities.providerId).toBe("codex");
     expect(codexAgentCapabilities.executionModes).toEqual(["task"]);
-    expect(codexAgentCapabilities.toolPolicyMode).toBe("provider-enforced");
+    expect(codexAgentCapabilities.toolPolicyMode).toBe("unsupported");
     expect(codexAgentCapabilities.supportsAbort).toBe(true);
     expect(codexJsonAgentCapabilities.agentId).toBe("codex-json");
     expect(codexJsonAgentCapabilities.providerId).toBe("codex");

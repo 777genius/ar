@@ -57,6 +57,18 @@ const forbidden = [
     message: "agent-task must stay provider and adapter neutral",
   },
   {
+    from: /^src\/agent-runtime-task\//,
+    imports: [
+      runtimeSubpathPattern("(?:provider-|worker-|queue-|store-|runner-)"),
+      internalPathPattern("(?:provider-|worker-|queue-|store-|runner-)"),
+      /bullmq/,
+      /claude/i,
+      /codex/i,
+      /github/i,
+    ],
+    message: "agent-runtime-task must stay provider and adapter neutral",
+  },
+  {
     from: /^src\/account-diagnostics\//,
     imports: [
       runtimeSubpathPattern(

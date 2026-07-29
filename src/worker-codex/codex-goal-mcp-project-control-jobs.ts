@@ -41,7 +41,6 @@ import {
   projectControlOperationExecutionMode,
   projectControlOperationView,
   projectControlOperationsRoot,
-  readProjectControlOperationById,
   recoverProjectControlOperations,
   startProjectControlOperationRunner,
   updateProjectControlOperation,
@@ -141,6 +140,15 @@ import {
   rejectedReviewedOutputRemediationView,
   resolveRejectedReviewedOutputRemediation,
 } from "./application/project-control/rejected-reviewed-output-remediation";
+import {
+  assertVerifierInputSource,
+  materializeReviewedOutputAggregateArtifacts,
+  prepareProjectControlVerifierView,
+  removeReviewedOutputAggregateArtifacts,
+  resolveLocalReviewedOutputAggregate,
+  resolveProducerHandoffForVerifier,
+  reviewedOutputIdValues,
+} from "./codex-goal-mcp-project-verifier-support";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -160,6 +168,7 @@ export type CodexGoalMcpProjectControlJobsDeps = {
 };
 
 export { projectControlCreateCodexGoalJobView } from "./codex-goal-mcp-project-control-create-job";
+export { projectControlOperationStatusView } from "./codex-goal-mcp-project-control-operation-status";
 
 export async function projectControlRefillWorkerView(
   args: ProjectControlMcpArgs,
@@ -764,216 +773,11 @@ export async function projectControlPrepareVerifierView(
   args: ProjectControlMcpArgs,
   deps: CodexGoalMcpProjectControlJobsDeps,
 ): Promise<JsonObject> {
-  const producerJobId = stringValue(args.producerJobId);
-  const reviewedOutputIds = reviewedOutputIdValues(args.reviewedOutputIds);
-  assertVerifierInputSource({
-    operationToolName: "codex_goal_project_prepare_verifier",
-    producerJobId,
-    reviewedOutputIds,
-  });
-  if (reviewedOutputIds && booleanValue(args.confirmRefill) !== true) {
-    const controller = await deps.loadProjectControlController(args);
-    const aggregate = await resolveLocalReviewedOutputAggregate({
-      registryRootDir: controller.registryRootDir,
-      projectId: controller.scope.projectId,
-      reviewedOutputIds,
-    });
-    return {
-      ok: false,
-      reason: "confirm_refill_required",
-      mode: "project_control_prepare_verifier_preview",
-      controllerJobId: controller.controller.jobId,
-      targetJobId: stringValue(args.jobId),
-      requiredInputPatchHash: aggregate.patchSha256,
-      reviewedOutputAggregate: reviewedOutputAggregateView(aggregate),
-      requiredConfirmation: "confirmRefill",
-    };
-  }
-  if (args.preStartAdmission === undefined) {
-    throw new Error("project_control_verifier_pre_start_admission_required");
-  }
-  const requestedRole = stringValue(args.workerRole) ?? "reviewer";
-  if (requestedRole !== "reviewer" && requestedRole !== "fastgate") {
-    throw new Error("project_control_verifier_role_required");
-  }
-  const result = await projectControlRefillWorkerView(
-    {
-      ...args,
-      workerRole: requestedRole,
-      requireCanonicalRemoteHead: true,
-    },
+  return await prepareProjectControlVerifierView({
+    args,
     deps,
-    "codex_goal_project_prepare_verifier",
-  );
-  return {
-    ...result,
-    mode: "project_control_prepare_verifier",
-  };
-}
-
-function reviewedOutputIdValues(value: unknown): readonly string[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    throw new Error("reviewed_output_aggregate_ids_invalid");
-  }
-  return value;
-}
-
-function assertVerifierInputSource(input: {
-  readonly operationToolName: ProjectControlOperationToolName;
-  readonly producerJobId: string | undefined;
-  readonly reviewedOutputIds: readonly string[] | undefined;
-}): void {
-  if (input.operationToolName !== "codex_goal_project_prepare_verifier") {
-    if (input.reviewedOutputIds) {
-      throw new Error(
-        "project_control_reviewed_output_aggregate_verifier_only",
-      );
-    }
-    return;
-  }
-  if (input.producerJobId && input.reviewedOutputIds) {
-    throw new Error("project_control_verifier_input_source_conflict");
-  }
-  if (!input.producerJobId && !input.reviewedOutputIds) {
-    throw new Error("project_control_verifier_input_source_required");
-  }
-}
-
-async function resolveLocalReviewedOutputAggregate(input: {
-  readonly registryRootDir: string;
-  readonly projectId: string;
-  readonly reviewedOutputIds: readonly string[];
-  readonly expectedBaseCommit?: string;
-}): Promise<ReviewedOutputAggregate> {
-  const store = new LocalReviewedWorkerOutputStore({
-    rootDir: reviewedWorkerOutputRoot(input.registryRootDir),
+    refillWorker: projectControlRefillWorkerView,
   });
-  return await resolveReviewedOutputAggregate(
-    {
-      store,
-      readPatch: async (snapshot) => await store.readPatch(snapshot),
-    },
-    {
-      projectId: input.projectId,
-      reviewedOutputIds: input.reviewedOutputIds,
-      ...(input.expectedBaseCommit
-        ? { expectedBaseCommit: input.expectedBaseCommit }
-        : {}),
-    },
-  );
-}
-
-async function materializeReviewedOutputAggregateArtifacts(input: {
-  readonly jobRootDir: string;
-  readonly aggregate: ReviewedOutputAggregate;
-}): Promise<{
-  readonly patchPath: string;
-  readonly provenancePath: string;
-  readonly createdPaths: readonly string[];
-}> {
-  const requestedJobRootParent = dirname(input.jobRootDir);
-  const jobRootParentItem = await lstat(requestedJobRootParent);
-  if (jobRootParentItem.isSymbolicLink() || !jobRootParentItem.isDirectory()) {
-    throw new Error("reviewed_output_aggregate_artifact_root_unsafe");
-  }
-  const canonicalJobRootParent = await realpath(requestedJobRootParent);
-  const requestedJobRoot = join(
-    canonicalJobRootParent,
-    basename(input.jobRootDir),
-  );
-  await mkdir(requestedJobRoot, { recursive: true, mode: 0o700 });
-  const jobRootItem = await lstat(requestedJobRoot);
-  if (jobRootItem.isSymbolicLink() || !jobRootItem.isDirectory()) {
-    throw new Error("reviewed_output_aggregate_artifact_root_unsafe");
-  }
-  const canonicalJobRoot = await realpath(requestedJobRoot);
-  if (dirname(canonicalJobRoot) !== canonicalJobRootParent) {
-    throw new Error("reviewed_output_aggregate_artifact_root_unsafe");
-  }
-  const root = join(canonicalJobRoot, "reviewed-output-aggregate");
-  await mkdir(root, { recursive: true, mode: 0o700 });
-  const rootItem = await lstat(root);
-  if (rootItem.isSymbolicLink() || !rootItem.isDirectory()) {
-    throw new Error("reviewed_output_aggregate_artifact_root_unsafe");
-  }
-  const canonicalRoot = await realpath(root);
-  if (dirname(canonicalRoot) !== canonicalJobRoot) {
-    throw new Error("reviewed_output_aggregate_artifact_root_unsafe");
-  }
-  const patchPath = join(canonicalRoot, "input.patch");
-  const provenancePath = join(canonicalRoot, "provenance.json");
-  const createdPaths: string[] = [];
-  try {
-    const patchArtifact = await publishImmutableTextArtifact({
-      path: patchPath,
-      content: input.aggregate.patch,
-      existingPathUnsafeError: "reviewed_output_aggregate_artifact_unsafe",
-      contentMismatchError: "reviewed_output_aggregate_immutable_conflict",
-    });
-    if (patchArtifact.created) {
-      createdPaths.push(patchPath);
-    }
-    const provenance = `${JSON.stringify(
-      reviewedOutputAggregateView(input.aggregate),
-      null,
-      2,
-    )}\n`;
-    const provenanceArtifact = await publishImmutableTextArtifact({
-      path: provenancePath,
-      content: provenance,
-      existingPathUnsafeError: "reviewed_output_aggregate_artifact_unsafe",
-      contentMismatchError: "reviewed_output_aggregate_immutable_conflict",
-    });
-    if (provenanceArtifact.created) {
-      createdPaths.push(provenancePath);
-    }
-    return { patchPath, provenancePath, createdPaths };
-  } catch (error) {
-    await removeReviewedOutputAggregateArtifacts(createdPaths);
-    throw error;
-  }
-}
-
-async function removeReviewedOutputAggregateArtifacts(
-  paths: readonly string[],
-): Promise<void> {
-  for (const path of [...paths].reverse()) await rm(path, { force: true });
-  const root = paths[0] ? dirname(paths[0]) : undefined;
-  if (root) await rmdir(root).catch(() => undefined);
-}
-
-async function resolveProducerHandoffForVerifier(input: {
-  readonly registryRootDir: string;
-  readonly producerJobId: string;
-  readonly expectedInputPatchHash: unknown;
-  readonly allowProviderOutputInvalid: boolean;
-}): Promise<VerifiedProducerHandoff> {
-  const producer = await readCodexGoalJob({
-    registryRootDir: input.registryRootDir,
-    jobId: input.producerJobId,
-  });
-  const launch = await goalLaunchInput(codexGoalJobToArgs(producer));
-  const initialStatus = await collectCodexGoalStatus(
-    codexGoalStatusInputFromLaunch(launch),
-  );
-  const status = await ensureTerminalCodexGoalHandoffArtifacts({
-    launch,
-    status: initialStatus,
-  });
-  if (resolveCodexGoalWorkerLiveness({ status }).alive) {
-    throw new Error("project_control_verifier_producer_still_running");
-  }
-  const handoff = input.allowProviderOutputInvalid
-    ? await readVerifiableProducerHandoff({ producer })
-    : await readVerifiedProducerHandoff({ producer });
-  if (
-    typeof input.expectedInputPatchHash !== "string" ||
-    input.expectedInputPatchHash.toLowerCase() !== handoff.patchSha256
-  ) {
-    throw new Error("project_control_verifier_admission_patch_hash_mismatch");
-  }
-  return handoff;
 }
 
 async function projectControlRefillWorkerBoundedView(
@@ -1200,30 +1004,6 @@ async function projectControlRefillWorkerBoundedView(
     targetJobId: createManifest.jobId,
     runnerPid: runner.pid,
     operation: projectControlOperationView({ operation: updated }),
-  };
-}
-
-export async function projectControlOperationStatusView(
-  args: ProjectControlMcpArgs,
-  deps: CodexGoalMcpProjectControlJobsDeps,
-): Promise<JsonObject> {
-  const controller = await deps.loadProjectControlController(args);
-  const operationId = requiredRawString(args.operationId, "operationId");
-  const operation = await readProjectControlOperationById({
-    operationsRootDir: projectControlOperationsRoot(
-      controller.controller.jobRootDir,
-    ),
-    operationId,
-  });
-  return {
-    ok: true,
-    mode: "project_control_operation_status",
-    controllerJobId: controller.controller.jobId,
-    registryRootDir: controller.registryRootDir,
-    operation: projectControlOperationView({
-      operation,
-      includeResult: booleanValue(args.includeResult) === true,
-    }),
   };
 }
 

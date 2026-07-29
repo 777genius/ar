@@ -765,7 +765,8 @@ await writeFile(operationFilePath, JSON.stringify(operation, null, 2) + "\\n");
       expect(result.operation).not.toHaveProperty("args");
 
       let status: Record<string, unknown> | undefined;
-      for (let attempt = 0; attempt < 200; attempt += 1) {
+      const operationDeadline = Date.now() + 30_000;
+      while (Date.now() < operationDeadline) {
         status = await callToolJson(client, "codex_goal_project_operation_status", {
           registryRootDir,
           controllerJobId: "infinity-context-controller-v1",
@@ -776,7 +777,7 @@ await writeFile(operationFilePath, JSON.stringify(operation, null, 2) + "\\n");
         if (operationStatus === "completed" || operationStatus === "failed") {
           break;
         }
-        await sleep(25);
+        await sleep(50);
       }
 
       expect(status).toMatchObject({

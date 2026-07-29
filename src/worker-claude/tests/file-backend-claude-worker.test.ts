@@ -20,6 +20,7 @@ import type {
   SessionStorePort,
   WorkspacePort,
 } from "@vioxen/subscription-runtime/core";
+import { AgentRuntimeExecutionMode } from "@vioxen/subscription-runtime/core";
 import {
   sessionArtifactFromClaudeOAuth,
   validateClaudeSessionArtifact,
@@ -100,6 +101,43 @@ describe("FileBackendClaudeWorker", () => {
         },
       });
       expect(result).toMatchObject({ outputText: "answer" });
+    } finally {
+      await worker.dispose();
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves Goal execution through the worker boundary", async () => {
+    const rootDir = await tempRoot();
+    const engine = new RecordingClaudeEngine({ outputText: "answer" });
+    const worker = new FileBackendClaudeWorker({
+      providerInstanceId: "claude-goal",
+      stateRootDir: rootDir,
+      encryptionKey: encryptionKey(),
+      engine,
+    });
+
+    try {
+      await worker.start();
+      await worker.seedClaudeOAuth({ oauthToken: "claude-oauth-secret" });
+      await worker.run({
+        prompt: "correct the fixture",
+        execution: {
+          mode: AgentRuntimeExecutionMode.Goal,
+          completionCondition: "value.txt contains exactly 42 followed by one newline",
+        },
+      });
+
+      expect(engine.records[0]).toMatchObject({
+        execution: {
+          mode: AgentRuntimeExecutionMode.Goal,
+          completionCondition: "value.txt contains exactly 42 followed by one newline",
+        },
+      });
+      expect(engine.records[0]?.prompt).toContain("Goal completion condition:");
+      expect(engine.records[0]?.prompt).toContain(
+        "value.txt contains exactly 42 followed by one newline",
+      );
     } finally {
       await worker.dispose();
       await rm(rootDir, { recursive: true, force: true });

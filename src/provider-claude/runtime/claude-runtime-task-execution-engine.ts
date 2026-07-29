@@ -4,6 +4,7 @@ import type {
   ProviderTaskTelemetry,
   RuntimeWarning,
 } from "@vioxen/subscription-runtime/core";
+import { AgentRuntimeTurnLimitEnforcement } from "@vioxen/subscription-runtime/core";
 import type {
   ClaudeTaskEngineInput,
   ClaudeTaskExecutionEngine,
@@ -50,6 +51,8 @@ export class ClaudeRuntimeTaskExecutionEngine
     supportsUsage: true,
     supportsProviderRunId: true,
     supportsCleanup: true,
+    turnLimitEnforcement: AgentRuntimeTurnLimitEnforcement.ProviderNative,
+    accessBoundaryMode: "unsupported",
   } as const;
 
   constructor(private readonly options: ClaudeRuntimeTaskExecutionEngineOptions = {}) {}

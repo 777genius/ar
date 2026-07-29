@@ -1,4 +1,8 @@
 import type {
+  AgentRuntimeBudgetCapability,
+  AgentRuntimeTaskExecution,
+  AgentRuntimeTaskExecutionCapability,
+  AgentRuntimeTurnLimitEnforcementCode,
   ProviderTaskControls,
   ProviderTaskEvent,
   ProviderTaskResult,
@@ -22,6 +26,7 @@ export type ClaudeRuntimeThreadInput = {
 
 export type ClaudeTaskEngineInput = {
   readonly prompt: string;
+  readonly execution?: AgentRuntimeTaskExecution;
   readonly session: ClaudeOAuthSession;
   readonly workspacePath: string;
   readonly appendSystemPrompt?: string;
@@ -29,6 +34,7 @@ export type ClaudeTaskEngineInput = {
   readonly redactor: RedactorPort;
   readonly model: string;
   readonly maxTurns?: number;
+  readonly maxBudgetUsd?: number;
   readonly allowedTools?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly mcpConfig?: readonly string[];
@@ -48,6 +54,10 @@ export type ClaudeTaskExecutionEngine = {
     readonly supportsUsage: boolean;
     readonly supportsProviderRunId: boolean;
     readonly supportsCleanup: boolean;
+    readonly budgetCapabilities?: readonly AgentRuntimeBudgetCapability[];
+    readonly taskExecutionCapabilities?: readonly AgentRuntimeTaskExecutionCapability[];
+    readonly turnLimitEnforcement?: AgentRuntimeTurnLimitEnforcementCode;
+    readonly accessBoundaryMode?: "provider-enforced" | "host-scoped" | "unsupported";
   };
   run(input: ClaudeTaskEngineInput): Promise<ClaudeTaskExecutionResult>;
   stream?(input: ClaudeTaskEngineInput): AsyncIterable<ProviderTaskEvent>;

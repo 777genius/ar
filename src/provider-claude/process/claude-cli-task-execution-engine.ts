@@ -28,6 +28,7 @@ export class ClaudeCliTaskExecutionEngine implements ClaudeTaskExecutionEngine {
     supportsUsage: false,
     supportsProviderRunId: false,
     supportsCleanup: true,
+    accessBoundaryMode: "unsupported",
   } as const;
 
   constructor(private readonly options: ClaudeCliTaskExecutionEngineOptions = {}) {}

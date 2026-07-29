@@ -41,16 +41,21 @@ export function assertClaudeProviderSandboxModeAllowed(
   throw new Error("claude_provider_sandbox_mode_requires_allow_edits");
 }
 
-const readOnlyClaudeTools = new Set([
+export const defaultClaudeReadOnlyTools = Object.freeze([
   "Glob",
   "Grep",
   "LS",
   "Read",
   "TodoRead",
-  "WebFetch",
 ]);
 
-function isReadOnlyClaudeTool(tool: string): boolean {
+const readOnlyCompatibleClaudeTools = new Set([
+  ...defaultClaudeReadOnlyTools,
+  "WebFetch",
+  "WebSearch",
+]);
+
+export function isReadOnlyClaudeTool(tool: string): boolean {
   const name = tool.split("(", 1)[0]?.trim();
-  return name !== undefined && readOnlyClaudeTools.has(name);
+  return name !== undefined && readOnlyCompatibleClaudeTools.has(name);
 }

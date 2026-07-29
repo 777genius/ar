@@ -3,6 +3,8 @@ import type {
   ProviderEnvironmentPolicy,
   ProviderCapabilities,
 } from "@vioxen/subscription-runtime/core";
+import { AgentRuntimeTurnLimitEnforcement } from "@vioxen/subscription-runtime/core";
+import { AgentRuntimeExecutionMode } from "@vioxen/subscription-runtime/core";
 
 export const codexProviderId = "codex";
 export const codexAgentId = "codex-cli";
@@ -66,7 +68,9 @@ export const codexAgentCapabilities: AgentCapabilities = {
   taskModes: ["review", "structured-prompt", "health-check"],
   historyMode: "none",
   executionModes: ["task"],
-  toolPolicyMode: "provider-enforced",
+  taskExecutionCapabilities: [{ mode: AgentRuntimeExecutionMode.SingleRun }],
+  toolPolicyMode: "unsupported",
+  accessBoundaryMode: "provider-enforced",
   outputModes: ["text", "json", "schema-json"],
   supportsReviewTasks: true,
   supportsStructuredOutput: true,
@@ -79,6 +83,7 @@ export const codexAgentCapabilities: AgentCapabilities = {
   supportsProviderRunId: false,
   supportsAbort: true,
   supportsCleanup: true,
+  turnLimitEnforcement: AgentRuntimeTurnLimitEnforcement.Unsupported,
   maxRuntimeMs: 600_000,
 };
 

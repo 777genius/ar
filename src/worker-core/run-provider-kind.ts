@@ -2,7 +2,7 @@ export enum RunEventProviderKind {
   Codex = "codex",
   Claude = "claude",
   Local = "local",
-  AgentTask = "agent-task",
+  AgentRuntimeTask = "agent-runtime-task",
   Unknown = "unknown",
 }
 
@@ -14,8 +14,8 @@ export function runEventProviderKindFromString(value: string): RunEventProviderK
       return RunEventProviderKind.Claude;
     case RunEventProviderKind.Local:
       return RunEventProviderKind.Local;
-    case RunEventProviderKind.AgentTask:
-      return RunEventProviderKind.AgentTask;
+    case RunEventProviderKind.AgentRuntimeTask:
+      return RunEventProviderKind.AgentRuntimeTask;
     default:
       return RunEventProviderKind.Unknown;
   }

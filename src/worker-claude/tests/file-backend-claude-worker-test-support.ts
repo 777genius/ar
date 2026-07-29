@@ -20,6 +20,7 @@ import type {
   SessionStorePort,
   WorkspacePort,
 } from "@vioxen/subscription-runtime/core";
+import { AgentRuntimeExecutionMode } from "@vioxen/subscription-runtime/core";
 import {
   sessionArtifactFromClaudeOAuth,
   validateClaudeSessionArtifact,
@@ -60,6 +61,10 @@ export class RecordingClaudeEngine implements ClaudeTaskExecutionEngine {
     supportsUsage: true,
     supportsProviderRunId: true,
     supportsCleanup: true,
+    taskExecutionCapabilities: [
+      { mode: AgentRuntimeExecutionMode.SingleRun },
+      { mode: AgentRuntimeExecutionMode.Goal, maxCompletionConditionChars: 4_000 },
+    ],
   };
   readonly records: ClaudeTaskEngineInput[] = [];
 

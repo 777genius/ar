@@ -28,6 +28,7 @@ import { CommandPolicyRunner } from "./command-policy-runner";
 import { codexAppServerCommandApprovalPolicy } from "./file-backend-codex-command-policy";
 import { LocalFileManagedRunStore } from "./file-backend-codex-managed-run-store";
 import type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker";
+import { buildCodexWorkspaceToolsProfile } from "./workspace-tools/codex-workspace-tools-profile";
 
 export type CodexWorkerExecutionEngine =
   | "app-server"
@@ -201,6 +202,12 @@ function createCodexAgentDriver(input: {
 }): CodexJsonAgentDriver | CodexCliAgentDriver {
   const { options } = input;
   const executionEngine = options.executionEngine ?? "app-server";
+  const workspaceToolsProfile = options.boundedWorkspaceTools && options.workspacePath
+    ? buildCodexWorkspaceToolsProfile({
+        workspaceRoot: options.workspacePath,
+        allowedTools: options.boundedWorkspaceTools.allowedTools,
+      })
+    : undefined;
   if (executionEngine === "plain-exec") {
     return new CodexCliAgentDriver({
       codexBinaryPath: options.codexBinaryPath,
@@ -228,7 +235,21 @@ function createCodexAgentDriver(input: {
           ...(options.appServerProcessFactory
             ? { processFactory: options.appServerProcessFactory }
             : {}),
-          ...(options.executionProfile
+          ...(options.rolloutBudget
+            ? { rolloutBudget: options.rolloutBudget }
+            : {}),
+          ...(workspaceToolsProfile
+            ? {
+                executionProfile: {
+                  kind: "custom" as const,
+                  developerInstructions:
+                    workspaceToolsProfile.developerInstructions,
+                  disableTools: false,
+                  historyMode: "none" as const,
+                },
+                nativeToolSurface: "disabled" as const,
+              }
+            : options.executionProfile
             ? { executionProfile: options.executionProfile }
             : {}),
           ...(options.commandPolicy?.validateCommands
@@ -243,17 +264,29 @@ function createCodexAgentDriver(input: {
                 ),
               }
             : {}),
-          cleanThreadPrewarm: options.cleanThreadPrewarm ?? true,
+          cleanThreadPrewarm: workspaceToolsProfile
+            ? false
+            : options.cleanThreadPrewarm ?? true,
           goalMode: executionEngine === "app-server-goal",
-          runStore: input.managedRunStore,
-          ...(executionEngine === "app-server-goal"
+          ...(options.maxGoalTurns === undefined
             ? {}
-            : { fallback: packagedExec }),
+            : { maxGoalTurns: options.maxGoalTurns }),
+          runStore: input.managedRunStore,
+          ...(
+            executionEngine === "app-server-goal" ||
+            workspaceToolsProfile ||
+            options.rolloutBudget
+            ? {}
+            : { fallback: packagedExec }
+          ),
         }),
     sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
       cacheKey: `codex:${options.providerInstanceId}:${input.workerId}`,
       slots: options.sessionCacheSlots ?? 1,
       rootDir: join(options.stateRootDir, "codex-session-cache"),
+      ...(workspaceToolsProfile
+        ? { configToml: workspaceToolsProfile.configToml }
+        : {}),
     }),
     model: options.model ?? defaultCodexModel,
     reasoningEffort: options.reasoningEffort ?? "low",
@@ -263,7 +296,7 @@ function createCodexAgentDriver(input: {
     ...(options.outputSchemas === undefined
       ? {}
       : { outputSchemas: options.outputSchemas }),
-    ...(typeof options.warmupPrompt === "string"
+    ...(!workspaceToolsProfile && typeof options.warmupPrompt === "string"
       ? { warmupPrompt: options.warmupPrompt }
       : {}),
   });

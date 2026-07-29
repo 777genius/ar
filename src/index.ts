@@ -1,5 +1,7 @@
 export * as core from "./core/index.js";
 export * as agentTask from "./agent-task/index.js";
+export * as agentRuntimeTask from "./agent-runtime-task/index.js";
+export * as agentRuntimeTaskRunner from "./agent-runtime-task-runner/index.js";
 export * as accountDiagnostics from "./account-diagnostics/index.js";
 export * as providerCodex from "./provider-codex/index.js";
 export * as openaiCompatibleCodex from "./openai-compatible-codex/index.js";

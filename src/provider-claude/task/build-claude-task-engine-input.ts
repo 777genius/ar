@@ -8,8 +8,13 @@ import type {
   WorkspaceHandle,
 } from "@vioxen/subscription-runtime/core";
 import {
+  AgentRuntimeBudgetMetric,
+  AgentRuntimeExecutionMode,
+} from "@vioxen/subscription-runtime/core";
+import {
   validateClaudeSessionArtifact,
 } from "../session/session-artifact";
+import { claudeGoalCompletionToolName } from "../process/claude-agent-sdk-goal-protocol";
 import { registerClaudeSecrets } from "../session/claude-session-driver";
 import type {
   ClaudeTaskEngineInput,
@@ -50,7 +55,10 @@ export function prepareClaudeTaskEngineInput(
   const validation = validateClaudeSessionArtifact(input.session);
   registerClaudeSecrets(input.redactor, validation.session.oauthToken);
   let engineInput: ClaudeTaskEngineInput = {
-    prompt: input.task.prompt,
+    prompt: executionPrompt(input.task),
+    execution: input.task.execution ?? {
+      mode: AgentRuntimeExecutionMode.SingleRun,
+    },
     session: validation.session,
     workspacePath: input.workspace.path,
     runner: input.runner,
@@ -59,6 +67,9 @@ export function prepareClaudeTaskEngineInput(
     abortSignal: input.abortSignal,
   };
   const maxTurns = input.task.controls?.maxTurns ?? options.maxTurns;
+  const maxBudgetUsd = input.task.controls?.budget?.metric === AgentRuntimeBudgetMetric.Usd
+    ? input.task.controls.budget.limit
+    : undefined;
   const allowedTools =
     input.task.controls?.allowedTools ?? options.allowedTools;
   const disallowedTools =
@@ -70,10 +81,12 @@ export function prepareClaudeTaskEngineInput(
   const appendSystemPrompt = mergeSystemPrompts(
     options.appendSystemPrompt,
     input.task.systemPrompt,
+    goalSystemPrompt(input.task.execution),
   );
   engineInput = withOptionalEngineInputValues(engineInput, {
     appendSystemPrompt,
     maxTurns,
+    maxBudgetUsd,
     allowedTools,
     disallowedTools,
     mcpConfig: options.mcpConfig,
@@ -92,6 +105,7 @@ export function prepareClaudeTaskEngineInput(
 type OptionalEngineInputKey =
   | "appendSystemPrompt"
   | "maxTurns"
+  | "maxBudgetUsd"
   | "allowedTools"
   | "disallowedTools"
   | "mcpConfig"
@@ -115,6 +129,9 @@ function withOptionalEngineInputValues(
   }
   if (optional.maxTurns !== undefined) {
     result = { ...result, maxTurns: optional.maxTurns };
+  }
+  if (optional.maxBudgetUsd !== undefined) {
+    result = { ...result, maxBudgetUsd: optional.maxBudgetUsd };
   }
   if (optional.allowedTools !== undefined) {
     result = { ...result, allowedTools: optional.allowedTools };
@@ -147,12 +164,34 @@ function withOptionalEngineInputValues(
 }
 
 function mergeSystemPrompts(
-  base: string | undefined,
-  task: string | undefined,
+  ...values: readonly (string | undefined)[]
 ): string | undefined {
-  const parts = [base, task]
+  const parts = values
     .map((value) => value?.trim())
     .filter((value): value is string => !!value);
   if (parts.length === 0) return undefined;
   return parts.join("\n\n");
+}
+
+function goalSystemPrompt(
+  execution: ProviderTask["execution"],
+): string | undefined {
+  if (execution?.mode !== AgentRuntimeExecutionMode.Goal) return undefined;
+  return [
+    "Agent Runtime execution mode: Goal.",
+    "Continue working autonomously within the provided tools and safety controls until the completion condition is satisfied or a hard runtime bound stops execution.",
+    `Before returning success, inspect the resulting workspace state, verify the completion condition, and call ${claudeGoalCompletionToolName} with concise evidence.`,
+    "Do not stop after only describing a plan. The Goal is incomplete until the completion report tool is accepted.",
+  ].join("\n");
+}
+
+function executionPrompt(task: ProviderTask): string {
+  if (task.execution?.mode !== AgentRuntimeExecutionMode.Goal) {
+    return task.prompt;
+  }
+  return [
+    task.prompt,
+    "Goal completion condition:",
+    task.execution.completionCondition,
+  ].join("\n\n");
 }

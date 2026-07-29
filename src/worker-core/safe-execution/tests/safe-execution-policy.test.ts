@@ -138,6 +138,7 @@ describe("safe execution policy decisions", () => {
     expect(safeExecutionFinalStatusForFailure("provider_output_invalid")).toBe(
       "failed",
     );
+    expect(safeExecutionFinalStatusForFailure("budget_exceeded")).toBe("failed");
     expect(safeExecutionFinalStatusForFailure("model_unavailable")).toBe(
       "failed",
     );
@@ -232,6 +233,17 @@ describe("safe execution policy decisions", () => {
       safeMessage: "Provider auth failed.",
       retryable: true,
       details: { code: "provider_session_invalid" },
+    });
+
+    const budgetFailure = new SubscriptionWorkerError(
+      "subscription_worker_run_failed",
+      "Codex task exhausted its weighted-token budget.",
+      { details: { code: "budget_exceeded" } },
+    );
+    expect(defaultSafeExecutionErrorClassifier(budgetFailure)).toEqual({
+      reason: "budget_exceeded",
+      safeMessage: "Codex task exhausted its weighted-token budget.",
+      retryable: false,
     });
 
     const modelFailure = new SubscriptionWorkerError(

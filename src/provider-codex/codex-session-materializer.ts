@@ -123,6 +123,8 @@ export type CodexWorkerCacheSessionMaterializerOptions = {
    * directory is created and removed on dispose.
    */
   readonly rootDir?: string;
+  /** Host-generated Codex config for this isolated worker slot. */
+  readonly configToml?: string;
   /**
    * Keep the cache directory on dispose. Useful only for local debugging; host
    * apps should normally let durable storage own the real session.
@@ -228,13 +230,21 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
       await writeCodexJsonHomeSnapshot({
         codexHome: entry.codexHome,
         authJson,
+        ...(this.options.configToml === undefined
+          ? {}
+          : { configToml: this.options.configToml }),
       });
       entry.sessionHash = sessionHash;
       entry.initialized = true;
       return entry;
     }
 
-    await writeCodexJsonConfig({ codexHome: entry.codexHome });
+    await writeCodexJsonConfig({
+      codexHome: entry.codexHome,
+      ...(this.options.configToml === undefined
+        ? {}
+        : { configToml: this.options.configToml }),
+    });
 
     if (entry.sessionHash !== sessionHash) {
       await writeCodexAuthJson({
@@ -288,6 +298,8 @@ export type CodexWorkerCacheSessionPoolMaterializerOptions = {
    */
   readonly slots: number;
   readonly rootDir?: string;
+  /** Host-generated Codex config shared by every isolated pool slot. */
+  readonly configToml?: string;
   readonly preserveOnDispose?: boolean;
 };
 
@@ -311,6 +323,9 @@ export class CodexWorkerCacheSessionPoolMaterializer implements CodexSessionMate
       return new CodexWorkerCacheSessionMaterializer({
         cacheKey: `${options.cacheKey}:slot:${index + 1}`,
         ...(options.rootDir ? { rootDir: options.rootDir } : {}),
+        ...(options.configToml === undefined
+          ? {}
+          : { configToml: options.configToml }),
         ...(options.preserveOnDispose !== undefined
           ? { preserveOnDispose: options.preserveOnDispose }
           : {}),
@@ -388,13 +403,25 @@ export class CodexWorkerCacheSessionPoolMaterializer implements CodexSessionMate
 export async function writeCodexJsonHomeSnapshot(input: {
   readonly codexHome: string;
   readonly authJson: string;
+  readonly configToml?: string;
 }): Promise<void> {
-  await writeCodexJsonConfig({ codexHome: input.codexHome });
+  await writeCodexJsonConfig({
+    codexHome: input.codexHome,
+    ...(input.configToml === undefined
+      ? {}
+      : { configToml: input.configToml }),
+  });
   await writeCodexAuthJson(input);
 }
 
-async function writeCodexJsonConfig(input: { readonly codexHome: string }): Promise<void> {
-  await writeFileAtomic(join(input.codexHome, "config.toml"), codexJsonHomeConfigToml());
+async function writeCodexJsonConfig(input: {
+  readonly codexHome: string;
+  readonly configToml?: string;
+}): Promise<void> {
+  await writeFileAtomic(
+    join(input.codexHome, "config.toml"),
+    input.configToml ?? codexJsonHomeConfigToml(),
+  );
 }
 
 export async function writeCodexAuthJson(input: {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AgentRuntimeExecutionMode,
   DefaultRedactor,
   RuntimeConfigurationError,
   assertCompatibleRuntimeManifests,
@@ -520,6 +521,50 @@ describe("subscription runtime use cases", () => {
       task: { kind: "health-check", prompt: "ping" },
       runContext: {
         runId: "run-task-mode",
+        attempt: 1,
+        abortSignal: new AbortController().signal,
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      reason: "task_mode_unsupported",
+    });
+  });
+
+  it("rejects unsupported execution mode before reading session storage", async () => {
+    const agent = new FakeAgentDriver();
+    const store = new (class extends InMemorySessionStore {
+      override async read(): Promise<null> {
+        throw new Error("execution_mode_check_must_happen_before_session_read");
+      }
+    })();
+    const runtime = createSubscriptionRuntime(
+      makeFakeRuntimeDeps({
+        agent: Object.assign(agent, {
+          capabilities: {
+            ...agent.capabilities,
+            taskExecutionCapabilities: [{
+              mode: AgentRuntimeExecutionMode.SingleRun,
+            }],
+          },
+        }),
+        store,
+      }),
+    );
+
+    const result = await runtime.refreshThenRunTask({
+      providerInstanceId: "provider-instance-1",
+      task: {
+        kind: "structured-prompt",
+        prompt: "finish the fixture",
+        execution: {
+          mode: AgentRuntimeExecutionMode.Goal,
+          completionCondition: "the fixture is complete",
+        },
+      },
+      runContext: {
+        runId: "run-execution-mode",
         attempt: 1,
         abortSignal: new AbortController().signal,
       },

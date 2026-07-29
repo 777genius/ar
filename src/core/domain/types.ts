@@ -120,7 +120,7 @@ export type ProviderCapabilities = {
   readonly setupModes: readonly ProviderSetupMode[];
 };
 
-export type AgentTaskMode = ProviderTaskKind;
+export type AgentRuntimeTaskMode = ProviderTaskKind;
 export type AgentHistoryMode =
   | "none"
   | "host-managed-thread"
@@ -131,12 +131,62 @@ export type ToolPolicyMode =
   | "provider-enforced"
   | "host-filtered"
   | "unsupported";
+export type AccessBoundaryMode =
+  | "provider-enforced"
+  | "host-scoped"
+  | "unsupported";
 export type OutputMode = "text" | "json" | "schema-json";
+
+export enum AgentRuntimeBudgetMetric {
+  Usd = "usd",
+  WeightedTokens = "weighted_tokens",
+}
+
+export type AgentRuntimeBudgetMetricCode = `${AgentRuntimeBudgetMetric}`;
+
+export enum AgentRuntimeBudgetEnforcement {
+  ProviderNative = "provider_native",
+}
+
+export type AgentRuntimeBudgetEnforcementCode =
+  `${AgentRuntimeBudgetEnforcement}`;
+
+export enum AgentRuntimeTurnLimitEnforcement {
+  ProviderNative = "provider_native",
+  Unsupported = "unsupported",
+}
+
+export enum AgentRuntimeExecutionMode {
+  SingleRun = "single_run",
+  Goal = "goal",
+}
+
+export type AgentRuntimeTaskExecution =
+  | {
+      readonly mode: AgentRuntimeExecutionMode.SingleRun;
+    }
+  | {
+      readonly mode: AgentRuntimeExecutionMode.Goal;
+      readonly completionCondition: string;
+    };
+
+export type AgentRuntimeTaskExecutionCapability = {
+  readonly mode: AgentRuntimeExecutionMode;
+  readonly maxCompletionConditionChars?: number;
+};
+
+export type AgentRuntimeTurnLimitEnforcementCode =
+  `${AgentRuntimeTurnLimitEnforcement}`;
+
+export type AgentRuntimeBudgetCapability = {
+  readonly metric: AgentRuntimeBudgetMetricCode;
+  readonly enforcement: AgentRuntimeBudgetEnforcementCode;
+};
 
 export type AgentCapabilities = {
   readonly agentId: string;
   readonly providerId: string;
-  readonly taskModes: readonly AgentTaskMode[];
+  readonly taskModes: readonly AgentRuntimeTaskMode[];
   readonly historyMode: AgentHistoryMode;
   readonly supportsReviewTasks: boolean;
   readonly supportsStructuredOutput: boolean;
@@ -147,11 +197,15 @@ export type AgentCapabilities = {
   readonly maxPromptBytes?: number;
   readonly maxRuntimeMs: number;
   readonly executionModes?: readonly AgentExecutionMode[];
+  readonly taskExecutionCapabilities?: readonly AgentRuntimeTaskExecutionCapability[];
   readonly toolPolicyMode?: ToolPolicyMode;
+  readonly accessBoundaryMode?: AccessBoundaryMode;
   readonly outputModes?: readonly OutputMode[];
   readonly supportsStreaming?: boolean;
   readonly supportsUsageTelemetry?: boolean;
   readonly supportsCostTelemetry?: boolean;
+  readonly budgetCapabilities?: readonly AgentRuntimeBudgetCapability[];
+  readonly turnLimitEnforcement?: AgentRuntimeTurnLimitEnforcementCode;
   readonly supportsProviderRunId?: boolean;
   readonly supportsAbort?: boolean;
   readonly supportsCleanup?: boolean;
@@ -203,7 +257,7 @@ export type RuntimePolicy = {
   readonly requireWritebackBeforeTask: boolean;
   readonly requireCompareAndSwap: boolean;
   readonly refreshPolicy?: SessionRefreshPolicy;
-  readonly requestedTaskMode?: AgentTaskMode;
+  readonly requestedTaskMode?: AgentRuntimeTaskMode;
   readonly requestedHistoryMode?: AgentHistoryMode | "unsupported";
   readonly allowInteractiveSetupInRuntime: false;
   readonly allowedProviderIds: readonly string[];
@@ -261,30 +315,37 @@ export type RuntimeExecutionPlan =
       readonly sessionForAgent: "refreshed";
     };
 
-export const providerFailureCodes = [
-  "needs_reconnect",
-  "quota_limited",
-  "permission_required",
-  "provider_session_invalid",
-  "provider_output_invalid",
-  "task_mode_unsupported",
-  "task_cancelled",
-  "task_timeout",
-  "stale_generation",
-  "backend_unavailable",
-  "goal_slice_exhausted",
-  "model_unavailable",
-  "unknown_runtime_failure",
-] as const;
+export enum AgentRuntimeFailureCode {
+  NeedsReconnect = "needs_reconnect",
+  QuotaLimited = "quota_limited",
+  PermissionRequired = "permission_required",
+  ProviderSessionInvalid = "provider_session_invalid",
+  ProviderOutputInvalid = "provider_output_invalid",
+  TaskRequestInvalid = "task_request_invalid",
+  TaskModeUnsupported = "task_mode_unsupported",
+  TaskCancelled = "task_cancelled",
+  TaskTimeout = "task_timeout",
+  StaleGeneration = "stale_generation",
+  BackendUnavailable = "backend_unavailable",
+  InputRequired = "input_required",
+  GoalSliceExhausted = "goal_slice_exhausted",
+  ModelUnavailable = "model_unavailable",
+  BudgetExceeded = "budget_exceeded",
+  ProviderRuntimeUnavailable = "provider_runtime_unavailable",
+  CleanupUnconfirmed = "cleanup_unconfirmed",
+  UnknownRuntimeFailure = "unknown_runtime_failure",
+}
 
-export type ProviderFailureCode = (typeof providerFailureCodes)[number];
+export const providerFailureCodes = Object.values(AgentRuntimeFailureCode);
+
+export type ProviderFailureCode = `${AgentRuntimeFailureCode}`;
 
 export function isProviderFailureCode(
   value: unknown,
 ): value is ProviderFailureCode {
   return (
     typeof value === "string" &&
-    providerFailureCodes.includes(value as ProviderFailureCode)
+    providerFailureCodes.includes(value as AgentRuntimeFailureCode)
   );
 }
 
@@ -301,7 +362,95 @@ export type SessionValidationResult =
   | { readonly status: "valid"; readonly warnings: readonly RuntimeWarning[] }
   | { readonly status: "invalid"; readonly failure: ProviderFailure };
 
-export type ProviderTaskKind = "review" | "structured-prompt" | "health-check";
+export enum AgentRuntimeTaskKind {
+  Review = "review",
+  StructuredPrompt = "structured-prompt",
+  HealthCheck = "health-check",
+}
+
+export type ProviderTaskKind = `${AgentRuntimeTaskKind}`;
+
+export enum AgentRuntimeTaskResultStatus {
+  Completed = "completed",
+  WaitingForInput = "waiting_for_input",
+  Failed = "failed",
+}
+
+export enum AgentRuntimeTaskEventType {
+  Started = "started",
+  TextDelta = "text_delta",
+  ToolCall = "tool_call",
+  Usage = "usage",
+  Warning = "warning",
+  Completed = "completed",
+}
+
+export enum AgentRuntimeAccessBoundary {
+  ReadOnly = "read_only",
+  IsolatedWorkspaceWrite = "isolated_workspace_write",
+  ProjectScopedControl = "project_scoped_control",
+  DangerFullAccess = "danger_full_access",
+}
+
+export type ProviderTaskAccessBoundary = `${AgentRuntimeAccessBoundary}`;
+
+export enum AgentRuntimeEditMode {
+  ReadOnly = "read-only",
+  AllowEdits = "allow-edits",
+}
+
+export type ProviderTaskEditMode = `${AgentRuntimeEditMode}`;
+
+export enum AgentRuntimeProviderSandboxMode {
+  WorkspaceWrite = "workspace-write",
+  DangerFullAccess = "danger-full-access",
+}
+
+export type ProviderTaskProviderSandboxMode =
+  `${AgentRuntimeProviderSandboxMode}`;
+
+export enum AgentRuntimeResponseFormat {
+  Text = "text",
+  Json = "json",
+}
+
+export type ProviderTaskResponseFormat = `${AgentRuntimeResponseFormat}`;
+
+export enum AgentRuntimeUnsupportedControlPolicy {
+  Fail = "fail",
+  Warn = "warn",
+}
+
+export type UnsupportedControlPolicy =
+  `${AgentRuntimeUnsupportedControlPolicy}`;
+
+export enum AgentRuntimeControl {
+  Execution = "execution",
+  MaxTurns = "maxTurns",
+  AccessBoundary = "accessBoundary",
+  ToolPolicy = "toolPolicy",
+  Budget = "budget",
+}
+
+export enum AgentRuntimeCostCurrency {
+  Usd = "USD",
+}
+
+export type AgentRuntimeCostCurrencyCode = `${AgentRuntimeCostCurrency}`;
+
+export enum AgentRuntimeTool {
+  ReadFile = "read_file",
+  EditFile = "edit_file",
+  WriteFile = "write_file",
+  SearchFiles = "search_files",
+  Shell = "shell",
+  WebAccess = "web_access",
+  DelegateAgent = "delegate_agent",
+  WorktreeControl = "worktree_control",
+  NotebookEdit = "notebook_edit",
+}
+
+export type AgentRuntimeToolName = `${AgentRuntimeTool}`;
 
 export type AgentUsage = {
   readonly inputTokens?: number;
@@ -311,7 +460,26 @@ export type AgentUsage = {
 
 export type AgentCost = {
   readonly amount: number;
-  readonly currency: "USD";
+  readonly currency: AgentRuntimeCostCurrencyCode;
+};
+
+export type ProviderToolPolicy = {
+  readonly allow?: readonly AgentRuntimeToolName[];
+  readonly deny?: readonly AgentRuntimeToolName[];
+  /**
+   * Provider-native escape hatch for adapters that deliberately target a
+   * concrete backend. Host applications should prefer allow/deny with
+   * AgentRuntimeTool values so provider selection stays config-driven.
+   */
+  readonly allowProviderTools?: readonly string[];
+  readonly denyProviderTools?: readonly string[];
+  readonly onUnsupported?: UnsupportedControlPolicy;
+};
+
+export type ProviderTaskBudget = {
+  readonly metric: AgentRuntimeBudgetMetricCode;
+  readonly limit: number;
+  readonly onUnsupported?: UnsupportedControlPolicy;
 };
 
 export type AgentToolCall = {
@@ -328,9 +496,13 @@ export type ProviderTaskControls = {
   readonly maxTurns?: number;
   readonly allowedTools?: readonly string[];
   readonly disallowedTools?: readonly string[];
-  readonly editMode?: "read-only" | "allow-edits";
-  readonly providerSandboxMode?: "workspace-write" | "danger-full-access";
-  readonly responseFormat?: "text" | "json";
+  readonly toolPolicy?: ProviderToolPolicy;
+  readonly budget?: ProviderTaskBudget;
+  readonly accessBoundary?: ProviderTaskAccessBoundary;
+  readonly allowDangerFullAccess?: boolean;
+  readonly editMode?: ProviderTaskEditMode;
+  readonly providerSandboxMode?: ProviderTaskProviderSandboxMode;
+  readonly responseFormat?: ProviderTaskResponseFormat;
   readonly outputSchemaName?: string;
 };
 
@@ -347,8 +519,9 @@ export type ProviderTaskTelemetry = {
     | "waiting_for_input"
     | "max_turns"
     | "cancelled"
-    | "timeout"
-    | "provider_error";
+      | "timeout"
+      | "budget_exceeded"
+      | "provider_error";
 };
 
 export type ProviderTaskEvent =
@@ -391,6 +564,7 @@ export type ProviderTaskEvent =
 export type ProviderTask = {
   readonly kind: ProviderTaskKind;
   readonly prompt: string;
+  readonly execution?: AgentRuntimeTaskExecution;
   readonly systemPrompt?: string;
   readonly outputSchemaName?: string;
   readonly controls?: ProviderTaskControls;

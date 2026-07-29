@@ -17,6 +17,14 @@ export type FakeAppServerFactoryOptions = {
   readonly emitTransientTopLevelErrorOnTurn?: string;
   readonly emitTopLevelErrorOnTurn?: string;
   readonly emitTopLevelErrorsOnTurns?: readonly (string | null)[];
+  readonly emitCodexErrorOnTurn?: {
+    readonly message: string;
+    readonly codexErrorInfo: string;
+  };
+  readonly completeTurnWithError?: {
+    readonly message: string;
+    readonly codexErrorInfo: string;
+  };
   readonly emitStdinErrorAfterTurnStartResponse?: boolean;
   readonly emitProcessErrorOnTurn?: boolean;
   readonly emitProcessErrorAfterTurnStartResponse?: boolean;
@@ -363,6 +371,13 @@ export class FakeAppServerProcess extends EventEmitter {
             );
             return;
           }
+          if (this.options.emitCodexErrorOnTurn) {
+            this.notify("error", {
+              turnId,
+              error: this.options.emitCodexErrorOnTurn,
+            });
+            return;
+          }
           if (this.options.emitProcessErrorOnTurn) {
             this.emit("error", new Error("fake app-server process failed"));
             return;
@@ -430,6 +445,13 @@ export class FakeAppServerProcess extends EventEmitter {
   }
 
   private completedTurn(turnId: string): Record<string, unknown> {
+    if (this.options.completeTurnWithError) {
+      return {
+        id: turnId,
+        status: "failed",
+        error: this.options.completeTurnWithError,
+      };
+    }
     return {
       id: turnId,
       status: { type: "completed" },

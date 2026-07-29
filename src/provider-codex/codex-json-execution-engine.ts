@@ -1,4 +1,7 @@
 import type {
+  AgentRuntimeTaskExecutionCapability,
+  AgentRuntimeTurnLimitEnforcementCode,
+  AgentRuntimeBudgetCapability,
   AgentUsage,
   ProviderTaskControls,
   ProviderTaskResult,
@@ -90,6 +93,9 @@ export type CodexExecutionEngine = {
     readonly supportsJsonEvents: boolean;
     readonly supportsThreadResume: boolean;
     readonly requiresSchemaFile: boolean;
+    readonly budgetCapabilities?: readonly AgentRuntimeBudgetCapability[];
+    readonly taskExecutionCapabilities?: readonly AgentRuntimeTaskExecutionCapability[];
+    readonly turnLimitEnforcement?: AgentRuntimeTurnLimitEnforcementCode;
   };
   run(input: {
     readonly runId?: string;

@@ -45,7 +45,7 @@ import {
 } from "@vioxen/subscription-runtime/worker-core";
 import { NodeProcessRunner } from "../worker-local/node-process-runner";
 import { NullWorkerObservability } from "../worker-local/observability";
-import { StableWorkerWorkspace } from "../worker-local/temp-workspace";
+import { BorrowedRunTaskWorkspace, StableWorkerWorkspace } from "../worker-local/temp-workspace";
 import {
   FileClaudeRateLimitTelemetry,
   type ClaudeRateLimitTelemetrySource,
@@ -69,6 +69,7 @@ import {
   normalizeCapacityAccountId,
   type ClaudeWorkerCapacityPolicy,
 } from "./file-backend-claude-capacity";
+import { workerFailureDetails } from "./worker-failure-details";
 
 export type { ClaudeWorkerCapacityPolicy } from "./file-backend-claude-capacity";
 
@@ -111,6 +112,7 @@ export type FileBackendClaudeWorkerJob = {
   readonly jobId?: string;
   readonly runId?: string;
   readonly prompt: string;
+  readonly execution?: ProviderTask["execution"];
   readonly systemPrompt?: string;
   readonly kind?: ProviderTask["kind"];
   readonly outputSchemaName?: string;
@@ -185,10 +187,8 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
       : new StableWorkerWorkspace(defaultWorkspacePath, {
           allowedRootDir: options.stateRootDir,
         });
-    this.workspace = options.workspace ?? this.ownedWorkspace!;
-    this.stableWorkspacePath = options.workspace
-      ? (options.workspacePath ?? null)
-      : defaultWorkspacePath;
+    this.workspace = options.workspace ?? (options.workspacePath ? new BorrowedRunTaskWorkspace(options.workspacePath, this.ownedWorkspace!) : this.ownedWorkspace!);
+    this.stableWorkspacePath = options.workspace ? (options.workspacePath ?? null) : options.workspacePath ?? defaultWorkspacePath;
     this.observability = options.observability ?? new NullWorkerObservability();
     this.clock = options.clock ?? systemClock;
     this.controlInbox =
@@ -532,6 +532,7 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
             controlBatch?.signals,
             shouldEchoWorkerControlInPrompt(job, this.options),
           ),
+          ...(job.execution ? { execution: job.execution } : {}),
           ...(systemPrompt === undefined ? {} : { systemPrompt }),
           ...(job.outputSchemaName
             ? { outputSchemaName: job.outputSchemaName }
@@ -591,7 +592,7 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
         throw new SubscriptionWorkerError(
           "subscription_worker_run_failed",
           result.task.failure.safeMessage,
-          { details: { code: result.task.failure.code } },
+          { details: workerFailureDetails(result.task.failure) },
         );
       }
 
@@ -803,7 +804,7 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
       throw new SubscriptionWorkerError(
         "subscription_worker_run_failed",
         result.task.failure.safeMessage,
-        { details: { code: result.task.failure.code } },
+        { details: workerFailureDetails(result.task.failure) },
       );
     }
 
