@@ -21,9 +21,11 @@ export interface ProcessRunnerPort {
 }
 
 export class NodeProcessRunner implements ProcessRunnerPort {
+  constructor(private readonly spawnProcess: typeof spawn = spawn) {}
+
   run(input: ProcessRunnerInput): Promise<ProcessRunnerResult> {
     return new Promise((resolve) => {
-      const child = spawn(input.command, [...input.args], {
+      const child = this.spawnProcess(input.command, [...input.args], {
         cwd: input.cwd,
         env: input.env,
         stdio: ["pipe", "pipe", "pipe"],
@@ -31,6 +33,8 @@ export class NodeProcessRunner implements ProcessRunnerPort {
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
       let timedOut = false;
+      let settled = false;
+      let stdinError: Error | null = null;
       const timeout =
         input.timeoutMs !== undefined
           ? setTimeout(() => {
@@ -39,6 +43,33 @@ export class NodeProcessRunner implements ProcessRunnerPort {
             }, input.timeoutMs)
           : null;
 
+      const settle = (
+        exitCode: number | null,
+        processError?: Error,
+      ): void => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        const capturedStderr = Buffer.concat(stderr).toString("utf8");
+        resolve({
+          exitCode,
+          stdout: Buffer.concat(stdout).toString("utf8"),
+          stderr: processError
+            ? `${capturedStderr}\n${processError.message}`
+            : capturedStderr,
+          timedOut,
+        });
+      };
+      const handleStdinError = (error: unknown): void => {
+        // A short-lived command may exit successfully without consuming its
+        // optional stdin. Node reports that normal close race as EPIPE.
+        if (isBrokenPipeError(error)) return;
+        stdinError ??= toError(error);
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGTERM");
+        }
+      };
+
       child.stdout.on("data", (chunk) => {
         stdout.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       });
@@ -46,24 +77,29 @@ export class NodeProcessRunner implements ProcessRunnerPort {
         stderr.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       });
       child.on("error", (error) => {
-        if (timeout) clearTimeout(timeout);
-        resolve({
-          exitCode: null,
-          stdout: Buffer.concat(stdout).toString("utf8"),
-          stderr: `${Buffer.concat(stderr).toString("utf8")}\n${error.message}`,
-          timedOut,
-        });
+        settle(null, error);
       });
       child.on("close", (exitCode) => {
-        if (timeout) clearTimeout(timeout);
-        resolve({
-          exitCode,
-          stdout: Buffer.concat(stdout).toString("utf8"),
-          stderr: Buffer.concat(stderr).toString("utf8"),
-          timedOut,
-        });
+        settle(stdinError ? null : exitCode, stdinError ?? undefined);
       });
-      child.stdin.end(input.stdin ?? "");
+      child.stdin.on("error", handleStdinError);
+      try {
+        child.stdin.end(input.stdin ?? "");
+      } catch (error) {
+        handleStdinError(error);
+      }
     });
   }
+}
+
+function isBrokenPipeError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "EPIPE"
+  );
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
