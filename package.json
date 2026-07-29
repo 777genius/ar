@@ -176,7 +176,7 @@
   },
   "dependencies": {
     "@vioxen/agent-account-observability": "file:packages/agent-account-observability",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^22.20.0",
     "libsodium-wrappers": "^0.8.4",
     "zod": "^4.4.3"
