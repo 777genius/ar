@@ -159,6 +159,7 @@ async function terminalHandoffReviewDisposition(input: {
     ledger,
     jobId: input.producer.jobId,
     workspacePath: input.workspacePath,
+    expectedPatchSha256: input.patchSha256,
   });
   if (patchSha256 !== input.patchSha256.toLowerCase()) {
     throw new Error("project_control_terminal_handoff_already_reviewed");

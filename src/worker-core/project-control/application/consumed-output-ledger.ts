@@ -41,6 +41,8 @@ export type ConsumedOutputRecord = {
 };
 
 export type ConsumedOutputLedger = {
+  /** Every parsed record when produced by readConsumedOutputLedgers. */
+  readonly records?: readonly ConsumedOutputRecord[];
   readonly byJobId: ReadonlyMap<string, ConsumedOutputRecord>;
   readonly byWorkspace: ReadonlyMap<string, ConsumedOutputRecord>;
   readonly debt: readonly ProjectDebtItem[];
@@ -73,6 +75,7 @@ export async function readConsumedOutputLedgers(input: {
   readonly roots: readonly string[];
   readonly source: ConsumedOutputLedgerSourcePort;
 }): Promise<ConsumedOutputLedger> {
+  const records: ConsumedOutputRecord[] = [];
   const byJobId = new Map<string, ConsumedOutputRecord>();
   const byWorkspace = new Map<string, ConsumedOutputRecord>();
   const loaded = await input.source.readEntries({
@@ -103,6 +106,7 @@ export async function readConsumedOutputLedgers(input: {
       }
       continue;
     }
+    records.push(record);
     if (!record.valid) {
       debt.push({
         reason: ProjectDebtReason.IncompleteConsumedOutputRecord,
@@ -127,7 +131,7 @@ export async function readConsumedOutputLedgers(input: {
       setLatestRecord(byWorkspace, record.resolvedWorkspace, record);
     }
   }
-  return { byJobId, byWorkspace, debt };
+  return { records, byJobId, byWorkspace, debt };
 }
 
 function hasTerminalOutputIntent(value: unknown): boolean {
@@ -289,24 +293,11 @@ export function consumedOutputRecordFor(input: {
     : undefined;
   const byJob = input.ledger.byJobId.get(input.jobId);
   if (byJob) {
-    if (
-      workspace &&
-      byJob.workspace &&
-      resolve(byJob.workspace) !== workspace &&
-      resolve(byJob.workspace) !== resolvedWorkspace &&
-      byJob.resolvedWorkspace !== workspace &&
-      byJob.resolvedWorkspace !== resolvedWorkspace
-    ) {
-      return {
-        ...byJob,
-        valid: false,
-        evidence: [
-          ...byJob.evidence,
-          `ledger workspace ${byJob.workspace} does not match dirty workspace ${workspace}`,
-        ],
-      };
-    }
-    return byJob;
+    return consumedOutputRecordForWorkspace({
+      record: byJob,
+      workspace,
+      resolvedWorkspace,
+    });
   }
 
   const byWorkspace = workspace
@@ -330,6 +321,56 @@ export function consumedOutputRecordFor(input: {
     return workspaceRecord;
   }
   return undefined;
+}
+
+/**
+ * Resolves one immutable attempt without relying on the latest-record ordering.
+ * Duplicate attempt identities fail closed instead of selecting by ledger path.
+ */
+export function consumedOutputRecordForAttempt(input: {
+  readonly ledger: ConsumedOutputLedger;
+  readonly jobId: string;
+  readonly attemptId: string;
+  readonly workspacePath?: string;
+  readonly resolvedWorkspacePath?: string;
+}): ConsumedOutputRecord | undefined {
+  const candidates = (input.ledger.records ?? []).filter(
+    (record) =>
+      record.jobId === input.jobId && record.attemptId === input.attemptId,
+  );
+  if (candidates.length !== 1) return undefined;
+  return consumedOutputRecordForWorkspace({
+    record: candidates[0]!,
+    workspace: input.workspacePath ? resolve(input.workspacePath) : undefined,
+    resolvedWorkspace: input.resolvedWorkspacePath
+      ? resolve(input.resolvedWorkspacePath)
+      : undefined,
+  });
+}
+
+function consumedOutputRecordForWorkspace(input: {
+  readonly record: ConsumedOutputRecord;
+  readonly workspace: string | undefined;
+  readonly resolvedWorkspace: string | undefined;
+}): ConsumedOutputRecord {
+  if (
+    input.workspace &&
+    input.record.workspace &&
+    resolve(input.record.workspace) !== input.workspace &&
+    resolve(input.record.workspace) !== input.resolvedWorkspace &&
+    input.record.resolvedWorkspace !== input.workspace &&
+    input.record.resolvedWorkspace !== input.resolvedWorkspace
+  ) {
+    return {
+      ...input.record,
+      valid: false,
+      evidence: [
+        ...input.record.evidence,
+        `ledger workspace ${input.record.workspace} does not match dirty workspace ${input.workspace}`,
+      ],
+    };
+  }
+  return input.record;
 }
 
 export function consumedDebt(record: ConsumedOutputRecord): readonly ProjectDebtItem[] {
