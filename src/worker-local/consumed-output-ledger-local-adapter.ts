@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
+import { constants } from "node:fs";
 import {
   link,
   mkdir,
+  open,
   readFile,
   stat,
   unlink,
@@ -86,8 +88,9 @@ export async function captureLocalTerminalOutputBackup(input: {
   readonly sourcePatchPath?: string;
   readonly gitBinaryPath?: string;
 }): Promise<LocalTerminalOutputBackupCapture> {
+  await ensurePrivateDirectory(input.archiveRoot);
   const archivePath = join(input.archiveRoot, safeLedgerName(input.archiveName));
-  await mkdir(archivePath, { recursive: true });
+  await ensurePrivateDirectory(archivePath);
   const statusPath = join(archivePath, "git-status.txt");
   const patchPath = join(archivePath, "tracked.diff");
   const numstatPath = join(archivePath, "tracked.numstat");
@@ -150,7 +153,8 @@ export class LocalIntegratedOutputLedgerAdapter
       this.options.archiveRoot,
       `${safeLedgerName(input.attempt.workerOutput.workerJobId)}-integrated-${input.commitSha.slice(0, 12)}-${safeLedgerName(input.attempt.attemptId)}`,
     );
-    await mkdir(archivePath, { recursive: true });
+    await ensurePrivateDirectory(this.options.archiveRoot);
+    await ensurePrivateDirectory(archivePath);
     const statusPath = join(archivePath, "git-status.txt");
     const patchPath = join(archivePath, "tracked.diff");
     const numstatPath = join(archivePath, "tracked.numstat");
@@ -376,7 +380,7 @@ async function publishExactJson(path: string, value: unknown): Promise<void> {
 }
 
 async function publishExactFile(path: string, sourcePath: string): Promise<void> {
-  await publishExactBytes(path, await readFile(sourcePath));
+  await publishExactBytes(path, await readRegularFileNoFollow(sourcePath));
 }
 
 async function anyFileHasBytes(paths: readonly string[]): Promise<boolean> {
@@ -393,16 +397,114 @@ async function publishExactText(path: string, contents: string): Promise<void> {
 async function publishExactBytes(path: string, contents: Buffer): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmpPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmpPath, contents, { flag: "wx" });
+  await writeFile(tmpPath, contents, { flag: "wx", mode: 0o600 });
   try {
     await link(tmpPath, path);
   } catch (error) {
     if (!isNodeErrorCode(error, "EEXIST")) throw error;
-    if (!(await readFile(path)).equals(contents)) {
-      throw new Error("integrated_output_ledger_preparation_conflict");
-    }
   } finally {
     await unlink(tmpPath).catch(() => undefined);
+  }
+  await assertExactPrivateFile(path, contents);
+}
+
+async function ensurePrivateDirectory(path: string): Promise<void> {
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const item = await handle.stat();
+    if (!item.isDirectory()) {
+      throw new Error("integrated_output_ledger_archive_unsafe");
+    }
+    await handle.chmod(0o700);
+    if (((await handle.stat()).mode & 0o777) !== 0o700) {
+      throw new Error("integrated_output_ledger_archive_unsafe");
+    }
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "integrated_output_ledger_archive_unsafe"
+    ) {
+      throw error;
+    }
+    throw new Error("integrated_output_ledger_archive_unsafe");
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function readRegularFileNoFollow(path: string): Promise<Buffer> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = await handle.stat();
+    if (!opened.isFile()) {
+      throw new Error("integrated_output_ledger_source_patch_unsafe");
+    }
+    const contents = await handle.readFile();
+    const confirmed = await handle.stat();
+    if (
+      confirmed.dev !== opened.dev ||
+      confirmed.ino !== opened.ino ||
+      confirmed.size !== opened.size ||
+      confirmed.mtimeMs !== opened.mtimeMs
+    ) {
+      throw new Error("integrated_output_ledger_source_patch_unsafe");
+    }
+    return contents;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "integrated_output_ledger_source_patch_unsafe"
+    ) {
+      throw error;
+    }
+    throw new Error("integrated_output_ledger_source_patch_unsafe");
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function assertExactPrivateFile(
+  path: string,
+  expected: Buffer,
+): Promise<void> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.size !== expected.byteLength) {
+      throw new Error("integrated_output_ledger_preparation_conflict");
+    }
+    const actual = await handle.readFile();
+    if (!actual.equals(expected)) {
+      throw new Error("integrated_output_ledger_preparation_conflict");
+    }
+    await handle.chmod(0o600);
+    const confirmed = await handle.stat();
+    if (
+      confirmed.dev !== opened.dev ||
+      confirmed.ino !== opened.ino ||
+      confirmed.size !== opened.size ||
+      confirmed.mtimeMs !== opened.mtimeMs ||
+      (confirmed.mode & 0o777) !== 0o600
+    ) {
+      throw new Error("integrated_output_ledger_preparation_unsafe");
+    }
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (
+        error.message === "integrated_output_ledger_preparation_conflict" ||
+        error.message === "integrated_output_ledger_preparation_unsafe"
+      )
+    ) {
+      throw error;
+    }
+    throw new Error("integrated_output_ledger_preparation_unsafe");
+  } finally {
+    await handle?.close();
   }
 }
 
