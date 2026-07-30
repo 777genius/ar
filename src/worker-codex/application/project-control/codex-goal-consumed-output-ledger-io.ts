@@ -4,6 +4,7 @@ import { open, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
   consumedOutputRecordFor,
+  consumedOutputRecordForAttempt,
   readConsumedOutputLedgers,
   type ConsumedOutputRecord,
   type ConsumedOutputLedger,
@@ -44,16 +45,28 @@ export function resolveRejectedUncapturedOutputPatchSha256(input: {
   readonly ledger: ConsumedOutputLedger;
   readonly jobId: string;
   readonly workspacePath: string;
+  readonly expectedPatchSha256: string;
 }): string | undefined {
   if (hasRelevantConsumedOutputDebt(input.ledger, input.jobId)) {
     return undefined;
   }
-  const record = consumedOutputRecordFor({
+  const expectedPatchSha256 = input.expectedPatchSha256.toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(expectedPatchSha256)) {
+    return undefined;
+  }
+  const record = consumedOutputRecordForAttempt({
     ledger: input.ledger,
     jobId: input.jobId,
     workspacePath: input.workspacePath,
+    attemptId: `uncaptured-rejection-${expectedPatchSha256}`,
   });
-  return record ? rejectedUncapturedOutputPatchSha256(record) : undefined;
+  if (
+    !record ||
+    rejectedUncapturedOutputPatchSha256(record) !== expectedPatchSha256
+  ) {
+    return undefined;
+  }
+  return expectedPatchSha256;
 }
 
 export async function assertCodexGoalProjectJobNotTerminal(input: {
@@ -86,6 +99,8 @@ export async function assertCodexGoalProjectJobNotTerminal(input: {
       ledger,
       jobId: input.jobId,
       workspacePath: input.workspacePath,
+      expectedPatchSha256:
+        input.rejectedUncapturedContinuationPatchSha256,
     });
     if (
       patchSha256 ===
