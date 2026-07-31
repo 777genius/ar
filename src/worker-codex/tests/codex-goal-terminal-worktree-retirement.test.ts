@@ -195,6 +195,37 @@ describe("terminal project worktree retirement", () => {
       }),
     ).rejects.toThrow("project_control_retire_worktree_root_required");
   });
+
+  it("accepts immutable output archived under the bound controller job", async () => {
+    const fixture = await createFixture({ archiveOwner: "controller" });
+
+    await expect(
+      retireTerminalProjectWorktree({
+        permit: fixture.permit,
+        permitSha256: "2".repeat(64),
+        confirm: false,
+        deps: stoppedDeps(),
+      }),
+    ).resolves.toMatchObject({
+      status: "noop",
+      jobId: fixture.workerJobId,
+      terminalStatus: "integrated",
+      workspaceExists: true,
+    });
+  });
+
+  it("denies immutable output archived under a different controller job", async () => {
+    const fixture = await createFixture({ archiveOwner: "other-controller" });
+
+    await expect(
+      retireTerminalProjectWorktree({
+        permit: fixture.permit,
+        permitSha256: "3".repeat(64),
+        confirm: false,
+        deps: stoppedDeps(),
+      }),
+    ).rejects.toThrow("project_control_retire_archive_outside_project");
+  });
 });
 
 describe("terminal worktree retirement CLI", () => {
@@ -325,7 +356,11 @@ function createTestBroker(input: {
 
 type Fixture = Awaited<ReturnType<typeof createFixture>>;
 
-async function createFixture() {
+async function createFixture(
+  options: {
+    readonly archiveOwner?: "registry" | "controller" | "other-controller";
+  } = {},
+) {
   const root = await realpath(
     await mkdtemp(join(tmpdir(), "terminal-worktree-retirement-")),
   );
@@ -361,12 +396,13 @@ async function createFixture() {
   await createStoredJob(seed, controllerJobId, controllerWorkspace, true);
   await createStoredJob(seed, workerJobId, workerWorkspace);
   const controllerJobRoot = join(root, "worker-jobs", controllerJobId);
-  const evidenceRoot = join(
-    root,
-    "worker-jobs",
-    "archives",
-    `${workerJobId}-integrated`,
-  );
+  const archiveRoot =
+    options.archiveOwner === "controller"
+      ? join(controllerJobRoot, "archives")
+      : options.archiveOwner === "other-controller"
+        ? join(root, "worker-jobs", "project-controller-other-v1", "archives")
+        : join(root, "worker-jobs", "archives");
+  const evidenceRoot = join(archiveRoot, `${workerJobId}-integrated`);
   await mkdir(join(ledgerRoot, "items"), { recursive: true });
   await mkdir(evidenceRoot, { recursive: true });
   const statusPath = join(evidenceRoot, "git-status.txt");

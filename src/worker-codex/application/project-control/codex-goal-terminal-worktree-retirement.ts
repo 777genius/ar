@@ -129,6 +129,7 @@ export async function retireTerminalProjectWorktree(input: {
     await assertImmutableTerminalArchive({
       record: terminalRecord,
       registryRootDir: controller.registryRootDir,
+      controllerJobRootDir: controller.controller.jobRootDir,
       jobRootDir: manifest.jobRootDir,
       jobId: manifest.jobId,
     });
@@ -397,6 +398,7 @@ async function terminalRecordFor(input: {
 async function assertImmutableTerminalArchive(input: {
   readonly record: ConsumedOutputRecord;
   readonly registryRootDir: string;
+  readonly controllerJobRootDir: string;
   readonly jobRootDir: string;
   readonly jobId: string;
 }): Promise<void> {
@@ -414,6 +416,7 @@ async function assertImmutableTerminalArchive(input: {
   }
   const archiveRoots = [
     join(dirname(resolve(input.registryRootDir)), "archives"),
+    join(resolve(input.controllerJobRootDir), "archives"),
     join(resolve(input.jobRootDir), "archives"),
   ];
   for (const path of paths) {
