@@ -130,6 +130,7 @@
   "bin": {
     "subscription-runtime-codex-goal": "dist/worker-codex/codex-goal-cli.js",
     "subscription-runtime-codex-goal-mcp": "dist/worker-codex/codex-goal-mcp.js",
+    "subscription-runtime-retire-terminal-worktree": "dist/worker-codex/codex-goal-terminal-worktree-retirement-cli.js",
     "subscription-runtime-openai-codex-bridge": "dist/openai-compatible-codex/cli.js",
     "subscription-runtime-agent-task": "dist/agent-task/cli.js",
     "subscription-runtime-agent-runtime-task": "dist/agent-runtime-task/cli.js",

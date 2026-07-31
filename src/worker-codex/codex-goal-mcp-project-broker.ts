@@ -31,13 +31,9 @@ import {
   codexProjectAdmissionGate,
   type CodexProjectAdmissionDeps,
 } from "./application/project-control/codex-goal-project-admission";
-import {
-  withProjectPreStartAdmissionLaunchAuthorization,
-} from "./application/project-control/codex-goal-project-pre-start-launch-authorization";
+import { withProjectPreStartAdmissionLaunchAuthorization } from "./application/project-control/codex-goal-project-pre-start-launch-authorization";
 import type { ProjectPreStartAdmissionLaunchWorkspaceMode } from "./application/project-control/codex-goal-project-pre-start-admission";
-import {
-  assertCodexGoalProjectJobNotTerminal,
-} from "./application/project-control/codex-goal-consumed-output-ledger-io";
+import { assertCodexGoalProjectJobNotTerminal } from "./application/project-control/codex-goal-consumed-output-ledger-io";
 import { decideCodexGoalProjectStop } from "./application/project-control/codex-goal-project-stop-policy";
 import type {
   CaptureReviewedWorkerOutputInput,
@@ -112,6 +108,9 @@ export type CodexProjectControlBrokerInput = {
   readonly createManifest?: CodexGoalJobManifestInput;
   readonly createOverwrite?: boolean;
   readonly createWorktreeInput?: CodexGoalProjectCreateWorktreeInput;
+  readonly retireWorktreeEffect?: (
+    workspacePath: string,
+  ) => Promise<ProjectControlOperationResult>;
   readonly admittedInputPatchTarget?: {
     readonly jobId: string;
     readonly workspacePath: string;
@@ -133,8 +132,7 @@ export type CodexProjectControlBrokerInput = {
   >;
   readonly reviewedContinuation?: ReviewedWorkerOutputSnapshot;
   readonly rejectedUncapturedTerminalHandoffRecovery?:
-    | { readonly patchSha256: string }
-    | undefined;
+    { readonly patchSha256: string } | undefined;
 };
 
 export function createCodexProjectControlBroker(
@@ -143,14 +141,18 @@ export function createCodexProjectControlBroker(
   const admittedInputPatchTarget =
     input.admittedInputPatchTarget ??
     ((input.startAdmissionWorkspaceMode === "admitted_input_patch" &&
-        input.startManifest &&
-        input.startWorkspaceLease) ||
-      (input.createWorktreeInput?.inputPatch && input.createWorktreeInput.jobId)
+      input.startManifest &&
+      input.startWorkspaceLease) ||
+    (input.createWorktreeInput?.inputPatch && input.createWorktreeInput.jobId)
       ? {
-          jobId: input.startManifest?.jobId ??
-            input.createWorktreeInput?.jobId ?? "",
-          workspacePath: input.startWorkspaceLease?.canonicalWorkspacePath ??
-            input.createWorktreeInput?.path ?? "",
+          jobId:
+            input.startManifest?.jobId ??
+            input.createWorktreeInput?.jobId ??
+            "",
+          workspacePath:
+            input.startWorkspaceLease?.canonicalWorkspacePath ??
+            input.createWorktreeInput?.path ??
+            "",
         }
       : undefined);
   return new ProjectControlBroker(
@@ -165,24 +167,21 @@ export function createCodexProjectControlBroker(
         scope: input.scope,
         deps: input.admissionDeps,
         ...((input.startAdmissionWorkspaceMode ===
-              "admitted_input_patch_continuation" ||
-            input.startAdmissionWorkspaceMode ===
-              "admitted_input_patch_runtime_continuation" ||
-            input.startAdmissionWorkspaceMode ===
-              "clean_capacity_continuation") &&
-            input.startManifest &&
-            input.startWorkspaceLease
+          "admitted_input_patch_continuation" ||
+          input.startAdmissionWorkspaceMode ===
+            "admitted_input_patch_runtime_continuation" ||
+          input.startAdmissionWorkspaceMode ===
+            "clean_capacity_continuation") &&
+        input.startManifest &&
+        input.startWorkspaceLease
           ? {
               capacityContinuationTarget: {
                 jobId: input.startManifest.jobId,
-                workspacePath:
-                  input.startWorkspaceLease.canonicalWorkspacePath,
+                workspacePath: input.startWorkspaceLease.canonicalWorkspacePath,
               },
             }
           : {}),
-        ...(admittedInputPatchTarget
-          ? { admittedInputPatchTarget }
-          : {}),
+        ...(admittedInputPatchTarget ? { admittedInputPatchTarget } : {}),
       }),
     },
   );
@@ -229,9 +228,11 @@ function codexProjectControlPorts(
         });
         if (input.reviewedOutputCapture) {
           assertReviewedOutputWorkerStopped(input.reviewLaunch, status);
-          await reviewedOutputDeps.continuationEnvironment.sanitizeDependencyRootLinks({
-            workspacePath: input.reviewLaunch.config.workspacePath,
-          });
+          await reviewedOutputDeps.continuationEnvironment.sanitizeDependencyRootLinks(
+            {
+              workspacePath: input.reviewLaunch.config.workspacePath,
+            },
+          );
           reviewedOutput = await captureReviewedWorkerOutputLocked(
             reviewedOutputDeps,
             {
@@ -308,9 +309,8 @@ function codexProjectControlPorts(
               ? { reviewedContinuation: input.reviewedContinuation }
               : {}),
             ...(input.startAdmissionWorkspaceMode ===
-                "admitted_input_patch_continuation" ||
-              input.startAdmissionWorkspaceMode ===
-                "clean_capacity_continuation"
+              "admitted_input_patch_continuation" ||
+            input.startAdmissionWorkspaceMode === "clean_capacity_continuation"
               ? { capacityContinuation: true as const }
               : {}),
             ...(input.rejectedUncapturedTerminalHandoffRecovery
@@ -344,15 +344,15 @@ function codexProjectControlPorts(
           try {
             command = input.startManifest
               ? await withProjectPreStartAdmissionLaunchAuthorization(
-                {
-                  manifest: input.startManifest,
-                  scope: input.scope,
-                  ...(input.startAdmissionWorkspaceMode
-                    ? { workspaceMode: input.startAdmissionWorkspaceMode }
-                    : {}),
-                },
-                async () => await startCodexGoalTmux(startLaunch),
-              )
+                  {
+                    manifest: input.startManifest,
+                    scope: input.scope,
+                    ...(input.startAdmissionWorkspaceMode
+                      ? { workspaceMode: input.startAdmissionWorkspaceMode }
+                      : {}),
+                  },
+                  async () => await startCodexGoalTmux(startLaunch),
+                )
               : await startCodexGoalTmux(startLaunch);
           } finally {
             if (previousBrokeredStart === undefined) {
@@ -438,6 +438,12 @@ function codexProjectControlPorts(
       },
     },
     workspace: {
+      async retireWorktree(workspacePath) {
+        if (!input.retireWorktreeEffect) {
+          throw new Error("project_control_retire_worktree_effect_required");
+        }
+        return input.retireWorktreeEffect(workspacePath);
+      },
       async resolveRevision(worktreeInput) {
         const sourceWorkspacePath = await realpath(
           worktreeInput.sourceWorkspacePath ?? input.controller.workspacePath,
@@ -632,14 +638,23 @@ export async function fastForwardExistingProjectWorktree(input: {
     throw new Error("project_control_existing_worktree_fast_forward_unpinned");
   }
   if (!request.newBranch || request.sourceRef !== request.newBranch) {
-    throw new Error("project_control_existing_worktree_fast_forward_branch_required");
+    throw new Error(
+      "project_control_existing_worktree_fast_forward_branch_required",
+    );
   }
   if (request.inputPatch) {
-    throw new Error("project_control_existing_worktree_fast_forward_patch_forbidden");
+    throw new Error(
+      "project_control_existing_worktree_fast_forward_patch_forbidden",
+    );
   }
   const materializedRealPath = await realpath(request.path);
-  if (!request.expectedRealPath || materializedRealPath !== request.expectedRealPath) {
-    throw new Error("project_control_existing_worktree_fast_forward_real_path_changed");
+  if (
+    !request.expectedRealPath ||
+    materializedRealPath !== request.expectedRealPath
+  ) {
+    throw new Error(
+      "project_control_existing_worktree_fast_forward_real_path_changed",
+    );
   }
   if (
     await projectControlRealPathOutsideWorkspaceScope(
@@ -647,7 +662,9 @@ export async function fastForwardExistingProjectWorktree(input: {
       input.scope,
     )
   ) {
-    throw new Error("project_control_existing_worktree_real_path_outside_scope");
+    throw new Error(
+      "project_control_existing_worktree_real_path_outside_scope",
+    );
   }
   const [sourceCommonDir, worktreeCommonDir] = await Promise.all([
     resolveGitCommonDir(request.expectedSourceRealPath),
@@ -671,30 +688,41 @@ export async function fastForwardExistingProjectWorktree(input: {
   });
   const current = (
     await execGitStdout(["-C", materializedRealPath, "rev-parse", "HEAD"])
-  ).trim().toLowerCase();
+  )
+    .trim()
+    .toLowerCase();
   const expectedCurrent = fastForward.expectedCurrentRevision.toLowerCase();
   const expectedNext = request.expectedRevision.toLowerCase();
   if (current === expectedNext) {
     if (expectedCurrent === expectedNext) return false;
     try {
-      if (await isGitAncestor({
-        workspacePath: materializedRealPath,
-        ancestor: expectedCurrent,
-        descendant: expectedNext,
-      })) return false;
+      if (
+        await isGitAncestor({
+          workspacePath: materializedRealPath,
+          ancestor: expectedCurrent,
+          descendant: expectedNext,
+        })
+      )
+        return false;
     } catch {
       // The regular current-mismatch error below is the stable public result.
     }
   }
   if (current !== expectedCurrent) {
-    throw new Error("project_control_existing_worktree_fast_forward_current_mismatch");
+    throw new Error(
+      "project_control_existing_worktree_fast_forward_current_mismatch",
+    );
   }
-  if (!await isGitAncestor({
-    workspacePath: materializedRealPath,
-    ancestor: expectedCurrent,
-    descendant: expectedNext,
-  })) {
-    throw new Error("project_control_existing_worktree_fast_forward_non_ancestor");
+  if (
+    !(await isGitAncestor({
+      workspacePath: materializedRealPath,
+      ancestor: expectedCurrent,
+      descendant: expectedNext,
+    }))
+  ) {
+    throw new Error(
+      "project_control_existing_worktree_fast_forward_non_ancestor",
+    );
   }
   await execGit([
     "-c",
@@ -710,7 +738,9 @@ export async function fastForwardExistingProjectWorktree(input: {
   try {
     const confirmed = (
       await execGitStdout(["-C", materializedRealPath, "rev-parse", "HEAD"])
-    ).trim().toLowerCase();
+    )
+      .trim()
+      .toLowerCase();
     const statusAfter = await execGitStdout([
       "-C",
       materializedRealPath,
@@ -718,7 +748,9 @@ export async function fastForwardExistingProjectWorktree(input: {
       "--porcelain",
     ]);
     if (confirmed !== expectedNext || statusAfter.trim().length > 0) {
-      throw new Error("project_control_existing_worktree_fast_forward_verification_failed");
+      throw new Error(
+        "project_control_existing_worktree_fast_forward_verification_failed",
+      );
     }
   } catch (error) {
     const rollback = await rollbackFastForwardRevision({
@@ -748,7 +780,9 @@ async function rollbackFastForwardRevision(input: {
 }): Promise<string> {
   const observed = (
     await execGitStdout(["-C", input.workspacePath, "rev-parse", "HEAD"])
-  ).trim().toLowerCase();
+  )
+    .trim()
+    .toLowerCase();
   if (observed !== input.expectedNext) return "skipped_head_changed";
   const status = await execGitStdout([
     "-C",
@@ -772,7 +806,9 @@ async function rollbackFastForwardRevision(input: {
   }
   const restored = (
     await execGitStdout(["-C", input.workspacePath, "rev-parse", "HEAD"])
-  ).trim().toLowerCase();
+  )
+    .trim()
+    .toLowerCase();
   return restored === input.expectedCurrent ? "revision" : "failed_preserved";
 }
 

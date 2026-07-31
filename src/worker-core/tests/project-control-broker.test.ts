@@ -25,21 +25,28 @@ describe("ProjectControlBroker", () => {
   it("executes allowed project-scoped operations through ports and audits decisions", async () => {
     const calls: string[] = [];
     const audits: ProjectControlBrokerEvent[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: scope(),
-    }, ports(calls, audits, allowAdmission()));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports(calls, audits, allowAdmission()),
+    );
 
-    await expect(broker.createJob({
-      jobId: "infinity-context-child-v1",
-      registryRoot: "/var/data/worker-jobs/registry",
-      workspacePath: "/work/infinity-context-child",
-      tmuxSession: "infinity-context-child-v1",
-    })).resolves.toMatchObject({ status: "applied" });
-    await expect(broker.pushBranch({
-      branch: "main",
-      remote: "origin",
-    })).resolves.toMatchObject({ status: "applied" });
+    await expect(
+      broker.createJob({
+        jobId: "infinity-context-child-v1",
+        registryRoot: "/var/data/worker-jobs/registry",
+        workspacePath: "/work/infinity-context-child",
+        tmuxSession: "infinity-context-child-v1",
+      }),
+    ).resolves.toMatchObject({ status: "applied" });
+    await expect(
+      broker.pushBranch({
+        branch: "main",
+        remote: "origin",
+      }),
+    ).resolves.toMatchObject({ status: "applied" });
 
     expect(calls).toEqual(["createJob:infinity-context-child-v1", "push:main"]);
     expect(audits.map((event) => event.type)).toEqual([
@@ -53,17 +60,22 @@ describe("ProjectControlBroker", () => {
   it("fails closed before side effects when admission is not configured", async () => {
     const calls: string[] = [];
     const audits: ProjectControlBrokerEvent[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: scope(),
-    }, ports(calls, audits));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports(calls, audits),
+    );
 
-    await expect(broker.createJob({
-      jobId: "infinity-context-child-v1",
-      registryRoot: "/var/data/worker-jobs/registry",
-      workspacePath: "/work/infinity-context-child",
-      tmuxSession: "infinity-context-child-v1",
-    })).rejects.toMatchObject({
+    await expect(
+      broker.createJob({
+        jobId: "infinity-context-child-v1",
+        registryRoot: "/var/data/worker-jobs/registry",
+        workspacePath: "/work/infinity-context-child",
+        tmuxSession: "infinity-context-child-v1",
+      }),
+    ).rejects.toMatchObject({
       decision: {
         allowed: false,
         reason: ProjectAdmissionDecisionReason.SnapshotUnavailable,
@@ -78,18 +90,57 @@ describe("ProjectControlBroker", () => {
     ]);
   });
 
+  it("authorizes, audits and delegates terminal worktree retirement", async () => {
+    const calls: string[] = [];
+    const audits: ProjectControlBrokerEvent[] = [];
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports(calls, audits),
+    );
+
+    await expect(
+      broker.retireWorktree({
+        jobId: "infinity-context-child-v1",
+        registryRoot: "/var/data/worker-jobs/registry",
+        workspacePath: "/work/infinity-context-child",
+      }),
+    ).resolves.toMatchObject({
+      status: "applied",
+      resourceId: "/work/infinity-context-child",
+    });
+
+    expect(calls).toEqual(["retireWorktree:/work/infinity-context-child"]);
+    expect(audits).toMatchObject([
+      {
+        operation: "retire_worktree",
+        decision: {
+          allowed: true,
+          operation: "retire_worktree",
+        },
+      },
+    ]);
+  });
+
   it("fails closed and does not call ports when a job is outside project scope", async () => {
     const calls: string[] = [];
     const audits: ProjectControlBrokerEvent[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: scope(),
-    }, ports(calls, audits));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports(calls, audits),
+    );
 
-    await expect(broker.startWorker({
-      jobId: "quanta-child-v1",
-      tmuxSession: "quanta-child-v1",
-    })).rejects.toMatchObject({
+    await expect(
+      broker.startWorker({
+        jobId: "quanta-child-v1",
+        tmuxSession: "quanta-child-v1",
+      }),
+    ).rejects.toMatchObject({
       decision: {
         allowed: false,
         reason: AccessDecisionReason.JobPrefixDenied,
@@ -109,20 +160,25 @@ describe("ProjectControlBroker", () => {
   it("fails closed when a project job requests an account outside scope", async () => {
     const calls: string[] = [];
     const audits: ProjectControlBrokerEvent[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: {
-        ...scope(),
-        allowedAccountIds: ["account-a"],
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: {
+          ...scope(),
+          allowedAccountIds: ["account-a"],
+        },
       },
-    }, ports(calls, audits));
+      ports(calls, audits),
+    );
 
-    await expect(broker.createJob({
-      jobId: "infinity-context-child-v1",
-      workspacePath: "/work/infinity-context-child",
-      tmuxSession: "infinity-context-child-v1",
-      accounts: ["account-b"],
-    })).rejects.toMatchObject({
+    await expect(
+      broker.createJob({
+        jobId: "infinity-context-child-v1",
+        workspacePath: "/work/infinity-context-child",
+        tmuxSession: "infinity-context-child-v1",
+        accounts: ["account-b"],
+      }),
+    ).rejects.toMatchObject({
       decision: {
         allowed: false,
         reason: AccessDecisionReason.AccountDenied,
@@ -139,20 +195,25 @@ describe("ProjectControlBroker", () => {
   it("fails closed when starting an existing project job with an account outside scope", async () => {
     const calls: string[] = [];
     const audits: ProjectControlBrokerEvent[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: {
-        ...scope(),
-        allowedAccountIds: ["account-a"],
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: {
+          ...scope(),
+          allowedAccountIds: ["account-a"],
+        },
       },
-    }, ports(calls, audits));
+      ports(calls, audits),
+    );
 
-    await expect(broker.startWorker({
-      jobId: "infinity-context-child-v1",
-      workspacePath: "/work/infinity-context-child",
-      tmuxSession: "infinity-context-child-v1",
-      accounts: ["account-b"],
-    })).rejects.toMatchObject({
+    await expect(
+      broker.startWorker({
+        jobId: "infinity-context-child-v1",
+        workspacePath: "/work/infinity-context-child",
+        tmuxSession: "infinity-context-child-v1",
+        accounts: ["account-b"],
+      }),
+    ).rejects.toMatchObject({
       decision: {
         allowed: false,
         reason: AccessDecisionReason.AccountDenied,
@@ -168,17 +229,22 @@ describe("ProjectControlBroker", () => {
 
   it("fails closed when a worker workspace resolves outside project roots", async () => {
     const calls: string[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: scope(),
-    }, ports(calls, [], allowAdmission()));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports(calls, [], allowAdmission()),
+    );
 
-    await expect(broker.startWorker({
-      jobId: "infinity-context-child-v1",
-      workspacePath: "/work/infinity-context-child",
-      realWorkspacePath: "/other-project/infinity-context-child",
-      tmuxSession: "infinity-context-child-v1",
-    })).rejects.toMatchObject({
+    await expect(
+      broker.startWorker({
+        jobId: "infinity-context-child-v1",
+        workspacePath: "/work/infinity-context-child",
+        realWorkspacePath: "/other-project/infinity-context-child",
+        tmuxSession: "infinity-context-child-v1",
+      }),
+    ).rejects.toMatchObject({
       decision: {
         allowed: false,
         reason: AccessDecisionReason.PathOutsideScope,
@@ -190,17 +256,22 @@ describe("ProjectControlBroker", () => {
 
   it("fails closed when a review marker workspace resolves outside project roots", async () => {
     const calls: string[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: scope(),
-    }, ports(calls, []));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports(calls, []),
+    );
 
-    await expect(broker.writeReviewMarker({
-      jobId: "infinity-context-child-v1",
-      workspacePath: "/work/infinity-context-child",
-      realWorkspacePath: "/other-project/infinity-context-child",
-      markerType: "review",
-    })).rejects.toMatchObject({
+    await expect(
+      broker.writeReviewMarker({
+        jobId: "infinity-context-child-v1",
+        workspacePath: "/work/infinity-context-child",
+        realWorkspacePath: "/other-project/infinity-context-child",
+        markerType: "review",
+      }),
+    ).rejects.toMatchObject({
       decision: {
         allowed: false,
         reason: AccessDecisionReason.PathOutsideScope,
@@ -212,18 +283,23 @@ describe("ProjectControlBroker", () => {
 
   it("fails closed when a worktree source resolves outside project roots", async () => {
     const calls: string[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: scope(),
-    }, ports(calls, [], allowAdmission()));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports(calls, [], allowAdmission()),
+    );
 
-    await expect(broker.createWorktree({
-      sourceWorkspacePath: "/work/infinity-context-main",
-      realSourceWorkspacePath: "/other-project/infinity-context-main",
-      path: "/work/infinity-context-child",
-      baseBranch: "main",
-      workerRole: ProjectAdmissionWorkerRole.Reviewer,
-    })).rejects.toMatchObject({
+    await expect(
+      broker.createWorktree({
+        sourceWorkspacePath: "/work/infinity-context-main",
+        realSourceWorkspacePath: "/other-project/infinity-context-main",
+        path: "/work/infinity-context-child",
+        baseBranch: "main",
+        workerRole: ProjectAdmissionWorkerRole.Reviewer,
+      }),
+    ).rejects.toMatchObject({
       decision: {
         allowed: false,
         reason: AccessDecisionReason.PathOutsideScope,
@@ -235,18 +311,23 @@ describe("ProjectControlBroker", () => {
 
   it("fails closed when an existing worktree target resolves outside project roots", async () => {
     const calls: string[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: scope(),
-    }, ports(calls, [], allowAdmission()));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports(calls, [], allowAdmission()),
+    );
 
-    await expect(broker.createWorktree({
-      sourceWorkspacePath: "/work/infinity-context-main",
-      path: "/work/infinity-context-child",
-      realPath: "/other-project/infinity-context-child",
-      baseBranch: "main",
-      workerRole: ProjectAdmissionWorkerRole.Reviewer,
-    })).rejects.toMatchObject({
+    await expect(
+      broker.createWorktree({
+        sourceWorkspacePath: "/work/infinity-context-main",
+        path: "/work/infinity-context-child",
+        realPath: "/other-project/infinity-context-child",
+        baseBranch: "main",
+        workerRole: ProjectAdmissionWorkerRole.Reviewer,
+      }),
+    ).rejects.toMatchObject({
       decision: {
         allowed: false,
         reason: AccessDecisionReason.PathOutsideScope,
@@ -258,24 +339,31 @@ describe("ProjectControlBroker", () => {
 
   it("creates worktrees from allowed source refs onto worker branches", async () => {
     const calls: string[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: scope(),
-    }, ports(calls, [], allowAdmission()));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports(calls, [], allowAdmission()),
+    );
 
-    await expect(broker.createWorktree({
-      sourceWorkspacePath: "/work/infinity-context",
-      path: "/work/infinity-context-child",
-      sourceRef: "main",
-      newBranch: "refactor/infinity-child-v1",
-    })).resolves.toMatchObject({ status: "applied" });
+    await expect(
+      broker.createWorktree({
+        sourceWorkspacePath: "/work/infinity-context",
+        path: "/work/infinity-context-child",
+        sourceRef: "main",
+        newBranch: "refactor/infinity-child-v1",
+      }),
+    ).resolves.toMatchObject({ status: "applied" });
 
-    await expect(broker.createWorktree({
-      sourceWorkspacePath: "/work/infinity-context",
-      path: "/work/infinity-context-child-2",
-      sourceRef: "main",
-      newBranch: "feature/private",
-    })).rejects.toMatchObject({
+    await expect(
+      broker.createWorktree({
+        sourceWorkspacePath: "/work/infinity-context",
+        path: "/work/infinity-context-child-2",
+        sourceRef: "main",
+        newBranch: "feature/private",
+      }),
+    ).rejects.toMatchObject({
       decision: {
         allowed: false,
         reason: AccessDecisionReason.BranchDenied,
@@ -287,23 +375,31 @@ describe("ProjectControlBroker", () => {
 
   it("does not let isolated workspace writers become coordinators", async () => {
     const calls: string[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.IsolatedWorkspaceWrite,
-      scope: scope(),
-    }, ports(calls, []));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.IsolatedWorkspaceWrite,
+        scope: scope(),
+      },
+      ports(calls, []),
+    );
 
-    await expect(broker.createWorktree({
-      path: "/work/infinity-context-child",
-      baseBranch: "main",
-    })).rejects.toBeInstanceOf(ProjectControlDeniedError);
+    await expect(
+      broker.createWorktree({
+        path: "/work/infinity-context-child",
+        baseBranch: "main",
+      }),
+    ).rejects.toBeInstanceOf(ProjectControlDeniedError);
     expect(calls).toEqual([]);
   });
 
   it("exposes a safe denial helper for adapters", async () => {
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: scope(),
-    }, ports([], []));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports([], []),
+    );
 
     try {
       await broker.pushBranch({ branch: "feature/outside", remote: "origin" });
@@ -318,29 +414,40 @@ describe("ProjectControlBroker", () => {
   it("blocks producer work before broker side effects when project output debt exists", async () => {
     const calls: string[] = [];
     const audits: ProjectControlBrokerEvent[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: scope(),
-    }, ports(calls, audits, admission({
-      allowed: false,
-      status: ProjectAdmissionDecisionStatus.Denied,
-      reason: ProjectAdmissionDecisionReason.OutputDebtPresent,
-      workerRole: ProjectAdmissionWorkerRole.Producer,
-      evidence: ["dirty completed worker output blocks producer work"],
-      debt: [{
-        reason: ProjectDebtReason.UnconsumedCompletedJob,
-        subject: "infinity-context-worker-v1",
-        evidence: ["reviewed is not consumed"],
-      }],
-    })));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports(
+        calls,
+        audits,
+        admission({
+          allowed: false,
+          status: ProjectAdmissionDecisionStatus.Denied,
+          reason: ProjectAdmissionDecisionReason.OutputDebtPresent,
+          workerRole: ProjectAdmissionWorkerRole.Producer,
+          evidence: ["dirty completed worker output blocks producer work"],
+          debt: [
+            {
+              reason: ProjectDebtReason.UnconsumedCompletedJob,
+              subject: "infinity-context-worker-v1",
+              evidence: ["reviewed is not consumed"],
+            },
+          ],
+        }),
+      ),
+    );
 
-    await expect(broker.createJob({
-      jobId: "infinity-context-child-v1",
-      registryRoot: "/var/data/worker-jobs/registry",
-      workspacePath: "/work/infinity-context-child",
-      tmuxSession: "infinity-context-child-v1",
-      workerRole: ProjectAdmissionWorkerRole.Producer,
-    })).rejects.toBeInstanceOf(ProjectControlAdmissionDeniedError);
+    await expect(
+      broker.createJob({
+        jobId: "infinity-context-child-v1",
+        registryRoot: "/var/data/worker-jobs/registry",
+        workspacePath: "/work/infinity-context-child",
+        tmuxSession: "infinity-context-child-v1",
+        workerRole: ProjectAdmissionWorkerRole.Producer,
+      }),
+    ).rejects.toBeInstanceOf(ProjectControlAdmissionDeniedError);
 
     expect(calls).toEqual([]);
     expect(audits.map((event) => event.type)).toEqual([
@@ -351,54 +458,76 @@ describe("ProjectControlBroker", () => {
 
   it("allows reviewer work through the broker when admission is drain-only", async () => {
     const calls: string[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: scope(),
-    }, ports(calls, [], admission({
-      allowed: true,
-      status: ProjectAdmissionDecisionStatus.AllowedForDrainOnly,
-      reason: ProjectAdmissionDecisionReason.OutputDebtPresent,
-      workerRole: ProjectAdmissionWorkerRole.Reviewer,
-      evidence: ["debt exists but reviewer drains it"],
-      debt: [{
-        reason: ProjectDebtReason.InactiveDirtyWorkspace,
-        subject: "/work/infinity-context-old",
-        evidence: ["dirty inactive workspace"],
-      }],
-    })));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports(
+        calls,
+        [],
+        admission({
+          allowed: true,
+          status: ProjectAdmissionDecisionStatus.AllowedForDrainOnly,
+          reason: ProjectAdmissionDecisionReason.OutputDebtPresent,
+          workerRole: ProjectAdmissionWorkerRole.Reviewer,
+          evidence: ["debt exists but reviewer drains it"],
+          debt: [
+            {
+              reason: ProjectDebtReason.InactiveDirtyWorkspace,
+              subject: "/work/infinity-context-old",
+              evidence: ["dirty inactive workspace"],
+            },
+          ],
+        }),
+      ),
+    );
 
-    await expect(broker.startWorker({
-      jobId: "infinity-context-reviewer-v1",
-      tmuxSession: "infinity-context-reviewer-v1",
-      workerRole: ProjectAdmissionWorkerRole.Reviewer,
-    })).resolves.toMatchObject({ status: "applied" });
+    await expect(
+      broker.startWorker({
+        jobId: "infinity-context-reviewer-v1",
+        tmuxSession: "infinity-context-reviewer-v1",
+        workerRole: ProjectAdmissionWorkerRole.Reviewer,
+      }),
+    ).resolves.toMatchObject({ status: "applied" });
 
     expect(calls).toEqual(["start:infinity-context-reviewer-v1"]);
   });
 
   it("gates refill worktree creation before creating filesystem side effects", async () => {
     const calls: string[] = [];
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: scope(),
-    }, ports(calls, [], admission({
-      allowed: false,
-      status: ProjectAdmissionDecisionStatus.Denied,
-      reason: ProjectAdmissionDecisionReason.OutputDebtPresent,
-      workerRole: ProjectAdmissionWorkerRole.Producer,
-      evidence: ["producer refill is blocked by output debt"],
-      debt: [{
-        reason: ProjectDebtReason.OrphanLegacyWorkspace,
-        subject: "/work/orphan",
-        evidence: ["legacy workspace not adopted"],
-      }],
-    })));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports(
+        calls,
+        [],
+        admission({
+          allowed: false,
+          status: ProjectAdmissionDecisionStatus.Denied,
+          reason: ProjectAdmissionDecisionReason.OutputDebtPresent,
+          workerRole: ProjectAdmissionWorkerRole.Producer,
+          evidence: ["producer refill is blocked by output debt"],
+          debt: [
+            {
+              reason: ProjectDebtReason.OrphanLegacyWorkspace,
+              subject: "/work/orphan",
+              evidence: ["legacy workspace not adopted"],
+            },
+          ],
+        }),
+      ),
+    );
 
-    await expect(broker.createWorktree({
-      path: "/work/infinity-context-child",
-      baseBranch: "main",
-      workerRole: ProjectAdmissionWorkerRole.Producer,
-    })).rejects.toBeInstanceOf(ProjectControlAdmissionDeniedError);
+    await expect(
+      broker.createWorktree({
+        path: "/work/infinity-context-child",
+        baseBranch: "main",
+        workerRole: ProjectAdmissionWorkerRole.Producer,
+      }),
+    ).rejects.toBeInstanceOf(ProjectControlAdmissionDeniedError);
 
     expect(calls).toEqual([]);
   });
@@ -420,10 +549,13 @@ describe("ProjectControlBroker", () => {
         };
       },
     };
-    const broker = new ProjectControlBroker({
-      boundary: AccessBoundary.ProjectScopedControl,
-      scope: scope(),
-    }, ports(calls, [], gate));
+    const broker = new ProjectControlBroker(
+      {
+        boundary: AccessBoundary.ProjectScopedControl,
+        scope: scope(),
+      },
+      ports(calls, [], gate),
+    );
 
     await broker.createWorktree({
       path: "/work/infinity-context-child",
@@ -479,6 +611,10 @@ function ports(
       async createWorktree(input) {
         calls.push(`worktree:${input.path}`);
         return result(input.path);
+      },
+      async retireWorktree(workspacePath) {
+        calls.push(`retireWorktree:${workspacePath}`);
+        return result(workspacePath);
       },
     },
     git: {

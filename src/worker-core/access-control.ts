@@ -32,8 +32,10 @@ export enum AccessBoundary {
 }
 
 export function isAccessBoundary(value: unknown): value is AccessBoundary {
-  return typeof value === "string" &&
-    (Object.values(AccessBoundary) as readonly string[]).includes(value);
+  return (
+    typeof value === "string" &&
+    (Object.values(AccessBoundary) as readonly string[]).includes(value)
+  );
 }
 
 export function parseAccessBoundary(
@@ -51,6 +53,7 @@ export enum ProjectOperation {
   StartWorker = "start_worker",
   StopWorker = "stop_worker",
   CreateWorktree = "create_worktree",
+  RetireWorktree = "retire_worktree",
   WriteReviewMarker = "write_review_marker",
   IntegrateCommit = "integrate_commit",
   PushBranch = "push_branch",
@@ -107,9 +110,13 @@ export enum NetworkAccessMode {
   Unrestricted = "unrestricted",
 }
 
-export function isNetworkAccessMode(value: unknown): value is NetworkAccessMode {
-  return typeof value === "string" &&
-    (Object.values(NetworkAccessMode) as readonly string[]).includes(value);
+export function isNetworkAccessMode(
+  value: unknown,
+): value is NetworkAccessMode {
+  return (
+    typeof value === "string" &&
+    (Object.values(NetworkAccessMode) as readonly string[]).includes(value)
+  );
 }
 
 export function parseNetworkAccessMode(
@@ -212,23 +219,42 @@ export type ProjectToolAccessRequest = {
 };
 
 export type ProjectOperationRequest =
-  | ({ readonly operation: ProjectOperation.ReadPath } & ProjectPathAccessRequest)
-  | ({ readonly operation: ProjectOperation.WritePath } & ProjectPathAccessRequest)
-  | ({ readonly operation: ProjectOperation.CreateJob } & ProjectJobAccessRequest)
-  | ({ readonly operation: ProjectOperation.StartWorker } & ProjectJobAccessRequest)
-  | ({ readonly operation: ProjectOperation.StopWorker } & ProjectJobAccessRequest)
+  | ({
+      readonly operation: ProjectOperation.ReadPath;
+    } & ProjectPathAccessRequest)
+  | ({
+      readonly operation: ProjectOperation.WritePath;
+    } & ProjectPathAccessRequest)
+  | ({
+      readonly operation: ProjectOperation.CreateJob;
+    } & ProjectJobAccessRequest)
+  | ({
+      readonly operation: ProjectOperation.StartWorker;
+    } & ProjectJobAccessRequest)
+  | ({
+      readonly operation: ProjectOperation.StopWorker;
+    } & ProjectJobAccessRequest)
   | ({
       readonly operation: ProjectOperation.CreateWorktree;
     } & ProjectWorktreeAccessRequest)
+  | ({
+      readonly operation: ProjectOperation.RetireWorktree;
+    } & ProjectJobAccessRequest)
   | ({
       readonly operation: ProjectOperation.WriteReviewMarker;
     } & ProjectJobAccessRequest)
   | ({
       readonly operation: ProjectOperation.IntegrateCommit;
     } & ProjectGitAccessRequest)
-  | ({ readonly operation: ProjectOperation.PushBranch } & ProjectGitAccessRequest)
-  | ({ readonly operation: ProjectOperation.UseAccount } & ProjectAccountAccessRequest)
-  | ({ readonly operation: ProjectOperation.UseTool } & ProjectToolAccessRequest);
+  | ({
+      readonly operation: ProjectOperation.PushBranch;
+    } & ProjectGitAccessRequest)
+  | ({
+      readonly operation: ProjectOperation.UseAccount;
+    } & ProjectAccountAccessRequest)
+  | ({
+      readonly operation: ProjectOperation.UseTool;
+    } & ProjectToolAccessRequest);
 
 export type PolicyDecision = {
   readonly allowed: boolean;
@@ -276,7 +302,8 @@ export type LaunchAdapterCapabilities = {
 export type LaunchPlanInput = AccessPolicyContext & {
   readonly adapter: LaunchAdapterCapabilities;
   readonly allowDangerFullAccess?: boolean;
-  readonly networkAccess?: NetworkAccessMode.Disabled | NetworkAccessMode.Restricted;
+  readonly networkAccess?:
+    NetworkAccessMode.Disabled | NetworkAccessMode.Restricted;
 };
 
 export type LaunchPlan =
@@ -305,6 +332,7 @@ export interface AccessPolicyService {
   canCreateJob(request: ProjectJobAccessRequest): PolicyDecision;
   canStartWorker(request: ProjectJobAccessRequest): PolicyDecision;
   canStopWorker(request: ProjectJobAccessRequest): PolicyDecision;
+  canRetireWorktree(request: ProjectJobAccessRequest): PolicyDecision;
   canCreateWorktree(request: ProjectWorktreeAccessRequest): PolicyDecision;
   canWriteReviewMarker(request: ProjectJobAccessRequest): PolicyDecision;
   canIntegrateCommit(request: ProjectGitAccessRequest): PolicyDecision;
@@ -330,18 +358,21 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     input.boundary === AccessBoundary.DangerFullAccess &&
     input.allowDangerFullAccess !== true
   ) {
-    return blockedLaunch(input, AccessDecisionReason.CannotEnforceAccessBoundary, [
-      "danger_full_access must be explicitly acknowledged",
-    ]);
+    return blockedLaunch(
+      input,
+      AccessDecisionReason.CannotEnforceAccessBoundary,
+      ["danger_full_access must be explicitly acknowledged"],
+    );
   }
   const enforcementBlocker = launchEnforcementBlocker(input);
   if (enforcementBlocker) return enforcementBlocker;
 
   const filesystemPolicy = filesystemPolicyFor(input.boundary, scope);
   const toolManifest = toolManifestFor(input.boundary);
-  const networkMode = input.boundary === AccessBoundary.DangerFullAccess
-    ? NetworkAccessMode.Unrestricted
-    : input.networkAccess ?? NetworkAccessMode.Disabled;
+  const networkMode =
+    input.boundary === AccessBoundary.DangerFullAccess
+      ? NetworkAccessMode.Unrestricted
+      : (input.networkAccess ?? NetworkAccessMode.Disabled);
   return {
     status: LaunchPlanStatus.Ready,
     boundary: input.boundary,
@@ -368,7 +399,9 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
         "tmux",
       ],
       deniedGitSubcommands: ["push"],
-      deniedPathPrefixes: scope?.registryRoot ? [normalizePath(scope.registryRoot)] : [],
+      deniedPathPrefixes: scope?.registryRoot
+        ? [normalizePath(scope.registryRoot)]
+        : [],
       deniedInlineCodeExecutables: ["python", "python3", "node"],
       deniedScriptExecutables: ["sh", "bash", "zsh"],
     },
@@ -378,7 +411,9 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
             projectId: scope.projectId,
             boundary: AccessBoundary.ProjectScopedControl,
             jobIdPrefixes: scope.jobIdPrefixes ?? [],
-            ...(scope.registryRoot ? { registryRoot: normalizePath(scope.registryRoot) } : {}),
+            ...(scope.registryRoot
+              ? { registryRoot: normalizePath(scope.registryRoot) }
+              : {}),
           },
         }
       : {}),
@@ -402,6 +437,8 @@ class DefaultAccessPolicyService implements AccessPolicyService {
         return this.canStopWorker(request);
       case ProjectOperation.CreateWorktree:
         return this.canCreateWorktree(request);
+      case ProjectOperation.RetireWorktree:
+        return this.canRetireWorktree(request);
       case ProjectOperation.WriteReviewMarker:
         return this.canWriteReviewMarker(request);
       case ProjectOperation.IntegrateCommit:
@@ -416,16 +453,26 @@ class DefaultAccessPolicyService implements AccessPolicyService {
   }
 
   canReadPath(request: ProjectPathAccessRequest): PolicyDecision {
-    return this.pathDecision(ProjectOperation.ReadPath, request, readRootsFor(this.scope()));
+    return this.pathDecision(
+      ProjectOperation.ReadPath,
+      request,
+      readRootsFor(this.scope()),
+    );
   }
 
   canWritePath(request: ProjectPathAccessRequest): PolicyDecision {
     const boundary = this.context.boundary;
     if (boundary === AccessBoundary.ReadOnly) {
-      return this.deny(ProjectOperation.WritePath, AccessDecisionReason.BoundaryReadOnly);
+      return this.deny(
+        ProjectOperation.WritePath,
+        AccessDecisionReason.BoundaryReadOnly,
+      );
     }
     if (boundary === AccessBoundary.DangerFullAccess) {
-      return this.allow(ProjectOperation.WritePath, AccessDecisionReason.DangerFullAccess);
+      return this.allow(
+        ProjectOperation.WritePath,
+        AccessDecisionReason.DangerFullAccess,
+      );
     }
     return this.pathDecision(
       ProjectOperation.WritePath,
@@ -440,11 +487,21 @@ class DefaultAccessPolicyService implements AccessPolicyService {
   }
 
   canStartWorker(request: ProjectJobAccessRequest): PolicyDecision {
-    return this.projectControlJobDecision(ProjectOperation.StartWorker, request);
+    return this.projectControlJobDecision(
+      ProjectOperation.StartWorker,
+      request,
+    );
   }
 
   canStopWorker(request: ProjectJobAccessRequest): PolicyDecision {
     return this.projectControlJobDecision(ProjectOperation.StopWorker, request);
+  }
+
+  canRetireWorktree(request: ProjectJobAccessRequest): PolicyDecision {
+    return this.projectControlJobDecision(
+      ProjectOperation.RetireWorktree,
+      request,
+    );
   }
 
   canCreateWorktree(request: ProjectWorktreeAccessRequest): PolicyDecision {
@@ -486,7 +543,10 @@ class DefaultAccessPolicyService implements AccessPolicyService {
     }
     if (
       request.sourceWorkspacePath &&
-      !pathInsideAnyRoot(request.sourceWorkspacePath, scopedWorkspaceRoots(scope))
+      !pathInsideAnyRoot(
+        request.sourceWorkspacePath,
+        scopedWorkspaceRoots(scope),
+      )
     ) {
       return this.deny(
         ProjectOperation.CreateWorktree,
@@ -496,7 +556,10 @@ class DefaultAccessPolicyService implements AccessPolicyService {
     }
     if (
       request.realSourceWorkspacePath &&
-      !pathInsideAnyRoot(request.realSourceWorkspacePath, scopedWorkspaceRoots(scope))
+      !pathInsideAnyRoot(
+        request.realSourceWorkspacePath,
+        scopedWorkspaceRoots(scope),
+      )
     ) {
       return this.deny(
         ProjectOperation.CreateWorktree,
@@ -515,7 +578,10 @@ class DefaultAccessPolicyService implements AccessPolicyService {
   }
 
   canWriteReviewMarker(request: ProjectJobAccessRequest): PolicyDecision {
-    return this.projectControlJobDecision(ProjectOperation.WriteReviewMarker, request);
+    return this.projectControlJobDecision(
+      ProjectOperation.WriteReviewMarker,
+      request,
+    );
   }
 
   canIntegrateCommit(request: ProjectGitAccessRequest): PolicyDecision {
@@ -528,30 +594,43 @@ class DefaultAccessPolicyService implements AccessPolicyService {
 
   canUseAccount(request: ProjectAccountAccessRequest): PolicyDecision {
     if (this.context.boundary === AccessBoundary.DangerFullAccess) {
-      return this.allow(ProjectOperation.UseAccount, AccessDecisionReason.DangerFullAccess);
+      return this.allow(
+        ProjectOperation.UseAccount,
+        AccessDecisionReason.DangerFullAccess,
+      );
     }
     const scope = this.scope();
     if (!scope) {
-      return this.deny(ProjectOperation.UseAccount, AccessDecisionReason.MissingProjectScope);
+      return this.deny(
+        ProjectOperation.UseAccount,
+        AccessDecisionReason.MissingProjectScope,
+      );
     }
     const allowed = scope.allowedAccountIds ?? [];
     if (allowed.length > 0 && !allowed.includes(request.accountId)) {
-      return this.deny(ProjectOperation.UseAccount, AccessDecisionReason.AccountDenied, [
-        `account ${request.accountId} is outside project account scope`,
-      ]);
+      return this.deny(
+        ProjectOperation.UseAccount,
+        AccessDecisionReason.AccountDenied,
+        [`account ${request.accountId} is outside project account scope`],
+      );
     }
     return this.allow(ProjectOperation.UseAccount);
   }
 
   canUseTool(request: ProjectToolAccessRequest): PolicyDecision {
     if (this.context.boundary === AccessBoundary.DangerFullAccess) {
-      return this.allow(ProjectOperation.UseTool, AccessDecisionReason.DangerFullAccess);
+      return this.allow(
+        ProjectOperation.UseTool,
+        AccessDecisionReason.DangerFullAccess,
+      );
     }
     const allowed = toolManifestFor(this.context.boundary).capabilities;
     if (!allowed.includes(request.tool)) {
-      return this.deny(ProjectOperation.UseTool, AccessDecisionReason.ToolDenied, [
-        `${request.tool} is not available for ${this.context.boundary}`,
-      ]);
+      return this.deny(
+        ProjectOperation.UseTool,
+        AccessDecisionReason.ToolDenied,
+        [`${request.tool} is not available for ${this.context.boundary}`],
+      );
     }
     return this.allow(ProjectOperation.UseTool);
   }
@@ -567,7 +646,8 @@ class DefaultAccessPolicyService implements AccessPolicyService {
       return this.deny(operation, AccessDecisionReason.BoundaryInsufficient);
     }
     const scope = this.scope();
-    if (!scope) return this.deny(operation, AccessDecisionReason.MissingProjectScope);
+    if (!scope)
+      return this.deny(operation, AccessDecisionReason.MissingProjectScope);
     if (!matchesAnyPrefix(request.jobId, scope.jobIdPrefixes ?? [])) {
       return this.deny(operation, AccessDecisionReason.JobPrefixDenied, [
         `job ${request.jobId} does not match project job prefixes`,
@@ -615,7 +695,8 @@ class DefaultAccessPolicyService implements AccessPolicyService {
   ): PolicyDecision {
     const scope = this.scope();
     const remoteTracking = parseRemoteTrackingBranch(request.branch);
-    if (!remoteTracking || !scope) return this.branchDecision(operation, request);
+    if (!remoteTracking || !scope)
+      return this.branchDecision(operation, request);
     if (
       scope.allowedGitRemotes &&
       !matchesAnyPattern(remoteTracking.remote, scope.allowedGitRemotes) &&
@@ -653,7 +734,8 @@ class DefaultAccessPolicyService implements AccessPolicyService {
       return this.deny(operation, AccessDecisionReason.BoundaryInsufficient);
     }
     const scope = this.scope();
-    if (!scope) return this.deny(operation, AccessDecisionReason.MissingProjectScope);
+    if (!scope)
+      return this.deny(operation, AccessDecisionReason.MissingProjectScope);
     if (
       request.workspacePath &&
       !pathInsideAnyRoot(request.workspacePath, scopedWorkspaceRoots(scope))
@@ -703,10 +785,13 @@ class DefaultAccessPolicyService implements AccessPolicyService {
       return this.allow(operation, AccessDecisionReason.DangerFullAccess);
     }
     const scope = this.scope();
-    if (!scope) return this.deny(operation, AccessDecisionReason.MissingProjectScope);
+    if (!scope)
+      return this.deny(operation, AccessDecisionReason.MissingProjectScope);
     const candidate = normalizePathOrNull(request.path);
-    const realCandidate = request.realPath ? normalizePathOrNull(request.realPath) : undefined;
-    if (!candidate || request.realPath && !realCandidate) {
+    const realCandidate = request.realPath
+      ? normalizePathOrNull(request.realPath)
+      : undefined;
+    if (!candidate || (request.realPath && !realCandidate)) {
       return this.deny(operation, AccessDecisionReason.InvalidPath);
     }
     const sensitive = sensitivePathDecision({
@@ -715,11 +800,12 @@ class DefaultAccessPolicyService implements AccessPolicyService {
       scope,
       denyRegistryRawWrite: options.denyRegistryRawWrite === true,
     });
-    if (sensitive) return this.deny(operation, sensitive.reason, sensitive.evidence);
+    if (sensitive)
+      return this.deny(operation, sensitive.reason, sensitive.evidence);
     const normalizedRoots = roots.map(normalizePath).filter(Boolean);
     if (
       !pathInsideAnyRoot(candidate, normalizedRoots) ||
-      realCandidate && !pathInsideAnyRoot(realCandidate, normalizedRoots)
+      (realCandidate && !pathInsideAnyRoot(realCandidate, normalizedRoots))
     ) {
       return this.deny(operation, AccessDecisionReason.PathOutsideScope);
     }
@@ -740,7 +826,9 @@ class DefaultAccessPolicyService implements AccessPolicyService {
       boundary: this.context.boundary,
       operation,
       reason,
-      ...(this.context.scope ? { projectId: this.context.scope.projectId } : {}),
+      ...(this.context.scope
+        ? { projectId: this.context.scope.projectId }
+        : {}),
       evidence,
     };
   }
@@ -755,7 +843,9 @@ class DefaultAccessPolicyService implements AccessPolicyService {
       boundary: this.context.boundary,
       operation,
       reason,
-      ...(this.context.scope ? { projectId: this.context.scope.projectId } : {}),
+      ...(this.context.scope
+        ? { projectId: this.context.scope.projectId }
+        : {}),
       evidence,
     };
   }
@@ -764,9 +854,11 @@ class DefaultAccessPolicyService implements AccessPolicyService {
 function isConfirmedExternalRewriteRecovery(
   request: ProjectGitAccessRequest,
 ): boolean {
-  return request.confirmExternalRewriteRecovery === true &&
+  return (
+    request.confirmExternalRewriteRecovery === true &&
     isFullSha1(request.expectedRemoteCommit) &&
-    isFullSha1(request.expectedLocalCommit);
+    isFullSha1(request.expectedLocalCommit)
+  );
 }
 
 function isFullSha1(value: string | undefined): value is string {
@@ -779,8 +871,10 @@ function launchEnforcementBlocker(input: LaunchPlanInput): LaunchPlan | null {
   if (!input.adapter.canEnforceFilesystemPolicy) {
     missing.push("filesystem policy enforcement is unavailable");
   }
-  if (!input.adapter.canIsolateHome) missing.push("HOME isolation is unavailable");
-  if (!input.adapter.canIsolateTemp) missing.push("temporary directory isolation is unavailable");
+  if (!input.adapter.canIsolateHome)
+    missing.push("HOME isolation is unavailable");
+  if (!input.adapter.canIsolateTemp)
+    missing.push("temporary directory isolation is unavailable");
   if (!input.adapter.canRestrictNetwork) {
     missing.push("network restriction is unavailable");
   }
@@ -803,7 +897,11 @@ function launchEnforcementBlocker(input: LaunchPlanInput): LaunchPlan | null {
     missing.push("raw shell cannot be disabled for project-scoped control");
   }
   return missing.length
-    ? blockedLaunch(input, AccessDecisionReason.CannotEnforceAccessBoundary, missing)
+    ? blockedLaunch(
+        input,
+        AccessDecisionReason.CannotEnforceAccessBoundary,
+        missing,
+      )
     : null;
 }
 
@@ -833,15 +931,17 @@ function filesystemPolicyFor(
     };
   }
   return {
-    mode: boundary === AccessBoundary.ReadOnly
-      ? FilesystemPolicyMode.ReadOnly
-      : boundary === AccessBoundary.IsolatedWorkspaceWrite
-      ? FilesystemPolicyMode.IsolatedWorkspaceWrite
-      : FilesystemPolicyMode.ProjectScopedWrite,
+    mode:
+      boundary === AccessBoundary.ReadOnly
+        ? FilesystemPolicyMode.ReadOnly
+        : boundary === AccessBoundary.IsolatedWorkspaceWrite
+          ? FilesystemPolicyMode.IsolatedWorkspaceWrite
+          : FilesystemPolicyMode.ProjectScopedWrite,
     readRoots: readRootsFor(scope).map(normalizePath),
-    writeRoots: boundary === AccessBoundary.ReadOnly
-      ? []
-      : writeRootsForWorkspaceBoundary(boundary, scope).map(normalizePath),
+    writeRoots:
+      boundary === AccessBoundary.ReadOnly
+        ? []
+        : writeRootsForWorkspaceBoundary(boundary, scope).map(normalizePath),
     deniedRoots: deniedRootsFor(scope).map(normalizePath),
   };
 }
@@ -880,7 +980,9 @@ function toolManifestFor(boundary: AccessBoundary): ToolManifest {
   }
 }
 
-function readRootsFor(scope: ProjectAccessScope | undefined): readonly string[] {
+function readRootsFor(
+  scope: ProjectAccessScope | undefined,
+): readonly string[] {
   if (!scope) return [];
   return uniqueStrings([
     ...(scope.readRoots ?? []),
@@ -914,7 +1016,9 @@ function scopedWorkspaceRoots(scope: ProjectAccessScope): readonly string[] {
   ]);
 }
 
-function deniedRootsFor(scope: ProjectAccessScope | undefined): readonly string[] {
+function deniedRootsFor(
+  scope: ProjectAccessScope | undefined,
+): readonly string[] {
   return uniqueStrings([
     ...(scope?.deniedRoots ?? []),
     ...(scope?.authRoot ? [scope.authRoot] : []),
@@ -929,7 +1033,10 @@ function sensitivePathDecision(input: {
   readonly path: string;
   readonly scope: ProjectAccessScope;
   readonly denyRegistryRawWrite: boolean;
-}): { readonly reason: AccessDecisionReason; readonly evidence: readonly string[] } | null {
+}): {
+  readonly reason: AccessDecisionReason;
+  readonly evidence: readonly string[];
+} | null {
   return sensitiveAccessPathDecision({
     path: input.path,
     deniedRoots: deniedRootsFor(input.scope),

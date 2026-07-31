@@ -32,7 +32,8 @@ export type ProjectControlOperationResult = {
 export type ProjectControlCreateJobInput = ProjectJobAccessRequest & {
   readonly promptPath?: string;
   readonly accounts?: readonly string[];
-  readonly workerRole?: ProjectAdmissionWorkerRole | `${ProjectAdmissionWorkerRole}`;
+  readonly workerRole?:
+    ProjectAdmissionWorkerRole | `${ProjectAdmissionWorkerRole}`;
   readonly tags?: readonly string[];
   readonly ownedPaths?: readonly string[];
 };
@@ -44,21 +45,22 @@ export type ProjectControlWriteReviewMarkerInput = ProjectJobAccessRequest & {
 
 export type ProjectControlAdmissionMetadata = {
   readonly jobId?: string;
-  readonly workerRole?: ProjectAdmissionWorkerRole | `${ProjectAdmissionWorkerRole}`;
+  readonly workerRole?:
+    ProjectAdmissionWorkerRole | `${ProjectAdmissionWorkerRole}`;
   readonly tags?: readonly string[];
   readonly ownedPaths?: readonly string[];
 };
 
-export type ProjectControlCreateWorktreeInput =
-  ProjectWorktreeAccessRequest & ProjectControlAdmissionMetadata;
+export type ProjectControlCreateWorktreeInput = ProjectWorktreeAccessRequest &
+  ProjectControlAdmissionMetadata;
 
 export type ProjectResolvedWorktreeSource = {
   readonly revision: string;
   readonly sourceRealPath: string;
 };
 
-export type ProjectControlStartWorkerInput =
-  ProjectJobAccessRequest & ProjectControlAdmissionMetadata & {
+export type ProjectControlStartWorkerInput = ProjectJobAccessRequest &
+  ProjectControlAdmissionMetadata & {
     readonly accounts?: readonly string[];
   };
 
@@ -79,23 +81,28 @@ export type ProjectControlAdmissionBrokerEvent = {
 };
 
 export type ProjectControlBrokerEvent =
-  | ProjectControlPolicyBrokerEvent
-  | ProjectControlAdmissionBrokerEvent;
+  ProjectControlPolicyBrokerEvent | ProjectControlAdmissionBrokerEvent;
 
 export interface ProjectControlAuditPort {
   record(event: ProjectControlBrokerEvent): Promise<void> | void;
 }
 
 export interface ProjectJobRegistryPort {
-  createJob(input: ProjectControlCreateJobInput): Promise<ProjectControlOperationResult>;
+  createJob(
+    input: ProjectControlCreateJobInput,
+  ): Promise<ProjectControlOperationResult>;
   writeReviewMarker(
     input: ProjectControlWriteReviewMarkerInput,
   ): Promise<ProjectControlOperationResult>;
 }
 
 export interface ProjectWorkerSupervisorPort {
-  startWorker(input: ProjectControlStartWorkerInput): Promise<ProjectControlOperationResult>;
-  stopWorker(input: ProjectJobAccessRequest): Promise<ProjectControlOperationResult>;
+  startWorker(
+    input: ProjectControlStartWorkerInput,
+  ): Promise<ProjectControlOperationResult>;
+  stopWorker(
+    input: ProjectJobAccessRequest,
+  ): Promise<ProjectControlOperationResult>;
 }
 
 export interface ProjectWorkspacePort {
@@ -105,11 +112,18 @@ export interface ProjectWorkspacePort {
   createWorktree(
     input: ProjectControlCreateWorktreeInput,
   ): Promise<ProjectControlOperationResult>;
+  retireWorktree?(
+    workspacePath: string,
+  ): Promise<ProjectControlOperationResult>;
 }
 
 export interface ProjectGitPort {
-  integrateCommit(input: ProjectGitAccessRequest): Promise<ProjectControlOperationResult>;
-  pushBranch(input: ProjectGitAccessRequest): Promise<ProjectControlOperationResult>;
+  integrateCommit(
+    input: ProjectGitAccessRequest,
+  ): Promise<ProjectControlOperationResult>;
+  pushBranch(
+    input: ProjectGitAccessRequest,
+  ): Promise<ProjectControlOperationResult>;
 }
 
 export type ProjectControlBrokerPorts = {
@@ -209,6 +223,19 @@ export class ProjectControlBroker {
     return this.ports.workspace.resolveRevision(input);
   }
 
+  async retireWorktree(
+    input: ProjectJobAccessRequest,
+  ): Promise<ProjectControlOperationResult> {
+    await this.authorize(this.policy.canRetireWorktree(input));
+    if (!input.workspacePath) {
+      throw new Error("project_control_retire_worktree_path_required");
+    }
+    if (!this.ports.workspace.retireWorktree) {
+      throw new Error("project_control_retire_worktree_port_unavailable");
+    }
+    return this.ports.workspace.retireWorktree(input.workspacePath);
+  }
+
   async writeReviewMarker(
     input: ProjectControlWriteReviewMarkerInput,
   ): Promise<ProjectControlOperationResult> {
@@ -242,7 +269,10 @@ export class ProjectControlBroker {
   }
 
   private async admit(
-    operation: ProjectOperation.CreateJob | ProjectOperation.StartWorker | ProjectOperation.CreateWorktree,
+    operation:
+      | ProjectOperation.CreateJob
+      | ProjectOperation.StartWorker
+      | ProjectOperation.CreateWorktree,
     input: ProjectControlAdmissionMetadata & {
       readonly jobId?: string;
       readonly workspacePath?: string;
@@ -272,7 +302,9 @@ export class ProjectControlBroker {
   }
 }
 
-export function projectControlDeniedReason(error: unknown): AccessDecisionReason | null {
+export function projectControlDeniedReason(
+  error: unknown,
+): AccessDecisionReason | null {
   return error instanceof ProjectControlDeniedError
     ? error.decision.reason
     : null;
@@ -290,13 +322,17 @@ function missingAdmissionDecision(input: {
   readonly operation: ProjectOperation;
   readonly jobId?: string;
   readonly workspacePath?: string;
-  readonly workerRole?: ProjectAdmissionWorkerRole | `${ProjectAdmissionWorkerRole}`;
+  readonly workerRole?:
+    ProjectAdmissionWorkerRole | `${ProjectAdmissionWorkerRole}`;
   readonly tags?: readonly string[];
   readonly ownedPaths?: readonly string[];
 }): ProjectAdmissionDecision {
   return {
     operation: input.operation,
-    workerRole: normalizeProjectAdmissionWorkerRole(input.workerRole, input.tags),
+    workerRole: normalizeProjectAdmissionWorkerRole(
+      input.workerRole,
+      input.tags,
+    ),
     status: ProjectAdmissionDecisionStatus.Denied,
     allowed: false,
     reason: ProjectAdmissionDecisionReason.SnapshotUnavailable,
@@ -308,9 +344,9 @@ function missingAdmissionDecision(input: {
 function isPolicyService(value: unknown): value is AccessPolicyService {
   return Boolean(
     value &&
-      typeof value === "object" &&
-      "canCreateJob" in value &&
-      "canStartWorker" in value &&
-      "canPushBranch" in value,
+    typeof value === "object" &&
+    "canCreateJob" in value &&
+    "canStartWorker" in value &&
+    "canPushBranch" in value,
   );
 }
