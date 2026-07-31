@@ -15,14 +15,9 @@ import {
   readCodexGoalJob,
   type CodexGoalJobManifest,
 } from "../../codex-goal-jobs";
-import { loadJobLaunch } from "../codex-goal-job-launch-loader";
-import {
-  collectCodexGoalStatus,
-  resolveCodexGoalWorkerLiveness,
-  type CodexGoalStatus,
-} from "../../codex-goal-ops";
+import type { CodexGoalStatus } from "../../codex-goal-ops";
+import { resolveCodexGoalWorkerLiveness } from "../codex-goal-process-liveness";
 import { execGit, execGitStdout } from "../../codex-goal-mcp-project-git";
-import { codexGoalStatusInputFromLaunch as statusInput } from "../../codex-goal-mcp-status-input";
 import { projectControlWorkspaceLocks } from "../../codex-goal-project-workspace-lock";
 import { readCodexGoalConsumedOutputLedgers } from "./codex-goal-consumed-output-ledger-io";
 
@@ -63,11 +58,12 @@ export type TerminalWorktreeRetirementResult = {
 
 export type TerminalWorktreeRetirementDependencies = {
   readonly loadController?: typeof loadController;
-  readonly loadLaunch?: typeof loadJobLaunch;
   readonly readJob?: typeof readCodexGoalJob;
   readonly listJobs?: typeof listCodexGoalJobs;
   readonly readLedgers?: typeof readCodexGoalConsumedOutputLedgers;
-  readonly collectStatus?: typeof collectCodexGoalStatus;
+  readonly collectStatus?: (
+    input: TerminalWorktreeStatusInput,
+  ) => Promise<CodexGoalStatus>;
   readonly broker?: (input: {
     readonly registryRootDir: string;
     readonly controller: CodexGoalJobManifest;
@@ -90,12 +86,12 @@ export async function retireTerminalProjectWorktree(input: {
     controllerJobId: input.permit.controllerJobId,
   });
   assertControllerBinding(input.permit, controller);
-  const loadLaunch = deps.loadLaunch ?? loadJobLaunch;
-  const loaded = await loadLaunch({
+  const readJob = deps.readJob ?? readCodexGoalJob;
+  const initialManifest = await readJob({
     registryRootDir: controller.registryRootDir,
     jobId: input.permit.jobId,
   });
-  assertWorkspaceBinding(loaded.manifest, input.permit.expectedWorkspacePath);
+  assertWorkspaceBinding(initialManifest, input.permit.expectedWorkspacePath);
 
   const locks = projectControlWorkspaceLocks(controller.registryRootDir);
   // This is the same lock domain used by project integration/review actions.
@@ -108,7 +104,6 @@ export async function retireTerminalProjectWorktree(input: {
       input.permit.jobId,
   });
   try {
-    const readJob = deps.readJob ?? readCodexGoalJob;
     const manifest = await readJob({
       registryRootDir: controller.registryRootDir,
       jobId: input.permit.jobId,
@@ -137,16 +132,10 @@ export async function retireTerminalProjectWorktree(input: {
       jobRootDir: manifest.jobRootDir,
       jobId: manifest.jobId,
     });
-    const collectStatus = deps.collectStatus ?? collectCodexGoalStatus;
-    const status = await collectStatus(
-      statusInput({
-        ...loaded.launch,
-        config: {
-          ...loaded.launch.config,
-          workspacePath: workspace.path,
-        },
-      }),
-    );
+    const collectStatus =
+      deps.collectStatus ??
+      (await import("../../codex-goal-ops")).collectCodexGoalStatus;
+    const status = await collectStatus(statusInput(manifest, workspace.path));
     assertWorkerStopped(status);
     await assertWorkspaceExclusive({
       registryRootDir: controller.registryRootDir,
@@ -241,6 +230,40 @@ export async function retireTerminalProjectWorktree(input: {
   } finally {
     await locks.release(lock);
   }
+}
+
+type TerminalWorktreeStatusInput = {
+  readonly jobRootDir: string;
+  readonly taskId: string;
+  readonly resultPath: string;
+  readonly workspacePath: string;
+  readonly tmuxSession?: string;
+  readonly logPath: string;
+  readonly progressPath: string;
+  readonly accessBoundary?: AccessBoundary;
+};
+
+function statusInput(
+  manifest: CodexGoalJobManifest,
+  workspacePath: string,
+): TerminalWorktreeStatusInput {
+  return {
+    jobRootDir: manifest.jobRootDir,
+    taskId: manifest.taskId,
+    resultPath:
+      manifest.outputPath ??
+      join(manifest.jobRootDir, `${manifest.taskId}.latest-result.json`),
+    workspacePath,
+    ...(manifest.tmuxSession ? { tmuxSession: manifest.tmuxSession } : {}),
+    logPath:
+      manifest.logPath ?? join(manifest.jobRootDir, `${manifest.taskId}.log`),
+    progressPath:
+      manifest.progressPath ??
+      join(manifest.jobRootDir, `${manifest.taskId}.progress.json`),
+    ...(manifest.accessBoundary
+      ? { accessBoundary: manifest.accessBoundary }
+      : {}),
+  };
 }
 
 function assertControllerBinding(
