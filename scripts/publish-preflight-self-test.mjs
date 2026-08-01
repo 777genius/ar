@@ -7,7 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { runPublishPreflight } from "./publish-preflight.mjs";
+import {
+  runPublishPreflight,
+  verifyRegistryPackageAccess,
+} from "./publish-preflight.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "subscription-runtime-publish-preflight-"));
 const packageJsonPath = join(root, "package.json");
@@ -35,6 +38,7 @@ const state = {
   authProbeUsername: "github-actions[bot]",
   authProbeRequests: 0,
   packageStatus: 404,
+  packageHasVersion: true,
   packageIntegrity: integrity,
   packageBytes: tarball,
   releaseStatus: 200,
@@ -55,19 +59,28 @@ const server = createServer((request, response) => {
       : JSON.stringify({ error: "not found or unauthorized" }));
     return;
   }
-  if (request.url.startsWith("/registry/@vioxen%2Fsubscription-runtime/")) {
+  if (request.url === "/registry/@vioxen%2Fsubscription-runtime") {
     response.statusCode = state.packageStatus;
     response.setHeader("content-type", "application/json");
     response.end(state.packageStatus === 404
       ? JSON.stringify({ error: "not found" })
       : JSON.stringify({
           name: "@vioxen/subscription-runtime",
-          version: "0.1.0-test.1",
-          dist: {
-            ...(state.packageIntegrity === undefined
-              ? {}
-              : { integrity: state.packageIntegrity }),
-            tarball: `${base}/registry/download/package.tgz`,
+          versions: {
+            ...(state.packageHasVersion
+              ? {
+                  "0.1.0-test.1": {
+                    name: "@vioxen/subscription-runtime",
+                    version: "0.1.0-test.1",
+                    dist: {
+                      ...(state.packageIntegrity === undefined
+                        ? {}
+                        : { integrity: state.packageIntegrity }),
+                      tarball: `${base}/registry/download/package.tgz`,
+                    },
+                  },
+                }
+              : {}),
           },
         }));
     return;
@@ -114,6 +127,15 @@ try {
   assert.equal(absent.releaseAssetAction, "skip");
   assert.equal(state.authProbeRequests, 1);
 
+  const absentPackageAccess = await verifyRegistryPackageAccess({
+    registryUrl: `${base}/registry/`,
+    token: "test-token",
+  });
+  assert.equal(absentPackageAccess.authenticated, true);
+  assert.equal(absentPackageAccess.packagePresent, false);
+  assert.equal(absentPackageAccess.versionCount, 0);
+  assert.equal(state.authProbeRequests, 2);
+
   state.authProbeStatus = 404;
   await assert.rejects(
     runPublishPreflight(common),
@@ -129,6 +151,19 @@ try {
   state.authProbeUsername = "github-actions[bot]";
 
   state.packageStatus = 200;
+  state.packageHasVersion = false;
+  const authProbeRequestsBeforeNewVersion = state.authProbeRequests;
+  const newVersion = await runPublishPreflight(common);
+  assert.equal(newVersion.packageAction, "publish");
+  assert.equal(state.authProbeRequests, authProbeRequestsBeforeNewVersion);
+
+  state.packageHasVersion = true;
+  const existingPackageAccess = await verifyRegistryPackageAccess({
+    registryUrl: `${base}/registry/`,
+    token: "test-token",
+  });
+  assert.equal(existingPackageAccess.packagePresent, true);
+  assert.equal(existingPackageAccess.versionCount, 1);
   const authProbeRequestsBeforeExisting = state.authProbeRequests;
   const identical = await runPublishPreflight(common);
   assert.equal(identical.packageAction, "skip");

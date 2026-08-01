@@ -11,6 +11,7 @@ const defaultRegistryUrl = "https://npm.pkg.github.com";
 const defaultGitHubApiUrl = "https://api.github.com";
 const fetchTimeoutMs = 30_000;
 const maxMetadataBytes = 2 * 1024 * 1024;
+const maxRegistryMetadataBytes = 16 * 1024 * 1024;
 const maxArtifactBytes = 128 * 1024 * 1024;
 
 export async function runPublishPreflight(input) {
@@ -73,7 +74,7 @@ export async function runPublishPreflight(input) {
 
 async function inspectPublishedPackage(input) {
   const metadataUrl = new URL(
-    `${encodedPackageName(input.packageName)}/${encodeURIComponent(input.version)}`,
+    encodedPackageName(input.packageName),
     input.registryUrl,
   );
   const response = await authenticatedFetch(metadataUrl, input.token, {
@@ -89,8 +90,16 @@ async function inspectPublishedPackage(input) {
   if (!response.ok) {
     throw new Error(`publish_preflight_registry_status:${response.status}`);
   }
-  const metadata = await safeResponseJson(response, "registry metadata");
+  const packument = await safeResponseJson(
+    response,
+    "registry metadata",
+    maxRegistryMetadataBytes,
+  );
+  const versions = assertRegistryPackument(packument, input.packageName);
+  if (!Object.hasOwn(versions, input.version)) return "publish";
+  const metadata = versions[input.version];
   if (
+    !metadata || typeof metadata !== "object" ||
     metadata?.name !== input.packageName ||
     metadata?.version !== input.version
   ) {
@@ -128,6 +137,42 @@ async function inspectPublishedPackage(input) {
     throw new Error("publish_preflight_existing_package_download_mismatch");
   }
   return "skip";
+}
+
+export async function verifyRegistryPackageAccess(input) {
+  const token = input.token?.trim();
+  if (!token) throw new Error("publish_preflight_github_token_required");
+  const registryUrl = normalizedBaseUrl(input.registryUrl ?? defaultRegistryUrl);
+  const packageName = input.packageName ?? expectedPackageName;
+  const metadataUrl = new URL(encodedPackageName(packageName), registryUrl);
+  const response = await authenticatedFetch(metadataUrl, token, {
+    Accept: "application/vnd.npm.install-v1+json, application/json",
+  });
+  if (response.status === 404) {
+    const auth = await verifyRegistryAuthentication({ registryUrl, token });
+    return {
+      ...auth,
+      packageName,
+      packagePresent: false,
+      versionCount: 0,
+    };
+  }
+  if (!response.ok) {
+    throw new Error(`publish_preflight_registry_status:${response.status}`);
+  }
+  const packument = await safeResponseJson(
+    response,
+    "registry metadata",
+    maxRegistryMetadataBytes,
+  );
+  const versions = assertRegistryPackument(packument, packageName);
+  return {
+    registryOrigin: registryUrl.origin,
+    authenticated: true,
+    packageName,
+    packagePresent: true,
+    versionCount: Object.keys(versions).length,
+  };
 }
 
 export async function verifyRegistryAuthentication(input) {
@@ -243,6 +288,18 @@ function assertManifest(value, label) {
   }
 }
 
+function assertRegistryPackument(value, packageName) {
+  if (
+    !value || typeof value !== "object" ||
+    value.name !== packageName ||
+    !value.versions || typeof value.versions !== "object" ||
+    Array.isArray(value.versions)
+  ) {
+    throw new Error("publish_preflight_registry_packument_invalid");
+  }
+  return value.versions;
+}
+
 function parseJson(value, label) {
   try {
     return JSON.parse(value);
@@ -251,8 +308,8 @@ function parseJson(value, label) {
   }
 }
 
-async function safeResponseJson(response, label) {
-  const bytes = await readResponseBytes(response, label, maxMetadataBytes);
+async function safeResponseJson(response, label, limit = maxMetadataBytes) {
+  const bytes = await readResponseBytes(response, label, limit);
   try {
     return JSON.parse(bytes.toString("utf8"));
   } catch {

@@ -20,12 +20,21 @@ concurrency:
 
 jobs:
   publish:
+    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name || inputs.release_tag }}
+      - name: Checkout current release tooling for manual recovery
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+          sparse-checkout: scripts/publish-preflight.mjs
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -44,7 +53,12 @@ jobs:
           node -e "const fs=require('node:fs'); const output=fs.readFileSync('pack.log','utf8').trim(); const start=output.lastIndexOf('\n['); const [{filename}]=JSON.parse(start === -1 ? output : output.slice(start + 1)); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'tarball=' + filename + '\n')"
       - name: Verify publish is new or byte-identical
         id: publish-preflight
-        run: node scripts/publish-preflight.mjs --tarball "${{ steps.pack.outputs.tarball }}"
+        run: |
+          preflight_script="scripts/publish-preflight.mjs"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            preflight_script=".release-tools/scripts/publish-preflight.mjs"
+          fi
+          node "$preflight_script" --tarball "${{ steps.pack.outputs.tarball }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
