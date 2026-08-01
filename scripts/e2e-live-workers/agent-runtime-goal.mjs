@@ -206,6 +206,7 @@ try {
     runnerRestartCount,
     exactReplayChecks,
     exactReplayProviderSideEffects,
+    restoredEffectRecovered,
     staleWorkspaceFailedClosed,
     contextStayedOutOfWorkspaceUntilRequested,
     workspaceBoundaryPreserved,

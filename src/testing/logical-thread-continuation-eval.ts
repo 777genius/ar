@@ -23,6 +23,7 @@ export interface LogicalThreadContinuationEvalEvidence {
   readonly runnerRestartCount: number;
   readonly exactReplayChecks: readonly boolean[];
   readonly exactReplayProviderSideEffects: number;
+  readonly restoredEffectRecovered: boolean;
   readonly staleWorkspaceFailedClosed: boolean;
   readonly contextStayedOutOfWorkspaceUntilRequested: boolean;
   readonly workspaceBoundaryPreserved: boolean;
@@ -31,20 +32,17 @@ export interface LogicalThreadContinuationEvalEvidence {
 export interface LogicalThreadEvalCriterion {
   readonly id: LogicalThreadEvalCriterionId;
   readonly weight: number;
-  readonly required: boolean;
   readonly passed: boolean;
 }
 
 export interface LogicalThreadContinuationEvalReport {
   readonly score: number;
   readonly maxScore: 10;
-  readonly threshold: 9.5;
   readonly passed: boolean;
   readonly criteria: readonly LogicalThreadEvalCriterion[];
 }
 
 const MIN_EVAL_ROUNDS = 3;
-const PASSING_SCORE = 9.5;
 
 export function evaluateLogicalThreadContinuation(
   evidence: LogicalThreadContinuationEvalEvidence,
@@ -74,7 +72,6 @@ export function evaluateLogicalThreadContinuation(
     criterion(
       LogicalThreadEvalCriterionId.RoundDepth,
       10,
-      true,
       expectedRounds >= MIN_EVAL_ROUNDS &&
         evidence.completedRounds === expectedRounds &&
         hasExpectedObservationCount,
@@ -82,58 +79,50 @@ export function evaluateLogicalThreadContinuation(
     criterion(
       LogicalThreadEvalCriterionId.StableThreadIdentity,
       10,
-      true,
       stableThreadIdentity,
     ),
     criterion(
       LogicalThreadEvalCriterionId.UniqueExecutionIdentity,
       10,
-      true,
       uniqueExecutionIdentity,
     ),
     criterion(
       LogicalThreadEvalCriterionId.ContinuationReceipts,
       15,
-      true,
       continuationReceipts,
     ),
     criterion(
       LogicalThreadEvalCriterionId.ExactContextRecall,
       20,
-      true,
       evidence.exactContextRecallChecks.length === expectedRounds - 1 &&
         evidence.exactContextRecallChecks.every(Boolean),
     ),
     criterion(
       LogicalThreadEvalCriterionId.RestartContinuity,
       10,
-      true,
       evidence.runnerRestartCount >= expectedRounds - 1,
     ),
     criterion(
       LogicalThreadEvalCriterionId.ExactReplayIdempotence,
       5,
-      false,
       evidence.exactReplayChecks.length === expectedRounds &&
         evidence.exactReplayChecks.every(Boolean) &&
-        evidence.exactReplayProviderSideEffects === 0,
+        evidence.exactReplayProviderSideEffects === 0 &&
+        evidence.restoredEffectRecovered,
     ),
     criterion(
       LogicalThreadEvalCriterionId.StaleWorkspaceFailsClosed,
       5,
-      true,
       evidence.staleWorkspaceFailedClosed,
     ),
     criterion(
       LogicalThreadEvalCriterionId.ContextLeakPrevention,
       5,
-      true,
       evidence.contextStayedOutOfWorkspaceUntilRequested,
     ),
     criterion(
       LogicalThreadEvalCriterionId.WorkspaceBoundary,
       10,
-      true,
       evidence.workspaceBoundaryPreserved,
     ),
   ];
@@ -145,10 +134,7 @@ export function evaluateLogicalThreadContinuation(
   return {
     score,
     maxScore: 10,
-    threshold: PASSING_SCORE,
-    passed:
-      score >= PASSING_SCORE &&
-      criteria.filter((item) => item.required).every((item) => item.passed),
+    passed: criteria.every((item) => item.passed),
     criteria,
   };
 }
@@ -156,8 +142,7 @@ export function evaluateLogicalThreadContinuation(
 function criterion(
   id: LogicalThreadEvalCriterionId,
   weight: number,
-  required: boolean,
   passed: boolean,
 ): LogicalThreadEvalCriterion {
-  return { id, weight, required, passed };
+  return { id, weight, passed };
 }

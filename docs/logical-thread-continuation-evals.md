@@ -13,9 +13,10 @@ The three rounds prove progressively stronger behavior:
 3. Restart again, recall both tokens cumulatively, verify exact replay, and
    prove a tampered workspace fails closed before provider execution.
 
-The command emits a machine-readable score from 0 to 10. A run needs at least
-9.5/10 and every required continuity, recall, leakage, and workspace-boundary
-criterion. Normal unit tests cover scoring behavior without provider calls.
+The command emits a diagnostic machine-readable score from 0 to 10 showing how
+much evidence survived. A run passes only when every replay, continuation,
+recall, leakage, fail-closed, and workspace-boundary criterion passes. Normal
+unit tests cover scoring behavior without provider calls.
 
 ```bash
 npm run eval:logical-thread-continuation:live:codex

@@ -11,12 +11,13 @@ describe("logical-thread continuation eval", () => {
   it("scores complete three-round continuation evidence at 10/10", () => {
     const report = evaluateLogicalThreadContinuation(passingEvidence());
 
-    expect(report).toMatchObject({ score: 10, maxScore: 10, threshold: 9.5, passed: true });
+    expect(report).toMatchObject({ score: 10, maxScore: 10, passed: true });
+    expect(report).not.toHaveProperty("threshold");
     expect(report.criteria).toHaveLength(10);
     expect(report.criteria.every((criterion) => criterion.passed)).toBe(true);
   });
 
-  it("fails a high aggregate score when a required context criterion fails", () => {
+  it("fails when an exact context criterion misses", () => {
     const report = evaluateLogicalThreadContinuation({
       ...passingEvidence(),
       exactContextRecallChecks: [true, false],
@@ -26,7 +27,6 @@ describe("logical-thread continuation eval", () => {
     expect(report.passed).toBe(false);
     expect(report.criteria).toContainEqual(expect.objectContaining({
       id: LogicalThreadEvalCriterionId.ExactContextRecall,
-      required: true,
       passed: false,
     }));
   });
@@ -53,25 +53,37 @@ describe("logical-thread continuation eval", () => {
     }));
   });
 
-  it("allows one optional resilience miss at the 9.5/10 threshold", () => {
+  it("requires exact replay even when the diagnostic score is 9.5/10", () => {
     const report = evaluateLogicalThreadContinuation({
       ...passingEvidence(),
       exactReplayChecks: [true, false, true],
     });
 
-    expect(report).toMatchObject({ score: 9.5, passed: true });
+    expect(report).toMatchObject({ score: 9.5, passed: false });
   });
 
-  it("requires fail-closed stale-workspace evidence even at the score threshold", () => {
+  it("requires fail-closed stale-workspace evidence", () => {
     const report = evaluateLogicalThreadContinuation({
       ...passingEvidence(),
       staleWorkspaceFailedClosed: false,
     });
 
-    expect(report).toMatchObject({ score: 9.5, threshold: 9.5, passed: false });
+    expect(report).toMatchObject({ score: 9.5, passed: false });
     expect(report.criteria).toContainEqual(expect.objectContaining({
       id: LogicalThreadEvalCriterionId.StaleWorkspaceFailsClosed,
-      required: true,
+      passed: false,
+    }));
+  });
+
+  it("requires exact replay recovery after restoring the workspace effect", () => {
+    const report = evaluateLogicalThreadContinuation({
+      ...passingEvidence(),
+      restoredEffectRecovered: false,
+    });
+
+    expect(report).toMatchObject({ score: 9.5, passed: false });
+    expect(report.criteria).toContainEqual(expect.objectContaining({
+      id: LogicalThreadEvalCriterionId.ExactReplayIdempotence,
       passed: false,
     }));
   });
@@ -92,6 +104,7 @@ function passingEvidence(): LogicalThreadContinuationEvalEvidence {
     runnerRestartCount: 5,
     exactReplayChecks: [true, true, true],
     exactReplayProviderSideEffects: 0,
+    restoredEffectRecovered: true,
     staleWorkspaceFailedClosed: true,
     contextStayedOutOfWorkspaceUntilRequested: true,
     workspaceBoundaryPreserved: true,
