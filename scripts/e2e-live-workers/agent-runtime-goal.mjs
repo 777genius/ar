@@ -12,6 +12,7 @@ import {
 import { readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   AgentRuntimeAccessBoundary,
@@ -126,24 +127,16 @@ try {
   await restartRunner({ replayOnly: true });
   const beforeFirstReplay = providerInvocations.length;
   const firstReplay = await runner.run(firstRequest);
-  assert.deepEqual(firstReplay, first, "completed round one must replay exactly after runner restart");
-  exactReplayChecks.push(true);
+  exactReplayChecks.push(isDeepStrictEqual(firstReplay, first));
   exactReplayProviderSideEffects += providerInvocations.length - beforeFirstReplay;
-  assert.equal(
-    providerInvocations.length,
-    beforeFirstReplay,
-    "exact replay must not invoke the provider",
-  );
 
   await restartRunner();
   const second = await runner.run(secondRequest);
   assertCompleted(second, AgentRuntimeThreadOutcome.Continued, "round two");
-  assert.equal(
-    await readFile(join(workspace, "context.txt"), "utf8"),
-    `${firstContextToken}\n`,
-    "round two must recover context that was available only in round one",
+  exactContextRecallChecks.push(
+    await readFile(join(workspace, "context.txt"), "utf8") ===
+      `${firstContextToken}\n`,
   );
-  exactContextRecallChecks.push(true);
   assert.equal(
     await readFile(join(workspace, "round-three.txt"), "utf8"),
     "unset\n",
@@ -151,34 +144,21 @@ try {
   );
   contextStayedOutOfWorkspaceUntilRequested =
     !(await workspaceFixtureText()).includes(secondContextToken);
-  assert.equal(
-    contextStayedOutOfWorkspaceUntilRequested,
-    true,
-    "round two leaked the second context token before it was requested",
-  );
   assert.equal(providerInvocations.length, 2, "two Goal rounds must invoke the provider twice");
 
   await restartRunner({ replayOnly: true });
   const beforeSecondReplay = providerInvocations.length;
   const secondReplay = await runner.run(secondRequest);
-  assert.deepEqual(secondReplay, second, "completed round two must replay exactly after runner restart");
-  exactReplayChecks.push(true);
+  exactReplayChecks.push(isDeepStrictEqual(secondReplay, second));
   exactReplayProviderSideEffects += providerInvocations.length - beforeSecondReplay;
-  assert.equal(
-    providerInvocations.length,
-    beforeSecondReplay,
-    "round-two exact replay must not invoke the provider",
-  );
 
   await restartRunner();
   const third = await runner.run(thirdRequest);
   assertCompleted(third, AgentRuntimeThreadOutcome.Continued, "round three");
-  assert.equal(
-    await readFile(join(workspace, "round-three.txt"), "utf8"),
-    `${firstContextToken}\n${secondContextToken}\n`,
-    "round three must recover cumulative context from both earlier rounds",
+  exactContextRecallChecks.push(
+    await readFile(join(workspace, "round-three.txt"), "utf8") ===
+      `${firstContextToken}\n${secondContextToken}\n`,
   );
-  exactContextRecallChecks.push(true);
   assert.equal(providerInvocations.length, 3, "three Goal rounds must invoke the provider three times");
   assert.deepEqual(
     providerInvocations.map((record) => record.hadPreviousCheckpoint),
@@ -189,30 +169,17 @@ try {
   await restartRunner({ replayOnly: true });
   const beforeThirdReplay = providerInvocations.length;
   const thirdReplay = await runner.run(thirdRequest);
-  assert.deepEqual(thirdReplay, third, "completed round three must replay exactly after runner restart");
-  exactReplayChecks.push(true);
+  exactReplayChecks.push(isDeepStrictEqual(thirdReplay, third));
   exactReplayProviderSideEffects += providerInvocations.length - beforeThirdReplay;
-  assert.equal(
-    providerInvocations.length,
-    beforeThirdReplay,
-    "round-three exact replay must not invoke the provider",
-  );
 
   await writeFile(join(workspace, "round-three.txt"), "tampered\n", "utf8");
   const staleReplay = await runner.run(thirdRequest);
-  assertFailed(
+  staleWorkspaceFailedClosed = matchesFailure(
     staleReplay,
     AgentRuntimeFailureCode.StaleGeneration,
     AgentRuntimeFailureLifecycleState.PreflightFailed,
-    "workspace-tampered replay",
-  );
-  assert.equal(staleReplay.failure.details?.control, "workspace_effect");
-  assert.equal(
-    providerInvocations.length,
-    beforeThirdReplay,
-    "stale replay must fail closed before provider execution",
-  );
-  staleWorkspaceFailedClosed = true;
+  ) && staleReplay.failure.details?.control === "workspace_effect" &&
+    providerInvocations.length === beforeThirdReplay;
 
   await writeFile(
     join(workspace, "round-three.txt"),
@@ -220,15 +187,11 @@ try {
     "utf8",
   );
   const restoredReplay = await runner.run(thirdRequest);
-  assert.deepEqual(
-    restoredReplay,
-    third,
-    "restoring the exact Git-visible effect must recover durable replay",
-  );
-  assert.equal(providerInvocations.length, beforeThirdReplay);
+  const restoredEffectRecovered = isDeepStrictEqual(restoredReplay, third) &&
+    providerInvocations.length === beforeThirdReplay;
 
   await runDeterministicFailureProbes();
-  assertWorkspaceBoundary();
+  const workspaceBoundaryPreserved = observeWorkspaceBoundary();
   const evalReport = evaluateLogicalThreadContinuation({
     expectedRounds: 3,
     completedRounds: 3,
@@ -245,7 +208,7 @@ try {
     exactReplayProviderSideEffects,
     staleWorkspaceFailedClosed,
     contextStayedOutOfWorkspaceUntilRequested,
-    workspaceBoundaryPreserved: true,
+    workspaceBoundaryPreserved,
   });
   assert.equal(evalReport.passed, true, `logical-thread eval failed: ${JSON.stringify(evalReport)}`);
 
@@ -256,14 +219,15 @@ try {
     provider,
     executionMode: AgentRuntimeExecutionMode.Goal,
     logicalThread: {
-      stableThreadId: true,
+      stableThreadId:
+        new Set([first.thread.id, second.thread.id, third.thread.id]).size === 1,
       executionIds: [
         firstRequest.executionId,
         secondRequest.executionId,
         thirdRequest.executionId,
       ],
       outcomes: [first.thread.outcome, second.thread.outcome, third.thread.outcome],
-      contextPreserved: true,
+      contextPreserved: exactContextRecallChecks.every(Boolean),
       runnerRestartCount,
     },
     providerExecution: {
@@ -271,9 +235,9 @@ try {
       exactReplaySideEffects: exactReplayProviderSideEffects,
     },
     durableReplay: {
-      exactAfterRestart: true,
-      staleWorkspaceFailClosed: true,
-      restoredEffectRecovered: true,
+      exactAfterRestart: exactReplayChecks.every(Boolean),
+      staleWorkspaceFailClosed: staleWorkspaceFailedClosed,
+      restoredEffectRecovered,
     },
     deterministicFailureProbes: {
       cancellation: true,
@@ -281,7 +245,7 @@ try {
       terminalFailureExactReplay: true,
     },
     changedFiles: ["context.txt", "round-one.txt", "round-three.txt"],
-    outsideWorkspaceUnchanged: true,
+    outsideWorkspaceUnchanged: workspaceBoundaryPreserved,
     toolSurface: provider === AgentRuntimeTaskProvider.Codex
       ? "bounded-workspace-mcp"
       : "provider-native-guarded",
@@ -619,23 +583,24 @@ function assertFailed(result, code, lifecycle, label) {
   assert.equal(result.lifecycle.state, lifecycle, `${label} lifecycle`);
 }
 
-function assertWorkspaceBoundary() {
-  const status = gitWorkspaceStatus();
-  assert.deepEqual(
-    status.map((entry) => entry.slice(3)).sort(),
-    ["context.txt", "round-one.txt", "round-three.txt"],
-    "only the three sandbox fixture files may change",
-  );
-  assert.equal(
-    status.every((entry) => /^(?: M|M |MM) /.test(entry)),
-    true,
-    "sandbox fixture files may be modified but not added, deleted, or renamed",
-  );
-  assert.equal(
-    readFileSync(outsideCanary, "utf8"),
-    "outside-safe\n",
-    "outside canary must remain unchanged",
-  );
+function matchesFailure(result, code, lifecycle) {
+  return result.protocolVersion === agentRuntimeTaskProtocolVersionV3 &&
+    result.status === AgentRuntimeTaskResultStatus.Failed &&
+    result.failure.code === code &&
+    result.lifecycle.state === lifecycle;
+}
+
+function observeWorkspaceBoundary() {
+  try {
+    const status = gitWorkspaceStatus();
+    return isDeepStrictEqual(
+      status.map((entry) => entry.slice(3)).sort(),
+      ["context.txt", "round-one.txt", "round-three.txt"],
+    ) && status.every((entry) => /^(?: M|M |MM) /.test(entry)) &&
+      readFileSync(outsideCanary, "utf8") === "outside-safe\n";
+  } catch {
+    return false;
+  }
 }
 
 async function workspaceFixtureText() {
