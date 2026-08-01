@@ -186,15 +186,18 @@ npm run e2e:live-agent-runtime-goal:codex
 npm run e2e:live-agent-runtime-goal:claude
 ```
 
-Each command performs two Goal executions with distinct `executionId` values
+Each command performs three Goal executions with distinct `executionId` values
 in one logical thread. The first prompt supplies a random context token without
 writing it to disk; after the runner is disposed and recreated, the second
-prompt must recover that token from provider-native context and write it to the
-sandbox. Exact completed-result replay is then run with a trap worker whose
+prompt must recover that token and retain another token. After another restart,
+the third prompt must recover both tokens cumulatively. Exact completed-result
+replay is run after every round with a trap worker whose
 `start()` and `run()` methods fail, proving replay does not reach the provider.
 The harness also verifies durable replay after restart, Git-visible receipt
 invalidation and restoration, provider-checkpoint redaction, timeout/cancel
-lifecycle probes, the exact workspace diff and an outside-workspace canary.
+lifecycle probes, the exact workspace diff, an outside-workspace canary, and a
+machine-readable continuation scorecard. Equivalent `eval:logical-thread-continuation:live:*`
+commands make the evaluation purpose explicit.
 It requires `--allow-live` internally and must never be run against a real user
 or Quanta project.
 
