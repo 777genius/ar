@@ -121,7 +121,7 @@ export function evaluateLogicalThreadContinuation(
     criterion(
       LogicalThreadEvalCriterionId.StaleWorkspaceFailsClosed,
       5,
-      false,
+      true,
       evidence.staleWorkspaceFailedClosed,
     ),
     criterion(

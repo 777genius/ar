@@ -56,20 +56,24 @@ describe("logical-thread continuation eval", () => {
   it("allows one optional resilience miss at the 9.5/10 threshold", () => {
     const report = evaluateLogicalThreadContinuation({
       ...passingEvidence(),
-      staleWorkspaceFailedClosed: false,
+      exactReplayChecks: [true, false, true],
     });
 
     expect(report).toMatchObject({ score: 9.5, passed: true });
   });
 
-  it("fails when both optional resilience criteria miss", () => {
+  it("requires fail-closed stale-workspace evidence even at the score threshold", () => {
     const report = evaluateLogicalThreadContinuation({
       ...passingEvidence(),
-      exactReplayChecks: [true, false, true],
       staleWorkspaceFailedClosed: false,
     });
 
-    expect(report).toMatchObject({ score: 9, threshold: 9.5, passed: false });
+    expect(report).toMatchObject({ score: 9.5, threshold: 9.5, passed: false });
+    expect(report.criteria).toContainEqual(expect.objectContaining({
+      id: LogicalThreadEvalCriterionId.StaleWorkspaceFailsClosed,
+      required: true,
+      passed: false,
+    }));
   });
 });
 
