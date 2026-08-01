@@ -11,7 +11,7 @@ describe("logical-thread continuation eval", () => {
   it("scores complete three-round continuation evidence at 10/10", () => {
     const report = evaluateLogicalThreadContinuation(passingEvidence());
 
-    expect(report).toMatchObject({ score: 10, maxScore: 10, threshold: 9, passed: true });
+    expect(report).toMatchObject({ score: 10, maxScore: 10, threshold: 9.5, passed: true });
     expect(report.criteria).toHaveLength(10);
     expect(report.criteria.every((criterion) => criterion.passed)).toBe(true);
   });
@@ -53,13 +53,23 @@ describe("logical-thread continuation eval", () => {
     }));
   });
 
-  it("allows one optional resilience miss only when the 9/10 threshold remains", () => {
+  it("allows one optional resilience miss at the 9.5/10 threshold", () => {
     const report = evaluateLogicalThreadContinuation({
       ...passingEvidence(),
       staleWorkspaceFailedClosed: false,
     });
 
     expect(report).toMatchObject({ score: 9.5, passed: true });
+  });
+
+  it("fails when both optional resilience criteria miss", () => {
+    const report = evaluateLogicalThreadContinuation({
+      ...passingEvidence(),
+      exactReplayChecks: [true, false, true],
+      staleWorkspaceFailedClosed: false,
+    });
+
+    expect(report).toMatchObject({ score: 9, threshold: 9.5, passed: false });
   });
 });
 

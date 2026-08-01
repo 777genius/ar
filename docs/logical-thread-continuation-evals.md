@@ -14,7 +14,7 @@ The three rounds prove progressively stronger behavior:
    prove a tampered workspace fails closed before provider execution.
 
 The command emits a machine-readable score from 0 to 10. A run needs at least
-9/10 and every required continuity, recall, leakage, and workspace-boundary
+9.5/10 and every required continuity, recall, leakage, and workspace-boundary
 criterion. Normal unit tests cover scoring behavior without provider calls.
 
 ```bash

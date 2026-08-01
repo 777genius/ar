@@ -38,12 +38,13 @@ export interface LogicalThreadEvalCriterion {
 export interface LogicalThreadContinuationEvalReport {
   readonly score: number;
   readonly maxScore: 10;
-  readonly threshold: 9;
+  readonly threshold: 9.5;
   readonly passed: boolean;
   readonly criteria: readonly LogicalThreadEvalCriterion[];
 }
 
 const MIN_EVAL_ROUNDS = 3;
+const PASSING_SCORE = 9.5;
 
 export function evaluateLogicalThreadContinuation(
   evidence: LogicalThreadContinuationEvalEvidence,
@@ -144,9 +145,9 @@ export function evaluateLogicalThreadContinuation(
   return {
     score,
     maxScore: 10,
-    threshold: 9,
+    threshold: PASSING_SCORE,
     passed:
-      score >= 9 &&
+      score >= PASSING_SCORE &&
       criteria.filter((item) => item.required).every((item) => item.passed),
     criteria,
   };
