@@ -323,6 +323,22 @@ The `Publish Package` GitHub Actions workflow builds, tests, packs and publishes
 the artifact to GitHub Packages from a GitHub Release or manual dispatch. It can
 also attach the exact tarball to the release.
 
+Publishing is idempotent and fail-closed. Before `npm publish`, the workflow
+checks the current `package.json` version with an authenticated registry
+request. An absent version may be published. An existing version is downloaded
+and skipped only when its SHA-512 integrity is byte-identical to the freshly
+packed artifact; mismatches or incomplete metadata stop the workflow. Existing
+release assets follow the same byte-identity rule, and new assets are uploaded
+without overwrite/clobber behavior. The network-free preflight regression suite
+is available through `npm run check:publish-preflight`. Release events and
+manual dispatch both require an existing tag that equals
+`v<package.json version>` exactly; package-only branch publication is not
+supported. When a target version is absent, the standard authenticated npm
+registry `/-/whoami` endpoint confirms token validity without depending on any
+particular package or retained version. CI exercises that same production
+helper against GitHub Packages with its read-only package token whenever the
+publish contract or its workflow changes.
+
 `dist` is generated for packaging and is not committed. Public subpaths must
 pass `check:packed-consumer` before release.
 

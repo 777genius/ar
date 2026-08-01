@@ -1,0 +1,32 @@
+name: Publish Registry Contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/publish.yml"
+      - ".github/workflows/publish-registry-contract.yml"
+      - "scripts/check-publish-registry-contract.mjs"
+      - "scripts/publish-preflight.mjs"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish.yml"
+      - ".github/workflows/publish-registry-contract.yml"
+      - "scripts/check-publish-registry-contract.mjs"
+      - "scripts/publish-preflight.mjs"
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  registry-auth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run check:publish-registry-contract
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

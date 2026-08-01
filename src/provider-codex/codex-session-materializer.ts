@@ -126,10 +126,16 @@ export type CodexWorkerCacheSessionMaterializerOptions = {
   /** Host-generated Codex config for this isolated worker slot. */
   readonly configToml?: string;
   /**
-   * Keep the cache directory on dispose. Useful only for local debugging; host
-   * apps should normally let durable storage own the real session.
+   * Keep the cache directory on dispose. The parent must be host-owned private
+   * durable state when this is used for logical-thread continuation.
    */
   readonly preserveOnDispose?: boolean;
+  /**
+   * Remove the materialized auth.json before preserving the remaining cache.
+   * A restarted worker can restore it from the encrypted session store while
+   * retaining the Codex thread records required by logical continuation.
+   */
+  readonly scrubAuthOnDispose?: boolean;
 };
 
 type WorkerCacheEntry = {
@@ -207,7 +213,14 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
   async dispose(): Promise<void> {
     const releaseLock = await this.acquireExclusiveUse();
     try {
-      if (!this.entry || this.options.preserveOnDispose) return;
+      if (!this.entry) return;
+      if (this.options.preserveOnDispose) {
+        if (this.options.scrubAuthOnDispose) {
+          await rm(join(this.entry.codexHome, "auth.json"), { force: true });
+          this.entry.sessionHash = null;
+        }
+        return;
+      }
       await rm(this.entry.cacheRoot, { recursive: true, force: true });
       this.entry = null;
     } finally {
@@ -301,6 +314,7 @@ export type CodexWorkerCacheSessionPoolMaterializerOptions = {
   /** Host-generated Codex config shared by every isolated pool slot. */
   readonly configToml?: string;
   readonly preserveOnDispose?: boolean;
+  readonly scrubAuthOnDispose?: boolean;
 };
 
 export class CodexWorkerCacheSessionPoolMaterializer implements CodexSessionMaterializer {
@@ -328,6 +342,9 @@ export class CodexWorkerCacheSessionPoolMaterializer implements CodexSessionMate
           : { configToml: options.configToml }),
         ...(options.preserveOnDispose !== undefined
           ? { preserveOnDispose: options.preserveOnDispose }
+          : {}),
+        ...(options.scrubAuthOnDispose !== undefined
+          ? { scrubAuthOnDispose: options.scrubAuthOnDispose }
           : {}),
       });
     });

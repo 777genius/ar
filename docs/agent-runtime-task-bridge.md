@@ -178,6 +178,26 @@ time-based stale-lock takeover because it cannot prove that provider or
 workspace side effects stopped, and automatic reclamation could duplicate
 those effects.
 
+The authorized live V3 certification harness uses only a fresh temporary Git
+workspace and state root:
+
+```bash
+npm run e2e:live-agent-runtime-goal:codex
+npm run e2e:live-agent-runtime-goal:claude
+```
+
+Each command performs two Goal executions with distinct `executionId` values
+in one logical thread. The first prompt supplies a random context token without
+writing it to disk; after the runner is disposed and recreated, the second
+prompt must recover that token from provider-native context and write it to the
+sandbox. Exact completed-result replay is then run with a trap worker whose
+`start()` and `run()` methods fail, proving replay does not reach the provider.
+The harness also verifies durable replay after restart, Git-visible receipt
+invalidation and restoration, provider-checkpoint redaction, timeout/cancel
+lifecycle probes, the exact workspace diff and an outside-workspace canary.
+It requires `--allow-live` internally and must never be run against a real user
+or Quanta project.
+
 The module runner validates the request at the runtime boundary, so JS callers
 and older TypeScript builds get the same protocol validation as the CLI. It does
 not silently borrow the interactive Claude or Codex profile. Pass credentials
@@ -212,6 +232,12 @@ names only after checking provider capabilities. If a provider cannot enforce a
 hard policy, the result fails with `task_mode_unsupported` unless the request
 explicitly asks for `onUnsupported: "warn"`.
 
+Claude path-scoped tools reject lexical, nested, case-variant and
+symlink-resolved `.git` metadata paths through both `canUseTool` and
+`PreToolUse`, including when the requested path otherwise remains inside the
+workspace. Git metadata changes belong to brokered integration controls, not
+provider file tools.
+
 `AgentRuntimeAccessBoundary.ReadOnly` constrains workspace mutation; it is not
 an outbound-network boundary. `AgentRuntimeTool.WebAccess` remains a separate
 explicit tool opt-in. Sensitive review workloads should omit it from an
@@ -227,10 +253,11 @@ to a less constrained execution engine. Write tools additionally require
 fail closed.
 
 `controls.maxTurns` is a hard control, not an observability hint. The Claude
-Agent SDK and background runtime enforce it provider-side. Codex does not
-currently expose an equivalent task control, so a Codex request containing
-`maxTurns` fails with `task_mode_unsupported`; use its native weighted-token
-budget when a hard Codex execution bound is required.
+Agent SDK and background runtime enforce it provider-side. Codex Goal execution
+maps it to the App Server's provider-native `maxGoalTurns` bound. Codex
+SingleRun/session execution does not expose an equivalent per-task turn bound,
+so `maxTurns` in that mode fails with `task_mode_unsupported`; use its native
+weighted-token budget when another hard Codex execution bound is required.
 
 `controls.budget` describes the bound for one `AgentRuntimeTask` execution. It
 does not aggregate host retries or convert between metrics. Claude supports the

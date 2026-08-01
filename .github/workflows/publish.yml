@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing GitHub Release tag for attaching the package tarball.
-        required: false
+        description: Existing exact v<package-version> GitHub Release tag.
+        required: true
         type: string
 
 permissions:
@@ -15,16 +15,17 @@ permissions:
   packages: write
 
 concurrency:
-  group: publish-package-${{ github.ref }}
+  group: publish-package-${{ github.repository }}-subscription-runtime
   cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name || inputs.release_tag || github.ref }}
+          ref: ${{ github.event.release.tag_name || inputs.release_tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -41,12 +42,20 @@ jobs:
         run: |
           npm pack --json > pack.log
           node -e "const fs=require('node:fs'); const output=fs.readFileSync('pack.log','utf8').trim(); const start=output.lastIndexOf('\n['); const [{filename}]=JSON.parse(start === -1 ? output : output.slice(start + 1)); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'tarball=' + filename + '\n')"
+      - name: Verify publish is new or byte-identical
+        id: publish-preflight
+        run: node scripts/publish-preflight.mjs --tarball "${{ steps.pack.outputs.tarball }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
       - name: Publish to GitHub Packages
+        if: ${{ steps.publish-preflight.outputs.package_action == 'publish' }}
         run: npm publish "${{ steps.pack.outputs.tarball }}" --registry=https://npm.pkg.github.com
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Attach tarball to release
-        if: ${{ github.event.release.tag_name || inputs.release_tag }}
-        run: gh release upload "${{ github.event.release.tag_name || inputs.release_tag }}" "${{ steps.pack.outputs.tarball }}" --clobber
+        if: ${{ steps.publish-preflight.outputs.release_asset_action == 'upload' }}
+        run: gh release upload "$RELEASE_TAG" "${{ steps.pack.outputs.tarball }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}

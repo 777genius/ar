@@ -166,8 +166,10 @@ describe("FileBackendCodexWorker", () => {
         expect.arrayContaining(expectedPathEntries),
       );
       expect(appServer.prompts).toEqual([]);
+      const codexHome = appServer.codexHomes[0]!;
       await worker.dispose();
-      await expect(access(join(rootDir, "codex-cache"))).rejects.toThrow();
+      await expect(access(codexHome)).resolves.toBeUndefined();
+      await expect(access(join(codexHome, "auth.json"))).rejects.toThrow();
       await expect(worker.run({ prompt: "hello" })).rejects.toThrow(
         "Codex worker has been disposed.",
       );

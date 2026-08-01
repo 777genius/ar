@@ -326,6 +326,134 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects Git metadata paths and selectors without blocking benign dotfiles", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-git-metadata-"));
+    const workspace = join(root, "workspace");
+    const gitMetadata = join(workspace, ".git");
+    let captured: Options | undefined;
+    try {
+      await mkdir(workspace);
+      await mkdir(gitMetadata);
+      await writeFile(join(gitMetadata, "config"), "[core]\n", "utf8");
+      await symlink(gitMetadata, join(workspace, "git-metadata-alias"));
+      const engine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: ({ options }: { options: Options }) => {
+            captured = options;
+            return successfulQuery();
+          },
+        }),
+      });
+
+      await engine.run(taskInput(workspace, {
+        allowedTools: [
+          "Read",
+          "Edit",
+          "Write",
+          "NotebookEdit",
+          "Glob",
+          "Grep",
+          "LS",
+        ],
+        editMode: AgentRuntimeEditMode.AllowEdits,
+        providerSandboxMode: AgentRuntimeProviderSandboxMode.WorkspaceWrite,
+      }));
+      const hook = captured?.hooks?.PreToolUse?.[0]?.hooks[0];
+      const thirtyThreeAlternatives = [
+        ...Array.from({ length: 32 }, (_, index) => `safe-${index}`),
+        ".git",
+      ].join(",");
+      const deniedCases = [
+        ["Read", { file_path: ".git/config" }],
+        ["Edit", { file_path: join(workspace, ".git", "config") }],
+        ["Write", {
+          file_path: join(workspace, "nested", "..", ".git", "config"),
+        }],
+        ["NotebookEdit", { notebook_path: ".git/notebook.ipynb" }],
+        ["Glob", { path: join(workspace, "nested", ".git", "objects") }],
+        ["Glob", { pattern: "**/.git/**" }],
+        ["Glob", { pattern: "**/.git{,ignore}/**" }],
+        ["Glob", { pattern: "**/[.]git/**" }],
+        ["Glob", { pattern: "**/.[g]it/**" }],
+        ["Glob", { pattern: "**/.g?t/**" }],
+        ["Glob", { pattern: "**/????/**" }],
+        ["Grep", { path: join(workspace, ".GIT", "config") }],
+        ["Grep", { glob: "{.git,.github}/**" }],
+        ["Grep", { glob: "**/?git/**" }],
+        ["Glob", { pattern: `**/{${thirtyThreeAlternatives}}/**` }],
+        ["Glob", { pattern: "**/{a,b,c,d,e,f,g,h}{0,1,2,3,4,5,6,7,8}/**" }],
+        ["Glob", { pattern: "**/{src,{.git,docs}}/**" }],
+        ["Glob", { pattern: "**/{src,.git/**" }],
+        ["Glob", { pattern: "**/[.git/**" }],
+        ["Grep", { glob: "**/src,.git}/**" }],
+        ["Grep", { glob: "**/@(.git|src)/**" }],
+        ["LS", { path: join(workspace, "git-metadata-alias", "config") }],
+      ] as const;
+
+      for (const [toolName, toolInput] of deniedCases) {
+        const permission = await captured?.canUseTool?.(
+          toolName,
+          toolInput,
+          {
+            signal: new AbortController().signal,
+            toolUseID: `tool-${toolName}`,
+          },
+        );
+        expect(permission, `${toolName} canUseTool`).toMatchObject({
+          behavior: "deny",
+          interrupt: true,
+        });
+        const hookDecision = await hook?.({
+          hook_event_name: "PreToolUse",
+          tool_name: toolName,
+          tool_input: toolInput,
+          tool_use_id: `tool-${toolName}`,
+          cwd: workspace,
+          session_id: "session-1",
+          transcript_path: "",
+          permission_mode: "acceptEdits",
+        }, `tool-${toolName}`, { signal: new AbortController().signal });
+        expect(hookDecision, `${toolName} hook`).toMatchObject({
+          hookSpecificOutput: { permissionDecision: "deny" },
+        });
+      }
+
+      const benignCases = [
+        ["Glob", { pattern: "**/.github/**" }],
+        ["Grep", { glob: ".gitignore" }],
+        ["Glob", { pattern: "**/*.ts" }],
+      ] as const;
+      for (const [toolName, toolInput] of benignCases) {
+        const permission = await captured?.canUseTool?.(
+          toolName,
+          toolInput,
+          {
+            signal: new AbortController().signal,
+            toolUseID: `benign-${toolName}`,
+          },
+        );
+        expect(permission, `${toolName} benign canUseTool`).toMatchObject({
+          behavior: "allow",
+        });
+        const hookDecision = await hook?.({
+          hook_event_name: "PreToolUse",
+          tool_name: toolName,
+          tool_input: toolInput,
+          tool_use_id: `benign-${toolName}`,
+          cwd: workspace,
+          session_id: "session-1",
+          transcript_path: "",
+          permission_mode: "acceptEdits",
+        }, `benign-${toolName}`, { signal: new AbortController().signal });
+        expect(hookDecision, `${toolName} benign hook`).toMatchObject({
+          hookSpecificOutput: { permissionDecision: "allow" },
+        });
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 function taskInput(

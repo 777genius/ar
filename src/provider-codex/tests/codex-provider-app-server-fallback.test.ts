@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -764,6 +764,75 @@ describe("Codex provider app-server adapter", () => {
       ).rejects.toThrow();
     } finally {
       await rm(workspace, { recursive: true, force: true });
+      await rm(cacheRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("retains thread state but scrubs auth across a durable cache restart", async () => {
+    const cacheRoot = await mkdtemp(join(tmpdir(), "codex-durable-cache-root-"));
+    const options = {
+      cacheKey: "provider-account:codex-test:slot:durable",
+      rootDir: cacheRoot,
+      preserveOnDispose: true,
+      scrubAuthOnDispose: true,
+    } as const;
+    const session = sessionArtifactFromCodexAuthJson(validAuthJson);
+    const first = new CodexWorkerCacheSessionMaterializer(options);
+    let second: CodexWorkerCacheSessionMaterializer | undefined;
+
+    try {
+      const initial = await first.materialize({
+        session,
+        redactor: new DefaultRedactor(),
+      });
+      const codexHome = initial.codexHome;
+      const threadStatePath = join(codexHome, "threads", "thread-1.json");
+      await mkdir(join(codexHome, "threads"), { recursive: true, mode: 0o700 });
+      await writeFile(threadStatePath, "durable thread state\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      await initial.release();
+      await first.dispose();
+
+      await expect(readFile(threadStatePath, "utf8")).resolves.toBe(
+        "durable thread state\n",
+      );
+      await expect(readFile(join(codexHome, "auth.json"), "utf8")).rejects.toThrow();
+
+      const sameInstanceRestored = await first.materialize({
+        session,
+        redactor: new DefaultRedactor(),
+      });
+      expect(sameInstanceRestored.codexHome).toBe(codexHome);
+      await expect(readFile(threadStatePath, "utf8")).resolves.toBe(
+        "durable thread state\n",
+      );
+      await expect(readFile(join(codexHome, "auth.json"), "utf8")).resolves.toBe(
+        validAuthJson,
+      );
+      await sameInstanceRestored.release();
+      await first.dispose();
+      await expect(readFile(join(codexHome, "auth.json"), "utf8")).rejects.toThrow();
+
+      second = new CodexWorkerCacheSessionMaterializer(options);
+      const restored = await second.materialize({
+        session,
+        redactor: new DefaultRedactor(),
+      });
+      expect(restored.codexHome).toBe(codexHome);
+      await expect(readFile(threadStatePath, "utf8")).resolves.toBe(
+        "durable thread state\n",
+      );
+      await expect(readFile(join(codexHome, "auth.json"), "utf8")).resolves.toBe(
+        validAuthJson,
+      );
+      await restored.release();
+      await second.dispose();
+      await expect(readFile(join(codexHome, "auth.json"), "utf8")).rejects.toThrow();
+    } finally {
+      await first.dispose();
+      await second?.dispose();
       await rm(cacheRoot, { recursive: true, force: true });
     }
   });

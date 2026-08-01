@@ -341,13 +341,25 @@ function createToolPolicyEvaluator(
         );
       }
     }
-    const pathField = toolPathField(toolName);
-    if (
-      pathField === null ||
-      input.providerSandboxMode === AgentRuntimeProviderSandboxMode.DangerFullAccess
-    ) {
-      return accept();
+    const selector = gitMetadataSelector(toolName, toolInput);
+    if (selector === GitMetadataSelectorDecision.Invalid) {
+      return rejectWithAudit(
+        audit,
+        toolName,
+        ToolPolicyDenialReason.InvalidPath,
+        "Tool path selector is invalid.",
+      );
     }
+    if (selector === GitMetadataSelectorDecision.GitMetadata) {
+      return rejectWithAudit(
+        audit,
+        toolName,
+        ToolPolicyDenialReason.GitMetadataPath,
+        "Direct access to Git metadata is not allowed.",
+      );
+    }
+    const pathField = toolPathField(toolName);
+    if (pathField === null) return accept();
     const candidate = toolInput[pathField];
     if (candidate === undefined && (toolName === "Grep" || toolName === "Glob")) {
       return accept();
@@ -360,7 +372,25 @@ function createToolPolicyEvaluator(
         "Tool path is missing or invalid.",
       );
     }
-    return (await pathStaysWithin(input.workspacePath, candidate))
+    const pathDecision = await workspacePathDecision(
+      input.workspacePath,
+      candidate,
+    );
+    if (pathDecision === WorkspacePathDecision.GitMetadata) {
+      return rejectWithAudit(
+        audit,
+        toolName,
+        ToolPolicyDenialReason.GitMetadataPath,
+        "Direct access to Git metadata is not allowed.",
+      );
+    }
+    if (
+      input.providerSandboxMode ===
+      AgentRuntimeProviderSandboxMode.DangerFullAccess
+    ) {
+      return accept();
+    }
+    return pathDecision === WorkspacePathDecision.Allowed
       ? accept()
       : rejectWithAudit(
           audit,
@@ -406,6 +436,7 @@ enum ToolPolicyDenialReason {
   ReadOnlyBoundary = "read_only_boundary",
   InvalidPath = "invalid_path",
   PathOutsideWorkspace = "path_outside_workspace",
+  GitMetadataPath = "git_metadata_path",
 }
 
 function toolsForInput(
@@ -461,6 +492,7 @@ const workspacePathGuardedClaudeTools = new Set([
   "Glob",
   "Grep",
   "LS",
+  "NotebookEdit",
   "Read",
   "Write",
 ]);
@@ -478,6 +510,8 @@ function toolPathField(toolName: string): string | null {
     case "Edit":
     case "Write":
       return "file_path";
+    case "NotebookEdit":
+      return "notebook_path";
     case "Grep":
     case "Glob":
     case "LS":
@@ -487,9 +521,243 @@ function toolPathField(toolName: string): string | null {
   }
 }
 
-async function pathStaysWithin(workspacePath: string, requestedPath: string): Promise<boolean> {
+enum GitMetadataSelectorDecision {
+  Allowed = "allowed",
+  Invalid = "invalid",
+  GitMetadata = "git_metadata",
+}
+
+function gitMetadataSelector(
+  toolName: string,
+  toolInput: Readonly<Record<string, unknown>>,
+): GitMetadataSelectorDecision {
+  const field = toolName === "Glob"
+    ? "pattern"
+    : toolName === "Grep"
+      ? "glob"
+      : null;
+  if (field === null || toolInput[field] === undefined) {
+    return GitMetadataSelectorDecision.Allowed;
+  }
+  const selector = toolInput[field];
+  if (
+    typeof selector !== "string" ||
+    selector.trim().length === 0 ||
+    selector.length > 4_096
+  ) {
+    return GitMetadataSelectorDecision.Invalid;
+  }
+  return globSelectorGitMetadataDecision(selector);
+}
+
+function globSelectorGitMetadataDecision(
+  selector: string,
+): GitMetadataSelectorDecision {
+  let decision = GitMetadataSelectorDecision.Allowed;
+  for (const segment of selector.split(/[\\/]+/)) {
+    const expansion = expandBraceAlternatives(segment.toLowerCase());
+    if (expansion.status === GlobExpansionStatus.Unsupported) {
+      return GitMetadataSelectorDecision.Invalid;
+    }
+    if (
+      expansion.patterns.some((pattern) =>
+        globSegmentMatches(pattern, ".git") &&
+        globPatternHasExplicitGitSignal(pattern)
+      )
+    ) {
+      decision = GitMetadataSelectorDecision.GitMetadata;
+    }
+  }
+  return decision;
+}
+
+function globPatternHasExplicitGitSignal(pattern: string): boolean {
+  if (pattern === "?".repeat(".git".length)) return true;
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index]!;
+    if (character === "[") {
+      const end = pattern.indexOf("]", index + 1);
+      if (end === -1) continue;
+      const characterClass = pattern.slice(index + 1, end);
+      const negated = characterClass[0] === "!" || characterClass[0] === "^";
+      if (
+        !negated &&
+        [...".git"].some((value) =>
+          globCharacterClassMatches(characterClass, value)
+        )
+      ) {
+        return true;
+      }
+      index = end;
+      continue;
+    }
+    if (character === "." || character === "g" || character === "i" || character === "t") {
+      return true;
+    }
+  }
+  return false;
+}
+
+enum GlobExpansionStatus {
+  Supported = "supported",
+  Unsupported = "unsupported",
+}
+
+type GlobExpansionResult =
+  | {
+      readonly status: GlobExpansionStatus.Supported;
+      readonly patterns: readonly string[];
+    }
+  | {
+      readonly status: GlobExpansionStatus.Unsupported;
+    };
+
+function expandBraceAlternatives(pattern: string): GlobExpansionResult {
+  if (hasUnsupportedGlobSyntax(pattern)) {
+    return { status: GlobExpansionStatus.Unsupported };
+  }
+
+  let expanded = [pattern];
+  while (true) {
+    const next: string[] = [];
+    let changed = false;
+    for (const candidate of expanded) {
+      const start = candidate.indexOf("{");
+      const end = start === -1 ? -1 : candidate.indexOf("}", start + 1);
+      if (start === -1 || end === -1) {
+        next.push(candidate);
+        continue;
+      }
+      const alternatives = candidate.slice(start + 1, end).split(",");
+      if (alternatives.length < 2 || alternatives.length > 32) {
+        return { status: GlobExpansionStatus.Unsupported };
+      }
+      if (next.length + alternatives.length > 64) {
+        return { status: GlobExpansionStatus.Unsupported };
+      }
+      changed = true;
+      for (const alternative of alternatives) {
+        next.push(
+          `${candidate.slice(0, start)}${alternative}${candidate.slice(end + 1)}`,
+        );
+      }
+    }
+    expanded = next;
+    if (!changed) break;
+  }
+  return {
+    status: GlobExpansionStatus.Supported,
+    patterns: expanded,
+  };
+}
+
+function hasUnsupportedGlobSyntax(pattern: string): boolean {
+  let braceDepth = 0;
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index]!;
+    if (character === "[") {
+      const end = pattern.indexOf("]", index + 1);
+      if (end === -1) return true;
+      const characterClass = pattern.slice(index + 1, end);
+      const negated = characterClass[0] === "!" || characterClass[0] === "^";
+      if (
+        characterClass.length === 0 ||
+        (negated && characterClass.length === 1) ||
+        characterClass.includes("[")
+      ) {
+        return true;
+      }
+      index = end;
+      continue;
+    }
+    if (character === "]") return true;
+    if (
+      (character === "?" || character === "*" || character === "+" ||
+        character === "@" || character === "!") &&
+      pattern[index + 1] === "("
+    ) {
+      return true;
+    }
+    if (character === "{") {
+      braceDepth += 1;
+      if (braceDepth > 1) return true;
+    } else if (character === "}") {
+      braceDepth -= 1;
+      if (braceDepth < 0) return true;
+    }
+  }
+  return braceDepth !== 0;
+}
+
+function globSegmentMatches(pattern: string, value: string): boolean {
+  const memo = new Map<string, boolean>();
+  const matches = (patternIndex: number, valueIndex: number): boolean => {
+    const key = `${patternIndex}:${valueIndex}`;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+    let result: boolean;
+    if (patternIndex === pattern.length) {
+      result = valueIndex === value.length;
+    } else if (pattern[patternIndex] === "*") {
+      result = matches(patternIndex + 1, valueIndex) ||
+        (valueIndex < value.length && matches(patternIndex, valueIndex + 1));
+    } else if (pattern[patternIndex] === "?") {
+      result = valueIndex < value.length &&
+        matches(patternIndex + 1, valueIndex + 1);
+    } else if (pattern[patternIndex] === "[") {
+      const end = pattern.indexOf("]", patternIndex + 1);
+      result = end !== -1 && valueIndex < value.length &&
+        globCharacterClassMatches(
+          pattern.slice(patternIndex + 1, end),
+          value[valueIndex]!,
+        ) && matches(end + 1, valueIndex + 1);
+    } else {
+      result = valueIndex < value.length &&
+        pattern[patternIndex] === value[valueIndex] &&
+        matches(patternIndex + 1, valueIndex + 1);
+    }
+    memo.set(key, result);
+    return result;
+  };
+  return matches(0, 0);
+}
+
+function globCharacterClassMatches(characterClass: string, value: string): boolean {
+  if (characterClass.length === 0) return false;
+  const negated = characterClass[0] === "!" || characterClass[0] === "^";
+  const body = negated ? characterClass.slice(1) : characterClass;
+  let matched = false;
+  for (let index = 0; index < body.length; index += 1) {
+    if (
+      index + 2 < body.length &&
+      body[index + 1] === "-" &&
+      body[index]! <= value &&
+      value <= body[index + 2]!
+    ) {
+      matched = true;
+      index += 2;
+    } else if (body[index] === value) {
+      matched = true;
+    }
+  }
+  return negated ? !matched : matched;
+}
+
+enum WorkspacePathDecision {
+  Allowed = "allowed",
+  OutsideWorkspace = "outside_workspace",
+  GitMetadata = "git_metadata",
+}
+
+async function workspacePathDecision(
+  workspacePath: string,
+  requestedPath: string,
+): Promise<WorkspacePathDecision> {
   const root = await realpath(resolve(workspacePath));
   const requested = resolve(root, requestedPath);
+  if (hasGitMetadataSegment(root, requested)) {
+    return WorkspacePathDecision.GitMetadata;
+  }
 
   let existing = requested;
   while (true) {
@@ -499,14 +767,25 @@ async function pathStaysWithin(workspacePath: string, requestedPath: string): Pr
         canonicalParent,
         relative(existing, requested),
       );
-      return isWithin(root, canonicalTarget);
+      if (hasGitMetadataSegment(root, canonicalTarget)) {
+        return WorkspacePathDecision.GitMetadata;
+      }
+      return isWithin(root, canonicalTarget)
+        ? WorkspacePathDecision.Allowed
+        : WorkspacePathDecision.OutsideWorkspace;
     } catch (error) {
-      if (!isMissingPath(error)) return false;
+      if (!isMissingPath(error)) return WorkspacePathDecision.OutsideWorkspace;
       const parent = dirname(existing);
-      if (parent === existing) return false;
+      if (parent === existing) return WorkspacePathDecision.OutsideWorkspace;
       existing = parent;
     }
   }
+}
+
+function hasGitMetadataSegment(root: string, candidate: string): boolean {
+  return relative(root, candidate)
+    .split(/[\\/]+/)
+    .some((segment) => segment.toLowerCase() === ".git");
 }
 
 function isWithin(root: string, candidate: string): boolean {

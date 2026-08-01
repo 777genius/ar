@@ -284,6 +284,8 @@ function createCodexAgentDriver(input: {
       cacheKey: `codex:${options.providerInstanceId}:${input.workerId}`,
       slots: options.sessionCacheSlots ?? 1,
       rootDir: join(options.stateRootDir, "codex-session-cache"),
+      preserveOnDispose: true,
+      scrubAuthOnDispose: true,
       ...(workspaceToolsProfile
         ? { configToml: workspaceToolsProfile.configToml }
         : {}),
