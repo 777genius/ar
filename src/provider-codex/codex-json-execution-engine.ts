@@ -92,6 +92,7 @@ export type CodexExecutionInput = {
   readonly sandboxMode?: CodexSandboxMode;
   readonly outputSchema?: unknown;
   readonly abortSignal: AbortSignal;
+  readonly onTextDelta?: (text: string) => void;
 };
 
 export type CodexLogicalThreadExecutionResult =

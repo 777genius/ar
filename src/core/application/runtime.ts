@@ -682,6 +682,9 @@ class RuntimeKernel {
             taskKind: input.task.kind,
           });
         },
+        ...(input.runContext.onProviderTextDelta === undefined
+          ? {}
+          : { onTextDelta: input.runContext.onProviderTextDelta }),
         ...(input.runContext.logicalThread === undefined
           ? {}
           : { logicalThread: input.runContext.logicalThread }),

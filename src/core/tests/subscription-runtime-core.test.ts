@@ -359,6 +359,7 @@ describe("subscription runtime use cases", () => {
       makeFakeRuntimeDeps({ store, agent }),
     );
     let providerTaskStarted = false;
+    const textDeltas: string[] = [];
 
     const result = await runtime.refreshThenRunTask({
       providerInstanceId: "provider-instance-1",
@@ -371,11 +372,15 @@ describe("subscription runtime use cases", () => {
           expect(agent.lastPrompt).toBeNull();
           providerTaskStarted = true;
         },
+        onProviderTextDelta: (text) => {
+          textDeltas.push(text);
+        },
       },
     });
 
     expect(result.status).toBe("completed");
     expect(providerTaskStarted).toBe(true);
+    expect(textDeltas).toEqual(["review:inspect diff"]);
     expect(agent.lastPrompt).toBe("inspect diff");
     const next = await store.read({
       providerInstanceId: "provider-instance-1",

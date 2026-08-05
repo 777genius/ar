@@ -820,15 +820,21 @@ describe("FileBackendCodexWorker", () => {
       },
     });
     const canaryPath = join(callerWorkspace, "canary.txt");
+    const textDeltas: string[] = [];
     await writeFile(canaryPath, "safe", "utf8");
 
     try {
       await worker.start();
       await worker.seedCodexAuthJson(validAuthJson);
-      await expect(worker.run({ prompt: "hello" })).resolves.toEqual({
-        outputText: "OK",
-        warnings: [],
-      });
+      await expect(worker.run(
+        { prompt: "hello" },
+        {
+          onProviderTextDelta: (text) => {
+            textDeltas.push(text);
+          },
+        },
+      )).resolves.toEqual({ outputText: "OK", warnings: [] });
+      expect(textDeltas.join("")).toBe("OK");
       expect(appServer.threadCwds).toContain(callerWorkspace);
       await worker.dispose();
       await expect(access(canaryPath)).resolves.toBeUndefined();

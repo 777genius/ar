@@ -37,6 +37,7 @@ export class AppServerTurnRunner {
     readonly timeoutMs: number;
     readonly abortSignal: AbortSignal;
     readonly prepareNext?: boolean;
+    readonly onTextDelta?: (text: string) => void;
   }): Promise<{
     readonly status?: "completed";
     readonly outputText: string;
@@ -47,9 +48,20 @@ export class AppServerTurnRunner {
     const preparedThread = this.takePreparedThread(input);
     const threadId =
       preparedThread?.threadId ?? (await this.options.client.startThread(input));
-    const turn = await this.options.client.startTurn({ ...input, threadId }).catch(
+    let emittedText = false;
+    const onTextDelta = input.onTextDelta === undefined
+      ? undefined
+      : (text: string): void => {
+          emittedText = true;
+          input.onTextDelta?.(text);
+        };
+    const turn = await this.options.client.startTurn({
+      ...input,
+      ...(onTextDelta === undefined ? {} : { onTextDelta }),
+      threadId,
+    }).catch(
       async (error: unknown) => {
-        if (!preparedThread) throw error;
+        if (!preparedThread || emittedText) throw error;
         warnings.push({
           code: "codex_app_server_prepared_thread_failed",
           safeMessage:
@@ -58,6 +70,7 @@ export class AppServerTurnRunner {
         const retryThreadId = await this.options.client.startThread(input);
         return await this.options.client.startTurn({
           ...input,
+          ...(onTextDelta === undefined ? {} : { onTextDelta }),
           threadId: retryThreadId,
         });
       },

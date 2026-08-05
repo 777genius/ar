@@ -306,6 +306,97 @@ describe("Codex provider app-server adapter", () => {
     }
   });
 
+  it("streams early app-server text deltas through the redacted task boundary", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-delta-test-"));
+    const fakeFactory = new FakeAppServerFactory({
+      emitTurnCompletionBeforeStarted: true,
+      mismatchTurnStartResponseId: true,
+    });
+    const redactor = new DefaultRedactor();
+    redactor.registerSecret("voice-secret", "voice-test");
+    const deltas: string[] = [];
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        cleanThreadPrewarm: false,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "voice-secret" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor,
+        abortSignal: new AbortController().signal,
+        onTextDelta: (text) => {
+          deltas.push(text);
+        },
+      });
+
+      expect(deltas.join("")).toBe(
+        "app-server output:[redacted:voice-test]",
+      );
+      expect(result).toMatchObject({
+        status: "completed",
+        outputText: "app-server output:[redacted:voice-test]",
+      });
+      expect(JSON.stringify({ deltas, result })).not.toContain("voice-secret");
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("fails the turn when the text-delta sink rejects streamed output", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-delta-sink-test-"));
+    const fakeFactory = new FakeAppServerFactory({
+      emitTurnEventsWithStartResponse: true,
+      mismatchTurnStartResponseId: true,
+    });
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        cleanThreadPrewarm: false,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "reject streamed output" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+        onTextDelta: () => {
+          throw new Error("bounded_delta_queue_full");
+        },
+      });
+
+      expect(result).toMatchObject({
+        status: "failed",
+        failure: {
+          code: "unknown_runtime_failure",
+          details: {
+            phase: "turn_error_after_output",
+            outputObserved: "true",
+          },
+        },
+      });
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("does not keep stale aliases when early app-server turn ids are reused", async () => {
     const workspace = await mkdtemp(
       join(tmpdir(), "codex-app-reused-turn-test-"),
