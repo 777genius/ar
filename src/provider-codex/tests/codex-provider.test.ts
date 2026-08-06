@@ -33,6 +33,9 @@ import {
   classifyCodexFailure,
   codexAgentCapabilities,
   codexEnvironmentPolicy,
+  codexProviderApiAndNpmRegistryEgressProfileId,
+  codexProviderApiEgressProfileId,
+  codexProviderEgressProfileEnvVar,
   codexJsonAgentCapabilities,
   codexProviderManifest,
   codexSessionCapabilities,
@@ -461,6 +464,8 @@ describe("Codex provider adapter", () => {
       sourceEnv: {
         PATH: "/usr/bin",
         GITHUB_TOKEN: "must-not-pass",
+        [codexProviderEgressProfileEnvVar]:
+          codexProviderApiAndNpmRegistryEgressProfileId,
       },
     });
 
@@ -478,6 +483,9 @@ describe("Codex provider adapter", () => {
       expect(runner.lastArgs).toContain("gpt-refresh-test");
       expect(runner.lastEnv?.GITHUB_TOKEN).toBeUndefined();
       expect(runner.lastEnv?.CODEX_HOME).toBeTruthy();
+      expect(runner.lastEnv?.[codexProviderEgressProfileEnvVar]).toBe(
+        codexProviderApiEgressProfileId,
+      );
       expect(new TextDecoder().decode(result.artifact.bytes)).toContain(
         ["refreshed", "refresh", "token"].join("-"),
       );

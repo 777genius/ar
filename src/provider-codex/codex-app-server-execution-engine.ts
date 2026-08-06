@@ -36,16 +36,6 @@ import {
   signalCodexAppServerChildGroup,
   spawnCodexAppServerProcess,
 } from "./app-server/adapters/node-app-server-process";
-import type {
-  CodexAppServerCommandApprovalDecision,
-  CodexAppServerCommandApprovalInput,
-  CodexAppServerCommandApprovalPolicy,
-  CodexAppServerNativeToolSurface,
-} from "./app-server/domain/app-server-types";
-import type {
-  CodexAppServerRolloutBudget,
-} from "./app-server/domain/app-server-rollout-budget";
-import { codexAppServerRolloutBudgetConfig } from "./app-server/domain/app-server-rollout-budget";
 import {
   defaultGoalContinuePrompt,
   defaultMaxGoalTurns,
@@ -53,7 +43,15 @@ import {
   defaultTimeoutMs,
   type AppServerRunResult,
   type AppServerWarning,
+  type CodexAppServerCommandApprovalDecision,
+  type CodexAppServerCommandApprovalInput,
+  type CodexAppServerCommandApprovalPolicy,
+  type CodexAppServerNativeToolSurface,
 } from "./app-server/domain/app-server-types";
+import {
+  codexAppServerRolloutBudgetConfig,
+  type CodexAppServerRolloutBudget,
+} from "./app-server/domain/app-server-rollout-budget";
 import {
   appServerOutputSchemaNotNativeWarning,
   assertOutputWithinBounds,
@@ -75,12 +73,11 @@ import {
 import { AppServerSlotPool } from "./app-server/application/app-server-slot-pool";
 import { runCodexAppServerLogicalThread } from "./app-server/application/app-server-logical-thread-runner";
 import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
+import type { CodexProviderEgressProfileId } from "./codex-provider-egress-policy";
 
 export type {
   CodexAppServerChildProcess,
   CodexAppServerProcessFactory,
-};
-export type {
   CodexAppServerCommandApprovalDecision,
   CodexAppServerCommandApprovalInput,
   CodexAppServerCommandApprovalPolicy,
@@ -91,6 +88,7 @@ export type {
 export type CodexAppServerExecutionEngineOptions = {
   readonly codexBinaryPath: string;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  readonly egressProfile?: CodexProviderEgressProfileId;
   readonly timeoutMs?: number;
   readonly startupTimeoutMs?: number;
   readonly maxOutputBytes?: number;
@@ -165,6 +163,9 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     this.slotPool = new AppServerSlotPool({
       codexBinaryPath: options.codexBinaryPath,
       ...(options.sourceEnv === undefined ? {} : { sourceEnv: options.sourceEnv }),
+      ...(options.egressProfile === undefined
+        ? {}
+        : { egressProfile: options.egressProfile }),
       processFactory: options.processFactory ?? spawnCodexAppServerProcess,
       signalChildProcess: signalCodexAppServerChildGroup,
       runStore: this.runStore,

@@ -19,6 +19,7 @@ import {
   codexProviderEgressConfigToml,
   codexProviderEgressEnv,
 } from "./codex-provider-egress-policy";
+import type { CodexProviderEgressProfileId } from "./codex-provider-egress-policy";
 import {
   codexAgentCapabilities,
   codexAgentId,
@@ -31,6 +32,7 @@ export type CodexCliAgentDriverOptions = {
   readonly codexBinaryPath?: string;
   readonly model?: string;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  readonly egressProfile?: CodexProviderEgressProfileId;
   readonly timeoutMs?: number;
 };
 
@@ -83,6 +85,9 @@ export class CodexCliAgentDriver implements AgentDriver {
         codexHome: tempCodexHome,
         authJson,
         sandboxMode,
+        ...(this.options.egressProfile === undefined
+          ? {}
+          : { egressProfile: this.options.egressProfile }),
       });
       await input.onTaskStarted?.();
       const result = await input.runner.run({
@@ -103,7 +108,7 @@ export class CodexCliAgentDriver implements AgentDriver {
           ...pruneCodexChildEnv(this.options.sourceEnv ?? process.env),
           HOME: tempHome,
           CODEX_HOME: tempCodexHome,
-          ...codexProviderEgressEnv(),
+          ...codexProviderEgressEnv(this.options.egressProfile),
           CI: "true",
         },
         stdin: new TextEncoder().encode(
@@ -152,6 +157,7 @@ async function writeCodexHomeSnapshot(input: {
   readonly codexHome: string;
   readonly authJson: string;
   readonly sandboxMode: ReturnType<typeof codexSandboxModeForControls>;
+  readonly egressProfile?: CodexProviderEgressProfileId;
 }): Promise<void> {
   const config = [
     'approval_policy = "never"',
@@ -170,7 +176,7 @@ async function writeCodexHomeSnapshot(input: {
     'inherit = "none"',
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     "",
-    codexProviderEgressConfigToml(),
+    codexProviderEgressConfigToml(input.egressProfile),
   ].join("\n");
   await writeFile(join(input.codexHome, "config.toml"), config, {
     mode: 0o600,

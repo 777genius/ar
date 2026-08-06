@@ -21,8 +21,7 @@ import {
   type CodexExecutionProfile,
   CodexJsonAgentDriver,
   type CodexAppServerProcessFactory,
-  type CodexReasoningEffort,
-  type CodexServiceTier,
+  type CodexReasoningEffort, type CodexServiceTier, type CodexProviderEgressProfileId,
 } from "@vioxen/subscription-runtime/provider-codex";
 import {
   SubscriptionWorkerError,
@@ -75,6 +74,7 @@ export type FileBackendCodexWorkerOptions = {
   readonly maxSessionAgeMs?: number;
   readonly refreshConflictRetryMaxMs?: number;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  readonly egressProfile?: CodexProviderEgressProfileId;
   readonly executionEngine?: CodexWorkerExecutionEngine;
   readonly appServerProcessFactory?: CodexAppServerProcessFactory;
   readonly executionProfile?: CodexExecutionProfile;

@@ -12,9 +12,11 @@ import {
 import { cleanupCodexRuntimeTempRoot } from "./codex-cli-temp-cleanup";
 import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 import {
+  codexProviderApiEgressProfileId,
   codexProviderEgressConfigToml,
   codexProviderEgressEnv,
 } from "./codex-provider-egress-policy";
+import type { CodexProviderEgressProfileId } from "./codex-provider-egress-policy";
 import type { CodexMaterializedSession } from "./codex-json-execution-engine";
 
 export type CodexSessionPrewarmResult = {
@@ -47,8 +49,16 @@ export type CodexSessionMaterializer = {
   dispose?(): Promise<void>;
 };
 
+export type CodexEphemeralSessionMaterializerOptions = {
+  readonly egressProfile?: CodexProviderEgressProfileId;
+};
+
 export class CodexEphemeralSessionMaterializer implements CodexSessionMaterializer {
   readonly mode = "ephemeral" as const;
+
+  constructor(
+    private readonly options: CodexEphemeralSessionMaterializerOptions = {},
+  ) {}
 
   async materialize(input: {
     readonly session: SessionArtifact;
@@ -64,7 +74,13 @@ export class CodexEphemeralSessionMaterializer implements CodexSessionMaterializ
     const codexHome = join(tempRoot, "codex-home");
     await mkdir(home, { recursive: true, mode: 0o700 });
     await mkdir(codexHome, { recursive: true, mode: 0o700 });
-    await writeCodexJsonHomeSnapshot({ codexHome, authJson });
+    await writeCodexJsonHomeSnapshot({
+      codexHome,
+      authJson,
+      ...(this.options.egressProfile === undefined
+        ? {}
+        : { egressProfile: this.options.egressProfile }),
+    });
 
     return {
       home,
@@ -73,7 +89,7 @@ export class CodexEphemeralSessionMaterializer implements CodexSessionMaterializ
       env: {
         HOME: home,
         CODEX_HOME: codexHome,
-        ...codexProviderEgressEnv(),
+        ...codexProviderEgressEnv(this.options.egressProfile),
       },
       snapshotSession: () => snapshotCodexSession({ codexHome }),
       release: once(async () => {
@@ -125,6 +141,8 @@ export type CodexWorkerCacheSessionMaterializerOptions = {
   readonly rootDir?: string;
   /** Host-generated Codex config for this isolated worker slot. */
   readonly configToml?: string;
+  /** Closed runtime-owned profile for this isolated worker slot. */
+  readonly egressProfile?: CodexProviderEgressProfileId;
   /**
    * Keep the cache directory on dispose. The parent must be host-owned private
    * durable state when this is used for logical-thread continuation.
@@ -176,7 +194,7 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
         env: {
           HOME: entry.home,
           CODEX_HOME: entry.codexHome,
-          ...codexProviderEgressEnv(),
+          ...codexProviderEgressEnv(this.options.egressProfile),
         },
         snapshotSession: () =>
           snapshotCodexSession({ codexHome: entry.codexHome }),
@@ -246,6 +264,9 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
         ...(this.options.configToml === undefined
           ? {}
           : { configToml: this.options.configToml }),
+        ...(this.options.egressProfile === undefined
+          ? {}
+          : { egressProfile: this.options.egressProfile }),
       });
       entry.sessionHash = sessionHash;
       entry.initialized = true;
@@ -257,6 +278,9 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
       ...(this.options.configToml === undefined
         ? {}
         : { configToml: this.options.configToml }),
+      ...(this.options.egressProfile === undefined
+        ? {}
+        : { egressProfile: this.options.egressProfile }),
     });
 
     if (entry.sessionHash !== sessionHash) {
@@ -313,6 +337,7 @@ export type CodexWorkerCacheSessionPoolMaterializerOptions = {
   readonly rootDir?: string;
   /** Host-generated Codex config shared by every isolated pool slot. */
   readonly configToml?: string;
+  readonly egressProfile?: CodexProviderEgressProfileId;
   readonly preserveOnDispose?: boolean;
   readonly scrubAuthOnDispose?: boolean;
 };
@@ -340,6 +365,9 @@ export class CodexWorkerCacheSessionPoolMaterializer implements CodexSessionMate
         ...(options.configToml === undefined
           ? {}
           : { configToml: options.configToml }),
+        ...(options.egressProfile === undefined
+          ? {}
+          : { egressProfile: options.egressProfile }),
         ...(options.preserveOnDispose !== undefined
           ? { preserveOnDispose: options.preserveOnDispose }
           : {}),
@@ -421,12 +449,16 @@ export async function writeCodexJsonHomeSnapshot(input: {
   readonly codexHome: string;
   readonly authJson: string;
   readonly configToml?: string;
+  readonly egressProfile?: CodexProviderEgressProfileId;
 }): Promise<void> {
   await writeCodexJsonConfig({
     codexHome: input.codexHome,
     ...(input.configToml === undefined
       ? {}
       : { configToml: input.configToml }),
+    ...(input.egressProfile === undefined
+      ? {}
+      : { egressProfile: input.egressProfile }),
   });
   await writeCodexAuthJson(input);
 }
@@ -434,10 +466,11 @@ export async function writeCodexJsonHomeSnapshot(input: {
 async function writeCodexJsonConfig(input: {
   readonly codexHome: string;
   readonly configToml?: string;
+  readonly egressProfile?: CodexProviderEgressProfileId;
 }): Promise<void> {
   await writeFileAtomic(
     join(input.codexHome, "config.toml"),
-    input.configToml ?? codexJsonHomeConfigToml(),
+    input.configToml ?? codexJsonHomeConfigToml(input.egressProfile),
   );
 }
 
@@ -455,7 +488,9 @@ async function snapshotCodexSession(input: {
   return sessionArtifactFromCodexAuthJson(authJson);
 }
 
-function codexJsonHomeConfigToml(): string {
+function codexJsonHomeConfigToml(
+  egressProfile: CodexProviderEgressProfileId = codexProviderApiEgressProfileId,
+): string {
   return [
     'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
@@ -485,7 +520,7 @@ function codexJsonHomeConfigToml(): string {
     'inherit = "none"',
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     "",
-    codexProviderEgressConfigToml(),
+    codexProviderEgressConfigToml(egressProfile),
   ].join("\n");
 }
 

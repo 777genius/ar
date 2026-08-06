@@ -18,7 +18,10 @@ import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 import { classifyCodexFailure } from "./failure-classifier";
 import { pruneCodexChildEnv } from "./codex-cli-domain";
 import { composeCodexPrompt } from "./codex-prompt-composer";
-import { codexProviderEgressCliConfigArgs } from "./codex-provider-egress-policy";
+import {
+  codexProviderEgressCliConfigArgs,
+  type CodexProviderEgressProfileId,
+} from "./codex-provider-egress-policy";
 import { parseCodexStructuredOutput } from "./structured-output";
 
 export type CodexReasoningEffort =
@@ -161,6 +164,7 @@ export type CodexExecutionEngine = {
 export type PackagedCodexJsonExecutionEngineOptions = {
   readonly codexBinaryPath: string;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  readonly egressProfile?: CodexProviderEgressProfileId;
   readonly timeoutMs?: number;
   readonly jsonFlag?: "--json" | "--experimental-json";
   readonly maxOutputBytes?: number;
@@ -214,6 +218,9 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
         ...(input.sandboxMode === undefined
           ? {}
           : { sandboxMode: input.sandboxMode }),
+        ...(this.options.egressProfile === undefined
+          ? {}
+          : { egressProfile: this.options.egressProfile }),
         ...(schemaFile === null ? {} : { outputSchemaPath: schemaFile.path }),
       });
 
@@ -293,6 +300,7 @@ export function buildCodexJsonExecArgs(input: {
   readonly reasoningEffort: CodexReasoningEffort;
   readonly serviceTier?: CodexServiceTier;
   readonly sandboxMode?: CodexSandboxMode;
+  readonly egressProfile?: CodexProviderEgressProfileId;
   readonly outputSchemaPath?: string;
 }): readonly string[] {
   return [
@@ -333,7 +341,7 @@ export function buildCodexJsonExecArgs(input: {
     "features.shell_snapshot=false",
     "--config",
     "features.skill_mcp_dependency_install=false",
-    ...codexProviderEgressCliConfigArgs(),
+    ...codexProviderEgressCliConfigArgs(input.egressProfile),
     ...(input.outputSchemaPath ? ["--output-schema", input.outputSchemaPath] : []),
     "--ephemeral",
     "--ignore-user-config",

@@ -36,6 +36,7 @@ import {
   type CodexSessionPrewarmResult,
   sessionArtifactHash,
 } from "./codex-session-materializer";
+import type { CodexProviderEgressProfileId } from "./codex-provider-egress-policy";
 
 type CodexJsonAgentDriverBaseOptions = {
   readonly model?: string;
@@ -44,6 +45,7 @@ type CodexJsonAgentDriverBaseOptions = {
   readonly warmupPrompt?: string;
   readonly sessionMaterializer?: CodexSessionMaterializer;
   readonly outputSchemas?: Readonly<Record<string, unknown>>;
+  readonly egressProfile?: CodexProviderEgressProfileId;
 };
 
 export type CodexJsonAgentDriverOptions = CodexJsonAgentDriverBaseOptions &
@@ -80,6 +82,9 @@ export class CodexJsonAgentDriver implements AgentDriver {
         : new PackagedCodexJsonExecutionEngine({
             codexBinaryPath: options.codexBinaryPath,
             ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
+            ...(options.egressProfile === undefined
+              ? {}
+              : { egressProfile: options.egressProfile }),
             ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
           });
     const engineCapabilities = this.engine.capabilities;
@@ -111,7 +116,11 @@ export class CodexJsonAgentDriver implements AgentDriver {
     this.serviceTier = options.serviceTier;
     this.outputSchemas = options.outputSchemas ?? {};
     this.sessionMaterializer =
-      options.sessionMaterializer ?? new CodexEphemeralSessionMaterializer();
+      options.sessionMaterializer ?? new CodexEphemeralSessionMaterializer({
+        ...(options.egressProfile === undefined
+          ? {}
+          : { egressProfile: options.egressProfile }),
+      });
   }
 
   async runTask(input: {

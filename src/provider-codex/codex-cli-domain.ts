@@ -2,7 +2,10 @@ import { accessSync, constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { delimiter, dirname, isAbsolute } from "node:path";
 import { codexEnvironmentPolicy } from "./capabilities";
-import { codexProviderEgressCliConfigArgs } from "./codex-provider-egress-policy";
+import {
+  codexProviderEgressCliConfigArgs,
+  codexProviderEgressEnv,
+} from "./codex-provider-egress-policy";
 import { codexAgentTempRootFromEnv } from "./app-server/domain/app-server-types";
 
 export const codexAuthJsonMaxBytes = 32 * 1024;
@@ -324,6 +327,7 @@ export function buildCodexRefreshBootstrapPlan(input: {
       HOME: input.tempHome,
       CODEX_HOME: input.tempCodexHome,
       REVIEWROUTER_CODEX_AUTH_PATH: input.authJsonPath,
+      ...codexProviderEgressEnv(),
     },
   };
 }

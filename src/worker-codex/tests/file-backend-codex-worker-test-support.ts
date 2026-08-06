@@ -327,16 +327,22 @@ export class StaticRunner implements RunnerPort {
       readonly stdout: string;
       readonly stderr: string;
     },
+    private readonly onRun?: (
+      input: Parameters<RunnerPort["run"]>[0],
+    ) => Promise<void> | void,
   ) {}
 
   lastArgs: readonly string[] = [];
   lastCwd = "";
   lastStdin = "";
+  lastEnv: Readonly<Record<string, string>> | null = null;
 
   async run(input: Parameters<RunnerPort["run"]>[0]) {
     this.lastArgs = input.args;
     this.lastCwd = input.cwd;
     this.lastStdin = new TextDecoder().decode(input.stdin);
+    this.lastEnv = input.env;
+    await this.onRun?.(input);
     return {
       ...this.result,
       durationMs: 1,

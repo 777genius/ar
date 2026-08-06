@@ -9,12 +9,38 @@ import {
 } from "../codex-app-server-policy";
 import { readGoal } from "../codex-app-server-protocol";
 import {
+  codexProviderApiAndNpmRegistryEgressPolicy,
+  codexProviderApiAndNpmRegistryEgressProfileId,
   codexProviderApiEgressProfileId,
+  codexProviderApiEgressPolicy,
+  codexProviderEgressConfigToml,
   codexProviderEgressEnv,
+  codexProviderEgressPolicyFromEnv,
   codexProviderEgressProfileEnvVar,
 } from "../codex-provider-egress-policy";
 
 describe("Codex app-server boundary helpers", () => {
+  it("keeps runtime-owned egress profiles exact and fails closed for unknown ids", () => {
+    expect(codexProviderApiEgressPolicy()).toEqual({
+      profileId: codexProviderApiEgressProfileId,
+      domains: ["api.openai.com"],
+    });
+    expect(codexProviderApiAndNpmRegistryEgressPolicy()).toEqual({
+      profileId: codexProviderApiAndNpmRegistryEgressProfileId,
+      domains: ["api.openai.com", "registry.npmjs.org"],
+    });
+    const config = codexProviderEgressConfigToml(
+      codexProviderApiAndNpmRegistryEgressProfileId,
+    );
+    expect(config).toContain(
+      'domains = { "api.openai.com" = "allow", "registry.npmjs.org" = "allow" }',
+    );
+    expect(config).not.toContain("*");
+    expect(codexProviderEgressPolicyFromEnv({
+      [codexProviderEgressProfileEnvVar]: "unknown-profile",
+    })).toBeNull();
+  });
+
   it("builds a strict workspace-write sandbox policy from the scoped environment", () => {
     expect(
       codexAppServerSandboxPolicy({

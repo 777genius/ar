@@ -23,6 +23,10 @@ import {
 import { CodexAppServerClient } from "./app-server-client";
 import { AppServerGoalRunner } from "./app-server-goal-runner";
 import { AppServerTurnRunner } from "./app-server-turn-runner";
+import {
+  codexProviderEgressEnv,
+  type CodexProviderEgressProfileId,
+} from "../../codex-provider-egress-policy";
 
 export type AppServerSlot = {
   readonly key: string;
@@ -39,6 +43,7 @@ export class AppServerSlotPool {
     private readonly options: {
       readonly codexBinaryPath: string;
       readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+      readonly egressProfile?: CodexProviderEgressProfileId;
       readonly processFactory: CodexAppServerProcessFactory;
       readonly signalChildProcess: CodexAppServerChildProcessSignaler;
       readonly runStore: ManagedRunStorePort;
@@ -74,6 +79,7 @@ export class AppServerSlotPool {
     const sourceEnv = {
       ...(this.options.sourceEnv ?? process.env),
       ...input.session.env,
+      ...codexProviderEgressEnv(this.options.egressProfile),
     };
     const client = new CodexAppServerClient({
       codexBinaryPath: this.options.codexBinaryPath,

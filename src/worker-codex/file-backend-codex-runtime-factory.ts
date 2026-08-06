@@ -15,6 +15,8 @@ import {
   CodexJsonAgentDriver,
   CodexWorkerCacheSessionPoolMaterializer,
   PackagedCodexJsonExecutionEngine,
+  codexProviderApiEgressProfileId,
+  codexProviderEgressConfigToml,
   defaultCodexModel,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { createLocalFileBackendRuntimeAdapters } from "@vioxen/subscription-runtime/store-local-file";
@@ -202,6 +204,7 @@ function createCodexAgentDriver(input: {
 }): CodexJsonAgentDriver | CodexCliAgentDriver {
   const { options } = input;
   const executionEngine = options.executionEngine ?? "app-server";
+  const egressProfile = options.egressProfile ?? codexProviderApiEgressProfileId;
   const workspaceToolsProfile = options.boundedWorkspaceTools && options.workspacePath
     ? buildCodexWorkspaceToolsProfile({
         workspaceRoot: options.workspacePath,
@@ -213,6 +216,7 @@ function createCodexAgentDriver(input: {
       codexBinaryPath: options.codexBinaryPath,
       model: options.model ?? defaultCodexModel,
       ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
+      egressProfile,
       ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
     });
   }
@@ -220,6 +224,7 @@ function createCodexAgentDriver(input: {
   const packagedExec = new PackagedCodexJsonExecutionEngine({
     codexBinaryPath: options.codexBinaryPath,
     ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
+    egressProfile,
     ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
   });
   return new CodexJsonAgentDriver({
@@ -228,6 +233,7 @@ function createCodexAgentDriver(input: {
       : new CodexAppServerExecutionEngine({
           codexBinaryPath: options.codexBinaryPath,
           ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
+          egressProfile,
           ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
           ...(options.appServerStartupTimeoutMs
             ? { startupTimeoutMs: options.appServerStartupTimeoutMs }
@@ -286,8 +292,11 @@ function createCodexAgentDriver(input: {
       rootDir: join(options.stateRootDir, "codex-session-cache"),
       preserveOnDispose: true,
       scrubAuthOnDispose: true,
+      egressProfile,
       ...(workspaceToolsProfile
-        ? { configToml: workspaceToolsProfile.configToml }
+        ? {
+            configToml: `${workspaceToolsProfile.configToml}${codexProviderEgressConfigToml(egressProfile)}`,
+          }
         : {}),
     }),
     model: options.model ?? defaultCodexModel,

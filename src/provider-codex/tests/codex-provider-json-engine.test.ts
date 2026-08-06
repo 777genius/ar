@@ -33,6 +33,8 @@ import {
   classifyCodexFailure,
   codexAgentCapabilities,
   codexEnvironmentPolicy,
+  codexProviderApiAndNpmRegistryEgressProfileId,
+  codexProviderEgressProfileEnvVar,
   codexJsonAgentCapabilities,
   codexProviderManifest,
   codexSessionCapabilities,
@@ -126,6 +128,36 @@ describe("Codex provider adapter", () => {
     ).toEqual(
       expect.arrayContaining(["--sandbox", "workspace-write"]),
     );
+  });
+
+  it("materializes the selected closed egress profile into config and environment", async () => {
+    const cacheRoot = await mkdtemp(join(tmpdir(), "codex-egress-materializer-"));
+    const materializer = new CodexWorkerCacheSessionMaterializer({
+      cacheKey: "provider-account:codex-egress:slot:1",
+      rootDir: cacheRoot,
+      egressProfile: codexProviderApiAndNpmRegistryEgressProfileId,
+    });
+
+    try {
+      const session = await materializer.materialize({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        redactor: new DefaultRedactor(),
+      });
+      try {
+        expect(session.env[codexProviderEgressProfileEnvVar]).toBe(
+          codexProviderApiAndNpmRegistryEgressProfileId,
+        );
+        await expect(readFile(join(session.codexHome, "config.toml"), "utf8"))
+          .resolves.toContain(
+            'domains = { "api.openai.com" = "allow", "registry.npmjs.org" = "allow" }',
+          );
+      } finally {
+        await session.release();
+      }
+    } finally {
+      await materializer.dispose();
+      await rm(cacheRoot, { recursive: true, force: true });
+    }
   });
 
   it("builds packaged JSON exec args with a native output schema path", () => {

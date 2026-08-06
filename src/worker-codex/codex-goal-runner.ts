@@ -11,7 +11,7 @@ import {
   AccessBoundary,
   InMemoryActiveAttemptRegistry,
   LaunchPlanStatus,
-  type NetworkAccessMode,
+  NetworkAccessMode,
   type ProjectAccessScope,
   type SafeExecutionPolicy,
   type SafeExecutionRunResult,
@@ -24,9 +24,9 @@ import {
   type RuntimeResultStatus,
   type WorkerReport,
 } from "@vioxen/subscription-runtime/worker-core";
-import type {
-  CodexReasoningEffort,
-  CodexServiceTier,
+import {
+  type CodexReasoningEffort,
+  type CodexServiceTier,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { LocalFileWorkerControlInboxStore } from "@vioxen/subscription-runtime/store-local-file";
 import {
@@ -47,6 +47,7 @@ import {
   buildCodexGoalAccessLaunchPlan,
   codexGoalControlsForAccessBoundary,
 } from "./codex-goal-access-plan";
+import { codexGoalTaskEgressProfile } from "./codex-goal-task-egress-profile";
 import { readLocalGitHeadCommit } from "./codex-goal-git-revision";
 import { createCodexGoalResultRecorder } from "./codex-goal-runtime-result-io";
 import {
@@ -387,6 +388,7 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
 }): FileBackendCodexSafeExecutorOptions {
   const { config } = input;
+  const egressProfile = codexGoalTaskEgressProfile(config);
   const accessLaunchPlan = buildCodexGoalAccessLaunchPlan(config);
   const commandPolicy =
     accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
@@ -447,6 +449,7 @@ export function buildCodexGoalExecutorOptions(input: {
           ? {}
           : { appServerStartupTimeoutMs: config.appServerStartupTimeoutMs }),
         sourceEnv: config.sourceEnv ?? process.env,
+        egressProfile,
         ...(commandPolicy === undefined ? {} : { commandPolicy }),
         ...(config.model ? { model: config.model } : {}),
         ...(config.reasoningEffort
