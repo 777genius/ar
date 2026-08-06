@@ -800,7 +800,7 @@ describe("codex goal MCP server", () => {
         client.connect(clientTransport),
       ]);
 
-      await callToolJson(client, "codex_goal_create_job", {
+      const controller = await callToolJson(client, "codex_goal_create_job", {
         registryRootDir,
         jobId: "infinity-context-controller-v1",
         jobRootDir: controllerJobRoot,
@@ -822,6 +822,7 @@ describe("codex goal MCP server", () => {
           preStartAdmission: { required: true, mode: "serial-builtin" },
         },
       });
+      if (controller.ok !== true) throw new Error(JSON.stringify(controller));
 
       const result = await callToolJson(client, "codex_goal_project_refill_worker", {
         registryRootDir,
@@ -840,6 +841,7 @@ describe("codex goal MCP server", () => {
         startWorker: false,
         confirmRefill: true,
       });
+      if (result.ok !== true) throw new Error(JSON.stringify(result));
       expect(result).toMatchObject({
         ok: true,
         manifest: { accounts: ["account-a"] },
