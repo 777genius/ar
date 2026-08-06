@@ -454,7 +454,10 @@ export type AgentRuntimeToolName = `${AgentRuntimeTool}`;
 
 export type AgentUsage = {
   readonly inputTokens?: number;
+  readonly cachedInputTokens?: number;
+  readonly cacheWriteInputTokens?: number;
   readonly outputTokens?: number;
+  readonly reasoningOutputTokens?: number;
   readonly totalTokens?: number;
 };
 

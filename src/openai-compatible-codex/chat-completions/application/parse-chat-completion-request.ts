@@ -47,7 +47,21 @@ export function parseChatCompletionRequest(
     );
   }
   const temperature = parseOptionalNumber(record.temperature, "temperature");
-  const maxTokens = parseOptionalNumber(record.max_tokens, "max_tokens");
+  const maxTokens = parseOptionalPositiveInteger(record.max_tokens, "max_tokens");
+  const maxCompletionTokens = parseOptionalPositiveInteger(
+    record.max_completion_tokens,
+    "max_completion_tokens",
+  );
+  if (
+    maxTokens !== undefined &&
+    maxCompletionTokens !== undefined &&
+    maxTokens !== maxCompletionTokens
+  ) {
+    throw invalidRequest(
+      "max_tokens and max_completion_tokens must match when both are provided.",
+    );
+  }
+  const requestedOutputTokenLimit = maxCompletionTokens ?? maxTokens;
 
   return {
     messages,
@@ -62,7 +76,9 @@ export function parseChatCompletionRequest(
       ? {}
       : { tool_choice: record.tool_choice }),
     ...(temperature === undefined ? {} : { temperature }),
-    ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
+    ...(requestedOutputTokenLimit === undefined
+      ? {}
+      : { requestedOutputTokenLimit }),
   };
 }
 
@@ -166,6 +182,18 @@ function parseOptionalNumber(
     throw invalidRequest(`${fieldName} must be a finite number.`);
   }
   return value;
+}
+
+function parseOptionalPositiveInteger(
+  value: unknown,
+  fieldName: string,
+): number | undefined {
+  const parsed = parseOptionalNumber(value, fieldName);
+  if (parsed === undefined) return undefined;
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw invalidRequest(`${fieldName} must be a positive safe integer.`);
+  }
+  return parsed;
 }
 
 function parseOptionalArray(

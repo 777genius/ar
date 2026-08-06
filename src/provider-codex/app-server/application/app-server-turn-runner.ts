@@ -10,6 +10,7 @@ import {
 import {
   normalizeSystemPrompt,
   type AppServerWarning,
+  type AppServerThreadExecutionReceipt,
   type PreparedThread,
 } from "../domain/app-server-types";
 import type { CodexAppServerClient } from "./app-server-client";
@@ -42,12 +43,18 @@ export class AppServerTurnRunner {
     readonly status?: "completed";
     readonly outputText: string;
     readonly usage?: AgentUsage;
+    readonly executionReceipt: {
+      readonly threadId: string;
+      readonly turnId: string;
+      readonly model: string;
+      readonly modelProvider: string;
+      readonly reasoningEffort: CodexReasoningEffort;
+      readonly serviceTier?: CodexServiceTier;
+    };
     readonly warnings: readonly AppServerWarning[];
   }> {
     const warnings = this.options.client.drainWarnings();
     const preparedThread = this.takePreparedThread(input);
-    const threadId =
-      preparedThread?.threadId ?? (await this.options.client.startThread(input));
     let emittedText = false;
     const onTextDelta = input.onTextDelta === undefined
       ? undefined
@@ -55,10 +62,14 @@ export class AppServerTurnRunner {
           emittedText = true;
           input.onTextDelta?.(text);
         };
+    let threadReceipt = preparedThread === null
+      ? await this.options.client.startThreadWithReceipt(input)
+      : threadReceiptFromPrepared(preparedThread);
+    assertEffectiveThreadSelection(threadReceipt, input);
     const turn = await this.options.client.startTurn({
       ...input,
       ...(onTextDelta === undefined ? {} : { onTextDelta }),
-      threadId,
+      threadId: threadReceipt.threadId,
     }).catch(
       async (error: unknown) => {
         if (!preparedThread || emittedText) throw error;
@@ -67,11 +78,13 @@ export class AppServerTurnRunner {
           safeMessage:
             "Codex app-server prepared thread failed; retried with a fresh thread.",
         });
-        const retryThreadId = await this.options.client.startThread(input);
+        const retryReceipt = await this.options.client.startThreadWithReceipt(input);
+        assertEffectiveThreadSelection(retryReceipt, input);
+        threadReceipt = retryReceipt;
         return await this.options.client.startTurn({
           ...input,
           ...(onTextDelta === undefined ? {} : { onTextDelta }),
-          threadId: retryThreadId,
+          threadId: retryReceipt.threadId,
         });
       },
     );
@@ -86,6 +99,10 @@ export class AppServerTurnRunner {
     return {
       outputText: turn.outputText,
       ...(turn.usage === undefined ? {} : { usage: turn.usage }),
+      executionReceipt: {
+        ...threadReceipt,
+        turnId: turn.turnId,
+      },
       warnings,
     };
   }
@@ -166,10 +183,11 @@ export class AppServerTurnRunner {
     if (this.preparedThread && this.preparedThreadMatches(input)) return;
     if (this.prepareThreadInFlight) return await this.prepareThreadInFlight;
 
-    this.prepareThreadInFlight = this.options.client.startThread(input)
-      .then((threadId) => {
+    this.prepareThreadInFlight = this.options.client.startThreadWithReceipt(input)
+      .then((receipt) => {
+        assertEffectiveThreadSelection(receipt, input);
         this.preparedThread = {
-          threadId,
+          threadId: receipt.threadId,
           workspacePath: input.workspacePath,
           model: input.model,
           reasoningEffort: input.reasoningEffort,
@@ -178,6 +196,7 @@ export class AppServerTurnRunner {
             : { serviceTier: input.serviceTier }),
           sandboxMode: input.sandboxMode ?? "read-only",
           systemPrompt: normalizeSystemPrompt(input.systemPrompt),
+          modelProvider: receipt.modelProvider,
         };
       })
       .finally(() => {
@@ -206,5 +225,36 @@ export class AppServerTurnRunner {
 
   private cleanThreadPrewarmEnabled(): boolean {
     return this.options.cleanThreadPrewarm;
+  }
+}
+
+function threadReceiptFromPrepared(
+  prepared: PreparedThread,
+): AppServerThreadExecutionReceipt {
+  return {
+    threadId: prepared.threadId,
+    model: prepared.model,
+    modelProvider: prepared.modelProvider,
+    reasoningEffort: prepared.reasoningEffort,
+    ...(prepared.serviceTier === undefined
+      ? {}
+      : { serviceTier: prepared.serviceTier }),
+  };
+}
+
+function assertEffectiveThreadSelection(
+  receipt: AppServerThreadExecutionReceipt,
+  requested: {
+    readonly model: string;
+    readonly reasoningEffort: CodexReasoningEffort;
+    readonly serviceTier?: CodexServiceTier;
+  },
+): void {
+  if (
+    receipt.model !== requested.model ||
+    receipt.reasoningEffort !== requested.reasoningEffort ||
+    receipt.serviceTier !== requested.serviceTier
+  ) {
+    throw new Error("codex_app_server_effective_selection_mismatch");
   }
 }

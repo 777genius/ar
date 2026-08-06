@@ -1,5 +1,4 @@
-import { EventEmitter, once as onceEvent } from "node:events";
-import type { AgentUsage } from "@vioxen/subscription-runtime/core";
+import { EventEmitter } from "node:events";
 import { pruneCodexChildEnv } from "../../codex-cli-domain";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
 import type {
@@ -21,6 +20,7 @@ import {
   codexAppServerSandboxPolicy,
   codexAppServerThreadRuntimePolicy,
   type AppServerWarning,
+  type AppServerThreadExecutionReceipt,
   type CodexAppServerCommandApprovalDecision,
   type CodexAppServerCommandApprovalInput,
   type CodexAppServerCommandApprovalPolicy,
@@ -66,30 +66,19 @@ import {
   stringField,
 } from "../protocol/app-server-content-parser";
 import { turnFailureError } from "./app-server-turn-failure";
-
+import { clearAppServerReconnectGraceTimer, createAppServerTurnState, type AppServerTurnResult, type AppServerTurnState } from "./app-server-turn-result";
+import { AppServerTurnIdentityTracker, deleteAppServerTurnAliases } from "./app-server-turn-identity";
+import { AppServerProviderReceiptTracker, applyProviderReceiptNotification } from "./app-server-provider-receipt-tracker";
+import { readAppServerThreadExecutionReceipt } from "../protocol/app-server-thread-receipt";
+import { bindStartedTurnResponse } from "./app-server-turn-start-response";
+import { AppServerChildStopController } from "./app-server-child-stop-controller";
 export {
   CodexAppServerTurnError,
   type AppServerTurnFailureDetails,
   type AppServerTurnFailurePhase,
 } from "./app-server-turn-failure";
 export { CodexAppServerThreadForkError, turnFailureError };
-
-export type AppServerTurnResult = {
-  readonly outputText: string;
-  readonly usage: AgentUsage | undefined;
-  readonly completed: boolean;
-  readonly error: Error | null;
-};
-
-type TurnState = {
-  outputText: string;
-  onTextDelta: ((text: string) => void) | null;
-  usage: AgentUsage | undefined;
-  completed: boolean;
-  error: Error | null;
-  waiters: ((state: TurnState) => void)[];
-  reconnectGraceTimer: NodeJS.Timeout | null;
-};
+export type { AppServerTurnResult } from "./app-server-turn-result";
 
 type PendingRequest = {
   readonly method: string;
@@ -97,20 +86,22 @@ type PendingRequest = {
   readonly reject: (error: Error) => void;
   readonly timer: NodeJS.Timeout;
 };
-
 export class CodexAppServerClient {
   private nextId = 1;
   private child: CodexAppServerChildProcess | null = null;
   private stdoutBuffer = "";
   private readonly pending = new Map<number, PendingRequest>();
-  private readonly turns = new Map<string, TurnState>();
+  private readonly turns = new Map<string, AppServerTurnState>();
   private readonly pendingTurnIdsByThread = new Map<string, string>();
   private readonly earlyTurnIdsByThread = new Map<string, string>();
   private readonly turnIdAliases = new Map<string, string>();
+  private readonly turnIdentity = new AppServerTurnIdentityTracker();
+  private readonly providerReceipt = new AppServerProviderReceiptTracker();
   private readonly serverRequests: AppServerWarning[] = [];
   private readonly backgroundWarnings: AppServerWarning[] = [];
   private exited = false;
   private terminalError: Error | null = null;
+  private childStop: AppServerChildStopController | null = null;
 
   constructor(
     private readonly options: {
@@ -127,6 +118,7 @@ export class CodexAppServerClient {
       readonly timeoutMs: number;
       readonly startupTimeoutMs: number;
       readonly reconnectGraceMs: number;
+      readonly attestationMode?: "none" | "provider-receipt";
       readonly abortSignal: AbortSignal;
     },
   ) {}
@@ -190,31 +182,21 @@ export class CodexAppServerClient {
     }
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.childStop) return this.childStop.stop();
     const child = this.child;
     this.child = null;
-    if (!child) return;
-    if (this.exited) return;
-    const exit = onceEvent(child as unknown as EventEmitter, "exit").catch(
-      () => undefined,
+    if (!child || this.exited) return Promise.resolve();
+    this.childStop = new AppServerChildStopController(
+      child,
+      this.options.signalChildProcess,
     );
-    try {
-      child.stdin.end();
-    } catch {
-      // The process may have already closed stdin.
-    }
-    this.options.signalChildProcess(child, "SIGTERM");
-    const timeout = setTimeout(() => {
-      this.options.signalChildProcess(child, "SIGKILL");
-    }, 5_000);
-    try {
-      await exit;
-    } catch {
-      // Best-effort shutdown.
-    } finally {
-      clearTimeout(timeout);
-      this.options.signalChildProcess(child, "SIGKILL");
-    }
+    return this.childStop.stop();
+  }
+
+  forceStop(): void {
+    if (this.childStop) this.childStop.forceStop();
+    else if (this.child) this.options.signalChildProcess(this.child, "SIGKILL");
   }
 
   drainWarnings(): AppServerWarning[] {
@@ -239,10 +221,22 @@ export class CodexAppServerClient {
     readonly abortSignal: AbortSignal;
     readonly goalMode?: boolean;
   }): Promise<string> {
+    return (await this.startThreadWithReceipt(input)).threadId;
+  }
+
+  async startThreadWithReceipt(input: {
+    readonly workspacePath: string;
+    readonly model: string;
+    readonly reasoningEffort: CodexReasoningEffort;
+    readonly serviceTier?: CodexServiceTier;
+    readonly sandboxMode?: CodexSandboxMode;
+    readonly systemPrompt?: string;
+    readonly timeoutMs: number;
+    readonly abortSignal: AbortSignal;
+    readonly goalMode?: boolean;
+  }): Promise<AppServerThreadExecutionReceipt> {
     const disableTools = this.disableAllTools(input.goalMode);
-    const disableNativeEnvironments = this.disableNativeEnvironments(
-      input.goalMode,
-    );
+    const disableNativeEnvironments = this.disableNativeEnvironments(input.goalMode);
     const threadPolicy = codexAppServerThreadRuntimePolicy({
       workspacePath: input.workspacePath,
       ...(input.sandboxMode === undefined
@@ -332,9 +326,7 @@ export class CodexAppServerClient {
       );
     }
 
-    const threadId = nestedString(response.result, ["thread", "id"]);
-    if (!threadId) throw new Error("codex_app_server_thread_id_missing");
-    return threadId;
+    return readAppServerThreadExecutionReceipt(response.result);
   }
 
   async forkThread(input: {
@@ -487,6 +479,7 @@ export class CodexAppServerClient {
       input.goalMode,
     );
     let response: CodexAppServerJsonRpcResponse;
+    if (this.options.attestationMode === "provider-receipt") this.providerReceipt.begin(input.threadId);
     try {
       response = await this.send(
         "turn/start",
@@ -520,37 +513,33 @@ export class CodexAppServerClient {
         input,
       );
     } catch (error) {
+      this.providerReceipt.cancel(input.threadId);
       throw turnFailureError(error, {
         phase: "turn_start_rejected",
         turnNumber: input.turnNumber,
         elapsedMs: Date.now() - startedAt,
       });
     }
-    if (response.error) {
-      throw turnFailureError(
-        new Error(
-          `codex_app_server_turn_start_failed:${response.error.message ?? "unknown"}`,
-        ),
-        {
-          phase: "turn_start_rejected",
-          turnNumber: input.turnNumber,
-          elapsedMs: Date.now() - startedAt,
-        },
-      );
-    }
-
-    const turnId = nestedString(response.result, ["turn", "id"]);
-    if (!turnId) {
-      throw turnFailureError(new Error("codex_app_server_turn_id_missing"), {
+    let turnId: string;
+    try {
+      turnId = bindStartedTurnResponse({
+        response, threadId: input.threadId,
+        attestationMode: this.options.attestationMode,
+        providerReceipt: this.providerReceipt,
+      });
+    } catch (error) {
+      throw turnFailureError(error, {
         phase: "turn_start_rejected",
         turnNumber: input.turnNumber,
         elapsedMs: Date.now() - startedAt,
       });
     }
     const turn = await this.waitForTurn(turnId, input);
-    if (!turn.error) return turn;
+    if (!turn.error) return { ...turn, threadId: input.threadId, turnId };
     return {
       ...turn,
+      threadId: input.threadId,
+      turnId,
       error: turnFailureError(turn.error, {
         phase:
           turn.outputText.length > 0
@@ -659,7 +648,7 @@ export class CodexAppServerClient {
       readonly abortSignal: AbortSignal;
       readonly onTextDelta?: (text: string) => void;
     },
-  ): Promise<TurnState> {
+  ): Promise<AppServerTurnState> {
     const earlyTurnId = this.earlyTurnIdsByThread.get(input.threadId);
     if (earlyTurnId) {
       this.earlyTurnIdsByThread.delete(input.threadId);
@@ -673,7 +662,7 @@ export class CodexAppServerClient {
     }
     if (this.terminalError) {
       return Promise.resolve({
-        ...createTurnState(),
+        ...createAppServerTurnState(),
         error: this.terminalError,
       });
     }
@@ -690,7 +679,7 @@ export class CodexAppServerClient {
         reject(new Error(`codex_app_server_turn_aborted:${turnId}`));
       };
       input.abortSignal.addEventListener("abort", abort, { once: true });
-      const turn = existing ?? createTurnState();
+      const turn = existing ?? createAppServerTurnState();
       if (!existing) this.attachTextDeltaSink(turn, input.onTextDelta);
       turn.waiters.push((state) => {
         clearTimeout(timer);
@@ -736,10 +725,24 @@ export class CodexAppServerClient {
     }
 
     if (typeof record.method !== "string") return;
+    if (this.options.attestationMode === "provider-receipt") {
+      if (applyProviderReceiptNotification(
+        this.providerReceipt, record.method, params, this.turns,
+        (error) => this.recordTerminalError(error),
+        (state) => this.resolveTurn(state),
+      )) return;
+    }
+    if (record.method === "thread/tokenUsage/updated") {
+      const turnId = stringField(params, "turnId");
+      const tokenUsage = readRecord(params?.tokenUsage);
+      const state = this.ensureTurn(turnId);
+      state.usage = readUsageFromRecords(tokenUsage?.total);
+      return;
+    }
     if (record.method === "item/agentMessage/delta") {
       const turnId = stringField(params, "turnId");
       const turn = this.ensureTurn(turnId);
-      this.clearReconnectGraceTimer(turn);
+      clearAppServerReconnectGraceTimer(turn);
       const delta = stringField(params, "delta") ?? "";
       turn.outputText += delta;
       if (delta) this.emitTextDelta(turn, delta);
@@ -762,6 +765,8 @@ export class CodexAppServerClient {
       ) {
         this.earlyTurnIdsByThread.set(threadId, actualTurnId);
       }
+      const identityError = this.turnIdentity.onStarted(actualTurnId, expectedTurnId);
+      if (identityError) this.recordTerminalError(identityError);
       return;
     }
     if (record.method === "item/completed") {
@@ -771,7 +776,7 @@ export class CodexAppServerClient {
         const text = agentMessageText(item);
         if (text) {
           const turn = this.ensureTurn(turnId);
-          this.clearReconnectGraceTimer(turn);
+          clearAppServerReconnectGraceTimer(turn);
           turn.outputText = text;
         }
       }
@@ -780,6 +785,17 @@ export class CodexAppServerClient {
     if (record.method === "turn/completed") {
       const turn = readRecord(params?.turn);
       const turnId = stringField(turn, "id");
+      if (!turnId) {
+        this.recordTerminalError(new Error("codex_app_server_turn_usage_wrong_turn"));
+        return;
+      }
+      const canonicalTurnId = this.turnIdAliases.get(turnId) ?? turnId;
+      const pendingTurnIds = new Set(this.pendingTurnIdsByThread.values());
+      const identityError = this.turnIdentity.onCompleted(turnId, canonicalTurnId, pendingTurnIds);
+      if (identityError) {
+        this.recordTerminalError(identityError);
+        return;
+      }
       const state = this.ensureTurn(turnId);
       state.completed = true;
       state.usage = mergeAgentUsage(
@@ -795,6 +811,15 @@ export class CodexAppServerClient {
           turn?.error ?? status ?? params ?? record,
         );
       }
+      queueMicrotask(() => {
+        if (state.completed || state.error) this.resolveTurn(state);
+      });
+      return;
+    }
+    if (record.method === "model/rerouted") {
+      const turnId = stringField(params, "turnId");
+      const state = this.ensureTurn(turnId);
+      state.error = new Error("codex_app_server_model_rerouted");
       this.resolveTurn(state);
       return;
     }
@@ -866,10 +891,10 @@ export class CodexAppServerClient {
   }
 
   private scheduleReconnectGraceTimeout(
-    turn: TurnState,
+    turn: AppServerTurnState,
     message: string,
   ): void {
-    this.clearReconnectGraceTimer(turn);
+    clearAppServerReconnectGraceTimer(turn);
     turn.reconnectGraceTimer = setTimeout(() => {
       if (turn.completed || turn.error) return;
       turn.error = new Error(
@@ -1008,23 +1033,22 @@ export class CodexAppServerClient {
     }
   }
 
-  private ensureTurn(turnId: string | null): TurnState {
-    if (!turnId) return createTurnState();
+  private ensureTurn(turnId: string | null): AppServerTurnState {
+    if (!turnId) return createAppServerTurnState();
     const canonicalTurnId = this.turnIdAliases.get(turnId) ?? turnId;
     let turn = this.turns.get(canonicalTurnId);
     if (!turn) {
-      turn = createTurnState();
+      turn = createAppServerTurnState();
       this.turns.set(canonicalTurnId, turn);
     }
     return turn;
   }
 
-  private resolveTurn(turn: TurnState): void {
-    this.clearReconnectGraceTimer(turn);
+  private resolveTurn(turn: AppServerTurnState): void {
+    clearAppServerReconnectGraceTimer(turn);
     const waiters = turn.waiters.splice(0);
     for (const waiter of waiters) waiter(turn);
   }
-
   private failOutstanding(error: Error): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
@@ -1038,6 +1062,8 @@ export class CodexAppServerClient {
     this.pendingTurnIdsByThread.clear();
     this.earlyTurnIdsByThread.clear();
     this.turnIdAliases.clear();
+    this.turnIdentity.clear();
+    this.providerReceipt.clear();
   }
 
   private recordTerminalError(error: Error): void {
@@ -1049,15 +1075,8 @@ export class CodexAppServerClient {
     this.turns.delete(turnId);
     this.pendingTurnIdsByThread.delete(threadId);
     this.earlyTurnIdsByThread.delete(threadId);
-    this.deleteTurnAliases(turnId);
-  }
-
-  private deleteTurnAliases(turnId: string): void {
-    for (const [actualTurnId, expectedTurnId] of this.turnIdAliases) {
-      if (actualTurnId === turnId || expectedTurnId === turnId) {
-        this.turnIdAliases.delete(actualTurnId);
-      }
-    }
+    deleteAppServerTurnAliases(this.turnIdAliases, turnId);
+    this.providerReceipt.clearActive(turnId, threadId);
   }
 
   private aliasTurnId(actualTurnId: string, expectedTurnId: string): void {
@@ -1081,21 +1100,15 @@ export class CodexAppServerClient {
     this.turns.delete(actualTurnId);
   }
 
-  private clearReconnectGraceTimer(turn: TurnState): void {
-    if (!turn.reconnectGraceTimer) return;
-    clearTimeout(turn.reconnectGraceTimer);
-    turn.reconnectGraceTimer = null;
-  }
-
   private attachTextDeltaSink(
-    turn: TurnState,
+    turn: AppServerTurnState,
     sink: ((text: string) => void) | undefined,
   ): void {
     turn.onTextDelta = sink ?? null;
     if (turn.outputText) this.emitTextDelta(turn, turn.outputText);
   }
 
-  private emitTextDelta(turn: TurnState, text: string): void {
+  private emitTextDelta(turn: AppServerTurnState, text: string): void {
     if (!turn.onTextDelta || turn.error) return;
     try {
       turn.onTextDelta(text);
@@ -1106,16 +1119,4 @@ export class CodexAppServerClient {
       this.resolveTurn(turn);
     }
   }
-}
-
-function createTurnState(): TurnState {
-  return {
-    outputText: "",
-    onTextDelta: null,
-    usage: undefined,
-    completed: false,
-    error: null,
-    waiters: [],
-    reconnectGraceTimer: null,
-  };
 }

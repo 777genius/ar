@@ -1,11 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { renderOpenAiBridgeChat } from "../domain/chat-prompt-renderer.js";
 import {
   OpenAiBridgeFinishReason,
   OpenAiBridgeObjectKind,
   OpenAiBridgeRole,
   type OpenAiBridgeChatCompletionResponse,
-  type OpenAiBridgeUsage,
 } from "../domain/openai-chat-contracts.js";
 import type { OpenAiBridgeChatBackend } from "../ports/chat-backend-port.js";
 import { parseChatCompletionRequest } from "./parse-chat-completion-request.js";
@@ -19,9 +18,13 @@ export type OpenAiBridgeChatCompletionUseCaseOptions = {
 
 export class OpenAiBridgeChatCompletionUseCase {
   private readonly now: () => Date;
+  private readonly systemFingerprint: string;
 
   constructor(private readonly options: OpenAiBridgeChatCompletionUseCaseOptions) {
     this.now = options.clock ?? (() => new Date());
+    this.systemFingerprint = `subscription-runtime-codex-bridge-v3:${createHash("sha256")
+      .update(JSON.stringify(["codex-app-server", options.publicModel, options.codexModel]))
+      .digest("hex")}`;
   }
 
   async complete(input: {
@@ -35,17 +38,16 @@ export class OpenAiBridgeChatCompletionUseCase {
       ...(rendered.systemPrompt ? { systemPrompt: rendered.systemPrompt } : {}),
       model: this.options.codexModel,
       requestId: randomUUID(),
+      ...(request.requestedOutputTokenLimit === undefined
+        ? {}
+        : { requestedOutputTokenLimit: request.requestedOutputTokenLimit }),
       abortSignal: input.abortSignal,
-    });
-    const usage = estimateUsage({
-      prompt: rendered.promptTextForUsageEstimate,
-      completion: backendResult.text,
     });
     return {
       id: `chatcmpl-${randomUUID()}`,
       object: OpenAiBridgeObjectKind.ChatCompletion,
       created: Math.floor(this.now().getTime() / 1000),
-      model: request.model ?? this.options.publicModel,
+      model: backendResult.model,
       choices: [
         {
           index: 0,
@@ -56,27 +58,21 @@ export class OpenAiBridgeChatCompletionUseCase {
           finish_reason: OpenAiBridgeFinishReason.Stop,
         },
       ],
-      usage,
-      system_fingerprint: "subscription-runtime-codex-bridge-v1",
+      usage: backendResult.usage,
+      system_fingerprint: this.systemFingerprint,
+      subscription_runtime: {
+        schema_version: 1,
+        attestation_level: "provider_receipt",
+        usage_source: "codex_thread_token_usage_updated",
+        runtime_selection: backendResult.runtimeSelection,
+        output_token_limit: {
+          ...(request.requestedOutputTokenLimit === undefined
+            ? {}
+            : { requested_tokens: request.requestedOutputTokenLimit }),
+          enforced: false,
+        },
+        receipt_hmac_sha256: backendResult.attestationHmacSha256,
+      },
     };
   }
-}
-
-function estimateUsage(input: {
-  readonly prompt: string;
-  readonly completion: string;
-}): OpenAiBridgeUsage {
-  const promptTokens = estimateTokens(input.prompt);
-  const completionTokens = estimateTokens(input.completion);
-  return {
-    prompt_tokens: promptTokens,
-    completion_tokens: completionTokens,
-    total_tokens: promptTokens + completionTokens,
-  };
-}
-
-function estimateTokens(value: string): number {
-  const compact = value.trim();
-  if (!compact) return 0;
-  return Math.max(1, Math.ceil(compact.length / 4));
 }

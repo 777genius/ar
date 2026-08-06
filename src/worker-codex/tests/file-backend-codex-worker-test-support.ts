@@ -138,7 +138,15 @@ export class FakeAppServerProcess extends EventEmitter {
           this.onThreadCwd(cwd);
           this.threadCwdsById.set(threadId, cwd);
         }
-        this.respond(request.id, { thread: { id: threadId } });
+        this.respond(request.id, {
+          thread: { id: threadId },
+          model: request.params?.model,
+          modelProvider: "openai",
+          serviceTier: request.params?.serviceTier ?? null,
+          reasoningEffort:
+            (request.params?.config as Record<string, unknown> | undefined)
+              ?.model_reasoning_effort,
+        });
         continue;
       }
       if (request.method === "thread/goal/set") {

@@ -11,7 +11,6 @@ import {
 export type RenderedOpenAiBridgeChat = {
   readonly prompt: string;
   readonly systemPrompt?: string;
-  readonly promptTextForUsageEstimate: string;
 };
 
 export function renderOpenAiBridgeChat(
@@ -54,7 +53,6 @@ export function renderOpenAiBridgeChat(
   return {
     prompt,
     ...(systemPrompt ? { systemPrompt } : {}),
-    promptTextForUsageEstimate: `${systemPrompt}\n${prompt}`,
   };
 }
 

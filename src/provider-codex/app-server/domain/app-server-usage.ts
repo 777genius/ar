@@ -18,11 +18,28 @@ export function mergeAgentUsage(
   if (!left) return right;
   if (!right) return left;
   const inputTokens = sumOptional(left.inputTokens, right.inputTokens);
+  const cachedInputTokens = sumOptional(
+    left.cachedInputTokens,
+    right.cachedInputTokens,
+  );
+  const cacheWriteInputTokens = sumOptional(
+    left.cacheWriteInputTokens,
+    right.cacheWriteInputTokens,
+  );
   const outputTokens = sumOptional(left.outputTokens, right.outputTokens);
+  const reasoningOutputTokens = sumOptional(
+    left.reasoningOutputTokens,
+    right.reasoningOutputTokens,
+  );
   const totalTokens = sumOptional(left.totalTokens, right.totalTokens);
   return {
     ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    ...(cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens }),
     ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(reasoningOutputTokens === undefined
+      ? {}
+      : { reasoningOutputTokens }),
     ...(totalTokens === undefined ? {} : { totalTokens }),
   };
 }
@@ -77,6 +94,21 @@ function normalizeUsageRecord(
     "totalOutputTokens",
     "total_output_tokens",
   );
+  const cachedInputTokens = numberField(
+    record,
+    "cachedInputTokens",
+    "cached_input_tokens",
+  );
+  const cacheWriteInputTokens = numberField(
+    record,
+    "cacheWriteInputTokens",
+    "cache_write_input_tokens",
+  );
+  const reasoningOutputTokens = numberField(
+    record,
+    "reasoningOutputTokens",
+    "reasoning_output_tokens",
+  );
   const totalTokens =
     numberField(
       record,
@@ -89,14 +121,22 @@ function normalizeUsageRecord(
     ) ?? derivedTotalTokens(inputTokens, outputTokens);
   if (
     inputTokens === undefined &&
+    cachedInputTokens === undefined &&
+    cacheWriteInputTokens === undefined &&
     outputTokens === undefined &&
+    reasoningOutputTokens === undefined &&
     totalTokens === undefined
   ) {
     return undefined;
   }
   return {
     ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    ...(cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens }),
     ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(reasoningOutputTokens === undefined
+      ? {}
+      : { reasoningOutputTokens }),
     ...(totalTokens === undefined ? {} : { totalTokens }),
   };
 }

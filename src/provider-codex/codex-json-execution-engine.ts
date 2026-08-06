@@ -54,11 +54,22 @@ export type CodexExecutionWarning = {
   readonly safeMessage: string;
 };
 
+export type CodexAppServerExecutionReceipt = {
+  readonly kind: "app-server";
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly model: string;
+  readonly modelProvider: string;
+  readonly reasoningEffort: CodexReasoningEffort;
+  readonly serviceTier?: CodexServiceTier;
+};
+
 export type CodexExecutionCompletedResult = {
   readonly status?: "completed";
   readonly outputText: string;
   readonly structuredOutput?: unknown;
   readonly usage?: AgentUsage;
+  readonly executionReceipt?: CodexAppServerExecutionReceipt;
   readonly warnings: readonly CodexExecutionWarning[];
 };
 
@@ -254,16 +265,19 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
       }
 
       const outputText = extractFinalAssistantText(stdout);
+      const usage = extractTurnCompletedUsage(stdout);
       if (input.outputSchema) {
         return {
           outputText,
           structuredOutput: parseStructuredOutput(outputText),
+          ...(usage === undefined ? {} : { usage }),
           warnings: [],
         };
       }
 
       return {
         outputText,
+        ...(usage === undefined ? {} : { usage }),
         warnings: [],
       };
     } finally {
@@ -469,6 +483,74 @@ function extractFinalAssistantText(stdout: string): string {
     throw new Error("codex_json_final_message_missing");
   }
   return finalText;
+}
+
+function extractTurnCompletedUsage(stdout: string): AgentUsage | undefined {
+  let completedUsage: AgentUsage | undefined;
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!event || typeof event !== "object") continue;
+    const record = event as Record<string, unknown>;
+    if (record.type !== "turn.completed") continue;
+    if (completedUsage !== undefined) {
+      throw new Error("codex_json_turn_usage_invalid:multiple_turns");
+    }
+    completedUsage = parseTurnUsage(record.usage);
+  }
+  return completedUsage;
+}
+
+function parseTurnUsage(value: unknown): AgentUsage {
+  if (!value || typeof value !== "object") {
+    throw new Error("codex_json_turn_usage_invalid:missing");
+  }
+  const record = value as Record<string, unknown>;
+  const inputTokens = parseUsageCount(record.input_tokens, "input_tokens");
+  const outputTokens = parseUsageCount(record.output_tokens, "output_tokens");
+  const cachedInputTokens = parseUsageCount(
+    record.cached_input_tokens,
+    "cached_input_tokens",
+  );
+  const cacheWriteInputTokens = parseUsageCount(
+    record.cache_write_input_tokens ?? 0,
+    "cache_write_input_tokens",
+  );
+  const reasoningOutputTokens = parseUsageCount(
+    record.reasoning_output_tokens,
+    "reasoning_output_tokens",
+  );
+  if (cachedInputTokens > inputTokens) {
+    throw new Error("codex_json_turn_usage_invalid:cached_exceeds_input");
+  }
+  if (reasoningOutputTokens > outputTokens) {
+    throw new Error("codex_json_turn_usage_invalid:reasoning_exceeds_output");
+  }
+  const totalTokens = inputTokens + outputTokens;
+  if (!Number.isSafeInteger(totalTokens)) {
+    throw new Error("codex_json_turn_usage_invalid:total_tokens");
+  }
+  return {
+    inputTokens,
+    cachedInputTokens,
+    cacheWriteInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    totalTokens,
+  };
+}
+
+function parseUsageCount(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`codex_json_turn_usage_invalid:${field}`);
+  }
+  return value;
 }
 
 function looksLikeJsonLine(value: string): boolean {

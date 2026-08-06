@@ -54,13 +54,42 @@ export type OpenAiBridgeChatCompletionRequest = {
   readonly tools?: readonly unknown[];
   readonly tool_choice?: unknown;
   readonly temperature?: number;
-  readonly max_tokens?: number;
+  readonly requestedOutputTokenLimit?: number;
 };
 
 export type OpenAiBridgeUsage = {
   readonly prompt_tokens: number;
+  readonly prompt_tokens_details?: {
+    readonly cached_tokens: number;
+    readonly cache_write_tokens?: number;
+  };
   readonly completion_tokens: number;
+  readonly completion_tokens_details?: {
+    readonly reasoning_tokens: number;
+  };
   readonly total_tokens: number;
+};
+
+export type OpenAiBridgeRuntimeSelection = {
+  readonly account_binding_hmac_sha256: string;
+  readonly thread_id: string;
+  readonly turn_id: string;
+  readonly model: string;
+  readonly model_provider: string;
+  readonly reasoning_effort: "minimal" | "low" | "medium" | "high" | "xhigh";
+  readonly service_tier: string;
+};
+
+export type OpenAiBridgeRuntimeMetadata = {
+  readonly schema_version: 1;
+  readonly attestation_level: "provider_receipt";
+  readonly usage_source: "codex_thread_token_usage_updated";
+  readonly runtime_selection: OpenAiBridgeRuntimeSelection;
+  readonly output_token_limit: {
+    readonly requested_tokens?: number;
+    readonly enforced: false;
+  };
+  readonly receipt_hmac_sha256: string;
 };
 
 export type OpenAiBridgeChatCompletionResponse = {
@@ -78,6 +107,7 @@ export type OpenAiBridgeChatCompletionResponse = {
   }[];
   readonly usage: OpenAiBridgeUsage;
   readonly system_fingerprint: string;
+  readonly subscription_runtime: OpenAiBridgeRuntimeMetadata;
 };
 
 export type OpenAiBridgeModelListResponse = {

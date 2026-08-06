@@ -30,6 +30,14 @@ export type AppServerCompletedResult = {
   readonly status?: "completed";
   readonly outputText: string;
   readonly usage?: AgentUsage;
+  readonly executionReceipt?: {
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly model: string;
+    readonly modelProvider: string;
+    readonly reasoningEffort: CodexReasoningEffort;
+    readonly serviceTier?: CodexServiceTier;
+  };
   readonly warnings: readonly AppServerWarning[];
 };
 
@@ -45,6 +53,15 @@ export type PreparedThread = {
   readonly serviceTier?: CodexServiceTier;
   readonly sandboxMode: CodexSandboxMode;
   readonly systemPrompt: string | null;
+  readonly modelProvider: string;
+};
+
+export type AppServerThreadExecutionReceipt = {
+  readonly threadId: string;
+  readonly model: string;
+  readonly modelProvider: string;
+  readonly reasoningEffort: CodexReasoningEffort;
+  readonly serviceTier?: CodexServiceTier;
 };
 
 export type CodexThreadGoalStatus =

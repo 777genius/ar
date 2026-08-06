@@ -376,7 +376,15 @@ class MinimalAppServerProcess extends EventEmitter implements CodexAppServerChil
         continue;
       }
       if (request.method === "thread/start") {
-        this.respond(request.id, { thread: { id: `thread-${this.nextThreadId++}` } });
+        this.respond(request.id, {
+          thread: { id: `thread-${this.nextThreadId++}` },
+          model: request.params?.model,
+          modelProvider: "openai",
+          serviceTier: request.params?.serviceTier ?? null,
+          reasoningEffort:
+            (request.params?.config as Record<string, unknown> | undefined)
+              ?.model_reasoning_effort,
+        });
         continue;
       }
       if (request.method === "thread/goal/set") {

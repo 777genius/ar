@@ -36,6 +36,7 @@ export type FakeAppServerFactoryOptions = {
   readonly appendCompletedAgentMessageToolContent?: boolean;
   readonly throwOnRequestMethod?: string;
   readonly exitOnStdinEnd?: boolean;
+  readonly ignoreSigterm?: boolean;
   readonly abortTurnNumbers?: readonly number[];
   readonly abortTurnReason?: string;
   readonly suppressOutputTurnNumbers?: readonly number[];
@@ -43,6 +44,20 @@ export type FakeAppServerFactoryOptions = {
   readonly turnUsage?: Record<string, unknown>;
   readonly mismatchTurnStartResponseId?: boolean;
   readonly reuseActualTurnId?: string;
+  readonly effectiveModel?: string;
+  readonly omitThreadReceiptMetadata?: boolean;
+  readonly emitModelRerouted?: boolean;
+  readonly duplicateTurnCompletion?: boolean;
+  readonly lateDuplicateTurnCompletion?: boolean;
+  readonly postTerminalTokenUsage?: boolean;
+  readonly postTerminalAgentMessageDelta?: boolean;
+  readonly wrongTurnCompletionId?: string;
+  readonly suppressTokenUsage?: boolean;
+  readonly wrongTokenUsageThreadId?: string;
+  readonly wrongTokenUsageTurnId?: string;
+  readonly duplicateTokenUsage?: boolean;
+  readonly tokenUsageUpdates?: readonly Record<string, unknown>[];
+  readonly suppressTurnCompletion?: boolean;
   readonly emitServerRequestOnTurn?: {
     readonly id?: number;
     readonly method: string;
@@ -104,6 +119,7 @@ export class FakeAppServerProcess extends EventEmitter {
   readonly pid = undefined;
   readonly stdout = new FakeReadable();
   readonly stderr = new FakeReadable();
+  readonly signals: NodeJS.Signals[] = [];
   private readonly stdinEmitter = new EventEmitter();
   readonly stdin = {
     write: (chunk: string | Uint8Array) => {
@@ -133,8 +149,10 @@ export class FakeAppServerProcess extends EventEmitter {
     super();
   }
 
-  kill(): boolean {
-    queueMicrotask(() => this.emitExit("SIGTERM"));
+  kill(signal: NodeJS.Signals = "SIGTERM"): boolean {
+    this.signals.push(signal);
+    if (signal === "SIGTERM" && this.options.ignoreSigterm) return true;
+    queueMicrotask(() => this.emitExit(signal));
     return true;
   }
 
@@ -214,6 +232,16 @@ export class FakeAppServerProcess extends EventEmitter {
         this.nextThreadId += 1;
         this.respond(request.id, {
           thread: { id: threadId },
+          ...(this.options.omitThreadReceiptMetadata
+            ? {}
+            : {
+                model: this.options.effectiveModel ?? request.params?.model,
+                modelProvider: "openai",
+                serviceTier: request.params?.serviceTier ?? null,
+                reasoningEffort:
+                  (request.params?.config as Record<string, unknown> | undefined)
+                    ?.model_reasoning_effort,
+              }),
         });
         continue;
       }
@@ -300,6 +328,16 @@ export class FakeAppServerProcess extends EventEmitter {
                   delta: `app-server output:${prompt}`,
                 },
               }),
+              ...(this.options.turnUsage
+                ? [JSON.stringify({
+                    method: "thread/tokenUsage/updated",
+                    params: {
+                      threadId: String(request.params?.threadId ?? ""),
+                      turnId,
+                      tokenUsage: this.threadTokenUsage(this.options.turnUsage),
+                    },
+                  })]
+                : []),
               JSON.stringify({
                 method: "turn/completed",
                 params: {
@@ -348,6 +386,15 @@ export class FakeAppServerProcess extends EventEmitter {
           );
         }
         setTimeout(() => {
+          if (this.options.emitModelRerouted) {
+            this.notify("model/rerouted", {
+              threadId: String(request.params?.threadId ?? ""),
+              turnId,
+              fromModel: request.params?.model,
+              toModel: "gpt-rerouted",
+              reason: "safety",
+            });
+          }
           if (this.options.emitTurnCompletionBeforeStarted) {
             this.notify("item/agentMessage/delta", {
               turnId,
@@ -439,9 +486,54 @@ export class FakeAppServerProcess extends EventEmitter {
               });
             }
           }
-          this.notify("turn/completed", {
-            turn: this.completedTurn(turnId),
-          });
+          const completedTurnId = this.options.wrongTurnCompletionId ?? turnId;
+          const usageUpdates = this.options.tokenUsageUpdates ??
+            (this.options.turnUsage ? [this.options.turnUsage] : []);
+          if (usageUpdates.length > 0 && !this.options.suppressTokenUsage) {
+            const usageParams = {
+              threadId: this.options.wrongTokenUsageThreadId ??
+                String(request.params?.threadId ?? ""),
+              turnId: this.options.wrongTokenUsageTurnId ?? turnId,
+              tokenUsage: this.threadTokenUsage(usageUpdates[0] ?? {}),
+            };
+            for (const usage of usageUpdates) {
+              this.notify("thread/tokenUsage/updated", {
+                ...usageParams,
+                tokenUsage: this.threadTokenUsage(usage),
+              });
+            }
+            if (this.options.duplicateTokenUsage) {
+              this.notify("thread/tokenUsage/updated", usageParams);
+            }
+          }
+          if (!this.options.suppressTurnCompletion) {
+            this.notify("turn/completed", {
+              turn: this.completedTurn(completedTurnId),
+            });
+            if (this.options.duplicateTurnCompletion) {
+              this.notify("turn/completed", {
+                turn: this.completedTurn(turnId),
+              });
+            }
+            if (this.options.lateDuplicateTurnCompletion) {
+              setTimeout(() => this.notify("turn/completed", {
+                turn: this.completedTurn(turnId),
+              }), 0);
+            }
+            if (this.options.postTerminalTokenUsage) {
+              setTimeout(() => this.notify("thread/tokenUsage/updated", {
+                threadId: String(request.params?.threadId ?? ""),
+                turnId,
+                tokenUsage: this.threadTokenUsage(this.options.turnUsage ?? {}),
+              }), 0);
+            }
+            if (this.options.postTerminalAgentMessageDelta) {
+              setTimeout(() => this.notify("item/agentMessage/delta", {
+                turnId,
+                delta: "late output",
+              }), 0);
+            }
+          }
         }, 5);
         continue;
       }
@@ -469,11 +561,20 @@ export class FakeAppServerProcess extends EventEmitter {
     }
     return {
       id: turnId,
-      status: { type: "completed" },
-      ...(this.options.turnUsage === undefined
-        ? {}
-        : { usage: this.options.turnUsage }),
+      status: "completed",
     };
+  }
+
+  private threadTokenUsage(usage: Record<string, unknown>): Record<string, unknown> {
+    const breakdown = {
+      inputTokens: usage.inputTokens ?? usage.input_tokens,
+      cachedInputTokens: usage.cachedInputTokens ?? usage.cached_input_tokens,
+      outputTokens: usage.outputTokens ?? usage.output_tokens,
+      reasoningOutputTokens:
+        usage.reasoningOutputTokens ?? usage.reasoning_output_tokens,
+      totalTokens: usage.totalTokens ?? usage.total_tokens,
+    };
+    return { last: breakdown, total: breakdown, modelContextWindow: 200_000 };
   }
 
   private markGoalAfterCompletedTurn(threadId: string): void {
