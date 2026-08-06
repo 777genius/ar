@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -15,6 +15,7 @@ import {
   type CodexReasoningEffort,
   type CodexServiceTier,
   type CodexAppServerProcessFactory,
+  resolveCodexExecutionProfile,
 } from "../../../../provider-codex/index.js";
 import { NodeProcessRunner } from "../../../../worker-local/index.js";
 import {
@@ -22,6 +23,11 @@ import {
   OpenAiBridgeRequestError,
   type OpenAiBridgeUsage,
 } from "../../domain/openai-chat-contracts.js";
+import {
+  assertExactJsonSchemaOutput,
+  responseFormatIdentity,
+  snapshotJsonSchemaResponseFormat,
+} from "../../domain/response-format-policy.js";
 import type {
   OpenAiBridgeChatBackend,
   OpenAiBridgeChatBackendInput,
@@ -37,6 +43,18 @@ import {
 } from "./codex-account-isolation.js";
 
 export { discoverCodexBridgeAccounts, type CodexOpenAiBridgeAccount };
+
+const codexOpenAiBridgeExecutionProfile = "stateless-completion" as const;
+const codexOpenAiBridgeModelProvider = "openai" as const;
+const resolvedCodexOpenAiBridgeExecutionProfile = resolveCodexExecutionProfile(
+  codexOpenAiBridgeExecutionProfile,
+);
+const codexOpenAiBridgeBaseInstructionsSha256 = createHash("sha256")
+  .update(
+    resolvedCodexOpenAiBridgeExecutionProfile.baseInstructions ?? "",
+    "utf8",
+  )
+  .digest("hex");
 
 export type CodexOpenAiBridgeBackendOptions = {
   readonly codexBinaryPath: string;
@@ -88,6 +106,7 @@ export class CodexOpenAiBridgeBackend implements OpenAiBridgeChatBackend {
       ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
       cleanThreadPrewarm: false,
       nativeToolSurface: "disabled",
+      executionProfile: codexOpenAiBridgeExecutionProfile,
       attestationMode: "provider-receipt",
       ...(options.processFactory === undefined
         ? {}
@@ -177,6 +196,26 @@ export class CodexOpenAiBridgeBackend implements OpenAiBridgeChatBackend {
   private async runWithAccounts(
     input: OpenAiBridgeChatBackendInput,
   ): Promise<OpenAiBridgeChatBackendResult> {
+    if (
+      input.requestIdentity.configured_codex_model !== input.model ||
+      input.requestIdentity.requested_codex_model !== input.model
+    ) {
+      throw new Error("codex_bridge_configured_model_identity_mismatch");
+    }
+    const responseFormat = input.responseFormat === undefined
+      ? undefined
+      : snapshotJsonSchemaResponseFormat(input.responseFormat);
+    const responseIdentity = responseFormatIdentity(responseFormat);
+    if (
+      input.requestIdentity.response_format_type !==
+        responseIdentity.response_format_type ||
+      input.requestIdentity.response_format_sha256 !==
+        responseIdentity.response_format_sha256 ||
+      input.requestIdentity.response_schema_sha256 !==
+        responseIdentity.response_schema_sha256
+    ) {
+      throw new Error("codex_bridge_response_format_identity_mismatch");
+    }
     this.assertActive();
     const maxAttempts = Math.max(
       1,
@@ -203,6 +242,9 @@ export class CodexOpenAiBridgeBackend implements OpenAiBridgeChatBackend {
           ...(this.options.serviceTier === undefined
             ? {}
             : { serviceTier: this.options.serviceTier }),
+          ...(responseFormat === undefined
+            ? {}
+            : { outputSchema: responseFormat.json_schema.schema }),
           sandboxMode: "read-only",
           abortSignal: input.abortSignal,
         });
@@ -219,6 +261,15 @@ export class CodexOpenAiBridgeBackend implements OpenAiBridgeChatBackend {
         if (receipt?.kind !== "app-server") {
           throw new Error("codex_app_server_execution_receipt_missing");
         }
+        if (receipt.model !== input.model) {
+          throw new Error("codex_bridge_effective_model_mismatch");
+        }
+        if (receipt.modelProvider !== codexOpenAiBridgeModelProvider) {
+          throw new Error("codex_bridge_effective_model_provider_mismatch");
+        }
+        if (responseFormat !== undefined) {
+          assertExactJsonSchemaOutput(result.outputText, responseFormat);
+        }
         const usage = observedUsage(result.usage);
         const runtimeSelection = {
           account_binding_hmac_sha256: accountBinding,
@@ -228,14 +279,26 @@ export class CodexOpenAiBridgeBackend implements OpenAiBridgeChatBackend {
           model_provider: receipt.modelProvider,
           reasoning_effort: receipt.reasoningEffort,
           service_tier: receipt.serviceTier ?? "default",
+          execution_profile: codexOpenAiBridgeExecutionProfile,
+          base_instructions_sha256:
+            codexOpenAiBridgeBaseInstructionsSha256,
+        } as const;
+        const outputIdentity = {
+          output_text_sha256: createHash("sha256")
+            .update(result.outputText, "utf8")
+            .digest("hex"),
+          terminal_status: "completed",
         } as const;
         return {
           text: result.outputText,
           model: receipt.model,
           usage,
           runtimeSelection,
+          outputIdentity,
           attestationHmacSha256: this.attestationSigner.sign(
             openAiBridgeRuntimeAttestationCanonicalBytes({
+            outputIdentity,
+            requestIdentity: input.requestIdentity,
             selection: runtimeSelection,
             usage,
             ...(input.requestedOutputTokenLimit === undefined

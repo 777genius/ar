@@ -23,11 +23,10 @@ export type ResolvedCodexExecutionProfile = {
 };
 
 const statelessCompletionBaseInstructions = [
-  "You are a fast backend inference worker.",
+  "You are a stateless completion worker.",
+  "Follow the developer and user instructions exactly.",
   "Return only the requested final answer.",
-  "Do not inspect files.",
-  "Do not use tools unless explicitly allowed.",
-  "If JSON is requested, return valid JSON only.",
+  "When an output schema is provided, satisfy it exactly.",
 ].join(" ");
 
 const subscriptionWorkerDeveloperInstructions =

@@ -25,6 +25,7 @@ export enum OpenAiBridgeErrorCode {
 
 export enum OpenAiBridgeResponseFormatType {
   JsonObject = "json_object",
+  JsonSchema = "json_schema",
   Text = "text",
 }
 
@@ -43,14 +44,23 @@ export type OpenAiBridgeMessage = {
   readonly name?: string;
 };
 
+export type OpenAiBridgeJsonSchemaResponseFormat = {
+  readonly type: OpenAiBridgeResponseFormatType.JsonSchema;
+  readonly json_schema: {
+    readonly name: string;
+    readonly schema: Readonly<Record<string, unknown>>;
+    readonly strict: true;
+  };
+};
+
 export type OpenAiBridgeChatCompletionRequest = {
   readonly model?: string;
   readonly messages: readonly OpenAiBridgeMessage[];
   readonly stream?: boolean;
   readonly n?: number;
-  readonly response_format?: {
-    readonly type?: OpenAiBridgeResponseFormatType;
-  };
+  readonly response_format?:
+    | { readonly type?: OpenAiBridgeResponseFormatType.Text }
+    | OpenAiBridgeJsonSchemaResponseFormat;
   readonly tools?: readonly unknown[];
   readonly tool_choice?: unknown;
   readonly temperature?: number;
@@ -78,13 +88,34 @@ export type OpenAiBridgeRuntimeSelection = {
   readonly model_provider: string;
   readonly reasoning_effort: "minimal" | "low" | "medium" | "high" | "xhigh";
   readonly service_tier: string;
+  readonly execution_profile: "stateless-completion";
+  readonly base_instructions_sha256: string;
+};
+
+export type OpenAiBridgeRequestIdentity = {
+  readonly public_model: string;
+  readonly client_requested_model: string;
+  readonly configured_codex_model: string;
+  readonly requested_codex_model: string;
+  readonly request_body_sha256: string;
+  readonly response_format_type: OpenAiBridgeResponseFormatType.Text
+    | OpenAiBridgeResponseFormatType.JsonSchema;
+  readonly response_format_sha256: string;
+  readonly response_schema_sha256: string | null;
+};
+
+export type OpenAiBridgeOutputIdentity = {
+  readonly output_text_sha256: string;
+  readonly terminal_status: "completed";
 };
 
 export type OpenAiBridgeRuntimeMetadata = {
-  readonly schema_version: 1;
+  readonly schema_version: 2;
   readonly attestation_level: "provider_receipt";
   readonly usage_source: "codex_thread_token_usage_updated";
   readonly runtime_selection: OpenAiBridgeRuntimeSelection;
+  readonly request_identity: OpenAiBridgeRequestIdentity;
+  readonly output_identity: OpenAiBridgeOutputIdentity;
   readonly output_token_limit: {
     readonly requested_tokens?: number;
     readonly enforced: false;

@@ -6,6 +6,7 @@ import {
   OpenAiBridgeRole,
   type OpenAiBridgeChatCompletionRequest,
 } from "../domain/openai-chat-contracts.js";
+import { snapshotJsonSchemaResponseFormat } from "../domain/response-format-policy.js";
 
 export function parseChatCompletionRequest(
   input: unknown,
@@ -151,15 +152,68 @@ function parseResponseFormat(value: unknown): Pick<
   }
   const type = (value as Record<string, unknown>).type;
   if (type === undefined) return { response_format: {} };
-  if (type === OpenAiBridgeResponseFormatType.JsonObject) {
-    return {
-      response_format: { type: OpenAiBridgeResponseFormatType.JsonObject },
-    };
-  }
   if (type === OpenAiBridgeResponseFormatType.Text) {
+    assertExactKeys(value as Record<string, unknown>, ["type"], "response_format");
     return { response_format: { type: OpenAiBridgeResponseFormatType.Text } };
   }
+  if (type === OpenAiBridgeResponseFormatType.JsonObject) {
+    throw invalidRequest(
+      "response_format.type=json_object is unsupported; provide a strict json_schema.",
+    );
+  }
+  if (type === OpenAiBridgeResponseFormatType.JsonSchema) {
+    const format = value as Record<string, unknown>;
+    assertExactKeys(format, ["type", "json_schema"], "response_format");
+    const jsonSchema = format.json_schema;
+    if (!jsonSchema || typeof jsonSchema !== "object" || Array.isArray(jsonSchema)) {
+      throw invalidRequest("response_format.json_schema must be an object.");
+    }
+    const envelope = jsonSchema as Record<string, unknown>;
+    assertExactKeys(
+      envelope,
+      ["name", "schema", "strict"],
+      "response_format.json_schema",
+    );
+    if (
+      typeof envelope.name !== "string" ||
+      envelope.strict !== true ||
+      !envelope.schema ||
+      typeof envelope.schema !== "object" ||
+      Array.isArray(envelope.schema)
+    ) {
+      throw invalidRequest(
+        "response_format.json_schema requires name, schema, and strict:true.",
+      );
+    }
+    try {
+      return {
+        response_format: snapshotJsonSchemaResponseFormat({
+          type: OpenAiBridgeResponseFormatType.JsonSchema,
+          json_schema: {
+            name: envelope.name,
+            schema: envelope.schema as Readonly<Record<string, unknown>>,
+            strict: true,
+          },
+        }),
+      };
+    } catch (error) {
+      throw invalidRequest(
+        error instanceof Error ? error.message : "response_format.json_schema is invalid.",
+      );
+    }
+  }
   throw invalidRequest("Unsupported response_format.type.");
+}
+
+function assertExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+  fieldName: string,
+): void {
+  const keys = Object.keys(value);
+  if (keys.length !== expected.length || expected.some((key) => !keys.includes(key))) {
+    throw invalidRequest(`${fieldName} contains unsupported fields.`);
+  }
 }
 
 function parseOptionalBoolean(

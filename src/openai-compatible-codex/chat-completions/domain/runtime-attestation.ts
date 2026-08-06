@@ -1,15 +1,30 @@
 import type {
+  OpenAiBridgeOutputIdentity,
+  OpenAiBridgeRequestIdentity,
   OpenAiBridgeRuntimeSelection,
   OpenAiBridgeUsage,
 } from "./openai-chat-contracts.js";
 
-export function openAiBridgeRuntimeAttestationCanonicalBytes(input: {
+export type OpenAiBridgeRuntimeAttestationInput = {
+  readonly outputIdentity: OpenAiBridgeOutputIdentity;
+  readonly requestIdentity: OpenAiBridgeRequestIdentity;
   readonly selection: OpenAiBridgeRuntimeSelection;
   readonly usage: OpenAiBridgeUsage;
   readonly requestedOutputTokenLimit?: number;
-}): Uint8Array {
+};
+
+/**
+ * Public v2 receipt contract. UTF-8 JSON bytes use this fixed top-level order:
+ * schema_version, attestation_level, usage_source, runtime_selection,
+ * request_identity, output_identity, usage, output_token_limit. Nested fields
+ * follow the source order below. Missing requested output tokens serialize as
+ * JSON null. No prompt, completion text, account subject, or secret is included.
+ */
+export function openAiBridgeRuntimeAttestationCanonicalBytes(
+  input: OpenAiBridgeRuntimeAttestationInput,
+): Uint8Array {
   const payload = {
-    schema_version: 1,
+    schema_version: 2,
     attestation_level: "provider_receipt",
     usage_source: "codex_thread_token_usage_updated",
     runtime_selection: {
@@ -21,6 +36,23 @@ export function openAiBridgeRuntimeAttestationCanonicalBytes(input: {
       model_provider: input.selection.model_provider,
       reasoning_effort: input.selection.reasoning_effort,
       service_tier: input.selection.service_tier,
+      execution_profile: input.selection.execution_profile,
+      base_instructions_sha256:
+        input.selection.base_instructions_sha256,
+    },
+    request_identity: {
+      public_model: input.requestIdentity.public_model,
+      client_requested_model: input.requestIdentity.client_requested_model,
+      configured_codex_model: input.requestIdentity.configured_codex_model,
+      requested_codex_model: input.requestIdentity.requested_codex_model,
+      request_body_sha256: input.requestIdentity.request_body_sha256,
+      response_format_type: input.requestIdentity.response_format_type,
+      response_format_sha256: input.requestIdentity.response_format_sha256,
+      response_schema_sha256: input.requestIdentity.response_schema_sha256,
+    },
+    output_identity: {
+      output_text_sha256: input.outputIdentity.output_text_sha256,
+      terminal_status: input.outputIdentity.terminal_status,
     },
     usage: {
       prompt_tokens: input.usage.prompt_tokens,

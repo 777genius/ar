@@ -10,6 +10,8 @@ const alias = {
     "/src/account-diagnostics/index.ts",
   "@vioxen/subscription-runtime/provider-codex":
     "/src/provider-codex/index.ts",
+  "@vioxen/subscription-runtime/openai-compatible-codex":
+    "/src/openai-compatible-codex/index.ts",
   "@vioxen/subscription-runtime/provider-claude":
     "/src/provider-claude/index.ts",
   "@vioxen/subscription-runtime/worker-core": "/src/worker-core/index.ts",

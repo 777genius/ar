@@ -40,11 +40,13 @@ export type FakeAppServerFactoryOptions = {
   readonly abortTurnNumbers?: readonly number[];
   readonly abortTurnReason?: string;
   readonly suppressOutputTurnNumbers?: readonly number[];
+  readonly agentMessageText?: string;
   readonly goalStatusesAfterTurns?: readonly string[];
   readonly turnUsage?: Record<string, unknown>;
   readonly mismatchTurnStartResponseId?: boolean;
   readonly reuseActualTurnId?: string;
   readonly effectiveModel?: string;
+  readonly effectiveModelProvider?: string;
   readonly omitThreadReceiptMetadata?: boolean;
   readonly emitModelRerouted?: boolean;
   readonly duplicateTurnCompletion?: boolean;
@@ -236,7 +238,7 @@ export class FakeAppServerProcess extends EventEmitter {
             ? {}
             : {
                 model: this.options.effectiveModel ?? request.params?.model,
-                modelProvider: "openai",
+                modelProvider: this.options.effectiveModelProvider ?? "openai",
                 serviceTier: request.params?.serviceTier ?? null,
                 reasoningEffort:
                   (request.params?.config as Record<string, unknown> | undefined)
@@ -325,7 +327,7 @@ export class FakeAppServerProcess extends EventEmitter {
                 method: "item/agentMessage/delta",
                 params: {
                   turnId,
-                  delta: `app-server output:${prompt}`,
+                  delta: this.agentMessageText(prompt),
                 },
               }),
               ...(this.options.turnUsage
@@ -398,7 +400,7 @@ export class FakeAppServerProcess extends EventEmitter {
           if (this.options.emitTurnCompletionBeforeStarted) {
             this.notify("item/agentMessage/delta", {
               turnId,
-              delta: `app-server output:${prompt}`,
+              delta: this.agentMessageText(prompt),
             });
             this.notify("turn/completed", {
               turn: this.completedTurn(turnId),
@@ -461,7 +463,7 @@ export class FakeAppServerProcess extends EventEmitter {
                   content: [
                     {
                       type: "output_text",
-                      text: `app-server output:${prompt}`,
+                      text: this.agentMessageText(prompt),
                     },
                     ...(this.options.appendCompletedAgentMessageToolContent
                       ? [
@@ -482,7 +484,7 @@ export class FakeAppServerProcess extends EventEmitter {
             } else {
               this.notify("item/agentMessage/delta", {
                 turnId,
-                delta: `app-server output:${prompt}`,
+                delta: this.agentMessageText(prompt),
               });
             }
           }
@@ -575,6 +577,10 @@ export class FakeAppServerProcess extends EventEmitter {
       totalTokens: usage.totalTokens ?? usage.total_tokens,
     };
     return { last: breakdown, total: breakdown, modelContextWindow: 200_000 };
+  }
+
+  private agentMessageText(prompt: string): string {
+    return this.options.agentMessageText ?? `app-server output:${prompt}`;
   }
 
   private markGoalAfterCompletedTurn(threadId: string): void {

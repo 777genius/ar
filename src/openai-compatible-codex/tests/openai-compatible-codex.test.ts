@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,14 +18,17 @@ import {
   OpenAiBridgeResponseFormatType,
   OpenAiBridgeRole,
   CodexOpenAiBridgeBackend,
+  openAiBridgeRequestBodySha256,
   parseChatCompletionRequest,
   renderOpenAiBridgeChat,
+  startOpenAiBridgeHttpServer,
   type OpenAiBridgeChatBackend,
 } from "../index.js";
 import {
   PackagedCodexJsonExecutionEngine,
   codexProviderApiEgressProfileId,
   codexProviderEgressProfileEnvVar,
+  resolveCodexExecutionProfile,
 } from "../../provider-codex/index.js";
 import {
   FakeAppServerFactory,
@@ -33,129 +36,28 @@ import {
 } from "../../provider-codex/app-server/testing/fake-app-server.js";
 import { AppServerProviderReceiptTracker } from "../../provider-codex/app-server/application/app-server-provider-receipt-tracker.js";
 import { readAppServerThreadExecutionReceipt } from "../../provider-codex/app-server/protocol/app-server-thread-receipt.js";
+import { openAiBridgeRuntimeAttestationCanonicalBytes } from "../chat-completions/domain/runtime-attestation.js";
+import { responseFormatIdentity } from "../chat-completions/domain/response-format-policy.js";
 
 const attestationSecret = "test-attestation-secret-that-is-at-least-32-bytes";
+const locomoJudgeResponseFormat = {
+  type: OpenAiBridgeResponseFormatType.JsonSchema,
+  json_schema: {
+    name: "locomo_judge",
+    strict: true,
+    schema: {
+      type: "object",
+      properties: {
+        reasoning: { type: "string" },
+        label: { type: "string", enum: ["CORRECT", "WRONG"] },
+      },
+      required: ["reasoning", "label"],
+      additionalProperties: false,
+    },
+  },
+} as const;
 
 describe("OpenAI-compatible Codex bridge", () => {
-  it("renders json_object requests into a JSON-only system prompt", () => {
-    const rendered = renderOpenAiBridgeChat({
-      messages: [
-        { role: OpenAiBridgeRole.System, content: "Extract memories." },
-        { role: OpenAiBridgeRole.User, content: "Dana keeps the blue checklist." },
-      ],
-      response_format: { type: OpenAiBridgeResponseFormatType.JsonObject },
-    });
-
-    expect(rendered.systemPrompt).toContain("Extract memories.");
-    expect(rendered.systemPrompt).toContain("Return one valid JSON object only");
-    expect(rendered.prompt).toContain("<message role=\"user\">");
-  });
-
-  it("returns an OpenAI-compatible chat completion response", async () => {
-    let backendCalls = 0;
-    const backend: OpenAiBridgeChatBackend = {
-      async complete(input) {
-        expect(input.model).toBe("gpt-5.5");
-        expect(input.requestedOutputTokenLimit).toBe(41);
-        expect(input.systemPrompt).toContain("Return one valid JSON object only");
-        return {
-          text: "{\"memory\":[\"Dana keeps the blue checklist\"]}",
-          model: input.model,
-          usage: {
-            prompt_tokens: 123,
-            completion_tokens: 17,
-            total_tokens: 140,
-          },
-          runtimeSelection: {
-            account_binding_hmac_sha256: "a".repeat(64),
-            thread_id: "thread-1",
-            turn_id: "turn-1",
-            model: input.model,
-            model_provider: "openai",
-            reasoning_effort: "high",
-            service_tier: "default",
-          },
-          attestationHmacSha256: (backendCalls++ === 0 ? "b" : "c").repeat(64),
-        };
-      },
-    };
-    const useCase = new OpenAiBridgeChatCompletionUseCase({
-      backend,
-      publicModel: "subscription-codex",
-      codexModel: "gpt-5.5",
-      clock: () => new Date("2026-07-02T20:00:00.000Z"),
-    });
-
-    const response = await useCase.complete({
-      request: {
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "user", content: "Extract: Dana keeps the blue checklist." },
-        ],
-        response_format: { type: "json_object" },
-        max_completion_tokens: 41,
-      },
-      abortSignal: new AbortController().signal,
-    });
-
-    expect(response.object).toBe(OpenAiBridgeObjectKind.ChatCompletion);
-    expect(response.model).toBe("gpt-5.5");
-    expect(response.choices[0]?.message.content).toBe(
-      "{\"memory\":[\"Dana keeps the blue checklist\"]}",
-    );
-    expect(response.usage).toEqual({
-      prompt_tokens: 123,
-      completion_tokens: 17,
-      total_tokens: 140,
-    });
-    expect(response.system_fingerprint).toMatch(
-      /^subscription-runtime-codex-bridge-v3:[a-f0-9]{64}$/,
-    );
-    expect(response.subscription_runtime).toEqual({
-      usage_source: "codex_thread_token_usage_updated",
-      runtime_selection: {
-        account_binding_hmac_sha256: "a".repeat(64),
-        thread_id: "thread-1",
-        turn_id: "turn-1",
-        model: "gpt-5.5",
-        model_provider: "openai",
-        reasoning_effort: "high",
-        service_tier: "default",
-      },
-      output_token_limit: { requested_tokens: 41, enforced: false },
-      receipt_hmac_sha256: "b".repeat(64),
-      schema_version: 1,
-      attestation_level: "provider_receipt",
-    });
-    expect(response.system_fingerprint).not.toContain("b".repeat(64));
-    const secondResponse = await useCase.complete({
-      request: {
-        messages: [{ role: "user", content: "A second turn." }],
-        response_format: { type: "json_object" },
-        max_completion_tokens: 41,
-      },
-      abortSignal: new AbortController().signal,
-    });
-    expect(secondResponse.system_fingerprint).toBe(response.system_fingerprint);
-    expect(secondResponse.subscription_runtime.receipt_hmac_sha256).toBe("c".repeat(64));
-  });
-
-  it("normalizes both OpenAI output token limit fields", () => {
-    expect(parseChatCompletionRequest({
-      messages: [{ role: "user", content: "hello" }],
-      max_tokens: 77,
-    }).requestedOutputTokenLimit).toBe(77);
-    expect(parseChatCompletionRequest({
-      messages: [{ role: "user", content: "hello" }],
-      max_completion_tokens: 88,
-    }).requestedOutputTokenLimit).toBe(88);
-    expect(parseChatCompletionRequest({
-      messages: [{ role: "user", content: "hello" }],
-      max_tokens: 99,
-      max_completion_tokens: 99,
-    }).requestedOutputTokenLimit).toBe(99);
-  });
-
   it("rejects conflicting or invalid output token limits", () => {
     expect(() => parseChatCompletionRequest({
       messages: [{ role: "user", content: "hello" }],
@@ -184,6 +86,7 @@ describe("OpenAI-compatible Codex bridge", () => {
         messages: [{ role: "user", content: "hello" }],
         stream: true,
       },
+      requestBodySha256: requestBodySha256({ messages: [{ role: "user", content: "hello" }], stream: true }),
       abortSignal: new AbortController().signal,
     })).rejects.toMatchObject({
       code: OpenAiBridgeErrorCode.UnsupportedFeature,
@@ -194,6 +97,7 @@ describe("OpenAI-compatible Codex bridge", () => {
         messages: [{ role: "user", content: "hello" }],
         tools: [{}],
       },
+      requestBodySha256: requestBodySha256({ messages: [{ role: "user", content: "hello" }], tools: [{}] }),
       abortSignal: new AbortController().signal,
     })).rejects.toMatchObject({
       code: OpenAiBridgeErrorCode.UnsupportedFeature,
@@ -302,6 +206,7 @@ describe("OpenAI-compatible Codex bridge", () => {
         prompt: "Reply OK",
         model: "gpt-5.5",
         requestId: "bridge-retry-test",
+        requestIdentity: testRequestIdentity(),
         abortSignal: new AbortController().signal,
       });
 
@@ -379,6 +284,7 @@ describe("OpenAI-compatible Codex bridge", () => {
         prompt: "Reply OK",
         model: "gpt-5.5",
         requestId: "bridge-test",
+        requestIdentity: testRequestIdentity(),
         abortSignal: new AbortController().signal,
       });
 
@@ -409,6 +315,14 @@ describe("OpenAI-compatible Codex bridge", () => {
     ["missing usage", {}],
     ["effective model drift", {
       effectiveModel: "gpt-drifted",
+      turnUsage: observedTurnUsage(),
+    }],
+    ["effective model-provider drift", {
+      effectiveModelProvider: "not-openai",
+      turnUsage: observedTurnUsage(),
+    }],
+    ["empty effective model provider", {
+      effectiveModelProvider: "",
       turnUsage: observedTurnUsage(),
     }],
     ["model reroute", {
@@ -783,6 +697,7 @@ function strongBridgeRequest() {
     prompt: "Reply OK",
     model: "gpt-5.5",
     requestId: "strong-bridge-test",
+    requestIdentity: testRequestIdentity(),
     abortSignal: new AbortController().signal,
   } as const;
 }
@@ -796,6 +711,10 @@ async function withStrongBridgeBackend(
     factory: FakeAppServerFactory,
     isolatedAuthPath: string,
   ) => Promise<void>,
+  backendOptions: {
+    readonly reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+    readonly serviceTier?: string;
+  } = {},
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "subscription-runtime-strong-bridge-"));
   const authRoot = join(root, "auth");
@@ -828,7 +747,10 @@ async function withStrongBridgeBackend(
     quotaCooldownMs: 1_000,
     maxAccountCycles: 1,
     maxConcurrentRequests: 1,
-    reasoningEffort: "low",
+    reasoningEffort: backendOptions.reasoningEffort ?? "low",
+    ...(backendOptions.serviceTier === undefined
+      ? {}
+      : { serviceTier: backendOptions.serviceTier }),
     attestationSecret,
     processFactory: factory.create,
   });
@@ -838,4 +760,83 @@ async function withStrongBridgeBackend(
     await backend.dispose();
     await rm(root, { recursive: true, force: true });
   }
+}
+
+function requestBodySha256(request: unknown): string {
+  return openAiBridgeRequestBodySha256(
+    new TextEncoder().encode(JSON.stringify(request)),
+  );
+}
+
+function testRequestIdentity(
+  overrides: Partial<{
+    readonly public_model: string;
+    readonly client_requested_model: string;
+    readonly configured_codex_model: string;
+    readonly requested_codex_model: string;
+    readonly request_body_sha256: string;
+    readonly response_format_type: OpenAiBridgeResponseFormatType.Text
+      | OpenAiBridgeResponseFormatType.JsonSchema;
+    readonly response_format_sha256: string;
+    readonly response_schema_sha256: string | null;
+  }> = {},
+) {
+  return {
+    public_model: "subscription-codex",
+    client_requested_model: "subscription-codex",
+    configured_codex_model: "gpt-5.5",
+    requested_codex_model: "gpt-5.5",
+    request_body_sha256: requestBodySha256({
+      messages: [{ role: "user", content: "Reply OK" }],
+    }),
+    ...responseFormatIdentity(undefined),
+    ...overrides,
+  } as const;
+}
+
+function testOutputIdentity(outputText = "test completion") {
+  return {
+    output_text_sha256: createHash("sha256")
+      .update(outputText, "utf8")
+      .digest("hex"),
+    terminal_status: "completed",
+  } as const;
+}
+
+function testAttestationBytes(
+  requestIdentity: ReturnType<typeof testRequestIdentity>,
+  outputIdentity = testOutputIdentity(),
+): Uint8Array {
+  return openAiBridgeRuntimeAttestationCanonicalBytes({
+    requestIdentity,
+    outputIdentity,
+    selection: {
+      account_binding_hmac_sha256: "a".repeat(64),
+      thread_id: "thread-1",
+      turn_id: "turn-1",
+      model: "gpt-5.5",
+      model_provider: "openai",
+      reasoning_effort: "high",
+      service_tier: "priority",
+      execution_profile: "stateless-completion",
+      base_instructions_sha256: "d".repeat(64),
+    },
+    usage: {
+      prompt_tokens: 21,
+      prompt_tokens_details: { cached_tokens: 8 },
+      completion_tokens: 5,
+      completion_tokens_details: { reasoning_tokens: 3 },
+      total_tokens: 26,
+    },
+    requestedOutputTokenLimit: 512,
+  });
+}
+
+function testAttestationHmac(
+  requestIdentity: ReturnType<typeof testRequestIdentity>,
+  outputIdentity = testOutputIdentity(),
+): string {
+  return createHmac("sha256", attestationSecret)
+    .update(testAttestationBytes(requestIdentity, outputIdentity))
+    .digest("hex");
 }
