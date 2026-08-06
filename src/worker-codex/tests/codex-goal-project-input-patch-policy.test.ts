@@ -1,7 +1,40 @@
 import { describe, expect, it } from "vitest";
-import { assertProjectRefillInputPatchSource } from "../application/project-control/codex-goal-project-input-patch-policy";
+import {
+  assertProjectInputPatchContract,
+  assertProjectRefillInputPatchSource,
+} from "../application/project-control/codex-goal-project-input-patch-policy";
 
 describe("project refill input patch policy", () => {
+  it("allows a null input patch only for a clean first builtin implementation", () => {
+    const cleanInitialImplementation = {
+      inputPatchHash: null,
+      reviewKind: "implementation",
+      revision: 0,
+      retryCount: 0,
+      supersedes: null,
+    };
+    expect(() => assertProjectInputPatchContract({
+      builtin: true,
+      contract: cleanInitialImplementation,
+    })).not.toThrow();
+
+    for (const contract of [
+      { ...cleanInitialImplementation, reviewKind: "review" },
+      { ...cleanInitialImplementation, reviewKind: "remediation" },
+      { ...cleanInitialImplementation, revision: 1 },
+      { ...cleanInitialImplementation, retryCount: 1 },
+      { ...cleanInitialImplementation, supersedes: "f".repeat(64) },
+    ]) {
+      expect(() => assertProjectInputPatchContract({ builtin: true, contract }))
+        .toThrow("project_control_pre_start_input_patch_hash_required");
+    }
+
+    expect(() => assertProjectInputPatchContract({
+      builtin: false,
+      contract: cleanInitialImplementation,
+    })).toThrow("project_control_pre_start_input_patch_hash_required");
+  });
+
   it("requires immutable producer evidence for a non-null input patch", () => {
     expect(() => assertProjectRefillInputPatchSource({
       contract: { inputPatchHash: "a".repeat(64) },

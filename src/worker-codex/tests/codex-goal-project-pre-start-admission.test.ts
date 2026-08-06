@@ -414,6 +414,33 @@ describe("builtin project pre-start admission", () => {
     })).toThrow("project_control_pre_start_builtin_materialization_state_mismatch");
   });
 
+  it("materializes a declarative clean first implementation without an input patch", async () => {
+    const fixture = await createBuiltinFixture();
+    const contract = {
+      ...declarativeContract(fixture.contract),
+      inputPatchHash: null,
+    };
+    const plan = fixture.plan({ contract, state: undefined });
+    const manifest = {
+      ...fixture.storedManifest,
+      projectPreStartAdmission: plan.descriptor,
+    };
+
+    expect(plan.contract).toMatchObject({
+      inputPatchHash: null,
+      reviewKind: "implementation",
+      revision: 0,
+      retryCount: 0,
+      supersedes: null,
+    });
+    await prepareProjectPreStartAdmission({ plan, manifest, scope: fixture.scope });
+    await validateStoredProjectPreStartAdmission({ manifest, scope: fixture.scope });
+    await expect(assertProjectPreStartAdmissionLaunchBinding({
+      manifest,
+      scope: fixture.scope,
+    })).resolves.toBeUndefined();
+  });
+
   it("rejects malformed work identity, paths, checks, and state identity", async () => {
     const badWorkKey = await createBuiltinFixture();
     await expect(prepareBuiltin(badWorkKey, {
@@ -503,28 +530,15 @@ describe("builtin project pre-start admission", () => {
     })).resolves.toBeUndefined();
   });
 
-  it("accepts a clean builtin canonical review and validates its launch binding", async () => {
+  it("rejects a clean builtin review without a bound input patch", async () => {
     const fixture = await createBuiltinFixture();
     const contract = withWorkKey({
       ...fixture.contract,
       inputPatchHash: null,
       reviewKind: "review",
     });
-    const plan = fixture.plan({ contract });
-    const manifest = {
-      ...fixture.storedManifest,
-      projectPreStartAdmission: plan.descriptor,
-    };
-
-    await prepareBuiltin(fixture, { contract });
-    await validateStoredProjectPreStartAdmission({
-      manifest,
-      scope: fixture.scope,
-    });
-    await expect(assertProjectPreStartAdmissionLaunchBinding({
-      manifest,
-      scope: fixture.scope,
-    })).resolves.toBeUndefined();
+    await expect(prepareBuiltin(fixture, { contract }))
+      .rejects.toThrow("contract_inputPatchHash_null_invalid");
   });
 
   it("keeps null input patches out of external and remediation admission", async () => {
