@@ -141,7 +141,19 @@ describe("Codex provider adapter", () => {
 
   it("runs a Codex JSON task through the packaged execution engine", async () => {
     const runner = new StaticRunner(
-      `${JSON.stringify({ type: "agent_message", message: "json review output" })}\n`,
+      [
+        JSON.stringify({ type: "agent_message", message: "json review output" }),
+        JSON.stringify({
+          type: "turn.completed",
+          usage: {
+            input_tokens: 101,
+            cached_input_tokens: 40,
+            cache_write_input_tokens: 0,
+            output_tokens: 12,
+            reasoning_output_tokens: 7,
+          },
+        }),
+      ].join("\n"),
     );
     const workspace = await mkdtemp(join(tmpdir(), "codex-json-agent-test-"));
     const driver = new CodexJsonAgentDriver({
@@ -167,6 +179,11 @@ describe("Codex provider adapter", () => {
         outputText: "json review output",
         telemetry: {
           finishReason: "completed",
+          usage: {
+            inputTokens: 101,
+            outputTokens: 12,
+            totalTokens: 113,
+          },
         },
       });
       expect(result.telemetry?.durationMs).toEqual(expect.any(Number));

@@ -6,6 +6,7 @@ import {
   OpenAiBridgeRole,
   type OpenAiBridgeChatCompletionRequest,
 } from "../domain/openai-chat-contracts.js";
+import { snapshotJsonSchemaResponseFormat } from "../domain/response-format-policy.js";
 
 export function parseChatCompletionRequest(
   input: unknown,
@@ -47,7 +48,21 @@ export function parseChatCompletionRequest(
     );
   }
   const temperature = parseOptionalNumber(record.temperature, "temperature");
-  const maxTokens = parseOptionalNumber(record.max_tokens, "max_tokens");
+  const maxTokens = parseOptionalPositiveInteger(record.max_tokens, "max_tokens");
+  const maxCompletionTokens = parseOptionalPositiveInteger(
+    record.max_completion_tokens,
+    "max_completion_tokens",
+  );
+  if (
+    maxTokens !== undefined &&
+    maxCompletionTokens !== undefined &&
+    maxTokens !== maxCompletionTokens
+  ) {
+    throw invalidRequest(
+      "max_tokens and max_completion_tokens must match when both are provided.",
+    );
+  }
+  const requestedOutputTokenLimit = maxCompletionTokens ?? maxTokens;
 
   return {
     messages,
@@ -62,7 +77,9 @@ export function parseChatCompletionRequest(
       ? {}
       : { tool_choice: record.tool_choice }),
     ...(temperature === undefined ? {} : { temperature }),
-    ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
+    ...(requestedOutputTokenLimit === undefined
+      ? {}
+      : { requestedOutputTokenLimit }),
   };
 }
 
@@ -135,15 +152,68 @@ function parseResponseFormat(value: unknown): Pick<
   }
   const type = (value as Record<string, unknown>).type;
   if (type === undefined) return { response_format: {} };
-  if (type === OpenAiBridgeResponseFormatType.JsonObject) {
-    return {
-      response_format: { type: OpenAiBridgeResponseFormatType.JsonObject },
-    };
-  }
   if (type === OpenAiBridgeResponseFormatType.Text) {
+    assertExactKeys(value as Record<string, unknown>, ["type"], "response_format");
     return { response_format: { type: OpenAiBridgeResponseFormatType.Text } };
   }
+  if (type === OpenAiBridgeResponseFormatType.JsonObject) {
+    throw invalidRequest(
+      "response_format.type=json_object is unsupported; provide a strict json_schema.",
+    );
+  }
+  if (type === OpenAiBridgeResponseFormatType.JsonSchema) {
+    const format = value as Record<string, unknown>;
+    assertExactKeys(format, ["type", "json_schema"], "response_format");
+    const jsonSchema = format.json_schema;
+    if (!jsonSchema || typeof jsonSchema !== "object" || Array.isArray(jsonSchema)) {
+      throw invalidRequest("response_format.json_schema must be an object.");
+    }
+    const envelope = jsonSchema as Record<string, unknown>;
+    assertExactKeys(
+      envelope,
+      ["name", "schema", "strict"],
+      "response_format.json_schema",
+    );
+    if (
+      typeof envelope.name !== "string" ||
+      envelope.strict !== true ||
+      !envelope.schema ||
+      typeof envelope.schema !== "object" ||
+      Array.isArray(envelope.schema)
+    ) {
+      throw invalidRequest(
+        "response_format.json_schema requires name, schema, and strict:true.",
+      );
+    }
+    try {
+      return {
+        response_format: snapshotJsonSchemaResponseFormat({
+          type: OpenAiBridgeResponseFormatType.JsonSchema,
+          json_schema: {
+            name: envelope.name,
+            schema: envelope.schema as Readonly<Record<string, unknown>>,
+            strict: true,
+          },
+        }),
+      };
+    } catch (error) {
+      throw invalidRequest(
+        error instanceof Error ? error.message : "response_format.json_schema is invalid.",
+      );
+    }
+  }
   throw invalidRequest("Unsupported response_format.type.");
+}
+
+function assertExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+  fieldName: string,
+): void {
+  const keys = Object.keys(value);
+  if (keys.length !== expected.length || expected.some((key) => !keys.includes(key))) {
+    throw invalidRequest(`${fieldName} contains unsupported fields.`);
+  }
 }
 
 function parseOptionalBoolean(
@@ -166,6 +236,18 @@ function parseOptionalNumber(
     throw invalidRequest(`${fieldName} must be a finite number.`);
   }
   return value;
+}
+
+function parseOptionalPositiveInteger(
+  value: unknown,
+  fieldName: string,
+): number | undefined {
+  const parsed = parseOptionalNumber(value, fieldName);
+  if (parsed === undefined) return undefined;
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw invalidRequest(`${fieldName} must be a positive safe integer.`);
+  }
+  return parsed;
 }
 
 function parseOptionalArray(

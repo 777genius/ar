@@ -11,12 +11,14 @@ import {
 export type RenderedOpenAiBridgeChat = {
   readonly prompt: string;
   readonly systemPrompt?: string;
-  readonly promptTextForUsageEstimate: string;
 };
 
 export function renderOpenAiBridgeChat(
   request: OpenAiBridgeChatCompletionRequest,
 ): RenderedOpenAiBridgeChat {
+  const directPromptPair = renderDirectPromptPair(request.messages);
+  if (directPromptPair) return directPromptPair;
+
   const systemMessages: string[] = [];
   const transcript: string[] = [];
 
@@ -31,7 +33,7 @@ export function renderOpenAiBridgeChat(
   }
 
   const jsonInstruction =
-    request.response_format?.type === OpenAiBridgeResponseFormatType.JsonObject
+    request.response_format?.type === OpenAiBridgeResponseFormatType.JsonSchema
       ? "Return one valid JSON object only. Do not wrap it in markdown fences."
       : null;
 
@@ -54,7 +56,39 @@ export function renderOpenAiBridgeChat(
   return {
     prompt,
     ...(systemPrompt ? { systemPrompt } : {}),
-    promptTextForUsageEstimate: `${systemPrompt}\n${prompt}`,
+  };
+}
+
+function renderDirectPromptPair(
+  messages: readonly OpenAiBridgeMessage[],
+): RenderedOpenAiBridgeChat | null {
+  if (messages.length === 1) {
+    const userMessage = messages[0];
+    if (
+      userMessage?.role !== OpenAiBridgeRole.User ||
+      userMessage.name !== undefined
+    ) {
+      return null;
+    }
+    const prompt = messageContentToText(userMessage);
+    return prompt.trim() ? { prompt } : null;
+  }
+  if (messages.length !== 2) return null;
+  const [systemMessage, userMessage] = messages;
+  if (
+    systemMessage?.role !== OpenAiBridgeRole.System ||
+    userMessage?.role !== OpenAiBridgeRole.User ||
+    systemMessage.name !== undefined ||
+    userMessage.name !== undefined
+  ) {
+    return null;
+  }
+  const systemPrompt = messageContentToText(systemMessage);
+  const prompt = messageContentToText(userMessage);
+  if (!prompt.trim()) return null;
+  return {
+    prompt,
+    ...(systemPrompt.trim() ? { systemPrompt } : {}),
   };
 }
 

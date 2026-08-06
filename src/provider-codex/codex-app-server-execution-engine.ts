@@ -28,10 +28,7 @@ import type {
 } from "./codex-json-execution-engine";
 import { codexOutputSchemaPayload } from "./codex-json-execution-engine";
 import { InMemoryManagedRunStore } from "./codex-app-server-managed-run-store";
-import type {
-  CodexAppServerChildProcess,
-  CodexAppServerProcessFactory,
-} from "./app-server/application/app-server-process-port";
+import type { CodexAppServerChildProcess, CodexAppServerProcessFactory } from "./app-server/application/app-server-process-port";
 import {
   signalCodexAppServerChildGroup,
   spawnCodexAppServerProcess,
@@ -42,9 +39,7 @@ import type {
   CodexAppServerCommandApprovalPolicy,
   CodexAppServerNativeToolSurface,
 } from "./app-server/domain/app-server-types";
-import type {
-  CodexAppServerRolloutBudget,
-} from "./app-server/domain/app-server-rollout-budget";
+import type { CodexAppServerRolloutBudget } from "./app-server/domain/app-server-rollout-budget";
 import { codexAppServerRolloutBudgetConfig } from "./app-server/domain/app-server-rollout-budget";
 import {
   defaultGoalContinuePrompt,
@@ -106,6 +101,7 @@ export type CodexAppServerExecutionEngineOptions = {
   readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
   readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
   readonly rolloutBudget?: CodexAppServerRolloutBudget;
+  readonly attestationMode?: "none" | "provider-receipt";
 };
 
 export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
@@ -179,6 +175,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         ? {}
         : { rolloutBudget: options.rolloutBudget }),
       cleanThreadPrewarm: options.cleanThreadPrewarm ?? true,
+      ...(options.attestationMode ? { attestationMode: options.attestationMode } : {}),
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.startupTimeoutMs === undefined
         ? {}
@@ -268,6 +265,10 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     await this.options.fallback?.dispose?.();
   }
 
+  forceDispose(): void {
+    this.slotPool.forceDispose();
+  }
+
   async prewarm(input: {
     readonly session: CodexMaterializedSession;
     readonly workspacePath: string;
@@ -302,7 +303,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
           outputText,
           "codex-app-server-prewarm-output",
         );
-        assertOutputWithinBounds(outputText, this.maxOutputBytes());
+        assertOutputWithinBounds(outputText, this.options.maxOutputBytes ?? defaultMaxOutputBytes);
         warnings.push(...result.warnings);
       }
 
@@ -453,7 +454,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   }): CodexExecutionResult {
     const outputText = input.redactor.redact(input.result.outputText);
     input.redactor.assertNoKnownSecret(outputText, "codex-app-server-output");
-    assertOutputWithinBounds(outputText, this.maxOutputBytes());
+    assertOutputWithinBounds(outputText, this.options.maxOutputBytes ?? defaultMaxOutputBytes);
     if (isAppServerWaitingForInputResult(input.result)) {
       return redactWaitingForInputResult({
         result: input.result,
@@ -464,6 +465,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     return {
       outputText,
       ...(input.result.usage === undefined ? {} : { usage: input.result.usage }),
+      ...(input.result.executionReceipt === undefined
+        ? {}
+        : {
+            executionReceipt: { kind: "app-server" as const, ...input.result.executionReceipt },
+          }),
       warnings: [...input.schemaWarnings, ...input.result.warnings],
     };
   }
@@ -489,9 +495,5 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       });
       throw error;
     }
-  }
-
-  private maxOutputBytes(): number {
-    return this.options.maxOutputBytes ?? defaultMaxOutputBytes;
   }
 }
