@@ -970,7 +970,9 @@ function cleanRefillAdmission(phaseStartSha: string, workspacePath: string) {
       executionPolicy: {
         mode: "sandbox-only",
         sandboxRoot: join(workspacePath, "sandbox"),
-        forbiddenRealProjects: [join(workspacePath, "forbidden")],
+        forbiddenRealProjects: [
+          join(workspacePath, "..", "forbidden-real-project"),
+        ],
       },
     },
   };
