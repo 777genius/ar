@@ -12,12 +12,13 @@ export function assertProjectRefillInputPatchSource(input: {
   const reviewedOutputId = input.reviewedOutputId?.trim();
   const inputPatchHash = input.contract?.inputPatchHash;
   if (inputPatchHash === null || inputPatchHash === undefined) {
-    if (producerJobId || reviewedOutputId) {
-      throw new Error("project_control_refill_input_patch_hash_required");
-    }
-    return;
+    throw new Error("project_control_refill_input_patch_hash_required");
   }
   if (!producerJobId) {
+    const emptyPatchHash = createHash("sha256")
+      .update(Buffer.alloc(0))
+      .digest("hex");
+    if (!reviewedOutputId && inputPatchHash === emptyPatchHash) return;
     throw new Error("project_control_refill_input_patch_source_required");
   }
   if (input.workerRole !== "producer" && input.workerRole !== "adoption") {

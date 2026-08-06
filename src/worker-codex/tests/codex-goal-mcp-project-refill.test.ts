@@ -1,8 +1,7 @@
 import { execFile } from "node:child_process";
-import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -47,6 +46,8 @@ import {
 } from "./codex-goal-mcp-test-support";
 
 const execFileAsync = promisify(execFile);
+const EMPTY_PATCH_SHA256 =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 type TestJsonSchema = {
   readonly type?: string;
@@ -179,7 +180,7 @@ describe("codex goal MCP server", () => {
           lanePacket: "lane.md",
           phaseId: "phase-01",
           laneId: "p1-s0",
-          inputPatchHash: null,
+          inputPatchHash: EMPTY_PATCH_SHA256,
           reviewKind: "implementation",
           ownedPaths: ["src/example.ts"],
           mandatoryDocs: ["README.md", "controller.md", "lane.md"],
@@ -194,7 +195,7 @@ describe("codex goal MCP server", () => {
         },
       };
 
-      const result = await callToolJson(client, "codex_goal_project_refill_worker", {
+      const refillRequest = {
         registryRootDir,
         controllerJobId: "infinity-context-controller-v1",
         jobId: "infinity-context-memory-fastgate-v1",
@@ -211,7 +212,33 @@ describe("codex goal MCP server", () => {
         confirmPreStartAdmission: true,
         startWorker: false,
         confirmRefill: true,
+      };
+      const missingInputPatchHash = await callToolJson(
+        client,
+        "codex_goal_project_refill_worker",
+        {
+          ...refillRequest,
+          preStartAdmission: {
+            ...builtinAdmission,
+            contract: {
+              ...builtinAdmission.contract,
+              inputPatchHash: null,
+            },
+          },
+        },
+      );
+      expect(missingInputPatchHash).toEqual({
+        ok: false,
+        error: "project_control_refill_input_patch_hash_required",
       });
+      await expect(access(childWorkspace)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(childJobRoot)).rejects.toMatchObject({ code: "ENOENT" });
+
+      const result = await callToolJson(
+        client,
+        "codex_goal_project_refill_worker",
+        refillRequest,
+      );
       if (result.ok !== true) throw new Error(JSON.stringify(result));
 
       expect(result).toMatchObject({
@@ -496,7 +523,7 @@ describe("codex goal MCP server", () => {
         "infinity-context-controller-v1",
       );
       expect(policyAuditDecisions(audit).map((decision) => decision.operation)).toEqual([
-        "create_worktree", "create_worktree",
+        "create_worktree", "create_worktree", "create_worktree",
         "create_job", "use_account",
         "create_worktree",
         "create_worktree",
@@ -547,56 +574,21 @@ describe("codex goal MCP server", () => {
     }
   });
 
-  it("advertises and preserves branch fields for bounded project refill", async () => {
+  it("advertises branch fields and rejects an unbound bounded refill", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-project-refill-bounded-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerJobRoot = join(root, "worker-jobs", "infinity-context-controller-v1");
     const sourceWorkspacePath = join(root, "workspaces", "infinity-context-main");
     const childWorkspace = join(root, "worktrees", "infinity-context-memory-fastgate-v1");
     const childJobRoot = join(root, "worker-jobs", "infinity-context-memory-fastgate-v1");
-    const fakeRunnerPath = join(root, "fake-operation-runner.mjs");
     const server = createCodexGoalMcpServer();
     const client = new Client({
       name: "subscription-runtime-test",
       version: "0.0.0",
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const previousRunnerPath =
-      process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_CLI_PATH;
-
     try {
       await mkdir(sourceWorkspacePath, { recursive: true });
-      await writeFile(fakeRunnerPath, `
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
-const index = process.argv.indexOf("--operation-file");
-const operationFilePath = process.argv[index + 1];
-const operation = JSON.parse(await readFile(operationFilePath, "utf8"));
-const now = new Date().toISOString();
-operation.status = "completed";
-operation.runningAt = operation.runningAt ?? now;
-operation.completedAt = now;
-operation.updatedAt = now;
-operation.runner = {
-  hostname: "fake-runner",
-  pid: process.pid,
-  command: process.argv,
-  startedAt: now
-};
-operation.result = {
-  ok: true,
-  mode: "fake_bounded_refill",
-  jobId: operation.targetJobId,
-  executionMode: operation.args.executionMode,
-  sourceRef: operation.args.sourceRef,
-  expectedSourceCommit: operation.args.expectedSourceCommit,
-  newBranch: operation.args.newBranch
-};
-await mkdir(dirname(operation.resultPath), { recursive: true });
-await writeFile(operation.resultPath, JSON.stringify(operation.result, null, 2) + "\\n");
-await writeFile(operationFilePath, JSON.stringify(operation, null, 2) + "\\n");
-`);
-      process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_CLI_PATH = fakeRunnerPath;
 
       await Promise.all([
         server.connect(serverTransport),
@@ -754,64 +746,18 @@ await writeFile(operationFilePath, JSON.stringify(operation, null, 2) + "\\n");
         workerRole: "fastgate",
         confirmRefill: true,
       });
-
-      expect(result).toMatchObject({
-        ok: true,
-        mode: "project_control_refill_worker_operation_started",
-        executionMode: "bounded",
-        operationStatusTool: "codex_goal_project_operation_status",
-        targetJobId: "infinity-context-memory-fastgate-v1",
+      expect(result).toEqual({
+        ok: false,
+        error: "project_control_refill_input_patch_hash_required",
       });
-      expect(result.operation).not.toHaveProperty("args");
-
-      let status: Record<string, unknown> | undefined;
-      const operationDeadline = Date.now() + 30_000;
-      while (Date.now() < operationDeadline) {
-        status = await callToolJson(client, "codex_goal_project_operation_status", {
-          registryRootDir,
-          controllerJobId: "infinity-context-controller-v1",
-          operationId: result.operationId,
-          includeResult: true,
-        });
-        const operationStatus = (status.operation as { status?: string } | undefined)?.status;
-        if (operationStatus === "completed" || operationStatus === "failed") {
-          break;
-        }
-        await sleep(50);
-      }
-
-      expect(status).toMatchObject({
-        ok: true,
-        mode: "project_control_operation_status",
-        operation: {
-          status: "completed",
-          targetJobId: "infinity-context-memory-fastgate-v1",
-          result: {
-            ok: true,
-            mode: "fake_bounded_refill",
-            jobId: "infinity-context-memory-fastgate-v1",
-            executionMode: "sync",
-            sourceRef: "main",
-            expectedSourceCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            newBranch: "refactor/infinity-context-memory-fastgate-v1",
-          },
-        },
-      });
-      expect(status?.operation).not.toHaveProperty("args");
     } finally {
-      if (previousRunnerPath === undefined) {
-        delete process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_CLI_PATH;
-      } else {
-        process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_CLI_PATH =
-          previousRunnerPath;
-      }
       await client.close();
       await server.close();
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("filters missing explicit refill accounts before creating the child manifest", async () => {
+  it("filters missing explicit refill accounts for a hash-bound child", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-project-refill-accounts-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const authRootDir = join(root, "auth");
@@ -830,8 +776,16 @@ await writeFile(operationFilePath, JSON.stringify(operation, null, 2) + "\\n");
       await mkdir(sourceWorkspacePath, { recursive: true });
       await gitInitRepository(sourceWorkspacePath);
       await writeFile(join(sourceWorkspacePath, "README.md"), "base\n");
-      await git(sourceWorkspacePath, ["add", "README.md"]);
+      await writeFile(join(sourceWorkspacePath, "controller.md"), "controller\n");
+      await writeFile(join(sourceWorkspacePath, "lane.md"), "lane\n");
+      await mkdir(join(sourceWorkspacePath, "sandbox"));
+      await writeFile(join(sourceWorkspacePath, "sandbox", ".keep"), "");
+      await git(sourceWorkspacePath, ["add", "."]);
       await git(sourceWorkspacePath, ["commit", "-m", "test: base"]);
+      const phaseStartSha = (await gitStdout(
+        sourceWorkspacePath,
+        ["rev-parse", "HEAD"],
+      )).trim();
       await git(sourceWorkspacePath, [
         "update-ref",
         "refs/remotes/origin/main",
@@ -865,6 +819,7 @@ await writeFile(operationFilePath, JSON.stringify(operation, null, 2) + "\\n");
           jobIdPrefixes: ["infinity-context-"],
           tmuxSessionPrefixes: ["infinity-context-"],
           allowedAccountIds: ["account-missing", "account-a"],
+          preStartAdmission: { required: true, mode: "serial-builtin" },
         },
       });
 
@@ -880,15 +835,14 @@ await writeFile(operationFilePath, JSON.stringify(operation, null, 2) + "\\n");
         taskId: "infinity-context-child-v1",
         accounts: ["account-missing", "account-a"],
         workerRole: "producer",
+        preStartAdmission: cleanRefillAdmission(phaseStartSha, childWorkspace),
+        confirmPreStartAdmission: true,
         startWorker: false,
         confirmRefill: true,
       });
-
       expect(result).toMatchObject({
         ok: true,
-        manifest: {
-          accounts: ["account-a"],
-        },
+        manifest: { accounts: ["account-a"] },
       });
     } finally {
       await client.close();
@@ -989,3 +943,33 @@ await writeFile(operationFilePath, JSON.stringify(operation, null, 2) + "\\n");
     }
   });
 });
+
+function cleanRefillAdmission(phaseStartSha: string, workspacePath: string) {
+  return {
+    mode: "serial-builtin",
+    contract: {
+      kind: "worker-launch",
+      format: 1,
+      canonicalSha: phaseStartSha,
+      baseSha: phaseStartSha,
+      phaseStartSha,
+      packetRevision: "phase-01-s0-r1",
+      controllerPacket: "controller.md",
+      lanePacket: "lane.md",
+      phaseId: "phase-01",
+      laneId: "p1-s0",
+      inputPatchHash: EMPTY_PATCH_SHA256,
+      reviewKind: "implementation",
+      ownedPaths: ["src/example.ts"],
+      mandatoryDocs: ["README.md", "controller.md", "lane.md"],
+      mandatoryScripts: [],
+      mandatoryFixtures: [],
+      requiredChecks: [{ id: "focused", cwd: "sandbox", command: "true" }],
+      executionPolicy: {
+        mode: "sandbox-only",
+        sandboxRoot: join(workspacePath, "sandbox"),
+        forbiddenRealProjects: [join(workspacePath, "forbidden")],
+      },
+    },
+  };
+}

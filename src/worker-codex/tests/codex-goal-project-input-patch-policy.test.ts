@@ -43,6 +43,29 @@ describe("project refill input patch policy", () => {
     })).toThrow("project_control_refill_input_patch_source_required");
   });
 
+  it("accepts an explicitly hash-bound empty patch for a clean refill", () => {
+    expect(() => assertProjectRefillInputPatchSource({
+      contract: {
+        inputPatchHash:
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      },
+      producerJobId: undefined,
+      reviewedOutputId: undefined,
+      workerRole: "producer",
+    })).not.toThrow();
+  });
+
+  it("requires every refill to bind an input patch hash", () => {
+    for (const contract of [undefined, {}, { inputPatchHash: null }]) {
+      expect(() => assertProjectRefillInputPatchSource({
+        contract,
+        producerJobId: undefined,
+        reviewedOutputId: undefined,
+        workerRole: "producer",
+      })).toThrow("project_control_refill_input_patch_hash_required");
+    }
+  });
+
   it("allows producer and adoption refill to consume immutable input patch evidence", () => {
     expect(() => assertProjectRefillInputPatchSource({
       contract: { inputPatchHash: "a".repeat(64) },
