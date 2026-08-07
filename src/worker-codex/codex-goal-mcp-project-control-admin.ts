@@ -1,6 +1,7 @@
-import { execFile } from "node:child_process";
 import { lstat, readdir } from "node:fs/promises";
-import { promisify } from "node:util";
+import {
+  LocalConsumedOutputLedgerMutationLock,
+} from "@vioxen/subscription-runtime/worker-local";
 import {
   AccessBoundary,
   ProjectAdmissionWorkerRole,
@@ -15,6 +16,7 @@ import {
   updateCodexGoalJob,
   type CodexGoalJobManifest,
   type CodexGoalJobManifestPatch,
+  type CodexGoalJobSummary,
 } from "./codex-goal-jobs";
 import {
   collectCodexGoalStatus,
@@ -34,6 +36,7 @@ import {
   projectControlWorkspaceLocks,
   withValidatedProjectWorkspaceLock,
 } from "./codex-goal-project-workspace-lock";
+import { projectControlCanonicalWorkspacePath } from "./application/project-control/codex-goal-project-workspace-scope";
 import { rebindProjectPreStartAdmissionManifest } from "./application/project-control/codex-goal-project-pre-start-admission";
 import { isAdmittedInputPatchCapacityContinuation } from "./application/project-control/codex-goal-project-admitted-input-patch-continuation";
 import {
@@ -82,8 +85,6 @@ import {
 } from "./application/project-control/legacy-consumed-output-repair";
 
 type JsonObject = Readonly<Record<string, unknown>>;
-
-const execFileAsync = promisify(execFile);
 
 export type ProjectControlRepairWorkspaceMode =
   | "clean_capacity_continuation"
@@ -191,28 +192,41 @@ export async function projectControlRepairLegacyOutputDebtView(
     registryRootDir: controller.registryRootDir,
   });
   const summariesByJobId = new Map(summaries.map((summary) => [summary.jobId, summary]));
-  const result = await repairLegacyConsumedOutputDebt({
-    projectId: controller.scope.projectId,
-    registryRootDir: controller.registryRootDir,
-    authorizedLedgerRoots: ledgerRoots,
-    admissionSnapshot: snapshot,
-    confirm: booleanValue(args.confirmLegacyOutputRepair) === true,
-    locks: projectControlWorkspaceLocks(controller.registryRootDir),
-    prove: async (candidate) => proveLegacyConsumedOutputSafe({
-      candidate,
+  const confirm = booleanValue(args.confirmLegacyOutputRepair) === true;
+  const executeRepair = async () => {
+    const result = await repairLegacyConsumedOutputDebt({
+      projectId: controller.scope.projectId,
       registryRootDir: controller.registryRootDir,
-      summariesByJobId,
-      canonicalWorkspacePath: controller.controller.workspacePath,
-      deps: deps.admissionDeps,
-    }),
-  });
-  const verifiedSnapshot = result.quarantinedCount > 0
-    ? await buildCodexProjectAdmissionSnapshot({
+      authorizedLedgerRoots: ledgerRoots,
+      allowedJobIdPrefixes: controller.scope.jobIdPrefixes ?? [],
+      admissionSnapshot: snapshot,
+      confirm,
+      mutationLocks: new LocalConsumedOutputLedgerMutationLock(),
+      prove: async (candidate) => proveLegacyConsumedOutputSafe({
+        candidate,
         registryRootDir: controller.registryRootDir,
-        scope: controller.scope,
+        projectId: controller.scope.projectId,
+        summariesByJobId,
         deps: deps.admissionDeps,
+      }),
+    });
+    const verifiedSnapshot = result.quarantinedCount > 0
+      ? await buildCodexProjectAdmissionSnapshot({
+          registryRootDir: controller.registryRootDir,
+          scope: controller.scope,
+          deps: deps.admissionDeps,
+        })
+      : snapshot;
+    return { result, verifiedSnapshot };
+  };
+  const { result, verifiedSnapshot } = confirm
+    ? await withLegacyOutputRepairWorkspaceCustody({
+        controller,
+        summaries,
+        deps: deps.admissionDeps,
+        effect: executeRepair,
       })
-    : snapshot;
+    : await executeRepair();
   return {
     ...result as unknown as JsonObject,
     controllerJobId: controller.controller.jobId,
@@ -223,10 +237,54 @@ export async function projectControlRepairLegacyOutputDebtView(
   };
 }
 
+async function withLegacyOutputRepairWorkspaceCustody<T>(input: {
+  readonly controller: LoadedProjectControlController;
+  readonly summaries: readonly CodexGoalJobSummary[];
+  readonly deps: CodexProjectAdmissionDeps;
+  readonly effect: () => Promise<T>;
+}): Promise<T> {
+  const workspacePaths = new Set<string>();
+  for (const summary of input.summaries) {
+    if (!matchesProjectControlPrefix(
+      summary.jobId,
+      input.controller.scope.jobIdPrefixes ?? [],
+    )) continue;
+    const manifest = input.deps.readJob
+      ? await input.deps.readJob({
+          registryRootDir: input.controller.registryRootDir,
+          jobId: summary.jobId,
+        })
+      : await readCodexGoalJob({
+          registryRootDir: input.controller.registryRootDir,
+          jobId: summary.jobId,
+    });
+    if (manifest.projectAccessScope?.projectId === input.controller.scope.projectId) {
+      workspacePaths.add(await projectControlCanonicalWorkspacePath(
+        manifest.workspacePath,
+        input.controller.scope,
+      ));
+    }
+  }
+  const orderedWorkspacePaths = [...workspacePaths].sort();
+  const locks = projectControlWorkspaceLocks(input.controller.registryRootDir);
+  const acquireNext = async (index: number): Promise<T> => {
+    const workspacePath = orderedWorkspacePaths[index];
+    if (workspacePath === undefined) return await input.effect();
+    return await withValidatedProjectWorkspaceLock({
+      locks,
+      scope: input.controller.scope,
+      requestedWorkspacePath: workspacePath,
+      owner: `legacy-output-repair:${input.controller.controller.jobId}`,
+      effect: async () => await acquireNext(index + 1),
+    });
+  };
+  return await acquireNext(0);
+}
+
 async function proveLegacyConsumedOutputSafe(input: {
   readonly candidate: LegacyConsumedOutputCandidate;
   readonly registryRootDir: string;
-  readonly canonicalWorkspacePath: string;
+  readonly projectId: string;
   readonly summariesByJobId: ReadonlyMap<string, {
     readonly jobId: string;
     readonly manifestPath: string;
@@ -256,6 +314,9 @@ async function proveLegacyConsumedOutputSafe(input: {
             registryRootDir: input.registryRootDir,
             jobId: input.candidate.jobId,
           });
+      if (manifest.projectAccessScope?.projectId !== input.projectId) {
+        reasons.push("current job manifest belongs to a different project");
+      }
       const artifacts = await readdir(manifest.jobRootDir, { withFileTypes: true });
       if (artifacts.some((entry) =>
         entry.isFile() &&
@@ -269,24 +330,7 @@ async function proveLegacyConsumedOutputSafe(input: {
       reasons.push("current job manifest proof is unavailable");
     }
   }
-  if (input.candidate.status === "integrated") {
-    if (!input.candidate.commitSha) {
-      reasons.push("integrated legacy decision has no target commit evidence");
-    } else {
-      try {
-        await execFileAsync("git", [
-          "-C",
-          input.canonicalWorkspacePath,
-          "merge-base",
-          "--is-ancestor",
-          input.candidate.commitSha,
-          "HEAD",
-        ], { timeout: 10_000 });
-      } catch {
-        reasons.push("integrated target commit is not proven in canonical history");
-      }
-    }
-  } else if (!input.candidate.workspace) {
+  if (!input.candidate.workspace) {
     reasons.push("legacy record workspace identity is unavailable");
   } else {
     try {
@@ -298,9 +342,6 @@ async function proveLegacyConsumedOutputSafe(input: {
       }
     }
   }
-  if (input.candidate.status === "rejected" && !summary) {
-    reasons.push("rejected legacy decision artifact custody is unavailable");
-  }
   if (reasons.length > 0) return { eligible: false, reasons };
   return {
     eligible: true,
@@ -309,9 +350,7 @@ async function proveLegacyConsumedOutputSafe(input: {
       summary
         ? "current registry worker is proven stopped"
         : "legacy job is absent from the current registry",
-      input.candidate.status === "integrated"
-        ? "integrated target commit is an ancestor of canonical HEAD"
-        : "failed/rejected legacy workspace and pending handoff artifacts are absent",
+      "failed legacy workspace and pending handoff artifacts are absent",
     ],
   };
 }

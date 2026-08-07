@@ -1,13 +1,15 @@
 import { execFile } from "node:child_process";
 import {
   link,
+  lstat,
   mkdir,
   readFile,
+  realpath,
   stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import type {
   ConsumedOutputLedgerWriterPort,
@@ -20,11 +22,16 @@ import type {
   TerminalOutputDecision,
   TerminalOutputDecisionReceipt,
 } from "@vioxen/subscription-runtime/worker-core";
+import { LocalWorkspaceIntegrationLock } from "./project-integration-local-adapters";
 
 const execFileAsync = promisify(execFile);
 
 export class LocalConsumedOutputLedgerWriter
   implements ConsumedOutputLedgerWriterPort {
+  constructor(
+    private readonly mutationLocks = new LocalConsumedOutputLedgerMutationLock(),
+  ) {}
+
   async assertCanRecord(input: {
     readonly ledgerRoot: string;
     readonly decision: TerminalOutputDecision;
@@ -43,6 +50,21 @@ export class LocalConsumedOutputLedgerWriter
   }
 
   async record(input: {
+    readonly ledgerRoot: string;
+    readonly decision: TerminalOutputDecision;
+  }): Promise<TerminalOutputDecisionReceipt> {
+    const lease = await this.mutationLocks.acquire({
+      ledgerRoots: [input.ledgerRoot],
+      owner: `terminal-output-writer:${input.decision.jobId}`,
+    });
+    try {
+      return await this.recordLocked(input);
+    } finally {
+      await this.mutationLocks.release(lease);
+    }
+  }
+
+  private async recordLocked(input: {
     readonly ledgerRoot: string;
     readonly decision: TerminalOutputDecision;
   }): Promise<TerminalOutputDecisionReceipt> {
@@ -68,6 +90,91 @@ export class LocalConsumedOutputLedgerWriter
       await unlink(tmpPath).catch(() => undefined);
     }
   }
+}
+
+export type ConsumedOutputLedgerMutationLease = {
+  readonly locks: readonly {
+    readonly port: LocalWorkspaceIntegrationLock;
+    readonly lock: Awaited<ReturnType<LocalWorkspaceIntegrationLock["acquire"]>>;
+  }[];
+};
+
+export class LocalConsumedOutputLedgerMutationLock {
+  async acquire(input: {
+    readonly ledgerRoots: readonly string[];
+    readonly owner: string;
+  }): Promise<ConsumedOutputLedgerMutationLease> {
+    const acquired: Array<ConsumedOutputLedgerMutationLease["locks"][number]> = [];
+    try {
+      for (const ledgerRoot of [...new Set(input.ledgerRoots)].sort()) {
+        const lockRoot = await ensureLocalLedgerLockRoot(ledgerRoot);
+        const port = new LocalWorkspaceIntegrationLock({
+          rootDir: lockRoot,
+          staleLockMs: 30 * 60_000,
+        });
+        const lock = await port.acquire({
+          workspacePath: ledgerRoot,
+          owner: input.owner,
+        });
+        acquired.push({ port, lock });
+      }
+      return { locks: acquired };
+    } catch (error) {
+      for (const entry of acquired.reverse()) {
+        await entry.port.release(entry.lock).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
+  async release(lease: ConsumedOutputLedgerMutationLease): Promise<void> {
+    for (const entry of [...lease.locks].reverse()) {
+      await entry.port.release(entry.lock);
+    }
+  }
+}
+
+async function ensureLocalLedgerLockRoot(ledgerRootInput: string): Promise<string> {
+  const ledgerRoot = resolve(ledgerRootInput);
+  let rootMetadata;
+  try {
+    rootMetadata = await lstat(ledgerRoot);
+  } catch (error) {
+    if (!isNodeErrorCode(error, "ENOENT")) throw error;
+    const parent = dirname(ledgerRoot);
+    const parentMetadata = await lstat(parent);
+    if (parentMetadata.isSymbolicLink() || !parentMetadata.isDirectory()) {
+      throw new Error("consumed_output_ledger_lock_root_unsafe");
+    }
+    await mkdir(ledgerRoot, { recursive: false, mode: 0o700 });
+    rootMetadata = await lstat(ledgerRoot);
+  }
+  if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
+    throw new Error("consumed_output_ledger_lock_root_unsafe");
+  }
+  const canonicalRoot = await realpath(ledgerRoot);
+  let parent = ledgerRoot;
+  for (const path of [
+    join(ledgerRoot, ".mutation-locks"),
+    join(ledgerRoot, ".mutation-locks", "workspace-locks"),
+  ]) {
+    try {
+      const metadata = await lstat(path);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+        throw new Error("consumed_output_ledger_lock_root_unsafe");
+      }
+    } catch (error) {
+      if (!isNodeErrorCode(error, "ENOENT")) throw error;
+      await mkdir(path, { recursive: false, mode: 0o700 });
+    }
+    const canonicalPath = await realpath(path);
+    const rest = relative(canonicalRoot, canonicalPath);
+    if (rest === ".." || rest.startsWith(`..${sep}`)) {
+      throw new Error("consumed_output_ledger_lock_root_unsafe");
+    }
+    parent = path;
+  }
+  return dirname(parent);
 }
 
 export type LocalTerminalOutputBackupCapture = {

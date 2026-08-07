@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 import {
   access,
+  appendFile,
   lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -19,9 +22,8 @@ import {
   evaluateProjectAdmission,
   projectAdmissionDebtCounts,
   type ProjectAdmissionSnapshot,
-  type WorkspaceLock,
-  type WorkspaceLockPort,
 } from "@vioxen/subscription-runtime/worker-core";
+import { LocalConsumedOutputLedgerMutationLock } from "@vioxen/subscription-runtime/worker-local";
 import { readCodexGoalConsumedOutputLedgers } from "../codex-goal-consumed-output-ledger-io";
 import { repairLegacyConsumedOutputDebt } from "../legacy-consumed-output-repair";
 
@@ -38,6 +40,8 @@ describe("legacy consumed-output repair", () => {
       });
       expect(await readFile(fixture.paths[0]!)).toEqual(original);
       await expect(access(join(fixture.ledgerRoot, "quarantine"))).rejects.toThrow();
+      await expect(access(join(fixture.ledgerRoot, ".mutation-locks"))).rejects.toThrow();
+      expect(fixture.locks).toMatchObject({ held: 0, maxHeld: 0 });
 
       const confirmed = await repair(fixture, true);
       expect(confirmed).toMatchObject({
@@ -63,9 +67,10 @@ describe("legacy consumed-output repair", () => {
         projectId: "project",
         registryRootDir: fixture.registryRoot,
         authorizedLedgerRoots: [fixture.ledgerRoot],
+        allowedJobIdPrefixes: ["legacy-"],
         admissionSnapshot: replaySnapshot,
         confirm: true,
-        locks: fixture.locks,
+        mutationLocks: fixture.locks,
         prove: async () => ({ eligible: true, evidence: ["safe"] }),
       });
       expect(replay).toMatchObject({ eligibleCount: 0, quarantinedCount: 0 });
@@ -81,9 +86,10 @@ describe("legacy consumed-output repair", () => {
         projectId: "project",
         registryRootDir: fixture.registryRoot,
         authorizedLedgerRoots: [fixture.ledgerRoot],
+        allowedJobIdPrefixes: ["legacy-"],
         admissionSnapshot: fixture.snapshot,
         confirm: true,
-        locks: fixture.locks,
+        mutationLocks: fixture.locks,
         prove: async () => ({ eligible: true, evidence: ["safe"] }),
         beforeQuarantine: async (candidate) => {
           await writeFile(candidate.ledgerPath, `${candidate.bytes.toString("utf8")} `);
@@ -96,6 +102,58 @@ describe("legacy consumed-output repair", () => {
     }
   });
 
+  it("revalidates retained output and workspace immediately before rename", async () => {
+    const patchFixture = await makeFixture(1);
+    try {
+      await expect(repairLegacyConsumedOutputDebt({
+        projectId: "project",
+        registryRootDir: patchFixture.registryRoot,
+        authorizedLedgerRoots: [patchFixture.ledgerRoot],
+        allowedJobIdPrefixes: ["legacy-"],
+        admissionSnapshot: patchFixture.snapshot,
+        confirm: true,
+        mutationLocks: patchFixture.locks,
+        prove: async () => ({ eligible: true, evidence: ["safe"] }),
+        afterReceipt: async () => {
+          await writeFile(
+            join(patchFixture.backupRoot, "legacy-worker-v2.patch"),
+            "late authored bytes!!\n",
+          );
+        },
+      })).rejects.toThrow("project_control_legacy_output_late_proof_changed");
+      await expect(access(patchFixture.paths[0]!)).resolves.toBeUndefined();
+    } finally {
+      await rm(patchFixture.root, { recursive: true, force: true });
+    }
+
+    const workspaceFixture = await makeFixture(1);
+    try {
+      await expect(repairLegacyConsumedOutputDebt({
+        projectId: "project",
+        registryRootDir: workspaceFixture.registryRoot,
+        authorizedLedgerRoots: [workspaceFixture.ledgerRoot],
+        allowedJobIdPrefixes: ["legacy-"],
+        admissionSnapshot: workspaceFixture.snapshot,
+        confirm: true,
+        mutationLocks: workspaceFixture.locks,
+        prove: async (candidate) => {
+          try {
+            await lstat(candidate.workspace!);
+            return { eligible: false as const, reasons: ["workspace exists"] };
+          } catch {
+            return { eligible: true as const, evidence: ["workspace absent"] };
+          }
+        },
+        afterReceipt: async (candidate) => {
+          await mkdir(candidate.workspace!, { recursive: true });
+        },
+      })).rejects.toThrow("project_control_legacy_output_late_proof_changed");
+      await expect(access(workspaceFixture.paths[0]!)).resolves.toBeUndefined();
+    } finally {
+      await rm(workspaceFixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed when the preview hash no longer matches", async () => {
     const fixture = await makeFixture(1);
     try {
@@ -103,15 +161,245 @@ describe("legacy consumed-output repair", () => {
         projectId: "project",
         registryRootDir: fixture.registryRoot,
         authorizedLedgerRoots: [fixture.ledgerRoot],
+        allowedJobIdPrefixes: ["legacy-"],
         admissionSnapshot: fixture.snapshot,
         confirm: true,
-        locks: fixture.locks,
+        mutationLocks: fixture.locks,
         prove: async () => ({ eligible: true, evidence: ["safe"] }),
         beforeQuarantine: async (candidate) => {
           (candidate as { sha256: string }).sha256 = "0".repeat(64);
         },
       })).rejects.toThrow("project_control_legacy_output_hash_mismatch");
       await expect(access(fixture.paths[0]!)).resolves.toBeUndefined();
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an authored retained patch and keeps admission blocked", async () => {
+    const fixture = await makeFixture(1);
+    try {
+      await writeFile(join(fixture.backupRoot, "legacy-worker-v2.patch"), "authored output\n");
+      const result = await repair(fixture, true);
+      expect(result).toMatchObject({
+        ok: false,
+        eligibleCount: 0,
+        refusedCount: 1,
+        quarantinedCount: 0,
+      });
+      expect(result.items[0]?.reasons[0]).toContain("non-empty or changed");
+      await expect(access(fixture.paths[0]!)).resolves.toBeUndefined();
+      expect(admission(await snapshotFromLedger(fixture.ledgerRoot)).allowed).toBe(false);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses future schemas and job ids outside the project prefix", async () => {
+    const fixture = await makeFixture(1);
+    try {
+      const value = JSON.parse(await readFile(fixture.paths[0]!, "utf8")) as {
+        schemaVersion: number;
+      };
+      value.schemaVersion = 2;
+      await writeFile(fixture.paths[0]!, JSON.stringify(value));
+      const futureSnapshot = await snapshotFromLedger(fixture.ledgerRoot);
+      const future = await repairLegacyConsumedOutputDebt({
+        projectId: "project",
+        registryRootDir: fixture.registryRoot,
+        authorizedLedgerRoots: [fixture.ledgerRoot],
+        allowedJobIdPrefixes: ["legacy-"],
+        admissionSnapshot: futureSnapshot,
+        mutationLocks: fixture.locks,
+        prove: async () => ({ eligible: true, evidence: ["safe"] }),
+      });
+      expect(future).toMatchObject({ eligibleCount: 0, refusedCount: 1 });
+
+      value.schemaVersion = 1;
+      await writeFile(fixture.paths[0]!, JSON.stringify(value));
+      const foreign = await repairLegacyConsumedOutputDebt({
+        projectId: "project",
+        registryRootDir: fixture.registryRoot,
+        authorizedLedgerRoots: [fixture.ledgerRoot],
+        allowedJobIdPrefixes: ["different-project-"],
+        admissionSnapshot: await snapshotFromLedger(fixture.ledgerRoot),
+        mutationLocks: fixture.locks,
+        prove: async () => ({ eligible: true, evidence: ["safe"] }),
+      });
+      expect(foreign).toMatchObject({ eligibleCount: 0, refusedCount: 1 });
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("requires the exact legacy failure and output value contract", async () => {
+    const fixture = await makeFixture(1);
+    try {
+      const value = JSON.parse(await readFile(fixture.paths[0]!, "utf8")) as {
+        failure: Record<string, unknown>;
+        output: Record<string, unknown>;
+      };
+      value.failure.unexpected = "foreign";
+      value.output.authoredChanges = "false";
+      await writeFile(fixture.paths[0]!, JSON.stringify(value));
+      const preview = await repairLegacyConsumedOutputDebt({
+        projectId: "project",
+        registryRootDir: fixture.registryRoot,
+        authorizedLedgerRoots: [fixture.ledgerRoot],
+        allowedJobIdPrefixes: ["legacy-"],
+        admissionSnapshot: fixture.snapshot,
+        mutationLocks: fixture.locks,
+        prove: async () => ({ eligible: true, evidence: ["safe"] }),
+      });
+      expect(preview).toMatchObject({ eligibleCount: 0, refusedCount: 1 });
+      await expect(access(fixture.paths[0]!)).resolves.toBeUndefined();
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an existing quarantine symlink before any outside-root write", async () => {
+    const fixture = await makeFixture(1);
+    const outside = join(fixture.root, "outside-quarantine");
+    try {
+      await mkdir(outside);
+      await symlink(outside, join(fixture.ledgerRoot, "quarantine"), "dir");
+      await expect(repair(fixture, true)).rejects.toThrow(
+        "project_control_legacy_output_quarantine_path_unsafe",
+      );
+      expect(await readdir(outside)).toEqual([]);
+      await expect(access(fixture.paths[0]!)).resolves.toBeUndefined();
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers a prepared receipt after rename and completes it idempotently", async () => {
+    const fixture = await makeFixture(1);
+    try {
+      await expect(repairLegacyConsumedOutputDebt({
+        projectId: "project",
+        registryRootDir: fixture.registryRoot,
+        authorizedLedgerRoots: [fixture.ledgerRoot],
+        allowedJobIdPrefixes: ["legacy-"],
+        admissionSnapshot: fixture.snapshot,
+        confirm: true,
+        mutationLocks: fixture.locks,
+        prove: async () => ({ eligible: true, evidence: ["safe"] }),
+        afterRename: async () => {
+          throw new Error("simulated_crash_after_rename");
+        },
+      })).rejects.toThrow("simulated_crash_after_rename");
+      await expect(access(fixture.paths[0]!)).rejects.toThrow();
+      await appendFile(
+        join(fixture.ledgerRoot, "quarantine", "legacy-consumed-output", "manifest.jsonl"),
+        '{"phase":"quarantined"',
+      );
+
+      const recovered = await repair(fixture, true);
+      expect(recovered).toMatchObject({
+        ok: true,
+        eligibleCount: 1,
+        quarantinedCount: 1,
+      });
+      expect(recovered.items[0]?.reasons).toContain(
+        "recovered and verified a prepared quarantine receipt",
+      );
+      const receiptLines = (await readFile(
+        join(fixture.ledgerRoot, "quarantine", "legacy-consumed-output", "manifest.jsonl"),
+        "utf8",
+      )).trim().split("\n");
+      const receipts = receiptLines.flatMap((line) => {
+        try {
+          return [JSON.parse(line) as {
+        phase: string;
+        recovered?: boolean;
+          }];
+        } catch {
+          return [];
+        }
+      });
+      expect(receipts).toEqual(expect.arrayContaining([
+        expect.objectContaining({ phase: "prepared" }),
+        expect.objectContaining({ phase: "quarantined", recovered: true }),
+      ]));
+
+      const replay = await repairLegacyConsumedOutputDebt({
+        projectId: "project",
+        registryRootDir: fixture.registryRoot,
+        authorizedLedgerRoots: [fixture.ledgerRoot],
+        allowedJobIdPrefixes: ["legacy-"],
+        admissionSnapshot: await snapshotFromLedger(fixture.ledgerRoot),
+        confirm: true,
+        mutationLocks: fixture.locks,
+        prove: async () => ({ eligible: true, evidence: ["safe"] }),
+      });
+      expect(replay).toMatchObject({ eligibleCount: 0, quarantinedCount: 0 });
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("seals a torn first manifest append before the next receipt", async () => {
+    const fixture = await makeFixture(1);
+    try {
+      const quarantineRoot = join(
+        fixture.ledgerRoot,
+        "quarantine",
+        "legacy-consumed-output",
+      );
+      await mkdir(join(quarantineRoot, "records"), { recursive: true });
+      await writeFile(join(quarantineRoot, "manifest.jsonl"), '{"schemaVersion":1');
+      const repaired = await repair(fixture, true);
+      expect(repaired).toMatchObject({ quarantinedCount: 1, ok: true });
+      const replay = await repairLegacyConsumedOutputDebt({
+        projectId: "project",
+        registryRootDir: fixture.registryRoot,
+        authorizedLedgerRoots: [fixture.ledgerRoot],
+        allowedJobIdPrefixes: ["legacy-"],
+        admissionSnapshot: await snapshotFromLedger(fixture.ledgerRoot),
+        confirm: true,
+        mutationLocks: fixture.locks,
+        prove: async () => ({ eligible: true, evidence: ["safe"] }),
+      });
+      expect(replay).toMatchObject({ quarantinedCount: 0, eligibleCount: 0 });
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("never truncates a replacement symlink target after opening the manifest", async () => {
+    const fixture = await makeFixture(1);
+    const quarantineRoot = join(
+      fixture.ledgerRoot,
+      "quarantine",
+      "legacy-consumed-output",
+    );
+    const manifestPath = join(quarantineRoot, "manifest.jsonl");
+    const displacedManifestPath = join(quarantineRoot, "manifest.displaced");
+    const outsidePath = join(fixture.root, "outside.txt");
+    try {
+      await mkdir(join(quarantineRoot, "records"), { recursive: true });
+      await writeFile(manifestPath, '{"schemaVersion":1');
+      await writeFile(outsidePath, "outside-safe\n");
+      await expect(repairLegacyConsumedOutputDebt({
+        projectId: "project",
+        registryRootDir: fixture.registryRoot,
+        authorizedLedgerRoots: [fixture.ledgerRoot],
+        allowedJobIdPrefixes: ["legacy-"],
+        admissionSnapshot: fixture.snapshot,
+        confirm: true,
+        mutationLocks: fixture.locks,
+        prove: async () => ({ eligible: true, evidence: ["safe"] }),
+        beforeManifestTailTruncate: async () => {
+          await rename(manifestPath, displacedManifestPath);
+          await symlink(outsidePath, manifestPath);
+        },
+      })).rejects.toBeDefined();
+      expect(await readFile(outsidePath, "utf8")).toBe("outside-safe\n");
+      await rm(manifestPath);
+      await rename(displacedManifestPath, manifestPath);
+      expect(await repair(fixture, true)).toMatchObject({ quarantinedCount: 1 });
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
@@ -142,8 +430,9 @@ describe("legacy consumed-output repair", () => {
         projectId: "project",
         registryRootDir: fixture.registryRoot,
         authorizedLedgerRoots: [fixture.ledgerRoot],
+        allowedJobIdPrefixes: ["legacy-"],
         admissionSnapshot: snapshot,
-        locks: fixture.locks,
+        mutationLocks: fixture.locks,
         prove: async () => ({ eligible: true, evidence: ["safe"] }),
       });
       expect(preview).toMatchObject({ eligibleCount: 1, refusedCount: 2 });
@@ -155,9 +444,10 @@ describe("legacy consumed-output repair", () => {
         projectId: "project",
         registryRootDir: fixture.registryRoot,
         authorizedLedgerRoots: [fixture.ledgerRoot],
+        allowedJobIdPrefixes: ["legacy-"],
         admissionSnapshot: snapshot,
         confirm: true,
-        locks: fixture.locks,
+        mutationLocks: fixture.locks,
         prove: async () => ({ eligible: true, evidence: ["safe"] }),
       });
       expect(confirmed).toMatchObject({
@@ -205,9 +495,13 @@ async function makeFixture(count: number) {
     const jobId = `legacy-worker-v${index + 2}`;
     const statusPath = join(backupRoot, `${jobId}.status`);
     const patchPath = join(backupRoot, `${jobId}.patch`);
+    const numstatPath = join(backupRoot, `${jobId}.numstat`);
+    const untrackedArchivePath = join(backupRoot, `${jobId}.untracked.tar`);
     const ledgerPath = join(ledgerRoot, "items", `${jobId}.json`);
     await writeFile(statusPath, "?? legacy-output.txt\n");
     await writeFile(patchPath, "");
+    await writeFile(numstatPath, "");
+    await writeFile(untrackedArchivePath, "");
     await writeFile(ledgerPath, `${JSON.stringify({
       schemaVersion: 1,
       jobId,
@@ -220,6 +514,8 @@ async function makeFixture(count: number) {
         workspace: join(root, "absent-workspaces", jobId),
         statusPath,
         patchPath,
+        numstatPath,
+        untrackedArchivePath,
       },
     }, null, 2)}\n`);
     paths.push(ledgerPath);
@@ -229,6 +525,7 @@ async function makeFixture(count: number) {
     ledgerRoot,
     registryRoot,
     paths,
+    backupRoot,
     snapshot: await snapshotFromLedger(ledgerRoot),
     locks: new TestLocks(),
   };
@@ -242,9 +539,10 @@ async function repair(
     projectId: "project",
     registryRootDir: fixture.registryRoot,
     authorizedLedgerRoots: [fixture.ledgerRoot],
+    allowedJobIdPrefixes: ["legacy-"],
     admissionSnapshot: fixture.snapshot,
     confirm,
-    locks: fixture.locks,
+    mutationLocks: fixture.locks,
     prove: async () => ({ eligible: true, evidence: ["workspace absent; no live attempt"] }),
   });
 }
@@ -279,21 +577,18 @@ function admission(snapshot: ProjectAdmissionSnapshot) {
   });
 }
 
-class TestLocks implements WorkspaceLockPort {
+class TestLocks extends LocalConsumedOutputLedgerMutationLock {
   held = 0;
   maxHeld = 0;
 
-  async acquire(input: { readonly workspacePath: string; readonly owner: string }) {
+  async acquire(input: { readonly ledgerRoots: readonly string[]; readonly owner: string }) {
     this.held += 1;
     this.maxHeld = Math.max(this.maxHeld, this.held);
-    return {
-      lockId: input.owner,
-      workspacePath: input.workspacePath,
-      owner: input.owner,
-    } satisfies WorkspaceLock;
+    return await super.acquire(input);
   }
 
-  async release(): Promise<void> {
+  async release(lease: Awaited<ReturnType<LocalConsumedOutputLedgerMutationLock["acquire"]>>): Promise<void> {
+    await super.release(lease);
     this.held -= 1;
   }
 }

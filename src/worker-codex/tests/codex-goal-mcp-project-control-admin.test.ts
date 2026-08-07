@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import {
   projectControlRepairLegacyOutputDebtView,
   resolveProjectControlRepairWorkspaceMode,
 } from "../codex-goal-mcp-project-control-admin";
+import { projectControlWorkspaceLocks } from "../codex-goal-project-workspace-lock";
 import type { CodexGoalJobManifest, CodexGoalJobSummary } from "../codex-goal-jobs";
 
 describe("project-control manifest repair workspace mode", () => {
@@ -41,9 +42,12 @@ describe("project-control manifest repair workspace mode", () => {
     const ledgerRoot = join(root, "ledger");
     const backupRoot = join(root, "backup");
     const jobRootDir = join(root, "job");
+    const currentWorkspace = join(root, "current-workspace");
     const jobId = "project-worker-v16";
     const statusPath = join(backupRoot, "status.txt");
     const patchPath = join(backupRoot, "patch.diff");
+    const numstatPath = join(backupRoot, "patch.numstat");
+    const untrackedArchivePath = join(backupRoot, "untracked.tar");
     const ledgerPath = join(ledgerRoot, "items", `${jobId}.json`);
     try {
       await Promise.all([
@@ -51,9 +55,12 @@ describe("project-control manifest repair workspace mode", () => {
         mkdir(join(ledgerRoot, "items"), { recursive: true }),
         mkdir(backupRoot, { recursive: true }),
         mkdir(jobRootDir, { recursive: true }),
+        mkdir(currentWorkspace, { recursive: true }),
       ]);
       await writeFile(statusPath, "?? old-output.txt\n");
       await writeFile(patchPath, "");
+      await writeFile(numstatPath, "");
+      await writeFile(untrackedArchivePath, "");
       await writeFile(ledgerPath, JSON.stringify({
         schemaVersion: 1,
         jobId,
@@ -66,12 +73,15 @@ describe("project-control manifest repair workspace mode", () => {
           workspace: join(root, "removed-workspace"),
           statusPath,
           patchPath,
+          numstatPath,
+          untrackedArchivePath,
         },
       }));
       const scope = {
         projectId: "project",
         consumedOutputLedgerRoots: [ledgerRoot],
         jobIdPrefixes: ["project-"],
+        workspaceRoots: [root],
       };
       const manifest: CodexGoalJobManifest = {
         schemaVersion: 1,
@@ -79,7 +89,7 @@ describe("project-control manifest repair workspace mode", () => {
         createdAt: "2025-01-01T00:00:00.000Z",
         updatedAt: "2025-01-01T00:00:00.000Z",
         jobRootDir,
-        workspacePath: join(root, "unrelated-current-manifest-workspace"),
+        workspacePath: currentWorkspace,
         promptPath: join(jobRootDir, "prompt.md"),
         taskId: jobId,
         accounts: ["account-a"],
@@ -121,12 +131,42 @@ describe("project-control manifest repair workspace mode", () => {
           readJob: async () => manifest,
         },
       };
+      const crossProject = await projectControlRepairLegacyOutputDebtView({}, {
+        ...deps,
+        admissionDeps: {
+          ...deps.admissionDeps,
+          readJob: async () => ({
+            ...manifest,
+            projectAccessScope: {
+              ...scope,
+              projectId: "project-overlapping-prefix-but-different-owner",
+            },
+          }),
+        },
+      });
+      expect(crossProject).toMatchObject({
+        eligibleCount: 0,
+        refusedCount: 1,
+      });
       const preview = await projectControlRepairLegacyOutputDebtView({}, deps);
       expect(preview).toMatchObject({
         mode: "preview",
         eligibleCount: 1,
         quarantinedCount: 0,
       });
+      const workspaceLocks = projectControlWorkspaceLocks(registryRootDir);
+      const competingLease = await workspaceLocks.acquire({
+        workspacePath: await realpath(currentWorkspace),
+        owner: "concurrent-evidence-writer",
+      });
+      try {
+        await expect(projectControlRepairLegacyOutputDebtView({
+          confirmLegacyOutputRepair: true,
+        }, deps)).rejects.toMatchObject({ code: "safe_execution_workspace_locked" });
+        await expect(access(ledgerPath)).resolves.toBeUndefined();
+      } finally {
+        await workspaceLocks.release(competingLease);
+      }
       const confirmed = await projectControlRepairLegacyOutputDebtView({
         confirmLegacyOutputRepair: true,
       }, deps);
