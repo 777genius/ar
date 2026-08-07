@@ -75,6 +75,27 @@ import {
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
+export type ProjectControlRepairWorkspaceMode =
+  | "clean_capacity_continuation"
+  | "reviewed_dirty_continuation"
+  | "admitted_input_patch_continuation";
+
+export function resolveProjectControlRepairWorkspaceMode(input: {
+  readonly workspaceDirty: boolean;
+  readonly reviewedOutputId?: string;
+  readonly admittedInputPatchCapacityContinuation: boolean;
+}): ProjectControlRepairWorkspaceMode {
+  if (!input.workspaceDirty) {
+    return "clean_capacity_continuation";
+  }
+  if (input.reviewedOutputId !== undefined) {
+    return "reviewed_dirty_continuation";
+  }
+  return input.admittedInputPatchCapacityContinuation
+    ? "admitted_input_patch_continuation"
+    : "reviewed_dirty_continuation";
+}
+
 type LoadedProjectControlController = {
   readonly registryRootDir: string;
   readonly controller: CodexGoalJobManifest;
@@ -402,9 +423,15 @@ async function rebindRepairedProjectJobManifest(input: {
         throw new Error("project_control_repair_live_worker_profile_denied");
       }
       const workspaceDirty = status.workspaceDirty === true;
-      const admittedInputPatchContinuation =
-        workspaceDirty && isAdmittedInputPatchCapacityContinuation(status);
-      if (workspaceDirty && !admittedInputPatchContinuation) {
+      const workspaceMode = resolveProjectControlRepairWorkspaceMode({
+        workspaceDirty,
+        ...(input.reviewedOutputId !== undefined
+          ? { reviewedOutputId: input.reviewedOutputId }
+          : {}),
+        admittedInputPatchCapacityContinuation:
+          workspaceDirty && isAdmittedInputPatchCapacityContinuation(status),
+      });
+      if (workspaceMode === "reviewed_dirty_continuation") {
         const reviewedOutputId = input.reviewedOutputId;
         if (!reviewedOutputId) {
           throw new Error("project_control_repair_reviewed_output_required");
@@ -435,11 +462,7 @@ async function rebindRepairedProjectJobManifest(input: {
       return await rebindProjectPreStartAdmissionManifest({
         manifest: input.manifest,
         scope: input.controller.scope,
-        workspaceMode: admittedInputPatchContinuation
-          ? "admitted_input_patch_continuation"
-          : workspaceDirty
-            ? "reviewed_dirty_continuation"
-            : "clean_capacity_continuation",
+        workspaceMode,
       });
     },
   });
