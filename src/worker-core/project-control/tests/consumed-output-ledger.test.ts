@@ -425,10 +425,142 @@ describe("consumed output ledger", () => {
     });
     expect(claimed).toMatchObject({
       valid: false,
+      structurallyValid: false,
+      retentionEvidenceMissing: false,
       evidence: expect.arrayContaining([
         "terminal consumed-output record still has active claim",
       ]),
     });
+    expect(consumedDebt(claimed!)).toEqual([
+      expect.objectContaining({
+        reason: ProjectDebtReason.IncompleteConsumedOutputRecord,
+        severity: "blocking",
+      }),
+    ]);
+  });
+
+  it("classifies only structurally valid terminal records with pruned archive bytes as retention debt", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-retained-ledger-"));
+    const workspace = join(root, "workspaces", "worker-1");
+    const missingBackup = {
+      workspace,
+      statusPath: join(root, "retained", "status.txt"),
+      patchPath: join(root, "retained", "output.patch"),
+      numstatPath: join(root, "retained", "numstat.txt"),
+    };
+    const source = localConsumedOutputLedgerSource();
+
+    for (const [status, commitSha] of [
+      ["integrated", "abc1234"],
+      ["rejected", undefined],
+    ] as const) {
+      const record = await consumedOutputRecordFromJson({
+        ledgerPath: join(root, `${status}.json`),
+        source,
+        value: {
+          jobId: `worker-${status}`,
+          status,
+          closedAt: "2026-07-01T00:00:00.000Z",
+          ...(commitSha ? { commitSha } : {}),
+          backup: missingBackup,
+        },
+      });
+
+      expect(record).toMatchObject({
+        status,
+        structurallyValid: true,
+        retentionEvidenceMissing: true,
+        valid: false,
+        evidence: expect.arrayContaining([
+          expect.stringContaining("retained backup statusPath bytes are missing"),
+          "retained backup patch/numstat/untracked archive bytes are missing",
+        ]),
+      });
+      expect(consumedDebt(record!)).toEqual([
+        expect.objectContaining({
+          reason: ProjectDebtReason.RetentionEvidenceMissing,
+          severity: "info",
+        }),
+      ]);
+    }
+
+    const missingCommit = await consumedOutputRecordFromJson({
+      ledgerPath: join(root, "missing-commit.json"),
+      source,
+      value: {
+        jobId: "worker-integrated-invalid",
+        status: "integrated",
+        closedAt: "2026-07-01T00:00:00.000Z",
+        backup: missingBackup,
+      },
+    });
+    expect(missingCommit).toMatchObject({
+      structurallyValid: false,
+      retentionEvidenceMissing: false,
+      valid: false,
+      evidence: expect.arrayContaining([
+        "integrated consumed-output record is missing commit evidence",
+      ]),
+    });
+    expect(consumedDebt(missingCommit!)).toEqual([
+      expect.objectContaining({
+        reason: ProjectDebtReason.IncompleteConsumedOutputRecord,
+        severity: "blocking",
+      }),
+    ]);
+  });
+
+  it("does not report pruned evidence for an older rejected attempt after later integration", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-retained-superseded-"));
+    const workspace = join(root, "workspace");
+    const integratedBackup = await createBackupEvidence(
+      root,
+      "worker-1-integrated",
+      workspace,
+    );
+    const source: ConsumedOutputLedgerSourcePort = {
+      ...localConsumedOutputLedgerSource(),
+      async readEntries() {
+        return {
+          failures: [],
+          entries: [
+            {
+              ledgerPath: join(root, "worker-1--rejected.json"),
+              value: {
+                jobId: "worker-1",
+                attemptId: "attempt-1",
+                status: "rejected",
+                closedAt: "2026-07-01T00:00:00.000Z",
+                backup: {
+                  workspace,
+                  statusPath: join(root, "pruned", "status.txt"),
+                  patchPath: join(root, "pruned", "output.patch"),
+                },
+              },
+            },
+            {
+              ledgerPath: join(root, "worker-1--integrated.json"),
+              value: {
+                jobId: "worker-1",
+                attemptId: "attempt-2",
+                status: "integrated",
+                closedAt: "2026-07-02T00:00:00.000Z",
+                commitSha: "def5678",
+                backup: integratedBackup,
+              },
+            },
+          ],
+        };
+      },
+    };
+
+    const ledger = await readConsumedOutputLedgers({ roots: [root], source });
+
+    expect(ledger.byJobId.get("worker-1")).toMatchObject({
+      status: "integrated",
+      valid: true,
+    });
+    expect(ledger.debt).toEqual([]);
   });
 
   it("matches workspace symlink realpaths and blocks job/workspace mismatches", async () => {

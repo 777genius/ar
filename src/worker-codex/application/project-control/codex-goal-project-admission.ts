@@ -540,6 +540,7 @@ async function debtFromConsumedJobSummary(input: {
     ...(resolvedWorkspacePath ? { resolvedWorkspacePath } : {}),
   });
   if (!consumed) return undefined;
+  if (consumed.retentionEvidenceMissing) return undefined;
   await rememberKnownWorkspacePath(
     input.knownWorkspacePaths,
     input.summary.workspacePath,
@@ -553,12 +554,16 @@ function consumedRecordDebt(
 ): readonly ProjectDebtItem[] {
   const debt = consumedDebt(record);
   const ledgerAlreadyReportedInvalidRecord = ledger.debt.some((item) =>
-    item.reason === ProjectDebtReason.IncompleteConsumedOutputRecord &&
+    (
+      item.reason === ProjectDebtReason.IncompleteConsumedOutputRecord ||
+      item.reason === ProjectDebtReason.RetentionEvidenceMissing
+    ) &&
     item.subject === record.ledgerPath
   );
   return ledgerAlreadyReportedInvalidRecord
     ? debt.filter((item) =>
-      item.reason !== ProjectDebtReason.IncompleteConsumedOutputRecord
+      item.reason !== ProjectDebtReason.IncompleteConsumedOutputRecord &&
+      item.reason !== ProjectDebtReason.RetentionEvidenceMissing
     )
     : debt;
 }
@@ -942,7 +947,7 @@ async function orphanDirtyWorkspaceDebt(input: {
       workspacePath,
       ...(resolved ? { resolvedWorkspacePath: resolved } : {}),
     });
-    if (consumed) {
+    if (consumed && !consumed.retentionEvidenceMissing) {
       debt.push(...consumedRecordDebt(input.consumedOutput, consumed));
       continue;
     }

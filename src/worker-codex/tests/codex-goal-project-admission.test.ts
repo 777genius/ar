@@ -23,6 +23,7 @@ import {
   codexProjectAdmissionGate,
   type CodexProjectAdmissionDeps,
 } from "../application/project-control/codex-goal-project-admission";
+import { assertCodexGoalProjectJobNotTerminal } from "../application/project-control/codex-goal-consumed-output-ledger-io";
 import {
   planProjectPreStartAdmission,
   prepareProjectPreStartAdmission,
@@ -34,6 +35,164 @@ import type { CodexGoalJobManifest } from "../codex-goal-jobs";
 const execFileAsync = promisify(execFile);
 
 describe("Codex project admission snapshot", () => {
+  it("admits fresh producers past pruned terminal archives but denies same-job rejected recovery", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-retention-admission-"));
+    const ledgerRoot = join(root, "control", "consumed-output-ledger");
+    const workspacePath = join(root, "worktrees", "project-rejected-v1");
+    const backup = {
+      workspace: workspacePath,
+      statusPath: join(root, "retained", "status.txt"),
+      patchPath: join(root, "retained", "output.patch"),
+      numstatPath: join(root, "retained", "numstat.txt"),
+    };
+    const scope: ProjectAccessScope = {
+      projectId: "project",
+      consumedOutputLedgerRoots: [ledgerRoot],
+      jobIdPrefixes: ["project-"],
+    };
+    const emptyDeps: CodexProjectAdmissionDeps = {
+      listJobs: async () => [],
+      buildOverviewItems: async () => [],
+    };
+
+    try {
+      await mkdir(join(ledgerRoot, "items"), { recursive: true });
+      await writeFile(
+        join(ledgerRoot, "items", "project-integrated-v1.json"),
+        `${JSON.stringify({
+          jobId: "project-integrated-v1",
+          status: "integrated",
+          closedAt: "2026-07-01T00:00:00.000Z",
+          commitSha: "abc1234",
+          backup: { ...backup, workspace: join(root, "worktrees", "project-integrated-v1") },
+        })}\n`,
+      );
+      await writeFile(
+        join(ledgerRoot, "items", "project-rejected-v1.json"),
+        `${JSON.stringify({
+          jobId: "project-rejected-v1",
+          status: "rejected",
+          closedAt: "2026-07-01T00:00:00.000Z",
+          backup,
+        })}\n`,
+      );
+
+      const snapshot = await buildCodexProjectAdmissionSnapshot({
+        registryRootDir: join(root, "registry"),
+        scope,
+        deps: emptyDeps,
+      });
+      expect(snapshot.debt).toEqual([
+        expect.objectContaining({
+          reason: ProjectDebtReason.RetentionEvidenceMissing,
+          severity: "info",
+        }),
+        expect.objectContaining({
+          reason: ProjectDebtReason.RetentionEvidenceMissing,
+          severity: "info",
+        }),
+      ]);
+      expect(snapshot.counts).toMatchObject({
+        incompleteConsumedOutputRecords: 0,
+        retentionEvidenceMissing: 2,
+      });
+      await expect(codexProjectAdmissionGate({
+        registryRootDir: join(root, "registry"),
+        scope,
+        deps: emptyDeps,
+      }).evaluate({
+        operation: ProjectOperation.StartWorker,
+        jobId: "project-fresh-v1",
+        workerRole: ProjectAdmissionWorkerRole.Producer,
+      })).resolves.toMatchObject({ allowed: true });
+
+      await expect(assertCodexGoalProjectJobNotTerminal({
+        roots: [ledgerRoot],
+        projectId: "project",
+        controllerJobId: "project-controller",
+        jobId: "project-rejected-v1",
+        taskId: "task-rejected-v1",
+        workspacePath,
+      })).rejects.toThrow(
+        "project_control_terminal_job_start_denied:retention_evidence_missing",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps live dirty workspace debt blocking when terminal archive bytes were pruned", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-retention-dirty-"));
+    const ledgerRoot = join(root, "control", "consumed-output-ledger");
+    const workspacePath = join(root, "worktrees", "project-rejected-v1");
+    const summary = {
+      jobId: "project-rejected-v1",
+      tags: ["worker-role-producer"],
+      taskId: "task-rejected-v1",
+      workspacePath,
+      promptPath: join(root, "prompt.md"),
+      accountNames: ["account-a"],
+      updatedAt: "2026-07-01T00:00:00.000Z",
+      manifestPath: join(root, "manifest.json"),
+    };
+
+    try {
+      await mkdir(join(ledgerRoot, "items"), { recursive: true });
+      await writeFile(
+        join(ledgerRoot, "items", "project-rejected-v1.json"),
+        `${JSON.stringify({
+          jobId: summary.jobId,
+          status: "rejected",
+          closedAt: "2026-07-01T00:00:00.000Z",
+          backup: {
+            workspace: workspacePath,
+            statusPath: join(root, "retained", "status.txt"),
+            patchPath: join(root, "retained", "output.patch"),
+          },
+        })}\n`,
+      );
+      const snapshot = await buildCodexProjectAdmissionSnapshot({
+        registryRootDir: join(root, "registry"),
+        scope: {
+          projectId: "project",
+          consumedOutputLedgerRoots: [ledgerRoot],
+          jobIdPrefixes: ["project-"],
+        },
+        deps: {
+          listJobs: async () => [summary],
+          buildOverviewItems: async () => [{
+            ok: true,
+            jobId: summary.jobId,
+            workspacePath,
+            workspaceDirty: true,
+            workerAlive: true,
+            silentStale: true,
+            workerFreshProgressAlive: false,
+            activeWriterRisk: "stale_live_worker",
+            activeWriterRiskReasons: ["worker is live but stale"],
+          }],
+        },
+      });
+
+      expect(snapshot.debt).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          reason: ProjectDebtReason.RetentionEvidenceMissing,
+          severity: "info",
+        }),
+        expect.objectContaining({
+          reason: ProjectDebtReason.ActiveWriterConflict,
+          severity: "blocking",
+        }),
+        expect.objectContaining({
+          reason: ProjectDebtReason.StaleDirtyWorker,
+          severity: "blocking",
+        }),
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("routes absent-registry legacy failed_no_output debt to retention without weakening current registry gates", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-legacy-ledger-admission-"));
     const ledgerRoot = join(root, "consumed-output");

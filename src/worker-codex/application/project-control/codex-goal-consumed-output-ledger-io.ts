@@ -102,7 +102,19 @@ export async function assertCodexGoalProjectJobNotTerminal(input: {
     jobId: input.jobId,
     workspacePath: input.workspacePath,
   });
-  if (!record?.valid) return;
+  if (record?.retentionEvidenceMissing) {
+    throw new Error(
+      "project_control_terminal_job_start_denied:retention_evidence_missing",
+    );
+  }
+  if (!record?.valid) {
+    if (hasRelevantConsumedOutputDebt(ledger, input.jobId)) {
+      throw new Error(
+        "project_control_terminal_job_start_denied:incomplete_consumed_output_record",
+      );
+    }
+    return;
+  }
   if (record.status === "rejected" && input.reviewedContinuation) {
     assertReviewedWorkerContinuationContext(input.reviewedContinuation, {
       projectId: input.projectId,
