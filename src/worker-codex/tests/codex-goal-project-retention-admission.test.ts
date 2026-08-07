@@ -432,6 +432,126 @@ describe("Codex project admission snapshot", () => {
     }
   });
 
+  it("ignores shared-workspace writer conflicts only for stopped terminal-consumed jobs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-consumed-shared-"));
+    const ledgerRoot = join(root, "control", "consumed-output-ledger");
+    const workspacePath = join(root, "worktrees", "shared-review");
+    const stoppedJobIds = ["project-adoption-drain-v1", "project-adoption-drain-v2"];
+    const liveJobId = "project-live-unconsumed-v3";
+    const scope: ProjectAccessScope = {
+      projectId: "project",
+      consumedOutputLedgerRoots: [ledgerRoot],
+      jobIdPrefixes: ["project-"],
+    };
+    const summary = (jobId: string, updatedAt: string) => ({
+      jobId,
+      tags: ["worker-role-adoption"],
+      taskId: jobId,
+      workspacePath,
+      promptPath: join(root, `${jobId}.md`),
+      accountNames: ["account-a"],
+      updatedAt,
+      manifestPath: join(root, `${jobId}.json`),
+    });
+    const overview = (jobId: string) => jobId === liveJobId
+      ? {
+          ok: true,
+          jobId,
+          workspacePath,
+          workspaceDirty: true,
+          workerAlive: true,
+          activeWriterRisk: "active_worker",
+          activeWriterRiskReasons: ["worker process is alive"],
+          workspaceConflict: true,
+        }
+      : {
+          ok: true,
+          jobId,
+          workspacePath,
+          workspaceDirty: true,
+          workerAlive: false,
+          activeWriterRisk: "dirty_workspace_without_worker",
+          activeWriterRiskReasons: ["dirty workspace has no live worker"],
+          workspaceConflict: true,
+        };
+
+    try {
+      await mkdir(join(ledgerRoot, "items"), { recursive: true });
+      for (const [index, jobId] of stoppedJobIds.entries()) {
+        const backupRoot = join(root, "retained", jobId);
+        await writeFile(
+          join(ledgerRoot, "items", `${jobId}.json`),
+          `${JSON.stringify({
+            schemaVersion: 1,
+            note: "reviewed output consumed",
+            jobId,
+            status: "rejected",
+            closedAt: `2026-07-0${index + 1}T00:00:00.000Z`,
+            backup: {
+              workspace: workspacePath,
+              statusPath: join(backupRoot, "missing-status.txt"),
+              patchPath: join(backupRoot, "missing-output.patch"),
+            },
+          })}\n`,
+        );
+      }
+      const stoppedSummaries = stoppedJobIds.map((jobId, index) =>
+        summary(jobId, `2026-07-0${index + 1}T00:00:00.000Z`)
+      );
+      const stoppedDeps: CodexProjectAdmissionDeps = {
+        listJobs: async () => stoppedSummaries,
+        buildOverviewItems: async (inputs) => inputs.map(({ jobId }) => overview(jobId)),
+      };
+      const stopped = await buildCodexProjectAdmissionSnapshot({
+        registryRootDir: join(root, "registry"),
+        scope,
+        deps: stoppedDeps,
+      });
+
+      expect(stopped.debt).toHaveLength(2);
+      expect(stopped.debt).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          reason: ProjectDebtReason.RetentionEvidenceMissing,
+          severity: "info",
+        }),
+      ]));
+      expect(stopped.debt).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ reason: ProjectDebtReason.ActiveWriterConflict }),
+      ]));
+      await expect(codexProjectAdmissionGate({
+        registryRootDir: join(root, "registry"),
+        scope,
+        deps: stoppedDeps,
+      }).evaluate({
+        operation: ProjectOperation.StartWorker,
+        jobId: "project-fresh-v4",
+        workerRole: ProjectAdmissionWorkerRole.Producer,
+      })).resolves.toMatchObject({ allowed: true });
+
+      const withLive = await buildCodexProjectAdmissionSnapshot({
+        registryRootDir: join(root, "registry"),
+        scope,
+        deps: {
+          listJobs: async () => [
+            ...stoppedSummaries,
+            summary(liveJobId, "2026-07-03T00:00:00.000Z"),
+          ],
+          buildOverviewItems: async (inputs) =>
+            inputs.map(({ jobId }) => overview(jobId)),
+        },
+      });
+      expect(withLive.debt).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          reason: ProjectDebtReason.ActiveWriterConflict,
+          subject: liveJobId,
+          severity: "blocking",
+        }),
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("routes absent-registry legacy failed_no_output debt to retention without weakening current registry gates", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-legacy-ledger-admission-"));
     const ledgerRoot = join(root, "consumed-output");

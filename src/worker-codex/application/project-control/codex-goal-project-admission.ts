@@ -11,7 +11,6 @@ import {
   evaluateProjectAdmission,
   projectAdmissionDebtCounts,
   type ConsumedOutputLedger,
-  type ActiveWriterRiskKind,
   type ProjectAccessScope,
   type ProjectAdmissionGate,
   type ProjectAdmissionSnapshot,
@@ -24,6 +23,11 @@ import type {
 import { stringValue } from "../codex-goal-input-values";
 import { readCodexGoalConsumedOutputLedgers } from "./codex-goal-consumed-output-ledger-io";
 import { limitCodexProjectSummariesForInspection } from "./codex-goal-project-admission-summary-limit";
+import {
+  hasBlockingActiveWriterRisk,
+  stoppedWorkspaceTerminalConsumption,
+  terminalConsumptionCoversStoppedRisk,
+} from "./codex-goal-project-terminal-consumption";
 import {
   matchesProjectControlPrefix,
   nodeErrorCode,
@@ -599,6 +603,21 @@ async function debtFromOverviewItem(input: {
   }
   const debt: ProjectDebtItem[] = [];
   const workerAlive = item.workerAlive === true;
+  const resolvedWorkspacePath = workspacePath
+    ? await optionalRealPathForAdmission(workspacePath)
+    : undefined;
+  const stoppedTerminalConsumption = stoppedWorkspaceTerminalConsumption({
+    ledger: input.consumedOutput,
+    jobId,
+    workerAlive,
+    workspacePath,
+    resolvedWorkspacePath,
+  });
+  const terminalConsumptionCoversStoppedConflict =
+    terminalConsumptionCoversStoppedRisk(
+      stoppedTerminalConsumption,
+      item.activeWriterRisk,
+    );
   const sameRequestedWorkspace = workerAlive && workspacePath !== undefined &&
     input.requestedWorkspacePath !== undefined &&
     await admissionWorkspacePathsMatch(
@@ -606,10 +625,12 @@ async function debtFromOverviewItem(input: {
       input.requestedWorkspacePath,
     );
   if (
-    (workerAlive && (input.blockAnyLiveWriter || sameRequestedWorkspace)) ||
-    hasBlockingActiveWriterRisk(item.activeWriterRisk, workerAlive) ||
-    item.workspaceConflict === true ||
-    input.duplicateWorkspaceIdentity
+    (!terminalConsumptionCoversStoppedConflict && (
+      (workerAlive && (input.blockAnyLiveWriter || sameRequestedWorkspace)) ||
+      hasBlockingActiveWriterRisk(item.activeWriterRisk, workerAlive) ||
+      item.workspaceConflict === true ||
+      input.duplicateWorkspaceIdentity
+    ))
   ) {
     const pathDisjointProducerEvidence = await healthyLiveProducerPathEvidence({
       item,
@@ -651,9 +672,6 @@ async function debtFromOverviewItem(input: {
     return debt;
   }
   if (workerAlive) return debt;
-  const resolvedWorkspacePath = workspacePath
-    ? await optionalRealPathForAdmission(workspacePath)
-    : undefined;
   const markerTypes = safeStringArray(item.lifecycleMarkerTypes);
   const recommendedAction = stringValue(item.recommendedAction);
   if (
@@ -684,7 +702,7 @@ async function debtFromOverviewItem(input: {
   ) {
     return withoutInactiveDirtyWorkspaceConflict(debt, item);
   }
-  const consumed = consumedOutputRecordFor({
+  const consumed = stoppedTerminalConsumption ?? consumedOutputRecordFor({
     ledger: input.consumedOutput,
     jobId,
     ...(workspacePath ? { workspacePath } : {}),
@@ -794,31 +812,6 @@ function withoutInactiveDirtyWorkspaceConflict(
   return debt.filter(
     (entry) => entry.reason !== ProjectDebtReason.ActiveWriterConflict,
   );
-}
-
-const activeWriterRiskKinds = new Set<string>([
-  "none",
-  "active_worker",
-  "stale_live_worker",
-  "dirty_workspace_without_worker",
-  "state_mismatch",
-  "unknown",
-] satisfies readonly ActiveWriterRiskKind[]);
-
-function hasBlockingActiveWriterRisk(
-  value: unknown,
-  workerAlive: boolean,
-): boolean {
-  // Keep accepting the former boolean overview shape while current status
-  // views publish a typed risk kind. A healthy active worker is only a conflict
-  // when admission targets its workspace; uncertain states still fail closed.
-  if (value === true) return true;
-  const kind = stringValue(value);
-  if (kind === undefined) return false;
-  if (!activeWriterRiskKinds.has(kind)) return true;
-  if (kind === "none") return false;
-  if (kind === "active_worker") return !workerAlive;
-  return true;
 }
 
 async function admissionWorkspacePathsMatch(
