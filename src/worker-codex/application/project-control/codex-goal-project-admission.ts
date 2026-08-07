@@ -619,6 +619,10 @@ async function debtFromOverviewItem(input: {
       stoppedTerminalConsumption,
       item.activeWriterRisk,
     );
+  const malformedDirtyWriterObservation =
+    item.workspaceDirty === true &&
+    (typeof item.workerAlive !== "boolean" ||
+      item.activeWriterRisk === undefined);
   const sameRequestedWorkspace = workerAlive && workspacePath !== undefined &&
     input.requestedWorkspacePath !== undefined &&
     await admissionWorkspacePathsMatch(
@@ -626,6 +630,7 @@ async function debtFromOverviewItem(input: {
       input.requestedWorkspacePath,
     );
   if (
+    malformedDirtyWriterObservation ||
     (!terminalConsumptionCoversStoppedConflict && (
       (workerAlive && (input.blockAnyLiveWriter || sameRequestedWorkspace)) ||
       hasBlockingActiveWriterRisk(item.activeWriterRisk, workerAlive) ||

@@ -558,7 +558,7 @@ describe("Codex project admission snapshot", () => {
             jobId: stoppedJobIds[0],
             workspacePath,
             workspaceDirty: true,
-            workspaceConflict: true,
+            workspaceConflict: false,
           }],
         },
       });
