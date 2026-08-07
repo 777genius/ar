@@ -622,7 +622,8 @@ async function debtFromOverviewItem(input: {
   const malformedDirtyWriterObservation =
     item.workspaceDirty === true &&
     (typeof item.workerAlive !== "boolean" ||
-      item.activeWriterRisk === undefined);
+      typeof item.activeWriterRisk !== "string" ||
+      item.activeWriterRisk.trim().length === 0);
   const sameRequestedWorkspace = workerAlive && workspacePath !== undefined &&
     input.requestedWorkspacePath !== undefined &&
     await admissionWorkspacePathsMatch(
