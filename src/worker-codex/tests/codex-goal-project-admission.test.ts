@@ -1044,7 +1044,13 @@ describe("Codex project admission snapshot", () => {
         scope,
         deps,
       });
-      expect(liveSnapshot.debt).toEqual([]);
+      expect(liveSnapshot.debt).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          reason: ProjectDebtReason.ActiveWriterConflict,
+          subject: reviewer.jobId,
+          severity: "blocking",
+        }),
+      ]));
       await expect(codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
         scope,
