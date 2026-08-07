@@ -614,6 +614,17 @@ async function debtFromOverviewItem(input: {
     workspacePath,
     resolvedWorkspacePath,
   });
+  const stoppedTerminalCandidate = item.workerAlive === false
+    ? consumedOutputRecordFor({
+        ledger: input.consumedOutput,
+        jobId,
+      })
+    : undefined;
+  const terminalConsumptionWorkspaceMismatch =
+    item.workerAlive === false &&
+    item.workspaceDirty === true &&
+    stoppedTerminalCandidate?.structurallyValid === true &&
+    stoppedTerminalConsumption === undefined;
   const terminalConsumptionCoversStoppedConflict =
     terminalConsumptionCoversStoppedRisk(
       stoppedTerminalConsumption,
@@ -632,6 +643,7 @@ async function debtFromOverviewItem(input: {
     );
   if (
     malformedDirtyWriterObservation ||
+    terminalConsumptionWorkspaceMismatch ||
     (!terminalConsumptionCoversStoppedConflict && (
       (workerAlive && (input.blockAnyLiveWriter || sameRequestedWorkspace)) ||
       hasBlockingActiveWriterRisk(item.activeWriterRisk, workerAlive) ||

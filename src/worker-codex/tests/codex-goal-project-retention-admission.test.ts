@@ -573,6 +573,33 @@ describe("Codex project admission snapshot", () => {
           }),
         ]));
       }
+
+      const mismatchedWorkspaceObservation =
+        await buildCodexProjectAdmissionSnapshot({
+          registryRootDir: join(root, "registry"),
+          scope,
+          deps: {
+            listJobs: async () => stoppedSummaries.slice(0, 1),
+            buildOverviewItems: async () => [{
+              ok: true,
+              jobId: stoppedJobIds[0],
+              workspacePath: join(root, "worktrees", "different-review"),
+              workspaceDirty: true,
+              workerAlive: false,
+              activeWriterRisk: "none",
+              workspaceConflict: false,
+            }],
+          },
+        });
+      expect(mismatchedWorkspaceObservation.debt).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            reason: ProjectDebtReason.ActiveWriterConflict,
+            subject: stoppedJobIds[0],
+            severity: "blocking",
+          }),
+        ]),
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
