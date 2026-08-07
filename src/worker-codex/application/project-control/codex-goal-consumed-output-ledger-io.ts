@@ -225,7 +225,10 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
       await this.assertExistingEvidencePathInsideRoot(path);
       return true;
     } catch (error) {
-      if (nodeErrorCode(error) === "ENOENT") return false;
+      if (nodeErrorCode(error) === "ENOENT") {
+        await this.assertMissingEvidencePathAncestorInsideRoot(path);
+        return false;
+      }
       throw error;
     }
   }
@@ -237,7 +240,10 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
       await this.assertExistingEvidencePathInsideRoot(path);
       return metadata.size;
     } catch (error) {
-      if (nodeErrorCode(error) === "ENOENT") return undefined;
+      if (nodeErrorCode(error) === "ENOENT") {
+        await this.assertMissingEvidencePathAncestorInsideRoot(path);
+        return undefined;
+      }
       throw error;
     }
   }
@@ -279,7 +285,10 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
       }
       return hash.digest("hex");
     } catch (error) {
-      if (nodeErrorCode(error) === "ENOENT") return undefined;
+      if (nodeErrorCode(error) === "ENOENT") {
+        await this.assertMissingEvidencePathAncestorInsideRoot(path);
+        return undefined;
+      }
       throw error;
     } finally {
       await handle?.close().catch(() => undefined);
@@ -309,6 +318,35 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
     ]);
     if (!realEvidenceRoots.some((root) => pathInsideOrEqual(realPath, root))) {
       throw new Error("consumed_output_evidence_path_outside_root");
+    }
+  }
+
+  private async assertMissingEvidencePathAncestorInsideRoot(
+    path: string,
+  ): Promise<void> {
+    const realEvidenceRoots = await Promise.all(
+      this.evidenceRoots.map(async (root) => await realpath(root)),
+    );
+    let candidate = dirname(resolve(path));
+    for (;;) {
+      try {
+        const realCandidate = await realpath(candidate);
+        if (
+          !realEvidenceRoots.some((root) =>
+            pathInsideOrEqual(realCandidate, root)
+          )
+        ) {
+          throw new Error("consumed_output_evidence_path_outside_root");
+        }
+        return;
+      } catch (error) {
+        if (nodeErrorCode(error) !== "ENOENT") throw error;
+        const parent = dirname(candidate);
+        if (parent === candidate) {
+          throw new Error("consumed_output_evidence_ancestor_unavailable");
+        }
+        candidate = parent;
+      }
     }
   }
 }

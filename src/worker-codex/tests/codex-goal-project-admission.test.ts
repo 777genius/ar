@@ -318,6 +318,69 @@ describe("Codex project admission snapshot", () => {
     }
   });
 
+  it("blocks a missing evidence child whose nearest symlink ancestor escapes the evidence root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-retention-symlink-root-"));
+    const outsideRoot = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-retention-symlink-outside-"),
+    );
+    const ledgerRoot = join(root, "control", "consumed-output-ledger");
+    const escapedBackupRoot = join(root, "escaped-backup");
+    const scope: ProjectAccessScope = {
+      projectId: "project",
+      consumedOutputLedgerRoots: [ledgerRoot],
+      jobIdPrefixes: ["project-"],
+    };
+
+    try {
+      await mkdir(join(ledgerRoot, "items"), { recursive: true });
+      await symlink(outsideRoot, escapedBackupRoot);
+      await writeFile(
+        join(ledgerRoot, "items", "project-integrated-v1.json"),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          note: "integrated output",
+          jobId: "project-integrated-v1",
+          status: "integrated",
+          closedAt: "2026-07-01T00:00:00.000Z",
+          commitSha: "abc1234",
+          backup: {
+            workspace: join(root, "worktrees", "project-integrated-v1"),
+            statusPath: join(escapedBackupRoot, "missing-status.txt"),
+            patchPath: join(escapedBackupRoot, "missing-output.patch"),
+          },
+        })}\n`,
+      );
+      const snapshot = await buildCodexProjectAdmissionSnapshot({
+        registryRootDir: join(root, "registry"),
+        scope,
+        deps: {
+          listJobs: async () => [],
+          buildOverviewItems: async () => [],
+        },
+      });
+
+      expect(snapshot.debt).toEqual([
+        expect.objectContaining({
+          reason: ProjectDebtReason.UnreadableRoot,
+          severity: "blocking",
+          evidence: expect.arrayContaining([
+            expect.stringContaining("consumed_output_evidence_path_outside_root"),
+          ]),
+        }),
+      ]);
+      expect(snapshot.debt).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          reason: ProjectDebtReason.RetentionEvidenceMissing,
+        }),
+      ]));
+    } finally {
+      await Promise.all([
+        rm(root, { recursive: true, force: true }),
+        rm(outsideRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
   it("routes absent-registry legacy failed_no_output debt to retention without weakening current registry gates", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-legacy-ledger-admission-"));
     const ledgerRoot = join(root, "consumed-output");
