@@ -219,23 +219,31 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
   }
 
   async pathExists(path: string): Promise<boolean> {
+    this.assertEvidencePath(path);
     try {
       await stat(path);
+      await this.assertExistingEvidencePathInsideRoot(path);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      if (nodeErrorCode(error) === "ENOENT") return false;
+      throw error;
     }
   }
 
   async pathSize(path: string): Promise<number | undefined> {
+    this.assertEvidencePath(path);
     try {
-      return (await stat(path)).size;
-    } catch {
-      return undefined;
+      const metadata = await stat(path);
+      await this.assertExistingEvidencePathInsideRoot(path);
+      return metadata.size;
+    } catch (error) {
+      if (nodeErrorCode(error) === "ENOENT") return undefined;
+      throw error;
     }
   }
 
   async pathSha256(path: string): Promise<string | undefined> {
+    this.assertEvidencePath(path);
     let handle;
     try {
       const realPath = await realpath(path);
@@ -243,7 +251,7 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
         this.evidenceRoots.map(async (root) => await realpath(root)),
       );
       if (!realEvidenceRoots.some((root) => pathInsideOrEqual(realPath, root))) {
-        return undefined;
+        throw new Error("consumed_output_evidence_path_outside_root");
       }
       handle = await open(
         realPath,
@@ -251,7 +259,7 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
       );
       const metadata = await handle.stat();
       if (!metadata.isFile() || metadata.size > 16 * 1024 * 1024) {
-        return undefined;
+        throw new Error("consumed_output_evidence_file_invalid");
       }
       const hash = createHash("sha256");
       const buffer = Buffer.allocUnsafe(64 * 1024);
@@ -263,13 +271,16 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
           Math.min(buffer.length, metadata.size - position),
           position,
         );
-        if (bytesRead === 0) return undefined;
+        if (bytesRead === 0) {
+          throw new Error("consumed_output_evidence_file_truncated");
+        }
         hash.update(buffer.subarray(0, bytesRead));
         position += bytesRead;
       }
       return hash.digest("hex");
-    } catch {
-      return undefined;
+    } catch (error) {
+      if (nodeErrorCode(error) === "ENOENT") return undefined;
+      throw error;
     } finally {
       await handle?.close().catch(() => undefined);
     }
@@ -278,8 +289,26 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
   async resolveWorkspacePath(path: string): Promise<string | undefined> {
     try {
       return await realpath(path);
-    } catch {
-      return undefined;
+    } catch (error) {
+      if (nodeErrorCode(error) === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+
+  private assertEvidencePath(path: string): void {
+    const resolvedPath = resolve(path);
+    if (!this.evidenceRoots.some((root) => pathInsideOrEqual(resolvedPath, root))) {
+      throw new Error("consumed_output_evidence_path_outside_root");
+    }
+  }
+
+  private async assertExistingEvidencePathInsideRoot(path: string): Promise<void> {
+    const [realPath, realEvidenceRoots] = await Promise.all([
+      realpath(path),
+      Promise.all(this.evidenceRoots.map(async (root) => await realpath(root))),
+    ]);
+    if (!realEvidenceRoots.some((root) => pathInsideOrEqual(realPath, root))) {
+      throw new Error("consumed_output_evidence_path_outside_root");
     }
   }
 }
@@ -314,6 +343,13 @@ function pathInsideOrEqual(path: string, root: string): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function nodeErrorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error &&
+      typeof error.code === "string"
+    ? error.code
+    : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

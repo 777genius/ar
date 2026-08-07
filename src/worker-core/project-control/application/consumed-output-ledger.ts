@@ -1,4 +1,4 @@
-import { basename, dirname, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 import {
   ProjectDebtReason,
@@ -88,11 +88,24 @@ export async function readConsumedOutputLedgers(input: {
   }));
   const retentionEvidenceMissingRecords: ConsumedOutputRecord[] = [];
   for (const entry of loaded.entries) {
-    const record = await consumedOutputRecordFromJson({
-      value: entry.value,
-      ledgerPath: entry.ledgerPath,
-      source: input.source,
-    });
+    let record: ConsumedOutputRecord | null;
+    try {
+      record = await consumedOutputRecordFromJson({
+        value: entry.value,
+        ledgerPath: entry.ledgerPath,
+        source: input.source,
+      });
+    } catch (error) {
+      debt.push({
+        reason: ProjectDebtReason.UnreadableRoot,
+        subject: entry.ledgerPath,
+        severity: "blocking",
+        evidence: [
+          `terminal consumed-output evidence unreadable: ${errorMessage(error)}`,
+        ],
+      });
+      continue;
+    }
     if (!record) {
       if (hasTerminalOutputIntent(entry.value)) {
         debt.push({
@@ -215,6 +228,12 @@ export async function consumedOutputRecordFromJson(input: {
   const closedAt = stringValue(input.value.closedAt);
   const hasActiveClaim = isRecord(input.value.claim) ||
     input.value.active === true || input.value.claimed === true;
+  if (input.value.schemaVersion !== 1) {
+    structuralEvidence.push("terminal consumed-output record requires schemaVersion=1");
+  }
+  if (!stringValue(input.value.note)) {
+    structuralEvidence.push("terminal consumed-output record is missing note");
+  }
   if (!closedAt) {
     structuralEvidence.push("terminal consumed-output record is missing closedAt");
   }
@@ -225,6 +244,11 @@ export async function consumedOutputRecordFromJson(input: {
   if (!workspace) {
     structuralEvidence.push("terminal consumed-output backup is missing workspace");
   }
+  const backupPathStructuralEvidence = terminalBackupPathEvidence(
+    input.value,
+    backup,
+  );
+  structuralEvidence.push(...backupPathStructuralEvidence);
   if (isRecord(input.value.claim)) {
     structuralEvidence.push("terminal consumed-output record still has active claim");
   }
@@ -232,7 +256,15 @@ export async function consumedOutputRecordFromJson(input: {
     structuralEvidence.push("terminal consumed-output record is still marked active/claimed");
   }
   const backupEvidence = backup
-    ? await consumedOutputBackupEvidence(backup, input.source)
+    ? backupPathStructuralEvidence.length === 0
+      ? await consumedOutputBackupEvidence(backup, input.source)
+      : {
+        ok: false,
+        hasAuthoredOutput: false,
+        workspaceDirty: false,
+        structuralEvidence: [],
+        availabilityEvidence: [],
+      }
     : {
       ok: false,
       hasAuthoredOutput: false,
@@ -574,6 +606,53 @@ function pathInsideOrEqual(path: string, root: string): boolean {
     (pathRelative !== ".." && !pathRelative.startsWith(`..${sep}`));
 }
 
+function terminalBackupPathEvidence(
+  value: Record<string, unknown>,
+  backup: Record<string, unknown> | undefined,
+): readonly string[] {
+  if (!backup) return [];
+  const evidence: string[] = [];
+  const workspace = stringValue(backup.workspace);
+  const statusPath = stringValue(backup.statusPath);
+  const payloadPaths = [
+    stringValue(backup.patchPath),
+    stringValue(backup.numstatPath),
+    stringValue(backup.untrackedArchivePath),
+  ].filter((path): path is string => path !== undefined);
+  for (const key of ["patchPath", "numstatPath", "untrackedArchivePath"] as const) {
+    if (backup[key] !== undefined && !stringValue(backup[key])) {
+      evidence.push(`terminal consumed-output backup ${key} is invalid`);
+    }
+  }
+  if (workspace && !isAbsolute(workspace)) {
+    evidence.push("terminal consumed-output backup workspace must be absolute");
+  }
+  if (statusPath && !isAbsolute(statusPath)) {
+    evidence.push("terminal consumed-output backup statusPath must be absolute");
+  }
+  if (statusPath) {
+    const backupRoot = dirname(statusPath);
+    for (const path of payloadPaths) {
+      if (!isAbsolute(path) || !pathInsideOrEqual(path, backupRoot)) {
+        evidence.push(`terminal consumed-output backup payload is outside backup root: ${path}`);
+      }
+    }
+    const archivePath = stringValue(value.archivePath);
+    if (value.archivePath !== undefined && !archivePath) {
+      evidence.push("terminal consumed-output archivePath is invalid");
+    }
+    if (
+      archivePath &&
+      (!isAbsolute(archivePath) || !pathInsideOrEqual(archivePath, backupRoot))
+    ) {
+      evidence.push(
+        `terminal consumed-output archivePath is outside backup root: ${archivePath}`,
+      );
+    }
+  }
+  return evidence;
+}
+
 function terminalOutputBackup(
   value: Record<string, unknown> | undefined,
 ): TerminalOutputBackup | undefined {
@@ -653,4 +732,8 @@ function stringValue(value: unknown): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

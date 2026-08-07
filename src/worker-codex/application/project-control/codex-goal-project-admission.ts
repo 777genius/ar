@@ -334,6 +334,7 @@ export async function buildCodexProjectAdmissionSnapshot(
   }));
   const projectSummaries = limitCodexProjectSummaries(
     matchingProjectSummaries,
+    consumedOutput,
   );
   const overviewSummaries: CodexGoalJobSummary[] = [];
   for (const summary of projectSummaries) {
@@ -513,12 +514,19 @@ function projectAdmissionCacheKey(input: {
 
 function limitCodexProjectSummaries(
   summaries: readonly CodexGoalJobSummary[],
+  consumedOutput: ConsumedOutputLedger,
 ): readonly CodexGoalJobSummary[] {
   const max = projectAdmissionMaxJobSummaries();
   if (max <= 0 || summaries.length <= max) return summaries;
-  return [...summaries]
+  const limited = [...summaries]
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
     .slice(-max);
+  const includedJobIds = new Set(limited.map((summary) => summary.jobId));
+  const retentionSafetySummaries = summaries.filter((summary) =>
+    !includedJobIds.has(summary.jobId) &&
+    consumedOutput.byJobId.get(summary.jobId)?.retentionEvidenceMissing === true
+  );
+  return [...retentionSafetySummaries, ...limited];
 }
 
 async function debtFromConsumedJobSummary(input: {

@@ -62,6 +62,8 @@ describe("consumed output ledger", () => {
             {
               ledgerPath: join(root, "worker-1--integrated.json"),
               value: {
+                schemaVersion: 1,
+                note: "integrated",
                 jobId: "worker-1",
                 status: "integrated",
                 closedAt: "2026-07-12T01:00:00.000Z",
@@ -72,6 +74,8 @@ describe("consumed output ledger", () => {
             {
               ledgerPath: join(root, "worker-1--rejected.json"),
               value: {
+                schemaVersion: 1,
+                note: "rejected",
                 jobId: "worker-1",
                 status: "rejected",
                 closedAt: "2026-07-12T00:00:00.000Z",
@@ -102,6 +106,8 @@ describe("consumed output ledger", () => {
         ledgerPath: join(root, `${status}.json`),
         source: localConsumedOutputLedgerSource(),
         value: {
+          schemaVersion: 1,
+          note: "terminal drain",
           jobId: `infinity-context-memory-${status}`,
           status,
           closedAt: "2026-07-06T00:00:00.000Z",
@@ -132,6 +138,8 @@ describe("consumed output ledger", () => {
       ledgerPath: join(root, "failed-no-output.json"),
       source,
       value: {
+        schemaVersion: 1,
+        note: "failed without output",
         jobId: "runtime-review-v1",
         status: "failed_no_output",
         closedAt: "2026-07-11T00:00:00.000Z",
@@ -180,6 +188,8 @@ describe("consumed output ledger", () => {
       ledgerPath: join(root, "mislabeled-rejected.json"),
       source,
       value: {
+        schemaVersion: 1,
+        note: "rejected output",
         jobId: "runtime-review-v1",
         status: "rejected",
         closedAt: "2026-07-11T00:00:00.000Z",
@@ -208,6 +218,8 @@ describe("consumed output ledger", () => {
     await writeFile(preexistingPatchPath, preexistingPatch);
 
     const value = {
+      schemaVersion: 1,
+      note: "failed verifier",
       jobId: "verifier-v1",
       status: "failed_no_output",
       closedAt: "2026-07-13T00:00:00.000Z",
@@ -255,6 +267,8 @@ describe("consumed output ledger", () => {
       ledgerPath: join(root, "integrated.json"),
       source: localConsumedOutputLedgerSource(),
       value: {
+        schemaVersion: 1,
+        note: "integrated",
         jobId: "infinity-context-memory-v1",
         status: "integrated",
         closedAt: "2026-07-06T00:00:00.000Z",
@@ -276,6 +290,8 @@ describe("consumed output ledger", () => {
       ledgerPath: join(root, "integrated-with-pruned-patch.json"),
       source: localConsumedOutputLedgerSource(),
       value: {
+        schemaVersion: 1,
+        note: "integrated empty backup",
         jobId: "integrated-with-pruned-patch",
         status: "integrated",
         closedAt: "2026-07-06T00:00:00.000Z",
@@ -292,6 +308,8 @@ describe("consumed output ledger", () => {
       ledgerPath: join(root, "integrated-missing-commit.json"),
       source: localConsumedOutputLedgerSource(),
       value: {
+        schemaVersion: 1,
+        note: "invalid integrated",
         jobId: "infinity-context-memory-v1",
         status: "integrated",
         closedAt: "2026-07-06T00:00:00.000Z",
@@ -323,6 +341,8 @@ describe("consumed output ledger", () => {
       ledgerPath: join(root, "reviewed-no-change.json"),
       source,
       value: {
+        schemaVersion: 1,
+        note: "reviewed no change",
         jobId: "contracts-review-v1",
         status: "reviewed_no_change",
         outcome: "reviewed_no_change",
@@ -348,6 +368,8 @@ describe("consumed output ledger", () => {
     await writeFile(
       join(ledgerRoot, "items", "contracts-review-v1.json"),
       `${JSON.stringify({
+        schemaVersion: 1,
+        note: "reviewed no change",
         jobId: "contracts-review-v1",
         status: "reviewed_no_change",
         outcome: "reviewed_no_change",
@@ -376,6 +398,8 @@ describe("consumed output ledger", () => {
       ledgerPath: join(root, "reviewed-no-change-missing-outcome.json"),
       source,
       value: {
+        schemaVersion: 1,
+        note: "invalid review",
         jobId: "contracts-review-v1",
         status: "reviewed_no_change",
         closedAt: "2026-07-11T00:00:00.000Z",
@@ -399,6 +423,8 @@ describe("consumed output ledger", () => {
       ledgerPath: join(root, "missing-backup.json"),
       source: localConsumedOutputLedgerSource(),
       value: {
+        schemaVersion: 1,
+        note: "missing backup",
         jobId: "infinity-context-memory-v1",
         status: "duplicate",
         closedAt: "2026-07-06T00:00:00.000Z",
@@ -416,6 +442,8 @@ describe("consumed output ledger", () => {
       ledgerPath: join(root, "claimed.json"),
       source: localConsumedOutputLedgerSource(),
       value: {
+        schemaVersion: 1,
+        note: "active claim",
         jobId: "infinity-context-memory-v1",
         status: "duplicate",
         closedAt: "2026-07-06T00:00:00.000Z",
@@ -458,6 +486,8 @@ describe("consumed output ledger", () => {
         ledgerPath: join(root, `${status}.json`),
         source,
         value: {
+          schemaVersion: 1,
+          note: "retained archive pruned",
           jobId: `worker-${status}`,
           status,
           closedAt: "2026-07-01T00:00:00.000Z",
@@ -488,6 +518,8 @@ describe("consumed output ledger", () => {
       ledgerPath: join(root, "missing-commit.json"),
       source,
       value: {
+        schemaVersion: 1,
+        note: "missing integrated commit",
         jobId: "worker-integrated-invalid",
         status: "integrated",
         closedAt: "2026-07-01T00:00:00.000Z",
@@ -510,6 +542,100 @@ describe("consumed output ledger", () => {
     ]);
   });
 
+  it("keeps future, truncated, and incoherent terminal metadata out of retention debt", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-retention-schema-"));
+    const statusPath = join(root, "backup", "status.txt");
+    const record = await consumedOutputRecordFromJson({
+      ledgerPath: join(root, "fabricated.json"),
+      source: localConsumedOutputLedgerSource(),
+      value: {
+        schemaVersion: 2,
+        jobId: "worker-fabricated",
+        status: "integrated",
+        closedAt: "2026-07-01T00:00:00.000Z",
+        commitSha: "abc1234",
+        archivePath: join(root, "outside", "archive.tar"),
+        backup: {
+          workspace: join(root, "workspace"),
+          statusPath,
+          patchPath: join(root, "outside", "output.patch"),
+        },
+      },
+    });
+
+    expect(record).toMatchObject({
+      structurallyValid: false,
+      retentionEvidenceMissing: false,
+      valid: false,
+      evidence: expect.arrayContaining([
+        "terminal consumed-output record requires schemaVersion=1",
+        "terminal consumed-output record is missing note",
+        expect.stringContaining("backup payload is outside backup root"),
+        expect.stringContaining("archivePath is outside backup root"),
+      ]),
+    });
+    expect(consumedDebt(record!)).toEqual([
+      expect.objectContaining({
+        reason: ProjectDebtReason.IncompleteConsumedOutputRecord,
+        severity: "blocking",
+      }),
+    ]);
+  });
+
+  it("keeps unreadable evidence storage blocking instead of treating it as pruned", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-retention-unreadable-"));
+    const workspace = join(root, "workspace");
+    const ledgerPath = join(root, "worker-1.json");
+    const accessError = Object.assign(new Error("permission denied"), {
+      code: "EACCES",
+    });
+    const source: ConsumedOutputLedgerSourcePort = {
+      ...localConsumedOutputLedgerSource(),
+      async readEntries() {
+        return {
+          failures: [],
+          entries: [{
+            ledgerPath,
+            value: {
+              schemaVersion: 1,
+              note: "integrated output",
+              jobId: "worker-1",
+              status: "integrated",
+              closedAt: "2026-07-01T00:00:00.000Z",
+              commitSha: "abc1234",
+              backup: {
+                workspace,
+                statusPath: join(root, "backup", "status.txt"),
+                patchPath: join(root, "backup", "output.patch"),
+              },
+            },
+          }],
+        };
+      },
+      async pathExists() {
+        throw accessError;
+      },
+    };
+
+    const ledger = await readConsumedOutputLedgers({ roots: [root], source });
+
+    expect(ledger.debt).toEqual([
+      expect.objectContaining({
+        reason: ProjectDebtReason.UnreadableRoot,
+        subject: ledgerPath,
+        severity: "blocking",
+        evidence: [
+          "terminal consumed-output evidence unreadable: permission denied",
+        ],
+      }),
+    ]);
+    expect(ledger.debt).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        reason: ProjectDebtReason.RetentionEvidenceMissing,
+      }),
+    ]));
+  });
+
   it("does not report pruned evidence for an older rejected attempt after later integration", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-retained-superseded-"));
     const workspace = join(root, "workspace");
@@ -527,6 +653,8 @@ describe("consumed output ledger", () => {
             {
               ledgerPath: join(root, "worker-1--rejected.json"),
               value: {
+                schemaVersion: 1,
+                note: "rejected attempt",
                 jobId: "worker-1",
                 attemptId: "attempt-1",
                 status: "rejected",
@@ -541,6 +669,8 @@ describe("consumed output ledger", () => {
             {
               ledgerPath: join(root, "worker-1--integrated.json"),
               value: {
+                schemaVersion: 1,
+                note: "later integration",
                 jobId: "worker-1",
                 attemptId: "attempt-2",
                 status: "integrated",
@@ -579,6 +709,8 @@ describe("consumed output ledger", () => {
     await writeFile(
       join(ledgerRoot, "items", "infinity-context-memory-v1.json"),
       `${JSON.stringify({
+        schemaVersion: 1,
+        note: "consumed duplicate",
         jobId: "infinity-context-memory-v1",
         status: "duplicate",
         closedAt: "2026-07-06T00:00:00.000Z",
@@ -631,6 +763,8 @@ describe("consumed output ledger", () => {
     await writeFile(
       join(sharedLedgerRoot, "items", "infinity-context-controller-a.json"),
       `${JSON.stringify({
+        schemaVersion: 1,
+        note: "superseded controller",
         jobId: "infinity-context-controller-a",
         status: "superseded",
         closedAt: "2026-07-06T00:00:00.000Z",
@@ -640,6 +774,8 @@ describe("consumed output ledger", () => {
     await writeFile(
       join(sharedLedgerRoot, "items", "infinity-context-controller-b.json"),
       `${JSON.stringify({
+        schemaVersion: 1,
+        note: "superseded controller",
         jobId: "infinity-context-controller-b",
         status: "superseded",
         closedAt: "2026-07-06T00:00:00.000Z",

@@ -60,6 +60,8 @@ describe("Codex project admission snapshot", () => {
       await writeFile(
         join(ledgerRoot, "items", "project-integrated-v1.json"),
         `${JSON.stringify({
+          schemaVersion: 1,
+          note: "integrated output",
           jobId: "project-integrated-v1",
           status: "integrated",
           closedAt: "2026-07-01T00:00:00.000Z",
@@ -70,10 +72,26 @@ describe("Codex project admission snapshot", () => {
       await writeFile(
         join(ledgerRoot, "items", "project-rejected-v1.json"),
         `${JSON.stringify({
+          schemaVersion: 1,
+          note: "rejected output",
           jobId: "project-rejected-v1",
           status: "rejected",
           closedAt: "2026-07-01T00:00:00.000Z",
           backup,
+        })}\n`,
+      );
+      await writeFile(
+        join(ledgerRoot, "items", "project-superseded-v1.json"),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          note: "superseded output",
+          jobId: "project-superseded-v1",
+          status: "superseded",
+          closedAt: "2026-07-01T00:00:00.000Z",
+          backup: {
+            ...backup,
+            workspace: join(root, "worktrees", "project-superseded-v1"),
+          },
         })}\n`,
       );
 
@@ -91,10 +109,14 @@ describe("Codex project admission snapshot", () => {
           reason: ProjectDebtReason.RetentionEvidenceMissing,
           severity: "info",
         }),
+        expect.objectContaining({
+          reason: ProjectDebtReason.RetentionEvidenceMissing,
+          severity: "info",
+        }),
       ]);
       expect(snapshot.counts).toMatchObject({
         incompleteConsumedOutputRecords: 0,
-        retentionEvidenceMissing: 2,
+        retentionEvidenceMissing: 3,
       });
       await expect(codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
@@ -113,6 +135,16 @@ describe("Codex project admission snapshot", () => {
         jobId: "project-rejected-v1",
         taskId: "task-rejected-v1",
         workspacePath,
+      })).rejects.toThrow(
+        "project_control_terminal_job_start_denied:retention_evidence_missing",
+      );
+      await expect(assertCodexGoalProjectJobNotTerminal({
+        roots: [ledgerRoot],
+        projectId: "project",
+        controllerJobId: "project-controller",
+        jobId: "project-superseded-v1",
+        taskId: "task-superseded-v1",
+        workspacePath: join(root, "worktrees", "project-superseded-v1"),
       })).rejects.toThrow(
         "project_control_terminal_job_start_denied:retention_evidence_missing",
       );
@@ -135,12 +167,23 @@ describe("Codex project admission snapshot", () => {
       updatedAt: "2026-07-01T00:00:00.000Z",
       manifestPath: join(root, "manifest.json"),
     };
+    const newerSummary = {
+      ...summary,
+      jobId: "project-newer-v2",
+      taskId: "task-newer-v2",
+      workspacePath: join(root, "worktrees", "project-newer-v2"),
+      updatedAt: "2026-07-02T00:00:00.000Z",
+    };
+    const previousLimit = process.env.SUBSCRIPTION_RUNTIME_PROJECT_ADMISSION_MAX_JOB_SUMMARIES;
 
     try {
+      process.env.SUBSCRIPTION_RUNTIME_PROJECT_ADMISSION_MAX_JOB_SUMMARIES = "1";
       await mkdir(join(ledgerRoot, "items"), { recursive: true });
       await writeFile(
         join(ledgerRoot, "items", "project-rejected-v1.json"),
         `${JSON.stringify({
+          schemaVersion: 1,
+          note: "rejected output",
           jobId: summary.jobId,
           status: "rejected",
           closedAt: "2026-07-01T00:00:00.000Z",
@@ -159,18 +202,29 @@ describe("Codex project admission snapshot", () => {
           jobIdPrefixes: ["project-"],
         },
         deps: {
-          listJobs: async () => [summary],
-          buildOverviewItems: async () => [{
-            ok: true,
-            jobId: summary.jobId,
-            workspacePath,
-            workspaceDirty: true,
-            workerAlive: true,
-            silentStale: true,
-            workerFreshProgressAlive: false,
-            activeWriterRisk: "stale_live_worker",
-            activeWriterRiskReasons: ["worker is live but stale"],
-          }],
+          listJobs: async () => [summary, newerSummary],
+          buildOverviewItems: async (inputs) => inputs.map(({ jobId }) =>
+            jobId === summary.jobId
+              ? {
+                  ok: true,
+                  jobId: summary.jobId,
+                  workspacePath,
+                  workspaceDirty: true,
+                  workerAlive: true,
+                  silentStale: true,
+                  workerFreshProgressAlive: false,
+                  activeWriterRisk: "stale_live_worker",
+                  activeWriterRiskReasons: ["worker is live but stale"],
+                }
+              : {
+                  ok: true,
+                  jobId,
+                  workspacePath: newerSummary.workspacePath,
+                  workspaceDirty: false,
+                  workerAlive: false,
+                  activeWriterRisk: "none",
+                }
+          ),
         },
       });
 
@@ -188,6 +242,77 @@ describe("Codex project admission snapshot", () => {
           severity: "blocking",
         }),
       ]));
+    } finally {
+      if (previousLimit === undefined) {
+        delete process.env.SUBSCRIPTION_RUNTIME_PROJECT_ADMISSION_MAX_JOB_SUMMARIES;
+      } else {
+        process.env.SUBSCRIPTION_RUNTIME_PROJECT_ADMISSION_MAX_JOB_SUMMARIES = previousLimit;
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps adapter storage errors blocking instead of classifying them as retention", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-retention-io-error-"));
+    const ledgerRoot = join(root, "control", "consumed-output-ledger");
+    const invalidParent = join(root, "retained-file");
+    const scope: ProjectAccessScope = {
+      projectId: "project",
+      consumedOutputLedgerRoots: [ledgerRoot],
+      jobIdPrefixes: ["project-"],
+    };
+    const deps: CodexProjectAdmissionDeps = {
+      listJobs: async () => [],
+      buildOverviewItems: async () => [],
+    };
+
+    try {
+      await mkdir(join(ledgerRoot, "items"), { recursive: true });
+      await writeFile(invalidParent, "not a directory\n");
+      await writeFile(
+        join(ledgerRoot, "items", "project-integrated-v1.json"),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          note: "integrated output",
+          jobId: "project-integrated-v1",
+          status: "integrated",
+          closedAt: "2026-07-01T00:00:00.000Z",
+          commitSha: "abc1234",
+          backup: {
+            workspace: join(root, "worktrees", "project-integrated-v1"),
+            statusPath: join(invalidParent, "status.txt"),
+            patchPath: join(invalidParent, "output.patch"),
+          },
+        })}\n`,
+      );
+
+      const snapshot = await buildCodexProjectAdmissionSnapshot({
+        registryRootDir: join(root, "registry"),
+        scope,
+        deps,
+      });
+      expect(snapshot.debt).toEqual([
+        expect.objectContaining({
+          reason: ProjectDebtReason.UnreadableRoot,
+          severity: "blocking",
+          evidence: expect.arrayContaining([
+            expect.stringContaining("terminal consumed-output evidence unreadable"),
+          ]),
+        }),
+      ]);
+      expect(snapshot.debt).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          reason: ProjectDebtReason.RetentionEvidenceMissing,
+        }),
+      ]));
+      await expect(codexProjectAdmissionGate({
+        registryRootDir: join(root, "registry"),
+        scope,
+        deps,
+      }).evaluate({
+        operation: ProjectOperation.StartWorker,
+        workerRole: ProjectAdmissionWorkerRole.Producer,
+      })).resolves.toMatchObject({ allowed: false });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -225,6 +350,7 @@ describe("Codex project admission snapshot", () => {
       await writeFile(
         join(ledgerRoot, "items", "project-legacy-worker-v1.json"),
         `${JSON.stringify({
+          schemaVersion: 1,
           jobId: "project-legacy-worker-v1",
           status: "failed_no_output",
           closedAt: "2026-07-12T00:00:00.000Z",
@@ -1170,6 +1296,8 @@ describe("Codex project admission snapshot", () => {
       await writeFile(
         join(ledgerRoot, "items", "project-producer-v1.json"),
         `${JSON.stringify({
+          schemaVersion: 1,
+          note: "archived producer output",
           jobId: "project-producer-v1",
           status: "archived",
           closedAt: "2026-07-11T00:00:00.000Z",
@@ -1183,6 +1311,8 @@ describe("Codex project admission snapshot", () => {
       await writeFile(
         join(ledgerRoot, "items", "project-reviewer-terminal-v1.json"),
         `${JSON.stringify({
+          schemaVersion: 1,
+          note: "reviewed no change",
           jobId: "project-reviewer-terminal-v1",
           status: "reviewed_no_change",
           outcome: "reviewed_no_change",
@@ -1269,6 +1399,8 @@ describe("Codex project admission snapshot", () => {
       await writeFile(
         join(ledgerRoot, "items", "project-producer-v1.json"),
         `${JSON.stringify({
+          schemaVersion: 1,
+          note: "archived producer output",
           jobId: "project-producer-v1",
           status: "archived",
           closedAt: "2026-07-11T00:00:00.000Z",
@@ -1367,6 +1499,8 @@ describe("Codex project admission snapshot", () => {
       await writeFile(
         join(ledgerRoot, "items", "project-router-r2.json"),
         `${JSON.stringify({
+          schemaVersion: 1,
+          note: "integrated router output",
           jobId: "project-router-r2",
           status: "integrated",
           closedAt: "2026-07-13T13:34:16.281Z",
