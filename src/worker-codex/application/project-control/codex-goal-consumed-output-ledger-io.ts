@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { open, readdir, readFile, realpath, stat } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { lstat, open, readdir, readFile, readlink, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
   consumedOutputRecordFor,
@@ -219,37 +219,15 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
   }
 
   async pathExists(path: string): Promise<boolean> {
-    this.assertEvidencePath(path);
-    try {
-      await stat(path);
-      await this.assertExistingEvidencePathInsideRoot(path);
-      return true;
-    } catch (error) {
-      if (nodeErrorCode(error) === "ENOENT") {
-        await this.assertMissingEvidencePathAncestorInsideRoot(path);
-        return false;
-      }
-      throw error;
-    }
+    return await this.evidenceFileMetadata(path) !== undefined;
   }
 
   async pathSize(path: string): Promise<number | undefined> {
-    this.assertEvidencePath(path);
-    try {
-      const metadata = await stat(path);
-      await this.assertExistingEvidencePathInsideRoot(path);
-      return metadata.size;
-    } catch (error) {
-      if (nodeErrorCode(error) === "ENOENT") {
-        await this.assertMissingEvidencePathAncestorInsideRoot(path);
-        return undefined;
-      }
-      throw error;
-    }
+    return (await this.evidenceFileMetadata(path))?.size;
   }
 
   async pathSha256(path: string): Promise<string | undefined> {
-    this.assertEvidencePath(path);
+    if (!await this.evidenceFileMetadata(path)) return undefined;
     let handle;
     try {
       const realPath = await realpath(path);
@@ -286,8 +264,8 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
       return hash.digest("hex");
     } catch (error) {
       if (nodeErrorCode(error) === "ENOENT") {
-        await this.assertMissingEvidencePathAncestorInsideRoot(path);
-        return undefined;
+        if (!await this.evidenceFileMetadata(path)) return undefined;
+        throw new Error("consumed_output_evidence_file_changed");
       }
       throw error;
     } finally {
@@ -311,6 +289,27 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
     }
   }
 
+  private async evidenceFileMetadata(path: string): Promise<Stats | undefined> {
+    this.assertEvidencePath(path);
+    let metadata: Stats;
+    try {
+      metadata = await lstat(path);
+    } catch (error) {
+      if (nodeErrorCode(error) !== "ENOENT") throw error;
+      await this.assertGenuinelyMissingEvidencePath(path);
+      return undefined;
+    }
+    if (metadata.isSymbolicLink()) {
+      await this.assertEvidenceSymlinkTargetInsideRoot(path);
+      throw new Error("consumed_output_evidence_leaf_symlink_invalid");
+    }
+    if (!metadata.isFile()) {
+      throw new Error("consumed_output_evidence_file_invalid");
+    }
+    await this.assertExistingEvidencePathInsideRoot(path);
+    return metadata;
+  }
+
   private async assertExistingEvidencePathInsideRoot(path: string): Promise<void> {
     const [realPath, realEvidenceRoots] = await Promise.all([
       realpath(path),
@@ -321,13 +320,36 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
     }
   }
 
-  private async assertMissingEvidencePathAncestorInsideRoot(
+  private async assertGenuinelyMissingEvidencePath(
+    path: string,
+  ): Promise<void> {
+    try {
+      const metadata = await lstat(path);
+      if (metadata.isSymbolicLink()) {
+        await this.assertEvidenceSymlinkTargetInsideRoot(path);
+        throw new Error("consumed_output_evidence_leaf_symlink_invalid");
+      }
+      throw new Error("consumed_output_evidence_missing_path_changed");
+    } catch (error) {
+      if (nodeErrorCode(error) !== "ENOENT") throw error;
+    }
+    await this.assertPathOrNearestExistingAncestorInsideRoot(dirname(resolve(path)));
+  }
+
+  private async assertEvidenceSymlinkTargetInsideRoot(path: string): Promise<void> {
+    const target = await readlink(path);
+    const resolvedTarget = resolve(dirname(path), target);
+    this.assertEvidencePath(resolvedTarget);
+    await this.assertPathOrNearestExistingAncestorInsideRoot(resolvedTarget);
+  }
+
+  private async assertPathOrNearestExistingAncestorInsideRoot(
     path: string,
   ): Promise<void> {
     const realEvidenceRoots = await Promise.all(
       this.evidenceRoots.map(async (root) => await realpath(root)),
     );
-    let candidate = dirname(resolve(path));
+    let candidate = resolve(path);
     for (;;) {
       try {
         const realCandidate = await realpath(candidate);
