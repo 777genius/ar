@@ -610,6 +610,7 @@ async function debtFromOverviewItem(input: {
     ledger: input.consumedOutput,
     jobId,
     workerAlive,
+    workerExplicitlyStopped: item.workerAlive === false,
     workspacePath,
     resolvedWorkspacePath,
   });

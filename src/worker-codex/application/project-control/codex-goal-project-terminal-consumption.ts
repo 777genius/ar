@@ -19,10 +19,15 @@ export function stoppedWorkspaceTerminalConsumption(input: {
   readonly ledger: ConsumedOutputLedger;
   readonly jobId: string;
   readonly workerAlive: boolean;
+  readonly workerExplicitlyStopped: boolean;
   readonly workspacePath: string | undefined;
   readonly resolvedWorkspacePath: string | undefined;
 }): ConsumedOutputRecord | undefined {
-  if (input.workerAlive || !input.workspacePath) return undefined;
+  if (
+    input.workerAlive ||
+    !input.workerExplicitlyStopped ||
+    !input.workspacePath
+  ) return undefined;
   const record = consumedOutputRecordFor({
     ledger: input.ledger,
     jobId: input.jobId,
@@ -55,7 +60,6 @@ export function terminalConsumptionCoversStoppedRisk(
   value: unknown,
 ): boolean {
   if (!record) return false;
-  if (value === undefined) return true;
   if (typeof value !== "string") return false;
   return value === "none" || value === "dirty_workspace_without_worker";
 }
