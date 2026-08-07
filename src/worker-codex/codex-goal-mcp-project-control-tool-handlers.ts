@@ -6,6 +6,7 @@ import type {
 } from "./codex-goal-mcp-inputs";
 import {
   projectControlAdmissionSnapshotView,
+  projectControlRepairLegacyOutputDebtView,
   projectControlRepairJobManifestView,
   projectControlUpdateControllerScopeView,
 } from "./codex-goal-mcp-project-control-admin";
@@ -58,6 +59,15 @@ function projectControlAdminDeps() {
 
 export async function projectControlAdmissionSnapshot(args: ProjectControlMcpArgs) {
   return mcpJson(await projectControlAdmissionSnapshotView(args, projectControlAdminDeps()));
+}
+
+export async function projectControlRepairLegacyOutputDebt(
+  args: ProjectControlMcpArgs,
+) {
+  return mcpJson(await projectControlRepairLegacyOutputDebtView(
+    args,
+    projectControlAdminDeps(),
+  ));
 }
 
 export async function projectControlUpdateControllerScope(

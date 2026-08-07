@@ -9,6 +9,7 @@ import {
 import { withMcpErrors } from "./codex-goal-mcp-response";
 import {
   projectControlAdmissionSnapshot,
+  projectControlRepairLegacyOutputDebt,
   projectControlRepairJobManifest,
   projectControlUpdateControllerScope,
 } from "./codex-goal-mcp-project-control-tool-handlers";
@@ -18,6 +19,23 @@ import {
 } from "./codex-goal-mcp-project-control-tool-schemas";
 
 export function registerCodexGoalProjectControlAdminTools(server: McpServer): void {
+  server.registerTool(
+    "codex_goal_project_repair_legacy_output_debt",
+    {
+      title: "Project Repair Legacy Consumed Output Debt",
+      description:
+        "Preview or explicitly confirm a brokered bulk quarantine of admission-validated legacy consumed-output records. Preview is the default.",
+      inputSchema: {
+        ...jobRegistryInputSchema(),
+        controllerJobId: z.string().optional(),
+        confirmLegacyOutputRepair: z.boolean().optional(),
+      },
+    },
+    async (args) => withMcpErrors(async () =>
+      projectControlRepairLegacyOutputDebt(args as ProjectControlMcpArgs),
+    ),
+  );
+
   server.registerTool(
     "codex_goal_project_admission_snapshot",
     {

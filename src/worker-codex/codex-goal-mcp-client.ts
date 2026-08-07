@@ -74,6 +74,7 @@ const requiredCodexGoalMcpTools = [
   "codex_goal_project_admission_snapshot",
   "codex_goal_project_update_controller_scope",
   "brokered_project_manifest_repair",
+  "codex_goal_project_repair_legacy_output_debt",
   "codex_goal_project_controller_launch_plan",
   "codex_goal_project_controller_start",
   "codex_goal_project_controller_status",

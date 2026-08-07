@@ -1,3 +1,6 @@
+import { execFile } from "node:child_process";
+import { lstat, readdir } from "node:fs/promises";
+import { promisify } from "node:util";
 import {
   AccessBoundary,
   ProjectAdmissionWorkerRole,
@@ -72,8 +75,15 @@ import {
 import {
   buildCodexProjectOperationsSnapshot,
 } from "./application/project-control/codex-goal-project-operations-snapshot";
+import {
+  repairLegacyConsumedOutputDebt,
+  type LegacyConsumedOutputCandidate,
+  type LegacyConsumedOutputProof,
+} from "./application/project-control/legacy-consumed-output-repair";
 
 type JsonObject = Readonly<Record<string, unknown>>;
+
+const execFileAsync = promisify(execFile);
 
 export type ProjectControlRepairWorkspaceMode =
   | "clean_capacity_continuation"
@@ -160,6 +170,149 @@ export async function projectControlAdmissionSnapshotView(
     snapshot: detailView.snapshot,
     operations,
     ...(detailView.decision ? { decision: detailView.decision } : {}),
+  };
+}
+
+export async function projectControlRepairLegacyOutputDebtView(
+  args: ProjectControlMcpArgs,
+  deps: CodexGoalMcpProjectControlAdminDeps,
+): Promise<JsonObject> {
+  const controller = await deps.loadProjectControlController(args);
+  const ledgerRoots = controller.scope.consumedOutputLedgerRoots ?? [];
+  if (ledgerRoots.length === 0) {
+    throw new Error("project_control_consumed_output_ledger_roots_required");
+  }
+  const snapshot = await buildCodexProjectAdmissionSnapshot({
+    registryRootDir: controller.registryRootDir,
+    scope: controller.scope,
+    deps: deps.admissionDeps,
+  });
+  const summaries = await deps.admissionDeps.listJobs({
+    registryRootDir: controller.registryRootDir,
+  });
+  const summariesByJobId = new Map(summaries.map((summary) => [summary.jobId, summary]));
+  const result = await repairLegacyConsumedOutputDebt({
+    projectId: controller.scope.projectId,
+    registryRootDir: controller.registryRootDir,
+    authorizedLedgerRoots: ledgerRoots,
+    admissionSnapshot: snapshot,
+    confirm: booleanValue(args.confirmLegacyOutputRepair) === true,
+    locks: projectControlWorkspaceLocks(controller.registryRootDir),
+    prove: async (candidate) => proveLegacyConsumedOutputSafe({
+      candidate,
+      registryRootDir: controller.registryRootDir,
+      summariesByJobId,
+      canonicalWorkspacePath: controller.controller.workspacePath,
+      deps: deps.admissionDeps,
+    }),
+  });
+  const verifiedSnapshot = result.quarantinedCount > 0
+    ? await buildCodexProjectAdmissionSnapshot({
+        registryRootDir: controller.registryRootDir,
+        scope: controller.scope,
+        deps: deps.admissionDeps,
+      })
+    : snapshot;
+  return {
+    ...result as unknown as JsonObject,
+    controllerJobId: controller.controller.jobId,
+    registryRootDir: controller.registryRootDir,
+    auditPath: projectControlAuditPath(controller.controller),
+    admissionBefore: snapshot.counts ?? {},
+    admissionAfter: verifiedSnapshot.counts ?? {},
+  };
+}
+
+async function proveLegacyConsumedOutputSafe(input: {
+  readonly candidate: LegacyConsumedOutputCandidate;
+  readonly registryRootDir: string;
+  readonly canonicalWorkspacePath: string;
+  readonly summariesByJobId: ReadonlyMap<string, {
+    readonly jobId: string;
+    readonly manifestPath: string;
+  }>;
+  readonly deps: CodexProjectAdmissionDeps;
+}): Promise<LegacyConsumedOutputProof> {
+  const reasons: string[] = [];
+  const summary = input.summariesByJobId.get(input.candidate.jobId);
+  if (summary) {
+    const overview = await input.deps.buildOverviewItems([{
+      registryRootDir: input.registryRootDir,
+      jobId: input.candidate.jobId,
+      staleAfterMs: 10 * 60_000,
+      tailLines: 0,
+    }]);
+    const item = overview[0];
+    if (!item || item.workerAlive !== false) {
+      reasons.push("managed worker/process liveness is not proven stopped");
+    }
+    try {
+      const manifest = input.deps.readJob
+        ? await input.deps.readJob({
+            registryRootDir: input.registryRootDir,
+            jobId: input.candidate.jobId,
+          })
+        : await readCodexGoalJob({
+            registryRootDir: input.registryRootDir,
+            jobId: input.candidate.jobId,
+          });
+      const artifacts = await readdir(manifest.jobRootDir, { withFileTypes: true });
+      if (artifacts.some((entry) =>
+        entry.isFile() &&
+        (/\.handoff\.(?:manifest\.json|patch)$/.test(entry.name) ||
+          /\.(?:patch|diff)$/i.test(entry.name) ||
+          /reviewed.*output/i.test(entry.name))
+      )) {
+        reasons.push("terminal handoff or reviewed output still awaits consumption");
+      }
+    } catch {
+      reasons.push("current job manifest proof is unavailable");
+    }
+  }
+  if (input.candidate.status === "integrated") {
+    if (!input.candidate.commitSha) {
+      reasons.push("integrated legacy decision has no target commit evidence");
+    } else {
+      try {
+        await execFileAsync("git", [
+          "-C",
+          input.canonicalWorkspacePath,
+          "merge-base",
+          "--is-ancestor",
+          input.candidate.commitSha,
+          "HEAD",
+        ], { timeout: 10_000 });
+      } catch {
+        reasons.push("integrated target commit is not proven in canonical history");
+      }
+    }
+  } else if (!input.candidate.workspace) {
+    reasons.push("legacy record workspace identity is unavailable");
+  } else {
+    try {
+      await lstat(input.candidate.workspace);
+      reasons.push("failed legacy decision workspace still exists");
+    } catch (error) {
+      if (nodeErrorCode(error) !== "ENOENT") {
+        reasons.push("failed legacy decision workspace absence is unprovable");
+      }
+    }
+  }
+  if (input.candidate.status === "rejected" && !summary) {
+    reasons.push("rejected legacy decision artifact custody is unavailable");
+  }
+  if (reasons.length > 0) return { eligible: false, reasons };
+  return {
+    eligible: true,
+    evidence: [
+      "admission validator classified the record as incomplete",
+      summary
+        ? "current registry worker is proven stopped"
+        : "legacy job is absent from the current registry",
+      input.candidate.status === "integrated"
+        ? "integrated target commit is an ancestor of canonical HEAD"
+        : "failed/rejected legacy workspace and pending handoff artifacts are absent",
+    ],
   };
 }
 
@@ -507,4 +660,10 @@ function assertProjectControlRepairAccountsAllowed(input: {
   if (denied.length > 0) {
     throw new Error("project_control_repair_account_outside_scope");
   }
+}
+
+function nodeErrorCode(error: unknown): string | undefined {
+  return error instanceof Error && "code" in error
+    ? String((error as NodeJS.ErrnoException).code)
+    : undefined;
 }

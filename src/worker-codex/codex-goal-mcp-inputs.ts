@@ -173,6 +173,7 @@ export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
   readonly preStartAdmission?: WorkerLaunchAdmission;
   readonly confirmPreStartAdmission?: boolean;
   readonly confirmRepair?: boolean;
+  readonly confirmLegacyOutputRepair?: boolean;
   readonly startWorker?: boolean;
   readonly workerRole?: string;
   readonly dependencyBootstrap?: string;
