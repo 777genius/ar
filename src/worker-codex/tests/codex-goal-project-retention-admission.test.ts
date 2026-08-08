@@ -52,7 +52,9 @@ describe("Codex project admission snapshot", () => {
           jobId: "project-integrated-v1",
           status: "integrated",
           closedAt: "2026-07-01T00:00:00.000Z",
+          consumedAt: "2026-07-01T00:00:00.000Z",
           commitSha: "abc1234",
+          notes: [{ status: "integrated", text: "integrated output", commit: "abc1234" }],
           backup: { ...backup, workspace: join(root, "worktrees", "project-integrated-v1") },
         })}\n`,
       );
@@ -64,6 +66,8 @@ describe("Codex project admission snapshot", () => {
           jobId: "project-rejected-v1",
           status: "rejected",
           closedAt: "2026-07-01T00:00:00.000Z",
+          consumedAt: "2026-07-01T00:00:00.000Z",
+          notes: [{ status: "rejected", text: "rejected output" }],
           backup,
         })}\n`,
       );
@@ -75,6 +79,8 @@ describe("Codex project admission snapshot", () => {
           jobId: "project-superseded-v1",
           status: "superseded",
           closedAt: "2026-07-01T00:00:00.000Z",
+          consumedAt: "2026-07-01T00:00:00.000Z",
+          notes: [{ status: "superseded", text: "superseded output" }],
           backup: {
             ...backup,
             workspace: join(root, "worktrees", "project-superseded-v1"),

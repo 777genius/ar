@@ -482,15 +482,23 @@ describe("consumed output ledger", () => {
       ["integrated", "abc1234"],
       ["rejected", undefined],
     ] as const) {
+      const closedAt = "2026-07-01T00:00:00.000Z";
+      const note = "retained archive pruned";
       const record = await consumedOutputRecordFromJson({
         ledgerPath: join(root, `${status}.json`),
         source,
         value: {
           schemaVersion: 1,
-          note: "retained archive pruned",
+          note,
           jobId: `worker-${status}`,
           status,
-          closedAt: "2026-07-01T00:00:00.000Z",
+          closedAt,
+          consumedAt: closedAt,
+          notes: [{
+            status,
+            text: note,
+            ...(commitSha ? { commit: commitSha } : {}),
+          }],
           ...(commitSha ? { commitSha } : {}),
           backup: missingBackup,
         },
@@ -513,6 +521,29 @@ describe("consumed output ledger", () => {
         }),
       ]);
     }
+
+    const unproven = await consumedOutputRecordFromJson({
+      ledgerPath: join(root, "unproven.json"),
+      source,
+      value: {
+        schemaVersion: 1,
+        note: "operator-authored metadata",
+        jobId: "worker-unproven",
+        status: "rejected",
+        closedAt: "2026-07-01T00:00:00.000Z",
+        consumedAt: "2026-07-02T00:00:00.000Z",
+        notes: [{ status: "integrated", text: "different decision" }],
+        backup: missingBackup,
+      },
+    });
+    expect(unproven).toMatchObject({
+      structurallyValid: false,
+      retentionEvidenceMissing: false,
+      valid: false,
+      evidence: expect.arrayContaining([
+        "pruned retention evidence has inconsistent consumedAt/notes writer provenance",
+      ]),
+    });
 
     const missingCommit = await consumedOutputRecordFromJson({
       ledgerPath: join(root, "missing-commit.json"),

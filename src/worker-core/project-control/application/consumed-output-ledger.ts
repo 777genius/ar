@@ -283,6 +283,14 @@ export async function consumedOutputRecordFromJson(input: {
     ...backupEvidence.availabilityEvidence,
   ];
   const commit = integratedOutputCommit(input.value);
+  if (
+    availabilityEvidence.length > 0 &&
+    !hasConsistentTerminalWriterAliases(input.value, status, closedAt, commit)
+  ) {
+    structuralEvidence.push(
+      "pruned retention evidence has inconsistent consumedAt/notes writer provenance",
+    );
+  }
   const hasAuthoredOutput = backupEvidence.hasAuthoredOutput ||
     (status === "integrated" && commit !== undefined);
   if (status === NO_OUTPUT_STATUS) {
@@ -700,6 +708,32 @@ function integratedOutputCommit(value: Record<string, unknown>): string | undefi
     if (commit && /^[0-9a-f]{7,40}$/i.test(commit)) return commit;
   }
   return undefined;
+}
+
+function hasConsistentTerminalWriterAliases(
+  value: Record<string, unknown>,
+  status: string,
+  closedAt: string | undefined,
+  commit: string | undefined,
+): boolean {
+  // Canonical records predate the redundant writer aliases. When either alias
+  // is present, require the complete pair to agree with the canonical decision
+  // before missing retention bytes can become non-blocking retention debt.
+  if (value.consumedAt === undefined && value.notes === undefined) return true;
+  if (!closedAt || stringValue(value.consumedAt) !== closedAt) return false;
+  const noteText = stringValue(value.note);
+  if (!noteText || !Array.isArray(value.notes)) return false;
+  return value.notes.some((entry) => {
+    if (
+      !isRecord(entry) ||
+      stringValue(entry.status) !== status ||
+      stringValue(entry.text) !== noteText
+    ) {
+      return false;
+    }
+    return status !== "integrated" ||
+      (commit !== undefined && stringValue(entry.commit) === commit);
+  });
 }
 
 function consumedOutputEvidence(input: {
