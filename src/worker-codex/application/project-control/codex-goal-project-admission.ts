@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { lstat, readdir, realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -21,7 +21,7 @@ import type {
   CodexGoalJobSummary,
 } from "../../codex-goal-jobs";
 import { stringValue } from "../codex-goal-input-values";
-import { readCodexGoalConsumedOutputLedgers } from "./codex-goal-consumed-output-ledger-io";
+import { readLedgerEpochAdmissionState } from "./codex-goal-ledger-epoch-admission-debt";
 import { limitCodexProjectSummariesForInspection } from "./codex-goal-project-admission-summary-limit";
 import {
   hasBlockingActiveWriterRisk,
@@ -35,6 +35,8 @@ import {
   uniqueProjectControlStrings,
 } from "./codex-goal-project-utils";
 import { readLaunchAuthorizedWorkerLaunchSpec } from "./codex-goal-project-pre-start-admission";
+import { orphanDirtyWorkspaceDebt } from
+  "./codex-goal-project-orphan-workspace-admission";
 type JsonObject = Readonly<Record<string, unknown>>;
 const execFileAsync = promisify(execFile);
 export type CodexProjectAdmissionDeps = {
@@ -66,10 +68,10 @@ type CodexProjectAdmissionInput = {
     readonly workspacePath: string;
   };
 };
-
 type CodexProjectAdmissionSnapshotInput = CodexProjectAdmissionInput & {
   readonly requestedWorkspacePath?: string;
   readonly blockAnyLiveWriter?: boolean;
+  readonly allowPendingEpochOrphanQuarantine?: boolean;
 };
 
 export function projectAdmissionDetailView(input: {
@@ -308,9 +310,17 @@ export async function buildCodexProjectAdmissionSnapshot(
   const knownWorkspacePaths = new Set<string>();
   const prefixes = input.scope.jobIdPrefixes ?? [];
   const staleAfterMs = 10 * 60_000;
-  const consumedOutput = await readCodexGoalConsumedOutputLedgers({
-    roots: input.scope.consumedOutputLedgerRoots ?? [],
+  const ledgerState = await readLedgerEpochAdmissionState({
+    scope: input.scope,
+    ...(input.allowPendingEpochOrphanQuarantine === undefined
+      ? {}
+      : {
+          allowPendingOrphanQuarantine:
+            input.allowPendingEpochOrphanQuarantine,
+        }),
   });
+  const consumedOutput = ledgerState.consumedOutput;
+  debt.push(...ledgerState.quarantineDebt);
   let summaries;
   try {
     summaries = await input.deps.listJobs({ registryRootDir: input.registryRootDir });
@@ -396,6 +406,8 @@ export async function buildCodexProjectAdmissionSnapshot(
       prefixes,
       knownWorkspacePaths,
       consumedOutput,
+      orphanWorkspaceBindings: ledgerState.orphanWorkspaceBindings,
+      deniedRoots: input.scope.deniedRoots ?? [],
     }));
     debt.push(...await diskPressureDebt(root));
   }
@@ -900,69 +912,6 @@ async function rememberKnownWorkspacePath(
   } catch {
     // Missing workspaces are handled by overview debt; keep the raw path.
   }
-}
-
-async function orphanDirtyWorkspaceDebt(input: {
-  readonly root: string;
-  readonly prefixes: readonly string[];
-  readonly knownWorkspacePaths: ReadonlySet<string>;
-  readonly consumedOutput: ConsumedOutputLedger;
-}): Promise<readonly ProjectDebtItem[]> {
-  const root = resolve(input.root);
-  let entries;
-  try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch (error) {
-    if (nodeErrorCode(error) === "ENOENT") return [];
-    return [{
-      reason: ProjectDebtReason.UnreadableRoot,
-      subject: root,
-      severity: "blocking",
-      evidence: [
-        `workspace root unreadable: ${error instanceof Error ? error.message : String(error)}`,
-      ],
-    }];
-  }
-  const debt: ProjectDebtItem[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-    if (!matchesProjectControlPrefix(entry.name, input.prefixes)) continue;
-    const workspacePath = join(root, entry.name);
-    if (!await pathLooksLikeGitWorkspace(workspacePath)) continue;
-    const resolved = await optionalRealPathForAdmission(workspacePath);
-    if (
-      input.knownWorkspacePaths.has(resolve(workspacePath)) ||
-      (resolved && input.knownWorkspacePaths.has(resolved))
-    ) {
-      continue;
-    }
-    const consumed = consumedOutputRecordFor({
-      ledger: input.consumedOutput,
-      jobId: entry.name,
-      workspacePath,
-      ...(resolved ? { resolvedWorkspacePath: resolved } : {}),
-    });
-    if (consumed && !consumed.retentionEvidenceMissing) {
-      debt.push(...consumedRecordDebt(input.consumedOutput, consumed));
-      continue;
-    }
-    const status = await gitStatusShort(workspacePath);
-    if (status.ok && status.lines.length === 0) continue;
-    debt.push({
-      reason: status.ok
-        ? ProjectDebtReason.OrphanLegacyWorkspace
-        : ProjectDebtReason.UnreadableWorkspace,
-      subject: workspacePath,
-      severity: "blocking",
-      evidence: status.ok
-        ? [
-            "dirty project workspace is not represented by the controller registry",
-            ...status.lines.slice(0, 5),
-          ]
-        : [`git status failed: ${status.error}`],
-    });
-  }
-  return debt;
 }
 
 async function diskPressureDebt(root: string): Promise<readonly ProjectDebtItem[]> {

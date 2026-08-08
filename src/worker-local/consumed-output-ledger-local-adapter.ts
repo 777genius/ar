@@ -22,7 +22,13 @@ import type {
   TerminalOutputDecision,
   TerminalOutputDecisionReceipt,
 } from "@vioxen/subscription-runtime/worker-core";
+import { CONSUMED_OUTPUT_LEDGER_RETIRED_MARKER } from
+  "@vioxen/subscription-runtime/worker-core";
 import { LocalWorkspaceIntegrationLock } from "./project-integration-local-adapters";
+import {
+  acquireConsumedOutputLedgerMaintenanceLock,
+  releaseConsumedOutputLedgerMaintenanceLock,
+} from "./consumed-output-ledger-maintenance-lock";
 
 const execFileAsync = promisify(execFile);
 
@@ -36,6 +42,7 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
     readonly ledgerRoot: string;
     readonly decision: TerminalOutputDecision;
   }): Promise<void> {
+    await assertLedgerRootActive(input.ledgerRoot);
     const ledgerPath = terminalLedgerPath(input.ledgerRoot, input.decision);
     let existing: string;
     try {
@@ -53,15 +60,24 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
     readonly ledgerRoot: string;
     readonly decision: TerminalOutputDecision;
   }): Promise<TerminalOutputDecisionReceipt> {
-    const lease = await this.mutationLocks.acquire({
-      ledgerRoots: [input.ledgerRoot],
-      owner: `terminal-output-writer:${input.decision.jobId}`,
-      ...(this.custodyRoot ? { custodyRoot: this.custodyRoot } : {}),
+    const maintenanceLease = await acquireConsumedOutputLedgerMaintenanceLock({
+      ledgerRoot: input.ledgerRoot,
+      owner: `terminal-record:${input.decision.jobId}`,
     });
+    let mutationLease;
     try {
+      mutationLease = await this.mutationLocks.acquire({
+        ledgerRoots: [input.ledgerRoot],
+        owner: `terminal-output-writer:${input.decision.jobId}`,
+        ...(this.custodyRoot ? { custodyRoot: this.custodyRoot } : {}),
+      });
+      await assertLedgerRootActive(input.ledgerRoot);
       return await this.recordLocked(input);
     } finally {
-      await this.mutationLocks.release(lease);
+      if (mutationLease) {
+        await this.mutationLocks.release(mutationLease);
+      }
+      await releaseConsumedOutputLedgerMaintenanceLock(maintenanceLease);
     }
   }
 
@@ -211,6 +227,16 @@ async function ensureLedgerRootWithinCustody(
       throw new Error("consumed_output_ledger_lock_root_unsafe");
     }
   }
+}
+
+async function assertLedgerRootActive(ledgerRoot: string): Promise<void> {
+  try {
+    await readFile(join(ledgerRoot, CONSUMED_OUTPUT_LEDGER_RETIRED_MARKER));
+  } catch (error) {
+    if (isNodeErrorCode(error, "ENOENT")) return;
+    throw error;
+  }
+  throw new Error("consumed_output_ledger_root_retired");
 }
 
 export type LocalTerminalOutputBackupCapture = {

@@ -11,6 +11,7 @@ import {
 import {
   nowIso,
   recordIntegrationAudit,
+  runIntegrationTransaction,
   type IntegrationUseCaseDeps,
 } from "./common";
 
@@ -20,6 +21,15 @@ export type OpenProjectIntegrationAttemptInput =
   };
 
 export async function openProjectIntegrationAttempt(
+  deps: IntegrationUseCaseDeps,
+  input: OpenProjectIntegrationAttemptInput,
+): Promise<IntegrationAttempt> {
+  return await runIntegrationTransaction(deps, input.attemptId, async () =>
+    await openProjectIntegrationAttemptTransaction(deps, input)
+  );
+}
+
+async function openProjectIntegrationAttemptTransaction(
   deps: IntegrationUseCaseDeps,
   input: OpenProjectIntegrationAttemptInput,
 ): Promise<IntegrationAttempt> {

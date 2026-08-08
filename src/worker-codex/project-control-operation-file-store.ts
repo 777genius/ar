@@ -205,6 +205,16 @@ export async function durableReplaceJsonFile(input: {
   }
 }
 
+export async function durableConfirmFilePublication(path: string): Promise<void> {
+  const handle = await open(path, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await syncDirectory(dirname(path));
+}
+
 export async function durablePublishJsonFile(input: {
   readonly path: string;
   readonly value: unknown;
@@ -228,6 +238,7 @@ export async function durablePublishJsonFile(input: {
       await link(temporaryPath, input.path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        await syncDirectory(parent);
         return DurableJsonPublishStatus.AlreadyExists;
       }
       throw error;

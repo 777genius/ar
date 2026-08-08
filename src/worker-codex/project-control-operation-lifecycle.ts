@@ -6,6 +6,12 @@ import { dirname, join } from "node:path";
 import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 import {
+  acquireLocalControllerActivityLease,
+  assertLocalControllerMaintenanceFenceOpen,
+  releaseLocalControllerActivityLease,
+  type LocalControllerActivityLease,
+} from "@vioxen/subscription-runtime/store-local-file";
+import {
   DurableJsonPublishStatus,
   type ProjectControlOperationClaimEnvironment,
   type ProjectControlOperationExecutionClaim,
@@ -130,6 +136,24 @@ export async function createProjectControlOperation(input: {
 }
 
 export async function createOrReuseProjectControlOperation(input: {
+  readonly operationsRootDir: string;
+  readonly controllerJobId: string;
+  readonly toolName: ProjectControlOperationToolName;
+  readonly args: JsonRecord;
+  readonly targetJobId?: string;
+}): Promise<ProjectControlOperationCreationResult> {
+  const lease = await acquireLocalControllerActivityLease({
+    controllerJobRootDir: dirname(input.operationsRootDir),
+    owner: `project-control-operation-create:${input.controllerJobId}`,
+  });
+  try {
+    return await createOrReuseProjectControlOperationWithLease(input);
+  } finally {
+    await releaseLocalControllerActivityLease(lease);
+  }
+}
+
+async function createOrReuseProjectControlOperationWithLease(input: {
   readonly operationsRootDir: string;
   readonly controllerJobId: string;
   readonly toolName: ProjectControlOperationToolName;
@@ -309,6 +333,8 @@ export async function runProjectControlOperationFile(input: {
   readonly claimEnvironment?: ProjectControlOperationClaimEnvironment;
   readonly heartbeatIntervalMs?: number;
 }): Promise<ProjectControlOperationRunResult> {
+  const controllerJobRootDir = dirname(dirname(dirname(input.operationFilePath)));
+  await assertLocalControllerMaintenanceFenceOpen(controllerJobRootDir);
   const observed = await readProjectControlOperation(input.operationFilePath);
   if (operationIsTerminal(observed)) {
     return terminalReplay(observed);
@@ -334,6 +360,16 @@ export async function runProjectControlOperationFile(input: {
       operation: await readProjectControlOperation(input.operationFilePath),
       disposition: ProjectControlOperationRunDisposition.AlreadyRunning,
     };
+  }
+  let activityLease: LocalControllerActivityLease;
+  try {
+    activityLease = await acquireLocalControllerActivityLease({
+      controllerJobRootDir,
+      owner: `project-control-operation-run:${observed.operationId}`,
+    });
+  } catch (error) {
+    await claim.release();
+    throw error;
   }
 
   const leaseDurationMs = input.claimEnvironment?.leaseDurationMs ?? 5 * 60_000;
@@ -371,6 +407,7 @@ export async function runProjectControlOperationFile(input: {
       };
     }
 
+    await assertLocalControllerMaintenanceFenceOpen(controllerJobRootDir);
     const startedAt = operationNow(input.claimEnvironment).toISOString();
     const initial = await updateProjectControlOperation({
       operationFilePath: input.operationFilePath,
@@ -465,6 +502,7 @@ export async function runProjectControlOperationFile(input: {
     };
   } finally {
     clearInterval(heartbeat);
+    await releaseLocalControllerActivityLease(activityLease);
     await claim.release();
   }
 }

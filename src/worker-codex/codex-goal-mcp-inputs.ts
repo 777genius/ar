@@ -174,6 +174,13 @@ export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
   readonly confirmPreStartAdmission?: boolean;
   readonly confirmRepair?: boolean;
   readonly confirmLegacyOutputRepair?: boolean;
+  readonly oldLedgerRoot?: string;
+  readonly newLedgerRoot?: string;
+  readonly ledgerEpochCutoff?: string;
+  readonly expectedLedgerEpochPlanSha256?: string;
+  readonly confirmLedgerEpochMigration?: boolean;
+  readonly expectedStaleIntegrationPlanSha256?: string;
+  readonly confirmStaleIntegrationReconciliation?: boolean;
   readonly startWorker?: boolean;
   readonly workerRole?: string;
   readonly dependencyBootstrap?: string;

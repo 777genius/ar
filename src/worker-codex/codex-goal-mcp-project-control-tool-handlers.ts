@@ -7,9 +7,11 @@ import type {
 import {
   projectControlAdmissionSnapshotView,
   projectControlRepairLegacyOutputDebtView,
+  projectControlReconcileStaleIntegrationsView,
   projectControlRepairJobManifestView,
   projectControlUpdateControllerScopeView,
 } from "./codex-goal-mcp-project-control-admin";
+import { projectControlLedgerEpochMigrationView } from "./codex-goal-mcp-project-control-ledger-epoch";
 import {
   projectControlCreateWorktreeView,
   projectControlIntegrateCommitView,
@@ -70,6 +72,15 @@ export async function projectControlRepairLegacyOutputDebt(
   ));
 }
 
+export async function projectControlReconcileStaleIntegrations(
+  args: ProjectControlMcpArgs,
+) {
+  return mcpJson(await projectControlReconcileStaleIntegrationsView(
+    args,
+    projectControlAdminDeps(),
+  ));
+}
+
 export async function projectControlUpdateControllerScope(
   args: ProjectControlMcpArgs,
 ) {
@@ -80,6 +91,15 @@ export async function projectControlRepairJobManifest(
   args: ProjectControlMcpArgs & JobUpdateMcpArgs,
 ) {
   return mcpJson(await projectControlRepairJobManifestView(args, projectControlAdminDeps()));
+}
+
+export async function projectControlLedgerEpochMigration(
+  args: ProjectControlMcpArgs,
+) {
+  return mcpJson(await projectControlLedgerEpochMigrationView(
+    args,
+    projectControlAdminDeps(),
+  ));
 }
 
 function projectControllerDeps() {

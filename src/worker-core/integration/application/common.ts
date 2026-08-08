@@ -24,6 +24,16 @@ export type IntegrationUseCaseDeps = {
   readonly clock?: IntegrationClock;
 };
 
+export async function runIntegrationTransaction<T>(
+  deps: IntegrationUseCaseDeps,
+  attemptId: string,
+  effect: () => Promise<T>,
+): Promise<T> {
+  return deps.store.withActivityLease
+    ? await deps.store.withActivityLease(`integration-transaction:${attemptId}`, effect)
+    : await effect();
+}
+
 export function nowIso(clock?: IntegrationClock): string {
   return (clock ?? { now: () => new Date() }).now().toISOString();
 }
