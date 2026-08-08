@@ -14,6 +14,8 @@ import {
 } from "./codex-goal-legacy-attempt-quarantine";
 import { legacyAttemptQuarantineDispositionCounts } from
   "./codex-goal-legacy-attempt-quarantine-policy";
+import { legacyAttemptQuarantineActivePlanPath } from
+  "./codex-goal-legacy-attempt-quarantine-single-use";
 
 const MAX_ANCHORED_ARTIFACT_BYTES = 16 * 1024 * 1024;
 const MAX_ANCHORED_ROOT_BYTES = 96 * 1024 * 1024;
@@ -60,6 +62,7 @@ async function anchorForPlan(
     LegacyAttemptQuarantineReceipt;
   await validateLegacyAttemptQuarantineReceiptImmutable(plan, receipt);
   const paths = [
+    legacyAttemptQuarantineActivePlanPath(plan.controllerJobRootDir),
     join(root, "plans", `${planSha256}.json`),
     receiptPath,
     ...receipt.entries.map((entry) => entry.preservationPath),

@@ -16,16 +16,9 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  CheckRunStatus,
-  CheckWorkspaceIntegrityDisposition,
   IntegrationAttemptStatus,
   ReviewDecisionStatus,
-  SecretScanStatus,
-  markChecksRunning,
-  markCommitCreated,
-  markWorkerOutputApplied,
   openIntegrationAttempt,
-  recordCheckRuns,
   type IntegrationAttempt,
 } from "@vioxen/subscription-runtime/worker-core";
 import { LocalIntegrationAttemptStore } from
@@ -51,6 +44,12 @@ import {
   reviewedWorkerOutputIdentityPayload,
   reviewedWorkerOutputRoot,
 } from "../reviewed-worker-output";
+import {
+  commitCandidate,
+  failedCheckRun,
+  historicalAttemptAtStatus,
+  passedCheckRun,
+} from "./codex-goal-stale-integration-reconciliation-test-support";
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
@@ -75,9 +74,12 @@ afterEach(async () => {
 
 describe("stale integration reconciliation", () => {
   it("binds automatically reconcilable entries without claiming lifecycle mutation", async () => {
-    const fixture = await reconciliationFixture({ incorporated: false });
+    const fixture = await reconciliationFixture({
+      incorporated: false,
+      incidentEnvelope: true,
+    });
     const sourcePlan = await previewStaleIntegrationReconciliationPlan(fixture.scope);
-    expect(sourcePlan.entries[0]?.eligible).toBe(true);
+    expect(sourcePlan.entries.filter((entry) => entry.eligible)).toHaveLength(2);
     const plan = await previewLegacyAttemptQuarantinePlan({
       ...fixture.scope,
       sourceStaleIntegrationPlanSha256: sourcePlan.planSha256,
@@ -92,18 +94,24 @@ describe("stale integration reconciliation", () => {
         blockers: [],
       }),
     });
-    expect(plan.entries[0]).toMatchObject({
+    expect(plan.entries.find((entry) => entry.reconciliation.eligible)).toMatchObject({
       disposition: "reconciliation_evidence_bound",
     });
-    expect(plan.entries[0]).not.toHaveProperty("refusalReason");
+    expect(plan.entries.find((entry) => entry.reconciliation.eligible))
+      .not.toHaveProperty("refusalReason");
   });
 
   it("immutably quarantines an exact refused source plan without terminalizing attempts", async () => {
-    const fixture = await reconciliationFixture({ incorporated: false, attemptCount: 3 });
+    const fixture = await reconciliationFixture({
+      incorporated: false,
+      incidentEnvelope: true,
+    });
     await writeFile(join(fixture.targetPath, "legacy-dirty.txt"), "legacy\n");
     await writeFile(fixture.eventsPath, "{}\n");
     const sourcePlan = await previewStaleIntegrationReconciliationPlan(fixture.scope);
-    expect(sourcePlan.entries[0]).toMatchObject({
+    expect(sourcePlan.entries.find((entry) =>
+      entry.attemptId === fixture.attemptId
+    )).toMatchObject({
       eligible: false,
       refusalReason: "target_workspace_dirty",
     });
@@ -162,7 +170,9 @@ describe("stale integration reconciliation", () => {
       fixture.controllerJobRootDir,
     );
     expect([...active.attemptIds].sort()).toEqual([...fixture.attemptIds].sort());
-    expect(active.debt[0]).toMatchObject({
+    expect(active.debt.find((entry) =>
+      entry.attemptId === fixture.attemptId
+    )).toMatchObject({
       disposition: "unresolved_evidence_quarantine",
       refusalReason: "target_workspace_dirty",
     });
@@ -179,7 +189,10 @@ describe("stale integration reconciliation", () => {
   });
 
   it("invalidates quarantine when original attempt bytes drift", async () => {
-    const fixture = await reconciliationFixture({ incorporated: false });
+    const fixture = await reconciliationFixture({
+      incorporated: false,
+      incidentEnvelope: true,
+    });
     await writeFile(join(fixture.targetPath, "legacy-dirty.txt"), "legacy\n");
     const sourcePlan = await previewStaleIntegrationReconciliationPlan(fixture.scope);
     const captureProcessEvidence = async (custodyPaths: readonly string[]) => ({
@@ -214,7 +227,10 @@ describe("stale integration reconciliation", () => {
   });
 
   it("rejects attempts updated after the stable cutoff", async () => {
-    const fixture = await reconciliationFixture({ incorporated: false });
+    const fixture = await reconciliationFixture({
+      incorporated: false,
+      incidentEnvelope: true,
+    });
     const sourcePlan = await previewStaleIntegrationReconciliationPlan(fixture.scope);
     await expect(previewLegacyAttemptQuarantinePlan({
       ...fixture.scope,
@@ -233,7 +249,10 @@ describe("stale integration reconciliation", () => {
   });
 
   it("keeps epoch-anchored custody stable after controller and registry advance", async () => {
-    const fixture = await reconciliationFixture({ incorporated: false });
+    const fixture = await reconciliationFixture({
+      incorporated: false,
+      incidentEnvelope: true,
+    });
     await writeFile(join(fixture.targetPath, "legacy-dirty.txt"), "legacy\n");
     const sourcePlan = await previewStaleIntegrationReconciliationPlan(fixture.scope);
     const captureProcessEvidence = async (custodyPaths: readonly string[]) => ({
@@ -260,7 +279,7 @@ describe("stale integration reconciliation", () => {
     const anchor = await buildLiveLegacyAttemptQuarantineEpochAnchor(
       fixture.controllerJobRootDir,
     );
-    expect(anchor).toMatchObject({ attemptCount: 1 });
+    expect(anchor).toMatchObject({ attemptCount: 17 });
     await writeFile(fixture.controllerManifestPath, "{\"advanced\":true}\n");
     const newJob = codexGoalJobManifestPath({
       registryRootDir: fixture.scope.registryRootDir,
@@ -275,12 +294,40 @@ describe("stale integration reconciliation", () => {
       fixture.controllerJobRootDir,
       anchor!,
     )).resolves.toMatchObject({
-      debt: [expect.objectContaining({ attemptId: fixture.attemptId })],
+      debt: expect.arrayContaining([
+        expect.objectContaining({ attemptId: fixture.attemptId }),
+      ]),
     });
+    await expect(previewLegacyAttemptQuarantinePlan({
+      ...fixture.scope,
+      sourceStaleIntegrationPlanSha256: sourcePlan.planSha256,
+      cutoff: "2026-08-08T00:02:00.000Z",
+      now: () => new Date("2026-08-10T00:02:00.000Z"),
+      captureProcessEvidence,
+      epochQuarantinePlanSha256s: [anchor!.planSha256],
+    })).resolves.toMatchObject({ planSha256: plan.planSha256 });
+    await expect(applyLegacyAttemptQuarantine({
+      controllerJobRootDir: fixture.controllerJobRootDir,
+      expectedPlanSha256: plan.planSha256,
+      captureProcessEvidence,
+      resolveEpochQuarantinePlanSha256s: async () => [anchor!.planSha256],
+      runAfterControllerScopeRevalidation: async (_persisted, effect) => await effect(),
+    })).resolves.toMatchObject({ idempotentReplay: true });
+    await expect(previewLegacyAttemptQuarantinePlan({
+      ...fixture.scope,
+      sourceStaleIntegrationPlanSha256: sourcePlan.planSha256,
+      cutoff: "2026-08-07T00:02:00.000Z",
+      now: () => new Date("2026-08-10T00:02:00.000Z"),
+      captureProcessEvidence,
+      epochQuarantinePlanSha256s: [anchor!.planSha256],
+    })).rejects.toThrow("legacy_attempt_quarantine_single_use_conflict");
   });
 
   it("resumes after crash and detects process, event, and preservation conflicts", async () => {
-    const fixture = await reconciliationFixture({ incorporated: false, attemptCount: 3 });
+    const fixture = await reconciliationFixture({
+      incorporated: false,
+      incidentEnvelope: true,
+    });
     await writeFile(join(fixture.targetPath, "legacy-dirty.txt"), "legacy\n");
     await writeFile(fixture.eventsPath, "{}\n");
     const sourcePlan = await previewStaleIntegrationReconciliationPlan(fixture.scope);
@@ -723,68 +770,10 @@ describe("stale integration reconciliation", () => {
   });
 });
 
-function historicalAttemptAtStatus(
-  opened: IntegrationAttempt,
-  status: IntegrationAttemptStatus,
-): IntegrationAttempt {
-  if (status === IntegrationAttemptStatus.Opened) return opened;
-  let attempt = markWorkerOutputApplied(opened, {
-    changedFiles: opened.workerOutput.changedFiles,
-    now: "2026-08-08T00:00:01.000Z",
-  });
-  if (status === IntegrationAttemptStatus.Applied) return attempt;
-  attempt = markChecksRunning(attempt, "2026-08-08T00:00:02.000Z");
-  if (status === IntegrationAttemptStatus.ChecksRunning) return attempt;
-  attempt = recordCheckRuns(attempt, {
-    checkRuns: status === IntegrationAttemptStatus.ChecksFailed
-      ? [failedCheckRun()]
-      : [passedCheckRun()],
-    now: "2026-08-08T00:00:03.000Z",
-  });
-  if (status === IntegrationAttemptStatus.ChecksFailed ||
-    status === IntegrationAttemptStatus.ChecksPassed) return attempt;
-  if (status === IntegrationAttemptStatus.CommitCreated) {
-    return markCommitCreated(attempt, {
-      commitCandidate: commitCandidate(),
-      now: "2026-08-08T00:00:04.000Z",
-    });
-  }
-  throw new Error(`unsupported historical status ${status}`);
-}
-
-function passedCheckRun() {
-  return {
-    checkId: "focused",
-    command: ["npm", "test"],
-    status: CheckRunStatus.Passed,
-    startedAt: "2026-08-08T00:00:02.000Z",
-    completedAt: "2026-08-08T00:00:03.000Z",
-    exitCode: 0,
-    workspaceIntegrity: CheckWorkspaceIntegrityDisposition.Unchanged,
-  } as const;
-}
-
-function failedCheckRun() {
-  return {
-    ...passedCheckRun(),
-    status: CheckRunStatus.Failed,
-    exitCode: 1,
-  } as const;
-}
-
-function commitCandidate() {
-  return {
-    commitSha: "e".repeat(40),
-    message: "fix: historical candidate",
-    files: ["value.txt"],
-    secretScanStatus: SecretScanStatus.Passed,
-    createdAt: "2026-08-08T00:00:04.000Z",
-  } as const;
-}
-
 async function reconciliationFixture(input: {
   readonly incorporated: boolean;
   readonly attemptCount?: number;
+  readonly incidentEnvelope?: boolean;
 }) {
   const root = await mkdtemp(join(tmpdir(), "stale-integration-reconciliation-"));
   roots.push(root);
@@ -894,31 +883,61 @@ async function reconciliationFixture(input: {
     },
     reviewMarkerContent,
   });
-  const attemptIds = Array.from({ length: input.attemptCount ?? 1 }, (_, index) =>
+  const incidentEnvelope = input.incidentEnvelope === true;
+  const attemptCount = incidentEnvelope ? 17 : input.attemptCount ?? 1;
+  const attemptIds = Array.from({ length: attemptCount }, (_, index) =>
     `stale-attempt-${index + 1}`
   );
+  const targetPaths = [targetPath];
+  if (incidentEnvelope) {
+    for (let index = 1; index < attemptCount; index += 1) {
+      const path = join(root, `target-${index + 1}`);
+      await git(root, ["clone", remote, path]);
+      targetPaths.push(path);
+    }
+    for (let index = 0; index < 3; index += 1) {
+      await writeFile(join(targetPaths[index]!, "legacy-dirty.txt"), "legacy\n");
+    }
+    for (let index = 3; index < 10; index += 1) {
+      const path = targetPaths[index]!;
+      const partialRemote = join(root, `partial-remote-${index + 1}.git`);
+      await git(root, ["init", "--bare", partialRemote]);
+      await git(path, ["config", "user.name", "Test"]);
+      await git(path, ["config", "user.email", "test@example.com"]);
+      await writeFile(join(path, "value.txt"), "ambiguous\n");
+      await git(path, ["add", "value.txt"]);
+      await git(path, ["commit", "-m", "test: ambiguous target state"]);
+      await git(path, ["remote", "set-url", "origin", partialRemote]);
+      await git(path, ["push", "-u", "origin", "main"]);
+    }
+  }
+  const outsidePatchPath = join(root, "outside-reviewed-store.patch");
+  if (incidentEnvelope) await writeFile(outsidePatchPath, patchBytes);
   const store = new LocalIntegrationAttemptStore({
     rootDir: join(controllerJobRootDir, "project-integration"),
   });
-  for (const attemptId of attemptIds) await store.create(openIntegrationAttempt({
+  for (const [index, attemptId] of attemptIds.entries()) {
+    const outside = incidentEnvelope && index >= 10 && index < 15;
+    await store.create(openIntegrationAttempt({
     attemptId,
     projectId: "social-monitor",
     controllerJobId: "social-monitor-controller-v4",
     sourceWorkspacePath: worker,
-    targetWorkspacePath: targetPath,
+    targetWorkspacePath: targetPaths[index] ?? targetPath,
     targetBranch: "main",
     targetRemote: "origin",
     workerOutput: {
       workerJobId: "social-monitor-worker-v1",
       workspacePath: worker,
-      patchPath: reviewedSnapshot.patchPath,
+      patchPath: outside ? outsidePatchPath : reviewedSnapshot.patchPath,
       patchSha256: createHash("sha256").update(patchBytes).digest("hex"),
       baseCommit,
       changedFiles: ["value.txt"],
     },
     reviewDecision,
     now: "2026-08-08T00:00:00.000Z",
-  }));
+    }));
+  }
   return {
     root,
     attemptId: attemptIds[0]!,
@@ -953,7 +972,7 @@ async function reconciliationFixture(input: {
       controllerManifestSha256: createHash("sha256")
         .update(controllerManifestBytes).digest("hex"),
       controllerScopeEpochSha256: "b".repeat(64),
-      targetWorkspaceRoots: [targetPath, worker],
+      targetWorkspaceRoots: [...targetPaths, worker],
       allowedGitRemotes: ["origin"],
       allowedBranches: ["main"],
     },

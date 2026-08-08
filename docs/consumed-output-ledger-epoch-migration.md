@@ -77,6 +77,11 @@ evidence that cannot be admitted as valid.
    The cutoff must already be at least 24 hours old. Only the audited refusal
    classes `target_workspace_dirty`, `attempt_patch_partial_or_ambiguous` and
    `patch_outside_reviewed_store` are accepted; any other refusal fails closed.
+   The incident envelope is exactly 17 attempts: 2 reconciliation-evidence-bound
+   and 15 unresolved, with refusal counts 3/7/5 in that class order. Any count
+   or distribution drift fails before publication. The quarantine is single-use
+   for the ledger epoch: its immutable active-plan claim permits exact same-plan
+   replay only, and rejects every second plan before or after the epoch switch.
    The custody plan imports the complete source plan atomically; callers cannot
    supply attempt IDs, dispositions or free-form refusal reasons. It preserves
    attempt and event bytes, controller/scope/registry/workspace/process custody,

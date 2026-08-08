@@ -46,6 +46,8 @@ import {
   nonEmptyString,
   sha256String,
 } from "./codex-goal-stale-integration-reconciliation-validation";
+import { staleIntegrationReconciliationProofRefusal } from
+  "./codex-goal-stale-integration-refusal";
 
 const execFileAsync = promisify(execFile);
 
@@ -648,7 +650,7 @@ async function reconcileEntry(input: {
       refusalReason: "attempt_patch_partial_or_ambiguous" };
   } catch (error) {
     return { ...base, eligible: false,
-      refusalReason: `proof_unavailable:${error instanceof Error ? error.message : String(error)}` };
+      refusalReason: staleIntegrationReconciliationProofRefusal(error) };
   }
 }
 

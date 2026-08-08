@@ -9,6 +9,8 @@ import {
 } from "./application/project-control/codex-goal-legacy-attempt-quarantine";
 import { captureLegacyAttemptProcessEvidence } from
   "./application/project-control/codex-goal-legacy-attempt-process-evidence";
+import { resolveLegacyAttemptQuarantine } from
+  "./application/project-control/codex-goal-legacy-attempt-quarantine-resolution";
 import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
 import {
   staleReconciliationControllerFingerprint,
@@ -39,6 +41,7 @@ export async function projectControlLegacyAttemptQuarantineView(
     deps.captureProcessEvidence ?? captureLegacyAttemptProcessEvidence
   )({ custodyPaths });
   if (booleanValue(args.confirmLegacyAttemptQuarantine) !== true) {
+    const epochQuarantinePlanSha256s = await resolveQuarantinePlanSha256s(loaded);
     const plan = await previewLegacyAttemptQuarantinePlan({
       ...quarantineScope(loaded),
       sourceStaleIntegrationPlanSha256: requiredSha(
@@ -47,6 +50,7 @@ export async function projectControlLegacyAttemptQuarantineView(
       ),
       cutoff: requiredString(args.legacyAttemptQuarantineCutoff, "legacyAttemptQuarantineCutoff"),
       captureProcessEvidence: capture,
+      epochQuarantinePlanSha256s,
     });
     return {
       ok: false,
@@ -94,6 +98,10 @@ export async function projectControlLegacyAttemptQuarantineView(
       controllerJobRootDir: loaded.controller.jobRootDir,
       expectedPlanSha256: expected,
       captureProcessEvidence: capture,
+      resolveEpochQuarantinePlanSha256s: async () =>
+        await resolveQuarantinePlanSha256s(
+          await deps.loadProjectControlController(args),
+        ),
       runAfterControllerScopeRevalidation: async (persisted, effect) => {
         const locked = await deps.loadProjectControlController(args);
         assertLegacyAttemptQuarantinePlanOwned(persisted, locked);
@@ -109,6 +117,16 @@ export async function projectControlLegacyAttemptQuarantineView(
   } finally {
     await locks.release(controllerLease);
   }
+}
+
+async function resolveQuarantinePlanSha256s(
+  loaded: LoadedProjectControlController,
+): Promise<readonly string[]> {
+  const active = await resolveLegacyAttemptQuarantine({
+    controllerJobRootDir: loaded.controller.jobRootDir,
+    scope: loaded.scope,
+  });
+  return [...new Set(active.debt.map((item) => item.planSha256))].sort();
 }
 
 export function assertLegacyAttemptQuarantinePlanOwned(
