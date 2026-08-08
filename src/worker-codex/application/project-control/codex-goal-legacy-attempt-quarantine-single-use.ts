@@ -8,6 +8,49 @@ type LegacyAttemptQuarantineActivePlan = {
   readonly planSha256: string;
 };
 
+type LegacyAttemptReplayPlan = {
+  readonly controllerJobId: string;
+  readonly projectId: string;
+  readonly registryRootDir: string;
+  readonly controllerJobRootDir: string;
+  readonly sourceStaleIntegrationPlanSha256: string;
+  readonly cutoff: string;
+  readonly targetWorkspaceRoots: readonly string[];
+  readonly deniedRoots: readonly string[];
+  readonly allowedGitRemotes: readonly string[];
+  readonly allowedBranches: readonly string[];
+};
+
+export function normalizedLegacyAttemptQuarantineCutoff(value: string): string {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error("legacy_attempt_quarantine_source_plan_invalid");
+  }
+  return new Date(parsed).toISOString();
+}
+
+export function assertLegacyAttemptQuarantineReplayRequest(
+  plan: LegacyAttemptReplayPlan,
+  input: Omit<LegacyAttemptReplayPlan, "cutoff">,
+  cutoff: string,
+): void {
+  if (plan.controllerJobId !== input.controllerJobId ||
+    plan.projectId !== input.projectId ||
+    plan.registryRootDir !== resolve(input.registryRootDir) ||
+    plan.controllerJobRootDir !== resolve(input.controllerJobRootDir) ||
+    plan.sourceStaleIntegrationPlanSha256 !==
+      input.sourceStaleIntegrationPlanSha256 || plan.cutoff !== cutoff ||
+    JSON.stringify(plan.targetWorkspaceRoots) !==
+      JSON.stringify(exactPaths(input.targetWorkspaceRoots)) ||
+    JSON.stringify(plan.deniedRoots) !== JSON.stringify(exactPaths(input.deniedRoots)) ||
+    JSON.stringify(plan.allowedGitRemotes) !==
+      JSON.stringify(exactStrings(input.allowedGitRemotes)) ||
+    JSON.stringify(plan.allowedBranches) !==
+      JSON.stringify(exactStrings(input.allowedBranches))) {
+    throw new Error("legacy_attempt_quarantine_single_use_conflict");
+  }
+}
+
 export async function claimLegacyAttemptQuarantineSingleUse(input: {
   readonly controllerJobRootDir: string;
   readonly planSha256: string;
@@ -136,6 +179,14 @@ async function optionalJson<T>(path: string): Promise<T | undefined> {
 
 function validSha(value: string): boolean {
   return /^[a-f0-9]{64}$/.test(value);
+}
+
+function exactPaths(values: readonly string[]): readonly string[] {
+  return [...new Set(values.map((value) => resolve(value)))].sort();
+}
+
+function exactStrings(values: readonly string[]): readonly string[] {
+  return [...new Set(values)].sort();
 }
 
 function isNodeError(error: unknown, code: string): boolean {

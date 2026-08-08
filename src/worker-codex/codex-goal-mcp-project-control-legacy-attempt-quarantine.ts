@@ -2,10 +2,15 @@ import { resolve } from "node:path";
 import type { ProjectAccessScope } from
   "@vioxen/subscription-runtime/worker-core";
 import {
+  acquireLocalControllerMaintenanceFence,
+  releaseLocalControllerMaintenanceFence,
+} from "@vioxen/subscription-runtime/store-local-file";
+import {
   applyLegacyAttemptQuarantine,
   loadLegacyAttemptQuarantinePlan,
   previewLegacyAttemptQuarantinePlan,
   type LegacyAttemptQuarantinePlan,
+  type ActiveLegacyAttemptQuarantine,
 } from "./application/project-control/codex-goal-legacy-attempt-quarantine";
 import { captureLegacyAttemptProcessEvidence } from
   "./application/project-control/codex-goal-legacy-attempt-process-evidence";
@@ -30,6 +35,9 @@ type JsonObject = Readonly<Record<string, unknown>>;
 
 export type LegacyAttemptQuarantineDeps = CodexGoalMcpProjectControlAdminDeps & {
   readonly captureProcessEvidence?: typeof captureLegacyAttemptProcessEvidence;
+  readonly resolveActiveQuarantine?: (
+    loaded: LoadedProjectControlController,
+  ) => Promise<ActiveLegacyAttemptQuarantine>;
 };
 
 export async function projectControlLegacyAttemptQuarantineView(
@@ -41,7 +49,11 @@ export async function projectControlLegacyAttemptQuarantineView(
     deps.captureProcessEvidence ?? captureLegacyAttemptProcessEvidence
   )({ custodyPaths });
   if (booleanValue(args.confirmLegacyAttemptQuarantine) !== true) {
-    const epochQuarantinePlanSha256s = await resolveQuarantinePlanSha256s(loaded);
+    const epochQuarantinePlanSha256s = await resolveQuarantinePlanSha256s(
+      loaded,
+      deps,
+    );
+    const locks = projectControlWorkspaceLocks(loaded.registryRootDir);
     const plan = await previewLegacyAttemptQuarantinePlan({
       ...quarantineScope(loaded),
       sourceStaleIntegrationPlanSha256: requiredSha(
@@ -51,6 +63,14 @@ export async function projectControlLegacyAttemptQuarantineView(
       cutoff: requiredString(args.legacyAttemptQuarantineCutoff, "legacyAttemptQuarantineCutoff"),
       captureProcessEvidence: capture,
       epochQuarantinePlanSha256s,
+      runBeforePlanPublication: async (candidate, effect) =>
+        await withQuarantinePublicationGuard({
+          args,
+          deps,
+          locks,
+          candidate,
+          effect,
+        }),
     });
     return {
       ok: false,
@@ -79,7 +99,12 @@ export async function projectControlLegacyAttemptQuarantineView(
   ) || plan.cutoff !== normalizedCutoff(args.legacyAttemptQuarantineCutoff)) {
     throw new Error("legacy_attempt_quarantine_confirmation_binding_mismatch");
   }
-  assertLegacyAttemptQuarantinePlanOwned(plan, loaded);
+  const anchoredPlanSha256s = await resolveQuarantinePlanSha256s(loaded, deps);
+  assertLegacyAttemptQuarantinePlanReplayOwned(
+    plan,
+    loaded,
+    anchoredPlanSha256s,
+  );
   const locks = projectControlWorkspaceLocks(loaded.registryRootDir);
   const controllerLease = await locks.acquire({
     workspacePath: controllerScopeLockIdentity(
@@ -101,10 +126,19 @@ export async function projectControlLegacyAttemptQuarantineView(
       resolveEpochQuarantinePlanSha256s: async () =>
         await resolveQuarantinePlanSha256s(
           await deps.loadProjectControlController(args),
+          deps,
         ),
       runAfterControllerScopeRevalidation: async (persisted, effect) => {
         const locked = await deps.loadProjectControlController(args);
-        assertLegacyAttemptQuarantinePlanOwned(persisted, locked);
+        const lockedAnchoredPlanSha256s = await resolveQuarantinePlanSha256s(
+          locked,
+          deps,
+        );
+        assertLegacyAttemptQuarantinePlanReplayOwned(
+          persisted,
+          locked,
+          lockedAnchoredPlanSha256s,
+        );
         return await withWorkspaceLocks({
           locks,
           scope: locked.scope,
@@ -121,12 +155,69 @@ export async function projectControlLegacyAttemptQuarantineView(
 
 async function resolveQuarantinePlanSha256s(
   loaded: LoadedProjectControlController,
+  deps: LegacyAttemptQuarantineDeps,
 ): Promise<readonly string[]> {
-  const active = await resolveLegacyAttemptQuarantine({
-    controllerJobRootDir: loaded.controller.jobRootDir,
-    scope: loaded.scope,
-  });
+  const active = deps.resolveActiveQuarantine
+    ? await deps.resolveActiveQuarantine(loaded)
+    : await resolveLegacyAttemptQuarantine({
+        controllerJobRootDir: loaded.controller.jobRootDir,
+        scope: loaded.scope,
+      });
   return [...new Set(active.debt.map((item) => item.planSha256))].sort();
+}
+
+function assertLegacyAttemptQuarantinePlanReplayOwned(
+  plan: LegacyAttemptQuarantinePlan,
+  loaded: LoadedProjectControlController,
+  anchoredPlanSha256s: readonly string[],
+): void {
+  if (!anchoredPlanSha256s.includes(plan.planSha256)) {
+    assertLegacyAttemptQuarantinePlanOwned(plan, loaded);
+    return;
+  }
+  const scope = quarantineScope(loaded);
+  if (plan.controllerJobId !== scope.controllerJobId ||
+    plan.projectId !== scope.projectId ||
+    plan.registryRootDir !== scope.registryRootDir ||
+    plan.controllerJobRootDir !== scope.controllerJobRootDir ||
+    JSON.stringify(plan.targetWorkspaceRoots) !==
+      JSON.stringify(scope.targetWorkspaceRoots) ||
+    JSON.stringify(plan.deniedRoots) !== JSON.stringify(scope.deniedRoots) ||
+    JSON.stringify(plan.allowedGitRemotes) !==
+      JSON.stringify(scope.allowedGitRemotes) ||
+    JSON.stringify(plan.allowedBranches) !== JSON.stringify(scope.allowedBranches)) {
+    throw new Error("legacy_attempt_quarantine_controller_scope_drift");
+  }
+}
+
+async function withQuarantinePublicationGuard<T>(input: {
+  readonly args: ProjectControlMcpArgs;
+  readonly deps: LegacyAttemptQuarantineDeps;
+  readonly locks: ReturnType<typeof projectControlWorkspaceLocks>;
+  readonly candidate: LegacyAttemptQuarantinePlan;
+  readonly effect: () => Promise<T>;
+}): Promise<T> {
+  const lease = await input.locks.acquire({
+    workspacePath: controllerScopeLockIdentity(
+      input.candidate.registryRootDir,
+      input.candidate.controllerJobId,
+    ),
+    owner: `legacy-attempt-quarantine-plan:${input.candidate.planSha256}`,
+  });
+  let fence: Awaited<ReturnType<typeof acquireLocalControllerMaintenanceFence>> |
+    undefined;
+  try {
+    const locked = await input.deps.loadProjectControlController(input.args);
+    assertLegacyAttemptQuarantinePlanOwned(input.candidate, locked);
+    fence = await acquireLocalControllerMaintenanceFence({
+      controllerJobRootDir: locked.controller.jobRootDir,
+      owner: `legacy-attempt-quarantine-plan:${input.candidate.planSha256}`,
+    });
+    return await input.effect();
+  } finally {
+    if (fence) await releaseLocalControllerMaintenanceFence(fence);
+    await input.locks.release(lease);
+  }
 }
 
 export function assertLegacyAttemptQuarantinePlanOwned(

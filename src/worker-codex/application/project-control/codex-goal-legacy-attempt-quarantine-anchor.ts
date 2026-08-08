@@ -14,7 +14,10 @@ import {
 } from "./codex-goal-legacy-attempt-quarantine";
 import { legacyAttemptQuarantineDispositionCounts } from
   "./codex-goal-legacy-attempt-quarantine-policy";
-import { legacyAttemptQuarantineActivePlanPath } from
+import {
+  legacyAttemptQuarantineActivePlanPath,
+  resolveLegacyAttemptQuarantineSingleUsePlan,
+} from
   "./codex-goal-legacy-attempt-quarantine-single-use";
 
 const MAX_ANCHORED_ARTIFACT_BYTES = 16 * 1024 * 1024;
@@ -23,10 +26,19 @@ const MAX_ANCHORED_ROOT_BYTES = 96 * 1024 * 1024;
 export async function buildLiveLegacyAttemptQuarantineEpochAnchor(
   controllerJobRootDir: string,
 ): Promise<ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor | undefined> {
+  const claimedPlanSha256 = await resolveLegacyAttemptQuarantineSingleUsePlan({
+    controllerJobRootDir,
+    epochPlanSha256s: [],
+  });
   const active = await readActiveLegacyAttemptQuarantine(controllerJobRootDir);
-  if (active.debt.length === 0) return undefined;
+  if (active.debt.length === 0) {
+    if (claimedPlanSha256) {
+      throw new Error("legacy_attempt_quarantine_pending_claim_blocks_epoch");
+    }
+    return undefined;
+  }
   const planShas = [...new Set(active.debt.map((item) => item.planSha256))];
-  if (planShas.length !== 1) {
+  if (planShas.length !== 1 || claimedPlanSha256 !== planShas[0]) {
     throw new Error("legacy_attempt_quarantine_epoch_requires_single_plan");
   }
   return await anchorForPlan(controllerJobRootDir, planShas[0]!);
