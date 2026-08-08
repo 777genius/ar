@@ -44,6 +44,18 @@ import {
 } from "./codex-goal-mcp-values";
 import { assertNoLedgerEpochWriterProcesses } from
   "./application/project-control/codex-goal-ledger-epoch-process-guard";
+import {
+  loadLegacyAttemptQuarantinePlan,
+  readActiveLegacyAttemptQuarantine,
+  type ActiveLegacyAttemptQuarantine,
+} from
+  "./application/project-control/codex-goal-legacy-attempt-quarantine";
+import {
+  buildLiveLegacyAttemptQuarantineEpochAnchor,
+  readStableLegacyAttemptQuarantine,
+} from "./application/project-control/codex-goal-legacy-attempt-quarantine-anchor";
+import { captureLegacyAttemptProcessEvidence } from
+  "./application/project-control/codex-goal-legacy-attempt-process-evidence";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -104,6 +116,10 @@ export async function projectControlLedgerEpochMigrationView(
       scope: current.scope,
       deps: deps.admissionDeps,
     });
+    const legacyAttemptQuarantine =
+      await buildLiveLegacyAttemptQuarantineEpochAnchor(
+        current.controller.jobRootDir,
+      );
     return await buildConsumedOutputLedgerEpochPlan({
       controllerJobId: current.controller.jobId,
       projectId: current.scope.projectId,
@@ -124,6 +140,7 @@ export async function projectControlLedgerEpochMigrationView(
         .map((item) => item.subject),
       controllerManifestSha256: manifestFingerprint(current.controller),
       controllerStableScopeSha256: stableControllerFingerprint(current.controller),
+      ...(legacyAttemptQuarantine ? { legacyAttemptQuarantine } : {}),
     });
   };
   const persistedPlan = await resolvePendingConsumedOutputLedgerEpochPlan(newRoot, true);
@@ -157,6 +174,7 @@ export async function projectControlLedgerEpochMigrationView(
       totalQuarantinedCount:
         plan.inheritedQuarantinedCount + plan.quarantinedCount,
       planSha256: plan.planSha256,
+      legacyAttemptQuarantine: plan.legacyAttemptQuarantine,
     };
   }
   const expectedPlanSha256 = stringValue(args.expectedLedgerEpochPlanSha256);
@@ -218,7 +236,21 @@ export async function projectControlLedgerEpochMigrationView(
       controllerJobRootDir: locked.controller.jobRootDir,
       owner: `ledger-epoch:${locked.controller.jobId}:${plan.planSha256}`,
     });
-    await assertControllerQuiescent(locked.controller.jobRootDir);
+    const lockedActiveRoot = await canonicalConsumedOutputLedgerRoot(
+      (locked.scope.consumedOutputLedgerRoots ?? [])[0]!,
+      true,
+    );
+    const lockedQuarantine = lockedActiveRoot === newRoot &&
+        lockedPersistedPlan?.legacyAttemptQuarantine
+      ? await readStableLegacyAttemptQuarantine(
+          locked.controller.jobRootDir,
+          lockedPersistedPlan.legacyAttemptQuarantine,
+        )
+      : await readActiveLegacyAttemptQuarantine(locked.controller.jobRootDir);
+    await assertControllerQuiescent(
+      locked.controller.jobRootDir,
+      lockedQuarantine,
+    );
     await (deps.assertNoLegacyWriterProcesses
       ? deps.assertNoLegacyWriterProcesses()
       : assertNoLedgerEpochWriterProcesses({
@@ -383,18 +415,41 @@ async function admissionSummary(input: {
   };
 }
 
-async function assertControllerQuiescent(jobRootDir: string): Promise<void> {
+async function assertControllerQuiescent(
+  jobRootDir: string,
+  quarantine: ActiveLegacyAttemptQuarantine,
+): Promise<void> {
   await assertJsonRecordsTerminal(
     join(jobRootDir, "project-control-operations"),
     "operation.json",
     new Set(["completed", "failed"]),
     "ledger_epoch_project_control_operation_in_flight",
   );
+  if (quarantine.debt.length > 0) {
+    const plans = await Promise.all([...new Set(quarantine.debt.map((item) =>
+      item.planSha256
+    ))].map(async (planSha256) => await loadLegacyAttemptQuarantinePlan({
+      controllerJobRootDir: jobRootDir,
+      expectedPlanSha256: planSha256,
+    })));
+    const custodyPaths = [...new Set(plans.flatMap((plan) =>
+      plan.entries.flatMap((entry) => [
+        entry.sourceWorkspace.declaredPath,
+        entry.targetWorkspace.declaredPath,
+        entry.workerLifecycle.workerJobRootDir,
+      ])
+    ))].sort();
+    const evidence = await captureLegacyAttemptProcessEvidence({ custodyPaths });
+    if (evidence.blockers.length > 0) {
+      throw new Error("ledger_epoch_quarantined_attempt_process_active");
+    }
+  }
   await assertJsonRecordsTerminal(
     join(jobRootDir, "project-integration", "integration-attempts"),
     "attempt.json",
     new Set(["pushed", "rejected"]),
     "ledger_epoch_integration_attempt_in_flight",
+    quarantine.attemptIds,
   );
 }
 
@@ -403,6 +458,7 @@ async function assertJsonRecordsTerminal(
   fileName: string,
   terminal: ReadonlySet<string>,
   errorCode: string,
+  quarantinedIds: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   let entries;
   try {
@@ -416,7 +472,9 @@ async function assertJsonRecordsTerminal(
     const value: unknown = JSON.parse(
       await readFile(join(root, entry.name, fileName), "utf8"),
     );
-    if (!isRecord(value) || typeof value.status !== "string" || !terminal.has(value.status)) {
+    if (!isRecord(value) || typeof value.status !== "string" ||
+      (!terminal.has(value.status) &&
+        (typeof value.attemptId !== "string" || !quarantinedIds.has(value.attemptId)))) {
       throw new Error(errorCode);
     }
   }

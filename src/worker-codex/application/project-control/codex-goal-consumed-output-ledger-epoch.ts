@@ -18,6 +18,7 @@ import {
   type ConsumedOutputLedgerEpochAdmissionSummary,
   type ConsumedOutputLedgerEpochFilePlan,
   type ConsumedOutputLedgerEpochOrphanWorkspaceBinding,
+  type ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor,
   type ConsumedOutputLedgerEpochPlan,
   type ConsumedOutputLedgerEpochReceipt,
   type ConsumedOutputLedgerEpochState,
@@ -85,6 +86,8 @@ export type BuildConsumedOutputLedgerEpochPlanInput = {
   readonly orphanWorkspacePaths?: readonly string[];
   readonly controllerManifestSha256: string;
   readonly controllerStableScopeSha256: string;
+  readonly legacyAttemptQuarantine?:
+    ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor;
 };
 export async function buildConsumedOutputLedgerEpochPlan(
   input: BuildConsumedOutputLedgerEpochPlanInput,
@@ -238,6 +241,9 @@ export async function buildConsumedOutputLedgerEpochPlan(
     deniedRoots,
     evidenceBindings,
     orphanWorkspaceBindings,
+    ...(input.legacyAttemptQuarantine
+      ? { legacyAttemptQuarantine: input.legacyAttemptQuarantine }
+      : {}),
     files: filesInOrder,
   };
   const plan = { ...unsigned, planSha256: sha256Json(unsigned) };
@@ -451,6 +457,9 @@ async function resumeConsumedOutputLedgerEpoch(
     inheritedQuarantinedCount: input.plan.inheritedQuarantinedCount,
     deniedRoots: input.plan.deniedRoots,
     orphanWorkspaceBindings: input.plan.orphanWorkspaceBindings,
+    ...(input.plan.legacyAttemptQuarantine
+      ? { legacyAttemptQuarantine: input.plan.legacyAttemptQuarantine }
+      : {}),
     planSha256: input.plan.planSha256,
     createdAt,
     activatedAt: createdAt,

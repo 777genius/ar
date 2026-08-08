@@ -16,16 +16,9 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  CheckRunStatus,
-  CheckWorkspaceIntegrityDisposition,
   IntegrationAttemptStatus,
   ReviewDecisionStatus,
-  SecretScanStatus,
-  markChecksRunning,
-  markCommitCreated,
-  markWorkerOutputApplied,
   openIntegrationAttempt,
-  recordCheckRuns,
   type IntegrationAttempt,
 } from "@vioxen/subscription-runtime/worker-core";
 import { LocalIntegrationAttemptStore } from
@@ -35,11 +28,28 @@ import {
   previewStaleIntegrationReconciliationPlan,
 } from "../application/project-control/codex-goal-stale-integration-reconciliation";
 import {
+  applyLegacyAttemptQuarantine,
+  previewLegacyAttemptQuarantinePlan,
+  readActiveLegacyAttemptQuarantine,
+} from "../application/project-control/codex-goal-legacy-attempt-quarantine";
+import { codexGoalJobManifestPath } from "../codex-goal-jobs";
+import {
+  buildLiveLegacyAttemptQuarantineEpochAnchor,
+  readStableLegacyAttemptQuarantine,
+} from
+  "../application/project-control/codex-goal-legacy-attempt-quarantine-anchor";
+import {
   LocalReviewedWorkerOutputStore,
   reviewedWorkerOutputFormat,
   reviewedWorkerOutputIdentityPayload,
   reviewedWorkerOutputRoot,
 } from "../reviewed-worker-output";
+import {
+  commitCandidate,
+  failedCheckRun,
+  historicalAttemptAtStatus,
+  passedCheckRun,
+} from "./codex-goal-stale-integration-reconciliation-test-support";
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
@@ -63,6 +73,319 @@ afterEach(async () => {
 });
 
 describe("stale integration reconciliation", () => {
+  it("binds automatically reconcilable entries without claiming lifecycle mutation", async () => {
+    const fixture = await reconciliationFixture({
+      incorporated: false,
+      incidentEnvelope: true,
+    });
+    const sourcePlan = await previewStaleIntegrationReconciliationPlan(fixture.scope);
+    expect(sourcePlan.entries.filter((entry) => entry.eligible)).toHaveLength(2);
+    const plan = await previewLegacyAttemptQuarantinePlan({
+      ...fixture.scope,
+      sourceStaleIntegrationPlanSha256: sourcePlan.planSha256,
+      cutoff: "2026-08-08T00:02:00.000Z",
+      now: () => new Date("2026-08-10T00:02:00.000Z"),
+      captureProcessEvidence: async (custodyPaths) => ({
+        schemaVersion: 1,
+        observedAt: "2026-08-08T00:01:00.000Z",
+        inspectedPidCount: 0,
+        inventorySha256: "b".repeat(64),
+        custodyPaths,
+        blockers: [],
+      }),
+    });
+    expect(plan.entries.find((entry) => entry.reconciliation.eligible)).toMatchObject({
+      disposition: "reconciliation_evidence_bound",
+    });
+    expect(plan.entries.find((entry) => entry.reconciliation.eligible))
+      .not.toHaveProperty("refusalReason");
+  });
+
+  it("immutably quarantines an exact refused source plan without terminalizing attempts", async () => {
+    const fixture = await reconciliationFixture({
+      incorporated: false,
+      incidentEnvelope: true,
+    });
+    await writeFile(join(fixture.targetPath, "legacy-dirty.txt"), "legacy\n");
+    await writeFile(fixture.eventsPath, "{}\n");
+    const sourcePlan = await previewStaleIntegrationReconciliationPlan(fixture.scope);
+    expect(sourcePlan.entries.find((entry) =>
+      entry.attemptId === fixture.attemptId
+    )).toMatchObject({
+      eligible: false,
+      refusalReason: "target_workspace_dirty",
+    });
+    const before = await readFile(fixture.attemptPath);
+    const captureProcessEvidence = async (custodyPaths: readonly string[]) => ({
+      schemaVersion: 1 as const,
+      observedAt: "2026-08-08T00:01:00.000Z",
+      inspectedPidCount: 3,
+      inventorySha256: "c".repeat(64),
+      custodyPaths,
+      blockers: [],
+    });
+    const plan = await previewLegacyAttemptQuarantinePlan({
+      ...fixture.scope,
+      sourceStaleIntegrationPlanSha256: sourcePlan.planSha256,
+      cutoff: "2026-08-08T00:02:00.000Z",
+      now: () => new Date("2026-08-10T00:02:00.000Z"),
+      captureProcessEvidence,
+    });
+    expect(plan.entries.find((entry) => entry.attemptId === fixture.attemptId))
+      .toMatchObject({
+      disposition: "unresolved_evidence_quarantine",
+      rejectOutcomeNotClaimed: true,
+      attemptSha256: createHash("sha256").update(before).digest("hex"),
+      targetGit: {
+        state: "observed",
+        remoteName: "origin",
+      },
+      workerLifecycle: {
+        state: "terminal_result",
+        terminalResultClaimed: true,
+        resultStatus: "done",
+      },
+      });
+    const receipt = await applyLegacyAttemptQuarantine({
+      controllerJobRootDir: fixture.controllerJobRootDir,
+      expectedPlanSha256: plan.planSha256,
+      captureProcessEvidence,
+      runAfterControllerScopeRevalidation: async (_persisted, effect) => await effect(),
+    });
+    expect(receipt).toMatchObject({
+      status: "active_quarantine",
+      sourceMutation: false,
+      lifecycleTerminalized: false,
+      rollbackClaimed: false,
+      ledgerConsumptionClaimed: false,
+      rejectOutcomeNotClaimed: true,
+      terminalForLedgerEpochOnly: true,
+      idempotentReplay: false,
+    });
+    expect(await readFile(fixture.attemptPath)).toEqual(before);
+    expect((await fixture.store.get(fixture.attemptId))?.status).toBe(
+      IntegrationAttemptStatus.Opened,
+    );
+    const active = await readActiveLegacyAttemptQuarantine(
+      fixture.controllerJobRootDir,
+    );
+    expect([...active.attemptIds].sort()).toEqual([...fixture.attemptIds].sort());
+    expect(active.debt.find((entry) =>
+      entry.attemptId === fixture.attemptId
+    )).toMatchObject({
+      disposition: "unresolved_evidence_quarantine",
+      refusalReason: "target_workspace_dirty",
+    });
+    await expect(applyLegacyAttemptQuarantine({
+      controllerJobRootDir: fixture.controllerJobRootDir,
+      expectedPlanSha256: plan.planSha256,
+      captureProcessEvidence,
+      runAfterControllerScopeRevalidation: async (_persisted, effect) => await effect(),
+    })).resolves.toMatchObject({ idempotentReplay: true });
+    await writeFile(join(fixture.targetPath, "legacy-dirty-2.txt"), "changed\n");
+    await expect(readActiveLegacyAttemptQuarantine(
+      fixture.controllerJobRootDir,
+    )).rejects.toThrow("legacy_attempt_quarantine_binding_drift");
+  });
+
+  it("invalidates quarantine when original attempt bytes drift", async () => {
+    const fixture = await reconciliationFixture({
+      incorporated: false,
+      incidentEnvelope: true,
+    });
+    await writeFile(join(fixture.targetPath, "legacy-dirty.txt"), "legacy\n");
+    const sourcePlan = await previewStaleIntegrationReconciliationPlan(fixture.scope);
+    const captureProcessEvidence = async (custodyPaths: readonly string[]) => ({
+      schemaVersion: 1 as const,
+      observedAt: "2026-08-08T00:01:00.000Z",
+      inspectedPidCount: 1,
+      inventorySha256: "d".repeat(64),
+      custodyPaths,
+      blockers: [],
+    });
+    const plan = await previewLegacyAttemptQuarantinePlan({
+      ...fixture.scope,
+      sourceStaleIntegrationPlanSha256: sourcePlan.planSha256,
+      cutoff: "2026-08-08T00:02:00.000Z",
+      now: () => new Date("2026-08-10T00:02:00.000Z"),
+      captureProcessEvidence,
+    });
+    await applyLegacyAttemptQuarantine({
+      controllerJobRootDir: fixture.controllerJobRootDir,
+      expectedPlanSha256: plan.planSha256,
+      captureProcessEvidence,
+      runAfterControllerScopeRevalidation: async (_persisted, effect) => await effect(),
+    });
+    const attempt = JSON.parse(await readFile(fixture.attemptPath, "utf8"));
+    await writeFile(fixture.attemptPath, `${JSON.stringify({
+      ...attempt,
+      externallyChanged: true,
+    }, null, 2)}\n`);
+    await expect(readActiveLegacyAttemptQuarantine(
+      fixture.controllerJobRootDir,
+    )).rejects.toThrow("legacy_attempt_quarantine_source_plan_drift");
+  });
+
+  it("rejects attempts updated after the stable cutoff", async () => {
+    const fixture = await reconciliationFixture({
+      incorporated: false,
+      incidentEnvelope: true,
+    });
+    const sourcePlan = await previewStaleIntegrationReconciliationPlan(fixture.scope);
+    await expect(previewLegacyAttemptQuarantinePlan({
+      ...fixture.scope,
+      sourceStaleIntegrationPlanSha256: sourcePlan.planSha256,
+      cutoff: "2026-08-07T00:00:00.000Z",
+      now: () => new Date("2026-08-10T00:00:00.000Z"),
+      captureProcessEvidence: async (custodyPaths) => ({
+        schemaVersion: 1,
+        observedAt: "2026-08-10T00:00:00.000Z",
+        inspectedPidCount: 0,
+        inventorySha256: "e".repeat(64),
+        custodyPaths,
+        blockers: [],
+      }),
+    })).rejects.toThrow("legacy_attempt_quarantine_attempt_newer_than_cutoff");
+  });
+
+  it("keeps epoch-anchored custody stable after controller and registry advance", async () => {
+    const fixture = await reconciliationFixture({
+      incorporated: false,
+      incidentEnvelope: true,
+    });
+    await writeFile(join(fixture.targetPath, "legacy-dirty.txt"), "legacy\n");
+    const sourcePlan = await previewStaleIntegrationReconciliationPlan(fixture.scope);
+    const captureProcessEvidence = async (custodyPaths: readonly string[]) => ({
+      schemaVersion: 1 as const,
+      observedAt: "2026-08-10T00:00:00.000Z",
+      inspectedPidCount: 0,
+      inventorySha256: "f".repeat(64),
+      custodyPaths,
+      blockers: [],
+    });
+    const plan = await previewLegacyAttemptQuarantinePlan({
+      ...fixture.scope,
+      sourceStaleIntegrationPlanSha256: sourcePlan.planSha256,
+      cutoff: "2026-08-08T00:02:00.000Z",
+      now: () => new Date("2026-08-10T00:02:00.000Z"),
+      captureProcessEvidence,
+    });
+    await applyLegacyAttemptQuarantine({
+      controllerJobRootDir: fixture.controllerJobRootDir,
+      expectedPlanSha256: plan.planSha256,
+      captureProcessEvidence,
+      runAfterControllerScopeRevalidation: async (_persisted, effect) => await effect(),
+    });
+    const anchor = await buildLiveLegacyAttemptQuarantineEpochAnchor(
+      fixture.controllerJobRootDir,
+    );
+    expect(anchor).toMatchObject({ attemptCount: 17 });
+    await writeFile(fixture.controllerManifestPath, "{\"advanced\":true}\n");
+    const newJob = codexGoalJobManifestPath({
+      registryRootDir: fixture.scope.registryRootDir,
+      jobId: "social-monitor-new-v4",
+    });
+    await mkdir(join(newJob, ".."), { recursive: true });
+    await writeFile(newJob, "{\"new\":true}\n");
+    await expect(readActiveLegacyAttemptQuarantine(
+      fixture.controllerJobRootDir,
+    )).rejects.toThrow();
+    await expect(readStableLegacyAttemptQuarantine(
+      fixture.controllerJobRootDir,
+      anchor!,
+    )).resolves.toMatchObject({
+      debt: expect.arrayContaining([
+        expect.objectContaining({ attemptId: fixture.attemptId }),
+      ]),
+    });
+    await expect(previewLegacyAttemptQuarantinePlan({
+      ...fixture.scope,
+      sourceStaleIntegrationPlanSha256: sourcePlan.planSha256,
+      cutoff: "2026-08-08T00:02:00.000Z",
+      now: () => new Date("2026-08-10T00:02:00.000Z"),
+      captureProcessEvidence,
+      epochQuarantinePlanSha256s: [anchor!.planSha256],
+    })).resolves.toMatchObject({ planSha256: plan.planSha256 });
+    await expect(applyLegacyAttemptQuarantine({
+      controllerJobRootDir: fixture.controllerJobRootDir,
+      expectedPlanSha256: plan.planSha256,
+      captureProcessEvidence,
+      resolveEpochQuarantinePlanSha256s: async () => [anchor!.planSha256],
+      runAfterControllerScopeRevalidation: async (_persisted, effect) => await effect(),
+    })).resolves.toMatchObject({ idempotentReplay: true });
+    await expect(previewLegacyAttemptQuarantinePlan({
+      ...fixture.scope,
+      sourceStaleIntegrationPlanSha256: sourcePlan.planSha256,
+      cutoff: "2026-08-07T00:02:00.000Z",
+      now: () => new Date("2026-08-10T00:02:00.000Z"),
+      captureProcessEvidence,
+      epochQuarantinePlanSha256s: [anchor!.planSha256],
+    })).rejects.toThrow("legacy_attempt_quarantine_single_use_conflict");
+  });
+
+  it("resumes after crash and detects process, event, and preservation conflicts", async () => {
+    const fixture = await reconciliationFixture({
+      incorporated: false,
+      incidentEnvelope: true,
+    });
+    await writeFile(join(fixture.targetPath, "legacy-dirty.txt"), "legacy\n");
+    await writeFile(fixture.eventsPath, "{}\n");
+    const sourcePlan = await previewStaleIntegrationReconciliationPlan(fixture.scope);
+    const evidence = async (custodyPaths: readonly string[]) => ({
+      schemaVersion: 1 as const,
+      observedAt: "2026-08-10T00:00:00.000Z",
+      inspectedPidCount: 1,
+      inventorySha256: "9".repeat(64),
+      custodyPaths,
+      blockers: [],
+    });
+    await expect(previewLegacyAttemptQuarantinePlan({
+      ...fixture.scope,
+      sourceStaleIntegrationPlanSha256: sourcePlan.planSha256,
+      cutoff: "2026-08-08T00:02:00.000Z",
+      now: () => new Date("2026-08-10T00:02:00.000Z"),
+      captureProcessEvidence: async (custodyPaths) => ({
+        ...(await evidence(custodyPaths)),
+        blockers: [{
+          pid: 42,
+          startTime: "1",
+          argvSha256: "8".repeat(64),
+          cwd: fixture.targetPath,
+        }],
+      }),
+    })).rejects.toThrow("legacy_attempt_quarantine_processes_active");
+    const plan = await previewLegacyAttemptQuarantinePlan({
+      ...fixture.scope,
+      sourceStaleIntegrationPlanSha256: sourcePlan.planSha256,
+      cutoff: "2026-08-08T00:02:00.000Z",
+      now: () => new Date("2026-08-10T00:02:00.000Z"),
+      captureProcessEvidence: evidence,
+    });
+    const apply = (crashAfterCompletedCount?: number) =>
+      applyLegacyAttemptQuarantine({
+        controllerJobRootDir: fixture.controllerJobRootDir,
+        expectedPlanSha256: plan.planSha256,
+        captureProcessEvidence: evidence,
+        runAfterControllerScopeRevalidation: async (_persisted, effect) => await effect(),
+        ...(crashAfterCompletedCount ? { crashAfterCompletedCount } : {}),
+      });
+    await expect(apply(1)).rejects.toThrow(
+      "legacy_attempt_quarantine_simulated_crash",
+    );
+    const receipt = await apply();
+    expect(receipt.idempotentReplay).toBe(false);
+    const eventsBefore = await readFile(fixture.eventsPath);
+    await writeFile(fixture.eventsPath, Buffer.concat([eventsBefore, Buffer.from("{}\n")]));
+    await expect(readActiveLegacyAttemptQuarantine(
+      fixture.controllerJobRootDir,
+    )).rejects.toThrow("legacy_attempt_quarantine_binding_drift");
+    await writeFile(fixture.eventsPath, eventsBefore);
+    await writeFile(receipt.entries[0]!.preservationPath, "{}\n");
+    await expect(readActiveLegacyAttemptQuarantine(
+      fixture.controllerJobRootDir,
+    )).rejects.toThrow("legacy_attempt_quarantine_preservation_drift");
+  });
+
   it.each([
     [false, "patch_absent"],
     [true, "patch_incorporated"],
@@ -447,68 +770,10 @@ describe("stale integration reconciliation", () => {
   });
 });
 
-function historicalAttemptAtStatus(
-  opened: IntegrationAttempt,
-  status: IntegrationAttemptStatus,
-): IntegrationAttempt {
-  if (status === IntegrationAttemptStatus.Opened) return opened;
-  let attempt = markWorkerOutputApplied(opened, {
-    changedFiles: opened.workerOutput.changedFiles,
-    now: "2026-08-08T00:00:01.000Z",
-  });
-  if (status === IntegrationAttemptStatus.Applied) return attempt;
-  attempt = markChecksRunning(attempt, "2026-08-08T00:00:02.000Z");
-  if (status === IntegrationAttemptStatus.ChecksRunning) return attempt;
-  attempt = recordCheckRuns(attempt, {
-    checkRuns: status === IntegrationAttemptStatus.ChecksFailed
-      ? [failedCheckRun()]
-      : [passedCheckRun()],
-    now: "2026-08-08T00:00:03.000Z",
-  });
-  if (status === IntegrationAttemptStatus.ChecksFailed ||
-    status === IntegrationAttemptStatus.ChecksPassed) return attempt;
-  if (status === IntegrationAttemptStatus.CommitCreated) {
-    return markCommitCreated(attempt, {
-      commitCandidate: commitCandidate(),
-      now: "2026-08-08T00:00:04.000Z",
-    });
-  }
-  throw new Error(`unsupported historical status ${status}`);
-}
-
-function passedCheckRun() {
-  return {
-    checkId: "focused",
-    command: ["npm", "test"],
-    status: CheckRunStatus.Passed,
-    startedAt: "2026-08-08T00:00:02.000Z",
-    completedAt: "2026-08-08T00:00:03.000Z",
-    exitCode: 0,
-    workspaceIntegrity: CheckWorkspaceIntegrityDisposition.Unchanged,
-  } as const;
-}
-
-function failedCheckRun() {
-  return {
-    ...passedCheckRun(),
-    status: CheckRunStatus.Failed,
-    exitCode: 1,
-  } as const;
-}
-
-function commitCandidate() {
-  return {
-    commitSha: "e".repeat(40),
-    message: "fix: historical candidate",
-    files: ["value.txt"],
-    secretScanStatus: SecretScanStatus.Passed,
-    createdAt: "2026-08-08T00:00:04.000Z",
-  } as const;
-}
-
 async function reconciliationFixture(input: {
   readonly incorporated: boolean;
   readonly attemptCount?: number;
+  readonly incidentEnvelope?: boolean;
 }) {
   const root = await mkdtemp(join(tmpdir(), "stale-integration-reconciliation-"));
   roots.push(root);
@@ -518,6 +783,34 @@ async function reconciliationFixture(input: {
   const targetPath = join(root, "target");
   const controllerJobRootDir = join(root, "controller");
   const registryRootDir = join(root, "registry");
+  const controllerManifestPath = codexGoalJobManifestPath({
+    registryRootDir,
+    jobId: "social-monitor-controller-v4",
+  });
+  await mkdir(join(controllerManifestPath, ".."), { recursive: true });
+  const controllerManifestBytes = Buffer.from("{\"fixture\":true}\n");
+  await writeFile(controllerManifestPath, controllerManifestBytes);
+  const workerManifestPath = codexGoalJobManifestPath({
+    registryRootDir,
+    jobId: "social-monitor-worker-v1",
+  });
+  const workerJobRoot = join(root, "worker-job");
+  const workerResultPath = join(workerJobRoot, "worker-task.latest-result.json");
+  await mkdir(join(workerManifestPath, ".."), { recursive: true });
+  await mkdir(workerJobRoot, { recursive: true });
+  await writeFile(workerResultPath, `${JSON.stringify({ status: "done" })}\n`);
+  await writeFile(workerManifestPath, `${JSON.stringify({
+    schemaVersion: 1,
+    jobId: "social-monitor-worker-v1",
+    createdAt: "2026-08-01T00:00:00.000Z",
+    updatedAt: "2026-08-01T01:00:00.000Z",
+    jobRootDir: workerJobRoot,
+    workspacePath: worker,
+    promptPath: join(workerJobRoot, "prompt.md"),
+    taskId: "worker-task",
+    accounts: ["account-test"],
+    outputPath: workerResultPath,
+  }, null, 2)}\n`);
   await git(root, ["init", "--bare", remote]);
   await mkdir(seed, { recursive: true });
   await git(seed, ["init", "-b", "main"]);
@@ -590,36 +883,67 @@ async function reconciliationFixture(input: {
     },
     reviewMarkerContent,
   });
-  const attemptIds = Array.from({ length: input.attemptCount ?? 1 }, (_, index) =>
+  const incidentEnvelope = input.incidentEnvelope === true;
+  const attemptCount = incidentEnvelope ? 17 : input.attemptCount ?? 1;
+  const attemptIds = Array.from({ length: attemptCount }, (_, index) =>
     `stale-attempt-${index + 1}`
   );
+  const targetPaths = [targetPath];
+  if (incidentEnvelope) {
+    for (let index = 1; index < attemptCount; index += 1) {
+      const path = join(root, `target-${index + 1}`);
+      await git(root, ["clone", remote, path]);
+      targetPaths.push(path);
+    }
+    for (let index = 0; index < 3; index += 1) {
+      await writeFile(join(targetPaths[index]!, "legacy-dirty.txt"), "legacy\n");
+    }
+    for (let index = 3; index < 10; index += 1) {
+      const path = targetPaths[index]!;
+      const partialRemote = join(root, `partial-remote-${index + 1}.git`);
+      await git(root, ["init", "--bare", partialRemote]);
+      await git(path, ["config", "user.name", "Test"]);
+      await git(path, ["config", "user.email", "test@example.com"]);
+      await writeFile(join(path, "value.txt"), "ambiguous\n");
+      await git(path, ["add", "value.txt"]);
+      await git(path, ["commit", "-m", "test: ambiguous target state"]);
+      await git(path, ["remote", "set-url", "origin", partialRemote]);
+      await git(path, ["push", "-u", "origin", "main"]);
+    }
+  }
+  const outsidePatchPath = join(root, "outside-reviewed-store.patch");
+  if (incidentEnvelope) await writeFile(outsidePatchPath, patchBytes);
   const store = new LocalIntegrationAttemptStore({
     rootDir: join(controllerJobRootDir, "project-integration"),
   });
-  for (const attemptId of attemptIds) await store.create(openIntegrationAttempt({
+  for (const [index, attemptId] of attemptIds.entries()) {
+    const outside = incidentEnvelope && index >= 10 && index < 15;
+    await store.create(openIntegrationAttempt({
     attemptId,
     projectId: "social-monitor",
     controllerJobId: "social-monitor-controller-v4",
     sourceWorkspacePath: worker,
-    targetWorkspacePath: targetPath,
+    targetWorkspacePath: targetPaths[index] ?? targetPath,
     targetBranch: "main",
     targetRemote: "origin",
     workerOutput: {
       workerJobId: "social-monitor-worker-v1",
       workspacePath: worker,
-      patchPath: reviewedSnapshot.patchPath,
+      patchPath: outside ? outsidePatchPath : reviewedSnapshot.patchPath,
       patchSha256: createHash("sha256").update(patchBytes).digest("hex"),
       baseCommit,
       changedFiles: ["value.txt"],
     },
     reviewDecision,
     now: "2026-08-08T00:00:00.000Z",
-  }));
+    }));
+  }
   return {
     root,
     attemptId: attemptIds[0]!,
     attemptIds,
     controllerJobRootDir,
+    controllerManifestPath,
     workerPath: worker,
     patchPath: reviewedSnapshot.patchPath,
     reviewedRoot,
@@ -630,6 +954,13 @@ async function reconciliationFixture(input: {
       createHash("sha256").update(attemptIds[0]!).digest("hex"),
       "attempt.json",
     ),
+    eventsPath: join(
+      controllerJobRootDir,
+      "project-integration",
+      "integration-attempts",
+      createHash("sha256").update(attemptIds[0]!).digest("hex"),
+      "events.jsonl",
+    ),
     seedPath: seed,
     targetPath,
     store,
@@ -638,9 +969,10 @@ async function reconciliationFixture(input: {
       projectId: "social-monitor",
       registryRootDir,
       controllerJobRootDir,
-      controllerManifestSha256: "a".repeat(64),
+      controllerManifestSha256: createHash("sha256")
+        .update(controllerManifestBytes).digest("hex"),
       controllerScopeEpochSha256: "b".repeat(64),
-      targetWorkspaceRoots: [targetPath, worker],
+      targetWorkspaceRoots: [...targetPaths, worker],
       allowedGitRemotes: ["origin"],
       allowedBranches: ["main"],
     },

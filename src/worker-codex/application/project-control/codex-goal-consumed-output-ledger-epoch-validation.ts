@@ -44,6 +44,8 @@ export function isEpochReceipt(
     value.deniedRoots.every((root) => typeof root === "string") &&
     Array.isArray(value.orphanWorkspaceBindings) &&
     value.orphanWorkspaceBindings.every(isEpochOrphanWorkspaceBinding) &&
+    (value.legacyAttemptQuarantine === undefined ||
+      isLegacyAttemptQuarantineAnchor(value.legacyAttemptQuarantine)) &&
     typeof value.createdAt === "string" && Number.isFinite(Date.parse(value.createdAt)) &&
     typeof value.activatedAt === "string" &&
     Number.isFinite(Date.parse(value.activatedAt)) &&
@@ -92,6 +94,8 @@ export function isEpochPlan(value: unknown): value is ConsumedOutputLedgerEpochP
     value.deniedRoots.every((root) => typeof root === "string") &&
     value.evidenceBindings.every(isEpochEvidenceBinding) &&
     value.orphanWorkspaceBindings.every(isEpochOrphanWorkspaceBinding) &&
+    (value.legacyAttemptQuarantine === undefined ||
+      isLegacyAttemptQuarantineAnchor(value.legacyAttemptQuarantine)) &&
     value.files.every(isEpochFilePlan);
   if (!valid) return false;
   return value.oldRootFileCount === value.files.length &&
@@ -101,6 +105,17 @@ export function isEpochPlan(value: unknown): value is ConsumedOutputLedgerEpochP
     value.quarantinedCount === value.files.filter((file) =>
       isRecord(file) && file.disposition === "quarantine"
     ).length;
+}
+
+function isLegacyAttemptQuarantineAnchor(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return value.schemaVersion === 1 && isSha256(value.planSha256) &&
+    isSha256(value.quarantineRootSha256) && isSha256(value.receiptSha256) &&
+    nonNegativeInteger(value.attemptCount) && value.attemptCount > 0 &&
+    nonNegativeInteger(value.reconciliationEvidenceBoundCount) &&
+    nonNegativeInteger(value.unresolvedEvidenceQuarantineCount) &&
+    value.attemptCount === value.reconciliationEvidenceBoundCount +
+      value.unresolvedEvidenceQuarantineCount;
 }
 
 function isEpochOrphanWorkspaceBinding(

@@ -11,6 +11,7 @@ import {
   projectControlAdmissionSnapshot,
   projectControlRepairLegacyOutputDebt,
   projectControlReconcileStaleIntegrations,
+  projectControlQuarantineLegacyIntegrationAttempts,
   projectControlLedgerEpochMigration,
   projectControlRepairJobManifest,
   projectControlUpdateControllerScope,
@@ -36,6 +37,29 @@ export function registerCodexGoalProjectControlAdminTools(server: McpServer): vo
     },
     async (args) => withMcpErrors(async () =>
       projectControlReconcileStaleIntegrations(args as ProjectControlMcpArgs),
+    ),
+  );
+
+  server.registerTool(
+    "codex_goal_project_quarantine_legacy_integration_attempts",
+    {
+      title: "Project Quarantine Legacy Integration Attempts",
+      description:
+        "Preview or confirm immutable retirement of exact investigated nonterminal legacy attempts that automatic reconciliation refuses. Attempt lifecycle bytes remain unchanged and visible as quarantine debt.",
+      inputSchema: {
+        ...jobRegistryInputSchema(),
+        controllerJobId: z.string().optional(),
+        sourceStaleIntegrationPlanSha256: z.string().regex(/^[a-f0-9]{64}$/),
+        legacyAttemptQuarantineCutoff: z.string().datetime(),
+        expectedLegacyAttemptQuarantinePlanSha256:
+          z.string().regex(/^[a-f0-9]{64}$/).optional(),
+        confirmLegacyAttemptQuarantine: z.boolean().optional(),
+      },
+    },
+    async (args) => withMcpErrors(async () =>
+      projectControlQuarantineLegacyIntegrationAttempts(
+        args as ProjectControlMcpArgs,
+      ),
     ),
   );
 

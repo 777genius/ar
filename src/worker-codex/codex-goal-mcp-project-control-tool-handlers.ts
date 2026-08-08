@@ -12,6 +12,8 @@ import {
   projectControlUpdateControllerScopeView,
 } from "./codex-goal-mcp-project-control-admin";
 import { projectControlLedgerEpochMigrationView } from "./codex-goal-mcp-project-control-ledger-epoch";
+import { projectControlLegacyAttemptQuarantineView } from
+  "./codex-goal-mcp-project-control-legacy-attempt-quarantine";
 import {
   projectControlCreateWorktreeView,
   projectControlIntegrateCommitView,
@@ -76,6 +78,15 @@ export async function projectControlReconcileStaleIntegrations(
   args: ProjectControlMcpArgs,
 ) {
   return mcpJson(await projectControlReconcileStaleIntegrationsView(
+    args,
+    projectControlAdminDeps(),
+  ));
+}
+
+export async function projectControlQuarantineLegacyIntegrationAttempts(
+  args: ProjectControlMcpArgs,
+) {
+  return mcpJson(await projectControlLegacyAttemptQuarantineView(
     args,
     projectControlAdminDeps(),
   ));

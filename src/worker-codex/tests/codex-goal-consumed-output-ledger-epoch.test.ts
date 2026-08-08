@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   CONSUMED_OUTPUT_LEDGER_RETIRED_MARKER,
+  type ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor,
   ProjectDebtReason,
 } from "@vioxen/subscription-runtime/worker-core";
 import { buildCodexProjectAdmissionSnapshot } from "../application/project-control/codex-goal-project-admission";
@@ -81,6 +82,30 @@ describe("consumed-output ledger epoch migration", () => {
     expect(plan.planSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(plan)).not.toContain("never-print-this-secret");
     expect((await fixture.buildPlan()).planSha256).toBe(plan.planSha256);
+  });
+
+  it("commits exact legacy-attempt quarantine provenance into plan and receipt", async () => {
+    const fixture = await ledgerFixture();
+    const legacyAttemptQuarantine = {
+      schemaVersion: 1 as const,
+      planSha256: "3".repeat(64),
+      quarantineRootSha256: "4".repeat(64),
+      receiptSha256: "5".repeat(64),
+      attemptCount: 17,
+      reconciliationEvidenceBoundCount: 2,
+      unresolvedEvidenceQuarantineCount: 15,
+    };
+    const plan = await fixture.buildPlan(legacyAttemptQuarantine);
+    expect(plan.legacyAttemptQuarantine).toEqual(legacyAttemptQuarantine);
+    const applied = await applyConsumedOutputLedgerEpoch({
+      ...fixture.applyDeps(plan),
+      expectedPlanSha256: plan.planSha256,
+    });
+    expect(applied.receipt.legacyAttemptQuarantine).toEqual(
+      legacyAttemptQuarantine,
+    );
+    expect((await resolveConsumedOutputLedgerEpochReceipt(fixture.newRoot))
+      .legacyAttemptQuarantine).toEqual(legacyAttemptQuarantine);
   });
 
   it("quarantines a current record whose donor evidence is missing", async () => {
@@ -917,7 +942,9 @@ async function ledgerFixture(options: {
     },
   })}\n`);
   let activeRoot = oldRoot;
-  const buildPlan = async () => await buildConsumedOutputLedgerEpochPlan({
+  const buildPlan = async (
+    legacyAttemptQuarantine?: ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor,
+  ) => await buildConsumedOutputLedgerEpochPlan({
     controllerJobId: "controller-v4",
     projectId: "social-monitor",
     oldRoot,
@@ -928,10 +955,11 @@ async function ledgerFixture(options: {
     orphanWorkspacePaths: orphanWorkspace ? [orphanWorkspace] : [],
     controllerManifestSha256: "1".repeat(64),
     controllerStableScopeSha256: "2".repeat(64),
+    ...(legacyAttemptQuarantine ? { legacyAttemptQuarantine } : {}),
   });
   const applyDeps = (plan: Awaited<ReturnType<typeof buildPlan>>) => ({
     plan,
-    buildCurrentPlan: buildPlan,
+    buildCurrentPlan: async () => await buildPlan(plan.legacyAttemptQuarantine),
     admissionBefore: { debtCount: 377, counts: { consumedDirtyWorkspaces: 0 } },
     validateProposedAdmission: async () => ({
       debtCount: plan.inheritedQuarantinedCount + plan.quarantinedCount +

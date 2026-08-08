@@ -41,6 +41,16 @@ export type ConsumedOutputLedgerEpochOrphanWorkspaceBinding = {
   readonly statusPreview?: readonly string[];
 };
 
+export type ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor = {
+  readonly schemaVersion: 1;
+  readonly planSha256: string;
+  readonly quarantineRootSha256: string;
+  readonly receiptSha256: string;
+  readonly attemptCount: number;
+  readonly reconciliationEvidenceBoundCount: number;
+  readonly unresolvedEvidenceQuarantineCount: number;
+};
+
 export type ConsumedOutputLedgerEpochPlan = {
   readonly schemaVersion: 1;
   readonly controllerJobId: string;
@@ -68,6 +78,8 @@ export type ConsumedOutputLedgerEpochPlan = {
   readonly evidenceBindings: readonly ConsumedOutputLedgerEpochEvidenceBinding[];
   readonly orphanWorkspaceBindings:
     readonly ConsumedOutputLedgerEpochOrphanWorkspaceBinding[];
+  readonly legacyAttemptQuarantine?:
+    ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor;
   readonly files: readonly ConsumedOutputLedgerEpochFilePlan[];
   readonly planSha256: string;
 };
@@ -96,6 +108,8 @@ export type ConsumedOutputLedgerEpochReceipt = {
   readonly deniedRoots: readonly string[];
   readonly orphanWorkspaceBindings:
     readonly ConsumedOutputLedgerEpochOrphanWorkspaceBinding[];
+  readonly legacyAttemptQuarantine?:
+    ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor;
   readonly planSha256: string;
   readonly createdAt: string;
   readonly activatedAt: string;
