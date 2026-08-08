@@ -303,6 +303,15 @@ export async function consumedOutputRecordFromJson(input: {
   if (status === "integrated" && !commit) {
     structuralEvidence.push("integrated consumed-output record is missing commit evidence");
   }
+  if (
+    structuralEvidence.length === 0 &&
+    availabilityEvidence.length > 0 &&
+    !hasSupportedPrunedRetentionProvenance(input.value, status, closedAt, commit)
+  ) {
+    structuralEvidence.push(
+      "pruned retention evidence does not match supported terminal writer provenance",
+    );
+  }
   const resolvedWorkspace = workspace
     ? await input.source.resolveWorkspacePath(workspace)
     : undefined;
@@ -700,6 +709,45 @@ function integratedOutputCommit(value: Record<string, unknown>): string | undefi
     if (commit && /^[0-9a-f]{7,40}$/i.test(commit)) return commit;
   }
   return undefined;
+}
+
+function hasSupportedPrunedRetentionProvenance(
+  value: Record<string, unknown>,
+  status: string,
+  closedAt: string | undefined,
+  commit: string | undefined,
+): boolean {
+  if (status !== "integrated" && status !== "rejected") return false;
+  if (!closedAt || stringValue(value.consumedAt) !== closedAt) return false;
+  const noteText = stringValue(value.note);
+  if (!noteText || !Array.isArray(value.notes) || value.notes.length !== 1) {
+    return false;
+  }
+  const writerNote = value.notes[0];
+  if (
+    !isRecord(writerNote) ||
+    stringValue(writerNote.status) !== status ||
+    stringValue(writerNote.text) !== noteText
+  ) {
+    return false;
+  }
+  if (status === "rejected") {
+    return writerNote.commit === undefined &&
+      value.commitSha === undefined &&
+      value.commit === undefined &&
+      value.integratedCommitSha === undefined;
+  }
+  const canonicalCommit = stringValue(value.commitSha);
+  if (
+    !canonicalCommit ||
+    !/^[0-9a-f]{7,40}$/i.test(canonicalCommit) ||
+    commit !== canonicalCommit ||
+    stringValue(writerNote.commit) !== canonicalCommit
+  ) {
+    return false;
+  }
+  return stringValue(value.commit) === canonicalCommit &&
+    stringValue(value.integratedCommitSha) === canonicalCommit;
 }
 
 function consumedOutputEvidence(input: {

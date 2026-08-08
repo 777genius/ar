@@ -24,6 +24,7 @@ import {
   type ConsumedOutputLedgerReadFailure,
   type ConsumedOutputLedgerSourcePort,
 } from "../index";
+import { prunedRetentionInvalidProvenanceCases } from "./pruned-retention-provenance-fixtures";
 
 describe("consumed output ledger", () => {
   it.each([
@@ -482,16 +483,30 @@ describe("consumed output ledger", () => {
       ["integrated", "abc1234"],
       ["rejected", undefined],
     ] as const) {
+      const closedAt = "2026-07-01T00:00:00.000Z";
+      const note = "retained archive pruned";
       const record = await consumedOutputRecordFromJson({
         ledgerPath: join(root, `${status}.json`),
         source,
         value: {
           schemaVersion: 1,
-          note: "retained archive pruned",
+          note,
           jobId: `worker-${status}`,
           status,
-          closedAt: "2026-07-01T00:00:00.000Z",
-          ...(commitSha ? { commitSha } : {}),
+          closedAt,
+          consumedAt: closedAt,
+          notes: [{
+            status,
+            text: note,
+            ...(commitSha ? { commit: commitSha } : {}),
+          }],
+          ...(commitSha
+            ? {
+                commitSha,
+                commit: commitSha,
+                integratedCommitSha: commitSha,
+              }
+            : {}),
           backup: missingBackup,
         },
       });
@@ -512,6 +527,23 @@ describe("consumed output ledger", () => {
           severity: "info",
         }),
       ]);
+    }
+
+    for (const invalidCase of prunedRetentionInvalidProvenanceCases(missingBackup)) {
+      const persistedValue: unknown = JSON.parse(JSON.stringify(invalidCase.value));
+      const record = await consumedOutputRecordFromJson({
+        ledgerPath: join(root, `${invalidCase.name.replaceAll(" ", "-")}.json`),
+        source,
+        value: persistedValue,
+      });
+      expect(record, invalidCase.name).toMatchObject({
+        structurallyValid: false,
+        retentionEvidenceMissing: false,
+        valid: false,
+        evidence: expect.arrayContaining([
+          "pruned retention evidence does not match supported terminal writer provenance",
+        ]),
+      });
     }
 
     const missingCommit = await consumedOutputRecordFromJson({
@@ -659,6 +691,8 @@ describe("consumed output ledger", () => {
                 attemptId: "attempt-1",
                 status: "rejected",
                 closedAt: "2026-07-01T00:00:00.000Z",
+                consumedAt: "2026-07-01T00:00:00.000Z",
+                notes: [{ status: "rejected", text: "rejected attempt" }],
                 backup: {
                   workspace,
                   statusPath: join(root, "pruned", "status.txt"),
