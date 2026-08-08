@@ -11,7 +11,6 @@ import {
   evaluateProjectAdmission,
   projectAdmissionDebtCounts,
   type ConsumedOutputLedger,
-  type ActiveWriterRiskKind,
   type ProjectAccessScope,
   type ProjectAdmissionGate,
   type ProjectAdmissionSnapshot,
@@ -23,6 +22,12 @@ import type {
 } from "../../codex-goal-jobs";
 import { stringValue } from "../codex-goal-input-values";
 import { readCodexGoalConsumedOutputLedgers } from "./codex-goal-consumed-output-ledger-io";
+import { limitCodexProjectSummariesForInspection } from "./codex-goal-project-admission-summary-limit";
+import {
+  hasBlockingActiveWriterRisk,
+  stoppedWorkspaceTerminalConsumption,
+  terminalConsumptionCoversStoppedRisk,
+} from "./codex-goal-project-terminal-consumption";
 import {
   matchesProjectControlPrefix,
   nodeErrorCode,
@@ -30,11 +35,8 @@ import {
   uniqueProjectControlStrings,
 } from "./codex-goal-project-utils";
 import { readLaunchAuthorizedWorkerLaunchSpec } from "./codex-goal-project-pre-start-admission";
-
 type JsonObject = Readonly<Record<string, unknown>>;
-
 const execFileAsync = promisify(execFile);
-
 export type CodexProjectAdmissionDeps = {
   readonly listJobs: (input: {
     readonly registryRootDir: string;
@@ -332,8 +334,9 @@ export async function buildCodexProjectAdmissionSnapshot(
       matchingProjectSummaries.map((summary) => summary.jobId),
     ),
   }));
-  const projectSummaries = limitCodexProjectSummaries(
+  const projectSummaries = limitCodexProjectSummariesForInspection(
     matchingProjectSummaries,
+    consumedOutput,
   );
   const overviewSummaries: CodexGoalJobSummary[] = [];
   for (const summary of projectSummaries) {
@@ -490,12 +493,6 @@ function projectAdmissionCacheTtlMs(): number {
   return Math.min(raw, 120_000);
 }
 
-function projectAdmissionMaxJobSummaries(): number {
-  const raw = Number(process.env.SUBSCRIPTION_RUNTIME_PROJECT_ADMISSION_MAX_JOB_SUMMARIES ?? "0");
-  if (!Number.isFinite(raw) || raw <= 0) return 0;
-  return Math.floor(raw);
-}
-
 function projectAdmissionCacheKey(input: {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
@@ -509,16 +506,6 @@ function projectAdmissionCacheKey(input: {
     observedWorkspaceRoots: input.scope.observedWorkspaceRoots ?? [],
     consumedOutputLedgerRoots: input.scope.consumedOutputLedgerRoots ?? [],
   });
-}
-
-function limitCodexProjectSummaries(
-  summaries: readonly CodexGoalJobSummary[],
-): readonly CodexGoalJobSummary[] {
-  const max = projectAdmissionMaxJobSummaries();
-  if (max <= 0 || summaries.length <= max) return summaries;
-  return [...summaries]
-    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
-    .slice(-max);
 }
 
 async function debtFromConsumedJobSummary(input: {
@@ -540,6 +527,7 @@ async function debtFromConsumedJobSummary(input: {
     ...(resolvedWorkspacePath ? { resolvedWorkspacePath } : {}),
   });
   if (!consumed) return undefined;
+  if (consumed.retentionEvidenceMissing) return undefined;
   await rememberKnownWorkspacePath(
     input.knownWorkspacePaths,
     input.summary.workspacePath,
@@ -553,12 +541,16 @@ function consumedRecordDebt(
 ): readonly ProjectDebtItem[] {
   const debt = consumedDebt(record);
   const ledgerAlreadyReportedInvalidRecord = ledger.debt.some((item) =>
-    item.reason === ProjectDebtReason.IncompleteConsumedOutputRecord &&
+    (
+      item.reason === ProjectDebtReason.IncompleteConsumedOutputRecord ||
+      item.reason === ProjectDebtReason.RetentionEvidenceMissing
+    ) &&
     item.subject === record.ledgerPath
   );
   return ledgerAlreadyReportedInvalidRecord
     ? debt.filter((item) =>
-      item.reason !== ProjectDebtReason.IncompleteConsumedOutputRecord
+      item.reason !== ProjectDebtReason.IncompleteConsumedOutputRecord &&
+      item.reason !== ProjectDebtReason.RetentionEvidenceMissing
     )
     : debt;
 }
@@ -608,6 +600,38 @@ async function debtFromOverviewItem(input: {
   }
   const debt: ProjectDebtItem[] = [];
   const workerAlive = item.workerAlive === true;
+  const resolvedWorkspacePath = workspacePath
+    ? await optionalRealPathForAdmission(workspacePath)
+    : undefined;
+  const stoppedTerminalConsumption = stoppedWorkspaceTerminalConsumption({
+    ledger: input.consumedOutput,
+    jobId,
+    workerAlive,
+    workerExplicitlyStopped: item.workerAlive === false,
+    workspacePath,
+    resolvedWorkspacePath,
+  });
+  const stoppedTerminalCandidate = item.workerAlive === false
+    ? consumedOutputRecordFor({
+        ledger: input.consumedOutput,
+        jobId,
+      })
+    : undefined;
+  const terminalConsumptionWorkspaceMismatch =
+    item.workerAlive === false &&
+    item.workspaceDirty === true &&
+    stoppedTerminalCandidate?.structurallyValid === true &&
+    stoppedTerminalConsumption === undefined;
+  const terminalConsumptionCoversStoppedConflict =
+    terminalConsumptionCoversStoppedRisk(
+      stoppedTerminalConsumption,
+      item.activeWriterRisk,
+    );
+  const malformedDirtyWriterObservation =
+    item.workspaceDirty === true &&
+    (typeof item.workerAlive !== "boolean" ||
+      typeof item.activeWriterRisk !== "string" ||
+      item.activeWriterRisk.trim().length === 0);
   const sameRequestedWorkspace = workerAlive && workspacePath !== undefined &&
     input.requestedWorkspacePath !== undefined &&
     await admissionWorkspacePathsMatch(
@@ -615,10 +639,14 @@ async function debtFromOverviewItem(input: {
       input.requestedWorkspacePath,
     );
   if (
-    (workerAlive && (input.blockAnyLiveWriter || sameRequestedWorkspace)) ||
-    hasBlockingActiveWriterRisk(item.activeWriterRisk, workerAlive) ||
-    item.workspaceConflict === true ||
-    input.duplicateWorkspaceIdentity
+    malformedDirtyWriterObservation ||
+    terminalConsumptionWorkspaceMismatch ||
+    (!terminalConsumptionCoversStoppedConflict && (
+      (workerAlive && (input.blockAnyLiveWriter || sameRequestedWorkspace)) ||
+      hasBlockingActiveWriterRisk(item.activeWriterRisk, workerAlive) ||
+      item.workspaceConflict === true ||
+      input.duplicateWorkspaceIdentity
+    ))
   ) {
     const pathDisjointProducerEvidence = await healthyLiveProducerPathEvidence({
       item,
@@ -660,9 +688,6 @@ async function debtFromOverviewItem(input: {
     return debt;
   }
   if (workerAlive) return debt;
-  const resolvedWorkspacePath = workspacePath
-    ? await optionalRealPathForAdmission(workspacePath)
-    : undefined;
   const markerTypes = safeStringArray(item.lifecycleMarkerTypes);
   const recommendedAction = stringValue(item.recommendedAction);
   if (
@@ -693,7 +718,7 @@ async function debtFromOverviewItem(input: {
   ) {
     return withoutInactiveDirtyWorkspaceConflict(debt, item);
   }
-  const consumed = consumedOutputRecordFor({
+  const consumed = stoppedTerminalConsumption ?? consumedOutputRecordFor({
     ledger: input.consumedOutput,
     jobId,
     ...(workspacePath ? { workspacePath } : {}),
@@ -803,31 +828,6 @@ function withoutInactiveDirtyWorkspaceConflict(
   return debt.filter(
     (entry) => entry.reason !== ProjectDebtReason.ActiveWriterConflict,
   );
-}
-
-const activeWriterRiskKinds = new Set<string>([
-  "none",
-  "active_worker",
-  "stale_live_worker",
-  "dirty_workspace_without_worker",
-  "state_mismatch",
-  "unknown",
-] satisfies readonly ActiveWriterRiskKind[]);
-
-function hasBlockingActiveWriterRisk(
-  value: unknown,
-  workerAlive: boolean,
-): boolean {
-  // Keep accepting the former boolean overview shape while current status
-  // views publish a typed risk kind. A healthy active worker is only a conflict
-  // when admission targets its workspace; uncertain states still fail closed.
-  if (value === true) return true;
-  const kind = stringValue(value);
-  if (kind === undefined) return false;
-  if (!activeWriterRiskKinds.has(kind)) return true;
-  if (kind === "none") return false;
-  if (kind === "active_worker") return !workerAlive;
-  return true;
 }
 
 async function admissionWorkspacePathsMatch(
@@ -942,7 +942,7 @@ async function orphanDirtyWorkspaceDebt(input: {
       workspacePath,
       ...(resolved ? { resolvedWorkspacePath: resolved } : {}),
     });
-    if (consumed) {
+    if (consumed && !consumed.retentionEvidenceMissing) {
       debt.push(...consumedRecordDebt(input.consumedOutput, consumed));
       continue;
     }

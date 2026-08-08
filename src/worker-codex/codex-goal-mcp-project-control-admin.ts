@@ -1,3 +1,7 @@
+import { lstat, readdir } from "node:fs/promises";
+import {
+  LocalConsumedOutputLedgerMutationLock,
+} from "@vioxen/subscription-runtime/worker-local";
 import {
   AccessBoundary,
   ProjectAdmissionWorkerRole,
@@ -12,6 +16,7 @@ import {
   updateCodexGoalJob,
   type CodexGoalJobManifest,
   type CodexGoalJobManifestPatch,
+  type CodexGoalJobSummary,
 } from "./codex-goal-jobs";
 import {
   collectCodexGoalStatus,
@@ -31,6 +36,7 @@ import {
   projectControlWorkspaceLocks,
   withValidatedProjectWorkspaceLock,
 } from "./codex-goal-project-workspace-lock";
+import { projectControlCanonicalWorkspacePath } from "./application/project-control/codex-goal-project-workspace-scope";
 import { rebindProjectPreStartAdmissionManifest } from "./application/project-control/codex-goal-project-pre-start-admission";
 import { isAdmittedInputPatchCapacityContinuation } from "./application/project-control/codex-goal-project-admitted-input-patch-continuation";
 import {
@@ -72,8 +78,34 @@ import {
 import {
   buildCodexProjectOperationsSnapshot,
 } from "./application/project-control/codex-goal-project-operations-snapshot";
+import {
+  repairLegacyConsumedOutputDebt,
+  type LegacyConsumedOutputCandidate,
+  type LegacyConsumedOutputProof,
+} from "./application/project-control/legacy-consumed-output-repair";
 
 type JsonObject = Readonly<Record<string, unknown>>;
+
+export type ProjectControlRepairWorkspaceMode =
+  | "clean_capacity_continuation"
+  | "reviewed_dirty_continuation"
+  | "admitted_input_patch_continuation";
+
+export function resolveProjectControlRepairWorkspaceMode(input: {
+  readonly workspaceDirty: boolean;
+  readonly reviewedOutputId?: string;
+  readonly admittedInputPatchCapacityContinuation: boolean;
+}): ProjectControlRepairWorkspaceMode {
+  if (!input.workspaceDirty) {
+    return "clean_capacity_continuation";
+  }
+  if (input.reviewedOutputId !== undefined) {
+    return "reviewed_dirty_continuation";
+  }
+  return input.admittedInputPatchCapacityContinuation
+    ? "admitted_input_patch_continuation"
+    : "reviewed_dirty_continuation";
+}
 
 type LoadedProjectControlController = {
   readonly registryRootDir: string;
@@ -139,6 +171,187 @@ export async function projectControlAdmissionSnapshotView(
     snapshot: detailView.snapshot,
     operations,
     ...(detailView.decision ? { decision: detailView.decision } : {}),
+  };
+}
+
+export async function projectControlRepairLegacyOutputDebtView(
+  args: ProjectControlMcpArgs,
+  deps: CodexGoalMcpProjectControlAdminDeps,
+): Promise<JsonObject> {
+  const controller = await deps.loadProjectControlController(args);
+  const ledgerRoots = controller.scope.consumedOutputLedgerRoots ?? [];
+  if (ledgerRoots.length === 0) {
+    throw new Error("project_control_consumed_output_ledger_roots_required");
+  }
+  const snapshot = await buildCodexProjectAdmissionSnapshot({
+    registryRootDir: controller.registryRootDir,
+    scope: controller.scope,
+    deps: deps.admissionDeps,
+  });
+  const summaries = await deps.admissionDeps.listJobs({
+    registryRootDir: controller.registryRootDir,
+  });
+  const summariesByJobId = new Map(summaries.map((summary) => [summary.jobId, summary]));
+  const confirm = booleanValue(args.confirmLegacyOutputRepair) === true;
+  const executeRepair = async () => {
+    const result = await repairLegacyConsumedOutputDebt({
+      projectId: controller.scope.projectId,
+      registryRootDir: controller.registryRootDir,
+      authorizedLedgerRoots: ledgerRoots,
+      allowedJobIdPrefixes: controller.scope.jobIdPrefixes ?? [],
+      admissionSnapshot: snapshot,
+      confirm,
+      mutationLocks: new LocalConsumedOutputLedgerMutationLock(),
+      prove: async (candidate) => proveLegacyConsumedOutputSafe({
+        candidate,
+        registryRootDir: controller.registryRootDir,
+        projectId: controller.scope.projectId,
+        summariesByJobId,
+        deps: deps.admissionDeps,
+      }),
+    });
+    const verifiedSnapshot = result.quarantinedCount > 0
+      ? await buildCodexProjectAdmissionSnapshot({
+          registryRootDir: controller.registryRootDir,
+          scope: controller.scope,
+          deps: deps.admissionDeps,
+        })
+      : snapshot;
+    return { result, verifiedSnapshot };
+  };
+  const { result, verifiedSnapshot } = confirm
+    ? await withLegacyOutputRepairWorkspaceCustody({
+        controller,
+        summaries,
+        deps: deps.admissionDeps,
+        effect: executeRepair,
+      })
+    : await executeRepair();
+  return {
+    ...result as unknown as JsonObject,
+    controllerJobId: controller.controller.jobId,
+    registryRootDir: controller.registryRootDir,
+    auditPath: projectControlAuditPath(controller.controller),
+    admissionBefore: snapshot.counts ?? {},
+    admissionAfter: verifiedSnapshot.counts ?? {},
+  };
+}
+
+async function withLegacyOutputRepairWorkspaceCustody<T>(input: {
+  readonly controller: LoadedProjectControlController;
+  readonly summaries: readonly CodexGoalJobSummary[];
+  readonly deps: CodexProjectAdmissionDeps;
+  readonly effect: () => Promise<T>;
+}): Promise<T> {
+  const workspacePaths = new Set<string>();
+  for (const summary of input.summaries) {
+    if (!matchesProjectControlPrefix(
+      summary.jobId,
+      input.controller.scope.jobIdPrefixes ?? [],
+    )) continue;
+    const manifest = input.deps.readJob
+      ? await input.deps.readJob({
+          registryRootDir: input.controller.registryRootDir,
+          jobId: summary.jobId,
+        })
+      : await readCodexGoalJob({
+          registryRootDir: input.controller.registryRootDir,
+          jobId: summary.jobId,
+    });
+    if (manifest.projectAccessScope?.projectId === input.controller.scope.projectId) {
+      workspacePaths.add(await projectControlCanonicalWorkspacePath(
+        manifest.workspacePath,
+        input.controller.scope,
+      ));
+    }
+  }
+  const orderedWorkspacePaths = [...workspacePaths].sort();
+  const locks = projectControlWorkspaceLocks(input.controller.registryRootDir);
+  const acquireNext = async (index: number): Promise<T> => {
+    const workspacePath = orderedWorkspacePaths[index];
+    if (workspacePath === undefined) return await input.effect();
+    return await withValidatedProjectWorkspaceLock({
+      locks,
+      scope: input.controller.scope,
+      requestedWorkspacePath: workspacePath,
+      owner: `legacy-output-repair:${input.controller.controller.jobId}`,
+      effect: async () => await acquireNext(index + 1),
+    });
+  };
+  return await acquireNext(0);
+}
+
+async function proveLegacyConsumedOutputSafe(input: {
+  readonly candidate: LegacyConsumedOutputCandidate;
+  readonly registryRootDir: string;
+  readonly projectId: string;
+  readonly summariesByJobId: ReadonlyMap<string, {
+    readonly jobId: string;
+    readonly manifestPath: string;
+  }>;
+  readonly deps: CodexProjectAdmissionDeps;
+}): Promise<LegacyConsumedOutputProof> {
+  const reasons: string[] = [];
+  const summary = input.summariesByJobId.get(input.candidate.jobId);
+  if (summary) {
+    const overview = await input.deps.buildOverviewItems([{
+      registryRootDir: input.registryRootDir,
+      jobId: input.candidate.jobId,
+      staleAfterMs: 10 * 60_000,
+      tailLines: 0,
+    }]);
+    const item = overview[0];
+    if (!item || item.workerAlive !== false) {
+      reasons.push("managed worker/process liveness is not proven stopped");
+    }
+    try {
+      const manifest = input.deps.readJob
+        ? await input.deps.readJob({
+            registryRootDir: input.registryRootDir,
+            jobId: input.candidate.jobId,
+          })
+        : await readCodexGoalJob({
+            registryRootDir: input.registryRootDir,
+            jobId: input.candidate.jobId,
+          });
+      if (manifest.projectAccessScope?.projectId !== input.projectId) {
+        reasons.push("current job manifest belongs to a different project");
+      }
+      const artifacts = await readdir(manifest.jobRootDir, { withFileTypes: true });
+      if (artifacts.some((entry) =>
+        entry.isFile() &&
+        (/\.handoff\.(?:manifest\.json|patch)$/.test(entry.name) ||
+          /\.(?:patch|diff)$/i.test(entry.name) ||
+          /reviewed.*output/i.test(entry.name))
+      )) {
+        reasons.push("terminal handoff or reviewed output still awaits consumption");
+      }
+    } catch {
+      reasons.push("current job manifest proof is unavailable");
+    }
+  }
+  if (!input.candidate.workspace) {
+    reasons.push("legacy record workspace identity is unavailable");
+  } else {
+    try {
+      await lstat(input.candidate.workspace);
+      reasons.push("failed legacy decision workspace still exists");
+    } catch (error) {
+      if (nodeErrorCode(error) !== "ENOENT") {
+        reasons.push("failed legacy decision workspace absence is unprovable");
+      }
+    }
+  }
+  if (reasons.length > 0) return { eligible: false, reasons };
+  return {
+    eligible: true,
+    evidence: [
+      "admission validator classified the record as incomplete",
+      summary
+        ? "current registry worker is proven stopped"
+        : "legacy job is absent from the current registry",
+      "failed legacy workspace and pending handoff artifacts are absent",
+    ],
   };
 }
 
@@ -402,9 +615,15 @@ async function rebindRepairedProjectJobManifest(input: {
         throw new Error("project_control_repair_live_worker_profile_denied");
       }
       const workspaceDirty = status.workspaceDirty === true;
-      const admittedInputPatchContinuation =
-        workspaceDirty && isAdmittedInputPatchCapacityContinuation(status);
-      if (workspaceDirty && !admittedInputPatchContinuation) {
+      const workspaceMode = resolveProjectControlRepairWorkspaceMode({
+        workspaceDirty,
+        ...(input.reviewedOutputId !== undefined
+          ? { reviewedOutputId: input.reviewedOutputId }
+          : {}),
+        admittedInputPatchCapacityContinuation:
+          workspaceDirty && isAdmittedInputPatchCapacityContinuation(status),
+      });
+      if (workspaceMode === "reviewed_dirty_continuation") {
         const reviewedOutputId = input.reviewedOutputId;
         if (!reviewedOutputId) {
           throw new Error("project_control_repair_reviewed_output_required");
@@ -435,11 +654,7 @@ async function rebindRepairedProjectJobManifest(input: {
       return await rebindProjectPreStartAdmissionManifest({
         manifest: input.manifest,
         scope: input.controller.scope,
-        workspaceMode: admittedInputPatchContinuation
-          ? "admitted_input_patch_continuation"
-          : workspaceDirty
-            ? "reviewed_dirty_continuation"
-            : "clean_capacity_continuation",
+        workspaceMode,
       });
     },
   });
@@ -484,4 +699,10 @@ function assertProjectControlRepairAccountsAllowed(input: {
   if (denied.length > 0) {
     throw new Error("project_control_repair_account_outside_scope");
   }
+}
+
+function nodeErrorCode(error: unknown): string | undefined {
+  return error instanceof Error && "code" in error
+    ? String((error as NodeJS.ErrnoException).code)
+    : undefined;
 }

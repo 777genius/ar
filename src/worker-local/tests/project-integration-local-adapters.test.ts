@@ -1022,6 +1022,7 @@ describe("local project integration adapters", () => {
     const adapter = new LocalIntegratedOutputLedgerAdapter({
       ledgerRoots: [ledgerRoot],
       archiveRoot: join(fixture.rootDir, "archives"),
+      custodyRoot: fixture.rootDir,
     });
     const attempt = {
       attemptId: "attempt-1",
@@ -1061,7 +1062,10 @@ describe("local project integration adapters", () => {
 
   it("rejects conflicting terminal decisions for the same worker", async () => {
     const fixture = await createGitFixture();
-    const writer = new LocalConsumedOutputLedgerWriter();
+    const writer = new LocalConsumedOutputLedgerWriter(
+      undefined,
+      fixture.rootDir,
+    );
     const ledgerRoot = join(fixture.rootDir, "ledger");
     const base = {
       schemaVersion: 1 as const,
