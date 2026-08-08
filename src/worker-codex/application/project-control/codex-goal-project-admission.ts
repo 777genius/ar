@@ -35,11 +35,8 @@ import {
   uniqueProjectControlStrings,
 } from "./codex-goal-project-utils";
 import { readLaunchAuthorizedWorkerLaunchSpec } from "./codex-goal-project-pre-start-admission";
-
 type JsonObject = Readonly<Record<string, unknown>>;
-
 const execFileAsync = promisify(execFile);
-
 export type CodexProjectAdmissionDeps = {
   readonly listJobs: (input: {
     readonly registryRootDir: string;
