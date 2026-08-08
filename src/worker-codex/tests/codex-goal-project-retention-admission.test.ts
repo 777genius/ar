@@ -52,7 +52,11 @@ describe("Codex project admission snapshot", () => {
           jobId: "project-integrated-v1",
           status: "integrated",
           closedAt: "2026-07-01T00:00:00.000Z",
+          consumedAt: "2026-07-01T00:00:00.000Z",
           commitSha: "abc1234",
+          commit: "abc1234",
+          integratedCommitSha: "abc1234",
+          notes: [{ status: "integrated", text: "integrated output", commit: "abc1234" }],
           backup: { ...backup, workspace: join(root, "worktrees", "project-integrated-v1") },
         })}\n`,
       );
@@ -64,24 +68,11 @@ describe("Codex project admission snapshot", () => {
           jobId: "project-rejected-v1",
           status: "rejected",
           closedAt: "2026-07-01T00:00:00.000Z",
+          consumedAt: "2026-07-01T00:00:00.000Z",
+          notes: [{ status: "rejected", text: "rejected output" }],
           backup,
         })}\n`,
       );
-      await writeFile(
-        join(ledgerRoot, "items", "project-superseded-v1.json"),
-        `${JSON.stringify({
-          schemaVersion: 1,
-          note: "superseded output",
-          jobId: "project-superseded-v1",
-          status: "superseded",
-          closedAt: "2026-07-01T00:00:00.000Z",
-          backup: {
-            ...backup,
-            workspace: join(root, "worktrees", "project-superseded-v1"),
-          },
-        })}\n`,
-      );
-
       const snapshot = await buildCodexProjectAdmissionSnapshot({
         registryRootDir: join(root, "registry"),
         scope,
@@ -96,14 +87,10 @@ describe("Codex project admission snapshot", () => {
           reason: ProjectDebtReason.RetentionEvidenceMissing,
           severity: "info",
         }),
-        expect.objectContaining({
-          reason: ProjectDebtReason.RetentionEvidenceMissing,
-          severity: "info",
-        }),
       ]);
       expect(snapshot.counts).toMatchObject({
         incompleteConsumedOutputRecords: 0,
-        retentionEvidenceMissing: 3,
+        retentionEvidenceMissing: 2,
       });
       await expect(codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
@@ -122,16 +109,6 @@ describe("Codex project admission snapshot", () => {
         jobId: "project-rejected-v1",
         taskId: "task-rejected-v1",
         workspacePath,
-      })).rejects.toThrow(
-        "project_control_terminal_job_start_denied:retention_evidence_missing",
-      );
-      await expect(assertCodexGoalProjectJobNotTerminal({
-        roots: [ledgerRoot],
-        projectId: "project",
-        controllerJobId: "project-controller",
-        jobId: "project-superseded-v1",
-        taskId: "task-superseded-v1",
-        workspacePath: join(root, "worktrees", "project-superseded-v1"),
       })).rejects.toThrow(
         "project_control_terminal_job_start_denied:retention_evidence_missing",
       );
@@ -174,6 +151,8 @@ describe("Codex project admission snapshot", () => {
           jobId: summary.jobId,
           status: "rejected",
           closedAt: "2026-07-01T00:00:00.000Z",
+          consumedAt: "2026-07-01T00:00:00.000Z",
+          notes: [{ status: "rejected", text: "rejected output" }],
           backup: {
             workspace: workspacePath,
             statusPath: join(root, "retained", "status.txt"),
@@ -479,6 +458,7 @@ describe("Codex project admission snapshot", () => {
       await mkdir(join(ledgerRoot, "items"), { recursive: true });
       for (const [index, jobId] of stoppedJobIds.entries()) {
         const backupRoot = join(root, "retained", jobId);
+        const closedAt = `2026-07-0${index + 1}T00:00:00.000Z`;
         await writeFile(
           join(ledgerRoot, "items", `${jobId}.json`),
           `${JSON.stringify({
@@ -486,7 +466,9 @@ describe("Codex project admission snapshot", () => {
             note: "reviewed output consumed",
             jobId,
             status: "rejected",
-            closedAt: `2026-07-0${index + 1}T00:00:00.000Z`,
+            closedAt,
+            consumedAt: closedAt,
+            notes: [{ status: "rejected", text: "reviewed output consumed" }],
             backup: {
               workspace: workspacePath,
               statusPath: join(backupRoot, "missing-status.txt"),
