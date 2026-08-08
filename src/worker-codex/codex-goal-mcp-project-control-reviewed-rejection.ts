@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import {
   recordTerminalOutputDecision,
@@ -19,6 +19,7 @@ import type { ReviewedWorkerOutputSnapshot } from "./reviewed-worker-output";
 
 export async function recordRejectedReviewedOutput(input: {
   readonly scope: ProjectAccessScope;
+  readonly custodyRoot?: string;
   readonly jobRootDir: string;
   readonly workspacePath: string;
   readonly snapshot: ReviewedWorkerOutputSnapshot;
@@ -48,7 +49,12 @@ export async function recordRejectedReviewedOutput(input: {
     throw new Error("reviewed_worker_output_rejected_authored_output_required");
   }
   return await recordTerminalOutputDecision(
-    { writer: new LocalConsumedOutputLedgerWriter() },
+    {
+      writer: new LocalConsumedOutputLedgerWriter(
+        undefined,
+        input.custodyRoot ?? dirname(dirname(input.jobRootDir)),
+      ),
+    },
     {
       allowedLedgerRoots: ledgerRoots,
       ledgerRoot: ledgerRoots[0]!,
@@ -75,6 +81,7 @@ export async function recordRejectedReviewedOutput(input: {
 
 export async function recordRejectedUncapturedOutput(input: {
   readonly scope: ProjectAccessScope;
+  readonly custodyRoot?: string;
   readonly jobId: string;
   readonly jobRootDir: string;
   readonly workspacePath: string;
@@ -114,7 +121,12 @@ export async function recordRejectedUncapturedOutput(input: {
     throw new Error("uncaptured_rejected_output_authored_output_required");
   }
   return await recordTerminalOutputDecision(
-    { writer: new LocalConsumedOutputLedgerWriter() },
+    {
+      writer: new LocalConsumedOutputLedgerWriter(
+        undefined,
+        input.custodyRoot ?? dirname(dirname(input.jobRootDir)),
+      ),
+    },
     {
       allowedLedgerRoots: ledgerRoots,
       ledgerRoot: ledgerRoots[0]!,

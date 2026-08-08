@@ -112,6 +112,7 @@ function localProjectIntegrationDeps(
     integratedOutputLedger: new LocalIntegratedOutputLedgerAdapter({
       ledgerRoots: controller.scope.consumedOutputLedgerRoots ?? [],
       archiveRoot,
+      custodyRoot: dirname(dirname(controller.registryRootDir)),
     }),
     checks: new LocalProjectCheckRunner(),
     scanner: new SimpleSecretScanner(),

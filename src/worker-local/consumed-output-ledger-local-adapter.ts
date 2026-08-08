@@ -29,6 +29,7 @@ const execFileAsync = promisify(execFile);
 export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWriterPort {
   constructor(
     private readonly mutationLocks = new LocalConsumedOutputLedgerMutationLock(),
+    private readonly custodyRoot?: string,
   ) {}
 
   async assertCanRecord(input: {
@@ -55,6 +56,7 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
     const lease = await this.mutationLocks.acquire({
       ledgerRoots: [input.ledgerRoot],
       owner: `terminal-output-writer:${input.decision.jobId}`,
+      ...(this.custodyRoot ? { custodyRoot: this.custodyRoot } : {}),
     });
     try {
       return await this.recordLocked(input);
@@ -101,12 +103,16 @@ export class LocalConsumedOutputLedgerMutationLock {
   async acquire(input: {
     readonly ledgerRoots: readonly string[];
     readonly owner: string;
+    readonly custodyRoot?: string;
   }): Promise<ConsumedOutputLedgerMutationLease> {
     const acquired: Array<ConsumedOutputLedgerMutationLease["locks"][number]> =
       [];
     try {
       for (const ledgerRoot of [...new Set(input.ledgerRoots)].sort()) {
-        const lockRoot = await ensureLocalLedgerLockRoot(ledgerRoot);
+        const lockRoot = await ensureLocalLedgerLockRoot(
+          ledgerRoot,
+          input.custodyRoot,
+        );
         const port = new LocalWorkspaceIntegrationLock({
           rootDir: lockRoot,
           staleLockMs: 30 * 60_000,
@@ -135,9 +141,12 @@ export class LocalConsumedOutputLedgerMutationLock {
 
 async function ensureLocalLedgerLockRoot(
   ledgerRootInput: string,
+  custodyRootInput?: string,
 ): Promise<string> {
   const ledgerRoot = resolve(ledgerRootInput);
-  await ensureSafeLedgerDirectoryTree(ledgerRoot);
+  if (custodyRootInput) {
+    await ensureLedgerRootWithinCustody(resolve(custodyRootInput), ledgerRoot);
+  }
   const rootMetadata = await lstat(ledgerRoot);
   if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
     throw new Error("consumed_output_ledger_lock_root_unsafe");
@@ -167,40 +176,38 @@ async function ensureLocalLedgerLockRoot(
   return dirname(parent);
 }
 
-async function ensureSafeLedgerDirectoryTree(path: string): Promise<void> {
-  const missing: string[] = [];
-  let existing = path;
-  while (true) {
+async function ensureLedgerRootWithinCustody(
+  custodyRoot: string,
+  ledgerRoot: string,
+): Promise<void> {
+  const custodyMetadata = await lstat(custodyRoot);
+  if (custodyMetadata.isSymbolicLink() || !custodyMetadata.isDirectory()) {
+    throw new Error("consumed_output_ledger_lock_root_unsafe");
+  }
+  const lexicalRest = relative(custodyRoot, ledgerRoot);
+  if (
+    lexicalRest === ".." ||
+    lexicalRest.startsWith(`..${sep}`) ||
+    resolve(custodyRoot, lexicalRest) !== ledgerRoot
+  ) {
+    throw new Error("consumed_output_ledger_lock_root_unsafe");
+  }
+  const canonicalCustody = await realpath(custodyRoot);
+  let current = custodyRoot;
+  for (const segment of lexicalRest.split(sep).filter(Boolean)) {
+    current = join(current, segment);
     try {
-      const metadata = await lstat(existing);
+      const metadata = await lstat(current);
       if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
         throw new Error("consumed_output_ledger_lock_root_unsafe");
       }
-      break;
     } catch (error) {
       if (!isNodeErrorCode(error, "ENOENT")) throw error;
-      missing.push(existing);
-      const parent = dirname(existing);
-      if (parent === existing) {
-        throw new Error("consumed_output_ledger_lock_root_unsafe");
-      }
-      existing = parent;
+      await mkdir(current, { recursive: false, mode: 0o700 });
     }
-  }
-  const canonicalAnchor = await realpath(existing);
-  for (const candidate of missing.reverse()) {
-    try {
-      await mkdir(candidate, { recursive: false, mode: 0o700 });
-    } catch (error) {
-      if (!isNodeErrorCode(error, "EEXIST")) throw error;
-    }
-    const metadata = await lstat(candidate);
-    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-      throw new Error("consumed_output_ledger_lock_root_unsafe");
-    }
-    const canonicalCandidate = await realpath(candidate);
-    const rest = relative(canonicalAnchor, canonicalCandidate);
-    if (rest === ".." || rest.startsWith(`..${sep}`)) {
+    const canonicalCurrent = await realpath(current);
+    const canonicalRest = relative(canonicalCustody, canonicalCurrent);
+    if (canonicalRest === ".." || canonicalRest.startsWith(`..${sep}`)) {
       throw new Error("consumed_output_ledger_lock_root_unsafe");
     }
   }
@@ -278,15 +285,21 @@ export async function captureLocalTerminalOutputBackup(input: {
 export type LocalIntegratedOutputLedgerAdapterOptions = {
   readonly ledgerRoots: readonly string[];
   readonly archiveRoot: string;
+  readonly custodyRoot?: string;
   readonly gitBinaryPath?: string;
 };
 
 export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedgerPort {
-  private readonly writer = new LocalConsumedOutputLedgerWriter();
+  private readonly writer: LocalConsumedOutputLedgerWriter;
 
   constructor(
     private readonly options: LocalIntegratedOutputLedgerAdapterOptions,
-  ) {}
+  ) {
+    this.writer = new LocalConsumedOutputLedgerWriter(
+      undefined,
+      options.custodyRoot,
+    );
+  }
 
   async prepare(input: {
     readonly attempt: IntegrationAttempt;
