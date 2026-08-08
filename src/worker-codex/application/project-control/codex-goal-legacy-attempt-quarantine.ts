@@ -20,8 +20,19 @@ import {
 } from "./codex-goal-stale-integration-reconciliation";
 import type { LegacyAttemptProcessEvidence } from
   "./codex-goal-legacy-attempt-process-evidence";
+import {
+  assertLegacyAttemptQuarantineIncidentPolicy,
+} from "./codex-goal-legacy-attempt-quarantine-policy";
+import {
+  bindLegacyAttemptWorkerLifecycle,
+  validLegacyAttemptWorkerLifecycle,
+  type LegacyAttemptWorkerLifecycleBinding,
+} from "./codex-goal-legacy-attempt-worker-custody";
 
 const execFileAsync = promisify(execFile);
+const MAX_BOUND_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_MANIFEST_BYTES = 1024 * 1024;
+const MAX_PLAN_BOUND_BYTES = 64 * 1024 * 1024;
 
 export type LegacyAttemptPathBinding = {
   readonly declaredPath: string;
@@ -45,13 +56,14 @@ export type LegacyAttemptQuarantineEntry = {
     | "reconciliation_evidence_bound"
     | "unresolved_evidence_quarantine";
   readonly refusalReason?: string;
-  readonly priorRejectOutcome: "failed_without_terminalization";
+  readonly rejectOutcomeNotClaimed: true;
   readonly events: LegacyAttemptPathBinding;
   readonly originalEventsBase64?: string;
   readonly sourceWorkspace: LegacyAttemptPathBinding;
   readonly targetWorkspace: LegacyAttemptPathBinding;
   readonly targetGit: LegacyAttemptTargetGitBinding;
   readonly workerManifest: LegacyAttemptPathBinding;
+  readonly workerLifecycle: LegacyAttemptWorkerLifecycleBinding;
   readonly reconciliation: StaleIntegrationReconciliationEntry;
 };
 
@@ -77,6 +89,7 @@ export type LegacyAttemptQuarantinePlan = {
   readonly registryJobIdsSha256: string;
   readonly sourceStaleIntegrationPlanSha256: string;
   readonly cutoff: string;
+  readonly policyObservedAt: string;
   readonly targetWorkspaceRoots: readonly string[];
   readonly deniedRoots: readonly string[];
   readonly allowedGitRemotes: readonly string[];
@@ -84,6 +97,7 @@ export type LegacyAttemptQuarantinePlan = {
   readonly controllerManifest: LegacyAttemptPathBinding;
   readonly entries: readonly LegacyAttemptQuarantineEntry[];
   readonly processEvidence: LegacyAttemptProcessEvidence;
+  readonly boundAggregateBytes: number;
   readonly planSha256: string;
 };
 
@@ -103,6 +117,7 @@ export type LegacyAttemptQuarantineReceipt = {
   readonly lifecycleTerminalized: false;
   readonly rollbackClaimed: false;
   readonly ledgerConsumptionClaimed: false;
+  readonly rejectOutcomeNotClaimed: true;
   readonly terminalForLedgerEpochOnly: true;
   readonly processEvidence: LegacyAttemptProcessEvidence;
   readonly entries: readonly {
@@ -144,6 +159,7 @@ export async function previewLegacyAttemptQuarantinePlan(input: ScopeInput & {
   readonly captureProcessEvidence: (
     custodyPaths: readonly string[],
   ) => Promise<LegacyAttemptProcessEvidence>;
+  readonly now?: () => Date;
 }): Promise<LegacyAttemptQuarantinePlan> {
   const reconciliation = await loadStaleIntegrationReconciliationPlan({
     controllerJobRootDir: input.controllerJobRootDir,
@@ -155,6 +171,12 @@ export async function previewLegacyAttemptQuarantinePlan(input: ScopeInput & {
     throw new Error("legacy_attempt_quarantine_source_plan_invalid");
   }
   const cutoff = new Date(Date.parse(input.cutoff)).toISOString();
+  const policyObservedAt = (input.now?.() ?? new Date()).toISOString();
+  assertLegacyAttemptQuarantineIncidentPolicy({
+    entries: reconciliation.entries,
+    cutoff,
+    now: new Date(policyObservedAt),
+  });
   const entries: LegacyAttemptQuarantineEntry[] = [];
   for (const reconciled of reconciliation.entries) {
     const attemptId = reconciled.attemptId;
@@ -172,6 +194,11 @@ export async function previewLegacyAttemptQuarantinePlan(input: ScopeInput & {
       ? (await readBoundFile(events.declaredPath)).toString("base64")
       : undefined;
     const targetWorkspace = await bindPath(reconciled.targetWorkspacePath, false);
+    const workerJobId = String(parsed.workerJobId);
+    const workerManifest = await bindPath(codexGoalJobManifestPath({
+      registryRootDir: input.registryRootDir,
+      jobId: workerJobId,
+    }), true, MAX_MANIFEST_BYTES);
     entries.push({
       attemptId,
       attemptPath: reconciled.attemptPath,
@@ -185,7 +212,7 @@ export async function previewLegacyAttemptQuarantinePlan(input: ScopeInput & {
       ...(reconciled.refusalReason
         ? { refusalReason: reconciled.refusalReason }
         : {}),
-      priorRejectOutcome: "failed_without_terminalization",
+      rejectOutcomeNotClaimed: true,
       events,
       ...(originalEventsBase64 ? { originalEventsBase64 } : {}),
       sourceWorkspace: await bindPath(String(parsed.sourceWorkspacePath), false),
@@ -195,10 +222,14 @@ export async function previewLegacyAttemptQuarantinePlan(input: ScopeInput & {
         workspace: targetWorkspace,
         remoteName: reconciled.targetRemote,
       }),
-      workerManifest: await bindPath(codexGoalJobManifestPath({
-        registryRootDir: input.registryRootDir,
-        jobId: String(parsed.workerJobId),
-      }), true),
+      workerManifest,
+      workerLifecycle: await bindLegacyAttemptWorkerLifecycle({
+        workerJobId,
+        workerManifest,
+        readBoundFile,
+        bindPath,
+        maxManifestBytes: MAX_MANIFEST_BYTES,
+      }),
       reconciliation: reconciled,
     });
   }
@@ -210,12 +241,19 @@ export async function previewLegacyAttemptQuarantinePlan(input: ScopeInput & {
     throw new Error("legacy_attempt_quarantine_controller_manifest_cas_mismatch");
   }
   const registry = await registrySnapshot(input.registryRootDir);
-  const custodyPaths = exactPaths(entries.flatMap((entry) => [
-    entry.sourceWorkspace.declaredPath,
-    entry.targetWorkspace.declaredPath,
-  ]));
+  const custodyPaths = custodyPathsForEntries(entries);
   const processEvidence = await input.captureProcessEvidence(custodyPaths);
   assertProcessEvidence(processEvidence, custodyPaths);
+  const boundAggregateBytes = entries.reduce((total, entry) => total +
+    Buffer.from(entry.originalAttemptBase64, "base64").length +
+    (entry.originalEventsBase64
+      ? Buffer.from(entry.originalEventsBase64, "base64").length
+      : 0) +
+    (entry.workerManifest.size ?? 0) +
+    (entry.workerLifecycle.result?.size ?? 0), 0);
+  if (boundAggregateBytes > MAX_PLAN_BOUND_BYTES) {
+    throw new Error("legacy_attempt_quarantine_aggregate_too_large");
+  }
   const unsigned = {
     schemaVersion: 1 as const,
     controllerJobId: input.controllerJobId,
@@ -228,6 +266,7 @@ export async function previewLegacyAttemptQuarantinePlan(input: ScopeInput & {
     registryJobIdsSha256: registry.sha256,
     sourceStaleIntegrationPlanSha256: reconciliation.planSha256,
     cutoff,
+    policyObservedAt,
     targetWorkspaceRoots: exactPaths(input.targetWorkspaceRoots),
     deniedRoots: exactPaths(input.deniedRoots ?? []),
     allowedGitRemotes: exactStrings(input.allowedGitRemotes),
@@ -235,6 +274,7 @@ export async function previewLegacyAttemptQuarantinePlan(input: ScopeInput & {
     controllerManifest,
     entries,
     processEvidence,
+    boundAggregateBytes,
   };
   const plan = { ...unsigned, planSha256: sha256Json(unsigned) };
   await durablePublishJsonFile({
@@ -275,6 +315,7 @@ export async function applyLegacyAttemptQuarantine(input: {
     plan: LegacyAttemptQuarantinePlan,
     effect: () => Promise<T>,
   ) => Promise<T>;
+  readonly crashAfterCompletedCount?: number;
 }): Promise<LegacyAttemptQuarantineReceipt & { readonly idempotentReplay: boolean }> {
   const initial = await loadLegacyAttemptQuarantinePlan(input);
   const fence = await acquireLocalControllerMaintenanceFence({
@@ -289,10 +330,7 @@ export async function applyLegacyAttemptQuarantine(input: {
       );
       if (existing) {
         await validateLegacyAttemptQuarantineReceipt(plan, existing);
-        const custodyPaths = exactPaths(plan.entries.flatMap((entry) => [
-          entry.sourceWorkspace.declaredPath,
-          entry.targetWorkspace.declaredPath,
-        ]));
+        const custodyPaths = custodyPathsForEntries(plan.entries);
         assertProcessEvidence(
           await input.captureProcessEvidence(custodyPaths),
           custodyPaths,
@@ -300,10 +338,7 @@ export async function applyLegacyAttemptQuarantine(input: {
         return { ...existing, idempotentReplay: true };
       }
       await revalidatePlanBindings(plan);
-      const custodyPaths = exactPaths(plan.entries.flatMap((entry) => [
-        entry.sourceWorkspace.declaredPath,
-        entry.targetWorkspace.declaredPath,
-      ]));
+      const custodyPaths = custodyPathsForEntries(plan.entries);
       const processEvidence = await input.captureProcessEvidence(custodyPaths);
       assertProcessEvidence(processEvidence, custodyPaths);
       const progressPath = quarantineProgressPath(
@@ -334,6 +369,9 @@ export async function applyLegacyAttemptQuarantine(input: {
             completedAttemptIds: [...completed].sort(),
           } satisfies LegacyAttemptQuarantineProgress,
         });
+        if (completed.size === input.crashAfterCompletedCount) {
+          throw new Error("legacy_attempt_quarantine_simulated_crash");
+        }
       }
       const receipt: LegacyAttemptQuarantineReceipt = {
         schemaVersion: 1,
@@ -345,6 +383,7 @@ export async function applyLegacyAttemptQuarantine(input: {
         lifecycleTerminalized: false,
         rollbackClaimed: false,
         ledgerConsumptionClaimed: false,
+        rejectOutcomeNotClaimed: true,
         terminalForLedgerEpochOnly: true,
         processEvidence,
         entries: plan.entries.map((entry) => {
@@ -456,6 +495,13 @@ async function revalidatePlanBindings(plan: LegacyAttemptQuarantinePlan): Promis
       })) !== JSON.stringify(entry.targetGit) ||
       JSON.stringify(await bindPath(entry.workerManifest.declaredPath, true)) !==
         JSON.stringify(entry.workerManifest) ||
+      JSON.stringify(await bindLegacyAttemptWorkerLifecycle({
+        workerJobId: entry.workerLifecycle.workerJobId,
+        workerManifest: entry.workerManifest,
+        readBoundFile,
+        bindPath,
+        maxManifestBytes: MAX_MANIFEST_BYTES,
+      })) !== JSON.stringify(entry.workerLifecycle) ||
       JSON.stringify(await bindPath(entry.events.declaredPath, true)) !==
         JSON.stringify(entry.events) ||
       (entry.events.state === "present" &&
@@ -479,7 +525,7 @@ async function registrySnapshot(registryRootDir: string): Promise<{
     const path = join(registryRootDir, entry.name, "job.json");
     let bytes: Buffer;
     try {
-      bytes = await readBoundFile(path);
+      bytes = await readBoundFile(path, MAX_MANIFEST_BYTES);
     } catch (error) {
       if (isNodeError(error, "ENOENT")) continue;
       throw error;
@@ -493,6 +539,14 @@ async function validateLegacyAttemptQuarantineReceipt(
   plan: LegacyAttemptQuarantinePlan,
   receipt: LegacyAttemptQuarantineReceipt,
 ): Promise<void> {
+  await validateLegacyAttemptQuarantineReceiptImmutable(plan, receipt);
+  await revalidatePlanBindings(plan);
+}
+
+export async function validateLegacyAttemptQuarantineReceiptImmutable(
+  plan: LegacyAttemptQuarantinePlan,
+  receipt: LegacyAttemptQuarantineReceipt,
+): Promise<void> {
   if (receipt.schemaVersion !== 1 || receipt.status !== "active_quarantine" ||
     receipt.planSha256 !== plan.planSha256 ||
     receipt.controllerJobId !== plan.controllerJobId ||
@@ -501,16 +555,13 @@ async function validateLegacyAttemptQuarantineReceipt(
     receipt.lifecycleTerminalized !== false ||
     receipt.rollbackClaimed !== false ||
     receipt.ledgerConsumptionClaimed !== false ||
+    receipt.rejectOutcomeNotClaimed !== true ||
     receipt.terminalForLedgerEpochOnly !== true ||
     receipt.entries.length !== plan.entries.length) {
     throw new Error("legacy_attempt_quarantine_receipt_invalid");
   }
-  const custodyPaths = exactPaths(plan.entries.flatMap((entry) => [
-    entry.sourceWorkspace.declaredPath,
-    entry.targetWorkspace.declaredPath,
-  ]));
+  const custodyPaths = custodyPathsForEntries(plan.entries);
   assertProcessEvidence(receipt.processEvidence, custodyPaths);
-  await revalidatePlanBindings(plan);
   for (const [index, entry] of plan.entries.entries()) {
     const item = receipt.entries[index];
     const expectedPath = preservationPath(plan, entry.attemptId);
@@ -597,12 +648,23 @@ function assertProcessEvidence(
 }
 
 function assertPlanStructure(plan: LegacyAttemptQuarantinePlan): void {
+  const expectedBoundAggregateBytes = plan.entries.reduce((total, entry) => total +
+    Buffer.from(entry.originalAttemptBase64, "base64").length +
+    (entry.originalEventsBase64
+      ? Buffer.from(entry.originalEventsBase64, "base64").length
+      : 0) +
+    (entry.workerManifest.size ?? 0) +
+    (entry.workerLifecycle.result?.size ?? 0), 0);
   if (!/^[a-f0-9]{64}$/.test(plan.controllerManifestSha256) ||
     !/^[a-f0-9]{64}$/.test(plan.controllerScopeEpochSha256) ||
     !/^[a-f0-9]{64}$/.test(plan.registryJobIdsSha256) ||
     !/^[a-f0-9]{64}$/.test(plan.sourceStaleIntegrationPlanSha256) ||
     !Number.isSafeInteger(plan.registryJobCount) || plan.registryJobCount < 1 ||
+    !Number.isSafeInteger(plan.boundAggregateBytes) ||
+    plan.boundAggregateBytes < 0 || plan.boundAggregateBytes > MAX_PLAN_BOUND_BYTES ||
+    plan.boundAggregateBytes !== expectedBoundAggregateBytes ||
     !Number.isFinite(Date.parse(plan.cutoff)) ||
+    !Number.isFinite(Date.parse(plan.policyObservedAt)) ||
     JSON.stringify(plan.targetWorkspaceRoots) !==
       JSON.stringify(exactPaths(plan.targetWorkspaceRoots)) ||
     JSON.stringify(plan.deniedRoots) !== JSON.stringify(exactPaths(plan.deniedRoots)) ||
@@ -613,10 +675,12 @@ function assertPlanStructure(plan: LegacyAttemptQuarantinePlan): void {
     plan.entries.length > 64) {
     throw new Error("legacy_attempt_quarantine_plan_invalid");
   }
-  assertProcessEvidence(plan.processEvidence, exactPaths(plan.entries.flatMap((entry) => [
-    entry.sourceWorkspace.declaredPath,
-    entry.targetWorkspace.declaredPath,
-  ])));
+  assertLegacyAttemptQuarantineIncidentPolicy({
+    entries: plan.entries.map((entry) => entry.reconciliation),
+    cutoff: plan.cutoff,
+    now: new Date(plan.policyObservedAt),
+  });
+  assertProcessEvidence(plan.processEvidence, custodyPathsForEntries(plan.entries));
   const ids = new Set<string>();
   for (const entry of plan.entries) {
     const bytes = Buffer.from(entry.originalAttemptBase64, "base64");
@@ -627,14 +691,15 @@ function assertPlanStructure(plan: LegacyAttemptQuarantinePlan): void {
       sha256(bytes) !== entry.attemptSha256 ||
       !Number.isFinite(Date.parse(entry.updatedAt)) ||
       Date.parse(entry.updatedAt) > Date.parse(plan.cutoff) ||
-      entry.priorRejectOutcome !== "failed_without_terminalization" ||
+      entry.rejectOutcomeNotClaimed !== true ||
       (entry.disposition === "reconciliation_evidence_bound") !==
         entry.reconciliation.eligible ||
       (entry.disposition === "unresolved_evidence_quarantine" &&
         (!entry.refusalReason || entry.reconciliation.eligible)) ||
       entry.refusalReason !== entry.reconciliation.refusalReason ||
       entry.attemptId !== entry.reconciliation.attemptId ||
-      entry.attemptSha256 !== entry.reconciliation.attemptSha256) {
+      entry.attemptSha256 !== entry.reconciliation.attemptSha256 ||
+      !validLegacyAttemptWorkerLifecycle(entry.workerLifecycle)) {
       throw new Error("legacy_attempt_quarantine_plan_invalid");
     }
     ids.add(entry.attemptId);
@@ -644,14 +709,18 @@ function assertPlanStructure(plan: LegacyAttemptQuarantinePlan): void {
 async function bindPath(
   path: string,
   includeBytes: boolean,
+  maxBytes = MAX_BOUND_FILE_BYTES,
 ): Promise<LegacyAttemptPathBinding> {
   const declaredPath = resolve(path);
   try {
     const metadata = await lstat(declaredPath);
     if (metadata.isSymbolicLink()) throw new Error("legacy_attempt_quarantine_path_unsafe");
     const canonicalPath = await realpath(declaredPath);
+    if (metadata.size > maxBytes) {
+      throw new Error("legacy_attempt_quarantine_file_too_large");
+    }
     const bytes = includeBytes && metadata.isFile()
-      ? await readBoundFile(declaredPath)
+      ? await readBoundFile(declaredPath, maxBytes)
       : undefined;
     return {
       declaredPath,
@@ -703,11 +772,17 @@ async function bindTargetGit(input: {
   };
 }
 
-async function readBoundFile(path: string): Promise<Buffer> {
+async function readBoundFile(
+  path: string,
+  maxBytes = MAX_BOUND_FILE_BYTES,
+): Promise<Buffer> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const before = await handle.stat();
     if (!before.isFile()) throw new Error("legacy_attempt_quarantine_file_unsafe");
+    if (before.size > maxBytes) {
+      throw new Error("legacy_attempt_quarantine_file_too_large");
+    }
     const bytes = await handle.readFile();
     const after = await handle.stat();
     if (before.dev !== after.dev || before.ino !== after.ino ||
@@ -720,8 +795,19 @@ async function readBoundFile(path: string): Promise<Buffer> {
   }
 }
 
+
 function exactPaths(values: readonly string[]): readonly string[] {
   return [...new Set(values.map((value) => resolve(value)))].sort();
+}
+
+function custodyPathsForEntries(
+  entries: readonly LegacyAttemptQuarantineEntry[],
+): readonly string[] {
+  return exactPaths(entries.flatMap((entry) => [
+    entry.sourceWorkspace.declaredPath,
+    entry.targetWorkspace.declaredPath,
+    entry.workerLifecycle.workerJobRootDir,
+  ]));
 }
 
 function exactStrings(values: readonly string[]): readonly string[] {
@@ -730,6 +816,10 @@ function exactStrings(values: readonly string[]): readonly string[] {
 
 function quarantineRoot(controllerJobRootDir: string): string {
   return join(resolve(controllerJobRootDir), "project-integration", "legacy-attempt-quarantine");
+}
+
+export function legacyAttemptQuarantineRoot(controllerJobRootDir: string): string {
+  return quarantineRoot(controllerJobRootDir);
 }
 
 function quarantinePlanPath(controllerJobRootDir: string, planSha256: string): string {

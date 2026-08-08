@@ -40,6 +40,15 @@ describe("project integration MCP tool handlers", () => {
       attemptId: "legacy-attempt",
       reason: "operator retry",
     })).rejects.toThrow("project_integration_attempt_quarantined");
+    await expect(handlers.rejectAttempt({
+      attemptId: "new-unrelated-attempt",
+      reason: "normal lifecycle",
+    })).resolves.toMatchObject({
+      structuredContent: {
+        reason: "confirm_reject_required",
+        attemptId: "new-unrelated-attempt",
+      },
+    });
   });
 
   it("builds open-attempt previews in the feature slice without invoking use cases", async () => {

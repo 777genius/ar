@@ -74,6 +74,9 @@ evidence that cannot be admitted as valid.
    still cannot be terminalized safely, preview
    `codex_goal_project_quarantine_legacy_integration_attempts` with that
    `sourceStaleIntegrationPlanSha256` and an ISO cutoff that excludes new work.
+   The cutoff must already be at least 24 hours old. Only the audited refusal
+   classes `target_workspace_dirty`, `attempt_patch_partial_or_ambiguous` and
+   `patch_outside_reviewed_store` are accepted; any other refusal fails closed.
    The custody plan imports the complete source plan atomically; callers cannot
    supply attempt IDs, dispositions or free-form refusal reasons. It preserves
    attempt and event bytes, controller/scope/registry/workspace/process custody,
@@ -81,9 +84,14 @@ evidence that cannot be admitted as valid.
    only the returned `expectedLegacyAttemptQuarantinePlanSha256`. The active
    receipt explicitly states that source was not mutated, lifecycle was not
    terminalized, rollback and ledger consumption were not claimed, and the
+   prior reject outcome is not claimed without immutable per-attempt evidence. The
    exception is terminal for ledger-epoch quiescence only. Any byte, scope,
-   registry, workspace, process or source-plan drift blocks activation. Normal
-   integration mutators also reject attempt IDs covered by an active receipt.
+   registry, workspace, process or source-plan drift blocks activation. The
+   ledger-epoch plan and receipt then anchor the exact quarantine plan, root,
+   receipt and disposition counts. After the atomic scope switch, that immutable
+   anchor replaces live controller/registry CAS checks so later jobs and pushes
+   do not invalidate historical custody. Normal integration mutators reject only
+   attempt IDs covered by the active or epoch-anchored receipt.
    The same MCP operation is available from the CLI without a second code path:
    `subscription-runtime-codex-goal tool codex_goal_project_quarantine_legacy_integration_attempts --args-file <json>`.
 3. Pause new work, wait for all other project-control/integration operations to reach

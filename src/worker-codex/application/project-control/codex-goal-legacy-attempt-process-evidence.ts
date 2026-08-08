@@ -16,6 +16,10 @@ export type LegacyAttemptProcessEvidence = {
   }[];
 };
 
+const MAX_PROCESS_COUNT = 65_536;
+const MAX_FD_COUNT_PER_PROCESS = 4_096;
+const MAX_CMDLINE_BYTES = 1024 * 1024;
+
 /**
  * Capture fail-closed Linux process evidence for legacy integration custody.
  * Raw argv is deliberately not persisted because it can contain credentials.
@@ -24,14 +28,19 @@ export async function captureLegacyAttemptProcessEvidence(input: {
   readonly custodyPaths: readonly string[];
   readonly selfPid?: number;
   readonly now?: () => Date;
+  readonly procRoot?: string;
 }): Promise<LegacyAttemptProcessEvidence> {
+  const procRoot = resolve(input.procRoot ?? "/proc");
   const custodyPaths = [...new Set(input.custodyPaths.map((path) => resolve(path)))]
     .sort();
   let entries: string[];
   try {
-    entries = await readdir("/proc");
+    entries = await readdir(procRoot);
   } catch {
     throw new Error("legacy_attempt_quarantine_process_inventory_unavailable");
+  }
+  if (entries.length > MAX_PROCESS_COUNT) {
+    throw new Error("legacy_attempt_quarantine_process_inventory_too_large");
   }
   const blockers: LegacyAttemptProcessEvidence["blockers"][number][] = [];
   const inventory: string[] = [];
@@ -40,13 +49,16 @@ export async function captureLegacyAttemptProcessEvidence(input: {
     const pid = Number(entry);
     if (pid === (input.selfPid ?? process.pid)) continue;
     try {
-      const before = await processStartTime(pid);
+      const before = await processStartTime(procRoot, pid);
       const [cmdline, cwd] = await Promise.all([
-        readFile(`/proc/${pid}/cmdline`),
-        readlink(`/proc/${pid}/cwd`),
+        readFile(`${procRoot}/${pid}/cmdline`),
+        readlink(`${procRoot}/${pid}/cwd`),
       ]);
-      const fdTargets = await processFileDescriptorTargets(pid);
-      const after = await processStartTime(pid);
+      const fdTargets = await processFileDescriptorTargets(procRoot, pid);
+      if (cmdline.length > MAX_CMDLINE_BYTES) {
+        throw new Error("legacy_attempt_quarantine_process_cmdline_too_large");
+      }
+      const after = await processStartTime(procRoot, pid);
       if (before !== after) {
         throw new Error("legacy_attempt_quarantine_process_pid_churn");
       }
@@ -91,10 +103,17 @@ export async function captureLegacyAttemptProcessEvidence(input: {
   };
 }
 
-async function processFileDescriptorTargets(pid: number): Promise<readonly string[]> {
-  const root = `/proc/${pid}/fd`;
+async function processFileDescriptorTargets(
+  procRoot: string,
+  pid: number,
+): Promise<readonly string[]> {
+  const root = `${procRoot}/${pid}/fd`;
   const targets: string[] = [];
-  for (const name of (await readdir(root)).sort()) {
+  const names = (await readdir(root)).sort();
+  if (names.length > MAX_FD_COUNT_PER_PROCESS) {
+    throw new Error("legacy_attempt_quarantine_process_fd_inventory_too_large");
+  }
+  for (const name of names) {
     if (!/^\d+$/.test(name)) {
       throw new Error("legacy_attempt_quarantine_process_fd_invalid");
     }
@@ -121,8 +140,8 @@ function pathInside(path: string, root: string): boolean {
   return child === "" || (child !== ".." && !child.startsWith(`..${sep}`));
 }
 
-async function processStartTime(pid: number): Promise<string> {
-  const value = await readFile(`/proc/${pid}/stat`, "utf8");
+async function processStartTime(procRoot: string, pid: number): Promise<string> {
+  const value = await readFile(`${procRoot}/${pid}/stat`, "utf8");
   const close = value.lastIndexOf(")");
   if (close < 0) throw new Error("legacy_attempt_quarantine_process_stat_invalid");
   const startTime = value.slice(close + 2).trim().split(/\s+/)[19];

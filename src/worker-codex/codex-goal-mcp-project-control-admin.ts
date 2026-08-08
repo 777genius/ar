@@ -91,8 +91,8 @@ import {
   loadStaleIntegrationReconciliationPlan,
   previewStaleIntegrationReconciliationPlan,
 } from "./application/project-control/codex-goal-stale-integration-reconciliation";
-import { readActiveLegacyAttemptQuarantine } from
-  "./application/project-control/codex-goal-legacy-attempt-quarantine";
+import { resolveLegacyAttemptQuarantine } from
+  "./application/project-control/codex-goal-legacy-attempt-quarantine-resolution";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -135,9 +135,10 @@ export async function projectControlAdmissionSnapshotView(
   deps: CodexGoalMcpProjectControlAdminDeps,
 ): Promise<JsonObject> {
   const controller = await deps.loadProjectControlController(args);
-  const legacyAttemptQuarantine = await readActiveLegacyAttemptQuarantine(
-    controller.controller.jobRootDir,
-  );
+  const legacyAttemptQuarantine = await resolveLegacyAttemptQuarantine({
+    controllerJobRootDir: controller.controller.jobRootDir,
+    scope: controller.scope,
+  });
   const snapshot = await buildCodexProjectAdmissionSnapshot({
     registryRootDir: controller.registryRootDir,
     scope: controller.scope,
