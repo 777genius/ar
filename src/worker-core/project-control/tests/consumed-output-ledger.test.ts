@@ -522,28 +522,93 @@ describe("consumed output ledger", () => {
       ]);
     }
 
-    const unproven = await consumedOutputRecordFromJson({
-      ledgerPath: join(root, "unproven.json"),
-      source,
-      value: {
-        schemaVersion: 1,
-        note: "operator-authored metadata",
-        jobId: "worker-unproven",
-        status: "rejected",
-        closedAt: "2026-07-01T00:00:00.000Z",
-        consumedAt: "2026-07-02T00:00:00.000Z",
-        notes: [{ status: "integrated", text: "different decision" }],
-        backup: missingBackup,
+    const rejectedBase = {
+      schemaVersion: 1,
+      note: "reviewed output rejected",
+      jobId: "worker-rejected-invalid",
+      status: "rejected",
+      closedAt: "2026-07-01T00:00:00.000Z",
+      consumedAt: "2026-07-01T00:00:00.000Z",
+      notes: [{ status: "rejected", text: "reviewed output rejected" }],
+      backup: missingBackup,
+    };
+    const invalidProvenanceCases = [
+      {
+        name: "missing aliases",
+        value: {
+          ...rejectedBase,
+          consumedAt: undefined,
+          notes: undefined,
+        },
       },
-    });
-    expect(unproven).toMatchObject({
-      structurallyValid: false,
-      retentionEvidenceMissing: false,
-      valid: false,
-      evidence: expect.arrayContaining([
-        "pruned retention evidence has inconsistent consumedAt/notes writer provenance",
-      ]),
-    });
+      {
+        name: "notes alias missing",
+        value: { ...rejectedBase, notes: undefined },
+      },
+      {
+        name: "consumedAt alias missing",
+        value: { ...rejectedBase, consumedAt: undefined },
+      },
+      {
+        name: "unsupported superseded status",
+        value: {
+          ...rejectedBase,
+          status: "superseded",
+          notes: [{ status: "superseded", text: rejectedBase.note }],
+        },
+      },
+      {
+        name: "mismatched writer note",
+        value: {
+          ...rejectedBase,
+          notes: [{ status: "rejected", text: "different decision" }],
+        },
+      },
+      {
+        name: "rejected record with contradictory commit",
+        value: { ...rejectedBase, commitSha: "abc1234" },
+      },
+      {
+        name: "integrated record with mismatched note commit",
+        value: {
+          ...rejectedBase,
+          status: "integrated",
+          commitSha: "abc1234",
+          notes: [{
+            status: "integrated",
+            text: rejectedBase.note,
+            commit: "def5678",
+          }],
+        },
+      },
+      {
+        name: "integrated record without canonical commit",
+        value: {
+          ...rejectedBase,
+          status: "integrated",
+          notes: [{
+            status: "integrated",
+            text: rejectedBase.note,
+            commit: "abc1234",
+          }],
+        },
+      },
+    ];
+    for (const invalidCase of invalidProvenanceCases) {
+      const record = await consumedOutputRecordFromJson({
+        ledgerPath: join(root, `${invalidCase.name.replaceAll(" ", "-")}.json`),
+        source,
+        value: invalidCase.value,
+      });
+      expect(record, invalidCase.name).toMatchObject({
+        structurallyValid: false,
+        retentionEvidenceMissing: false,
+        valid: false,
+        evidence: expect.arrayContaining([
+          "pruned retention evidence does not match supported terminal writer provenance",
+        ]),
+      });
+    }
 
     const missingCommit = await consumedOutputRecordFromJson({
       ledgerPath: join(root, "missing-commit.json"),
@@ -690,6 +755,8 @@ describe("consumed output ledger", () => {
                 attemptId: "attempt-1",
                 status: "rejected",
                 closedAt: "2026-07-01T00:00:00.000Z",
+                consumedAt: "2026-07-01T00:00:00.000Z",
+                notes: [{ status: "rejected", text: "rejected attempt" }],
                 backup: {
                   workspace,
                   statusPath: join(root, "pruned", "status.txt"),

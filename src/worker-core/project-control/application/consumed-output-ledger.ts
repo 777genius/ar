@@ -283,14 +283,6 @@ export async function consumedOutputRecordFromJson(input: {
     ...backupEvidence.availabilityEvidence,
   ];
   const commit = integratedOutputCommit(input.value);
-  if (
-    availabilityEvidence.length > 0 &&
-    !hasConsistentTerminalWriterAliases(input.value, status, closedAt, commit)
-  ) {
-    structuralEvidence.push(
-      "pruned retention evidence has inconsistent consumedAt/notes writer provenance",
-    );
-  }
   const hasAuthoredOutput = backupEvidence.hasAuthoredOutput ||
     (status === "integrated" && commit !== undefined);
   if (status === NO_OUTPUT_STATUS) {
@@ -310,6 +302,15 @@ export async function consumedOutputRecordFromJson(input: {
   }
   if (status === "integrated" && !commit) {
     structuralEvidence.push("integrated consumed-output record is missing commit evidence");
+  }
+  if (
+    structuralEvidence.length === 0 &&
+    availabilityEvidence.length > 0 &&
+    !hasSupportedPrunedRetentionProvenance(input.value, status, closedAt, commit)
+  ) {
+    structuralEvidence.push(
+      "pruned retention evidence does not match supported terminal writer provenance",
+    );
   }
   const resolvedWorkspace = workspace
     ? await input.source.resolveWorkspacePath(workspace)
@@ -710,30 +711,44 @@ function integratedOutputCommit(value: Record<string, unknown>): string | undefi
   return undefined;
 }
 
-function hasConsistentTerminalWriterAliases(
+function hasSupportedPrunedRetentionProvenance(
   value: Record<string, unknown>,
   status: string,
   closedAt: string | undefined,
   commit: string | undefined,
 ): boolean {
-  // Canonical records predate the redundant writer aliases. When either alias
-  // is present, require the complete pair to agree with the canonical decision
-  // before missing retention bytes can become non-blocking retention debt.
-  if (value.consumedAt === undefined && value.notes === undefined) return true;
+  if (status !== "integrated" && status !== "rejected") return false;
   if (!closedAt || stringValue(value.consumedAt) !== closedAt) return false;
   const noteText = stringValue(value.note);
-  if (!noteText || !Array.isArray(value.notes)) return false;
-  return value.notes.some((entry) => {
-    if (
-      !isRecord(entry) ||
-      stringValue(entry.status) !== status ||
-      stringValue(entry.text) !== noteText
-    ) {
-      return false;
-    }
-    return status !== "integrated" ||
-      (commit !== undefined && stringValue(entry.commit) === commit);
-  });
+  if (!noteText || !Array.isArray(value.notes) || value.notes.length !== 1) {
+    return false;
+  }
+  const writerNote = value.notes[0];
+  if (
+    !isRecord(writerNote) ||
+    stringValue(writerNote.status) !== status ||
+    stringValue(writerNote.text) !== noteText
+  ) {
+    return false;
+  }
+  if (status === "rejected") {
+    return writerNote.commit === undefined &&
+      value.commitSha === undefined &&
+      value.commit === undefined &&
+      value.integratedCommitSha === undefined;
+  }
+  const canonicalCommit = stringValue(value.commitSha);
+  if (
+    !canonicalCommit ||
+    !/^[0-9a-f]{7,40}$/i.test(canonicalCommit) ||
+    commit !== canonicalCommit ||
+    stringValue(writerNote.commit) !== canonicalCommit
+  ) {
+    return false;
+  }
+  return [value.commit, value.integratedCommitSha].every((alias) =>
+    alias === undefined || stringValue(alias) === canonicalCommit
+  );
 }
 
 function consumedOutputEvidence(input: {
