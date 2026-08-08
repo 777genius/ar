@@ -18,8 +18,10 @@ import {
   loadStaleIntegrationReconciliationPlan,
   type StaleIntegrationReconciliationEntry,
 } from "./codex-goal-stale-integration-reconciliation";
-import type { LegacyAttemptProcessEvidence } from
-  "./codex-goal-legacy-attempt-process-evidence";
+import {
+  assertLegacyAttemptProcessEvidence,
+  type LegacyAttemptProcessEvidence,
+} from "./codex-goal-legacy-attempt-process-evidence";
 import {
   assertLegacyAttemptQuarantineIncidentPolicy,
 } from "./codex-goal-legacy-attempt-quarantine-policy";
@@ -32,10 +34,13 @@ import {
   assertLegacyAttemptQuarantineActivePlan,
   assertLegacyAttemptQuarantineReplayRequest,
   assertLegacyAttemptQuarantineSingleUseExpected,
-  claimLegacyAttemptQuarantineSingleUse,
   resolveLegacyAttemptQuarantineSingleUsePlan,
   normalizedLegacyAttemptQuarantineCutoff,
 } from "./codex-goal-legacy-attempt-quarantine-single-use";
+import {
+  completeLegacyAttemptQuarantinePlanMarker,
+  publishLegacyAttemptQuarantinePlanFirst,
+} from "./codex-goal-legacy-attempt-quarantine-publication";
 
 const execFileAsync = promisify(execFile);
 const MAX_BOUND_FILE_BYTES = 8 * 1024 * 1024;
@@ -173,7 +178,7 @@ export async function previewLegacyAttemptQuarantinePlan(input: ScopeInput & {
     plan: LegacyAttemptQuarantinePlan,
     effect: () => Promise<T>,
   ) => Promise<T>;
-  readonly crashAfterActivePlanClaim?: boolean;
+  readonly crashAfterPlanPublication?: boolean;
 }): Promise<LegacyAttemptQuarantinePlan> {
   const cutoff = normalizedLegacyAttemptQuarantineCutoff(input.cutoff);
   const existingPlanSha256 = await resolveLegacyAttemptQuarantineSingleUsePlan({
@@ -182,7 +187,7 @@ export async function previewLegacyAttemptQuarantinePlan(input: ScopeInput & {
   });
   if (existingPlanSha256) {
     try {
-      const existing = await loadLegacyAttemptQuarantinePlan({
+      const existing = await loadLegacyAttemptQuarantinePlanCandidate({
         controllerJobRootDir: input.controllerJobRootDir,
         expectedPlanSha256: existingPlanSha256,
       });
@@ -190,12 +195,33 @@ export async function previewLegacyAttemptQuarantinePlan(input: ScopeInput & {
         ...input,
         deniedRoots: input.deniedRoots ?? [],
       }, cutoff);
-      await validatePlanForReplay({
+      await revalidateLegacyAttemptQuarantinePlanForPublication({
         plan: existing,
         epochPlanSha256s: input.epochQuarantinePlanSha256s ?? [],
         captureProcessEvidence: input.captureProcessEvidence,
       });
-      return existing;
+      try {
+        await assertLegacyAttemptQuarantineActivePlan(
+          existing.controllerJobRootDir,
+          existing.planSha256,
+        );
+        return existing;
+      } catch (error) {
+        if (!isNodeError(error, "ENOENT")) throw error;
+      }
+      const complete = async () =>
+        await completeLegacyAttemptQuarantinePlanMarker({
+          controllerJobRootDir: input.controllerJobRootDir,
+          planSha256: existing.planSha256,
+          epochPlanSha256s: input.epochQuarantinePlanSha256s ?? [],
+          load: async () => await loadLegacyAttemptQuarantinePlan({
+            controllerJobRootDir: input.controllerJobRootDir,
+            expectedPlanSha256: existing.planSha256,
+          }),
+        });
+      return input.runBeforePlanPublication
+        ? await input.runBeforePlanPublication(existing, complete)
+        : await complete();
     } catch (error) {
       if (!isNodeError(error, "ENOENT")) throw error;
     }
@@ -281,7 +307,7 @@ export async function previewLegacyAttemptQuarantinePlan(input: ScopeInput & {
   const registry = await registrySnapshot(input.registryRootDir);
   const custodyPaths = custodyPathsForEntries(entries);
   const processEvidence = await input.captureProcessEvidence(custodyPaths);
-  assertProcessEvidence(processEvidence, custodyPaths);
+  assertLegacyAttemptProcessEvidence(processEvidence, custodyPaths);
   const boundAggregateBytes = entries.reduce((total, entry) => total +
     Buffer.from(entry.originalAttemptBase64, "base64").length +
     (entry.originalEventsBase64
@@ -315,30 +341,38 @@ export async function previewLegacyAttemptQuarantinePlan(input: ScopeInput & {
     boundAggregateBytes,
   };
   const plan = { ...unsigned, planSha256: sha256Json(unsigned) };
-  const publish = async (): Promise<LegacyAttemptQuarantinePlan> => {
-    await claimLegacyAttemptQuarantineSingleUse({
+  const publish = async () => await publishLegacyAttemptQuarantinePlanFirst({
       controllerJobRootDir: input.controllerJobRootDir,
       planSha256: plan.planSha256,
+      planPath: quarantinePlanPath(input.controllerJobRootDir, plan.planSha256),
+      plan,
       epochPlanSha256s: input.epochQuarantinePlanSha256s ?? [],
+      ...(input.crashAfterPlanPublication
+        ? { crashAfterPlanPublication: true }
+        : {}),
+      load: async () => await loadLegacyAttemptQuarantinePlan({
+        controllerJobRootDir: input.controllerJobRootDir,
+        expectedPlanSha256: plan.planSha256,
+      }),
     });
-    if (input.crashAfterActivePlanClaim) {
-      throw new Error("legacy_attempt_quarantine_simulated_claim_crash");
-    }
-    await durablePublishJsonFile({
-      path: quarantinePlanPath(input.controllerJobRootDir, plan.planSha256),
-      value: plan,
-    });
-    return await loadLegacyAttemptQuarantinePlan({
-      controllerJobRootDir: input.controllerJobRootDir,
-      expectedPlanSha256: plan.planSha256,
-    });
-  };
   return input.runBeforePlanPublication
     ? await input.runBeforePlanPublication(plan, publish)
     : await publish();
 }
 
 export async function loadLegacyAttemptQuarantinePlan(input: {
+  readonly controllerJobRootDir: string;
+  readonly expectedPlanSha256: string;
+}): Promise<LegacyAttemptQuarantinePlan> {
+  const plan = await loadLegacyAttemptQuarantinePlanCandidate(input);
+  await assertLegacyAttemptQuarantineActivePlan(
+    plan.controllerJobRootDir,
+    plan.planSha256,
+  );
+  return plan;
+}
+
+async function loadLegacyAttemptQuarantinePlanCandidate(input: {
   readonly controllerJobRootDir: string;
   readonly expectedPlanSha256: string;
 }): Promise<LegacyAttemptQuarantinePlan> {
@@ -353,10 +387,6 @@ export async function loadLegacyAttemptQuarantinePlan(input: {
     throw new Error("legacy_attempt_quarantine_plan_invalid");
   }
   assertPlanStructure(plan);
-  await assertLegacyAttemptQuarantineActivePlan(
-    plan.controllerJobRootDir,
-    plan.planSha256,
-  );
   return plan;
 }
 
@@ -407,7 +437,7 @@ export async function applyLegacyAttemptQuarantine(input: {
           await validateLegacyAttemptQuarantineReceipt(plan, existing);
         }
         const custodyPaths = custodyPathsForEntries(plan.entries);
-        assertProcessEvidence(
+        assertLegacyAttemptProcessEvidence(
           await input.captureProcessEvidence(custodyPaths),
           custodyPaths,
         );
@@ -416,7 +446,7 @@ export async function applyLegacyAttemptQuarantine(input: {
       await revalidatePlanBindings(plan);
       const custodyPaths = custodyPathsForEntries(plan.entries);
       const processEvidence = await input.captureProcessEvidence(custodyPaths);
-      assertProcessEvidence(processEvidence, custodyPaths);
+      assertLegacyAttemptProcessEvidence(processEvidence, custodyPaths);
       const progressPath = quarantineProgressPath(
         plan.controllerJobRootDir,
         plan.planSha256,
@@ -637,7 +667,7 @@ export async function validateLegacyAttemptQuarantineReceiptImmutable(
     throw new Error("legacy_attempt_quarantine_receipt_invalid");
   }
   const custodyPaths = custodyPathsForEntries(plan.entries);
-  assertProcessEvidence(receipt.processEvidence, custodyPaths);
+  assertLegacyAttemptProcessEvidence(receipt.processEvidence, custodyPaths);
   for (const [index, entry] of plan.entries.entries()) {
     const item = receipt.entries[index];
     const expectedPath = preservationPath(plan, entry.attemptId);
@@ -706,23 +736,6 @@ function assertProgress(
   }
 }
 
-function assertProcessEvidence(
-  evidence: LegacyAttemptProcessEvidence,
-  custodyPaths: readonly string[],
-): void {
-  if (evidence.schemaVersion !== 1 ||
-    !Number.isFinite(Date.parse(evidence.observedAt)) ||
-    JSON.stringify(evidence.custodyPaths) !== JSON.stringify(custodyPaths) ||
-    !Number.isSafeInteger(evidence.inspectedPidCount) ||
-    !/^[a-f0-9]{64}$/.test(evidence.inventorySha256) ||
-    !Array.isArray(evidence.blockers)) {
-    throw new Error("legacy_attempt_quarantine_process_evidence_invalid");
-  }
-  if (evidence.blockers.length > 0) {
-    throw new Error("legacy_attempt_quarantine_processes_active");
-  }
-}
-
 function assertPlanStructure(plan: LegacyAttemptQuarantinePlan): void {
   const expectedBoundAggregateBytes = plan.entries.reduce((total, entry) => total +
     Buffer.from(entry.originalAttemptBase64, "base64").length +
@@ -756,7 +769,10 @@ function assertPlanStructure(plan: LegacyAttemptQuarantinePlan): void {
     cutoff: plan.cutoff,
     now: new Date(plan.policyObservedAt),
   });
-  assertProcessEvidence(plan.processEvidence, custodyPathsForEntries(plan.entries));
+  assertLegacyAttemptProcessEvidence(
+    plan.processEvidence,
+    custodyPathsForEntries(plan.entries),
+  );
   const ids = new Set<string>();
   for (const entry of plan.entries) {
     const bytes = Buffer.from(entry.originalAttemptBase64, "base64");
@@ -890,7 +906,7 @@ function exactStrings(values: readonly string[]): readonly string[] {
   return [...new Set(values)].sort();
 }
 
-async function validatePlanForReplay(input: {
+export async function revalidateLegacyAttemptQuarantinePlanForPublication(input: {
   readonly plan: LegacyAttemptQuarantinePlan;
   readonly epochPlanSha256s: readonly string[];
   readonly captureProcessEvidence: (
@@ -911,7 +927,7 @@ async function validatePlanForReplay(input: {
     await revalidatePlanBindings(input.plan);
   }
   const custodyPaths = custodyPathsForEntries(input.plan.entries);
-  assertProcessEvidence(
+  assertLegacyAttemptProcessEvidence(
     await input.captureProcessEvidence(custodyPaths),
     custodyPaths,
   );

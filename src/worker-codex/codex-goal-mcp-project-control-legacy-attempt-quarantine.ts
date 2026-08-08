@@ -9,12 +9,15 @@ import {
   applyLegacyAttemptQuarantine,
   loadLegacyAttemptQuarantinePlan,
   previewLegacyAttemptQuarantinePlan,
+  revalidateLegacyAttemptQuarantinePlanForPublication,
   type LegacyAttemptQuarantinePlan,
   type ActiveLegacyAttemptQuarantine,
 } from "./application/project-control/codex-goal-legacy-attempt-quarantine";
 import { captureLegacyAttemptProcessEvidence } from
   "./application/project-control/codex-goal-legacy-attempt-process-evidence";
-import { resolveLegacyAttemptQuarantine } from
+import type { LegacyAttemptProcessEvidence } from
+  "./application/project-control/codex-goal-legacy-attempt-process-evidence";
+import { resolveEpochAnchoredLegacyAttemptQuarantine } from
   "./application/project-control/codex-goal-legacy-attempt-quarantine-resolution";
 import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
 import {
@@ -35,9 +38,9 @@ type JsonObject = Readonly<Record<string, unknown>>;
 
 export type LegacyAttemptQuarantineDeps = CodexGoalMcpProjectControlAdminDeps & {
   readonly captureProcessEvidence?: typeof captureLegacyAttemptProcessEvidence;
-  readonly resolveActiveQuarantine?: (
+  readonly resolveEpochAnchoredQuarantine?: (
     loaded: LoadedProjectControlController,
-  ) => Promise<ActiveLegacyAttemptQuarantine>;
+  ) => Promise<ActiveLegacyAttemptQuarantine | undefined>;
 };
 
 export async function projectControlLegacyAttemptQuarantineView(
@@ -69,6 +72,7 @@ export async function projectControlLegacyAttemptQuarantineView(
           deps,
           locks,
           candidate,
+          captureProcessEvidence: capture,
           effect,
         }),
     });
@@ -157,13 +161,15 @@ async function resolveQuarantinePlanSha256s(
   loaded: LoadedProjectControlController,
   deps: LegacyAttemptQuarantineDeps,
 ): Promise<readonly string[]> {
-  const active = deps.resolveActiveQuarantine
-    ? await deps.resolveActiveQuarantine(loaded)
-    : await resolveLegacyAttemptQuarantine({
+  const active = deps.resolveEpochAnchoredQuarantine
+    ? await deps.resolveEpochAnchoredQuarantine(loaded)
+    : await resolveEpochAnchoredLegacyAttemptQuarantine({
         controllerJobRootDir: loaded.controller.jobRootDir,
         scope: loaded.scope,
       });
-  return [...new Set(active.debt.map((item) => item.planSha256))].sort();
+  return active
+    ? [...new Set(active.debt.map((item) => item.planSha256))].sort()
+    : [];
 }
 
 function assertLegacyAttemptQuarantinePlanReplayOwned(
@@ -195,6 +201,9 @@ async function withQuarantinePublicationGuard<T>(input: {
   readonly deps: LegacyAttemptQuarantineDeps;
   readonly locks: ReturnType<typeof projectControlWorkspaceLocks>;
   readonly candidate: LegacyAttemptQuarantinePlan;
+  readonly captureProcessEvidence: (
+    custodyPaths: readonly string[],
+  ) => Promise<LegacyAttemptProcessEvidence>;
   readonly effect: () => Promise<T>;
 }): Promise<T> {
   const lease = await input.locks.acquire({
@@ -212,6 +221,11 @@ async function withQuarantinePublicationGuard<T>(input: {
     fence = await acquireLocalControllerMaintenanceFence({
       controllerJobRootDir: locked.controller.jobRootDir,
       owner: `legacy-attempt-quarantine-plan:${input.candidate.planSha256}`,
+    });
+    await revalidateLegacyAttemptQuarantinePlanForPublication({
+      plan: input.candidate,
+      epochPlanSha256s: await resolveQuarantinePlanSha256s(locked, input.deps),
+      captureProcessEvidence: input.captureProcessEvidence,
     });
     return await input.effect();
   } finally {

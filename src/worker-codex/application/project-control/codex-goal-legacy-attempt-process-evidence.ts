@@ -20,6 +20,23 @@ const MAX_PROCESS_COUNT = 65_536;
 const MAX_FD_COUNT_PER_PROCESS = 4_096;
 const MAX_CMDLINE_BYTES = 1024 * 1024;
 
+export function assertLegacyAttemptProcessEvidence(
+  evidence: LegacyAttemptProcessEvidence,
+  custodyPaths: readonly string[],
+): void {
+  if (evidence.schemaVersion !== 1 ||
+    !Number.isFinite(Date.parse(evidence.observedAt)) ||
+    JSON.stringify(evidence.custodyPaths) !== JSON.stringify(custodyPaths) ||
+    !Number.isSafeInteger(evidence.inspectedPidCount) ||
+    !/^[a-f0-9]{64}$/.test(evidence.inventorySha256) ||
+    !Array.isArray(evidence.blockers)) {
+    throw new Error("legacy_attempt_quarantine_process_evidence_invalid");
+  }
+  if (evidence.blockers.length > 0) {
+    throw new Error("legacy_attempt_quarantine_processes_active");
+  }
+}
+
 /**
  * Capture fail-closed Linux process evidence for legacy integration custody.
  * Raw argv is deliberately not persisted because it can contain credentials.

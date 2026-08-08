@@ -22,10 +22,24 @@ export async function resolveLegacyAttemptQuarantine(input: {
     readonly readLive?: typeof readActiveLegacyAttemptQuarantine;
   };
 }): Promise<ActiveLegacyAttemptQuarantine> {
+  const anchored = await resolveEpochAnchoredLegacyAttemptQuarantine(input);
+  if (anchored) return anchored;
+  const readLive = input.deps?.readLive ?? readActiveLegacyAttemptQuarantine;
+  return await readLive(input.controllerJobRootDir);
+}
+
+export async function resolveEpochAnchoredLegacyAttemptQuarantine(input: {
+  readonly controllerJobRootDir: string;
+  readonly scope: ProjectAccessScope;
+  readonly deps?: {
+    readonly resolveEpochReceipt?: typeof resolveConsumedOutputLedgerEpochReceipt;
+    readonly resolvePendingEpochPlan?: typeof resolvePendingConsumedOutputLedgerEpochPlan;
+    readonly readStable?: typeof readStableLegacyAttemptQuarantine;
+  };
+}): Promise<ActiveLegacyAttemptQuarantine | undefined> {
   const resolveEpochReceipt = input.deps?.resolveEpochReceipt ??
     resolveConsumedOutputLedgerEpochReceipt;
   const readStable = input.deps?.readStable ?? readStableLegacyAttemptQuarantine;
-  const readLive = input.deps?.readLive ?? readActiveLegacyAttemptQuarantine;
   const resolvePendingEpochPlan = input.deps?.resolvePendingEpochPlan ??
     resolvePendingConsumedOutputLedgerEpochPlan;
   const roots = input.scope.consumedOutputLedgerRoots ?? [];
@@ -49,7 +63,7 @@ export async function resolveLegacyAttemptQuarantine(input: {
       }
     }
   }
-  return await readLive(input.controllerJobRootDir);
+  return undefined;
 }
 
 function isNodeError(error: unknown, code: string): boolean {

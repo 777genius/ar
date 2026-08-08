@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProjectAccessScope } from
@@ -6,6 +6,7 @@ import type { ProjectAccessScope } from
 import {
   applyLegacyAttemptQuarantine,
   previewLegacyAttemptQuarantinePlan,
+  revalidateLegacyAttemptQuarantinePlanForPublication,
 } from "../application/project-control/codex-goal-legacy-attempt-quarantine";
 import { buildLiveLegacyAttemptQuarantineEpochAnchor } from
   "../application/project-control/codex-goal-legacy-attempt-quarantine-anchor";
@@ -28,6 +29,34 @@ const observedAt = "2026-08-10T00:02:00.000Z";
 afterEach(async () => await cleanupReconciliationFixtures());
 
 describe("legacy attempt quarantine handler", () => {
+  it("rejects critical binding drift inside the publication fence", async () => {
+    const fixture = await reconciliationFixture({
+      incorporated: false,
+      incidentEnvelope: true,
+    });
+    const source = await previewStaleIntegrationReconciliationPlan(fixture.scope);
+    await expect(previewLegacyAttemptQuarantinePlan({
+      ...fixture.scope,
+      sourceStaleIntegrationPlanSha256: source.planSha256,
+      cutoff,
+      now: () => new Date(observedAt),
+      captureProcessEvidence: evidence,
+      runBeforePlanPublication: async (plan, publish) => {
+        await writeFile(fixture.eventsPath, "{}\n");
+        await revalidateLegacyAttemptQuarantinePlanForPublication({
+          plan,
+          epochPlanSha256s: [],
+          captureProcessEvidence: evidence,
+        });
+        return await publish();
+      },
+    })).rejects.toThrow("legacy_attempt_quarantine_binding_drift");
+    await expect(access(join(fixture.controllerJobRootDir, "project-integration",
+      "legacy-attempt-quarantine", "plans"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("blocks epoch planning after a claim crash and resumes the exact plan", async () => {
     const fixture = await reconciliationFixture({
       incorporated: false,
@@ -43,13 +72,23 @@ describe("legacy attempt quarantine handler", () => {
     };
     await expect(previewLegacyAttemptQuarantinePlan({
       ...input,
-      crashAfterActivePlanClaim: true,
-    })).rejects.toThrow("legacy_attempt_quarantine_simulated_claim_crash");
+      crashAfterPlanPublication: true,
+    })).rejects.toThrow("legacy_attempt_quarantine_simulated_plan_crash");
     await expect(buildLiveLegacyAttemptQuarantineEpochAnchor(
       fixture.controllerJobRootDir,
     )).rejects.toThrow("legacy_attempt_quarantine_pending_claim_blocks_epoch");
-    const recovered = await previewLegacyAttemptQuarantinePlan(input);
+    const recovered = await previewLegacyAttemptQuarantinePlan({
+      ...input,
+      now: () => new Date("2026-08-12T00:02:00.000Z"),
+      captureProcessEvidence: async (custodyPaths) => ({
+        ...(await evidence(custodyPaths)),
+        observedAt: "2026-08-12T00:01:00.000Z",
+        inventorySha256: "c".repeat(64),
+      }),
+    });
     expect(recovered.entries).toHaveLength(17);
+    expect(recovered.policyObservedAt).toBe(observedAt);
+    expect(recovered.processEvidence.observedAt).toBe(observedAt);
     await expect(buildLiveLegacyAttemptQuarantineEpochAnchor(
       fixture.controllerJobRootDir,
     )).rejects.toThrow("legacy_attempt_quarantine_pending_claim_blocks_epoch");
@@ -84,7 +123,7 @@ describe("legacy attempt quarantine handler", () => {
       captureProcessEvidence: async (input: {
         readonly custodyPaths: readonly string[];
       }) => await evidence(input.custodyPaths),
-      resolveActiveQuarantine: async () => ({
+      resolveEpochAnchoredQuarantine: async () => ({
         attemptIds: new Set(plan.entries.map((entry) => entry.attemptId)),
         debt: plan.entries.map((entry) => ({
           attemptId: entry.attemptId,
@@ -99,13 +138,32 @@ describe("legacy attempt quarantine handler", () => {
       sourceStaleIntegrationPlanSha256: source.planSha256,
       legacyAttemptQuarantineCutoff: cutoff,
     };
-    await expect(projectControlLegacyAttemptQuarantineView(args, deps))
-      .resolves.toMatchObject({ planSha256: plan.planSha256 });
-    await expect(projectControlLegacyAttemptQuarantineView({
+    const confirmArgs = {
       ...args,
       confirmLegacyAttemptQuarantine: true,
       expectedLegacyAttemptQuarantinePlanSha256: plan.planSha256,
-    }, deps)).resolves.toMatchObject({ idempotentReplay: true });
+    };
+    const {
+      resolveEpochAnchoredQuarantine: _anchored,
+      ...preEpochDeps
+    } = deps;
+    for (const drifted of [
+      loaded,
+      { ...loaded, registryRootDir: join(fixture.root, "other-registry") },
+      { ...loaded, scope: {
+        ...loaded.scope,
+        workspaceRoots: (loaded.scope.workspaceRoots ?? []).slice(1),
+      } },
+    ]) {
+      await expect(projectControlLegacyAttemptQuarantineView(confirmArgs, {
+        ...preEpochDeps,
+        loadProjectControlController: async () => drifted,
+      })).rejects.toThrow("legacy_attempt_quarantine_controller_scope_drift");
+    }
+    await expect(projectControlLegacyAttemptQuarantineView(args, deps))
+      .resolves.toMatchObject({ planSha256: plan.planSha256 });
+    await expect(projectControlLegacyAttemptQuarantineView(confirmArgs, deps))
+      .resolves.toMatchObject({ idempotentReplay: true });
     await expect(projectControlLegacyAttemptQuarantineView({
       ...args,
       legacyAttemptQuarantineCutoff: "2026-08-07T00:02:00.000Z",

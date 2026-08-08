@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ConsumedOutputLedgerEpochReceipt } from
   "@vioxen/subscription-runtime/worker-core";
-import { resolveLegacyAttemptQuarantine } from
+import {
+  resolveEpochAnchoredLegacyAttemptQuarantine,
+  resolveLegacyAttemptQuarantine,
+} from
   "../application/project-control/codex-goal-legacy-attempt-quarantine-resolution";
 
 describe("legacy attempt quarantine resolution", () => {
@@ -65,5 +68,23 @@ describe("legacy attempt quarantine resolution", () => {
       },
     })).resolves.toMatchObject({ debt: [] });
     expect(readLive).toHaveBeenCalledOnce();
+  });
+
+  it("does not classify a live pre-epoch receipt as immutable custody", async () => {
+    await expect(resolveEpochAnchoredLegacyAttemptQuarantine({
+      controllerJobRootDir: "/controller",
+      scope: { projectId: "project", consumedOutputLedgerRoots: ["/old"] },
+      deps: {
+        resolveEpochReceipt: async () => {
+          const error = new Error("missing");
+          Object.assign(error, { code: "ENOENT" });
+          throw error;
+        },
+        resolvePendingEpochPlan: async () => undefined,
+        readStable: async () => {
+          throw new Error("stable custody must not be read");
+        },
+      },
+    })).resolves.toBeUndefined();
   });
 });
