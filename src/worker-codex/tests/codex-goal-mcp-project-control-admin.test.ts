@@ -1,16 +1,84 @@
+import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AccessBoundary, NetworkAccessMode } from "@vioxen/subscription-runtime/worker-core";
 import {
+  assertStaleReconciliationPlanOwned,
   projectControlRepairLegacyOutputDebtView,
   resolveProjectControlRepairWorkspaceMode,
+  staleReconciliationControllerScopeEpoch,
 } from "../codex-goal-mcp-project-control-admin";
+import type {
+  StaleIntegrationReconciliationPlan,
+} from "../application/project-control/codex-goal-stale-integration-reconciliation";
 import { projectControlWorkspaceLocks } from "../codex-goal-project-workspace-lock";
 import type { CodexGoalJobManifest, CodexGoalJobSummary } from "../codex-goal-jobs";
 
 describe("project-control manifest repair workspace mode", () => {
+  it("rebinds a persisted stale-reconciliation plan to the exact controller epoch", () => {
+    const registryRootDir = "/tmp/stale-scope/registry";
+    const workspacePath = "/tmp/stale-scope/workspace";
+    const jobRootDir = "/tmp/stale-scope/controller";
+    const scope = {
+      projectId: "social-monitor",
+      workspaceRoots: [workspacePath],
+      worktreeRoots: [],
+      deniedRoots: ["/tmp/stale-scope/denied"],
+      allowedGitRemotes: ["origin"],
+      allowedBranches: ["main"],
+    };
+    const controller: CodexGoalJobManifest = {
+      schemaVersion: 1,
+      jobId: "social-monitor-controller-v4",
+      createdAt: "2026-08-08T00:00:00.000Z",
+      updatedAt: "2026-08-08T00:00:01.000Z",
+      jobRootDir,
+      workspacePath,
+      promptPath: `${jobRootDir}/prompt.md`,
+      taskId: "social-monitor-controller-v4",
+      accounts: ["account-d"],
+      projectAccessScope: scope,
+      accessBoundary: AccessBoundary.ProjectScopedControl,
+    };
+    const plan: StaleIntegrationReconciliationPlan = {
+      schemaVersion: 1,
+      controllerJobId: controller.jobId,
+      projectId: scope.projectId,
+      registryRootDir,
+      controllerJobRootDir: jobRootDir,
+      controllerManifestSha256: createHash("sha256")
+        .update(JSON.stringify(controller)).digest("hex"),
+      controllerScopeEpochSha256: staleReconciliationControllerScopeEpoch({
+        registryRootDir,
+        controller,
+        scope,
+      }),
+      gitBinaryPath: "/usr/bin/git",
+      targetWorkspaceRoots: [workspacePath],
+      deniedRoots: [...scope.deniedRoots],
+      allowedGitRemotes: [...scope.allowedGitRemotes],
+      allowedBranches: [...scope.allowedBranches],
+      entries: [],
+      planSha256: "b".repeat(64),
+    };
+    const loaded = { registryRootDir, controller, scope };
+    expect(() => assertStaleReconciliationPlanOwned({ plan, loaded }))
+      .not.toThrow();
+    expect(() => assertStaleReconciliationPlanOwned({
+      plan,
+      loaded: {
+        ...loaded,
+        controller: { ...controller, updatedAt: "2026-08-08T00:00:02.000Z" },
+      },
+    })).toThrow("stale_integration_reconciliation_controller_scope_drift");
+    expect(() => assertStaleReconciliationPlanOwned({
+      plan,
+      loaded: { ...loaded, scope: { ...scope, allowedGitRemotes: ["upstream"] } },
+    })).toThrow("stale_integration_reconciliation_controller_scope_drift");
+  });
+
   it("prefers an exact reviewed snapshot over stale admitted-patch quota classification", () => {
     expect(
       resolveProjectControlRepairWorkspaceMode({

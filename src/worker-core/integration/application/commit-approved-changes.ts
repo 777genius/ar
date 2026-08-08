@@ -32,6 +32,7 @@ import {
   loadIntegrationAttempt,
   nowIso,
   recordIntegrationAudit,
+  runIntegrationTransaction,
   type IntegrationUseCaseDeps,
 } from "./common";
 
@@ -49,6 +50,15 @@ export type CommitApprovedChangesInput = {
 };
 
 export async function commitApprovedChanges(
+  deps: CommitApprovedChangesDeps,
+  input: CommitApprovedChangesInput,
+): Promise<IntegrationAttempt> {
+  return await runIntegrationTransaction(deps, input.attemptId, async () =>
+    await commitApprovedChangesTransaction(deps, input)
+  );
+}
+
+async function commitApprovedChangesTransaction(
   deps: CommitApprovedChangesDeps,
   input: CommitApprovedChangesInput,
 ): Promise<IntegrationAttempt> {

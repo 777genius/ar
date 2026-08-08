@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
+import { resolve } from "node:path";
 import {
   LocalConsumedOutputLedgerMutationLock,
 } from "@vioxen/subscription-runtime/worker-local";
@@ -37,6 +39,7 @@ import {
   withValidatedProjectWorkspaceLock,
 } from "./codex-goal-project-workspace-lock";
 import { projectControlCanonicalWorkspacePath } from "./application/project-control/codex-goal-project-workspace-scope";
+import { controllerScopeLockIdentity } from "./codex-goal-mcp-project-control-ledger-epoch";
 import { rebindProjectPreStartAdmissionManifest } from "./application/project-control/codex-goal-project-pre-start-admission";
 import { isAdmittedInputPatchCapacityContinuation } from "./application/project-control/codex-goal-project-admitted-input-patch-continuation";
 import {
@@ -83,6 +86,11 @@ import {
   type LegacyConsumedOutputCandidate,
   type LegacyConsumedOutputProof,
 } from "./application/project-control/legacy-consumed-output-repair";
+import {
+  applyStaleIntegrationReconciliation,
+  loadStaleIntegrationReconciliationPlan,
+  previewStaleIntegrationReconciliationPlan,
+} from "./application/project-control/codex-goal-stale-integration-reconciliation";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -235,6 +243,161 @@ export async function projectControlRepairLegacyOutputDebtView(
     admissionBefore: snapshot.counts ?? {},
     admissionAfter: verifiedSnapshot.counts ?? {},
   };
+}
+
+export async function projectControlReconcileStaleIntegrationsView(
+  args: ProjectControlMcpArgs,
+  deps: CodexGoalMcpProjectControlAdminDeps,
+): Promise<JsonObject> {
+  const loaded = await deps.loadProjectControlController(args);
+  if (booleanValue(args.confirmStaleIntegrationReconciliation) !== true) {
+    const plan = await previewStaleIntegrationReconciliationPlan({
+      controllerJobId: loaded.controller.jobId,
+      projectId: loaded.scope.projectId,
+      registryRootDir: loaded.registryRootDir,
+      controllerJobRootDir: loaded.controller.jobRootDir,
+      controllerManifestSha256: staleReconciliationControllerFingerprint(
+        loaded.controller,
+      ),
+      controllerScopeEpochSha256:
+        staleReconciliationControllerScopeEpoch(loaded),
+      targetWorkspaceRoots: [
+        ...(loaded.scope.workspaceRoots ?? []),
+        ...(loaded.scope.worktreeRoots ?? []),
+      ],
+      deniedRoots: loaded.scope.deniedRoots ?? [],
+      allowedGitRemotes: loaded.scope.allowedGitRemotes ?? [],
+      allowedBranches: loaded.scope.allowedBranches ?? [],
+    });
+    return {
+      ok: false,
+      reason: "confirm_stale_integration_reconciliation_required",
+      mode: "project_control_stale_integration_reconciliation",
+      planSha256: plan.planSha256,
+      eligibleCount: plan.entries.filter((entry) => entry.eligible).length,
+      refusedCount: plan.entries.filter((entry) => !entry.eligible).length,
+      entries: plan.entries,
+    };
+  }
+  const expected = stringValue(args.expectedStaleIntegrationPlanSha256);
+  if (!expected) throw new Error("stale_integration_reconciliation_plan_sha_required");
+  const plan = await loadStaleIntegrationReconciliationPlan({
+    controllerJobRootDir: loaded.controller.jobRootDir,
+    expectedPlanSha256: expected,
+  });
+  const locks = projectControlWorkspaceLocks(loaded.registryRootDir);
+  const controllerLease = await locks.acquire({
+    workspacePath: controllerScopeLockIdentity(
+      loaded.registryRootDir,
+      loaded.controller.jobId,
+    ),
+    owner: `stale-integration-reconciliation-scope:${expected}`,
+  });
+  try {
+    const workspacePaths = [...new Set(plan.entries.map((entry) =>
+      entry.targetWorkspacePath
+    ))].sort();
+    return await applyStaleIntegrationReconciliation({
+      expectedPlanSha256: expected,
+      controllerJobRootDir: loaded.controller.jobRootDir,
+      runAfterControllerScopeRevalidation: async (effect) => {
+        const locked = await deps.loadProjectControlController(args);
+        assertStaleReconciliationPlanOwned({ plan, loaded: locked });
+        return await withStaleReconciliationTargetLocks({
+          locks,
+          scope: locked.scope,
+          workspacePaths,
+          owner: `stale-integration-reconciliation:${expected}`,
+          effect,
+        });
+      },
+    });
+  } finally {
+    await locks.release(controllerLease);
+  }
+}
+
+export function assertStaleReconciliationPlanOwned(input: {
+  readonly plan: Awaited<ReturnType<typeof loadStaleIntegrationReconciliationPlan>>;
+  readonly loaded: LoadedProjectControlController;
+}): void {
+  const targetWorkspaceRoots = [...new Set([
+    ...(input.loaded.scope.workspaceRoots ?? []),
+    ...(input.loaded.scope.worktreeRoots ?? []),
+  ].map((root) => resolve(root)))].sort();
+  const deniedRoots = [...new Set((input.loaded.scope.deniedRoots ?? [])
+    .map((root) => resolve(root)))].sort();
+  const allowedGitRemotes = [...new Set(
+    input.loaded.scope.allowedGitRemotes ?? [],
+  )].sort();
+  const allowedBranches = [...new Set(
+    input.loaded.scope.allowedBranches ?? [],
+  )].sort();
+  if (input.plan.controllerJobId !== input.loaded.controller.jobId ||
+    input.plan.projectId !== input.loaded.scope.projectId ||
+    input.plan.registryRootDir !== resolve(input.loaded.registryRootDir) ||
+    input.plan.controllerJobRootDir !== resolve(input.loaded.controller.jobRootDir) ||
+    input.plan.controllerManifestSha256 !==
+      staleReconciliationControllerFingerprint(input.loaded.controller) ||
+    input.plan.controllerScopeEpochSha256 !==
+      staleReconciliationControllerScopeEpoch(input.loaded) ||
+    JSON.stringify(input.plan.targetWorkspaceRoots) !==
+      JSON.stringify(targetWorkspaceRoots) ||
+    JSON.stringify(input.plan.deniedRoots) !== JSON.stringify(deniedRoots) ||
+    JSON.stringify(input.plan.allowedGitRemotes) !==
+      JSON.stringify(allowedGitRemotes) ||
+    JSON.stringify(input.plan.allowedBranches) !== JSON.stringify(allowedBranches)) {
+    throw new Error("stale_integration_reconciliation_controller_scope_drift");
+  }
+}
+
+export function staleReconciliationControllerScopeEpoch(
+  loaded: LoadedProjectControlController,
+): string {
+  const scope = loaded.scope;
+  return createHash("sha256").update(JSON.stringify({
+    controllerManifestSha256:
+      staleReconciliationControllerFingerprint(loaded.controller),
+    controllerJobId: loaded.controller.jobId,
+    projectId: scope.projectId,
+    registryRootDir: resolve(loaded.registryRootDir),
+    controllerJobRootDir: resolve(loaded.controller.jobRootDir),
+    targetWorkspaceRoots: [...new Set([
+      ...(scope.workspaceRoots ?? []),
+      ...(scope.worktreeRoots ?? []),
+    ].map((root) => resolve(root)))].sort(),
+    deniedRoots: [...new Set((scope.deniedRoots ?? [])
+      .map((root) => resolve(root)))].sort(),
+    allowedGitRemotes: [...new Set(scope.allowedGitRemotes ?? [])].sort(),
+    allowedBranches: [...new Set(scope.allowedBranches ?? [])].sort(),
+  })).digest("hex");
+}
+
+function staleReconciliationControllerFingerprint(
+  controller: CodexGoalJobManifest,
+): string {
+  return createHash("sha256").update(JSON.stringify(controller)).digest("hex");
+}
+
+async function withStaleReconciliationTargetLocks<T>(input: {
+  readonly locks: ReturnType<typeof projectControlWorkspaceLocks>;
+  readonly scope: ProjectAccessScope;
+  readonly workspacePaths: readonly string[];
+  readonly owner: string;
+  readonly effect: () => Promise<T>;
+}): Promise<T> {
+  const acquireNext = async (index: number): Promise<T> => {
+    const workspacePath = input.workspacePaths[index];
+    if (workspacePath === undefined) return await input.effect();
+    return await withValidatedProjectWorkspaceLock({
+      locks: input.locks,
+      scope: input.scope,
+      requestedWorkspacePath: workspacePath,
+      owner: input.owner,
+      effect: async () => await acquireNext(index + 1),
+    });
+  };
+  return await acquireNext(0);
 }
 
 async function withLegacyOutputRepairWorkspaceCustody<T>(input: {
@@ -394,11 +557,38 @@ export async function projectControlUpdateControllerScopeView(
     };
   }
 
-  const manifest = await updateCodexGoalJob({
-    registryRootDir: controller.registryRootDir,
-    jobId: controller.controller.jobId,
-    patch: { projectAccessScope: proposedScope },
+  const locks = projectControlWorkspaceLocks(controller.registryRootDir);
+  const expectedManifestSha256 = createHash("sha256")
+    .update(JSON.stringify(controller.controller))
+    .digest("hex");
+  const lease = await locks.acquire({
+    workspacePath: controllerScopeLockIdentity(
+      controller.registryRootDir,
+      controller.controller.jobId,
+    ),
+    owner: `controller-scope-update:${controller.controller.jobId}`,
   });
+  let manifest;
+  try {
+    const current = await deps.loadProjectControlController(args);
+    const currentManifestSha256 = createHash("sha256")
+      .update(JSON.stringify(current.controller))
+      .digest("hex");
+    if (currentManifestSha256 !== expectedManifestSha256) {
+      throw new Error("project_control_controller_scope_cas_mismatch");
+    }
+    assertProjectControlScopeRepairAllowed({
+      existing: current.scope,
+      proposed: proposedScope,
+    });
+    manifest = await updateCodexGoalJob({
+      registryRootDir: current.registryRootDir,
+      jobId: current.controller.jobId,
+      patch: { projectAccessScope: proposedScope },
+    });
+  } finally {
+    await locks.release(lease);
+  }
   return {
     ok: true,
     mode: "project_control_update_controller_scope",

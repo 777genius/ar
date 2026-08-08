@@ -373,7 +373,7 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
   }
 }
 
-function ledgerFilenameMatchesPayload(
+export function ledgerFilenameMatchesPayload(
   filename: string,
   value: unknown,
 ): boolean {
