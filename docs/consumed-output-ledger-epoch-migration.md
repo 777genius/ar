@@ -69,19 +69,34 @@ evidence that cannot be admitted as valid.
    device/inode, mode, size and byte hash. Confirm with that SHA only.
    Reconciliation revalidates the controller CAS, runs under the controller
    maintenance fence and target locks, records durable per-attempt progress,
-   and resumes idempotently after interruption. Refused or ambiguous entries
-   must be investigated rather than bypassed.
-2. Pause new work, wait for all project-control/integration operations to reach
+   and resumes idempotently after interruption.
+2. If the exact persisted stale plan contains investigated legacy attempts that
+   still cannot be terminalized safely, preview
+   `codex_goal_project_quarantine_legacy_integration_attempts` with that
+   `sourceStaleIntegrationPlanSha256` and an ISO cutoff that excludes new work.
+   The custody plan imports the complete source plan atomically; callers cannot
+   supply attempt IDs, dispositions or free-form refusal reasons. It preserves
+   attempt and event bytes, controller/scope/registry/workspace/process custody,
+   and records eligible entries separately from unresolved evidence. Confirm
+   only the returned `expectedLegacyAttemptQuarantinePlanSha256`. The active
+   receipt explicitly states that source was not mutated, lifecycle was not
+   terminalized, rollback and ledger consumption were not claimed, and the
+   exception is terminal for ledger-epoch quiescence only. Any byte, scope,
+   registry, workspace, process or source-plan drift blocks activation. Normal
+   integration mutators also reject attempt IDs covered by an active receipt.
+   The same MCP operation is available from the CLI without a second code path:
+   `subscription-runtime-codex-goal tool codex_goal_project_quarantine_legacy_integration_attempts --args-file <json>`.
+3. Pause new work, wait for all other project-control/integration operations to reach
    terminal state, then drain and reconnect all old MCP/OpenAI bridge processes.
    Record admission and confirm the controller points at the intended old root.
-3. Call the migration tool without confirmation. Save `planSha256`,
+4. Call the migration tool without confirmation. Save `planSha256`,
    `oldRootHash`, file count, migrated count and quarantine count.
-4. Review the bounded counts and paths, then call the same tool with
+5. Review the bounded counts and paths, then call the same tool with
    `expectedLedgerEpochPlanSha256` and `confirmLedgerEpochMigration=true`.
-5. Read another admission snapshot. Confirm the active root contains
+6. Read another admission snapshot. Confirm the active root contains
    `ledger-epoch-receipt.json` and the returned before/after comparison matches
    the observed result.
-6. Point maintenance and janitor code at
+7. Point maintenance and janitor code at
    `resolveConsumedOutputMaintenanceLedgerRoot(scope)`. It selects the active
    scope root and verifies an epoch receipt when present; do not hardcode a
    historical ledger root.

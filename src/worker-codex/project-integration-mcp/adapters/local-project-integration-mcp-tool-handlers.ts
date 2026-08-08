@@ -31,7 +31,7 @@ import { projectControlWorkspaceLockRoot } from "../../codex-goal-project-worksp
 
 export type CreateLocalProjectIntegrationMcpToolHandlersOptions = Pick<
   CreateProjectIntegrationMcpToolHandlersOptions,
-  "loadController" | "resolvePathArg"
+  "loadController" | "resolvePathArg" | "assertAttemptMutable"
 >;
 
 export function createLocalProjectIntegrationMcpToolHandlers(

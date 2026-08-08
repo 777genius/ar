@@ -44,6 +44,13 @@ import {
 } from "./codex-goal-mcp-values";
 import { assertNoLedgerEpochWriterProcesses } from
   "./application/project-control/codex-goal-ledger-epoch-process-guard";
+import {
+  loadLegacyAttemptQuarantinePlan,
+  readActiveLegacyAttemptQuarantine,
+} from
+  "./application/project-control/codex-goal-legacy-attempt-quarantine";
+import { captureLegacyAttemptProcessEvidence } from
+  "./application/project-control/codex-goal-legacy-attempt-process-evidence";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -390,11 +397,31 @@ async function assertControllerQuiescent(jobRootDir: string): Promise<void> {
     new Set(["completed", "failed"]),
     "ledger_epoch_project_control_operation_in_flight",
   );
+  const quarantine = await readActiveLegacyAttemptQuarantine(jobRootDir);
+  if (quarantine.debt.length > 0) {
+    const plans = await Promise.all([...new Set(quarantine.debt.map((item) =>
+      item.planSha256
+    ))].map(async (planSha256) => await loadLegacyAttemptQuarantinePlan({
+      controllerJobRootDir: jobRootDir,
+      expectedPlanSha256: planSha256,
+    })));
+    const custodyPaths = [...new Set(plans.flatMap((plan) =>
+      plan.entries.flatMap((entry) => [
+        entry.sourceWorkspace.declaredPath,
+        entry.targetWorkspace.declaredPath,
+      ])
+    ))].sort();
+    const evidence = await captureLegacyAttemptProcessEvidence({ custodyPaths });
+    if (evidence.blockers.length > 0) {
+      throw new Error("ledger_epoch_quarantined_attempt_process_active");
+    }
+  }
   await assertJsonRecordsTerminal(
     join(jobRootDir, "project-integration", "integration-attempts"),
     "attempt.json",
     new Set(["pushed", "rejected"]),
     "ledger_epoch_integration_attempt_in_flight",
+    quarantine.attemptIds,
   );
 }
 
@@ -403,6 +430,7 @@ async function assertJsonRecordsTerminal(
   fileName: string,
   terminal: ReadonlySet<string>,
   errorCode: string,
+  quarantinedIds: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   let entries;
   try {
@@ -416,7 +444,9 @@ async function assertJsonRecordsTerminal(
     const value: unknown = JSON.parse(
       await readFile(join(root, entry.name, fileName), "utf8"),
     );
-    if (!isRecord(value) || typeof value.status !== "string" || !terminal.has(value.status)) {
+    if (!isRecord(value) || typeof value.status !== "string" ||
+      (!terminal.has(value.status) &&
+        (typeof value.attemptId !== "string" || !quarantinedIds.has(value.attemptId)))) {
       throw new Error(errorCode);
     }
   }

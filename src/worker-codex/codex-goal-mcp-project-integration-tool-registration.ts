@@ -15,11 +15,21 @@ import {
 import {
   createLocalProjectIntegrationMcpToolHandlers,
 } from "./project-integration-mcp/adapters/local-project-integration-mcp-tool-handlers";
+import { readActiveLegacyAttemptQuarantine } from
+  "./application/project-control/codex-goal-legacy-attempt-quarantine";
 
 export function registerCodexGoalProjectIntegrationTools(server: McpServer): void {
   const projectIntegrationHandlers = createLocalProjectIntegrationMcpToolHandlers({
     loadController: loadProjectControlController,
     resolvePathArg: projectControlPathArg,
+    assertAttemptMutable: async (controller, attemptId) => {
+      const quarantine = await readActiveLegacyAttemptQuarantine(
+        controller.controller.jobRootDir,
+      );
+      if (quarantine.attemptIds.has(attemptId)) {
+        throw new Error("project_integration_attempt_quarantined");
+      }
+    },
   });
   registerProjectIntegrationMcpTools(server, {
     openAttempt: (args) => withMcpErrors(async () =>

@@ -181,6 +181,10 @@ export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
   readonly confirmLedgerEpochMigration?: boolean;
   readonly expectedStaleIntegrationPlanSha256?: string;
   readonly confirmStaleIntegrationReconciliation?: boolean;
+  readonly sourceStaleIntegrationPlanSha256?: string;
+  readonly legacyAttemptQuarantineCutoff?: string;
+  readonly expectedLegacyAttemptQuarantinePlanSha256?: string;
+  readonly confirmLegacyAttemptQuarantine?: boolean;
   readonly startWorker?: boolean;
   readonly workerRole?: string;
   readonly dependencyBootstrap?: string;

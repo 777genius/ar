@@ -91,6 +91,8 @@ import {
   loadStaleIntegrationReconciliationPlan,
   previewStaleIntegrationReconciliationPlan,
 } from "./application/project-control/codex-goal-stale-integration-reconciliation";
+import { readActiveLegacyAttemptQuarantine } from
+  "./application/project-control/codex-goal-legacy-attempt-quarantine";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -115,7 +117,7 @@ export function resolveProjectControlRepairWorkspaceMode(input: {
     : "reviewed_dirty_continuation";
 }
 
-type LoadedProjectControlController = {
+export type LoadedProjectControlController = {
   readonly registryRootDir: string;
   readonly controller: CodexGoalJobManifest;
   readonly scope: ProjectAccessScope;
@@ -133,6 +135,9 @@ export async function projectControlAdmissionSnapshotView(
   deps: CodexGoalMcpProjectControlAdminDeps,
 ): Promise<JsonObject> {
   const controller = await deps.loadProjectControlController(args);
+  const legacyAttemptQuarantine = await readActiveLegacyAttemptQuarantine(
+    controller.controller.jobRootDir,
+  );
   const snapshot = await buildCodexProjectAdmissionSnapshot({
     registryRootDir: controller.registryRootDir,
     scope: controller.scope,
@@ -178,6 +183,8 @@ export async function projectControlAdmissionSnapshotView(
     registryRootDir: controller.registryRootDir,
     snapshot: detailView.snapshot,
     operations,
+    legacyAttemptQuarantineDebt: legacyAttemptQuarantine.debt,
+    legacyAttemptQuarantineDebtCount: legacyAttemptQuarantine.debt.length,
     ...(detailView.decision ? { decision: detailView.decision } : {}),
   };
 }
@@ -373,7 +380,7 @@ export function staleReconciliationControllerScopeEpoch(
   })).digest("hex");
 }
 
-function staleReconciliationControllerFingerprint(
+export function staleReconciliationControllerFingerprint(
   controller: CodexGoalJobManifest,
 ): string {
   return createHash("sha256").update(JSON.stringify(controller)).digest("hex");
