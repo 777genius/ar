@@ -499,7 +499,13 @@ describe("consumed output ledger", () => {
             text: note,
             ...(commitSha ? { commit: commitSha } : {}),
           }],
-          ...(commitSha ? { commitSha } : {}),
+          ...(commitSha
+            ? {
+                commitSha,
+                commit: commitSha,
+                integratedCommitSha: commitSha,
+              }
+            : {}),
           backup: missingBackup,
         },
       });
@@ -531,6 +537,18 @@ describe("consumed output ledger", () => {
       consumedAt: "2026-07-01T00:00:00.000Z",
       notes: [{ status: "rejected", text: "reviewed output rejected" }],
       backup: missingBackup,
+    };
+    const integratedBase = {
+      ...rejectedBase,
+      status: "integrated",
+      commitSha: "abc1234",
+      commit: "abc1234",
+      integratedCommitSha: "abc1234",
+      notes: [{
+        status: "integrated",
+        text: rejectedBase.note,
+        commit: "abc1234",
+      }],
     };
     const invalidProvenanceCases = [
       {
@@ -571,9 +589,7 @@ describe("consumed output ledger", () => {
       {
         name: "integrated record with mismatched note commit",
         value: {
-          ...rejectedBase,
-          status: "integrated",
-          commitSha: "abc1234",
+          ...integratedBase,
           notes: [{
             status: "integrated",
             text: rejectedBase.note,
@@ -583,22 +599,23 @@ describe("consumed output ledger", () => {
       },
       {
         name: "integrated record without canonical commit",
-        value: {
-          ...rejectedBase,
-          status: "integrated",
-          notes: [{
-            status: "integrated",
-            text: rejectedBase.note,
-            commit: "abc1234",
-          }],
-        },
+        value: { ...integratedBase, commitSha: undefined },
+      },
+      {
+        name: "integrated record without commit alias",
+        value: { ...integratedBase, commit: undefined },
+      },
+      {
+        name: "integrated record without integratedCommitSha alias",
+        value: { ...integratedBase, integratedCommitSha: undefined },
       },
     ];
     for (const invalidCase of invalidProvenanceCases) {
+      const persistedValue: unknown = JSON.parse(JSON.stringify(invalidCase.value));
       const record = await consumedOutputRecordFromJson({
         ledgerPath: join(root, `${invalidCase.name.replaceAll(" ", "-")}.json`),
         source,
-        value: invalidCase.value,
+        value: persistedValue,
       });
       expect(record, invalidCase.name).toMatchObject({
         structurallyValid: false,

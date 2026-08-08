@@ -746,9 +746,8 @@ function hasSupportedPrunedRetentionProvenance(
   ) {
     return false;
   }
-  return [value.commit, value.integratedCommitSha].every((alias) =>
-    alias === undefined || stringValue(alias) === canonicalCommit
-  );
+  return stringValue(value.commit) === canonicalCommit &&
+    stringValue(value.integratedCommitSha) === canonicalCommit;
 }
 
 function consumedOutputEvidence(input: {

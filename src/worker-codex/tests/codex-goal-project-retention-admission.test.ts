@@ -54,6 +54,8 @@ describe("Codex project admission snapshot", () => {
           closedAt: "2026-07-01T00:00:00.000Z",
           consumedAt: "2026-07-01T00:00:00.000Z",
           commitSha: "abc1234",
+          commit: "abc1234",
+          integratedCommitSha: "abc1234",
           notes: [{ status: "integrated", text: "integrated output", commit: "abc1234" }],
           backup: { ...backup, workspace: join(root, "worktrees", "project-integrated-v1") },
         })}\n`,
