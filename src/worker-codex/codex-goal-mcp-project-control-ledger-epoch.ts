@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
-import { lstat, readdir, readFile, realpath } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
+import { readdir, readFile, realpath } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import {
   ProjectDebtReason,
-  summarizeProjectAdmissionDebt,
   type ProjectAccessScope,
   type ProjectAdmissionSnapshot,
 } from "@vioxen/subscription-runtime/worker-core";
@@ -16,10 +15,8 @@ import {
   acquireLocalControllerMaintenanceFence,
   releaseLocalControllerMaintenanceFence,
 } from "@vioxen/subscription-runtime/store-local-file";
-import {
-  buildCodexProjectAdmissionSnapshot,
-  type CodexProjectAdmissionDeps,
-} from "./application/project-control/codex-goal-project-admission";
+import type { CodexProjectAdmissionDeps } from
+  "./application/project-control/codex-goal-project-admission";
 import {
   applyConsumedOutputLedgerEpoch,
   assertConsumedOutputLedgerEpochOrphanBindingsUnchanged,
@@ -27,7 +24,6 @@ import {
   buildConsumedOutputLedgerEpochPlan,
   canonicalConsumedOutputLedgerRoot,
   resolvePendingConsumedOutputLedgerEpochPlan,
-  type ConsumedOutputLedgerEpochAdmissionSummary,
 } from "./application/project-control/codex-goal-consumed-output-ledger-epoch";
 import {
   codexGoalJobManifestPath,
@@ -70,10 +66,32 @@ import {
   upgradePreparedEpochV1,
 } from "./application/project-control/codex-goal-consumed-output-ledger-epoch-target";
 import {
+  assertSocialProposedAdmissionSourceOrphanSeal,
+  assertSocialProposedAdmissionDebtCustody,
+  buildSocialProposedAdmissionAnchor,
+  createOrVerifySocialProposedAdmissionAnchor,
+  normalizeAnchoredProposedAdmission,
+  readSocialProposedAdmissionAnchor,
+  SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256,
+  verifySocialPreparedV1SourceOrphanSeal,
+  verifySocialProposedAdmissionAnchorEvidence,
+  type LedgerEpochProposedAdmissionAnchor,
+} from "./application/project-control/codex-goal-ledger-epoch-proposed-admission";
+import {
   assertLedgerEpochDebtCustodyUnchanged,
   resolveLedgerEpochDebtCustody,
   type LedgerEpochDebtCustodyBinding,
 } from "./application/project-control/codex-goal-consumed-output-ledger-epoch-switch";
+import {
+  assertCanonicalLedgerRootsAllowed,
+  buildRawLedgerEpochAdmissionSnapshot as buildAdmissionSnapshot,
+  ledgerEpochAdmissionSummary as admissionSummary,
+  type LedgerEpochAdmissionSnapshotBuilder,
+} from "./application/project-control/codex-goal-ledger-epoch-handler-admission";
+import {
+  ledgerEpochCustodyPaths as custodyPathsFor,
+  ledgerEpochDirectoryIdentity as directoryIdentity,
+} from "./application/project-control/codex-goal-ledger-epoch-handler-custody";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -82,17 +100,12 @@ type LoadedController = {
   readonly controller: CodexGoalJobManifest;
   readonly scope: ProjectAccessScope;
 };
-
 export type ProjectControlLedgerEpochDeps = {
   readonly loadProjectControlController: (
     args: ProjectControlMcpArgs,
   ) => Promise<LoadedController>;
   readonly admissionDeps: CodexProjectAdmissionDeps;
-  readonly buildAdmissionSnapshot?: (input: {
-    readonly registryRootDir: string;
-    readonly scope: ProjectAccessScope;
-    readonly allowPendingEpochOrphanQuarantine?: boolean;
-  }) => Promise<ProjectAdmissionSnapshot>;
+  readonly buildAdmissionSnapshot?: LedgerEpochAdmissionSnapshotBuilder;
   readonly assertNoLegacyWriterProcesses?: () => Promise<void>;
   readonly captureProcessEvidence?: (
     custodyPaths: readonly string[],
@@ -214,6 +227,35 @@ export async function projectControlLedgerEpochMigrationView(
   }
   const plan = persistedPlan ?? await buildPlan();
   if (booleanValue(args.confirmLedgerEpochMigration) !== true) {
+    let proposedAdmissionAnchorSha256: string | undefined;
+    if (plan.planSha256 === SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256) {
+      const existing = await readSocialProposedAdmissionAnchor(plan);
+      if (existing) {
+        await verifySocialProposedAdmissionAnchorEvidence(existing);
+        proposedAdmissionAnchorSha256 = existing.anchorSha256;
+      } else {
+        const summaries = await listCodexGoalJobs({
+          registryRootDir: loaded.registryRootDir,
+        });
+        const proposedAdmission = await buildAdmissionSnapshot({
+          registryRootDir: loaded.registryRootDir,
+          scope: proposedScope,
+          admissionDeps: deps.admissionDeps,
+          snapshotBuilder: deps.buildAdmissionSnapshot,
+          allowPendingEpochOrphanQuarantine: true,
+        });
+        const sourceOrphanSeal = await verifySocialPreparedV1SourceOrphanSeal(plan);
+        const anchor = await buildSocialProposedAdmissionAnchor({
+          plan,
+          snapshot: proposedAdmission,
+          summaries,
+          controllerJobRootDir: loaded.controller.jobRootDir,
+          debtCustody: await resolveLedgerEpochDebtCustody(proposedAdmission, summaries),
+          sourceOrphanSeal,
+        });
+        proposedAdmissionAnchorSha256 = anchor?.anchorSha256;
+      }
+    }
     return {
       ok: false,
       reason: "confirm_ledger_epoch_migration_required",
@@ -231,6 +273,9 @@ export async function projectControlLedgerEpochMigrationView(
       totalQuarantinedCount:
         plan.inheritedQuarantinedCount + plan.quarantinedCount,
       planSha256: plan.planSha256,
+      ...(proposedAdmissionAnchorSha256
+        ? { proposedAdmissionAnchorSha256 }
+        : {}),
       legacyAttemptQuarantine: plan.legacyAttemptQuarantine,
       legacyAdmission: plan.legacyAdmission,
       upgradeRequired: plan.transactionVersion !== 2,
@@ -239,6 +284,13 @@ export async function projectControlLedgerEpochMigrationView(
   const expectedPlanSha256 = stringValue(args.expectedLedgerEpochPlanSha256);
   if (!expectedPlanSha256) {
     throw new Error("ledger_epoch_expected_plan_sha256_required");
+  }
+  const expectedProposedAdmissionAnchorSha256 = stringValue(
+    args.expectedLedgerEpochProposedAdmissionAnchorSha256,
+  );
+  if (plan.planSha256 === SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256 &&
+    !/^[a-f0-9]{64}$/.test(expectedProposedAdmissionAnchorSha256 ?? "")) {
+    throw new Error("ledger_epoch_proposed_admission_expected_anchor_sha256_required");
   }
   const locks = projectControlWorkspaceLocks(loaded.registryRootDir);
   const lock = await locks.acquire({
@@ -336,8 +388,18 @@ export async function projectControlLedgerEpochMigrationView(
     const lockedSummaries = await listCodexGoalJobs({
       registryRootDir: locked.registryRootDir,
     });
+    const lockedProposedAdmission = plan.planSha256 ===
+        SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256
+      ? await buildAdmissionSnapshot({
+          registryRootDir: locked.registryRootDir,
+          scope: lockedProposedScope,
+          admissionDeps: deps.admissionDeps,
+          snapshotBuilder: deps.buildAdmissionSnapshot,
+          allowPendingEpochOrphanQuarantine: true,
+        })
+      : undefined;
     const debtCustody = await resolveLedgerEpochDebtCustody(
-      lockedAdmission,
+      lockedProposedAdmission ?? lockedAdmission,
       lockedSummaries,
     );
     const controllerCustodyPaths = await Promise.all([
@@ -392,6 +454,19 @@ export async function projectControlLedgerEpochMigrationView(
       if (JSON.stringify(currentAdmission.debt) !== JSON.stringify(lockedAdmission.debt)) {
         throw new Error("ledger_epoch_admission_debt_drift");
       }
+      const currentProposedAdmission = lockedProposedAdmission
+        ? await buildAdmissionSnapshot({
+            registryRootDir: currentController.registryRootDir,
+            scope: lockedProposedScope,
+            admissionDeps: deps.admissionDeps,
+            snapshotBuilder: deps.buildAdmissionSnapshot,
+            allowPendingEpochOrphanQuarantine: true,
+          })
+        : undefined;
+      if (lockedProposedAdmission && JSON.stringify(currentProposedAdmission?.debt) !==
+          JSON.stringify(lockedProposedAdmission.debt)) {
+        throw new Error("ledger_epoch_proposed_admission_debt_drift");
+      }
       await assertNoLegacyWriterProcesses();
       const currentEvidence = await captureEpochProcessEvidence(deps, custodyPaths);
       assertEpochProcessEvidenceClear(currentEvidence, custodyPaths);
@@ -419,7 +494,11 @@ export async function projectControlLedgerEpochMigrationView(
       if (newRootWasMissing && newRootNowPresent) {
         await assertConsumedOutputLedgerEpochPreparedArtifacts(plan);
       }
-      return { admission: currentAdmission, evidence: currentEvidence };
+      return {
+        admission: currentAdmission,
+        ...(currentProposedAdmission ? { proposedAdmission: currentProposedAdmission } : {}),
+        evidence: currentEvidence,
+      };
     };
     let authoritative = await rebuildLockedFacts();
     let processEvidence = authoritative.evidence;
@@ -428,6 +507,7 @@ export async function projectControlLedgerEpochMigrationView(
       cutoff,
       processEvidence,
     });
+    let proposedAdmissionAnchor: LedgerEpochProposedAdmissionAnchor | undefined;
     let lockedCurrentPlan: Awaited<ReturnType<
       typeof buildConsumedOutputLedgerEpochPlan
     >> | undefined;
@@ -451,23 +531,69 @@ export async function projectControlLedgerEpochMigrationView(
         cutoff,
         processEvidence,
       });
-      const crashAfter = deps.preparedV1UpgradeCrashAfter?.();
-      await upgradePreparedEpochV1({
-        plan,
-        ...(upgradedLegacyAdmission
-          ? { legacyAdmission: upgradedLegacyAdmission }
-          : {}),
-        debtCustody,
-        processEvidence,
-        expectedPlanSha256,
-        ...(crashAfter === undefined ? {} : { crashAfter }),
-      });
-      await assertPreparedEpochV2Sidecar(
-        plan,
-        processEvidence,
-        upgradedLegacyAdmission,
-        debtCustody,
-      );
+      if (plan.planSha256 === SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256) {
+        // The v2 provenance sidecar predates this exception and is immutable.
+        // Validate it intrinsically, then publish the independent anchor while
+        // all controller, debt, maintenance and ledger mutation locks are held.
+        const sourceOrphanSeal = await verifySocialPreparedV1SourceOrphanSeal(plan);
+        const currentSummaries = await listCodexGoalJobs({
+          registryRootDir: locked.registryRootDir,
+        });
+        if (lockedActiveRoot === oldRoot) {
+          const rebuilt = await buildSocialProposedAdmissionAnchor({
+            plan,
+            snapshot: authoritative.proposedAdmission!,
+            summaries: currentSummaries,
+            controllerJobRootDir: locked.controller.jobRootDir,
+            debtCustody,
+            sourceOrphanSeal,
+          });
+          if (rebuilt?.anchorSha256 !== expectedProposedAdmissionAnchorSha256) {
+            throw new Error("ledger_epoch_proposed_admission_expected_anchor_hash_mismatch");
+          }
+        }
+        await createOrVerifySocialProposedAdmissionAnchor({
+          plan,
+          snapshot: authoritative.proposedAdmission!,
+          summaries: currentSummaries,
+          controllerJobRootDir: locked.controller.jobRootDir,
+          debtCustody,
+          sourceOrphanSeal,
+          expectedAnchorSha256: expectedProposedAdmissionAnchorSha256!,
+        });
+        proposedAdmissionAnchor = await readSocialProposedAdmissionAnchor(
+          plan,
+          expectedProposedAdmissionAnchorSha256!,
+        );
+        if (!proposedAdmissionAnchor) {
+          throw new Error("ledger_epoch_proposed_admission_anchor_missing");
+        }
+        assertSocialProposedAdmissionSourceOrphanSeal(proposedAdmissionAnchor,
+          sourceOrphanSeal);
+        await verifySocialProposedAdmissionAnchorEvidence(proposedAdmissionAnchor);
+        normalizeAnchoredProposedAdmission({
+          anchor: proposedAdmissionAnchor,
+          snapshot: authoritative.proposedAdmission!,
+        });
+      } else {
+        const crashAfter = deps.preparedV1UpgradeCrashAfter?.();
+        await upgradePreparedEpochV1({
+          plan,
+          ...(upgradedLegacyAdmission
+            ? { legacyAdmission: upgradedLegacyAdmission }
+            : {}),
+          debtCustody,
+          processEvidence,
+          expectedPlanSha256,
+          ...(crashAfter === undefined ? {} : { crashAfter }),
+        });
+        await assertPreparedEpochV2Sidecar(
+          plan,
+          processEvidence,
+          upgradedLegacyAdmission,
+          debtCustody,
+        );
+      }
     } else if (plan.legacyAdmission && JSON.stringify(plan.legacyAdmission) !==
         JSON.stringify(upgradedLegacyAdmission)) {
       throw new Error("ledger_epoch_legacy_admission_drift");
@@ -478,6 +604,27 @@ export async function projectControlLedgerEpochMigrationView(
       deps: deps.admissionDeps,
       snapshotBuilder: deps.buildAdmissionSnapshot,
     });
+    const revalidateProposedSnapshot = proposedAdmissionAnchor
+      ? async (snapshot: ProjectAdmissionSnapshot) => {
+          const currentSummaries = await listCodexGoalJobs({
+            registryRootDir: locked.registryRootDir,
+          });
+          const currentCustody = await resolveLedgerEpochDebtCustody(
+            snapshot,
+            currentSummaries,
+          );
+          assertSocialProposedAdmissionDebtCustody(
+            proposedAdmissionAnchor,
+            currentCustody,
+          );
+          const sourceSeal = await verifySocialPreparedV1SourceOrphanSeal(plan);
+          assertSocialProposedAdmissionSourceOrphanSeal(
+            proposedAdmissionAnchor,
+            sourceSeal,
+          );
+          await verifySocialProposedAdmissionAnchorEvidence(proposedAdmissionAnchor);
+        }
+      : undefined;
     result = await applyConsumedOutputLedgerEpoch({
       plan,
       ...(plan.transactionVersion === 2
@@ -486,15 +633,25 @@ export async function projectControlLedgerEpochMigrationView(
         ? { upgradedLegacyAdmission }
         : {}),
       expectedPlanSha256,
+      ...(proposedAdmissionAnchor
+        ? {
+          expectedProposedAdmissionAnchorSha256:
+            expectedProposedAdmissionAnchorSha256!,
+        }
+        : {}),
       buildCurrentPlan: async () => {
         const current = await rebuildCurrentPlanOnce();
         if (plan.transactionVersion !== 2) {
-          await assertPreparedEpochV2Sidecar(
-            plan,
-            processEvidence,
-            upgradedLegacyAdmission,
-            debtCustody,
-          );
+          if (plan.planSha256 === SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256) {
+            await verifySocialPreparedV1SourceOrphanSeal(plan);
+          } else {
+            await assertPreparedEpochV2Sidecar(
+              plan,
+              processEvidence,
+              upgradedLegacyAdmission,
+              debtCustody,
+            );
+          }
         }
         return current;
       },
@@ -506,6 +663,10 @@ export async function projectControlLedgerEpochMigrationView(
         snapshotBuilder: deps.buildAdmissionSnapshot,
         rejectBlocking: true,
         allowPendingEpochOrphanQuarantine: true,
+        ...(proposedAdmissionAnchor ? { proposedAdmissionAnchor } : {}),
+        ...(revalidateProposedSnapshot
+          ? { revalidateBeforeNormalization: revalidateProposedSnapshot }
+          : {}),
       }),
       admissionForNewRoot: async () => await admissionSummary({
         registryRootDir: locked.registryRootDir,
@@ -514,6 +675,10 @@ export async function projectControlLedgerEpochMigrationView(
         snapshotBuilder: deps.buildAdmissionSnapshot,
         rejectBlocking: true,
         allowPendingEpochOrphanQuarantine: true,
+        ...(proposedAdmissionAnchor ? { proposedAdmissionAnchor } : {}),
+        ...(revalidateProposedSnapshot
+          ? { revalidateBeforeNormalization: revalidateProposedSnapshot }
+          : {}),
       }),
       readActiveRoot: async () => {
         const current = await deps.loadProjectControlController(args);
@@ -523,6 +688,24 @@ export async function projectControlLedgerEpochMigrationView(
       },
       revalidateBeforeMutation: async () => {
         await rebuildLockedFacts();
+        if (proposedAdmissionAnchor) {
+          const sourceOrphanSeal = await verifySocialPreparedV1SourceOrphanSeal(plan);
+          assertSocialProposedAdmissionSourceOrphanSeal(proposedAdmissionAnchor,
+            sourceOrphanSeal);
+          await verifySocialProposedAdmissionAnchorEvidence(proposedAdmissionAnchor);
+        }
+        await admissionSummary({
+          registryRootDir: locked.registryRootDir,
+          scope: lockedProposedScope,
+          deps: deps.admissionDeps,
+          snapshotBuilder: deps.buildAdmissionSnapshot,
+          rejectBlocking: true,
+          allowPendingEpochOrphanQuarantine: true,
+          ...(proposedAdmissionAnchor ? { proposedAdmissionAnchor } : {}),
+          ...(revalidateProposedSnapshot
+            ? { revalidateBeforeNormalization: revalidateProposedSnapshot }
+            : {}),
+        });
       },
       switchScope: async () => {
         const current = await deps.loadProjectControlController(args);
@@ -537,7 +720,6 @@ export async function projectControlLedgerEpochMigrationView(
         });
       },
       revalidatePostSwitchBindings: async () => {
-        await assertLedgerEpochDebtCustodyUnchanged(debtCustody);
         const current = await deps.loadProjectControlController(args);
         if (
           stableControllerFingerprint(current.controller) !==
@@ -548,6 +730,32 @@ export async function projectControlLedgerEpochMigrationView(
         const summaries = await listCodexGoalJobs({
           registryRootDir: current.registryRootDir,
         });
+        if (proposedAdmissionAnchor) {
+          const snapshot = await buildAdmissionSnapshot({
+            registryRootDir: current.registryRootDir,
+            scope: lockedProposedScope,
+            admissionDeps: deps.admissionDeps,
+            snapshotBuilder: deps.buildAdmissionSnapshot,
+            allowPendingEpochOrphanQuarantine: true,
+          });
+          normalizeAnchoredProposedAdmission({
+            anchor: proposedAdmissionAnchor,
+            snapshot,
+          });
+          const currentCustody = await resolveLedgerEpochDebtCustody(snapshot, summaries);
+          assertSocialProposedAdmissionDebtCustody(
+            proposedAdmissionAnchor,
+            currentCustody,
+          );
+          const sourceOrphanSeal = await verifySocialPreparedV1SourceOrphanSeal(plan);
+          assertSocialProposedAdmissionSourceOrphanSeal(
+            proposedAdmissionAnchor,
+            sourceOrphanSeal,
+          );
+          await verifySocialProposedAdmissionAnchorEvidence(proposedAdmissionAnchor);
+        } else {
+          await assertLedgerEpochDebtCustodyUnchanged(debtCustody);
+        }
         const ids = summaries
           .filter((summary) => matchesProjectControlPrefix(
             summary.jobId,
@@ -596,6 +804,10 @@ export async function projectControlLedgerEpochMigrationView(
     mode: "project_control_consumed_output_ledger_epoch",
     idempotentReplay: result.idempotentReplay,
     receipt: result.receipt as unknown as JsonObject,
+    ...(result.receipt.proposedAdmissionAnchorSha256
+      ? { proposedAdmissionAnchorSha256:
+          result.receipt.proposedAdmissionAnchorSha256 }
+      : {}),
   };
 }
 
@@ -632,40 +844,6 @@ function assertEpochProcessEvidenceClear(
     evidence.blockers.length !== 0) {
     throw new Error("ledger_epoch_process_inventory_drift");
   }
-}
-
-function custodyPathsFor(
-  bindings: readonly LedgerEpochDebtCustodyBinding[],
-  oldRoot: string,
-  newRoot: string,
-  additionalPaths: readonly string[] = [],
-): readonly string[] {
-  return [...new Set([
-    oldRoot,
-    newRoot,
-    ...additionalPaths,
-    ...bindings.map((binding) => binding.canonicalPath),
-  ].map((path) => resolve(path)))].sort();
-}
-
-async function directoryIdentity(path: string, allowMissing = false) {
-  let metadata;
-  try {
-    metadata = await lstat(path);
-  } catch (error) {
-    if (allowMissing && isNodeError(error, "ENOENT")) {
-      return { canonicalPath: resolve(path), present: false as const };
-    }
-    throw error;
-  }
-  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-    throw new Error("ledger_epoch_target_root_identity_drift");
-  }
-  return {
-    canonicalPath: await realpath(path),
-    device: metadata.dev,
-    inode: metadata.ino,
-  };
 }
 
 function assertPersistedPlanOwned(input: {
@@ -709,67 +887,6 @@ function stableControllerFingerprint(manifest: CodexGoalJobManifest): string {
 
 function sha256Json(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
-async function admissionSummary(input: {
-  readonly registryRootDir: string;
-  readonly scope: ProjectAccessScope;
-  readonly deps: CodexProjectAdmissionDeps;
-  readonly snapshotBuilder: ProjectControlLedgerEpochDeps["buildAdmissionSnapshot"];
-  readonly rejectBlocking?: boolean;
-  readonly allowPendingEpochOrphanQuarantine?: boolean;
-}): Promise<ConsumedOutputLedgerEpochAdmissionSummary> {
-  const snapshot = await buildAdmissionSnapshot({
-    registryRootDir: input.registryRootDir,
-    scope: input.scope,
-    admissionDeps: input.deps,
-    snapshotBuilder: input.snapshotBuilder,
-    ...(input.allowPendingEpochOrphanQuarantine === undefined
-      ? {}
-      : {
-          allowPendingEpochOrphanQuarantine:
-            input.allowPendingEpochOrphanQuarantine,
-        }),
-  });
-  if (input.rejectBlocking && snapshot.debt.some((item) => item.severity === "blocking")) {
-    throw new Error("ledger_epoch_proposed_admission_blocked");
-  }
-  return {
-    debtCount: snapshot.debt.length,
-    counts: snapshot.counts ?? summarizeProjectAdmissionDebt(snapshot.debt).counts,
-  };
-}
-
-async function buildAdmissionSnapshot(input: {
-  readonly registryRootDir: string;
-  readonly scope: ProjectAccessScope;
-  readonly admissionDeps: CodexProjectAdmissionDeps;
-  readonly snapshotBuilder: ProjectControlLedgerEpochDeps["buildAdmissionSnapshot"];
-  readonly allowPendingEpochOrphanQuarantine?: boolean;
-}): Promise<ProjectAdmissionSnapshot> {
-  if (input.snapshotBuilder) {
-    return await input.snapshotBuilder({
-      registryRootDir: input.registryRootDir,
-      scope: input.scope,
-      ...(input.allowPendingEpochOrphanQuarantine === undefined
-        ? {}
-        : {
-            allowPendingEpochOrphanQuarantine:
-              input.allowPendingEpochOrphanQuarantine,
-          }),
-    });
-  }
-  return await buildCodexProjectAdmissionSnapshot({
-    registryRootDir: input.registryRootDir,
-    scope: input.scope,
-    deps: input.admissionDeps,
-    ...(input.allowPendingEpochOrphanQuarantine === undefined
-      ? {}
-      : {
-          allowPendingEpochOrphanQuarantine:
-            input.allowPendingEpochOrphanQuarantine,
-        }),
-  });
 }
 
 async function assertControllerQuiescent(
@@ -843,37 +960,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNodeError(error: unknown, code: string): boolean {
   return isRecord(error) && error.code === code;
-}
-
-async function assertCanonicalLedgerRootsAllowed(
-  scope: ProjectAccessScope,
-  oldRoot: string,
-  newRoot: string,
-): Promise<void> {
-  const allowed = await Promise.all([
-    ...(scope.readRoots ?? []),
-    ...(scope.workspaceRoots ?? []),
-    ...(scope.worktreeRoots ?? []),
-    ...(scope.observedWorkspaceRoots ?? []),
-  ].map(async (root) => await canonicalConsumedOutputLedgerRoot(root, true)));
-  const denied = await Promise.all((scope.deniedRoots ?? []).map(
-    async (root) => await canonicalConsumedOutputLedgerRoot(root, false),
-  ));
-  if (
-    !allowed.some((root) => pathInside(oldRoot, root)) ||
-    !allowed.some((root) => pathInside(newRoot, root)) ||
-    denied.some((root) =>
-      pathInside(oldRoot, root) || pathInside(newRoot, root) ||
-      pathInside(root, oldRoot) || pathInside(root, newRoot)
-    )
-  ) {
-    throw new Error("ledger_epoch_root_outside_canonical_scope");
-  }
-}
-
-function pathInside(path: string, root: string): boolean {
-  const child = relative(root, path);
-  return child === "" || (child !== ".." && !child.startsWith(`..${sep}`));
 }
 
 async function assertControllerLedgerRootState(

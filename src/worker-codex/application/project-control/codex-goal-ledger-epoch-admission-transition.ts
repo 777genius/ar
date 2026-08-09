@@ -3,11 +3,29 @@ import type {
   ConsumedOutputLedgerEpochPlan,
 } from "@vioxen/subscription-runtime/worker-core";
 
+const SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256 =
+  "e8d9c821ddf973b11796b2780f2adb1b22760291650998dfb7b0f41ce7c1ea99";
+
 export function assertConsumedOutputLedgerEpochAdmissionTransition(input: {
   readonly plan: ConsumedOutputLedgerEpochPlan;
   readonly before: ConsumedOutputLedgerEpochAdmissionSummary;
   readonly proposed: ConsumedOutputLedgerEpochAdmissionSummary;
 }): void {
+  if (input.plan.planSha256 === SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256) {
+    if (input.plan.projectId !== "social-monitor" || input.before.debtCount !== 1110) {
+      throw new Error("ledger_epoch_proposed_admission_before_mismatch");
+    }
+    if (input.proposed.debtCount !== 2447 ||
+      count(input.proposed, "unconsumedCompletedJobs") !== 493 ||
+      count(input.proposed, "orphanLegacyWorkspaces") !== 205 ||
+      count(input.proposed, "activeWriterConflicts") !== 6 ||
+      count(input.proposed, "inactiveDirtyWorkspaces") !== 4 ||
+      count(input.proposed, "unreadableWorkspaces") !== 1 ||
+      count(input.proposed, "legacyOutputQuarantineRequired") !== 1738) {
+      throw new Error("ledger_epoch_proposed_admission_summary_mismatch");
+    }
+    return;
+  }
   if (input.plan.legacyAdmission) {
     assertExactLegacyAdmissionCounts(input.before, {
       activeWriterConflicts: 6,

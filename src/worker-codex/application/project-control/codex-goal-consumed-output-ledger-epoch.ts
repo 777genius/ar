@@ -68,6 +68,13 @@ import { assertConsumedOutputLedgerEpochAdmissionTransition } from
 import { ledgerEpochLegacyAdmissionPlanCounts } from
   "./codex-goal-ledger-epoch-legacy-admission";
 import {
+  assertSocialProposedAdmissionSourceOrphanSeal,
+  readSocialProposedAdmissionAnchor,
+  SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256,
+  verifySocialPreparedV1SourceOrphanSeal,
+  verifySocialProposedAdmissionAnchorEvidence,
+} from "./codex-goal-ledger-epoch-proposed-admission";
+import {
   assertNoAbandonedEpochStagingRoots,
   assertPreparedEpochV2Sidecar,
   assertLedgerEpochTargetIdentity,
@@ -283,6 +290,7 @@ export type ApplyConsumedOutputLedgerEpochInput = {
   readonly plan: ConsumedOutputLedgerEpochPlan;
   readonly upgradedLegacyAdmission?: ConsumedOutputLedgerEpochLegacyAdmissionAnchor;
   readonly expectedPlanSha256: string;
+  readonly expectedProposedAdmissionAnchorSha256?: string;
   readonly buildCurrentPlan: () => Promise<ConsumedOutputLedgerEpochPlan>;
   readonly admissionBefore: ConsumedOutputLedgerEpochAdmissionSummary;
   readonly validateProposedAdmission: () => Promise<ConsumedOutputLedgerEpochAdmissionSummary>;
@@ -302,12 +310,19 @@ export async function applyConsumedOutputLedgerEpoch(
   input: ApplyConsumedOutputLedgerEpochInput,
 ): Promise<{ readonly receipt: ConsumedOutputLedgerEpochReceipt; readonly idempotentReplay: boolean }> {
   assertPlanHash(input.plan, input.expectedPlanSha256);
+  const proposedAdmissionAnchorSha256 =
+    await verifyConsumedOutputLedgerEpochProposedAdmissionAnchor(input);
   await assertRootIdentities(input.plan);
   const replay = await existingActiveReceipt(input.plan.newRoot);
   if (replay) {
     await durableConfirmEpochRoot(input.plan.newRoot);
     if (replay.planSha256 !== input.plan.planSha256) {
       throw new Error("ledger_epoch_existing_root_conflict");
+    }
+    if (proposedAdmissionAnchorSha256 &&
+      replay.proposedAdmissionAnchorSha256 !==
+        proposedAdmissionAnchorSha256) {
+      throw new Error("ledger_epoch_existing_receipt_proposed_anchor_mismatch");
     }
     if (resolve(await input.readActiveRoot()) !== input.plan.newRoot) {
       throw new Error("ledger_epoch_active_receipt_scope_mismatch");
@@ -421,6 +436,8 @@ async function resumeConsumedOutputLedgerEpoch(
   input: ApplyConsumedOutputLedgerEpochInput,
   state: ConsumedOutputLedgerEpochState,
 ): Promise<{ readonly receipt: ConsumedOutputLedgerEpochReceipt; readonly idempotentReplay: boolean }> {
+  const proposedAdmissionAnchorSha256 =
+    await verifyConsumedOutputLedgerEpochProposedAdmissionAnchor(input);
   assertEpochStateOwned(state, input.plan);
   await assertSeededRootMatchesPlan(input.plan);
   const activeRoot = resolve(await input.readActiveRoot());
@@ -522,6 +539,9 @@ async function resumeConsumedOutputLedgerEpoch(
     ...(transactionUpgradeSha256
       ? { transactionUpgradeSha256 }
       : {}),
+    ...(proposedAdmissionAnchorSha256
+      ? { proposedAdmissionAnchorSha256 }
+      : {}),
     createdAt,
     activatedAt: createdAt,
     admissionBefore: state.admissionBefore,
@@ -543,6 +563,27 @@ async function resumeConsumedOutputLedgerEpoch(
     phase: "active",
   });
   return { receipt, idempotentReplay: false };
+}
+
+export async function verifyConsumedOutputLedgerEpochProposedAdmissionAnchor(
+  input: Pick<ApplyConsumedOutputLedgerEpochInput,
+    "plan" | "expectedProposedAdmissionAnchorSha256">,
+): Promise<string | undefined> {
+  if (input.plan.planSha256 !== SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256) {
+    return undefined;
+  }
+  const expected = input.expectedProposedAdmissionAnchorSha256;
+  if (!/^[a-f0-9]{64}$/.test(expected ?? "")) {
+    throw new Error("ledger_epoch_proposed_admission_verified_anchor_required");
+  }
+  const anchor = await readSocialProposedAdmissionAnchor(input.plan, expected);
+  if (!anchor) {
+    throw new Error("ledger_epoch_proposed_admission_anchor_missing");
+  }
+  const sourceOrphanSeal = await verifySocialPreparedV1SourceOrphanSeal(input.plan);
+  assertSocialProposedAdmissionSourceOrphanSeal(anchor, sourceOrphanSeal);
+  await verifySocialProposedAdmissionAnchorEvidence(anchor);
+  return expected;
 }
 async function seedEpochRoot(input: {
   readonly plan: ConsumedOutputLedgerEpochPlan;

@@ -1246,6 +1246,52 @@ describe("Codex project admission snapshot", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("threads the raw active Social proposed snapshot into anchor revalidation", async () => {
+    const calls: string[] = [];
+    const root = await mkdtemp(join(tmpdir(), "social-active-proposed-admission-"));
+    const ledgerRoot = join(root, "ledger-v2");
+    await mkdir(join(ledgerRoot, "items"), { recursive: true });
+    try {
+      const snapshot = await buildCodexProjectAdmissionSnapshot({
+        registryRootDir: "/registry",
+        scope: {
+          projectId: "social-monitor",
+          consumedOutputLedgerRoots: [ledgerRoot],
+          jobIdPrefixes: ["social-monitor-"],
+        },
+        deps: {
+          listJobs: async () => [{
+            jobId: "social-monitor-proposed-job",
+            tags: [], taskId: "task", workspacePath: "/work/proposed",
+            promptPath: "/registry/prompt.md", accountNames: ["account-a"],
+            updatedAt: "2026-08-09T00:00:00.000Z",
+            manifestPath: "/registry/job.json",
+          }],
+          buildOverviewItems: async () => [],
+          normalizeActiveProposedAdmission: async (_scope, proposed, summaries) => {
+            calls.push(`revalidate:${proposed.debt.length}:${summaries.length}`);
+            expect(proposed.debt).toEqual([]);
+            return {
+              ...proposed,
+              debt: [{
+                reason: ProjectDebtReason.UnconsumedCompletedJob,
+                subject: "social-monitor-proposed-job",
+                severity: "info" as const,
+                evidence: ["exact active anchor"],
+              }],
+            };
+          },
+        },
+      });
+      expect(calls).toEqual(["revalidate:0:1"]);
+      expect(snapshot.debt).toEqual([expect.objectContaining({
+        subject: "social-monitor-proposed-job", severity: "info",
+      })]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 async function createAttestedLiveProducer(input: {

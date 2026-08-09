@@ -39,6 +39,8 @@ export function isEpochReceipt(
     isSha256(value.planSha256) &&
     (value.transactionUpgradeSha256 === undefined ||
       isSha256(value.transactionUpgradeSha256)) &&
+    (value.proposedAdmissionAnchorSha256 === undefined ||
+      isSha256(value.proposedAdmissionAnchorSha256)) &&
     nonNegativeInteger(value.oldRootFileCount) &&
     nonNegativeInteger(value.migratedCount) &&
     nonNegativeInteger(value.quarantinedCount) &&

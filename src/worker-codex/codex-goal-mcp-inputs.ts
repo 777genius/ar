@@ -178,6 +178,7 @@ export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
   readonly newLedgerRoot?: string;
   readonly ledgerEpochCutoff?: string;
   readonly expectedLedgerEpochPlanSha256?: string;
+  readonly expectedLedgerEpochProposedAdmissionAnchorSha256?: string;
   readonly confirmLedgerEpochMigration?: boolean;
   readonly expectedStaleIntegrationPlanSha256?: string;
   readonly confirmStaleIntegrationReconciliation?: boolean;

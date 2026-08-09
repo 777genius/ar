@@ -22,6 +22,17 @@ import type {
 } from "../../codex-goal-jobs";
 import { stringValue } from "../codex-goal-input-values";
 import { readLedgerEpochAdmissionState } from "./codex-goal-ledger-epoch-admission-debt";
+import { resolveConsumedOutputMaintenanceLedgerRoot } from
+  "./codex-goal-consumed-output-ledger-epoch";
+import {
+  assertSocialProposedAdmissionSourceOrphanSeal,
+  assertSocialProposedAdmissionDebtCustody,
+  normalizeAnchoredProposedAdmission,
+  readSocialProposedAdmissionAnchor,
+  SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256,
+  verifySocialPreparedV1SourceOrphanSeal,
+  verifySocialProposedAdmissionAnchorEvidence,
+} from "./codex-goal-ledger-epoch-proposed-admission";
 import { limitCodexProjectSummariesForInspection } from "./codex-goal-project-admission-summary-limit";
 import {
   hasBlockingActiveWriterRisk,
@@ -37,6 +48,8 @@ import {
 import { readLaunchAuthorizedWorkerLaunchSpec } from "./codex-goal-project-pre-start-admission";
 import { orphanDirtyWorkspaceDebt } from
   "./codex-goal-project-orphan-workspace-admission";
+import { resolveLedgerEpochDebtCustody } from
+  "./codex-goal-consumed-output-ledger-epoch-switch";
 type JsonObject = Readonly<Record<string, unknown>>;
 const execFileAsync = promisify(execFile);
 export type CodexProjectAdmissionDeps = {
@@ -53,6 +66,11 @@ export type CodexProjectAdmissionDeps = {
     readonly registryRootDir: string;
     readonly jobId: string;
   }) => Promise<CodexGoalJobManifest>;
+  readonly normalizeActiveProposedAdmission?: (
+    scope: ProjectAccessScope,
+    snapshot: ProjectAdmissionSnapshot,
+    summaries: readonly CodexGoalJobSummary[],
+  ) => Promise<ProjectAdmissionSnapshot>;
 };
 
 type CodexProjectAdmissionInput = {
@@ -72,6 +90,7 @@ type CodexProjectAdmissionSnapshotInput = CodexProjectAdmissionInput & {
   readonly requestedWorkspacePath?: string;
   readonly blockAnyLiveWriter?: boolean;
   readonly allowPendingEpochOrphanQuarantine?: boolean;
+  readonly skipActiveProposedAdmissionNormalization?: boolean;
 };
 
 export function projectAdmissionDetailView(input: {
@@ -411,13 +430,45 @@ export async function buildCodexProjectAdmissionSnapshot(
     }));
     debt.push(...await diskPressureDebt(root));
   }
-  return {
+  const snapshot: ProjectAdmissionSnapshot = {
     schemaVersion: 1,
     projectId: input.scope.projectId,
     observedAt: new Date().toISOString(),
     debt,
     counts: projectAdmissionDebtCounts(debt),
   };
+  return input.skipActiveProposedAdmissionNormalization
+    ? snapshot
+    : await (input.deps.normalizeActiveProposedAdmission ??
+        normalizeActiveSocialProposedAdmission)(input.scope, snapshot, summaries);
+}
+
+export async function normalizeActiveSocialProposedAdmission(
+  scope: ProjectAccessScope,
+  snapshot: ProjectAdmissionSnapshot,
+  summaries: readonly CodexGoalJobSummary[],
+): Promise<ProjectAdmissionSnapshot> {
+  if (scope.projectId !== "social-monitor" ||
+    (scope.consumedOutputLedgerRoots?.length ?? 0) !== 1) return snapshot;
+  const active = await resolveConsumedOutputMaintenanceLedgerRoot(scope);
+  const receipt = active.epochReceipt;
+  if (!receipt || receipt.planSha256 !== SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256) {
+    return snapshot;
+  }
+  if (resolve(active.ledgerRoot) !== resolve(receipt.newRoot)) {
+    throw new Error("ledger_epoch_proposed_admission_active_root_mismatch");
+  }
+  const anchor = await readSocialProposedAdmissionAnchor(
+    receipt,
+    receipt.proposedAdmissionAnchorSha256,
+  );
+  if (!anchor) throw new Error("ledger_epoch_proposed_admission_anchor_missing");
+  const sourceOrphanSeal = await verifySocialPreparedV1SourceOrphanSeal(receipt);
+  assertSocialProposedAdmissionSourceOrphanSeal(anchor, sourceOrphanSeal);
+  await verifySocialProposedAdmissionAnchorEvidence(anchor);
+  const currentCustody = await resolveLedgerEpochDebtCustody(snapshot, summaries);
+  assertSocialProposedAdmissionDebtCustody(anchor, currentCustody);
+  return normalizeAnchoredProposedAdmission({ anchor, snapshot });
 }
 
 const LEGACY_FAILED_NO_OUTPUT_DIRTY_EVIDENCE =

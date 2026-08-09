@@ -130,6 +130,7 @@ export type ConsumedOutputLedgerEpochReceipt = {
   readonly legacyAdmission?: ConsumedOutputLedgerEpochLegacyAdmissionAnchor;
   readonly planSha256: string;
   readonly transactionUpgradeSha256?: string;
+  readonly proposedAdmissionAnchorSha256?: string;
   readonly createdAt: string;
   readonly activatedAt: string;
   readonly admissionBefore: ConsumedOutputLedgerEpochAdmissionSummary;

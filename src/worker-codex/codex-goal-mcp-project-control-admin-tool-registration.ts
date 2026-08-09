@@ -131,6 +131,8 @@ export function registerCodexGoalProjectControlAdminTools(server: McpServer): vo
         newLedgerRoot: z.string(),
         ledgerEpochCutoff: z.string().datetime(),
         expectedLedgerEpochPlanSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+        expectedLedgerEpochProposedAdmissionAnchorSha256:
+          z.string().regex(/^[a-f0-9]{64}$/).optional(),
         confirmLedgerEpochMigration: z.boolean().optional(),
       },
     },
