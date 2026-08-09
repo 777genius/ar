@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AccessBoundary,
   CONSUMED_OUTPUT_LEDGER_RETIRED_MARKER,
   NetworkAccessMode,
+  ProjectDebtReason,
+  type ConsumedOutputLedgerEpochPlan,
   type ProjectAccessScope,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
@@ -14,14 +16,440 @@ import {
   buildConsumedOutputLedgerEpochPlan,
 } from "../application/project-control/codex-goal-consumed-output-ledger-epoch";
 import {
+  acquireConsumedOutputLedgerMaintenanceLock,
+  LocalConsumedOutputLedgerMutationLock,
+  LocalConsumedOutputLedgerWriter,
+  LocalWorkspaceIntegrationLock,
+  releaseConsumedOutputLedgerMaintenanceLock,
+} from "@vioxen/subscription-runtime/worker-local";
+import {
   readCodexGoalJob,
   updateCodexGoalJob,
   type CodexGoalJobManifest,
 } from "../codex-goal-jobs";
 import { projectControlLedgerEpochMigrationView } from
   "../codex-goal-mcp-project-control-ledger-epoch";
+import {
+  seedAuthenticD0aPreparedEpochV1,
+  seedLegacyAdmissionHandlerFixture,
+  prepareAuthenticD0aFixture,
+} from
+  "./codex-goal-ledger-epoch-legacy-admission-fixture";
+import { buildLedgerEpochLegacyAdmissionAnchor } from
+  "../application/project-control/codex-goal-ledger-epoch-legacy-admission";
+
+const realHandlerUpgradeCrashBoundaries = [
+  ...Array.from({ length: 205 }, (_, index) =>
+    `source-orphan-${String(index).padStart(4, "0")}.json`
+  ),
+  "plan.json",
+  "owner.json",
+  "state.json",
+  "receipt.json",
+  "final-sidecar",
+  "intent",
+];
+
+await prepareAuthenticD0aFixture();
+const productionFixture = await handlerFixture(495);
+const productionPreview = await projectControlLedgerEpochMigrationView(
+  productionFixture.args(),
+  productionFixture.deps,
+);
+const productionPlan = await productionFixture.seedPreparedV1();
+await productionFixture.freezePreparedV1Baseline();
+const sharedBoundaryFixture = await handlerFixture(495, true);
+const sharedBoundaryPlan = await sharedBoundaryFixture.seedPreparedV1();
+await sharedBoundaryFixture.freezePreparedV1Baseline();
 
 describe("project control ledger epoch handler", () => {
+  it("anchors the exact production-shaped 495/205/6/4 legacy envelope", async () => {
+    expect(productionPreview).toMatchObject({
+      legacyAdmission: {
+        debtCount: 710,
+        blockingDebtCount: 710,
+      },
+    });
+  });
+
+  it("upgrades and activates the exact-710 prepared v1 plan through the real handler", async () => {
+    const fixture = productionFixture;
+    const plan = productionPlan;
+    await fixture.resetPreparedV1Baseline();
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args(),
+      fixture.deps,
+    )).resolves.toMatchObject({
+      planSha256: plan.planSha256,
+      upgradeRequired: true,
+    });
+    const activated = await projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: plan.planSha256,
+      }),
+      fixture.deps,
+    );
+    expect(activated).toMatchObject({
+      ok: true,
+      receipt: {
+        planSha256: plan.planSha256,
+        admissionAfter: { debtCount: 414 },
+      },
+    });
+  });
+
+  it("allows exact-710 post-admission output, normal jobs and replay", async () => {
+    const fixture = productionFixture;
+    const plan = productionPlan;
+    const normalStatusPath = join(fixture.root, "normal-new-job.status");
+    await writeFile(normalStatusPath, "");
+    const normalDecision = {
+      schemaVersion: 1 as const,
+      jobId: "social-monitor-normal-new-job",
+      status: "failed_no_output" as const,
+      closedAt: "2026-08-08T00:00:00.000Z",
+      failure: { category: "test", code: "test" },
+      output: { authoredChanges: false, workspaceDirty: false },
+      note: "normal post-admission terminal job",
+      backup: { workspace: fixture.root, statusPath: normalStatusPath },
+    };
+    const writer = new LocalConsumedOutputLedgerWriter();
+    await expect(writer.record({
+      ledgerRoot: fixture.oldRoot,
+      decision: normalDecision,
+    })).rejects.toThrow("consumed_output_ledger_root_retired");
+    await expect(writer.record({
+      ledgerRoot: fixture.newRoot,
+      decision: normalDecision,
+    })).resolves.toMatchObject({ decision: { jobId: normalDecision.jobId } });
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: plan.planSha256,
+      }),
+      fixture.deps,
+    )).resolves.toMatchObject({ ok: true, idempotentReplay: true });
+  });
+
+  it("refuses exact-710 v1 process drift with fresh handler dependencies", async () => {
+    const fixture = await handlerFixture(495);
+    const plan = await fixture.seedPreparedV1();
+    const oldScopeBytes = await fixture.oldScopeBytes();
+    fixture.setProcessInventorySequence([
+      "a".repeat(64),
+      "b".repeat(64),
+      "c".repeat(64),
+    ]);
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: plan.planSha256,
+      }),
+      fixture.deps,
+    )).rejects.toThrow("ledger_epoch_process_inventory_drift");
+    expect(await fixture.oldScopeBytes()).toEqual(oldScopeBytes);
+  });
+
+  it("refuses late exact-710 v1 fact drift without changing any target bytes", async () => {
+    const fixture = await handlerFixture(495);
+    const plan = await fixture.seedPreparedV1();
+    const before = await fixture.oldScopeBytes();
+    fixture.setProcessInventorySequence([
+      "a".repeat(64),
+      "a".repeat(64),
+      "b".repeat(64),
+      "b".repeat(64),
+    ]);
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: plan.planSha256,
+      }),
+      fixture.deps,
+    )).rejects.toThrow("ledger_epoch_process_inventory_drift");
+    expect(await fixture.oldScopeBytes()).toEqual(before);
+  });
+
+  it("releases both ledger roots and every upper lock when first release detects drift", async () => {
+    const fixture = await handlerFixture(495, true);
+    const plan = await fixture.seedPreparedV1();
+    const original = `${fixture.newRoot}-release-probe-original`;
+    fixture.setCaptureMutationAt(3, async () => {
+      await rename(fixture.newRoot, original);
+      await cp(original, fixture.newRoot, { recursive: true });
+    });
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: plan.planSha256,
+      }),
+      fixture.deps,
+    )).rejects.toThrow("ledger_epoch_target_root_identity_drift");
+
+    await rm(fixture.newRoot, { recursive: true });
+    await rename(original, fixture.newRoot);
+    fixture.setCaptureMutationAt(3, async () => undefined);
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: plan.planSha256,
+      }),
+      fixture.deps,
+    )).resolves.toMatchObject({
+      ok: true,
+      receipt: { planSha256: plan.planSha256, status: "active" },
+    });
+  });
+
+  it("releases a mutation lock when root identity drifts after acquisition", async () => {
+    const probeRoot = await mkdtemp(join(tmpdir(), "ledger-acquire-drift-"));
+    const ledgerRoot = join(probeRoot, "ledger");
+    const originalRoot = join(probeRoot, "ledger-original");
+    await mkdir(ledgerRoot);
+    const originalAcquire = LocalWorkspaceIntegrationLock.prototype.acquire;
+    const acquireSpy = vi.spyOn(
+      LocalWorkspaceIntegrationLock.prototype,
+      "acquire",
+    ).mockImplementation(async function (
+      this: LocalWorkspaceIntegrationLock,
+      input,
+    ) {
+      const lock = await originalAcquire.call(this, input);
+      await rename(ledgerRoot, originalRoot);
+      await cp(originalRoot, ledgerRoot, { recursive: true });
+      return lock;
+    });
+    const mutationLocks = new LocalConsumedOutputLedgerMutationLock();
+    try {
+      await expect(mutationLocks.acquire({
+        ledgerRoots: [ledgerRoot],
+        owner: "acquire-drift-probe",
+      })).rejects.toThrow("consumed_output_ledger_root_identity_drift");
+      acquireSpy.mockRestore();
+      await rm(ledgerRoot, { recursive: true });
+      await rename(originalRoot, ledgerRoot);
+
+      const retry = await mutationLocks.acquire({
+        ledgerRoots: [ledgerRoot],
+        owner: "acquire-drift-retry",
+      });
+      await mutationLocks.release(retry);
+    } finally {
+      acquireSpy.mockRestore();
+      await rm(probeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an exact-710 registry manifest remap before any scope bytes change", async () => {
+    const fixture = await handlerFixture(495);
+    const plan = await fixture.seedPreparedV1();
+    const oldScopeBytes = await fixture.oldScopeBytes();
+    fixture.setCaptureMutation(async () => {
+      await fixture.remapJobManifest("legacy-consumed-0");
+    });
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: plan.planSha256,
+      }),
+      fixture.deps,
+    )).rejects.toThrow("ledger_epoch_debt_custody_drift");
+    const after = await fixture.oldScopeBytes();
+    expect(after.controller).toEqual(oldScopeBytes.controller);
+    expect(after.oldRoot).toEqual(oldScopeBytes.oldRoot);
+    expect(after.newRoot).toEqual(oldScopeBytes.newRoot);
+    expect((await fixture.load()).scope.consumedOutputLedgerRoots).toEqual([
+      fixture.oldRoot,
+    ]);
+  });
+
+  it("refuses exact-710 workspace alias-map drift before any scope bytes change", async () => {
+    const fixture = await handlerFixture(495);
+    const alias = await fixture.aliasJobManifest("legacy-consumed-0");
+    const plan = await fixture.seedPreparedV1();
+    const oldScopeBytes = await fixture.oldScopeBytes();
+    fixture.setCaptureMutation(async () => {
+      await rm(alias.path);
+      await symlink(alias.replacement, alias.path, "dir");
+    });
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: plan.planSha256,
+      }),
+      fixture.deps,
+    )).rejects.toThrow("ledger_epoch_debt_custody_drift");
+    expect(await fixture.oldScopeBytes()).toEqual(oldScopeBytes);
+  });
+
+  describe("exact-710 monotonic public-handler crash chain", () => {
+    for (const [index, crashAfter] of realHandlerUpgradeCrashBoundaries.entries()) {
+      it(`resumes cursor ${index} then crashes after ${crashAfter}`, async () => {
+        if (index === 0) {
+          await sharedBoundaryFixture.resetPreparedV1Baseline();
+        }
+        const request = sharedBoundaryFixture.args({
+          confirmLedgerEpochMigration: true,
+          expectedLedgerEpochPlanSha256: sharedBoundaryPlan.planSha256,
+        });
+        sharedBoundaryFixture.setUpgradeCrashAfter(crashAfter);
+        await expect(projectControlLedgerEpochMigrationView(
+          request,
+          { ...sharedBoundaryFixture.deps },
+        ), crashAfter).rejects.toThrow(
+          `ledger_epoch_simulated_upgrade_crash:${crashAfter}`,
+        );
+      });
+    }
+    it("performs one final fresh activation and replay", async () => {
+      const request = sharedBoundaryFixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: sharedBoundaryPlan.planSha256,
+      });
+      sharedBoundaryFixture.setUpgradeCrashAfter(undefined);
+      await expect(projectControlLedgerEpochMigrationView(
+        request,
+        { ...sharedBoundaryFixture.deps },
+      )).resolves.toMatchObject({
+        ok: true,
+        receipt: { planSha256: sharedBoundaryPlan.planSha256, status: "active" },
+      });
+      await expect(projectControlLedgerEpochMigrationView(
+        request,
+        { ...sharedBoundaryFixture.deps },
+      )).resolves.toMatchObject({ ok: true, idempotentReplay: true });
+    });
+  });
+
+  it("refuses a partial exact-710 final sidecar through the real handler", async () => {
+    const fixture = await handlerFixture(495);
+    const plan = await fixture.seedPreparedV1();
+    await mkdir(join(fixture.newRoot, ".ledger-epoch-v2-sidecar"));
+    await writeFile(join(
+      fixture.newRoot,
+      ".ledger-epoch-v2-sidecar",
+      "intent.json",
+    ), "{}\n");
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: plan.planSha256,
+      }),
+      { ...fixture.deps },
+    )).rejects.toThrow("ledger_epoch_upgrade_sidecar_partial");
+    expect((await fixture.load()).scope.consumedOutputLedgerRoots).toEqual([
+      fixture.oldRoot,
+    ]);
+  });
+
+  describe("conflicting exact-710 final sidecar", () => {
+    it("captures the valid final-sidecar-before-intent boundary", async () => {
+      await sharedBoundaryFixture.resetPreparedV1Baseline();
+      sharedBoundaryFixture.setUpgradeCrashAfter("final-sidecar");
+      await expect(projectControlLedgerEpochMigrationView(
+        sharedBoundaryFixture.args({
+          confirmLedgerEpochMigration: true,
+          expectedLedgerEpochPlanSha256: sharedBoundaryPlan.planSha256,
+        }),
+        { ...sharedBoundaryFixture.deps },
+      )).rejects.toThrow("ledger_epoch_simulated_upgrade_crash:final-sidecar");
+    });
+
+    it("refuses conflicting bytes through a fresh real handler", async () => {
+      const manifestPath = join(
+        sharedBoundaryFixture.newRoot,
+        ".ledger-epoch-v2-sidecar",
+        "manifest.json",
+      );
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as
+        Record<string, unknown>;
+      await writeFile(manifestPath, `${JSON.stringify({
+        ...manifest,
+        processEvidence: { inventorySha256: "f".repeat(64) },
+      }, null, 2)}\n`);
+      sharedBoundaryFixture.setUpgradeCrashAfter(undefined);
+      await expect(projectControlLedgerEpochMigrationView(
+        sharedBoundaryFixture.args({
+          confirmLedgerEpochMigration: true,
+          expectedLedgerEpochPlanSha256: sharedBoundaryPlan.planSha256,
+        }),
+        { ...sharedBoundaryFixture.deps },
+      )).rejects.toThrow("ledger_epoch_upgrade_sidecar_hash_mismatch");
+      expect((await sharedBoundaryFixture.load()).scope.consumedOutputLedgerRoots)
+        .toEqual([sharedBoundaryFixture.oldRoot]);
+    });
+  });
+
+  it.each([
+    ".ledger-epoch-intent.json",
+    "ledger-epoch-plan.json",
+    ".epoch-owner.json",
+    "ledger-epoch-state.json",
+    "ledger-epoch-receipt.json",
+  ])("refuses exact-710 v1 %s mutation before switching scope", async (name) => {
+    const fixture = await handlerFixture(495);
+    const plan = await fixture.seedPreparedV1();
+    fixture.setCaptureMutation(async () => {
+      await writeFile(join(fixture.newRoot, name), "mutated\n");
+    });
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: plan.planSha256,
+      }),
+      fixture.deps,
+    )).rejects.toThrow();
+    expect((await fixture.load()).scope.consumedOutputLedgerRoots).toEqual([
+      fixture.oldRoot,
+    ]);
+  });
+
+  it("refuses exact-710 v1 target replacement before switching scope", async () => {
+    const fixture = await handlerFixture(495);
+    const plan = await fixture.seedPreparedV1();
+    fixture.setCaptureMutation(async () => {
+      const original = `${fixture.newRoot}-original`;
+      await rename(fixture.newRoot, original);
+      await cp(original, fixture.newRoot, { recursive: true });
+    });
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: plan.planSha256,
+      }),
+      fixture.deps,
+    )).rejects.toThrow("ledger_epoch_target_root_identity_drift");
+  });
+
+  it("refuses exact-710 v1 maintenance contention with fresh handler dependencies", async () => {
+    const fixture = await handlerFixture(495);
+    const plan = await fixture.seedPreparedV1();
+    const competing = await acquireConsumedOutputLedgerMaintenanceLock({
+      ledgerRoot: fixture.oldRoot,
+      owner: "competing-ledger-epoch",
+    });
+    try {
+      await expect(projectControlLedgerEpochMigrationView(
+        fixture.args({
+          confirmLedgerEpochMigration: true,
+          expectedLedgerEpochPlanSha256: plan.planSha256,
+        }),
+        fixture.deps,
+      )).rejects.toThrow("consumed_output_ledger_maintenance_locked");
+    } finally {
+      await releaseConsumedOutputLedgerMaintenanceLock(competing);
+    }
+  });
+
+  it.each([494, 496])("refuses a %i-item legacy admission near miss", async (count) => {
+    const fixture = await handlerFixture(count);
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args(),
+      fixture.deps,
+    )).rejects.toThrow("ledger_epoch_legacy_admission_exact_count_mismatch");
+  });
+
   it("confirms a fresh preview under the actual publication locks", async () => {
     const fixture = await handlerFixture();
     const preview = await projectControlLedgerEpochMigrationView(
@@ -171,7 +599,10 @@ describe("project control ledger epoch handler", () => {
   });
 });
 
-async function handlerFixture() {
+async function handlerFixture(
+  legacyConsumedCount?: number,
+  fastOrphanBoundaries = false,
+) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "ledger-epoch-handler-")));
   const registryRootDir = join(root, "registry");
   const controllerJobId = "social-monitor-controller-v4";
@@ -185,7 +616,17 @@ async function handlerFixture() {
     mkdir(join(root, "worktrees"), { recursive: true }),
     mkdir(join(root, "secrets"), { recursive: true }),
   ]);
-  await writeFile(join(oldRoot, "items", "legacy.json"), "not-json\n");
+  const admissionSnapshot = legacyConsumedCount === undefined
+    ? undefined
+    : await seedLegacyAdmissionHandlerFixture({
+        root,
+        oldRoot,
+        consumedCount: legacyConsumedCount,
+        fastOrphanBoundaries,
+      });
+  if (!admissionSnapshot) {
+    await writeFile(join(oldRoot, "items", "legacy.json"), "not-json\n");
+  }
   const scope: ProjectAccessScope = {
     projectId: "social-monitor",
     readRoots: [root],
@@ -259,6 +700,22 @@ async function handlerFixture() {
     })).rejects.toThrow("ledger_epoch_simulated_crash_after_scope_switched");
     return plan;
   };
+  const seedPreparedV1 = async () => {
+    if (!admissionSnapshot) throw new Error("legacy fixture required");
+    const controller = (await load()).controller;
+    return await seedAuthenticD0aPreparedEpochV1({
+      root,
+      oldRoot,
+      newRoot,
+      controllerJobId,
+      cutoff,
+      orphanWorkspacePaths: admissionSnapshot.debt
+        .filter((item) => item.reason === ProjectDebtReason.OrphanLegacyWorkspace)
+        .map((item) => item.subject),
+      controllerManifestSha256: sha256Json(controller),
+      controllerStableScopeSha256: stableControllerFingerprint(controller),
+    }) as unknown as ConsumedOutputLedgerEpochPlan;
+  };
   const activateWithoutState = async () => {
     await mkdir(newRoot, { recursive: true });
     await updateCodexGoalJob({
@@ -280,13 +737,94 @@ async function handlerFixture() {
       },
     });
   };
+  let processInventorySha = "a".repeat(64);
+  let processInventorySequence: string[] = [];
+  let captureCount = 0;
+  let captureMutationAt = 2;
+  let captureMutation: (() => Promise<void>) | undefined;
+  let upgradeCrashAfter: string | undefined;
+  const postAdmissionCount = fastOrphanBoundaries ? 209 : 414;
+  let preparedBaselineRoot: string | undefined;
+  let preparedBaselineController: Buffer | undefined;
   return {
     root,
     oldRoot,
     newRoot,
+    oldScopeBytes: async () => ({
+      controller: await exactTreeBytes(controllerJobRoot),
+      oldRoot: await exactTreeBytes(oldRoot),
+      newRoot: await exactTreeBytes(newRoot),
+    }),
+    remapJobManifest: async (jobId: string) => {
+      const path = join(registryRootDir, jobId, "job.json");
+      const current = JSON.parse(await readFile(path, "utf8")) as
+        Record<string, unknown>;
+      const remapped = join(root, "workspaces", `${jobId}-remapped`);
+      await mkdir(remapped, { recursive: true });
+      await writeFile(path, `${JSON.stringify({
+        ...current,
+        workspacePath: remapped,
+      }, null, 2)}\n`);
+    },
+    aliasJobManifest: async (jobId: string) => {
+      const manifestPath = join(registryRootDir, jobId, "job.json");
+      const current = JSON.parse(await readFile(manifestPath, "utf8")) as
+        Record<string, unknown>;
+      const original = String(current.workspacePath);
+      const replacement = join(root, "workspaces", `${jobId}-alias-replacement`);
+      const path = join(root, "workspaces", `${jobId}-alias`);
+      await mkdir(replacement, { recursive: true });
+      await symlink(original, path, "dir");
+      await writeFile(manifestPath, `${JSON.stringify({
+        ...current,
+        workspacePath: path,
+      }, null, 2)}\n`);
+      return { path, replacement };
+    },
     seedScopeSwitched,
+    seedPreparedV1,
     activateWithoutState,
     setDeniedRoots,
+    setProcessInventorySha: (value: string) => {
+      processInventorySha = value;
+    },
+    load,
+    setProcessInventorySequence: (value: readonly string[]) => {
+      processInventorySequence = [...value];
+    },
+    setCaptureMutation: (value: () => Promise<void>) => {
+      captureMutation = value;
+      captureMutationAt = 2;
+      captureCount = 0;
+    },
+    setCaptureMutationAt: (count: number, value: () => Promise<void>) => {
+      captureMutation = value;
+      captureMutationAt = count;
+      captureCount = 0;
+    },
+    setUpgradeCrashAfter: (value: string | undefined) => {
+      upgradeCrashAfter = value;
+    },
+    freezePreparedV1Baseline: async () => {
+      preparedBaselineRoot = await mkdtemp(join(tmpdir(), "ledger-epoch-v1-baseline-"));
+      await cp(newRoot, join(preparedBaselineRoot, "root"), { recursive: true });
+      preparedBaselineController = await readFile(join(controllerJobRoot, "job.json"));
+    },
+    resetPreparedV1Baseline: async () => {
+      if (!preparedBaselineRoot || !preparedBaselineController) {
+        throw new Error("prepared v1 baseline not frozen");
+      }
+      await rm(newRoot, { recursive: true, force: true });
+      await cp(join(preparedBaselineRoot, "root"), newRoot, { recursive: true });
+      await writeFile(join(controllerJobRoot, "job.json"), preparedBaselineController);
+      await rm(join(oldRoot, CONSUMED_OUTPUT_LEDGER_RETIRED_MARKER), { force: true });
+      captureCount = 0;
+      captureMutationAt = 2;
+      captureMutation = undefined;
+      processInventorySequence = [];
+      processInventorySha = "a".repeat(64);
+      upgradeCrashAfter = undefined;
+    },
     args: (extra: Record<string, unknown> = {}) => ({
       registryRootDir,
       controllerJobId,
@@ -298,10 +836,57 @@ async function handlerFixture() {
     deps: {
       loadProjectControlController: async () => await load(),
       admissionDeps: { listJobs: async () => [], buildOverviewItems: async () => [] },
+      ...(admissionSnapshot
+        ? { buildAdmissionSnapshot: async (input: { scope: ProjectAccessScope }) =>
+            input.scope.consumedOutputLedgerRoots?.[0] === newRoot
+              ? {
+                  ...admissionSnapshot,
+                  debt: Array.from({ length: postAdmissionCount }, (_, index) => ({
+                    reason: ProjectDebtReason.LegacyOutputQuarantineRequired,
+                    subject: `${newRoot}/quarantine/${index}`,
+                    severity: "info" as const,
+                    evidence: [`anchored quarantine ${index}`],
+                  })),
+                }
+              : admissionSnapshot }
+        : {}),
       assertNoLegacyWriterProcesses: async () => undefined,
+      captureProcessEvidence: async (custodyPaths: readonly string[]) => {
+        captureCount += 1;
+        if (captureCount === captureMutationAt) await captureMutation?.();
+        return {
+          schemaVersion: 1 as const,
+          observedAt: "2026-08-08T00:00:00.000Z",
+          inspectedPidCount: 3,
+          inventorySha256: processInventorySequence.shift() ?? processInventorySha,
+          custodyPaths,
+          blockers: [],
+        };
+      },
+      preparedV1UpgradeCrashAfter: () => upgradeCrashAfter,
     },
   };
 }
+
+async function exactTreeBytes(root: string): Promise<readonly string[]> {
+  const values: string[] = [];
+  const visit = async (path: string, relativePath: string): Promise<void> => {
+    const metadata = await stat(path);
+    if (metadata.isDirectory()) {
+      values.push(`d\0${relativePath}\0${metadata.mode}`);
+      for (const name of (await readdir(path)).sort()) {
+        await visit(join(path, name), relativePath ? `${relativePath}/${name}` : name);
+      }
+      return;
+    }
+    const bytes = await readFile(path);
+    values.push(`f\0${relativePath}\0${bytes.length}\0${createHash("sha256")
+      .update(bytes).digest("hex")}`);
+  };
+  await visit(root, "");
+  return values;
+}
+
 
 function stableControllerFingerprint(manifest: CodexGoalJobManifest): string {
   const projectAccessScope = manifest.projectAccessScope

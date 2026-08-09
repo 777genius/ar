@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import {
   ProjectDebtReason,
+  summarizeProjectAdmissionDebt,
   type ProjectAccessScope,
+  type ProjectAdmissionSnapshot,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
   acquireConsumedOutputLedgerMaintenanceLock,
@@ -20,6 +22,8 @@ import {
 } from "./application/project-control/codex-goal-project-admission";
 import {
   applyConsumedOutputLedgerEpoch,
+  assertConsumedOutputLedgerEpochOrphanBindingsUnchanged,
+  assertConsumedOutputLedgerEpochPreparedArtifacts,
   buildConsumedOutputLedgerEpochPlan,
   canonicalConsumedOutputLedgerRoot,
   resolvePendingConsumedOutputLedgerEpochPlan,
@@ -30,6 +34,7 @@ import {
   listCodexGoalJobs,
   updateCodexGoalJob,
   type CodexGoalJobManifest,
+  type CodexGoalJobSummary,
 } from "./codex-goal-jobs";
 import type { ProjectControlMcpArgs } from "./codex-goal-mcp-inputs";
 import { assertProjectControlScopeRepairAllowed } from "./codex-goal-mcp-project-scope";
@@ -56,6 +61,19 @@ import {
 } from "./application/project-control/codex-goal-legacy-attempt-quarantine-anchor";
 import { captureLegacyAttemptProcessEvidence } from
   "./application/project-control/codex-goal-legacy-attempt-process-evidence";
+import type { LegacyAttemptProcessEvidence } from
+  "./application/project-control/codex-goal-legacy-attempt-process-evidence";
+import { buildLedgerEpochLegacyAdmissionAnchor } from
+  "./application/project-control/codex-goal-ledger-epoch-legacy-admission";
+import {
+  assertPreparedEpochV2Sidecar,
+  upgradePreparedEpochV1,
+} from "./application/project-control/codex-goal-consumed-output-ledger-epoch-target";
+import {
+  assertLedgerEpochDebtCustodyUnchanged,
+  resolveLedgerEpochDebtCustody,
+  type LedgerEpochDebtCustodyBinding,
+} from "./application/project-control/codex-goal-consumed-output-ledger-epoch-switch";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -70,7 +88,17 @@ export type ProjectControlLedgerEpochDeps = {
     args: ProjectControlMcpArgs,
   ) => Promise<LoadedController>;
   readonly admissionDeps: CodexProjectAdmissionDeps;
+  readonly buildAdmissionSnapshot?: (input: {
+    readonly registryRootDir: string;
+    readonly scope: ProjectAccessScope;
+    readonly allowPendingEpochOrphanQuarantine?: boolean;
+  }) => Promise<ProjectAdmissionSnapshot>;
   readonly assertNoLegacyWriterProcesses?: () => Promise<void>;
+  readonly captureProcessEvidence?: (
+    custodyPaths: readonly string[],
+  ) => Promise<LegacyAttemptProcessEvidence>;
+  /** Deterministic crash boundary used only by restart certification. */
+  readonly preparedV1UpgradeCrashAfter?: () => string | undefined;
 };
 
 export async function projectControlLedgerEpochMigrationView(
@@ -97,7 +125,12 @@ export async function projectControlLedgerEpochMigrationView(
   });
   await assertCanonicalLedgerRootsAllowed(loaded.scope, oldRoot, newRoot);
   await assertControllerLedgerRootState(loaded.scope, oldRoot, newRoot);
-  const buildPlan = async () => {
+  const buildPlan = async (
+    transactionVersion: 1 | 2 = 2,
+    preboundOrphanWorkspaceBindings?: Awaited<ReturnType<
+      typeof buildConsumedOutputLedgerEpochPlan
+    >>["orphanWorkspaceBindings"],
+  ) => {
     const current = await deps.loadProjectControlController(args);
     await assertControllerLedgerRootState(current.scope, oldRoot, newRoot);
     const summaries = await listCodexGoalJobs({
@@ -111,16 +144,29 @@ export async function projectControlLedgerEpochMigrationView(
         ))
         .map((summary) => summary.jobId),
     );
-    const admission = await buildCodexProjectAdmissionSnapshot({
+    const admission = await buildAdmissionSnapshot({
       registryRootDir: current.registryRootDir,
       scope: current.scope,
-      deps: deps.admissionDeps,
+      admissionDeps: deps.admissionDeps,
+      snapshotBuilder: deps.buildAdmissionSnapshot,
     });
     const legacyAttemptQuarantine =
       await buildLiveLegacyAttemptQuarantineEpochAnchor(
         current.controller.jobRootDir,
       );
+    const debtCustody = await resolveLedgerEpochDebtCustody(admission, summaries);
+    const custodyPaths = custodyPathsFor(debtCustody, oldRoot, newRoot);
+    const processEvidence = await captureEpochProcessEvidence(
+      deps,
+      custodyPaths,
+    );
+    const legacyAdmission = buildLedgerEpochLegacyAdmissionAnchor({
+      snapshot: admission,
+      cutoff,
+      processEvidence,
+    });
     return await buildConsumedOutputLedgerEpochPlan({
+      transactionVersion,
       controllerJobId: current.controller.jobId,
       projectId: current.scope.projectId,
       oldRoot,
@@ -138,12 +184,20 @@ export async function projectControlLedgerEpochMigrationView(
       orphanWorkspacePaths: admission.debt
         .filter((item) => item.reason === ProjectDebtReason.OrphanLegacyWorkspace)
         .map((item) => item.subject),
+      ...(preboundOrphanWorkspaceBindings
+        ? { preboundOrphanWorkspaceBindings }
+        : {}),
       controllerManifestSha256: manifestFingerprint(current.controller),
       controllerStableScopeSha256: stableControllerFingerprint(current.controller),
       ...(legacyAttemptQuarantine ? { legacyAttemptQuarantine } : {}),
+      ...(transactionVersion === 2 && legacyAdmission ? { legacyAdmission } : {}),
     });
   };
-  const persistedPlan = await resolvePendingConsumedOutputLedgerEpochPlan(newRoot, true);
+  const persistedPlan = await resolvePendingConsumedOutputLedgerEpochPlan(
+    newRoot,
+    true,
+    true,
+  );
   await assertPreparedStateForActiveRoot(loaded.scope, newRoot, persistedPlan !== undefined);
   if (persistedPlan) {
     assertPersistedPlanOwned({
@@ -154,6 +208,9 @@ export async function projectControlLedgerEpochMigrationView(
       newRoot,
       cutoff,
     });
+    if (persistedPlan.transactionVersion === 2) {
+      await assertConsumedOutputLedgerEpochPreparedArtifacts(persistedPlan);
+    }
   }
   const plan = persistedPlan ?? await buildPlan();
   if (booleanValue(args.confirmLedgerEpochMigration) !== true) {
@@ -175,6 +232,8 @@ export async function projectControlLedgerEpochMigrationView(
         plan.inheritedQuarantinedCount + plan.quarantinedCount,
       planSha256: plan.planSha256,
       legacyAttemptQuarantine: plan.legacyAttemptQuarantine,
+      legacyAdmission: plan.legacyAdmission,
+      upgradeRequired: plan.transactionVersion !== 2,
     };
   }
   const expectedPlanSha256 = stringValue(args.expectedLedgerEpochPlanSha256);
@@ -194,6 +253,8 @@ export async function projectControlLedgerEpochMigrationView(
   let mutationLease;
   let maintenanceLease;
   let controllerFence;
+  let operationError: unknown;
+  const debtLocks: Array<Awaited<ReturnType<typeof locks.acquire>>> = [];
   try {
     const locked = await deps.loadProjectControlController(args);
     await durableConfirmFilePublication(controllerScopeLockIdentity(
@@ -211,6 +272,7 @@ export async function projectControlLedgerEpochMigrationView(
     });
     const lockedPersistedPlan = await resolvePendingConsumedOutputLedgerEpochPlan(
       newRoot,
+      true,
       true,
     );
     await assertPreparedStateForActiveRoot(
@@ -230,6 +292,9 @@ export async function projectControlLedgerEpochMigrationView(
         newRoot,
         cutoff,
       });
+      if (lockedPersistedPlan.transactionVersion === 2) {
+        await assertConsumedOutputLedgerEpochPreparedArtifacts(lockedPersistedPlan);
+      }
     }
     const lockedManifestFingerprint = manifestFingerprint(locked.controller);
     controllerFence = await acquireLocalControllerMaintenanceFence({
@@ -259,28 +324,182 @@ export async function projectControlLedgerEpochMigrationView(
           ledgerRoot: oldRoot,
           selfPid: process.pid,
         }));
+    const lockedAdmission = await buildAdmissionSnapshot({
+      registryRootDir: locked.registryRootDir,
+      scope: { ...locked.scope, consumedOutputLedgerRoots: [oldRoot] },
+      admissionDeps: deps.admissionDeps,
+      snapshotBuilder: deps.buildAdmissionSnapshot,
+    });
+    const lockedSummaries = await listCodexGoalJobs({
+      registryRootDir: locked.registryRootDir,
+    });
+    const debtCustody = await resolveLedgerEpochDebtCustody(
+      lockedAdmission,
+      lockedSummaries,
+    );
+    const debtPaths = custodyPathsFor(debtCustody, oldRoot, newRoot);
+    const preliminaryProcessEvidence = await captureEpochProcessEvidence(
+      deps,
+      debtPaths,
+    );
+    for (const path of debtPaths) {
+      debtLocks.push(await locks.acquire({
+        workspacePath: path,
+        owner: `ledger-epoch-debt:${locked.controller.jobId}:${plan.planSha256}`,
+      }));
+    }
     maintenanceLease = await acquireConsumedOutputLedgerMaintenanceLock({
       ledgerRoot: oldRoot,
       owner: `ledger-epoch:${locked.controller.jobId}:${plan.planSha256}`,
     });
     mutationLease = await mutationLocks.acquire({
-      ledgerRoots: [oldRoot],
+      ledgerRoots: lockedPersistedPlan ? [oldRoot, newRoot] : [oldRoot],
       owner: `ledger-epoch:${locked.controller.jobId}:${plan.planSha256}`,
     });
+    const lockedRootIdentities = await Promise.all([
+      directoryIdentity(oldRoot),
+      directoryIdentity(newRoot, true),
+    ]);
+    const rebuildLockedFacts = async () => {
+      const currentController = await deps.loadProjectControlController(args);
+      if (manifestFingerprint(currentController.controller) !== lockedManifestFingerprint) {
+        throw new Error("ledger_epoch_controller_manifest_cas_mismatch");
+      }
+      await assertControllerLedgerRootState(
+        currentController.scope,
+        oldRoot,
+        lockedActiveRoot,
+      );
+      const currentAdmission = await buildAdmissionSnapshot({
+        registryRootDir: currentController.registryRootDir,
+        scope: { ...currentController.scope, consumedOutputLedgerRoots: [oldRoot] },
+        admissionDeps: deps.admissionDeps,
+        snapshotBuilder: deps.buildAdmissionSnapshot,
+      });
+      if (JSON.stringify(currentAdmission.debt) !== JSON.stringify(lockedAdmission.debt)) {
+        throw new Error("ledger_epoch_admission_debt_drift");
+      }
+      const currentEvidence = await captureEpochProcessEvidence(deps, debtPaths);
+      if (currentEvidence.inventorySha256 !== preliminaryProcessEvidence.inventorySha256 ||
+        currentEvidence.inspectedPidCount !== preliminaryProcessEvidence.inspectedPidCount ||
+        JSON.stringify(currentEvidence.custodyPaths) !==
+          JSON.stringify(preliminaryProcessEvidence.custodyPaths) ||
+        JSON.stringify(currentEvidence.blockers) !==
+          JSON.stringify(preliminaryProcessEvidence.blockers)) {
+        throw new Error("ledger_epoch_process_inventory_drift");
+      }
+      const reboundController = await deps.loadProjectControlController(args);
+      if (manifestFingerprint(reboundController.controller) !== lockedManifestFingerprint) {
+        throw new Error("ledger_epoch_controller_manifest_cas_mismatch");
+      }
+      const reboundSummaries = await listCodexGoalJobs({
+        registryRootDir: reboundController.registryRootDir,
+      });
+      await assertLedgerEpochDebtCustodyUnchanged(debtCustody, reboundSummaries);
+      const reboundRootIdentities = await Promise.all([
+        directoryIdentity(oldRoot),
+        directoryIdentity(newRoot, true),
+      ]);
+      const newRootWasMissing = "present" in lockedRootIdentities[1]! &&
+        lockedRootIdentities[1].present === false;
+      const newRootNowPresent = !("present" in reboundRootIdentities[1]!);
+      if (JSON.stringify(reboundRootIdentities[0]) !==
+          JSON.stringify(lockedRootIdentities[0]) ||
+        (!newRootWasMissing && JSON.stringify(reboundRootIdentities[1]) !==
+          JSON.stringify(lockedRootIdentities[1]))) {
+        throw new Error("ledger_epoch_target_root_identity_drift");
+      }
+      if (newRootWasMissing && newRootNowPresent) {
+        await assertConsumedOutputLedgerEpochPreparedArtifacts(plan);
+      }
+      return { admission: currentAdmission, evidence: currentEvidence };
+    };
+    let authoritative = await rebuildLockedFacts();
+    let processEvidence = authoritative.evidence;
+    let upgradedLegacyAdmission = buildLedgerEpochLegacyAdmissionAnchor({
+      snapshot: authoritative.admission,
+      cutoff,
+      processEvidence,
+    });
+    if (plan.transactionVersion !== 2 && !upgradedLegacyAdmission) {
+      throw new Error("ledger_epoch_legacy_admission_required");
+    }
+    let lockedCurrentPlan: Awaited<ReturnType<
+      typeof buildConsumedOutputLedgerEpochPlan
+    >> | undefined;
+    const rebuildCurrentPlanOnce = async () => {
+      if (!lockedCurrentPlan) {
+        lockedCurrentPlan = await buildCurrentPlanFor(plan, buildPlan);
+        if (lockedCurrentPlan.planSha256 !== plan.planSha256) {
+          throw new Error("ledger_epoch_plan_drift");
+        }
+      }
+      return lockedCurrentPlan;
+    };
+    if (plan.transactionVersion !== 2) {
+      if (lockedActiveRoot === oldRoot) await rebuildCurrentPlanOnce();
+      await assertConsumedOutputLedgerEpochPreparedArtifacts(plan);
+      await assertConsumedOutputLedgerEpochOrphanBindingsUnchanged(plan);
+      authoritative = await rebuildLockedFacts();
+      processEvidence = authoritative.evidence;
+      upgradedLegacyAdmission = buildLedgerEpochLegacyAdmissionAnchor({
+        snapshot: authoritative.admission,
+        cutoff,
+        processEvidence,
+      });
+      if (!upgradedLegacyAdmission) {
+        throw new Error("ledger_epoch_legacy_admission_required");
+      }
+      const crashAfter = deps.preparedV1UpgradeCrashAfter?.();
+      await upgradePreparedEpochV1({
+        plan,
+        legacyAdmission: upgradedLegacyAdmission!,
+        debtCustody,
+        processEvidence,
+        expectedPlanSha256,
+        ...(crashAfter === undefined ? {} : { crashAfter }),
+      });
+      await assertPreparedEpochV2Sidecar(
+        plan,
+        processEvidence,
+        upgradedLegacyAdmission!,
+        debtCustody,
+      );
+    } else if (plan.legacyAdmission && JSON.stringify(plan.legacyAdmission) !==
+        JSON.stringify(upgradedLegacyAdmission)) {
+      throw new Error("ledger_epoch_legacy_admission_drift");
+    }
+    const boundLegacyAdmission = plan.legacyAdmission ?? upgradedLegacyAdmission;
     const admissionBefore = await admissionSummary({
       registryRootDir: loaded.registryRootDir,
       scope: { ...locked.scope, consumedOutputLedgerRoots: [oldRoot] },
       deps: deps.admissionDeps,
+      snapshotBuilder: deps.buildAdmissionSnapshot,
     });
     result = await applyConsumedOutputLedgerEpoch({
       plan,
+      ...(plan.transactionVersion === 2
+        ? {}
+        : { upgradedLegacyAdmission: upgradedLegacyAdmission! }),
       expectedPlanSha256,
-      buildCurrentPlan: buildPlan,
+      buildCurrentPlan: async () => {
+        const current = await rebuildCurrentPlanOnce();
+        if (plan.transactionVersion !== 2) {
+          await assertPreparedEpochV2Sidecar(
+            plan,
+            processEvidence,
+            upgradedLegacyAdmission!,
+            debtCustody,
+          );
+        }
+        return current;
+      },
       admissionBefore,
       validateProposedAdmission: async () => await admissionSummary({
         registryRootDir: locked.registryRootDir,
         scope: lockedProposedScope,
         deps: deps.admissionDeps,
+        snapshotBuilder: deps.buildAdmissionSnapshot,
         rejectBlocking: true,
         allowPendingEpochOrphanQuarantine: true,
       }),
@@ -288,6 +507,7 @@ export async function projectControlLedgerEpochMigrationView(
         registryRootDir: locked.registryRootDir,
         scope: lockedProposedScope,
         deps: deps.admissionDeps,
+        snapshotBuilder: deps.buildAdmissionSnapshot,
         rejectBlocking: true,
         allowPendingEpochOrphanQuarantine: true,
       }),
@@ -296,6 +516,9 @@ export async function projectControlLedgerEpochMigrationView(
         const roots = current.scope.consumedOutputLedgerRoots ?? [];
         if (roots.length !== 1) throw new Error("ledger_epoch_controller_scope_drift");
         return await canonicalConsumedOutputLedgerRoot(roots[0]!, true);
+      },
+      revalidateBeforeMutation: async () => {
+        await rebuildLockedFacts();
       },
       switchScope: async () => {
         const current = await deps.loadProjectControlController(args);
@@ -310,6 +533,7 @@ export async function projectControlLedgerEpochMigrationView(
         });
       },
       revalidatePostSwitchBindings: async () => {
+        await assertLedgerEpochDebtCustodyUnchanged(debtCustody);
         const current = await deps.loadProjectControlController(args);
         if (
           stableControllerFingerprint(current.controller) !==
@@ -333,25 +557,110 @@ export async function projectControlLedgerEpochMigrationView(
         ) {
           throw new Error("ledger_epoch_registry_snapshot_drift");
         }
+        if (boundLegacyAdmission) {
+          const currentEvidence = await captureEpochProcessEvidence(
+            deps,
+            boundLegacyAdmission.processCustodyPaths,
+          );
+          if (currentEvidence.inventorySha256 !==
+              boundLegacyAdmission.processInventorySha256 ||
+            currentEvidence.inspectedPidCount !==
+              boundLegacyAdmission.inspectedPidCount) {
+            throw new Error("ledger_epoch_process_inventory_drift");
+          }
+        }
       },
     });
-  } finally {
-    if (mutationLease) {
-      await mutationLocks.release(mutationLease);
-    }
-    if (maintenanceLease) {
-      await releaseConsumedOutputLedgerMaintenanceLock(maintenanceLease);
-    }
-    if (controllerFence) {
-      await releaseLocalControllerMaintenanceFence(controllerFence);
-    }
-    await locks.release(lock);
+  } catch (error) {
+    operationError = error;
   }
+  const releaseFailures: unknown[] = [];
+  const release = async (action: () => Promise<void>) => {
+    try {
+      await action();
+    } catch (error) {
+      releaseFailures.push(error);
+    }
+  };
+  if (mutationLease) await release(async () =>
+    await mutationLocks.release(mutationLease));
+  if (maintenanceLease) await release(async () =>
+    await releaseConsumedOutputLedgerMaintenanceLock(maintenanceLease));
+  if (controllerFence) await release(async () =>
+    await releaseLocalControllerMaintenanceFence(controllerFence));
+  for (const debtLock of [...debtLocks].reverse()) {
+    await release(async () => await locks.release(debtLock));
+  }
+  await release(async () => await locks.release(lock));
+  if (operationError) throw operationError;
+  if (releaseFailures.length > 0) {
+    throw new Error("ledger_epoch_lock_release_failed", {
+      cause: releaseFailures[0],
+    });
+  }
+  if (!result) throw new Error("ledger_epoch_apply_result_missing");
   return {
     ok: true,
     mode: "project_control_consumed_output_ledger_epoch",
     idempotentReplay: result.idempotentReplay,
     receipt: result.receipt as unknown as JsonObject,
+  };
+}
+
+async function buildCurrentPlanFor(
+  persisted: Awaited<ReturnType<typeof buildConsumedOutputLedgerEpochPlan>>,
+  build: (
+    transactionVersion?: 1 | 2,
+    preboundOrphanWorkspaceBindings?: Awaited<ReturnType<
+      typeof buildConsumedOutputLedgerEpochPlan
+    >>["orphanWorkspaceBindings"],
+  ) => Promise<Awaited<ReturnType<typeof buildConsumedOutputLedgerEpochPlan>>>,
+) {
+  return await build(
+    persisted.transactionVersion === 2 ? 2 : 1,
+    persisted.orphanWorkspaceBindings,
+  );
+}
+
+async function captureEpochProcessEvidence(
+  deps: ProjectControlLedgerEpochDeps,
+  custodyPaths: readonly string[],
+): Promise<LegacyAttemptProcessEvidence> {
+  const paths = [...new Set(custodyPaths.map((path) => resolve(path)))].sort();
+  return deps.captureProcessEvidence
+    ? await deps.captureProcessEvidence(paths)
+    : await captureLegacyAttemptProcessEvidence({ custodyPaths: paths });
+}
+
+function custodyPathsFor(
+  bindings: readonly LedgerEpochDebtCustodyBinding[],
+  oldRoot: string,
+  newRoot: string,
+): readonly string[] {
+  return [...new Set([
+    oldRoot,
+    newRoot,
+    ...bindings.map((binding) => binding.canonicalPath),
+  ].map((path) => resolve(path)))].sort();
+}
+
+async function directoryIdentity(path: string, allowMissing = false) {
+  let metadata;
+  try {
+    metadata = await lstat(path);
+  } catch (error) {
+    if (allowMissing && isNodeError(error, "ENOENT")) {
+      return { canonicalPath: resolve(path), present: false as const };
+    }
+    throw error;
+  }
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    throw new Error("ledger_epoch_target_root_identity_drift");
+  }
+  return {
+    canonicalPath: await realpath(path),
+    device: metadata.dev,
+    inode: metadata.ino,
   };
 }
 
@@ -402,17 +711,61 @@ async function admissionSummary(input: {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
   readonly deps: CodexProjectAdmissionDeps;
+  readonly snapshotBuilder: ProjectControlLedgerEpochDeps["buildAdmissionSnapshot"];
   readonly rejectBlocking?: boolean;
   readonly allowPendingEpochOrphanQuarantine?: boolean;
 }): Promise<ConsumedOutputLedgerEpochAdmissionSummary> {
-  const snapshot = await buildCodexProjectAdmissionSnapshot(input);
+  const snapshot = await buildAdmissionSnapshot({
+    registryRootDir: input.registryRootDir,
+    scope: input.scope,
+    admissionDeps: input.deps,
+    snapshotBuilder: input.snapshotBuilder,
+    ...(input.allowPendingEpochOrphanQuarantine === undefined
+      ? {}
+      : {
+          allowPendingEpochOrphanQuarantine:
+            input.allowPendingEpochOrphanQuarantine,
+        }),
+  });
   if (input.rejectBlocking && snapshot.debt.some((item) => item.severity === "blocking")) {
     throw new Error("ledger_epoch_proposed_admission_blocked");
   }
   return {
     debtCount: snapshot.debt.length,
-    ...(snapshot.counts ? { counts: snapshot.counts } : {}),
+    counts: snapshot.counts ?? summarizeProjectAdmissionDebt(snapshot.debt).counts,
   };
+}
+
+async function buildAdmissionSnapshot(input: {
+  readonly registryRootDir: string;
+  readonly scope: ProjectAccessScope;
+  readonly admissionDeps: CodexProjectAdmissionDeps;
+  readonly snapshotBuilder: ProjectControlLedgerEpochDeps["buildAdmissionSnapshot"];
+  readonly allowPendingEpochOrphanQuarantine?: boolean;
+}): Promise<ProjectAdmissionSnapshot> {
+  if (input.snapshotBuilder) {
+    return await input.snapshotBuilder({
+      registryRootDir: input.registryRootDir,
+      scope: input.scope,
+      ...(input.allowPendingEpochOrphanQuarantine === undefined
+        ? {}
+        : {
+            allowPendingEpochOrphanQuarantine:
+              input.allowPendingEpochOrphanQuarantine,
+          }),
+    });
+  }
+  return await buildCodexProjectAdmissionSnapshot({
+    registryRootDir: input.registryRootDir,
+    scope: input.scope,
+    deps: input.admissionDeps,
+    ...(input.allowPendingEpochOrphanQuarantine === undefined
+      ? {}
+      : {
+          allowPendingEpochOrphanQuarantine:
+            input.allowPendingEpochOrphanQuarantine,
+        }),
+  });
 }
 
 async function assertControllerQuiescent(

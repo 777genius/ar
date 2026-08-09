@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { link, lstat, mkdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -9,13 +9,18 @@ const execFileAsync = promisify(execFile);
 export type LocalConsumedOutputLedgerMaintenanceLease = {
   readonly lockPath: string;
   readonly ownerToken: string;
+  readonly ledgerRoot: string;
+  readonly device?: number;
+  readonly inode?: number;
 };
 
 export async function acquireConsumedOutputLedgerMaintenanceLock(input: {
   readonly ledgerRoot: string;
   readonly owner: string;
 }): Promise<LocalConsumedOutputLedgerMaintenanceLease> {
-  const lockBoundary = await realpath(dirname(dirname(resolve(input.ledgerRoot))));
+  const requestedRoot = await canonicalProspectiveRoot(input.ledgerRoot);
+  const rootMetadata = await optionalDirectoryIdentity(requestedRoot);
+  const lockBoundary = await realpath(dirname(dirname(requestedRoot)));
   const lockPath = join(
     lockBoundary,
     ".consumed-output-ledger-maintenance.lock",
@@ -42,7 +47,19 @@ export async function acquireConsumedOutputLedgerMaintenanceLock(input: {
   } finally {
     await unlink(temporaryPath).catch(() => undefined);
   }
-  return { lockPath, ownerToken };
+  if (rootMetadata && !await directoryIdentityMatches(requestedRoot, rootMetadata)) {
+    await releaseOwnedMaintenanceLock(lockPath, ownerToken);
+    throw new Error("consumed_output_ledger_maintenance_root_identity_drift");
+  }
+  return {
+    lockPath,
+    ownerToken,
+    ledgerRoot: requestedRoot,
+    ...(rootMetadata ? {
+      device: rootMetadata.dev,
+      inode: rootMetadata.ino,
+    } : {}),
+  };
 }
 
 async function recoverDeadOwner(lockPath: string): Promise<boolean> {
@@ -87,11 +104,81 @@ async function recoverDeadOwner(lockPath: string): Promise<boolean> {
 export async function releaseConsumedOutputLedgerMaintenanceLock(
   lease: LocalConsumedOutputLedgerMaintenanceLease,
 ): Promise<void> {
+  const drifted = lease.device !== undefined && lease.inode !== undefined &&
+    !await directoryIdentityMatches(lease.ledgerRoot, {
+      dev: lease.device,
+      ino: lease.inode,
+    });
   const owner: unknown = JSON.parse(await readFile(lease.lockPath, "utf8"));
   if (!isRecord(owner) || owner.ownerToken !== lease.ownerToken) {
     throw new Error("consumed_output_ledger_maintenance_lock_owner_mismatch");
   }
   await unlink(lease.lockPath);
+  if (drifted) {
+    throw new Error("consumed_output_ledger_maintenance_root_identity_drift");
+  }
+}
+
+async function canonicalProspectiveRoot(value: string): Promise<string> {
+  const requested = resolve(value);
+  const missing: string[] = [];
+  let current = requested;
+  while (true) {
+    try {
+      const metadata = await lstat(current);
+      if (!metadata.isDirectory() && !metadata.isSymbolicLink()) {
+        throw new Error("consumed_output_ledger_maintenance_root_unsafe");
+      }
+      return join(await realpath(current), ...missing.reverse());
+    } catch (error) {
+      if (!isNodeError(error, "ENOENT")) throw error;
+      const parent = dirname(current);
+      if (parent === current) throw error;
+      missing.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+async function optionalDirectoryIdentity(
+  path: string,
+): Promise<{ readonly dev: number; readonly ino: number } | undefined> {
+  try {
+    const metadata = await lstat(path);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new Error("consumed_output_ledger_maintenance_root_unsafe");
+    }
+    return { dev: metadata.dev, ino: metadata.ino };
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return undefined;
+    throw error;
+  }
+}
+
+async function directoryIdentityMatches(
+  path: string,
+  expected: { readonly dev: number; readonly ino: number },
+): Promise<boolean> {
+  try {
+    const metadata = await lstat(path);
+    return !metadata.isSymbolicLink() && metadata.isDirectory() &&
+      metadata.dev === expected.dev && metadata.ino === expected.ino &&
+      await realpath(path) === path;
+  } catch {
+    return false;
+  }
+}
+
+async function releaseOwnedMaintenanceLock(
+  lockPath: string,
+  ownerToken: string,
+): Promise<void> {
+  try {
+    const owner: unknown = JSON.parse(await readFile(lockPath, "utf8"));
+    if (isRecord(owner) && owner.ownerToken === ownerToken) await unlink(lockPath);
+  } catch (error) {
+    if (!isNodeError(error, "ENOENT")) throw error;
+  }
 }
 
 async function processStartIdentity(pid: number): Promise<string> {

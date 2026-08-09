@@ -8,6 +8,14 @@ export function assertConsumedOutputLedgerEpochAdmissionTransition(input: {
   readonly before: ConsumedOutputLedgerEpochAdmissionSummary;
   readonly proposed: ConsumedOutputLedgerEpochAdmissionSummary;
 }): void {
+  if (input.plan.legacyAdmission) {
+    assertExactLegacyAdmissionCounts(input.before, {
+      activeWriterConflicts: 6,
+      inactiveDirtyWorkspaces: 4,
+      orphanLegacyWorkspaces: 205,
+      unconsumedCompletedJobs: 495,
+    });
+  }
   const expectedQuarantine = input.plan.inheritedQuarantinedCount +
     input.plan.quarantinedCount +
     input.plan.orphanWorkspaceBindings.filter((binding) =>
@@ -29,6 +37,15 @@ export function assertConsumedOutputLedgerEpochAdmissionTransition(input: {
       throw new Error(`ledger_epoch_proposed_admission_blocking_debt:${key}`);
     }
   }
+}
+
+function assertExactLegacyAdmissionCounts(
+  summary: ConsumedOutputLedgerEpochAdmissionSummary,
+  expected: Readonly<Record<string, number>>,
+): void {
+  if (summary.debtCount !== 710 || Object.entries(expected).some(
+    ([key, value]) => count(summary, key) !== value
+  )) throw new Error("ledger_epoch_legacy_admission_summary_mismatch");
 }
 
 function count(

@@ -16,6 +16,13 @@ evidence that cannot be admitted as valid.
   snapshot, old/new roots, cutoff, every source file, and every external
   admission-evidence realpath/size/hash (or explicit missing/denied marker)
   into one SHA-256 plan.
+- A production-sized legacy-admission exception is accepted only for the
+  independently approved exact 495 unconsumed-completed-job / 205
+  orphan-legacy-workspace / 6 active-writer-conflict / 4
+  inactive-dirty-workspace envelope. The plan and every later
+  epoch retain its canonical category counts, subjects hash, full sanitized
+  debt hash and cutoff. Near-count or content drift fails closed; smaller
+  ordinary migrations continue through the normal quarantine transition.
 - Apply requires the exact preview hash. It rescans immediately before seeding
   and immediately before activation, so source or scope drift fails closed.
 - All old-root files are copied byte-for-byte to
@@ -33,6 +40,13 @@ evidence that cannot be admitted as valid.
   root is owned and retained for fail-forward retry; it is never deleted after
   publication or scope switch. Seed trees, state replacements, scope updates,
   retirement markers and receipts are synced before the next durable phase.
+  New prepared roots also contain an immutable schema-v2 intent binding the
+  old/new roots, epoch history, root device/inode identities and plan hash.
+  Existing prepared schema-v1 roots are upgraded and activated by the same
+  hash-confirmed call. It publishes or recovers a resumable v2 provenance
+  sidecar without rewriting the immutable v1 plan, owner, state, history or
+  seeded evidence bytes. The sidecar binds the reconstructed exact debt and
+  canonical workspace/process custody before activation continues.
 - Before quiescence checks, apply acquires a durable controller-maintenance
   fence. Operation publication/execution, complete integration use cases and
   worker launch use activity leases that are mutually exclusive with that fence. Process
@@ -106,6 +120,8 @@ evidence that cannot be admitted as valid.
    `oldRootHash`, file count, migrated count and quarantine count.
 5. Review the bounded counts and paths, then call the same tool with
    `expectedLedgerEpochPlanSha256` and `confirmLedgerEpochMigration=true`.
+   For a prepared v1 plan this same call atomically recovers or publishes the
+   sidecar and continues activation; no second confirmation is required.
 6. Read another admission snapshot. Confirm the active root contains
    `ledger-epoch-receipt.json` and the returned before/after comparison matches
    the observed result.

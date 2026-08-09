@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   link,
   lstat,
@@ -65,20 +66,30 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
       owner: `terminal-record:${input.decision.jobId}`,
     });
     let mutationLease;
+    let operationError: unknown;
+    let receipt: TerminalOutputDecisionReceipt | undefined;
     try {
       mutationLease = await this.mutationLocks.acquire({
         ledgerRoots: [input.ledgerRoot],
         owner: `terminal-output-writer:${input.decision.jobId}`,
         ...(this.custodyRoot ? { custodyRoot: this.custodyRoot } : {}),
       });
+      await this.mutationLocks.assertHeld(mutationLease);
       await assertLedgerRootActive(input.ledgerRoot);
-      return await this.recordLocked(input);
-    } finally {
-      if (mutationLease) {
-        await this.mutationLocks.release(mutationLease);
-      }
-      await releaseConsumedOutputLedgerMaintenanceLock(maintenanceLease);
+      receipt = await this.recordLocked(input);
+      await this.mutationLocks.assertHeld(mutationLease);
+    } catch (error) {
+      operationError = error;
     }
+    const releaseError = await releaseAllBestEffort([
+      ...(mutationLease
+        ? [async () => await this.mutationLocks.release(mutationLease)]
+        : []),
+      async () => await releaseConsumedOutputLedgerMaintenanceLock(maintenanceLease),
+    ]);
+    if (operationError) throw operationError;
+    if (releaseError) throw releaseError;
+    return receipt!;
   }
 
   private async recordLocked(input: {
@@ -112,6 +123,9 @@ export type ConsumedOutputLedgerMutationLease = {
     readonly lock: Awaited<
       ReturnType<LocalWorkspaceIntegrationLock["acquire"]>
     >;
+    readonly ledgerRoot: string;
+    readonly device: number;
+    readonly inode: number;
   }[];
 };
 
@@ -124,20 +138,28 @@ export class LocalConsumedOutputLedgerMutationLock {
     const acquired: Array<ConsumedOutputLedgerMutationLease["locks"][number]> =
       [];
     try {
-      for (const ledgerRoot of [...new Set(input.ledgerRoots)].sort()) {
-        const lockRoot = await ensureLocalLedgerLockRoot(
-          ledgerRoot,
-          input.custodyRoot,
-        );
+      const roots = await canonicalLedgerMutationRoots(
+        input.ledgerRoots,
+        input.custodyRoot,
+      );
+      for (const identity of roots) {
+        const ledgerRoot = identity.canonicalPath;
         const port = new LocalWorkspaceIntegrationLock({
-          rootDir: lockRoot,
+          rootDir: identity.lockRoot,
           staleLockMs: 30 * 60_000,
         });
         const lock = await port.acquire({
           workspacePath: ledgerRoot,
           owner: input.owner,
         });
-        acquired.push({ port, lock });
+        acquired.push({
+          port,
+          lock,
+          ledgerRoot,
+          device: identity.device,
+          inode: identity.inode,
+        });
+        await assertLedgerMutationRootIdentity(identity);
       }
       return { locks: acquired };
     } catch (error) {
@@ -149,9 +171,117 @@ export class LocalConsumedOutputLedgerMutationLock {
   }
 
   async release(lease: ConsumedOutputLedgerMutationLease): Promise<void> {
+    const failures: unknown[] = [];
     for (const entry of [...lease.locks].reverse()) {
-      await entry.port.release(entry.lock);
+      try {
+        await assertLedgerMutationRootIdentity({
+          canonicalPath: entry.ledgerRoot,
+          device: entry.device,
+          inode: entry.inode,
+        });
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await entry.port.release(entry.lock);
+      } catch (error) {
+        failures.push(error);
+      }
     }
+    if (failures.length > 0) throw deterministicReleaseError(
+      "consumed_output_ledger_mutation_release_failed",
+      failures,
+    );
+  }
+
+  async assertHeld(lease: ConsumedOutputLedgerMutationLease): Promise<void> {
+    for (const entry of lease.locks) {
+      await assertLedgerMutationRootIdentity({
+        canonicalPath: entry.ledgerRoot,
+        device: entry.device,
+        inode: entry.inode,
+      });
+    }
+  }
+}
+
+async function releaseAllBestEffort(
+  releases: readonly (() => Promise<void>)[],
+): Promise<Error | undefined> {
+  const failures: unknown[] = [];
+  for (const release of releases) {
+    try {
+      await release();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  return failures.length === 0
+    ? undefined
+    : deterministicReleaseError("consumed_output_ledger_release_failed", failures);
+}
+
+function deterministicReleaseError(message: string, failures: readonly unknown[]): Error {
+  return new Error(message, { cause: failures[0] });
+}
+
+type LedgerMutationRootIdentity = {
+  readonly canonicalPath: string;
+  readonly lockRoot: string;
+  readonly device: number;
+  readonly inode: number;
+};
+
+async function canonicalLedgerMutationRoots(
+  inputs: readonly string[],
+  custodyRoot?: string,
+): Promise<readonly LedgerMutationRootIdentity[]> {
+  const roots = await Promise.all(inputs.map(async (input) => {
+    const requested = resolve(input);
+    const lockRoot = await ensureLocalLedgerLockRoot(requested, custodyRoot);
+    const metadata = await lstat(requested);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new Error("consumed_output_ledger_lock_root_unsafe");
+    }
+    const canonicalPath = await realpath(requested);
+    if (canonicalPath !== requested) {
+      throw new Error("consumed_output_ledger_root_alias_denied");
+    }
+    return {
+      canonicalPath,
+      lockRoot,
+      device: metadata.dev,
+      inode: metadata.ino,
+    };
+  }));
+  const byPath = new Map<string, LedgerMutationRootIdentity>();
+  const byIdentity = new Map<string, string>();
+  for (const root of roots) {
+    const existingPath = byIdentity.get(`${root.device}:${root.inode}`);
+    if (existingPath !== undefined && existingPath !== root.canonicalPath) {
+      throw new Error("consumed_output_ledger_root_alias_denied");
+    }
+    byIdentity.set(`${root.device}:${root.inode}`, root.canonicalPath);
+    byPath.set(root.canonicalPath, root);
+  }
+  return [...byPath.values()].sort((left, right) =>
+    left.canonicalPath.localeCompare(right.canonicalPath)
+  );
+}
+
+async function assertLedgerMutationRootIdentity(
+  expected: Pick<
+    LedgerMutationRootIdentity,
+    "canonicalPath" | "device" | "inode"
+  >,
+): Promise<void> {
+  const current = await lstat(expected.canonicalPath);
+  if (
+    current.isSymbolicLink() || !current.isDirectory() ||
+    current.dev !== expected.device || current.ino !== expected.inode ||
+    await realpath(expected.canonicalPath) !== expected.canonicalPath
+  ) {
+    throw new Error("consumed_output_ledger_root_identity_drift");
   }
 }
 
@@ -168,28 +298,28 @@ async function ensureLocalLedgerLockRoot(
     throw new Error("consumed_output_ledger_lock_root_unsafe");
   }
   const canonicalRoot = await realpath(ledgerRoot);
-  let parent = ledgerRoot;
-  for (const path of [
-    join(ledgerRoot, ".mutation-locks"),
-    join(ledgerRoot, ".mutation-locks", "workspace-locks"),
-  ]) {
-    try {
-      const metadata = await lstat(path);
-      if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-        throw new Error("consumed_output_ledger_lock_root_unsafe");
-      }
-    } catch (error) {
-      if (!isNodeErrorCode(error, "ENOENT")) throw error;
-      await mkdir(path, { recursive: false, mode: 0o700 });
-    }
-    const canonicalPath = await realpath(path);
-    const rest = relative(canonicalRoot, canonicalPath);
-    if (rest === ".." || rest.startsWith(`..${sep}`)) {
+  const legacyLockRoot = join(ledgerRoot, ".mutation-locks");
+  try {
+    const legacyMetadata = await lstat(legacyLockRoot);
+    if (legacyMetadata.isSymbolicLink() || !legacyMetadata.isDirectory()) {
       throw new Error("consumed_output_ledger_lock_root_unsafe");
     }
-    parent = path;
+  } catch (error) {
+    if (!isNodeErrorCode(error, "ENOENT")) throw error;
   }
-  return dirname(parent);
+  const lockBoundary = await realpath(dirname(canonicalRoot));
+  const lockRoot = join(
+    lockBoundary,
+    ".consumed-output-ledger-mutation-locks",
+    createHash("sha256").update(canonicalRoot).digest("hex"),
+  );
+  await mkdir(lockRoot, { recursive: true, mode: 0o700 });
+  const canonicalLockRoot = await realpath(lockRoot);
+  const rest = relative(lockBoundary, canonicalLockRoot);
+  if (rest === ".." || rest.startsWith(`..${sep}`)) {
+    throw new Error("consumed_output_ledger_lock_root_unsafe");
+  }
+  return canonicalLockRoot;
 }
 
 async function ensureLedgerRootWithinCustody(

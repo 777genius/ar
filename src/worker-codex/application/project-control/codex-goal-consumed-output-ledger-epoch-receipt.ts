@@ -43,6 +43,12 @@ export function assertLedgerEpochReceiptMatchesPlan(
       JSON.stringify(plan.orphanWorkspaceBindings) ||
     JSON.stringify(receipt.legacyAttemptQuarantine) !==
       JSON.stringify(plan.legacyAttemptQuarantine) ||
+    ((plan.transactionVersion === 2 ||
+      receipt.transactionUpgradeSha256 === undefined) &&
+      JSON.stringify(receipt.legacyAdmission) !==
+        JSON.stringify(plan.legacyAdmission)) ||
+    (plan.transactionVersion === 2) !==
+      (receipt.transactionUpgradeSha256 === undefined) ||
     receipt.planSha256 !== plan.planSha256
   ) throw new Error("ledger_epoch_receipt_plan_mismatch");
 }

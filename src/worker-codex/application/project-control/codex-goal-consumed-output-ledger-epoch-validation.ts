@@ -36,7 +36,10 @@ export function isEpochReceipt(
     isSha256(value.genesisOldRootHash) &&
     (value.previousEpochPlanSha256 === undefined ||
       isSha256(value.previousEpochPlanSha256)) &&
-    isSha256(value.planSha256) && nonNegativeInteger(value.oldRootFileCount) &&
+    isSha256(value.planSha256) &&
+    (value.transactionUpgradeSha256 === undefined ||
+      isSha256(value.transactionUpgradeSha256)) &&
+    nonNegativeInteger(value.oldRootFileCount) &&
     nonNegativeInteger(value.migratedCount) &&
     nonNegativeInteger(value.quarantinedCount) &&
     nonNegativeInteger(value.inheritedQuarantinedCount) &&
@@ -46,6 +49,8 @@ export function isEpochReceipt(
     value.orphanWorkspaceBindings.every(isEpochOrphanWorkspaceBinding) &&
     (value.legacyAttemptQuarantine === undefined ||
       isLegacyAttemptQuarantineAnchor(value.legacyAttemptQuarantine)) &&
+    (value.legacyAdmission === undefined ||
+      isLegacyAdmissionAnchor(value.legacyAdmission, value.cutoff)) &&
     typeof value.createdAt === "string" && Number.isFinite(Date.parse(value.createdAt)) &&
     typeof value.activatedAt === "string" &&
     Number.isFinite(Date.parse(value.activatedAt)) &&
@@ -71,6 +76,7 @@ export function isEpochPlan(value: unknown): value is ConsumedOutputLedgerEpochP
     !Array.isArray(value.orphanWorkspaceBindings) || !Array.isArray(value.files)
   ) return false;
   const valid = typeof value.controllerJobId === "string" &&
+    (value.transactionVersion === undefined || value.transactionVersion === 2) &&
     typeof value.projectId === "string" &&
     typeof value.oldRoot === "string" && typeof value.newRoot === "string" &&
     typeof value.cutoff === "string" && Number.isFinite(Date.parse(value.cutoff)) &&
@@ -96,6 +102,8 @@ export function isEpochPlan(value: unknown): value is ConsumedOutputLedgerEpochP
     value.orphanWorkspaceBindings.every(isEpochOrphanWorkspaceBinding) &&
     (value.legacyAttemptQuarantine === undefined ||
       isLegacyAttemptQuarantineAnchor(value.legacyAttemptQuarantine)) &&
+    (value.legacyAdmission === undefined ||
+      isLegacyAdmissionAnchor(value.legacyAdmission, value.cutoff)) &&
     value.files.every(isEpochFilePlan);
   if (!valid) return false;
   return value.oldRootFileCount === value.files.length &&
@@ -116,6 +124,34 @@ function isLegacyAttemptQuarantineAnchor(value: unknown): boolean {
     nonNegativeInteger(value.unresolvedEvidenceQuarantineCount) &&
     value.attemptCount === value.reconciliationEvidenceBoundCount +
       value.unresolvedEvidenceQuarantineCount;
+}
+
+function isLegacyAdmissionAnchor(value: unknown, cutoff: unknown): boolean {
+  if (!isRecord(value) || value.schemaVersion !== 1 || value.debtCount !== 710 ||
+    !nonNegativeInteger(value.blockingDebtCount) ||
+    value.blockingDebtCount !== 710 ||
+    !isRecord(value.categoryCounts) ||
+    JSON.stringify(value.categoryCounts) !== JSON.stringify({
+      active_writer_conflict: 6,
+      inactive_dirty_workspace: 4,
+      orphan_legacy_workspace: 205,
+      unconsumed_completed_job: 495,
+    }) ||
+    !Object.values(value.categoryCounts).every(nonNegativeInteger) ||
+    (Object.values(value.categoryCounts) as unknown[]).reduce<number>(
+      (sum, count) => sum + (typeof count === "number" ? count : 0),
+      0,
+    ) !==
+      value.debtCount || !isSha256(value.debtSha256) ||
+    !isSha256(value.subjectsSha256) || typeof value.cutoff !== "string" ||
+    !Number.isFinite(Date.parse(value.cutoff)) ||
+    !isSha256(value.processInventorySha256) ||
+    !nonNegativeInteger(value.inspectedPidCount) ||
+    !isSha256(value.processCustodyPathsSha256)
+    || !Array.isArray(value.processCustodyPaths) ||
+    value.processCustodyPaths.some((path) => typeof path !== "string")
+  ) return false;
+  return value.cutoff === cutoff;
 }
 
 function isEpochOrphanWorkspaceBinding(

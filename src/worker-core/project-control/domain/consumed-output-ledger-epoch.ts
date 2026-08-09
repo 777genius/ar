@@ -51,8 +51,24 @@ export type ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor = {
   readonly unresolvedEvidenceQuarantineCount: number;
 };
 
+export type ConsumedOutputLedgerEpochLegacyAdmissionAnchor = {
+  readonly schemaVersion: 1;
+  readonly debtCount: 710;
+  readonly blockingDebtCount: number;
+  readonly categoryCounts: Readonly<Record<string, number>>;
+  readonly debtSha256: string;
+  readonly subjectsSha256: string;
+  readonly cutoff: string;
+  readonly processInventorySha256: string;
+  readonly inspectedPidCount: number;
+  readonly processCustodyPathsSha256: string;
+  readonly processCustodyPaths: readonly string[];
+};
+
 export type ConsumedOutputLedgerEpochPlan = {
   readonly schemaVersion: 1;
+  /** Absent only for immutable v1 roots created before transactional intents. */
+  readonly transactionVersion?: 2;
   readonly controllerJobId: string;
   readonly projectId: string;
   readonly oldRoot: string;
@@ -80,6 +96,7 @@ export type ConsumedOutputLedgerEpochPlan = {
     readonly ConsumedOutputLedgerEpochOrphanWorkspaceBinding[];
   readonly legacyAttemptQuarantine?:
     ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor;
+  readonly legacyAdmission?: ConsumedOutputLedgerEpochLegacyAdmissionAnchor;
   readonly files: readonly ConsumedOutputLedgerEpochFilePlan[];
   readonly planSha256: string;
 };
@@ -110,7 +127,9 @@ export type ConsumedOutputLedgerEpochReceipt = {
     readonly ConsumedOutputLedgerEpochOrphanWorkspaceBinding[];
   readonly legacyAttemptQuarantine?:
     ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor;
+  readonly legacyAdmission?: ConsumedOutputLedgerEpochLegacyAdmissionAnchor;
   readonly planSha256: string;
+  readonly transactionUpgradeSha256?: string;
   readonly createdAt: string;
   readonly activatedAt: string;
   readonly admissionBefore: ConsumedOutputLedgerEpochAdmissionSummary;

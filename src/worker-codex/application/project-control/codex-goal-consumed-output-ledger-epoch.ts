@@ -1,17 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  open,
-  readFile,
-  readdir,
-  realpath,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat,
+  writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
   consumedOutputRecordFromJson,
@@ -19,10 +9,10 @@ import {
   type ConsumedOutputLedgerEpochFilePlan,
   type ConsumedOutputLedgerEpochOrphanWorkspaceBinding,
   type ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor,
+  type ConsumedOutputLedgerEpochLegacyAdmissionAnchor,
   type ConsumedOutputLedgerEpochPlan,
   type ConsumedOutputLedgerEpochReceipt,
   type ConsumedOutputLedgerEpochState,
-  type ProjectAccessScope,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
   assertEpochArtifactsAbsent,
@@ -35,8 +25,9 @@ import {
   durablePublishEpochRoot,
   durableReplaceEpochJson,
 } from "./codex-goal-consumed-output-ledger-epoch-durability";
-export { canonicalConsumedOutputLedgerRoot } from
-  "./codex-goal-consumed-output-ledger-epoch-durability";
+export { canonicalConsumedOutputLedgerRoot } from "./codex-goal-consumed-output-ledger-epoch-durability";
+export { resolveConsumedOutputMaintenanceLedgerRoot } from
+  "./codex-goal-consumed-output-ledger-epoch-switch";
 import { ledgerFilenameMatchesPayload } from
   "./codex-goal-consumed-output-ledger-io";
 import {
@@ -52,7 +43,7 @@ import {
 } from
   "./codex-goal-consumed-output-ledger-epoch-retirement";
 import {
-  bindLedgerEpochOrphanWorkspace,
+  bindLedgerEpochOrphanWorkspaces,
   ledgerEpochOrphanWorkspaceBindingMatches,
 } from "./codex-goal-ledger-epoch-orphan-quarantine";
 import {
@@ -65,9 +56,20 @@ import {
 } from "./codex-goal-ledger-epoch-evidence";
 import { assertConsumedOutputLedgerEpochAdmissionTransition } from
   "./codex-goal-ledger-epoch-admission-transition";
+import { ledgerEpochLegacyAdmissionPlanCounts } from
+  "./codex-goal-ledger-epoch-legacy-admission";
+import {
+  assertNoAbandonedEpochStagingRoots,
+  assertPreparedEpochV2Sidecar,
+  assertLedgerEpochTargetIdentity,
+  assertUnusedEpochTarget,
+  LEDGER_EPOCH_INTENT_NAME,
+  ledgerEpochIntent,
+  memoizedLedgerEpochEvidenceSource,
+  resolvePreparedEpochUpgradeSha256,
+} from "./codex-goal-consumed-output-ledger-epoch-target";
 const PLAN_VERSION = 1;
-const PLAN_NAME = "ledger-epoch-plan.json";
-const STATE_NAME = "ledger-epoch-state.json";
+const [PLAN_NAME, STATE_NAME] = ["ledger-epoch-plan.json", "ledger-epoch-state.json"];
 const MAX_LEDGER_FILE_BYTES = 16 * 1024 * 1024;
 export type {
   ConsumedOutputLedgerEpochAdmissionSummary,
@@ -75,6 +77,8 @@ export type {
   ConsumedOutputLedgerEpochReceipt,
 } from "@vioxen/subscription-runtime/worker-core";
 export type BuildConsumedOutputLedgerEpochPlanInput = {
+  /** Rebuilds the byte-authentic schema emitted before v2 transactions. */
+  readonly transactionVersion?: 1 | 2;
   readonly controllerJobId: string;
   readonly projectId: string;
   readonly oldRoot: string;
@@ -84,10 +88,13 @@ export type BuildConsumedOutputLedgerEpochPlanInput = {
   readonly evidenceRoots: readonly string[];
   readonly deniedRoots?: readonly string[];
   readonly orphanWorkspacePaths?: readonly string[];
+  /** Frozen only while callers hold locks and revalidate before mutation. */
+  readonly preboundOrphanWorkspaceBindings?: readonly ConsumedOutputLedgerEpochOrphanWorkspaceBinding[];
   readonly controllerManifestSha256: string;
   readonly controllerStableScopeSha256: string;
   readonly legacyAttemptQuarantine?:
     ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor;
+  readonly legacyAdmission?: ConsumedOutputLedgerEpochLegacyAdmissionAnchor;
 };
 export async function buildConsumedOutputLedgerEpochPlan(
   input: BuildConsumedOutputLedgerEpochPlanInput,
@@ -109,18 +116,22 @@ export async function buildConsumedOutputLedgerEpochPlan(
   const deniedRoots = uniqueResolvedRoots(input.deniedRoots ?? []);
   const canonicalEvidenceRoots = await canonicalLedgerEpochRoots(evidenceRoots);
   const canonicalDeniedRoots = await canonicalLedgerEpochRoots(deniedRoots);
-  const evidenceSource = restrictedLedgerEpochEvidenceSource({
+  const evidenceSource = memoizedLedgerEpochEvidenceSource(
+    restrictedLedgerEpochEvidenceSource({
     roots: evidenceRoots,
     canonicalRoots: canonicalEvidenceRoots,
     deniedRoots,
     canonicalDeniedRoots,
-  });
+    }),
+  );
   const evidencePathValues = new Set<string>();
-  const orphanWorkspacePaths = new Set(
+  const requiredOrphanWorkspacePaths = new Set(
     (input.orphanWorkspacePaths ?? []).map((path) => resolve(path)),
   );
-  const planned: ConsumedOutputLedgerEpochFilePlan[] = [];
-  for (const file of files) {
+  const orphanWorkspacePaths = new Set(requiredOrphanWorkspacePaths);
+  const planned = await Promise.all(files.map(async (
+    file,
+  ): Promise<ConsumedOutputLedgerEpochFilePlan> => {
     const relativePath = relative(oldRoot, file.path);
     const base = {
       relativePath,
@@ -128,8 +139,7 @@ export async function buildConsumedOutputLedgerEpochPlan(
       sha256: file.sha256,
     };
     if (!relativePath.startsWith(`items${sep}`) || !relativePath.endsWith(".json")) {
-      planned.push({ ...base, disposition: "preserve_only" });
-      continue;
+      return { ...base, disposition: "preserve_only" };
     }
     let value: unknown;
     try {
@@ -138,21 +148,19 @@ export async function buildConsumedOutputLedgerEpochPlan(
         evidencePathValues.add(path);
       }
     } catch {
-      planned.push({
+      return {
         ...base,
         disposition: "quarantine",
         quarantineReason: "invalid_json",
-      });
-      continue;
+      };
     }
     if (!ledgerFilenameMatchesPayload(basename(file.path), value)) {
       rememberQuarantinedOrphanCandidate(value, input.currentJobIds, orphanWorkspacePaths);
-      planned.push({
+      return {
         ...base,
         disposition: "quarantine",
         quarantineReason: "invalid_or_missing_evidence",
-      });
-      continue;
+      };
     }
     const record = await consumedOutputRecordFromJson({
       value,
@@ -161,25 +169,23 @@ export async function buildConsumedOutputLedgerEpochPlan(
     });
     if (!record?.valid) {
       rememberQuarantinedOrphanCandidate(value, input.currentJobIds, orphanWorkspacePaths);
-      planned.push({
+      return {
         ...base,
         disposition: "quarantine",
         quarantineReason: "invalid_or_missing_evidence",
-      });
-      continue;
+      };
     }
     const postCutoff = record.closedAt !== undefined &&
       Date.parse(record.closedAt) >= Date.parse(cutoff);
     if (!postCutoff && !input.currentJobIds.has(record.jobId)) {
-      planned.push({
+      return {
         ...base,
         disposition: "quarantine",
         quarantineReason: "legacy_before_cutoff",
-      });
-      continue;
+      };
     }
-    planned.push({ ...base, disposition: "migrate" });
-  }
+    return { ...base, disposition: "migrate" };
+  }));
   const filesInOrder = planned.sort((left, right) =>
     left.relativePath.localeCompare(right.relativePath)
   );
@@ -194,22 +200,31 @@ export async function buildConsumedOutputLedgerEpochPlan(
       })
     ),
   );
-  const currentOrphanWorkspaceBindings = (await Promise.all(
-    [...orphanWorkspacePaths].sort().map(async (workspacePath) =>
-      await bindLedgerEpochOrphanWorkspace({ workspacePath, deniedRoots })
-    ),
-  )).filter((binding): binding is ConsumedOutputLedgerEpochOrphanWorkspaceBinding =>
-    binding !== undefined
-  );
+  const currentOrphanWorkspaceBindings = input.preboundOrphanWorkspaceBindings ??
+    await bindLedgerEpochOrphanWorkspaces({
+      workspacePaths: [...orphanWorkspacePaths].sort(),
+      requiredWorkspacePaths: requiredOrphanWorkspacePaths,
+      deniedRoots,
+    });
   const registryJobIds = [...input.currentJobIds].sort();
   const oldRootHash = treeHash(filesInOrder);
   const previousEpoch = await previousEpochReceipt(oldRoot);
+  if (previousEpoch?.legacyAdmission && input.legacyAdmission &&
+    JSON.stringify(previousEpoch.legacyAdmission) !==
+      JSON.stringify(input.legacyAdmission)
+  ) throw new Error("ledger_epoch_inherited_legacy_admission_drift");
+  const legacyAdmission = input.legacyAdmission ?? previousEpoch?.legacyAdmission;
   const orphanWorkspaceBindings = await mergeInheritedOrphanWorkspaceBindings({
     previous: previousEpoch?.orphanWorkspaceBindings ?? [],
     current: currentOrphanWorkspaceBindings,
     deniedRoots,
   });
-  const unsigned = {
+  const { migratedCount, quarantinedCount } = ledgerEpochLegacyAdmissionPlanCounts({
+    anchor: input.legacyAdmission,
+    files: filesInOrder,
+    orphanWorkspaceCount: orphanWorkspaceBindings.length,
+  });
+  const preTransactionUnsigned = {
     schemaVersion: PLAN_VERSION as 1,
     controllerJobId: input.controllerJobId,
     projectId: input.projectId,
@@ -231,10 +246,8 @@ export async function buildConsumedOutputLedgerEpochPlan(
     controllerStableScopeSha256: input.controllerStableScopeSha256,
     registryJobIdsSha256: sha256Json(registryJobIds),
     registryJobCount: registryJobIds.length,
-    migratedCount: filesInOrder.filter((file) => file.disposition === "migrate").length,
-    quarantinedCount: filesInOrder.filter(
-      (file) => file.disposition === "quarantine",
-    ).length,
+    migratedCount,
+    quarantinedCount,
     inheritedQuarantinedCount: previousEpoch
       ? previousEpoch.inheritedQuarantinedCount + previousEpoch.quarantinedCount
       : 0,
@@ -246,17 +259,26 @@ export async function buildConsumedOutputLedgerEpochPlan(
       : {}),
     files: filesInOrder,
   };
+  const unsigned = input.transactionVersion === 1
+    ? preTransactionUnsigned
+    : {
+        ...preTransactionUnsigned,
+        transactionVersion: 2 as const,
+        ...(legacyAdmission ? { legacyAdmission } : {}),
+      };
   const plan = { ...unsigned, planSha256: sha256Json(unsigned) };
   await assertConsumedOutputLedgerRetiredMarkerIfPresent(plan);
   return plan;
 }
 export type ApplyConsumedOutputLedgerEpochInput = {
   readonly plan: ConsumedOutputLedgerEpochPlan;
+  readonly upgradedLegacyAdmission?: ConsumedOutputLedgerEpochLegacyAdmissionAnchor;
   readonly expectedPlanSha256: string;
   readonly buildCurrentPlan: () => Promise<ConsumedOutputLedgerEpochPlan>;
   readonly admissionBefore: ConsumedOutputLedgerEpochAdmissionSummary;
   readonly validateProposedAdmission: () => Promise<ConsumedOutputLedgerEpochAdmissionSummary>;
   readonly admissionForNewRoot: () => Promise<ConsumedOutputLedgerEpochAdmissionSummary>;
+  readonly revalidateBeforeMutation?: () => Promise<void>;
   readonly switchScope: (newRoot: string) => Promise<void>;
   readonly readActiveRoot: () => Promise<string>;
   readonly now?: () => Date;
@@ -300,10 +322,13 @@ export async function applyConsumedOutputLedgerEpoch(
     await durableConfirmEpochRoot(input.plan.newRoot);
     return await resumeConsumedOutputLedgerEpoch(input, existingState);
   }
+  await assertUnusedEpochTarget(input.plan.newRoot);
+  await assertNoAbandonedEpochStagingRoots(input.plan.newRoot);
   const currentPlan = await input.buildCurrentPlan();
   if (currentPlan.planSha256 !== input.plan.planSha256) {
     throw new Error("ledger_epoch_plan_drift");
   }
+  await input.revalidateBeforeMutation?.();
   const stagingRoot = await mkdtemp(join(
     dirname(input.plan.newRoot),
     `.${basename(input.plan.newRoot)}.staging-`,
@@ -344,12 +369,20 @@ export async function resolveConsumedOutputLedgerEpochReceipt(
     plan,
     requireRetirementMarker: true,
   });
+  if (plan.transactionVersion !== 2) {
+    await assertPreparedEpochV2Sidecar(
+      plan,
+      undefined,
+      value.legacyAdmission,
+    );
+  }
   await assertSeededRootMatchesPlan(plan);
   return value;
 }
 export async function resolvePendingConsumedOutputLedgerEpochPlan(
   ledgerRoot: string,
   allowActiveMarkerRecovery = false,
+  deferArtifactValidation = false,
 ): Promise<ConsumedOutputLedgerEpochPlan | undefined> {
   const root = resolve(ledgerRoot);
   const state = await optionalEpochState(root);
@@ -358,6 +391,7 @@ export async function resolvePendingConsumedOutputLedgerEpochPlan(
   if (state.planSha256 !== value.planSha256 || resolve(value.newRoot) !== root) {
     throw new Error("ledger_epoch_seed_plan_mismatch");
   }
+  if (deferArtifactValidation) return value;
   if (state.phase === "active") {
     await readLedgerEpochReceiptTuple({
       root,
@@ -368,6 +402,11 @@ export async function resolvePendingConsumedOutputLedgerEpochPlan(
   }
   await assertSeededRootMatchesPlan(value);
   return value;
+}
+export async function assertConsumedOutputLedgerEpochPreparedArtifacts(
+  plan: ConsumedOutputLedgerEpochPlan,
+): Promise<void> {
+  await assertSeededRootMatchesPlan(plan);
 }
 async function resumeConsumedOutputLedgerEpoch(
   input: ApplyConsumedOutputLedgerEpochInput,
@@ -398,18 +437,23 @@ async function resumeConsumedOutputLedgerEpoch(
   }
   if (state.phase === "prepared") {
     if (activeRoot === input.plan.oldRoot) {
+      await assertRootIdentities(input.plan);
       const currentPlan = await input.buildCurrentPlan();
       if (currentPlan.planSha256 !== input.plan.planSha256) {
         throw new Error("ledger_epoch_plan_drift");
       }
       const proposedAdmission = await input.validateProposedAdmission();
       assertConsumedOutputLedgerEpochAdmissionTransition({
-        plan: input.plan,
+        plan: input.upgradedLegacyAdmission
+          ? { ...input.plan, legacyAdmission: input.upgradedLegacyAdmission }
+          : input.plan,
         before: state.admissionBefore,
         proposed: proposedAdmission,
       });
       await assertOrphanWorkspaceBindingsUnchanged(input.plan);
+      await input.revalidateBeforeMutation?.();
       await input.switchScope(input.plan.newRoot);
+      await assertRootIdentities(input.plan);
       if (input.crashAfterPhase === "scope_switched_before_retirement") {
         throw new Error(
           "ledger_epoch_simulated_crash_after_scope_switched_before_retirement",
@@ -437,6 +481,8 @@ async function resumeConsumedOutputLedgerEpoch(
   const admissionAfter = await input.admissionForNewRoot();
   const now = input.now ?? (() => new Date());
   const createdAt = now().toISOString();
+  const transactionUpgradeSha256 =
+    await resolvePreparedEpochUpgradeSha256(input.plan);
   const receipt: ConsumedOutputLedgerEpochReceipt = {
     schemaVersion: 1,
     status: "active",
@@ -460,7 +506,13 @@ async function resumeConsumedOutputLedgerEpoch(
     ...(input.plan.legacyAttemptQuarantine
       ? { legacyAttemptQuarantine: input.plan.legacyAttemptQuarantine }
       : {}),
+    ...(input.upgradedLegacyAdmission ?? input.plan.legacyAdmission
+      ? { legacyAdmission: input.upgradedLegacyAdmission ?? input.plan.legacyAdmission }
+      : {}),
     planSha256: input.plan.planSha256,
+    ...(transactionUpgradeSha256
+      ? { transactionUpgradeSha256 }
+      : {}),
     createdAt,
     activatedAt: createdAt,
     admissionBefore: state.admissionBefore,
@@ -482,33 +534,6 @@ async function resumeConsumedOutputLedgerEpoch(
     phase: "active",
   });
   return { receipt, idempotentReplay: false };
-}
-export async function resolveConsumedOutputMaintenanceLedgerRoot(
-  scope: ProjectAccessScope,
-): Promise<{
-  readonly ledgerRoot: string;
-  readonly epochReceipt?: ConsumedOutputLedgerEpochReceipt;
-  readonly pendingEpochPlan?: ConsumedOutputLedgerEpochPlan;
-}> {
-  const roots = scope.consumedOutputLedgerRoots ?? [];
-  if (roots.length !== 1) {
-    throw new Error("project_control_consumed_output_ledger_required");
-  }
-  const ledgerRoot = resolve(roots[0]!);
-  try {
-    return {
-      ledgerRoot,
-      epochReceipt: await resolveConsumedOutputLedgerEpochReceipt(ledgerRoot),
-    };
-  } catch (error) {
-    if (isNodeError(error, "ENOENT")) {
-      const pendingEpochPlan = await resolvePendingConsumedOutputLedgerEpochPlan(
-        ledgerRoot,
-      );
-      return { ledgerRoot, ...(pendingEpochPlan ? { pendingEpochPlan } : {}) };
-    }
-    throw error;
-  }
 }
 async function seedEpochRoot(input: {
   readonly plan: ConsumedOutputLedgerEpochPlan;
@@ -550,6 +575,12 @@ async function seedEpochRoot(input: {
     );
   }
   await writeJsonExact(join(input.stagingRoot, PLAN_NAME), input.plan);
+  if (input.plan.transactionVersion === 2) {
+    await writeJsonExact(
+      join(input.stagingRoot, LEDGER_EPOCH_INTENT_NAME),
+      await ledgerEpochIntent(input.plan, input.stagingRoot),
+    );
+  }
   await writeJsonExact(join(input.stagingRoot, ".epoch-owner.json"), {
     schemaVersion: 1,
     ownerToken: input.ownerToken,
@@ -594,6 +625,8 @@ async function optionalEpochState(
     if (isNodeError(error, "ENOENT")) {
       await assertEpochArtifactsAbsent([
         join(root, PLAN_NAME),
+        join(root, LEDGER_EPOCH_INTENT_NAME),
+        join(root, ".epoch-owner.json"),
         join(root, LEDGER_EPOCH_RECEIPT_NAME),
       ]);
       return undefined;
@@ -625,6 +658,15 @@ async function assertSeededRootMatchesPlan(
     throw new Error("ledger_epoch_seed_plan_mismatch");
   }
   const state = await requireEpochState(plan.newRoot);
+  if (plan.transactionVersion === 2) {
+    const intentBytes = await readFile(
+      join(plan.newRoot, LEDGER_EPOCH_INTENT_NAME),
+    );
+    const expectedIntent = await ledgerEpochIntent(plan, plan.newRoot);
+    if (!intentBytes.equals(Buffer.from(
+      `${JSON.stringify(expectedIntent, null, 2)}\n`,
+    ))) throw new Error("ledger_epoch_seed_intent_mismatch");
+  }
   const ownerBytes = await readFile(join(plan.newRoot, ".epoch-owner.json"));
   const owner: unknown = JSON.parse(ownerBytes.toString("utf8"));
   if (
@@ -685,20 +727,23 @@ async function assertSeededRootMatchesPlan(
     orphanPaths,
   );
 }
-
 async function assertOrphanWorkspaceBindingsUnchanged(
   plan: ConsumedOutputLedgerEpochPlan,
 ): Promise<void> {
-  for (const binding of plan.orphanWorkspaceBindings) {
-    if (binding.state !== "quarantined" ||
-      !await ledgerEpochOrphanWorkspaceBindingMatches({
-        binding,
-        deniedRoots: plan.deniedRoots,
-      })
-    ) throw new Error("ledger_epoch_orphan_workspace_binding_drift");
+  const matches = await Promise.all(plan.orphanWorkspaceBindings.map(
+    async (binding) => await ledgerEpochOrphanWorkspaceBindingMatches({
+      binding,
+      deniedRoots: plan.deniedRoots,
+    }),
+  ));
+  if (matches.some((matchesBinding) => !matchesBinding)) {
+    throw new Error("ledger_epoch_orphan_workspace_binding_drift");
   }
 }
-
+export async function assertConsumedOutputLedgerEpochOrphanBindingsUnchanged(
+  plan: ConsumedOutputLedgerEpochPlan): Promise<void> {
+  await assertOrphanWorkspaceBindingsUnchanged(plan);
+}
 async function mergeInheritedOrphanWorkspaceBindings(input: {
   readonly previous: readonly ConsumedOutputLedgerEpochOrphanWorkspaceBinding[];
   readonly current: readonly ConsumedOutputLedgerEpochOrphanWorkspaceBinding[];
@@ -772,6 +817,11 @@ async function assertRootIdentities(plan: ConsumedOutputLedgerEpochPlan): Promis
     await realpath(dirname(plan.newRoot)) !== dirname(plan.newRoot)
   ) {
     throw new Error("ledger_epoch_root_identity_drift");
+  }
+  try {
+    await assertLedgerEpochTargetIdentity(plan);
+  } catch (error) {
+    if (!isNodeError(error, "ENOENT")) throw error;
   }
 }
 
