@@ -37,7 +37,6 @@ import {
   "./codex-goal-ledger-epoch-legacy-admission-fixture";
 import { buildLedgerEpochLegacyAdmissionAnchor } from
   "../application/project-control/codex-goal-ledger-epoch-legacy-admission";
-
 const realHandlerUpgradeCrashBoundaries = [
   ...Array.from({ length: 205 }, (_, index) =>
     `source-orphan-${String(index).padStart(4, "0")}.json`
@@ -49,7 +48,6 @@ const realHandlerUpgradeCrashBoundaries = [
   "final-sidecar",
   "intent",
 ];
-
 await prepareAuthenticD0aFixture();
 const productionFixture = await handlerFixture(495);
 const productionPreview = await projectControlLedgerEpochMigrationView(
@@ -61,7 +59,6 @@ await productionFixture.freezePreparedV1Baseline();
 const sharedBoundaryFixture = await handlerFixture(495, true);
 const sharedBoundaryPlan = await sharedBoundaryFixture.seedPreparedV1();
 await sharedBoundaryFixture.freezePreparedV1Baseline();
-
 describe("project control ledger epoch handler", () => {
   it("anchors the exact production-shaped 495/205/6/4 legacy envelope", async () => {
     expect(productionPreview).toMatchObject({
@@ -71,7 +68,6 @@ describe("project control ledger epoch handler", () => {
       },
     });
   });
-
   it("upgrades and activates the exact-710 prepared v1 plan through the real handler", async () => {
     const fixture = productionFixture;
     const plan = productionPlan;
@@ -97,8 +93,41 @@ describe("project control ledger epoch handler", () => {
         admissionAfter: { debtCount: 414 },
       },
     });
+    const sidecar = JSON.parse(await readFile(join(
+      fixture.newRoot,
+      ".ledger-epoch-v2-sidecar",
+      "manifest.json",
+    ), "utf8"));
+    expect(sidecar.legacyAdmission).toMatchObject({
+      debtCount: 710,
+      blockingDebtCount: 710,
+    });
   });
-
+  it("activates non-legacy prepared v1 without a legacy admission anchor", async () => {
+    const fixture = await handlerFixture(676, false, true);
+    const plan = await fixture.seedPreparedV1();
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: plan.planSha256,
+      }),
+      fixture.deps,
+    )).resolves.toMatchObject({
+      ok: true,
+      receipt: { planSha256: plan.planSha256, status: "active" },
+    });
+    const sidecar = JSON.parse(await readFile(join(
+      fixture.newRoot,
+      ".ledger-epoch-v2-sidecar",
+      "manifest.json",
+    ), "utf8"));
+    const receipt = JSON.parse(await readFile(join(
+      fixture.newRoot,
+      "ledger-epoch-receipt.json",
+    ), "utf8"));
+    expect(sidecar).not.toHaveProperty("legacyAdmission");
+    expect(receipt).not.toHaveProperty("legacyAdmission");
+  });
   it("allows exact-710 post-admission output, normal jobs and replay", async () => {
     const fixture = productionFixture;
     const plan = productionPlan;
@@ -131,7 +160,6 @@ describe("project control ledger epoch handler", () => {
       fixture.deps,
     )).resolves.toMatchObject({ ok: true, idempotentReplay: true });
   });
-
   it("allows unrelated process hash and PID-count churn with clear custody", async () => {
     const fixture = await handlerFixture(495);
     const plan = await fixture.seedPreparedV1();
@@ -153,7 +181,6 @@ describe("project control ledger epoch handler", () => {
       receipt: { planSha256: plan.planSha256, status: "active" },
     });
   });
-
   it("refuses a custody blocker appearing after locks without changing target bytes", async () => {
     const fixture = await handlerFixture(495);
     const plan = await fixture.seedPreparedV1();
@@ -168,7 +195,6 @@ describe("project control ledger epoch handler", () => {
     )).rejects.toThrow("ledger_epoch_process_inventory_drift");
     expect(await fixture.oldScopeBytes()).toEqual(before);
   });
-
   it("refuses when the writer guard passes then fails without changing target bytes", async () => {
     const fixture = await handlerFixture(495);
     const plan = await fixture.seedPreparedV1();
@@ -183,7 +209,6 @@ describe("project control ledger epoch handler", () => {
     )).rejects.toThrow("ledger_epoch_writer_process_active");
     expect(await fixture.oldScopeBytes()).toEqual(before);
   });
-
   it("releases both ledger roots and every upper lock when first release detects drift", async () => {
     const fixture = await handlerFixture(495, true);
     const plan = await fixture.seedPreparedV1();
@@ -199,7 +224,6 @@ describe("project control ledger epoch handler", () => {
       }),
       fixture.deps,
     )).rejects.toThrow("ledger_epoch_target_root_identity_drift");
-
     await rm(fixture.newRoot, { recursive: true });
     await rename(original, fixture.newRoot);
     fixture.setCaptureMutationAt(3, async () => undefined);
@@ -214,7 +238,6 @@ describe("project control ledger epoch handler", () => {
       receipt: { planSha256: plan.planSha256, status: "active" },
     });
   });
-
   it("releases a mutation lock when root identity drifts after acquisition", async () => {
     const probeRoot = await mkdtemp(join(tmpdir(), "ledger-acquire-drift-"));
     const ledgerRoot = join(probeRoot, "ledger");
@@ -457,10 +480,12 @@ describe("project control ledger epoch handler", () => {
 
   it.each([494, 496])("refuses a %i-item legacy admission near miss", async (count) => {
     const fixture = await handlerFixture(count);
+    const before = await exactTreeBytes(fixture.root);
     await expect(projectControlLedgerEpochMigrationView(
       fixture.args(),
       fixture.deps,
     )).rejects.toThrow("ledger_epoch_legacy_admission_exact_count_mismatch");
+    expect(await exactTreeBytes(fixture.root)).toEqual(before);
   });
 
   it("confirms a fresh preview under the actual publication locks", async () => {
@@ -615,6 +640,7 @@ describe("project control ledger epoch handler", () => {
 async function handlerFixture(
   legacyConsumedCount?: number,
   fastOrphanBoundaries = false,
+  currentSocialDebt = false,
 ) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "ledger-epoch-handler-")));
   const registryRootDir = join(root, "registry");
@@ -630,7 +656,7 @@ async function handlerFixture(
     mkdir(join(root, "worktrees"), { recursive: true }),
     mkdir(join(root, "secrets"), { recursive: true }),
   ]);
-  const admissionSnapshot = legacyConsumedCount === undefined
+  const seededAdmission = legacyConsumedCount === undefined
     ? undefined
     : await seedLegacyAdmissionHandlerFixture({
         root,
@@ -638,6 +664,21 @@ async function handlerFixture(
         consumedCount: legacyConsumedCount,
         fastOrphanBoundaries,
       });
+  const admissionSnapshot = seededAdmission && currentSocialDebt
+    ? { ...seededAdmission, debt: [
+      ...seededAdmission.debt.filter((item) => item.reason ===
+        ProjectDebtReason.UnconsumedCompletedJob).map((item) =>
+          ({ ...item, reason: ProjectDebtReason.ConsumedDirtyWorkspace })),
+      ...seededAdmission.debt.filter((item) => item.reason ===
+        ProjectDebtReason.OrphanLegacyWorkspace).slice(0, 57),
+      ...Array.from({ length: 377 }, (_, index) => ({
+        reason: ProjectDebtReason.UnreadableRoot,
+        subject: `${root}/unreadable/${index}`,
+        severity: "blocking" as const,
+        evidence: [`unreadable root ${index}`],
+      })),
+    ] }
+    : seededAdmission;
   if (!admissionSnapshot) {
     await writeFile(join(oldRoot, "items", "legacy.json"), "not-json\n");
   }
@@ -717,7 +758,7 @@ async function handlerFixture(
   const seedPreparedV1 = async () => {
     if (!admissionSnapshot) throw new Error("legacy fixture required");
     const controller = (await load()).controller;
-    return await seedAuthenticD0aPreparedEpochV1({
+    const plan = await seedAuthenticD0aPreparedEpochV1({
       root,
       oldRoot,
       newRoot,
@@ -729,6 +770,15 @@ async function handlerFixture(
       controllerManifestSha256: sha256Json(controller),
       controllerStableScopeSha256: stableControllerFingerprint(controller),
     }) as unknown as ConsumedOutputLedgerEpochPlan;
+    if (currentSocialDebt) {
+      const path = join(newRoot, "ledger-epoch-state.json");
+      const state = JSON.parse(await readFile(path, "utf8"));
+      state.admissionBefore = { debtCount: 1110, counts: {
+        consumedDirtyWorkspaces: 676, orphanLegacyWorkspaces: 57, unreadableRoots: 377,
+      } };
+      await writeFile(path, `${JSON.stringify(state, null, 2)}\n`);
+    }
+    return plan;
   };
   const activateWithoutState = async () => {
     await mkdir(newRoot, { recursive: true });
@@ -761,7 +811,7 @@ async function handlerFixture(
   let captureMutationAt = 2;
   let captureMutation: (() => Promise<void>) | undefined;
   let upgradeCrashAfter: string | undefined;
-  const postAdmissionCount = fastOrphanBoundaries ? 209 : 414;
+  const postAdmissionCount = currentSocialDebt ? 266 : fastOrphanBoundaries ? 209 : 414;
   let preparedBaselineRoot: string | undefined;
   let preparedBaselineController: Buffer | undefined;
   return {
@@ -873,12 +923,17 @@ async function handlerFixture(
             input.scope.consumedOutputLedgerRoots?.[0] === newRoot
               ? {
                   ...admissionSnapshot,
-                  debt: Array.from({ length: postAdmissionCount }, (_, index) => ({
+                  debt: [
+                    ...(currentSocialDebt ? admissionSnapshot.debt.filter((item) =>
+                      item.reason === ProjectDebtReason.ConsumedDirtyWorkspace).map((item) =>
+                        ({ ...item, severity: "info" as const })) : []),
+                    ...Array.from({ length: postAdmissionCount }, (_, index) => ({
                     reason: ProjectDebtReason.LegacyOutputQuarantineRequired,
                     subject: `${newRoot}/quarantine/${index}`,
                     severity: "info" as const,
                     evidence: [`anchored quarantine ${index}`],
-                  })),
+                    })),
+                  ],
                 }
               : admissionSnapshot }
         : {}),

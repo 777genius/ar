@@ -139,7 +139,7 @@ export function preparedEpochV1ArtifactNames(
  */
 export async function upgradePreparedEpochV1(input: {
   readonly plan: ConsumedOutputLedgerEpochPlan;
-  readonly legacyAdmission: ConsumedOutputLedgerEpochLegacyAdmissionAnchor;
+  readonly legacyAdmission?: ConsumedOutputLedgerEpochLegacyAdmissionAnchor;
   readonly debtCustody: readonly LedgerEpochDebtCustodyBinding[];
   readonly processEvidence: LegacyAttemptProcessEvidence;
   readonly expectedPlanSha256: string;
@@ -160,7 +160,9 @@ export async function upgradePreparedEpochV1(input: {
     const existing = await readCompleteUpgradeManifest({
       plan: input.plan,
       processEvidence: input.processEvidence,
-      legacyAdmission: input.legacyAdmission,
+      ...(input.legacyAdmission
+        ? { legacyAdmission: input.legacyAdmission }
+        : {}),
       debtCustody: input.debtCustody,
       requireIntent: false,
     });
@@ -208,7 +210,7 @@ export async function upgradePreparedEpochV1(input: {
     sourceOrphansSha256: sha256(sourceOrphans.join("\n")),
     targetOrphansSha256: sha256(targetOrphans.join("\n")),
     processEvidence: input.processEvidence,
-    legacyAdmission: input.legacyAdmission,
+    ...(input.legacyAdmission ? { legacyAdmission: input.legacyAdmission } : {}),
     debtCustody: input.debtCustody,
     targetRoot,
     intentSha256: sha256Json(intent),
@@ -425,6 +427,9 @@ async function readCompleteUpgradeManifest(input: {
   }
   if (input.legacyAdmission && JSON.stringify(manifest.legacyAdmission) !==
       JSON.stringify(input.legacyAdmission)) {
+    throw new Error("ledger_epoch_upgrade_legacy_admission_drift");
+  }
+  if (!input.legacyAdmission && "legacyAdmission" in manifest) {
     throw new Error("ledger_epoch_upgrade_legacy_admission_drift");
   }
   if (input.debtCustody && JSON.stringify(manifest.debtCustody) !==

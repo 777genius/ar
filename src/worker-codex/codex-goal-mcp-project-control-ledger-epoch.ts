@@ -428,9 +428,6 @@ export async function projectControlLedgerEpochMigrationView(
       cutoff,
       processEvidence,
     });
-    if (plan.transactionVersion !== 2 && !upgradedLegacyAdmission) {
-      throw new Error("ledger_epoch_legacy_admission_required");
-    }
     let lockedCurrentPlan: Awaited<ReturnType<
       typeof buildConsumedOutputLedgerEpochPlan
     >> | undefined;
@@ -454,13 +451,12 @@ export async function projectControlLedgerEpochMigrationView(
         cutoff,
         processEvidence,
       });
-      if (!upgradedLegacyAdmission) {
-        throw new Error("ledger_epoch_legacy_admission_required");
-      }
       const crashAfter = deps.preparedV1UpgradeCrashAfter?.();
       await upgradePreparedEpochV1({
         plan,
-        legacyAdmission: upgradedLegacyAdmission!,
+        ...(upgradedLegacyAdmission
+          ? { legacyAdmission: upgradedLegacyAdmission }
+          : {}),
         debtCustody,
         processEvidence,
         expectedPlanSha256,
@@ -469,7 +465,7 @@ export async function projectControlLedgerEpochMigrationView(
       await assertPreparedEpochV2Sidecar(
         plan,
         processEvidence,
-        upgradedLegacyAdmission!,
+        upgradedLegacyAdmission,
         debtCustody,
       );
     } else if (plan.legacyAdmission && JSON.stringify(plan.legacyAdmission) !==
@@ -486,7 +482,9 @@ export async function projectControlLedgerEpochMigrationView(
       plan,
       ...(plan.transactionVersion === 2
         ? {}
-        : { upgradedLegacyAdmission: upgradedLegacyAdmission! }),
+        : upgradedLegacyAdmission
+        ? { upgradedLegacyAdmission }
+        : {}),
       expectedPlanSha256,
       buildCurrentPlan: async () => {
         const current = await rebuildCurrentPlanOnce();
@@ -494,7 +492,7 @@ export async function projectControlLedgerEpochMigrationView(
           await assertPreparedEpochV2Sidecar(
             plan,
             processEvidence,
-            upgradedLegacyAdmission!,
+            upgradedLegacyAdmission,
             debtCustody,
           );
         }
