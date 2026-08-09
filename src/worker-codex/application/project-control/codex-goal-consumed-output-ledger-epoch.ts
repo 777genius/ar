@@ -44,9 +44,17 @@ import {
   "./codex-goal-consumed-output-ledger-epoch-retirement";
 import {
   bindLedgerEpochOrphanWorkspaces,
-  ledgerEpochOrphanWorkspaceBindingMatches,
-  revalidateLedgerEpochOrphanWorkspaceBinding,
 } from "./codex-goal-ledger-epoch-orphan-quarantine";
+import {
+  assertOrphanWorkspaceBindingsUnchanged,
+  mergeInheritedOrphanWorkspaceBindings,
+  orphanArtifactName,
+  orphanWorkspaceArtifact,
+  rememberQuarantinedOrphanCandidate,
+} from "./codex-goal-consumed-output-ledger-epoch-orphans";
+export {
+  LedgerEpochOrphanWorkspaceBindingRevalidationError,
+} from "./codex-goal-consumed-output-ledger-epoch-orphans";
 import {
   assertLedgerEpochEvidenceBindingsUnchanged,
   bindLedgerEpochEvidencePath,
@@ -72,7 +80,6 @@ import {
 const PLAN_VERSION = 1;
 const [PLAN_NAME, STATE_NAME] = ["ledger-epoch-plan.json", "ledger-epoch-state.json"];
 const MAX_LEDGER_FILE_BYTES = 16 * 1024 * 1024;
-const ORPHAN_BINDING_REVALIDATION_CONCURRENCY = 8;
 export type {
   ConsumedOutputLedgerEpochAdmissionSummary,
   ConsumedOutputLedgerEpochPlan,
@@ -729,129 +736,11 @@ async function assertSeededRootMatchesPlan(
     orphanPaths,
   );
 }
-async function assertOrphanWorkspaceBindingsUnchanged(
-  plan: Pick<ConsumedOutputLedgerEpochPlan, "orphanWorkspaceBindings" | "deniedRoots">,
-): Promise<void> {
-  const results = new Array<Awaited<ReturnType<
-    typeof revalidateLedgerEpochOrphanWorkspaceBinding
-  >>>(plan.orphanWorkspaceBindings.length);
-  let nextIndex = 0;
-  const workers = Array.from({
-    length: Math.min(
-      ORPHAN_BINDING_REVALIDATION_CONCURRENCY,
-      plan.orphanWorkspaceBindings.length,
-    ),
-  }, async () => {
-    while (nextIndex < plan.orphanWorkspaceBindings.length) {
-      const index = nextIndex++;
-      const binding = plan.orphanWorkspaceBindings[index];
-      if (!binding) throw new Error("ledger_epoch_binding_index_invalid");
-      results[index] = await revalidateLedgerEpochOrphanWorkspaceBinding({
-        binding,
-        deniedRoots: plan.deniedRoots,
-      });
-    }
-  });
-  await Promise.all(workers);
-  for (let index = 0; index < results.length; index++) {
-    const result = results[index];
-    if (!result) throw new Error("ledger_epoch_binding_result_invalid");
-    if (!result.matches) {
-      throw new LedgerEpochOrphanWorkspaceBindingRevalidationError({
-        category: result.category,
-        index,
-        path: result.path,
-      });
-    }
-  }
-}
-
-export class LedgerEpochOrphanWorkspaceBindingRevalidationError extends Error {
-  readonly category: "mismatch" | "observation_error";
-  readonly bindingIndex: number;
-  readonly bindingPath: string;
-
-  constructor(input: {
-    readonly category: "mismatch" | "observation_error";
-    readonly index: number;
-    readonly path: string;
-  }) {
-    super(input.category === "mismatch"
-      ? "ledger_epoch_orphan_workspace_binding_drift"
-      : "ledger_epoch_orphan_workspace_binding_observation_error");
-    this.name = "LedgerEpochOrphanWorkspaceBindingRevalidationError";
-    this.category = input.category;
-    this.bindingIndex = input.index;
-    this.bindingPath = input.path;
-  }
-}
 export async function assertConsumedOutputLedgerEpochOrphanBindingsUnchanged(
   plan: Pick<ConsumedOutputLedgerEpochPlan, "orphanWorkspaceBindings" | "deniedRoots">,
 ): Promise<void> {
   await assertOrphanWorkspaceBindingsUnchanged(plan);
 }
-async function mergeInheritedOrphanWorkspaceBindings(input: {
-  readonly previous: readonly ConsumedOutputLedgerEpochOrphanWorkspaceBinding[];
-  readonly current: readonly ConsumedOutputLedgerEpochOrphanWorkspaceBinding[];
-  readonly deniedRoots: readonly string[];
-}): Promise<readonly ConsumedOutputLedgerEpochOrphanWorkspaceBinding[]> {
-  const bindings = new Map<string, ConsumedOutputLedgerEpochOrphanWorkspaceBinding>();
-  for (const binding of input.previous) {
-    if (binding.state !== "quarantined" ||
-      !await ledgerEpochOrphanWorkspaceBindingMatches({
-        binding,
-        deniedRoots: input.deniedRoots,
-      })) {
-      throw new Error("ledger_epoch_inherited_orphan_workspace_binding_drift");
-    }
-    bindings.set(resolve(binding.declaredPath), binding);
-  }
-  for (const binding of input.current) {
-    const key = resolve(binding.declaredPath);
-    const inherited = bindings.get(key);
-    if (inherited && JSON.stringify(inherited) !== JSON.stringify(binding)) {
-      throw new Error("ledger_epoch_inherited_orphan_workspace_binding_drift");
-    }
-    bindings.set(key, binding);
-  }
-  return [...bindings.values()].sort((left, right) =>
-    left.declaredPath.localeCompare(right.declaredPath)
-  );
-}
-
-function rememberQuarantinedOrphanCandidate(
-  value: unknown,
-  currentJobIds: ReadonlySet<string>,
-  target: Set<string>,
-): void {
-  if (!isRecord(value) || typeof value.jobId !== "string" ||
-    currentJobIds.has(value.jobId) || !isRecord(value.backup) ||
-    typeof value.backup.workspace !== "string"
-  ) return;
-  target.add(resolve(value.backup.workspace));
-}
-
-function orphanArtifactName(
-  binding: ConsumedOutputLedgerEpochOrphanWorkspaceBinding,
-): string {
-  return `${createHash("sha256").update(binding.declaredPath).digest("hex")}.json`;
-}
-
-function orphanWorkspaceArtifact(
-  binding: ConsumedOutputLedgerEpochOrphanWorkspaceBinding,
-  planSha256: string,
-) {
-  return {
-    schemaVersion: 1,
-    status: "quarantined_orphan_legacy_workspace",
-    planSha256,
-    binding,
-    valid: false,
-    repaired: false,
-    sourceWorkspaceUntouched: true,
-  };
-}
-
 async function assertRootIdentities(plan: ConsumedOutputLedgerEpochPlan): Promise<void> {
   const oldRoot = await stat(plan.oldRoot);
   const parent = await stat(dirname(plan.newRoot));
