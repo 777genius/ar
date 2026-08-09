@@ -206,8 +206,7 @@ export function assertSocialProposedAdmissionSourceOrphanSeal(
   }
 }
 
-/** Verify the immutable legacy v2 sidecar without deriving its 205 records from the
- * current 506-binding plan view. */
+/** Verify the immutable legacy v2 sidecar against its plan-bound source records. */
 export async function verifySocialPreparedV1SourceOrphanSeal(
   plan: ConsumedOutputLedgerEpochPlan | ConsumedOutputLedgerEpochReceipt,
 ): Promise<PreparedV1SourceOrphanSeal> {
@@ -226,7 +225,10 @@ export async function verifySocialPreparedV1SourceOrphanSeal(
   if (sha256Json(unsigned) !== upgradeSha256) {
     throw new Error("ledger_epoch_proposed_admission_source_orphan_manifest_hash_mismatch");
   }
-  const sourceNames = Array.from({ length: 205 }, (_, index) =>
+  const expectedCanonical = plan.orphanWorkspaceBindings.map((binding) =>
+    JSON.stringify(binding)
+  ).sort();
+  const sourceNames = expectedCanonical.map((_, index) =>
     `source-orphan-${String(index).padStart(4, "0")}.json`
   );
   const expectedNames = [
@@ -239,7 +241,10 @@ export async function verifySocialPreparedV1SourceOrphanSeal(
   const bindings = await Promise.all(sourceNames.map(async (name) =>
     await readJsonRecord(join(root, name))
   ));
-  const canonical = bindings.map((binding) => JSON.stringify(binding)).sort();
+  const canonical = bindings.map((binding) => JSON.stringify(binding));
+  if (JSON.stringify(canonical) !== JSON.stringify(expectedCanonical)) {
+    throw new Error("ledger_epoch_proposed_admission_source_orphan_seal_mismatch");
+  }
   if (manifest.sourceOrphansSha256 !== sha256(canonical.join("\n"))) {
     throw new Error("ledger_epoch_proposed_admission_source_orphan_seal_mismatch");
   }

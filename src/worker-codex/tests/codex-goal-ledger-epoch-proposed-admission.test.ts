@@ -127,44 +127,74 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
     );
   });
 
-  it("verifies the immutable 205-record source-orphan seal, not all 506 plan bindings", async () => {
+  it("fails closed around the exact plan-bound 506-record source-orphan seal", async () => {
     const root = await mkdtemp(join(tmpdir(), "proposed-admission-sidecar-"));
     try {
       const sidecar = join(root, ".ledger-epoch-v2-sidecar");
       await mkdir(sidecar);
-      const records = Array.from({ length: 205 }, (_, index) => ({
-        declaredPath: `/sealed/orphan-${index}`,
-        state: "denied",
-      }));
-      for (const [index, record] of records.entries()) {
+      const records = plan().orphanWorkspaceBindings
+        .map((record) => JSON.stringify(record)).sort()
+        .map((record) => JSON.parse(record) as Record<string, unknown>);
+      const writeRecord = async (index: number, record: Record<string, unknown>) => {
         await writeFile(join(sidecar,
           `source-orphan-${String(index).padStart(4, "0")}.json`),
         JSON.stringify(record));
-      }
+      };
+      for (const [index, record] of records.entries()) await writeRecord(index, record);
       const intent = { planSha256: SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256 };
       for (const [name, value] of [
         ["intent.json", intent], ["plan.json", {}], ["owner.json", {}],
         ["state.json", {}], ["receipt.json", {}],
       ] as const) await writeFile(join(sidecar, name), JSON.stringify(value));
-      const unsigned = {
-        schemaVersion: 2,
-        planSha256: SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256,
-        sourceOrphansSha256: sha256(records.map((record) =>
+      const sourceOrphansSha256 = sha256(records.map((record) =>
           JSON.stringify(record)
-        ).sort().join("\n")),
-        intentSha256: sha256(JSON.stringify(intent)),
+        ).join("\n"));
+      const writeManifest = async (sourceHash: string) => {
+        const unsigned = {
+          schemaVersion: 2,
+          planSha256: SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256,
+          sourceOrphansSha256: sourceHash,
+          intentSha256: sha256(JSON.stringify(intent)),
+        };
+        await writeFile(join(sidecar, "manifest.json"), JSON.stringify({
+          ...unsigned,
+          upgradeSha256: sha256(JSON.stringify(unsigned)),
+        }));
       };
-      await writeFile(join(sidecar, "manifest.json"), JSON.stringify({
-        ...unsigned,
-        upgradeSha256: sha256(JSON.stringify(unsigned)),
-      }));
+      await writeManifest(sourceOrphansSha256);
       const sealed = await verifySocialPreparedV1SourceOrphanSeal({
         ...plan(), newRoot: root,
       });
-      expect(sealed.bindingSha256).toHaveLength(205);
-      expect(sealed.bindingsSha256).toBe(unsigned.sourceOrphansSha256);
+      expect(sealed.bindingSha256).toHaveLength(506);
+      expect(sealed.bindingsSha256).toBe(sourceOrphansSha256);
 
-      await writeFile(join(sidecar, "source-orphan-0204.json"), "{}\n");
+      await rm(join(sidecar, "source-orphan-0505.json"));
+      await expect(verifySocialPreparedV1SourceOrphanSeal({
+        ...plan(), newRoot: root,
+      })).rejects.toThrow("ledger_epoch_proposed_admission_source_orphan_sidecar_partial");
+      await writeRecord(505, records[505]!);
+
+      await writeFile(join(sidecar, "source-orphan-0506.json"), "{}\n");
+      await expect(verifySocialPreparedV1SourceOrphanSeal({
+        ...plan(), newRoot: root,
+      })).rejects.toThrow("ledger_epoch_proposed_admission_source_orphan_sidecar_partial");
+      await rm(join(sidecar, "source-orphan-0506.json"));
+
+      await writeRecord(0, {});
+      await expect(verifySocialPreparedV1SourceOrphanSeal({
+        ...plan(), newRoot: root,
+      })).rejects.toThrow("ledger_epoch_proposed_admission_source_orphan_seal_mismatch");
+      await writeRecord(0, records[0]!);
+
+      await writeRecord(0, records[1]!);
+      await writeRecord(1, records[0]!);
+      await expect(verifySocialPreparedV1SourceOrphanSeal({
+        ...plan(), newRoot: root,
+      })).rejects.toThrow("ledger_epoch_proposed_admission_source_orphan_seal_mismatch");
+      await writeRecord(0, records[0]!);
+      await writeRecord(1, records[1]!);
+
+      await writeManifest("0".repeat(64));
       await expect(verifySocialPreparedV1SourceOrphanSeal({
         ...plan(), newRoot: root,
       })).rejects.toThrow("ledger_epoch_proposed_admission_source_orphan_seal_mismatch");
