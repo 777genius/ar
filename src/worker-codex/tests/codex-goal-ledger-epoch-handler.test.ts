@@ -132,35 +132,33 @@ describe("project control ledger epoch handler", () => {
     )).resolves.toMatchObject({ ok: true, idempotentReplay: true });
   });
 
-  it("refuses exact-710 v1 process drift with fresh handler dependencies", async () => {
+  it("allows unrelated process hash and PID-count churn with clear custody", async () => {
     const fixture = await handlerFixture(495);
     const plan = await fixture.seedPreparedV1();
-    const oldScopeBytes = await fixture.oldScopeBytes();
     fixture.setProcessInventorySequence([
       "a".repeat(64),
       "b".repeat(64),
       "c".repeat(64),
+      "d".repeat(64),
     ]);
+    fixture.setInspectedPidCountSequence([3, 4, 2, 5]);
     await expect(projectControlLedgerEpochMigrationView(
       fixture.args({
         confirmLedgerEpochMigration: true,
         expectedLedgerEpochPlanSha256: plan.planSha256,
       }),
       fixture.deps,
-    )).rejects.toThrow("ledger_epoch_process_inventory_drift");
-    expect(await fixture.oldScopeBytes()).toEqual(oldScopeBytes);
+    )).resolves.toMatchObject({
+      ok: true,
+      receipt: { planSha256: plan.planSha256, status: "active" },
+    });
   });
 
-  it("refuses late exact-710 v1 fact drift without changing any target bytes", async () => {
+  it("refuses a custody blocker appearing after locks without changing target bytes", async () => {
     const fixture = await handlerFixture(495);
     const plan = await fixture.seedPreparedV1();
     const before = await fixture.oldScopeBytes();
-    fixture.setProcessInventorySequence([
-      "a".repeat(64),
-      "a".repeat(64),
-      "b".repeat(64),
-      "b".repeat(64),
-    ]);
+    fixture.setProcessBlockerFromCapture(2);
     await expect(projectControlLedgerEpochMigrationView(
       fixture.args({
         confirmLedgerEpochMigration: true,
@@ -168,6 +166,21 @@ describe("project control ledger epoch handler", () => {
       }),
       fixture.deps,
     )).rejects.toThrow("ledger_epoch_process_inventory_drift");
+    expect(await fixture.oldScopeBytes()).toEqual(before);
+  });
+
+  it("refuses when the writer guard passes then fails without changing target bytes", async () => {
+    const fixture = await handlerFixture(495);
+    const plan = await fixture.seedPreparedV1();
+    const before = await fixture.oldScopeBytes();
+    fixture.setWriterGuardFailureAt(2);
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: plan.planSha256,
+      }),
+      fixture.deps,
+    )).rejects.toThrow("ledger_epoch_writer_process_active");
     expect(await fixture.oldScopeBytes()).toEqual(before);
   });
 
@@ -613,6 +626,7 @@ async function handlerFixture(
   await mkdir(controllerJobRoot, { recursive: true });
   await Promise.all([
     mkdir(join(root, "workspaces"), { recursive: true }),
+    mkdir(join(root, "workspaces", "controller"), { recursive: true }),
     mkdir(join(root, "worktrees"), { recursive: true }),
     mkdir(join(root, "secrets"), { recursive: true }),
   ]);
@@ -739,6 +753,10 @@ async function handlerFixture(
   };
   let processInventorySha = "a".repeat(64);
   let processInventorySequence: string[] = [];
+  let inspectedPidCountSequence: number[] = [];
+  let processBlockerFromCapture = Number.POSITIVE_INFINITY;
+  let writerGuardCount = 0;
+  let writerGuardFailureAt = Number.POSITIVE_INFINITY;
   let captureCount = 0;
   let captureMutationAt = 2;
   let captureMutation: (() => Promise<void>) | undefined;
@@ -792,6 +810,16 @@ async function handlerFixture(
     setProcessInventorySequence: (value: readonly string[]) => {
       processInventorySequence = [...value];
     },
+    setInspectedPidCountSequence: (value: readonly number[]) => {
+      inspectedPidCountSequence = [...value];
+    },
+    setProcessBlockerFromCapture: (value: number) => {
+      processBlockerFromCapture = value;
+    },
+    setWriterGuardFailureAt: (value: number) => {
+      writerGuardFailureAt = value;
+      writerGuardCount = 0;
+    },
     setCaptureMutation: (value: () => Promise<void>) => {
       captureMutation = value;
       captureMutationAt = 2;
@@ -822,6 +850,10 @@ async function handlerFixture(
       captureMutationAt = 2;
       captureMutation = undefined;
       processInventorySequence = [];
+      inspectedPidCountSequence = [];
+      processBlockerFromCapture = Number.POSITIVE_INFINITY;
+      writerGuardCount = 0;
+      writerGuardFailureAt = Number.POSITIVE_INFINITY;
       processInventorySha = "a".repeat(64);
       upgradeCrashAfter = undefined;
     },
@@ -850,17 +882,29 @@ async function handlerFixture(
                 }
               : admissionSnapshot }
         : {}),
-      assertNoLegacyWriterProcesses: async () => undefined,
+      assertNoLegacyWriterProcesses: async () => {
+        writerGuardCount += 1;
+        if (writerGuardCount === writerGuardFailureAt) {
+          throw new Error("ledger_epoch_writer_process_active");
+        }
+      },
       captureProcessEvidence: async (custodyPaths: readonly string[]) => {
         captureCount += 1;
         if (captureCount === captureMutationAt) await captureMutation?.();
         return {
           schemaVersion: 1 as const,
           observedAt: "2026-08-08T00:00:00.000Z",
-          inspectedPidCount: 3,
+          inspectedPidCount: inspectedPidCountSequence.shift() ?? 3,
           inventorySha256: processInventorySequence.shift() ?? processInventorySha,
           custodyPaths,
-          blockers: [],
+          blockers: captureCount >= processBlockerFromCapture
+            ? [{
+                pid: 4242,
+                startTime: "12345",
+                argvSha256: "e".repeat(64),
+                cwd: custodyPaths[0]!,
+              }]
+            : [],
         };
       },
       preparedV1UpgradeCrashAfter: () => upgradeCrashAfter,

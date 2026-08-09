@@ -316,14 +316,17 @@ export async function projectControlLedgerEpochMigrationView(
       locked.controller.jobRootDir,
       lockedQuarantine,
     );
-    await (deps.assertNoLegacyWriterProcesses
-      ? deps.assertNoLegacyWriterProcesses()
-      : assertNoLedgerEpochWriterProcesses({
+    const assertNoLegacyWriterProcesses = async () => {
+      await (deps.assertNoLegacyWriterProcesses
+        ? deps.assertNoLegacyWriterProcesses()
+        : assertNoLedgerEpochWriterProcesses({
           registryRootDir: locked.registryRootDir,
           controllerJobId: locked.controller.jobId,
           ledgerRoot: oldRoot,
           selfPid: process.pid,
         }));
+    };
+    await assertNoLegacyWriterProcesses();
     const lockedAdmission = await buildAdmissionSnapshot({
       registryRootDir: locked.registryRootDir,
       scope: { ...locked.scope, consumedOutputLedgerRoots: [oldRoot] },
@@ -337,12 +340,22 @@ export async function projectControlLedgerEpochMigrationView(
       lockedAdmission,
       lockedSummaries,
     );
-    const debtPaths = custodyPathsFor(debtCustody, oldRoot, newRoot);
+    const controllerCustodyPaths = await Promise.all([
+      locked.controller.jobRootDir,
+      locked.controller.workspacePath,
+    ].map(async (path) => await realpath(path)));
+    const custodyPaths = custodyPathsFor(
+      debtCustody,
+      oldRoot,
+      newRoot,
+      controllerCustodyPaths,
+    );
     const preliminaryProcessEvidence = await captureEpochProcessEvidence(
       deps,
-      debtPaths,
+      custodyPaths,
     );
-    for (const path of debtPaths) {
+    assertEpochProcessEvidenceClear(preliminaryProcessEvidence, custodyPaths);
+    for (const path of custodyPaths) {
       debtLocks.push(await locks.acquire({
         workspacePath: path,
         owner: `ledger-epoch-debt:${locked.controller.jobId}:${plan.planSha256}`,
@@ -379,15 +392,9 @@ export async function projectControlLedgerEpochMigrationView(
       if (JSON.stringify(currentAdmission.debt) !== JSON.stringify(lockedAdmission.debt)) {
         throw new Error("ledger_epoch_admission_debt_drift");
       }
-      const currentEvidence = await captureEpochProcessEvidence(deps, debtPaths);
-      if (currentEvidence.inventorySha256 !== preliminaryProcessEvidence.inventorySha256 ||
-        currentEvidence.inspectedPidCount !== preliminaryProcessEvidence.inspectedPidCount ||
-        JSON.stringify(currentEvidence.custodyPaths) !==
-          JSON.stringify(preliminaryProcessEvidence.custodyPaths) ||
-        JSON.stringify(currentEvidence.blockers) !==
-          JSON.stringify(preliminaryProcessEvidence.blockers)) {
-        throw new Error("ledger_epoch_process_inventory_drift");
-      }
+      await assertNoLegacyWriterProcesses();
+      const currentEvidence = await captureEpochProcessEvidence(deps, custodyPaths);
+      assertEpochProcessEvidenceClear(currentEvidence, custodyPaths);
       const reboundController = await deps.loadProjectControlController(args);
       if (manifestFingerprint(reboundController.controller) !== lockedManifestFingerprint) {
         throw new Error("ledger_epoch_controller_manifest_cas_mismatch");
@@ -469,7 +476,6 @@ export async function projectControlLedgerEpochMigrationView(
         JSON.stringify(upgradedLegacyAdmission)) {
       throw new Error("ledger_epoch_legacy_admission_drift");
     }
-    const boundLegacyAdmission = plan.legacyAdmission ?? upgradedLegacyAdmission;
     const admissionBefore = await admissionSummary({
       registryRootDir: loaded.registryRootDir,
       scope: { ...locked.scope, consumedOutputLedgerRoots: [oldRoot] },
@@ -557,18 +563,6 @@ export async function projectControlLedgerEpochMigrationView(
         ) {
           throw new Error("ledger_epoch_registry_snapshot_drift");
         }
-        if (boundLegacyAdmission) {
-          const currentEvidence = await captureEpochProcessEvidence(
-            deps,
-            boundLegacyAdmission.processCustodyPaths,
-          );
-          if (currentEvidence.inventorySha256 !==
-              boundLegacyAdmission.processInventorySha256 ||
-            currentEvidence.inspectedPidCount !==
-              boundLegacyAdmission.inspectedPidCount) {
-            throw new Error("ledger_epoch_process_inventory_drift");
-          }
-        }
       },
     });
   } catch (error) {
@@ -632,14 +626,26 @@ async function captureEpochProcessEvidence(
     : await captureLegacyAttemptProcessEvidence({ custodyPaths: paths });
 }
 
+function assertEpochProcessEvidenceClear(
+  evidence: LegacyAttemptProcessEvidence,
+  custodyPaths: readonly string[],
+): void {
+  if (JSON.stringify(evidence.custodyPaths) !== JSON.stringify(custodyPaths) ||
+    evidence.blockers.length !== 0) {
+    throw new Error("ledger_epoch_process_inventory_drift");
+  }
+}
+
 function custodyPathsFor(
   bindings: readonly LedgerEpochDebtCustodyBinding[],
   oldRoot: string,
   newRoot: string,
+  additionalPaths: readonly string[] = [],
 ): readonly string[] {
   return [...new Set([
     oldRoot,
     newRoot,
+    ...additionalPaths,
     ...bindings.map((binding) => binding.canonicalPath),
   ].map((path) => resolve(path)))].sort();
 }
