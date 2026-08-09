@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readdir, readlink, realpath } from "node:fs/promises";
+import { lstat, open, readlink, realpath } from "node:fs/promises";
 import { isAbsolute, normalize, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -10,16 +10,20 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const MAX_ORPHAN_FILE_BYTES = 16 * 1024 * 1024;
-const bindingCache = new Map<string, {
-  readonly device: number;
-  readonly inode: number;
-  readonly treeSha256: string;
-  readonly binding: ConsumedOutputLedgerEpochOrphanWorkspaceBinding;
-}>();
+
+export type LedgerEpochOrphanWorkspaceBindingRevalidation =
+  | { readonly matches: true }
+  | {
+      readonly matches: false;
+      readonly category: "mismatch" | "observation_error";
+      readonly path: string;
+    };
 
 export async function bindLedgerEpochOrphanWorkspace(input: {
   readonly workspacePath: string;
   readonly deniedRoots: readonly string[];
+  /** Observation failures must remain distinct while checking a sealed binding. */
+  readonly failOnObservationError?: boolean;
 }): Promise<ConsumedOutputLedgerEpochOrphanWorkspaceBinding | undefined> {
   const declaredPath = resolve(input.workspacePath);
   const deniedRoots = input.deniedRoots.map((root) => resolve(root));
@@ -43,15 +47,12 @@ export async function bindLedgerEpochOrphanWorkspace(input: {
   )) {
     return { declaredPath, state: "denied", canonicalPath };
   }
-  const treeSha256 = await workspaceTreeSha256(canonicalPath);
-  const cached = bindingCache.get(canonicalPath);
-  if (cached && cached.device === metadata.dev && cached.inode === metadata.ino &&
-    cached.treeSha256 === treeSha256) return cached.binding;
   let topLevel: string;
   try {
     topLevel = (await gitBytes(canonicalPath, ["rev-parse", "--show-toplevel"]))
       .toString("utf8").trim();
-  } catch {
+  } catch (error) {
+    if (input.failOnObservationError) throw error;
     return undefined;
   }
   if (await realpath(topLevel) !== canonicalPath) return undefined;
@@ -102,12 +103,6 @@ export async function bindLedgerEpochOrphanWorkspace(input: {
     contentSha256: contentHash.digest("hex"),
     statusPreview: nulValues(status).slice(0, 5),
   };
-  bindingCache.set(canonicalPath, {
-    device: metadata.dev,
-    inode: metadata.ino,
-    treeSha256: await workspaceTreeSha256(canonicalPath),
-    binding,
-  });
   return binding;
 }
 
@@ -136,14 +131,32 @@ export async function ledgerEpochOrphanWorkspaceBindingMatches(input: {
   readonly binding: ConsumedOutputLedgerEpochOrphanWorkspaceBinding;
   readonly deniedRoots: readonly string[];
 }): Promise<boolean> {
+  return (await revalidateLedgerEpochOrphanWorkspaceBinding(input)).matches;
+}
+
+export async function revalidateLedgerEpochOrphanWorkspaceBinding(input: {
+  readonly binding: ConsumedOutputLedgerEpochOrphanWorkspaceBinding;
+  readonly deniedRoots: readonly string[];
+}): Promise<LedgerEpochOrphanWorkspaceBindingRevalidation> {
   try {
     const current = await bindLedgerEpochOrphanWorkspace({
       workspacePath: input.binding.declaredPath,
       deniedRoots: input.deniedRoots,
+      failOnObservationError: true,
     });
-    return JSON.stringify(current) === JSON.stringify(input.binding);
+    return JSON.stringify(current) === JSON.stringify(input.binding)
+      ? { matches: true }
+      : {
+          matches: false,
+          category: "mismatch",
+          path: input.binding.declaredPath,
+        };
   } catch {
-    return false;
+    return {
+      matches: false,
+      category: "observation_error",
+      path: input.binding.declaredPath,
+    };
   }
 }
 
@@ -168,35 +181,6 @@ async function readHardenedFile(path: string): Promise<Buffer> {
   } finally {
     await handle.close();
   }
-}
-
-async function workspaceTreeSha256(root: string): Promise<string> {
-  const hash = createHash("sha256").update("ledger-epoch-workspace-tree-v1\0");
-  const visit = async (path: string, relativePath: string): Promise<void> => {
-    const entries = await readdir(path, { withFileTypes: true });
-    for (const entry of entries.sort((left, right) =>
-      left.name.localeCompare(right.name)
-    )) {
-      const child = `${relativePath}/${entry.name}`;
-      const absolute = resolve(path, entry.name);
-      const metadata = await lstat(absolute);
-      hash.update(child).update("\0").update(String(metadata.mode)).update("\0");
-      if (metadata.isDirectory()) {
-        hash.update("directory\n");
-        await visit(absolute, child);
-      } else if (metadata.isSymbolicLink()) {
-        hash.update("symlink\0").update(await readlink(absolute)).update("\n");
-      } else if (metadata.isFile()) {
-        const bytes = await readHardenedFile(absolute);
-        hash.update("file\0").update(String(bytes.length)).update("\0")
-          .update(sha256(bytes)).update("\n");
-      } else {
-        hash.update("other\n");
-      }
-    }
-  };
-  await visit(root, "");
-  return hash.digest("hex");
 }
 
 async function gitBytes(cwd: string, args: readonly string[]): Promise<Buffer> {
