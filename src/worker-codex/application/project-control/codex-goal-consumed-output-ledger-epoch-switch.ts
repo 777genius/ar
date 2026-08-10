@@ -94,44 +94,9 @@ export async function resolveLedgerEpochDebtCustody(
     item,
     job: await resolveDebtJob(item, jobs, summaries),
   })));
-  const bindings = await Promise.all(resolvedDebt.map(async ({ item, job }) => {
-    const declaredPath = job?.workspacePath ?? item.subject;
-    if (!declaredPath.startsWith("/")) {
-      throw new Error(`ledger_epoch_debt_job_workspace_missing:${item.subject}`);
-    }
-    const resolvedDeclaredPath = resolve(declaredPath);
-    const canonicalPath = await realpath(resolvedDeclaredPath);
-    const metadata = await lstat(canonicalPath);
-    if (!metadata.isDirectory()) {
-      throw new Error("ledger_epoch_debt_workspace_invalid");
-    }
-    const declaredMetadata = await lstat(resolvedDeclaredPath);
-    const aliasTarget = declaredMetadata.isSymbolicLink()
-      ? await readlink(resolvedDeclaredPath)
-      : undefined;
-    const aliasResolutionSha256 = sha256Json({
-      declaredPath: resolvedDeclaredPath,
-      canonicalPath,
-      declaredDevice: declaredMetadata.dev,
-      declaredInode: declaredMetadata.ino,
-      ...(aliasTarget === undefined ? {} : { aliasTarget }),
-      device: metadata.dev,
-      inode: metadata.ino,
-    });
-    const jobFacts = job ? await bindJobFacts(job) : undefined;
-    return {
-      reason: item.reason,
-      subject: item.subject,
-      ...(job ? { jobId: job.jobId } : {}),
-      declaredPath: resolvedDeclaredPath,
-      canonicalPath,
-      device: metadata.dev,
-      inode: metadata.ino,
-      aliasResolutionSha256,
-      ...(aliasTarget === undefined ? {} : { aliasTarget }),
-      ...(jobFacts ?? {}),
-    };
-  }));
+  const bindings = await Promise.all(resolvedDebt.map(({ item, job }) =>
+    bindDebtCustody(item.reason, item.subject, job)
+  ));
   return bindings.sort((left, right) =>
     JSON.stringify(left).localeCompare(JSON.stringify(right))
   );
@@ -151,7 +116,13 @@ async function resolveDebtJob(
     isAbsolute(summary.workspacePath) &&
     resolve(summary.workspacePath) === normalizedSubject
   );
-  if (normalizedMatches.length > 1) return ambiguousDebtJob(item.subject);
+  if (normalizedMatches.length > 1) {
+    const evidenceMatches = normalizedMatches.filter((summary) =>
+      hasExactInactiveDirtyEvidence(item.evidence, summary.jobId)
+    );
+    if (evidenceMatches.length === 1) return evidenceMatches[0];
+    return ambiguousDebtJob(item.subject);
+  }
   if (normalizedMatches.length === 1) return normalizedMatches[0];
 
   let canonicalSubject: string;
@@ -175,6 +146,14 @@ async function resolveDebtJob(
   return missingDebtJob(item.subject);
 }
 
+function hasExactInactiveDirtyEvidence(
+  evidence: readonly string[],
+  jobId: string,
+): boolean {
+  const expected = `${jobId} is inactive with dirty workspace`;
+  return evidence.some((entry) => entry.split(/\r?\n/u).includes(expected));
+}
+
 function missingDebtJob(subject: string): never {
   throw new Error(`ledger_epoch_debt_job_manifest_missing:${subject}`);
 }
@@ -188,11 +167,30 @@ export async function assertLedgerEpochDebtCustodyUnchanged(
   summaries?: readonly CodexGoalJobSummary[],
 ): Promise<void> {
   if (summaries) {
-    const current = await resolveLedgerEpochDebtCustody(
-      snapshotFromBindings(bindings),
-      summaries,
-    );
-    if (JSON.stringify(current) !== JSON.stringify(bindings)) {
+    try {
+      const current = await Promise.all(bindings.map(async (binding) => {
+        if (binding.jobId === undefined) {
+          return await bindDebtCustody(binding.reason, binding.subject);
+        }
+        const matches = summaries.filter((summary) =>
+          summary.jobId === binding.jobId
+        );
+        if (matches.length !== 1) {
+          throw new Error("ledger_epoch_debt_custody_drift");
+        }
+        return await bindDebtCustody(
+          binding.reason,
+          binding.subject,
+          matches[0],
+        );
+      }));
+      current.sort((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right))
+      );
+      if (JSON.stringify(current) !== JSON.stringify(bindings)) {
+        throw new Error("ledger_epoch_debt_custody_drift");
+      }
+    } catch {
       throw new Error("ledger_epoch_debt_custody_drift");
     }
     return;
@@ -207,19 +205,46 @@ export async function assertLedgerEpochDebtCustodyUnchanged(
   }
 }
 
-function snapshotFromBindings(
-  bindings: readonly LedgerEpochDebtCustodyBinding[],
-): ProjectAdmissionSnapshot {
+async function bindDebtCustody(
+  reason: string,
+  subject: string,
+  job?: CodexGoalJobSummary,
+): Promise<LedgerEpochDebtCustodyBinding> {
+  const declaredPath = job?.workspacePath ?? subject;
+  if (!declaredPath.startsWith("/")) {
+    throw new Error(`ledger_epoch_debt_job_workspace_missing:${subject}`);
+  }
+  const resolvedDeclaredPath = resolve(declaredPath);
+  const canonicalPath = await realpath(resolvedDeclaredPath);
+  const metadata = await lstat(canonicalPath);
+  if (!metadata.isDirectory()) {
+    throw new Error("ledger_epoch_debt_workspace_invalid");
+  }
+  const declaredMetadata = await lstat(resolvedDeclaredPath);
+  const aliasTarget = declaredMetadata.isSymbolicLink()
+    ? await readlink(resolvedDeclaredPath)
+    : undefined;
+  const aliasResolutionSha256 = sha256Json({
+    declaredPath: resolvedDeclaredPath,
+    canonicalPath,
+    declaredDevice: declaredMetadata.dev,
+    declaredInode: declaredMetadata.ino,
+    ...(aliasTarget === undefined ? {} : { aliasTarget }),
+    device: metadata.dev,
+    inode: metadata.ino,
+  });
+  const jobFacts = job ? await bindJobFacts(job) : undefined;
   return {
-    schemaVersion: 1,
-    projectId: "custody-revalidation",
-    observedAt: new Date(0).toISOString(),
-    debt: bindings.map((binding) => ({
-      reason: binding.reason as ProjectDebtReason,
-      subject: binding.subject,
-      severity: "blocking" as const,
-      evidence: [],
-    })),
+    reason,
+    subject,
+    ...(job ? { jobId: job.jobId } : {}),
+    declaredPath: resolvedDeclaredPath,
+    canonicalPath,
+    device: metadata.dev,
+    inode: metadata.ino,
+    aliasResolutionSha256,
+    ...(aliasTarget === undefined ? {} : { aliasTarget }),
+    ...(jobFacts ?? {}),
   };
 }
 

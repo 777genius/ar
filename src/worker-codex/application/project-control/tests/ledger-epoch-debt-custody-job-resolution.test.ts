@@ -67,6 +67,99 @@ describe("ledger epoch debt custody job resolution", () => {
     );
   });
 
+  it.each([
+    "social-monitor-recovery-runtime-acl-v2b-20260731",
+    "social-monitor-recovery-runtime-acl-v2c-20260731",
+  ])("selects %s only from its exact whole evidence line", async (jobId) => {
+    const first = await jobFixture(
+      "social-monitor-recovery-runtime-acl-v2b-20260731",
+    );
+    const second = await jobFixture(
+      "social-monitor-recovery-runtime-acl-v2c-20260731",
+      first,
+    );
+
+    const custody = await resolveLedgerEpochDebtCustody(
+      debtSnapshot(first.workspacePath, [
+        "unrelated context",
+        `prefix\n${jobId} is inactive with dirty workspace\nsuffix`,
+      ]),
+      [first.summary, second.summary],
+    );
+
+    expect(custody).toMatchObject([{ jobId, subject: first.workspacePath }]);
+  });
+
+  it.each([
+    ["missing", []],
+    ["wrong", [
+      "social-monitor-recovery-runtime-acl-v2b-20260731 is inactive with dirty workspace suffix",
+    ]],
+    ["ambiguous", [
+      "social-monitor-recovery-runtime-acl-v2b-20260731 is inactive with dirty workspace",
+      "social-monitor-recovery-runtime-acl-v2c-20260731 is inactive with dirty workspace",
+    ]],
+  ])("rejects %s evidence for a shared workspace", async (_case, evidence) => {
+    const first = await jobFixture(
+      "social-monitor-recovery-runtime-acl-v2b-20260731",
+    );
+    const second = await jobFixture(
+      "social-monitor-recovery-runtime-acl-v2c-20260731",
+      first,
+    );
+
+    await expect(resolveLedgerEpochDebtCustody(
+      debtSnapshot(first.workspacePath, evidence),
+      [first.summary, second.summary],
+    )).rejects.toThrow(
+      `ledger_epoch_debt_job_manifest_ambiguous:${first.workspacePath}`,
+    );
+  });
+
+  it("replays a shared-workspace binding by anchored jobId without evidence", async () => {
+    const first = await jobFixture(
+      "social-monitor-recovery-runtime-acl-v2b-20260731",
+    );
+    const second = await jobFixture(
+      "social-monitor-recovery-runtime-acl-v2c-20260731",
+      first,
+    );
+    const custody = await resolveLedgerEpochDebtCustody(
+      debtSnapshot(first.workspacePath, [
+        `${first.summary.jobId} is inactive with dirty workspace`,
+      ]),
+      [first.summary, second.summary],
+    );
+
+    await expect(assertLedgerEpochDebtCustodyUnchanged(
+      custody,
+      [first.summary, second.summary],
+    )).resolves.toBeUndefined();
+  });
+
+  it("fails replay for missing, nonunique, or changed anchored job facts", async () => {
+    const fixture = await jobFixture("anchored-job");
+    const custody = await resolveLedgerEpochDebtCustody(
+      debtSnapshot(fixture.summary.jobId),
+      [fixture.summary],
+    );
+    const duplicate = { ...fixture.summary };
+    const changed = {
+      ...fixture.summary,
+      updatedAt: "2026-08-10T00:00:01.000Z",
+    };
+
+    for (const summaries of [
+      [],
+      [{ ...fixture.summary, jobId: "wrong-job" }],
+      [fixture.summary, duplicate],
+      [changed],
+    ]) {
+      await expect(assertLedgerEpochDebtCustodyUnchanged(custody, summaries))
+        .rejects.toThrow("ledger_epoch_debt_custody_drift");
+    }
+  });
+
   it("preserves the missing-manifest error for an unmatched absolute subject", async () => {
     const fixture = await jobFixture("other-job");
     const unmatched = join(fixture.root, "unmatched-workspace");
@@ -79,7 +172,10 @@ describe("ledger epoch debt custody job resolution", () => {
   });
 });
 
-function debtSnapshot(subject: string): ProjectAdmissionSnapshot {
+function debtSnapshot(
+  subject: string,
+  evidence: readonly string[] = [],
+): ProjectAdmissionSnapshot {
   return {
     schemaVersion: 1,
     projectId: "ledger-epoch-custody-test",
@@ -88,21 +184,25 @@ function debtSnapshot(subject: string): ProjectAdmissionSnapshot {
       reason: ProjectDebtReason.UnconsumedCompletedJob,
       subject,
       severity: "blocking",
-      evidence: [],
+      evidence,
     }],
   };
 }
 
-async function jobFixture(jobId: string): Promise<{
+async function jobFixture(
+  jobId: string,
+  shared?: { readonly root: string; readonly workspacePath: string },
+): Promise<{
   readonly root: string;
   readonly workspacePath: string;
   readonly summary: CodexGoalJobSummary;
 }> {
-  const root = await mkdtemp(join(tmpdir(), "ledger-epoch-debt-custody-"));
-  const workspacePath = join(root, "workspace");
-  const jobRoot = join(root, "job");
+  const root = shared?.root ??
+    await mkdtemp(join(tmpdir(), "ledger-epoch-debt-custody-"));
+  const workspacePath = shared?.workspacePath ?? join(root, "workspace");
+  const jobRoot = join(root, `${jobId}-job`);
   const manifestPath = join(jobRoot, "job.json");
-  await mkdir(workspacePath);
+  if (!shared) await mkdir(workspacePath);
   await mkdir(jobRoot);
   await writeFile(manifestPath, `${JSON.stringify({
     schemaVersion: 1,
