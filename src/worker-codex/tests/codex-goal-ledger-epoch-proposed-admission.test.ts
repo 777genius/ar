@@ -166,8 +166,21 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
     });
   });
 
+  it("preserves the exact post-activation rejected ledger item as info", () => {
+    const item = postActivationRejectedConsumedDirtyWorkspace();
+
+    expect(normalizeAnchoredProposedAdmission({
+      anchor: anchorFor([]),
+      snapshot: snapshot([item]),
+    })).toMatchObject({
+      debt: [item],
+      counts: { consumedDirtyWorkspaces: 1 },
+    });
+  });
+
   it("rejects every inexact post-activation consumed workspace item", () => {
     const exact = postActivationConsumedDirtyWorkspace();
+    const rejected = postActivationRejectedConsumedDirtyWorkspace();
     const cases: readonly ProjectDebtItem[] = [
       { ...exact, severity: "blocking" },
       { ...exact, severity: "warning" },
@@ -184,6 +197,24 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
         exact.evidence[2]!] },
       { ...exact, evidence: [exact.evidence[0]!, exact.evidence[1]!, "commit: abc123"] },
       { ...exact, evidence: [...exact.evidence, "extra"] },
+      { ...rejected, severity: "blocking" },
+      { ...rejected, severity: "warning" },
+      { ...rejected, reason: ProjectDebtReason.LegacyOutputQuarantineRequired },
+      ...["failed", "duplicate", "superseded", "archived", "reviewed_no_change"]
+        .map((status): ProjectDebtItem => ({ ...rejected, evidence: [
+          `dirty output consumed by terminal ledger status: ${status}`,
+          rejected.evidence[1]!,
+        ] })),
+      { ...rejected, evidence: [rejected.evidence[0]!] },
+      { ...rejected, evidence: [rejected.evidence[0]!,
+        "ledger: relative/item.json"] },
+      { ...rejected, evidence: [rejected.evidence[0]!,
+        "ledger: /ledger/v2/items/../item.json"] },
+      { ...rejected, evidence: [rejected.evidence[0]!, "ledger: /ledger/v2/items"] },
+      { ...rejected, evidence: [rejected.evidence[0]!,
+        "ledger: /ledger/v2/other/item.json"] },
+      { ...rejected, evidence: [...rejected.evidence, "commit: abc1234"] },
+      { ...rejected, evidence: [...rejected.evidence, "extra"] },
     ];
 
     for (const item of cases) {
@@ -198,6 +229,7 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
         exact.evidence[0]!, exact.evidence[1]!, "commit: 7654321",
       ] }]),
     })).toThrow("ledger_epoch_proposed_admission_new_or_changed_debt");
+
   });
 
   it("blocks a generic unreadable item even inside the exact count envelope", async () => {
@@ -534,6 +566,18 @@ function postActivationConsumedDirtyWorkspace(): ProjectDebtItem {
       "dirty output consumed by terminal ledger status: integrated",
       "ledger: /ledger/v2/items/producer-job.json",
       "commit: abc1234",
+    ],
+  };
+}
+
+function postActivationRejectedConsumedDirtyWorkspace(): ProjectDebtItem {
+  return {
+    reason: ProjectDebtReason.ConsumedDirtyWorkspace,
+    subject: "social-monitor-release-bundle-recovery-v4-20260810",
+    severity: "info",
+    evidence: [
+      "dirty output consumed by terminal ledger status: rejected",
+      "ledger: /ledger/v2/items/social-monitor-release-bundle-recovery-v4-20260810.json",
     ],
   };
 }

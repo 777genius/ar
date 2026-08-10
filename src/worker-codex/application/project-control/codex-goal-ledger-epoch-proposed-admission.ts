@@ -365,11 +365,16 @@ function isPostActivationConsumedDirtyWorkspace(
     anchored.reason === item.reason && anchored.subject === item.subject
   )) return false;
   if (item.reason !== ProjectDebtReason.ConsumedDirtyWorkspace ||
-    item.severity !== "info" || item.evidence.length !== 3 ||
-    item.evidence[0] !==
-      "dirty output consumed by terminal ledger status: integrated" ||
-    !item.evidence[1]?.startsWith("ledger: ") ||
-    !/^commit: [0-9a-f]{7,40}$/i.test(item.evidence[2] ?? "")) return false;
+    item.severity !== "info") return false;
+  const integrated = item.evidence.length === 3 && item.evidence[0] ===
+      "dirty output consumed by terminal ledger status: integrated" &&
+    /^commit: [0-9a-f]{7,40}$/i.test(item.evidence[2] ?? "");
+  // The snapshot builder emits rejected debt only after validating its complete backup.
+  const rejected = item.evidence.length === 2 && item.evidence[0] ===
+    "dirty output consumed by terminal ledger status: rejected";
+  if ((!integrated && !rejected) || !item.evidence[1]?.startsWith("ledger: ")) {
+    return false;
+  }
   const ledgerPath = item.evidence[1].slice("ledger: ".length);
   if (ledgerPath !== resolve(ledgerPath)) return false;
   const child = relative(join(resolve(anchor.newRoot), "items"), ledgerPath);
