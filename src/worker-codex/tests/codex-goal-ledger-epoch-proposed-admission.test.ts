@@ -154,6 +154,52 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
     })).toThrow("ledger_epoch_proposed_admission_unreadable_workspace_blocked");
   });
 
+  it("preserves the exact post-activation integrated ledger item as info", () => {
+    const item = postActivationConsumedDirtyWorkspace();
+
+    expect(normalizeAnchoredProposedAdmission({
+      anchor: anchorFor([]),
+      snapshot: snapshot([item]),
+    })).toMatchObject({
+      debt: [item],
+      counts: { consumedDirtyWorkspaces: 1 },
+    });
+  });
+
+  it("rejects every inexact post-activation consumed workspace item", () => {
+    const exact = postActivationConsumedDirtyWorkspace();
+    const cases: readonly ProjectDebtItem[] = [
+      { ...exact, severity: "blocking" },
+      { ...exact, severity: "warning" },
+      { ...exact, reason: ProjectDebtReason.LegacyOutputQuarantineRequired },
+      { ...exact, evidence: ["dirty output consumed by terminal ledger status: failed",
+        exact.evidence[1]!, exact.evidence[2]!] },
+      { ...exact, evidence: [exact.evidence[0]!, "ledger: relative/item.json",
+        exact.evidence[2]!] },
+      { ...exact, evidence: [exact.evidence[0]!, "ledger: /ledger/v2/items/../item.json",
+        exact.evidence[2]!] },
+      { ...exact, evidence: [exact.evidence[0]!, "ledger: /ledger/v2/items",
+        exact.evidence[2]!] },
+      { ...exact, evidence: [exact.evidence[0]!, "ledger: /ledger/v2/other/item.json",
+        exact.evidence[2]!] },
+      { ...exact, evidence: [exact.evidence[0]!, exact.evidence[1]!, "commit: abc123"] },
+      { ...exact, evidence: [...exact.evidence, "extra"] },
+    ];
+
+    for (const item of cases) {
+      expect(() => normalizeAnchoredProposedAdmission({
+        anchor: anchorFor([]), snapshot: snapshot([item]),
+      })).toThrow("ledger_epoch_proposed_admission_new_or_changed_debt");
+    }
+
+    expect(() => normalizeAnchoredProposedAdmission({
+      anchor: anchorFor([exact]),
+      snapshot: snapshot([{ ...exact, evidence: [
+        exact.evidence[0]!, exact.evidence[1]!, "commit: 7654321",
+      ] }]),
+    })).toThrow("ledger_epoch_proposed_admission_new_or_changed_debt");
+  });
+
   it("blocks a generic unreadable item even inside the exact count envelope", async () => {
     const blocking = [
       ...many(ProjectDebtReason.UnconsumedCompletedJob, 495),
@@ -477,6 +523,19 @@ async function historicalLineageFixture() {
 
 function debt(reason: ProjectDebtReason, subject: string): ProjectDebtItem {
   return { reason, subject, severity: "blocking", evidence: [`evidence ${subject}`] };
+}
+
+function postActivationConsumedDirtyWorkspace(): ProjectDebtItem {
+  return {
+    reason: ProjectDebtReason.ConsumedDirtyWorkspace,
+    subject: "producer-job",
+    severity: "info",
+    evidence: [
+      "dirty output consumed by terminal ledger status: integrated",
+      "ledger: /ledger/v2/items/producer-job.json",
+      "commit: abc1234",
+    ],
+  };
 }
 
 function many(reason: ProjectDebtReason, count: number): readonly ProjectDebtItem[] {

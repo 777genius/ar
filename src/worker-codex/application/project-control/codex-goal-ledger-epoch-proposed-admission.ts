@@ -8,7 +8,7 @@ import {
   rename,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   ProjectDebtReason,
   summarizeProjectAdmissionDebt,
@@ -342,6 +342,7 @@ export function normalizeAnchoredProposedAdmission(input: {
     const hash = debtHash(item);
     const allCount = allRemaining.get(hash) ?? 0;
     if (allCount === 0) {
+      if (isPostActivationConsumedDirtyWorkspace(input.anchor, item)) return item;
       throw new Error("ledger_epoch_proposed_admission_new_or_changed_debt");
     }
     allRemaining.set(hash, allCount - 1);
@@ -354,6 +355,26 @@ export function normalizeAnchoredProposedAdmission(input: {
     return { ...item, severity: "info" as const };
   });
   return { ...input.snapshot, debt, counts: summarizeProjectAdmissionDebt(debt).counts };
+}
+
+function isPostActivationConsumedDirtyWorkspace(
+  anchor: LedgerEpochProposedAdmissionAnchor,
+  item: ProjectDebtItem,
+): boolean {
+  if (anchor.debt.some((anchored) =>
+    anchored.reason === item.reason && anchored.subject === item.subject
+  )) return false;
+  if (item.reason !== ProjectDebtReason.ConsumedDirtyWorkspace ||
+    item.severity !== "info" || item.evidence.length !== 3 ||
+    item.evidence[0] !==
+      "dirty output consumed by terminal ledger status: integrated" ||
+    !item.evidence[1]?.startsWith("ledger: ") ||
+    !/^commit: [0-9a-f]{7,40}$/i.test(item.evidence[2] ?? "")) return false;
+  const ledgerPath = item.evidence[1].slice("ledger: ".length);
+  if (ledgerPath !== resolve(ledgerPath)) return false;
+  const child = relative(join(resolve(anchor.newRoot), "items"), ledgerPath);
+  return child !== "" && !isAbsolute(child) && child !== ".." &&
+    !child.startsWith(`..${sep}`);
 }
 
 export async function verifySocialProposedAdmissionAnchorEvidence(
