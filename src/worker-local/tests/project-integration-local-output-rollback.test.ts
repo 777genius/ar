@@ -144,7 +144,7 @@ describe("local project integration output rollback", () => {
     expect(preservedLines[19]).toBe("line 20: tampered");
   });
 
-  it("fails closed when the real index contains staged patch tampering", async () => {
+  it("normalizes an approved-path intermediate index before patch rollback", async () => {
     const fixture = await createFixture();
     const adapter = new LocalGitIntegrationAdapter({
       allowedPatchRoots: [fixture.rootDir],
@@ -157,12 +157,36 @@ describe("local project integration output rollback", () => {
     await git(fixture.workspacePath, ["add", "src/memory.ts"]);
     await writeFile(fixture.filePath, "export const value = 2;\n");
 
+    await adapter.rollbackWorkerOutput({ attempt: fixture.attempt });
+
+    await expect(readFile(fixture.filePath, "utf8"))
+      .resolves.toBe("export const value = 1;\n");
+    expect(await gitOutput(fixture.workspacePath, ["show", ":src/memory.ts"]))
+      .toBe("export const value = 1;\n");
+    await expect(adapter.getStatus({ workspacePath: fixture.workspacePath }))
+      .resolves.toEqual({ branch: "main", dirtyFiles: [] });
+  });
+
+  it("fails closed on a mixed index when the full worktree is not exact", async () => {
+    const fixture = await createFixture();
+    const adapter = new LocalGitIntegrationAdapter({
+      allowedPatchRoots: [fixture.rootDir],
+    });
+    await adapter.applyWorkerOutput({
+      attempt: fixture.attempt,
+      workerOutput: fixture.attempt.workerOutput,
+    });
+    await writeFile(fixture.filePath, "export const value = 99;\n");
+    await git(fixture.workspacePath, ["add", "src/memory.ts"]);
+    await writeFile(fixture.filePath, "export const value = 100;\n");
+
     await expect(adapter.rollbackWorkerOutput({ attempt: fixture.attempt }))
       .rejects.toThrow(
         "local_git_integration_output_rollback_patch_index_mismatch",
       );
+
     await expect(readFile(fixture.filePath, "utf8"))
-      .resolves.toBe("export const value = 2;\n");
+      .resolves.toBe("export const value = 100;\n");
     expect(await gitOutput(fixture.workspacePath, ["show", ":src/memory.ts"]))
       .toBe("export const value = 99;\n");
   });
@@ -283,7 +307,7 @@ describe("local project integration output rollback", () => {
     await expect(readFile(fixture.filePath, "utf8")).rejects.toThrow();
   });
 
-  it("fails closed when patch output has an extra dirty file", async () => {
+  it("fails closed on an out-of-scope real-index path", async () => {
     const fixture = await createFixture();
     const adapter = new LocalGitIntegrationAdapter({
       allowedPatchRoots: [fixture.rootDir],
@@ -294,6 +318,8 @@ describe("local project integration output rollback", () => {
     });
     const unrelatedPath = join(fixture.workspacePath, "src", "unrelated.ts");
     await writeFile(unrelatedPath, "export const unrelated = true;\n");
+    await git(fixture.workspacePath, ["add", "src/unrelated.ts"]);
+    await rm(unrelatedPath);
 
     await expect(adapter.rollbackWorkerOutput({ attempt: fixture.attempt }))
       .rejects.toThrow(
@@ -301,8 +327,9 @@ describe("local project integration output rollback", () => {
       );
     await expect(readFile(fixture.filePath, "utf8"))
       .resolves.toBe("export const value = 2;\n");
-    await expect(readFile(unrelatedPath, "utf8"))
-      .resolves.toBe("export const unrelated = true;\n");
+    await expect(readFile(unrelatedPath, "utf8")).rejects.toThrow();
+    expect(await gitOutput(fixture.workspacePath, ["show", ":src/unrelated.ts"]))
+      .toBe("export const unrelated = true;\n");
   });
 
   it("restores an exact commit-backed modification", async () => {
@@ -451,6 +478,19 @@ describe("local project integration output rollback", () => {
         attempt: fixture.attempt,
         workerOutput: fixture.attempt.workerOutput,
       });
+      if (source === "patch") {
+        await writeFile(
+          fixture.binaryPath,
+          Uint8Array.from([0, 1, 8, 3, 255]),
+        );
+        await writeFile(fixture.deletedPath, "intermediate aggregate\n");
+        await git(fixture.workspacePath, ["add", "-A", "--", "src"]);
+        await writeFile(
+          fixture.binaryPath,
+          Uint8Array.from([0, 1, 9, 3, 255]),
+        );
+        await rm(fixture.deletedPath);
+      }
       expect(Array.from(await readFile(fixture.binaryPath)))
         .toEqual([0, 1, 9, 3, 255]);
       await expect(readFile(fixture.deletedPath)).rejects.toThrow();

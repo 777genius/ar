@@ -16,7 +16,10 @@ export type LocalGitOutputRollbackRuntime = Pick<
 >;
 
 type LocalOutputState = "applied" | "target";
-type LocalPatchOutputState = LocalOutputState | "staged-applied";
+type LocalPatchOutputState =
+  | LocalOutputState
+  | "mixed-index-applied"
+  | "staged-applied";
 
 export async function assertLocalWorkerPatchBytesExactlyApplied(input: {
   readonly runtime: LocalGitOutputRollbackRuntime;
@@ -224,6 +227,29 @@ async function reverseImmutableWorkerPatch(input: {
     throw new Error("local_git_integration_output_rollback_patch_not_applied");
   }
   await input.runtime.assertPatchSha256(patchPath, patchSha256);
+  if (state === "mixed-index-applied") {
+    await input.runtime.git(
+      [
+        "restore",
+        `--source=${input.expectedCommit}`,
+        "--staged",
+        "--",
+        ...input.appliedFiles,
+      ],
+      input.workspacePath,
+    );
+    if (
+      (await patchOutputState({
+        ...input,
+        patchPath,
+      })) !== "applied"
+    ) {
+      throw new Error(
+        "local_git_integration_output_rollback_patch_normalization_failed",
+      );
+    }
+    await input.runtime.assertPatchSha256(patchPath, patchSha256);
+  }
   await input.runtime.git(
     stagedApplied
       ? [
@@ -283,7 +309,10 @@ async function patchOutputState(input: {
   ) {
     return "staged-applied";
   }
-  if (indexTree !== patchOutput.targetTree) {
+  if (
+    indexTree !== patchOutput.targetTree &&
+    currentWorktreeTree !== patchOutput.outputTree
+  ) {
     throw new Error(
       "local_git_integration_output_rollback_patch_index_mismatch",
     );
@@ -293,7 +322,19 @@ async function patchOutputState(input: {
       "local_git_integration_output_rollback_patch_not_exactly_applied",
     );
   }
-  return "applied";
+  if (indexTree === patchOutput.targetTree) return "applied";
+  const indexChangedFiles = await treeChangedFiles({
+    runtime: input.runtime,
+    workspacePath: input.workspacePath,
+    baseTree: patchOutput.targetTree,
+    outputTree: indexTree,
+  });
+  if (hasFilesOutside(indexChangedFiles, input.appliedFiles)) {
+    throw new Error(
+      "local_git_integration_output_rollback_patch_index_mismatch",
+    );
+  }
+  return "mixed-index-applied";
 }
 
 async function assertRollbackTarget(input: {
