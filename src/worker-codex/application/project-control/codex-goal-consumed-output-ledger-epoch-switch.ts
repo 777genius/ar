@@ -6,7 +6,7 @@ import {
   readlink,
   realpath,
 } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   ProjectDebtReason,
   type ConsumedOutputLedgerEpochPlan,
@@ -90,11 +90,11 @@ export async function resolveLedgerEpochDebtCustody(
     item.reason === ProjectDebtReason.ActiveWriterConflict ||
     item.reason === ProjectDebtReason.InactiveDirtyWorkspace
   );
-  const bindings = await Promise.all(debt.map(async (item) => {
-    const job = jobs.get(item.subject);
-    if (JOB_REASONS.has(item.reason) && !job) {
-      throw new Error(`ledger_epoch_debt_job_manifest_missing:${item.subject}`);
-    }
+  const resolvedDebt = await Promise.all(debt.map(async (item) => ({
+    item,
+    job: await resolveDebtJob(item, jobs, summaries),
+  })));
+  const bindings = await Promise.all(resolvedDebt.map(async ({ item, job }) => {
     const declaredPath = job?.workspacePath ?? item.subject;
     if (!declaredPath.startsWith("/")) {
       throw new Error(`ledger_epoch_debt_job_workspace_missing:${item.subject}`);
@@ -135,6 +135,52 @@ export async function resolveLedgerEpochDebtCustody(
   return bindings.sort((left, right) =>
     JSON.stringify(left).localeCompare(JSON.stringify(right))
   );
+}
+
+async function resolveDebtJob(
+  item: ProjectAdmissionSnapshot["debt"][number],
+  jobs: ReadonlyMap<string, CodexGoalJobSummary>,
+  summaries: readonly CodexGoalJobSummary[],
+): Promise<CodexGoalJobSummary | undefined> {
+  const exact = jobs.get(item.subject);
+  if (exact || !JOB_REASONS.has(item.reason)) return exact;
+  if (!isAbsolute(item.subject)) return missingDebtJob(item.subject);
+
+  const normalizedSubject = resolve(item.subject);
+  const normalizedMatches = summaries.filter((summary) =>
+    isAbsolute(summary.workspacePath) &&
+    resolve(summary.workspacePath) === normalizedSubject
+  );
+  if (normalizedMatches.length > 1) return ambiguousDebtJob(item.subject);
+  if (normalizedMatches.length === 1) return normalizedMatches[0];
+
+  let canonicalSubject: string;
+  try {
+    canonicalSubject = await realpath(normalizedSubject);
+  } catch {
+    return missingDebtJob(item.subject);
+  }
+  const canonicalMatches = (await Promise.all(summaries.map(async (summary) => {
+    if (!isAbsolute(summary.workspacePath)) return undefined;
+    try {
+      return await realpath(resolve(summary.workspacePath)) === canonicalSubject
+        ? summary
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }))).filter((summary): summary is CodexGoalJobSummary => summary !== undefined);
+  if (canonicalMatches.length > 1) return ambiguousDebtJob(item.subject);
+  if (canonicalMatches.length === 1) return canonicalMatches[0];
+  return missingDebtJob(item.subject);
+}
+
+function missingDebtJob(subject: string): never {
+  throw new Error(`ledger_epoch_debt_job_manifest_missing:${subject}`);
+}
+
+function ambiguousDebtJob(subject: string): never {
+  throw new Error(`ledger_epoch_debt_job_manifest_ambiguous:${subject}`);
 }
 
 export async function assertLedgerEpochDebtCustodyUnchanged(
