@@ -13,6 +13,7 @@ import {
   type ConsumedOutputLedger,
   type ProjectAccessScope,
   type ProjectAdmissionGate,
+  type ProjectAdmissionRequest,
   type ProjectAdmissionSnapshot,
   type ProjectDebtItem,
 } from "@vioxen/subscription-runtime/worker-core";
@@ -91,6 +92,7 @@ type CodexProjectAdmissionSnapshotInput = CodexProjectAdmissionInput & {
   readonly blockAnyLiveWriter?: boolean;
   readonly allowPendingEpochOrphanQuarantine?: boolean;
   readonly skipActiveProposedAdmissionNormalization?: boolean;
+  readonly admittedInputPatchRequest?: ProjectAdmissionRequest;
 };
 
 export function projectAdmissionDetailView(input: {
@@ -145,14 +147,12 @@ export function codexProjectAdmissionGate(
           : {}),
         blockAnyLiveWriter: request.ownedPaths !== undefined ||
           request.workspacePath === undefined,
-      });
-      const inputPatchSnapshot = await withoutAdmittedInputPatchDebt({
-        snapshot: observedSnapshot,
-        request,
-        binding: input.admittedInputPatchTarget,
+        ...(input.admittedInputPatchTarget
+          ? { admittedInputPatchRequest: request }
+          : {}),
       });
       const snapshot = await withoutCapacityContinuationSiblingDebt({
-        snapshot: inputPatchSnapshot,
+        snapshot: observedSnapshot,
         request,
         binding: input.capacityContinuationTarget,
       });
@@ -226,16 +226,12 @@ async function withoutCapacityContinuationSiblingDebt(input: {
 
 async function withoutAdmittedInputPatchDebt(input: {
   readonly snapshot: ProjectAdmissionSnapshot;
-  readonly request: {
-    readonly operation: ProjectOperation;
-    readonly jobId?: string;
-    readonly workspacePath?: string;
-  };
+  readonly request: ProjectAdmissionRequest | undefined;
   readonly binding: CodexProjectAdmissionInput["admittedInputPatchTarget"];
 }): Promise<ProjectAdmissionSnapshot> {
   const { binding, request } = input;
   if (
-    !binding ||
+    !binding || !request ||
     (request.operation !== ProjectOperation.StartWorker &&
       request.operation !== ProjectOperation.CreateWorktree &&
       request.operation !== ProjectOperation.CreateJob) ||
@@ -430,13 +426,17 @@ export async function buildCodexProjectAdmissionSnapshot(
     }));
     debt.push(...await diskPressureDebt(root));
   }
-  const snapshot: ProjectAdmissionSnapshot = {
+  const rawSnapshot: ProjectAdmissionSnapshot = {
     schemaVersion: 1,
     projectId: input.scope.projectId,
     observedAt: new Date().toISOString(),
     debt,
     counts: projectAdmissionDebtCounts(debt),
   };
+  const snapshot = await withoutAdmittedInputPatchDebt({
+    snapshot: rawSnapshot, request: input.admittedInputPatchRequest,
+    binding: input.admittedInputPatchTarget,
+  });
   return input.skipActiveProposedAdmissionNormalization
     ? snapshot
     : await (input.deps.normalizeActiveProposedAdmission ??
