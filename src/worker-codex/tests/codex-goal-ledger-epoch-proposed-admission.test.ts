@@ -8,7 +8,9 @@ import {
 import {
   buildSocialProposedAdmissionAnchor,
   createOrVerifySocialProposedAdmissionAnchor,
+  LEDGER_EPOCH_PROPOSED_ADMISSION_SIDECAR,
   normalizeAnchoredProposedAdmission,
+  readSocialProposedAdmissionAnchor,
   SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256,
   type LedgerEpochProposedAdmissionAnchor,
   verifySocialProposedAdmissionAnchorEvidence,
@@ -194,6 +196,33 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
         commitSha: "6c0129f655a056da0832355c5f8733a4e1daa4ff",
       });
       await expect(verifySocialProposedAdmissionAnchorEvidence(anchor!)).resolves.toBeUndefined();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("accepts exactly 506 sealed plan source records and rejects inexact shapes", async () => {
+    const fixture = await historicalLineageFixture();
+    try {
+      const anchor = (await buildSocialProposedAdmissionAnchor(fixture.input))!;
+      const sidecar = join(fixture.input.plan.newRoot,
+        LEDGER_EPOCH_PROPOSED_ADMISSION_SIDECAR);
+      await mkdir(sidecar);
+      const assertCandidate = async (count: number, accepted: boolean) => {
+        const candidate = anchorWithSourceRecordCount(anchor, count);
+        await writeFile(join(sidecar, "anchor.json"), JSON.stringify(candidate));
+        await writeFile(join(sidecar, "expected-anchor-sha256"), candidate.anchorSha256);
+        const result = expect(readSocialProposedAdmissionAnchor(
+          fixture.input.plan, candidate.anchorSha256));
+        if (accepted) await result.resolves.toEqual(candidate);
+        else await result.rejects.toThrow(
+          "ledger_epoch_proposed_admission_anchor_shape_invalid");
+      };
+
+      await assertCandidate(506, true);
+      await assertCandidate(205, false);
+      await assertCandidate(505, false);
+      await assertCandidate(507, false);
     } finally {
       await fixture.cleanup();
     }
@@ -436,11 +465,7 @@ async function historicalLineageFixture() {
         reason: value.reason, subject: value.subject, declaredPath: `/debt/${index}`,
         canonicalPath: `/debt/${index}`, device: 1, inode: index + 1,
       })),
-      sourceOrphanSeal: {
-        bindings: Array.from({ length: 205 }, (_, index) => ({ index })),
-        bindingSha256: Array.from({ length: 205 }, () => "f".repeat(64)),
-        bindingsSha256: "c".repeat(64),
-      },
+      sourceOrphanSeal: sourceOrphanSeal(506),
     },
     cleanup: async () => {
       virtualFs.files.clear();
@@ -479,6 +504,32 @@ function itemHash(item: ProjectDebtItem): string {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function sourceOrphanSeal(count: number) {
+  const canonical = Array.from({ length: count }, (_, index) =>
+    JSON.stringify({ index })).sort();
+  return {
+    bindings: canonical.map((value) => JSON.parse(value) as Record<string, unknown>),
+    bindingSha256: canonical.map(sha256),
+    bindingsSha256: sha256(canonical.join("\n")),
+  };
+}
+
+function anchorWithSourceRecordCount(
+  anchor: LedgerEpochProposedAdmissionAnchor,
+  count: number,
+): LedgerEpochProposedAdmissionAnchor {
+  const seal = sourceOrphanSeal(count);
+  const { anchorSha256: ignored, ...anchored } = anchor;
+  void ignored;
+  const unsigned = {
+    ...anchored,
+    sourceOrphanBindingSha256: seal.bindingSha256,
+    sourceOrphanBindingsSha256: seal.bindingsSha256,
+    sourceOrphanBindings: seal.bindings,
+  };
+  return { ...unsigned, anchorSha256: sha256(JSON.stringify(unsigned)) };
 }
 
 function anchorFor(items: readonly ProjectDebtItem[]): LedgerEpochProposedAdmissionAnchor {

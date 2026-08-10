@@ -459,7 +459,7 @@ function assertAnchor(
   if (value.debtItemSha256.length !== 2448 ||
     value.debt.length !== 2448 ||
     value.blockingDebtItemSha256.length !== 710 ||
-    value.sourceOrphanBindingSha256.length !== 205 ||
+    value.sourceOrphanBindingSha256.length !== 506 ||
     !value.debtItemSha256.every(isSha256) ||
     !value.blockingDebtItemSha256.every(isSha256) ||
     !value.sourceOrphanBindingSha256.every(isSha256) ||
@@ -482,7 +482,7 @@ function assertAnchor(
       JSON.stringify(value.blockingDebtItemSha256) ||
     sha256Json(debt) !== value.debtSha256 ||
     JSON.stringify(categoryCountsFor(debt)) !== JSON.stringify(value.categoryCounts) ||
-    sourceCanonical.length !== 205 ||
+    sourceCanonical.length !== 506 ||
     sha256(sourceCanonical.join("\n")) !== value.sourceOrphanBindingsSha256 ||
     JSON.stringify(sourceCanonical.map((binding) => sha256(binding))) !==
       JSON.stringify(value.sourceOrphanBindingSha256)) {
