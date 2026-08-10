@@ -6,15 +6,19 @@ import {
   type ProjectDebtItem,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  buildSocialProposedAdmissionAnchor,
   createOrVerifySocialProposedAdmissionAnchor,
   normalizeAnchoredProposedAdmission,
   SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256,
   type LedgerEpochProposedAdmissionAnchor,
+  verifySocialProposedAdmissionAnchorEvidence,
 } from "../application/project-control/codex-goal-ledger-epoch-proposed-admission";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { verifySocialPreparedV1SourceOrphanSeal } from
   "../application/project-control/codex-goal-ledger-epoch-proposed-admission";
 import { assertConsumedOutputLedgerEpochAdmissionTransition } from
@@ -29,7 +33,13 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
     })).not.toThrow();
     expect(() => assertConsumedOutputLedgerEpochAdmissionTransition({
       plan: plan(), before: { debtCount: 1110 }, proposed: {
+        ...proposedSummary(), debtCount: 2449,
+      },
+    })).toThrow("ledger_epoch_proposed_admission_summary_mismatch");
+    expect(() => assertConsumedOutputLedgerEpochAdmissionTransition({
+      plan: plan(), before: { debtCount: 1110 }, proposed: {
         ...proposedSummary(), debtCount: 2447,
+        counts: { ...proposedSummary().counts, unconsumedCompletedJobs: 493 },
       },
     })).toThrow("ledger_epoch_proposed_admission_summary_mismatch");
     expect(() => assertConsumedOutputLedgerEpochAdmissionTransition({
@@ -41,6 +51,13 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
     expect(() => assertConsumedOutputLedgerEpochAdmissionTransition({
       plan: plan(), before: { debtCount: 1109 }, proposed: proposedSummary(),
     })).toThrow("ledger_epoch_proposed_admission_before_mismatch");
+    expect(() => assertConsumedOutputLedgerEpochAdmissionTransition({
+      plan: plan(), before: { debtCount: 1110 }, proposed: {
+        ...proposedSummary(),
+        counts: { ...proposedSummary().counts, unreadableWorkspaces: 1 },
+        debtCount: 2449,
+      },
+    })).toThrow("ledger_epoch_proposed_admission_summary_mismatch");
   });
 
   it("rejects missing and forged structural direct-apply authority", async () => {
@@ -102,6 +119,13 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
         severity: "info",
       }]),
     })).toThrow("ledger_epoch_proposed_admission_new_or_changed_debt");
+
+    expect(() => normalizeAnchoredProposedAdmission({
+      anchor,
+      snapshot: snapshot([
+        debt(ProjectDebtReason.UnreadableWorkspace, "/new/unreadable"),
+      ]),
+    })).toThrow("ledger_epoch_proposed_admission_unreadable_workspace_blocked");
   });
 
   it("blocks a generic unreadable item even inside the exact count envelope", async () => {
@@ -133,9 +157,123 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
         bindingsSha256: "c".repeat(64),
       },
       expectedAnchorSha256: "a".repeat(64),
-    })).rejects.toThrow(
-      "ledger_epoch_proposed_admission_generic_unreadable_blocked",
-    );
+    })).rejects.toThrow("ledger_epoch_proposed_admission_unreadable_workspace_blocked");
+  });
+
+  it("seals the historical alias separately and rejects path, head, and evidence tamper", async () => {
+    const root = await mkdtemp(join(tmpdir(), "proposed-admission-alias-"));
+    const aliasName = "social-monitor-x-attribution-reuse-fixture-integration-v1-20260719";
+    const target = join(root, "target");
+    const alias = join(root, aliasName);
+    const manifest = join(root, "registry", "job.json");
+    const attempt = join(root, "controller", "project-integration",
+      "integration-attempts", "attempt-1", "attempt.json");
+    const consumed = join(root, "old", "items", "consumed.json");
+    const tracked = join(target, "tracked.txt");
+    const git = async (...args: string[]) => await promisify(execFile)("git", args, {
+      cwd: target,
+    });
+    try {
+      await Promise.all([
+        mkdir(target, { recursive: true }),
+        mkdir(join(root, "registry"), { recursive: true }),
+        mkdir(join(root, "controller", "project-integration", "integration-attempts",
+          "attempt-1"), { recursive: true }),
+        mkdir(join(root, "old", "items"), { recursive: true }),
+      ]);
+      await writeFile(tracked, "sealed\n");
+      await git("init", "-q");
+      await git("add", "tracked.txt");
+      await git("-c", "user.name=runtime-test", "-c", "user.email=runtime@test",
+        "commit", "-qm", "seed");
+      await git("branch", "6c0129f");
+      await symlink(target, alias);
+      const manifestBytes = JSON.stringify({ jobId: aliasName });
+      const attemptBytes = JSON.stringify({
+        attemptId: "attempt-1", status: "pushed", jobId: aliasName,
+      });
+      const consumedBytes = JSON.stringify({ attemptId: "attempt-1", jobId: aliasName });
+      await Promise.all([
+        writeFile(manifest, manifestBytes),
+        writeFile(attempt, attemptBytes),
+        writeFile(consumed, consumedBytes),
+      ]);
+      const blocking = [
+        ...many(ProjectDebtReason.UnconsumedCompletedJob, 495),
+        ...many(ProjectDebtReason.OrphanLegacyWorkspace, 205),
+        ...many(ProjectDebtReason.ActiveWriterConflict, 6),
+        ...many(ProjectDebtReason.InactiveDirtyWorkspace, 4),
+      ];
+      const info = many(ProjectDebtReason.LegacyOutputQuarantineRequired, 1738)
+        .map((item) => ({ ...item, severity: "info" as const }));
+      const anchor = await buildSocialProposedAdmissionAnchor({
+        plan: {
+          ...plan(), oldRoot: join(root, "old"),
+          evidenceBindings: [{
+            declaredPath: alias, state: "symlink", canonicalPath: target,
+          }],
+        },
+        snapshot: snapshot([...blocking, ...info]),
+        summaries: [{
+          jobId: aliasName, tags: [], taskId: "historical", workspacePath: alias,
+          promptPath: join(root, "prompt.md"), accountNames: [],
+          updatedAt: new Date(0).toISOString(), manifestPath: manifest,
+        }],
+        controllerJobRootDir: join(root, "controller"),
+        debtCustody: blocking.map((item, index) => ({
+          reason: item.reason,
+          subject: item.subject,
+          declaredPath: `/debt/${index}`,
+          canonicalPath: `/debt/${index}`,
+          device: 1,
+          inode: index + 1,
+        })),
+        sourceOrphanSeal: {
+          bindings: Array.from({ length: 205 }, (_, index) => ({ index })),
+          bindingSha256: Array.from({ length: 205 }, () => "f".repeat(64)),
+          bindingsSha256: "c".repeat(64),
+        },
+      });
+      expect(anchor).toBeDefined();
+      expect(anchor!.debtCount).toBe(2448);
+      expect(anchor!.blockingDebtCount).toBe(710);
+      expect(anchor!.categoryCounts).not.toHaveProperty(
+        ProjectDebtReason.UnreadableWorkspace,
+      );
+      await expect(verifySocialProposedAdmissionAnchorEvidence(anchor!)).resolves.toBeUndefined();
+
+      await rm(alias);
+      await symlink(root, alias);
+      await expect(verifySocialProposedAdmissionAnchorEvidence(anchor!)).rejects.toThrow(
+        "ledger_epoch_proposed_admission_alias_symlink_drift",
+      );
+      await rm(alias);
+      await symlink(target, alias);
+
+      await expect(verifySocialProposedAdmissionAnchorEvidence({
+        ...anchor!, historicalAlias: {
+          ...anchor!.historicalAlias, declaredPath: join(root, "wrong-alias"),
+        },
+      })).rejects.toThrow();
+
+      await writeFile(tracked, "tampered\n");
+      await expect(verifySocialProposedAdmissionAnchorEvidence(anchor!)).rejects.toThrow(
+        "ledger_epoch_proposed_admission_alias_git_proof_drift",
+      );
+      await writeFile(tracked, "sealed\n");
+
+      for (const [path, original] of [
+        [manifest, manifestBytes], [attempt, attemptBytes], [consumed, consumedBytes],
+      ] as const) {
+        await writeFile(path, `${original} `);
+        await expect(verifySocialProposedAdmissionAnchorEvidence(anchor!)).rejects.toThrow(
+          "ledger_epoch_proposed_admission_alias_evidence_drift",
+        );
+        await writeFile(path, original);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("fails closed around the exact plan-bound 506-record source-orphan seal", async () => {
@@ -255,8 +393,8 @@ function anchorFor(items: readonly ProjectDebtItem[]): LedgerEpochProposedAdmiss
     oldRoot: "/ledger/v1",
     newRoot: "/ledger/v2",
     cutoff: "2026-07-20T00:00:00.000Z",
-    debtCount: 2449,
-    blockingDebtCount: 711,
+    debtCount: 2448,
+    blockingDebtCount: 710,
     infoDebtCount: 1738,
     categoryCounts: {},
     debt: [...items].sort((left, right) =>
@@ -321,7 +459,11 @@ function plan(): ConsumedOutputLedgerEpochPlan {
     quarantinedCount: 209,
     inheritedQuarantinedCount: 0,
     deniedRoots: [],
-    evidenceBindings: [],
+    evidenceBindings: [{
+      declaredPath: "/archive/social-monitor-x-attribution-reuse-fixture-integration-v1-20260719",
+      state: "symlink",
+      canonicalPath: "/archive/target",
+    }],
     orphanWorkspaceBindings: Array.from({ length: 506 }, (_, index) => ({
       declaredPath: `/work/orphan-${index}`,
       state: "denied" as const,
@@ -333,13 +475,13 @@ function plan(): ConsumedOutputLedgerEpochPlan {
 
 function proposedSummary() {
   return {
-    debtCount: 2449,
+    debtCount: 2448,
     counts: {
       unconsumedCompletedJobs: 495,
       orphanLegacyWorkspaces: 205,
       activeWriterConflicts: 6,
       inactiveDirtyWorkspaces: 4,
-      unreadableWorkspaces: 1,
+      unreadableWorkspaces: 0,
       legacyOutputQuarantineRequired: 1738,
     },
   };

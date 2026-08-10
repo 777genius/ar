@@ -15,12 +15,12 @@ export function assertConsumedOutputLedgerEpochAdmissionTransition(input: {
     if (input.plan.projectId !== "social-monitor" || input.before.debtCount !== 1110) {
       throw new Error("ledger_epoch_proposed_admission_before_mismatch");
     }
-    if (input.proposed.debtCount !== 2449 ||
+    if (input.proposed.debtCount !== 2448 ||
       count(input.proposed, "unconsumedCompletedJobs") !== 495 ||
       count(input.proposed, "orphanLegacyWorkspaces") !== 205 ||
       count(input.proposed, "activeWriterConflicts") !== 6 ||
       count(input.proposed, "inactiveDirtyWorkspaces") !== 4 ||
-      count(input.proposed, "unreadableWorkspaces") !== 1 ||
+      count(input.proposed, "unreadableWorkspaces") !== 0 ||
       count(input.proposed, "legacyOutputQuarantineRequired") !== 1738) {
       throw new Error("ledger_epoch_proposed_admission_summary_mismatch");
     }

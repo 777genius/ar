@@ -44,7 +44,6 @@ const EXPECTED_BLOCKING = {
   [ProjectDebtReason.InactiveDirtyWorkspace]: 4,
   [ProjectDebtReason.OrphanLegacyWorkspace]: 205,
   [ProjectDebtReason.UnconsumedCompletedJob]: 495,
-  [ProjectDebtReason.UnreadableWorkspace]: 1,
 } as const;
 const EXPECTED_ALL = {
   [ProjectDebtReason.ActiveWriterConflict]: 6,
@@ -52,7 +51,6 @@ const EXPECTED_ALL = {
   [ProjectDebtReason.LegacyOutputQuarantineRequired]: 1738,
   [ProjectDebtReason.OrphanLegacyWorkspace]: 205,
   [ProjectDebtReason.UnconsumedCompletedJob]: 495,
-  [ProjectDebtReason.UnreadableWorkspace]: 1,
 } as const;
 
 type FileBinding = {
@@ -72,8 +70,8 @@ export type LedgerEpochProposedAdmissionAnchor = {
   readonly oldRoot: string;
   readonly newRoot: string;
   readonly cutoff: string;
-  readonly debtCount: 2449;
-  readonly blockingDebtCount: 711;
+  readonly debtCount: 2448;
+  readonly blockingDebtCount: 710;
   readonly infoDebtCount: 1738;
   readonly categoryCounts: Readonly<Record<string, number>>;
   readonly debt: readonly ProjectDebtItem[];
@@ -140,13 +138,11 @@ export async function buildSocialProposedAdmissionAnchor(input: {
   readonly sourceOrphanSeal: PreparedV1SourceOrphanSeal;
 }): Promise<LedgerEpochProposedAdmissionAnchor | undefined> {
   if (input.plan.planSha256 !== SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256) return undefined;
+  assertNoUnreadableWorkspace(input.snapshot.debt);
   assertExactEnvelope(input.plan, input.snapshot);
   const blocking = input.snapshot.debt.filter(isBlocking);
-  const unreadable = blocking.filter((item) =>
-    item.reason === ProjectDebtReason.UnreadableWorkspace
-  );
   const historicalAlias = await bindHistoricalAlias({
-    item: unreadable[0]!,
+    plan: input.plan,
     summaries: input.summaries,
     controllerJobRootDir: input.controllerJobRootDir,
     oldRoot: input.plan.oldRoot,
@@ -165,8 +161,8 @@ export async function buildSocialProposedAdmissionAnchor(input: {
     oldRoot: input.plan.oldRoot,
     newRoot: input.plan.newRoot,
     cutoff: input.plan.cutoff,
-    debtCount: 2449 as const,
-    blockingDebtCount: 711 as const,
+    debtCount: 2448 as const,
+    blockingDebtCount: 710 as const,
     infoDebtCount: 1738 as const,
     categoryCounts,
     debt: canonical,
@@ -316,6 +312,7 @@ export function normalizeAnchoredProposedAdmission(input: {
   readonly anchor: LedgerEpochProposedAdmissionAnchor;
   readonly snapshot: ProjectAdmissionSnapshot;
 }): ProjectAdmissionSnapshot {
+  assertNoUnreadableWorkspace(input.snapshot.debt);
   const allRemaining = multiset(input.anchor.debtItemSha256);
   const blockingRemaining = multiset(input.anchor.blockingDebtItemSha256);
   const debt = input.snapshot.debt.map((item) => {
@@ -431,8 +428,8 @@ function assertAnchor(
     value.planSha256 !== SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256 ||
     value.controllerJobId !== plan.controllerJobId || value.projectId !== plan.projectId ||
     value.oldRoot !== plan.oldRoot || value.newRoot !== plan.newRoot ||
-    value.cutoff !== plan.cutoff || value.debtCount !== 2449 ||
-    value.blockingDebtCount !== 711 || value.infoDebtCount !== 1738 ||
+    value.cutoff !== plan.cutoff || value.debtCount !== 2448 ||
+    value.blockingDebtCount !== 710 || value.infoDebtCount !== 1738 ||
     value.sourceOrphanBindingCount !== 205 || value.anchorSha256 !== expectedAnchorSha256 ||
     !Array.isArray(value.debt) || !Array.isArray(value.debtItemSha256) ||
     !Array.isArray(value.blockingDebtItemSha256) ||
@@ -445,9 +442,9 @@ function assertAnchor(
   if (sha256Json(unsigned) !== anchorSha256) {
     throw new Error("ledger_epoch_proposed_admission_anchor_hash_mismatch");
   }
-  if (value.debtItemSha256.length !== 2449 ||
-    value.debt.length !== 2449 ||
-    value.blockingDebtItemSha256.length !== 711 ||
+  if (value.debtItemSha256.length !== 2448 ||
+    value.debt.length !== 2448 ||
+    value.blockingDebtItemSha256.length !== 710 ||
     value.sourceOrphanBindingSha256.length !== 205 ||
     !value.debtItemSha256.every(isSha256) ||
     !value.blockingDebtItemSha256.every(isSha256) ||
@@ -549,7 +546,7 @@ function assertExactEnvelope(
   snapshot: ProjectAdmissionSnapshot,
 ): void {
   if (snapshot.projectId !== "social-monitor" || snapshot.projectId !== plan.projectId ||
-    snapshot.debt.length !== 2449 || snapshot.debt.filter(isBlocking).length !== 711 ||
+    snapshot.debt.length !== 2448 || snapshot.debt.filter(isBlocking).length !== 710 ||
     snapshot.debt.filter((item) => !isBlocking(item)).length !== 1738) {
     throw new Error("ledger_epoch_proposed_admission_exact_envelope_mismatch");
   }
@@ -567,9 +564,7 @@ function assertDebtCustody(
   debt: readonly ProjectDebtItem[],
   custody: readonly LedgerEpochDebtCustodyBinding[],
 ): void {
-  const expected = multiset(debt.filter((item) =>
-    item.reason !== ProjectDebtReason.UnreadableWorkspace
-  ).map((item) => `${item.reason}\0${item.subject}`));
+  const expected = multiset(debt.map((item) => `${item.reason}\0${item.subject}`));
   for (const binding of custody) {
     const key = `${binding.reason}\0${binding.subject}`;
     const count = expected.get(key) ?? 0;
@@ -582,19 +577,26 @@ function assertDebtCustody(
 }
 
 async function bindHistoricalAlias(input: {
-  readonly item: ProjectDebtItem;
+  readonly plan: ConsumedOutputLedgerEpochPlan;
   readonly summaries: readonly CodexGoalJobSummary[];
   readonly controllerJobRootDir: string;
   readonly oldRoot: string;
 }): Promise<LedgerEpochProposedAdmissionAnchor["historicalAlias"]> {
-  if (basename(input.item.subject) !== HISTORICAL_ALIAS) {
-    throw new Error("ledger_epoch_proposed_admission_generic_unreadable_blocked");
-  }
-  const summary = input.summaries.find((value) =>
-    value.jobId === HISTORICAL_ALIAS &&
-    resolve(value.workspacePath) === resolve(input.item.subject)
+  const planBindings = input.plan.evidenceBindings.filter((binding) =>
+    basename(binding.declaredPath) === HISTORICAL_ALIAS && binding.state === "symlink"
   );
-  if (!summary) throw new Error("ledger_epoch_proposed_admission_alias_unregistered");
+  if (planBindings.length !== 1) {
+    throw new Error("ledger_epoch_proposed_admission_alias_plan_binding_mismatch");
+  }
+  const planBinding = planBindings[0]!;
+  const matchingSummaries = input.summaries.filter((value) =>
+    value.jobId === HISTORICAL_ALIAS &&
+    resolve(value.workspacePath) === resolve(planBinding.declaredPath)
+  );
+  if (matchingSummaries.length !== 1) {
+    throw new Error("ledger_epoch_proposed_admission_alias_unregistered");
+  }
+  const summary = matchingSummaries[0]!;
   const declaredPath = resolve(summary.workspacePath);
   const metadata = await lstat(declaredPath);
   if (!metadata.isSymbolicLink()) {
@@ -607,7 +609,9 @@ async function bindHistoricalAlias(input: {
     git(declaredPath, ["rev-parse", `${HISTORICAL_HEAD_PREFIX}^{commit}`]),
     git(declaredPath, ["status", "--porcelain=v1", "--untracked-files=all"]),
   ]);
-  if (head !== historicalHead || status !== "") {
+  if ((planBinding.canonicalPath !== undefined &&
+      resolve(planBinding.canonicalPath) !== resolve(canonicalPath)) ||
+    head !== historicalHead || status !== "") {
     throw new Error("ledger_epoch_proposed_admission_alias_git_proof_mismatch");
   }
   const attempt = await findMatchingJsonFile(
@@ -638,6 +642,12 @@ async function bindHistoricalAlias(input: {
     pushedAttempt: attempt.binding,
     consumedEvidence: consumed.binding,
   };
+}
+
+function assertNoUnreadableWorkspace(debt: readonly ProjectDebtItem[]): void {
+  if (debt.some((item) => item.reason === ProjectDebtReason.UnreadableWorkspace)) {
+    throw new Error("ledger_epoch_proposed_admission_unreadable_workspace_blocked");
+  }
 }
 
 async function findMatchingJsonFile(
