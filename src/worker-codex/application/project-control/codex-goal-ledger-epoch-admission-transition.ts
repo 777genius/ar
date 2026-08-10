@@ -15,8 +15,8 @@ export function assertConsumedOutputLedgerEpochAdmissionTransition(input: {
     if (input.plan.projectId !== "social-monitor" || input.before.debtCount !== 1110) {
       throw new Error("ledger_epoch_proposed_admission_before_mismatch");
     }
-    if (input.proposed.debtCount !== 2447 ||
-      count(input.proposed, "unconsumedCompletedJobs") !== 493 ||
+    if (input.proposed.debtCount !== 2449 ||
+      count(input.proposed, "unconsumedCompletedJobs") !== 495 ||
       count(input.proposed, "orphanLegacyWorkspaces") !== 205 ||
       count(input.proposed, "activeWriterConflicts") !== 6 ||
       count(input.proposed, "inactiveDirtyWorkspaces") !== 4 ||

@@ -43,7 +43,7 @@ const EXPECTED_BLOCKING = {
   [ProjectDebtReason.ActiveWriterConflict]: 6,
   [ProjectDebtReason.InactiveDirtyWorkspace]: 4,
   [ProjectDebtReason.OrphanLegacyWorkspace]: 205,
-  [ProjectDebtReason.UnconsumedCompletedJob]: 493,
+  [ProjectDebtReason.UnconsumedCompletedJob]: 495,
   [ProjectDebtReason.UnreadableWorkspace]: 1,
 } as const;
 const EXPECTED_ALL = {
@@ -51,7 +51,7 @@ const EXPECTED_ALL = {
   [ProjectDebtReason.InactiveDirtyWorkspace]: 4,
   [ProjectDebtReason.LegacyOutputQuarantineRequired]: 1738,
   [ProjectDebtReason.OrphanLegacyWorkspace]: 205,
-  [ProjectDebtReason.UnconsumedCompletedJob]: 493,
+  [ProjectDebtReason.UnconsumedCompletedJob]: 495,
   [ProjectDebtReason.UnreadableWorkspace]: 1,
 } as const;
 
@@ -72,8 +72,8 @@ export type LedgerEpochProposedAdmissionAnchor = {
   readonly oldRoot: string;
   readonly newRoot: string;
   readonly cutoff: string;
-  readonly debtCount: 2447;
-  readonly blockingDebtCount: 709;
+  readonly debtCount: 2449;
+  readonly blockingDebtCount: 711;
   readonly infoDebtCount: 1738;
   readonly categoryCounts: Readonly<Record<string, number>>;
   readonly debt: readonly ProjectDebtItem[];
@@ -165,8 +165,8 @@ export async function buildSocialProposedAdmissionAnchor(input: {
     oldRoot: input.plan.oldRoot,
     newRoot: input.plan.newRoot,
     cutoff: input.plan.cutoff,
-    debtCount: 2447 as const,
-    blockingDebtCount: 709 as const,
+    debtCount: 2449 as const,
+    blockingDebtCount: 711 as const,
     infoDebtCount: 1738 as const,
     categoryCounts,
     debt: canonical,
@@ -431,8 +431,8 @@ function assertAnchor(
     value.planSha256 !== SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256 ||
     value.controllerJobId !== plan.controllerJobId || value.projectId !== plan.projectId ||
     value.oldRoot !== plan.oldRoot || value.newRoot !== plan.newRoot ||
-    value.cutoff !== plan.cutoff || value.debtCount !== 2447 ||
-    value.blockingDebtCount !== 709 || value.infoDebtCount !== 1738 ||
+    value.cutoff !== plan.cutoff || value.debtCount !== 2449 ||
+    value.blockingDebtCount !== 711 || value.infoDebtCount !== 1738 ||
     value.sourceOrphanBindingCount !== 205 || value.anchorSha256 !== expectedAnchorSha256 ||
     !Array.isArray(value.debt) || !Array.isArray(value.debtItemSha256) ||
     !Array.isArray(value.blockingDebtItemSha256) ||
@@ -445,9 +445,9 @@ function assertAnchor(
   if (sha256Json(unsigned) !== anchorSha256) {
     throw new Error("ledger_epoch_proposed_admission_anchor_hash_mismatch");
   }
-  if (value.debtItemSha256.length !== 2447 ||
-    value.debt.length !== 2447 ||
-    value.blockingDebtItemSha256.length !== 709 ||
+  if (value.debtItemSha256.length !== 2449 ||
+    value.debt.length !== 2449 ||
+    value.blockingDebtItemSha256.length !== 711 ||
     value.sourceOrphanBindingSha256.length !== 205 ||
     !value.debtItemSha256.every(isSha256) ||
     !value.blockingDebtItemSha256.every(isSha256) ||
@@ -549,7 +549,7 @@ function assertExactEnvelope(
   snapshot: ProjectAdmissionSnapshot,
 ): void {
   if (snapshot.projectId !== "social-monitor" || snapshot.projectId !== plan.projectId ||
-    snapshot.debt.length !== 2447 || snapshot.debt.filter(isBlocking).length !== 709 ||
+    snapshot.debt.length !== 2449 || snapshot.debt.filter(isBlocking).length !== 711 ||
     snapshot.debt.filter((item) => !isBlocking(item)).length !== 1738) {
     throw new Error("ledger_epoch_proposed_admission_exact_envelope_mismatch");
   }

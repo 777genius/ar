@@ -23,10 +23,21 @@ import { verifyConsumedOutputLedgerEpochProposedAdmissionAnchor } from
   "../application/project-control/codex-goal-consumed-output-ledger-epoch";
 
 describe("Social prepared-v1 proposed-admission anchor", () => {
-  it("restricts the transition exception to the exact old debt count", () => {
+  it("accepts the stable proposed counts and rejects stale or inexact counts", () => {
     expect(() => assertConsumedOutputLedgerEpochAdmissionTransition({
       plan: plan(), before: { debtCount: 1110 }, proposed: proposedSummary(),
     })).not.toThrow();
+    expect(() => assertConsumedOutputLedgerEpochAdmissionTransition({
+      plan: plan(), before: { debtCount: 1110 }, proposed: {
+        ...proposedSummary(), debtCount: 2447,
+      },
+    })).toThrow("ledger_epoch_proposed_admission_summary_mismatch");
+    expect(() => assertConsumedOutputLedgerEpochAdmissionTransition({
+      plan: plan(), before: { debtCount: 1110 }, proposed: {
+        ...proposedSummary(),
+        counts: { ...proposedSummary().counts, unconsumedCompletedJobs: 493 },
+      },
+    })).toThrow("ledger_epoch_proposed_admission_summary_mismatch");
     expect(() => assertConsumedOutputLedgerEpochAdmissionTransition({
       plan: plan(), before: { debtCount: 1109 }, proposed: proposedSummary(),
     })).toThrow("ledger_epoch_proposed_admission_before_mismatch");
@@ -95,7 +106,7 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
 
   it("blocks a generic unreadable item even inside the exact count envelope", async () => {
     const blocking = [
-      ...many(ProjectDebtReason.UnconsumedCompletedJob, 493),
+      ...many(ProjectDebtReason.UnconsumedCompletedJob, 495),
       ...many(ProjectDebtReason.OrphanLegacyWorkspace, 205),
       ...many(ProjectDebtReason.ActiveWriterConflict, 6),
       ...many(ProjectDebtReason.InactiveDirtyWorkspace, 4),
@@ -244,8 +255,8 @@ function anchorFor(items: readonly ProjectDebtItem[]): LedgerEpochProposedAdmiss
     oldRoot: "/ledger/v1",
     newRoot: "/ledger/v2",
     cutoff: "2026-07-20T00:00:00.000Z",
-    debtCount: 2447,
-    blockingDebtCount: 709,
+    debtCount: 2449,
+    blockingDebtCount: 711,
     infoDebtCount: 1738,
     categoryCounts: {},
     debt: [...items].sort((left, right) =>
@@ -322,9 +333,9 @@ function plan(): ConsumedOutputLedgerEpochPlan {
 
 function proposedSummary() {
   return {
-    debtCount: 2447,
+    debtCount: 2449,
     counts: {
-      unconsumedCompletedJobs: 493,
+      unconsumedCompletedJobs: 495,
       orphanLegacyWorkspaces: 205,
       activeWriterConflicts: 6,
       inactiveDirtyWorkspaces: 4,
