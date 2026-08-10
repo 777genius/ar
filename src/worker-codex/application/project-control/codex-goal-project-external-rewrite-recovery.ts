@@ -61,7 +61,9 @@ export async function pushProjectBranch(
     expectedLocalCommit: input.expectedLocalCommit,
     confirmExternalRewriteRecovery: input.confirmExternalRewriteRecovery === true,
   });
-  await assertGitCurrentBranch(input);
+  if (!recovery) {
+    await assertGitCurrentBranch(input);
+  }
   if (recovery) {
     const localHead = (await execGitStdout([
       "-C",
