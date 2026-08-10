@@ -448,6 +448,12 @@ function controllerSupervisorCooldownInstants(result: unknown): readonly number[
 }
 
 export function codexGoalMcpToolTimeoutMs(name: string): number | undefined {
+  if (
+    name === "codex_goal_project_refill_worker" ||
+    name === "codex_goal_project_prepare_verifier"
+  ) {
+    return 1_800_000;
+  }
   if (name.startsWith("codex_goal_project_")) {
     return 300_000;
   }

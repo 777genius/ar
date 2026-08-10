@@ -15,8 +15,9 @@ import {
 } from "../codex-goal-mcp-client";
 
 describe("codex goal MCP client supervisor helpers", () => {
-  it("uses extended MCP request timeout for project-control tools", () => {
-    expect(codexGoalMcpToolTimeoutMs("codex_goal_project_refill_worker")).toBe(300_000);
+  it("uses exact MCP request timeouts for project-control tools", () => {
+    expect(codexGoalMcpToolTimeoutMs("codex_goal_project_refill_worker")).toBe(1_800_000);
+    expect(codexGoalMcpToolTimeoutMs("codex_goal_project_prepare_verifier")).toBe(1_800_000);
     expect(codexGoalMcpToolTimeoutMs("codex_goal_project_start")).toBe(300_000);
     expect(codexGoalMcpToolTimeoutMs("codex_goal_project_controller_status")).toBe(300_000);
     expect(codexGoalMcpToolTimeoutMs("codex_goal_brief")).toBeUndefined();
