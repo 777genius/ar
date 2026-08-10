@@ -1,19 +1,14 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmod,
-  lstat,
   mkdir,
   open,
   readFile,
   readdir,
-  readlink,
-  realpath,
   rename,
   writeFile,
 } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { dirname, join, resolve } from "node:path";
 import {
   ProjectDebtReason,
   summarizeProjectAdmissionDebt,
@@ -22,13 +17,10 @@ import {
   type ProjectAdmissionSnapshot,
   type ProjectDebtItem,
 } from "@vioxen/subscription-runtime/worker-core";
-import type { CodexGoalJobSummary } from "../../codex-goal-jobs";
 import type { LedgerEpochDebtCustodyBinding } from
   "./codex-goal-consumed-output-ledger-epoch-switch";
 import { LEDGER_EPOCH_V2_SIDECAR_NAME } from
   "./codex-goal-consumed-output-ledger-epoch-target";
-
-const execFileAsync = promisify(execFile);
 
 export const SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256 =
   "e8d9c821ddf973b11796b2780f2adb1b22760291650998dfb7b0f41ce7c1ea99";
@@ -38,7 +30,32 @@ const STAGING_SUFFIX = ".staging";
 const EXPECTED_SHA_NAME = "expected-anchor-sha256";
 const HISTORICAL_ALIAS =
   "social-monitor-x-attribution-reuse-fixture-integration-v1-20260719";
-const HISTORICAL_HEAD_PREFIX = "6c0129f";
+const HISTORICAL_ALIAS_PATH =
+  "/var/data/social-monitor/worktrees/social-monitor-x-attribution-reuse-fixture-integration-v1-20260719";
+const HISTORICAL_WORKER_JOB =
+  "social-monitor-x-attribution-reuse-fixture-ci-v1-20260719";
+const HISTORICAL_SOURCE_WORKSPACE =
+  "/var/data/social-monitor/worktrees/social-monitor-x-attribution-reuse-fixture-ci-v1-20260719";
+const HISTORICAL_ATTEMPT_ID =
+  "social-monitor-x-attribution-reuse-fixture-integration-20260719-001";
+const HISTORICAL_COMMIT = "6c0129f655a056da0832355c5f8733a4e1daa4ff";
+const HISTORICAL_ARCHIVE_NAME =
+  "social-monitor-x-attribution-reuse-fixture-ci-v1-20260719-integrated-6c0129f655a0-social-monitor-x-attribution-reuse-fixture-integration-20260719-001";
+const ITEM_RELATIVE_PATH =
+  `items/${HISTORICAL_WORKER_JOB}--${HISTORICAL_ATTEMPT_ID}.json`;
+const PREPARATION_RELATIVE_PATH = `preparations/${HISTORICAL_ATTEMPT_ID}.json`;
+const ITEM_SHA256 = "d230f4ceed015a5f9a9ccc207f62418a3495fb54ae7ec8c02df9a794d7765b4d";
+const PREPARATION_SHA256 =
+  "55e2a0824804d6db0a9a5698fe5ef84b453c9a8a6e21ed373748536048ecb523";
+const ATTEMPT_SHA256 = "e54f8f26db111df27bdc0b3773942c53eb0a8a278c2f7c9c9fea48b3604068a8";
+const ARCHIVE_FILE_CONSTANTS = {
+  "git-status.txt": { size: 70, sha256:
+    "6e3b8a86eebeb8e0ce448ead56ecfccd326f8c2d491131cab331ba195029fe00" },
+  "tracked.diff": { size: 1019, sha256:
+    "3a90d2c4fd6dfdb0a4ddd26c2d11b5594a833fd2a93e811e213e38e8a0eabfc5" },
+  "tracked.numstat": { size: 72, sha256:
+    "ed87382617904c748408aa0e89832e323941a255f44e5336381c57e4baf06d35" },
+} as const;
 const EXPECTED_BLOCKING = {
   [ProjectDebtReason.ActiveWriterConflict]: 6,
   [ProjectDebtReason.InactiveDirtyWorkspace]: 4,
@@ -55,11 +72,14 @@ const EXPECTED_ALL = {
 
 type FileBinding = {
   readonly path: string;
-  readonly canonicalPath: string;
-  readonly device: number;
-  readonly inode: number;
   readonly size: number;
   readonly sha256: string;
+};
+
+type PlanFileBinding = {
+  readonly planRecord: ConsumedOutputLedgerEpochPlan["files"][number];
+  readonly planRecordSha256: string;
+  readonly preserved: FileBinding;
 };
 
 export type LedgerEpochProposedAdmissionAnchor = {
@@ -86,13 +106,21 @@ export type LedgerEpochProposedAdmissionAnchor = {
   readonly sourceOrphanBindingCount: 205;
   readonly historicalAlias: {
     readonly name: typeof HISTORICAL_ALIAS;
-    readonly declaredPath: string;
-    readonly linkTarget: string;
-    readonly canonicalPath: string;
-    readonly headSha: string;
-    readonly registryManifest: FileBinding;
+    readonly targetWorkspacePath: typeof HISTORICAL_ALIAS_PATH;
+    readonly workerJobId: typeof HISTORICAL_WORKER_JOB;
+    readonly sourceWorkspacePath: typeof HISTORICAL_SOURCE_WORKSPACE;
+    readonly attemptId: typeof HISTORICAL_ATTEMPT_ID;
+    readonly commitSha: typeof HISTORICAL_COMMIT;
+    readonly item: PlanFileBinding;
+    readonly preparation: PlanFileBinding;
+    readonly archiveEvidenceBindings:
+      readonly ConsumedOutputLedgerEpochPlan["evidenceBindings"][number][];
+    readonly archiveEvidenceBindingsSha256: string;
+    readonly archiveRoot: string;
+    readonly gitStatus: FileBinding;
+    readonly trackedDiff: FileBinding;
+    readonly trackedNumstat: FileBinding;
     readonly pushedAttempt: FileBinding;
-    readonly consumedEvidence: FileBinding;
   };
   readonly anchorSha256: string;
 };
@@ -100,7 +128,6 @@ export type LedgerEpochProposedAdmissionAnchor = {
 export async function createOrVerifySocialProposedAdmissionAnchor(input: {
   readonly plan: ConsumedOutputLedgerEpochPlan;
   readonly snapshot: ProjectAdmissionSnapshot;
-  readonly summaries: readonly CodexGoalJobSummary[];
   readonly controllerJobRootDir: string;
   readonly debtCustody: readonly LedgerEpochDebtCustodyBinding[];
   readonly sourceOrphanSeal: PreparedV1SourceOrphanSeal;
@@ -132,7 +159,6 @@ export async function createOrVerifySocialProposedAdmissionAnchor(input: {
 export async function buildSocialProposedAdmissionAnchor(input: {
   readonly plan: ConsumedOutputLedgerEpochPlan;
   readonly snapshot: ProjectAdmissionSnapshot;
-  readonly summaries: readonly CodexGoalJobSummary[];
   readonly controllerJobRootDir: string;
   readonly debtCustody: readonly LedgerEpochDebtCustodyBinding[];
   readonly sourceOrphanSeal: PreparedV1SourceOrphanSeal;
@@ -143,9 +169,6 @@ export async function buildSocialProposedAdmissionAnchor(input: {
   const blocking = input.snapshot.debt.filter(isBlocking);
   const historicalAlias = await bindHistoricalAlias({
     plan: input.plan,
-    summaries: input.summaries,
-    controllerJobRootDir: input.controllerJobRootDir,
-    oldRoot: input.plan.oldRoot,
   });
   assertDebtCustody(blocking, input.debtCustody);
   const canonical = canonicalDebt(input.snapshot.debt);
@@ -337,25 +360,16 @@ export async function verifySocialProposedAdmissionAnchorEvidence(
   anchor: LedgerEpochProposedAdmissionAnchor,
 ): Promise<void> {
   const alias = anchor.historicalAlias;
-  const metadata = await lstat(alias.declaredPath);
-  if (!metadata.isSymbolicLink() || await readlink(alias.declaredPath) !== alias.linkTarget ||
-    await realpath(alias.declaredPath) !== alias.canonicalPath) {
-    throw new Error("ledger_epoch_proposed_admission_alias_symlink_drift");
-  }
-  const [head, status] = await Promise.all([
-    git(alias.declaredPath, ["rev-parse", "HEAD"]),
-    git(alias.declaredPath, ["status", "--porcelain=v1", "--untracked-files=all"]),
-  ]);
-  if (head !== alias.headSha || status !== "") {
-    throw new Error("ledger_epoch_proposed_admission_alias_git_proof_drift");
-  }
-  for (const binding of [
-    alias.registryManifest, alias.pushedAttempt, alias.consumedEvidence,
-  ]) {
-    if (JSON.stringify(await bindFile(binding.path)) !== JSON.stringify(binding)) {
-      throw new Error("ledger_epoch_proposed_admission_alias_evidence_drift");
+  for (const binding of [alias.item.preserved, alias.preparation.preserved,
+    alias.gitStatus, alias.trackedDiff, alias.trackedNumstat, alias.pushedAttempt]) {
+    if (JSON.stringify(await bindFileBytes(binding.path)) !== JSON.stringify(binding)) {
+      throw new Error("ledger_epoch_proposed_admission_alias_lineage_drift");
     }
   }
+  const item = await readJsonRecord(alias.item.preserved.path);
+  const preparation = await readJsonRecord(alias.preparation.preserved.path);
+  const attempt = await readJsonRecord(alias.pushedAttempt.path);
+  assertHistoricalCrossLinks(alias, item, preparation, attempt);
 }
 
 async function publishCreateOnce(
@@ -507,20 +521,54 @@ function isCustodyFileBinding(value: unknown): boolean {
 
 function assertHistoricalAliasShape(value: unknown): void {
   if (!isRecord(value) || value.name !== HISTORICAL_ALIAS ||
-    typeof value.declaredPath !== "string" || typeof value.linkTarget !== "string" ||
-    typeof value.canonicalPath !== "string" ||
-    !/^[a-f0-9]{40}$/.test(typeof value.headSha === "string" ? value.headSha : "") ||
-    !isFileBinding(value.registryManifest) || !isFileBinding(value.pushedAttempt) ||
-    !isFileBinding(value.consumedEvidence)) {
+    value.targetWorkspacePath !== HISTORICAL_ALIAS_PATH ||
+    value.workerJobId !== HISTORICAL_WORKER_JOB ||
+    value.sourceWorkspacePath !== HISTORICAL_SOURCE_WORKSPACE ||
+    value.attemptId !== HISTORICAL_ATTEMPT_ID || value.commitSha !== HISTORICAL_COMMIT ||
+    !isPlanFileBinding(value.item, expectedItemPlanRecord()) ||
+    !isPlanFileBinding(value.preparation, expectedPreparationPlanRecord()) ||
+    !Array.isArray(value.archiveEvidenceBindings) ||
+    !isSha256(value.archiveEvidenceBindingsSha256) ||
+    sha256Json(value.archiveEvidenceBindings) !== value.archiveEvidenceBindingsSha256 ||
+    typeof value.archiveRoot !== "string" ||
+    JSON.stringify(value.archiveEvidenceBindings) !==
+      JSON.stringify(expectedArchiveEvidenceBindings(value.archiveRoot)) ||
+    !isExactFileBinding(value.gitStatus, join(value.archiveRoot, "git-status.txt"),
+      ARCHIVE_FILE_CONSTANTS["git-status.txt"]) ||
+    !isExactFileBinding(value.trackedDiff, join(value.archiveRoot, "tracked.diff"),
+      ARCHIVE_FILE_CONSTANTS["tracked.diff"]) ||
+    !isExactFileBinding(value.trackedNumstat, join(value.archiveRoot, "tracked.numstat"),
+      ARCHIVE_FILE_CONSTANTS["tracked.numstat"]) ||
+    !isExactFileBinding(value.pushedAttempt, value.pushedAttempt &&
+      isRecord(value.pushedAttempt) ? String(value.pushedAttempt.path) : "", {
+        size: 2724, sha256: ATTEMPT_SHA256,
+      })) {
     throw new Error("ledger_epoch_proposed_admission_alias_anchor_shape_invalid");
   }
 }
 
 function isFileBinding(value: unknown): value is FileBinding {
   return isRecord(value) && typeof value.path === "string" &&
-    typeof value.canonicalPath === "string" && typeof value.device === "number" &&
-    typeof value.inode === "number" && typeof value.size === "number" &&
-    isSha256(value.sha256);
+    typeof value.size === "number" && isSha256(value.sha256);
+}
+
+function isExactFileBinding(
+  value: unknown,
+  path: string,
+  expected: { readonly size: number; readonly sha256: string },
+): boolean {
+  return isFileBinding(value) && value.path === path && value.size === expected.size &&
+    value.sha256 === expected.sha256;
+}
+
+function isPlanFileBinding(
+  value: unknown,
+  expected: ConsumedOutputLedgerEpochPlan["files"][number],
+): boolean {
+  return isRecord(value) && JSON.stringify(value.planRecord) === JSON.stringify(expected) &&
+    value.planRecordSha256 === sha256Json(expected) && isRecord(value.preserved) &&
+    value.preserved.size === expected.size && value.preserved.sha256 === expected.sha256 &&
+    typeof value.preserved.path === "string";
 }
 
 async function syncFile(path: string): Promise<void> {
@@ -578,70 +626,153 @@ function assertDebtCustody(
 
 async function bindHistoricalAlias(input: {
   readonly plan: ConsumedOutputLedgerEpochPlan;
-  readonly summaries: readonly CodexGoalJobSummary[];
-  readonly controllerJobRootDir: string;
-  readonly oldRoot: string;
 }): Promise<LedgerEpochProposedAdmissionAnchor["historicalAlias"]> {
-  const planBindings = input.plan.evidenceBindings.filter((binding) =>
-    basename(binding.declaredPath) === HISTORICAL_ALIAS && binding.state === "symlink"
+  const itemRecord = uniquePlanFile(input.plan, ITEM_RELATIVE_PATH,
+    expectedItemPlanRecord());
+  const preparationRecord = uniquePlanFile(input.plan, PREPARATION_RELATIVE_PATH,
+    expectedPreparationPlanRecord());
+  const archiveRoots = input.plan.evidenceBindings.filter((binding) =>
+    binding.declaredPath.endsWith(`/${HISTORICAL_ARCHIVE_NAME}`)
   );
-  if (planBindings.length !== 1) {
-    throw new Error("ledger_epoch_proposed_admission_alias_plan_binding_mismatch");
+  if (archiveRoots.length !== 1) {
+    throw new Error("ledger_epoch_proposed_admission_archive_plan_binding_mismatch");
   }
-  const planBinding = planBindings[0]!;
-  const matchingSummaries = input.summaries.filter((value) =>
-    value.jobId === HISTORICAL_ALIAS &&
-    resolve(value.workspacePath) === resolve(planBinding.declaredPath)
+  const archiveRoot = archiveRoots[0]!.declaredPath;
+  const archiveEvidenceBindings = expectedArchiveEvidenceBindings(archiveRoot);
+  const actualArchiveBindings = input.plan.evidenceBindings.filter((binding) =>
+    binding.declaredPath === archiveRoot || binding.declaredPath.startsWith(`${archiveRoot}/`)
   );
-  if (matchingSummaries.length !== 1) {
-    throw new Error("ledger_epoch_proposed_admission_alias_unregistered");
+  if (JSON.stringify(actualArchiveBindings) !== JSON.stringify(archiveEvidenceBindings)) {
+    throw new Error("ledger_epoch_proposed_admission_archive_plan_binding_mismatch");
   }
-  const summary = matchingSummaries[0]!;
-  const declaredPath = resolve(summary.workspacePath);
-  const metadata = await lstat(declaredPath);
-  if (!metadata.isSymbolicLink()) {
-    throw new Error("ledger_epoch_proposed_admission_alias_symlink_required");
-  }
-  const [linkTarget, canonicalPath, head, historicalHead, status] = await Promise.all([
-    readlink(declaredPath),
-    realpath(declaredPath),
-    git(declaredPath, ["rev-parse", "HEAD"]),
-    git(declaredPath, ["rev-parse", `${HISTORICAL_HEAD_PREFIX}^{commit}`]),
-    git(declaredPath, ["status", "--porcelain=v1", "--untracked-files=all"]),
-  ]);
-  if ((planBinding.canonicalPath !== undefined &&
-      resolve(planBinding.canonicalPath) !== resolve(canonicalPath)) ||
-    head !== historicalHead || status !== "") {
-    throw new Error("ledger_epoch_proposed_admission_alias_git_proof_mismatch");
-  }
+  const controllerRoot = dirname(dirname(archiveRoot));
   const attempt = await findMatchingJsonFile(
-    join(input.controllerJobRootDir, "project-integration", "integration-attempts"),
+    join(controllerRoot, "project-integration", "integration-attempts"),
     "attempt.json",
-    (value, bytes) => value.status === "pushed" && bytes.includes(HISTORICAL_ALIAS),
+    (value) => value.attemptId === HISTORICAL_ATTEMPT_ID,
   );
-  const attemptId = typeof attempt.value.attemptId === "string" &&
-      attempt.value.attemptId.length > 0
-    ? attempt.value.attemptId
-    : undefined;
-  if (!attemptId) {
-    throw new Error("ledger_epoch_proposed_admission_alias_attempt_id_required");
-  }
-  const consumed = await findMatchingJsonFile(
-    join(input.oldRoot, "items"),
-    undefined,
-    (value, bytes) => bytes.includes(HISTORICAL_ALIAS) &&
-      value.attemptId === attemptId,
-  );
-  return {
+  const historicalAlias: LedgerEpochProposedAdmissionAnchor["historicalAlias"] = {
     name: HISTORICAL_ALIAS,
-    declaredPath,
-    linkTarget,
-    canonicalPath,
-    headSha: head,
-    registryManifest: await bindFile(summary.manifestPath),
+    targetWorkspacePath: HISTORICAL_ALIAS_PATH,
+    workerJobId: HISTORICAL_WORKER_JOB,
+    sourceWorkspacePath: HISTORICAL_SOURCE_WORKSPACE,
+    attemptId: HISTORICAL_ATTEMPT_ID,
+    commitSha: HISTORICAL_COMMIT,
+    item: await bindPlanFile(input.plan, itemRecord),
+    preparation: await bindPlanFile(input.plan, preparationRecord),
+    archiveEvidenceBindings,
+    archiveEvidenceBindingsSha256: sha256Json(archiveEvidenceBindings),
+    archiveRoot,
+    gitStatus: await bindFileBytes(join(archiveRoot, "git-status.txt")),
+    trackedDiff: await bindFileBytes(join(archiveRoot, "tracked.diff")),
+    trackedNumstat: await bindFileBytes(join(archiveRoot, "tracked.numstat")),
     pushedAttempt: attempt.binding,
-    consumedEvidence: consumed.binding,
   };
+  assertHistoricalAliasShape(historicalAlias);
+  assertHistoricalCrossLinks(historicalAlias, await readJsonRecord(
+    historicalAlias.item.preserved.path), await readJsonRecord(
+    historicalAlias.preparation.preserved.path), attempt.value);
+  return historicalAlias;
+}
+
+function expectedItemPlanRecord(): ConsumedOutputLedgerEpochPlan["files"][number] {
+  return {
+    relativePath: ITEM_RELATIVE_PATH,
+    size: 1980,
+    sha256: ITEM_SHA256,
+    disposition: "quarantine",
+    quarantineReason: "invalid_or_missing_evidence",
+  };
+}
+
+function expectedPreparationPlanRecord():
+  ConsumedOutputLedgerEpochPlan["files"][number] {
+  return {
+    relativePath: PREPARATION_RELATIVE_PATH,
+    size: 1296,
+    sha256: PREPARATION_SHA256,
+    disposition: "preserve_only",
+  };
+}
+
+function uniquePlanFile(
+  plan: ConsumedOutputLedgerEpochPlan,
+  relativePath: string,
+  expected: ConsumedOutputLedgerEpochPlan["files"][number],
+): ConsumedOutputLedgerEpochPlan["files"][number] {
+  const matches = plan.files.filter((record) => record.relativePath === relativePath);
+  if (matches.length !== 1 || JSON.stringify(matches[0]) !== JSON.stringify(expected)) {
+    throw new Error("ledger_epoch_proposed_admission_plan_file_mismatch");
+  }
+  return matches[0]!;
+}
+
+async function bindPlanFile(
+  plan: ConsumedOutputLedgerEpochPlan,
+  planRecord: ConsumedOutputLedgerEpochPlan["files"][number],
+): Promise<PlanFileBinding> {
+  const preserved = await bindFileBytes(join(
+    plan.newRoot, "legacy-preservation", planRecord.relativePath,
+  ));
+  if (preserved.size !== planRecord.size || preserved.sha256 !== planRecord.sha256) {
+    throw new Error("ledger_epoch_proposed_admission_preserved_file_mismatch");
+  }
+  return { planRecord, planRecordSha256: sha256Json(planRecord), preserved };
+}
+
+function expectedArchiveEvidenceBindings(
+  archiveRoot: string,
+): readonly ConsumedOutputLedgerEpochPlan["evidenceBindings"][number][] {
+  return [archiveRoot, join(archiveRoot, "git-status.txt"),
+    join(archiveRoot, "tracked.diff"), join(archiveRoot, "tracked.numstat")].map(
+    (declaredPath) => ({ declaredPath, state: "denied" as const,
+      canonicalPath: declaredPath }),
+  );
+}
+
+function assertHistoricalCrossLinks(
+  alias: LedgerEpochProposedAdmissionAnchor["historicalAlias"],
+  item: Record<string, unknown>,
+  preparation: Record<string, unknown>,
+  attempt: Record<string, unknown>,
+): void {
+  const backup = recordValue(item.backup);
+  const workerOutput = recordValue(attempt.workerOutput);
+  const commitCandidate = recordValue(attempt.commitCandidate);
+  const pushAttempt = recordValue(attempt.pushAttempt);
+  if (item.jobId !== HISTORICAL_WORKER_JOB || item.attemptId !== HISTORICAL_ATTEMPT_ID ||
+    item.status !== "integrated" || item.commitSha !== HISTORICAL_COMMIT ||
+    item.integratedCommitSha !== HISTORICAL_COMMIT || item.commit !== HISTORICAL_COMMIT ||
+    item.archivePath !== alias.archiveRoot ||
+    backup.workspace !== HISTORICAL_SOURCE_WORKSPACE ||
+    backup.statusPath !== alias.gitStatus.path || backup.patchPath !== alias.trackedDiff.path ||
+    backup.numstatPath !== alias.trackedNumstat.path ||
+    preparation.attemptId !== HISTORICAL_ATTEMPT_ID ||
+    preparation.workerJobId !== HISTORICAL_WORKER_JOB ||
+    preparation.workerWorkspacePath !== HISTORICAL_SOURCE_WORKSPACE ||
+    preparation.commitSha !== HISTORICAL_COMMIT ||
+    preparation.archivePath !== alias.archiveRoot ||
+    preparation.statusPath !== alias.gitStatus.path ||
+    preparation.patchPath !== alias.trackedDiff.path ||
+    preparation.numstatPath !== alias.trackedNumstat.path ||
+    attempt.attemptId !== HISTORICAL_ATTEMPT_ID || attempt.projectId !== "social-monitor" ||
+    attempt.workerJobId !== HISTORICAL_WORKER_JOB ||
+    attempt.sourceWorkspacePath !== HISTORICAL_SOURCE_WORKSPACE ||
+    attempt.targetWorkspacePath !== HISTORICAL_ALIAS_PATH || attempt.status !== "pushed" ||
+    workerOutput.workerJobId !== HISTORICAL_WORKER_JOB ||
+    workerOutput.workspacePath !== HISTORICAL_SOURCE_WORKSPACE ||
+    workerOutput.patchSha256 !== ARCHIVE_FILE_CONSTANTS["tracked.diff"].sha256 ||
+    commitCandidate.commitSha !== HISTORICAL_COMMIT ||
+    pushAttempt.commitSha !== HISTORICAL_COMMIT || pushAttempt.status !== "pushed") {
+    throw new Error("ledger_epoch_proposed_admission_alias_cross_link_mismatch");
+  }
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error("ledger_epoch_proposed_admission_alias_cross_link_mismatch");
+  }
+  return value;
 }
 
 function assertNoUnreadableWorkspace(debt: readonly ProjectDebtItem[]): void {
@@ -668,30 +799,17 @@ async function findMatchingJsonFile(
   if (matches.length !== 1) {
     throw new Error("ledger_epoch_proposed_admission_alias_evidence_mismatch");
   }
-  return { value: matches[0]!.value, binding: await bindFile(matches[0]!.path) };
+  return { value: matches[0]!.value, binding: await bindFileBytes(matches[0]!.path) };
 }
 
-async function bindFile(path: string): Promise<FileBinding> {
+async function bindFileBytes(path: string): Promise<FileBinding> {
   const declared = resolve(path);
-  const canonicalPath = await realpath(declared);
-  const [metadata, bytes] = await Promise.all([lstat(canonicalPath), readFile(canonicalPath)]);
-  if (!metadata.isFile()) throw new Error("ledger_epoch_proposed_admission_proof_file_invalid");
+  const bytes = await readFile(declared);
   return {
     path: declared,
-    canonicalPath,
-    device: metadata.dev,
-    inode: metadata.ino,
     size: bytes.length,
     sha256: sha256(bytes),
   };
-}
-
-async function git(path: string, args: readonly string[]): Promise<string> {
-  const result = await execFileAsync("git", ["-C", path, ...args], {
-    timeout: 8_000,
-    maxBuffer: 1024 * 1024,
-  });
-  return result.stdout.trim();
 }
 
 function canonicalDebt(debt: readonly ProjectDebtItem[]): readonly ProjectDebtItem[] {

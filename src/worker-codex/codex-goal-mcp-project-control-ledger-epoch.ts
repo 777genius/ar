@@ -248,7 +248,6 @@ export async function projectControlLedgerEpochMigrationView(
         const anchor = await buildSocialProposedAdmissionAnchor({
           plan,
           snapshot: proposedAdmission,
-          summaries,
           controllerJobRootDir: loaded.controller.jobRootDir,
           debtCustody: await resolveLedgerEpochDebtCustody(proposedAdmission, summaries),
           sourceOrphanSeal,
@@ -536,14 +535,10 @@ export async function projectControlLedgerEpochMigrationView(
         // Validate it intrinsically, then publish the independent anchor while
         // all controller, debt, maintenance and ledger mutation locks are held.
         const sourceOrphanSeal = await verifySocialPreparedV1SourceOrphanSeal(plan);
-        const currentSummaries = await listCodexGoalJobs({
-          registryRootDir: locked.registryRootDir,
-        });
         if (lockedActiveRoot === oldRoot) {
           const rebuilt = await buildSocialProposedAdmissionAnchor({
             plan,
             snapshot: authoritative.proposedAdmission!,
-            summaries: currentSummaries,
             controllerJobRootDir: locked.controller.jobRootDir,
             debtCustody,
             sourceOrphanSeal,
@@ -555,7 +550,6 @@ export async function projectControlLedgerEpochMigrationView(
         await createOrVerifySocialProposedAdmissionAnchor({
           plan,
           snapshot: authoritative.proposedAdmission!,
-          summaries: currentSummaries,
           controllerJobRootDir: locked.controller.jobRootDir,
           debtCustody,
           sourceOrphanSeal,

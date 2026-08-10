@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ProjectDebtReason,
   type ConsumedOutputLedgerEpochPlan,
@@ -13,18 +13,42 @@ import {
   type LedgerEpochProposedAdmissionAnchor,
   verifySocialProposedAdmissionAnchorEvidence,
 } from "../application/project-control/codex-goal-ledger-epoch-proposed-admission";
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { verifySocialPreparedV1SourceOrphanSeal } from
   "../application/project-control/codex-goal-ledger-epoch-proposed-admission";
 import { assertConsumedOutputLedgerEpochAdmissionTransition } from
   "../application/project-control/codex-goal-ledger-epoch-admission-transition";
 import { verifyConsumedOutputLedgerEpochProposedAdmissionAnchor } from
   "../application/project-control/codex-goal-consumed-output-ledger-epoch";
+
+const virtualFs = vi.hoisted(() => ({
+  files: new Map<string, Buffer>(),
+  directories: new Map<string, readonly string[]>(),
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    readFile: async (path: Parameters<typeof actual.readFile>[0], options?: unknown) => {
+      const bytes = virtualFs.files.get(String(path));
+      if (!bytes) return await actual.readFile(path, options as never);
+      return typeof options === "string" ? bytes.toString(options as BufferEncoding) : bytes;
+    },
+    readdir: async (path: Parameters<typeof actual.readdir>[0], options?: unknown) => {
+      const names = virtualFs.directories.get(String(path));
+      if (!names) return await actual.readdir(path, options as never);
+      return names.map((name) => ({
+        name,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+      }));
+    },
+  };
+});
 
 describe("Social prepared-v1 proposed-admission anchor", () => {
   it("accepts the stable proposed counts and rejects stale or inexact counts", () => {
@@ -148,7 +172,6 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
     await expect(createOrVerifySocialProposedAdmissionAnchor({
       plan: plan(),
       snapshot: snapshot([...blocking, ...info]),
-      summaries: [],
       controllerJobRootDir: "/controller",
       debtCustody: [],
       sourceOrphanSeal: {
@@ -160,119 +183,54 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
     })).rejects.toThrow("ledger_epoch_proposed_admission_unreadable_workspace_blocked");
   });
 
-  it("seals the historical alias separately and rejects path, head, and evidence tamper", async () => {
-    const root = await mkdtemp(join(tmpdir(), "proposed-admission-alias-"));
-    const aliasName = "social-monitor-x-attribution-reuse-fixture-integration-v1-20260719";
-    const target = join(root, "target");
-    const alias = join(root, aliasName);
-    const manifest = join(root, "registry", "job.json");
-    const attempt = join(root, "controller", "project-integration",
-      "integration-attempts", "attempt-1", "attempt.json");
-    const consumed = join(root, "old", "items", "consumed.json");
-    const tracked = join(target, "tracked.txt");
-    const git = async (...args: string[]) => await promisify(execFile)("git", args, {
-      cwd: target,
-    });
+  it("binds exact immutable plan, archive, and pushed-attempt lineage", async () => {
+    const fixture = await historicalLineageFixture();
     try {
-      await Promise.all([
-        mkdir(target, { recursive: true }),
-        mkdir(join(root, "registry"), { recursive: true }),
-        mkdir(join(root, "controller", "project-integration", "integration-attempts",
-          "attempt-1"), { recursive: true }),
-        mkdir(join(root, "old", "items"), { recursive: true }),
-      ]);
-      await writeFile(tracked, "sealed\n");
-      await git("init", "-q");
-      await git("add", "tracked.txt");
-      await git("-c", "user.name=runtime-test", "-c", "user.email=runtime@test",
-        "commit", "-qm", "seed");
-      await git("branch", "6c0129f");
-      await symlink(target, alias);
-      const manifestBytes = JSON.stringify({ jobId: aliasName });
-      const attemptBytes = JSON.stringify({
-        attemptId: "attempt-1", status: "pushed", jobId: aliasName,
+      const anchor = await buildSocialProposedAdmissionAnchor(fixture.input);
+      expect(anchor?.historicalAlias).toMatchObject({
+        targetWorkspacePath:
+          "/var/data/social-monitor/worktrees/social-monitor-x-attribution-reuse-fixture-integration-v1-20260719",
+        attemptId: "social-monitor-x-attribution-reuse-fixture-integration-20260719-001",
+        commitSha: "6c0129f655a056da0832355c5f8733a4e1daa4ff",
       });
-      const consumedBytes = JSON.stringify({ attemptId: "attempt-1", jobId: aliasName });
-      await Promise.all([
-        writeFile(manifest, manifestBytes),
-        writeFile(attempt, attemptBytes),
-        writeFile(consumed, consumedBytes),
-      ]);
-      const blocking = [
-        ...many(ProjectDebtReason.UnconsumedCompletedJob, 495),
-        ...many(ProjectDebtReason.OrphanLegacyWorkspace, 205),
-        ...many(ProjectDebtReason.ActiveWriterConflict, 6),
-        ...many(ProjectDebtReason.InactiveDirtyWorkspace, 4),
-      ];
-      const info = many(ProjectDebtReason.LegacyOutputQuarantineRequired, 1738)
-        .map((item) => ({ ...item, severity: "info" as const }));
-      const anchor = await buildSocialProposedAdmissionAnchor({
-        plan: {
-          ...plan(), oldRoot: join(root, "old"),
-          evidenceBindings: [{
-            declaredPath: alias, state: "symlink", canonicalPath: target,
-          }],
-        },
-        snapshot: snapshot([...blocking, ...info]),
-        summaries: [{
-          jobId: aliasName, tags: [], taskId: "historical", workspacePath: alias,
-          promptPath: join(root, "prompt.md"), accountNames: [],
-          updatedAt: new Date(0).toISOString(), manifestPath: manifest,
-        }],
-        controllerJobRootDir: join(root, "controller"),
-        debtCustody: blocking.map((item, index) => ({
-          reason: item.reason,
-          subject: item.subject,
-          declaredPath: `/debt/${index}`,
-          canonicalPath: `/debt/${index}`,
-          device: 1,
-          inode: index + 1,
-        })),
-        sourceOrphanSeal: {
-          bindings: Array.from({ length: 205 }, (_, index) => ({ index })),
-          bindingSha256: Array.from({ length: 205 }, () => "f".repeat(64)),
-          bindingsSha256: "c".repeat(64),
-        },
-      });
-      expect(anchor).toBeDefined();
-      expect(anchor!.debtCount).toBe(2448);
-      expect(anchor!.blockingDebtCount).toBe(710);
-      expect(anchor!.categoryCounts).not.toHaveProperty(
-        ProjectDebtReason.UnreadableWorkspace,
-      );
       await expect(verifySocialProposedAdmissionAnchorEvidence(anchor!)).resolves.toBeUndefined();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
 
-      await rm(alias);
-      await symlink(root, alias);
-      await expect(verifySocialProposedAdmissionAnchorEvidence(anchor!)).rejects.toThrow(
-        "ledger_epoch_proposed_admission_alias_symlink_drift",
-      );
-      await rm(alias);
-      await symlink(target, alias);
-
-      await expect(verifySocialProposedAdmissionAnchorEvidence({
-        ...anchor!, historicalAlias: {
-          ...anchor!.historicalAlias, declaredPath: join(root, "wrong-alias"),
-        },
-      })).rejects.toThrow();
-
-      await writeFile(tracked, "tampered\n");
-      await expect(verifySocialProposedAdmissionAnchorEvidence(anchor!)).rejects.toThrow(
-        "ledger_epoch_proposed_admission_alias_git_proof_drift",
-      );
-      await writeFile(tracked, "sealed\n");
-
-      for (const [path, original] of [
-        [manifest, manifestBytes], [attempt, attemptBytes], [consumed, consumedBytes],
-      ] as const) {
-        await writeFile(path, `${original} `);
-        await expect(verifySocialProposedAdmissionAnchorEvidence(anchor!)).rejects.toThrow(
-          "ledger_epoch_proposed_admission_alias_evidence_drift",
+  it("rejects tampered historical archive or pushed-attempt bytes", async () => {
+    const fixture = await historicalLineageFixture();
+    try {
+      const anchor = (await buildSocialProposedAdmissionAnchor(fixture.input))!;
+      for (const path of [fixture.statusPath, fixture.attemptPath]) {
+        const original = virtualFs.files.get(path)!;
+        virtualFs.files.set(path, Buffer.concat([original, Buffer.from(" ")]));
+        await expect(verifySocialProposedAdmissionAnchorEvidence(anchor)).rejects.toThrow(
+          "ledger_epoch_proposed_admission_alias_lineage_drift",
         );
-        await writeFile(path, original);
+        virtualFs.files.set(path, original);
       }
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await fixture.cleanup();
+    }
+  });
+
+  it("rejects missing or duplicate pushed attempts", async () => {
+    const fixture = await historicalLineageFixture();
+    try {
+      virtualFs.directories.set(fixture.attemptsRoot, []);
+      await expect(buildSocialProposedAdmissionAnchor(fixture.input)).rejects.toThrow(
+        "ledger_epoch_proposed_admission_alias_evidence_mismatch",
+      );
+      virtualFs.directories.set(fixture.attemptsRoot, ["attempt-1", "attempt-2"]);
+      virtualFs.files.set(join(fixture.attemptsRoot, "attempt-2", "attempt.json"),
+        virtualFs.files.get(fixture.attemptPath)!);
+      await expect(buildSocialProposedAdmissionAnchor(fixture.input)).rejects.toThrow(
+        "ledger_epoch_proposed_admission_alias_evidence_mismatch",
+      );
+    } finally {
+      await fixture.cleanup();
     }
   });
 
@@ -353,6 +311,145 @@ describe("Social prepared-v1 proposed-admission anchor", () => {
   });
 });
 
+async function historicalLineageFixture() {
+  const root = await mkdtemp(join(tmpdir(), "proposed-admission-lineage-"));
+  const newRoot = join(root, "new");
+  const controllerRoot = "/var/data/social-monitor/worker-jobs/controller";
+  const archiveName =
+    "social-monitor-x-attribution-reuse-fixture-ci-v1-20260719-integrated-6c0129f655a0-social-monitor-x-attribution-reuse-fixture-integration-20260719-001";
+  const archiveRoot = join(controllerRoot, "archives", archiveName);
+  const attemptsRoot = join(controllerRoot, "project-integration", "integration-attempts");
+  const attemptPath = join(attemptsRoot, "attempt-1", "attempt.json");
+  const statusPath = join(archiveRoot, "git-status.txt");
+  const diffPath = join(archiveRoot, "tracked.diff");
+  const numstatPath = join(archiveRoot, "tracked.numstat");
+  const workerJobId = "social-monitor-x-attribution-reuse-fixture-ci-v1-20260719";
+  const attemptId = "social-monitor-x-attribution-reuse-fixture-integration-20260719-001";
+  const sourceWorkspacePath =
+    "/var/data/social-monitor/worktrees/social-monitor-x-attribution-reuse-fixture-ci-v1-20260719";
+  const targetWorkspacePath =
+    "/var/data/social-monitor/worktrees/social-monitor-x-attribution-reuse-fixture-integration-v1-20260719";
+  const commitSha = "6c0129f655a056da0832355c5f8733a4e1daa4ff";
+  const itemRelativePath = `items/${workerJobId}--${attemptId}.json`;
+  const preparationRelativePath = `preparations/${attemptId}.json`;
+  const item = {
+    schemaVersion: 1, jobId: workerJobId, attemptId, status: "integrated",
+    closedAt: "2026-07-19T02:15:09.018Z", commitSha, archivePath: archiveRoot,
+    note: `Integrated reviewed worker output via project lifecycle attempt ${attemptId}.`,
+    backup: { workspace: sourceWorkspacePath, statusPath, patchPath: diffPath,
+      numstatPath },
+    consumedAt: "2026-07-19T02:15:09.018Z", integratedCommitSha: commitSha,
+    commit: commitSha,
+    notes: [{ status: "integrated",
+      text: `Integrated reviewed worker output via project lifecycle attempt ${attemptId}.`,
+      commit: commitSha }],
+  };
+  const preparation = {
+    attemptId, workerJobId, workerWorkspacePath: sourceWorkspacePath, commitSha,
+    archivePath: archiveRoot, statusPath, patchPath: diffPath, numstatPath,
+  };
+  const changedFile =
+    "scripts/lib/reader-summary-production-day-reuse-provenance.spec.ts";
+  const attempt = {
+    attemptId, projectId: "social-monitor",
+    controllerJobId: "social-monitor-project-controller-v1", workerJobId,
+    sourceWorkspacePath, targetWorkspacePath,
+    targetBranch: "fix/x-attribution-reuse-fixture-ci-v2", targetRemote: "origin",
+    expectedFiles: [changedFile], status: "pushed",
+    workerOutput: {
+      workerJobId, workspacePath: sourceWorkspacePath,
+      patchPath: "/var/data/social-monitor/worker-jobs/reviewed-worker-outputs/ae7057651acf5be3f97f74f002a7777f0f34a3609bf846dfa41e81648b23e308/output.patch",
+      patchSha256: "3a90d2c4fd6dfdb0a4ddd26c2d11b5594a833fd2a93e811e213e38e8a0eabfc5",
+      baseCommit: "55780616f3be3742974d8c26943712aead6b6a98",
+      targetCommit: "55780616f3be3742974d8c26943712aead6b6a98",
+      changedFiles: [changedFile],
+    },
+    reviewDecision: {
+      reviewedBy: "independent-review:production_18_quality_audit",
+      decision: "approved",
+      reason: "Independent review confirmed truthful complete warning-only attribution fixture; production validation untouched; exact regression 4/4 and nearby validation 67/67; lint, targeted TS, line cap, secrets and diff-check pass.",
+      approvedFiles: [changedFile], requiredChecks: [],
+    },
+    checkRuns: [], createdAt: "2026-07-19T02:13:43.551Z",
+    updatedAt: "2026-07-19T02:15:09.018Z",
+    commitCandidate: {
+      commitSha, message: "test(summary): align X attribution reuse fixture",
+      files: [changedFile], secretScanStatus: "passed",
+      createdAt: "2026-07-19T02:14:58.909Z",
+      diffStat: ".../reader-summary-production-day-reuse-provenance.spec.ts    | 11 ++++++++++-\n 1 file changed, 10 insertions(+), 1 deletion(-)",
+    },
+    pushAttempt: { remote: "origin", branch: "fix/x-attribution-reuse-fixture-ci-v2",
+      commitSha, status: "pushed", pushedAt: "2026-07-19T02:15:09.018Z" },
+  };
+  const itemBytes = `${JSON.stringify(item, null, 2)}\n`;
+  const preparationBytes = `${JSON.stringify(preparation, null, 2)}\n`;
+  const attemptBytes = `${JSON.stringify(attempt, null, 2)}\n`;
+  expect([itemBytes.length, sha256(itemBytes)]).toEqual([1980,
+    "d230f4ceed015a5f9a9ccc207f62418a3495fb54ae7ec8c02df9a794d7765b4d"]);
+  expect([preparationBytes.length, sha256(preparationBytes)]).toEqual([1296,
+    "55e2a0824804d6db0a9a5698fe5ef84b453c9a8a6e21ed373748536048ecb523"]);
+  expect([attemptBytes.length, sha256(attemptBytes)]).toEqual([2724,
+    "e54f8f26db111df27bdc0b3773942c53eb0a8a278c2f7c9c9fea48b3604068a8"]);
+  await Promise.all([
+    mkdir(join(newRoot, "legacy-preservation", "items"), { recursive: true }),
+    mkdir(join(newRoot, "legacy-preservation", "preparations"), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(join(newRoot, "legacy-preservation", itemRelativePath), itemBytes),
+    writeFile(join(newRoot, "legacy-preservation", preparationRelativePath),
+      preparationBytes),
+  ]);
+  virtualFs.files.set(statusPath, Buffer.from(` M ${changedFile}\n`));
+  virtualFs.files.set(diffPath, Buffer.from(
+    "diff --git a/scripts/lib/reader-summary-production-day-reuse-provenance.spec.ts b/scripts/lib/reader-summary-production-day-reuse-provenance.spec.ts\n" +
+    "index db393ab00..64aad898d 100644\n--- a/scripts/lib/reader-summary-production-day-reuse-provenance.spec.ts\n+++ b/scripts/lib/reader-summary-production-day-reuse-provenance.spec.ts\n@@ -185,7 +185,16 @@ function buildLiveReport(\n     collectionQuality: {\n       collectionDate,\n       dayWindowAudit: { publishedInsideWindowFeedItemCount: 5 },\n-      xAccountPool: { totalAccountCount: 1, eligibleAccountCount: 1 },\n+      xAccountPool: {\n+        totalAccountCount: 1,\n+        eligibleAccountCount: 1,\n+        attributionStatus: \"unknown\",\n+        attributionPolicy: \"warning_only\",\n+        attributionGateReason:\n+          \"unknown_attribution_global_collection_succeeded_warning_only\",\n+        eligibleAccountZeroAttributableOutputWarningCount: 0,\n+        attributionWarnings: [],\n+      },\n     },\n     durableEvidence: evidence,\n     evidenceBinding: binding,\n",
+  ));
+  virtualFs.files.set(numstatPath, Buffer.from(`10\t1\t${changedFile}\n`));
+  virtualFs.files.set(attemptPath, Buffer.from(attemptBytes));
+  virtualFs.directories.set(attemptsRoot, ["attempt-1"]);
+  const blocking = [
+    ...many(ProjectDebtReason.UnconsumedCompletedJob, 495),
+    ...many(ProjectDebtReason.OrphanLegacyWorkspace, 205),
+    ...many(ProjectDebtReason.ActiveWriterConflict, 6),
+    ...many(ProjectDebtReason.InactiveDirtyWorkspace, 4),
+  ];
+  const info = many(ProjectDebtReason.LegacyOutputQuarantineRequired, 1738)
+    .map((value) => ({ ...value, severity: "info" as const }));
+  const evidenceBindings = [archiveRoot, statusPath, diffPath, numstatPath]
+    .map((declaredPath) => ({ declaredPath, state: "denied" as const,
+      canonicalPath: declaredPath }));
+  const files = [{ relativePath: itemRelativePath, size: 1980,
+    sha256: "d230f4ceed015a5f9a9ccc207f62418a3495fb54ae7ec8c02df9a794d7765b4d",
+    disposition: "quarantine" as const,
+    quarantineReason: "invalid_or_missing_evidence" as const }, {
+    relativePath: preparationRelativePath, size: 1296,
+    sha256: "55e2a0824804d6db0a9a5698fe5ef84b453c9a8a6e21ed373748536048ecb523",
+    disposition: "preserve_only" as const,
+  }];
+  return {
+    statusPath, attemptPath, attemptsRoot,
+    input: {
+      plan: { ...plan(), newRoot, evidenceBindings, files },
+      snapshot: snapshot([...blocking, ...info]),
+      controllerJobRootDir: controllerRoot,
+      debtCustody: blocking.map((value, index) => ({
+        reason: value.reason, subject: value.subject, declaredPath: `/debt/${index}`,
+        canonicalPath: `/debt/${index}`, device: 1, inode: index + 1,
+      })),
+      sourceOrphanSeal: {
+        bindings: Array.from({ length: 205 }, (_, index) => ({ index })),
+        bindingSha256: Array.from({ length: 205 }, () => "f".repeat(64)),
+        bindingsSha256: "c".repeat(64),
+      },
+    },
+    cleanup: async () => {
+      virtualFs.files.clear();
+      virtualFs.directories.clear();
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
+
 function debt(reason: ProjectDebtReason, subject: string): ProjectDebtItem {
   return { reason, subject, severity: "blocking", evidence: [`evidence ${subject}`] };
 }
@@ -412,13 +509,26 @@ function anchorFor(items: readonly ProjectDebtItem[]): LedgerEpochProposedAdmiss
     sourceOrphanBindingCount: 205,
     historicalAlias: {
       name: "social-monitor-x-attribution-reuse-fixture-integration-v1-20260719",
-      declaredPath: "/archive/alias",
-      linkTarget: "/archive/target",
-      canonicalPath: "/archive/target",
-      headSha: "6c0129f" + "0".repeat(33),
-      registryManifest: file("/registry/job.json"),
+      targetWorkspacePath:
+        "/var/data/social-monitor/worktrees/social-monitor-x-attribution-reuse-fixture-integration-v1-20260719",
+      workerJobId: "social-monitor-x-attribution-reuse-fixture-ci-v1-20260719",
+      sourceWorkspacePath:
+        "/var/data/social-monitor/worktrees/social-monitor-x-attribution-reuse-fixture-ci-v1-20260719",
+      attemptId: "social-monitor-x-attribution-reuse-fixture-integration-20260719-001",
+      commitSha: "6c0129f655a056da0832355c5f8733a4e1daa4ff",
+      item: { planRecord: { relativePath: "item", size: 3, sha256: "e".repeat(64),
+        disposition: "quarantine" }, planRecordSha256: "e".repeat(64),
+      preserved: file("/item") },
+      preparation: { planRecord: { relativePath: "preparation", size: 3,
+        sha256: "e".repeat(64), disposition: "preserve_only" },
+      planRecordSha256: "e".repeat(64), preserved: file("/preparation") },
+      archiveEvidenceBindings: [],
+      archiveEvidenceBindingsSha256: "e".repeat(64),
+      archiveRoot: "/archive",
+      gitStatus: file("/archive/git-status.txt"),
+      trackedDiff: file("/archive/tracked.diff"),
+      trackedNumstat: file("/archive/tracked.numstat"),
       pushedAttempt: file("/controller/attempt.json"),
-      consumedEvidence: file("/ledger/v1/items/job.json"),
     },
     anchorSha256: "d".repeat(64),
   };
@@ -459,11 +569,7 @@ function plan(): ConsumedOutputLedgerEpochPlan {
     quarantinedCount: 209,
     inheritedQuarantinedCount: 0,
     deniedRoots: [],
-    evidenceBindings: [{
-      declaredPath: "/archive/social-monitor-x-attribution-reuse-fixture-integration-v1-20260719",
-      state: "symlink",
-      canonicalPath: "/archive/target",
-    }],
+    evidenceBindings: [],
     orphanWorkspaceBindings: Array.from({ length: 506 }, (_, index) => ({
       declaredPath: `/work/orphan-${index}`,
       state: "denied" as const,
