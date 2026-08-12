@@ -3,18 +3,20 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import {
   lstat,
+  mkdtemp,
   mkdir,
   open,
   readFile,
   realpath,
+  rm,
   writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import {
   basename,
   dirname,
   isAbsolute,
   join,
-  relative,
   resolve,
 } from "node:path";
 import { promisify } from "node:util";
@@ -31,6 +33,18 @@ import {
   CODEX_GOAL_CONTINUATION_WORKSPACE_FINGERPRINT_SCHEMA,
   type CodexGoalContinuationWorkspaceFingerprint,
 } from "./codex-goal-continuation-workspace-fingerprint";
+import {
+  assertSafeHandoffId as assertSafeId,
+  ensureHandoffTrailingNewline as ensureTrailingNewline,
+  handoffPathInside as pathInside,
+  isHandoffExecErrorWithStdout as isExecErrorWithStdout,
+  isHandoffNodeError as isNodeError,
+  sameHandoffPaths as sameStrings,
+  sha256HandoffContent as sha256,
+  stableHandoffJson as stableJson,
+  uniqueSortedHandoffPaths as uniqueSorted,
+} from "./codex-goal-handoff-artifact-guards";
+import { withHandoffWorktreeIndex } from "./codex-goal-handoff-worktree-index";
 
 const execFileAsync = promisify(execFile);
 const maximumHandoffByteLimit = 64 * 1024 * 1024;
@@ -270,59 +284,81 @@ async function captureStableHandoffPatch(input: {
   if (input.expectedBaseCommit && input.expectedBaseCommit !== baseCommit) {
     throw new Error("handoff_base_commit_mismatch");
   }
-  const changedPaths = await gitChangedPaths(
-    workspacePath,
-    baseCommit,
-    limits.maxChangedFiles,
-  );
-  if (changedPaths.length === 0) return null;
-  if (changedPaths.length > limits.maxChangedFiles) {
-    throw new Error("handoff_changed_file_limit_exceeded");
-  }
-  await assertSafeChangedFiles({
-    workspacePath,
-    changedPaths,
-    baseCommit,
-    limits,
-    scanSecretContent: input.scanSecretContent !== false,
+  const workspaceLayer = await captureHandoffWorkspaceLayer(workspacePath);
+  return withHandoffWorktreeIndex({
+    initialize: async (worktreeIndexEnv) => {
+      // A clean synthetic index has no skip-worktree or assume-unchanged bits,
+      // so every tracked worktree byte remains visible to snapshot reads.
+      await gitOutput(
+        workspacePath,
+        ["read-tree", baseCommit],
+        1024 * 1024,
+        worktreeIndexEnv,
+      );
+    },
+    operation: async (worktreeIndexEnv) => {
+      const changedPaths = await gitChangedPaths(
+        workspacePath,
+        baseCommit,
+        limits.maxChangedFiles,
+        worktreeIndexEnv,
+      );
+      if (changedPaths.length === 0) return null;
+      await assertSafeChangedFiles({
+        workspacePath,
+        changedPaths,
+        baseCommit,
+        limits,
+        scanSecretContent: input.scanSecretContent !== false,
+      });
+      await input.testHooks?.afterSafetyScan?.(1);
+      const patch = await buildDeterministicPatch({
+        workspacePath,
+        changedPaths,
+        baseCommit,
+        limits,
+        worktreeIndexEnv,
+      });
+      await input.testHooks?.afterPatchSnapshot?.(1);
+      await assertGitHeadUnchanged(workspacePath, baseCommit);
+      const confirmedWorkspaceLayer = await captureHandoffWorkspaceLayer(
+        workspacePath,
+      );
+      if (workspaceLayer !== confirmedWorkspaceLayer) {
+        throw new Error("handoff_workspace_changed_during_materialization");
+      }
+      const confirmedChangedPaths = await gitChangedPaths(
+        workspacePath,
+        baseCommit,
+        limits.maxChangedFiles,
+        worktreeIndexEnv,
+      );
+      if (!sameStrings(changedPaths, confirmedChangedPaths)) {
+        throw new Error("handoff_workspace_changed_during_materialization");
+      }
+      await assertSafeChangedFiles({
+        workspacePath,
+        changedPaths: confirmedChangedPaths,
+        baseCommit,
+        limits,
+        scanSecretContent: input.scanSecretContent !== false,
+      });
+      await input.testHooks?.afterSafetyScan?.(2);
+      const confirmedPatch = await buildDeterministicPatch({
+        workspacePath,
+        changedPaths: confirmedChangedPaths,
+        baseCommit,
+        limits,
+        worktreeIndexEnv,
+      });
+      await input.testHooks?.afterPatchSnapshot?.(2);
+      await assertGitHeadUnchanged(workspacePath, baseCommit);
+      if (patch !== confirmedPatch) {
+        throw new Error("handoff_workspace_changed_during_materialization");
+      }
+      return { baseCommit, changedPaths, patch };
+    },
   });
-  await input.testHooks?.afterSafetyScan?.(1);
-  const patch = await buildDeterministicPatch({
-    workspacePath,
-    changedPaths,
-    baseCommit,
-    limits,
-  });
-  await input.testHooks?.afterPatchSnapshot?.(1);
-  await assertGitHeadUnchanged(workspacePath, baseCommit);
-  const confirmedChangedPaths = await gitChangedPaths(
-    workspacePath,
-    baseCommit,
-    limits.maxChangedFiles,
-  );
-  if (!sameStrings(changedPaths, confirmedChangedPaths)) {
-    throw new Error("handoff_workspace_changed_during_materialization");
-  }
-  await assertSafeChangedFiles({
-    workspacePath,
-    changedPaths: confirmedChangedPaths,
-    baseCommit,
-    limits,
-    scanSecretContent: input.scanSecretContent !== false,
-  });
-  await input.testHooks?.afterSafetyScan?.(2);
-  const confirmedPatch = await buildDeterministicPatch({
-    workspacePath,
-    changedPaths: confirmedChangedPaths,
-    baseCommit,
-    limits,
-  });
-  await input.testHooks?.afterPatchSnapshot?.(2);
-  await assertGitHeadUnchanged(workspacePath, baseCommit);
-  if (patch !== confirmedPatch) {
-    throw new Error("handoff_workspace_changed_during_materialization");
-  }
-  return { baseCommit, changedPaths, patch };
 }
 
 function handoffArtifactLimits(
@@ -345,27 +381,148 @@ async function gitChangedPaths(
   workspacePath: string,
   baseCommit: string,
   maxChangedFiles: number,
+  worktreeIndexEnv: NodeJS.ProcessEnv,
 ): Promise<readonly string[]> {
   const [tracked, untracked] = await Promise.all([
     gitNullPaths(workspacePath, [
       "diff",
+      "--no-ext-diff",
       "--name-only",
       "--no-renames",
       "-z",
       baseCommit,
       "--",
-    ]),
+    ], worktreeIndexEnv),
     gitNullPaths(workspacePath, [
       "ls-files",
       "--others",
       "--exclude-standard",
       "-z",
-    ]),
+    ], worktreeIndexEnv),
   ]);
   if (tracked.length + untracked.length > maxChangedFiles) {
     throw new Error("handoff_changed_file_limit_exceeded");
   }
   return uniqueSorted([...tracked, ...untracked].map(assertSafeRelativePath));
+}
+
+type HandoffWorkspaceLayer = "staged" | "unstaged" | "clean";
+
+/**
+ * A continuation snapshot has one authoritative Git layer. A staged input
+ * patch may remain exactly staged, or the same full patch may be completely
+ * reset into the worktree. Mixing the two layers is ambiguous and is never
+ * resumable.
+ */
+async function captureHandoffWorkspaceLayer(
+  workspacePath: string,
+): Promise<HandoffWorkspaceLayer> {
+  const [headTree, indexPath, repositoryObjectsPath] = await Promise.all([
+    gitText(workspacePath, ["rev-parse", "--verify", "HEAD^{tree}"]),
+    gitText(workspacePath, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-path",
+      "index",
+    ]),
+    gitText(workspacePath, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-path",
+      "objects",
+    ]),
+  ]);
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "subscription-runtime-handoff-index-"),
+  );
+  try {
+    const temporaryObjectsPath = join(temporaryDirectory, "objects");
+    await mkdir(temporaryObjectsPath, { recursive: true, mode: 0o700 });
+    const isolatedObjectEnv = {
+      ...process.env,
+      GIT_OBJECT_DIRECTORY: temporaryObjectsPath,
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: repositoryObjectsPath,
+    };
+    const indexTree = await gitText(workspacePath, ["write-tree"], {
+      ...isolatedObjectEnv,
+      GIT_INDEX_FILE: indexPath,
+    });
+    const env = {
+      ...isolatedObjectEnv,
+      GIT_INDEX_FILE: join(temporaryDirectory, "index"),
+    };
+    await gitOutput(workspacePath, ["read-tree", indexTree], 1024 * 1024, env);
+    const [unstagedDiffPaths, untrackedPaths, modeDriftPaths] =
+      await Promise.all([
+        gitNullPaths(workspacePath, [
+          "diff",
+          "--no-ext-diff",
+          "--name-only",
+          "--no-renames",
+          "-z",
+          "--",
+        ], env),
+        gitNullPaths(workspacePath, [
+          "ls-files",
+          "--others",
+          "--exclude-standard",
+          "-z",
+        ]),
+        gitIndexWorktreeModeDriftPaths(workspacePath),
+      ]);
+    const staged = indexTree !== headTree;
+    const unstaged =
+      unstagedDiffPaths.length > 0 ||
+      untrackedPaths.length > 0 ||
+      modeDriftPaths.length > 0;
+    if (staged && unstaged) {
+      throw new Error("handoff_mixed_index_worktree_state");
+    }
+    return staged ? "staged" : unstaged ? "unstaged" : "clean";
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Git intentionally obeys core.fileMode and index stat hints in ordinary
+ * status/diff output. Read index plumbing and compare it with lstat so an
+ * executable-bit drift cannot disappear behind repository configuration.
+ */
+async function gitIndexWorktreeModeDriftPaths(
+  workspacePath: string,
+): Promise<readonly string[]> {
+  const output = await gitOutput(
+    workspacePath,
+    ["ls-files", "--stage", "-z"],
+    16 * 1024 * 1024,
+  );
+  const changed: string[] = [];
+  for (const rawEntry of output.split("\0").filter(Boolean)) {
+    const separator = rawEntry.indexOf("\t");
+    const metadata = rawEntry.slice(0, separator).split(" ");
+    const path = assertSafeRelativePath(rawEntry.slice(separator + 1));
+    const [mode, objectId, stage] = metadata;
+    if (
+      separator < 0 ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(objectId ?? "") ||
+      stage !== "0"
+    ) {
+      throw new Error("handoff_index_entry_invalid");
+    }
+    if (mode !== "100644" && mode !== "100755") continue;
+    let item;
+    try {
+      item = await lstat(resolve(workspacePath, path));
+    } catch (error) {
+      if (isNodeError(error, "ENOENT")) continue;
+      throw error;
+    }
+    if (!item.isFile()) continue;
+    const worktreeMode = (item.mode & 0o111) === 0 ? "100644" : "100755";
+    if (worktreeMode !== mode) changed.push(path);
+  }
+  return uniqueSorted(changed);
 }
 
 async function assertSafeChangedFiles(input: {
@@ -467,6 +624,7 @@ async function assertSafeChangedFiles(input: {
             objectNames: objectIds,
             maxBlobBytes: input.limits.maxFileBytes,
             maxTotalBytes: input.limits.maxTotalFileBytes - totalBytes,
+            noReplaceObjects: true,
           });
   } catch (error) {
     throw handoffGitBlobError(error);
@@ -593,6 +751,7 @@ async function buildDeterministicPatch(input: {
   readonly changedPaths: readonly string[];
   readonly baseCommit: string;
   readonly limits: HandoffArtifactLimits;
+  readonly worktreeIndexEnv: NodeJS.ProcessEnv;
 }): Promise<string> {
   const untracked = new Set(
     await gitNullPaths(input.workspacePath, [
@@ -600,12 +759,20 @@ async function buildDeterministicPatch(input: {
       "--others",
       "--exclude-standard",
       "-z",
-    ]),
+    ], input.worktreeIndexEnv),
   );
   const trackedPatch = await gitOutput(
     input.workspacePath,
-    ["diff", "--binary", "--no-renames", input.baseCommit, "--"],
+    [
+      "diff",
+      "--no-ext-diff",
+      "--binary",
+      "--no-renames",
+      input.baseCommit,
+      "--",
+    ],
     input.limits.maxPatchBytes,
+    input.worktreeIndexEnv,
   );
   const parts = trackedPatch ? [ensureTrailingNewline(trackedPatch)] : [];
   let byteLength = Buffer.byteLength(trackedPatch);
@@ -755,26 +922,40 @@ function assertNoRawSecret(content: Buffer, path: string): void {
 async function gitNullPaths(
   cwd: string,
   args: readonly string[],
+  env?: NodeJS.ProcessEnv,
 ): Promise<readonly string[]> {
-  const output = await gitOutput(cwd, args, 2 * 1024 * 1024);
+  const output = await gitOutput(cwd, args, 2 * 1024 * 1024, env);
   return output.split("\0").filter(Boolean);
 }
 
-async function gitText(cwd: string, args: readonly string[]): Promise<string> {
-  return (await gitOutput(cwd, args, 1024 * 1024)).trim();
+async function gitText(
+  cwd: string,
+  args: readonly string[],
+  env?: NodeJS.ProcessEnv,
+): Promise<string> {
+  return (await gitOutput(cwd, args, 1024 * 1024, env)).trim();
 }
 
 async function gitOutput(
   cwd: string,
   args: readonly string[],
   maxBuffer: number,
+  env?: NodeJS.ProcessEnv,
 ): Promise<string> {
   const { stdout } = await execFileAsync(
     "git",
-    withLiteralGitPathspecs(["-c", "core.quotepath=false", ...args]),
+    withLiteralGitPathspecs([
+      "--no-replace-objects",
+      "-c",
+      "core.quotepath=false",
+      "-c",
+      "core.fileMode=true",
+      ...args,
+    ]),
     {
       cwd,
       encoding: "utf8",
+      ...(env ? { env } : {}),
       maxBuffer,
       timeout: 15_000,
     },
@@ -815,64 +996,4 @@ function runtimeArtifact(
   item: HandoffArtifactDescriptor,
 ): RuntimeResultArtifact {
   return { kind, ...item };
-}
-
-function stableJson(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
-}
-
-function sha256(value: string | Buffer): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function uniqueSorted(values: readonly string[]): readonly string[] {
-  return [...new Set(values)].sort();
-}
-
-function sameStrings(
-  left: readonly string[],
-  right: readonly string[],
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every((value, index) => value === right[index])
-  );
-}
-
-function ensureTrailingNewline(value: string): string {
-  return value.endsWith("\n") ? value : `${value}\n`;
-}
-
-function pathInside(root: string, path: string): boolean {
-  const rel = relative(root, path);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
-
-function assertSafeId(value: string, label: string): void {
-  if (
-    basename(value) !== value ||
-    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)
-  ) {
-    throw new Error(`${label}_invalid`);
-  }
-}
-
-function isNodeError(
-  error: unknown,
-  code: string,
-): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error && error.code === code;
-}
-
-function isExecErrorWithStdout(
-  error: unknown,
-): error is { readonly code: number; readonly stdout: string } {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === 1 &&
-    "stdout" in error &&
-    typeof error.stdout === "string"
-  );
 }

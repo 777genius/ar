@@ -1,6 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import type { ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
-import { optionalRealPathForAdmission } from "./codex-goal-project-admission";
+import { optionalRealPathForAdmission } from "./codex-goal-project-admission-paths";
 import {
   pathInsideAnyProjectRoot,
   uniqueProjectControlStrings,

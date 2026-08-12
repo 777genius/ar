@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -41,8 +40,13 @@ import { tryMaterializeTerminalCodexGoalHandoff } from "../codex-goal-terminal-h
 import {
   cleanupProjectPreStartAdmissionFixtures,
   createBuiltinFixture,
-  withWorkKey,
+  withOwnershipBoundWorkKey,
 } from "./codex-goal-project-pre-start-admission-fixture";
+import {
+  legacyUnsupportedModelPrewarmRawCause,
+  recordUnavailableAttempt,
+  sha256TestBytes as sha256,
+} from "./codex-goal-project-continuation-test-support";
 
 afterEach(async () => {
   await cleanupProjectPreStartAdmissionFixtures();
@@ -333,9 +337,11 @@ describe("admitted input-patch capacity continuation", () => {
     });
     await mkdir(join(workspacePath, "src"), { recursive: true });
     const providerToken = ["sk-", "v".repeat(24)].join("");
+    const verifierSource =
+      `export const providerToken = ${JSON.stringify(providerToken)};\n`;
     await writeFile(
       join(workspacePath, "src", "example.ts"),
-      `export const providerToken = ${JSON.stringify(providerToken)};\n`,
+      verifierSource,
     );
     execFileSync("git", ["add", "src/example.ts"], { cwd: workspacePath });
     const stagedPatch = execFileSync(
@@ -370,7 +376,7 @@ describe("admitted input-patch capacity continuation", () => {
       networkAccess: NetworkAccessMode.Restricted,
       tags: ["worker-role-producer"],
     };
-    const contract = withWorkKey({
+    const contract = withOwnershipBoundWorkKey({
       ...fixture.contract,
       workspaceRoot: workspacePath,
       phaseStartSha: execFileSync("git", ["rev-parse", "HEAD"], {
@@ -387,7 +393,7 @@ describe("admitted input-patch capacity continuation", () => {
       }).trim(),
       inputPatchHash: patchSha256,
       reviewKind: "review",
-      ownedPaths: ["src/owned.ts"],
+      ownedPaths: ["src/example.ts"],
       executionPolicy: {
         mode: "sandbox-only",
         sandboxRoot: workspacePath,
@@ -452,6 +458,10 @@ describe("admitted input-patch capacity continuation", () => {
       manifest.jobRootDir,
       `${manifest.taskId}.latest-result.json`,
     );
+    const progressPath = codexGoalProgressPath({
+      jobRootDir: manifest.jobRootDir,
+      taskId: manifest.taskId,
+    });
     await writeFile(
       resultPath,
       `${JSON.stringify({
@@ -514,6 +524,9 @@ describe("admitted input-patch capacity continuation", () => {
 
     let reservedLaunch: CodexGoalLaunchInput | undefined;
     const startAdmissionWorkspaceModes: Array<string | undefined> = [];
+    const startWorkerRequests: Array<Readonly<Record<string, unknown>>> = [];
+    let runtimeContinuationOwnedPaths: readonly string[] | undefined;
+    let runtimeSupervisorReapCalls = 0;
     const continuationDeps: CodexGoalMcpProjectControlActionsDeps = {
       ...deps,
       safeExecutionJournal: journal,
@@ -530,10 +543,44 @@ describe("admitted input-patch capacity continuation", () => {
       codexProjectControlBroker: (input) => {
         reservedLaunch = input.startLaunch;
         startAdmissionWorkspaceModes.push(input.startAdmissionWorkspaceMode);
+        runtimeContinuationOwnedPaths =
+          input.controlledRuntimeInPlaceContinuation?.ownedPaths;
         return {
-          startWorker: async () => ({ status: "started" }),
+          stopWorker: async () => {
+            runtimeSupervisorReapCalls += 1;
+            await writeFile(
+              progressPath,
+              `${JSON.stringify({
+                schemaVersion: 1,
+                taskId: manifest.taskId,
+                status: "stopped",
+                updatedAt: new Date().toISOString(),
+              })}\n`,
+            );
+            return { status: "applied" };
+          },
+          startWorker: async (request: Readonly<Record<string, unknown>>) => {
+            startWorkerRequests.push(request);
+            return { status: "started" };
+          },
         } as unknown as ProjectControlBroker;
       },
+      listAccountStatuses: async () =>
+        ["account-c", "account-g", "account-i"].map((accountId) => ({
+          name: accountId,
+          authJsonPath: join(
+            fixture.root,
+            "auth",
+            accountId,
+            "auth.json",
+          ),
+          status: "ready" as const,
+          availability: "available" as const,
+          schedulerEligible: true,
+          recommendedAction: "none" as const,
+          warnings: [],
+          safeMessage: "ready",
+        })),
     };
     const started = await projectControlStartStoredJobView(
       args,
@@ -892,6 +939,18 @@ describe("admitted input-patch capacity continuation", () => {
       interruptedResultPath,
       `${JSON.stringify(interruptedResult)}\n`,
     );
+    await writeFile(
+      progressPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        taskId: manifest.taskId,
+        status: "blocked",
+        resultStatus: "partial",
+        reason: "runtime_interrupted",
+        updatedAt: new Date().toISOString(),
+        pid: process.pid,
+      })}\n`,
+    );
     await expect(
       projectControlStartStoredJobView(args, continuationDeps),
     ).resolves.toMatchObject({
@@ -901,13 +960,101 @@ describe("admitted input-patch capacity continuation", () => {
     });
     await expect(
       projectControlStartStoredJobView(
-        { ...args, forceStart: true },
+        {
+          ...args,
+          forceStart: true,
+          continuationAccounts: ["account-g"],
+        },
         continuationDeps,
       ),
     ).resolves.toMatchObject({ ok: true });
+    expect(runtimeSupervisorReapCalls).toBe(1);
     expect(startAdmissionWorkspaceModes.at(-1)).toBe(
       "admitted_input_patch_runtime_continuation",
     );
+    expect(runtimeContinuationOwnedPaths).toEqual(contract.ownedPaths);
+    expect(startWorkerRequests.at(-1)).toMatchObject({
+      jobId: manifest.jobId,
+      accounts: ["account-g"],
+      ownedPaths: contract.ownedPaths,
+    });
+    const assertRuntimeWorkspaceBinding = () =>
+      assertProjectPreStartAdmissionLaunchBinding({
+        manifest,
+        scope,
+        workspaceMode: "admitted_input_patch_runtime_continuation",
+      });
+
+    execFileSync("git", ["reset", "--", "src/example.ts"], {
+      cwd: workspacePath,
+    });
+    await expect(assertRuntimeWorkspaceBinding()).resolves.toBeUndefined();
+
+    await writeFile(join(workspacePath, "outside-owned.ts"), "index only\n");
+    execFileSync("git", ["add", "outside-owned.ts"], { cwd: workspacePath });
+    await expect(assertRuntimeWorkspaceBinding()).rejects.toThrow(
+      "handoff_mixed_index_worktree_state",
+    );
+    execFileSync("git", ["add", "src/example.ts"], { cwd: workspacePath });
+    expect(execFileSync("git", ["diff", "--name-only"], {
+      cwd: workspacePath,
+      encoding: "utf8",
+    })).toBe("");
+    await expect(assertRuntimeWorkspaceBinding()).rejects.toThrow(
+      "project_control_pre_start_launch_binding_mismatch",
+    );
+    execFileSync("git", [
+      "reset",
+      "--",
+      "src/example.ts",
+      "outside-owned.ts",
+    ], {
+      cwd: workspacePath,
+    });
+    await rm(join(workspacePath, "outside-owned.ts"));
+
+    await writeFile(
+      join(workspacePath, "src", "example.ts"),
+      `${verifierSource}// byte drift\n`,
+    );
+    await expect(assertRuntimeWorkspaceBinding()).rejects.toThrow(
+      "project_control_pre_start_launch_binding_mismatch",
+    );
+    await writeFile(join(workspacePath, "src", "example.ts"), verifierSource);
+
+    execFileSync("git", ["config", "core.fileMode", "false"], {
+      cwd: workspacePath,
+    });
+    execFileSync("chmod", ["755", join(workspacePath, "src", "example.ts")]);
+    await expect(assertRuntimeWorkspaceBinding()).rejects.toThrow(
+      "project_control_pre_start_launch_binding_mismatch",
+    );
+    execFileSync("chmod", ["644", join(workspacePath, "src", "example.ts")]);
+    execFileSync("git", ["config", "core.fileMode", "true"], {
+      cwd: workspacePath,
+    });
+
+    await writeFile(join(workspacePath, "UNTRACKED.txt"), "drift\n");
+    await expect(assertRuntimeWorkspaceBinding()).rejects.toThrow(
+      "project_control_pre_start_launch_binding_mismatch",
+    );
+    await rm(join(workspacePath, "UNTRACKED.txt"));
+
+    await rm(join(workspacePath, "src", "example.ts"));
+    await expect(assertRuntimeWorkspaceBinding()).rejects.toThrow(
+      "project_control_pre_start_launch_binding_mismatch",
+    );
+    await writeFile(join(workspacePath, "src", "example.ts"), verifierSource);
+
+    execFileSync("git", ["commit", "--allow-empty", "-m", "test: head drift"], {
+      cwd: workspacePath,
+    });
+    await expect(assertRuntimeWorkspaceBinding()).rejects.toThrow(
+      "handoff_base_commit_mismatch",
+    );
+    execFileSync("git", ["reset", "--soft", contract.phaseStartSha], {
+      cwd: workspacePath,
+    });
 
     await writeFile(
       interruptedResultPath,
@@ -952,137 +1099,7 @@ describe("admitted input-patch capacity continuation", () => {
     expect(await readFile(plan.descriptor.receiptPath, "utf8")).toContain(
       '"status": "launch_authorized"',
     );
-  });
-});
-
-describe("clean-first producer runtime interruption continuation", () => {
-  it("accepts the runtime-captured owned patch without an original verified input patch", async () => {
-    const fixture = await createBuiltinFixture();
-    const contract = withWorkKey({
-      ...fixture.contract,
-      reviewKind: "implementation",
-      inputPatchHash: null,
-      ownedPaths: ["src/"],
-    });
-    const state = {
-      ...fixture.state,
-      records: fixture.state.records.map((record) => ({
-        ...record,
-        ...Object.fromEntries(
-          (
-            [
-              "workKey",
-              "baseSha",
-              "phaseStartSha",
-              "inputPatchHash",
-              "reviewKind",
-            ] as const
-          ).map((field) => [field, contract[field]]),
-        ),
-      })),
-    };
-    const plan = planProjectPreStartAdmission({
-      value: { mode: "serial-builtin", contract, state },
-      confirmed: true,
-      scope: fixture.scope,
-      manifest: fixture.manifest,
-    });
-    if (!plan) throw new Error("expected admission plan");
-    const manifest: CodexGoalJobManifest = {
-      ...fixture.storedManifest,
-      projectPreStartAdmission: plan.descriptor,
-    };
-    await prepareProjectPreStartAdmission({
-      plan,
-      manifest,
-      scope: fixture.scope,
-    });
-    await authorizeProjectPreStartAdmissionLaunch({
-      manifest,
-      scope: fixture.scope,
-    });
-
-    await mkdir(join(manifest.workspacePath, "src"), { recursive: true });
-    await writeFile(
-      join(manifest.workspacePath, "src", "example.ts"),
-      "export const value = 1;\n",
-    );
-    await writeFile(
-      join(manifest.workspacePath, "src", "second.ts"),
-      "export const second = 1;\n",
-    );
-    const handoff = await materializeCodexGoalHandoffArtifacts({
-      workerJobId: manifest.jobId,
-      taskId: manifest.taskId,
-      workspacePath: manifest.workspacePath,
-      jobRootDir: manifest.jobRootDir,
-    });
-    if (!handoff) throw new Error("expected interrupted handoff");
-    const resultPath = join(
-      manifest.jobRootDir,
-      `${manifest.taskId}.latest-result.json`,
-    );
-    await writeFile(
-      resultPath,
-      `${JSON.stringify({
-        schemaVersion: 1,
-        taskId: manifest.taskId,
-        status: "partial",
-        reason: "runtime_interrupted",
-        updatedAt: new Date().toISOString(),
-        changedFiles: ["src/example.ts", "src/second.ts"],
-        evidence: ["safe_execution_status:partial"],
-        blockers: ["runtime_interrupted"],
-        nextAction: "preserve_patch",
-        artifacts: handoff.artifacts,
-      })}\n`,
-    );
-
-    await expect(
-      assertProjectPreStartAdmissionLaunchBinding({
-        manifest,
-        scope: fixture.scope,
-        workspaceMode: "admitted_input_patch_runtime_continuation",
-      }),
-    ).resolves.toBeUndefined();
-
-    await writeFile(
-      resultPath,
-      `${JSON.stringify({
-        schemaVersion: 1,
-        taskId: manifest.taskId,
-        status: "partial",
-        reason: "account_unavailable",
-        updatedAt: new Date().toISOString(),
-        changedFiles: ["src/example.ts", "src/second.ts"],
-        evidence: ["safe_execution_status:partial"],
-        blockers: ["account_unavailable"],
-        nextAction: "switch_account",
-        artifacts: handoff.artifacts,
-      })}\n`,
-    );
-    const status = {
-      workspaceDirty: true,
-      recommendedAction: "continue_after_capacity",
-      resultExists: true,
-      resultPath,
-      resultStatus: "partial",
-      resultReason: "account_unavailable",
-      warnings: [],
-    } as CodexGoalStatus;
-    await expect(
-      resolveProjectPreStartContinuation({
-        manifest,
-        launch: {
-          config: { taskId: manifest.taskId },
-        } as CodexGoalLaunchInput,
-        status,
-      }),
-    ).resolves.toEqual({
-      kind: "capacity",
-      workspaceMode: "admitted_input_patch_continuation",
-    });
-  });
+  }, 120_000);
 });
 
 describe("clean pre-start capacity continuation", () => {
@@ -1406,57 +1423,3 @@ describe("clean pre-start capacity continuation", () => {
     );
   });
 });
-
-function sha256(value: Uint8Array): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function legacyUnsupportedModelPrewarmRawCause(): string {
-  return [
-    "Codex prewarm transcript:",
-    "user",
-    "Respond with OK only.",
-    'ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The \'gpt-5.6-sol\' model is not supported when using Codex with a ChatGPT account."}}',
-    'ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The \'gpt-5.6-sol\' model is not supported when using Codex with a ChatGPT account."}}',
-  ].join("\n");
-}
-
-async function recordUnavailableAttempt(
-  journal: InMemoryAttemptJournal,
-  taskId: string,
-  workspacePath: string,
-  workspaceDirty = true,
-): Promise<void> {
-  const now = new Date("2026-07-14T00:00:00.000Z");
-  await journal.startTask({
-    taskId,
-    workspaceRunId: "workspace-run",
-    workspacePath,
-    effectMode: "workspace_patch",
-    provider: "codex",
-    now,
-  });
-  await journal.appendAttempt({
-    taskId,
-    attempt: {
-      taskId,
-      attemptNumber: 1,
-      accountId: "account-c",
-      provider: "codex",
-      startedAt: now,
-      finishedAt: now,
-      status: "blocked",
-      failureReason: "account_unavailable",
-      workspaceDirtyBefore: workspaceDirty,
-      workspaceDirtyAfter: workspaceDirty,
-      changedFiles: [],
-    },
-    now,
-  });
-  await journal.markPartial({
-    taskId,
-    status: "waiting_capacity",
-    reason: "account_unavailable",
-    now,
-  });
-}

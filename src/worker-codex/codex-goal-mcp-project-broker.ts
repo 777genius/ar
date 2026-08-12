@@ -38,7 +38,10 @@ import type { ProjectPreStartAdmissionLaunchWorkspaceMode } from "./application/
 import {
   assertCodexGoalProjectJobNotTerminal,
 } from "./application/project-control/codex-goal-consumed-output-ledger-io";
-import { decideCodexGoalProjectStop } from "./application/project-control/codex-goal-project-stop-policy";
+import {
+  decideCodexGoalProjectStop,
+  isCodexGoalProjectTerminalCapacityPause,
+} from "./application/project-control/codex-goal-project-stop-policy";
 import type {
   CaptureReviewedWorkerOutputInput,
   ReviewedWorkerOutputSnapshot,
@@ -65,6 +68,10 @@ import {
   isGitAncestor,
 } from "./codex-goal-mcp-project-git";
 import { pushProjectBranch } from "./application/project-control/codex-goal-project-external-rewrite-recovery";
+import {
+  assertProjectControlledRuntimeInPlaceContinuation,
+  type ProjectControlledRuntimeInPlaceContinuation,
+} from "./application/project-control/codex-goal-project-in-place-continuation";
 
 export type { CodexGoalProjectCreateWorktreeInput } from "./application/project-control/codex-goal-project-control-contracts";
 
@@ -123,6 +130,8 @@ export type CodexProjectControlBrokerInput = {
   readonly startAdmissionWorkspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
   readonly startWorkspaceLease?: ProjectControlWorkspaceLease;
   readonly startSkipDoctor?: boolean;
+  readonly controlledRuntimeInPlaceContinuation?:
+    ProjectControlledRuntimeInPlaceContinuation;
   readonly stopLaunch?: CodexGoalLaunchInput;
   readonly reviewLaunch?: CodexGoalLaunchInput;
   readonly reviewWorkspaceLease?: ProjectControlWorkspaceLease;
@@ -140,6 +149,16 @@ export type CodexProjectControlBrokerInput = {
 export function createCodexProjectControlBroker(
   input: CodexProjectControlBrokerInput,
 ): ProjectControlBroker {
+  const runtimeContinuationMode = input.startAdmissionWorkspaceMode ===
+    "admitted_input_patch_runtime_continuation";
+  if (
+    runtimeContinuationMode !==
+      (input.controlledRuntimeInPlaceContinuation !== undefined) ||
+    (runtimeContinuationMode &&
+      (!input.startManifest || !input.startWorkspaceLease))
+  ) {
+    throw new Error("project_control_runtime_continuation_context_required");
+  }
   const admittedInputPatchTarget =
     input.admittedInputPatchTarget ??
     ((input.startAdmissionWorkspaceMode === "admitted_input_patch" &&
@@ -177,6 +196,18 @@ export function createCodexProjectControlBroker(
                 jobId: input.startManifest.jobId,
                 workspacePath:
                   input.startWorkspaceLease.canonicalWorkspacePath,
+              },
+            }
+          : {}),
+        ...(input.controlledRuntimeInPlaceContinuation &&
+            input.startManifest && input.startWorkspaceLease
+          ? {
+              inPlaceContinuationTarget: {
+                jobId: input.startManifest.jobId,
+                workspacePath:
+                  input.startWorkspaceLease.canonicalWorkspacePath,
+                ownedPaths:
+                  input.controlledRuntimeInPlaceContinuation.ownedPaths,
               },
             }
           : {}),
@@ -297,6 +328,19 @@ function codexProjectControlPorts(
           throw new Error("project_control_start_workspace_lease_mismatch");
         }
         const start = async () => {
+          if (input.controlledRuntimeInPlaceContinuation) {
+            if (!input.startManifest) {
+              throw new Error(
+                "project_control_runtime_interruption_manifest_required",
+              );
+            }
+            await assertProjectControlledRuntimeInPlaceContinuation({
+              manifest: input.startManifest,
+              scope: input.scope,
+              workspacePath: startLaunch.config.workspacePath,
+              expected: input.controlledRuntimeInPlaceContinuation,
+            });
+          }
           await assertCodexGoalProjectJobNotTerminal({
             roots: input.scope.consumedOutputLedgerRoots ?? [],
             projectId: input.scope.projectId,
@@ -310,6 +354,8 @@ function codexProjectControlPorts(
             ...(input.startAdmissionWorkspaceMode ===
                 "admitted_input_patch_continuation" ||
               input.startAdmissionWorkspaceMode ===
+                "admitted_input_patch_runtime_continuation" ||
+              input.startAdmissionWorkspaceMode ===
                 "clean_capacity_continuation"
               ? { capacityContinuation: true as const }
               : {}),
@@ -318,6 +364,12 @@ function codexProjectControlPorts(
                   rejectedUncapturedContinuationPatchSha256:
                     input.rejectedUncapturedTerminalHandoffRecovery.patchSha256,
                 }
+              : input.controlledRuntimeInPlaceContinuation?.rejectedPatchSha256
+                ? {
+                    rejectedUncapturedContinuationPatchSha256:
+                      input.controlledRuntimeInPlaceContinuation
+                        .rejectedPatchSha256,
+                  }
               : {}),
           });
           await prepareCodexGoalLaunchPaths(startLaunch);
@@ -383,9 +435,9 @@ function codexProjectControlPorts(
           tailLines: 20,
         });
         const capacityContinuation =
-          input.startAdmissionWorkspaceMode ===
-            "admitted_input_patch_continuation" ||
-          input.startAdmissionWorkspaceMode === "clean_capacity_continuation";
+          isCodexGoalProjectTerminalCapacityPause(
+            input.startAdmissionWorkspaceMode,
+          );
         const stopPolicy = decideCodexGoalProjectStop({
           ...brief.workerHealth,
           terminalCapacityPause: capacityContinuation,
