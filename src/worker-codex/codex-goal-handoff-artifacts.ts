@@ -105,19 +105,61 @@ export type CodexGoalHandoffPatchFingerprint = {
   readonly patchSha256: string;
 };
 
+export type CodexGoalExactWorkspacePatch = {
+  readonly baseCommit: string;
+  readonly changedPaths: readonly string[];
+  readonly patch: string;
+};
+
+/**
+ * The single exact serializer used by immutable handoffs and reviewed-output
+ * snapshots. Keeping both consumers on this primitive makes patch hashes
+ * interoperable for renames, staged changes, untracked files, and binaries.
+ */
+export async function captureCodexGoalExactWorkspacePatch(input: {
+  readonly workspacePath: string;
+  readonly gitBinaryPath?: string;
+  readonly expectedBaseCommit?: string;
+  readonly limits?: Partial<HandoffArtifactLimits>;
+  readonly scanSecretContent?: boolean;
+  readonly enforceSingleWorkspaceLayer?: boolean;
+  readonly testHooks?: {
+    readonly afterSafetyScan?: (scan: 1 | 2) => Promise<void>;
+    readonly afterPatchSnapshot?: (snapshot: 1 | 2) => Promise<void>;
+  };
+}): Promise<CodexGoalExactWorkspacePatch | null> {
+  const workspacePath = await canonicalOwnedDirectory(
+    input.workspacePath,
+    "handoff_workspace",
+  );
+  return await captureStableHandoffPatch({
+    workspacePath,
+    ...(input.gitBinaryPath === undefined
+      ? {}
+      : { gitBinaryPath: input.gitBinaryPath }),
+    limits: handoffArtifactLimits(input.limits),
+    ...(input.expectedBaseCommit
+      ? { expectedBaseCommit: input.expectedBaseCommit }
+      : {}),
+    ...(input.scanSecretContent === undefined
+      ? {}
+      : { scanSecretContent: input.scanSecretContent }),
+    ...(input.enforceSingleWorkspaceLayer === undefined
+      ? {}
+      : { enforceSingleWorkspaceLayer: input.enforceSingleWorkspaceLayer }),
+    ...(input.testHooks ? { testHooks: input.testHooks } : {}),
+  });
+}
+
 /** Read-only fingerprint using the exact serializer and safety checks of handoff materialization. */
 export async function captureCodexGoalHandoffPatchFingerprint(input: {
   readonly workspacePath: string;
   readonly expectedBaseCommit?: string;
   readonly limits?: Partial<HandoffArtifactLimits>;
 }): Promise<CodexGoalHandoffPatchFingerprint | null> {
-  const workspacePath = await canonicalOwnedDirectory(
-    input.workspacePath,
-    "handoff_workspace",
-  );
-  const snapshot = await captureStableHandoffPatch({
-    workspacePath,
-    limits: handoffArtifactLimits(input.limits),
+  const snapshot = await captureCodexGoalExactWorkspacePatch({
+    workspacePath: input.workspacePath,
+    ...(input.limits ? { limits: input.limits } : {}),
     ...(input.expectedBaseCommit
       ? { expectedBaseCommit: input.expectedBaseCommit }
       : {}),
@@ -137,13 +179,9 @@ export async function captureCodexGoalContinuationWorkspaceFingerprint(input: {
   readonly expectedBaseCommit?: string;
   readonly limits?: Partial<HandoffArtifactLimits>;
 }): Promise<CodexGoalContinuationWorkspaceFingerprint | null> {
-  const workspacePath = await canonicalOwnedDirectory(
-    input.workspacePath,
-    "handoff_workspace",
-  );
-  const snapshot = await captureStableHandoffPatch({
-    workspacePath,
-    limits: handoffArtifactLimits(input.limits),
+  const snapshot = await captureCodexGoalExactWorkspacePatch({
+    workspacePath: input.workspacePath,
+    ...(input.limits ? { limits: input.limits } : {}),
     scanSecretContent: false,
     ...(input.expectedBaseCommit
       ? { expectedBaseCommit: input.expectedBaseCommit }
@@ -183,7 +221,7 @@ export async function materializeCodexGoalHandoffArtifacts(input: {
     input.jobRootDir,
     "handoff_job_root",
   );
-  const snapshot = await captureStableHandoffPatch({
+  const snapshot = await captureCodexGoalExactWorkspacePatch({
     workspacePath,
     limits,
     ...(input.expectedBaseCommit
@@ -263,9 +301,11 @@ export async function materializeCodexGoalHandoffArtifacts(input: {
 
 async function captureStableHandoffPatch(input: {
   readonly workspacePath: string;
+  readonly gitBinaryPath?: string;
   readonly expectedBaseCommit?: string;
   readonly limits: HandoffArtifactLimits;
   readonly scanSecretContent?: boolean;
+  readonly enforceSingleWorkspaceLayer?: boolean;
   readonly testHooks?: {
     readonly afterSafetyScan?: (scan: 1 | 2) => Promise<void>;
     readonly afterPatchSnapshot?: (snapshot: 1 | 2) => Promise<void>;
@@ -280,11 +320,13 @@ async function captureStableHandoffPatch(input: {
     "rev-parse",
     "--verify",
     "HEAD",
-  ]);
+  ], undefined, input.gitBinaryPath);
   if (input.expectedBaseCommit && input.expectedBaseCommit !== baseCommit) {
     throw new Error("handoff_base_commit_mismatch");
   }
-  const workspaceLayer = await captureHandoffWorkspaceLayer(workspacePath);
+  const workspaceLayer = input.enforceSingleWorkspaceLayer === false
+    ? undefined
+    : await captureHandoffWorkspaceLayer(workspacePath, input.gitBinaryPath);
   return withHandoffWorktreeIndex({
     initialize: async (worktreeIndexEnv) => {
       // A clean synthetic index has no skip-worktree or assume-unchanged bits,
@@ -294,6 +336,7 @@ async function captureStableHandoffPatch(input: {
         ["read-tree", baseCommit],
         1024 * 1024,
         worktreeIndexEnv,
+        input.gitBinaryPath,
       );
     },
     operation: async (worktreeIndexEnv) => {
@@ -302,6 +345,7 @@ async function captureStableHandoffPatch(input: {
         baseCommit,
         limits.maxChangedFiles,
         worktreeIndexEnv,
+        input.gitBinaryPath,
       );
       if (changedPaths.length === 0) return null;
       await assertSafeChangedFiles({
@@ -310,6 +354,9 @@ async function captureStableHandoffPatch(input: {
         baseCommit,
         limits,
         scanSecretContent: input.scanSecretContent !== false,
+        ...(input.gitBinaryPath === undefined
+          ? {}
+          : { gitBinaryPath: input.gitBinaryPath }),
       });
       await input.testHooks?.afterSafetyScan?.(1);
       const patch = await buildDeterministicPatch({
@@ -318,20 +365,27 @@ async function captureStableHandoffPatch(input: {
         baseCommit,
         limits,
         worktreeIndexEnv,
+        ...(input.gitBinaryPath === undefined
+          ? {}
+          : { gitBinaryPath: input.gitBinaryPath }),
       });
       await input.testHooks?.afterPatchSnapshot?.(1);
-      await assertGitHeadUnchanged(workspacePath, baseCommit);
-      const confirmedWorkspaceLayer = await captureHandoffWorkspaceLayer(
-        workspacePath,
-      );
-      if (workspaceLayer !== confirmedWorkspaceLayer) {
-        throw new Error("handoff_workspace_changed_during_materialization");
+      await assertGitHeadUnchanged(workspacePath, baseCommit, input.gitBinaryPath);
+      if (workspaceLayer !== undefined) {
+        const confirmedWorkspaceLayer = await captureHandoffWorkspaceLayer(
+          workspacePath,
+          input.gitBinaryPath,
+        );
+        if (workspaceLayer !== confirmedWorkspaceLayer) {
+          throw new Error("handoff_workspace_changed_during_materialization");
+        }
       }
       const confirmedChangedPaths = await gitChangedPaths(
         workspacePath,
         baseCommit,
         limits.maxChangedFiles,
         worktreeIndexEnv,
+        input.gitBinaryPath,
       );
       if (!sameStrings(changedPaths, confirmedChangedPaths)) {
         throw new Error("handoff_workspace_changed_during_materialization");
@@ -342,6 +396,9 @@ async function captureStableHandoffPatch(input: {
         baseCommit,
         limits,
         scanSecretContent: input.scanSecretContent !== false,
+        ...(input.gitBinaryPath === undefined
+          ? {}
+          : { gitBinaryPath: input.gitBinaryPath }),
       });
       await input.testHooks?.afterSafetyScan?.(2);
       const confirmedPatch = await buildDeterministicPatch({
@@ -350,9 +407,12 @@ async function captureStableHandoffPatch(input: {
         baseCommit,
         limits,
         worktreeIndexEnv,
+        ...(input.gitBinaryPath === undefined
+          ? {}
+          : { gitBinaryPath: input.gitBinaryPath }),
       });
       await input.testHooks?.afterPatchSnapshot?.(2);
-      await assertGitHeadUnchanged(workspacePath, baseCommit);
+      await assertGitHeadUnchanged(workspacePath, baseCommit, input.gitBinaryPath);
       if (patch !== confirmedPatch) {
         throw new Error("handoff_workspace_changed_during_materialization");
       }
@@ -382,6 +442,7 @@ async function gitChangedPaths(
   baseCommit: string,
   maxChangedFiles: number,
   worktreeIndexEnv: NodeJS.ProcessEnv,
+  gitBinaryPath?: string,
 ): Promise<readonly string[]> {
   const [tracked, untracked] = await Promise.all([
     gitNullPaths(workspacePath, [
@@ -392,13 +453,13 @@ async function gitChangedPaths(
       "-z",
       baseCommit,
       "--",
-    ], worktreeIndexEnv),
+    ], worktreeIndexEnv, gitBinaryPath),
     gitNullPaths(workspacePath, [
       "ls-files",
       "--others",
       "--exclude-standard",
       "-z",
-    ], worktreeIndexEnv),
+    ], worktreeIndexEnv, gitBinaryPath),
   ]);
   if (tracked.length + untracked.length > maxChangedFiles) {
     throw new Error("handoff_changed_file_limit_exceeded");
@@ -416,21 +477,22 @@ type HandoffWorkspaceLayer = "staged" | "unstaged" | "clean";
  */
 async function captureHandoffWorkspaceLayer(
   workspacePath: string,
+  gitBinaryPath?: string,
 ): Promise<HandoffWorkspaceLayer> {
   const [headTree, indexPath, repositoryObjectsPath] = await Promise.all([
-    gitText(workspacePath, ["rev-parse", "--verify", "HEAD^{tree}"]),
+    gitText(workspacePath, ["rev-parse", "--verify", "HEAD^{tree}"], undefined, gitBinaryPath),
     gitText(workspacePath, [
       "rev-parse",
       "--path-format=absolute",
       "--git-path",
       "index",
-    ]),
+    ], undefined, gitBinaryPath),
     gitText(workspacePath, [
       "rev-parse",
       "--path-format=absolute",
       "--git-path",
       "objects",
-    ]),
+    ], undefined, gitBinaryPath),
   ]);
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "subscription-runtime-handoff-index-"),
@@ -446,12 +508,12 @@ async function captureHandoffWorkspaceLayer(
     const indexTree = await gitText(workspacePath, ["write-tree"], {
       ...isolatedObjectEnv,
       GIT_INDEX_FILE: indexPath,
-    });
+    }, gitBinaryPath);
     const env = {
       ...isolatedObjectEnv,
       GIT_INDEX_FILE: join(temporaryDirectory, "index"),
     };
-    await gitOutput(workspacePath, ["read-tree", indexTree], 1024 * 1024, env);
+    await gitOutput(workspacePath, ["read-tree", indexTree], 1024 * 1024, env, gitBinaryPath);
     const [unstagedDiffPaths, untrackedPaths, modeDriftPaths] =
       await Promise.all([
         gitNullPaths(workspacePath, [
@@ -461,14 +523,14 @@ async function captureHandoffWorkspaceLayer(
           "--no-renames",
           "-z",
           "--",
-        ], env),
+        ], env, gitBinaryPath),
         gitNullPaths(workspacePath, [
           "ls-files",
           "--others",
           "--exclude-standard",
           "-z",
-        ]),
-        gitIndexWorktreeModeDriftPaths(workspacePath),
+        ], undefined, gitBinaryPath),
+        gitIndexWorktreeModeDriftPaths(workspacePath, gitBinaryPath),
       ]);
     const staged = indexTree !== headTree;
     const unstaged =
@@ -491,11 +553,14 @@ async function captureHandoffWorkspaceLayer(
  */
 async function gitIndexWorktreeModeDriftPaths(
   workspacePath: string,
+  gitBinaryPath?: string,
 ): Promise<readonly string[]> {
   const output = await gitOutput(
     workspacePath,
     ["ls-files", "--stage", "-z"],
     16 * 1024 * 1024,
+    undefined,
+    gitBinaryPath,
   );
   const changed: string[] = [];
   for (const rawEntry of output.split("\0").filter(Boolean)) {
@@ -531,6 +596,7 @@ async function assertSafeChangedFiles(input: {
   readonly baseCommit: string;
   readonly limits: HandoffArtifactLimits;
   readonly scanSecretContent: boolean;
+  readonly gitBinaryPath?: string;
 }): Promise<number> {
   let totalBytes = 0;
   const currentBlobs = new Map<string, Buffer>();
@@ -605,6 +671,9 @@ async function assertSafeChangedFiles(input: {
     workspacePath: input.workspacePath,
     baseCommit: input.baseCommit,
     changedPaths: input.changedPaths,
+    ...(input.gitBinaryPath === undefined
+      ? {}
+      : { gitBinaryPath: input.gitBinaryPath }),
   });
   const objectIds = [
     ...new Set(
@@ -625,6 +694,9 @@ async function assertSafeChangedFiles(input: {
             maxBlobBytes: input.limits.maxFileBytes,
             maxTotalBytes: input.limits.maxTotalFileBytes - totalBytes,
             noReplaceObjects: true,
+            ...(input.gitBinaryPath === undefined
+              ? {}
+              : { gitBinaryPath: input.gitBinaryPath }),
           });
   } catch (error) {
     throw handoffGitBlobError(error);
@@ -703,11 +775,14 @@ async function gitBaseBlobObjects(input: {
   readonly workspacePath: string;
   readonly baseCommit: string;
   readonly changedPaths: readonly string[];
+  readonly gitBinaryPath?: string;
 }): Promise<ReadonlyMap<string, string>> {
   const treeOutput = await gitOutput(
     input.workspacePath,
     ["ls-tree", "-z", input.baseCommit, "--", ...input.changedPaths],
     2 * 1024 * 1024,
+    undefined,
+    input.gitBinaryPath,
   );
   const requested = new Set(input.changedPaths);
   const objects = new Map<string, string>();
@@ -752,6 +827,7 @@ async function buildDeterministicPatch(input: {
   readonly baseCommit: string;
   readonly limits: HandoffArtifactLimits;
   readonly worktreeIndexEnv: NodeJS.ProcessEnv;
+  readonly gitBinaryPath?: string;
 }): Promise<string> {
   const untracked = new Set(
     await gitNullPaths(input.workspacePath, [
@@ -759,7 +835,7 @@ async function buildDeterministicPatch(input: {
       "--others",
       "--exclude-standard",
       "-z",
-    ], input.worktreeIndexEnv),
+    ], input.worktreeIndexEnv, input.gitBinaryPath),
   );
   const trackedPatch = await gitOutput(
     input.workspacePath,
@@ -773,6 +849,7 @@ async function buildDeterministicPatch(input: {
     ],
     input.limits.maxPatchBytes,
     input.worktreeIndexEnv,
+    input.gitBinaryPath,
   );
   const parts = trackedPatch ? [ensureTrailingNewline(trackedPatch)] : [];
   let byteLength = Buffer.byteLength(trackedPatch);
@@ -785,6 +862,7 @@ async function buildDeterministicPatch(input: {
       input.workspacePath,
       changedPath,
       remaining,
+      input.gitBinaryPath,
     );
     const normalized = ensureTrailingNewline(item);
     byteLength += Buffer.byteLength(normalized);
@@ -801,12 +879,13 @@ async function buildDeterministicPatch(input: {
 async function assertGitHeadUnchanged(
   workspacePath: string,
   expectedHead: string,
+  gitBinaryPath?: string,
 ): Promise<void> {
   const currentHead = await gitText(workspacePath, [
     "rev-parse",
     "--verify",
     "HEAD",
-  ]);
+  ], undefined, gitBinaryPath);
   if (currentHead !== expectedHead) {
     throw new Error("handoff_head_changed_during_materialization");
   }
@@ -923,8 +1002,9 @@ async function gitNullPaths(
   cwd: string,
   args: readonly string[],
   env?: NodeJS.ProcessEnv,
+  gitBinaryPath?: string,
 ): Promise<readonly string[]> {
-  const output = await gitOutput(cwd, args, 2 * 1024 * 1024, env);
+  const output = await gitOutput(cwd, args, 2 * 1024 * 1024, env, gitBinaryPath);
   return output.split("\0").filter(Boolean);
 }
 
@@ -932,8 +1012,9 @@ async function gitText(
   cwd: string,
   args: readonly string[],
   env?: NodeJS.ProcessEnv,
+  gitBinaryPath?: string,
 ): Promise<string> {
-  return (await gitOutput(cwd, args, 1024 * 1024, env)).trim();
+  return (await gitOutput(cwd, args, 1024 * 1024, env, gitBinaryPath)).trim();
 }
 
 async function gitOutput(
@@ -941,9 +1022,10 @@ async function gitOutput(
   args: readonly string[],
   maxBuffer: number,
   env?: NodeJS.ProcessEnv,
+  gitBinaryPath?: string,
 ): Promise<string> {
   const { stdout } = await execFileAsync(
-    "git",
+    gitBinaryPath ?? "git",
     withLiteralGitPathspecs([
       "--no-replace-objects",
       "-c",
@@ -967,12 +1049,15 @@ async function gitDiffNoIndex(
   cwd: string,
   path: string,
   maxBuffer: number,
+  gitBinaryPath?: string,
 ): Promise<string> {
   try {
     return await gitOutput(
       cwd,
       ["diff", "--binary", "--no-index", "--", "/dev/null", path],
       maxBuffer,
+      undefined,
+      gitBinaryPath,
     );
   } catch (error) {
     if (isExecErrorWithStdout(error) && error.code === 1) return error.stdout;

@@ -205,7 +205,7 @@ describe("project worker stop policy", () => {
         scope: controller.scope,
         stopLaunch: child.launch,
         startAdmissionWorkspaceMode:
-          "admitted_input_patch_runtime_continuation",
+          "clean_capacity_continuation",
       });
       await expect(
         capacityRecoveryBroker.stopWorker({

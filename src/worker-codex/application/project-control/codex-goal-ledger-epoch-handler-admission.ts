@@ -1,5 +1,6 @@
-import { relative, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import {
+  ProjectDebtReason,
   summarizeProjectAdmissionDebt,
   type ConsumedOutputLedgerEpochAdmissionSummary,
   type ProjectAccessScope,
@@ -34,6 +35,7 @@ export async function ledgerEpochAdmissionSummary(input: {
   readonly revalidateBeforeNormalization?: (
     snapshot: ProjectAdmissionSnapshot,
   ) => Promise<void>;
+  readonly unpublishedLedgerRoot?: string;
 }): Promise<ConsumedOutputLedgerEpochAdmissionSummary> {
   let snapshot = await buildRawLedgerEpochAdmissionSnapshot({
     registryRootDir: input.registryRootDir,
@@ -49,12 +51,40 @@ export async function ledgerEpochAdmissionSummary(input: {
       snapshot,
     });
   }
+  if (input.unpublishedLedgerRoot) {
+    snapshot = withoutCurrentUnpublishedLedgerDebt(
+      snapshot,
+      input.unpublishedLedgerRoot,
+    );
+  }
   if (input.rejectBlocking && snapshot.debt.some((item) =>
     item.severity !== "info" && item.severity !== "warning"
   )) throw new Error("ledger_epoch_proposed_admission_blocked");
   return {
     debtCount: snapshot.debt.length,
     counts: snapshot.counts ?? summarizeProjectAdmissionDebt(snapshot.debt).counts,
+  };
+}
+
+function withoutCurrentUnpublishedLedgerDebt(
+  snapshot: ProjectAdmissionSnapshot,
+  ledgerRoot: string,
+): ProjectAdmissionSnapshot {
+  const expectedSubject = resolve(join(ledgerRoot, "items"));
+  const expectedEvidence =
+    `consumed output ledger unreadable: ENOENT: no such file or directory, scandir '${expectedSubject}'`;
+  const debt = snapshot.debt.filter((item) => !(
+    item.reason === ProjectDebtReason.UnreadableRoot &&
+    resolve(item.subject) === expectedSubject &&
+    item.severity === "blocking" &&
+    item.evidence.length === 1 &&
+    item.evidence[0] === expectedEvidence
+  ));
+  if (debt.length === snapshot.debt.length) return snapshot;
+  return {
+    ...snapshot,
+    debt,
+    counts: summarizeProjectAdmissionDebt(debt).counts,
   };
 }
 

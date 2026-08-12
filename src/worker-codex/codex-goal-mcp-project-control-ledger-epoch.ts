@@ -434,6 +434,9 @@ export async function projectControlLedgerEpochMigrationView(
       directoryIdentity(oldRoot),
       directoryIdentity(newRoot, true),
     ]);
+    const currentOperationWillPublishNewRoot =
+      "present" in lockedRootIdentities[1]! &&
+      lockedRootIdentities[1].present === false;
     const rebuildLockedFacts = async () => {
       const currentController = await deps.loadProjectControlController(args);
       if (manifestFingerprint(currentController.controller) !== lockedManifestFingerprint) {
@@ -695,6 +698,9 @@ export async function projectControlLedgerEpochMigrationView(
           snapshotBuilder: deps.buildAdmissionSnapshot,
           rejectBlocking: true,
           allowPendingEpochOrphanQuarantine: true,
+          ...(currentOperationWillPublishNewRoot
+            ? { unpublishedLedgerRoot: newRoot }
+            : {}),
           ...(proposedAdmissionAnchor ? { proposedAdmissionAnchor } : {}),
           ...(revalidateProposedSnapshot
             ? { revalidateBeforeNormalization: revalidateProposedSnapshot }
