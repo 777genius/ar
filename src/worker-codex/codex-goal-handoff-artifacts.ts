@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -19,7 +18,6 @@ import {
   join,
   resolve,
 } from "node:path";
-import { promisify } from "node:util";
 
 import {
   detectSecretLikeContent,
@@ -27,7 +25,6 @@ import {
 } from "@vioxen/subscription-runtime/worker-core";
 import { readGitBlobBatch } from "@vioxen/subscription-runtime/worker-local";
 import { assertGitPatchBlobsSecretSafe } from "./git-patch-secret-validator";
-import { withLiteralGitPathspecs } from "./git-literal-pathspecs";
 import { publishImmutableTextArtifact } from "./local-immutable-text-artifact";
 import {
   CODEX_GOAL_CONTINUATION_WORKSPACE_FINGERPRINT_SCHEMA,
@@ -37,16 +34,21 @@ import {
   assertSafeHandoffId as assertSafeId,
   ensureHandoffTrailingNewline as ensureTrailingNewline,
   handoffPathInside as pathInside,
-  isHandoffExecErrorWithStdout as isExecErrorWithStdout,
   isHandoffNodeError as isNodeError,
   sameHandoffPaths as sameStrings,
   sha256HandoffContent as sha256,
   stableHandoffJson as stableJson,
   uniqueSortedHandoffPaths as uniqueSorted,
 } from "./codex-goal-handoff-artifact-guards";
+import {
+  assertHandoffGitHeadUnchanged as assertGitHeadUnchanged,
+  handoffGitDiffNoIndex as gitDiffNoIndex,
+  handoffGitNullPaths as gitNullPaths,
+  handoffGitOutput as gitOutput,
+  handoffGitText as gitText,
+} from "./codex-goal-handoff-git-snapshot";
 import { withHandoffWorktreeIndex } from "./codex-goal-handoff-worktree-index";
 
-const execFileAsync = promisify(execFile);
 const maximumHandoffByteLimit = 64 * 1024 * 1024;
 
 export const DEFAULT_HANDOFF_ARTIFACT_LIMITS = {
@@ -55,7 +57,6 @@ export const DEFAULT_HANDOFF_ARTIFACT_LIMITS = {
   maxTotalFileBytes: 16 * 1024 * 1024,
   maxPatchBytes: 16 * 1024 * 1024,
 } as const;
-
 export type HandoffArtifactLimits = {
   readonly maxChangedFiles: number;
   readonly maxFileBytes: number;
@@ -876,21 +877,6 @@ async function buildDeterministicPatch(input: {
   return patch;
 }
 
-async function assertGitHeadUnchanged(
-  workspacePath: string,
-  expectedHead: string,
-  gitBinaryPath?: string,
-): Promise<void> {
-  const currentHead = await gitText(workspacePath, [
-    "rev-parse",
-    "--verify",
-    "HEAD",
-  ], undefined, gitBinaryPath);
-  if (currentHead !== expectedHead) {
-    throw new Error("handoff_head_changed_during_materialization");
-  }
-}
-
 async function assertExactPatchSecretSafe(input: {
   readonly workspacePath: string;
   readonly jobRootDir: string;
@@ -995,76 +981,6 @@ function assertNonSensitivePath(path: string): void {
 function assertNoRawSecret(content: Buffer, path: string): void {
   if (detectSecretLikeContent(content, { filePath: path }) !== undefined) {
     throw new Error(`handoff_raw_secret_rejected:${path}`);
-  }
-}
-
-async function gitNullPaths(
-  cwd: string,
-  args: readonly string[],
-  env?: NodeJS.ProcessEnv,
-  gitBinaryPath?: string,
-): Promise<readonly string[]> {
-  const output = await gitOutput(cwd, args, 2 * 1024 * 1024, env, gitBinaryPath);
-  return output.split("\0").filter(Boolean);
-}
-
-async function gitText(
-  cwd: string,
-  args: readonly string[],
-  env?: NodeJS.ProcessEnv,
-  gitBinaryPath?: string,
-): Promise<string> {
-  return (await gitOutput(cwd, args, 1024 * 1024, env, gitBinaryPath)).trim();
-}
-
-async function gitOutput(
-  cwd: string,
-  args: readonly string[],
-  maxBuffer: number,
-  env?: NodeJS.ProcessEnv,
-  gitBinaryPath?: string,
-): Promise<string> {
-  const { stdout } = await execFileAsync(
-    gitBinaryPath ?? "git",
-    withLiteralGitPathspecs([
-      "--no-replace-objects",
-      "-c",
-      "core.quotepath=false",
-      "-c",
-      "core.fileMode=true",
-      ...args,
-    ]),
-    {
-      cwd,
-      encoding: "utf8",
-      ...(env ? { env } : {}),
-      maxBuffer,
-      timeout: 15_000,
-    },
-  );
-  return stdout;
-}
-
-async function gitDiffNoIndex(
-  cwd: string,
-  path: string,
-  maxBuffer: number,
-  gitBinaryPath?: string,
-): Promise<string> {
-  try {
-    return await gitOutput(
-      cwd,
-      ["diff", "--binary", "--no-index", "--", "/dev/null", path],
-      maxBuffer,
-      undefined,
-      gitBinaryPath,
-    );
-  } catch (error) {
-    if (isExecErrorWithStdout(error) && error.code === 1) return error.stdout;
-    if (isNodeError(error, "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")) {
-      throw new Error("handoff_patch_byte_limit_exceeded");
-    }
-    throw error;
   }
 }
 
