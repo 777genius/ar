@@ -1,6 +1,6 @@
 {
   "name": "@vioxen/subscription-runtime",
-  "version": "0.1.0-main.27",
+  "version": "0.1.0-main.28",
   "description": "Provider-neutral subscription runtime for backend workers, Codex subscription execution, and pluggable session custody.",
   "license": "UNLICENSED",
   "type": "module",
@@ -143,13 +143,11 @@
     "docs",
     "LICENSE"
   ],
-  "bundleDependencies": [
-    "@vioxen/agent-account-observability"
-  ],
   "scripts": {
     "clean:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean:dist && npm run build:packages && tsc -p tsconfig.build.json && node scripts/rewrite-dist-esm-imports.mjs",
+    "build": "npm run clean:dist && npm run build:packages && tsc -p tsconfig.build.json && npm run build:bundled-packages && node scripts/rewrite-dist-esm-imports.mjs",
     "build:packages": "npm run --prefix packages/agent-account-observability build",
+    "build:bundled-packages": "node scripts/bundle-workspace-packages.mjs",
     "prepack": "npm run build",
     "typecheck": "npm run build:packages && tsc --noEmit -p tsconfig.json && npm run typecheck:packages",
     "typecheck:packages": "npm run --prefix packages/agent-account-observability typecheck",
@@ -177,7 +175,6 @@
     "check:architecture-guardrails": "node scripts/check-architecture-guardrails.mjs && node scripts/check-architecture-guardrails-self-test.mjs"
   },
   "dependencies": {
-    "@vioxen/agent-account-observability": "file:packages/agent-account-observability",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^22.20.0",
     "libsodium-wrappers": "^0.8.4",
@@ -192,6 +189,7 @@
     }
   },
   "devDependencies": {
+    "@vioxen/agent-account-observability": "file:packages/agent-account-observability",
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"
   },
