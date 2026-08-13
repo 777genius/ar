@@ -1,5 +1,13 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -1123,6 +1131,25 @@ describe("local project integration adapters", () => {
       sourcePatchPath,
     });
     await expect(readFile(captured.patchPath)).resolves.toEqual(firstBytes);
+    expect((await stat(archiveRoot)).mode & 0o777).toBe(0o700);
+    expect((await stat(captured.archivePath)).mode & 0o777).toBe(0o700);
+    for (const path of [
+      captured.statusPath,
+      captured.patchPath,
+      captured.numstatPath,
+    ]) {
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+    }
+
+    await chmod(captured.patchPath, 0o644);
+    await expect(captureLocalTerminalOutputBackup({
+      archiveRoot,
+      archiveName: "binary-patch",
+      workspacePath: fixture.workspacePath,
+      changedFiles: [],
+      sourcePatchPath,
+    })).resolves.toEqual(captured);
+    expect((await stat(captured.patchPath)).mode & 0o777).toBe(0o600);
 
     await writeFile(sourcePatchPath, secondBytes);
     await expect(captureLocalTerminalOutputBackup({
@@ -1132,6 +1159,36 @@ describe("local project integration adapters", () => {
       changedFiles: [],
       sourcePatchPath,
     })).rejects.toThrow("integrated_output_ledger_preparation_conflict");
+  });
+
+  it("rejects symlinked backup sources and publication targets", async () => {
+    const fixture = await createGitFixture();
+    const archiveRoot = join(fixture.rootDir, "archives");
+    const sourcePatchPath = join(fixture.rootDir, "source.patch");
+    const sourceTargetPath = join(fixture.rootDir, "source-target.patch");
+    await writeFile(sourceTargetPath, "source bytes\n");
+    await symlink(sourceTargetPath, sourcePatchPath);
+
+    await expect(captureLocalTerminalOutputBackup({
+      archiveRoot,
+      archiveName: "source-symlink",
+      workspacePath: fixture.workspacePath,
+      changedFiles: [],
+      sourcePatchPath,
+    })).rejects.toThrow("integrated_output_ledger_source_patch_unsafe");
+
+    const publicationTarget = join(fixture.rootDir, "publication-target.patch");
+    const publicationArchive = join(archiveRoot, "publication-symlink");
+    await writeFile(publicationTarget, "source bytes\n");
+    await mkdir(publicationArchive, { recursive: true });
+    await symlink(publicationTarget, join(publicationArchive, "tracked.diff"));
+    await expect(captureLocalTerminalOutputBackup({
+      archiveRoot,
+      archiveName: "publication-symlink",
+      workspacePath: fixture.workspacePath,
+      changedFiles: [],
+      sourcePatchPath: sourceTargetPath,
+    })).rejects.toThrow("integrated_output_ledger_preparation_unsafe");
   });
 
 });

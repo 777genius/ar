@@ -18,6 +18,7 @@ import {
   ProjectDebtReason,
   consumedDebt,
   consumedOutputRecordFor,
+  consumedOutputRecordForAttempt,
   consumedOutputRecordFromJson,
   readConsumedOutputLedgers,
   type ConsumedOutputLedgerEntry,
@@ -90,6 +91,72 @@ describe("consumed output ledger", () => {
       status: "integrated",
       commitSha: "abc1234",
     });
+  });
+
+  it("selects an exact attempt among same-timestamp records without a path tie-break", async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-ledger-exact-attempt-"),
+    );
+    const workspace = join(root, "workspace");
+    const backup = await createBackupEvidence(root, "worker-1", workspace);
+    const attemptIds = [
+      "attempt-current-4ca6",
+      "attempt-old-11",
+      "attempt-old-22",
+      "attempt-old-33",
+      "attempt-old-44",
+      "attempt-stale-f7",
+    ];
+    const local = localConsumedOutputLedgerSource();
+    const source: ConsumedOutputLedgerSourcePort = {
+      ...local,
+      async readEntries() {
+        return {
+          entries: attemptIds.map((attemptId, index) => ({
+            ledgerPath: join(
+              root,
+              index === attemptIds.length - 1
+                ? "worker-1--zz-stale-f7.json"
+                : `worker-1--0${index}.json`,
+            ),
+            value: {
+              jobId: "worker-1",
+              attemptId,
+              status: "rejected",
+              closedAt: "2026-07-12T00:00:00.000Z",
+              backup,
+            },
+          })),
+          failures: [],
+        };
+      },
+    };
+
+    const ledger = await readConsumedOutputLedgers({ roots: [root], source });
+
+    expect(ledger.records).toHaveLength(6);
+    expect(ledger.byJobId.get("worker-1")?.attemptId).toBe(
+      "attempt-stale-f7",
+    );
+    expect(
+      consumedOutputRecordForAttempt({
+        ledger,
+        jobId: "worker-1",
+        attemptId: "attempt-current-4ca6",
+        workspacePath: workspace,
+      })?.attemptId,
+    ).toBe("attempt-current-4ca6");
+    expect(
+      consumedOutputRecordForAttempt({
+        ledger: {
+          ...ledger,
+          records: [...ledger.records!, ledger.records![0]!],
+        },
+        jobId: "worker-1",
+        attemptId: "attempt-current-4ca6",
+        workspacePath: workspace,
+      }),
+    ).toBeUndefined();
   });
 
   it("accepts terminal drain records with backup evidence", async () => {
