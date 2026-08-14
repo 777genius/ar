@@ -20,7 +20,9 @@ concurrency:
 
 jobs:
   publish:
-    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    if: >-
+      github.repository == 'vioxen/subscription-runtime' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

@@ -151,7 +151,7 @@
     "prepack": "npm run build",
     "typecheck": "npm run build:packages && tsc --noEmit -p tsconfig.json && npm run typecheck:packages",
     "typecheck:packages": "npm run --prefix packages/agent-account-observability typecheck",
-    "test": "npm run build:packages && vitest run && npm run test:packages && npm run check:publish-preflight",
+    "test": "npm run build:packages && vitest run && npm run test:packages && npm run check:publish-preflight && npm run check:publish-authority",
     "test:packages": "npm run --prefix packages/agent-account-observability test",
     "e2e:live-workers": "npm run build && node scripts/e2e-live-workers/run.mjs",
     "e2e:live-workers:dist": "node scripts/e2e-live-workers/run.mjs",
@@ -170,6 +170,7 @@
     "check:dist": "node scripts/check-dist.mjs",
     "check:packed-consumer": "node scripts/check-packed-consumer.mjs",
     "check:publish-preflight": "node scripts/publish-preflight-self-test.mjs",
+    "check:publish-authority": "node scripts/check-publish-authority.mjs",
     "check:publish-registry-contract": "node scripts/check-publish-registry-contract.mjs",
     "check": "npm run check:diff && npm run check:dist-policy && npm run typecheck && npm run build && npm run check:dist && npm test && npm run check:boundaries && npm pack --dry-run && npm run check:packed-consumer",
     "check:architecture-guardrails": "node scripts/check-architecture-guardrails.mjs && node scripts/check-architecture-guardrails-self-test.mjs"
