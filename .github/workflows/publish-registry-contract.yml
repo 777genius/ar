@@ -21,6 +21,7 @@ permissions:
 
 jobs:
   registry-auth:
+    if: ${{ github.repository == 'vioxen/subscription-runtime' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
