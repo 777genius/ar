@@ -159,6 +159,7 @@ describe("project integration safety kernel e2e", () => {
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerRoot = join(root, "worker-jobs", "controller-v1");
     const ledgerRoot = join(root, "control", "consumed-output-ledger");
+    const evidenceRoot = join(controllerRoot, "archives");
     await git(root, ["init", "--bare", remotePath]);
     await mkdir(join(seedPath, "src"), { recursive: true });
     await git(seedPath, ["init", "-b", "main"]);
@@ -204,6 +205,7 @@ describe("project integration safety kernel e2e", () => {
         registryRoot: registryRootDir,
         workspaceRoots: [targetPath, workerPath],
         consumedOutputLedgerRoots: [ledgerRoot],
+        consumedOutputEvidenceRoots: [evidenceRoot],
         jobIdPrefixes: ["synthetic-"],
         commitIdentity: {
           name: "Approved Integrator",
@@ -281,6 +283,7 @@ describe("project integration safety kernel e2e", () => {
 
     const ledger = await readCodexGoalConsumedOutputLedgers({
       roots: [ledgerRoot],
+      evidenceRoots: [evidenceRoot],
     });
     const record = consumedOutputRecordFor({
       ledger,
@@ -325,6 +328,7 @@ describe("project integration safety kernel e2e", () => {
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerRoot = join(root, "worker-jobs", "controller-v1");
     const ledgerRoot = join(root, "control", "consumed-output-ledger");
+    const evidenceRoot = join(controllerRoot, "archives");
 
     try {
       await mkdir(targetPath, { recursive: true });
@@ -361,6 +365,7 @@ describe("project integration safety kernel e2e", () => {
           registryRoot: registryRootDir,
           workspaceRoots: [targetPath, workerPath],
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [evidenceRoot],
           jobIdPrefixes: ["synthetic-"],
           allowedBranches: ["main"],
           allowedGitRemotes: ["origin"],
@@ -414,6 +419,7 @@ describe("project integration safety kernel e2e", () => {
 
       const ledger = await readCodexGoalConsumedOutputLedgers({
         roots: [ledgerRoot],
+        evidenceRoots: [evidenceRoot],
       });
       const record = consumedOutputRecordFor({
         ledger,

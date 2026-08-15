@@ -275,7 +275,10 @@ async function resolveCurrentRejectedPatchSha256(input: {
 }): Promise<string | undefined> {
   const roots = input.scope.consumedOutputLedgerRoots ?? [];
   if (roots.length !== 1) return undefined;
-  const ledger = await readCodexGoalConsumedOutputLedgers({ roots });
+  const ledger = await readCodexGoalConsumedOutputLedgers({
+    roots,
+    evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
+  });
   if (hasRelevantConsumedOutputDebt(ledger, input.manifest.jobId)) {
     throw new Error(
       "project_control_runtime_interruption_rejected_ledger_evidence_invalid",

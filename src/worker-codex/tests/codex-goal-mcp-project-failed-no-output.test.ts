@@ -52,6 +52,7 @@ describe("project failed_no_output lifecycle", () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-failed-no-output-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const ledgerRoot = join(root, "control", "consumed-output-ledger");
+    const evidenceRoot = join(root, "control", "archives");
     const worktreeRoot = join(root, "worktrees");
     const controllerWorkspace = join(root, "repo");
     const authRoot = join(root, "auth");
@@ -84,6 +85,7 @@ describe("project failed_no_output lifecycle", () => {
           worktreeRoots: [worktreeRoot],
           registryRoot: registryRootDir,
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [evidenceRoot],
           jobIdPrefixes: ["project-"],
           tmuxSessionPrefixes: ["project-"],
           allowedAccountIds: ["account-a"],
@@ -128,14 +130,14 @@ describe("project failed_no_output lifecycle", () => {
         root,
         ledgerRoot,
         jobId: workerJobId,
-        archiveRoot: join(
-          root,
-          "worker-jobs",
-          controllerJobId,
-          "archives",
-        ),
+        archiveRoot: evidenceRoot,
       });
-      await writeMislabeledNoOutput({ root, ledgerRoot, jobId: dirtyWorkerJobId });
+      await writeMislabeledNoOutput({
+        root,
+        ledgerRoot,
+        jobId: dirtyWorkerJobId,
+        archiveRoot: evidenceRoot,
+      });
 
       const deps = {
         loadProjectControlController,
@@ -202,6 +204,7 @@ describe("project failed_no_output lifecycle", () => {
       );
       await expect(assertCodexGoalProjectJobNotTerminal({
         roots: [ledgerRoot],
+        evidenceRoots: [evidenceRoot],
         projectId: "project",
         controllerJobId,
         jobId: freshWorkerJobId,
@@ -219,6 +222,7 @@ describe("project failed_no_output lifecycle", () => {
       );
       await expect(assertCodexGoalProjectJobNotTerminal({
         roots: [ledgerRoot],
+        evidenceRoots: [evidenceRoot],
         projectId: "project",
         controllerJobId,
         jobId: freshWorkerJobId,
@@ -284,7 +288,10 @@ describe("project failed_no_output lifecycle", () => {
       await expect(readFile(String(recorded.ledgerPath), "utf8")).resolves
         .toContain('"status": "failed_no_output"');
 
-      const ledger = await readCodexGoalConsumedOutputLedgers({ roots: [ledgerRoot] });
+      const ledger = await readCodexGoalConsumedOutputLedgers({
+        roots: [ledgerRoot],
+        evidenceRoots: [evidenceRoot],
+      });
       expect(ledger.byJobId.get(workerJobId)).toMatchObject({
         status: "failed_no_output",
         valid: true,
@@ -328,42 +335,10 @@ describe("project failed_no_output lifecycle", () => {
           ok: false,
           reason: "confirm_preexisting_workspace_patch_required",
         });
-      const verifierRecorded = await projectControlRecordFailedNoOutputView({
+      await expect(projectControlRecordFailedNoOutputView({
         ...verifierArgs,
         confirmPreexistingWorkspacePatch: true,
-      }, deps);
-      expect(verifierRecorded).toMatchObject({
-        ok: true,
-        decision: {
-          status: "failed_no_output",
-          preexistingWorkspacePatch: {
-            sha256: baseline.sha256,
-          },
-        },
-      });
-      const verifierDecision = verifierRecorded.decision as {
-        readonly backup: { readonly statusPath: string };
-        readonly preexistingWorkspacePatch: {
-          readonly path: string;
-          readonly sha256: string;
-        };
-      };
-      expect(verifierDecision.preexistingWorkspacePatch.path).not.toBe(baseline.path);
-      expect(verifierDecision.preexistingWorkspacePatch.path).toBe(
-        join(
-          dirname(verifierDecision.backup.statusPath),
-          "preexisting-workspace.patch",
-        ),
-      );
-      await expect(
-        readFile(verifierDecision.preexistingWorkspacePatch.path, "utf8"),
-      ).resolves.toBe("diff --git a/README.md b/README.md\n");
-      const reconciled = await readCodexGoalConsumedOutputLedgers({ roots: [ledgerRoot] });
-      expect(reconciled.byJobId.get(verifierJobId)).toMatchObject({
-        status: "failed_no_output",
-        preexistingWorkspacePatchValid: true,
-        valid: true,
-      });
+      }, deps)).rejects.toThrow("project_control_pre_start_admission_required");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -471,6 +446,7 @@ async function createStoredJob(input: {
     readonly worktreeRoots: readonly string[];
     readonly registryRoot: string;
     readonly consumedOutputLedgerRoots: readonly string[];
+    readonly consumedOutputEvidenceRoots: readonly string[];
     readonly jobIdPrefixes: readonly string[];
     readonly tmuxSessionPrefixes: readonly string[];
     readonly allowedAccountIds: readonly string[];

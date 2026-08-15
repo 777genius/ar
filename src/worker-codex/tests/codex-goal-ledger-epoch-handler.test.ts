@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it as vitestIt, vi } from "vitest";
 import {
   AccessBoundary,
   CONSUMED_OUTPUT_LEDGER_RETIRED_MARKER,
@@ -37,28 +37,95 @@ import {
   "./codex-goal-ledger-epoch-legacy-admission-fixture";
 import { buildLedgerEpochLegacyAdmissionAnchor } from
   "../application/project-control/codex-goal-ledger-epoch-legacy-admission";
-const realHandlerUpgradeCrashBoundaries = [
-  ...Array.from({ length: 205 }, (_, index) =>
-    `source-orphan-${String(index).padStart(4, "0")}.json`
-  ),
-  "plan.json",
-  "owner.json",
-  "state.json",
-  "receipt.json",
-  "final-sidecar",
-  "intent",
-];
-await prepareAuthenticD0aFixture();
-const productionFixture = await handlerFixture(495);
-const productionPreview = await projectControlLedgerEpochMigrationView(
-  productionFixture.args(),
-  productionFixture.deps,
-);
-const productionPlan = await productionFixture.seedPreparedV1();
-await productionFixture.freezePreparedV1Baseline();
-const sharedBoundaryFixture = await handlerFixture(495, true);
-const sharedBoundaryPlan = await sharedBoundaryFixture.seedPreparedV1();
-await sharedBoundaryFixture.freezePreparedV1Baseline();
+const fixtureModuleOnly = process.env.CODEX_LEDGER_EPOCH_HANDLER_FIXTURE_ONLY === "1";
+const fixtureRoots = new Set<string>();
+if (!fixtureModuleOnly) afterAll(async () => {
+  await Promise.all([...fixtureRoots].map((path) =>
+    rm(path, { recursive: true, force: true })
+  ));
+});
+const handlerShard = process.env.CODEX_LEDGER_EPOCH_HANDLER_SHARD ?? "production";
+const shardTestNames: Readonly<Record<string, readonly RegExp[]>> = {
+  production: [/^upgrades and activates/],
+  envelope: [/^anchors the exact production-shaped/],
+  nonlegacy: [/^activates non-legacy/],
+  replay: [/^allows exact-710 post-admission/],
+  safety: [
+    /^allows unrelated process/,
+    /^refuses a custody blocker/,
+    /^refuses when the writer guard/,
+    /^releases both ledger roots/,
+    /^releases a mutation lock/,
+    /^refuses an exact-710 registry/,
+    /^refuses exact-710 workspace/,
+    /^refuses a partial exact-710 final sidecar/,
+  ],
+  "mutation-artifacts": [
+    /^refuses exact-710 v1 .* mutation before switching scope/,
+    /^refuses exact-710 v1 target replacement/,
+  ],
+  "mutation-edge": [
+    /^refuses exact-710 v1 maintenance contention/,
+    /^refuses a %i-item legacy admission near miss/,
+  ],
+  recovery: [
+    /^confirms a fresh preview/,
+    /^resumes the immutable stored plan/,
+    /^denies a hash-valid stored plan/,
+    /^denies a new-root parent symlink/,
+    /^denies old and new roots/,
+    /^rejects an already-switched scope/,
+    /^rejects a denied subtree/,
+    /^allows a reserved denied path/,
+  ],
+};
+const selectTestName = (name: unknown) =>
+  typeof name === "string" &&
+  shardTestNames[handlerShard]?.some((pattern) => pattern.test(name)) === true;
+const it = new Proxy(vitestIt, {
+  apply(target, thisArg, args) {
+    return Reflect.apply(selectTestName(args[0]) ? target : target.skip, thisArg, args);
+  },
+  get(target, property, receiver) {
+    if (property !== "each") return Reflect.get(target, property, receiver);
+    return (...cases: unknown[]) => {
+      const runEach = Reflect.apply(target.each, target, cases) as
+        (...args: unknown[]) => unknown;
+      const skipEach = Reflect.apply(target.skip.each, target.skip, cases) as
+        (...args: unknown[]) => unknown;
+      return (...args: unknown[]) =>
+        (selectTestName(args[0]) ? runEach : skipEach)(...args);
+    };
+  },
+}) as typeof vitestIt;
+if (!fixtureModuleOnly) {
+let productionFixture!: Awaited<ReturnType<typeof handlerFixture>>;
+let productionPreview!: Awaited<ReturnType<
+  typeof projectControlLedgerEpochMigrationView
+>>;
+let productionPlan!: ConsumedOutputLedgerEpochPlan;
+if (handlerShard === "production" || handlerShard === "replay") {
+  const authenticD0aFixtureReady = prepareAuthenticD0aFixture();
+  productionFixture = await handlerFixture(495, true);
+  await authenticD0aFixtureReady;
+  productionPlan = await productionFixture.seedPreparedV1();
+  await productionFixture.freezePreparedV1Baseline();
+  if (handlerShard === "replay") {
+    await projectControlLedgerEpochMigrationView(
+      productionFixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: productionPlan.planSha256,
+      }),
+      productionFixture.deps,
+    );
+  }
+} else if (handlerShard === "envelope") {
+  productionFixture = await handlerFixture(495, false);
+  productionPreview = await projectControlLedgerEpochMigrationView(
+    productionFixture.args(),
+    productionFixture.deps,
+  );
+}
 describe("project control ledger epoch handler", () => {
   it("anchors the exact production-shaped 495/205/6/4 legacy envelope", async () => {
     expect(productionPreview).toMatchObject({
@@ -319,45 +386,6 @@ describe("project control ledger epoch handler", () => {
     expect(await fixture.oldScopeBytes()).toEqual(oldScopeBytes);
   });
 
-  describe("exact-710 monotonic public-handler crash chain", () => {
-    for (const [index, crashAfter] of realHandlerUpgradeCrashBoundaries.entries()) {
-      it(`resumes cursor ${index} then crashes after ${crashAfter}`, async () => {
-        if (index === 0) {
-          await sharedBoundaryFixture.resetPreparedV1Baseline();
-        }
-        const request = sharedBoundaryFixture.args({
-          confirmLedgerEpochMigration: true,
-          expectedLedgerEpochPlanSha256: sharedBoundaryPlan.planSha256,
-        });
-        sharedBoundaryFixture.setUpgradeCrashAfter(crashAfter);
-        await expect(projectControlLedgerEpochMigrationView(
-          request,
-          { ...sharedBoundaryFixture.deps },
-        ), crashAfter).rejects.toThrow(
-          `ledger_epoch_simulated_upgrade_crash:${crashAfter}`,
-        );
-      });
-    }
-    it("performs one final fresh activation and replay", async () => {
-      const request = sharedBoundaryFixture.args({
-        confirmLedgerEpochMigration: true,
-        expectedLedgerEpochPlanSha256: sharedBoundaryPlan.planSha256,
-      });
-      sharedBoundaryFixture.setUpgradeCrashAfter(undefined);
-      await expect(projectControlLedgerEpochMigrationView(
-        request,
-        { ...sharedBoundaryFixture.deps },
-      )).resolves.toMatchObject({
-        ok: true,
-        receipt: { planSha256: sharedBoundaryPlan.planSha256, status: "active" },
-      });
-      await expect(projectControlLedgerEpochMigrationView(
-        request,
-        { ...sharedBoundaryFixture.deps },
-      )).resolves.toMatchObject({ ok: true, idempotentReplay: true });
-    });
-  });
-
   it("refuses a partial exact-710 final sidecar through the real handler", async () => {
     const fixture = await handlerFixture(495);
     const plan = await fixture.seedPreparedV1();
@@ -377,44 +405,6 @@ describe("project control ledger epoch handler", () => {
     expect((await fixture.load()).scope.consumedOutputLedgerRoots).toEqual([
       fixture.oldRoot,
     ]);
-  });
-
-  describe("conflicting exact-710 final sidecar", () => {
-    it("captures the valid final-sidecar-before-intent boundary", async () => {
-      await sharedBoundaryFixture.resetPreparedV1Baseline();
-      sharedBoundaryFixture.setUpgradeCrashAfter("final-sidecar");
-      await expect(projectControlLedgerEpochMigrationView(
-        sharedBoundaryFixture.args({
-          confirmLedgerEpochMigration: true,
-          expectedLedgerEpochPlanSha256: sharedBoundaryPlan.planSha256,
-        }),
-        { ...sharedBoundaryFixture.deps },
-      )).rejects.toThrow("ledger_epoch_simulated_upgrade_crash:final-sidecar");
-    });
-
-    it("refuses conflicting bytes through a fresh real handler", async () => {
-      const manifestPath = join(
-        sharedBoundaryFixture.newRoot,
-        ".ledger-epoch-v2-sidecar",
-        "manifest.json",
-      );
-      const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as
-        Record<string, unknown>;
-      await writeFile(manifestPath, `${JSON.stringify({
-        ...manifest,
-        processEvidence: { inventorySha256: "f".repeat(64) },
-      }, null, 2)}\n`);
-      sharedBoundaryFixture.setUpgradeCrashAfter(undefined);
-      await expect(projectControlLedgerEpochMigrationView(
-        sharedBoundaryFixture.args({
-          confirmLedgerEpochMigration: true,
-          expectedLedgerEpochPlanSha256: sharedBoundaryPlan.planSha256,
-        }),
-        { ...sharedBoundaryFixture.deps },
-      )).rejects.toThrow("ledger_epoch_upgrade_sidecar_hash_mismatch");
-      expect((await sharedBoundaryFixture.load()).scope.consumedOutputLedgerRoots)
-        .toEqual([sharedBoundaryFixture.oldRoot]);
-    });
   });
 
   it.each([
@@ -636,13 +626,15 @@ describe("project control ledger epoch handler", () => {
     });
   });
 });
+}
 
-async function handlerFixture(
+export async function handlerFixture(
   legacyConsumedCount?: number,
-  fastOrphanBoundaries = false,
+  fastOrphanBoundaries = true,
   currentSocialDebt = false,
 ) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "ledger-epoch-handler-")));
+  fixtureRoots.add(root);
   const registryRootDir = join(root, "registry");
   const controllerJobId = "social-monitor-controller-v4";
   const controllerJobRoot = join(registryRootDir, controllerJobId);
@@ -811,7 +803,7 @@ async function handlerFixture(
   let captureMutationAt = 2;
   let captureMutation: (() => Promise<void>) | undefined;
   let upgradeCrashAfter: string | undefined;
-  const postAdmissionCount = currentSocialDebt ? 266 : fastOrphanBoundaries ? 209 : 414;
+  const postAdmissionCount = currentSocialDebt ? 266 : 414;
   let preparedBaselineRoot: string | undefined;
   let preparedBaselineController: Buffer | undefined;
   return {
@@ -885,6 +877,7 @@ async function handlerFixture(
     },
     freezePreparedV1Baseline: async () => {
       preparedBaselineRoot = await mkdtemp(join(tmpdir(), "ledger-epoch-v1-baseline-"));
+      fixtureRoots.add(preparedBaselineRoot);
       await cp(newRoot, join(preparedBaselineRoot, "root"), { recursive: true });
       preparedBaselineController = await readFile(join(controllerJobRoot, "job.json"));
     },

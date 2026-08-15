@@ -400,7 +400,7 @@ describe("codex goal MCP server", () => {
     const sourceWorkspacePath = join(workspaceRoot, "infinity-context-main");
     const orphanWorkspace = join(legacyWorkspaceRoot, "infinity-context-memory-old-v1");
     const ledgerRoot = join(root, "dirty-worktree-drain");
-    const backupRoot = join(root, "dirty-worktree-backups");
+    const backupRoot = join(root, "archives");
     const producerWorkspace = join(root, "worktrees", "infinity-context-memory-producer-v1");
     const server = createCodexGoalMcpServer();
     const client = new Client({
@@ -472,6 +472,7 @@ describe("codex goal MCP server", () => {
           worktreeRoots: [join(root, "worktrees")],
           observedWorkspaceRoots: [legacyWorkspaceRoot],
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [backupRoot],
           registryRoot: registryRootDir,
           jobIdPrefixes: ["infinity-context-"],
           tmuxSessionPrefixes: ["infinity-context-"],
@@ -571,7 +572,7 @@ describe("codex goal MCP server", () => {
     const retiredWorkspace = join(root, "worktrees", "infinity-context-memory-retired-v1");
     const retiredJobRoot = join(root, "worker-jobs", "infinity-context-memory-retired-v1");
     const ledgerRoot = join(root, "dirty-worktree-drain");
-    const backupRoot = join(root, "dirty-worktree-backups");
+    const backupRoot = join(root, "archives");
     const server = createCodexGoalMcpServer();
     const client = new Client({
       name: "subscription-runtime-test",
@@ -634,6 +635,7 @@ describe("codex goal MCP server", () => {
           workspaceRoots: [workspaceRoot],
           worktreeRoots: [join(root, "worktrees")],
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [backupRoot],
           registryRoot: registryRootDir,
           jobIdPrefixes: ["infinity-context-"],
           tmuxSessionPrefixes: ["infinity-context-"],
@@ -696,7 +698,7 @@ describe("codex goal MCP server", () => {
     const sourceWorkspacePath = join(workspaceRoot, "infinity-context-main");
     const orphanWorkspace = join(legacyWorkspaceRoot, "infinity-context-memory-old-v1");
     const ledgerRoot = join(root, "dirty-worktree-drain");
-    const backupRoot = join(root, "dirty-worktree-backups");
+    const backupRoot = join(root, "archives");
     const server = createCodexGoalMcpServer();
     const client = new Client({
       name: "subscription-runtime-test",
@@ -763,6 +765,7 @@ describe("codex goal MCP server", () => {
           worktreeRoots: [join(root, "worktrees")],
           observedWorkspaceRoots: [legacyWorkspaceRoot],
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [backupRoot],
           registryRoot: registryRootDir,
           jobIdPrefixes: ["infinity-context-"],
           tmuxSessionPrefixes: ["infinity-context-"],

@@ -16,6 +16,8 @@ import {
   captureGitWorkspacePatch,
 } from "./codex-goal-runtime-result-io";
 import type { ReviewedWorkerOutputSnapshot } from "./reviewed-worker-output";
+import { projectControlConsumedOutputEvidenceRoot } from
+  "./codex-goal-mcp-project-scope";
 
 export async function recordRejectedReviewedOutput(input: {
   readonly scope: ProjectAccessScope;
@@ -37,7 +39,7 @@ export async function recordRejectedReviewedOutput(input: {
     throw new Error("project_control_consumed_output_ledger_required");
   }
   const backup = await captureLocalTerminalOutputBackup({
-    archiveRoot: join(input.jobRootDir, "archives"),
+    archiveRoot: projectControlConsumedOutputEvidenceRoot(input.scope),
     archiveName:
       `${input.snapshot.workerJobId}-rejected-reviewed-` +
       input.snapshot.reviewedOutputId,
@@ -53,6 +55,7 @@ export async function recordRejectedReviewedOutput(input: {
       writer: new LocalConsumedOutputLedgerWriter(
         undefined,
         input.custodyRoot ?? dirname(dirname(input.jobRootDir)),
+        input.scope.consumedOutputEvidenceRoots ?? ledgerRoots,
       ),
     },
     {
@@ -101,7 +104,7 @@ export async function recordRejectedUncapturedOutput(input: {
   }
   const patchSha256 = createHash("sha256").update(patch).digest("hex");
   const attemptId = `uncaptured-rejection-${patchSha256}`;
-  const archiveRoot = join(input.jobRootDir, "archives");
+  const archiveRoot = projectControlConsumedOutputEvidenceRoot(input.scope);
   const sourcePatchPath = join(archiveRoot, `.${attemptId}.patch`);
   await mkdir(archiveRoot, { recursive: true, mode: 0o700 });
   await writeFile(sourcePatchPath, patch, {
@@ -148,6 +151,7 @@ export async function recordRejectedUncapturedOutput(input: {
       writer: new LocalConsumedOutputLedgerWriter(
         undefined,
         input.custodyRoot ?? dirname(dirname(input.jobRootDir)),
+        input.scope.consumedOutputEvidenceRoots ?? ledgerRoots,
       ),
     },
     {

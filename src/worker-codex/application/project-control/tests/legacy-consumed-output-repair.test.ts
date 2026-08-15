@@ -62,7 +62,10 @@ describe("legacy consumed-output repair", () => {
       expect(receipts.filter((receipt) => receipt.phase === "quarantined")).toHaveLength(3);
       expect(fixture.locks.maxHeld).toBe(1);
 
-      const replaySnapshot = await snapshotFromLedger(fixture.ledgerRoot);
+      const replaySnapshot = await snapshotFromLedger(
+        fixture.ledgerRoot,
+        fixture.backupRoot,
+      );
       const replay = await repairLegacyConsumedOutputDebt({
         projectId: "project",
         registryRootDir: fixture.registryRoot,
@@ -189,7 +192,10 @@ describe("legacy consumed-output repair", () => {
       });
       expect(result.items[0]?.reasons[0]).toContain("non-empty or changed");
       await expect(access(fixture.paths[0]!)).resolves.toBeUndefined();
-      expect(admission(await snapshotFromLedger(fixture.ledgerRoot)).allowed).toBe(false);
+      expect(admission(await snapshotFromLedger(
+        fixture.ledgerRoot,
+        fixture.backupRoot,
+      )).allowed).toBe(false);
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
@@ -203,7 +209,10 @@ describe("legacy consumed-output repair", () => {
       };
       value.schemaVersion = 2;
       await writeFile(fixture.paths[0]!, JSON.stringify(value));
-      const futureSnapshot = await snapshotFromLedger(fixture.ledgerRoot);
+      const futureSnapshot = await snapshotFromLedger(
+        fixture.ledgerRoot,
+        fixture.backupRoot,
+      );
       const future = await repairLegacyConsumedOutputDebt({
         projectId: "project",
         registryRootDir: fixture.registryRoot,
@@ -222,7 +231,10 @@ describe("legacy consumed-output repair", () => {
         registryRootDir: fixture.registryRoot,
         authorizedLedgerRoots: [fixture.ledgerRoot],
         allowedJobIdPrefixes: ["different-project-"],
-        admissionSnapshot: await snapshotFromLedger(fixture.ledgerRoot),
+        admissionSnapshot: await snapshotFromLedger(
+          fixture.ledgerRoot,
+          fixture.backupRoot,
+        ),
         mutationLocks: fixture.locks,
         prove: async () => ({ eligible: true, evidence: ["safe"] }),
       });
@@ -329,7 +341,10 @@ describe("legacy consumed-output repair", () => {
         registryRootDir: fixture.registryRoot,
         authorizedLedgerRoots: [fixture.ledgerRoot],
         allowedJobIdPrefixes: ["legacy-"],
-        admissionSnapshot: await snapshotFromLedger(fixture.ledgerRoot),
+        admissionSnapshot: await snapshotFromLedger(
+          fixture.ledgerRoot,
+          fixture.backupRoot,
+        ),
         confirm: true,
         mutationLocks: fixture.locks,
         prove: async () => ({ eligible: true, evidence: ["safe"] }),
@@ -357,7 +372,10 @@ describe("legacy consumed-output repair", () => {
         registryRootDir: fixture.registryRoot,
         authorizedLedgerRoots: [fixture.ledgerRoot],
         allowedJobIdPrefixes: ["legacy-"],
-        admissionSnapshot: await snapshotFromLedger(fixture.ledgerRoot),
+        admissionSnapshot: await snapshotFromLedger(
+          fixture.ledgerRoot,
+          fixture.backupRoot,
+        ),
         confirm: true,
         mutationLocks: fixture.locks,
         prove: async () => ({ eligible: true, evidence: ["safe"] }),
@@ -468,9 +486,15 @@ describe("legacy consumed-output repair", () => {
     try {
       expect(admission(fixture.snapshot).allowed).toBe(false);
       await repair(fixture, false);
-      expect(admission(await snapshotFromLedger(fixture.ledgerRoot)).allowed).toBe(false);
+      expect(admission(await snapshotFromLedger(
+        fixture.ledgerRoot,
+        fixture.backupRoot,
+      )).allowed).toBe(false);
       await repair(fixture, true);
-      expect(admission(await snapshotFromLedger(fixture.ledgerRoot))).toMatchObject({
+      expect(admission(await snapshotFromLedger(
+        fixture.ledgerRoot,
+        fixture.backupRoot,
+      ))).toMatchObject({
         allowed: true,
         reason: "allowed",
       });
@@ -526,7 +550,7 @@ async function makeFixture(count: number) {
     registryRoot,
     paths,
     backupRoot,
-    snapshot: await snapshotFromLedger(ledgerRoot),
+    snapshot: await snapshotFromLedger(ledgerRoot, backupRoot),
     locks: new TestLocks(),
   };
 }
@@ -547,8 +571,14 @@ async function repair(
   });
 }
 
-async function snapshotFromLedger(ledgerRoot: string): Promise<ProjectAdmissionSnapshot> {
-  const ledger = await readCodexGoalConsumedOutputLedgers({ roots: [ledgerRoot] });
+async function snapshotFromLedger(
+  ledgerRoot: string,
+  evidenceRoot: string,
+): Promise<ProjectAdmissionSnapshot> {
+  const ledger = await readCodexGoalConsumedOutputLedgers({
+    roots: [ledgerRoot],
+    evidenceRoots: [evidenceRoot],
+  });
   return {
     schemaVersion: 1,
     projectId: "project",

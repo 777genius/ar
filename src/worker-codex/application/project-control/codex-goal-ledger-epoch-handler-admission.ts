@@ -116,6 +116,7 @@ export async function assertCanonicalLedgerRootsAllowed(
   const allowed = await Promise.all([
     ...(scope.readRoots ?? []), ...(scope.workspaceRoots ?? []),
     ...(scope.worktreeRoots ?? []), ...(scope.observedWorkspaceRoots ?? []),
+    ...(scope.registryRoot ? [scope.registryRoot] : []),
   ].map(async (root) => await canonicalConsumedOutputLedgerRoot(root, true)));
   const denied = await Promise.all((scope.deniedRoots ?? []).map(
     async (root) => await canonicalConsumedOutputLedgerRoot(root, false),

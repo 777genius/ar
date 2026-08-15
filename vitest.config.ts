@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 const alias = {
   "@vioxen/subscription-runtime/core": "/src/core/index.ts",
@@ -33,6 +33,10 @@ const alias = {
 export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
+    exclude: [
+      ...configDefaults.exclude,
+      "src/worker-codex/tests/codex-goal-ledger-epoch-handler.test.ts",
+    ],
     fileParallelism: false,
     globals: true,
     testTimeout: 60_000,

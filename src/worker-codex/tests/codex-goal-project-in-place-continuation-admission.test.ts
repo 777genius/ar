@@ -160,6 +160,7 @@ describe("controlled runtime in-place continuation admission", () => {
     const scope: ProjectAccessScope = {
       ...fixture.scope,
       consumedOutputLedgerRoots: [join(fixture.root, "ledger")],
+      consumedOutputEvidenceRoots: [join(fixture.root, "archives")],
     };
     const contract = withOwnershipBoundWorkKey({
       ...fixture.contract,
@@ -260,6 +261,7 @@ describe("controlled runtime in-place continuation admission", () => {
     }
     await expect(assertCodexGoalProjectJobNotTerminal({
       roots: scope.consumedOutputLedgerRoots ?? [],
+      evidenceRoots: scope.consumedOutputEvidenceRoots ?? [],
       projectId: scope.projectId,
       controllerJobId: "project-controller",
       jobId: manifest.jobId,

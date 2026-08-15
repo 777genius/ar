@@ -888,6 +888,7 @@ describe("Codex project admission snapshot", () => {
       projectId: "project",
       worktreeRoots: [join(root, "worktrees")],
       consumedOutputLedgerRoots: [ledgerRoot],
+      consumedOutputEvidenceRoots: [backupRoot],
       jobIdPrefixes: ["project-"],
     };
 
@@ -994,6 +995,7 @@ describe("Codex project admission snapshot", () => {
       projectId: "project",
       worktreeRoots: [join(root, "worktrees")],
       consumedOutputLedgerRoots: [ledgerRoot],
+      consumedOutputEvidenceRoots: [backupRoot],
       jobIdPrefixes: ["project-"],
     };
 
@@ -1100,6 +1102,7 @@ describe("Codex project admission snapshot", () => {
       projectId: "project",
       worktreeRoots: [join(root, "worktrees")],
       consumedOutputLedgerRoots: [ledgerRoot],
+      consumedOutputEvidenceRoots: [backupRoot],
       jobIdPrefixes: ["project-"],
     };
 

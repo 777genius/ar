@@ -35,6 +35,7 @@ describe("Codex project admission snapshot", () => {
     const scope: ProjectAccessScope = {
       projectId: "project",
       consumedOutputLedgerRoots: [ledgerRoot],
+      consumedOutputEvidenceRoots: [join(root, "retained")],
       jobIdPrefixes: ["project-"],
     };
     const emptyDeps: CodexProjectAdmissionDeps = {
@@ -43,6 +44,7 @@ describe("Codex project admission snapshot", () => {
     };
 
     try {
+      await mkdir(join(root, "retained"), { recursive: true });
       await mkdir(join(ledgerRoot, "items"), { recursive: true });
       await writeFile(
         join(ledgerRoot, "items", "project-integrated-v1.json"),
@@ -104,6 +106,7 @@ describe("Codex project admission snapshot", () => {
 
       await expect(assertCodexGoalProjectJobNotTerminal({
         roots: [ledgerRoot],
+        evidenceRoots: scope.consumedOutputEvidenceRoots ?? [],
         projectId: "project",
         controllerJobId: "project-controller",
         jobId: "project-rejected-v1",
@@ -142,6 +145,7 @@ describe("Codex project admission snapshot", () => {
 
     try {
       process.env.SUBSCRIPTION_RUNTIME_PROJECT_ADMISSION_MAX_JOB_SUMMARIES = "1";
+      await mkdir(join(root, "retained"), { recursive: true });
       await mkdir(join(ledgerRoot, "items"), { recursive: true });
       await writeFile(
         join(ledgerRoot, "items", "project-rejected-v1.json"),
@@ -165,6 +169,7 @@ describe("Codex project admission snapshot", () => {
         scope: {
           projectId: "project",
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [join(root, "retained")],
           jobIdPrefixes: ["project-"],
         },
         deps: {
@@ -225,6 +230,7 @@ describe("Codex project admission snapshot", () => {
     const scope: ProjectAccessScope = {
       projectId: "project",
       consumedOutputLedgerRoots: [ledgerRoot],
+      consumedOutputEvidenceRoots: [root],
       jobIdPrefixes: ["project-"],
     };
     const deps: CodexProjectAdmissionDeps = {
@@ -294,6 +300,7 @@ describe("Codex project admission snapshot", () => {
     const scope: ProjectAccessScope = {
       projectId: "project",
       consumedOutputLedgerRoots: [ledgerRoot],
+      consumedOutputEvidenceRoots: [root],
       jobIdPrefixes: ["project-"],
     };
 
@@ -381,6 +388,7 @@ describe("Codex project admission snapshot", () => {
         scope: {
           projectId: "project",
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [root],
           jobIdPrefixes: ["project-"],
         },
         deps: {
@@ -420,6 +428,7 @@ describe("Codex project admission snapshot", () => {
     const scope: ProjectAccessScope = {
       projectId: "project",
       consumedOutputLedgerRoots: [ledgerRoot],
+      consumedOutputEvidenceRoots: [join(root, "retained")],
       jobIdPrefixes: ["project-"],
     };
     const summary = (jobId: string, updatedAt: string) => ({
@@ -455,6 +464,7 @@ describe("Codex project admission snapshot", () => {
         };
 
     try {
+      await mkdir(join(root, "retained"), { recursive: true });
       await mkdir(join(ledgerRoot, "items"), { recursive: true });
       for (const [index, jobId] of stoppedJobIds.entries()) {
         const backupRoot = join(root, "retained", jobId);
@@ -598,6 +608,7 @@ describe("Codex project admission snapshot", () => {
     const scope: ProjectAccessScope = {
       projectId: "project",
       consumedOutputLedgerRoots: [ledgerRoot],
+      consumedOutputEvidenceRoots: [join(root, "backups")],
       jobIdPrefixes: ["project-"],
     };
     const summary = (jobId: string, updatedAt: string) => ({

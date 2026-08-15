@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifestInput } from "../codex-goal-jobs";
 import {
+  assertProjectControlEvidenceRootsCanonical,
   assertProjectControlCreateManifestPaths,
   assertProjectControlScopeRepairAllowed,
   projectControlCanonicalWorkspacePath,
@@ -69,6 +70,30 @@ describe("codex goal MCP project scope helpers", () => {
         },
       }),
     ).toThrow("project_control_consumed_output_ledger_root_outside_scope");
+  });
+
+  it("allows append-only narrow canonical evidence roots and rejects broad or symlink scope", async () => {
+    const root = await mkdtemp(join(tmpdir(), "project-evidence-scope-"));
+    const archives = join(root, "controller", "archives");
+    const realArchives = join(root, "real", "archives");
+    await Promise.all([
+      mkdir(archives, { recursive: true }),
+      mkdir(realArchives, { recursive: true }),
+    ]);
+    const existing = projectScope();
+    expect(() => assertProjectControlScopeRepairAllowed({
+      existing,
+      proposed: { ...existing, consumedOutputEvidenceRoots: [archives] },
+    })).not.toThrow();
+    await expect(assertProjectControlEvidenceRootsCanonical([archives]))
+      .resolves.toBeUndefined();
+    await expect(assertProjectControlEvidenceRootsCanonical([root]))
+      .rejects.toThrow("evidence_root_not_narrow");
+    const linked = join(root, "linked", "archives");
+    await mkdir(join(root, "linked"), { recursive: true });
+    await symlink(realArchives, linked);
+    await expect(assertProjectControlEvidenceRootsCanonical([linked]))
+      .rejects.toThrow("evidence_root_noncanonical");
   });
 
   it("allows append-only account registration during confirmed scope repair", () => {

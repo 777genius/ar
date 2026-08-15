@@ -343,6 +343,7 @@ function codexProjectControlPorts(
           }
           await assertCodexGoalProjectJobNotTerminal({
             roots: input.scope.consumedOutputLedgerRoots ?? [],
+            evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
             projectId: input.scope.projectId,
             controllerJobId: input.controller.jobId,
             jobId: input.startManifest?.jobId ?? startLaunch.config.taskId,

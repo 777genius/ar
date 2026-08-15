@@ -205,6 +205,7 @@ describe("terminal worker handoff dependency recovery", () => {
             if (!recovery) throw new Error("expected rejected recovery");
             await assertCodexGoalProjectJobNotTerminal({
               roots: input.scope.consumedOutputLedgerRoots ?? [],
+              evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
               projectId: input.scope.projectId,
               controllerJobId: input.controller.jobId,
               jobId: fixture.jobId,
@@ -609,6 +610,7 @@ async function actionFixture() {
   const promptPath = join(jobRootDir, "prompt.md");
   const jobId = "project-worker";
   const ledgerRoot = join(root, "consumed-output-ledger");
+  const evidenceRoot = join(root, "archives");
   await Promise.all([
     mkdir(workspacePath, { recursive: true }),
     mkdir(canonicalWorkspacePath, { recursive: true }),
@@ -641,6 +643,7 @@ async function actionFixture() {
     allowedBranches: ["main"],
     allowedGitRemotes: ["origin"],
     consumedOutputLedgerRoots: [ledgerRoot],
+    consumedOutputEvidenceRoots: [evidenceRoot],
   };
   await createCodexGoalJob({
     registryRootDir,
@@ -768,6 +771,7 @@ async function assertTerminalAdmission(
 ): Promise<void> {
   await assertCodexGoalProjectJobNotTerminal({
     roots: [fixture.ledgerRoot],
+    evidenceRoots: fixture.scope.consumedOutputEvidenceRoots ?? [],
     projectId: fixture.scope.projectId,
     controllerJobId: fixture.controller.jobId,
     jobId: fixture.jobId,

@@ -108,7 +108,7 @@ describe("project-control manifest repair workspace mode", () => {
     const root = await mkdtemp(join(tmpdir(), "current-registry-legacy-repair-"));
     const registryRootDir = join(root, "registry");
     const ledgerRoot = join(root, "ledger");
-    const backupRoot = join(root, "backup");
+    const backupRoot = join(root, "archives");
     const jobRootDir = join(root, "job");
     const currentWorkspace = join(root, "current-workspace");
     const jobId = "project-worker-v16";
@@ -148,6 +148,7 @@ describe("project-control manifest repair workspace mode", () => {
       const scope = {
         projectId: "project",
         consumedOutputLedgerRoots: [ledgerRoot],
+        consumedOutputEvidenceRoots: [backupRoot],
         jobIdPrefixes: ["project-"],
         workspaceRoots: [root],
       };

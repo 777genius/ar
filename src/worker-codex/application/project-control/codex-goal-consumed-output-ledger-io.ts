@@ -18,11 +18,14 @@ import {
 
 export async function readCodexGoalConsumedOutputLedgers(input: {
   readonly roots: readonly string[];
+  readonly evidenceRoots?: readonly string[];
   readonly source?: ConsumedOutputLedgerSourcePort;
 }): Promise<ConsumedOutputLedger> {
   return readConsumedOutputLedgers({
     roots: input.roots,
-    source: input.source ?? new LocalConsumedOutputLedgerSource(input.roots),
+    source: input.source ?? new LocalConsumedOutputLedgerSource(
+      input.evidenceRoots ?? input.roots,
+    ),
   });
 }
 
@@ -58,6 +61,7 @@ export function resolveRejectedUncapturedOutputPatchSha256(input: {
 
 export async function assertCodexGoalProjectJobNotTerminal(input: {
   readonly roots: readonly string[];
+  readonly evidenceRoots?: readonly string[];
   readonly projectId: string;
   readonly controllerJobId: string;
   readonly jobId: string;
@@ -80,6 +84,7 @@ export async function assertCodexGoalProjectJobNotTerminal(input: {
   }
   const ledger = await readCodexGoalConsumedOutputLedgers({
     roots: input.roots,
+    evidenceRoots: input.evidenceRoots ?? input.roots,
   });
   if (input.rejectedUncapturedContinuationPatchSha256) {
     const patchSha256 = resolveRejectedUncapturedOutputPatchSha256({
@@ -150,10 +155,8 @@ export function hasRelevantConsumedOutputDebt(
 class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort {
   private readonly evidenceRoots: readonly string[];
 
-  constructor(ledgerRoots: readonly string[]) {
-    this.evidenceRoots = ledgerRoots.map((root) =>
-      dirname(dirname(resolve(root)))
-    );
+  constructor(evidenceRoots: readonly string[]) {
+    this.evidenceRoots = evidenceRoots.map((root) => resolve(root));
   }
 
   async readEntries(input: {

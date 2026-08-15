@@ -67,6 +67,7 @@ import {
   type CodexProjectAdmissionDeps,
 } from "./application/project-control/codex-goal-project-admission";
 import {
+  assertProjectControlEvidenceRootsCanonical,
   assertProjectControlScopeRepairAllowed,
   projectControlAddedAllowedAccountIds,
   projectScopeFieldFingerprint,
@@ -542,6 +543,9 @@ export async function projectControlUpdateControllerScopeView(
     existing: controller.scope,
     proposed: proposedScope,
   });
+  await assertProjectControlEvidenceRootsCanonical(
+    proposedScope.consumedOutputEvidenceRoots ?? [],
+  );
   await assertProjectControlAddedAccountsUsable({
     existing: controller.scope,
     proposed: proposedScope,
@@ -562,6 +566,10 @@ export async function projectControlUpdateControllerScopeView(
         controller.scope.consumedOutputLedgerRoots ?? [],
       proposedConsumedOutputLedgerRoots:
         proposedScope.consumedOutputLedgerRoots ?? [],
+      currentConsumedOutputEvidenceRoots:
+        controller.scope.consumedOutputEvidenceRoots ?? [],
+      proposedConsumedOutputEvidenceRoots:
+        proposedScope.consumedOutputEvidenceRoots ?? [],
     };
   }
 
@@ -589,6 +597,9 @@ export async function projectControlUpdateControllerScopeView(
       existing: current.scope,
       proposed: proposedScope,
     });
+    await assertProjectControlEvidenceRootsCanonical(
+      proposedScope.consumedOutputEvidenceRoots ?? [],
+    );
     manifest = await updateCodexGoalJob({
       registryRootDir: current.registryRootDir,
       jobId: current.controller.jobId,

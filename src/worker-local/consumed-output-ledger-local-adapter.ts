@@ -37,12 +37,17 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
   constructor(
     private readonly mutationLocks = new LocalConsumedOutputLedgerMutationLock(),
     private readonly custodyRoot?: string,
+    private readonly evidenceRoots?: readonly string[],
   ) {}
 
   async assertCanRecord(input: {
     readonly ledgerRoot: string;
     readonly decision: TerminalOutputDecision;
   }): Promise<void> {
+    await assertTerminalEvidenceInCanonicalRoots(
+      input.decision,
+      this.evidenceRoots,
+    );
     await assertLedgerRootActive(input.ledgerRoot);
     const ledgerPath = terminalLedgerPath(input.ledgerRoot, input.decision);
     let existing: string;
@@ -61,6 +66,10 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
     readonly ledgerRoot: string;
     readonly decision: TerminalOutputDecision;
   }): Promise<TerminalOutputDecisionReceipt> {
+    await assertTerminalEvidenceInCanonicalRoots(
+      input.decision,
+      this.evidenceRoots,
+    );
     const maintenanceLease = await acquireConsumedOutputLedgerMaintenanceLock({
       ledgerRoot: input.ledgerRoot,
       owner: `terminal-record:${input.decision.jobId}`,
@@ -96,6 +105,12 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
     readonly ledgerRoot: string;
     readonly decision: TerminalOutputDecision;
   }): Promise<TerminalOutputDecisionReceipt> {
+    // Revalidate immediately before publication so a path swap after the
+    // preflight cannot publish a ledger record bound to out-of-scope evidence.
+    await assertTerminalEvidenceInCanonicalRoots(
+      input.decision,
+      this.evidenceRoots,
+    );
     const ledgerPath = terminalLedgerPath(input.ledgerRoot, input.decision);
     await mkdir(dirname(ledgerPath), { recursive: true });
     const contents = `${JSON.stringify(ledgerRecord(input.decision), null, 2)}\n`;
@@ -115,6 +130,66 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
       await unlink(tmpPath).catch(() => undefined);
     }
   }
+}
+
+async function assertTerminalEvidenceInCanonicalRoots(
+  decision: TerminalOutputDecision,
+  configuredRoots: readonly string[] | undefined,
+): Promise<void> {
+  if (configuredRoots === undefined) return;
+  if (configuredRoots.length === 0) {
+    throw new Error("consumed_output_evidence_root_required");
+  }
+  const roots = await Promise.all(configuredRoots.map(async (input) => {
+    const lexical = resolve(input);
+    const metadata = await lstat(lexical);
+    const physical = await realpath(lexical);
+    if (
+      physical !== lexical || metadata.isSymbolicLink() || !metadata.isDirectory()
+    ) {
+      throw new Error("consumed_output_evidence_root_noncanonical");
+    }
+    return physical;
+  }));
+  const directories = decision.archivePath ? [decision.archivePath] : [];
+  const files = [
+    decision.backup.statusPath,
+    decision.backup.patchPath,
+    decision.backup.numstatPath,
+    decision.backup.untrackedArchivePath,
+    decision.preexistingWorkspacePatch?.path,
+  ].filter((path): path is string => path !== undefined);
+  for (const input of directories) {
+    const lexical = resolve(input);
+    const [physical, metadata] = await Promise.all([
+      realpath(lexical),
+      lstat(lexical),
+    ]);
+    if (
+      physical !== lexical || metadata.isSymbolicLink() || !metadata.isDirectory() ||
+      !roots.some((root) => pathInsideOrEqual(physical, root))
+    ) {
+      throw new Error("consumed_output_evidence_directory_outside_root");
+    }
+  }
+  for (const input of files) {
+    const lexical = resolve(input);
+    const [physical, metadata] = await Promise.all([
+      realpath(lexical),
+      lstat(lexical),
+    ]);
+    if (
+      physical !== lexical || metadata.isSymbolicLink() || !metadata.isFile() ||
+      !roots.some((root) => pathInsideOrEqual(physical, root))
+    ) {
+      throw new Error("consumed_output_evidence_file_outside_root");
+    }
+  }
+}
+
+function pathInsideOrEqual(path: string, root: string): boolean {
+  const child = relative(root, path);
+  return child === "" || (child !== ".." && !child.startsWith(`..${sep}`));
 }
 
 export type ConsumedOutputLedgerMutationLease = {

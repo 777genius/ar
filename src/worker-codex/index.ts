@@ -13,6 +13,8 @@ export * from "./observability";
 export * from "./project-integration-mcp";
 export * from "./temp-workspace";
 export * from "./application/project-control/codex-goal-consumed-output-ledger-epoch";
+export * from "./application/project-control/codex-goal-legacy-job-summary-retirement";
+export * from "./application/project-control/codex-goal-frozen-output-import";
 export {
   parseWorkerLaunchRequest,
   parseWorkerLaunchSpec,

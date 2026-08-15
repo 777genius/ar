@@ -1,4 +1,5 @@
-import { basename, dirname, resolve } from "node:path";
+import { lstat, realpath } from "node:fs/promises";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import type { ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifestInput } from "./codex-goal-jobs";
 import type {
@@ -132,6 +133,64 @@ export function assertProjectControlScopeRepairAllowed(input: {
       throw new Error("project_control_consumed_output_ledger_root_denied");
     }
   }
+  const existingEvidenceRoots = new Set(
+    input.existing.consumedOutputEvidenceRoots ?? [],
+  );
+  for (const root of input.proposed.consumedOutputEvidenceRoots ?? []) {
+    if (!isAbsolute(root) || resolve(root) === dirname(resolve(root))) {
+      throw new Error("project_control_consumed_output_evidence_root_invalid");
+    }
+    if (pathInsideAnyProjectRoot(root, deniedRoots)) {
+      throw new Error("project_control_consumed_output_evidence_root_denied");
+    }
+  }
+  const proposedEvidenceRoots = input.proposed.consumedOutputEvidenceRoots ?? [];
+  if (
+    proposedEvidenceRoots.length < existingEvidenceRoots.size ||
+    [...existingEvidenceRoots].some((root) => !proposedEvidenceRoots.includes(root))
+  ) {
+    throw new Error("project_control_consumed_output_evidence_roots_repair_denied");
+  }
+}
+
+/**
+ * Evidence custody may be appended during a repair, but only as an exact,
+ * existing archive directory. Lexical/physical identity rejects leaf and
+ * ancestor symlinks and prevents granting a broad cache or home root.
+ */
+export async function assertProjectControlEvidenceRootsCanonical(
+  roots: readonly string[],
+): Promise<void> {
+  const seen = new Set<string>();
+  for (const input of roots) {
+    if (!isAbsolute(input) || basename(resolve(input)) !== "archives") {
+      throw new Error("project_control_consumed_output_evidence_root_not_narrow");
+    }
+    const resolved = resolve(input);
+    if (seen.has(resolved)) {
+      throw new Error("project_control_consumed_output_evidence_root_duplicate");
+    }
+    seen.add(resolved);
+    const [physical, metadata] = await Promise.all([
+      realpath(resolved),
+      lstat(resolved),
+    ]);
+    if (
+      physical !== resolved || metadata.isSymbolicLink() || !metadata.isDirectory()
+    ) {
+      throw new Error("project_control_consumed_output_evidence_root_noncanonical");
+    }
+  }
+}
+
+export function projectControlConsumedOutputEvidenceRoot(
+  scope: ProjectAccessScope,
+): string {
+  const roots = scope.consumedOutputEvidenceRoots ?? [];
+  if (roots.length !== 1) {
+    throw new Error("project_control_consumed_output_evidence_root_required");
+  }
+  return resolve(roots[0]!);
 }
 
 function projectControlAllowedBranchesAppendAllowed(input: {

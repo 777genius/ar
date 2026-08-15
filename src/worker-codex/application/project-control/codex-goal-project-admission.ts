@@ -62,6 +62,12 @@ import { orphanDirtyWorkspaceDebt } from
   "./codex-goal-project-orphan-workspace-admission";
 import { resolveLedgerEpochDebtCustody } from
   "./codex-goal-consumed-output-ledger-epoch-switch";
+import {
+  legacyJobSummaryRetirementPath,
+  projectRetirementProjection,
+} from "./codex-goal-legacy-job-summary-retirement";
+import { frozenOutputSupersessionProjection } from
+  "./codex-goal-frozen-output-import";
 type JsonObject = Readonly<Record<string, unknown>>;
 const execFileAsync = promisify(execFile);
 export type CodexProjectAdmissionDeps = {
@@ -231,9 +237,23 @@ export async function buildCodexProjectAdmissionSnapshot(
     });
     summaries = [];
   }
-  const matchingProjectSummaries = summaries.filter((summary) =>
-    matchesProjectControlPrefix(summary.jobId, prefixes)
-  );
+  const matchingProjectSummariesBeforeRetirement = summaries.every((summary) =>
+      matchesProjectControlPrefix(summary.jobId, prefixes)
+    )
+    ? summaries
+    : summaries.filter((summary) =>
+        matchesProjectControlPrefix(summary.jobId, prefixes)
+      );
+  const retirementProjection = await projectRetirementProjection({
+    registryRootDir: input.registryRootDir,
+    projectId: input.scope.projectId,
+    summaries: matchingProjectSummariesBeforeRetirement,
+  });
+  const frozenProjection = await frozenOutputSupersessionProjection({
+    evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
+    summaries: retirementProjection.active,
+  });
+  const matchingProjectSummaries = frozenProjection.active;
   debt.push(...consumedOutputDebtForCurrentRegistry({
     ledger: consumedOutput,
     currentJobIds: new Set(
@@ -313,6 +333,29 @@ export async function buildCodexProjectAdmissionSnapshot(
     observedAt: new Date().toISOString(),
     debt,
     counts: projectAdmissionDebtCounts(debt),
+    ...(retirementProjection.retired.length === 0 ? {} : {
+      retiredLegacyJobSummaries: retirementProjection.retired.map((receipt) => ({
+        jobId: receipt.jobId,
+        manifestSha256: receipt.manifestSha256,
+        retainedRegistrationJobId: receipt.retainedRegistrationJobId,
+        receiptPath: legacyJobSummaryRetirementPath({
+          registryRootDir: input.registryRootDir,
+          projectId: receipt.projectId,
+          jobId: receipt.jobId,
+          manifestSha256: receipt.manifestSha256,
+        }),
+      })),
+    }),
+    ...(frozenProjection.receipts.length === 0 ? {} : {
+      supersededFrozenOutputSummaries: frozenProjection.receipts.flatMap(
+        (receipt) => receipt.supersededSummaries.map((summary) => ({
+          jobId: summary.jobId,
+          manifestSha256: summary.manifestSha256,
+          retainedRegistrationJobId: receipt.retainedRegistrationJobId,
+          receiptPath: receipt.receiptPath,
+        })),
+      ),
+    }),
   };
   const snapshot = await withoutAdmittedInputPatchDebt({
     snapshot: rawSnapshot,
@@ -324,7 +367,11 @@ export async function buildCodexProjectAdmissionSnapshot(
   return input.skipActiveProposedAdmissionNormalization
     ? snapshot
     : await (input.deps.normalizeActiveProposedAdmission ??
-        normalizeActiveSocialProposedAdmission)(input.scope, snapshot, summaries);
+        normalizeActiveSocialProposedAdmission)(
+          input.scope,
+          snapshot,
+          matchingProjectSummaries,
+        );
 }
 
 export async function normalizeActiveSocialProposedAdmission(
