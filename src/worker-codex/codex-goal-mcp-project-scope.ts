@@ -117,6 +117,7 @@ export function assertProjectControlScopeRepairAllowed(input: {
     ...(input.existing.readRoots ?? []),
     ...(input.existing.workspaceRoots ?? []),
     ...(input.existing.worktreeRoots ?? []),
+    ...(input.existing.observedWorkspaceRoots ?? []),
     ...(input.existing.isolatedWorkspaceRoot
       ? [input.existing.isolatedWorkspaceRoot]
       : []),
@@ -129,7 +130,7 @@ export function assertProjectControlScopeRepairAllowed(input: {
         "project_control_consumed_output_ledger_root_outside_scope",
       );
     }
-    if (pathInsideAnyProjectRoot(root, deniedRoots)) {
+    if (deniedRoots.some((denied) => pathsOverlap(root, denied))) {
       throw new Error("project_control_consumed_output_ledger_root_denied");
     }
   }
@@ -140,7 +141,10 @@ export function assertProjectControlScopeRepairAllowed(input: {
     if (!isAbsolute(root) || resolve(root) === dirname(resolve(root))) {
       throw new Error("project_control_consumed_output_evidence_root_invalid");
     }
-    if (pathInsideAnyProjectRoot(root, deniedRoots)) {
+    if (!pathInsideAnyProjectRoot(root, allowedRoots)) {
+      throw new Error("project_control_consumed_output_evidence_root_outside_scope");
+    }
+    if (deniedRoots.some((denied) => pathsOverlap(root, denied))) {
       throw new Error("project_control_consumed_output_evidence_root_denied");
     }
   }
@@ -160,6 +164,7 @@ export function assertProjectControlScopeRepairAllowed(input: {
  */
 export async function assertProjectControlEvidenceRootsCanonical(
   roots: readonly string[],
+  scope?: ProjectAccessScope,
 ): Promise<void> {
   const seen = new Set<string>();
   for (const input of roots) {
@@ -167,6 +172,21 @@ export async function assertProjectControlEvidenceRootsCanonical(
       throw new Error("project_control_consumed_output_evidence_root_not_narrow");
     }
     const resolved = resolve(input);
+    if (scope) {
+      const ownedRoots = uniqueProjectControlStrings([
+        ...(scope.readRoots ?? []), ...(scope.workspaceRoots ?? []),
+        ...(scope.worktreeRoots ?? []), ...(scope.observedWorkspaceRoots ?? []),
+        ...(scope.isolatedWorkspaceRoot ? [scope.isolatedWorkspaceRoot] : []),
+        ...(scope.registryRoot ? [scope.registryRoot] : []),
+      ]).map((root) => resolve(root));
+      if (!pathInsideAnyProjectRoot(resolved, ownedRoots)) {
+        throw new Error("project_control_consumed_output_evidence_root_outside_scope");
+      }
+      if ((scope.deniedRoots ?? []).some((denied) =>
+        pathsOverlap(resolved, resolve(denied)))) {
+        throw new Error("project_control_consumed_output_evidence_root_denied");
+      }
+    }
     if (seen.has(resolved)) {
       throw new Error("project_control_consumed_output_evidence_root_duplicate");
     }
@@ -181,6 +201,46 @@ export async function assertProjectControlEvidenceRootsCanonical(
       throw new Error("project_control_consumed_output_evidence_root_noncanonical");
     }
   }
+}
+
+export async function assertProjectControlCustodyScopeCanonical(
+  scope: ProjectAccessScope,
+): Promise<void> {
+  await assertProjectControlEvidenceRootsCanonical(
+    scope.consumedOutputEvidenceRoots ?? [],
+    scope,
+  );
+  const ownedRoots = uniqueProjectControlStrings([
+    ...(scope.readRoots ?? []), ...(scope.workspaceRoots ?? []),
+    ...(scope.worktreeRoots ?? []), ...(scope.observedWorkspaceRoots ?? []),
+    ...(scope.isolatedWorkspaceRoot ? [scope.isolatedWorkspaceRoot] : []),
+    ...(scope.registryRoot ? [scope.registryRoot] : []),
+  ]).map((root) => resolve(root));
+  const seen = new Set<string>();
+  for (const input of scope.consumedOutputLedgerRoots ?? []) {
+    const lexical = resolve(input);
+    if (seen.has(lexical)) {
+      throw new Error("project_control_consumed_output_ledger_root_duplicate");
+    }
+    seen.add(lexical);
+    if (!pathInsideAnyProjectRoot(lexical, ownedRoots) ||
+      (scope.deniedRoots ?? []).some((denied) =>
+        pathsOverlap(lexical, resolve(denied)))) {
+      throw new Error("project_control_consumed_output_ledger_root_outside_scope");
+    }
+    const [physical, metadata] = await Promise.all([
+      realpath(lexical), lstat(lexical),
+    ]);
+    if (physical !== lexical || metadata.isSymbolicLink() ||
+      !metadata.isDirectory()) {
+      throw new Error("project_control_consumed_output_ledger_root_noncanonical");
+    }
+  }
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  return pathInsideOrEqual(resolve(left), resolve(right)) ||
+    pathInsideOrEqual(resolve(right), resolve(left));
 }
 
 export function projectControlConsumedOutputEvidenceRoot(

@@ -23,6 +23,8 @@ import type {
   TerminalOutputDecision,
   TerminalOutputDecisionReceipt,
 } from "@vioxen/subscription-runtime/worker-core";
+import { LocalProjectControlEvidenceCustody } from
+  "./project-control-evidence-custody-local-adapter";
 import { CONSUMED_OUTPUT_LEDGER_RETIRED_MARKER } from
   "@vioxen/subscription-runtime/worker-core";
 import { LocalWorkspaceIntegrationLock } from "./project-integration-local-adapters";
@@ -458,30 +460,26 @@ export async function captureLocalTerminalOutputBackup(input: {
   readonly workspacePath: string;
   readonly changedFiles: readonly string[];
   readonly sourcePatchPath?: string;
+  readonly sourcePatchBytes?: Uint8Array;
   readonly gitBinaryPath?: string;
 }): Promise<LocalTerminalOutputBackupCapture> {
   const archivePath = join(
     input.archiveRoot,
     safeLedgerName(input.archiveName),
   );
-  await mkdir(archivePath, { recursive: true });
   const statusPath = join(archivePath, "git-status.txt");
   const patchPath = join(archivePath, "tracked.diff");
   const numstatPath = join(archivePath, "tracked.numstat");
-  await publishExactText(
-    statusPath,
-    await localGitOutput({
+  const status = Buffer.from(await localGitOutput({
       cwd: input.workspacePath,
       args: ["status", "--short"],
       ...(input.gitBinaryPath ? { gitBinaryPath: input.gitBinaryPath } : {}),
-    }),
-  );
-  if (input.sourcePatchPath) {
-    await publishExactFile(patchPath, input.sourcePatchPath);
-  } else {
-    await publishExactBytes(
-      patchPath,
-      input.changedFiles.length === 0
+    }));
+  const patch = input.sourcePatchBytes
+    ? Buffer.from(input.sourcePatchBytes)
+    : input.sourcePatchPath
+    ? await readFile(input.sourcePatchPath)
+    : input.changedFiles.length === 0
         ? Buffer.alloc(0)
         : await localGitOutputBytes({
             cwd: input.workspacePath,
@@ -489,12 +487,8 @@ export async function captureLocalTerminalOutputBackup(input: {
             ...(input.gitBinaryPath
               ? { gitBinaryPath: input.gitBinaryPath }
               : {}),
-          }),
-    );
-  }
-  await publishExactText(
-    numstatPath,
-    input.changedFiles.length === 0
+          });
+  const numstat = Buffer.from(input.changedFiles.length === 0
       ? ""
       : await localGitOutput({
           cwd: input.workspacePath,
@@ -502,8 +496,26 @@ export async function captureLocalTerminalOutputBackup(input: {
           ...(input.gitBinaryPath
             ? { gitBinaryPath: input.gitBinaryPath }
             : {}),
-        }),
-  );
+        }));
+  const custody = new LocalProjectControlEvidenceCustody();
+  const directory = safeLedgerName(input.archiveName);
+  await Promise.all([
+    custody.publishImmutableBytes({
+      root: input.archiveRoot, directories: [directory],
+      fileName: "git-status.txt", bytes: status,
+      expectedSha256: sha256Bytes(status),
+    }),
+    custody.publishImmutableBytes({
+      root: input.archiveRoot, directories: [directory],
+      fileName: "tracked.diff", bytes: patch,
+      expectedSha256: sha256Bytes(patch),
+    }),
+    custody.publishImmutableBytes({
+      root: input.archiveRoot, directories: [directory],
+      fileName: "tracked.numstat", bytes: numstat,
+      expectedSha256: sha256Bytes(numstat),
+    }),
+  ]);
   return {
     archivePath,
     statusPath,
@@ -511,6 +523,10 @@ export async function captureLocalTerminalOutputBackup(input: {
     numstatPath,
     hasAuthoredOutput: await anyFileHasBytes([patchPath, numstatPath]),
   };
+}
+
+function sha256Bytes(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 export type LocalIntegratedOutputLedgerAdapterOptions = {

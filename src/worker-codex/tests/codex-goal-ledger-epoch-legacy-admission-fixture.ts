@@ -15,6 +15,8 @@ const execFileAsync = promisify(execFile);
 const D0A_COMMIT = "d0a6885ddac5d90d765819359cfce05b756b7a54";
 const D0A_BUILDER_SHA256 =
   "858be0c57bace3f1cc0e262357c78ccc0bd96b33031dbb437583e2afd849109e";
+const D0A_COMPILED_BUILDER_SHA256 =
+  "e0940490668806afa15c074fd3cd2e37d2ac6e1fdc19f95150efad40ed80e477";
 type EpochBuilderModule = typeof import(
   "../application/project-control/codex-goal-consumed-output-ledger-epoch"
 );
@@ -235,6 +237,9 @@ async function loadCompiledD0aFixture(
     if (createHash("sha256").update(builderBytes).digest("hex") !==
       D0A_BUILDER_SHA256) return undefined;
     await access(modulePath);
+    const compiledBytes = await readFile(modulePath);
+    if (createHash("sha256").update(compiledBytes).digest("hex") !==
+      D0A_COMPILED_BUILDER_SHA256) return undefined;
     return await import(pathToFileURL(modulePath).href) as EpochBuilderModule;
   } catch (error) {
     if (isNodeError(error, "ENOENT")) return undefined;

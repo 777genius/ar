@@ -1,14 +1,7 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import {
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  realpath,
-} from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import type { ProjectControlEvidenceCustodyPort } from
+  "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifest, CodexGoalJobSummary } from
   "../../codex-goal-jobs";
 
@@ -56,7 +49,7 @@ export function legacyJobSummaryRetirementRoot(input: {
     input.registryRootDir,
     ".project-control",
     "legacy-job-summary-retirements",
-    safeComponent(input.projectId),
+    identityComponent(input.projectId),
   );
 }
 
@@ -73,9 +66,11 @@ export function legacyJobSummaryRetirementPath(input: {
 }
 
 export async function buildLegacyJobSummaryRetirementPlan(input: {
+  readonly custody: ProjectControlEvidenceCustodyPort;
   readonly registryRootDir: string;
   readonly projectId: string;
   readonly controllerJobId: string;
+  readonly jobIdPrefixes: readonly string[];
   readonly manifest: CodexGoalJobManifest;
   readonly manifestPath: string;
   readonly expectedManifestPath: string;
@@ -86,12 +81,12 @@ export async function buildLegacyJobSummaryRetirementPlan(input: {
   readonly expectedRetainedManifestSha256: string;
   readonly workerAlive: boolean;
 }): Promise<LegacyJobSummaryRetirementPlan> {
-  await assertCanonicalRegistryRoot(input.registryRootDir);
+  await assertCanonicalRegistryRoot(input.custody, input.registryRootDir);
   const manifestPath = resolve(input.manifestPath);
   if (manifestPath !== resolve(input.expectedManifestPath)) {
     throw new Error("legacy_job_summary_manifest_path_cas_mismatch");
   }
-  const manifestSha256 = await regularFileSha256(manifestPath);
+  const manifestSha256 = await regularFileSha256(input.custody, manifestPath);
   if (manifestSha256 !== input.expectedManifestSha256.toLowerCase()) {
     throw new Error("legacy_job_summary_manifest_sha256_cas_mismatch");
   }
@@ -100,21 +95,38 @@ export async function buildLegacyJobSummaryRetirementPlan(input: {
   ) {
     throw new Error("legacy_job_summary_workspace_cas_mismatch");
   }
-  await assertWorkspaceEnoent(input.expectedWorkspacePath);
+  assertRegistryJobOwned({
+    registryRootDir: input.registryRootDir,
+    projectId: input.projectId,
+    jobIdPrefixes: input.jobIdPrefixes,
+    manifest: input.manifest,
+    manifestPath,
+    allowUnscopedLegacy: true,
+  });
+  await assertWorkspaceEnoent(input.custody, input.expectedWorkspacePath);
   if (input.workerAlive) throw new Error("legacy_job_summary_worker_live");
-  await assertNeverLaunchedArtifactsAbsent(input.manifest);
+  await assertNeverLaunchedArtifactsAbsent(input.custody, input.manifest);
 
   if (input.retainedManifest.jobId === input.manifest.jobId) {
     throw new Error("legacy_job_summary_retained_sibling_required");
   }
   const retainedManifestPath = resolve(input.retainedManifestPath);
-  const retainedManifestSha256 = await regularFileSha256(retainedManifestPath);
+  const retainedManifestSha256 = await regularFileSha256(input.custody,
+    retainedManifestPath);
   if (
     retainedManifestSha256 !==
       input.expectedRetainedManifestSha256.toLowerCase()
   ) {
     throw new Error("legacy_job_summary_retained_manifest_cas_mismatch");
   }
+  assertRegistryJobOwned({
+    registryRootDir: input.registryRootDir,
+    projectId: input.projectId,
+    jobIdPrefixes: input.jobIdPrefixes,
+    manifest: input.retainedManifest,
+    manifestPath: retainedManifestPath,
+    allowUnscopedLegacy: false,
+  });
   if (
     resolve(input.retainedManifest.workspacePath) !==
       resolve(input.expectedWorkspacePath) ||
@@ -138,6 +150,7 @@ export async function buildLegacyJobSummaryRetirementPlan(input: {
 }
 
 export async function publishLegacyJobSummaryRetirement(input: {
+  readonly custody: ProjectControlEvidenceCustodyPort;
   readonly registryRootDir: string;
   readonly plan: LegacyJobSummaryRetirementPlan;
   readonly expectedPlanSha256: string;
@@ -151,6 +164,22 @@ export async function publishLegacyJobSummaryRetirement(input: {
   if (planSha256 !== input.expectedPlanSha256.toLowerCase()) {
     throw new Error("legacy_job_summary_retirement_plan_cas_mismatch");
   }
+  const receiptPath = legacyJobSummaryRetirementPath({
+    registryRootDir: input.registryRootDir,
+    projectId: input.plan.projectId,
+    jobId: input.plan.jobId,
+    manifestSha256: input.plan.manifestSha256,
+  });
+  try {
+    const existing = parseRetirementReceipt(decode((await input.custody
+      .readImmutableFile(receiptPath, 1024 * 1024)).bytes));
+    if (existing.planSha256 !== planSha256 ||
+      legacyJobSummaryRetirementPlanSha256(planFromReceipt(existing)) !==
+        planSha256) throw new Error("legacy_job_summary_retirement_receipt_conflict");
+    return { receipt: existing, receiptPath, idempotentReplay: true };
+  } catch (error) {
+    if (nodeErrorCode(error) !== "ENOENT") throw error;
+  }
   const receipt: LegacyJobSummaryRetirementReceipt = {
     ...input.plan,
     planSha256,
@@ -163,39 +192,19 @@ export async function publishLegacyJobSummaryRetirement(input: {
       "manifest_cas_exact",
     ],
   };
-  const receiptPath = legacyJobSummaryRetirementPath({
-    registryRootDir: input.registryRootDir,
-    projectId: input.plan.projectId,
-    jobId: input.plan.jobId,
-    manifestSha256: input.plan.manifestSha256,
-  });
-  await mkdir(dirname(receiptPath), { recursive: true, mode: 0o700 });
   const body = `${JSON.stringify(receipt, null, 2)}\n`;
-  try {
-    const handle = await open(
-      receiptPath,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      0o600,
-    );
-    try {
-      await handle.writeFile(body, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await fsyncDirectory(dirname(receiptPath));
-    return { receipt, receiptPath, idempotentReplay: false };
-  } catch (error) {
-    if (nodeErrorCode(error) !== "EEXIST") throw error;
-    const existing = parseRetirementReceipt(await readFile(receiptPath, "utf8"));
-    if (
-      existing.planSha256 !== planSha256 ||
-      legacyJobSummaryRetirementPlanSha256(planFromReceipt(existing)) !== planSha256
-    ) {
-      throw new Error("legacy_job_summary_retirement_receipt_conflict");
-    }
-    return { receipt: existing, receiptPath, idempotentReplay: true };
-  }
+  const published = await input.custody.publishImmutableBytes({
+    root: input.registryRootDir,
+    directories: [
+      ".project-control",
+      "legacy-job-summary-retirements",
+      identityComponent(input.plan.projectId),
+    ],
+    fileName: `${safeComponent(input.plan.jobId)}--${input.plan.manifestSha256}.json`,
+    bytes: Buffer.from(body),
+    expectedSha256: sha256(body),
+  });
+  return { receipt, receiptPath, idempotentReplay: !published.created };
 }
 
 function planFromReceipt(
@@ -217,8 +226,11 @@ function planFromReceipt(
 }
 
 export async function projectRetirementProjection(input: {
+  readonly custody: ProjectControlEvidenceCustodyPort;
   readonly registryRootDir: string;
   readonly projectId: string;
+  readonly controllerJobId?: string;
+  readonly jobIdPrefixes?: readonly string[];
   readonly summaries: readonly CodexGoalJobSummary[];
 }): Promise<{
   readonly active: readonly CodexGoalJobSummary[];
@@ -226,22 +238,22 @@ export async function projectRetirementProjection(input: {
 }> {
   let entries;
   try {
-    entries = await readdir(legacyJobSummaryRetirementRoot(input), {
-      withFileTypes: true,
-    });
-  } catch (error) {
-    if (nodeErrorCode(error) === "ENOENT") {
-      return { active: input.summaries, retired: [] };
-    }
-    throw error;
-  }
+    entries = await input.custody.listDirectory(
+      legacyJobSummaryRetirementRoot(input),
+    );
+  } catch (error) { throw error; }
   const receipts: LegacyJobSummaryRetirementReceipt[] = [];
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    receipts.push(parseRetirementReceipt(await readFile(
-      join(legacyJobSummaryRetirementRoot(input), entry.name),
-      "utf8",
-    )));
+    if (entry.kind !== "file" || !entry.name.endsWith(".json")) continue;
+    const receipt = parseRetirementReceipt(decode((await input.custody.readImmutableFile(
+      join(legacyJobSummaryRetirementRoot(input), entry.name), 1024 * 1024,
+    )).bytes));
+    if (receipt.projectId !== input.projectId ||
+      (input.controllerJobId !== undefined &&
+        receipt.controllerJobId !== input.controllerJobId) ||
+      (input.jobIdPrefixes !== undefined &&
+        !matchesPrefix(receipt.jobId, input.jobIdPrefixes))) continue;
+    receipts.push(receipt);
   }
   const retired: LegacyJobSummaryRetirementReceipt[] = [];
   const active: CodexGoalJobSummary[] = [];
@@ -251,14 +263,34 @@ export async function projectRetirementProjection(input: {
       active.push(summary);
       continue;
     }
-    const currentSha256 = await regularFileSha256(summary.manifestPath);
+    const currentFile = await input.custody.readImmutableFile(
+      summary.manifestPath, 1024 * 1024,
+    );
+    const currentSha256 = currentFile.sha256;
+    let currentManifest: CodexGoalJobManifest;
+    try { currentManifest = JSON.parse(decode(currentFile.bytes)); } catch {
+      throw new Error("legacy_job_summary_manifest_invalid");
+    }
+    assertRegistryJobOwned({
+      registryRootDir: input.registryRootDir,
+      projectId: input.projectId,
+      jobIdPrefixes: input.jobIdPrefixes ?? [],
+      manifest: currentManifest,
+      manifestPath: summary.manifestPath,
+      allowUnscopedLegacy: true,
+    });
     let matched: LegacyJobSummaryRetirementReceipt | undefined;
     for (const receipt of candidates) {
       let retainedCurrent = false;
       try {
-        retainedCurrent =
-          await regularFileSha256(receipt.retainedManifestPath) ===
-            receipt.retainedManifestSha256;
+        const retained = JSON.parse(decode((await input.custody.readImmutableFile(
+          receipt.retainedManifestPath, 1024 * 1024,
+        )).bytes)) as CodexGoalJobManifest;
+        retainedCurrent = await regularFileSha256(input.custody,
+          receipt.retainedManifestPath) ===
+          receipt.retainedManifestSha256 &&
+          retained.projectAccessScope?.projectId === input.projectId &&
+          retained.jobId === receipt.retainedRegistrationJobId;
       } catch {
         retainedCurrent = false;
       }
@@ -282,30 +314,23 @@ export async function projectRetirementProjection(input: {
   };
 }
 
-async function assertCanonicalRegistryRoot(root: string): Promise<void> {
-  const lexical = resolve(root);
-  const [physical, metadata] = await Promise.all([realpath(lexical), lstat(lexical)]);
-  if (physical !== lexical || metadata.isSymbolicLink() || !metadata.isDirectory()) {
-    throw new Error("legacy_job_summary_registry_root_noncanonical");
-  }
+async function assertCanonicalRegistryRoot(custody: ProjectControlEvidenceCustodyPort,
+  root: string): Promise<void> {
+  await custody.canonicalDirectory(root);
 }
 
-async function assertWorkspaceEnoent(path: string): Promise<void> {
-  try {
-    await lstat(path);
+async function assertWorkspaceEnoent(custody: ProjectControlEvidenceCustodyPort,
+  path: string): Promise<void> {
+  if (await custody.pathKind(path) !== "absent") {
     throw new Error("legacy_job_summary_workspace_still_exists");
-  } catch (error) {
-    if (nodeErrorCode(error) !== "ENOENT") throw error;
   }
   let parent = dirname(resolve(path));
   for (;;) {
     try {
-      if (await realpath(parent) !== parent) {
-        throw new Error("legacy_job_summary_workspace_parent_noncanonical");
-      }
+      await custody.canonicalDirectory(parent);
       return;
     } catch (error) {
-      if (nodeErrorCode(error) !== "ENOENT") throw error;
+      if (await custody.pathKind(parent) !== "absent") throw error;
       const next = dirname(parent);
       if (next === parent) throw error;
       parent = next;
@@ -314,43 +339,26 @@ async function assertWorkspaceEnoent(path: string): Promise<void> {
 }
 
 async function assertNeverLaunchedArtifactsAbsent(
+  custody: ProjectControlEvidenceCustodyPort,
   manifest: CodexGoalJobManifest,
 ): Promise<void> {
   const explicit = [manifest.outputPath, manifest.progressPath, manifest.logPath]
     .filter((path): path is string => path !== undefined);
   for (const path of explicit) {
-    try {
-      await lstat(path);
+    if (await custody.pathKind(path) !== "absent") {
       throw new Error("legacy_job_summary_runtime_artifact_present");
-    } catch (error) {
-      if (nodeErrorCode(error) !== "ENOENT") throw error;
     }
   }
-  let entries;
-  try {
-    entries = await readdir(manifest.jobRootDir, { withFileTypes: true });
-  } catch (error) {
-    if (nodeErrorCode(error) === "ENOENT") return;
-    throw error;
-  }
+  const entries = await custody.listDirectory(manifest.jobRootDir);
   const forbidden = /(^|[-_.])(launch|handoff|result|output)([-_.]|$)/i;
   if (entries.some((entry) => forbidden.test(entry.name))) {
     throw new Error("legacy_job_summary_runtime_artifact_present");
   }
 }
 
-async function regularFileSha256(path: string): Promise<string> {
-  const lexical = resolve(path);
-  const [physical, metadata, bytes] = await Promise.all([
-    realpath(lexical),
-    lstat(lexical),
-    readFile(lexical),
-  ]);
-  if (
-    physical !== lexical || metadata.isSymbolicLink() || !metadata.isFile() ||
-    metadata.size !== bytes.length
-  ) throw new Error("legacy_job_summary_manifest_noncanonical");
-  return sha256(bytes);
+async function regularFileSha256(custody: ProjectControlEvidenceCustodyPort,
+  path: string): Promise<string> {
+  return (await custody.readImmutableFile(path, 1024 * 1024)).sha256;
 }
 
 function parseRetirementReceipt(value: string): LegacyJobSummaryRetirementReceipt {
@@ -371,15 +379,6 @@ function parseRetirementReceipt(value: string): LegacyJobSummaryRetirementReceip
   return receipt;
 }
 
-async function fsyncDirectory(path: string): Promise<void> {
-  const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY);
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
 function safeComponent(value: string): string {
   const safe = value.replace(/[^a-zA-Z0-9._-]/g, "_");
   if (!safe || safe === "." || safe === ".." || basename(safe) !== safe) {
@@ -388,8 +387,44 @@ function safeComponent(value: string): string {
   return safe;
 }
 
-function sha256(value: string | Buffer): string {
+function identityComponent(value: string): string {
+  return `${safeComponent(value).slice(0, 80)}--${sha256(value).slice(0, 16)}`;
+}
+
+function assertRegistryJobOwned(input: {
+  readonly registryRootDir: string;
+  readonly projectId: string;
+  readonly jobIdPrefixes: readonly string[];
+  readonly manifest: CodexGoalJobManifest;
+  readonly manifestPath: string;
+  readonly allowUnscopedLegacy: boolean;
+}): void {
+  if (!matchesPrefix(input.manifest.jobId, input.jobIdPrefixes)) {
+    throw new Error("legacy_job_summary_job_prefix_mismatch");
+  }
+  const expectedRoot = join(resolve(input.registryRootDir), input.manifest.jobId);
+  if (resolve(input.manifestPath) !== join(expectedRoot, "job.json") ||
+    resolve(input.manifest.jobRootDir) !== expectedRoot) {
+    throw new Error("legacy_job_summary_registry_ownership_mismatch");
+  }
+  const manifestProjectId = input.manifest.projectAccessScope?.projectId;
+  if (manifestProjectId !== input.projectId &&
+    !(input.allowUnscopedLegacy && manifestProjectId === undefined)) {
+    throw new Error("legacy_job_summary_project_mismatch");
+  }
+}
+
+function matchesPrefix(jobId: string, prefixes: readonly string[]): boolean {
+  return prefixes.length > 0 && prefixes.some((prefix) =>
+    prefix.length > 0 && jobId.startsWith(prefix));
+}
+
+function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function decode(value: Uint8Array): string {
+  return Buffer.from(value).toString("utf8");
 }
 
 function nodeErrorCode(error: unknown): string | undefined {

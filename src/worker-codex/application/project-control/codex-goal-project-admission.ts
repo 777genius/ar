@@ -16,6 +16,7 @@ import {
   type ProjectAdmissionRequest,
   type ProjectAdmissionSnapshot,
   type ProjectDebtItem,
+  type ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
 import type {
   CodexGoalJobManifest,
@@ -89,11 +90,13 @@ export type CodexProjectAdmissionDeps = {
     snapshot: ProjectAdmissionSnapshot,
     summaries: readonly CodexGoalJobSummary[],
   ) => Promise<ProjectAdmissionSnapshot>;
+  readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
 };
 
 type CodexProjectAdmissionInput = {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
+  readonly controllerJobId?: string;
   readonly deps: CodexProjectAdmissionDeps;
   readonly admittedInputPatchTarget?: ProjectAdmissionJobWorkspaceBinding;
   readonly capacityContinuationTarget?: ProjectAdmissionJobWorkspaceBinding;
@@ -244,15 +247,30 @@ export async function buildCodexProjectAdmissionSnapshot(
     : summaries.filter((summary) =>
         matchesProjectControlPrefix(summary.jobId, prefixes)
       );
-  const retirementProjection = await projectRetirementProjection({
-    registryRootDir: input.registryRootDir,
-    projectId: input.scope.projectId,
-    summaries: matchingProjectSummariesBeforeRetirement,
-  });
-  const frozenProjection = await frozenOutputSupersessionProjection({
-    evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
-    summaries: retirementProjection.active,
-  });
+  const retirementProjection = input.deps.evidenceCustody
+    ? await projectRetirementProjection({
+        custody: input.deps.evidenceCustody,
+        registryRootDir: input.registryRootDir,
+        projectId: input.scope.projectId,
+        ...(input.controllerJobId
+          ? { controllerJobId: input.controllerJobId }
+          : {}),
+        jobIdPrefixes: prefixes,
+        summaries: matchingProjectSummariesBeforeRetirement,
+      })
+    : { active: matchingProjectSummariesBeforeRetirement, retired: [] };
+  const frozenProjection = input.deps.evidenceCustody
+    ? await frozenOutputSupersessionProjection({
+        custody: input.deps.evidenceCustody,
+        evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
+        ledgerRoots: input.scope.consumedOutputLedgerRoots ?? [],
+        projectId: input.scope.projectId,
+        ...(input.controllerJobId
+          ? { controllerJobId: input.controllerJobId }
+          : {}),
+        summaries: retirementProjection.active,
+      })
+    : { active: retirementProjection.active, receipts: [] };
   const matchingProjectSummaries = frozenProjection.active;
   debt.push(...consumedOutputDebtForCurrentRegistry({
     ledger: consumedOutput,

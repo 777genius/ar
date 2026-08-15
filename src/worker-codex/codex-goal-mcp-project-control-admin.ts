@@ -10,6 +10,7 @@ import {
   ProjectOperation,
   evaluateProjectAdmission,
   type ProjectAccessScope,
+  type ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
   codexGoalJobToArgs,
@@ -129,6 +130,7 @@ export type CodexGoalMcpProjectControlAdminDeps = {
     args: ProjectControlMcpArgs,
   ) => Promise<LoadedProjectControlController>;
   readonly admissionDeps: CodexProjectAdmissionDeps;
+  readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
 };
 
 export async function projectControlAdmissionSnapshotView(
@@ -143,6 +145,7 @@ export async function projectControlAdmissionSnapshotView(
   const snapshot = await buildCodexProjectAdmissionSnapshot({
     registryRootDir: controller.registryRootDir,
     scope: controller.scope,
+    controllerJobId: controller.controller.jobId,
     deps: deps.admissionDeps,
   });
   const operation = projectAdmissionOperation(args.operation);
@@ -203,6 +206,7 @@ export async function projectControlRepairLegacyOutputDebtView(
   const snapshot = await buildCodexProjectAdmissionSnapshot({
     registryRootDir: controller.registryRootDir,
     scope: controller.scope,
+    controllerJobId: controller.controller.jobId,
     deps: deps.admissionDeps,
   });
   const summaries = await deps.admissionDeps.listJobs({
@@ -231,6 +235,7 @@ export async function projectControlRepairLegacyOutputDebtView(
       ? await buildCodexProjectAdmissionSnapshot({
           registryRootDir: controller.registryRootDir,
           scope: controller.scope,
+          controllerJobId: controller.controller.jobId,
           deps: deps.admissionDeps,
         })
       : snapshot;
@@ -545,6 +550,7 @@ export async function projectControlUpdateControllerScopeView(
   });
   await assertProjectControlEvidenceRootsCanonical(
     proposedScope.consumedOutputEvidenceRoots ?? [],
+    proposedScope,
   );
   await assertProjectControlAddedAccountsUsable({
     existing: controller.scope,
@@ -599,6 +605,7 @@ export async function projectControlUpdateControllerScopeView(
     });
     await assertProjectControlEvidenceRootsCanonical(
       proposedScope.consumedOutputEvidenceRoots ?? [],
+      proposedScope,
     );
     manifest = await updateCodexGoalJob({
       registryRootDir: current.registryRootDir,

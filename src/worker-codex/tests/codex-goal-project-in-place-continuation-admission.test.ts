@@ -157,6 +157,7 @@ describe("controlled runtime in-place continuation admission", () => {
 
   it("binds the workspace fingerprint and exact rejected patch hash", async () => {
     const fixture = await createBuiltinFixture();
+    await mkdir(join(fixture.root, "archives"), { recursive: true });
     const scope: ProjectAccessScope = {
       ...fixture.scope,
       consumedOutputLedgerRoots: [join(fixture.root, "ledger")],

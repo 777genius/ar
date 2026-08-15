@@ -53,6 +53,7 @@ import {
   codexProjectControlBroker,
   loadJobLaunch,
   loadProjectControlController,
+  projectControlEvidenceCustody,
 } from "./codex-goal-mcp-project-control-deps";
 
 const serverVersion = process.env.npm_package_version ?? "0.0.0";
@@ -63,6 +64,7 @@ function projectControlAdminDeps() {
   return {
     loadProjectControlController,
     admissionDeps: codexProjectAdmissionDeps,
+    evidenceCustody: projectControlEvidenceCustody,
   };
 }
 

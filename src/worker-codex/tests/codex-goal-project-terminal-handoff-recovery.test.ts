@@ -616,6 +616,7 @@ async function actionFixture() {
     mkdir(canonicalWorkspacePath, { recursive: true }),
     mkdir(jobRootDir, { recursive: true }),
     mkdir(join(ledgerRoot, "items"), { recursive: true }),
+    mkdir(evidenceRoot, { recursive: true }),
   ]);
   await gitInitRepository(workspacePath);
   await gitInitRepository(canonicalWorkspacePath);

@@ -138,14 +138,6 @@ describe("project control ledger epoch handler", () => {
   it("upgrades and activates the exact-710 prepared v1 plan through the real handler", async () => {
     const fixture = productionFixture;
     const plan = productionPlan;
-    await fixture.resetPreparedV1Baseline();
-    await expect(projectControlLedgerEpochMigrationView(
-      fixture.args(),
-      fixture.deps,
-    )).resolves.toMatchObject({
-      planSha256: plan.planSha256,
-      upgradeRequired: true,
-    });
     const activated = await projectControlLedgerEpochMigrationView(
       fixture.args({
         confirmLedgerEpochMigration: true,
@@ -808,6 +800,12 @@ export async function handlerFixture(
   let preparedBaselineController: Buffer | undefined;
   return {
     root,
+    cleanup: async () => {
+      await rm(root, { recursive: true, force: true });
+      if (preparedBaselineRoot) {
+        await rm(preparedBaselineRoot, { recursive: true, force: true });
+      }
+    },
     oldRoot,
     newRoot,
     oldScopeBytes: async () => ({

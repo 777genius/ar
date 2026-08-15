@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import {
   recordTerminalOutputDecision,
@@ -105,44 +104,13 @@ export async function recordRejectedUncapturedOutput(input: {
   const patchSha256 = createHash("sha256").update(patch).digest("hex");
   const attemptId = `uncaptured-rejection-${patchSha256}`;
   const archiveRoot = projectControlConsumedOutputEvidenceRoot(input.scope);
-  const sourcePatchPath = join(archiveRoot, `.${attemptId}.patch`);
-  await mkdir(archiveRoot, { recursive: true, mode: 0o700 });
-  await writeFile(sourcePatchPath, patch, {
-    encoding: "utf8",
-    mode: 0o600,
-    flag: "wx",
+  const backup = await captureLocalTerminalOutputBackup({
+    archiveRoot,
+    archiveName: `${input.jobId}-rejected-uncaptured-${patchSha256}`,
+    workspacePath: input.workspacePath,
+    changedFiles,
+    sourcePatchBytes: Buffer.from(patch),
   });
-  const sourceIdentity = await lstat(sourcePatchPath);
-  if (!sourceIdentity.isFile() || sourceIdentity.isSymbolicLink()) {
-    throw new Error("uncaptured_rejected_output_provenance_unsafe");
-  }
-  let backup;
-  try {
-    backup = await captureLocalTerminalOutputBackup({
-      archiveRoot,
-      archiveName: `${input.jobId}-rejected-uncaptured-${patchSha256}`,
-      workspacePath: input.workspacePath,
-      changedFiles,
-      sourcePatchPath,
-    });
-  } finally {
-    let current;
-    try {
-      current = await lstat(sourcePatchPath);
-    } catch (error) {
-      throw new Error(
-        "uncaptured_rejected_output_provenance_drift",
-        { cause: error },
-      );
-    }
-    if (!current.isFile() || current.isSymbolicLink() ||
-      current.dev !== sourceIdentity.dev || current.ino !== sourceIdentity.ino ||
-      current.size !== Buffer.byteLength(patch) ||
-      createHash("sha256").update(await readFile(sourcePatchPath)).digest("hex") !==
-        patchSha256
-    ) throw new Error("uncaptured_rejected_output_provenance_drift");
-    await rm(sourcePatchPath);
-  }
   if (!backup.hasAuthoredOutput) {
     throw new Error("uncaptured_rejected_output_authored_output_required");
   }

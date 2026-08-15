@@ -3,16 +3,21 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
+  rename,
+  rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import type { ProjectAccessScope } from
   "@vioxen/subscription-runtime/worker-core";
 import { LocalConsumedOutputLedgerWriter } from
   "@vioxen/subscription-runtime/worker-local";
+import { LocalProjectControlEvidenceCustody } from
+  "../../worker-local/project-control-evidence-custody-local-adapter";
 import type { CodexGoalJobManifest, CodexGoalJobSummary } from
   "../codex-goal-jobs";
 import {
@@ -31,10 +36,18 @@ import { readCodexGoalConsumedOutputLedgers } from
   "../application/project-control/codex-goal-consumed-output-ledger-io";
 import { assertCanonicalLedgerRootsAllowed } from
   "../application/project-control/codex-goal-ledger-epoch-handler-admission";
+import { assertProjectControlDebtControllerCas } from
+  "../codex-goal-mcp-project-control-debt-remediation";
+
+const remediationRoots = new Set<string>();
+afterAll(async () => await Promise.all([...remediationRoots].map((root) =>
+  rm(root, { recursive: true, force: true })
+)));
 
 describe("consumed output evidence scope", () => {
   it("allows ledger epoch roots beneath the configured canonical registry root", async () => {
     const root = await mkdtemp(join(tmpdir(), "ledger-registry-scope-"));
+    remediationRoots.add(root);
     const registryRoot = join(root, "registry");
     const oldRoot = join(registryRoot, "controller", "ledger-v1");
     const newRoot = join(registryRoot, "controller", "ledger-v2");
@@ -50,6 +63,7 @@ describe("consumed output evidence scope", () => {
 
   it("reads hosted sibling archives only through the explicit narrow evidence root", async () => {
     const root = await mkdtemp(join(tmpdir(), "hosted-evidence-root-"));
+    remediationRoots.add(root);
     const ledgerRoot = join(root, "codex-goal-jobs", "controller", "consumed-output-ledger");
     const evidenceRoot = join(root, "controller", "archives");
     const archivePath = join(evidenceRoot, "producer-rejected");
@@ -96,6 +110,7 @@ describe("consumed output evidence scope", () => {
 
   it("rejects a symlink-swapped evidence leaf before publishing the ledger", async () => {
     const root = await mkdtemp(join(tmpdir(), "evidence-preflight-"));
+    remediationRoots.add(root);
     const ledgerRoot = join(root, "ledger");
     const evidenceRoot = join(root, "archives");
     const outside = join(root, "outside.txt");
@@ -125,18 +140,46 @@ describe("consumed output evidence scope", () => {
   });
 });
 
+const evidenceCustody = new LocalProjectControlEvidenceCustody();
+
+describe("project-control debt confirmation controller CAS", () => {
+  it("rejects a controller or scope reloaded with any drift under the lock", () => {
+    const controller = manifestFor("controller", "/workspace", "/registry/controller");
+    const loaded = {
+      registryRootDir: "/registry",
+      controller,
+      scope: controller.projectAccessScope!,
+    };
+    expect(() => assertProjectControlDebtControllerCas(loaded, loaded)).not.toThrow();
+    const driftedController = {
+      ...controller,
+      projectAccessScope: {
+        ...controller.projectAccessScope!,
+        consumedOutputEvidenceRoots: ["/changed/archives"],
+      },
+    };
+    expect(() => assertProjectControlDebtControllerCas(loaded, {
+      ...loaded,
+      controller: driftedController,
+      scope: driftedController.projectAccessScope,
+    })).toThrow("controller_scope_cas_mismatch");
+  });
+});
+
 describe("legacy job summary retirement", () => {
   it("publishes an immutable idempotent receipt and suppresses only the exact manifest", async () => {
     const fixture = await retirementFixture();
     const plan = await fixture.plan();
     const planSha256 = legacyJobSummaryRetirementPlanSha256(plan);
     const first = await publishLegacyJobSummaryRetirement({
+      custody: evidenceCustody,
       registryRootDir: fixture.registry,
       plan,
       expectedPlanSha256: planSha256,
       now: new Date("2026-08-15T00:00:00.000Z"),
     });
     const replay = await publishLegacyJobSummaryRetirement({
+      custody: evidenceCustody,
       registryRootDir: fixture.registry,
       plan,
       expectedPlanSha256: planSha256,
@@ -146,8 +189,10 @@ describe("legacy job summary retirement", () => {
     expect(await readFile(first.receiptPath, "utf8")).toContain("workspace_enoent");
 
     const projected = await projectRetirementProjection({
+      custody: evidenceCustody,
       registryRootDir: fixture.registry,
       projectId: "p0",
+      jobIdPrefixes: ["legacy", "retained"],
       summaries: [fixture.summary],
     });
     expect(projected.active).toEqual([]);
@@ -158,8 +203,10 @@ describe("legacy job summary retirement", () => {
       description: "later legitimate manifest",
     }, null, 2)}\n`);
     const changed = await projectRetirementProjection({
+      custody: evidenceCustody,
       registryRootDir: fixture.registry,
       projectId: "p0",
+      jobIdPrefixes: ["legacy", "retained"],
       summaries: [fixture.summary],
     });
     expect(changed.active).toHaveLength(1);
@@ -189,6 +236,9 @@ describe("legacy job summary retirement", () => {
     await symlink(original, linkPath);
     await expect(linked.plan({ expectedManifestPath: linkPath }))
       .rejects.toThrow();
+
+    const foreign = await retirementFixture("foreign");
+    await expect(foreign.plan()).rejects.toThrow("project_mismatch");
   });
 });
 
@@ -201,11 +251,13 @@ describe("frozen output import and summary supersession", () => {
     const plan = await fixture.plan();
     const planSha256 = frozenOutputImportPlanSha256(plan);
     const first = await publishFrozenOutputImport({
+      custody: evidenceCustody,
       plan,
       expectedPlanSha256: planSha256,
       now: new Date("2026-08-15T00:00:00.000Z"),
     });
     const replay = await publishFrozenOutputImport({
+      custody: evidenceCustody,
       plan,
       expectedPlanSha256: planSha256,
     });
@@ -215,7 +267,11 @@ describe("frozen output import and summary supersession", () => {
       .toBe(fixture.sourceSha256);
     expect(await readFile(authoredPath)).toEqual(authoredBefore);
 
+    // Projection relies on custody copies, not mutable producer registration.
+    await writeFile(fixture.retainedOutputPath, "mutated after custody\n");
+
     const projection = await frozenOutputSupersessionProjection({
+      custody: evidenceCustody,
       evidenceRoots: [fixture.evidenceRoot],
       summaries: [fixture.summary],
     });
@@ -227,6 +283,7 @@ describe("frozen output import and summary supersession", () => {
       description: "new registration",
     }, null, 2)}\n`);
     const changed = await frozenOutputSupersessionProjection({
+      custody: evidenceCustody,
       evidenceRoots: [fixture.evidenceRoot],
       summaries: [fixture.summary],
     });
@@ -251,6 +308,7 @@ describe("frozen output import and summary supersession", () => {
     const plan = await drift.plan();
     await writeFile(drift.sourcePath, "changed after preview\n");
     await expect(publishFrozenOutputImport({
+      custody: evidenceCustody,
       plan,
       expectedPlanSha256: frozenOutputImportPlanSha256(plan),
     })).rejects.toThrow("source_drift");
@@ -272,15 +330,65 @@ describe("frozen output import and summary supersession", () => {
     await writeFile(legacyOutput, "{}\n");
     await expect(outputBearing.plan({ legacyOutputPath: legacyOutput }))
       .rejects.toThrow("output_bearing_refused");
+
+    const manifestMismatch = await frozenFixture();
+    const sourceManifest = JSON.parse(await readFile(
+      manifestMismatch.sourceManifestPath, "utf8",
+    ));
+    sourceManifest.projectId = "foreign";
+    await writeFile(manifestMismatch.sourceManifestPath,
+      `${JSON.stringify(sourceManifest, null, 2)}\n`);
+    await expect(manifestMismatch.plan()).rejects.toThrow("binding_mismatch");
+
+    const retainedDrift = await frozenFixture();
+    const retainedPlan = await retainedDrift.plan();
+    await writeFile(retainedDrift.retainedOutputPath, "drifted retained output\n");
+    await expect(publishFrozenOutputImport({
+      custody: evidenceCustody,
+      plan: retainedPlan,
+      expectedPlanSha256: frozenOutputImportPlanSha256(retainedPlan),
+    })).rejects.toThrow("source_drift");
+  });
+
+  it("rejects intermediate symlink and root-swap publication without external writes", async () => {
+    const linked = await frozenFixture();
+    const plan = await linked.plan();
+    const outside = join(linked.root, "outside");
+    await mkdir(outside);
+    await symlink(outside, join(linked.evidenceRoot, "frozen-output-imports"), "dir");
+    await expect(publishFrozenOutputImport({
+      custody: evidenceCustody,
+      plan,
+      expectedPlanSha256: frozenOutputImportPlanSha256(plan),
+    })).rejects.toThrow("ancestor_unsafe");
+    expect(await readdir(outside)).toEqual([]);
+
+    const swapped = await frozenFixture();
+    const swappedPlan = await swapped.plan();
+    const original = `${swapped.evidenceRoot}-original`;
+    const outsideRoot = join(swapped.root, "outside-root");
+    await mkdir(outsideRoot);
+    await rename(swapped.evidenceRoot, original);
+    await symlink(outsideRoot, swapped.evidenceRoot, "dir");
+    await expect(publishFrozenOutputImport({
+      custody: evidenceCustody,
+      plan: swappedPlan,
+      expectedPlanSha256: frozenOutputImportPlanSha256(swappedPlan),
+    })).rejects.toThrow("root_noncanonical");
+    expect(await readdir(outsideRoot)).toEqual([]);
   });
 });
 
-async function retirementFixture() {
+async function retirementFixture(targetProjectId = "p0") {
   const root = await mkdtemp(join(tmpdir(), "summary-retirement-"));
+  remediationRoots.add(root);
   const registry = join(root, "registry");
   const workspace = join(root, "gone-workspace");
   await mkdir(registry, { recursive: true });
-  const manifest = manifestFor("legacy", workspace, join(registry, "legacy"));
+  const manifest = {
+    ...manifestFor("legacy", workspace, join(registry, "legacy")),
+    projectAccessScope: { projectId: targetProjectId },
+  };
   const retained = manifestFor("retained", workspace, join(registry, "retained"));
   const manifestPath = await writeManifest(registry, manifest);
   const retainedPath = await writeManifest(registry, retained);
@@ -292,9 +400,11 @@ async function retirementFixture() {
       expectedManifestSha256: string;
       workerAlive: boolean;
     }> = {}) => await buildLegacyJobSummaryRetirementPlan({
+      custody: evidenceCustody,
       registryRootDir: registry,
       projectId: "p0",
       controllerJobId: "controller",
+      jobIdPrefixes: ["legacy", "retained"],
       manifest,
       manifestPath,
       expectedManifestPath: override.expectedManifestPath ?? manifestPath,
@@ -310,6 +420,7 @@ async function retirementFixture() {
 
 async function frozenFixture() {
   const root = await mkdtemp(join(tmpdir(), "frozen-import-"));
+  remediationRoots.add(root);
   const registry = join(root, "registry");
   const sourceRoot = join(root, "freeze");
   const evidenceRoot = join(root, "controller", "archives");
@@ -320,8 +431,11 @@ async function frozenFixture() {
   ));
   const sourcePath = join(sourceRoot, "output.patch");
   const sourceManifestPath = join(sourceRoot, "freeze-manifest.json");
-  await writeFile(sourcePath, "diff --git a/a.ts b/a.ts\n+changed\n");
-  await writeFile(sourceManifestPath, "{\"frozen\":true}\n");
+  await writeFile(sourcePath,
+    `From ${"2".repeat(40)} Mon Sep 17 00:00:00 2001\n` +
+    "Subject: [PATCH] test\n\n" +
+    "diff --git a/a.ts b/a.ts\n+changed\n-- \n2.0\n" +
+    `base-commit: ${"1".repeat(40)}\n`);
   const sourceSha256 = sha(await readFile(sourcePath));
   const retainedOutputPath = join(root, "retained-result.json");
   await writeFile(retainedOutputPath, "{\"status\":\"done\"}\n");
@@ -335,12 +449,30 @@ async function frozenFixture() {
   const summary = summaryFor(legacyManifest, legacyManifestPath);
   const scope: ProjectAccessScope = {
     projectId: "p0",
-    readRoots: [sourceRoot],
+    readRoots: [root],
     consumedOutputEvidenceRoots: [evidenceRoot],
     consumedOutputLedgerRoots: [ledgerRoot],
   };
+  await writeFile(sourceManifestPath, `${JSON.stringify({
+    schemaVersion: 1,
+    projectId: "p0",
+    controllerJobId: "controller",
+    patch: {
+      sha256: sourceSha256,
+      length: (await readFile(sourcePath)).length,
+      baseCommit: "1".repeat(40),
+      headCommit: "2".repeat(40),
+      changedPaths: ["a.ts"],
+    },
+    retainedOutput: {
+      jobId: retainedManifest.jobId,
+      manifestSha256: sha(await readFile(retainedManifestPath)),
+      outputSha256: sha(await readFile(retainedOutputPath)),
+    },
+  }, null, 2)}\n`);
   return {
-    root, registry, sourceRoot, sourcePath, sourceSha256, evidenceRoot, workspace,
+    root, registry, sourceRoot, sourcePath, sourceManifestPath, sourceSha256,
+    evidenceRoot, workspace, retainedOutputPath,
     legacyManifest, legacyManifestPath, summary,
     plan: async (override: Partial<{
       sourcePath: string;
@@ -357,8 +489,10 @@ async function frozenFixture() {
         ...(override.legacyOutputPath ? { outputPath: override.legacyOutputPath } : {}),
       };
       return await buildFrozenOutputImportPlan({
+        custody: evidenceCustody,
         scope,
         controllerJobId: "controller",
+        jobIdPrefixes: ["legacy", "retained"],
         sourcePath: override.sourcePath ?? sourcePath,
         expectedSourceSha256: override.expectedSourceSha256 ?? sourceSha256,
         expectedSourceLength: (await readFile(sourcePath)).length,

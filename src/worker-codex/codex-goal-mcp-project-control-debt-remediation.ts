@@ -25,15 +25,15 @@ import { controllerScopeLockIdentity } from
   "./codex-goal-mcp-project-control-ledger-epoch";
 import { projectControlWorkspaceLocks } from
   "./codex-goal-project-workspace-lock";
-
 type JsonObject = Readonly<Record<string, unknown>>;
 
 export async function projectControlImportFrozenOutputView(
   args: ProjectControlMcpArgs,
   deps: CodexGoalMcpProjectControlAdminDeps,
 ): Promise<JsonObject> {
+  const evidenceCustody = requiredEvidenceCustody(deps);
   const controller = await deps.loadProjectControlController(args);
-  const plan = await loadFrozenOutputPlan(args, controller);
+  const plan = await loadFrozenOutputPlan(args, controller, evidenceCustody);
   const planSha256 = frozenOutputImportPlanSha256(plan);
   if (args.confirmFrozenOutputImport !== true) {
     return {
@@ -57,7 +57,9 @@ export async function projectControlImportFrozenOutputView(
     owner: `frozen-output-import:${planSha256}`,
   });
   try {
-    const locked = await loadFrozenOutputPlan(args, controller);
+    const lockedController = await deps.loadProjectControlController(args);
+    assertProjectControlDebtControllerCas(controller, lockedController);
+    const locked = await loadFrozenOutputPlan(args, lockedController, evidenceCustody);
     if (frozenOutputImportPlanSha256(locked) !== planSha256) {
       throw new Error("frozen_output_import_plan_drift");
     }
@@ -65,6 +67,7 @@ export async function projectControlImportFrozenOutputView(
       ok: true,
       mode: "project_control_import_frozen_output",
       ...await publishFrozenOutputImport({
+        custody: evidenceCustody,
         plan: locked,
         expectedPlanSha256,
       }),
@@ -77,6 +80,7 @@ export async function projectControlImportFrozenOutputView(
 async function loadFrozenOutputPlan(
   args: ProjectControlMcpArgs,
   controller: Awaited<ReturnType<CodexGoalMcpProjectControlAdminDeps["loadProjectControlController"]>>,
+  evidenceCustody: NonNullable<CodexGoalMcpProjectControlAdminDeps["evidenceCustody"]>,
 ) {
   const retainedRegistrationJobId = requiredRawString(
     args.retainedRegistrationJobId,
@@ -117,8 +121,10 @@ async function loadFrozenOutputPlan(
     throw new Error("frozenOutputSourceLength_invalid");
   }
   return await buildFrozenOutputImportPlan({
+    custody: evidenceCustody,
     scope: controller.scope,
     controllerJobId: controller.controller.jobId,
+    jobIdPrefixes: controller.scope.jobIdPrefixes ?? [],
     sourcePath: requiredRawString(args.frozenOutputSourcePath, "frozenOutputSourcePath"),
     expectedSourceSha256: requiredRawString(args.frozenOutputSourceSha256, "frozenOutputSourceSha256"),
     expectedSourceLength: args.frozenOutputSourceLength!,
@@ -163,6 +169,7 @@ export async function projectControlRetireLegacyJobSummaryView(
   args: ProjectControlMcpArgs,
   deps: CodexGoalMcpProjectControlAdminDeps,
 ): Promise<JsonObject> {
+  const evidenceCustody = requiredEvidenceCustody(deps);
   const controller = await deps.loadProjectControlController(args);
   const jobId = requiredRawString(args.jobId, "jobId");
   const retainedRegistrationJobId = requiredRawString(
@@ -170,10 +177,12 @@ export async function projectControlRetireLegacyJobSummaryView(
     "retainedRegistrationJobId",
   );
   const plan = await loadAndProvePlan({
+    custody: evidenceCustody,
     args,
     registryRootDir: controller.registryRootDir,
     projectId: controller.scope.projectId,
     controllerJobId: controller.controller.jobId,
+    jobIdPrefixes: controller.scope.jobIdPrefixes ?? [],
     jobId,
     retainedRegistrationJobId,
   });
@@ -200,11 +209,15 @@ export async function projectControlRetireLegacyJobSummaryView(
     owner: `legacy-job-summary-retirement:${jobId}`,
   });
   try {
+    const lockedController = await deps.loadProjectControlController(args);
+    assertProjectControlDebtControllerCas(controller, lockedController);
     const lockedPlan = await loadAndProvePlan({
       args,
-      registryRootDir: controller.registryRootDir,
-      projectId: controller.scope.projectId,
-      controllerJobId: controller.controller.jobId,
+      registryRootDir: lockedController.registryRootDir,
+      projectId: lockedController.scope.projectId,
+      controllerJobId: lockedController.controller.jobId,
+      jobIdPrefixes: lockedController.scope.jobIdPrefixes ?? [],
+      custody: evidenceCustody,
       jobId,
       retainedRegistrationJobId,
     });
@@ -212,6 +225,7 @@ export async function projectControlRetireLegacyJobSummaryView(
       throw new Error("legacy_job_summary_retirement_plan_drift");
     }
     const result = await publishLegacyJobSummaryRetirement({
+      custody: evidenceCustody,
       registryRootDir: controller.registryRootDir,
       plan: lockedPlan,
       expectedPlanSha256,
@@ -227,10 +241,12 @@ export async function projectControlRetireLegacyJobSummaryView(
 }
 
 async function loadAndProvePlan(input: {
+  readonly custody: NonNullable<CodexGoalMcpProjectControlAdminDeps["evidenceCustody"]>;
   readonly args: ProjectControlMcpArgs;
   readonly registryRootDir: string;
   readonly projectId: string;
   readonly controllerJobId: string;
+  readonly jobIdPrefixes: readonly string[];
   readonly jobId: string;
   readonly retainedRegistrationJobId: string;
 }) {
@@ -260,8 +276,10 @@ async function loadAndProvePlan(input: {
     if (manifest.tmuxSession) throw error;
   }
   return await buildLegacyJobSummaryRetirementPlan({
+    custody: input.custody,
     registryRootDir: input.registryRootDir,
     projectId: input.projectId,
+    jobIdPrefixes: input.jobIdPrefixes,
     controllerJobId: input.controllerJobId,
     manifest,
     manifestPath: codexGoalJobManifestPath({
@@ -291,4 +309,21 @@ async function loadAndProvePlan(input: {
     ),
     workerAlive,
   });
+}
+
+export function assertProjectControlDebtControllerCas(
+  before: Awaited<ReturnType<CodexGoalMcpProjectControlAdminDeps["loadProjectControlController"]>>,
+  locked: Awaited<ReturnType<CodexGoalMcpProjectControlAdminDeps["loadProjectControlController"]>>,
+): void {
+  if (before.registryRootDir !== locked.registryRootDir ||
+    before.controller.jobId !== locked.controller.jobId ||
+    JSON.stringify(before.controller) !== JSON.stringify(locked.controller)) {
+    throw new Error("project_control_controller_scope_cas_mismatch");
+  }
+}
+
+function requiredEvidenceCustody(deps: CodexGoalMcpProjectControlAdminDeps) {
+  const custody = deps.evidenceCustody ?? deps.admissionDeps.evidenceCustody;
+  if (!custody) throw new Error("project_control_evidence_custody_required");
+  return custody;
 }

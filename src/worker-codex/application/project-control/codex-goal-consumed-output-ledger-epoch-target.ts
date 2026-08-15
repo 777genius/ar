@@ -236,19 +236,29 @@ export async function upgradePreparedEpochV1(input: {
     if (index >= next) {
       await writeExactOrVerify(join(stagingPath, name), value);
       next = index + 1;
-      await durableReplaceEpochJson(journalPath, {
-        schemaVersion: 1,
-        planSha256: input.plan.planSha256,
-        upgradeSha256,
-        next,
-        fileCount: files.length,
-      });
+      // The cursor is only a bounded replay optimization: exact immutable
+      // writes make replay from an earlier checkpoint safe. Checkpointing a
+      // batch avoids hundreds of directory-syncing journal replacements while
+      // limiting recovery verification to at most fifteen files.
+      if (next % 16 === 0 || next === files.length) {
+        await durableReplaceEpochJson(journalPath, {
+          schemaVersion: 1,
+          planSha256: input.plan.planSha256,
+          upgradeSha256,
+          next,
+          fileCount: files.length,
+        });
+      }
       if (input.crashAfter === name) {
         throw new Error(`ledger_epoch_simulated_upgrade_crash:${name}`);
       }
-    } else {
-      await writeExactOrVerify(join(stagingPath, name), value);
     }
+  }
+  // The durable cursor makes earlier entries immutable progress. Revalidating
+  // every prior entry on every resume makes the public-handler crash matrix
+  // quadratic; verify the complete prefix once at the commit boundary instead.
+  for (const [name, value] of files) {
+    await writeExactOrVerify(join(stagingPath, name), value);
   }
   if (await pathExists(finalPath)) {
     throw new Error("ledger_epoch_upgrade_final_target_not_empty");

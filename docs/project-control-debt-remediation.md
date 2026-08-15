@@ -12,6 +12,12 @@ an existing canonical directory named `archives`; the lexical path must equal
 its physical path, so leaf and ancestor symlinks are rejected. Do not grant a
 cache parent such as `/root/.cache/subscription-runtime`.
 
+Evidence and ledger roots must also be descendants of an immutable project-owned
+read, workspace, worktree, isolated-workspace, observed-workspace, or registry
+root. A denied root may neither contain a custody root nor be contained by one.
+These identities are revalidated whenever the controller is loaded and again
+through directory-handle-relative, no-symlink writes during materialization.
+
 Ledger readers and rejection/archive writers consume the same roots. Writers
 revalidate every archive, status, patch, numstat, untracked archive, and
 preexisting-patch path immediately before ledger publication. A missing field
@@ -31,6 +37,11 @@ registration whose workspace is genuinely absent. Preview proves:
 - stopped/no live worker;
 - no launch, handoff, result, output, progress, or log artifact;
 - an exact, distinct, same-project sibling registration for the same workspace.
+
+Both registry jobs must match a controller-owned job prefix. A scoped legacy
+manifest must name the same project. An older unscoped manifest is accepted only
+when its exact manifest and job-root locations match the prefixed registry job;
+the retained sibling must always carry the current project scope.
 
 Confirmation requires `expectedRetirementPlanSha256` and writes a new,
 fsynced, immutable receipt beneath
@@ -56,10 +67,20 @@ summary must be stopped, dirty, output-free, present, canonical, and bound by
 manifest path and SHA-256. Missing, clean, live, or output-bearing candidates
 are refused.
 
-Confirmation requires `expectedFrozenOutputImportPlanSha256`. The broker
-reopens the sources with `O_NOFOLLOW`, verifies file identity before and after
-reading, copies bytes into a plan-hash directory using exclusive fsynced files,
-and publishes an exclusive fsynced receipt. Exact replay is idempotent.
+The source manifest is strict and contains only `schemaVersion`, `projectId`,
+`controllerJobId`, `patch`, and `retainedOutput`. Its patch descriptor binds the
+SHA-256, byte length, base and head commits, and changed paths. Its retained
+descriptor binds the job, manifest SHA-256, and output SHA-256. The broker also
+streams the format patch itself, derives its `From`, `base-commit`, and
+`diff --git` identities, and requires them to equal the request and manifest.
+
+Confirmation requires `expectedFrozenOutputImportPlanSha256`. Under the scope
+lock the broker reloads and CAS-checks the controller, then reopens every source
+with `O_NOFOLLOW`. A worker-local custody adapter streams copies through
+directory handles, fsyncs each new directory entry, custody-copies the patch,
+source manifest, retained manifest, and retained output, publishes the ledger
+registration, and publishes the receipt last as the commit marker. Exact replay
+and recovery from a prepared ledger registration are idempotent.
 Admission suppresses only exact superseded manifest identities and exposes the
 receipts as `supersededFrozenOutputSummaries` for audit.
 
