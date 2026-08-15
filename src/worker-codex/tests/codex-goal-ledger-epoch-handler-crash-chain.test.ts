@@ -6,7 +6,7 @@ import {
   ledgerEpochUpgradeCrashBoundaryShards as shards,
 } from "./codex-goal-ledger-epoch-handler-crash-boundaries";
 
-describe("exact-710 monotonic public-handler crash chain", () => {
+describe("exact-211 monotonic public-handler crash chain", () => {
   it("keeps the complete ordered crash-boundary contract", () => {
     expect(crashBoundaries).toHaveLength(211);
     expect(new Set(crashBoundaries)).toHaveLength(211);
@@ -53,8 +53,7 @@ describe("exact-710 monotonic public-handler crash chain", () => {
       const end = field("end");
       expect(field("shard"), wrapperPath).toBe(index);
       expect([start, end], wrapperPath).toEqual([expectedStart, expectedEnd]);
-      expect(wrapper.includes("completesActivation: true"), wrapperPath)
-        .toBe(index === shards.length - 1);
+      expect(wrapper.includes("completesActivation"), wrapperPath).toBe(false);
       assignedBoundaries.push(...Array.from(
         { length: end - start },
         (_, offset) => start + offset,
@@ -65,6 +64,7 @@ describe("exact-710 monotonic public-handler crash chain", () => {
       Array.from({ length: crashBoundaries.length }, (_, index) => index),
     );
     expect(new Set(assignedBoundaries)).toHaveLength(crashBoundaries.length);
+    expect(shards).toHaveLength(27);
     await expect(access(join(
       import.meta.dirname,
       "codex-goal-ledger-epoch-handler-production.test.ts",
