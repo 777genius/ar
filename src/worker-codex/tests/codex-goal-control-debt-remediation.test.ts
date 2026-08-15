@@ -7,6 +7,7 @@ import {
   rename,
   rm,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -38,6 +39,8 @@ import { assertCanonicalLedgerRootsAllowed } from
   "../application/project-control/codex-goal-ledger-epoch-handler-admission";
 import { assertProjectControlDebtControllerCas } from
   "../codex-goal-mcp-project-control-debt-remediation";
+import { createCodexProjectControlBroker } from
+  "../codex-goal-mcp-project-broker";
 
 const remediationRoots = new Set<string>();
 afterAll(async () => await Promise.all([...remediationRoots].map((root) =>
@@ -142,6 +145,98 @@ describe("consumed output evidence scope", () => {
 
 const evidenceCustody = new LocalProjectControlEvidenceCustody();
 
+describe("immutable evidence publication recovery", () => {
+  for (const crashPoint of [
+    "after_temp_write",
+    "after_temp_fsync",
+    "after_publish_before_directory_fsync",
+    "after_directory_fsync",
+  ] as const) {
+    it(`recovers an interrupted ${crashPoint} publication without mutable overwrite`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "evidence-publication-crash-"));
+      remediationRoots.add(root);
+      const bytes = Buffer.from("durable immutable evidence\n");
+      const expectedSha256 = sha(bytes);
+      let injected = false;
+      const crashing = new LocalProjectControlEvidenceCustody((point) => {
+        if (!injected && point === crashPoint) {
+          injected = true;
+          throw new Error(`simulated_crash:${point}`);
+        }
+      });
+      await expect(crashing.publishImmutableBytes({
+        root,
+        directories: ["receipts"],
+        fileName: "receipt.json",
+        bytes,
+        expectedSha256,
+      })).rejects.toThrow(`simulated_crash:${crashPoint}`);
+
+      const replay = await evidenceCustody.publishImmutableBytes({
+        root,
+        directories: ["receipts"],
+        fileName: "receipt.json",
+        bytes,
+        expectedSha256,
+      });
+      expect(replay.created).toBe(
+        crashPoint === "after_temp_write" || crashPoint === "after_temp_fsync",
+      );
+      expect(await readFile(replay.path)).toEqual(bytes);
+      expect((await readdir(join(root, "receipts"))).filter((name) =>
+        name.startsWith(".custody-publish-")
+      )).toEqual([]);
+
+      const conflictingBytes = Buffer.alloc(bytes.length, 0x78);
+      await expect(evidenceCustody.publishImmutableBytes({
+        root,
+        directories: ["receipts"],
+        fileName: "receipt.json",
+        bytes: conflictingBytes,
+        expectedSha256: sha(conflictingBytes),
+      })).rejects.toThrow("immutable_conflict");
+    });
+  }
+
+  it("removes a stale unpublished temporary before safely publishing", async () => {
+    const root = await mkdtemp(join(tmpdir(), "evidence-publication-stale-"));
+    remediationRoots.add(root);
+    const firstBytes = Buffer.from("abandoned evidence\n");
+    const crashing = new LocalProjectControlEvidenceCustody((point) => {
+      if (point === "after_temp_write") throw new Error("simulated_crash");
+    });
+    await expect(crashing.publishImmutableBytes({
+      root,
+      directories: ["receipts"],
+      fileName: "receipt.json",
+      bytes: firstBytes,
+      expectedSha256: sha(firstBytes),
+    })).rejects.toThrow("simulated_crash");
+    const receiptRoot = join(root, "receipts");
+    const [temporaryName] = (await readdir(receiptRoot)).filter((name) =>
+      name.startsWith(".custody-publish-")
+    );
+    if (!temporaryName) throw new Error("expected abandoned publication temp");
+    const old = new Date(Date.now() - 2 * 60 * 60_000);
+    await utimes(join(receiptRoot, temporaryName), old, old);
+
+    const replacement = Buffer.from("replacement evidence\n");
+    await evidenceCustody.publishImmutableBytes({
+      root,
+      directories: ["receipts"],
+      fileName: "receipt.json",
+      bytes: replacement,
+      expectedSha256: sha(replacement),
+    });
+    expect(await readFile(join(receiptRoot, "receipt.json"))).toEqual(
+      replacement,
+    );
+    expect((await readdir(receiptRoot)).filter((name) =>
+      name.startsWith(".custody-publish-")
+    )).toEqual([]);
+  });
+});
+
 describe("project-control debt confirmation controller CAS", () => {
   it("rejects a controller or scope reloaded with any drift under the lock", () => {
     const controller = manifestFor("controller", "/workspace", "/registry/controller");
@@ -192,11 +287,81 @@ describe("legacy job summary retirement", () => {
       custody: evidenceCustody,
       registryRootDir: fixture.registry,
       projectId: "p0",
+      controllerJobId: "controller",
       jobIdPrefixes: ["legacy", "retained"],
       summaries: [fixture.summary],
     });
     expect(projected.active).toEqual([]);
     expect(projected.retired).toHaveLength(1);
+    const staleController = await projectRetirementProjection({
+      custody: evidenceCustody,
+      registryRootDir: fixture.registry,
+      projectId: "p0",
+      controllerJobId: "successor-controller",
+      jobIdPrefixes: ["legacy", "retained"],
+      summaries: [fixture.summary],
+    });
+    expect(staleController.active).toEqual([fixture.summary]);
+
+    const admissionDeps = {
+      evidenceCustody,
+      listJobs: async () => [fixture.summary],
+      buildOverviewItems: async (inputs: readonly { jobId: string }[]) =>
+        inputs.map(({ jobId }) => ({
+          ok: true,
+          jobId,
+          workspacePath: fixture.workspace,
+          workspaceDirty: true,
+          workerAlive: false,
+          activeWriterRisk: "dirty_workspace_without_worker",
+          activeWriterRiskReasons: ["dirty_workspace_without_worker"],
+        })),
+    };
+    const scope: ProjectAccessScope = {
+      projectId: "p0",
+      registryRoot: fixture.registry,
+      workspaceRoots: [fixture.root],
+      jobIdPrefixes: ["legacy", "retained", "new-"],
+      allowedAccountIds: ["account-a"],
+    };
+    const successor = createCodexProjectControlBroker({
+      registryRootDir: fixture.registry,
+      controller: manifestFor(
+        "successor-controller",
+        fixture.root,
+        join(fixture.registry, "successor-controller"),
+      ),
+      scope,
+      admissionDeps,
+    });
+    await expect(successor.createJob({
+      jobId: "new-child",
+      registryRoot: fixture.registry,
+      workspacePath: join(fixture.root, "new-child"),
+      accounts: ["account-a"],
+    })).rejects.toThrow("project_control_admission_denied");
+
+    const current = createCodexProjectControlBroker({
+      registryRootDir: fixture.registry,
+      controller: manifestFor(
+        "controller",
+        fixture.root,
+        join(fixture.registry, "controller"),
+      ),
+      scope,
+      admissionDeps,
+      createManifest: manifestFor(
+        "new-child",
+        join(fixture.root, "new-child"),
+        join(fixture.registry, "new-child"),
+      ),
+    });
+    await expect(current.createJob({
+      jobId: "new-child",
+      registryRoot: fixture.registry,
+      workspacePath: join(fixture.root, "new-child"),
+      accounts: ["account-a"],
+    })).resolves.toMatchObject({ status: "applied" });
 
     await writeFile(fixture.manifestPath, `${JSON.stringify({
       ...fixture.manifest,
@@ -227,6 +392,35 @@ describe("legacy job summary retirement", () => {
     const artifact = await retirementFixture();
     await writeFile(join(artifact.manifest.jobRootDir, "result.json"), "{}\n");
     await expect(artifact.plan()).rejects.toThrow("runtime_artifact_present");
+
+    for (const suffix of [
+      "latest-result.json",
+      "progress.json",
+      "log",
+      "events.jsonl",
+    ]) {
+      const derived = await retirementFixture();
+      await writeFile(join(
+        derived.manifest.jobRootDir,
+        `${derived.manifest.taskId}.${suffix}`,
+      ), "runtime evidence\n");
+      await expect(derived.plan()).rejects.toThrow("runtime_artifact_present");
+    }
+
+    const stateFixtureRoot = await mkdtemp(join(tmpdir(), "retirement-state-root-"));
+    const configuredStateRoot = join(stateFixtureRoot, "configured-state");
+    remediationRoots.add(stateFixtureRoot);
+    const stateBearing = await retirementFixture("p0", {
+      stateRootDir: configuredStateRoot,
+    });
+    await mkdir(configuredStateRoot, { recursive: true });
+    await expect(stateBearing.plan()).rejects.toThrow("runtime_state_present");
+
+    const defaultStateBearing = await retirementFixture();
+    await mkdir(join(defaultStateBearing.manifest.jobRootDir, "state"));
+    await expect(defaultStateBearing.plan()).rejects.toThrow(
+      "runtime_state_present",
+    );
 
     const linked = await retirementFixture();
     const original = join(linked.root, "original.json");
@@ -273,10 +467,21 @@ describe("frozen output import and summary supersession", () => {
     const projection = await frozenOutputSupersessionProjection({
       custody: evidenceCustody,
       evidenceRoots: [fixture.evidenceRoot],
+      projectId: "p0",
+      controllerJobId: "controller",
       summaries: [fixture.summary],
     });
     expect(projection.active).toEqual([]);
     expect(projection.receipts).toHaveLength(1);
+    const foreignController = await frozenOutputSupersessionProjection({
+      custody: evidenceCustody,
+      evidenceRoots: [fixture.evidenceRoot],
+      projectId: "p0",
+      controllerJobId: "foreign-controller",
+      summaries: [fixture.summary],
+    });
+    expect(foreignController.active).toEqual([fixture.summary]);
+    expect(foreignController.receipts).toEqual([]);
 
     await writeFile(fixture.legacyManifestPath, `${JSON.stringify({
       ...fixture.legacyManifest,
@@ -331,6 +536,26 @@ describe("frozen output import and summary supersession", () => {
     await expect(outputBearing.plan({ legacyOutputPath: legacyOutput }))
       .rejects.toThrow("output_bearing_refused");
 
+    const defaultOutputBearing = await frozenFixture();
+    await writeFile(join(
+      defaultOutputBearing.legacyManifest.jobRootDir,
+      `${defaultOutputBearing.legacyManifest.taskId}.latest-result.json`,
+    ), "{}\n");
+    await expect(defaultOutputBearing.plan())
+      .rejects.toThrow("output_bearing_refused");
+
+    const freshlyObservedOutput = await frozenFixture();
+    await expect(freshlyObservedOutput.plan({ observedResultExists: true }))
+      .rejects.toThrow("output_bearing_refused");
+
+    const handoffBearing = await frozenFixture();
+    await writeFile(join(
+      handoffBearing.legacyManifest.jobRootDir,
+      `${handoffBearing.legacyManifest.taskId}.handoff.patch`,
+    ), "authored handoff\n");
+    await expect(handoffBearing.plan())
+      .rejects.toThrow("handoff_bearing_refused");
+
     const manifestMismatch = await frozenFixture();
     const sourceManifest = JSON.parse(await readFile(
       manifestMismatch.sourceManifestPath, "utf8",
@@ -348,6 +573,100 @@ describe("frozen output import and summary supersession", () => {
       plan: retainedPlan,
       expectedPlanSha256: frozenOutputImportPlanSha256(retainedPlan),
     })).rejects.toThrow("source_drift");
+
+    const supersededOutputRace = await frozenFixture();
+    const supersededPlan = await supersededOutputRace.plan();
+    await writeFile(join(
+      supersededOutputRace.legacyManifest.jobRootDir,
+      `${supersededOutputRace.legacyManifest.taskId}.latest-result.json`,
+    ), "late result\n");
+    await expect(publishFrozenOutputImport({
+      custody: evidenceCustody,
+      plan: supersededPlan,
+      expectedPlanSha256: frozenOutputImportPlanSha256(supersededPlan),
+    })).rejects.toThrow("output_bearing_refused");
+
+    const supersededManifestRace = await frozenFixture();
+    const supersededManifestPlan = await supersededManifestRace.plan();
+    await writeFile(
+      supersededManifestRace.legacyManifestPath,
+      `${JSON.stringify({
+        ...supersededManifestRace.legacyManifest,
+        description: "replacement registration",
+      }, null, 2)}\n`,
+    );
+    await expect(publishFrozenOutputImport({
+      custody: evidenceCustody,
+      plan: supersededManifestPlan,
+      expectedPlanSha256: frozenOutputImportPlanSha256(
+        supersededManifestPlan,
+      ),
+    })).rejects.toThrow("superseded_manifest_drift");
+
+    const externalRetained = await frozenFixture();
+    const externalRoot = await mkdtemp(join(tmpdir(), "foreign-retained-output-"));
+    remediationRoots.add(externalRoot);
+    const externalOutput = join(externalRoot, "result.json");
+    await writeFile(externalOutput, "foreign output\n");
+    await writeFile(externalRetained.retainedManifestPath, `${JSON.stringify({
+      ...externalRetained.retainedManifest,
+      outputPath: externalOutput,
+    }, null, 2)}\n`);
+    await expect(externalRetained.plan())
+      .rejects.toThrow("retained_output_outside_project_scope");
+
+    const deniedRetained = await frozenFixture();
+    const deniedRoot = join(deniedRetained.root, "denied-output");
+    const deniedOutput = join(deniedRoot, "result.json");
+    await mkdir(deniedRoot);
+    await writeFile(deniedOutput, "denied output\n");
+    await writeFile(deniedRetained.retainedManifestPath, `${JSON.stringify({
+      ...deniedRetained.retainedManifest,
+      outputPath: deniedOutput,
+    }, null, 2)}\n`);
+    await expect(deniedRetained.plan({
+      scope: {
+        projectId: "p0",
+        readRoots: [deniedRetained.root],
+        deniedRoots: [deniedRoot],
+        consumedOutputEvidenceRoots: [deniedRetained.evidenceRoot],
+        consumedOutputLedgerRoots: [join(
+          deniedRetained.registry,
+          "controller",
+          "consumed-output-ledger",
+        )],
+      },
+    })).rejects.toThrow("retained_output_outside_project_scope");
+
+    const registryIdentity = await frozenFixture();
+    await writeFile(registryIdentity.legacyManifestPath, `${JSON.stringify({
+      ...registryIdentity.legacyManifest,
+      jobRootDir: join(registryIdentity.registry, "different-job"),
+    }, null, 2)}\n`);
+    await expect(registryIdentity.plan())
+      .rejects.toThrow("registry_identity_mismatch");
+  });
+
+  it("restores a superseded registration when a default result appears later", async () => {
+    const fixture = await frozenFixture();
+    const plan = await fixture.plan();
+    await publishFrozenOutputImport({
+      custody: evidenceCustody,
+      plan,
+      expectedPlanSha256: frozenOutputImportPlanSha256(plan),
+    });
+    await writeFile(join(
+      fixture.legacyManifest.jobRootDir,
+      `${fixture.legacyManifest.taskId}.latest-result.json`,
+    ), "late authored result\n");
+    const projection = await frozenOutputSupersessionProjection({
+      custody: evidenceCustody,
+      evidenceRoots: [fixture.evidenceRoot],
+      projectId: "p0",
+      controllerJobId: "controller",
+      summaries: [fixture.summary],
+    });
+    expect(projection.active).toEqual([fixture.summary]);
   });
 
   it("rejects intermediate symlink and root-swap publication without external writes", async () => {
@@ -379,7 +698,10 @@ describe("frozen output import and summary supersession", () => {
   });
 });
 
-async function retirementFixture(targetProjectId = "p0") {
+async function retirementFixture(
+  targetProjectId = "p0",
+  manifestPatch: Partial<CodexGoalJobManifest> = {},
+) {
   const root = await mkdtemp(join(tmpdir(), "summary-retirement-"));
   remediationRoots.add(root);
   const registry = join(root, "registry");
@@ -388,6 +710,7 @@ async function retirementFixture(targetProjectId = "p0") {
   const manifest = {
     ...manifestFor("legacy", workspace, join(registry, "legacy")),
     projectAccessScope: { projectId: targetProjectId },
+    ...manifestPatch,
   };
   const retained = manifestFor("retained", workspace, join(registry, "retained"));
   const manifestPath = await writeManifest(registry, manifest);
@@ -473,6 +796,7 @@ async function frozenFixture() {
   return {
     root, registry, sourceRoot, sourcePath, sourceManifestPath, sourceSha256,
     evidenceRoot, workspace, retainedOutputPath,
+    retainedManifest, retainedManifestPath,
     legacyManifest, legacyManifestPath, summary,
     plan: async (override: Partial<{
       sourcePath: string;
@@ -482,15 +806,21 @@ async function frozenFixture() {
       workerAlive: boolean;
       workspacePath: string;
       legacyOutputPath: string;
+      scope: ProjectAccessScope;
+      observedResultExists: boolean;
     }> = {}) => {
       const candidate = {
         ...legacyManifest,
         workspacePath: override.workspacePath ?? legacyManifest.workspacePath,
         ...(override.legacyOutputPath ? { outputPath: override.legacyOutputPath } : {}),
       };
+      if (override.workspacePath || override.legacyOutputPath) {
+        await writeFile(legacyManifestPath, `${JSON.stringify(candidate, null, 2)}\n`);
+      }
       return await buildFrozenOutputImportPlan({
         custody: evidenceCustody,
-        scope,
+        scope: override.scope ?? scope,
+        registryRootDir: registry,
         controllerJobId: "controller",
         jobIdPrefixes: ["legacy", "retained"],
         sourcePath: override.sourcePath ?? sourcePath,
@@ -504,16 +834,17 @@ async function frozenFixture() {
         baseCommit: "1".repeat(40),
         headCommit: "2".repeat(40),
         patchSha256: sourceSha256,
-        retainedManifest,
+        retainedRegistrationJobId: retainedManifest.jobId,
         retainedManifestPath,
         expectedRetainedManifestSha256: sha(await readFile(retainedManifestPath)),
         expectedRetainedOutputSha256: sha(await readFile(retainedOutputPath)),
         superseded: [{
-          manifest: candidate,
+          jobId: candidate.jobId,
           manifestPath: legacyManifestPath,
           expectedManifestSha256: sha(await readFile(legacyManifestPath)),
           workspaceDirty: override.workspaceDirty ?? true,
           workerAlive: override.workerAlive ?? false,
+          observedResultExists: override.observedResultExists ?? false,
         }],
       });
     },

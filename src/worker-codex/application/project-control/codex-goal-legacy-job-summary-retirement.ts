@@ -342,15 +342,32 @@ async function assertNeverLaunchedArtifactsAbsent(
   custody: ProjectControlEvidenceCustodyPort,
   manifest: CodexGoalJobManifest,
 ): Promise<void> {
-  const explicit = [manifest.outputPath, manifest.progressPath, manifest.logPath]
-    .filter((path): path is string => path !== undefined);
-  for (const path of explicit) {
+  const effectiveRuntimeFiles = new Set([
+    resolve(manifest.outputPath ??
+      join(manifest.jobRootDir, `${manifest.taskId}.latest-result.json`)),
+    resolve(manifest.progressPath ??
+      join(manifest.jobRootDir, `${manifest.taskId}.progress.json`)),
+    resolve(manifest.logPath ??
+      join(manifest.jobRootDir, `${manifest.taskId}.log`)),
+    resolve(join(manifest.jobRootDir, `${manifest.taskId}.events.jsonl`)),
+  ]);
+  for (const path of effectiveRuntimeFiles) {
     if (await custody.pathKind(path) !== "absent") {
       throw new Error("legacy_job_summary_runtime_artifact_present");
     }
   }
+  const stateRoots = new Set([
+    resolve(join(manifest.jobRootDir, "state")),
+    ...(manifest.stateRootDir ? [resolve(manifest.stateRootDir)] : []),
+  ]);
+  for (const stateRoot of stateRoots) {
+    if (await custody.pathKind(stateRoot) !== "absent") {
+      throw new Error("legacy_job_summary_runtime_state_present");
+    }
+  }
   const entries = await custody.listDirectory(manifest.jobRootDir);
-  const forbidden = /(^|[-_.])(launch|handoff|result|output)([-_.]|$)/i;
+  const forbidden =
+    /(^|[-_.])(launch|handoff|result|output|progress|log|events)([-_.]|$)/i;
   if (entries.some((entry) => forbidden.test(entry.name))) {
     throw new Error("legacy_job_summary_runtime_artifact_present");
   }

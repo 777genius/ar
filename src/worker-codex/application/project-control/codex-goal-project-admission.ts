@@ -102,6 +102,9 @@ type CodexProjectAdmissionInput = {
   readonly capacityContinuationTarget?: ProjectAdmissionJobWorkspaceBinding;
   readonly inPlaceContinuationTarget?: ProjectAdmissionInPlaceContinuationBinding;
 };
+type CodexProjectMutationAdmissionInput = CodexProjectAdmissionInput & {
+  readonly controllerJobId: string;
+};
 type CodexProjectAdmissionSnapshotInput = CodexProjectAdmissionInput & {
   readonly requestedWorkspacePath?: string;
   readonly blockAnyLiveWriter?: boolean;
@@ -149,7 +152,7 @@ export function projectAdmissionDetailView(input: {
 }
 
 export function codexProjectAdmissionGate(
-  input: CodexProjectAdmissionInput,
+  input: CodexProjectMutationAdmissionInput,
 ): ProjectAdmissionGate {
   return {
     async evaluate(request) {

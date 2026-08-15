@@ -86,10 +86,6 @@ async function loadFrozenOutputPlan(
     args.retainedRegistrationJobId,
     "retainedRegistrationJobId",
   );
-  const retainedManifest = await readCodexGoalJob({
-    registryRootDir: controller.registryRootDir,
-    jobId: retainedRegistrationJobId,
-  });
   const supersededArgs = args.supersededLegacySummaries;
   if (!Array.isArray(supersededArgs) || supersededArgs.length === 0) {
     throw new Error("supersededLegacySummaries_required");
@@ -102,7 +98,7 @@ async function loadFrozenOutputPlan(
     });
     const state = await manifestRuntimeState(manifest);
     return {
-      manifest,
+      jobId,
       manifestPath: requiredRawString(
         candidate.manifestPath,
         `supersededLegacySummaries.${index}.manifestPath`,
@@ -113,6 +109,8 @@ async function loadFrozenOutputPlan(
       ),
       workspaceDirty: state.workspaceDirty,
       workerAlive: state.workerAlive,
+      observedResultExists: state.resultExists,
+      ...(state.resultPath ? { observedResultPath: state.resultPath } : {}),
     };
   }));
   if (!Array.isArray(args.changedPaths)) throw new Error("changedPaths_required");
@@ -123,6 +121,7 @@ async function loadFrozenOutputPlan(
   return await buildFrozenOutputImportPlan({
     custody: evidenceCustody,
     scope: controller.scope,
+    registryRootDir: controller.registryRootDir,
     controllerJobId: controller.controller.jobId,
     jobIdPrefixes: controller.scope.jobIdPrefixes ?? [],
     sourcePath: requiredRawString(args.frozenOutputSourcePath, "frozenOutputSourcePath"),
@@ -136,7 +135,7 @@ async function loadFrozenOutputPlan(
     baseCommit: requiredRawString(args.baseCommit, "baseCommit"),
     headCommit: requiredRawString(args.headCommit, "headCommit"),
     patchSha256: requiredRawString(args.patchSha256, "patchSha256"),
-    retainedManifest,
+    retainedRegistrationJobId,
     retainedManifestPath: codexGoalJobManifestPath({
       registryRootDir: controller.registryRootDir,
       jobId: retainedRegistrationJobId,
@@ -158,6 +157,8 @@ async function manifestRuntimeState(manifest: Awaited<ReturnType<typeof readCode
   const status = await collectCodexGoalStatus(codexGoalStatusInputFromLaunch(launch));
   return {
     workspaceDirty: status.workspaceDirty === true,
+    resultExists: status.resultExists === true,
+    resultPath: status.resultPath,
     workerAlive: resolveCodexGoalWorkerLiveness({
       status,
       progressStale: false,

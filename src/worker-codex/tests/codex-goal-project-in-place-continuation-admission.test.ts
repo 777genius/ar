@@ -115,6 +115,7 @@ describe("controlled runtime in-place continuation admission", () => {
       const ownedPaths = ["src/resume.ts"];
       const gate = codexProjectAdmissionGate({
         registryRootDir: registryRoot,
+        controllerJobId: "project-controller",
         scope,
         deps,
         inPlaceContinuationTarget: {

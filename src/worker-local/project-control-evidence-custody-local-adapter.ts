@@ -11,6 +11,8 @@ import type {
 
 export class LocalProjectControlEvidenceCustody implements
     ProjectControlEvidenceCustodyPort {
+  constructor(private readonly crashHook?: PublicationCrashHook) {}
+
   async canonicalDirectory(path: string, allowMissing = false): Promise<string> {
     const lexical = resolve(path);
     try {
@@ -163,6 +165,7 @@ export class LocalProjectControlEvidenceCustody implements
         expectedSha256: input.expectedSha256,
         expectedLength: input.bytes.byteLength,
         write: async (handle) => await handle.writeFile(input.bytes),
+        ...(this.crashHook ? { crashHook: this.crashHook } : {}),
       });
     } finally {
       await boundary.handle.close();
@@ -192,6 +195,7 @@ export class LocalProjectControlEvidenceCustody implements
         fileName: input.fileName,
         expectedSha256: input.expectedSha256,
         expectedLength: input.expectedLength,
+        ...(this.crashHook ? { crashHook: this.crashHook } : {}),
       });
     } finally {
       await source.close();
@@ -290,110 +294,212 @@ async function copyThroughHandle(input: {
   readonly maxBytes: number; readonly parentFd: number; readonly lexicalPath: string;
   readonly fileName: string; readonly expectedSha256: string;
   readonly expectedLength: number;
+  readonly crashHook?: PublicationCrashHook;
 }) {
-  safeSegment(input.fileName);
-  const parent = `/proc/self/fd/${input.parentFd}`;
-  const finalPath = `${parent}/${input.fileName}`;
-  try {
-    const existing = await readViaHandle(finalPath, input.expectedLength);
-    if (existing.sha256 !== input.expectedSha256 ||
-      existing.length !== input.expectedLength) {
-      throw new Error("evidence_custody_immutable_conflict");
-    }
-    return { path: input.lexicalPath, created: false };
-  } catch (error) {
-    if (code(error) !== "ENOENT") throw error;
-  }
-
-  const temporaryName = `.custody-${process.pid}-${Date.now()}-${Math.random()
-    .toString(16).slice(2)}.tmp`;
-  const temporaryPath = `${parent}/${temporaryName}`;
-  const target = await open(temporaryPath,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-    0o600);
-  let temporaryExists = true;
-  try {
-    const hash = createHash("sha256");
-    let length = 0;
-    for (;;) {
-      const chunk = Buffer.allocUnsafe(1024 * 1024);
-      const { bytesRead } = await input.source.read(chunk, 0, chunk.length, length);
-      if (bytesRead === 0) break;
-      const exact = chunk.subarray(0, bytesRead);
-      hash.update(exact);
-      await target.write(exact);
-      length += bytesRead;
-      if (length > input.maxBytes) throw new Error("evidence_custody_source_drift");
-    }
-    const after = await input.source.stat();
-    if (input.sourceBefore.dev !== after.dev || input.sourceBefore.ino !== after.ino ||
-      input.sourceBefore.size !== after.size || length !== input.expectedLength ||
-      hash.digest("hex") !== input.expectedSha256) {
-      throw new Error("evidence_custody_source_drift");
-    }
-    await target.sync();
-    await target.close();
-    try {
-      await link(temporaryPath, finalPath);
-    } catch (error) {
-      if (code(error) !== "EEXIST") throw error;
-      const existing = await readViaHandle(finalPath, input.expectedLength);
-      if (existing.sha256 !== input.expectedSha256 ||
-        existing.length !== input.expectedLength) {
-        throw new Error("evidence_custody_immutable_conflict");
+  return await publishThroughHandle({
+    parentFd: input.parentFd,
+    lexicalPath: input.lexicalPath,
+    fileName: input.fileName,
+    expectedSha256: input.expectedSha256,
+    expectedLength: input.expectedLength,
+    ...(input.crashHook ? { crashHook: input.crashHook } : {}),
+    write: async (target) => {
+      const hash = createHash("sha256");
+      let length = 0;
+      for (;;) {
+        const chunk = Buffer.allocUnsafe(1024 * 1024);
+        const { bytesRead } = await input.source.read(
+          chunk,
+          0,
+          chunk.length,
+          length,
+        );
+        if (bytesRead === 0) break;
+        const exact = chunk.subarray(0, bytesRead);
+        hash.update(exact);
+        await target.write(exact);
+        length += bytesRead;
+        if (length > input.maxBytes) {
+          throw new Error("evidence_custody_source_drift");
+        }
       }
-      await unlink(temporaryPath);
-      temporaryExists = false;
-      return { path: input.lexicalPath, created: false };
-    }
-    await unlink(temporaryPath);
-    temporaryExists = false;
-    const directory = await open(parent, constants.O_RDONLY | constants.O_DIRECTORY);
-    try { await directory.sync(); } finally { await directory.close(); }
-    return { path: input.lexicalPath, created: true };
-  } finally {
-    await target.close().catch(() => undefined);
-    if (temporaryExists) await unlink(temporaryPath).catch(() => undefined);
-  }
+      const after = await input.source.stat();
+      if (input.sourceBefore.dev !== after.dev || input.sourceBefore.ino !== after.ino ||
+        input.sourceBefore.size !== after.size || length !== input.expectedLength ||
+        hash.digest("hex") !== input.expectedSha256) {
+        throw new Error("evidence_custody_source_drift");
+      }
+    },
+  });
 }
+
+type PublicationCrashHook = (
+  point:
+    | "after_temp_write"
+    | "after_temp_fsync"
+    | "after_publish_before_directory_fsync"
+    | "after_directory_fsync",
+  path: string,
+) => Promise<void> | void;
 
 async function publishThroughHandle(input: {
   readonly parentFd: number; readonly lexicalPath: string; readonly fileName: string;
   readonly expectedSha256: string; readonly expectedLength: number;
   readonly write: (handle: Awaited<ReturnType<typeof open>>) => Promise<void>;
+  readonly crashHook?: PublicationCrashHook;
 }) {
   safeSegment(input.fileName);
-  const path = `/proc/self/fd/${input.parentFd}/${input.fileName}`;
-  let target;
-  let closed = false;
+  const parent = `/proc/self/fd/${input.parentFd}`;
+  const path = `${parent}/${input.fileName}`;
   try {
-    target = await open(path,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      0o600);
-  } catch (error) {
-    if (code(error) !== "EEXIST") throw error;
     const existing = await readViaHandle(path, input.expectedLength);
     if (existing.sha256 !== input.expectedSha256 ||
       existing.length !== input.expectedLength) {
       throw new Error("evidence_custody_immutable_conflict");
     }
+    await syncDirectory(parent);
+    if (await cleanPublicationTemps({
+      parent,
+      fileName: input.fileName,
+      expectedSha256: input.expectedSha256,
+      expectedLength: input.expectedLength,
+      removeMatching: true,
+    })) await syncDirectory(parent);
     return { path: input.lexicalPath, created: false };
+  } catch (error) {
+    if (code(error) !== "ENOENT") throw error;
   }
+  if (await cleanPublicationTemps({
+    parent,
+    fileName: input.fileName,
+    expectedSha256: input.expectedSha256,
+    expectedLength: input.expectedLength,
+    removeMatching: false,
+  })) await syncDirectory(parent);
+  const temporaryName = publicationTemporaryName(input.fileName);
+  const temporaryPath = `${parent}/${temporaryName}`;
+  const target = await open(temporaryPath,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600);
+  let targetClosed = false;
+  let temporaryExists = true;
+  let simulatedCrash = false;
+  let published = false;
   try {
     await input.write(target);
+    try {
+      await input.crashHook?.("after_temp_write", input.lexicalPath);
+    } catch (error) {
+      simulatedCrash = true;
+      throw error;
+    }
     await target.sync();
-  } catch (error) {
     await target.close();
-    closed = true;
-    await unlink(path);
-    throw error;
+    targetClosed = true;
+    try {
+      await input.crashHook?.("after_temp_fsync", input.lexicalPath);
+    } catch (error) {
+      simulatedCrash = true;
+      throw error;
+    }
+    try {
+      await link(temporaryPath, path);
+      published = true;
+    } catch (error) {
+      if (code(error) !== "EEXIST" && code(error) !== "ENOENT") throw error;
+      const existing = await readViaHandle(path, input.expectedLength);
+      if (existing.sha256 !== input.expectedSha256 ||
+        existing.length !== input.expectedLength) {
+        throw new Error("evidence_custody_immutable_conflict");
+      }
+      await unlink(temporaryPath).catch((unlinkError) => {
+        if (code(unlinkError) !== "ENOENT") throw unlinkError;
+      });
+      temporaryExists = false;
+      await syncDirectory(parent);
+      return { path: input.lexicalPath, created: false };
+    }
+    try {
+      await input.crashHook?.(
+        "after_publish_before_directory_fsync",
+        input.lexicalPath,
+      );
+    } catch (error) {
+      simulatedCrash = true;
+      throw error;
+    }
+    await syncDirectory(parent);
+    try {
+      await input.crashHook?.("after_directory_fsync", input.lexicalPath);
+    } catch (error) {
+      simulatedCrash = true;
+      throw error;
+    }
+    await unlink(temporaryPath);
+    temporaryExists = false;
+    await syncDirectory(parent);
+    if (await cleanPublicationTemps({
+      parent,
+      fileName: input.fileName,
+      expectedSha256: input.expectedSha256,
+      expectedLength: input.expectedLength,
+      removeMatching: true,
+    })) await syncDirectory(parent);
+    return { path: input.lexicalPath, created: true };
   } finally {
-    if (!closed) await target.close();
+    if (!targetClosed) await target.close().catch(() => undefined);
+    if (temporaryExists && !simulatedCrash && !published) {
+      await unlink(temporaryPath).catch(() => undefined);
+    }
   }
-  const parent = await open(`/proc/self/fd/${input.parentFd}`,
-    constants.O_RDONLY | constants.O_DIRECTORY);
-  try { await parent.sync(); } finally { await parent.close(); }
-  return { path: input.lexicalPath, created: true };
+}
+
+function publicationTemporaryName(fileName: string): string {
+  const identity = createHash("sha256").update(fileName).digest("hex").slice(0, 16);
+  return `.custody-publish-${identity}-${process.pid}-${Date.now()}-${Math.random()
+    .toString(16).slice(2)}.tmp`;
+}
+
+async function cleanPublicationTemps(input: {
+  readonly parent: string;
+  readonly fileName: string;
+  readonly expectedSha256: string;
+  readonly expectedLength: number;
+  readonly removeMatching: boolean;
+}): Promise<boolean> {
+  const identity = createHash("sha256").update(input.fileName).digest("hex")
+    .slice(0, 16);
+  const prefix = `.custody-publish-${identity}-`;
+  const staleBefore = Date.now() - 60 * 60_000;
+  let removed = false;
+  for (const entry of await readdir(input.parent, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.startsWith(prefix) ||
+      !entry.name.endsWith(".tmp")) continue;
+    const path = `${input.parent}/${entry.name}`;
+    const metadata = await lstat(path);
+    if (metadata.isSymbolicLink() || !metadata.isFile()) continue;
+    let matching = false;
+    try {
+      const identity = await readViaHandle(path, input.expectedLength);
+      matching = identity.length === input.expectedLength &&
+        identity.sha256 === input.expectedSha256;
+    } catch (error) {
+      if (code(error) === "ENOENT") continue;
+    }
+    if (!(input.removeMatching && matching) && metadata.mtimeMs >= staleBefore) {
+      continue;
+    }
+    await unlink(path).catch((error) => {
+      if (code(error) !== "ENOENT") throw error;
+    });
+    removed = true;
+  }
+  return removed;
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const directory = await open(path, constants.O_RDONLY | constants.O_DIRECTORY);
+  try { await directory.sync(); } finally { await directory.close(); }
 }
 
 async function readViaHandle(path: string, maxBytes: number) {

@@ -105,7 +105,10 @@ export async function buildRawLedgerEpochAdmissionSnapshot(input: {
   };
   return input.snapshotBuilder
     ? await input.snapshotBuilder(common)
-    : await buildCodexProjectAdmissionSnapshot({ ...common, deps: input.admissionDeps });
+    : await buildCodexProjectAdmissionSnapshot({
+        ...common,
+        deps: input.admissionDeps,
+      });
 }
 
 export async function assertCanonicalLedgerRootsAllowed(

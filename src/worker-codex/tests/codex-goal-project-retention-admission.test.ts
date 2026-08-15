@@ -96,6 +96,7 @@ describe("Codex project admission snapshot", () => {
       });
       await expect(codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope,
         deps: emptyDeps,
       }).evaluate({
@@ -279,6 +280,7 @@ describe("Codex project admission snapshot", () => {
       ]));
       await expect(codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope,
         deps,
       }).evaluate({
@@ -512,6 +514,7 @@ describe("Codex project admission snapshot", () => {
       ]));
       await expect(codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope,
         deps: stoppedDeps,
       }).evaluate({
@@ -671,6 +674,7 @@ describe("Codex project admission snapshot", () => {
       });
       await expect(codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope,
         deps: deps([]),
       }).evaluate({

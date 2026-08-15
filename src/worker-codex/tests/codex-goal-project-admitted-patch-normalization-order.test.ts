@@ -43,6 +43,7 @@ describe("admitted input patch normalization ordering", () => {
       const gate = (jobId: string, workspacePath: string) =>
         codexProjectAdmissionGate({
           registryRootDir: join(root, "registry"),
+          controllerJobId: "project-controller",
           scope: {
             projectId: "social-monitor",
             jobIdPrefixes: ["social-"],
@@ -85,6 +86,7 @@ describe("admitted input patch normalization ordering", () => {
       await createDirtyGitWorkspace(workspacePath);
       const gate = codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope: {
           projectId: "social-monitor",
           jobIdPrefixes: ["social-"],

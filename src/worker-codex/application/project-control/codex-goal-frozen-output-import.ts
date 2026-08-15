@@ -8,18 +8,22 @@ import type {
   "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifest, CodexGoalJobSummary } from
   "../../codex-goal-jobs";
+import { parseCodexGoalJobManifest } from "../../codex-goal-jobs";
 
 export type FrozenOutputSupersededSummary = {
   readonly jobId: string;
   readonly manifestPath: string;
   readonly manifestSha256: string;
   readonly workspacePath: string;
+  readonly effectiveOutputPath: string;
+  readonly observedResultExists: boolean;
 };
 
 export type FrozenOutputImportPlan = {
   readonly schemaVersion: 1;
   readonly projectId: string;
   readonly controllerJobId: string;
+  readonly registryRootDir: string;
   readonly jobIdPrefixes: readonly string[];
   readonly sourcePath: string;
   readonly sourceSha256: string;
@@ -33,10 +37,13 @@ export type FrozenOutputImportPlan = {
   readonly headCommit: string;
   readonly patchSha256: string;
   readonly retainedRegistrationJobId: string;
+  readonly retainedJobRootDir: string;
   readonly retainedManifestPath: string;
   readonly retainedManifestSha256: string;
   readonly retainedOutputPath: string;
   readonly retainedOutputSha256: string;
+  readonly authorizedRetainedOutputRoots: readonly string[];
+  readonly deniedRoots: readonly string[];
   readonly supersededSummaries: readonly FrozenOutputSupersededSummary[];
 };
 
@@ -80,6 +87,7 @@ export function frozenOutputImportPlanSha256(plan: FrozenOutputImportPlan): stri
 export async function buildFrozenOutputImportPlan(input: {
   readonly custody: ProjectControlEvidenceCustodyPort;
   readonly scope: ProjectAccessScope;
+  readonly registryRootDir: string;
   readonly controllerJobId: string;
   readonly jobIdPrefixes: readonly string[];
   readonly sourcePath: string;
@@ -93,18 +101,28 @@ export async function buildFrozenOutputImportPlan(input: {
   readonly baseCommit: string;
   readonly headCommit: string;
   readonly patchSha256: string;
-  readonly retainedManifest: CodexGoalJobManifest;
+  readonly retainedRegistrationJobId: string;
   readonly retainedManifestPath: string;
   readonly expectedRetainedManifestSha256: string;
   readonly expectedRetainedOutputSha256: string;
   readonly superseded: readonly {
-    readonly manifest: CodexGoalJobManifest;
+    readonly jobId: string;
     readonly manifestPath: string;
     readonly expectedManifestSha256: string;
     readonly workspaceDirty: boolean;
     readonly workerAlive: boolean;
+    readonly observedResultExists: boolean;
+    readonly observedResultPath?: string;
   }[];
 }): Promise<FrozenOutputImportPlan> {
+  const registryRootDir = await input.custody.canonicalDirectory(
+    input.registryRootDir,
+  );
+  if (input.scope.registryRoot !== undefined &&
+    await input.custody.canonicalDirectory(input.scope.registryRoot) !==
+      registryRootDir) {
+    throw new Error("frozen_output_registry_scope_mismatch");
+  }
   const sourceRoots = await canonicalRoots(input.custody, input.scope.readRoots ?? []);
   const deniedRoots = await canonicalRoots(input.custody,
     input.scope.deniedRoots ?? [], true);
@@ -179,13 +197,35 @@ export async function buildFrozenOutputImportPlan(input: {
   if (retainedManifest.sha256 !== input.expectedRetainedManifestSha256.toLowerCase()) {
     throw new Error("frozen_output_retained_manifest_cas_mismatch");
   }
-  if (input.retainedManifest.projectAccessScope?.projectId !== input.scope.projectId ||
-    !input.retainedManifest.outputPath ||
-    !matchesPrefix(input.retainedManifest.jobId, input.jobIdPrefixes)) {
+  const retainedRegistration = parseJobManifest(retainedManifest.bytes);
+  assertRegistryManifestIdentity({
+    registryRootDir,
+    manifestPath: retainedManifest.path,
+    manifest: retainedRegistration,
+    expectedJobId: input.retainedRegistrationJobId,
+  });
+  if (retainedRegistration.projectAccessScope?.projectId !== input.scope.projectId ||
+    !matchesPrefix(retainedRegistration.jobId, input.jobIdPrefixes)) {
     throw new Error("frozen_output_output_bearing_registration_required");
   }
+  const retainedJobRootDir = await input.custody.canonicalDirectory(
+    retainedRegistration.jobRootDir,
+  );
+  const authorizedRetainedOutputRoots = [...new Set([
+    retainedJobRootDir,
+    ...ownershipRoots,
+  ])].sort();
+  const retainedOutputPath = resolve(retainedRegistration.outputPath ?? join(
+    retainedJobRootDir,
+    `${retainedRegistration.taskId}.latest-result.json`,
+  ));
   const retainedOutput = await immutableFileIdentity(input.custody,
-    input.retainedManifest.outputPath);
+    retainedOutputPath);
+  if (!authorizedRetainedOutputRoots.some((root) =>
+      inside(retainedOutput.path, root)) ||
+    deniedRoots.some((root) => inside(retainedOutput.path, root))) {
+    throw new Error("frozen_output_retained_output_outside_project_scope");
+  }
   if (retainedOutput.length === 0 ||
     retainedOutput.sha256 !== input.expectedRetainedOutputSha256.toLowerCase()) {
     throw new Error("frozen_output_retained_output_cas_mismatch");
@@ -198,13 +238,13 @@ export async function buildFrozenOutputImportPlan(input: {
     baseCommit: input.baseCommit,
     headCommit: input.headCommit,
     changedPaths: input.changedPaths,
-    retainedJobId: input.retainedManifest.jobId,
+    retainedJobId: retainedRegistration.jobId,
     retainedManifestSha256: retainedManifest.sha256,
     retainedOutputSha256: retainedOutput.sha256,
   });
   const supersededSummaries: FrozenOutputSupersededSummary[] = [];
   if (input.superseded.length > 1_000 ||
-    new Set(input.superseded.map((candidate) => candidate.manifest.jobId)).size !==
+    new Set(input.superseded.map((candidate) => candidate.jobId)).size !==
       input.superseded.length) {
     throw new Error("frozen_output_legacy_summaries_invalid");
   }
@@ -213,38 +253,44 @@ export async function buildFrozenOutputImportPlan(input: {
     if (!candidate.workspaceDirty) {
       throw new Error("frozen_output_legacy_dirty_workspace_required");
     }
-    if (candidate.manifest.projectAccessScope?.projectId !== input.scope.projectId) {
-      throw new Error("frozen_output_legacy_project_mismatch");
-    }
-    if (!matchesPrefix(candidate.manifest.jobId, input.jobIdPrefixes)) {
-      throw new Error("frozen_output_legacy_job_prefix_mismatch");
-    }
-    if (candidate.manifest.outputPath) {
-      try {
-        await immutableFileIdentity(input.custody, candidate.manifest.outputPath);
-        throw new Error("frozen_output_legacy_output_bearing_refused");
-      } catch (error) {
-        if (error instanceof Error &&
-          error.message === "frozen_output_legacy_output_bearing_refused") throw error;
-        if (nodeErrorCode(error) !== "ENOENT") throw error;
-      }
-    }
     const identity = await immutableFileIdentity(input.custody,
       candidate.manifestPath, 1024 * 1024);
     if (identity.sha256 !== candidate.expectedManifestSha256.toLowerCase()) {
       throw new Error("frozen_output_legacy_manifest_cas_mismatch");
     }
+    const candidateManifest = parseJobManifest(identity.bytes);
+    assertRegistryManifestIdentity({
+      registryRootDir,
+      manifestPath: identity.path,
+      manifest: candidateManifest,
+      expectedJobId: candidate.jobId,
+    });
+    if (candidateManifest.projectAccessScope?.projectId !== input.scope.projectId) {
+      throw new Error("frozen_output_legacy_project_mismatch");
+    }
+    if (!matchesPrefix(candidateManifest.jobId, input.jobIdPrefixes)) {
+      throw new Error("frozen_output_legacy_job_prefix_mismatch");
+    }
+    const effectiveOutputPath = effectiveResultPath(candidateManifest);
+    if (candidate.observedResultPath !== undefined &&
+      resolve(candidate.observedResultPath) !== effectiveOutputPath) {
+      throw new Error("frozen_output_observed_result_path_mismatch");
+    }
+    await assertRegistrationOutputAbsent(input.custody, candidateManifest,
+      candidate.observedResultExists);
     const workspacePath = await input.custody.canonicalDirectory(
-      candidate.manifest.workspacePath,
+      candidateManifest.workspacePath,
     );
-    if (workspacePath !== resolve(candidate.manifest.workspacePath)) {
+    if (workspacePath !== resolve(candidateManifest.workspacePath)) {
       throw new Error("frozen_output_legacy_workspace_noncanonical");
     }
     supersededSummaries.push({
-      jobId: candidate.manifest.jobId,
+      jobId: candidateManifest.jobId,
       manifestPath: identity.path,
       manifestSha256: identity.sha256,
       workspacePath,
+      effectiveOutputPath,
+      observedResultExists: candidate.observedResultExists,
     });
   }
   if (supersededSummaries.length === 0) {
@@ -254,6 +300,7 @@ export async function buildFrozenOutputImportPlan(input: {
     schemaVersion: 1,
     projectId: input.scope.projectId,
     controllerJobId: input.controllerJobId,
+    registryRootDir,
     jobIdPrefixes: [...input.jobIdPrefixes].sort(),
     sourcePath: source.canonicalPath,
     sourceSha256: source.sha256,
@@ -266,11 +313,14 @@ export async function buildFrozenOutputImportPlan(input: {
     baseCommit: input.baseCommit.toLowerCase(),
     headCommit: input.headCommit.toLowerCase(),
     patchSha256: input.patchSha256.toLowerCase(),
-    retainedRegistrationJobId: input.retainedManifest.jobId,
+    retainedRegistrationJobId: retainedRegistration.jobId,
+    retainedJobRootDir,
     retainedManifestPath: retainedManifest.path,
     retainedManifestSha256: retainedManifest.sha256,
     retainedOutputPath: retainedOutput.path,
     retainedOutputSha256: retainedOutput.sha256,
+    authorizedRetainedOutputRoots,
+    deniedRoots: [...deniedRoots].sort(),
     supersededSummaries: supersededSummaries.sort((a, b) =>
       a.jobId.localeCompare(b.jobId)
     ),
@@ -300,6 +350,53 @@ export async function publishFrozenOutputImport(input: {
     retainedManifest.sha256 !== input.plan.retainedManifestSha256 ||
     retainedOutput.sha256 !== input.plan.retainedOutputSha256) {
     throw new Error("frozen_output_import_source_drift");
+  }
+  const retainedRegistration = parseJobManifest(retainedManifest.bytes);
+  const [registryRootDir, retainedJobRootDir, authorizedRetainedOutputRoots,
+    deniedRoots] = await Promise.all([
+    input.custody.canonicalDirectory(input.plan.registryRootDir),
+    input.custody.canonicalDirectory(retainedRegistration.jobRootDir),
+    canonicalRoots(input.custody, input.plan.authorizedRetainedOutputRoots),
+    canonicalRoots(input.custody, input.plan.deniedRoots, true),
+  ]);
+  assertRegistryManifestIdentity({
+    registryRootDir,
+    manifestPath: input.plan.retainedManifestPath,
+    manifest: retainedRegistration,
+    expectedJobId: input.plan.retainedRegistrationJobId,
+  });
+  const currentRetainedOutputPath = effectiveResultPath(retainedRegistration);
+  if (registryRootDir !== input.plan.registryRootDir ||
+    retainedJobRootDir !== input.plan.retainedJobRootDir ||
+    !sameStrings(authorizedRetainedOutputRoots,
+      input.plan.authorizedRetainedOutputRoots) ||
+    !sameStrings(deniedRoots, input.plan.deniedRoots) ||
+    currentRetainedOutputPath !== input.plan.retainedOutputPath ||
+    !authorizedRetainedOutputRoots.some((root) =>
+      inside(currentRetainedOutputPath, root)) ||
+    deniedRoots.some((root) => inside(currentRetainedOutputPath, root))) {
+    throw new Error("frozen_output_import_retained_authorization_drift");
+  }
+  for (const expected of input.plan.supersededSummaries) {
+    const current = await immutableFileIdentity(input.custody,
+      expected.manifestPath, 1024 * 1024);
+    if (current.sha256 !== expected.manifestSha256) {
+      throw new Error("frozen_output_import_superseded_manifest_drift");
+    }
+    const manifest = parseJobManifest(current.bytes);
+    assertRegistryManifestIdentity({
+      registryRootDir,
+      manifestPath: current.path,
+      manifest,
+      expectedJobId: expected.jobId,
+    });
+    if (effectiveResultPath(manifest) !== expected.effectiveOutputPath ||
+      await input.custody.canonicalDirectory(manifest.workspacePath) !==
+        expected.workspacePath) {
+      throw new Error("frozen_output_import_superseded_identity_drift");
+    }
+    await assertRegistrationOutputAbsent(input.custody, manifest,
+      expected.observedResultExists);
   }
   const importRoot = join(
     input.plan.destinationEvidenceRoot,
@@ -423,6 +520,9 @@ export async function frozenOutputSupersessionProjection(input: {
         const receipt = parseReceipt(decode((await input.custody.readImmutableFile(
           path, 4 * 1024 * 1024,
         )).bytes));
+        if ((input.projectId !== undefined && receipt.projectId !== input.projectId) ||
+          (input.controllerJobId !== undefined &&
+            receipt.controllerJobId !== input.controllerJobId)) continue;
         await verifyFrozenOutputReceipt(input.custody, receipt, path, evidenceRoot,
           input);
         receipts.push(receipt);
@@ -441,14 +541,15 @@ export async function frozenOutputSupersessionProjection(input: {
       active.push(summary);
       continue;
     }
-    const currentSha256 = (await immutableFileIdentity(input.custody,
-      summary.manifestPath, 1024 * 1024)).sha256;
+    const current = await immutableFileIdentity(input.custody,
+      summary.manifestPath, 1024 * 1024);
     const matched = candidates.some((expected) =>
       expected.manifestPath === resolve(summary.manifestPath) &&
       expected.workspacePath === resolve(summary.workspacePath) &&
-      currentSha256 === expected.manifestSha256
+      current.sha256 === expected.manifestSha256
     );
-    if (!matched) {
+    if (!matched || await registrationHasOutput(input.custody,
+      parseJobManifest(current.bytes))) {
       active.push(summary);
     }
   }
@@ -565,14 +666,22 @@ async function verifyFrozenOutputReceipt(
     retainedManifestSha256: receipt.retainedManifestSha256,
     retainedOutputSha256: receipt.retainedOutputSha256,
   });
-  let retained: CodexGoalJobManifest;
-  try { retained = JSON.parse(decode(retainedManifest.bytes)); } catch {
-    throw new Error("frozen_output_import_retained_manifest_invalid");
-  }
+  const retained = parseJobManifest(retainedManifest.bytes);
+  assertRegistryManifestIdentity({
+    registryRootDir: receipt.registryRootDir,
+    manifestPath: receipt.retainedManifestPath,
+    manifest: retained,
+    expectedJobId: receipt.retainedRegistrationJobId,
+  });
   if (retained.jobId !== receipt.retainedRegistrationJobId ||
     retained.projectAccessScope?.projectId !== receipt.projectId ||
     !matchesPrefix(retained.jobId, receipt.jobIdPrefixes) ||
-    retained.outputPath !== receipt.retainedOutputPath) {
+    resolve(retained.jobRootDir) !== receipt.retainedJobRootDir ||
+    resolve(retained.outputPath ?? join(retained.jobRootDir,
+      `${retained.taskId}.latest-result.json`)) !== receipt.retainedOutputPath ||
+    !receipt.authorizedRetainedOutputRoots.some((root) =>
+      inside(receipt.retainedOutputPath, root)) ||
+    receipt.deniedRoots.some((root) => inside(receipt.retainedOutputPath, root))) {
     throw new Error("frozen_output_import_retained_manifest_mismatch");
   }
 }
@@ -676,6 +785,73 @@ function gitObject(value: string): boolean {
 function matchesPrefix(jobId: string, prefixes: readonly string[]): boolean {
   return prefixes.length > 0 && prefixes.some((prefix) =>
     prefix.length > 0 && jobId.startsWith(prefix));
+}
+
+function effectiveResultPath(manifest: CodexGoalJobManifest): string {
+  return resolve(manifest.outputPath ?? join(
+    manifest.jobRootDir,
+    `${manifest.taskId}.latest-result.json`,
+  ));
+}
+
+async function assertRegistrationOutputAbsent(
+  custody: ProjectControlEvidenceCustodyPort,
+  manifest: CodexGoalJobManifest,
+  observedResultExists: boolean,
+): Promise<void> {
+  if (observedResultExists || await custody.pathKind(effectiveResultPath(manifest)) !==
+    "absent") {
+    throw new Error("frozen_output_legacy_output_bearing_refused");
+  }
+  if (await registrationHasHandoff(custody, manifest)) {
+    throw new Error("frozen_output_legacy_handoff_bearing_refused");
+  }
+}
+
+async function registrationHasOutput(
+  custody: ProjectControlEvidenceCustodyPort,
+  manifest: CodexGoalJobManifest,
+): Promise<boolean> {
+  return await custody.pathKind(effectiveResultPath(manifest)) !== "absent" ||
+    await registrationHasHandoff(custody, manifest);
+}
+
+async function registrationHasHandoff(
+  custody: ProjectControlEvidenceCustodyPort,
+  manifest: CodexGoalJobManifest,
+): Promise<boolean> {
+  return (await custody.listDirectory(manifest.jobRootDir)).some((entry) =>
+    entry.kind === "file" &&
+    entry.name.startsWith(`${manifest.taskId}.`) &&
+    /\.handoff\.(patch|summary\.json|manifest\.json)$/i.test(entry.name)
+  );
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) =>
+    value === right[index]);
+}
+
+function parseJobManifest(bytes: Uint8Array): CodexGoalJobManifest {
+  try {
+    return parseCodexGoalJobManifest(JSON.parse(decode(bytes)));
+  } catch (error) {
+    throw new Error("frozen_output_job_manifest_invalid", { cause: error });
+  }
+}
+
+function assertRegistryManifestIdentity(input: {
+  readonly registryRootDir: string;
+  readonly manifestPath: string;
+  readonly manifest: CodexGoalJobManifest;
+  readonly expectedJobId: string;
+}): void {
+  const expectedJobRoot = join(resolve(input.registryRootDir), input.expectedJobId);
+  if (input.manifest.jobId !== input.expectedJobId ||
+    resolve(input.manifestPath) !== join(expectedJobRoot, "job.json") ||
+    resolve(input.manifest.jobRootDir) !== expectedJobRoot) {
+    throw new Error("frozen_output_registry_identity_mismatch");
+  }
 }
 
 function sha256(value: string | Uint8Array): string {

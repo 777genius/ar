@@ -182,6 +182,7 @@ export function createCodexProjectControlBroker(
       admission: codexProjectAdmissionGate({
         registryRootDir: input.registryRootDir,
         scope: input.scope,
+        controllerJobId: input.controller.jobId,
         deps: input.admissionDeps,
         ...((input.startAdmissionWorkspaceMode ===
               "admitted_input_patch_continuation" ||
