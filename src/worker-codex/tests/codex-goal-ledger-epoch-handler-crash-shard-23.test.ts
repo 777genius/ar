@@ -1,3 +1,3 @@
 import { certifyLedgerEpochCrashBoundaryShard } from
   "./codex-goal-ledger-epoch-handler-crash-shard-support";
-certifyLedgerEpochCrashBoundaryShard({ shard: 23, start: 184, end: 192 });
+certifyLedgerEpochCrashBoundaryShard({ shard: 23, start: 92, end: 96 });

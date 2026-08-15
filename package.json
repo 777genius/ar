@@ -155,6 +155,7 @@
     "typecheck:packages": "npm run --prefix packages/agent-account-observability typecheck",
     "test": "npm run build:packages && vitest run && npm run test:packages && npm run check:publish-preflight",
     "test:packages": "npm run --prefix packages/agent-account-observability test",
+    "test:crash-shard": "vitest run --config vitest.crash-shard.config.ts --maxWorkers=1",
     "e2e:live-workers": "npm run build && node scripts/e2e-live-workers/run.mjs",
     "e2e:live-workers:dist": "node scripts/e2e-live-workers/run.mjs",
     "e2e:live-agent-runtime-task": "npm run build && node scripts/e2e-live-workers/agent-runtime-task-module.mjs --allow-live",

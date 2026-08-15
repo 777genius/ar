@@ -1,6 +1,6 @@
 import { configDefaults, defineConfig } from "vitest/config";
 
-const alias = {
+export const alias = {
   "@vioxen/subscription-runtime/core": "/src/core/index.ts",
   "@vioxen/subscription-runtime/agent-task": "/src/agent-task/index.ts",
   "@vioxen/subscription-runtime/agent-runtime-task": "/src/agent-runtime-task/index.ts",
@@ -36,6 +36,7 @@ export default defineConfig({
     exclude: [
       ...configDefaults.exclude,
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler.test.ts",
+      "src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-*.test.ts",
     ],
     fileParallelism: false,
     globals: true,

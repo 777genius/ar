@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -29,6 +29,26 @@ describe("exact-211 monotonic public-handler crash chain", () => {
 
   it("discovers an exact, gap-free executable shard for every boundary", async () => {
     expect(crashBoundaries).toHaveLength(211);
+    expect(shards).toHaveLength(53);
+    expect(shards[0]).toEqual([0, 4]);
+    expect(shards[52]).toEqual([208, 211]);
+    for (const [index, [start, end]] of shards.entries()) {
+      expect(start, `shard ${index} start`).toBe(index * 4);
+      expect(end, `shard ${index} end`).toBe(Math.min(index * 4 + 4, 211));
+      expect(end - start, `shard ${index} width`).toBe(index === 52 ? 3 : 4);
+      if (index > 0) {
+        expect(start, `shard ${index} adjacency`).toBe(shards[index - 1]?.[1]);
+      }
+    }
+    const expectedWrapperNames = Array.from(
+      { length: 53 },
+      (_, index) => `codex-goal-ledger-epoch-handler-crash-shard-${index}.test.ts`,
+    );
+    const wrapperNames = (await readdir(import.meta.dirname))
+      .filter((name) => /^codex-goal-ledger-epoch-handler-crash-shard-\d+\.test\.ts$/.test(name))
+      .sort((left, right) => Number(left.match(/\d+/g)?.at(-1)) -
+        Number(right.match(/\d+/g)?.at(-1)));
+    expect(wrapperNames).toEqual(expectedWrapperNames);
     const assignedBoundaries: number[] = [];
     await Promise.all(shards.map(async ([expectedStart, expectedEnd], index) => {
       const wrapperPath = join(
@@ -37,6 +57,12 @@ describe("exact-211 monotonic public-handler crash chain", () => {
       );
       await expect(access(wrapperPath)).resolves.toBeUndefined();
       const wrapper = await readFile(wrapperPath, "utf8");
+      expect(wrapper, wrapperPath).toBe(
+        "import { certifyLedgerEpochCrashBoundaryShard } from\n" +
+        "  \"./codex-goal-ledger-epoch-handler-crash-shard-support\";\n" +
+        `certifyLedgerEpochCrashBoundaryShard({ shard: ${index}, ` +
+        `start: ${expectedStart}, end: ${expectedEnd} });\n`,
+      );
       const invocation = wrapper.match(
         /certifyLedgerEpochCrashBoundaryShard\(\{([\s\S]*?)\}\);/,
       );
@@ -64,7 +90,6 @@ describe("exact-211 monotonic public-handler crash chain", () => {
       Array.from({ length: crashBoundaries.length }, (_, index) => index),
     );
     expect(new Set(assignedBoundaries)).toHaveLength(crashBoundaries.length);
-    expect(shards).toHaveLength(27);
     await expect(access(join(
       import.meta.dirname,
       "codex-goal-ledger-epoch-handler-production.test.ts",
