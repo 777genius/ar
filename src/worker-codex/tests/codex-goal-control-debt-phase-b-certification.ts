@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { expect, it } from "vitest";
 import type {
@@ -25,6 +25,7 @@ import { observingCustody } from
   "./codex-goal-frozen-output-phase-a-certification";
 
 type RetirementFixture = {
+  readonly root: string;
   readonly registry: string;
   readonly workspace: string;
   readonly manifestPath: string;
@@ -32,6 +33,7 @@ type RetirementFixture = {
   readonly summary: CodexGoalJobSummary;
   readonly plan: (override?: {
     readonly workerAlive?: boolean;
+    readonly custody?: ProjectControlEvidenceCustodyPort;
   }) => Promise<LegacyJobSummaryRetirementPlan>;
 };
 
@@ -169,6 +171,41 @@ function certifyRetirement(input: {
     expect(runtimeObserved).toBe(false);
   });
 
+  it("rejects a detached renamed parent while proving retirement absence", async () => {
+    const fixture = await input.retirementFixture();
+    const parent = dirname(fixture.workspace);
+    const moved = join(fixture.root, "gone-workspace-moved");
+    const outside = join(fixture.root, "outside-workspace");
+    await Promise.all([parent, outside].map((path) => mkdir(path)));
+    let swapped = false;
+    const custody = new Proxy(input.custody, {
+      get(target, property, receiver) {
+        if (property !== "openDirectoryForInspection") {
+          return Reflect.get(target, property, receiver);
+        }
+        return async (path: string) => {
+          const inspection = await target.openDirectoryForInspection(path);
+          if (path !== parent) return inspection;
+          return {
+            ...inspection,
+            pathKind: async (entryName: string) => {
+              if (!swapped) {
+                swapped = true;
+                await rename(parent, moved);
+                await symlink(outside, parent, "dir");
+              }
+              return await inspection.pathKind(entryName);
+            },
+          };
+        };
+      },
+    });
+    await expect(fixture.plan({ custody })).rejects.toThrow(
+      "inspection_parent_drift",
+    );
+    expect(swapped).toBe(true);
+  });
+
   it.each(["worker", "artifact"] as const)(
     "refuses retirement when %s evidence appears at the commit gate",
     async (race) => {
@@ -283,6 +320,7 @@ function certifyFrozen(input: {
       observeRuntime: async () => runtime,
     });
     expect(projection.active).toEqual([fixture.summary]);
+    expect(projection.receipts).toEqual([]);
   });
 }
 

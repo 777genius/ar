@@ -23,14 +23,16 @@ export class LocalProjectControlEvidenceCustody implements
       await handle.close();
       return lexical;
     } catch (error) {
-      if (allowMissing && deepCode(error) === "ENOENT") return lexical;
+      if (allowMissing && deepCode(error) === "ENOENT" &&
+        await this.pathKind(lexical) === "absent") return lexical;
       throw error;
     }
   }
 
   async readImmutableFile(path: string, maxBytes: number): Promise<ImmutableEvidenceFile> {
     const lexical = resolve(path);
-    const handle = await openAbsoluteFileNoSymlinks(lexical);
+    const held = await openAbsoluteFileNoSymlinks(lexical);
+    const handle = held.handle;
     try {
       const before = await handle.stat();
       if (!before.isFile() || before.size > maxBytes) {
@@ -54,6 +56,9 @@ export class LocalProjectControlEvidenceCustody implements
         before.size !== after.size || after.size !== length) {
         throw new Error("evidence_custody_file_changed_during_read");
       }
+      await this.crashHook?.("after_immutable_read_before_lexical_reopen", lexical);
+      await assertHeldLexicalFile(held, before,
+        "evidence_custody_file_changed_during_read");
       return {
         canonicalPath: lexical,
         sha256: hash.digest("hex"),
@@ -61,13 +66,14 @@ export class LocalProjectControlEvidenceCustody implements
         bytes: Buffer.concat(chunks, length),
       };
     } finally {
-      await handle.close();
+      await closeHeldLexicalFile(held);
     }
   }
 
   async inspectImmutablePatch(path: string, maxBytes: number): Promise<ImmutablePatchEvidence> {
     const lexical = resolve(path);
-    const handle = await openAbsoluteFileNoSymlinks(lexical);
+    const held = await openAbsoluteFileNoSymlinks(lexical);
+    const handle = held.handle;
     try {
       const before = await handle.stat();
       if (!before.isFile() || before.size > maxBytes) {
@@ -110,6 +116,9 @@ export class LocalProjectControlEvidenceCustody implements
         before.size !== after.size || after.size !== length) {
         throw new Error("evidence_custody_file_changed_during_read");
       }
+      await this.crashHook?.("after_immutable_read_before_lexical_reopen", lexical);
+      await assertHeldLexicalFile(held, before,
+        "evidence_custody_file_changed_during_read");
       return {
         canonicalPath: lexical,
         sha256: hash.digest("hex"),
@@ -118,36 +127,64 @@ export class LocalProjectControlEvidenceCustody implements
         baseCommits,
         changedPathPairs,
       };
-    } finally { await handle.close(); }
+    } finally { await closeHeldLexicalFile(held); }
   }
 
   async pathKind(path: string) {
-    try {
-      const metadata = await lstat(path);
-      if (metadata.isSymbolicLink()) return "symlink" as const;
-      if (metadata.isFile()) return "file" as const;
-      if (metadata.isDirectory()) return "directory" as const;
-      return "other" as const;
-    } catch (error) {
-      if (code(error) === "ENOENT") return "absent" as const;
-      throw error;
+    const lexical = resolve(path);
+    if (lexical === "/") return "directory" as const;
+    let candidate = lexical;
+    for (;;) {
+      const parent = dirname(candidate);
+      try {
+        const inspection = await this.openDirectoryForInspection(parent);
+        try {
+          const kind = await inspection.pathKind(basename(candidate));
+          if (candidate === lexical || kind === "absent") return kind;
+          candidate = lexical;
+        } finally {
+          await inspection.close();
+        }
+      } catch (error) {
+        if (deepCode(error) !== "ENOENT") throw error;
+        if (parent === candidate) throw error;
+        candidate = parent;
+      }
     }
   }
 
   async openDirectoryForInspection(path: string): Promise<EvidenceDirectoryInspection> {
-    const handle = await openAbsoluteDirectoryNoSymlinks(path);
-    const canonicalPath = await realpath(`/proc/self/fd/${handle.fd}`);
-    const identity = await handle.stat();
+    const lexical = resolve(path);
+    const parentPath = dirname(lexical);
+    const parent = lexical === "/"
+      ? undefined
+      : await openAbsoluteDirectoryNoSymlinks(parentPath);
+    let handle: Awaited<ReturnType<typeof open>>;
+    try {
+      handle = parent
+        ? await open(`/proc/self/fd/${parent.fd}/${basename(lexical)}`,
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+        : await openAbsoluteDirectoryNoSymlinks(lexical);
+    } catch (error) {
+      await parent?.close();
+      throw error;
+    }
+    let identity: Awaited<ReturnType<FileHandle["stat"]>>;
+    try {
+      identity = await handle.stat();
+      await assertInspectionLexicalBinding({ lexical, handle, parent, identity });
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      await parent?.close().catch(() => undefined);
+      throw error;
+    }
     let closed = false;
     return {
-      canonicalPath,
+      canonicalPath: lexical,
       pathKind: async (entryName: string): Promise<EvidencePathKind> => {
         if (closed) throw new Error("evidence_custody_inspection_closed");
         safeSegment(entryName);
-        const before = await handle.stat();
-        if (before.dev !== identity.dev || before.ino !== identity.ino) {
-          throw new Error("evidence_custody_inspection_handle_drift");
-        }
+        await assertInspectionLexicalBinding({ lexical, handle, parent, identity });
         let kind: EvidencePathKind;
         try {
           const metadata = await lstat(`/proc/self/fd/${handle.fd}/${entryName}`);
@@ -158,16 +195,18 @@ export class LocalProjectControlEvidenceCustody implements
           if (code(error) !== "ENOENT") throw error;
           kind = "absent";
         }
-        const after = await handle.stat();
-        if (after.dev !== identity.dev || after.ino !== identity.ino) {
-          throw new Error("evidence_custody_inspection_handle_drift");
-        }
+        await this.crashHook?.(
+          "after_path_classification_before_parent_revalidation",
+          join(lexical, entryName),
+        );
+        await assertInspectionLexicalBinding({ lexical, handle, parent, identity });
         return kind;
       },
       close: async () => {
         if (closed) return;
         closed = true;
         await handle.close();
+        await parent?.close();
       },
     };
   }
@@ -227,12 +266,20 @@ export class LocalProjectControlEvidenceCustody implements
     try {
       boundary = await openBoundary(input.root, input.directories,
         this.crashHook);
-      const before = await source.stat();
+      const before = await source.handle.stat();
       if (!before.isFile() || before.size !== input.expectedLength ||
         before.size > input.maxBytes) throw new Error("evidence_custody_source_drift");
       return await copyThroughHandle({
-        source,
+        source: source.handle,
         sourceBefore: before,
+        assertSourceLexical: async () => {
+          await this.crashHook?.(
+            "after_copy_read_before_lexical_reopen",
+            sourcePath,
+          );
+          await assertHeldLexicalFile(source, before,
+            "evidence_custody_source_drift");
+        },
         maxBytes: input.maxBytes,
         parentFd: boundary.handle.fd,
         lexicalPath: join(resolve(input.root), ...input.directories, input.fileName),
@@ -242,7 +289,7 @@ export class LocalProjectControlEvidenceCustody implements
         ...(this.crashHook ? { crashHook: this.crashHook } : {}),
       });
     } finally {
-      await source.close();
+      await closeHeldLexicalFile(source);
       await boundary?.handle.close();
     }
   }
@@ -334,20 +381,93 @@ async function openAbsoluteFileNoSymlinks(path: string) {
       handle = undefined;
       throw new Error("evidence_custody_file_noncanonical");
     }
-    return handle;
+    return { handle, parent, lexical, fileName: basename(lexical) };
   } catch (error) {
     await handle?.close();
+    await parent.close();
     if (error instanceof Error &&
       error.message === "evidence_custody_file_noncanonical") throw error;
     throw custodyError("evidence_custody_file_noncanonical", error);
-  } finally {
-    await parent.close();
+  }
+}
+
+type HeldLexicalFile = Awaited<ReturnType<typeof openAbsoluteFileNoSymlinks>>;
+
+async function closeHeldLexicalFile(held: HeldLexicalFile): Promise<void> {
+  await held.handle.close().finally(async () => await held.parent.close());
+}
+
+async function assertHeldLexicalFile(
+  held: HeldLexicalFile,
+  identity: Awaited<ReturnType<FileHandle["stat"]>>,
+  errorCode: string,
+): Promise<void> {
+  try {
+    if (await realpath(`/proc/self/fd/${held.parent.fd}`) !== dirname(held.lexical)) {
+      throw new Error(errorCode);
+    }
+    const reopened = await open(
+      `/proc/self/fd/${held.parent.fd}/${held.fileName}`,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    try {
+      const current = await reopened.stat();
+      if (current.dev !== identity.dev || current.ino !== identity.ino) {
+        throw new Error(errorCode);
+      }
+    } finally {
+      await reopened.close();
+    }
+    if (await realpath(`/proc/self/fd/${held.parent.fd}`) !== dirname(held.lexical)) {
+      throw new Error(errorCode);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === errorCode) throw error;
+    throw new Error(errorCode, { cause: error });
+  }
+}
+
+async function assertInspectionLexicalBinding(input: {
+  readonly lexical: string;
+  readonly handle: FileHandle;
+  readonly parent: FileHandle | undefined;
+  readonly identity: Awaited<ReturnType<FileHandle["stat"]>>;
+}): Promise<void> {
+  try {
+    const current = await input.handle.stat();
+    if (current.dev !== input.identity.dev || current.ino !== input.identity.ino ||
+      await realpath(`/proc/self/fd/${input.handle.fd}`) !== input.lexical) {
+      throw new Error("evidence_custody_inspection_parent_drift");
+    }
+    if (!input.parent) return;
+    if (await realpath(`/proc/self/fd/${input.parent.fd}`) !==
+      dirname(input.lexical)) {
+      throw new Error("evidence_custody_inspection_parent_drift");
+    }
+    const reopened = await open(
+      `/proc/self/fd/${input.parent.fd}/${basename(input.lexical)}`,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      const lexicalCurrent = await reopened.stat();
+      if (lexicalCurrent.dev !== input.identity.dev ||
+        lexicalCurrent.ino !== input.identity.ino) {
+        throw new Error("evidence_custody_inspection_parent_drift");
+      }
+    } finally {
+      await reopened.close();
+    }
+  } catch (error) {
+    if (error instanceof Error &&
+      error.message === "evidence_custody_inspection_parent_drift") throw error;
+    throw new Error("evidence_custody_inspection_parent_drift", { cause: error });
   }
 }
 
 async function copyThroughHandle(input: {
   readonly source: Awaited<ReturnType<typeof open>>;
   readonly sourceBefore: Awaited<ReturnType<Awaited<ReturnType<typeof open>>["stat"]>>;
+  readonly assertSourceLexical: () => Promise<void>;
   readonly maxBytes: number; readonly parentFd: number; readonly lexicalPath: string;
   readonly fileName: string; readonly expectedSha256: string;
   readonly expectedLength: number;
@@ -386,12 +506,16 @@ async function copyThroughHandle(input: {
         hash.digest("hex") !== input.expectedSha256) {
         throw new Error("evidence_custody_source_drift");
       }
+      await input.assertSourceLexical();
     },
   });
 }
 
 export type PublicationCrashHook = (
   point:
+    | "after_immutable_read_before_lexical_reopen"
+    | "after_copy_read_before_lexical_reopen"
+    | "after_path_classification_before_parent_revalidation"
     | "after_temp_write"
     | "after_temp_fsync"
     | "after_ancestor_creation_before_parent_fsync"
@@ -579,7 +703,22 @@ async function syncDirectory(path: string): Promise<void> {
 async function readViaHandle(path: string, maxBytes: number) {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    return await readViaOpenHandle(handle, maxBytes);
+    const read = await readViaOpenHandle(handle, maxBytes);
+    let reopened: FileHandle | undefined;
+    try {
+      reopened = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const lexical = await reopened.stat();
+      if (lexical.dev !== read.dev || lexical.ino !== read.ino) {
+        throw new Error("evidence_custody_file_changed_during_read");
+      }
+    } catch (error) {
+      if (error instanceof Error &&
+        error.message === "evidence_custody_file_changed_during_read") throw error;
+      throw new Error("evidence_custody_file_changed_during_read", { cause: error });
+    } finally {
+      await reopened?.close();
+    }
+    return read;
   } finally { await handle.close(); }
 }
 

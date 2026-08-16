@@ -445,7 +445,6 @@ describe("legacy job summary retirement", () => {
     const foreign = await retirementFixture("foreign");
     await expect(foreign.plan()).rejects.toThrow("project_mismatch");
   });
-
 });
 
 describe("frozen output import and summary supersession", () => {
@@ -859,8 +858,9 @@ async function retirementFixture(
       expectedManifestPath: string;
       expectedManifestSha256: string;
       workerAlive: boolean;
+      custody: ProjectControlEvidenceCustodyPort;
     }> = {}) => await buildLegacyJobSummaryRetirementPlan({
-      custody: evidenceCustody,
+      custody: override.custody ?? evidenceCustody,
       registryRootDir: registry,
       projectId: "p0",
       controllerJobId: "controller",

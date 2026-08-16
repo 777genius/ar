@@ -588,11 +588,16 @@ export async function frozenOutputSupersessionProjection(input: {
       }
     }
   }
-  const superseded = receipts.flatMap((receipt) => receipt.supersededSummaries);
+  const effectivePairs: {
+    readonly receipt: FrozenOutputImportReceipt;
+    readonly summary: FrozenOutputImportReceipt["supersededSummaries"][number];
+  }[] = [];
   const active: CodexGoalJobSummary[] = [];
   for (const summary of input.summaries) {
-    const candidates = superseded.filter((expected) =>
-      expected.jobId === summary.jobId
+    const candidates = receipts.flatMap((receipt) =>
+      receipt.supersededSummaries
+        .filter((expected) => expected.jobId === summary.jobId)
+        .map((expected) => ({ receipt, summary: expected }))
     );
     if (candidates.length === 0) {
       active.push(summary);
@@ -603,14 +608,14 @@ export async function frozenOutputSupersessionProjection(input: {
     const current = await authorizedImmutableFileIdentity(input.custody,
       lexicalAuthorization, authorization, summary.manifestPath, "registry",
       1024 * 1024);
-    const matched = candidates.some((expected) =>
+    const matched = candidates.filter(({ summary: expected }) =>
       expected.manifestPath === resolve(summary.manifestPath) &&
       expected.workspacePath === resolve(summary.workspacePath) &&
       current.sha256 === expected.manifestSha256
     );
     const manifest = parseJobManifest(current.bytes);
     let runtimeAllowsSupersession = false;
-    if (matched) {
+    if (matched.length > 0) {
       try {
         const runtime = await input.observeRuntime(manifest);
         const canonicalWorkspace = await input.custody.canonicalDirectory(
@@ -631,11 +636,21 @@ export async function frozenOutputSupersessionProjection(input: {
     }
     if (!runtimeAllowsSupersession) {
       active.push(summary);
+    } else {
+      effectivePairs.push(...matched);
     }
   }
+  const effectiveReceipts = receipts.flatMap((receipt) => {
+    const supersededSummaries = effectivePairs
+      .filter((pair) => pair.receipt === receipt)
+      .map((pair) => pair.summary);
+    return supersededSummaries.length === 0
+      ? []
+      : [{ ...receipt, supersededSummaries }];
+  });
   return {
     active: active.length === input.summaries.length ? input.summaries : active,
-    receipts,
+    receipts: effectiveReceipts,
   };
 }
 

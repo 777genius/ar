@@ -35,6 +35,8 @@ export function ledgerEpochProcessBlocks(
   const entrypoint = processEntrypoint(snapshot.argv);
   if (entrypoint !== undefined && MCP_ENTRYPOINTS.has(entrypoint)) return true;
   if (entrypoint === undefined || !CLI_ENTRYPOINTS.has(entrypoint)) return false;
+  if (snapshot.argv.some((value) => value === "controller-supervise" ||
+    value === "project-controller-supervise")) return true;
   return snapshot.argv.some((value) =>
     value === selector.registryRootDir || value === selector.controllerJobId ||
     value === selector.ledgerRoot

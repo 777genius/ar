@@ -24,7 +24,7 @@ describe("ledger epoch process selector", () => {
     expect(blocks(15, ["node", "-e", "console.log('codex-goal-mcp.js')"])).toBe(false);
   });
 
-  it("scopes direct CLI processes to the selected controller", () => {
+  it("conservatively blocks every direct controller-supervise process", () => {
     expect(blocks(12, [
       "subscription-runtime-codex-goal", "controller-supervise",
       "--registry-root", selector.registryRootDir,
@@ -32,7 +32,21 @@ describe("ledger epoch process selector", () => {
     expect(blocks(13, [
       "subscription-runtime-codex-goal", "controller-supervise",
       "--registry-root", "/var/data/other/registry-v4",
-    ])).toBe(false);
+    ])).toBe(true);
+  });
+
+  it("blocks controller-supervise when selectors come only from environment", () => {
+    expect(blocks(16, [
+      "subscription-runtime-codex-goal",
+      "controller-supervise",
+    ])).toBe(true);
+    expect(blocks(17, [
+      "node",
+      "/app/worker-codex/codex-goal-cli.js",
+      "project-controller-supervise",
+      "--provider",
+      "codex",
+    ])).toBe(true);
   });
 
   it("excludes only the exact self pid", () => {

@@ -153,7 +153,7 @@ export function certifyR25HighFrozenOutput(input: {
     await expect(swapped.plan({
       legacyOutputPath: join(outputParent, "race-result.json"),
       custody: swapCustody,
-    })).resolves.toBeDefined();
+    })).rejects.toThrow("inspection_parent_drift");
     expect(swapReached).toBe(true);
 
     const rejected = await input.fixture();

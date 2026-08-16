@@ -54,7 +54,9 @@ describe("local project-control evidence custody durability", () => {
     }
     await rename(parent, moved);
     await symlink(outside, parent, "dir");
-    expect(await inspection.pathKind("sentinel")).toBe("absent");
+    await expect(inspection.pathKind("sentinel")).rejects.toThrow(
+      "inspection_parent_drift",
+    );
     await inspection.close();
     await new Promise<void>((resolve, reject) =>
       socket.close((error) => error ? reject(error) : resolve())
@@ -73,6 +75,75 @@ describe("local project-control evidence custody durability", () => {
     await expect(custody.openDirectoryForInspection(join(outer, "linked")))
       .rejects.toThrow();
   });
+
+  it("rejects a parent swap during custody pathKind absence proof", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-path-kind-race-"));
+    const parent = join(outer, "parent");
+    const moved = join(outer, "moved-parent");
+    const outside = join(outer, "outside");
+    await Promise.all([parent, outside].map((path) => mkdir(path)));
+    const candidate = join(parent, "missing");
+    let swapped = false;
+    const custody = new LocalProjectControlEvidenceCustody(async (point, path) => {
+      if (point !== "after_path_classification_before_parent_revalidation" ||
+        path !== candidate || swapped) return;
+      swapped = true;
+      await rename(parent, moved);
+      await symlink(outside, parent, "dir");
+    });
+    await expect(custody.pathKind(candidate)).rejects.toThrow(
+      "inspection_parent_drift",
+    );
+    expect(swapped).toBe(true);
+  });
+
+  it.each(["read", "inspect", "copy"] as const)(
+    "rejects deterministic lexical leaf replacement after a held-FD %s",
+    async (operation) => {
+      const outer = await mkdtemp(join(tmpdir(), "custody-leaf-race-"));
+      const source = join(outer, "source.patch");
+      const displaced = join(outer, "source.original.patch");
+      const oldBytes = Buffer.from("diff --git a/old b/old\nold bytes\n");
+      const replacement = Buffer.from("diff --git a/new b/new\nnew bytes\n");
+      await writeFile(source, oldBytes);
+      let replaced = false;
+      const custody = new LocalProjectControlEvidenceCustody(
+        async (point, path) => {
+          const expectedPoint = operation === "copy"
+            ? "after_copy_read_before_lexical_reopen"
+            : "after_immutable_read_before_lexical_reopen";
+          if (point !== expectedPoint || path !== source || replaced) return;
+          replaced = true;
+          await rename(source, displaced);
+          await writeFile(source, replacement);
+        },
+      );
+      if (operation === "read") {
+        await expect(custody.readImmutableFile(source, 1024 * 1024))
+          .rejects.toThrow("file_changed_during_read");
+      } else if (operation === "inspect") {
+        await expect(custody.inspectImmutablePatch(source, 1024 * 1024))
+          .rejects.toThrow("file_changed_during_read");
+      } else {
+        const root = join(outer, "evidence");
+        await mkdir(root);
+        await expect(custody.copyImmutableFile({
+          sourcePath: source,
+          expectedSha256: sha(oldBytes),
+          expectedLength: oldBytes.length,
+          maxBytes: 1024 * 1024,
+          root,
+          directories: ["copies"],
+          fileName: "source.patch",
+        })).rejects.toThrow("source_drift");
+        await expect(readFile(join(root, "copies", "source.patch")))
+          .rejects.toMatchObject({ code: "ENOENT" });
+      }
+      expect(replaced).toBe(true);
+      expect(await readFile(source)).toEqual(replacement);
+      expect(await readFile(displaced)).toEqual(oldBytes);
+    },
+  );
 
   it("writeAll completes deterministic short writes and rejects zero progress", async () => {
     const output = Buffer.alloc(11);
