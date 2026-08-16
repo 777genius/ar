@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { expect, it } from "vitest";
 import type {
   ProjectAccessScope,
@@ -102,7 +102,7 @@ function certifyRetirement(input: {
       plan,
       expectedPlanSha256: legacyJobSummaryRetirementPlanSha256(plan),
       rebuildCurrentPlan: async () => {
-        await mkdir(fixture.workspace);
+        await mkdir(fixture.workspace, { recursive: true });
         return await fixture.plan();
       },
     })).rejects.toThrow("workspace_still_exists");
@@ -130,12 +130,43 @@ function certifyRetirement(input: {
         observeRuntime: async () => ({ workerAlive }),
       });
     expect((await project(true)).active).toEqual([fixture.summary]);
-    await mkdir(fixture.workspace);
+    await mkdir(fixture.workspace, { recursive: true });
     expect((await project(false)).active).toEqual([fixture.summary]);
     await rm(fixture.workspace, { recursive: true });
     await writeFile(join(fixture.manifest.jobRootDir,
       `${fixture.manifest.taskId}.events.jsonl`), "late event\n");
     expect((await project(false)).active).toEqual([fixture.summary]);
+  });
+
+  it("restores a retired summary after a missing ancestor becomes a symlink", async () => {
+    const fixture = await input.retirementFixture();
+    const plan = await fixture.plan();
+    await publishLegacyJobSummaryRetirement({
+      custody: input.custody,
+      registryRootDir: fixture.registry,
+      plan,
+      expectedPlanSha256: legacyJobSummaryRetirementPlanSha256(plan),
+      rebuildCurrentPlan: async () => await fixture.plan(),
+    });
+    const replacementParent = join(dirname(fixture.registry), "replacement-parent");
+    await mkdir(replacementParent);
+    await symlink(replacementParent, dirname(fixture.workspace), "dir");
+    let runtimeObserved = false;
+    const projection = await projectRetirementProjection({
+      custody: input.custody,
+      registryRootDir: fixture.registry,
+      projectId: "p0",
+      controllerJobId: "controller",
+      jobIdPrefixes: ["legacy", "retained"],
+      summaries: [fixture.summary],
+      observeRuntime: async () => {
+        runtimeObserved = true;
+        return { workerAlive: false };
+      },
+    });
+    expect(projection.active).toEqual([fixture.summary]);
+    expect(projection.retired).toEqual([]);
+    expect(runtimeObserved).toBe(false);
   });
 
   it.each(["worker", "artifact"] as const)(

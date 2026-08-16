@@ -22,6 +22,8 @@ import {
 const fixturePath = fileURLToPath(new URL(
   "./project-control-evidence-custody-crash-fixture.ts", import.meta.url,
 ));
+const fixtureDeadlineMs = 10_000;
+const fixtureMaxStderrBytes = 64 * 1024;
 
 describe("local project-control evidence custody durability", () => {
   it("classifies a leaf relative to an open no-follow parent capability", async () => {
@@ -166,6 +168,29 @@ describe("local project-control evidence custody durability", () => {
     });
     expect(ensured).toEqual([join(root, "one"), join(root, "one", "two")]);
   });
+
+  it("kills and reaps a fixture that exceeds its evidence deadline", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-deadline-"));
+    const root = join(outer, "root");
+    await mkdir(root);
+    let fixturePid: number | undefined;
+    await expect(runFixture({
+      root,
+      source: join(outer, "unused-source"),
+      operation: "bytes",
+      hang: true,
+      deadlineMs: 100,
+      onSpawn: (pid) => { fixturePid = pid; },
+    })).rejects.toThrow("custody_fixture_deadline_exceeded");
+    expect(fixturePid).toBeDefined();
+    let reapError: NodeJS.ErrnoException | undefined;
+    try {
+      process.kill(fixturePid!, 0);
+    } catch (error) {
+      reapError = error as NodeJS.ErrnoException;
+    }
+    expect(reapError?.code).toBe("ESRCH");
+  });
 });
 
 async function runFixture(input: {
@@ -174,6 +199,9 @@ async function runFixture(input: {
   readonly operation: "bytes" | "copy";
   readonly crashPoint?: string;
   readonly proofPath?: string;
+  readonly hang?: boolean;
+  readonly deadlineMs?: number;
+  readonly onSpawn?: (pid: number) => void;
 }): Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }> {
   return await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["--experimental-transform-types", fixturePath], {
@@ -188,16 +216,57 @@ async function runFixture(input: {
         ...(input.proofPath
           ? { CUSTODY_FIXTURE_PROOF_PATH: input.proofPath }
           : {}),
+        ...(input.hang ? { CUSTODY_FIXTURE_HANG: "1" } : {}),
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "ignore", "pipe"],
     });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-    child.once("error", reject);
-    child.once("exit", (code, signal) => {
-      if (code && signal === null) reject(new Error(stderr));
-      else resolve({ code, signal });
-    });
+    if (child.pid !== undefined) input.onSpawn?.(child.pid);
+    const stderr: Buffer[] = [];
+    let stderrBytes = 0;
+    let timedOut = false;
+    let deadline: NodeJS.Timeout | undefined;
+    let spawnError: Error | undefined;
+    const onStderr = (value: Buffer | string) => {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      const remaining = fixtureMaxStderrBytes - stderrBytes;
+      if (remaining <= 0) return;
+      const captured = chunk.subarray(0, remaining);
+      stderr.push(captured);
+      stderrBytes += captured.length;
+    };
+    const cleanup = () => {
+      if (deadline !== undefined) clearTimeout(deadline);
+      child.stderr.off("data", onStderr);
+      child.off("error", onError);
+      child.off("close", onClose);
+    };
+    const onError = (error: Error) => {
+      spawnError = error;
+      if (child.pid === undefined) {
+        cleanup();
+        reject(error);
+      }
+    };
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      cleanup();
+      if (timedOut) {
+        reject(new Error("custody_fixture_deadline_exceeded"));
+      } else if (spawnError !== undefined) {
+        reject(spawnError);
+      } else if (code && signal === null) {
+        reject(new Error(Buffer.concat(stderr, stderrBytes).toString("utf8")));
+      } else {
+        resolve({ code, signal });
+      }
+    };
+    child.stderr.on("data", onStderr);
+    child.once("error", onError);
+    child.once("close", onClose);
+    deadline = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, input.deadlineMs ?? fixtureDeadlineMs);
+    deadline.unref();
   });
 }
 

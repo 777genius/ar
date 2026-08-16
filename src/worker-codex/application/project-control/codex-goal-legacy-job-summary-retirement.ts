@@ -310,8 +310,8 @@ export async function projectRetirementProjection(input: {
       }
       let runtimeStillRetired = false;
       try {
+        await assertWorkspaceEnoent(input.custody, currentManifest.workspacePath);
         runtimeStillRetired =
-          await input.custody.pathKind(currentManifest.workspacePath) === "absent" &&
           !(await input.observeRuntime(currentManifest)).workerAlive;
         if (runtimeStillRetired) {
           await assertNeverLaunchedArtifactsAbsent(input.custody, currentManifest);

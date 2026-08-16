@@ -15,6 +15,10 @@ const sourcePath = operation === "copy"
   : undefined;
 const expected = sourcePath === undefined ? bytes : await readFile(sourcePath);
 const proofPath = process.env.CUSTODY_FIXTURE_PROOF_PATH;
+if (process.env.CUSTODY_FIXTURE_HANG === "1") {
+  setInterval(() => undefined, 1_000);
+  await new Promise<never>(() => undefined);
+}
 const custody = new LocalProjectControlEvidenceCustody(async (point, path) => {
   if (point === "after_publish_before_directory_fsync") {
     const temporaryNames = (await readdir(dirname(path))).filter((name) =>

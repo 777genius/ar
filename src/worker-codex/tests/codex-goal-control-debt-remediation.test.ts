@@ -842,7 +842,7 @@ async function retirementFixture(
   const root = await mkdtemp(join(tmpdir(), "summary-retirement-"));
   remediationRoots.add(root);
   const registry = join(root, "registry");
-  const workspace = join(root, "gone-workspace");
+  const workspace = join(root, "gone-workspace", "leaf");
   await mkdir(registry, { recursive: true });
   const manifest = {
     ...manifestFor("legacy", workspace, join(registry, "legacy")),
