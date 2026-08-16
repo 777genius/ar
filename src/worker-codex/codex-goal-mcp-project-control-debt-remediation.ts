@@ -71,6 +71,9 @@ export async function projectControlImportFrozenOutputView(
         scope: lockedController.scope,
         plan: locked,
         expectedPlanSha256,
+        rebuildCurrentPlan: async () => await loadFrozenOutputPlan(
+          args, lockedController, evidenceCustody,
+        ),
       }),
     };
   } finally {
@@ -91,13 +94,8 @@ async function loadFrozenOutputPlan(
   if (!Array.isArray(supersededArgs) || supersededArgs.length === 0) {
     throw new Error("supersededLegacySummaries_required");
   }
-  const superseded = await Promise.all(supersededArgs.map(async (candidate, index) => {
+  const superseded = supersededArgs.map((candidate, index) => {
     const jobId = requiredRawString(candidate.jobId, `supersededLegacySummaries.${index}.jobId`);
-    const manifest = await readCodexGoalJob({
-      registryRootDir: controller.registryRootDir,
-      jobId,
-    });
-    const state = await manifestRuntimeState(manifest);
     return {
       jobId,
       manifestPath: requiredRawString(
@@ -108,12 +106,8 @@ async function loadFrozenOutputPlan(
         candidate.manifestSha256,
         `supersededLegacySummaries.${index}.manifestSha256`,
       ),
-      workspaceDirty: state.workspaceDirty,
-      workerAlive: state.workerAlive,
-      observedResultExists: state.resultExists,
-      ...(state.resultPath ? { observedResultPath: state.resultPath } : {}),
     };
-  }));
+  });
   if (!Array.isArray(args.changedPaths)) throw new Error("changedPaths_required");
   if (!Number.isSafeInteger(args.frozenOutputSourceLength) ||
     (args.frozenOutputSourceLength ?? -1) < 0) {
@@ -149,6 +143,7 @@ async function loadFrozenOutputPlan(
       args.expectedRetainedOutputSha256,
       "expectedRetainedOutputSha256",
     ),
+    observeRuntime: manifestRuntimeState,
     superseded,
   });
 }
@@ -156,10 +151,11 @@ async function loadFrozenOutputPlan(
 async function manifestRuntimeState(manifest: Awaited<ReturnType<typeof readCodexGoalJob>>) {
   const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
   const status = await collectCodexGoalStatus(codexGoalStatusInputFromLaunch(launch));
+  const resultPath = status.resultPath;
   return {
     workspaceDirty: status.workspaceDirty === true,
     resultExists: status.resultExists === true,
-    resultPath: status.resultPath,
+    ...(resultPath === undefined ? {} : { resultPath }),
     workerAlive: resolveCodexGoalWorkerLiveness({
       status,
       progressStale: false,
@@ -231,6 +227,16 @@ export async function projectControlRetireLegacyJobSummaryView(
       registryRootDir: controller.registryRootDir,
       plan: lockedPlan,
       expectedPlanSha256,
+      rebuildCurrentPlan: async () => await loadAndProvePlan({
+        args,
+        registryRootDir: lockedController.registryRootDir,
+        projectId: lockedController.scope.projectId,
+        controllerJobId: lockedController.controller.jobId,
+        jobIdPrefixes: lockedController.scope.jobIdPrefixes ?? [],
+        custody: evidenceCustody,
+        jobId,
+        retainedRegistrationJobId,
+      }),
     });
     return {
       ok: true,
@@ -252,38 +258,12 @@ async function loadAndProvePlan(input: {
   readonly jobId: string;
   readonly retainedRegistrationJobId: string;
 }) {
-  const [manifest, retainedManifest] = await Promise.all([
-    readCodexGoalJob({
-      registryRootDir: input.registryRootDir,
-      jobId: input.jobId,
-    }),
-    readCodexGoalJob({
-      registryRootDir: input.registryRootDir,
-      jobId: input.retainedRegistrationJobId,
-    }),
-  ]);
-  let workerAlive = false;
-  try {
-    const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
-    const status = await collectCodexGoalStatus(
-      codexGoalStatusInputFromLaunch(launch),
-    );
-    workerAlive = resolveCodexGoalWorkerLiveness({
-      status,
-      progressStale: false,
-    }).alive;
-  } catch (error) {
-    // Missing workspace data is expected, but liveness must still be
-    // independently disproven by the absence of any configured tmux session.
-    if (manifest.tmuxSession) throw error;
-  }
   return await buildLegacyJobSummaryRetirementPlan({
     custody: input.custody,
     registryRootDir: input.registryRootDir,
     projectId: input.projectId,
     jobIdPrefixes: input.jobIdPrefixes,
     controllerJobId: input.controllerJobId,
-    manifest,
     manifestPath: codexGoalJobManifestPath({
       registryRootDir: input.registryRootDir,
       jobId: input.jobId,
@@ -300,7 +280,6 @@ async function loadAndProvePlan(input: {
       input.args.expectedWorkspacePath,
       "expectedWorkspacePath",
     ),
-    retainedManifest,
     retainedManifestPath: codexGoalJobManifestPath({
       registryRootDir: input.registryRootDir,
       jobId: input.retainedRegistrationJobId,
@@ -309,7 +288,22 @@ async function loadAndProvePlan(input: {
       input.args.expectedRetainedRegistrationManifestSha256,
       "expectedRetainedRegistrationManifestSha256",
     ),
-    workerAlive,
+    observeRuntime: async (manifest) => {
+      let workerAlive = false;
+      try {
+        const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
+        const status = await collectCodexGoalStatus(
+          codexGoalStatusInputFromLaunch(launch),
+        );
+        workerAlive = resolveCodexGoalWorkerLiveness({
+          status,
+          progressStale: false,
+        }).alive;
+      } catch (error) {
+        if (manifest.tmuxSession) throw error;
+      }
+      return { workerAlive };
+    },
   });
 }
 

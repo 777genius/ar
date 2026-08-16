@@ -85,6 +85,14 @@ export type CodexProjectAdmissionDeps = {
     readonly registryRootDir: string;
     readonly jobId: string;
   }) => Promise<CodexGoalJobManifest>;
+  readonly observeManifestRuntime?: (
+    manifest: CodexGoalJobManifest,
+  ) => Promise<{
+    readonly workspaceDirty: boolean;
+    readonly workerAlive: boolean;
+    readonly resultExists: boolean;
+    readonly resultPath?: string;
+  }>;
   readonly normalizeActiveProposedAdmission?: (
     scope: ProjectAccessScope,
     snapshot: ProjectAdmissionSnapshot,
@@ -260,6 +268,10 @@ export async function buildCodexProjectAdmissionSnapshot(
           : {}),
         jobIdPrefixes: prefixes,
         summaries: matchingProjectSummariesBeforeRetirement,
+        observeRuntime: async (manifest) => {
+          const state = await projectionRuntimeObservation(input, manifest);
+          return { workerAlive: state.workerAlive };
+        },
       })
     : { active: matchingProjectSummariesBeforeRetirement, retired: [] };
   const frozenProjection = input.deps.evidenceCustody
@@ -274,6 +286,8 @@ export async function buildCodexProjectAdmissionSnapshot(
           ? { controllerJobId: input.controllerJobId }
           : {}),
         summaries: retirementProjection.active,
+        observeRuntime: async (manifest) =>
+          await projectionRuntimeObservation(input, manifest),
       })
     : { active: retirementProjection.active, receipts: [] };
   const matchingProjectSummaries = frozenProjection.active;
@@ -395,6 +409,22 @@ export async function buildCodexProjectAdmissionSnapshot(
           snapshot,
           matchingProjectSummaries,
         );
+}
+
+async function projectionRuntimeObservation(
+  input: CodexProjectAdmissionSnapshotInput,
+  manifest: CodexGoalJobManifest,
+): Promise<{
+  readonly workspaceDirty: boolean;
+  readonly workerAlive: boolean;
+  readonly resultExists: boolean;
+  readonly resultPath?: string;
+}> {
+  const observeRuntime = input.deps.observeManifestRuntime;
+  if (!observeRuntime) {
+    throw new Error("project_control_projection_runtime_unproven");
+  }
+  return await observeRuntime(manifest);
 }
 
 export async function normalizeActiveSocialProposedAdmission(

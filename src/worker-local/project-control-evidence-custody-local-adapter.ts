@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, link, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
   EvidenceDirectoryEntry,
@@ -157,7 +158,8 @@ export class LocalProjectControlEvidenceCustody implements
   }) {
     if (createHash("sha256").update(input.bytes).digest("hex") !==
       input.expectedSha256) throw new Error("evidence_custody_source_drift");
-    const boundary = await openBoundary(input.root, input.directories);
+    const boundary = await openBoundary(input.root, input.directories,
+      this.crashHook);
     try {
       return await publishThroughHandle({
         parentFd: boundary.handle.fd,
@@ -165,7 +167,7 @@ export class LocalProjectControlEvidenceCustody implements
         fileName: input.fileName,
         expectedSha256: input.expectedSha256,
         expectedLength: input.bytes.byteLength,
-        write: async (handle) => await handle.writeFile(input.bytes),
+        write: async (handle) => await writeAll(handle, input.bytes),
         ...(this.crashHook ? { crashHook: this.crashHook } : {}),
       });
     } finally {
@@ -183,7 +185,8 @@ export class LocalProjectControlEvidenceCustody implements
     const source = await openAbsoluteFileNoSymlinks(sourcePath);
     let boundary: Awaited<ReturnType<typeof openBoundary>> | undefined;
     try {
-      boundary = await openBoundary(input.root, input.directories);
+      boundary = await openBoundary(input.root, input.directories,
+        this.crashHook);
       const before = await source.stat();
       if (!before.isFile() || before.size !== input.expectedLength ||
         before.size > input.maxBytes) throw new Error("evidence_custody_source_drift");
@@ -205,15 +208,17 @@ export class LocalProjectControlEvidenceCustody implements
   }
 }
 
-async function openBoundary(root: string, directories: readonly string[]) {
+async function openBoundary(root: string, directories: readonly string[],
+  crashHook?: PublicationCrashHook) {
   const canonicalRoot = resolve(root);
   let handle = await openAbsoluteDirectoryNoSymlinks(canonicalRoot);
-  for (const segment of directories) {
+  for (const [index, segment] of directories.entries()) {
     safeSegment(segment);
     const child = `/proc/self/fd/${handle.fd}/${segment}`;
+    let created = false;
     try {
       await mkdir(child, { mode: 0o700 });
-      await handle.sync();
+      created = true;
     } catch (error) {
       if (code(error) !== "EEXIST") {
         await handle.close();
@@ -228,6 +233,17 @@ async function openBoundary(root: string, directories: readonly string[]) {
       await handle.close();
       throw new Error("evidence_custody_ancestor_unsafe", { cause: error });
     }
+    if (created) {
+      await crashHook?.("after_ancestor_creation_before_parent_fsync",
+        join(canonicalRoot, ...directories.slice(0, index + 1)));
+    }
+    // Sync even after EEXIST. A predecessor may have created this entry and
+    // terminated before making the parent directory durable.
+    await crashHook?.("before_ancestor_parent_fsync",
+      join(canonicalRoot, ...directories.slice(0, index + 1)));
+    await handle.sync();
+    await crashHook?.("after_ancestor_parent_fsync",
+      join(canonicalRoot, ...directories.slice(0, index + 1)));
     await handle.close();
     handle = next;
   }
@@ -318,7 +334,7 @@ async function copyThroughHandle(input: {
         if (bytesRead === 0) break;
         const exact = chunk.subarray(0, bytesRead);
         hash.update(exact);
-        await target.write(exact);
+        await writeAll(target, exact);
         length += bytesRead;
         if (length > input.maxBytes) {
           throw new Error("evidence_custody_source_drift");
@@ -334,10 +350,13 @@ async function copyThroughHandle(input: {
   });
 }
 
-type PublicationCrashHook = (
+export type PublicationCrashHook = (
   point:
     | "after_temp_write"
     | "after_temp_fsync"
+    | "after_ancestor_creation_before_parent_fsync"
+    | "before_ancestor_parent_fsync"
+    | "after_ancestor_parent_fsync"
     | "after_publish_before_directory_fsync"
     | "after_directory_fsync",
   path: string,
@@ -380,7 +399,7 @@ async function publishThroughHandle(input: {
   const temporaryName = publicationTemporaryName(input.fileName);
   const temporaryPath = `${parent}/${temporaryName}`;
   const target = await open(temporaryPath,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
     0o600);
   let targetClosed = false;
   let temporaryExists = true;
@@ -395,8 +414,11 @@ async function publishThroughHandle(input: {
       throw error;
     }
     await target.sync();
-    await target.close();
-    targetClosed = true;
+    const verified = await readViaOpenHandle(target, input.expectedLength);
+    if (verified.length !== input.expectedLength ||
+      verified.sha256 !== input.expectedSha256) {
+      throw new Error("evidence_custody_publication_verification_failed");
+    }
     try {
       await input.crashHook?.("after_temp_fsync", input.lexicalPath);
     } catch (error) {
@@ -406,6 +428,15 @@ async function publishThroughHandle(input: {
     try {
       await link(temporaryPath, path);
       published = true;
+      const linked = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const linkedStat = await linked.stat();
+        if (linkedStat.dev !== verified.dev || linkedStat.ino !== verified.ino) {
+          throw new Error("evidence_custody_published_inode_mismatch");
+        }
+      } finally {
+        await linked.close();
+      }
     } catch (error) {
       if (code(error) !== "EEXIST" && code(error) !== "ENOENT") throw error;
       const existing = await readViaHandle(path, input.expectedLength);
@@ -430,6 +461,8 @@ async function publishThroughHandle(input: {
       throw error;
     }
     await syncDirectory(parent);
+    await target.close();
+    targetClosed = true;
     try {
       await input.crashHook?.("after_directory_fsync", input.lexicalPath);
     } catch (error) {
@@ -506,16 +539,55 @@ async function syncDirectory(path: string): Promise<void> {
 async function readViaHandle(path: string, maxBytes: number) {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const metadata = await handle.stat();
-    if (!metadata.isFile() || metadata.size > maxBytes) {
-      throw new Error("evidence_custody_file_invalid");
-    }
-    const bytes = await handle.readFile();
-    return {
-      length: bytes.length,
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-    };
+    return await readViaOpenHandle(handle, maxBytes);
   } finally { await handle.close(); }
+}
+
+async function readViaOpenHandle(handle: FileHandle, maxBytes: number) {
+  const before = await handle.stat();
+  if (!before.isFile() || before.size > maxBytes) {
+    throw new Error("evidence_custody_file_invalid");
+  }
+  const hash = createHash("sha256");
+  let length = 0;
+  for (;;) {
+    const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024,
+      Math.max(1, maxBytes - length + 1)));
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, length);
+    if (bytesRead === 0) break;
+    hash.update(chunk.subarray(0, bytesRead));
+    length += bytesRead;
+    if (length > maxBytes) throw new Error("evidence_custody_file_invalid");
+  }
+  const after = await handle.stat();
+  if (before.dev !== after.dev || before.ino !== after.ino ||
+    before.size !== after.size || after.size !== length) {
+    throw new Error("evidence_custody_file_changed_during_read");
+  }
+  return {
+    dev: after.dev,
+    ino: after.ino,
+    length,
+    sha256: hash.digest("hex"),
+  };
+}
+
+/** Write the complete buffer even when the filesystem reports short writes. */
+export async function writeAll(
+  handle: Pick<FileHandle, "write">,
+  bytes: Uint8Array,
+): Promise<void> {
+  const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const { bytesWritten } = await handle.write(
+      buffer, offset, buffer.length - offset, null,
+    );
+    if (bytesWritten <= 0) {
+      throw new Error("evidence_custody_write_no_progress");
+    }
+    offset += bytesWritten;
+  }
 }
 
 function safeSegment(value: string): void {

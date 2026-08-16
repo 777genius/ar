@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
@@ -13,16 +12,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import type { ProjectAccessScope } from
-  "@vioxen/subscription-runtime/worker-core";
-import type { ProjectControlEvidenceCustodyPort } from
+import type { ProjectAccessScope, ProjectControlEvidenceCustodyPort } from
   "@vioxen/subscription-runtime/worker-core";
 import { LocalConsumedOutputLedgerWriter } from
   "@vioxen/subscription-runtime/worker-local";
 import { LocalProjectControlEvidenceCustody } from
   "../../worker-local/project-control-evidence-custody-local-adapter";
-import type { CodexGoalJobManifest, CodexGoalJobSummary } from
-  "../codex-goal-jobs";
+import type { CodexGoalJobManifest } from "../codex-goal-jobs";
 import {
   buildLegacyJobSummaryRetirementPlan,
   legacyJobSummaryRetirementPlanSha256,
@@ -37,6 +33,10 @@ import {
 } from "../application/project-control/codex-goal-frozen-output-import";
 import { certifyFrozenOutputPhaseA, observingCustody } from
   "./codex-goal-frozen-output-phase-a-certification";
+import { certifyControlDebtPhaseB } from
+  "./codex-goal-control-debt-phase-b-certification";
+import { manifestFor, sha, summaryFor, writeManifest } from
+  "./codex-goal-control-debt-remediation-fixtures";
 import { readCodexGoalConsumedOutputLedgers } from
   "../application/project-control/codex-goal-consumed-output-ledger-io";
 import { assertCanonicalLedgerRootsAllowed } from
@@ -275,6 +275,7 @@ describe("legacy job summary retirement", () => {
       registryRootDir: fixture.registry,
       plan,
       expectedPlanSha256: planSha256,
+      rebuildCurrentPlan: async () => plan,
       now: new Date("2026-08-15T00:00:00.000Z"),
     });
     const replay = await publishLegacyJobSummaryRetirement({
@@ -282,6 +283,7 @@ describe("legacy job summary retirement", () => {
       registryRootDir: fixture.registry,
       plan,
       expectedPlanSha256: planSha256,
+      rebuildCurrentPlan: async () => plan,
     });
     expect(first.idempotentReplay).toBe(false);
     expect(replay.idempotentReplay).toBe(true);
@@ -294,6 +296,7 @@ describe("legacy job summary retirement", () => {
       controllerJobId: "controller",
       jobIdPrefixes: ["legacy", "retained"],
       summaries: [fixture.summary],
+      observeRuntime: async () => ({ workerAlive: false }),
     });
     expect(projected.active).toEqual([]);
     expect(projected.retired).toHaveLength(1);
@@ -304,12 +307,14 @@ describe("legacy job summary retirement", () => {
       controllerJobId: "successor-controller",
       jobIdPrefixes: ["legacy", "retained"],
       summaries: [fixture.summary],
+      observeRuntime: async () => ({ workerAlive: false }),
     });
     expect(staleController.active).toEqual([fixture.summary]);
 
     const admissionDeps = {
       evidenceCustody,
       listJobs: async () => [fixture.summary],
+      observeManifestRuntime: async () => ({ workspaceDirty: true, workerAlive: false, resultExists: false }),
       buildOverviewItems: async (inputs: readonly { jobId: string }[]) =>
         inputs.map(({ jobId }) => ({
           ok: true,
@@ -317,6 +322,7 @@ describe("legacy job summary retirement", () => {
           workspacePath: fixture.workspace,
           workspaceDirty: true,
           workerAlive: false,
+          resultExists: false,
           activeWriterRisk: "dirty_workspace_without_worker",
           activeWriterRiskReasons: ["dirty_workspace_without_worker"],
         })),
@@ -377,6 +383,7 @@ describe("legacy job summary retirement", () => {
       projectId: "p0",
       jobIdPrefixes: ["legacy", "retained"],
       summaries: [fixture.summary],
+      observeRuntime: async () => ({ workerAlive: false }),
     });
     expect(changed.active).toHaveLength(1);
   });
@@ -438,6 +445,7 @@ describe("legacy job summary retirement", () => {
     const foreign = await retirementFixture("foreign");
     await expect(foreign.plan()).rejects.toThrow("project_mismatch");
   });
+
 });
 
 describe("frozen output import and summary supersession", () => {
@@ -453,6 +461,7 @@ describe("frozen output import and summary supersession", () => {
       scope: fixture.scope,
       plan,
       expectedPlanSha256: planSha256,
+      rebuildCurrentPlan: async () => plan,
       now: new Date("2026-08-15T00:00:00.000Z"),
     });
     const replay = await publishFrozenOutputImport({
@@ -460,6 +469,7 @@ describe("frozen output import and summary supersession", () => {
       scope: fixture.scope,
       plan,
       expectedPlanSha256: planSha256,
+      rebuildCurrentPlan: async () => plan,
     });
     expect(first.idempotentReplay).toBe(false);
     expect(replay.idempotentReplay).toBe(true);
@@ -478,6 +488,9 @@ describe("frozen output import and summary supersession", () => {
       projectId: "p0",
       controllerJobId: "controller",
       summaries: [fixture.summary],
+      observeRuntime: async () => ({
+        workspaceDirty: true, workerAlive: false, resultExists: false,
+      }),
     });
     expect(projection.active).toEqual([]);
     expect(projection.receipts).toHaveLength(1);
@@ -489,6 +502,9 @@ describe("frozen output import and summary supersession", () => {
       projectId: "p0",
       controllerJobId: "foreign-controller",
       summaries: [fixture.summary],
+      observeRuntime: async () => ({
+        workspaceDirty: true, workerAlive: false, resultExists: false,
+      }),
     });
     expect(foreignController.active).toEqual([fixture.summary]);
     expect(foreignController.receipts).toEqual([]);
@@ -503,6 +519,9 @@ describe("frozen output import and summary supersession", () => {
       registryRootDir: fixture.registry,
       evidenceRoots: [fixture.evidenceRoot],
       summaries: [fixture.summary],
+      observeRuntime: async () => ({
+        workspaceDirty: true, workerAlive: false, resultExists: false,
+      }),
     });
     expect(changed.active).toHaveLength(1);
   });
@@ -582,6 +601,7 @@ describe("frozen output import and summary supersession", () => {
       scope: drift.scope,
       plan,
       expectedPlanSha256: frozenOutputImportPlanSha256(plan),
+      rebuildCurrentPlan: async () => plan,
     })).rejects.toThrow("source_drift");
 
     const clean = await frozenFixture();
@@ -655,6 +675,7 @@ describe("frozen output import and summary supersession", () => {
       scope: retainedDrift.scope,
       plan: retainedPlan,
       expectedPlanSha256: frozenOutputImportPlanSha256(retainedPlan),
+      rebuildCurrentPlan: async () => retainedPlan,
     })).rejects.toThrow("source_drift");
 
     const supersededOutputRace = await frozenFixture();
@@ -668,6 +689,7 @@ describe("frozen output import and summary supersession", () => {
       scope: supersededOutputRace.scope,
       plan: supersededPlan,
       expectedPlanSha256: frozenOutputImportPlanSha256(supersededPlan),
+      rebuildCurrentPlan: async () => supersededPlan,
     })).rejects.toThrow("output_bearing_refused");
 
     const supersededManifestRace = await frozenFixture();
@@ -686,6 +708,7 @@ describe("frozen output import and summary supersession", () => {
       expectedPlanSha256: frozenOutputImportPlanSha256(
         supersededManifestPlan,
       ),
+      rebuildCurrentPlan: async () => supersededManifestPlan,
     })).rejects.toThrow("superseded_manifest_drift");
 
     const externalRetained = await frozenFixture();
@@ -754,6 +777,7 @@ describe("frozen output import and summary supersession", () => {
       scope: fixture.scope,
       plan,
       expectedPlanSha256: frozenOutputImportPlanSha256(plan),
+      rebuildCurrentPlan: async () => plan,
     });
     await writeFile(join(
       fixture.legacyManifest.jobRootDir,
@@ -767,6 +791,9 @@ describe("frozen output import and summary supersession", () => {
       projectId: "p0",
       controllerJobId: "controller",
       summaries: [fixture.summary],
+      observeRuntime: async () => ({
+        workspaceDirty: true, workerAlive: false, resultExists: false,
+      }),
     });
     expect(projection.active).toEqual([fixture.summary]);
   });
@@ -784,6 +811,7 @@ describe("frozen output import and summary supersession", () => {
       scope: linked.scope,
       plan,
       expectedPlanSha256: frozenOutputImportPlanSha256(plan),
+      rebuildCurrentPlan: async () => plan,
     })).rejects.toThrow("ancestor_unsafe");
     expect(await readdir(outside)).toEqual([]);
 
@@ -799,10 +827,13 @@ describe("frozen output import and summary supersession", () => {
       scope: swapped.scope,
       plan: swappedPlan,
       expectedPlanSha256: frozenOutputImportPlanSha256(swappedPlan),
+      rebuildCurrentPlan: async () => swappedPlan,
     })).rejects.toThrow("root_noncanonical");
     expect(await readdir(outsideRoot)).toEqual([]);
   });
 });
+
+certifyControlDebtPhaseB({ custody: evidenceCustody, retirementFixture, frozenFixture });
 
 async function retirementFixture(
   targetProjectId = "p0",
@@ -834,15 +865,15 @@ async function retirementFixture(
       projectId: "p0",
       controllerJobId: "controller",
       jobIdPrefixes: ["legacy", "retained"],
-      manifest,
       manifestPath,
       expectedManifestPath: override.expectedManifestPath ?? manifestPath,
       expectedManifestSha256: override.expectedManifestSha256 ?? sha(await readFile(manifestPath)),
       expectedWorkspacePath: workspace,
-      retainedManifest: retained,
       retainedManifestPath: retainedPath,
       expectedRetainedManifestSha256: sha(await readFile(retainedPath)),
-      workerAlive: override.workerAlive ?? false,
+      observeRuntime: async () => ({
+        workerAlive: override.workerAlive ?? false,
+      }),
     }),
   };
 }
@@ -917,6 +948,12 @@ async function frozenFixture() {
       scope: ProjectAccessScope;
       observedResultExists: boolean;
       custody: ProjectControlEvidenceCustodyPort;
+      observeRuntime: (manifest: CodexGoalJobManifest) => Promise<{
+        readonly workspaceDirty: boolean;
+        readonly workerAlive: boolean;
+        readonly resultExists: boolean;
+        readonly resultPath?: string;
+      }>;
     }> = {}) => {
       const candidate = {
         ...legacyManifest,
@@ -947,54 +984,17 @@ async function frozenFixture() {
         retainedManifestPath,
         expectedRetainedManifestSha256: sha(await readFile(retainedManifestPath)),
         expectedRetainedOutputSha256: sha(await readFile(retainedOutputPath)),
+        observeRuntime: override.observeRuntime ?? (async () => ({
+            workspaceDirty: override.workspaceDirty ?? true,
+            workerAlive: override.workerAlive ?? false,
+            resultExists: override.observedResultExists ?? false,
+          })),
         superseded: [{
           jobId: candidate.jobId,
           manifestPath: legacyManifestPath,
           expectedManifestSha256: sha(await readFile(legacyManifestPath)),
-          workspaceDirty: override.workspaceDirty ?? true,
-          workerAlive: override.workerAlive ?? false,
-          observedResultExists: override.observedResultExists ?? false,
         }],
       });
     },
   };
-}
-function manifestFor(jobId: string, workspacePath: string, jobRootDir: string): CodexGoalJobManifest {
-  return {
-    schemaVersion: 1,
-    jobId,
-    createdAt: "2026-08-15T00:00:00.000Z",
-    updatedAt: "2026-08-15T00:00:00.000Z",
-    jobRootDir,
-    workspacePath,
-    promptPath: join(jobRootDir, "prompt.md"),
-    taskId: jobId,
-    accounts: ["account-a"],
-    projectAccessScope: { projectId: "p0" },
-  };
-}
-
-async function writeManifest(registry: string, manifest: CodexGoalJobManifest) {
-  const root = join(registry, manifest.jobId);
-  await mkdir(root, { recursive: true });
-  const path = join(root, "job.json");
-  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
-  return path;
-}
-
-function summaryFor(manifest: CodexGoalJobManifest, manifestPath: string): CodexGoalJobSummary {
-  return {
-    jobId: manifest.jobId,
-    tags: [],
-    taskId: manifest.taskId,
-    workspacePath: manifest.workspacePath,
-    promptPath: manifest.promptPath,
-    accountNames: manifest.accounts,
-    updatedAt: manifest.updatedAt,
-    manifestPath,
-  };
-}
-
-function sha(bytes: Buffer): string {
-  return createHash("sha256").update(bytes).digest("hex");
 }

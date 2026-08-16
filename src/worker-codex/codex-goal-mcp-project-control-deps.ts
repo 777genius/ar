@@ -4,10 +4,15 @@ import {
   type ProjectControlBroker,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  codexGoalJobToArgs,
   listCodexGoalJobs,
   readCodexGoalJob,
   type CodexGoalJobManifest,
 } from "./codex-goal-jobs";
+import { collectCodexGoalStatus, resolveCodexGoalWorkerLiveness } from
+  "./codex-goal-ops";
+import { goalLaunchInput } from "./codex-goal-mcp-launch-input";
+import { codexGoalStatusInputFromLaunch } from "./codex-goal-mcp-status-input";
 import {
   registryRootFromArgs,
   type ProjectControlMcpArgs,
@@ -63,6 +68,22 @@ export const codexProjectAdmissionDeps: CodexProjectAdmissionDeps = {
   listJobs: listCodexGoalJobs,
   readJob: readCodexGoalJob,
   buildOverviewItems: (inputs) => buildCodexGoalOverviewItems(inputs),
+  observeManifestRuntime: async (manifest) => {
+    const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
+    const status = await collectCodexGoalStatus(
+      codexGoalStatusInputFromLaunch(launch),
+    );
+    const resultPath = status.resultPath;
+    return {
+      workspaceDirty: status.workspaceDirty === true,
+      workerAlive: resolveCodexGoalWorkerLiveness({
+        status,
+        progressStale: false,
+      }).alive,
+      resultExists: status.resultExists === true,
+      ...(resultPath === undefined ? {} : { resultPath }),
+    };
+  },
   evidenceCustody: projectControlEvidenceCustody,
 };
 

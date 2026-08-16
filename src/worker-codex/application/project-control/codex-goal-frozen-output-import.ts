@@ -8,7 +8,6 @@ import type {
   "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifest, CodexGoalJobSummary } from
   "../../codex-goal-jobs";
-import { parseCodexGoalJobManifest } from "../../codex-goal-jobs";
 import {
   assertFrozenOutputReadAllowed,
   buildFrozenOutputPathAuthorization,
@@ -25,6 +24,15 @@ import {
   plainObject,
   safeChangedPath,
 } from "./codex-goal-frozen-output-validation";
+import {
+  assertRegistryManifestIdentity,
+  effectiveResultPath,
+  parseJobManifest,
+  type FrozenOutputRuntimeObservation,
+  type FrozenOutputRuntimeObserver,
+} from "./codex-goal-frozen-output-runtime";
+export type { FrozenOutputRuntimeObservation, FrozenOutputRuntimeObserver } from
+  "./codex-goal-frozen-output-runtime";
 
 export type FrozenOutputSupersededSummary = {
   readonly jobId: string;
@@ -121,14 +129,11 @@ export async function buildFrozenOutputImportPlan(input: {
   readonly retainedManifestPath: string;
   readonly expectedRetainedManifestSha256: string;
   readonly expectedRetainedOutputSha256: string;
+  readonly observeRuntime: FrozenOutputRuntimeObserver;
   readonly superseded: readonly {
     readonly jobId: string;
     readonly manifestPath: string;
     readonly expectedManifestSha256: string;
-    readonly workspaceDirty: boolean;
-    readonly workerAlive: boolean;
-    readonly observedResultExists: boolean;
-    readonly observedResultPath?: string;
   }[];
 }): Promise<FrozenOutputImportPlan> {
   const lexicalAuthorization = buildFrozenOutputPathAuthorization({
@@ -144,10 +149,6 @@ export async function buildFrozenOutputImportPlan(input: {
   for (const candidate of input.superseded) {
     assertExpectedRegistryManifestPath(lexicalAuthorization, candidate.jobId,
       candidate.manifestPath);
-    if (candidate.observedResultPath !== undefined) {
-      assertFrozenOutputReadAllowed(lexicalAuthorization,
-        candidate.observedResultPath, "project");
-    }
   }
   assertFrozenOutputReadAllowed(lexicalAuthorization,
     input.destinationEvidenceRoot, "evidence",
@@ -252,10 +253,6 @@ export async function buildFrozenOutputImportPlan(input: {
     throw new Error("frozen_output_legacy_summaries_invalid");
   }
   for (const candidate of input.superseded) {
-    if (candidate.workerAlive) throw new Error("frozen_output_legacy_worker_live");
-    if (!candidate.workspaceDirty) {
-      throw new Error("frozen_output_legacy_dirty_workspace_required");
-    }
     const identity = await authorizedImmutableFileIdentity(input.custody,
       lexicalAuthorization, authorization, candidate.manifestPath, "registry",
       1024 * 1024);
@@ -275,15 +272,20 @@ export async function buildFrozenOutputImportPlan(input: {
     if (!matchesPrefix(candidateManifest.jobId, input.jobIdPrefixes)) {
       throw new Error("frozen_output_legacy_job_prefix_mismatch");
     }
+    const runtime = await input.observeRuntime(candidateManifest);
+    if (runtime.workerAlive) throw new Error("frozen_output_legacy_worker_live");
+    if (!runtime.workspaceDirty) {
+      throw new Error("frozen_output_legacy_dirty_workspace_required");
+    }
     const effectiveOutputPath = effectiveResultPath(candidateManifest);
     assertFrozenOutputReadAllowed(lexicalAuthorization, effectiveOutputPath,
       "project");
-    if (candidate.observedResultPath !== undefined &&
-      resolve(candidate.observedResultPath) !== effectiveOutputPath) {
+    if (runtime.resultPath !== undefined &&
+      resolve(runtime.resultPath) !== effectiveOutputPath) {
       throw new Error("frozen_output_observed_result_path_mismatch");
     }
     await assertRegistrationOutputAbsent(input.custody, candidateManifest,
-      candidate.observedResultExists, lexicalAuthorization, authorization);
+      runtime.resultExists, lexicalAuthorization, authorization);
     assertFrozenOutputReadAllowed(lexicalAuthorization,
       candidateManifest.workspacePath, "project");
     const workspacePath = await input.custody.canonicalDirectory(
@@ -299,7 +301,7 @@ export async function buildFrozenOutputImportPlan(input: {
       manifestSha256: identity.sha256,
       workspacePath,
       effectiveOutputPath,
-      observedResultExists: candidate.observedResultExists,
+      observedResultExists: runtime.resultExists,
     });
   }
   if (supersededSummaries.length === 0) {
@@ -341,6 +343,7 @@ export async function publishFrozenOutputImport(input: {
   readonly scope: ProjectAccessScope;
   readonly plan: FrozenOutputImportPlan;
   readonly expectedPlanSha256: string;
+  readonly rebuildCurrentPlan: () => Promise<FrozenOutputImportPlan>;
   readonly now?: Date;
 }): Promise<{ readonly receipt: FrozenOutputImportReceipt; readonly idempotentReplay: boolean }> {
   const planSha256 = frozenOutputImportPlanSha256(input.plan);
@@ -546,6 +549,10 @@ export async function publishFrozenOutputImport(input: {
     bytes: body,
     expectedSha256: sha256(body),
   });
+  const currentPlan = await input.rebuildCurrentPlan();
+  if (frozenOutputImportPlanSha256(currentPlan) !== planSha256) {
+    throw new Error("frozen_output_import_plan_drift");
+  }
   // The receipt is the commit marker and must be published last. Projection
   // cannot observe a committed import without its durable ledger record.
   const published = await input.custody.publishImmutableBytes({
@@ -567,6 +574,7 @@ export async function frozenOutputSupersessionProjection(input: {
   readonly projectId?: string;
   readonly controllerJobId?: string;
   readonly summaries: readonly CodexGoalJobSummary[];
+  readonly observeRuntime: FrozenOutputRuntimeObserver;
 }): Promise<{
   readonly active: readonly CodexGoalJobSummary[];
   readonly receipts: readonly FrozenOutputImportReceipt[];
@@ -634,8 +642,28 @@ export async function frozenOutputSupersessionProjection(input: {
       expected.workspacePath === resolve(summary.workspacePath) &&
       current.sha256 === expected.manifestSha256
     );
-    if (!matched || await registrationHasOutput(input.custody,
-      parseJobManifest(current.bytes), lexicalAuthorization, authorization)) {
+    const manifest = parseJobManifest(current.bytes);
+    let runtimeAllowsSupersession = false;
+    if (matched) {
+      try {
+        const runtime = await input.observeRuntime(manifest);
+        const canonicalWorkspace = await input.custody.canonicalDirectory(
+          manifest.workspacePath,
+        );
+        assertFrozenOutputReadAllowed(authorization, canonicalWorkspace,
+          "project");
+        runtimeAllowsSupersession = runtime.workspaceDirty &&
+          !runtime.workerAlive && !runtime.resultExists &&
+          (runtime.resultPath === undefined ||
+            resolve(runtime.resultPath) === effectiveResultPath(manifest)) &&
+          canonicalWorkspace === resolve(manifest.workspacePath) &&
+          !await registrationHasOutput(input.custody, manifest,
+            lexicalAuthorization, authorization);
+      } catch {
+        runtimeAllowsSupersession = false;
+      }
+    }
+    if (!runtimeAllowsSupersession) {
       active.push(summary);
     }
   }
@@ -880,13 +908,6 @@ function assertPatchDescriptor(evidence: ImmutablePatchEvidence, expected: {
   }
 }
 
-function effectiveResultPath(manifest: CodexGoalJobManifest): string {
-  return resolve(manifest.outputPath ?? join(
-    manifest.jobRootDir,
-    `${manifest.taskId}.latest-result.json`,
-  ));
-}
-
 async function assertRegistrationOutputAbsent(
   custody: ProjectControlEvidenceCustodyPort,
   manifest: CodexGoalJobManifest,
@@ -944,28 +965,6 @@ async function authorizedPathKind(
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) =>
     value === right[index]);
-}
-
-function parseJobManifest(bytes: Uint8Array): CodexGoalJobManifest {
-  try {
-    return parseCodexGoalJobManifest(JSON.parse(decode(bytes)));
-  } catch (error) {
-    throw new Error("frozen_output_job_manifest_invalid", { cause: error });
-  }
-}
-
-function assertRegistryManifestIdentity(input: {
-  readonly registryRootDir: string;
-  readonly manifestPath: string;
-  readonly manifest: CodexGoalJobManifest;
-  readonly expectedJobId: string;
-}): void {
-  const expectedJobRoot = join(resolve(input.registryRootDir), input.expectedJobId);
-  if (input.manifest.jobId !== input.expectedJobId ||
-    resolve(input.manifestPath) !== join(expectedJobRoot, "job.json") ||
-    resolve(input.manifest.jobRootDir) !== expectedJobRoot) {
-    throw new Error("frozen_output_registry_identity_mismatch");
-  }
 }
 
 function assertExpectedRegistryManifestPath(

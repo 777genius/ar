@@ -4,6 +4,11 @@ import type { ProjectControlEvidenceCustodyPort } from
   "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifest, CodexGoalJobSummary } from
   "../../codex-goal-jobs";
+import { parseCodexGoalJobManifest } from "../../codex-goal-jobs";
+
+export type LegacyJobRuntimeObserver = (
+  manifest: CodexGoalJobManifest,
+) => Promise<{ readonly workerAlive: boolean }>;
 
 export const LEGACY_JOB_SUMMARY_RETIREMENT_REASON =
   "workspace_missing_registration_never_launched" as const;
@@ -71,27 +76,29 @@ export async function buildLegacyJobSummaryRetirementPlan(input: {
   readonly projectId: string;
   readonly controllerJobId: string;
   readonly jobIdPrefixes: readonly string[];
-  readonly manifest: CodexGoalJobManifest;
   readonly manifestPath: string;
   readonly expectedManifestPath: string;
   readonly expectedManifestSha256: string;
   readonly expectedWorkspacePath: string;
-  readonly retainedManifest: CodexGoalJobManifest;
   readonly retainedManifestPath: string;
   readonly expectedRetainedManifestSha256: string;
-  readonly workerAlive: boolean;
+  readonly observeRuntime: LegacyJobRuntimeObserver;
 }): Promise<LegacyJobSummaryRetirementPlan> {
   await assertCanonicalRegistryRoot(input.custody, input.registryRootDir);
   const manifestPath = resolve(input.manifestPath);
   if (manifestPath !== resolve(input.expectedManifestPath)) {
     throw new Error("legacy_job_summary_manifest_path_cas_mismatch");
   }
-  const manifestSha256 = await regularFileSha256(input.custody, manifestPath);
+  const manifestFile = await input.custody.readImmutableFile(
+    manifestPath, 1024 * 1024,
+  );
+  const manifest = parseManifest(manifestFile.bytes);
+  const manifestSha256 = manifestFile.sha256;
   if (manifestSha256 !== input.expectedManifestSha256.toLowerCase()) {
     throw new Error("legacy_job_summary_manifest_sha256_cas_mismatch");
   }
   if (
-    resolve(input.manifest.workspacePath) !== resolve(input.expectedWorkspacePath)
+    resolve(manifest.workspacePath) !== resolve(input.expectedWorkspacePath)
   ) {
     throw new Error("legacy_job_summary_workspace_cas_mismatch");
   }
@@ -99,20 +106,25 @@ export async function buildLegacyJobSummaryRetirementPlan(input: {
     registryRootDir: input.registryRootDir,
     projectId: input.projectId,
     jobIdPrefixes: input.jobIdPrefixes,
-    manifest: input.manifest,
+    manifest,
     manifestPath,
     allowUnscopedLegacy: true,
   });
   await assertWorkspaceEnoent(input.custody, input.expectedWorkspacePath);
-  if (input.workerAlive) throw new Error("legacy_job_summary_worker_live");
-  await assertNeverLaunchedArtifactsAbsent(input.custody, input.manifest);
+  if ((await input.observeRuntime(manifest)).workerAlive) {
+    throw new Error("legacy_job_summary_worker_live");
+  }
+  await assertNeverLaunchedArtifactsAbsent(input.custody, manifest);
 
-  if (input.retainedManifest.jobId === input.manifest.jobId) {
+  const retainedManifestPath = resolve(input.retainedManifestPath);
+  const retainedFile = await input.custody.readImmutableFile(
+    retainedManifestPath, 1024 * 1024,
+  );
+  const retainedManifest = parseManifest(retainedFile.bytes);
+  if (retainedManifest.jobId === manifest.jobId) {
     throw new Error("legacy_job_summary_retained_sibling_required");
   }
-  const retainedManifestPath = resolve(input.retainedManifestPath);
-  const retainedManifestSha256 = await regularFileSha256(input.custody,
-    retainedManifestPath);
+  const retainedManifestSha256 = retainedFile.sha256;
   if (
     retainedManifestSha256 !==
       input.expectedRetainedManifestSha256.toLowerCase()
@@ -123,14 +135,14 @@ export async function buildLegacyJobSummaryRetirementPlan(input: {
     registryRootDir: input.registryRootDir,
     projectId: input.projectId,
     jobIdPrefixes: input.jobIdPrefixes,
-    manifest: input.retainedManifest,
+    manifest: retainedManifest,
     manifestPath: retainedManifestPath,
     allowUnscopedLegacy: false,
   });
   if (
-    resolve(input.retainedManifest.workspacePath) !==
+    resolve(retainedManifest.workspacePath) !==
       resolve(input.expectedWorkspacePath) ||
-    input.retainedManifest.projectAccessScope?.projectId !== input.projectId
+    retainedManifest.projectAccessScope?.projectId !== input.projectId
   ) {
     throw new Error("legacy_job_summary_retained_registration_mismatch");
   }
@@ -138,11 +150,11 @@ export async function buildLegacyJobSummaryRetirementPlan(input: {
     schemaVersion: 1,
     projectId: input.projectId,
     controllerJobId: input.controllerJobId,
-    jobId: input.manifest.jobId,
+    jobId: manifest.jobId,
     manifestPath,
     manifestSha256,
     workspacePath: resolve(input.expectedWorkspacePath),
-    retainedRegistrationJobId: input.retainedManifest.jobId,
+    retainedRegistrationJobId: retainedManifest.jobId,
     retainedManifestPath,
     retainedManifestSha256,
     reasonCode: LEGACY_JOB_SUMMARY_RETIREMENT_REASON,
@@ -154,6 +166,7 @@ export async function publishLegacyJobSummaryRetirement(input: {
   readonly registryRootDir: string;
   readonly plan: LegacyJobSummaryRetirementPlan;
   readonly expectedPlanSha256: string;
+  readonly rebuildCurrentPlan: () => Promise<LegacyJobSummaryRetirementPlan>;
   readonly now?: Date;
 }): Promise<{
   readonly receipt: LegacyJobSummaryRetirementReceipt;
@@ -179,6 +192,10 @@ export async function publishLegacyJobSummaryRetirement(input: {
     return { receipt: existing, receiptPath, idempotentReplay: true };
   } catch (error) {
     if (nodeErrorCode(error) !== "ENOENT") throw error;
+  }
+  const currentPlan = await input.rebuildCurrentPlan();
+  if (legacyJobSummaryRetirementPlanSha256(currentPlan) !== planSha256) {
+    throw new Error("legacy_job_summary_retirement_plan_drift");
   }
   const receipt: LegacyJobSummaryRetirementReceipt = {
     ...input.plan,
@@ -232,6 +249,7 @@ export async function projectRetirementProjection(input: {
   readonly controllerJobId?: string;
   readonly jobIdPrefixes?: readonly string[];
   readonly summaries: readonly CodexGoalJobSummary[];
+  readonly observeRuntime: LegacyJobRuntimeObserver;
 }): Promise<{
   readonly active: readonly CodexGoalJobSummary[];
   readonly retired: readonly LegacyJobSummaryRetirementReceipt[];
@@ -267,10 +285,7 @@ export async function projectRetirementProjection(input: {
       summary.manifestPath, 1024 * 1024,
     );
     const currentSha256 = currentFile.sha256;
-    let currentManifest: CodexGoalJobManifest;
-    try { currentManifest = JSON.parse(decode(currentFile.bytes)); } catch {
-      throw new Error("legacy_job_summary_manifest_invalid");
-    }
+    const currentManifest = parseManifest(currentFile.bytes);
     assertRegistryJobOwned({
       registryRootDir: input.registryRootDir,
       projectId: input.projectId,
@@ -283,18 +298,29 @@ export async function projectRetirementProjection(input: {
     for (const receipt of candidates) {
       let retainedCurrent = false;
       try {
-        const retained = JSON.parse(decode((await input.custody.readImmutableFile(
+        const retainedFile = await input.custody.readImmutableFile(
           receipt.retainedManifestPath, 1024 * 1024,
-        )).bytes)) as CodexGoalJobManifest;
-        retainedCurrent = await regularFileSha256(input.custody,
-          receipt.retainedManifestPath) ===
-          receipt.retainedManifestSha256 &&
+        );
+        const retained = parseManifest(retainedFile.bytes);
+        retainedCurrent = retainedFile.sha256 === receipt.retainedManifestSha256 &&
           retained.projectAccessScope?.projectId === input.projectId &&
           retained.jobId === receipt.retainedRegistrationJobId;
       } catch {
         retainedCurrent = false;
       }
-      if (receipt.manifestPath === resolve(summary.manifestPath) &&
+      let runtimeStillRetired = false;
+      try {
+        runtimeStillRetired =
+          await input.custody.pathKind(currentManifest.workspacePath) === "absent" &&
+          !(await input.observeRuntime(currentManifest)).workerAlive;
+        if (runtimeStillRetired) {
+          await assertNeverLaunchedArtifactsAbsent(input.custody, currentManifest);
+        }
+      } catch {
+        runtimeStillRetired = false;
+      }
+      if (runtimeStillRetired &&
+        receipt.manifestPath === resolve(summary.manifestPath) &&
         receipt.manifestSha256 === currentSha256 &&
         receipt.workspacePath === resolve(summary.workspacePath) &&
         retainedCurrent) {
@@ -373,9 +399,12 @@ async function assertNeverLaunchedArtifactsAbsent(
   }
 }
 
-async function regularFileSha256(custody: ProjectControlEvidenceCustodyPort,
-  path: string): Promise<string> {
-  return (await custody.readImmutableFile(path, 1024 * 1024)).sha256;
+function parseManifest(bytes: Uint8Array): CodexGoalJobManifest {
+  try {
+    return parseCodexGoalJobManifest(JSON.parse(decode(bytes)));
+  } catch (error) {
+    throw new Error("legacy_job_summary_manifest_invalid", { cause: error });
+  }
 }
 
 function parseRetirementReceipt(value: string): LegacyJobSummaryRetirementReceipt {

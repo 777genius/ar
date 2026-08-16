@@ -70,6 +70,7 @@ export function certifyFrozenOutputPhaseA(input: {
       scope: fixture.scope,
       plan,
       expectedPlanSha256: frozenOutputImportPlanSha256(plan),
+      rebuildCurrentPlan: async () => plan,
     });
     await mkdir(join(fixture.legacyManifest.jobRootDir,
       `${fixture.legacyManifest.taskId}.late.handoff.manifest.json`));
@@ -85,6 +86,7 @@ export function certifyFrozenOutputPhaseA(input: {
       scope: fixture.scope,
       plan,
       expectedPlanSha256: frozenOutputImportPlanSha256(plan),
+      rebuildCurrentPlan: async () => plan,
     });
     const outside = join(fixture.root, "outside-ledger", "receipt.json");
     await writeFile(published.receipt.receiptPath, `${JSON.stringify({
@@ -116,6 +118,11 @@ function project(
     projectId: "p0",
     controllerJobId: "controller",
     summaries: [fixture.summary],
+    observeRuntime: async () => ({
+      workspaceDirty: true,
+      workerAlive: false,
+      resultExists: false,
+    }),
   });
 }
 
