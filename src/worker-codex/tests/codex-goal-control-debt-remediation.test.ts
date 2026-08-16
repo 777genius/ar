@@ -526,6 +526,107 @@ describe("frozen output import and summary supersession", () => {
     expect(changed.active).toHaveLength(1);
   });
 
+  it.each([
+    "custodyOutputPath",
+    "custodySourceManifestPath",
+    "custodyRetainedManifestPath",
+    "custodyRetainedOutputPath",
+    "receiptPath",
+    "ledgerRegistrationPath",
+    "importedAt-invalid",
+    "importedAt-noncanonical",
+  ] as const)("rejects a prepared receipt with conflicting %s before publication",
+    async (field) => {
+      const fixture = await frozenFixture();
+      const plan = await fixture.plan();
+      const planSha256 = frozenOutputImportPlanSha256(plan);
+      const importRoot = join(fixture.evidenceRoot, "frozen-output-imports",
+        planSha256);
+      const ledgerRegistrationPath = join(plan.destinationLedgerRoot,
+        "frozen-output-imports", `${planSha256}.json`);
+      const expected = {
+        ...plan,
+        planSha256,
+        importedAt: "2026-08-15T00:00:00.000Z",
+        custodyOutputPath: join(importRoot, "output.patch"),
+        custodySourceManifestPath: join(importRoot, "source-manifest.json"),
+        custodyRetainedManifestPath: join(importRoot, "retained-manifest.json"),
+        custodyRetainedOutputPath: join(importRoot, "retained-output.json"),
+        receiptPath: join(importRoot, "receipt.json"),
+        ledgerRegistrationPath,
+      };
+      const forgedPath = join(fixture.root, "forged", field);
+      const receipt = field === "importedAt-invalid"
+        ? { ...expected, importedAt: "not-a-date" }
+        : field === "importedAt-noncanonical"
+        ? { ...expected, importedAt: "2026-08-15T00:00:00Z" }
+        : { ...expected, [field]: forgedPath };
+      const prepared = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`);
+      await mkdir(join(plan.destinationLedgerRoot, "frozen-output-imports"),
+        { recursive: true });
+      await writeFile(ledgerRegistrationPath, prepared);
+      let publications = 0;
+      let copies = 0;
+      let forgedReads = 0;
+      const custody = observingCustody(evidenceCustody, (method, argument) => {
+        if (method === "publishImmutableBytes") publications += 1;
+        if (method === "copyImmutableFile") copies += 1;
+        if (argument === forgedPath) forgedReads += 1;
+      });
+      await expect(publishFrozenOutputImport({
+        custody,
+        scope: fixture.scope,
+        plan,
+        expectedPlanSha256: planSha256,
+        rebuildCurrentPlan: async () => plan,
+      })).rejects.toThrow("frozen_output_import_ledger_conflict");
+      expect({ publications, copies, forgedReads }).toEqual({
+        publications: 0, copies: 0, forgedReads: 0,
+      });
+      expect(await readdir(fixture.evidenceRoot)).toEqual([]);
+      expect(await readFile(ledgerRegistrationPath)).toEqual(prepared);
+    });
+
+  it("recovers after a crash following ledger-first reservation", async () => {
+    const fixture = await frozenFixture();
+    const plan = await fixture.plan();
+    const planSha256 = frozenOutputImportPlanSha256(plan);
+    let crashed = false;
+    const custody = new Proxy(evidenceCustody, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          if (!crashed && property === "copyImmutableFile") {
+            crashed = true;
+            throw new Error("simulated_post_reservation_crash");
+          }
+          return Reflect.apply(value, target, args);
+        };
+      },
+    });
+    await expect(publishFrozenOutputImport({
+      custody,
+      scope: fixture.scope,
+      plan,
+      expectedPlanSha256: planSha256,
+      rebuildCurrentPlan: async () => plan,
+      now: new Date("2026-08-15T00:00:00.000Z"),
+    })).rejects.toThrow("simulated_post_reservation_crash");
+    const ledgerPath = join(plan.destinationLedgerRoot,
+      "frozen-output-imports", `${planSha256}.json`);
+    const reserved = await readFile(ledgerPath);
+    const recovered = await publishFrozenOutputImport({
+      custody: evidenceCustody,
+      scope: fixture.scope,
+      plan,
+      expectedPlanSha256: planSha256,
+      rebuildCurrentPlan: async () => plan,
+    });
+    expect(recovered.receipt.importedAt).toBe("2026-08-15T00:00:00.000Z");
+    expect(await readFile(ledgerPath)).toEqual(reserved);
+  });
+
   it("refuses traversal, symlinks, CAS/TOCTOU drift, clean, live, missing, and output-bearing summaries", async () => {
     const unauthorizedSource = await frozenFixture();
     const outsideSourceRoot = await mkdtemp(join(tmpdir(), "foreign-frozen-source-"));

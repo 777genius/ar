@@ -33,80 +33,22 @@ import {
 } from "./codex-goal-frozen-output-runtime";
 export type { FrozenOutputRuntimeObservation, FrozenOutputRuntimeObserver } from
   "./codex-goal-frozen-output-runtime";
-
-export type FrozenOutputSupersededSummary = {
-  readonly jobId: string;
-  readonly manifestPath: string;
-  readonly manifestSha256: string;
-  readonly workspacePath: string;
-  readonly effectiveOutputPath: string;
-  readonly observedResultExists: boolean;
-};
-
-export type FrozenOutputImportPlan = {
-  readonly schemaVersion: 1;
-  readonly projectId: string;
-  readonly controllerJobId: string;
-  readonly registryRootDir: string;
-  readonly jobIdPrefixes: readonly string[];
-  readonly sourcePath: string;
-  readonly sourceSha256: string;
-  readonly sourceLength: number;
-  readonly sourceManifestPath: string;
-  readonly sourceManifestSha256: string;
-  readonly destinationEvidenceRoot: string;
-  readonly destinationLedgerRoot: string;
-  readonly changedPaths: readonly string[];
-  readonly baseCommit: string;
-  readonly headCommit: string;
-  readonly patchSha256: string;
-  readonly retainedRegistrationJobId: string;
-  readonly retainedJobRootDir: string;
-  readonly retainedManifestPath: string;
-  readonly retainedManifestSha256: string;
-  readonly retainedOutputPath: string;
-  readonly retainedOutputSha256: string;
-  readonly authorizedRetainedOutputRoots: readonly string[];
-  readonly deniedRoots: readonly string[];
-  readonly supersededSummaries: readonly FrozenOutputSupersededSummary[];
-};
-
-export type FrozenOutputSourceManifest = {
-  readonly schemaVersion: 1;
-  readonly projectId: string;
-  readonly controllerJobId: string;
-  readonly patch: {
-    readonly sha256: string;
-    readonly length: number;
-    readonly baseCommit: string;
-    readonly headCommit: string;
-    readonly changedPaths: readonly string[];
-  };
-  readonly retainedOutput: {
-    readonly jobId: string;
-    readonly manifestSha256: string;
-    readonly outputSha256: string;
-  };
-};
-
-export type FrozenOutputImportReceipt = FrozenOutputImportPlan & {
-  readonly planSha256: string;
-  readonly importedAt: string;
-  readonly custodyOutputPath: string;
-  readonly custodySourceManifestPath: string;
-  readonly custodyRetainedManifestPath: string;
-  readonly custodyRetainedOutputPath: string;
-  readonly receiptPath: string;
-  readonly ledgerRegistrationPath: string;
-};
-
-export function frozenOutputImportPlanSha256(plan: FrozenOutputImportPlan): string {
-  const body = `${JSON.stringify(plan)}\n`;
-  if (Buffer.byteLength(body) > 4 * 1024 * 1024) {
-    throw new Error("frozen_output_import_plan_too_large");
-  }
-  return sha256(body);
-}
+import {
+  frozenOutputImportPlanSha256,
+  parseFrozenOutputReceipt as parseReceipt,
+  planFromFrozenOutputReceipt as planFromReceipt,
+  type FrozenOutputImportPlan,
+  type FrozenOutputImportReceipt,
+  type FrozenOutputSourceManifest,
+  type FrozenOutputSupersededSummary,
+} from "./codex-goal-frozen-output-contract";
+export {
+  frozenOutputImportPlanSha256,
+  type FrozenOutputImportPlan,
+  type FrozenOutputImportReceipt,
+  type FrozenOutputSourceManifest,
+  type FrozenOutputSupersededSummary,
+} from "./codex-goal-frozen-output-contract";
 
 export async function buildFrozenOutputImportPlan(input: {
   readonly custody: ProjectControlEvidenceCustodyPort;
@@ -482,6 +424,63 @@ export async function publishFrozenOutputImport(input: {
   assertFrozenOutputReadAllowed(lexicalAuthorization, ledgerRegistrationPath,
     "ledger");
   const importDirectories = ["frozen-output-imports", planSha256];
+  const validatePreparedReceipt = (prepared: FrozenOutputImportReceipt) => {
+    const importedAt = new Date(prepared.importedAt);
+    if (prepared.planSha256 !== planSha256 ||
+      frozenOutputImportPlanSha256(planFromReceipt(prepared)) !== planSha256 ||
+      prepared.custodyOutputPath !== custodyOutputPath ||
+      prepared.custodySourceManifestPath !== custodySourceManifestPath ||
+      prepared.custodyRetainedManifestPath !== custodyRetainedManifestPath ||
+      prepared.custodyRetainedOutputPath !== custodyRetainedOutputPath ||
+      prepared.receiptPath !== receiptPath ||
+      prepared.ledgerRegistrationPath !== ledgerRegistrationPath ||
+      typeof prepared.importedAt !== "string" ||
+      Number.isNaN(importedAt.valueOf()) ||
+      importedAt.toISOString() !== prepared.importedAt) {
+      throw new Error("frozen_output_import_ledger_conflict");
+    }
+    return prepared;
+  };
+  const readPreparedReceipt = async () => validatePreparedReceipt(parseReceipt(
+    decode((await authorizedReadImmutableBytes(
+      input.custody, lexicalAuthorization, authorization,
+      ledgerRegistrationPath, "ledger", 4 * 1024 * 1024,
+    )).bytes),
+  ));
+  let receipt: FrozenOutputImportReceipt;
+  let prepared = true;
+  try {
+    receipt = await readPreparedReceipt();
+  } catch (error) {
+    if (nodeErrorCode(error) !== "ENOENT") throw error;
+    prepared = false;
+    receipt = {
+      ...input.plan,
+      planSha256,
+      importedAt: (input.now ?? new Date()).toISOString(),
+      custodyOutputPath,
+      custodySourceManifestPath,
+      custodyRetainedManifestPath,
+      custodyRetainedOutputPath,
+      receiptPath,
+      ledgerRegistrationPath,
+    };
+  }
+  let body = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`);
+  try {
+    await input.custody.publishImmutableBytes({
+      root: input.plan.destinationLedgerRoot,
+      directories: ["frozen-output-imports"],
+      fileName: `${planSha256}.json`,
+      bytes: body,
+      expectedSha256: sha256(body),
+    });
+  } catch (error) {
+    if (prepared || !(error instanceof Error) ||
+      error.message !== "evidence_custody_immutable_conflict") throw error;
+    receipt = await readPreparedReceipt();
+    body = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`);
+  }
   await Promise.all([
     input.custody.copyImmutableFile({
       sourcePath: input.plan.sourcePath,
@@ -516,39 +515,6 @@ export async function publishFrozenOutputImport(input: {
       fileName: "retained-output.json",
     }),
   ]);
-  const candidateReceipt: FrozenOutputImportReceipt = {
-    ...input.plan,
-    planSha256,
-    importedAt: (input.now ?? new Date()).toISOString(),
-    custodyOutputPath,
-    custodySourceManifestPath,
-    custodyRetainedManifestPath,
-    custodyRetainedOutputPath,
-    receiptPath,
-    ledgerRegistrationPath,
-  };
-  let receipt = candidateReceipt;
-  try {
-    const prepared = parseReceipt(decode((await authorizedReadImmutableBytes(
-      input.custody, lexicalAuthorization, authorization,
-      ledgerRegistrationPath, "ledger", 4 * 1024 * 1024,
-    )).bytes));
-    if (prepared.planSha256 !== planSha256 ||
-      frozenOutputImportPlanSha256(planFromReceipt(prepared)) !== planSha256) {
-      throw new Error("frozen_output_import_ledger_conflict");
-    }
-    receipt = prepared;
-  } catch (error) {
-    if (nodeErrorCode(error) !== "ENOENT") throw error;
-  }
-  const body = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`);
-  await input.custody.publishImmutableBytes({
-    root: input.plan.destinationLedgerRoot,
-    directories: ["frozen-output-imports"],
-    fileName: `${planSha256}.json`,
-    bytes: body,
-    expectedSha256: sha256(body),
-  });
   const currentPlan = await input.rebuildCurrentPlan();
   if (frozenOutputImportPlanSha256(currentPlan) !== planSha256) {
     throw new Error("frozen_output_import_plan_drift");
@@ -715,32 +681,6 @@ async function authorizedImmutableFileIdentity(
     length: read.length,
     bytes: read.bytes,
   };
-}
-
-function planFromReceipt(receipt: FrozenOutputImportReceipt): FrozenOutputImportPlan {
-  const { planSha256: _plan, importedAt: _at, custodyOutputPath: _out,
-    custodySourceManifestPath: _manifest, receiptPath: _receipt,
-    custodyRetainedManifestPath: _retainedManifest,
-    custodyRetainedOutputPath: _retainedOutput,
-    ledgerRegistrationPath: _ledger, ...plan } = receipt;
-  return plan;
-}
-
-function parseReceipt(body: string): FrozenOutputImportReceipt {
-  const value: unknown = JSON.parse(body);
-  if (typeof value !== "object" || value === null || Array.isArray(value) ||
-    (value as { schemaVersion?: unknown }).schemaVersion !== 1 ||
-    typeof (value as { planSha256?: unknown }).planSha256 !== "string") {
-    throw new Error("frozen_output_import_receipt_invalid");
-  }
-  const receipt = value as FrozenOutputImportReceipt;
-  if (!/^[a-f0-9]{64}$/.test(receipt.planSha256) ||
-    !Array.isArray(receipt.changedPaths) ||
-    !Array.isArray(receipt.supersededSummaries) ||
-    frozenOutputImportPlanSha256(planFromReceipt(receipt)) !== receipt.planSha256) {
-    throw new Error("frozen_output_import_receipt_invalid");
-  }
-  return receipt;
 }
 
 async function verifyFrozenOutputReceipt(
