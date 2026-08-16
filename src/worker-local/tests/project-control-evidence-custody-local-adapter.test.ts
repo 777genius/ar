@@ -97,6 +97,53 @@ describe("local project-control evidence custody durability", () => {
     expect(swapped).toBe(true);
   });
 
+  it("rejects a directory lexical replacement after listing", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-list-race-"));
+    const listed = join(outer, "listed");
+    const moved = join(outer, "listed-original");
+    await mkdir(listed);
+    await writeFile(join(listed, "inside"), "inside\n");
+    let swapped = false;
+    const custody = new LocalProjectControlEvidenceCustody(async (point, path) => {
+      if (point !== "after_directory_listing_before_lexical_revalidation" ||
+        path !== listed || swapped) return;
+      swapped = true;
+      await rename(listed, moved);
+      await mkdir(listed);
+      await writeFile(join(listed, "replacement"), "replacement\n");
+    });
+    await expect(custody.listDirectory(listed)).rejects.toThrow(
+      "inspection_parent_drift",
+    );
+    expect(swapped).toBe(true);
+  });
+
+  it("fails closed when the destination root is replaced before success", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-root-race-"));
+    const root = join(outer, "root");
+    const moved = join(outer, "root-original");
+    await mkdir(root);
+    let swapped = false;
+    const custody = new LocalProjectControlEvidenceCustody(async (point, path) => {
+      if (point !== "before_publication_success_boundary_revalidation" ||
+        path !== root || swapped) return;
+      swapped = true;
+      await rename(root, moved);
+      await mkdir(root);
+    });
+    const bytes = Buffer.from("root-bound publication\n");
+    await expect(custody.publishImmutableBytes({
+      root,
+      directories: ["evidence"],
+      fileName: "artifact.bin",
+      bytes,
+      expectedSha256: sha(bytes),
+    })).rejects.toThrow("publication_root_drift");
+    expect(swapped).toBe(true);
+    expect(await readdir(root)).toEqual([]);
+    expect(await readFile(join(moved, "evidence", "artifact.bin"))).toEqual(bytes);
+  });
+
   it.each(["read", "inspect", "copy"] as const)(
     "rejects deterministic lexical leaf replacement after a held-FD %s",
     async (operation) => {

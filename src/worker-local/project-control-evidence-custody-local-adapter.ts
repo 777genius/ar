@@ -212,21 +212,30 @@ export class LocalProjectControlEvidenceCustody implements
   }
 
   async listDirectory(path: string): Promise<readonly EvidenceDirectoryEntry[]> {
-    let handle;
+    const lexical = resolve(path);
+    let held: HeldLexicalDirectory;
     try {
-      handle = await openAbsoluteDirectoryNoSymlinks(path);
-      return (await readdir(`/proc/self/fd/${handle.fd}`, { withFileTypes: true }))
-        .map((entry) => ({
+      held = await openHeldLexicalDirectory(lexical);
+    } catch (error) {
+      if (deepCode(error) === "ENOENT" && await this.pathKind(lexical) === "absent") {
+        return [];
+      }
+      throw error;
+    }
+    try {
+      const entries = (await readdir(`/proc/self/fd/${held.handle.fd}`,
+        { withFileTypes: true })).map((entry) => ({
         name: entry.name,
         kind: entry.isFile() ? "file" as const :
           entry.isDirectory() ? "directory" as const :
           entry.isSymbolicLink() ? "symlink" as const : "other" as const,
-        }));
-    } catch (error) {
-      if (deepCode(error) === "ENOENT") return [];
-      throw error;
+      }));
+      await this.crashHook?.("after_directory_listing_before_lexical_revalidation",
+        lexical);
+      await assertHeldLexicalDirectory(held);
+      return entries;
     } finally {
-      await handle?.close();
+      await closeHeldLexicalDirectory(held);
     }
   }
 
@@ -246,11 +255,12 @@ export class LocalProjectControlEvidenceCustody implements
         fileName: input.fileName,
         expectedSha256: input.expectedSha256,
         expectedLength: input.bytes.byteLength,
+        assertBoundary: boundary.assertRootBinding,
         write: async (handle) => await writeAll(handle, input.bytes),
         ...(this.crashHook ? { crashHook: this.crashHook } : {}),
       });
     } finally {
-      await boundary.handle.close();
+      await boundary.close();
     }
   }
 
@@ -286,11 +296,12 @@ export class LocalProjectControlEvidenceCustody implements
         fileName: input.fileName,
         expectedSha256: input.expectedSha256,
         expectedLength: input.expectedLength,
+        assertBoundary: boundary.assertRootBinding,
         ...(this.crashHook ? { crashHook: this.crashHook } : {}),
       });
     } finally {
       await closeHeldLexicalFile(source);
-      await boundary?.handle.close();
+      await boundary?.close();
     }
   }
 }
@@ -298,43 +309,71 @@ export class LocalProjectControlEvidenceCustody implements
 async function openBoundary(root: string, directories: readonly string[],
   crashHook?: PublicationCrashHook) {
   const canonicalRoot = resolve(root);
-  let handle = await openAbsoluteDirectoryNoSymlinks(canonicalRoot);
-  for (const [index, segment] of directories.entries()) {
-    safeSegment(segment);
-    const child = `/proc/self/fd/${handle.fd}/${segment}`;
-    let created = false;
-    try {
-      await mkdir(child, { mode: 0o700 });
-      created = true;
-    } catch (error) {
-      if (code(error) !== "EEXIST") {
-        await handle.close();
-        throw error;
+  const rootHandle = await openAbsoluteDirectoryNoSymlinks(canonicalRoot);
+  let rootIdentity: Awaited<ReturnType<FileHandle["stat"]>>;
+  try {
+    rootIdentity = await rootHandle.stat();
+  } catch (error) {
+    await rootHandle.close().catch(() => undefined);
+    throw error;
+  }
+  let handle = rootHandle;
+  try {
+    for (const [index, segment] of directories.entries()) {
+      safeSegment(segment);
+      const child = `/proc/self/fd/${handle.fd}/${segment}`;
+      let created = false;
+      try {
+        await mkdir(child, { mode: 0o700 });
+        created = true;
+      } catch (error) {
+        if (code(error) !== "EEXIST") throw error;
+      }
+      let next: FileHandle | undefined;
+      try {
+        next = await open(child,
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      } catch (error) {
+        throw new Error("evidence_custody_ancestor_unsafe", { cause: error });
+      }
+      try {
+        if (created) {
+          await crashHook?.("after_ancestor_creation_before_parent_fsync",
+            join(canonicalRoot, ...directories.slice(0, index + 1)));
+        }
+        await crashHook?.("before_ancestor_parent_fsync",
+          join(canonicalRoot, ...directories.slice(0, index + 1)));
+        await handle.sync();
+        await crashHook?.("after_ancestor_parent_fsync",
+          join(canonicalRoot, ...directories.slice(0, index + 1)));
+        const previous = handle;
+        handle = next;
+        next = undefined;
+        if (previous !== rootHandle) await previous.close();
+      } finally {
+        await next?.close().catch(() => undefined);
       }
     }
-    let next;
-    try {
-      next = await open(child,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-    } catch (error) {
-      await handle.close();
-      throw new Error("evidence_custody_ancestor_unsafe", { cause: error });
-    }
-    if (created) {
-      await crashHook?.("after_ancestor_creation_before_parent_fsync",
-        join(canonicalRoot, ...directories.slice(0, index + 1)));
-    }
-    // Sync even after EEXIST. A predecessor may have created this entry and
-    // terminated before making the parent directory durable.
-    await crashHook?.("before_ancestor_parent_fsync",
-      join(canonicalRoot, ...directories.slice(0, index + 1)));
-    await handle.sync();
-    await crashHook?.("after_ancestor_parent_fsync",
-      join(canonicalRoot, ...directories.slice(0, index + 1)));
-    await handle.close();
-    handle = next;
+    return {
+      handle,
+      assertRootBinding: async () => {
+        await crashHook?.("before_publication_success_boundary_revalidation",
+          canonicalRoot);
+        await assertHeldRootLexicalBinding(canonicalRoot, rootHandle, rootIdentity);
+      },
+      close: async () => {
+        if (handle === rootHandle) {
+          await rootHandle.close();
+          return;
+        }
+        await handle.close().finally(async () => await rootHandle.close());
+      },
+    };
+  } catch (error) {
+    if (handle !== rootHandle) await handle.close().catch(() => undefined);
+    await rootHandle.close().catch(() => undefined);
+    throw error;
   }
-  return { handle };
 }
 
 async function openAbsoluteDirectoryNoSymlinks(path: string) {
@@ -366,6 +405,73 @@ async function openAbsoluteDirectoryNoSymlinks(path: string) {
     if (error instanceof Error &&
       error.message === "evidence_custody_root_noncanonical") throw error;
     throw custodyError("evidence_custody_ancestor_unsafe", error);
+  }
+}
+
+type HeldLexicalDirectory = {
+  readonly lexical: string;
+  readonly handle: FileHandle;
+  readonly parent: FileHandle | undefined;
+  readonly identity: Awaited<ReturnType<FileHandle["stat"]>>;
+};
+
+async function openHeldLexicalDirectory(
+  lexical: string,
+): Promise<HeldLexicalDirectory> {
+  const parent = lexical === "/"
+    ? undefined
+    : await openAbsoluteDirectoryNoSymlinks(dirname(lexical));
+  let handle: FileHandle | undefined;
+  try {
+    handle = parent
+      ? await open(`/proc/self/fd/${parent.fd}/${basename(lexical)}`,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+      : await openAbsoluteDirectoryNoSymlinks(lexical);
+    const identity = await handle.stat();
+    const held = { lexical, handle, parent, identity };
+    await assertHeldLexicalDirectory(held);
+    return held;
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    await parent?.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function assertHeldLexicalDirectory(held: HeldLexicalDirectory): Promise<void> {
+  await assertInspectionLexicalBinding(held);
+}
+
+async function closeHeldLexicalDirectory(held: HeldLexicalDirectory): Promise<void> {
+  await held.handle.close().finally(async () => await held.parent?.close());
+}
+
+async function assertHeldRootLexicalBinding(
+  lexical: string,
+  handle: FileHandle,
+  identity: Awaited<ReturnType<FileHandle["stat"]>>,
+): Promise<void> {
+  let reopened: FileHandle | undefined;
+  try {
+    const current = await handle.stat();
+    if (current.dev !== identity.dev || current.ino !== identity.ino ||
+      await realpath(`/proc/self/fd/${handle.fd}`) !== lexical) {
+      throw new Error("evidence_custody_publication_root_drift");
+    }
+    reopened = await openAbsoluteDirectoryNoSymlinks(lexical);
+    const lexicalCurrent = await reopened.stat();
+    if (lexicalCurrent.dev !== identity.dev || lexicalCurrent.ino !== identity.ino) {
+      throw new Error("evidence_custody_publication_root_drift");
+    }
+    if (await realpath(`/proc/self/fd/${handle.fd}`) !== lexical) {
+      throw new Error("evidence_custody_publication_root_drift");
+    }
+  } catch (error) {
+    if (error instanceof Error &&
+      error.message === "evidence_custody_publication_root_drift") throw error;
+    throw new Error("evidence_custody_publication_root_drift", { cause: error });
+  } finally {
+    await reopened?.close();
   }
 }
 
@@ -471,6 +577,7 @@ async function copyThroughHandle(input: {
   readonly maxBytes: number; readonly parentFd: number; readonly lexicalPath: string;
   readonly fileName: string; readonly expectedSha256: string;
   readonly expectedLength: number;
+  readonly assertBoundary: () => Promise<void>;
   readonly crashHook?: PublicationCrashHook;
 }) {
   return await publishThroughHandle({
@@ -479,6 +586,7 @@ async function copyThroughHandle(input: {
     fileName: input.fileName,
     expectedSha256: input.expectedSha256,
     expectedLength: input.expectedLength,
+    assertBoundary: input.assertBoundary,
     ...(input.crashHook ? { crashHook: input.crashHook } : {}),
     write: async (target) => {
       const hash = createHash("sha256");
@@ -516,19 +624,22 @@ export type PublicationCrashHook = (
     | "after_immutable_read_before_lexical_reopen"
     | "after_copy_read_before_lexical_reopen"
     | "after_path_classification_before_parent_revalidation"
+    | "after_directory_listing_before_lexical_revalidation"
     | "after_temp_write"
     | "after_temp_fsync"
     | "after_ancestor_creation_before_parent_fsync"
     | "before_ancestor_parent_fsync"
     | "after_ancestor_parent_fsync"
     | "after_publish_before_directory_fsync"
-    | "after_directory_fsync",
+    | "after_directory_fsync"
+    | "before_publication_success_boundary_revalidation",
   path: string,
 ) => Promise<void> | void;
 
 async function publishThroughHandle(input: {
   readonly parentFd: number; readonly lexicalPath: string; readonly fileName: string;
   readonly expectedSha256: string; readonly expectedLength: number;
+  readonly assertBoundary: () => Promise<void>;
   readonly write: (handle: Awaited<ReturnType<typeof open>>) => Promise<void>;
   readonly crashHook?: PublicationCrashHook;
 }) {
@@ -549,6 +660,7 @@ async function publishThroughHandle(input: {
       expectedLength: input.expectedLength,
       removeMatching: true,
     })) await syncDirectory(parent);
+    await input.assertBoundary();
     return { path: input.lexicalPath, created: false };
   } catch (error) {
     if (code(error) !== "ENOENT") throw error;
@@ -613,6 +725,7 @@ async function publishThroughHandle(input: {
       });
       temporaryExists = false;
       await syncDirectory(parent);
+      await input.assertBoundary();
       return { path: input.lexicalPath, created: false };
     }
     try {
@@ -643,6 +756,7 @@ async function publishThroughHandle(input: {
       expectedLength: input.expectedLength,
       removeMatching: true,
     })) await syncDirectory(parent);
+    await input.assertBoundary();
     return { path: input.lexicalPath, created: true };
   } finally {
     if (!targetClosed) await target.close().catch(() => undefined);

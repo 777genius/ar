@@ -289,7 +289,7 @@ export async function buildCodexProjectAdmissionSnapshot(
         observeRuntime: async (manifest) =>
           await projectionRuntimeObservation(input, manifest),
       })
-    : { active: retirementProjection.active, receipts: [] };
+    : { active: retirementProjection.active, supersessions: [] };
   const matchingProjectSummaries = frozenProjection.active;
   debt.push(...consumedOutputDebtForCurrentRegistry({
     ledger: consumedOutput,
@@ -383,9 +383,9 @@ export async function buildCodexProjectAdmissionSnapshot(
         }),
       })),
     }),
-    ...(frozenProjection.receipts.length === 0 ? {} : {
-      supersededFrozenOutputSummaries: frozenProjection.receipts.flatMap(
-        (receipt) => receipt.supersededSummaries.map((summary) => ({
+    ...(frozenProjection.supersessions.length === 0 ? {} : {
+      supersededFrozenOutputSummaries: frozenProjection.supersessions.flatMap(
+        ({ receipt, supersededSummaries }) => supersededSummaries.map((summary) => ({
           jobId: summary.jobId,
           manifestSha256: summary.manifestSha256,
           retainedRegistrationJobId: receipt.retainedRegistrationJobId,

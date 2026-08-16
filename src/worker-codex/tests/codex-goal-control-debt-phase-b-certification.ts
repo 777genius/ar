@@ -320,7 +320,7 @@ function certifyFrozen(input: {
       observeRuntime: async () => runtime,
     });
     expect(projection.active).toEqual([fixture.summary]);
-    expect(projection.receipts).toEqual([]);
+    expect(projection.supersessions).toEqual([]);
   });
 }
 

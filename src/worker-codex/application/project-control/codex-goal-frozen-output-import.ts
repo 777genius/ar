@@ -50,6 +50,11 @@ export {
   type FrozenOutputSupersededSummary,
 } from "./codex-goal-frozen-output-contract";
 
+export type FrozenOutputSupersessionReceiptProjection = {
+  readonly receipt: FrozenOutputImportReceipt;
+  readonly supersededSummaries: readonly FrozenOutputSupersededSummary[];
+};
+
 export async function buildFrozenOutputImportPlan(input: {
   readonly custody: ProjectControlEvidenceCustodyPort;
   readonly scope: ProjectAccessScope;
@@ -543,7 +548,7 @@ export async function frozenOutputSupersessionProjection(input: {
   readonly observeRuntime: FrozenOutputRuntimeObserver;
 }): Promise<{
   readonly active: readonly CodexGoalJobSummary[];
-  readonly receipts: readonly FrozenOutputImportReceipt[];
+  readonly supersessions: readonly FrozenOutputSupersessionReceiptProjection[];
 }> {
   const lexicalAuthorization = buildFrozenOutputPathAuthorization({
     scope: input.scope,
@@ -640,17 +645,17 @@ export async function frozenOutputSupersessionProjection(input: {
       effectivePairs.push(...matched);
     }
   }
-  const effectiveReceipts = receipts.flatMap((receipt) => {
+  const supersessions = receipts.flatMap((receipt) => {
     const supersededSummaries = effectivePairs
       .filter((pair) => pair.receipt === receipt)
       .map((pair) => pair.summary);
     return supersededSummaries.length === 0
       ? []
-      : [{ ...receipt, supersededSummaries }];
+      : [{ receipt, supersededSummaries }];
   });
   return {
     active: active.length === input.summaries.length ? input.summaries : active,
-    receipts: effectiveReceipts,
+    supersessions,
   };
 }
 

@@ -49,6 +49,26 @@ describe("ledger epoch process selector", () => {
     ])).toBe(true);
   });
 
+  it.each([
+    ["node", ["--enable-source-maps"]],
+    ["nodejs", ["--trace-warnings", "--stack-trace-limit=50"]],
+    ["bun", ["--smol"]],
+    ["deno", ["run", "--allow-read=/var/data"]],
+  ] as const)("blocks option-bearing %s controller supervision", (runtime, options) => {
+    expect(blocks(18, [
+      runtime,
+      ...options,
+      "/app/worker-codex/codex-goal-cli.js",
+      "controller-supervise",
+    ])).toBe(true);
+  });
+
+  it("does not treat eval source containing an entrypoint name as an entrypoint", () => {
+    expect(blocks(19, [
+      "deno", "eval", "console.log('codex-goal-cli.js controller-supervise')",
+    ])).toBe(false);
+  });
+
   it("excludes only the exact self pid", () => {
     expect(blocks(777, ["subscription-runtime-codex-goal-mcp"])).toBe(false);
   });

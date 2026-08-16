@@ -49,8 +49,18 @@ function processEntrypoint(argv: readonly string[]): string | undefined {
   if (MCP_ENTRYPOINTS.has(executable) || CLI_ENTRYPOINTS.has(executable)) {
     return executable;
   }
-  if (["node", "nodejs", "bun", "deno"].includes(executable) && argv[1]) {
-    return basename(argv[1]);
+  if (["node", "nodejs", "bun", "deno"].includes(executable)) {
+    // Runtime option grammars evolve and several options consume a following
+    // value. Locating only an exact, recognized entrypoint is conservative in
+    // both directions: options cannot hide a writer, while option payloads and
+    // eval source cannot spoof one through a substring.
+    for (const argument of argv.slice(1)) {
+      const candidate = basename(argument);
+      if (MCP_ENTRYPOINTS.has(candidate) || CLI_ENTRYPOINTS.has(candidate)) {
+        return candidate;
+      }
+    }
+    return undefined;
   }
   return executable;
 }
