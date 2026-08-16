@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type {
   ImmutablePatchEvidence,
   ProjectAccessScope,
@@ -897,9 +897,17 @@ async function authorizedPathKind(
   path: string,
 ): Promise<"absent" | "file" | "directory" | "symlink" | "other"> {
   const candidate = assertFrozenOutputReadAllowed(lexical, path, "project");
-  const canonicalParent = await custody.canonicalDirectory(dirname(candidate));
-  assertFrozenOutputReadAllowed(canonical, canonicalParent, "project");
-  return await custody.pathKind(candidate);
+  if (lexical.projectRoots.includes(candidate) ||
+    canonical.projectRoots.includes(candidate)) return "directory";
+  const parent = dirname(candidate);
+  assertFrozenOutputReadAllowed(lexical, parent, "project");
+  const inspection = await custody.openDirectoryForInspection(parent);
+  try {
+    assertFrozenOutputReadAllowed(canonical, inspection.canonicalPath, "project");
+    return await inspection.pathKind(basename(candidate));
+  } finally {
+    await inspection.close();
+  }
 }
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {

@@ -10,6 +10,19 @@ export type EvidenceDirectoryEntry = {
   readonly kind: "file" | "directory" | "symlink" | "other";
 };
 
+export type EvidencePathKind =
+  | "absent"
+  | "file"
+  | "directory"
+  | "symlink"
+  | "other";
+
+export interface EvidenceDirectoryInspection {
+  readonly canonicalPath: string;
+  pathKind(entryName: string): Promise<EvidencePathKind>;
+  close(): Promise<void>;
+}
+
 export type ImmutablePatchEvidence = Omit<ImmutableEvidenceFile, "bytes"> & {
   readonly commits: readonly string[];
   readonly baseCommits: readonly string[];
@@ -21,7 +34,8 @@ export interface ProjectControlEvidenceCustodyPort {
   canonicalDirectory(path: string, allowMissing?: boolean): Promise<string>;
   readImmutableFile(path: string, maxBytes: number): Promise<ImmutableEvidenceFile>;
   inspectImmutablePatch(path: string, maxBytes: number): Promise<ImmutablePatchEvidence>;
-  pathKind(path: string): Promise<"absent" | "file" | "directory" | "symlink" | "other">;
+  pathKind(path: string): Promise<EvidencePathKind>;
+  openDirectoryForInspection(path: string): Promise<EvidenceDirectoryInspection>;
   listDirectory(path: string): Promise<readonly EvidenceDirectoryEntry[]>;
   publishImmutableBytes(input: {
     readonly root: string;

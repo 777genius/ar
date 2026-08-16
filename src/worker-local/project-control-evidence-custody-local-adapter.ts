@@ -5,6 +5,8 @@ import type { FileHandle } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
   EvidenceDirectoryEntry,
+  EvidenceDirectoryInspection,
+  EvidencePathKind,
   ImmutableEvidenceFile,
   ImmutablePatchEvidence,
   ProjectControlEvidenceCustodyPort,
@@ -130,6 +132,44 @@ export class LocalProjectControlEvidenceCustody implements
       if (code(error) === "ENOENT") return "absent" as const;
       throw error;
     }
+  }
+
+  async openDirectoryForInspection(path: string): Promise<EvidenceDirectoryInspection> {
+    const handle = await openAbsoluteDirectoryNoSymlinks(path);
+    const canonicalPath = await realpath(`/proc/self/fd/${handle.fd}`);
+    const identity = await handle.stat();
+    let closed = false;
+    return {
+      canonicalPath,
+      pathKind: async (entryName: string): Promise<EvidencePathKind> => {
+        if (closed) throw new Error("evidence_custody_inspection_closed");
+        safeSegment(entryName);
+        const before = await handle.stat();
+        if (before.dev !== identity.dev || before.ino !== identity.ino) {
+          throw new Error("evidence_custody_inspection_handle_drift");
+        }
+        let kind: EvidencePathKind;
+        try {
+          const metadata = await lstat(`/proc/self/fd/${handle.fd}/${entryName}`);
+          kind = metadata.isSymbolicLink() ? "symlink" :
+            metadata.isFile() ? "file" :
+            metadata.isDirectory() ? "directory" : "other";
+        } catch (error) {
+          if (code(error) !== "ENOENT") throw error;
+          kind = "absent";
+        }
+        const after = await handle.stat();
+        if (after.dev !== identity.dev || after.ino !== identity.ino) {
+          throw new Error("evidence_custody_inspection_handle_drift");
+        }
+        return kind;
+      },
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        await handle.close();
+      },
+    };
   }
 
   async listDirectory(path: string): Promise<readonly EvidenceDirectoryEntry[]> {

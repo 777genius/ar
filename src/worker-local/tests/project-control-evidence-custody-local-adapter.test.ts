@@ -1,7 +1,16 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -15,6 +24,54 @@ const fixturePath = fileURLToPath(new URL(
 ));
 
 describe("local project-control evidence custody durability", () => {
+  it("classifies a leaf relative to an open no-follow parent capability", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-inspection-"));
+    const parent = join(outer, "parent");
+    const moved = join(outer, "moved-parent");
+    const outside = join(outer, "outside");
+    await Promise.all([parent, outside].map((path) => mkdir(path)));
+    await writeFile(join(parent, "file"), "inside\n");
+    await mkdir(join(parent, "directory"));
+    await symlink(join(parent, "file"), join(parent, "symlink"));
+    const socket = createServer();
+    await new Promise<void>((resolve, reject) => {
+      socket.once("error", reject);
+      socket.listen(join(parent, "other"), resolve);
+    });
+    await writeFile(join(outside, "sentinel"), "outside\n");
+    const custody = new LocalProjectControlEvidenceCustody();
+    const inspection = await custody.openDirectoryForInspection(parent);
+    expect(inspection.canonicalPath).toBe(parent);
+    expect(await inspection.pathKind("file")).toBe("file");
+    expect(await inspection.pathKind("directory")).toBe("directory");
+    expect(await inspection.pathKind("symlink")).toBe("symlink");
+    expect(await inspection.pathKind("other")).toBe("other");
+    expect(await inspection.pathKind("absent")).toBe("absent");
+    for (const invalid of ["", ".", "..", "/absolute", "a/b", "a\\b"]) {
+      await expect(inspection.pathKind(invalid)).rejects.toThrow("path_invalid");
+    }
+    await rename(parent, moved);
+    await symlink(outside, parent, "dir");
+    expect(await inspection.pathKind("sentinel")).toBe("absent");
+    await inspection.close();
+    await new Promise<void>((resolve, reject) =>
+      socket.close((error) => error ? reject(error) : resolve())
+    );
+    await expect(inspection.pathKind("file")).rejects.toThrow(
+      "inspection_closed",
+    );
+  });
+
+  it("rejects a symlinked inspection parent", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-inspection-link-"));
+    const outside = join(outer, "outside");
+    await mkdir(outside);
+    await symlink(outside, join(outer, "linked"), "dir");
+    const custody = new LocalProjectControlEvidenceCustody();
+    await expect(custody.openDirectoryForInspection(join(outer, "linked")))
+      .rejects.toThrow();
+  });
+
   it("writeAll completes deterministic short writes and rejects zero progress", async () => {
     const output = Buffer.alloc(11);
     let position = 0;
