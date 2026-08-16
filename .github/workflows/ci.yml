@@ -64,6 +64,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run build:packages
       - name: Certify crash-boundary shards in lane ${{ matrix.lane }}
         env:
           CODEX_LEDGER_EPOCH_CRASH_RANGE_ONLY: "1"
