@@ -28,11 +28,8 @@ import {
 } from "../codex-goal-jobs";
 import { projectControlLedgerEpochMigrationView } from
   "../codex-goal-mcp-project-control-ledger-epoch";
-import {
-  seedAuthenticD0aPreparedEpochV1,
-  seedLegacyAdmissionHandlerFixture,
-  prepareAuthenticD0aFixture,
-} from
+import { seedAuthenticD0aPreparedEpochV1, seedLegacyAdmissionHandlerFixture,
+  prepareAuthenticD0aFixture } from
   "./codex-goal-ledger-epoch-legacy-admission-fixture";
 import { buildLedgerEpochLegacyAdmissionAnchor } from
   "../application/project-control/codex-goal-ledger-epoch-legacy-admission";
@@ -43,6 +40,7 @@ import {
   sha256Json,
   stableControllerFingerprint,
 } from "./codex-goal-ledger-epoch-handler-test-identity";
+import { certifyLedgerEpochRecoveryFence } from "./codex-goal-ledger-epoch-recovery-fence-certification";
 const fixtureModuleOnly = process.env.CODEX_LEDGER_EPOCH_HANDLER_FIXTURE_ONLY === "1";
 const fixtureRoots = new Set<string>();
 if (!fixtureModuleOnly) afterAll(async () => {
@@ -84,6 +82,7 @@ const shardTestNames: Readonly<Record<string, readonly RegExp[]>> = {
     /^rejects an already-switched scope/,
     /^rejects a denied subtree/,
     /^allows a reserved denied path/,
+    /^fences prepared active-root recovery/,
   ],
 };
 const selectTestName = (name: unknown) =>
@@ -537,6 +536,7 @@ describe("project control ledger epoch handler", () => {
     ))).resolves.toMatchObject({ size: expect.any(Number) });
   });
 
+  certifyLedgerEpochRecoveryFence({ test: it, fixture: handlerFixture });
   it("denies a hash-valid stored plan owned by a stale controller scope", async () => {
     const fixture = await handlerFixture();
     const plan = await fixture.seedScopeSwitched();
@@ -756,8 +756,8 @@ export async function handlerFixture(
       },
       readActiveRoot: async () => activeRoot,
       revalidatePostSwitchBindings: async () => undefined,
-      crashAfterPhase: "scope_switched",
-    })).rejects.toThrow("ledger_epoch_simulated_crash_after_scope_switched");
+      crashAfterPhase: "scope_switched_before_retirement",
+    })).rejects.toThrow("ledger_epoch_simulated_crash_after_scope_switched_before_retirement");
     return plan;
   };
   const seedPreparedV1 = async () => {

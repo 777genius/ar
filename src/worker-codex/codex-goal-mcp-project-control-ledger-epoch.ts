@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readdir, readFile, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
@@ -38,6 +37,11 @@ import { matchesProjectControlPrefix } from "./codex-goal-mcp-project-utils";
 import { projectControlWorkspaceLocks } from "./codex-goal-project-workspace-lock";
 import { durableConfirmFilePublication } from
   "./project-control-operation-file-store";
+import {
+  manifestFingerprint,
+  sha256Json,
+  stableControllerFingerprint,
+} from "./codex-goal-mcp-ledger-epoch-controller-identity";
 import {
   booleanValue,
   requiredRawString,
@@ -710,6 +714,16 @@ export async function projectControlLedgerEpochMigrationView(
       }),
       readActiveRoot: async () => {
         const current = await deps.loadProjectControlController(args);
+        if (current.controller.jobId !== lockedControllerJobId) {
+          throw new Error("ledger_epoch_controller_job_id_mismatch");
+        }
+        if (manifestFingerprint(current.controller) !== lockedManifestFingerprint) {
+          throw new Error("ledger_epoch_controller_manifest_cas_mismatch");
+        }
+        if (stableControllerFingerprint(current.controller) !==
+          plan.controllerStableScopeSha256) {
+          throw new Error("ledger_epoch_controller_stable_scope_drift");
+        }
         const roots = current.scope.consumedOutputLedgerRoots ?? [];
         if (roots.length !== 1) throw new Error("ledger_epoch_controller_scope_drift");
         return await canonicalConsumedOutputLedgerRoot(roots[0]!, true);
@@ -908,21 +922,6 @@ export function controllerScopeLockIdentity(
   controllerJobId: string,
 ): string {
   return codexGoalJobManifestPath({ registryRootDir, jobId: controllerJobId });
-}
-
-function manifestFingerprint(manifest: CodexGoalJobManifest): string {
-  return createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
-}
-
-function stableControllerFingerprint(manifest: CodexGoalJobManifest): string {
-  const scope = manifest.projectAccessScope
-    ? { ...manifest.projectAccessScope, consumedOutputLedgerRoots: undefined }
-    : undefined;
-  return sha256Json({ ...manifest, updatedAt: undefined, projectAccessScope: scope });
-}
-
-function sha256Json(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 async function assertControllerQuiescent(
