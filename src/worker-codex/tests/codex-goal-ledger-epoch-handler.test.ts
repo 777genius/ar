@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it as vitestIt, vi } from "vitest";
@@ -37,6 +36,13 @@ import {
   "./codex-goal-ledger-epoch-legacy-admission-fixture";
 import { buildLedgerEpochLegacyAdmissionAnchor } from
   "../application/project-control/codex-goal-ledger-epoch-legacy-admission";
+import { buildCodexProjectAdmissionSnapshot } from
+  "../application/project-control/codex-goal-project-admission";
+import {
+  exactTreeBytes,
+  sha256Json,
+  stableControllerFingerprint,
+} from "./codex-goal-ledger-epoch-handler-test-identity";
 const fixtureModuleOnly = process.env.CODEX_LEDGER_EPOCH_HANDLER_FIXTURE_ONLY === "1";
 const fixtureRoots = new Set<string>();
 if (!fixtureModuleOnly) afterAll(async () => {
@@ -69,6 +75,7 @@ const shardTestNames: Readonly<Record<string, readonly RegExp[]>> = {
     /^refuses a %i-item legacy admission near miss/,
   ],
   recovery: [
+    /^binds every preview, locked, and revalidation admission/,
     /^confirms a fresh preview/,
     /^resumes the immutable stored plan/,
     /^denies a hash-valid stored plan/,
@@ -473,9 +480,7 @@ describe("project control ledger epoch handler", () => {
   it("confirms a fresh preview under the actual publication locks", async () => {
     const fixture = await handlerFixture();
     const preview = await projectControlLedgerEpochMigrationView(
-      fixture.args(),
-      fixture.deps,
-    );
+      fixture.args(), fixture.deps);
     const planSha256 = String(preview.planSha256);
 
     await expect(projectControlLedgerEpochMigrationView(
@@ -508,9 +513,7 @@ describe("project control ledger epoch handler", () => {
       fixture.args({
         confirmLedgerEpochMigration: true,
         expectedLedgerEpochPlanSha256: plan.planSha256,
-      }),
-      fixture.deps,
-    );
+      }), fixture.deps);
     expect(completed).toMatchObject({
       ok: true,
       idempotentReplay: false,
@@ -617,13 +620,31 @@ describe("project control ledger epoch handler", () => {
       reason: "confirm_ledger_epoch_migration_required",
     });
   });
+
+  it("binds every preview, locked, and revalidation admission to the exact controller", async () => {
+    const fixture = await handlerFixture(undefined, true, false, true);
+    const preview = await projectControlLedgerEpochMigrationView(
+      fixture.args(),
+      fixture.deps,
+    );
+    await projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: String(preview.planSha256),
+      }),
+      fixture.deps,
+    );
+    expect(fixture.observedAdmissionControllerJobIds.length).toBeGreaterThanOrEqual(7);
+    expect(new Set(fixture.observedAdmissionControllerJobIds))
+      .toEqual(new Set(["social-monitor-controller-v4"]));
+  });
 });
 }
-
 export async function handlerFixture(
   legacyConsumedCount?: number,
   fastOrphanBoundaries = true,
   currentSocialDebt = false,
+  observeDefaultAdmission = false,
 ) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "ledger-epoch-handler-")));
   fixtureRoots.add(root);
@@ -795,6 +816,11 @@ export async function handlerFixture(
   let captureMutationAt = 2;
   let captureMutation: (() => Promise<void>) | undefined;
   let upgradeCrashAfter: string | undefined;
+  const observedAdmissionControllerJobIds: string[] = [];
+  const admissionDeps = {
+    listJobs: async () => [],
+    buildOverviewItems: async () => [],
+  };
   const postAdmissionCount = currentSocialDebt ? 266 : 414;
   let preparedBaselineRoot: string | undefined;
   let preparedBaselineController: Buffer | undefined;
@@ -808,6 +834,7 @@ export async function handlerFixture(
     },
     oldRoot,
     newRoot,
+    observedAdmissionControllerJobIds,
     oldScopeBytes: async () => ({
       controller: await exactTreeBytes(controllerJobRoot),
       oldRoot: await exactTreeBytes(oldRoot),
@@ -908,10 +935,23 @@ export async function handlerFixture(
     }),
     deps: {
       loadProjectControlController: async () => await load(),
-      admissionDeps: { listJobs: async () => [], buildOverviewItems: async () => [] },
-      ...(admissionSnapshot
-        ? { buildAdmissionSnapshot: async (input: { scope: ProjectAccessScope }) =>
-            input.scope.consumedOutputLedgerRoots?.[0] === newRoot
+      admissionDeps,
+      ...(admissionSnapshot || observeDefaultAdmission
+        ? { buildAdmissionSnapshot: async (input: {
+            scope: ProjectAccessScope;
+            controllerJobId: string;
+            allowPendingEpochOrphanQuarantine?: boolean;
+            skipActiveProposedAdmissionNormalization?: boolean;
+          }) => {
+            observedAdmissionControllerJobIds.push(input.controllerJobId);
+            if (!admissionSnapshot) {
+              return await buildCodexProjectAdmissionSnapshot({
+                registryRootDir,
+                ...input,
+                deps: admissionDeps,
+              });
+            }
+            return input.scope.consumedOutputLedgerRoots?.[0] === newRoot
               ? {
                   ...admissionSnapshot,
                   debt: [
@@ -926,7 +966,8 @@ export async function handlerFixture(
                     })),
                   ],
                 }
-              : admissionSnapshot }
+              : admissionSnapshot;
+          } }
         : {}),
       assertNoLegacyWriterProcesses: async () => {
         writerGuardCount += 1;
@@ -956,35 +997,4 @@ export async function handlerFixture(
       preparedV1UpgradeCrashAfter: () => upgradeCrashAfter,
     },
   };
-}
-
-async function exactTreeBytes(root: string): Promise<readonly string[]> {
-  const values: string[] = [];
-  const visit = async (path: string, relativePath: string): Promise<void> => {
-    const metadata = await stat(path);
-    if (metadata.isDirectory()) {
-      values.push(`d\0${relativePath}\0${metadata.mode}`);
-      for (const name of (await readdir(path)).sort()) {
-        await visit(join(path, name), relativePath ? `${relativePath}/${name}` : name);
-      }
-      return;
-    }
-    const bytes = await readFile(path);
-    values.push(`f\0${relativePath}\0${bytes.length}\0${createHash("sha256")
-      .update(bytes).digest("hex")}`);
-  };
-  await visit(root, "");
-  return values;
-}
-
-
-function stableControllerFingerprint(manifest: CodexGoalJobManifest): string {
-  const projectAccessScope = manifest.projectAccessScope
-    ? { ...manifest.projectAccessScope, consumedOutputLedgerRoots: undefined }
-    : undefined;
-  return sha256Json({ ...manifest, updatedAt: undefined, projectAccessScope });
-}
-
-function sha256Json(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }

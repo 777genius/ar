@@ -68,6 +68,7 @@ export async function projectControlImportFrozenOutputView(
       mode: "project_control_import_frozen_output",
       ...await publishFrozenOutputImport({
         custody: evidenceCustody,
+        scope: lockedController.scope,
         plan: locked,
         expectedPlanSha256,
       }),

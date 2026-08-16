@@ -20,6 +20,7 @@ import {
 export type LedgerEpochAdmissionSnapshotBuilder = (input: {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
+  readonly controllerJobId: string;
   readonly allowPendingEpochOrphanQuarantine?: boolean;
   readonly skipActiveProposedAdmissionNormalization?: boolean;
 }) => Promise<ProjectAdmissionSnapshot>;
@@ -27,6 +28,7 @@ export type LedgerEpochAdmissionSnapshotBuilder = (input: {
 export async function ledgerEpochAdmissionSummary(input: {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
+  readonly controllerJobId: string;
   readonly deps: CodexProjectAdmissionDeps;
   readonly snapshotBuilder?: LedgerEpochAdmissionSnapshotBuilder | undefined;
   readonly rejectBlocking?: boolean;
@@ -40,6 +42,7 @@ export async function ledgerEpochAdmissionSummary(input: {
   let snapshot = await buildRawLedgerEpochAdmissionSnapshot({
     registryRootDir: input.registryRootDir,
     scope: input.scope,
+    controllerJobId: input.controllerJobId,
     admissionDeps: input.deps,
     snapshotBuilder: input.snapshotBuilder,
     allowPendingEpochOrphanQuarantine: input.allowPendingEpochOrphanQuarantine,
@@ -91,6 +94,7 @@ function withoutCurrentUnpublishedLedgerDebt(
 export async function buildRawLedgerEpochAdmissionSnapshot(input: {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
+  readonly controllerJobId: string;
   readonly admissionDeps: CodexProjectAdmissionDeps;
   readonly snapshotBuilder?: LedgerEpochAdmissionSnapshotBuilder | undefined;
   readonly allowPendingEpochOrphanQuarantine?: boolean | undefined;
@@ -98,6 +102,7 @@ export async function buildRawLedgerEpochAdmissionSnapshot(input: {
   const common = {
     registryRootDir: input.registryRootDir,
     scope: input.scope,
+    controllerJobId: input.controllerJobId,
     ...(input.allowPendingEpochOrphanQuarantine === undefined ? {} : {
       allowPendingEpochOrphanQuarantine: input.allowPendingEpochOrphanQuarantine,
     }),

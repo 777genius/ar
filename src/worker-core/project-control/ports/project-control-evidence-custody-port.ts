@@ -7,7 +7,7 @@ export type ImmutableEvidenceFile = {
 
 export type EvidenceDirectoryEntry = {
   readonly name: string;
-  readonly kind: "file" | "directory" | "other";
+  readonly kind: "file" | "directory" | "symlink" | "other";
 };
 
 export type ImmutablePatchEvidence = Omit<ImmutableEvidenceFile, "bytes"> & {

@@ -265,6 +265,8 @@ export async function buildCodexProjectAdmissionSnapshot(
   const frozenProjection = input.deps.evidenceCustody
     ? await frozenOutputSupersessionProjection({
         custody: input.deps.evidenceCustody,
+        scope: input.scope,
+        registryRootDir: input.registryRootDir,
         evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
         ledgerRoots: input.scope.consumedOutputLedgerRoots ?? [],
         projectId: input.scope.projectId,

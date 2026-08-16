@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import type { ProjectAccessScope } from
   "@vioxen/subscription-runtime/worker-core";
+import type { ProjectControlEvidenceCustodyPort } from
+  "@vioxen/subscription-runtime/worker-core";
 import { LocalConsumedOutputLedgerWriter } from
   "@vioxen/subscription-runtime/worker-local";
 import { LocalProjectControlEvidenceCustody } from
@@ -33,6 +35,8 @@ import {
   frozenOutputSupersessionProjection,
   publishFrozenOutputImport,
 } from "../application/project-control/codex-goal-frozen-output-import";
+import { certifyFrozenOutputPhaseA, observingCustody } from
+  "./codex-goal-frozen-output-phase-a-certification";
 import { readCodexGoalConsumedOutputLedgers } from
   "../application/project-control/codex-goal-consumed-output-ledger-io";
 import { assertCanonicalLedgerRootsAllowed } from
@@ -446,12 +450,14 @@ describe("frozen output import and summary supersession", () => {
     const planSha256 = frozenOutputImportPlanSha256(plan);
     const first = await publishFrozenOutputImport({
       custody: evidenceCustody,
+      scope: fixture.scope,
       plan,
       expectedPlanSha256: planSha256,
       now: new Date("2026-08-15T00:00:00.000Z"),
     });
     const replay = await publishFrozenOutputImport({
       custody: evidenceCustody,
+      scope: fixture.scope,
       plan,
       expectedPlanSha256: planSha256,
     });
@@ -466,6 +472,8 @@ describe("frozen output import and summary supersession", () => {
 
     const projection = await frozenOutputSupersessionProjection({
       custody: evidenceCustody,
+      scope: fixture.scope,
+      registryRootDir: fixture.registry,
       evidenceRoots: [fixture.evidenceRoot],
       projectId: "p0",
       controllerJobId: "controller",
@@ -475,6 +483,8 @@ describe("frozen output import and summary supersession", () => {
     expect(projection.receipts).toHaveLength(1);
     const foreignController = await frozenOutputSupersessionProjection({
       custody: evidenceCustody,
+      scope: fixture.scope,
+      registryRootDir: fixture.registry,
       evidenceRoots: [fixture.evidenceRoot],
       projectId: "p0",
       controllerJobId: "foreign-controller",
@@ -489,6 +499,8 @@ describe("frozen output import and summary supersession", () => {
     }, null, 2)}\n`);
     const changed = await frozenOutputSupersessionProjection({
       custody: evidenceCustody,
+      scope: fixture.scope,
+      registryRootDir: fixture.registry,
       evidenceRoots: [fixture.evidenceRoot],
       summaries: [fixture.summary],
     });
@@ -496,6 +508,59 @@ describe("frozen output import and summary supersession", () => {
   });
 
   it("refuses traversal, symlinks, CAS/TOCTOU drift, clean, live, missing, and output-bearing summaries", async () => {
+    const unauthorizedSource = await frozenFixture();
+    const outsideSourceRoot = await mkdtemp(join(tmpdir(), "foreign-frozen-source-"));
+    remediationRoots.add(outsideSourceRoot);
+    const outsideSource = join(outsideSourceRoot, "output.patch");
+    await writeFile(outsideSource, "untrusted patch\n");
+    let outsideSourceInspections = 0;
+    const sourceCustody = observingCustody(evidenceCustody, (method, path) => {
+      if (method === "inspectImmutablePatch" && path === outsideSource) {
+        outsideSourceInspections += 1;
+      }
+    });
+    await expect(unauthorizedSource.plan({
+      sourcePath: outsideSource,
+      custody: sourceCustody,
+    })).rejects.toThrow("source_outside_project_read_scope");
+    expect(outsideSourceInspections).toBe(0);
+
+    const unauthorizedManifest = await frozenFixture();
+    const outsideManifest = join(outsideSourceRoot, "source-manifest.json");
+    await writeFile(outsideManifest, "{}\n");
+    let outsideManifestReads = 0;
+    const manifestCustody = observingCustody(evidenceCustody, (method, path) => {
+      if (method === "readImmutableFile" && path === outsideManifest) {
+        outsideManifestReads += 1;
+      }
+    });
+    await expect(unauthorizedManifest.plan({
+      sourceManifestPath: outsideManifest,
+      custody: manifestCustody,
+    })).rejects.toThrow("manifest_outside_project_read_scope");
+    expect(outsideManifestReads).toBe(0);
+
+    const unauthorizedRegistry = await frozenFixture();
+    let registryCustodyCalls = 0;
+    const registryCustody = observingCustody(evidenceCustody, () => {
+      registryCustodyCalls += 1;
+    });
+    await expect(unauthorizedRegistry.plan({
+      custody: registryCustody,
+      scope: {
+        projectId: "p0",
+        readRoots: [unauthorizedRegistry.sourceRoot],
+        consumedOutputEvidenceRoots: [unauthorizedRegistry.evidenceRoot],
+        ...(unauthorizedRegistry.scope.consumedOutputLedgerRoots
+          ? {
+              consumedOutputLedgerRoots:
+                unauthorizedRegistry.scope.consumedOutputLedgerRoots,
+            }
+          : {}),
+      },
+    })).rejects.toThrow("registry_outside_project_scope");
+    expect(registryCustodyCalls).toBe(0);
+
     const traversal = await frozenFixture();
     await expect(traversal.plan({ changedPaths: ["../escape"] }))
       .rejects.toThrow("changed_paths_invalid");
@@ -514,6 +579,7 @@ describe("frozen output import and summary supersession", () => {
     await writeFile(drift.sourcePath, "changed after preview\n");
     await expect(publishFrozenOutputImport({
       custody: evidenceCustody,
+      scope: drift.scope,
       plan,
       expectedPlanSha256: frozenOutputImportPlanSha256(plan),
     })).rejects.toThrow("source_drift");
@@ -535,6 +601,22 @@ describe("frozen output import and summary supersession", () => {
     await writeFile(legacyOutput, "{}\n");
     await expect(outputBearing.plan({ legacyOutputPath: legacyOutput }))
       .rejects.toThrow("output_bearing_refused");
+
+    const unauthorizedResult = await frozenFixture();
+    const externalResultRoot = await mkdtemp(join(tmpdir(), "foreign-result-"));
+    remediationRoots.add(externalResultRoot);
+    const externalResult = join(externalResultRoot, "result.json");
+    let externalResultKinds = 0;
+    const resultCustody = observingCustody(evidenceCustody, (method, path) => {
+      if (method === "pathKind" && path === externalResult) {
+        externalResultKinds += 1;
+      }
+    });
+    await expect(unauthorizedResult.plan({
+      legacyOutputPath: externalResult,
+      custody: resultCustody,
+    })).rejects.toThrow("path_outside_project_scope");
+    expect(externalResultKinds).toBe(0);
 
     const defaultOutputBearing = await frozenFixture();
     await writeFile(join(
@@ -570,6 +652,7 @@ describe("frozen output import and summary supersession", () => {
     await writeFile(retainedDrift.retainedOutputPath, "drifted retained output\n");
     await expect(publishFrozenOutputImport({
       custody: evidenceCustody,
+      scope: retainedDrift.scope,
       plan: retainedPlan,
       expectedPlanSha256: frozenOutputImportPlanSha256(retainedPlan),
     })).rejects.toThrow("source_drift");
@@ -582,6 +665,7 @@ describe("frozen output import and summary supersession", () => {
     ), "late result\n");
     await expect(publishFrozenOutputImport({
       custody: evidenceCustody,
+      scope: supersededOutputRace.scope,
       plan: supersededPlan,
       expectedPlanSha256: frozenOutputImportPlanSha256(supersededPlan),
     })).rejects.toThrow("output_bearing_refused");
@@ -597,6 +681,7 @@ describe("frozen output import and summary supersession", () => {
     );
     await expect(publishFrozenOutputImport({
       custody: evidenceCustody,
+      scope: supersededManifestRace.scope,
       plan: supersededManifestPlan,
       expectedPlanSha256: frozenOutputImportPlanSha256(
         supersededManifestPlan,
@@ -612,8 +697,16 @@ describe("frozen output import and summary supersession", () => {
       ...externalRetained.retainedManifest,
       outputPath: externalOutput,
     }, null, 2)}\n`);
-    await expect(externalRetained.plan())
+    let externalOutputReads = 0;
+    const externalCustody = observingCustody(evidenceCustody,
+      (method, path) => {
+        if (method === "readImmutableFile" && path === externalOutput) {
+          externalOutputReads += 1;
+        }
+      });
+    await expect(externalRetained.plan({ custody: externalCustody }))
       .rejects.toThrow("retained_output_outside_project_scope");
+    expect(externalOutputReads).toBe(0);
 
     const deniedRetained = await frozenFixture();
     const deniedRoot = join(deniedRetained.root, "denied-output");
@@ -639,12 +732,18 @@ describe("frozen output import and summary supersession", () => {
     })).rejects.toThrow("retained_output_outside_project_scope");
 
     const registryIdentity = await frozenFixture();
+    const selfAuthorizedRoot = join(outsideSourceRoot, "manifest-job-root");
     await writeFile(registryIdentity.legacyManifestPath, `${JSON.stringify({
       ...registryIdentity.legacyManifest,
-      jobRootDir: join(registryIdentity.registry, "different-job"),
+      jobRootDir: selfAuthorizedRoot,
     }, null, 2)}\n`);
-    await expect(registryIdentity.plan())
+    let selfAuthorizedRootCalls = 0;
+    const identityCustody = observingCustody(evidenceCustody, (_method, path) => {
+      if (path === selfAuthorizedRoot) selfAuthorizedRootCalls += 1;
+    });
+    await expect(registryIdentity.plan({ custody: identityCustody }))
       .rejects.toThrow("registry_identity_mismatch");
+    expect(selfAuthorizedRootCalls).toBe(0);
   });
 
   it("restores a superseded registration when a default result appears later", async () => {
@@ -652,6 +751,7 @@ describe("frozen output import and summary supersession", () => {
     const plan = await fixture.plan();
     await publishFrozenOutputImport({
       custody: evidenceCustody,
+      scope: fixture.scope,
       plan,
       expectedPlanSha256: frozenOutputImportPlanSha256(plan),
     });
@@ -661,6 +761,8 @@ describe("frozen output import and summary supersession", () => {
     ), "late authored result\n");
     const projection = await frozenOutputSupersessionProjection({
       custody: evidenceCustody,
+      scope: fixture.scope,
+      registryRootDir: fixture.registry,
       evidenceRoots: [fixture.evidenceRoot],
       projectId: "p0",
       controllerJobId: "controller",
@@ -668,6 +770,8 @@ describe("frozen output import and summary supersession", () => {
     });
     expect(projection.active).toEqual([fixture.summary]);
   });
+
+  certifyFrozenOutputPhaseA({ custody: evidenceCustody, fixture: frozenFixture });
 
   it("rejects intermediate symlink and root-swap publication without external writes", async () => {
     const linked = await frozenFixture();
@@ -677,6 +781,7 @@ describe("frozen output import and summary supersession", () => {
     await symlink(outside, join(linked.evidenceRoot, "frozen-output-imports"), "dir");
     await expect(publishFrozenOutputImport({
       custody: evidenceCustody,
+      scope: linked.scope,
       plan,
       expectedPlanSha256: frozenOutputImportPlanSha256(plan),
     })).rejects.toThrow("ancestor_unsafe");
@@ -691,6 +796,7 @@ describe("frozen output import and summary supersession", () => {
     await symlink(outsideRoot, swapped.evidenceRoot, "dir");
     await expect(publishFrozenOutputImport({
       custody: evidenceCustody,
+      scope: swapped.scope,
       plan: swappedPlan,
       expectedPlanSha256: frozenOutputImportPlanSha256(swappedPlan),
     })).rejects.toThrow("root_noncanonical");
@@ -795,11 +901,13 @@ async function frozenFixture() {
   }, null, 2)}\n`);
   return {
     root, registry, sourceRoot, sourcePath, sourceManifestPath, sourceSha256,
+    scope,
     evidenceRoot, workspace, retainedOutputPath,
     retainedManifest, retainedManifestPath,
     legacyManifest, legacyManifestPath, summary,
     plan: async (override: Partial<{
       sourcePath: string;
+      sourceManifestPath: string;
       expectedSourceSha256: string;
       changedPaths: readonly string[];
       workspaceDirty: boolean;
@@ -808,6 +916,7 @@ async function frozenFixture() {
       legacyOutputPath: string;
       scope: ProjectAccessScope;
       observedResultExists: boolean;
+      custody: ProjectControlEvidenceCustodyPort;
     }> = {}) => {
       const candidate = {
         ...legacyManifest,
@@ -818,7 +927,7 @@ async function frozenFixture() {
         await writeFile(legacyManifestPath, `${JSON.stringify(candidate, null, 2)}\n`);
       }
       return await buildFrozenOutputImportPlan({
-        custody: evidenceCustody,
+        custody: override.custody ?? evidenceCustody,
         scope: override.scope ?? scope,
         registryRootDir: registry,
         controllerJobId: "controller",
@@ -826,7 +935,7 @@ async function frozenFixture() {
         sourcePath: override.sourcePath ?? sourcePath,
         expectedSourceSha256: override.expectedSourceSha256 ?? sourceSha256,
         expectedSourceLength: (await readFile(sourcePath)).length,
-        sourceManifestPath,
+        sourceManifestPath: override.sourceManifestPath ?? sourceManifestPath,
         expectedSourceManifestSha256: sha(await readFile(sourceManifestPath)),
         destinationEvidenceRoot: evidenceRoot,
         destinationLedgerRoot: ledgerRoot,
@@ -850,7 +959,6 @@ async function frozenFixture() {
     },
   };
 }
-
 function manifestFor(jobId: string, workspacePath: string, jobRootDir: string): CodexGoalJobManifest {
   return {
     schemaVersion: 1,

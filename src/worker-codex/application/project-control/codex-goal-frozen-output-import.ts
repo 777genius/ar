@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { join, relative, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type {
   ImmutablePatchEvidence,
   ProjectAccessScope,
@@ -9,6 +9,22 @@ import type {
 import type { CodexGoalJobManifest, CodexGoalJobSummary } from
   "../../codex-goal-jobs";
 import { parseCodexGoalJobManifest } from "../../codex-goal-jobs";
+import {
+  assertFrozenOutputReadAllowed,
+  buildFrozenOutputPathAuthorization,
+  canonicalFrozenOutputPathAuthorization,
+  frozenOutputPathsEqual,
+  type FrozenOutputPathAuthorization,
+  type FrozenOutputPathClass,
+} from "./codex-goal-frozen-output-authorization";
+import {
+  exactKeys,
+  gitObject,
+  inside,
+  matchesPrefix,
+  plainObject,
+  safeChangedPath,
+} from "./codex-goal-frozen-output-validation";
 
 export type FrozenOutputSupersededSummary = {
   readonly jobId: string;
@@ -115,38 +131,34 @@ export async function buildFrozenOutputImportPlan(input: {
     readonly observedResultPath?: string;
   }[];
 }): Promise<FrozenOutputImportPlan> {
-  const registryRootDir = await input.custody.canonicalDirectory(
-    input.registryRootDir,
-  );
-  if (input.scope.registryRoot !== undefined &&
-    await input.custody.canonicalDirectory(input.scope.registryRoot) !==
-      registryRootDir) {
-    throw new Error("frozen_output_registry_scope_mismatch");
-  }
-  const sourceRoots = await canonicalRoots(input.custody, input.scope.readRoots ?? []);
-  const deniedRoots = await canonicalRoots(input.custody,
-    input.scope.deniedRoots ?? [], true);
-  const evidenceRoots = await canonicalRoots(
-    input.custody, input.scope.consumedOutputEvidenceRoots ?? [],
-  );
-  const ledgerRoots = await canonicalRoots(
-    input.custody, input.scope.consumedOutputLedgerRoots ?? [],
-  );
-  const ownershipRoots = await canonicalRoots(input.custody, [
-    ...(input.scope.readRoots ?? []), ...(input.scope.workspaceRoots ?? []),
-    ...(input.scope.worktreeRoots ?? []),
-    ...(input.scope.observedWorkspaceRoots ?? []),
-    ...(input.scope.isolatedWorkspaceRoot
-      ? [input.scope.isolatedWorkspaceRoot]
-      : []),
-    ...(input.scope.registryRoot ? [input.scope.registryRoot] : []),
-  ]);
-  for (const root of [...evidenceRoots, ...ledgerRoots]) {
-    if (!ownershipRoots.some((owned) => inside(root, owned)) ||
-      deniedRoots.some((denied) => inside(root, denied) || inside(denied, root))) {
-      throw new Error("frozen_output_custody_root_outside_project_scope");
+  const lexicalAuthorization = buildFrozenOutputPathAuthorization({
+    scope: input.scope,
+    registryRootDir: input.registryRootDir,
+  });
+  assertFrozenOutputReadAllowed(lexicalAuthorization, input.sourcePath, "read",
+    "frozen_output_source_outside_project_read_scope");
+  assertFrozenOutputReadAllowed(lexicalAuthorization, input.sourceManifestPath,
+    "read", "frozen_output_manifest_outside_project_read_scope");
+  assertExpectedRegistryManifestPath(lexicalAuthorization,
+    input.retainedRegistrationJobId, input.retainedManifestPath);
+  for (const candidate of input.superseded) {
+    assertExpectedRegistryManifestPath(lexicalAuthorization, candidate.jobId,
+      candidate.manifestPath);
+    if (candidate.observedResultPath !== undefined) {
+      assertFrozenOutputReadAllowed(lexicalAuthorization,
+        candidate.observedResultPath, "project");
     }
   }
+  assertFrozenOutputReadAllowed(lexicalAuthorization,
+    input.destinationEvidenceRoot, "evidence",
+    "frozen_output_destination_outside_evidence_scope");
+  assertFrozenOutputReadAllowed(lexicalAuthorization,
+    input.destinationLedgerRoot, "ledger",
+    "frozen_output_destination_outside_ledger_scope");
+  const authorization = await canonicalFrozenOutputPathAuthorization(
+    input.custody, lexicalAuthorization,
+  );
+  const registryRootDir = authorization.registryRoot;
   if (input.changedPaths.length === 0 || input.changedPaths.length > 10_000 ||
     new Set(input.changedPaths).size !== input.changedPaths.length ||
     input.changedPaths.some((path) => !safeChangedPath(path))) {
@@ -155,17 +167,12 @@ export async function buildFrozenOutputImportPlan(input: {
   const source = await input.custody.inspectImmutablePatch(
     input.sourcePath, 64 * 1024 * 1024,
   );
-  const sourceManifest = await immutableFileIdentity(input.custody,
-    input.sourceManifestPath, 1024 * 1024);
+  assertFrozenOutputReadAllowed(authorization, source.canonicalPath, "read",
+    "frozen_output_source_outside_project_read_scope");
+  const sourceManifest = await authorizedImmutableFileIdentity(input.custody,
+    lexicalAuthorization, authorization, input.sourceManifestPath, "read",
+    1024 * 1024, "frozen_output_manifest_outside_project_read_scope");
   const authoritativeManifest = parseSourceManifest(sourceManifest.bytes);
-  if (!sourceRoots.some((root) => inside(source.canonicalPath, root)) ||
-    deniedRoots.some((root) => inside(source.canonicalPath, root))) {
-    throw new Error("frozen_output_source_outside_project_read_scope");
-  }
-  if (!sourceRoots.some((root) => inside(sourceManifest.path, root)) ||
-    deniedRoots.some((root) => inside(sourceManifest.path, root))) {
-    throw new Error("frozen_output_manifest_outside_project_read_scope");
-  }
   if (source.sha256 !== input.expectedSourceSha256.toLowerCase() ||
     source.length !== input.expectedSourceLength) {
     throw new Error("frozen_output_source_cas_mismatch");
@@ -182,18 +189,19 @@ export async function buildFrozenOutputImportPlan(input: {
     throw new Error("frozen_output_source_manifest_cas_mismatch");
   }
   const destinationEvidenceRoot = resolve(input.destinationEvidenceRoot);
-  if (!evidenceRoots.includes(destinationEvidenceRoot)) {
+  if (!authorization.evidenceRoots.includes(destinationEvidenceRoot)) {
     throw new Error("frozen_output_destination_outside_evidence_scope");
   }
   const destinationLedgerRoot = resolve(input.destinationLedgerRoot);
-  if (!ledgerRoots.includes(destinationLedgerRoot)) {
+  if (!authorization.ledgerRoots.includes(destinationLedgerRoot)) {
     throw new Error("frozen_output_destination_outside_ledger_scope");
   }
   if (!gitObject(input.baseCommit) || !gitObject(input.headCommit)) {
     throw new Error("frozen_output_git_identity_invalid");
   }
-  const retainedManifest = await immutableFileIdentity(input.custody,
-    input.retainedManifestPath, 1024 * 1024);
+  const retainedManifest = await authorizedImmutableFileIdentity(input.custody,
+    lexicalAuthorization, authorization, input.retainedManifestPath, "registry",
+    1024 * 1024);
   if (retainedManifest.sha256 !== input.expectedRetainedManifestSha256.toLowerCase()) {
     throw new Error("frozen_output_retained_manifest_cas_mismatch");
   }
@@ -211,21 +219,16 @@ export async function buildFrozenOutputImportPlan(input: {
   const retainedJobRootDir = await input.custody.canonicalDirectory(
     retainedRegistration.jobRootDir,
   );
-  const authorizedRetainedOutputRoots = [...new Set([
-    retainedJobRootDir,
-    ...ownershipRoots,
-  ])].sort();
+  assertFrozenOutputReadAllowed(authorization, retainedJobRootDir, "registry");
+  const authorizedRetainedOutputRoots = [...authorization.projectRoots];
   const retainedOutputPath = resolve(retainedRegistration.outputPath ?? join(
     retainedJobRootDir,
     `${retainedRegistration.taskId}.latest-result.json`,
   ));
-  const retainedOutput = await immutableFileIdentity(input.custody,
-    retainedOutputPath);
-  if (!authorizedRetainedOutputRoots.some((root) =>
-      inside(retainedOutput.path, root)) ||
-    deniedRoots.some((root) => inside(retainedOutput.path, root))) {
-    throw new Error("frozen_output_retained_output_outside_project_scope");
-  }
+  const retainedOutput = await authorizedImmutableFileIdentity(input.custody,
+    lexicalAuthorization, authorization, retainedOutputPath, "project",
+    64 * 1024 * 1024,
+    "frozen_output_retained_output_outside_project_scope");
   if (retainedOutput.length === 0 ||
     retainedOutput.sha256 !== input.expectedRetainedOutputSha256.toLowerCase()) {
     throw new Error("frozen_output_retained_output_cas_mismatch");
@@ -253,8 +256,9 @@ export async function buildFrozenOutputImportPlan(input: {
     if (!candidate.workspaceDirty) {
       throw new Error("frozen_output_legacy_dirty_workspace_required");
     }
-    const identity = await immutableFileIdentity(input.custody,
-      candidate.manifestPath, 1024 * 1024);
+    const identity = await authorizedImmutableFileIdentity(input.custody,
+      lexicalAuthorization, authorization, candidate.manifestPath, "registry",
+      1024 * 1024);
     if (identity.sha256 !== candidate.expectedManifestSha256.toLowerCase()) {
       throw new Error("frozen_output_legacy_manifest_cas_mismatch");
     }
@@ -272,15 +276,20 @@ export async function buildFrozenOutputImportPlan(input: {
       throw new Error("frozen_output_legacy_job_prefix_mismatch");
     }
     const effectiveOutputPath = effectiveResultPath(candidateManifest);
+    assertFrozenOutputReadAllowed(lexicalAuthorization, effectiveOutputPath,
+      "project");
     if (candidate.observedResultPath !== undefined &&
       resolve(candidate.observedResultPath) !== effectiveOutputPath) {
       throw new Error("frozen_output_observed_result_path_mismatch");
     }
     await assertRegistrationOutputAbsent(input.custody, candidateManifest,
-      candidate.observedResultExists);
+      candidate.observedResultExists, lexicalAuthorization, authorization);
+    assertFrozenOutputReadAllowed(lexicalAuthorization,
+      candidateManifest.workspacePath, "project");
     const workspacePath = await input.custody.canonicalDirectory(
       candidateManifest.workspacePath,
     );
+    assertFrozenOutputReadAllowed(authorization, workspacePath, "project");
     if (workspacePath !== resolve(candidateManifest.workspacePath)) {
       throw new Error("frozen_output_legacy_workspace_noncanonical");
     }
@@ -320,7 +329,7 @@ export async function buildFrozenOutputImportPlan(input: {
     retainedOutputPath: retainedOutput.path,
     retainedOutputSha256: retainedOutput.sha256,
     authorizedRetainedOutputRoots,
-    deniedRoots: [...deniedRoots].sort(),
+    deniedRoots: [...authorization.deniedRoots].sort(),
     supersededSummaries: supersededSummaries.sort((a, b) =>
       a.jobId.localeCompare(b.jobId)
     ),
@@ -329,6 +338,7 @@ export async function buildFrozenOutputImportPlan(input: {
 
 export async function publishFrozenOutputImport(input: {
   readonly custody: ProjectControlEvidenceCustodyPort;
+  readonly scope: ProjectAccessScope;
   readonly plan: FrozenOutputImportPlan;
   readonly expectedPlanSha256: string;
   readonly now?: Date;
@@ -337,14 +347,53 @@ export async function publishFrozenOutputImport(input: {
   if (planSha256 !== input.expectedPlanSha256.toLowerCase()) {
     throw new Error("frozen_output_import_plan_cas_mismatch");
   }
+  const lexicalAuthorization = buildFrozenOutputPathAuthorization({
+    scope: input.scope,
+    registryRootDir: input.plan.registryRootDir,
+  });
+  assertFrozenOutputReadAllowed(lexicalAuthorization, input.plan.sourcePath,
+    "read");
+  assertFrozenOutputReadAllowed(lexicalAuthorization,
+    input.plan.sourceManifestPath, "read");
+  assertExpectedRegistryManifestPath(lexicalAuthorization,
+    input.plan.retainedRegistrationJobId, input.plan.retainedManifestPath);
+  assertFrozenOutputReadAllowed(lexicalAuthorization,
+    input.plan.retainedOutputPath, "project");
+  assertFrozenOutputReadAllowed(lexicalAuthorization,
+    input.plan.destinationEvidenceRoot, "evidence");
+  assertFrozenOutputReadAllowed(lexicalAuthorization,
+    input.plan.destinationLedgerRoot, "ledger");
+  for (const expected of input.plan.supersededSummaries) {
+    assertExpectedRegistryManifestPath(lexicalAuthorization, expected.jobId,
+      expected.manifestPath);
+    assertFrozenOutputReadAllowed(lexicalAuthorization, expected.workspacePath,
+      "project");
+    assertFrozenOutputReadAllowed(lexicalAuthorization,
+      expected.effectiveOutputPath, "project");
+  }
+  const authorization = await canonicalFrozenOutputPathAuthorization(
+    input.custody, lexicalAuthorization,
+  );
+  const plannedAuthorization: FrozenOutputPathAuthorization = {
+    ...authorization,
+    projectRoots: [...input.plan.authorizedRetainedOutputRoots],
+    deniedRoots: [...input.plan.deniedRoots],
+  };
+  if (!frozenOutputPathsEqual(authorization, plannedAuthorization)) {
+    throw new Error("frozen_output_import_authorization_drift");
+  }
   // Re-read source identities after the plan was built. The copy routine also
   // holds an O_NOFOLLOW handle and checks the inode/size again after reading.
   const [source, sourceManifest, retainedManifest, retainedOutput] = await Promise.all([
     input.custody.inspectImmutablePatch(input.plan.sourcePath, 64 * 1024 * 1024),
-    readImmutableBytes(input.custody, input.plan.sourceManifestPath, 1024 * 1024),
-    readImmutableBytes(input.custody, input.plan.retainedManifestPath, 1024 * 1024),
-    readImmutableBytes(input.custody, input.plan.retainedOutputPath),
+    authorizedReadImmutableBytes(input.custody, lexicalAuthorization,
+      authorization, input.plan.sourceManifestPath, "read", 1024 * 1024),
+    authorizedReadImmutableBytes(input.custody, lexicalAuthorization,
+      authorization, input.plan.retainedManifestPath, "registry", 1024 * 1024),
+    authorizedReadImmutableBytes(input.custody, lexicalAuthorization,
+      authorization, input.plan.retainedOutputPath, "project"),
   ]);
+  assertFrozenOutputReadAllowed(authorization, source.canonicalPath, "read");
   if (source.sha256 !== input.plan.sourceSha256 || source.length !== input.plan.sourceLength ||
     sourceManifest.sha256 !== input.plan.sourceManifestSha256 ||
     retainedManifest.sha256 !== input.plan.retainedManifestSha256 ||
@@ -352,19 +401,19 @@ export async function publishFrozenOutputImport(input: {
     throw new Error("frozen_output_import_source_drift");
   }
   const retainedRegistration = parseJobManifest(retainedManifest.bytes);
-  const [registryRootDir, retainedJobRootDir, authorizedRetainedOutputRoots,
-    deniedRoots] = await Promise.all([
-    input.custody.canonicalDirectory(input.plan.registryRootDir),
-    input.custody.canonicalDirectory(retainedRegistration.jobRootDir),
-    canonicalRoots(input.custody, input.plan.authorizedRetainedOutputRoots),
-    canonicalRoots(input.custody, input.plan.deniedRoots, true),
-  ]);
+  const registryRootDir = authorization.registryRoot;
   assertRegistryManifestIdentity({
     registryRootDir,
     manifestPath: input.plan.retainedManifestPath,
     manifest: retainedRegistration,
     expectedJobId: input.plan.retainedRegistrationJobId,
   });
+  const retainedJobRootDir = await input.custody.canonicalDirectory(
+    retainedRegistration.jobRootDir,
+  );
+  assertFrozenOutputReadAllowed(authorization, retainedJobRootDir, "registry");
+  const authorizedRetainedOutputRoots = authorization.projectRoots;
+  const deniedRoots = authorization.deniedRoots;
   const currentRetainedOutputPath = effectiveResultPath(retainedRegistration);
   if (registryRootDir !== input.plan.registryRootDir ||
     retainedJobRootDir !== input.plan.retainedJobRootDir ||
@@ -378,8 +427,9 @@ export async function publishFrozenOutputImport(input: {
     throw new Error("frozen_output_import_retained_authorization_drift");
   }
   for (const expected of input.plan.supersededSummaries) {
-    const current = await immutableFileIdentity(input.custody,
-      expected.manifestPath, 1024 * 1024);
+    const current = await authorizedImmutableFileIdentity(input.custody,
+      lexicalAuthorization, authorization, expected.manifestPath, "registry",
+      1024 * 1024);
     if (current.sha256 !== expected.manifestSha256) {
       throw new Error("frozen_output_import_superseded_manifest_drift");
     }
@@ -390,13 +440,21 @@ export async function publishFrozenOutputImport(input: {
       manifest,
       expectedJobId: expected.jobId,
     });
-    if (effectiveResultPath(manifest) !== expected.effectiveOutputPath ||
-      await input.custody.canonicalDirectory(manifest.workspacePath) !==
-        expected.workspacePath) {
+    const effectiveOutputPath = effectiveResultPath(manifest);
+    assertFrozenOutputReadAllowed(lexicalAuthorization, effectiveOutputPath,
+      "project");
+    assertFrozenOutputReadAllowed(lexicalAuthorization, manifest.workspacePath,
+      "project");
+    const workspacePath = await input.custody.canonicalDirectory(
+      manifest.workspacePath,
+    );
+    assertFrozenOutputReadAllowed(authorization, workspacePath, "project");
+    if (effectiveOutputPath !== expected.effectiveOutputPath ||
+      workspacePath !== expected.workspacePath) {
       throw new Error("frozen_output_import_superseded_identity_drift");
     }
     await assertRegistrationOutputAbsent(input.custody, manifest,
-      expected.observedResultExists);
+      expected.observedResultExists, lexicalAuthorization, authorization);
   }
   const importRoot = join(
     input.plan.destinationEvidenceRoot,
@@ -416,6 +474,10 @@ export async function publishFrozenOutputImport(input: {
     ledgerRegistrationRoot,
     `${planSha256}.json`,
   );
+  assertFrozenOutputReadAllowed(lexicalAuthorization, importRoot, "evidence");
+  assertFrozenOutputReadAllowed(lexicalAuthorization, receiptPath, "evidence");
+  assertFrozenOutputReadAllowed(lexicalAuthorization, ledgerRegistrationPath,
+    "ledger");
   const importDirectories = ["frozen-output-imports", planSha256];
   await Promise.all([
     input.custody.copyImmutableFile({
@@ -464,8 +526,9 @@ export async function publishFrozenOutputImport(input: {
   };
   let receipt = candidateReceipt;
   try {
-    const prepared = parseReceipt(decode((await input.custody.readImmutableFile(
-      ledgerRegistrationPath, 4 * 1024 * 1024,
+    const prepared = parseReceipt(decode((await authorizedReadImmutableBytes(
+      input.custody, lexicalAuthorization, authorization,
+      ledgerRegistrationPath, "ledger", 4 * 1024 * 1024,
     )).bytes));
     if (prepared.planSha256 !== planSha256 ||
       frozenOutputImportPlanSha256(planFromReceipt(prepared)) !== planSha256) {
@@ -497,6 +560,8 @@ export async function publishFrozenOutputImport(input: {
 
 export async function frozenOutputSupersessionProjection(input: {
   readonly custody: ProjectControlEvidenceCustodyPort;
+  readonly scope: ProjectAccessScope;
+  readonly registryRootDir: string;
   readonly evidenceRoots: readonly string[];
   readonly ledgerRoots?: readonly string[];
   readonly projectId?: string;
@@ -506,9 +571,25 @@ export async function frozenOutputSupersessionProjection(input: {
   readonly active: readonly CodexGoalJobSummary[];
   readonly receipts: readonly FrozenOutputImportReceipt[];
 }> {
+  const lexicalAuthorization = buildFrozenOutputPathAuthorization({
+    scope: input.scope,
+    registryRootDir: input.registryRootDir,
+  });
+  for (const evidenceRoot of input.evidenceRoots) {
+    assertFrozenOutputReadAllowed(lexicalAuthorization, evidenceRoot, "evidence");
+  }
+  for (const ledgerRoot of input.ledgerRoots ?? []) {
+    assertFrozenOutputReadAllowed(lexicalAuthorization, ledgerRoot, "ledger");
+  }
+  const authorization = await canonicalFrozenOutputPathAuthorization(
+    input.custody, lexicalAuthorization,
+  );
   const receipts: FrozenOutputImportReceipt[] = [];
   for (const evidenceRoot of input.evidenceRoots) {
     const root = join(evidenceRoot, "frozen-output-imports");
+    assertFrozenOutputReadAllowed(lexicalAuthorization, root, "evidence");
+    const canonicalRoot = await input.custody.canonicalDirectory(root, true);
+    assertFrozenOutputReadAllowed(authorization, canonicalRoot, "evidence");
     let entries;
     try {
       entries = await input.custody.listDirectory(root);
@@ -516,15 +597,17 @@ export async function frozenOutputSupersessionProjection(input: {
     for (const entry of entries) {
       if (entry.kind !== "directory") continue;
       const path = join(root, entry.name, "receipt.json");
+      assertFrozenOutputReadAllowed(lexicalAuthorization, path, "evidence");
       try {
-        const receipt = parseReceipt(decode((await input.custody.readImmutableFile(
-          path, 4 * 1024 * 1024,
+        const receipt = parseReceipt(decode((await authorizedReadImmutableBytes(
+          input.custody, lexicalAuthorization, authorization, path, "evidence",
+          4 * 1024 * 1024,
         )).bytes));
         if ((input.projectId !== undefined && receipt.projectId !== input.projectId) ||
           (input.controllerJobId !== undefined &&
             receipt.controllerJobId !== input.controllerJobId)) continue;
         await verifyFrozenOutputReceipt(input.custody, receipt, path, evidenceRoot,
-          input);
+          input, lexicalAuthorization, authorization);
         receipts.push(receipt);
       } catch (error) {
         if (nodeErrorCode(error) !== "ENOENT") throw error;
@@ -541,15 +624,18 @@ export async function frozenOutputSupersessionProjection(input: {
       active.push(summary);
       continue;
     }
-    const current = await immutableFileIdentity(input.custody,
-      summary.manifestPath, 1024 * 1024);
+    assertExpectedRegistryManifestPath(lexicalAuthorization, summary.jobId,
+      summary.manifestPath);
+    const current = await authorizedImmutableFileIdentity(input.custody,
+      lexicalAuthorization, authorization, summary.manifestPath, "registry",
+      1024 * 1024);
     const matched = candidates.some((expected) =>
       expected.manifestPath === resolve(summary.manifestPath) &&
       expected.workspacePath === resolve(summary.workspacePath) &&
       current.sha256 === expected.manifestSha256
     );
     if (!matched || await registrationHasOutput(input.custody,
-      parseJobManifest(current.bytes))) {
+      parseJobManifest(current.bytes), lexicalAuthorization, authorization)) {
       active.push(summary);
     }
   }
@@ -559,27 +645,48 @@ export async function frozenOutputSupersessionProjection(input: {
   };
 }
 
-async function canonicalRoots(custody: ProjectControlEvidenceCustodyPort,
-  inputs: readonly string[], allowMissing = false): Promise<string[]> {
-  return await Promise.all(inputs.map(async (input) => {
-    return await custody.canonicalDirectory(input, allowMissing);
-  }));
-}
-
-async function immutableFileIdentity(custody: ProjectControlEvidenceCustodyPort,
-  path: string, maxBytes = 64 * 1024 * 1024) {
-  const read = await readImmutableBytes(custody, path, maxBytes);
-  return {
-    path: resolve(path), sha256: read.sha256, length: read.length, bytes: read.bytes,
-  };
-}
-
 async function readImmutableBytes(custody: ProjectControlEvidenceCustodyPort,
   path: string, maxBytes = 64 * 1024 * 1024): Promise<{
-  readonly bytes: Uint8Array; readonly sha256: string; readonly length: number;
+  readonly canonicalPath: string; readonly bytes: Uint8Array;
+  readonly sha256: string; readonly length: number;
 }> {
   const file = await custody.readImmutableFile(path, maxBytes);
-  return { bytes: file.bytes, sha256: file.sha256, length: file.length };
+  return file;
+}
+
+async function authorizedReadImmutableBytes(
+  custody: ProjectControlEvidenceCustodyPort,
+  lexical: FrozenOutputPathAuthorization,
+  canonical: FrozenOutputPathAuthorization,
+  path: string,
+  pathClass: FrozenOutputPathClass,
+  maxBytes = 64 * 1024 * 1024,
+  errorCode?: string,
+) {
+  assertFrozenOutputReadAllowed(lexical, path, pathClass, errorCode);
+  const file = await readImmutableBytes(custody, path, maxBytes);
+  assertFrozenOutputReadAllowed(canonical, file.canonicalPath, pathClass,
+    errorCode);
+  return file;
+}
+
+async function authorizedImmutableFileIdentity(
+  custody: ProjectControlEvidenceCustodyPort,
+  lexical: FrozenOutputPathAuthorization,
+  canonical: FrozenOutputPathAuthorization,
+  path: string,
+  pathClass: FrozenOutputPathClass,
+  maxBytes = 64 * 1024 * 1024,
+  errorCode?: string,
+) {
+  const read = await authorizedReadImmutableBytes(custody, lexical, canonical,
+    path, pathClass, maxBytes, errorCode);
+  return {
+    path: read.canonicalPath,
+    sha256: read.sha256,
+    length: read.length,
+    bytes: read.bytes,
+  };
 }
 
 function planFromReceipt(receipt: FrozenOutputImportReceipt): FrozenOutputImportPlan {
@@ -618,6 +725,8 @@ async function verifyFrozenOutputReceipt(
     readonly projectId?: string;
     readonly controllerJobId?: string;
   },
+  lexicalPaths: FrozenOutputPathAuthorization,
+  canonicalPaths: FrozenOutputPathAuthorization,
 ): Promise<void> {
   if (receipt.receiptPath !== resolve(receiptPath) ||
     receipt.destinationEvidenceRoot !== resolve(evidenceRoot) ||
@@ -629,25 +738,38 @@ async function verifyFrozenOutputReceipt(
       receipt.projectId !== authorization.projectId) ||
     (authorization.controllerJobId !== undefined &&
       receipt.controllerJobId !== authorization.controllerJobId) ||
+    receipt.registryRootDir !== lexicalPaths.registryRoot ||
     (authorization.ledgerRoots !== undefined &&
       !authorization.ledgerRoots.map((root) => resolve(root))
-        .includes(receipt.destinationLedgerRoot))) {
+        .includes(receipt.destinationLedgerRoot)) ||
+    !inside(receipt.ledgerRegistrationPath, receipt.destinationLedgerRoot)) {
     throw new Error("frozen_output_import_receipt_scope_mismatch");
   }
+  for (const path of [receipt.custodyOutputPath,
+    receipt.custodySourceManifestPath, receipt.custodyRetainedManifestPath,
+    receipt.custodyRetainedOutputPath]) {
+    assertFrozenOutputReadAllowed(lexicalPaths, path, "evidence");
+  }
+  assertFrozenOutputReadAllowed(lexicalPaths, receipt.ledgerRegistrationPath,
+    "ledger");
   const [output, sourceManifest, retainedManifest, retainedOutput,
     ledgerRegistration] = await Promise.all([
-    immutableFileIdentity(custody, receipt.custodyOutputPath),
-    immutableFileIdentity(custody, receipt.custodySourceManifestPath),
-    immutableFileIdentity(custody, receipt.custodyRetainedManifestPath),
-    immutableFileIdentity(custody, receipt.custodyRetainedOutputPath),
-    immutableFileIdentity(custody, receipt.ledgerRegistrationPath),
+    authorizedImmutableFileIdentity(custody, lexicalPaths, canonicalPaths,
+      receipt.custodyOutputPath, "evidence"),
+    authorizedImmutableFileIdentity(custody, lexicalPaths, canonicalPaths,
+      receipt.custodySourceManifestPath, "evidence"),
+    authorizedImmutableFileIdentity(custody, lexicalPaths, canonicalPaths,
+      receipt.custodyRetainedManifestPath, "evidence"),
+    authorizedImmutableFileIdentity(custody, lexicalPaths, canonicalPaths,
+      receipt.custodyRetainedOutputPath, "evidence"),
+    authorizedImmutableFileIdentity(custody, lexicalPaths, canonicalPaths,
+      receipt.ledgerRegistrationPath, "ledger"),
   ]);
   if (output.sha256 !== receipt.sourceSha256 ||
     output.length !== receipt.sourceLength ||
     sourceManifest.sha256 !== receipt.sourceManifestSha256 ||
     retainedManifest.sha256 !== receipt.retainedManifestSha256 ||
     retainedOutput.sha256 !== receipt.retainedOutputSha256 ||
-    !inside(receipt.ledgerRegistrationPath, receipt.destinationLedgerRoot) ||
     ledgerRegistration.sha256 !== sha256(
       Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`),
     )) {
@@ -758,35 +880,6 @@ function assertPatchDescriptor(evidence: ImmutablePatchEvidence, expected: {
   }
 }
 
-function plainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actual = Object.keys(value).sort();
-  return actual.length === keys.length && keys.every((key, index) =>
-    actual[index] === [...keys].sort()[index]);
-}
-
-function inside(path: string, root: string): boolean {
-  const child = relative(root, path);
-  return child === "" || (child !== ".." && !child.startsWith(`..${sep}`));
-}
-
-function safeChangedPath(path: string): boolean {
-  return path.length > 0 && path.length <= 1024 && !path.startsWith("/") &&
-    path.split(/[\\/]/).every((part) => part !== "" && part !== "." && part !== "..");
-}
-
-function gitObject(value: string): boolean {
-  return /^[a-f0-9]{40}([a-f0-9]{24})?$/i.test(value);
-}
-
-function matchesPrefix(jobId: string, prefixes: readonly string[]): boolean {
-  return prefixes.length > 0 && prefixes.some((prefix) =>
-    prefix.length > 0 && jobId.startsWith(prefix));
-}
-
 function effectiveResultPath(manifest: CodexGoalJobManifest): string {
   return resolve(manifest.outputPath ?? join(
     manifest.jobRootDir,
@@ -798,12 +891,14 @@ async function assertRegistrationOutputAbsent(
   custody: ProjectControlEvidenceCustodyPort,
   manifest: CodexGoalJobManifest,
   observedResultExists: boolean,
+  lexical: FrozenOutputPathAuthorization,
+  canonical: FrozenOutputPathAuthorization,
 ): Promise<void> {
-  if (observedResultExists || await custody.pathKind(effectiveResultPath(manifest)) !==
-    "absent") {
+  if (observedResultExists || await authorizedPathKind(custody, lexical,
+    canonical, effectiveResultPath(manifest)) !== "absent") {
     throw new Error("frozen_output_legacy_output_bearing_refused");
   }
-  if (await registrationHasHandoff(custody, manifest)) {
+  if (await registrationHasHandoff(custody, manifest, lexical, canonical)) {
     throw new Error("frozen_output_legacy_handoff_bearing_refused");
   }
 }
@@ -811,20 +906,39 @@ async function assertRegistrationOutputAbsent(
 async function registrationHasOutput(
   custody: ProjectControlEvidenceCustodyPort,
   manifest: CodexGoalJobManifest,
+  lexical: FrozenOutputPathAuthorization,
+  canonical: FrozenOutputPathAuthorization,
 ): Promise<boolean> {
-  return await custody.pathKind(effectiveResultPath(manifest)) !== "absent" ||
-    await registrationHasHandoff(custody, manifest);
+  return await authorizedPathKind(custody, lexical, canonical,
+    effectiveResultPath(manifest)) !== "absent" ||
+    await registrationHasHandoff(custody, manifest, lexical, canonical);
 }
 
 async function registrationHasHandoff(
   custody: ProjectControlEvidenceCustodyPort,
   manifest: CodexGoalJobManifest,
+  lexical: FrozenOutputPathAuthorization,
+  canonical: FrozenOutputPathAuthorization,
 ): Promise<boolean> {
-  return (await custody.listDirectory(manifest.jobRootDir)).some((entry) =>
-    entry.kind === "file" &&
+  assertFrozenOutputReadAllowed(lexical, manifest.jobRootDir, "registry");
+  const canonicalJobRoot = await custody.canonicalDirectory(manifest.jobRootDir);
+  assertFrozenOutputReadAllowed(canonical, canonicalJobRoot, "registry");
+  return (await custody.listDirectory(canonicalJobRoot)).some((entry) =>
     entry.name.startsWith(`${manifest.taskId}.`) &&
     /\.handoff\.(patch|summary\.json|manifest\.json)$/i.test(entry.name)
   );
+}
+
+async function authorizedPathKind(
+  custody: ProjectControlEvidenceCustodyPort,
+  lexical: FrozenOutputPathAuthorization,
+  canonical: FrozenOutputPathAuthorization,
+  path: string,
+): Promise<"absent" | "file" | "directory" | "symlink" | "other"> {
+  const candidate = assertFrozenOutputReadAllowed(lexical, path, "project");
+  const canonicalParent = await custody.canonicalDirectory(dirname(candidate));
+  assertFrozenOutputReadAllowed(canonical, canonicalParent, "project");
+  return await custody.pathKind(candidate);
 }
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
@@ -852,6 +966,18 @@ function assertRegistryManifestIdentity(input: {
     resolve(input.manifest.jobRootDir) !== expectedJobRoot) {
     throw new Error("frozen_output_registry_identity_mismatch");
   }
+}
+
+function assertExpectedRegistryManifestPath(
+  authorization: FrozenOutputPathAuthorization,
+  jobId: string,
+  manifestPath: string,
+): void {
+  const expected = join(authorization.registryRoot, jobId, "job.json");
+  if (resolve(manifestPath) !== expected) {
+    throw new Error("frozen_output_registry_identity_mismatch");
+  }
+  assertFrozenOutputReadAllowed(authorization, manifestPath, "registry");
 }
 
 function sha256(value: string | Uint8Array): string {

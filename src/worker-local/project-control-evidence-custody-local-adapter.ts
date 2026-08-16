@@ -139,7 +139,8 @@ export class LocalProjectControlEvidenceCustody implements
         .map((entry) => ({
         name: entry.name,
         kind: entry.isFile() ? "file" as const :
-          entry.isDirectory() ? "directory" as const : "other" as const,
+          entry.isDirectory() ? "directory" as const :
+          entry.isSymbolicLink() ? "symlink" as const : "other" as const,
         }));
     } catch (error) {
       if (deepCode(error) === "ENOENT") return [];

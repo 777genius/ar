@@ -14,6 +14,29 @@ const exactMissingEvidence =
   `consumed output ledger unreadable: ENOENT: no such file or directory, scandir '${itemsRoot}'`;
 
 describe("ledger epoch unpublished root admission", () => {
+  it("forwards the exact controller ID to a custom admission builder", async () => {
+    const observed: string[] = [];
+    await ledgerEpochAdmissionSummary({
+      registryRootDir: "/tmp/registry",
+      scope: { projectId: "test-project" },
+      controllerJobId: "controller-exact",
+      deps: {
+        listJobs: async () => [],
+        buildOverviewItems: async () => [],
+      },
+      snapshotBuilder: async (input) => {
+        observed.push(input.controllerJobId);
+        return {
+          schemaVersion: 1,
+          projectId: "test-project",
+          observedAt: new Date(0).toISOString(),
+          debt: [],
+        };
+      },
+    });
+    expect(observed).toEqual(["controller-exact"]);
+  });
+
   it("ignores only the exact adapter-produced missing-items debt", async () => {
     await expect(summary([unreadable(itemsRoot, exactMissingEvidence)]))
       .resolves.toMatchObject({ debtCount: 0 });
@@ -60,6 +83,7 @@ async function summary(debt: readonly ProjectDebtItem[]) {
   return await ledgerEpochAdmissionSummary({
     registryRootDir: "/tmp/registry",
     scope: { projectId: "test-project" },
+    controllerJobId: "controller",
     deps: {
       listJobs: async () => [],
       buildOverviewItems: async () => [],

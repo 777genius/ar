@@ -89,6 +89,10 @@ import {
   type LedgerEpochAdmissionSnapshotBuilder,
 } from "./application/project-control/codex-goal-ledger-epoch-handler-admission";
 import {
+  assertControllerLedgerRootState,
+  assertPreparedStateForActiveRoot,
+} from "./application/project-control/codex-goal-ledger-epoch-scope-guards";
+import {
   ledgerEpochCustodyPaths as custodyPathsFor,
   ledgerEpochDirectoryIdentity as directoryIdentity,
 } from "./application/project-control/codex-goal-ledger-epoch-handler-custody";
@@ -138,6 +142,7 @@ export async function projectControlLedgerEpochMigrationView(
   });
   await assertCanonicalLedgerRootsAllowed(loaded.scope, oldRoot, newRoot);
   await assertControllerLedgerRootState(loaded.scope, oldRoot, newRoot);
+  let capturedLockedControllerJobId: string | undefined;
   const buildPlan = async (
     transactionVersion: 1 | 2 = 2,
     preboundOrphanWorkspaceBindings?: Awaited<ReturnType<
@@ -145,6 +150,12 @@ export async function projectControlLedgerEpochMigrationView(
     >>["orphanWorkspaceBindings"],
   ) => {
     const current = await deps.loadProjectControlController(args);
+    if (capturedLockedControllerJobId !== undefined &&
+      current.controller.jobId !== capturedLockedControllerJobId) {
+      throw new Error("ledger_epoch_controller_job_id_mismatch");
+    }
+    const controllerJobId =
+      capturedLockedControllerJobId ?? current.controller.jobId;
     await assertControllerLedgerRootState(current.scope, oldRoot, newRoot);
     const summaries = await listCodexGoalJobs({
       registryRootDir: current.registryRootDir,
@@ -160,6 +171,7 @@ export async function projectControlLedgerEpochMigrationView(
     const admission = await buildAdmissionSnapshot({
       registryRootDir: current.registryRootDir,
       scope: current.scope,
+      controllerJobId,
       admissionDeps: deps.admissionDeps,
       snapshotBuilder: deps.buildAdmissionSnapshot,
     });
@@ -240,6 +252,7 @@ export async function projectControlLedgerEpochMigrationView(
         const proposedAdmission = await buildAdmissionSnapshot({
           registryRootDir: loaded.registryRootDir,
           scope: proposedScope,
+          controllerJobId: loaded.controller.jobId,
           admissionDeps: deps.admissionDeps,
           snapshotBuilder: deps.buildAdmissionSnapshot,
           allowPendingEpochOrphanQuarantine: true,
@@ -308,6 +321,11 @@ export async function projectControlLedgerEpochMigrationView(
   const debtLocks: Array<Awaited<ReturnType<typeof locks.acquire>>> = [];
   try {
     const locked = await deps.loadProjectControlController(args);
+    const lockedControllerJobId = locked.controller.jobId;
+    capturedLockedControllerJobId = lockedControllerJobId;
+    if (lockedControllerJobId !== plan.controllerJobId) {
+      throw new Error("ledger_epoch_controller_job_id_mismatch");
+    }
     await durableConfirmFilePublication(controllerScopeLockIdentity(
       locked.registryRootDir,
       locked.controller.jobId,
@@ -381,6 +399,7 @@ export async function projectControlLedgerEpochMigrationView(
     const lockedAdmission = await buildAdmissionSnapshot({
       registryRootDir: locked.registryRootDir,
       scope: { ...locked.scope, consumedOutputLedgerRoots: [oldRoot] },
+      controllerJobId: lockedControllerJobId,
       admissionDeps: deps.admissionDeps,
       snapshotBuilder: deps.buildAdmissionSnapshot,
     });
@@ -392,6 +411,7 @@ export async function projectControlLedgerEpochMigrationView(
       ? await buildAdmissionSnapshot({
           registryRootDir: locked.registryRootDir,
           scope: lockedProposedScope,
+          controllerJobId: lockedControllerJobId,
           admissionDeps: deps.admissionDeps,
           snapshotBuilder: deps.buildAdmissionSnapshot,
           allowPendingEpochOrphanQuarantine: true,
@@ -439,6 +459,9 @@ export async function projectControlLedgerEpochMigrationView(
       lockedRootIdentities[1].present === false;
     const rebuildLockedFacts = async () => {
       const currentController = await deps.loadProjectControlController(args);
+      if (currentController.controller.jobId !== lockedControllerJobId) {
+        throw new Error("ledger_epoch_controller_job_id_mismatch");
+      }
       if (manifestFingerprint(currentController.controller) !== lockedManifestFingerprint) {
         throw new Error("ledger_epoch_controller_manifest_cas_mismatch");
       }
@@ -450,6 +473,7 @@ export async function projectControlLedgerEpochMigrationView(
       const currentAdmission = await buildAdmissionSnapshot({
         registryRootDir: currentController.registryRootDir,
         scope: { ...currentController.scope, consumedOutputLedgerRoots: [oldRoot] },
+        controllerJobId: lockedControllerJobId,
         admissionDeps: deps.admissionDeps,
         snapshotBuilder: deps.buildAdmissionSnapshot,
       });
@@ -460,6 +484,7 @@ export async function projectControlLedgerEpochMigrationView(
         ? await buildAdmissionSnapshot({
             registryRootDir: currentController.registryRootDir,
             scope: lockedProposedScope,
+            controllerJobId: lockedControllerJobId,
             admissionDeps: deps.admissionDeps,
             snapshotBuilder: deps.buildAdmissionSnapshot,
             allowPendingEpochOrphanQuarantine: true,
@@ -473,6 +498,9 @@ export async function projectControlLedgerEpochMigrationView(
       const currentEvidence = await captureEpochProcessEvidence(deps, custodyPaths);
       assertEpochProcessEvidenceClear(currentEvidence, custodyPaths);
       const reboundController = await deps.loadProjectControlController(args);
+      if (reboundController.controller.jobId !== lockedControllerJobId) {
+        throw new Error("ledger_epoch_controller_job_id_mismatch");
+      }
       if (manifestFingerprint(reboundController.controller) !== lockedManifestFingerprint) {
         throw new Error("ledger_epoch_controller_manifest_cas_mismatch");
       }
@@ -598,6 +626,7 @@ export async function projectControlLedgerEpochMigrationView(
     const admissionBefore = await admissionSummary({
       registryRootDir: loaded.registryRootDir,
       scope: { ...locked.scope, consumedOutputLedgerRoots: [oldRoot] },
+      controllerJobId: lockedControllerJobId,
       deps: deps.admissionDeps,
       snapshotBuilder: deps.buildAdmissionSnapshot,
     });
@@ -656,6 +685,7 @@ export async function projectControlLedgerEpochMigrationView(
       validateProposedAdmission: async () => await admissionSummary({
         registryRootDir: locked.registryRootDir,
         scope: lockedProposedScope,
+        controllerJobId: lockedControllerJobId,
         deps: deps.admissionDeps,
         snapshotBuilder: deps.buildAdmissionSnapshot,
         rejectBlocking: true,
@@ -668,6 +698,7 @@ export async function projectControlLedgerEpochMigrationView(
       admissionForNewRoot: async () => await admissionSummary({
         registryRootDir: locked.registryRootDir,
         scope: lockedProposedScope,
+        controllerJobId: lockedControllerJobId,
         deps: deps.admissionDeps,
         snapshotBuilder: deps.buildAdmissionSnapshot,
         rejectBlocking: true,
@@ -694,6 +725,7 @@ export async function projectControlLedgerEpochMigrationView(
         await admissionSummary({
           registryRootDir: locked.registryRootDir,
           scope: lockedProposedScope,
+          controllerJobId: lockedControllerJobId,
           deps: deps.admissionDeps,
           snapshotBuilder: deps.buildAdmissionSnapshot,
           rejectBlocking: true,
@@ -709,6 +741,9 @@ export async function projectControlLedgerEpochMigrationView(
       },
       switchScope: async () => {
         const current = await deps.loadProjectControlController(args);
+        if (current.controller.jobId !== lockedControllerJobId) {
+          throw new Error("ledger_epoch_controller_job_id_mismatch");
+        }
         if (manifestFingerprint(current.controller) !== lockedManifestFingerprint) {
           throw new Error("ledger_epoch_controller_manifest_cas_mismatch");
         }
@@ -734,6 +769,7 @@ export async function projectControlLedgerEpochMigrationView(
           const snapshot = await buildAdmissionSnapshot({
             registryRootDir: current.registryRootDir,
             scope: lockedProposedScope,
+            controllerJobId: lockedControllerJobId,
             admissionDeps: deps.admissionDeps,
             snapshotBuilder: deps.buildAdmissionSnapshot,
             allowPendingEpochOrphanQuarantine: true,
@@ -960,30 +996,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNodeError(error: unknown, code: string): boolean {
   return isRecord(error) && error.code === code;
-}
-
-async function assertControllerLedgerRootState(
-  scope: ProjectAccessScope,
-  oldRoot: string,
-  newRoot: string,
-): Promise<void> {
-  const roots = await Promise.all((scope.consumedOutputLedgerRoots ?? []).map(
-    async (root) => await canonicalConsumedOutputLedgerRoot(root, true),
-  ));
-  if (roots.length !== 1 || (roots[0] !== oldRoot && roots[0] !== newRoot)) {
-    throw new Error("ledger_epoch_controller_scope_drift");
-  }
-}
-
-async function assertPreparedStateForActiveRoot(
-  scope: ProjectAccessScope,
-  newRoot: string,
-  hasPersistedPlan: boolean,
-): Promise<void> {
-  const configured = scope.consumedOutputLedgerRoots ?? [];
-  if (configured.length !== 1) throw new Error("ledger_epoch_controller_scope_drift");
-  const active = await canonicalConsumedOutputLedgerRoot(configured[0]!, true);
-  if (active === newRoot && !hasPersistedPlan) {
-    throw new Error("ledger_epoch_prepared_state_required");
-  }
 }
