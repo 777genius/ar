@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   mkdtemp,
   mkdir,
+  lstat,
   readFile,
   readdir,
   rename,
@@ -285,6 +286,111 @@ describe("local project-control evidence custody durability", () => {
       expectedSha256: sha(bytes),
     });
     expect(ensured).toEqual([join(root, "one"), join(root, "one", "two")]);
+  });
+
+  it("materializes new and pre-existing custody directories under a held anchor", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-bootstrap-"));
+    const anchor = join(outer, "project");
+    const ledger = join(anchor, "control", "ledger");
+    const archives = join(anchor, "control", "archives");
+    await mkdir(join(anchor, "control"), { recursive: true });
+    const custody = new LocalProjectControlEvidenceCustody();
+
+    const certification = await custody.materializeApprovedProjectControlCustody({
+      approvedAnchor: anchor,
+      ledgerRoots: [ledger],
+      evidenceRoots: [archives],
+      deniedRoots: [],
+    });
+    await certification.revalidate();
+    await certification.close();
+
+    expect((await lstat(ledger)).isDirectory()).toBe(true);
+    expect((await lstat(archives)).isDirectory()).toBe(true);
+    const derivedLock = join(
+      dirname(ledger),
+      ".consumed-output-ledger-mutation-locks",
+      createHash("sha256").update(ledger).digest("hex"),
+    );
+    expect((await lstat(derivedLock)).isDirectory()).toBe(true);
+  });
+
+  it("rejects custody symlinks, non-directories, boundary escape, and unsafe locks", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-bootstrap-unsafe-"));
+    const anchor = join(outer, "project");
+    const outside = join(outer, "outside");
+    await Promise.all([mkdir(anchor), mkdir(outside)]);
+    const custody = new LocalProjectControlEvidenceCustody();
+
+    await symlink(outside, join(anchor, "linked"), "dir");
+    await expect(custody.materializeApprovedProjectControlCustody({
+      approvedAnchor: anchor,
+      ledgerRoots: [join(anchor, "linked", "ledger")],
+      evidenceRoots: [],
+      deniedRoots: [],
+    })).rejects.toThrow("evidence_custody_bootstrap_ancestry_unsafe");
+
+    await writeFile(join(anchor, "file"), "not a directory\n");
+    await expect(custody.materializeApprovedProjectControlCustody({
+      approvedAnchor: anchor,
+      ledgerRoots: [join(anchor, "file")],
+      evidenceRoots: [],
+      deniedRoots: [],
+    })).rejects.toThrow("evidence_custody_bootstrap_root_unsafe");
+
+    await expect(custody.materializeApprovedProjectControlCustody({
+      approvedAnchor: anchor,
+      ledgerRoots: [join(outside, "ledger")],
+      evidenceRoots: [],
+      deniedRoots: [],
+    })).rejects.toThrow("evidence_custody_bootstrap_boundary_escape");
+
+    const legacyLedger = join(anchor, "legacy-ledger");
+    await mkdir(legacyLedger);
+    await symlink(outside, join(legacyLedger, ".mutation-locks"), "dir");
+    await expect(custody.materializeApprovedProjectControlCustody({
+      approvedAnchor: anchor,
+      ledgerRoots: [legacyLedger],
+      evidenceRoots: [],
+      deniedRoots: [],
+    })).rejects.toThrow("evidence_custody_bootstrap_legacy_lock_unsafe");
+
+    const derivedLedger = join(anchor, "derived", "ledger");
+    await mkdir(join(anchor, "derived"));
+    await symlink(outside,
+      join(anchor, "derived", ".consumed-output-ledger-mutation-locks"), "dir");
+    await expect(custody.materializeApprovedProjectControlCustody({
+      approvedAnchor: anchor,
+      ledgerRoots: [derivedLedger],
+      evidenceRoots: [],
+      deniedRoots: [],
+    })).rejects.toThrow("evidence_custody_bootstrap_derived_lock_unsafe");
+  });
+
+  it("detects custody root identity drift during publication revalidation", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-bootstrap-drift-"));
+    const anchor = join(outer, "project");
+    const ledger = join(anchor, "ledger");
+    await mkdir(anchor);
+    let validations = 0;
+    const custody = new LocalProjectControlEvidenceCustody(async (point) => {
+      if (point !== "before_custody_manifest_publication_revalidation" ||
+        ++validations !== 2) return;
+      await rename(ledger, join(anchor, "moved-ledger"));
+      await mkdir(ledger);
+    });
+    const certification = await custody.materializeApprovedProjectControlCustody({
+      approvedAnchor: anchor,
+      ledgerRoots: [ledger],
+      evidenceRoots: [],
+      deniedRoots: [],
+    });
+    try {
+      await expect(certification.revalidate())
+        .rejects.toThrow("evidence_custody_bootstrap_identity_drift");
+    } finally {
+      await certification.close();
+    }
   });
 
   it("kills and reaps a fixture that exceeds its evidence deadline", async () => {

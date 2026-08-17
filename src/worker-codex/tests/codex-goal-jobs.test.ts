@@ -1,7 +1,9 @@
 import {
   mkdir,
+  lstat,
   mkdtemp,
   readFile,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -24,6 +26,8 @@ import {
   updateCodexGoalJob,
   type CodexGoalJobManifestInput,
 } from "../codex-goal-jobs";
+import { LocalProjectControlEvidenceCustody } from
+  "../../worker-local/project-control-evidence-custody-local-adapter";
 
 describe("codex goal job registry", () => {
   it("creates, lists, reads, updates and summarizes versioned job manifests", async () => {
@@ -355,6 +359,10 @@ describe("codex goal job registry", () => {
 
   it("allows brokered project-scoped control manifests but rejects missing scope", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-jobs-"));
+    const workspace = join(root, "workspace");
+    const ledgerRoot = join(workspace, "custody", "ledger");
+    const evidenceRoot = join(workspace, "custody", "archives");
+    await mkdir(workspace);
     const projectControlManifest = {
       ...jobManifest(root),
       jobId: "infinity-context-project-control",
@@ -364,8 +372,10 @@ describe("codex goal job registry", () => {
       projectAccessScope: {
         projectId: "infinity-context",
         registryRoot: join(root, "registry"),
-        workspaceRoots: [join(root, "workspace")],
+        workspaceRoots: [workspace],
         worktreeRoots: [join(root, "worktrees")],
+        consumedOutputLedgerRoots: [ledgerRoot],
+        consumedOutputEvidenceRoots: [evidenceRoot],
         jobIdPrefixes: ["infinity-context-"],
         tmuxSessionPrefixes: ["infinity-context-"],
         allowedBranches: ["main"],
@@ -382,6 +392,8 @@ describe("codex goal job registry", () => {
         jobId: "infinity-context-project-control",
         accessBoundary: AccessBoundary.ProjectScopedControl,
       });
+      await expect(lstat(ledgerRoot)).resolves.toMatchObject({});
+      await expect(lstat(evidenceRoot)).resolves.toMatchObject({});
 
       const { projectAccessScope: _scope, ...missingScope } =
         projectControlManifest;
@@ -392,6 +404,50 @@ describe("codex goal job registry", () => {
           jobId: "project-control-no-scope",
         },
       })).rejects.toThrow(/codex_goal_access_boundary_blocked:missing_project_scope/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("revalidates custody immediately before initial controller publication", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-jobs-custody-drift-"));
+    const workspace = join(root, "workspace");
+    const ledgerRoot = join(workspace, "custody", "ledger");
+    const evidenceRoot = join(workspace, "custody", "archives");
+    const registryRootDir = join(root, "registry");
+    await mkdir(workspace);
+    let validations = 0;
+    const custody = new LocalProjectControlEvidenceCustody(async (point) => {
+      if (point !== "before_custody_manifest_publication_revalidation" ||
+        ++validations !== 2) return;
+      await rename(ledgerRoot, join(workspace, "custody", "moved-ledger"));
+      await mkdir(ledgerRoot);
+    });
+    try {
+      await expect(createCodexGoalJob({
+        registryRootDir,
+        evidenceCustody: custody,
+        manifest: {
+          ...jobManifest(root),
+          jobId: "infinity-context-project-control-drift",
+          tmuxSession: "infinity-context-project-control-drift",
+          accessBoundary: AccessBoundary.ProjectScopedControl,
+          projectAccessScope: {
+            projectId: "infinity-context",
+            registryRoot: registryRootDir,
+            workspaceRoots: [workspace],
+            consumedOutputLedgerRoots: [ledgerRoot],
+            consumedOutputEvidenceRoots: [evidenceRoot],
+            jobIdPrefixes: ["infinity-context-"],
+            tmuxSessionPrefixes: ["infinity-context-"],
+            allowedAccountIds: ["account-a", "account-b"],
+          },
+        },
+      })).rejects.toThrow("evidence_custody_bootstrap_identity_drift");
+      await expect(readFile(codexGoalJobManifestPath({
+        registryRootDir,
+        jobId: "infinity-context-project-control-drift",
+      }))).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

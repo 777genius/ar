@@ -23,6 +23,19 @@ export interface EvidenceDirectoryInspection {
   close(): Promise<void>;
 }
 
+/**
+ * A held certification for newly configured project-control custody roots.
+ * Callers must revalidate it immediately before publishing the scope that
+ * makes these paths authoritative, then close it in all cases.
+ */
+export interface ProjectControlCustodyBootstrapCertification {
+  readonly approvedAnchor: string;
+  readonly ledgerRoots: readonly string[];
+  readonly evidenceRoots: readonly string[];
+  revalidate(): Promise<void>;
+  close(): Promise<void>;
+}
+
 export type ImmutablePatchEvidence = Omit<ImmutableEvidenceFile, "bytes"> & {
   readonly commits: readonly string[];
   readonly baseCommits: readonly string[];
@@ -31,6 +44,12 @@ export type ImmutablePatchEvidence = Omit<ImmutableEvidenceFile, "bytes"> & {
 
 /** Host-filesystem effects required by project-control evidence use cases. */
 export interface ProjectControlEvidenceCustodyPort {
+  materializeApprovedProjectControlCustody(input: {
+    readonly approvedAnchor: string;
+    readonly ledgerRoots: readonly string[];
+    readonly evidenceRoots: readonly string[];
+    readonly deniedRoots: readonly string[];
+  }): Promise<ProjectControlCustodyBootstrapCertification>;
   canonicalDirectory(path: string, allowMissing?: boolean): Promise<string>;
   readImmutableFile(path: string, maxBytes: number): Promise<ImmutableEvidenceFile>;
   inspectImmutablePatch(path: string, maxBytes: number): Promise<ImmutablePatchEvidence>;
