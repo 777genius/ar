@@ -353,6 +353,7 @@ describe("project integration safety kernel e2e", () => {
       );
       await mkdir(controllerRoot, { recursive: true });
       await mkdir(registryRootDir, { recursive: true });
+      await mkdir(evidenceRoot, { recursive: true });
 
       const baseCommit = (
         await gitOutput(targetPath, ["rev-parse", "HEAD"])

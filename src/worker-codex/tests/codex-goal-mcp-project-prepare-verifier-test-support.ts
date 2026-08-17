@@ -28,6 +28,7 @@ export function projectScope(input: {
 }): ProjectAccessScope {
   return {
     projectId: "project",
+    readRoots: [input.root],
     workspaceRoots: [input.sourceWorkspacePath],
     worktreeRoots: [join(input.root, "worktrees")],
     registryRoot: input.registryRootDir,
