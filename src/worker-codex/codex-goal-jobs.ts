@@ -217,14 +217,22 @@ export async function createCodexGoalJob(input: {
     registryRootDir,
     { requireProjectControllerCreateAuthorization: true },
   );
-  const custodyCertification = await bootstrapInitialProjectControlCustody(
-    manifest,
-    input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
-  );
   const path = codexGoalJobManifestPath({
     registryRootDir,
     jobId: manifest.jobId,
   });
+  if (await pathExists(path)) {
+    await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: input.overwrite ? "w" : "wx",
+    });
+    return manifest;
+  }
+  const custodyCertification = await bootstrapInitialProjectControlCustody(
+    manifest,
+    input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
+  );
   try {
     await mkdir(join(registryRootDir, manifest.jobId), {
       recursive: true,
@@ -239,6 +247,17 @@ export async function createCodexGoalJob(input: {
     return manifest;
   } finally {
     await custodyCertification?.close();
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error &&
+      error.code === "ENOENT") return false;
+    throw error;
   }
 }
 

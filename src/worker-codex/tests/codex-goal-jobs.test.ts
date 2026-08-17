@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import {
   AccessBoundary,
   NetworkAccessMode,
+  type ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
   codexGoalJobManifestPath,
@@ -26,6 +27,7 @@ import {
   updateCodexGoalJob,
   type CodexGoalJobManifestInput,
 } from "../codex-goal-jobs";
+import { upsertCodexGoalLaunchManifest } from "../codex-goal-launch-manifest";
 import { LocalProjectControlEvidenceCustody } from
   "../../worker-local/project-control-evidence-custody-local-adapter";
 
@@ -448,6 +450,94 @@ describe("codex goal job registry", () => {
         registryRootDir,
         jobId: "infinity-context-project-control-drift",
       }))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("skips custody for duplicate, overwrite-existing, and upsert-existing jobs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-jobs-existing-"));
+    const registryRootDir = join(root, "registry");
+    const workspace = join(root, "workspace");
+    const ledgerRoot = join(workspace, "custody", "ledger");
+    const evidenceRoot = join(workspace, "custody", "archives");
+    await mkdir(workspace);
+    const jobId = "infinity-context-existing";
+    const existing = {
+      ...jobManifest(root),
+      jobId,
+      tmuxSession: jobId,
+    } satisfies CodexGoalJobManifestInput;
+    const control = {
+      ...existing,
+      accessBoundary: AccessBoundary.ProjectScopedControl,
+      projectAccessScope: {
+        projectId: "infinity-context",
+        registryRoot: registryRootDir,
+        workspaceRoots: [workspace],
+        consumedOutputLedgerRoots: [ledgerRoot],
+        consumedOutputEvidenceRoots: [evidenceRoot],
+        jobIdPrefixes: ["infinity-context-"],
+        tmuxSessionPrefixes: ["infinity-context-"],
+        allowedAccountIds: ["account-a", "account-b"],
+      },
+    } satisfies CodexGoalJobManifestInput;
+    let custodyCalls = 0;
+    const localCustody = new LocalProjectControlEvidenceCustody();
+    const custody = new Proxy(localCustody, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target) as unknown;
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          custodyCalls += 1;
+          return Reflect.apply(value, target, args);
+        };
+      },
+    }) as ProjectControlEvidenceCustodyPort;
+
+    try {
+      await createCodexGoalJob({ registryRootDir, manifest: existing });
+      await expect(createCodexGoalJob({
+        registryRootDir,
+        manifest: control,
+        evidenceCustody: custody,
+      })).rejects.toMatchObject({ code: "EEXIST" });
+      expect(custodyCalls).toBe(0);
+      await expect(lstat(ledgerRoot)).rejects.toMatchObject({ code: "ENOENT" });
+
+      await createCodexGoalJob({
+        registryRootDir,
+        manifest: control,
+        overwrite: true,
+        evidenceCustody: custody,
+      });
+      expect(custodyCalls).toBe(0);
+      await expect(lstat(evidenceRoot)).rejects.toMatchObject({ code: "ENOENT" });
+
+      await upsertCodexGoalLaunchManifest({
+        registryRootDir,
+        launch: {
+          config: {
+            jobId,
+            jobRootDir: control.jobRootDir,
+            authRootDir: control.authRootDir!,
+            workspacePath: control.workspacePath,
+            promptPath: control.promptPath,
+            taskId: control.taskId,
+            accounts: control.accounts.map((name) => ({ name })),
+            accessBoundary: control.accessBoundary,
+            projectAccessScope: control.projectAccessScope,
+            networkAccess: control.networkAccess!,
+          },
+          tmuxSession: control.tmuxSession,
+          cwd: control.cwd!,
+          logPath: control.logPath!,
+          cliCommand: ["codex"],
+        },
+      });
+      expect(custodyCalls).toBe(0);
+      await expect(lstat(ledgerRoot)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(lstat(evidenceRoot)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

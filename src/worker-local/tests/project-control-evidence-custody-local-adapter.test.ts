@@ -7,13 +7,13 @@ import {
   readFile,
   readdir,
   rename,
+  rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { createServer } from "node:net";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   LocalProjectControlEvidenceCustody,
@@ -25,6 +25,15 @@ const fixturePath = fileURLToPath(new URL(
 ));
 const fixtureDeadlineMs = 10_000;
 const fixtureMaxStderrBytes = 64 * 1024;
+const fixtureBootstrap = [
+  "import { registerHooks } from 'node:module';",
+  "registerHooks({ resolve(specifier, context, nextResolve) {",
+  "try { return nextResolve(specifier, context); } catch (error) {",
+  "if (error?.code !== 'ERR_MODULE_NOT_FOUND' || !specifier.startsWith('.')) throw error;",
+  "return nextResolve(`${specifier}.ts`, context);",
+  "}}});",
+  `await import(${JSON.stringify(pathToFileURL(fixturePath).href)});`,
+].join("\n");
 
 describe("local project-control evidence custody durability", () => {
   it("classifies a leaf relative to an open no-follow parent capability", async () => {
@@ -36,11 +45,7 @@ describe("local project-control evidence custody durability", () => {
     await writeFile(join(parent, "file"), "inside\n");
     await mkdir(join(parent, "directory"));
     await symlink(join(parent, "file"), join(parent, "symlink"));
-    const socket = createServer();
-    await new Promise<void>((resolve, reject) => {
-      socket.once("error", reject);
-      socket.listen(join(parent, "other"), resolve);
-    });
+    await runCommandFixture("mkfifo", [join(parent, "other")]);
     await writeFile(join(outside, "sentinel"), "outside\n");
     const custody = new LocalProjectControlEvidenceCustody();
     const inspection = await custody.openDirectoryForInspection(parent);
@@ -59,9 +64,6 @@ describe("local project-control evidence custody durability", () => {
       "inspection_parent_drift",
     );
     await inspection.close();
-    await new Promise<void>((resolve, reject) =>
-      socket.close((error) => error ? reject(error) : resolve())
-    );
     await expect(inspection.pathKind("file")).rejects.toThrow(
       "inspection_closed",
     );
@@ -312,6 +314,7 @@ describe("local project-control evidence custody durability", () => {
       ".consumed-output-ledger-mutation-locks",
       createHash("sha256").update(ledger).digest("hex"),
     );
+    expect((await lstat(join(ledger, ".mutation-locks"))).isDirectory()).toBe(true);
     expect((await lstat(derivedLock)).isDirectory()).toBe(true);
   });
 
@@ -393,6 +396,35 @@ describe("local project-control evidence custody durability", () => {
     }
   });
 
+  it("rejects a legacy lock replaced by a late symlink", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-bootstrap-late-legacy-link-"));
+    const anchor = join(outer, "project");
+    const outside = join(outer, "outside");
+    const ledger = join(anchor, "ledger");
+    const legacyLock = join(ledger, ".mutation-locks");
+    await Promise.all([mkdir(anchor), mkdir(outside)]);
+    let validations = 0;
+    const custody = new LocalProjectControlEvidenceCustody(async (point) => {
+      if (point !== "before_custody_manifest_publication_revalidation" ||
+        ++validations !== 2) return;
+      await rename(legacyLock, join(ledger, ".moved-mutation-locks"));
+      await symlink(outside, legacyLock, "dir");
+    });
+    const certification = await custody.materializeApprovedProjectControlCustody({
+      approvedAnchor: anchor,
+      ledgerRoots: [ledger],
+      evidenceRoots: [],
+      deniedRoots: [],
+    });
+    try {
+      await expect(certification.revalidate())
+        .rejects.toThrow("evidence_custody_bootstrap_identity_drift");
+    } finally {
+      await certification.close();
+      await rm(outer, { recursive: true, force: true });
+    }
+  });
+
   it("kills and reaps a fixture that exceeds its evidence deadline", async () => {
     const outer = await mkdtemp(join(tmpdir(), "custody-deadline-"));
     const root = join(outer, "root");
@@ -428,7 +460,12 @@ async function runFixture(input: {
   readonly onSpawn?: (pid: number) => void;
 }): Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }> {
   return await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--experimental-transform-types", fixturePath], {
+    const child = spawn(process.execPath, [
+      "--experimental-transform-types",
+      "--input-type=module",
+      "--eval",
+      fixtureBootstrap,
+    ], {
       env: {
         ...process.env,
         CUSTODY_FIXTURE_ROOT: input.root,
@@ -491,6 +528,17 @@ async function runFixture(input: {
       child.kill("SIGKILL");
     }, input.deadlineMs ?? fixtureDeadlineMs);
     deadline.unref();
+  });
+}
+
+async function runCommandFixture(command: string, args: readonly string[]): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args);
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0 && signal === null) resolve();
+      else reject(new Error(`fixture_command_failed:${String(code)}:${String(signal)}`));
+    });
   });
 }
 
