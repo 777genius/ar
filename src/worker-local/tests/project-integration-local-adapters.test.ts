@@ -1117,6 +1117,7 @@ describe("local project integration adapters", () => {
     const sourcePatchPath = join(fixture.rootDir, "source.patch");
     const firstBytes = Buffer.from([0x64, 0x69, 0x66, 0x66, 0x0a, 0x80]);
     const secondBytes = Buffer.from([0x64, 0x69, 0x66, 0x66, 0x0a, 0x81]);
+    await mkdir(archiveRoot);
     await writeFile(sourcePatchPath, firstBytes);
 
     const captured = await captureLocalTerminalOutputBackup({
@@ -1135,7 +1136,7 @@ describe("local project integration adapters", () => {
       workspacePath: fixture.workspacePath,
       changedFiles: [],
       sourcePatchPath,
-    })).rejects.toThrow("integrated_output_ledger_preparation_conflict");
+    })).rejects.toThrow("evidence_custody_immutable_conflict");
   });
 
 });

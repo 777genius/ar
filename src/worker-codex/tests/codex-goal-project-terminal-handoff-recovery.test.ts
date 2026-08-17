@@ -609,8 +609,8 @@ async function actionFixture() {
   const jobRootDir = join(root, "jobs", "project-worker");
   const promptPath = join(jobRootDir, "prompt.md");
   const jobId = "project-worker";
-  const ledgerRoot = join(root, "consumed-output-ledger");
-  const evidenceRoot = join(root, "archives");
+  const ledgerRoot = join(canonicalWorkspacePath, "custody", "consumed-output-ledger");
+  const evidenceRoot = join(canonicalWorkspacePath, "custody", "archives");
   await Promise.all([
     mkdir(workspacePath, { recursive: true }),
     mkdir(canonicalWorkspacePath, { recursive: true }),
