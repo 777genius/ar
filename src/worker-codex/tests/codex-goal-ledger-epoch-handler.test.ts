@@ -487,37 +487,23 @@ describe("project control ledger epoch handler", () => {
     )).rejects.toThrow("ledger_epoch_legacy_admission_exact_count_mismatch");
     expect(await exactTreeBytes(fixture.root)).toEqual(before);
   });
-
   it("confirms a fresh preview with retained debt under the actual publication locks", async () => {
     const fixture = await handlerFixture();
     const deps = {
       ...fixture.deps,
       buildAdmissionSnapshot: async () => ({
-        schemaVersion: 1 as const,
-        projectId: "social-monitor",
-        observedAt: "2026-08-08T00:00:00.000Z",
-        debt: [{
-          reason: ProjectDebtReason.LegacyOutputQuarantineRequired,
-          subject: join(fixture.newRoot, "legacy-preservation"),
-          severity: "info" as const,
-          evidence: ["fixture record retained by the epoch"],
-        }],
-        counts: { legacyOutputQuarantineRequired: 1 },
-      }),
+        schemaVersion: 1 as const, projectId: "social-monitor", observedAt: "2026-08-08T00:00:00.000Z",
+        debt: [{ reason: ProjectDebtReason.LegacyOutputQuarantineRequired,
+          subject: join(fixture.newRoot, "legacy-preservation"), severity: "info" as const, evidence: ["fixture record retained by the epoch"] }],
+        counts: { legacyOutputQuarantineRequired: 1 } }),
     };
-    const preview = await projectControlLedgerEpochMigrationView(
-      fixture.args(),
-      deps,
-    );
+    const preview = await projectControlLedgerEpochMigrationView(fixture.args(), deps);
     expect(preview.oldRootFileCount).toBe(1);
     const planSha256 = String(preview.planSha256);
-    await expect(projectControlLedgerEpochMigrationView(
-      fixture.args({
-        confirmLedgerEpochMigration: true,
-        expectedLedgerEpochPlanSha256: planSha256,
-      }),
-      deps,
-    )).resolves.toMatchObject({
+    await expect(projectControlLedgerEpochMigrationView(fixture.args({
+      confirmLedgerEpochMigration: true,
+      expectedLedgerEpochPlanSha256: planSha256,
+    }), deps)).resolves.toMatchObject({
       ok: true,
       receipt: { planSha256, status: "active" },
     });
