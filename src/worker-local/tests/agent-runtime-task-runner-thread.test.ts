@@ -21,6 +21,7 @@ import {
   AgentRuntimeThreadOutcome,
   agentRuntimeTaskProtocolVersionV3,
   type AgentRuntimeTaskRequestV3,
+  type JsonObject,
 } from "@vioxen/subscription-runtime/agent-runtime-task";
 import {
   AgentRuntimeTaskProvider,
@@ -575,27 +576,27 @@ function request(
 function codexRequest(
   executionId: string,
   threadId: string,
-  outputSchema?: Readonly<Record<string, unknown>>,
+  outputSchema?: JsonObject,
 ): AgentRuntimeTaskRequestV3 {
   const base = request(executionId, "review", threadId);
+  const controls = {
+    maxTurns: 3,
+    accessBoundary: AgentRuntimeAccessBoundary.ReadOnly,
+    toolPolicy: { allow: [AgentRuntimeTool.ReadFile] },
+    budget: {
+      metric: AgentRuntimeBudgetMetric.WeightedTokens,
+      limit: 1_000,
+    },
+  } as const;
   return {
     ...base,
-    task: {
-      ...base.task,
-      ...(outputSchema === undefined
-        ? {}
-        : { outputSchemaName: "review-schema" }),
-      controls: {
-        maxTurns: 3,
-        accessBoundary: AgentRuntimeAccessBoundary.ReadOnly,
-        toolPolicy: { allow: [AgentRuntimeTool.ReadFile] },
-        budget: {
-          metric: AgentRuntimeBudgetMetric.WeightedTokens,
-          limit: 1_000,
+    task: outputSchema === undefined
+      ? { ...base.task, controls }
+      : {
+          ...base.task,
+          outputSchemaName: "review-schema",
+          controls: { ...controls, outputSchema },
         },
-        ...(outputSchema === undefined ? {} : { outputSchema }),
-      },
-    },
   };
 }
 

@@ -17,12 +17,15 @@ export * from "./domain";
 export function createLocalAgentRuntimeTaskRunner(
   input: CreateLocalAgentRuntimeTaskRunnerInput,
 ): AgentRuntimeTaskRunner {
-  assertAgentRuntimeTaskExecutionProfile(
-    input.provider,
-    input.providerRuntime ?? {},
-  );
   if (input.provider === AgentRuntimeTaskProvider.Claude) {
     const { providerRuntime, ...rest } = input;
+    assertAgentRuntimeTaskExecutionProfile(
+      AgentRuntimeTaskProvider.Claude,
+      (providerRuntime as {
+        readonly reasoningEffort?: unknown;
+        readonly serviceTier?: unknown;
+      } | undefined) ?? {},
+    );
     return createWorkerLocalAgentRuntimeTaskRunner({
       ...rest,
       claudeBackend:
@@ -38,6 +41,10 @@ export function createLocalAgentRuntimeTaskRunner(
   }
 
   const { providerRuntime, ...rest } = input;
+  assertAgentRuntimeTaskExecutionProfile(
+    AgentRuntimeTaskProvider.Codex,
+    providerRuntime ?? {},
+  );
   return createWorkerLocalAgentRuntimeTaskRunner({
     ...rest,
     ...(providerRuntime?.binaryPath
