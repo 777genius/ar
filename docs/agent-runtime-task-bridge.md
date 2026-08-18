@@ -223,8 +223,38 @@ For the CLI, select it explicitly with
 `CLAUDE_RUNTIME_DIST_DIR` never changes the backend. The CLI default is always
 `agent-sdk`.
 
-Codex can override its binary with `providerRuntime.binaryPath`. Keep provider
-runtime wiring in the composition root, not in review/fix business logic.
+Codex can override its binary with `providerRuntime.binaryPath`. It can also set
+the validated execution profile with `reasoningEffort: "high"` and
+`serviceTier: "default"`; the CLI equivalents are `--reasoning-effort high`
+and `--service-tier default`. Other values and non-Codex use fail closed. The
+profile is part of protocol v3 logical-thread compatibility.
+
+For structured results, put the JSON object schema in
+`task.controls.outputSchema`. An explicit `outputSchemaName` is optional; the
+runner generates a deterministic name when absent and registers the schema on
+the Codex worker before execution. The recursive canonical digest ignores JSON
+object key order and is part of v3 compatibility even for explicit names.
+Explicit empty names are invalid.
+
+Read-only reviews can opt into instruction isolation with this exact v2 control:
+
+```json
+"workspaceInstructionPolicy": "deny_project_instructions_v1"
+```
+
+It requires `accessBoundary: "read_only"` and bounded `read_file` /
+`search_files` tools. The Codex adapter then disables native project-document
+discovery and rejects project instruction paths before reads or search results.
+Default consumers remain unchanged. Hosts can preflight support without auth,
+stdin, state initialization or worker startup:
+
+```sh
+subscription-runtime-run-agent-runtime-task --capabilities-json
+```
+
+The response has capability schema version 1; pass an optional `1` to pin it.
+Unknown versions fail closed. Keep provider runtime wiring in the composition
+root, not in review/fix business logic.
 
 `toolPolicy.allow` and `toolPolicy.deny` use provider-neutral
 `AgentRuntimeTool` values. The local runner maps them to concrete provider tool
