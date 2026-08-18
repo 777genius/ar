@@ -488,14 +488,15 @@ describe("project control ledger epoch handler", () => {
     expect(await exactTreeBytes(fixture.root)).toEqual(before);
   });
 
-  it("confirms a fresh preview under the actual publication locks", async () => {
+  it("confirms a clean fresh preview under the actual publication locks", async () => {
     const fixture = await handlerFixture();
+    await rm(join(fixture.oldRoot, "items", "legacy.json"));
     const preview = await projectControlLedgerEpochMigrationView(
       fixture.args(),
       fixture.deps,
     );
+    expect(preview.oldRootFileCount).toBe(0);
     const planSha256 = String(preview.planSha256);
-
     await expect(projectControlLedgerEpochMigrationView(
       fixture.args({
         confirmLedgerEpochMigration: true,
