@@ -16,6 +16,7 @@ import {
   type ProjectAdmissionRequest,
   type ProjectAdmissionSnapshot,
   type ProjectDebtItem,
+  type ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
 import type {
   CodexGoalJobManifest,
@@ -36,6 +37,17 @@ import {
 } from "./codex-goal-ledger-epoch-proposed-admission";
 import { limitCodexProjectSummariesForInspection } from "./codex-goal-project-admission-summary-limit";
 import {
+  withoutAdmittedInputPatchDebt,
+  withoutCapacityContinuationSiblingDebt,
+  withoutInPlaceContinuationSelfDebt,
+  type ProjectAdmissionInPlaceContinuationBinding,
+  type ProjectAdmissionJobWorkspaceBinding,
+} from "./codex-goal-project-admission-normalization";
+import {
+  admissionWorkspacePathsMatch,
+  optionalRealPathForAdmission,
+} from "./codex-goal-project-admission-paths";
+import {
   hasBlockingActiveWriterRisk,
   stoppedWorkspaceTerminalConsumption,
   terminalConsumptionCoversStoppedRisk,
@@ -53,6 +65,12 @@ import { orphanDirtyWorkspaceDebt } from
   "./codex-goal-project-orphan-workspace-admission";
 import { resolveLedgerEpochDebtCustody } from
   "./codex-goal-consumed-output-ledger-epoch-switch";
+import {
+  legacyJobSummaryRetirementPath,
+  projectRetirementProjection,
+} from "./codex-goal-legacy-job-summary-retirement";
+import { frozenOutputSupersessionProjection } from
+  "./codex-goal-frozen-output-import";
 type JsonObject = Readonly<Record<string, unknown>>;
 const execFileAsync = promisify(execFile);
 export type CodexProjectAdmissionDeps = {
@@ -69,25 +87,33 @@ export type CodexProjectAdmissionDeps = {
     readonly registryRootDir: string;
     readonly jobId: string;
   }) => Promise<CodexGoalJobManifest>;
+  readonly observeManifestRuntime?: (
+    manifest: CodexGoalJobManifest,
+  ) => Promise<{
+    readonly workspaceDirty: boolean;
+    readonly workerAlive: boolean;
+    readonly resultExists: boolean;
+    readonly resultPath?: string;
+  }>;
   readonly normalizeActiveProposedAdmission?: (
     scope: ProjectAccessScope,
     snapshot: ProjectAdmissionSnapshot,
     summaries: readonly CodexGoalJobSummary[],
   ) => Promise<ProjectAdmissionSnapshot>;
+  readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
 };
 
 type CodexProjectAdmissionInput = {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
+  readonly controllerJobId?: string;
   readonly deps: CodexProjectAdmissionDeps;
-  readonly admittedInputPatchTarget?: {
-    readonly jobId: string;
-    readonly workspacePath: string;
-  };
-  readonly capacityContinuationTarget?: {
-    readonly jobId: string;
-    readonly workspacePath: string;
-  };
+  readonly admittedInputPatchTarget?: ProjectAdmissionJobWorkspaceBinding;
+  readonly capacityContinuationTarget?: ProjectAdmissionJobWorkspaceBinding;
+  readonly inPlaceContinuationTarget?: ProjectAdmissionInPlaceContinuationBinding;
+};
+type CodexProjectMutationAdmissionInput = CodexProjectAdmissionInput & {
+  readonly controllerJobId: string;
 };
 type CodexProjectAdmissionSnapshotInput = CodexProjectAdmissionInput & {
   readonly requestedWorkspacePath?: string;
@@ -136,7 +162,7 @@ export function projectAdmissionDetailView(input: {
 }
 
 export function codexProjectAdmissionGate(
-  input: CodexProjectAdmissionInput,
+  input: CodexProjectMutationAdmissionInput,
 ): ProjectAdmissionGate {
   return {
     async evaluate(request) {
@@ -153,112 +179,28 @@ export function codexProjectAdmissionGate(
           ? { admittedInputPatchRequest: request }
           : {}),
       });
-      const snapshot = await withoutCapacityContinuationSelfDebt({
+      const snapshot = await withoutCapacityContinuationSiblingDebt({
         snapshot: observedSnapshot,
         request,
-        binding: input.capacityContinuationTarget,
+        ...(input.capacityContinuationTarget
+          ? { binding: input.capacityContinuationTarget }
+          : {}),
+      });
+      const continuationSnapshot = await withoutInPlaceContinuationSelfDebt({
+        snapshot,
+        request,
+        ...(input.inPlaceContinuationTarget
+          ? { binding: input.inPlaceContinuationTarget }
+          : {}),
       });
       return evaluateProjectAdmission({
         request: {
           ...request,
           projectId: request.projectId ?? input.scope.projectId,
         },
-        snapshot,
+        snapshot: continuationSnapshot,
       });
     },
-  };
-}
-
-async function withoutCapacityContinuationSelfDebt(input: {
-  readonly snapshot: ProjectAdmissionSnapshot;
-  readonly request: {
-    readonly operation: ProjectOperation;
-    readonly jobId?: string;
-    readonly workspacePath?: string;
-  };
-  readonly binding: CodexProjectAdmissionInput["capacityContinuationTarget"];
-}): Promise<ProjectAdmissionSnapshot> {
-  const { binding, request } = input;
-  if (
-    !binding ||
-    request.operation !== ProjectOperation.StartWorker ||
-    request.jobId !== binding.jobId ||
-    !request.workspacePath ||
-    !await admissionWorkspacePathsMatch(
-      request.workspacePath,
-      binding.workspacePath,
-    )
-  ) {
-    return input.snapshot;
-  }
-  const debt: ProjectDebtItem[] = [];
-  for (const item of input.snapshot.debt) {
-    const selfInactiveWorkspace =
-      item.reason === ProjectDebtReason.InactiveDirtyWorkspace &&
-      await admissionWorkspacePathsMatch(item.subject, binding.workspacePath);
-    const selfDirtyWithoutRunner =
-      item.reason === ProjectDebtReason.ActiveWriterConflict &&
-      item.subject === binding.jobId &&
-      item.evidence.includes("dirty_workspace_without_worker");
-    if (!selfInactiveWorkspace && !selfDirtyWithoutRunner) {
-      debt.push(item);
-    }
-  }
-  return {
-    ...input.snapshot,
-    debt,
-    counts: projectAdmissionDebtCounts(debt),
-  };
-}
-
-async function withoutAdmittedInputPatchDebt(input: {
-  readonly snapshot: ProjectAdmissionSnapshot;
-  readonly request: ProjectAdmissionRequest | undefined;
-  readonly binding: CodexProjectAdmissionInput["admittedInputPatchTarget"];
-}): Promise<ProjectAdmissionSnapshot> {
-  const { binding, request } = input;
-  if (
-    !binding || !request ||
-    (request.operation !== ProjectOperation.StartWorker &&
-      request.operation !== ProjectOperation.CreateWorktree &&
-      request.operation !== ProjectOperation.CreateJob) ||
-    request.jobId !== binding.jobId ||
-    !request.workspacePath ||
-    !await admissionWorkspacePathsMatch(
-      request.workspacePath,
-      binding.workspacePath,
-    )
-  ) {
-    return input.snapshot;
-  }
-  const debt: ProjectDebtItem[] = [];
-  for (const item of input.snapshot.debt) {
-    const selfOrphanWorkspace =
-      item.reason === ProjectDebtReason.OrphanLegacyWorkspace &&
-      await admissionWorkspacePathsMatch(item.subject, binding.workspacePath);
-    if (request.operation === ProjectOperation.CreateJob) {
-      if (!selfOrphanWorkspace) debt.push(item);
-      continue;
-    }
-    const selfInactiveWorkspace =
-      item.reason === ProjectDebtReason.InactiveDirtyWorkspace &&
-      await admissionWorkspacePathsMatch(item.subject, binding.workspacePath);
-    const selfDirtyWithoutRunner =
-      item.reason === ProjectDebtReason.ActiveWriterConflict &&
-      item.subject === binding.jobId &&
-      item.evidence.includes("dirty_workspace_without_worker");
-    if (
-      !selfInactiveWorkspace &&
-      !selfOrphanWorkspace &&
-      !selfDirtyWithoutRunner
-    ) {
-      debt.push(item);
-    }
-  }
-  return {
-    ...input.snapshot,
-    debt,
-    counts: projectAdmissionDebtCounts(debt),
   };
 }
 
@@ -311,9 +253,52 @@ export async function buildCodexProjectAdmissionSnapshot(
     });
     summaries = [];
   }
-  const matchingProjectSummaries = summaries.filter((summary) =>
-    matchesProjectControlPrefix(summary.jobId, prefixes)
-  );
+  const matchingProjectSummariesBeforeRetirement = summaries.every((summary) =>
+      matchesProjectControlPrefix(summary.jobId, prefixes)
+    )
+    ? summaries
+    : summaries.filter((summary) =>
+        matchesProjectControlPrefix(summary.jobId, prefixes)
+      );
+  const custodyProjectionEnabled = input.deps.evidenceCustody !== undefined &&
+    ((input.scope.consumedOutputEvidenceRoots?.length ?? 0) > 0 ||
+      (input.scope.consumedOutputLedgerRoots?.length ?? 0) > 0);
+  const evidenceCustody = custodyProjectionEnabled
+    ? input.deps.evidenceCustody
+    : undefined;
+  const retirementProjection = custodyProjectionEnabled
+    ? await projectRetirementProjection({
+        custody: evidenceCustody!,
+        registryRootDir: input.registryRootDir,
+        projectId: input.scope.projectId,
+        ...(input.controllerJobId
+          ? { controllerJobId: input.controllerJobId }
+          : {}),
+        jobIdPrefixes: prefixes,
+        summaries: matchingProjectSummariesBeforeRetirement,
+        observeRuntime: async (manifest) => {
+          const state = await projectionRuntimeObservation(input, manifest);
+          return { workerAlive: state.workerAlive };
+        },
+      })
+    : { active: matchingProjectSummariesBeforeRetirement, retired: [] };
+  const frozenProjection = custodyProjectionEnabled
+    ? await frozenOutputSupersessionProjection({
+        custody: evidenceCustody!,
+        scope: input.scope,
+        registryRootDir: input.registryRootDir,
+        evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
+        ledgerRoots: input.scope.consumedOutputLedgerRoots ?? [],
+        projectId: input.scope.projectId,
+        ...(input.controllerJobId
+          ? { controllerJobId: input.controllerJobId }
+          : {}),
+        summaries: retirementProjection.active,
+        observeRuntime: async (manifest) =>
+          await projectionRuntimeObservation(input, manifest),
+      })
+    : { active: retirementProjection.active, supersessions: [] };
+  const matchingProjectSummaries = frozenProjection.active;
   debt.push(...consumedOutputDebtForCurrentRegistry({
     ledger: consumedOutput,
     currentJobIds: new Set(
@@ -393,15 +378,61 @@ export async function buildCodexProjectAdmissionSnapshot(
     observedAt: new Date().toISOString(),
     debt,
     counts: projectAdmissionDebtCounts(debt),
+    ...(retirementProjection.retired.length === 0 ? {} : {
+      retiredLegacyJobSummaries: retirementProjection.retired.map((receipt) => ({
+        jobId: receipt.jobId,
+        manifestSha256: receipt.manifestSha256,
+        retainedRegistrationJobId: receipt.retainedRegistrationJobId,
+        receiptPath: legacyJobSummaryRetirementPath({
+          registryRootDir: input.registryRootDir,
+          projectId: receipt.projectId,
+          jobId: receipt.jobId,
+          manifestSha256: receipt.manifestSha256,
+        }),
+      })),
+    }),
+    ...(frozenProjection.supersessions.length === 0 ? {} : {
+      supersededFrozenOutputSummaries: frozenProjection.supersessions.flatMap(
+        ({ receipt, supersededSummaries }) => supersededSummaries.map((summary) => ({
+          jobId: summary.jobId,
+          manifestSha256: summary.manifestSha256,
+          retainedRegistrationJobId: receipt.retainedRegistrationJobId,
+          receiptPath: receipt.receiptPath,
+        })),
+      ),
+    }),
   };
   const snapshot = await withoutAdmittedInputPatchDebt({
-    snapshot: rawSnapshot, request: input.admittedInputPatchRequest,
-    binding: input.admittedInputPatchTarget,
+    snapshot: rawSnapshot,
+    request: input.admittedInputPatchRequest,
+    ...(input.admittedInputPatchTarget
+      ? { binding: input.admittedInputPatchTarget }
+      : {}),
   });
   return input.skipActiveProposedAdmissionNormalization
     ? snapshot
     : await (input.deps.normalizeActiveProposedAdmission ??
-        normalizeActiveSocialProposedAdmission)(input.scope, snapshot, summaries);
+        normalizeActiveSocialProposedAdmission)(
+          input.scope,
+          snapshot,
+          matchingProjectSummaries,
+        );
+}
+
+async function projectionRuntimeObservation(
+  input: CodexProjectAdmissionSnapshotInput,
+  manifest: CodexGoalJobManifest,
+): Promise<{
+  readonly workspaceDirty: boolean;
+  readonly workerAlive: boolean;
+  readonly resultExists: boolean;
+  readonly resultPath?: string;
+}> {
+  const observeRuntime = input.deps.observeManifestRuntime;
+  if (!observeRuntime) {
+    throw new Error("project_control_projection_runtime_unproven");
+  }
+  return await observeRuntime(manifest);
 }
 
 export async function normalizeActiveSocialProposedAdmission(
@@ -869,20 +900,6 @@ function withoutInactiveDirtyWorkspaceConflict(
   );
 }
 
-async function admissionWorkspacePathsMatch(
-  left: string,
-  right: string,
-): Promise<boolean> {
-  if (resolve(left) === resolve(right)) return true;
-  const [leftRealPath, rightRealPath] = await Promise.all([
-    optionalRealPathForAdmission(left),
-    optionalRealPathForAdmission(right),
-  ]);
-  return leftRealPath !== undefined &&
-    rightRealPath !== undefined &&
-    leftRealPath === rightRealPath;
-}
-
 function workspaceConsumedByAnotherJob(input: {
   readonly ledger: ConsumedOutputLedger;
   readonly jobId: string;
@@ -978,16 +995,6 @@ async function pathLooksLikeGitWorkspace(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
-  }
-}
-
-export async function optionalRealPathForAdmission(
-  path: string,
-): Promise<string | undefined> {
-  try {
-    return await realpath(path);
-  } catch {
-    return undefined;
   }
 }
 

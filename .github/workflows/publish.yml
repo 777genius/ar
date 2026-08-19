@@ -19,22 +19,95 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate_release:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.validate.outputs.release_tag }}
+    steps:
+      - name: Validate existing release tag before checkout
+        id: validate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "release tag must be an exact semver-style v<package-version> tag" >&2
+            exit 1
+          fi
+          release_json="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft)"
+          test "$(jq -r '.tagName' <<<"$release_json")" = "$RELEASE_TAG"
+          test "$(jq -r '.isDraft' <<<"$release_json")" = "false"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+  crash-boundary-shards:
+    permissions:
+      contents: read
+    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    needs: [validate_release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        lane: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate_release.outputs.release_tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:packages
+      - name: Certify crash-boundary shards in lane ${{ matrix.lane }}
+        env:
+          CODEX_LEDGER_EPOCH_CRASH_RANGE_ONLY: "1"
+          SHARD_LANE: ${{ matrix.lane }}
+        run: |
+          shard="$SHARD_LANE"
+          while [ "$shard" -le 53 ]; do
+            file="src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-${shard}.test.ts"
+            timeout --signal=TERM --kill-after=10s 240s \
+              npm run test:crash-shard -- "$file"
+            shard=$((shard + 8))
+          done
+
+  crash-boundary-shards-complete:
+    permissions:
+      contents: read
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    needs: [crash-boundary-shards]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every crash-boundary shard lane passed
+        env:
+          CRASH_BOUNDARY_SHARDS_RESULT: ${{ needs.crash-boundary-shards.result }}
+        run: test "$CRASH_BOUNDARY_SHARDS_RESULT" = "success"
+
   publish:
     if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    needs: [validate_release, crash-boundary-shards-complete]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name || inputs.release_tag }}
-      - name: Fetch pinned legacy ledger fixture
-        run: git fetch --no-tags --depth=1 origin d0a6885ddac5d90d765819359cfce05b756b7a54
+          ref: ${{ needs.validate_release.outputs.release_tag }}
+          fetch-depth: 0
+          persist-credentials: false
       - name: Checkout current release tooling for manual recovery
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           path: .release-tools
+          persist-credentials: false
           sparse-checkout: scripts/publish-preflight.mjs
           sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v4
@@ -63,7 +136,7 @@ jobs:
           node "$preflight_script" --tarball "${{ steps.pack.outputs.tarball }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+          RELEASE_TAG: ${{ needs.validate_release.outputs.release_tag }}
       - name: Publish to GitHub Packages
         if: ${{ steps.publish-preflight.outputs.package_action == 'publish' }}
         run: npm publish "${{ steps.pack.outputs.tarball }}" --registry=https://npm.pkg.github.com
@@ -74,4 +147,4 @@ jobs:
         run: gh release upload "$RELEASE_TAG" "${{ steps.pack.outputs.tarball }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+          RELEASE_TAG: ${{ needs.validate_release.outputs.release_tag }}

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, cp, mkdir, mkdtemp, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -14,6 +15,8 @@ const execFileAsync = promisify(execFile);
 const D0A_COMMIT = "d0a6885ddac5d90d765819359cfce05b756b7a54";
 const D0A_BUILDER_SHA256 =
   "858be0c57bace3f1cc0e262357c78ccc0bd96b33031dbb437583e2afd849109e";
+const D0A_COMPILED_BUILDER_SHA256 =
+  "e0940490668806afa15c074fd3cd2e37d2ac6e1fdc19f95150efad40ed80e477";
 type EpochBuilderModule = typeof import(
   "../application/project-control/codex-goal-consumed-output-ledger-epoch"
 );
@@ -59,11 +62,7 @@ export async function seedLegacyAdmissionHandlerFixture(input: {
     writeFile(join(itemsRoot, `legacy-invalid-${index}.json`), "not-json\n")
   ));
   const orphanWorkspaces = input.fastOrphanBoundaries
-    ? await Promise.all(Array.from({ length: 205 }, async (_, index) => {
-        const path = join(input.root, "secrets", `legacy-orphan-${index}`);
-        await mkdir(path, { recursive: true });
-        return path;
-      }))
+    ? await sharedDirtyOrphanWorkspaces(input.root)
     : await dirtyOrphanWorkspaces(input.root);
   const activeJobIds = await Promise.all(Array.from({ length: 6 }, async (_, index) => {
     const jobId = `legacy-active-writer-${index}`;
@@ -75,9 +74,32 @@ export async function seedLegacyAdmissionHandlerFixture(input: {
 
 async function dirtyOrphanWorkspaces(root: string): Promise<readonly string[]> {
   const orphanTemplate = await dirtyOrphanWorkspace(root, "template");
+  const paths = new Array<string>(205);
+  let nextIndex = 0;
+  const copyWorkspace = async (): Promise<void> => {
+    while (nextIndex < paths.length) {
+      const index = nextIndex++;
+      const path = join(root, "worktrees", `legacy-orphan-${index}`);
+      await cp(orphanTemplate, path, {
+        recursive: true,
+        mode: constants.COPYFILE_FICLONE,
+      });
+      paths[index] = path;
+    }
+  };
+  await Promise.all(Array.from({ length: 32 }, copyWorkspace));
+  return paths;
+}
+
+async function sharedDirtyOrphanWorkspaces(root: string): Promise<readonly string[]> {
+  const orphanTemplate = await dirtyOrphanWorkspace(root, "template");
   return await Promise.all(Array.from({ length: 205 }, async (_, index) => {
     const path = join(root, "worktrees", `legacy-orphan-${index}`);
-    await cp(orphanTemplate, path, { recursive: true });
+    await mkdir(path, { recursive: true });
+    await Promise.all([
+      symlink(join(orphanTemplate, ".git"), join(path, ".git"), "dir"),
+      writeFile(join(path, "tracked.txt"), "dirty\n"),
+    ]);
     return path;
   }));
 }
@@ -149,9 +171,15 @@ async function isolatedD0aFixture(): Promise<EpochBuilderModule> {
 }
 
 async function createIsolatedD0aFixture(): Promise<EpochBuilderModule> {
+  const cachedSourceRoot = join(
+    tmpdir(),
+    `subscription-runtime-d0a-${D0A_BUILDER_SHA256}-${process.versions.modules}`,
+  );
+  const cached = await loadCompiledD0aFixture(cachedSourceRoot);
+  if (cached) return cached;
   const root = await mkdtemp(join(tmpdir(), "ledger-epoch-authentic-d0a-"));
   const archivePath = join(root, "d0a.tar");
-  const sourceRoot = join(root, "source");
+  let sourceRoot = join(root, "source");
   await mkdir(sourceRoot);
   await execFileAsync("git", [
     "archive",
@@ -171,17 +199,52 @@ async function createIsolatedD0aFixture(): Promise<EpochBuilderModule> {
   await execFileAsync(join(process.cwd(), "node_modules", ".bin", "tsc"), [
     "-p",
     "tsconfig.build.json",
+    "--noCheck",
   ], { cwd: sourceRoot, timeout: 60_000, maxBuffer: 16 * 1024 * 1024 });
   await execFileAsync(process.execPath, ["scripts/rewrite-dist-esm-imports.mjs"], {
     cwd: sourceRoot,
     timeout: 60_000,
     maxBuffer: 16 * 1024 * 1024,
   });
+  try {
+    await rename(sourceRoot, cachedSourceRoot);
+    sourceRoot = cachedSourceRoot;
+  } catch (error) {
+    if (!isNodeError(error, "EEXIST") && !isNodeError(error, "ENOTEMPTY")) {
+      throw error;
+    }
+    const raced = await loadCompiledD0aFixture(cachedSourceRoot);
+    if (raced) return raced;
+  }
+  const compiled = await loadCompiledD0aFixture(sourceRoot);
+  if (!compiled) throw new Error("ledger_epoch_authentic_d0a_cache_invalid");
+  return compiled;
+}
+
+async function loadCompiledD0aFixture(
+  sourceRoot: string,
+): Promise<EpochBuilderModule | undefined> {
+  const builderPath = join(
+    sourceRoot,
+    "src/worker-codex/application/project-control/codex-goal-consumed-output-ledger-epoch.ts",
+  );
   const modulePath = join(
     sourceRoot,
     "dist/worker-codex/application/project-control/codex-goal-consumed-output-ledger-epoch.js",
   );
-  return await import(pathToFileURL(modulePath).href) as EpochBuilderModule;
+  try {
+    const builderBytes = await readFile(builderPath);
+    if (createHash("sha256").update(builderBytes).digest("hex") !==
+      D0A_BUILDER_SHA256) return undefined;
+    await access(modulePath);
+    const compiledBytes = await readFile(modulePath);
+    if (createHash("sha256").update(compiledBytes).digest("hex") !==
+      D0A_COMPILED_BUILDER_SHA256) return undefined;
+    return await import(pathToFileURL(modulePath).href) as EpochBuilderModule;
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return undefined;
+    throw error;
+  }
 }
 
 function legacyAdmissionSnapshot(
@@ -254,4 +317,8 @@ async function dirtyOrphanWorkspace(root: string, index: number | string): Promi
   await execFileAsync("git", ["commit", "-qm", "base"], { cwd: path });
   await writeFile(join(path, "tracked.txt"), "dirty\n");
   return path;
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
 }

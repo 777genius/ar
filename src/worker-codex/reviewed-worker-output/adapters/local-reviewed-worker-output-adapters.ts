@@ -20,11 +20,10 @@ import {
 import {
   LocalWorkspaceIntegrationLock,
 } from "@vioxen/subscription-runtime/worker-local";
-import { readLocalGitHeadCommit } from "../../codex-goal-git-revision";
 import {
-  captureGitWorkspaceChangedFiles,
-  captureGitWorkspacePatch,
-} from "../../codex-goal-runtime-result-io";
+  captureCodexGoalExactWorkspacePatch,
+} from "../../codex-goal-handoff-artifacts";
+import { LocalGitRevisionReader } from "../../codex-goal-git-revision";
 import {
   inspectNodeDependencyEnvironment,
   sanitizeNodeDependencyEnvironment,
@@ -61,21 +60,25 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
     readonly workspacePath: string;
     readonly allowEmptyPatch?: boolean;
   }): Promise<ReviewedWorkerOutputWorkspaceSnapshot> {
-    const baseCommit = await readLocalGitHeadCommit(input.workspacePath);
-    if (!baseCommit)
-      throw new Error("reviewed_worker_output_base_commit_required");
-    const patch = await captureGitWorkspacePatch({
+    const captured = await captureCodexGoalExactWorkspacePatch({
       workspacePath: input.workspacePath,
-      ...(this.options.gitBinaryPath
-        ? { gitBinaryPath: this.options.gitBinaryPath }
-        : {}),
+      ...(this.options.gitBinaryPath === undefined
+        ? {}
+        : { gitBinaryPath: this.options.gitBinaryPath }),
+      scanSecretContent: false,
+      enforceSingleWorkspaceLayer: false,
     });
-    const changedFiles = await captureGitWorkspaceChangedFiles({
-      workspacePath: input.workspacePath,
-      ...(this.options.gitBinaryPath
-        ? { gitBinaryPath: this.options.gitBinaryPath }
-        : {}),
-    });
+    if (!captured) {
+      if (input.allowEmptyPatch !== true) {
+        throw new Error("reviewed_worker_output_patch_required");
+      }
+      return {
+        patch: "",
+        baseCommit: await this.requireBaseCommit(input.workspacePath),
+        changedFiles: [],
+      };
+    }
+    const { baseCommit, patch, changedPaths: changedFiles } = captured;
     if (!patch.trim()) {
       if (
         input.allowEmptyPatch !== true ||
@@ -100,6 +103,16 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
       baseCommit,
       changedFiles,
     };
+  }
+
+  private async requireBaseCommit(workspacePath: string): Promise<string> {
+    const { commit: baseCommit } = await new LocalGitRevisionReader({
+      ...(this.options.gitBinaryPath
+        ? { gitBinaryPath: this.options.gitBinaryPath }
+        : {}),
+    }).readHeadCommit({ workspacePath });
+    if (!baseCommit) throw new Error("reviewed_worker_output_base_commit_required");
+    return baseCommit;
   }
 
   private async assertPatchAppliesToBase(input: {

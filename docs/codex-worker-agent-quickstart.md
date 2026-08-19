@@ -297,6 +297,8 @@ codex_goal_project_controller_status({ controllerJobId, ... })
 codex_goal_project_start({ controllerJobId, jobId, confirmStart: true })
 codex_goal_project_mark_reviewed({ controllerJobId, jobId })
 codex_goal_project_record_failed_no_output({ controllerJobId, jobId, terminalAttemptId, failureCategory, failureCode, confirmFailedNoOutput: true })
+codex_goal_project_retire_legacy_job_summary({ controllerJobId, jobId, confirmRetirement: false, ... })
+codex_goal_project_import_frozen_output({ controllerJobId, confirmFrozenOutputImport: false, ... })
 codex_goal_project_open_integration_attempt({ controllerJobId, ... })
 codex_goal_project_apply_worker_output({ controllerJobId, attemptId, ... })
 codex_goal_project_run_required_checks({ controllerJobId, attemptId, ... })
@@ -311,6 +313,14 @@ must be clean unless it contains a preexisting producer patch. In that case,
 pass its scoped path and verified SHA-256 with
 `confirmPreexistingWorkspacePatch: true`. The command appends a new terminal
 receipt and never rewrites the original ledger record.
+
+Legacy control debt uses the two distinct preview/confirm surfaces shown above.
+Summary retirement is limited to exact unlaunched missing-workspace manifests;
+frozen-output import is limited to stopped dirty manifest-only summaries and an
+output-bearing retained registration. See
+[project-control-debt-remediation.md](./project-control-debt-remediation.md)
+for their path, CAS, and immutable-receipt contracts. Neither surface creates
+`failed_no_output` evidence.
 
 Child jobs created by `codex_goal_project_create_job` inherit a narrowed scope
 from the controller. They default to

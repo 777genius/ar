@@ -144,6 +144,7 @@ export async function upgradePreparedEpochV1(input: {
   readonly processEvidence: LegacyAttemptProcessEvidence;
   readonly expectedPlanSha256: string;
   readonly crashAfter?: string;
+  readonly crashBoundary?: (boundary: string) => void;
 }): Promise<PreparedEpochUpgradeResult> {
   if (input.plan.transactionVersion === 2) return { upgraded: false };
   if (input.plan.planSha256 !== input.expectedPlanSha256) {
@@ -170,9 +171,7 @@ export async function upgradePreparedEpochV1(input: {
       join(root, LEDGER_EPOCH_INTENT_NAME),
       await ledgerEpochIntent(input.plan, root),
     );
-    if (input.crashAfter === "intent") {
-      throw new Error("ledger_epoch_simulated_upgrade_crash:intent");
-    }
+    reachUpgradeCrashBoundary(input, "intent");
     await assertPreparedEpochV2Sidecar(
       input.plan,
       input.processEvidence,
@@ -229,6 +228,13 @@ export async function upgradePreparedEpochV1(input: {
     ["receipt.json", snapshots[3]],
     ["manifest.json", { ...manifest, upgradeSha256 }],
   ] as const;
+  const expectedStagedBoundaries = preparedEpochV1UpgradeCrashBoundaries(
+    sourceOrphans.length,
+  ).slice(0, -2);
+  if (JSON.stringify(files.map(([name]) => name)) !==
+    JSON.stringify(expectedStagedBoundaries)) {
+    throw new Error("ledger_epoch_upgrade_crash_inventory_drift");
+  }
   await mkdir(stagingPath, { recursive: true, mode: 0o700 });
   let next = await upgradeCursor(journalPath, upgradeSha256);
   for (let index = 0; index < files.length; index += 1) {
@@ -236,31 +242,35 @@ export async function upgradePreparedEpochV1(input: {
     if (index >= next) {
       await writeExactOrVerify(join(stagingPath, name), value);
       next = index + 1;
-      await durableReplaceEpochJson(journalPath, {
-        schemaVersion: 1,
-        planSha256: input.plan.planSha256,
-        upgradeSha256,
-        next,
-        fileCount: files.length,
-      });
-      if (input.crashAfter === name) {
-        throw new Error(`ledger_epoch_simulated_upgrade_crash:${name}`);
+      // The cursor is only a bounded replay optimization: exact immutable
+      // writes make replay from an earlier checkpoint safe. Checkpointing a
+      // batch avoids hundreds of directory-syncing journal replacements while
+      // limiting recovery verification to at most fifteen files.
+      if (next % 16 === 0 || next === files.length) {
+        await durableReplaceEpochJson(journalPath, {
+          schemaVersion: 1,
+          planSha256: input.plan.planSha256,
+          upgradeSha256,
+          next,
+          fileCount: files.length,
+        });
       }
-    } else {
-      await writeExactOrVerify(join(stagingPath, name), value);
+      reachUpgradeCrashBoundary(input, name);
     }
+  }
+  // The durable cursor makes earlier entries immutable progress. Revalidating
+  // every prior entry on every resume makes the public-handler crash matrix
+  // quadratic; verify the complete prefix once at the commit boundary instead.
+  for (const [name, value] of files) {
+    await writeExactOrVerify(join(stagingPath, name), value);
   }
   if (await pathExists(finalPath)) {
     throw new Error("ledger_epoch_upgrade_final_target_not_empty");
   }
   await rename(stagingPath, finalPath);
-  if (input.crashAfter === "final-sidecar") {
-    throw new Error("ledger_epoch_simulated_upgrade_crash:final-sidecar");
-  }
+  reachUpgradeCrashBoundary(input, "final-sidecar");
   await writeExactOrVerify(join(root, LEDGER_EPOCH_INTENT_NAME), intent);
-  if (input.crashAfter === "intent") {
-    throw new Error("ledger_epoch_simulated_upgrade_crash:intent");
-  }
+  reachUpgradeCrashBoundary(input, "intent");
   await durableReplaceEpochJson(journalPath, {
     schemaVersion: 1,
     planSha256: input.plan.planSha256,
@@ -276,6 +286,37 @@ export async function upgradePreparedEpochV1(input: {
     input.debtCustody,
   );
   return { upgraded: true, upgradeSha256 };
+}
+
+function reachUpgradeCrashBoundary(
+  input: {
+    readonly crashAfter?: string;
+    readonly crashBoundary?: (boundary: string) => void;
+  },
+  boundary: string,
+): void {
+  input.crashBoundary?.(boundary);
+  if (input.crashAfter === boundary) {
+    throw new Error(`ledger_epoch_simulated_upgrade_crash:${boundary}`);
+  }
+}
+
+export function preparedEpochV1UpgradeCrashBoundaries(
+  sourceOrphanCount: number,
+): readonly string[] {
+  return [
+    "intent.json",
+    ...Array.from({ length: sourceOrphanCount }, (_, index) =>
+      sourceOrphanName(index)
+    ),
+    "plan.json",
+    "owner.json",
+    "state.json",
+    "receipt.json",
+    "manifest.json",
+    "final-sidecar",
+    "intent",
+  ];
 }
 
 export async function assertPreparedEpochV2Sidecar(

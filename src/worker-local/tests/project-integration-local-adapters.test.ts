@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ import {
 import {
   ConfiguredCommitIdentityAdapter,
   captureLocalTerminalOutputBackup,
+  localProjectControlEvidenceCustodySupported,
   LocalConsumedOutputLedgerWriter,
   LocalGitIntegrationAdapter,
   LocalIntegratedOutputLedgerAdapter,
@@ -1012,16 +1013,26 @@ describe("local project integration adapters", () => {
     });
   });
 
-  it("prepares evidence before push and finalizes an idempotent terminal ledger", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "prepares custody-readable evidence before push and finalizes an idempotent terminal ledger",
+    async () => {
     const fixture = await createGitFixture();
     await writeFile(
       join(fixture.workspacePath, "src", "memory.ts"),
       "export const value = 3;\n",
     );
     const ledgerRoot = join(fixture.rootDir, "ledger");
+    const historicalRoot = join(fixture.rootDir, "historical", "archives");
+    const activeRoot = join(fixture.rootDir, "active", "archives");
+    await Promise.all([
+      mkdir(ledgerRoot),
+      mkdir(historicalRoot, { recursive: true }),
+      mkdir(activeRoot, { recursive: true }),
+    ]);
     const adapter = new LocalIntegratedOutputLedgerAdapter({
       ledgerRoots: [ledgerRoot],
-      archiveRoot: join(fixture.rootDir, "archives"),
+      evidenceRoots: [historicalRoot, activeRoot],
+      activeEvidenceRoot: activeRoot,
       custodyRoot: fixture.rootDir,
     });
     const attempt = {
@@ -1039,8 +1050,34 @@ describe("local project integration adapters", () => {
     });
     await expect(readFile(preparation.patchPath, "utf8"))
       .resolves.toContain("export const value = 2");
+    expect(preparation.archivePath.startsWith(`${activeRoot}/`)).toBe(true);
+    await expect(readdir(historicalRoot)).resolves.toEqual([]);
+    await expect(readFile(preparation.statusPath, "utf8"))
+      .resolves.toEqual(expect.any(String));
+    await expect(readFile(preparation.numstatPath, "utf8"))
+      .resolves.toContain("src/memory.ts");
     await expect(adapter.preflightFinalize({ preparation }))
       .resolves.toBeUndefined();
+
+    const historicalArchive = join(historicalRoot, "older-attempt");
+    await mkdir(historicalArchive);
+    await Promise.all([
+      writeFile(join(historicalArchive, "git-status.txt"), ""),
+      writeFile(join(historicalArchive, "tracked.diff"), "historical\n"),
+      writeFile(join(historicalArchive, "tracked.numstat"), "1\t0\told.ts\n"),
+    ]);
+    await expect(adapter.preflightFinalize({
+      preparation: {
+        attemptId: "older-attempt",
+        workerJobId: "older-worker",
+        workerWorkspacePath: fixture.workspacePath,
+        commitSha: fixture.workerCommitSha,
+        archivePath: historicalArchive,
+        statusPath: join(historicalArchive, "git-status.txt"),
+        patchPath: join(historicalArchive, "tracked.diff"),
+        numstatPath: join(historicalArchive, "tracked.numstat"),
+      },
+    })).resolves.toBeUndefined();
 
     const first = await adapter.finalize({
       preparation,
@@ -1058,6 +1095,79 @@ describe("local project integration adapters", () => {
     });
     expect(first.idempotentReplay).toBe(false);
     expect(replay.idempotentReplay).toBe(true);
+    },
+  );
+
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "writes rejected evidence only to the latest active root",
+    async () => {
+    const fixture = await createGitFixture();
+    await writeFile(
+      join(fixture.workspacePath, "src", "memory.ts"),
+      "export const value = 3;\n",
+    );
+    const ledgerRoot = join(fixture.rootDir, "ledger");
+    const historicalRoot = join(fixture.rootDir, "historical", "archives");
+    const activeRoot = join(fixture.rootDir, "active", "archives");
+    await Promise.all([
+      mkdir(ledgerRoot),
+      mkdir(historicalRoot, { recursive: true }),
+      mkdir(activeRoot, { recursive: true }),
+    ]);
+    const adapter = new LocalIntegratedOutputLedgerAdapter({
+      ledgerRoots: [ledgerRoot],
+      evidenceRoots: [historicalRoot, activeRoot],
+      activeEvidenceRoot: activeRoot,
+      custodyRoot: fixture.rootDir,
+    });
+    const preparation = await adapter.prepareRejection({
+      attempt: {
+        attemptId: "rejected-attempt",
+        targetWorkspacePath: fixture.workspacePath,
+        workerOutput: {
+          workerJobId: "worker-1",
+          workspacePath: fixture.workspacePath,
+          changedFiles: ["src/memory.ts"],
+        },
+      } as unknown as IntegrationAttempt,
+    });
+    expect(preparation.archivePath.startsWith(`${activeRoot}/`)).toBe(true);
+    await expect(readdir(historicalRoot)).resolves.toEqual([]);
+    await expect(adapter.finalizeRejection({
+      preparation,
+      rejectedAt: "2026-08-19T00:00:00.000Z",
+      reason: "review rejected",
+    })).resolves.toMatchObject({ status: "rejected" });
+    await expect(readFile(preparation.patchPath, "utf8"))
+      .resolves.toContain("export const value = 3");
+    },
+  );
+
+  it("rejects an active evidence root that is not the latest append-only root", async () => {
+    const fixture = await createGitFixture();
+    const adapter = new LocalIntegratedOutputLedgerAdapter({
+      ledgerRoots: [join(fixture.rootDir, "ledger")],
+      evidenceRoots: [
+        join(fixture.rootDir, "historical", "archives"),
+        join(fixture.rootDir, "active", "archives"),
+      ],
+      activeEvidenceRoot: join(fixture.rootDir, "historical", "archives"),
+      custodyRoot: fixture.rootDir,
+    });
+    await expect(adapter.prepare({
+      attempt: {
+        attemptId: "attempt-1",
+        targetWorkspacePath: fixture.workspacePath,
+        workerOutput: {
+          workerJobId: "worker-1",
+          workspacePath: fixture.workspacePath,
+          changedFiles: ["src/memory.ts"],
+        },
+      } as unknown as IntegrationAttempt,
+      commitSha: fixture.workerCommitSha,
+    })).rejects.toThrow(
+      "project_integration_consumed_output_active_evidence_root_mismatch",
+    );
   });
 
   it("rejects conflicting terminal decisions for the same worker", async () => {
@@ -1117,6 +1227,7 @@ describe("local project integration adapters", () => {
     const sourcePatchPath = join(fixture.rootDir, "source.patch");
     const firstBytes = Buffer.from([0x64, 0x69, 0x66, 0x66, 0x0a, 0x80]);
     const secondBytes = Buffer.from([0x64, 0x69, 0x66, 0x66, 0x0a, 0x81]);
+    await mkdir(archiveRoot);
     await writeFile(sourcePatchPath, firstBytes);
 
     const captured = await captureLocalTerminalOutputBackup({
@@ -1135,7 +1246,9 @@ describe("local project integration adapters", () => {
       workspacePath: fixture.workspacePath,
       changedFiles: [],
       sourcePatchPath,
-    })).rejects.toThrow("integrated_output_ledger_preparation_conflict");
+    })).rejects.toThrow(localProjectControlEvidenceCustodySupported
+      ? "evidence_custody_immutable_conflict"
+      : "integrated_output_ledger_preparation_conflict");
   });
 
 });

@@ -50,6 +50,10 @@ import {
   writeClaudeRunArtifacts,
   writeFakeAuth,
 } from "./codex-goal-mcp-test-support";
+import { createCommittedTestRepository } from
+  "./codex-goal-mcp-project-broker-test-support";
+import { localProjectControlEvidenceCustodySupported } from
+  "../../worker-local/project-control-evidence-custody-local-adapter";
 
 const execFileAsync = promisify(execFile);
 
@@ -346,7 +350,9 @@ describe("codex goal MCP server", () => {
     }
   });
 
-  it("updates controller consumed-output ledger roots through scoped repair only", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "updates controller consumed-output ledger roots through scoped repair only",
+    async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-controller-scope-repair-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerJobRoot = join(root, "worker-jobs", "infinity-context-controller-v1");
@@ -365,6 +371,7 @@ describe("codex goal MCP server", () => {
       allowedBranches: ["main"],
       allowedAccountIds: ["account-a"],
     };
+    await mkdir(controlRoot, { recursive: true });
     const server = createCodexGoalMcpServer();
     const client = new Client({
       name: "subscription-runtime-test",
@@ -645,7 +652,8 @@ describe("codex goal MCP server", () => {
       await server.close();
       await rm(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
 
   it("denies generic start for project-scoped controller jobs", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-project-generic-start-"));
@@ -1040,16 +1048,8 @@ describe("codex goal MCP server", () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
     try {
-      await mkdir(sourceWorkspacePath, { recursive: true });
-      await gitInitRepository(sourceWorkspacePath);
-      await writeFile(join(sourceWorkspacePath, "README.md"), "base\n");
-      await git(sourceWorkspacePath, ["add", "README.md"]);
-      await git(sourceWorkspacePath, ["commit", "-m", "test: base"]);
-      await mkdir(outsideChildTarget, { recursive: true });
-      await gitInitRepository(outsideChildTarget);
-      await writeFile(join(outsideChildTarget, "README.md"), "outside\n");
-      await git(outsideChildTarget, ["add", "README.md"]);
-      await git(outsideChildTarget, ["commit", "-m", "test: outside base"]);
+      await createCommittedTestRepository(sourceWorkspacePath, "base\n");
+      await createCommittedTestRepository(outsideChildTarget, "outside\n", "test: outside base");
       await mkdir(join(root, "worktrees"), { recursive: true });
       await symlink(outsideChildTarget, childWorkspace, "dir");
       await mkdir(childJobRoot, { recursive: true });

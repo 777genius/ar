@@ -1,12 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  symlink,
-  writeFile,
+  mkdir, mkdtemp, readFile, rm, symlink, writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,6 +63,7 @@ describe("Codex project admission snapshot", () => {
       };
       const gate = codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope: {
           projectId: "project",
           jobIdPrefixes: ["project-"],
@@ -146,6 +142,7 @@ describe("Codex project admission snapshot", () => {
       };
       const gate = codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope: { projectId: "project", jobIdPrefixes: ["project-"] },
         deps,
       });
@@ -297,6 +294,7 @@ describe("Codex project admission snapshot", () => {
       };
       const gate = codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope,
         deps,
       });
@@ -444,6 +442,7 @@ describe("Codex project admission snapshot", () => {
       };
       const gate = codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope: { projectId: "project", jobIdPrefixes: ["project-"] },
         deps,
         admittedInputPatchTarget: {
@@ -543,6 +542,7 @@ describe("Codex project admission snapshot", () => {
       const gate = (admissionDeps: CodexProjectAdmissionDeps) =>
         codexProjectAdmissionGate({
           registryRootDir: join(root, "registry"),
+          controllerJobId: "project-controller",
           scope: {
             projectId: "project",
             jobIdPrefixes: ["project-"],
@@ -562,6 +562,7 @@ describe("Codex project admission snapshot", () => {
 
       await expect(codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope: { projectId: "project", jobIdPrefixes: ["project-"] },
         deps: deps(),
       }).evaluate(request(ProjectOperation.StartWorker))).resolves.toMatchObject({
@@ -614,6 +615,7 @@ describe("Codex project admission snapshot", () => {
       await writeFile(join(orphanWorkspacePath, "seeded.txt"), "seeded output\n");
       const orphanGate = codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope: {
           projectId: "project",
           jobIdPrefixes: ["project-"],
@@ -687,6 +689,7 @@ describe("Codex project admission snapshot", () => {
         String(Number.MAX_SAFE_INTEGER);
       await expect(codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope: {
           projectId: "project",
           jobIdPrefixes: ["project-"],
@@ -770,6 +773,7 @@ describe("Codex project admission snapshot", () => {
       };
       const input = {
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope: { projectId: "project", jobIdPrefixes: ["project-"] },
         deps,
       };
@@ -927,6 +931,7 @@ describe("Codex project admission snapshot", () => {
       projectId: "project",
       worktreeRoots: [join(root, "worktrees")],
       consumedOutputLedgerRoots: [ledgerRoot],
+      consumedOutputEvidenceRoots: [backupRoot],
       jobIdPrefixes: ["project-"],
     };
 
@@ -1033,6 +1038,7 @@ describe("Codex project admission snapshot", () => {
       projectId: "project",
       worktreeRoots: [join(root, "worktrees")],
       consumedOutputLedgerRoots: [ledgerRoot],
+      consumedOutputEvidenceRoots: [backupRoot],
       jobIdPrefixes: ["project-"],
     };
 
@@ -1092,6 +1098,7 @@ describe("Codex project admission snapshot", () => {
       ]));
       await expect(codexProjectAdmissionGate({
         registryRootDir: join(root, "registry"),
+        controllerJobId: "project-controller",
         scope,
         deps,
       }).evaluate({
@@ -1139,6 +1146,7 @@ describe("Codex project admission snapshot", () => {
       projectId: "project",
       worktreeRoots: [join(root, "worktrees")],
       consumedOutputLedgerRoots: [ledgerRoot],
+      consumedOutputEvidenceRoots: [backupRoot],
       jobIdPrefixes: ["project-"],
     };
 

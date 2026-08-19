@@ -7,13 +7,17 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   AccessBoundary,
   createAccessPolicyService,
   type NetworkAccessMode,
   type ProjectAccessScope,
+  type ProjectControlCustodyBootstrapCertification,
+  type ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
+import { LocalProjectControlEvidenceCustody } from
+  "../worker-local/project-control-evidence-custody-local-adapter";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import type { CodexGoalOutputFormat } from "./codex-goal-ops";
 import {
@@ -197,6 +201,7 @@ export async function createCodexGoalJob(input: {
   readonly overwrite?: boolean;
   readonly cwd?: string;
   readonly now?: Date;
+  readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
 }): Promise<CodexGoalJobManifest> {
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
   const now = (input.now ?? new Date()).toISOString();
@@ -216,16 +221,39 @@ export async function createCodexGoalJob(input: {
     registryRootDir,
     jobId: manifest.jobId,
   });
-  await mkdir(join(registryRootDir, manifest.jobId), {
-    recursive: true,
-    mode: 0o700,
-  });
-  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: input.overwrite ? 0o600 : 0o600,
-    flag: input.overwrite ? "w" : "wx",
-  });
-  return manifest;
+  if (!input.overwrite && await pathExists(path)) {
+    throw codexGoalJobManifestAlreadyExists(path);
+  }
+  const custodyCertification = await bootstrapInitialProjectControlCustody(
+    manifest,
+    input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
+  );
+  try {
+    await mkdir(join(registryRootDir, manifest.jobId), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await custodyCertification?.revalidate();
+    await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: input.overwrite ? "w" : "wx",
+    });
+    return manifest;
+  } finally {
+    await custodyCertification?.close();
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error &&
+      error.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 export async function updateCodexGoalJob(input: {
@@ -234,6 +262,7 @@ export async function updateCodexGoalJob(input: {
   readonly patch: CodexGoalJobManifestPatch;
   readonly cwd?: string;
   readonly now?: Date;
+  readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
 }): Promise<CodexGoalJobManifest> {
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
   const existing = await readCodexGoalJob({
@@ -261,8 +290,40 @@ export async function updateCodexGoalJob(input: {
     registryRootDir,
     jobId: input.jobId,
   });
-  await durableReplaceJsonFile({ path: manifestPath, value: manifest });
-  return manifest;
+  const custodyCertification = requiresProjectControlCustodyCertification(
+      existing,
+      manifest,
+    )
+    ? await bootstrapInitialProjectControlCustody(
+        manifest,
+        input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
+      )
+    : undefined;
+  try {
+    await custodyCertification?.revalidate();
+    await durableReplaceJsonFile({ path: manifestPath, value: manifest });
+    return manifest;
+  } finally {
+    await custodyCertification?.close();
+  }
+}
+
+function requiresProjectControlCustodyCertification(
+  existing: CodexGoalJobManifest,
+  manifest: CodexGoalJobManifest,
+): boolean {
+  return manifest.accessBoundary === AccessBoundary.ProjectScopedControl &&
+    existing.accessBoundary !== AccessBoundary.ProjectScopedControl;
+}
+
+function codexGoalJobManifestAlreadyExists(path: string): NodeJS.ErrnoException {
+  const error = new Error(
+    `EEXIST: file already exists, open '${path}'`,
+  ) as NodeJS.ErrnoException;
+  error.code = "EEXIST";
+  error.path = path;
+  error.syscall = "open";
+  return error;
 }
 
 export function codexGoalJobToArgs(
@@ -640,6 +701,68 @@ async function assertCodexGoalJobManifestAccessConsistency(
   if (!createDecision.allowed) {
     throw new Error(`codex_goal_job_create_denied:${createDecision.reason}`);
   }
+}
+
+export async function bootstrapInitialProjectControlCustody(
+  manifest: CodexGoalJobManifest,
+  custody: ProjectControlEvidenceCustodyPort,
+): Promise<ProjectControlCustodyBootstrapCertification | undefined> {
+  if (manifest.accessBoundary !== AccessBoundary.ProjectScopedControl ||
+    !manifest.projectAccessScope) return undefined;
+  const scope = manifest.projectAccessScope;
+  const ledgerRoots = scope.consumedOutputLedgerRoots ?? [];
+  const evidenceRoots = scope.consumedOutputEvidenceRoots ?? [];
+  if (ledgerRoots.length === 0 && evidenceRoots.length === 0) return undefined;
+  for (const root of evidenceRoots) {
+    if (!isAbsolute(root) || resolve(root) !== root || basename(root) !== "archives") {
+      throw new Error("evidence_custody_bootstrap_evidence_basename_invalid");
+    }
+  }
+  const configuredRoots = [...ledgerRoots, ...evidenceRoots];
+  for (const root of configuredRoots) {
+    if (!isAbsolute(root) || resolve(root) !== root) {
+      throw new Error("evidence_custody_bootstrap_root_unsafe");
+    }
+  }
+  const candidateInputs = uniqueManifestStrings([
+    ...(scope.workspaceRoots ?? []),
+    ...(scope.worktreeRoots ?? []),
+    ...(scope.observedWorkspaceRoots ?? []),
+    ...(scope.readRoots ?? []),
+    ...(scope.isolatedWorkspaceRoot ? [scope.isolatedWorkspaceRoot] : []),
+    ...(scope.registryRoot ? [scope.registryRoot] : []),
+  ]);
+  const candidates: string[] = [];
+  for (const candidate of candidateInputs) {
+    try {
+      const canonical = await custody.canonicalDirectory(candidate);
+      if (canonical !== resolve(candidate)) continue;
+      if (configuredRoots.every((root) => pathStrictlyInside(canonical, root))) {
+        candidates.push(canonical);
+      }
+    } catch (error) {
+      if (error instanceof Error &&
+        error.message ===
+          "project_control_evidence_custody_platform_unsupported") {
+        throw error;
+      }
+      // Only an already-existing, canonical project-owned root may be an anchor.
+    }
+  }
+  const anchor = candidates.sort((left, right) => right.length - left.length)[0];
+  if (!anchor) throw new Error("evidence_custody_bootstrap_anchor_unsafe");
+  return await custody.materializeApprovedProjectControlCustody({
+    approvedAnchor: anchor,
+    ledgerRoots,
+    evidenceRoots,
+    deniedRoots: scope.deniedRoots ?? [],
+  });
+}
+
+function pathStrictlyInside(parent: string, child: string): boolean {
+  const rest = relative(parent, child);
+  return rest !== "" && rest !== ".." && !rest.startsWith(`..${sep}`) &&
+    !isAbsolute(rest);
 }
 
 async function optionalRealPath(path: string): Promise<string | undefined> {

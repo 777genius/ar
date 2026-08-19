@@ -55,6 +55,7 @@ export async function verifyTerminalHandoffRecovery(input: {
   readonly workspacePath: string;
   readonly snapshotter: ReviewedWorkerOutputSnapshotterPort;
   readonly consumedOutputLedgerRoots?: readonly string[];
+  readonly consumedOutputEvidenceRoots?: readonly string[];
   readonly expected?: VerifiedTerminalHandoffRecovery;
 }): Promise<VerifiedTerminalHandoffRecovery> {
   const handoff = await readVerifiedProducerHandoff({
@@ -67,6 +68,10 @@ export async function verifyTerminalHandoffRecovery(input: {
     consumedOutputLedgerRoots:
       input.consumedOutputLedgerRoots ??
       input.producer.projectAccessScope?.consumedOutputLedgerRoots ??
+      [],
+    consumedOutputEvidenceRoots:
+      input.consumedOutputEvidenceRoots ??
+      input.producer.projectAccessScope?.consumedOutputEvidenceRoots ??
       [],
   });
   const current = await input.snapshotter.capture({
@@ -104,6 +109,7 @@ async function terminalHandoffReviewDisposition(input: {
   readonly workspacePath: string;
   readonly patchSha256: string;
   readonly consumedOutputLedgerRoots: readonly string[];
+  readonly consumedOutputEvidenceRoots: readonly string[];
 }): Promise<"unreviewed" | "rejected_uncaptured"> {
   const reviewPath = join(
     input.producer.jobRootDir,
@@ -154,6 +160,7 @@ async function terminalHandoffReviewDisposition(input: {
   }
   const ledger = await readCodexGoalConsumedOutputLedgers({
     roots: input.consumedOutputLedgerRoots,
+    evidenceRoots: input.consumedOutputEvidenceRoots,
   });
   const patchSha256 = resolveRejectedUncapturedOutputPatchSha256({
     ledger,
@@ -170,10 +177,12 @@ async function assertNoRejectedLedgerWithoutMarker(input: {
   readonly producer: CodexGoalJobManifest;
   readonly workspacePath: string;
   readonly consumedOutputLedgerRoots: readonly string[];
+  readonly consumedOutputEvidenceRoots: readonly string[];
 }): Promise<void> {
   if (input.consumedOutputLedgerRoots.length === 0) return;
   const ledger = await readCodexGoalConsumedOutputLedgers({
     roots: input.consumedOutputLedgerRoots,
+    evidenceRoots: input.consumedOutputEvidenceRoots,
   });
   if (
     hasRelevantConsumedOutputDebt(ledger, input.producer.jobId) ||

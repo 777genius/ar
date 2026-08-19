@@ -17,7 +17,10 @@ import {
   loadJobLaunch,
   loadProjectControlController,
 } from "../codex-goal-mcp-project-control-deps";
-import { decideCodexGoalProjectStop } from "../application/project-control/codex-goal-project-stop-policy";
+import {
+  decideCodexGoalProjectStop,
+  isCodexGoalProjectTerminalCapacityPause,
+} from "../application/project-control/codex-goal-project-stop-policy";
 import { callToolJson, hasTmux } from "./codex-goal-mcp-test-support";
 
 const execFileAsync = promisify(execFile);
@@ -54,6 +57,15 @@ describe("project worker stop policy", () => {
         terminalCapacityPause: true,
       }),
     ).toEqual({ allowed: true });
+  });
+
+  it("classifies runtime-preserved admitted input as a terminal capacity pause", () => {
+    expect(isCodexGoalProjectTerminalCapacityPause(
+      "admitted_input_patch_runtime_continuation",
+    )).toBe(true);
+    expect(isCodexGoalProjectTerminalCapacityPause(
+      "reviewed_dirty_continuation",
+    )).toBe(false);
   });
 
   it("does not let forceStop terminate a fresh live project worker", async () => {
@@ -192,7 +204,8 @@ describe("project worker stop policy", () => {
         controller: controller.controller,
         scope: controller.scope,
         stopLaunch: child.launch,
-        startAdmissionWorkspaceMode: "clean_capacity_continuation",
+        startAdmissionWorkspaceMode:
+          "clean_capacity_continuation",
       });
       await expect(
         capacityRecoveryBroker.stopWorker({
