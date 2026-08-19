@@ -44,8 +44,10 @@ describe("Codex project reviewed worker output", () => {
     );
     roots.push(root);
     const registryRootDir = join(root, "worker-jobs", "registry");
+    const workerJobsRoot = join(root, "worker-jobs");
     const controlRoot = join(root, "control");
     const ledgerRoot = join(controlRoot, "consumed-output-ledger");
+    const evidenceRoot = join(controlRoot, "archives");
     const controllerJobId = "project-controller";
     const workerJobId = "project-worker";
     const controllerJobRoot = join(root, "worker-jobs", controllerJobId);
@@ -135,11 +137,12 @@ describe("Codex project reviewed worker output", () => {
         networkAccess: NetworkAccessMode.Restricted,
         projectAccessScope: {
           projectId: "project",
-          readRoots: [controlRoot],
+          readRoots: [controlRoot, workerJobsRoot],
           workspaceRoots: [targetWorkspacePath],
           worktreeRoots: [join(root, "worktrees")],
           registryRoot: registryRootDir,
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [evidenceRoot],
           jobIdPrefixes: ["project-"],
           tmuxSessionPrefixes: ["project-"],
           allowedAccountIds: ["account-a"],
@@ -413,8 +416,10 @@ describe("Codex project reviewed worker output", () => {
     );
     roots.push(root);
     const registryRootDir = join(root, "worker-jobs", "registry");
+    const workerJobsRoot = join(root, "worker-jobs");
     const controlRoot = join(root, "control");
     const ledgerRoot = join(controlRoot, "consumed-output-ledger");
+    const evidenceRoot = join(controlRoot, "archives");
     const controllerJobId = "project-controller";
     const workerJobId = "project-over-limit-worker";
     const controllerJobRoot = join(root, "worker-jobs", controllerJobId);
@@ -506,11 +511,12 @@ describe("Codex project reviewed worker output", () => {
         networkAccess: NetworkAccessMode.Restricted,
         projectAccessScope: {
           projectId: "project",
-          readRoots: [controlRoot],
+          readRoots: [controlRoot, workerJobsRoot],
           workspaceRoots: [targetWorkspacePath],
           worktreeRoots: [join(root, "worktrees")],
           registryRoot: registryRootDir,
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [evidenceRoot],
           jobIdPrefixes: ["project-"],
           tmuxSessionPrefixes: ["project-"],
           allowedAccountIds: ["account-a"],

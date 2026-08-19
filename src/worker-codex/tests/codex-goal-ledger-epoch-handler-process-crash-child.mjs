@@ -1,5 +1,7 @@
 import { createServer } from "vite";
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const mode = process.env.CODEX_LEDGER_EPOCH_PROCESS_CRASH_MODE;
 const root = process.env.CODEX_LEDGER_EPOCH_PROCESS_CRASH_ROOT;
@@ -9,8 +11,11 @@ if ((mode !== "crash" && mode !== "resume") || !root || !planSha256) {
   throw new Error("ledger_epoch_process_crash_fixture_required");
 }
 
+const projectRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const vite = await createServer({
   appType: "custom",
+  root: projectRoot,
+  configFile: join(projectRoot, "vitest.config.ts"),
   server: { middlewareMode: true },
 });
 try {

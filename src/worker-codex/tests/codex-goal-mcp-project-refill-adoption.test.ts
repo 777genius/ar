@@ -78,6 +78,7 @@ describe("project refill adoption", () => {
     const childWorkspace = join(root, "worktrees", "project-adoption");
     const childJobRoot = join(root, "worker-jobs", "project-adoption");
     const consumedOutputLedgerRoot = join(root, "worker-jobs", "consumed");
+    const consumedOutputEvidenceRoot = join(root, "worker-jobs", "archives");
     const authRootDir = join(root, "auth");
     const server = createCodexGoalMcpServer();
     const client = new Client({
@@ -203,6 +204,7 @@ describe("project refill adoption", () => {
           worktreeRoots: [join(root, "worktrees")],
           registryRoot: registryRootDir,
           consumedOutputLedgerRoots: [consumedOutputLedgerRoot],
+          consumedOutputEvidenceRoots: [consumedOutputEvidenceRoot],
           authRoot: authRootDir,
           jobIdPrefixes: ["project-"],
           tmuxSessionPrefixes: ["project-"],

@@ -436,6 +436,7 @@ describe("codex goal MCP server", () => {
 
       await mkdir(join(ledgerRoot, "items"), { recursive: true });
       await mkdir(backupRoot, { recursive: true });
+      await mkdir(join(root, "worktrees"), { recursive: true });
       const statusPath = join(backupRoot, "infinity-context-memory-old-v1.status.txt");
       const patchPath = join(backupRoot, "infinity-context-memory-old-v1.patch");
       await writeFile(statusPath, " M memory.py\n");
@@ -605,6 +606,7 @@ describe("codex goal MCP server", () => {
 
       await mkdir(join(ledgerRoot, "items"), { recursive: true });
       await mkdir(backupRoot, { recursive: true });
+      await mkdir(join(root, "worktrees"), { recursive: true });
       const statusPath = join(backupRoot, "infinity-context-memory-retired-v1.status.txt");
       const patchPath = join(backupRoot, "infinity-context-memory-retired-v1.patch");
       await writeFile(statusPath, " M memory.py\n");
@@ -743,6 +745,7 @@ describe("codex goal MCP server", () => {
 
       await mkdir(join(ledgerRoot, "items"), { recursive: true });
       await mkdir(backupRoot, { recursive: true });
+      await mkdir(join(root, "worktrees"), { recursive: true });
       const statusPath = join(backupRoot, "infinity-context-memory-old-v1.status.txt");
       await writeFile(statusPath, " M memory.py\n");
       await writeFile(
