@@ -582,6 +582,8 @@ async function createGitFixture(): Promise<string> {
   await git(workspacePath, ["init"]);
   await git(workspacePath, ["config", "user.email", "test@example.com"]);
   await git(workspacePath, ["config", "user.name", "Test User"]);
+  await git(workspacePath, ["config", "gc.auto", "0"]);
+  await git(workspacePath, ["config", "maintenance.auto", "false"]);
   await writeFile(join(workspacePath, "README.md"), "fixture\n");
   await git(workspacePath, ["add", "README.md"]);
   await git(workspacePath, ["commit", "-m", "test: fixture"]);
