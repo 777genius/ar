@@ -10,6 +10,7 @@ import {
   AgentRuntimeResponseFormat,
   AgentRuntimeTool,
   AgentRuntimeUnsupportedControlPolicy,
+  AgentRuntimeWorkspaceInstructionPolicy,
 } from "@vioxen/subscription-runtime/core";
 import {
   AgentRuntimeTaskProtocolError,
@@ -36,6 +37,11 @@ const unsupportedControlPolicies = new Set<UnsupportedControlPolicy>(
 );
 const agentRuntimeTools = new Set<string>(Object.values(AgentRuntimeTool));
 const budgetMetrics = new Set<string>(Object.values(AgentRuntimeBudgetMetric));
+const workspaceInstructionPolicies = new Set<
+  NonNullable<AgentRuntimeTaskControls["workspaceInstructionPolicy"]>
+>(
+  Object.values(AgentRuntimeWorkspaceInstructionPolicy),
+);
 
 export function providerTaskControls(
   controls: AgentRuntimeTaskControls,
@@ -56,6 +62,9 @@ export function providerTaskControls(
     ...(controls.outputSchemaName
       ? { outputSchemaName: controls.outputSchemaName }
       : {}),
+    ...(controls.workspaceInstructionPolicy
+      ? { workspaceInstructionPolicy: controls.workspaceInstructionPolicy }
+      : {}),
   };
 }
 
@@ -74,6 +83,7 @@ export function parseControls(
     "responseFormat",
     "outputSchemaName",
     "outputSchema",
+    "workspaceInstructionPolicy",
   ], path);
   const controls: AgentRuntimeTaskControls = {
     ...optionalStringField(input, "model", `${path}.model`),
@@ -99,7 +109,19 @@ export function parseControls(
     ),
     ...optionalStringField(input, "outputSchemaName", `${path}.outputSchemaName`),
     ...optionalJsonObjectField(input, "outputSchema", `${path}.outputSchema`),
+    ...optionalEnumField(
+      input,
+      "workspaceInstructionPolicy",
+      `${path}.workspaceInstructionPolicy`,
+      workspaceInstructionPolicies,
+    ),
   };
+  if (controls.outputSchemaName === "") {
+    throw protocolError(
+      "agent_runtime_task_request_invalid",
+      `${path}.outputSchemaName must not be empty`,
+    );
+  }
   assertDangerAcknowledgementAllowed(controls, path);
   assertReadOnlyToolPolicy(controls, path);
   return controls;

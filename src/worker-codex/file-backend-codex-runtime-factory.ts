@@ -206,6 +206,9 @@ function createCodexAgentDriver(input: {
     ? buildCodexWorkspaceToolsProfile({
         workspaceRoot: options.workspacePath,
         allowedTools: options.boundedWorkspaceTools.allowedTools,
+        ...(options.boundedWorkspaceTools.denyProjectInstructions
+          ? { denyProjectInstructions: true }
+          : {}),
       })
     : undefined;
   if (executionEngine === "plain-exec") {

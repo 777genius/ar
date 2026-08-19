@@ -21,6 +21,7 @@ import {
   AgentRuntimeThreadOutcome,
   agentRuntimeTaskProtocolVersionV3,
   type AgentRuntimeTaskRequestV3,
+  type JsonObject,
 } from "@vioxen/subscription-runtime/agent-runtime-task";
 import {
   AgentRuntimeTaskProvider,
@@ -28,6 +29,10 @@ import {
   createLocalAgentRuntimeTaskRunner,
   type AgentRuntimeTaskWorkerFactory,
 } from "../agent-runtime-task-runner";
+import {
+  AgentRuntimeTaskReasoningEffort,
+  AgentRuntimeTaskServiceTier,
+} from "../../agent-runtime-task-runner/domain";
 
 const execFileAsync = promisify(execFile);
 
@@ -234,6 +239,108 @@ describe("local AgentRuntimeTaskRunner logical threads", () => {
       expect(runs).toBe(1);
     } finally {
       await runner.dispose();
+      await rm(root, { recursive: true, force: true });
+      await rm(stateRootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects Codex execution-profile drift on a durable logical thread", async () => {
+    const root = await gitFixture();
+    const stateRootDir = await mkdtemp(
+      join(tmpdir(), "agent-runtime-thread-profile-state-"),
+    );
+    let runs = 0;
+    const workerFactory: AgentRuntimeTaskWorkerFactory = () => ({
+      async start() {},
+      async run(job, options) {
+        runs += 1;
+        await options?.onProviderTaskStarted?.();
+        await job.logicalThread?.onCheckpoint({
+          checkpoint: `profile-checkpoint-${runs}`,
+          outcome: job.logicalThread.previousCheckpoint === undefined
+            ? ProviderLogicalThreadOutcome.StartedFresh
+            : ProviderLogicalThreadOutcome.Continued,
+        });
+        return { outputText: "ok", warnings: [] };
+      },
+      async dispose() {},
+    });
+    const common = {
+      provider: AgentRuntimeTaskProvider.Codex,
+      stateRootDir,
+      encryptionKey: "legacy-session-key",
+      workspaceRoot: root,
+      env: {},
+      workerFactory,
+      codexRuntimeFeatureProbe: { async supports() { return true; } },
+    } as const;
+    const baseline = createLocalAgentRuntimeTaskRunner(common);
+    const legacyCompatible = createLocalAgentRuntimeTaskRunner(common);
+    const high = createLocalAgentRuntimeTaskRunner({
+      ...common,
+      reasoningEffort: AgentRuntimeTaskReasoningEffort.High,
+    });
+    const highDefault = createLocalAgentRuntimeTaskRunner({
+      ...common,
+      reasoningEffort: AgentRuntimeTaskReasoningEffort.High,
+      serviceTier: AgentRuntimeTaskServiceTier.Default,
+    });
+    try {
+      const legacyRequest = codexRequest("profile-1", "effort-thread");
+      const first = await baseline.run(legacyRequest);
+      expect(first).toMatchObject({ status: "completed" });
+      expect(await legacyCompatible.run(legacyRequest)).toEqual(first);
+      expect(
+        await legacyCompatible.run(codexRequest("profile-2", "effort-thread")),
+      ).toMatchObject({
+        status: "completed",
+        thread: { outcome: AgentRuntimeThreadOutcome.Continued },
+      });
+      expect(await high.run(codexRequest("profile-3", "effort-thread")))
+        .toMatchObject({
+          status: "failed",
+          failure: { code: AgentRuntimeFailureCode.TaskRequestInvalid },
+        });
+      expect(await high.run(codexRequest("profile-4", "service-thread")))
+        .toMatchObject({
+          status: "completed",
+        });
+      expect(
+        await highDefault.run(codexRequest("profile-5", "service-thread")),
+      ).toMatchObject({
+        protocolVersion: 3,
+        status: "failed",
+        failure: { code: AgentRuntimeFailureCode.TaskRequestInvalid },
+      });
+      const schema = {
+        type: "object",
+        properties: {
+          verdict: { type: "string" },
+          score: { type: "number" },
+        },
+      } as const;
+      expect(await high.run(codexRequest("schema-1", "schema-thread", schema)))
+        .toMatchObject({ status: "completed" });
+      expect(await high.run(codexRequest("schema-2", "schema-thread", {
+        properties: {
+          score: { type: "number" },
+          verdict: { type: "string" },
+        },
+        type: "object",
+      }))).toMatchObject({ status: "completed" });
+      expect(await high.run(codexRequest("schema-3", "schema-thread", {
+        type: "object",
+        properties: { verdict: { type: "boolean" } },
+      }))).toMatchObject({
+        status: "failed",
+        failure: { code: AgentRuntimeFailureCode.TaskRequestInvalid },
+      });
+      expect(runs).toBe(5);
+    } finally {
+      await baseline.dispose();
+      await legacyCompatible.dispose();
+      await high.dispose();
+      await highDefault.dispose();
       await rm(root, { recursive: true, force: true });
       await rm(stateRootDir, { recursive: true, force: true });
     }
@@ -463,6 +570,33 @@ function request(
         },
       },
     },
+  };
+}
+
+function codexRequest(
+  executionId: string,
+  threadId: string,
+  outputSchema?: JsonObject,
+): AgentRuntimeTaskRequestV3 {
+  const base = request(executionId, "review", threadId);
+  const controls = {
+    maxTurns: 3,
+    accessBoundary: AgentRuntimeAccessBoundary.ReadOnly,
+    toolPolicy: { allow: [AgentRuntimeTool.ReadFile] },
+    budget: {
+      metric: AgentRuntimeBudgetMetric.WeightedTokens,
+      limit: 1_000,
+    },
+  } as const;
+  return {
+    ...base,
+    task: outputSchema === undefined
+      ? { ...base.task, controls }
+      : {
+          ...base.task,
+          outputSchemaName: "review-schema",
+          controls: { ...controls, outputSchema },
+        },
   };
 }
 

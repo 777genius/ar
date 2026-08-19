@@ -416,6 +416,13 @@ export enum AgentRuntimeResponseFormat {
 
 export type ProviderTaskResponseFormat = `${AgentRuntimeResponseFormat}`;
 
+export enum AgentRuntimeWorkspaceInstructionPolicy {
+  DenyProjectInstructionsV1 = "deny_project_instructions_v1",
+}
+
+export type ProviderTaskWorkspaceInstructionPolicy =
+  `${AgentRuntimeWorkspaceInstructionPolicy}`;
+
 export enum AgentRuntimeUnsupportedControlPolicy {
   Fail = "fail",
   Warn = "warn",
@@ -504,6 +511,7 @@ export type ProviderTaskControls = {
   readonly providerSandboxMode?: ProviderTaskProviderSandboxMode;
   readonly responseFormat?: ProviderTaskResponseFormat;
   readonly outputSchemaName?: string;
+  readonly workspaceInstructionPolicy?: ProviderTaskWorkspaceInstructionPolicy;
 };
 
 export type ProviderTaskTelemetry = {

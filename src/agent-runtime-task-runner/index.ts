@@ -3,6 +3,7 @@ import {
 } from "../worker-local/agent-runtime-task-runner";
 import {
   AgentRuntimeTaskProvider,
+  assertAgentRuntimeTaskExecutionProfile,
   ClaudeAgentRuntimeBackend,
   type AgentRuntimeTaskRunner,
   type CreateLocalAgentRuntimeTaskRunnerInput,
@@ -18,6 +19,13 @@ export function createLocalAgentRuntimeTaskRunner(
 ): AgentRuntimeTaskRunner {
   if (input.provider === AgentRuntimeTaskProvider.Claude) {
     const { providerRuntime, ...rest } = input;
+    assertAgentRuntimeTaskExecutionProfile(
+      AgentRuntimeTaskProvider.Claude,
+      (providerRuntime as {
+        readonly reasoningEffort?: unknown;
+        readonly serviceTier?: unknown;
+      } | undefined) ?? {},
+    );
     return createWorkerLocalAgentRuntimeTaskRunner({
       ...rest,
       claudeBackend:
@@ -33,10 +41,20 @@ export function createLocalAgentRuntimeTaskRunner(
   }
 
   const { providerRuntime, ...rest } = input;
+  assertAgentRuntimeTaskExecutionProfile(
+    AgentRuntimeTaskProvider.Codex,
+    providerRuntime ?? {},
+  );
   return createWorkerLocalAgentRuntimeTaskRunner({
     ...rest,
     ...(providerRuntime?.binaryPath
       ? { codexBinaryPath: providerRuntime.binaryPath }
+      : {}),
+    ...(providerRuntime?.reasoningEffort
+      ? { reasoningEffort: providerRuntime.reasoningEffort }
+      : {}),
+    ...(providerRuntime?.serviceTier
+      ? { serviceTier: providerRuntime.serviceTier }
       : {}),
   });
 }

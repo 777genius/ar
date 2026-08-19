@@ -174,6 +174,12 @@ describe("Codex provider app-server adapter", () => {
       failThreadStart: true,
     });
     const fallback = new RecordingJsonEngine("fallback output");
+    const outputSchema = {
+      type: "object",
+      properties: { verdict: { type: "string" } },
+      required: ["verdict"],
+      additionalProperties: false,
+    } as const;
     const driver = new CodexJsonAgentDriver({
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: "/bin/codex-test",
@@ -182,12 +188,17 @@ describe("Codex provider app-server adapter", () => {
       }),
       model: "gpt-test",
       reasoningEffort: "low",
+      outputSchemas: { verdict: outputSchema },
     });
 
     try {
       const result = await driver.runTask({
         session: sessionArtifactFromCodexAuthJson(validAuthJson),
-        task: { kind: "review", prompt: "fallback please" },
+        task: {
+          kind: "review",
+          prompt: "fallback please",
+          outputSchemaName: "verdict",
+        },
         workspace: { path: workspace },
         runner: new StaticRunner(""),
         redactor: new DefaultRedactor(),
@@ -202,6 +213,9 @@ describe("Codex provider app-server adapter", () => {
         "codex_app_server_fallback",
       );
       expect(fallback.prompts).toEqual(["fallback please"]);
+      expect(fallback.outputSchemaPlans).toHaveLength(1);
+      expect(fallback.outputSchemaPlans[0]?.providerSchema).toEqual(outputSchema);
+      expect(Object.isFrozen(fallback.outputSchemaPlans[0])).toBe(true);
     } finally {
       await driver.dispose();
       await rm(workspace, { recursive: true, force: true });

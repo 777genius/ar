@@ -1,6 +1,6 @@
 {
   "name": "@vioxen/subscription-runtime",
-  "version": "0.1.0-main.28",
+  "version": "0.1.0-main.29",
   "description": "Provider-neutral subscription runtime for backend workers, Codex subscription execution, and pluggable session custody.",
   "license": "UNLICENSED",
   "type": "module",
@@ -143,8 +143,14 @@
     "docs",
     "LICENSE"
   ],
-  "bundleDependencies": [
-    "@vioxen/agent-account-observability"
+  "bundledDependencies": [
+    "@anthropic-ai/claude-agent-sdk",
+    "@modelcontextprotocol/sdk",
+    "@types/node",
+    "@vioxen/agent-account-observability",
+    "ajv",
+    "libsodium-wrappers",
+    "zod"
   ],
   "scripts": {
     "clean:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
@@ -180,9 +186,11 @@
     "check:architecture-guardrails": "node scripts/check-architecture-guardrails.mjs && node scripts/check-architecture-guardrails-self-test.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.173",
     "@vioxen/agent-account-observability": "file:packages/agent-account-observability",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^22.20.0",
+    "ajv": "8.20.0",
     "libsodium-wrappers": "^0.8.4",
     "zod": "^4.4.3"
   },
@@ -197,8 +205,5 @@
   "devDependencies": {
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"
-  },
-  "optionalDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.173"
   }
 }
