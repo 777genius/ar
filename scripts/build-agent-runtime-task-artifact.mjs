@@ -38,15 +38,16 @@ export async function buildAgentRuntimeTaskArtifact({
   outputPath = defaultOutput,
 } = {}) {
   assertLinuxX64BuildHost();
-  assertCleanGitSource();
+  const source = cleanGitSourceIdentity();
   const buildRoot = await mkdtemp(join(tmpdir(), "subscription-runtime-build-"));
   try {
-    const tarballPath = await packCleanPackage(buildRoot);
+    const tarballPath = await packCleanPackage(buildRoot, source.sourceGitSha);
     await assertPackageTarball(tarballPath);
     const payload = await readFile(tarballPath);
     const header = renderLauncher();
     const bytes = Buffer.concat([Buffer.from(header, "utf8"), payload]);
     const resolvedOutput = resolve(outputPath);
+    assertUnchangedGitSource(source);
     await mkdir(dirname(resolvedOutput), { recursive: true });
     await assertNotSymlink(resolvedOutput);
     const temporaryOutput = join(
@@ -56,7 +57,6 @@ export async function buildAgentRuntimeTaskArtifact({
     await writeFile(temporaryOutput, bytes, { mode: 0o755, flag: "wx" });
     await chmod(temporaryOutput, 0o755);
     await rename(temporaryOutput, resolvedOutput);
-    const source = gitSourceIdentity();
     return {
       schemaVersion: 1,
       outputPath: resolvedOutput,
@@ -70,7 +70,7 @@ export async function buildAgentRuntimeTaskArtifact({
   }
 }
 
-async function packCleanPackage(buildRoot) {
+async function packCleanPackage(buildRoot, sourceGitSha) {
   const sourceArchive = join(buildRoot, "source.tar");
   const sourceRoot = join(buildRoot, "source");
   const packRoot = join(buildRoot, "pack");
@@ -82,7 +82,7 @@ async function packCleanPackage(buildRoot) {
   await mkdir(buildTmp);
   runChecked(
     "git",
-    ["archive", "--format=tar", "--output", sourceArchive, "HEAD"],
+    ["archive", "--format=tar", "--output", sourceArchive, sourceGitSha],
     { cwd: rootDir, env: buildMinimalEnvironment() },
   );
   runChecked("tar", ["-xf", sourceArchive, "-C", sourceRoot], {
@@ -248,18 +248,30 @@ function buildMinimalEnvironment() {
   );
 }
 
-function gitSourceIdentity() {
-  return {
-    sourceGitSha: gitOutput(["rev-parse", "HEAD"]),
-    sourceGitTree: gitOutput(["rev-parse", "HEAD^{tree}"]),
-  };
-}
-
-function assertCleanGitSource() {
+function cleanGitSourceIdentity() {
+  const sourceGitSha = gitOutput(["rev-parse", "HEAD"]);
+  if (sourceGitSha === null) throw new Error("artifact source is not a Git worktree");
+  const sourceGitTree = gitOutput(["rev-parse", `${sourceGitSha}^{tree}`]);
+  if (sourceGitTree === null) throw new Error("artifact source tree is unavailable");
   const status = gitOutput(["status", "--porcelain=v1", "--untracked-files=all"]);
   if (status === null) throw new Error("artifact source is not a Git worktree");
   if (status !== "") {
     throw new Error("refusing to publish an artifact from a dirty Git worktree");
+  }
+  return { sourceGitSha, sourceGitTree };
+}
+
+function assertUnchangedGitSource(expected) {
+  const current = cleanGitSourceIdentity();
+  assertMatchingGitSourceIdentity(expected, current);
+}
+
+export function assertMatchingGitSourceIdentity(expected, current) {
+  if (
+    current.sourceGitSha !== expected.sourceGitSha ||
+    current.sourceGitTree !== expected.sourceGitTree
+  ) {
+    throw new Error("artifact Git source changed during the build");
   }
 }
 

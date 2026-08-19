@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   buildAgentRuntimeTaskArtifact,
   assertLinuxX64ArchiveEntries,
+  assertMatchingGitSourceIdentity,
 } from "./build-agent-runtime-task-artifact.mjs";
 
 const expectedCapabilities = {
@@ -18,6 +19,7 @@ const expectedCapabilities = {
   instructionPathDeny: true,
 };
 assertWrongPlatformPackageFails();
+assertSourceMovementFails();
 if (process.platform !== "linux" || process.arch !== "x64") {
   process.stdout.write(`${JSON.stringify({
     status: "skipped",
@@ -80,6 +82,19 @@ function assertWrongPlatformPackageFails() {
     throw error;
   }
   throw new Error("wrong-platform Claude SDK package was accepted");
+}
+
+function assertSourceMovementFails() {
+  try {
+    assertMatchingGitSourceIdentity(
+      { sourceGitSha: "a".repeat(40), sourceGitTree: "b".repeat(40) },
+      { sourceGitSha: "c".repeat(40), sourceGitTree: "d".repeat(40) },
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("changed during")) return;
+    throw error;
+  }
+  throw new Error("artifact source movement was accepted");
 }
 
 function assertCapabilities(artifactPath, home, runtimeTmp) {
