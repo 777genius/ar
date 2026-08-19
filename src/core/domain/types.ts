@@ -685,6 +685,12 @@ export type RunContext = {
   readonly attempt: number;
   readonly abortSignal: AbortSignal;
   readonly onProviderTaskStarted?: () => Promise<void> | void;
+  /**
+   * Receives provider text as it is generated. The sink must remain
+   * synchronous and non-blocking; consumers that need backpressure own a
+   * bounded queue outside the provider stdout reader.
+   */
+  readonly onProviderTextDelta?: (text: string) => void;
   readonly logicalThread?: ProviderLogicalThreadExecution;
 };
 

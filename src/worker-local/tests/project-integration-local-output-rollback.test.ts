@@ -50,6 +50,59 @@ describe("local project integration output rollback", () => {
       .toBe(fixture.targetCommit);
   });
 
+  it("reverses an exact staged patch and keeps clean replay idempotent", async () => {
+    const fixture = await createFixture();
+    const adapter = new LocalGitIntegrationAdapter({
+      allowedPatchRoots: [fixture.rootDir],
+    });
+
+    await adapter.applyWorkerOutput({
+      attempt: fixture.attempt,
+      workerOutput: fixture.attempt.workerOutput,
+    });
+    await git(fixture.workspacePath, ["add", "--", "src/memory.ts"]);
+
+    await adapter.rollbackWorkerOutput({ attempt: fixture.attempt });
+    await expect(readFile(fixture.filePath, "utf8"))
+      .resolves.toBe("export const value = 1;\n");
+    expect(await gitOutput(fixture.workspacePath, ["show", ":src/memory.ts"]))
+      .toBe("export const value = 1;\n");
+    await expect(adapter.getStatus({ workspacePath: fixture.workspacePath }))
+      .resolves.toEqual({ branch: "main", dirtyFiles: [] });
+
+    await adapter.rollbackWorkerOutput({ attempt: fixture.attempt });
+    await expect(adapter.getStatus({ workspacePath: fixture.workspacePath }))
+      .resolves.toEqual({ branch: "main", dirtyFiles: [] });
+  });
+
+  it("fails closed on mixed staged-output and target-worktree state", async () => {
+    const fixture = await createFixture();
+    const adapter = new LocalGitIntegrationAdapter({
+      allowedPatchRoots: [fixture.rootDir],
+    });
+    await adapter.applyWorkerOutput({
+      attempt: fixture.attempt,
+      workerOutput: fixture.attempt.workerOutput,
+    });
+    await git(fixture.workspacePath, ["add", "--", "src/memory.ts"]);
+    await git(fixture.workspacePath, [
+      "restore",
+      "--source=HEAD",
+      "--worktree",
+      "--",
+      "src/memory.ts",
+    ]);
+
+    await expect(adapter.rollbackWorkerOutput({ attempt: fixture.attempt }))
+      .rejects.toThrow(
+        "local_git_integration_output_rollback_patch_index_mismatch",
+      );
+    await expect(readFile(fixture.filePath, "utf8"))
+      .resolves.toBe("export const value = 1;\n");
+    expect(await gitOutput(fixture.workspacePath, ["show", ":src/memory.ts"]))
+      .toBe("export const value = 2;\n");
+  });
+
   it("fails closed when the applied patch no longer matches target state", async () => {
     const fixture = await createFixture();
     const adapter = new LocalGitIntegrationAdapter({

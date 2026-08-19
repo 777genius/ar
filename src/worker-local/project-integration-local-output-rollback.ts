@@ -16,6 +16,7 @@ export type LocalGitOutputRollbackRuntime = Pick<
 >;
 
 type LocalOutputState = "applied" | "target";
+type LocalPatchOutputState = LocalOutputState | "staged-applied";
 
 export async function assertLocalWorkerPatchBytesExactlyApplied(input: {
   readonly runtime: LocalGitOutputRollbackRuntime;
@@ -202,8 +203,21 @@ async function reverseImmutableWorkerPatch(input: {
     patchPath,
   });
   if (state === "target") return;
+  const stagedApplied = state === "staged-applied";
+  if (stagedApplied) {
+    await input.runtime.assertPatchSha256(patchPath, patchSha256);
+  }
   const reverseCheck = await input.runtime.tryGit(
-    ["apply", "--reverse", "--check", "--whitespace=nowarn", patchPath],
+    stagedApplied
+      ? [
+        "apply",
+        "--reverse",
+        "--check",
+        "--index",
+        "--whitespace=nowarn",
+        patchPath,
+      ]
+      : ["apply", "--reverse", "--check", "--whitespace=nowarn", patchPath],
     input.workspacePath,
   );
   if (reverseCheck.exitCode !== 0) {
@@ -211,7 +225,15 @@ async function reverseImmutableWorkerPatch(input: {
   }
   await input.runtime.assertPatchSha256(patchPath, patchSha256);
   await input.runtime.git(
-    ["apply", "--reverse", "--whitespace=nowarn", patchPath],
+    stagedApplied
+      ? [
+        "apply",
+        "--reverse",
+        "--index",
+        "--whitespace=nowarn",
+        patchPath,
+      ]
+      : ["apply", "--reverse", "--whitespace=nowarn", patchPath],
     input.workspacePath,
   );
   if (
@@ -230,7 +252,7 @@ async function patchOutputState(input: {
   readonly appliedFiles: readonly string[];
   readonly expectedCommit: string;
   readonly patchPath: string;
-}): Promise<LocalOutputState> {
+}): Promise<LocalPatchOutputState> {
   const [patchOutput, indexTree, currentWorktreeTree] = await Promise.all([
     inspectLocalPatchOutputTree({
       runtime: input.runtime,
@@ -254,6 +276,12 @@ async function patchOutputState(input: {
     currentWorktreeTree === patchOutput.targetTree
   ) {
     return "target";
+  }
+  if (
+    indexTree === patchOutput.outputTree &&
+    currentWorktreeTree === patchOutput.outputTree
+  ) {
+    return "staged-applied";
   }
   if (indexTree !== patchOutput.targetTree) {
     throw new Error(

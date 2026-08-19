@@ -122,6 +122,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     readonly redactor: RedactorPort;
     readonly abortSignal: AbortSignal;
     readonly onTaskStarted?: () => Promise<void> | void;
+    readonly onTextDelta?: (text: string) => void;
     readonly logicalThread?: ProviderLogicalThreadExecution;
   }): Promise<ProviderTaskResult> {
     assertProviderTaskSystemPrompt(input.task.systemPrompt, "task.systemPrompt");
@@ -175,6 +176,18 @@ export class CodexJsonAgentDriver implements AgentDriver {
           : { serviceTier: this.serviceTier }),
         sandboxMode: codexSandboxModeForControls(input.task.controls),
         abortSignal: input.abortSignal,
+        ...(input.onTextDelta === undefined
+          ? {}
+          : {
+              onTextDelta: (text: string) => {
+                const redacted = input.redactor.redact(text);
+                input.redactor.assertNoKnownSecret(
+                  redacted,
+                  "codex-app-server-text-delta",
+                );
+                if (redacted) input.onTextDelta?.(redacted);
+              },
+            }),
       };
       await input.onTaskStarted?.();
       const logicalThreadResult =

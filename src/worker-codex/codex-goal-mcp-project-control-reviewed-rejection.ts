@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 
 import {
   recordTerminalOutputDecision,
@@ -19,6 +19,7 @@ import type { ReviewedWorkerOutputSnapshot } from "./reviewed-worker-output";
 
 export async function recordRejectedReviewedOutput(input: {
   readonly scope: ProjectAccessScope;
+  readonly custodyRoot?: string;
   readonly jobRootDir: string;
   readonly workspacePath: string;
   readonly snapshot: ReviewedWorkerOutputSnapshot;
@@ -48,7 +49,12 @@ export async function recordRejectedReviewedOutput(input: {
     throw new Error("reviewed_worker_output_rejected_authored_output_required");
   }
   return await recordTerminalOutputDecision(
-    { writer: new LocalConsumedOutputLedgerWriter() },
+    {
+      writer: new LocalConsumedOutputLedgerWriter(
+        undefined,
+        input.custodyRoot ?? dirname(dirname(input.jobRootDir)),
+      ),
+    },
     {
       allowedLedgerRoots: ledgerRoots,
       ledgerRoot: ledgerRoots[0]!,
@@ -75,6 +81,7 @@ export async function recordRejectedReviewedOutput(input: {
 
 export async function recordRejectedUncapturedOutput(input: {
   readonly scope: ProjectAccessScope;
+  readonly custodyRoot?: string;
   readonly jobId: string;
   readonly jobRootDir: string;
   readonly workspacePath: string;
@@ -97,7 +104,15 @@ export async function recordRejectedUncapturedOutput(input: {
   const archiveRoot = join(input.jobRootDir, "archives");
   const sourcePatchPath = join(archiveRoot, `.${attemptId}.patch`);
   await mkdir(archiveRoot, { recursive: true, mode: 0o700 });
-  await writeFile(sourcePatchPath, patch, { encoding: "utf8", mode: 0o600 });
+  await writeFile(sourcePatchPath, patch, {
+    encoding: "utf8",
+    mode: 0o600,
+    flag: "wx",
+  });
+  const sourceIdentity = await lstat(sourcePatchPath);
+  if (!sourceIdentity.isFile() || sourceIdentity.isSymbolicLink()) {
+    throw new Error("uncaptured_rejected_output_provenance_unsafe");
+  }
   let backup;
   try {
     backup = await captureLocalTerminalOutputBackup({
@@ -108,13 +123,33 @@ export async function recordRejectedUncapturedOutput(input: {
       sourcePatchPath,
     });
   } finally {
-    await rm(sourcePatchPath, { force: true });
+    let current;
+    try {
+      current = await lstat(sourcePatchPath);
+    } catch (error) {
+      throw new Error(
+        "uncaptured_rejected_output_provenance_drift",
+        { cause: error },
+      );
+    }
+    if (!current.isFile() || current.isSymbolicLink() ||
+      current.dev !== sourceIdentity.dev || current.ino !== sourceIdentity.ino ||
+      current.size !== Buffer.byteLength(patch) ||
+      createHash("sha256").update(await readFile(sourcePatchPath)).digest("hex") !==
+        patchSha256
+    ) throw new Error("uncaptured_rejected_output_provenance_drift");
+    await rm(sourcePatchPath);
   }
   if (!backup.hasAuthoredOutput) {
     throw new Error("uncaptured_rejected_output_authored_output_required");
   }
   return await recordTerminalOutputDecision(
-    { writer: new LocalConsumedOutputLedgerWriter() },
+    {
+      writer: new LocalConsumedOutputLedgerWriter(
+        undefined,
+        input.custodyRoot ?? dirname(dirname(input.jobRootDir)),
+      ),
+    },
     {
       allowedLedgerRoots: ledgerRoots,
       ledgerRoot: ledgerRoots[0]!,

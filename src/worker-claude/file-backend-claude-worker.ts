@@ -547,6 +547,9 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
           ...(input.onProviderTaskStarted
               ? { onProviderTaskStarted: input.onProviderTaskStarted }
               : {}),
+          ...(input.onProviderTextDelta
+              ? { onProviderTextDelta: input.onProviderTextDelta }
+              : {}),
           ...(job.logicalThread === undefined
             ? {}
             : { logicalThread: job.logicalThread }),

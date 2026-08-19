@@ -23,6 +23,34 @@ const controller: ProjectIntegrationMcpController = {
 };
 
 describe("project integration MCP tool handlers", () => {
+  it("fails normal attempt mutators when custody marks an attempt quarantined", async () => {
+    const handlers = createProjectIntegrationMcpToolHandlers({
+      loadController: async () => controller,
+      resolvePathArg: () => "/unused",
+      integrationDeps: () => {
+        throw new Error("integration_deps_unexpected");
+      },
+      assertAttemptMutable: async (_controller, attemptId) => {
+        if (attemptId === "legacy-attempt") {
+          throw new Error("project_integration_attempt_quarantined");
+        }
+      },
+    });
+    await expect(handlers.rejectAttempt({
+      attemptId: "legacy-attempt",
+      reason: "operator retry",
+    })).rejects.toThrow("project_integration_attempt_quarantined");
+    await expect(handlers.rejectAttempt({
+      attemptId: "new-unrelated-attempt",
+      reason: "normal lifecycle",
+    })).resolves.toMatchObject({
+      structuredContent: {
+        reason: "confirm_reject_required",
+        attemptId: "new-unrelated-attempt",
+      },
+    });
+  });
+
   it("builds open-attempt previews in the feature slice without invoking use cases", async () => {
     let integrationDepsCalls = 0;
     const handlers = createProjectIntegrationMcpToolHandlers({

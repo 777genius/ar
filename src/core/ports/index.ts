@@ -84,6 +84,7 @@ export interface AgentDriver {
     readonly redactor: RedactorPort;
     readonly abortSignal: AbortSignal;
     readonly onTaskStarted?: () => Promise<void> | void;
+    readonly onTextDelta?: (text: string) => void;
     readonly logicalThread?: ProviderLogicalThreadExecution;
   }): Promise<ProviderTaskResult>;
 

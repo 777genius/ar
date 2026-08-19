@@ -408,6 +408,9 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
         ...(options.onProviderTaskStarted
           ? { onProviderTaskStarted: options.onProviderTaskStarted }
           : {}),
+        ...(options.onProviderTextDelta
+          ? { onProviderTextDelta: options.onProviderTextDelta }
+          : {}),
       })
       .then((result) => {
         this.completedCount += 1;

@@ -225,9 +225,11 @@ export class FakeAgentDriver implements AgentDriver {
   async runTask(input: {
     readonly task: { readonly prompt: string };
     readonly onTaskStarted?: () => Promise<void> | void;
+    readonly onTextDelta?: (text: string) => void;
   }): Promise<ProviderTaskResult> {
     await input.onTaskStarted?.();
     this.lastPrompt = input.task.prompt;
+    input.onTextDelta?.(`review:${input.task.prompt}`);
     return {
       status: "completed",
       outputText: `review:${input.task.prompt}`,

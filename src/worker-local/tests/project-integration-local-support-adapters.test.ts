@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -8,6 +8,7 @@ import {
 } from "@vioxen/subscription-runtime/worker-core";
 import {
   LocalConsumedOutputLedgerWriter,
+  LocalConsumedOutputLedgerMutationLock,
   LocalProjectCheckRunner,
   LocalWorkspaceIntegrationLock,
   SimpleSecretScanner,
@@ -26,9 +27,92 @@ afterEach(async () => {
 });
 
 describe("local project integration support adapters", () => {
+  it("coordinates terminal writers with the consumed-output mutation lock", async () => {
+    const fixture = await createGitFixture();
+    const ledgerRoot = join(fixture.rootDir, "ledger-lock-test");
+    await mkdir(ledgerRoot);
+    const mutationLocks = new LocalConsumedOutputLedgerMutationLock();
+    const lease = await mutationLocks.acquire({
+      ledgerRoots: [ledgerRoot],
+      owner: "repair-test",
+    });
+    const writer = new LocalConsumedOutputLedgerWriter(
+      undefined,
+      fixture.rootDir,
+    );
+    const decision = {
+      schemaVersion: 1 as const,
+      jobId: "worker-locked",
+      status: "failed_no_output" as const,
+      closedAt: "2026-08-08T00:00:00.000Z",
+      failure: { category: "infrastructure", code: "no_output" },
+      output: { authoredChanges: false as const, workspaceDirty: false as const },
+      note: "writer must share the repair lock domain",
+      backup: {
+        workspace: fixture.workspacePath,
+        statusPath: "/archive/status",
+        patchPath: "/archive/patch",
+        numstatPath: "/archive/numstat",
+      },
+    };
+    try {
+      await expect(writer.record({ ledgerRoot, decision })).rejects.toThrow(
+        "Workspace is already locked",
+      );
+    } finally {
+      await mutationLocks.release(lease);
+    }
+    await expect(writer.record({ ledgerRoot, decision })).resolves.toMatchObject({
+      idempotentReplay: false,
+    });
+  });
+
+  it("rejects a ledger mutation-lock symlink before outside-root writes", async () => {
+    const fixture = await createGitFixture();
+    const ledgerRoot = join(fixture.rootDir, "ledger-lock-symlink-test");
+    const outside = join(fixture.rootDir, "outside-lock-root");
+    await Promise.all([mkdir(ledgerRoot), mkdir(outside)]);
+    await symlink(outside, join(ledgerRoot, ".mutation-locks"), "dir");
+    const mutationLocks = new LocalConsumedOutputLedgerMutationLock();
+    await expect(mutationLocks.acquire({
+      ledgerRoots: [ledgerRoot],
+      owner: "repair-test",
+    })).rejects.toThrow("consumed_output_ledger_lock_root_unsafe");
+    expect(await readdir(outside)).toEqual([]);
+  });
+
+  it("rejects an intermediate ledger symlink before creating nested roots", async () => {
+    const fixture = await createGitFixture();
+    const custodyRoot = join(fixture.rootDir, "ledger-custody");
+    const outside = join(fixture.rootDir, "outside-ledger-root");
+    await Promise.all([mkdir(custodyRoot), mkdir(outside)]);
+    await symlink(outside, join(custodyRoot, "redirect"), "dir");
+    const writer = new LocalConsumedOutputLedgerWriter(undefined, custodyRoot);
+    await expect(writer.record({
+      ledgerRoot: join(custodyRoot, "redirect", "nested-ledger"),
+      decision: {
+        schemaVersion: 1,
+        jobId: "worker-symlink",
+        status: "failed_no_output",
+        closedAt: "2026-08-08T00:00:00.000Z",
+        failure: { category: "infrastructure", code: "no_output" },
+        output: { authoredChanges: false, workspaceDirty: false },
+        note: "intermediate symlinks must fail closed",
+        backup: {
+          workspace: fixture.workspacePath,
+          statusPath: "/archive/status",
+        },
+      },
+    })).rejects.toThrow("consumed_output_ledger_lock_root_unsafe");
+    expect(await readdir(outside)).toEqual([]);
+  });
+
   it("preserves a rejected attempt when a later attempt integrates the same worker", async () => {
     const fixture = await createGitFixture();
-    const writer = new LocalConsumedOutputLedgerWriter();
+    const writer = new LocalConsumedOutputLedgerWriter(
+      undefined,
+      fixture.rootDir,
+    );
     const ledgerRoot = join(fixture.rootDir, "ledger");
     const backup = {
       workspace: fixture.workspacePath,

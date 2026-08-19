@@ -344,6 +344,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     readonly sandboxMode?: CodexSandboxMode;
     readonly outputSchema?: unknown;
     readonly abortSignal: AbortSignal;
+    readonly onTextDelta?: (text: string) => void;
   }): Promise<CodexExecutionResult> {
     const slot = await this.slotPool.ensureSlot(input);
     const outputSchema = codexOutputSchemaPayload(input.outputSchema);
@@ -369,6 +370,9 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ...(outputSchema === undefined ? {} : { outputSchema }),
       timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
       abortSignal: input.abortSignal,
+      ...(input.onTextDelta === undefined
+        ? {}
+        : { onTextDelta: input.onTextDelta }),
     };
     const result = this.options.goalMode
       ? await slot.goalRunner.runGoal({

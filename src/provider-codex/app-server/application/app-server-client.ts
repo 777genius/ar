@@ -83,6 +83,7 @@ export type AppServerTurnResult = {
 
 type TurnState = {
   outputText: string;
+  onTextDelta: ((text: string) => void) | null;
   usage: AgentUsage | undefined;
   completed: boolean;
   error: Error | null;
@@ -478,6 +479,7 @@ export class CodexAppServerClient {
     readonly abortSignal: AbortSignal;
     readonly goalMode?: boolean;
     readonly turnNumber?: number;
+    readonly onTextDelta?: (text: string) => void;
   }): Promise<AppServerTurnResult> {
     const startedAt = Date.now();
     const disableTools = this.disableAllTools(input.goalMode);
@@ -655,6 +657,7 @@ export class CodexAppServerClient {
       readonly threadId: string;
       readonly timeoutMs: number;
       readonly abortSignal: AbortSignal;
+      readonly onTextDelta?: (text: string) => void;
     },
   ): Promise<TurnState> {
     const earlyTurnId = this.earlyTurnIdsByThread.get(input.threadId);
@@ -663,6 +666,7 @@ export class CodexAppServerClient {
       this.aliasTurnId(earlyTurnId, turnId);
     }
     const existing = this.turns.get(turnId);
+    if (existing) this.attachTextDeltaSink(existing, input.onTextDelta);
     if (existing?.completed || existing?.error) {
       this.clearTurnTracking(turnId, input.threadId);
       return Promise.resolve(existing);
@@ -687,6 +691,7 @@ export class CodexAppServerClient {
       };
       input.abortSignal.addEventListener("abort", abort, { once: true });
       const turn = existing ?? createTurnState();
+      if (!existing) this.attachTextDeltaSink(turn, input.onTextDelta);
       turn.waiters.push((state) => {
         clearTimeout(timer);
         input.abortSignal.removeEventListener("abort", abort);
@@ -735,7 +740,9 @@ export class CodexAppServerClient {
       const turnId = stringField(params, "turnId");
       const turn = this.ensureTurn(turnId);
       this.clearReconnectGraceTimer(turn);
-      turn.outputText += stringField(params, "delta") ?? "";
+      const delta = stringField(params, "delta") ?? "";
+      turn.outputText += delta;
+      if (delta) this.emitTextDelta(turn, delta);
       return;
     }
     if (record.method === "turn/started") {
@@ -1061,6 +1068,7 @@ export class CodexAppServerClient {
     const expected = this.turns.get(expectedTurnId);
     if (expected) {
       expected.outputText += actual.outputText;
+      if (actual.outputText) this.emitTextDelta(expected, actual.outputText);
       expected.completed = expected.completed || actual.completed;
       expected.error = expected.error ?? actual.error;
       expected.waiters.push(...actual.waiters);
@@ -1078,11 +1086,32 @@ export class CodexAppServerClient {
     clearTimeout(turn.reconnectGraceTimer);
     turn.reconnectGraceTimer = null;
   }
+
+  private attachTextDeltaSink(
+    turn: TurnState,
+    sink: ((text: string) => void) | undefined,
+  ): void {
+    turn.onTextDelta = sink ?? null;
+    if (turn.outputText) this.emitTextDelta(turn, turn.outputText);
+  }
+
+  private emitTextDelta(turn: TurnState, text: string): void {
+    if (!turn.onTextDelta || turn.error) return;
+    try {
+      turn.onTextDelta(text);
+    } catch (error) {
+      turn.error = new Error("codex_app_server_text_delta_sink_failed", {
+        cause: error,
+      });
+      this.resolveTurn(turn);
+    }
+  }
 }
 
 function createTurnState(): TurnState {
   return {
     outputText: "",
+    onTextDelta: null,
     usage: undefined,
     completed: false,
     error: null,

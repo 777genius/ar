@@ -43,14 +43,16 @@ describe("BoundedSubscriptionWorkerPool", () => {
     });
   });
 
-  it("forwards provider task start callbacks to the selected worker", async () => {
+  it("forwards provider task callbacks to the selected worker", async () => {
     let callbackCalls = 0;
+    const textDeltas: string[] = [];
     const pool = new BoundedSubscriptionWorkerPool<string, string>({
       poolId: "provider-start-callback",
       slots: 1,
       workerFactory: ({ workerId }) =>
         new FakeWorker(workerId, async (job, options) => {
           await options?.onProviderTaskStarted?.();
+          options?.onProviderTextDelta?.(`delta:${job}`);
           return `done:${job}`;
         }),
     });
@@ -61,11 +63,15 @@ describe("BoundedSubscriptionWorkerPool", () => {
         onProviderTaskStarted: () => {
           callbackCalls += 1;
         },
+        onProviderTextDelta: (text) => {
+          textDeltas.push(text);
+        },
       }),
     ).resolves.toBe("done:review");
     await pool.dispose();
 
     expect(callbackCalls).toBe(1);
+    expect(textDeltas).toEqual(["delta:review"]);
   });
 
   it("skips idle slots that report unavailable capacity", async () => {

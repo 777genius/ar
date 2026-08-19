@@ -30,6 +30,10 @@ export type CreateProjectIntegrationMcpToolHandlersOptions = {
   readonly integrationDeps: (
     controller: ProjectIntegrationMcpController,
   ) => ProjectIntegrationMcpUseCaseDeps;
+  readonly assertAttemptMutable?: (
+    controller: ProjectIntegrationMcpController,
+    attemptId: string,
+  ) => Promise<void>;
   readonly validateWorkerHandoffArtifact?: (input: {
     readonly controller: ProjectIntegrationMcpController;
     readonly attemptId: string;

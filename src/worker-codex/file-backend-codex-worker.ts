@@ -319,6 +319,9 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
               ...(options.onProviderTaskStarted
                   ? { onProviderTaskStarted: options.onProviderTaskStarted }
                   : {}),
+              ...(options.onProviderTextDelta
+                  ? { onProviderTextDelta: options.onProviderTextDelta }
+                  : {}),
               ...(job.logicalThread === undefined
                 ? {}
                 : { logicalThread: job.logicalThread }),

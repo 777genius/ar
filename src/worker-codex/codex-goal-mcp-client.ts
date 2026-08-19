@@ -73,7 +73,10 @@ const requiredCodexGoalMcpTools = [
   "codex_goal_project_recover_operations",
   "codex_goal_project_admission_snapshot",
   "codex_goal_project_update_controller_scope",
+  "codex_goal_project_migrate_consumed_output_ledger_epoch",
+  "codex_goal_project_reconcile_stale_integrations",
   "brokered_project_manifest_repair",
+  "codex_goal_project_repair_legacy_output_debt",
   "codex_goal_project_controller_launch_plan",
   "codex_goal_project_controller_start",
   "codex_goal_project_controller_status",
@@ -445,6 +448,12 @@ function controllerSupervisorCooldownInstants(result: unknown): readonly number[
 }
 
 export function codexGoalMcpToolTimeoutMs(name: string): number | undefined {
+  if (
+    name === "codex_goal_project_refill_worker" ||
+    name === "codex_goal_project_prepare_verifier"
+  ) {
+    return 1_800_000;
+  }
   if (name.startsWith("codex_goal_project_")) {
     return 300_000;
   }

@@ -845,6 +845,7 @@ function usage(): string {
   subscription-runtime-codex-goal project-events [jobId] [--provider codex] [--registry-root <dir>] [--event-root <dir>] [--host-id <id>] [--include-changed-files]
   subscription-runtime-codex-goal relay-events --event-root <dir> --consumer-id <id> [--publisher stdout|webhook] [--webhook-url <url>] [--limit 100] [--run-id <id>] [--type run.completed]
   subscription-runtime-codex-goal reconcile-preview [--registry-root <dir>] [--continue-safe-jobs]
+  subscription-runtime-codex-goal tool codex_goal_project_quarantine_legacy_integration_attempts --args-file <json>
   subscription-runtime-codex-goal brief <jobId> [--registry-root <dir>]
   subscription-runtime-codex-goal decision <jobId> [--registry-root <dir>]
   subscription-runtime-codex-goal handoff <jobId> [--registry-root <dir>]

@@ -27,6 +27,7 @@ import {
   optionalCodexGoalEditMode,
   optionalCodexGoalProviderSandboxMode,
 } from "./codex-goal-control-modes";
+import { durableReplaceJsonFile } from "./project-control-operation-file-store";
 
 export const codexGoalJobManifestSchemaVersion = 1;
 export const codexGoalObjectiveMaxChars = 4000;
@@ -256,11 +257,11 @@ export async function updateCodexGoalJob(input: {
         existing.accessBoundary !== AccessBoundary.ProjectScopedControl,
     },
   );
-  await writeFile(
-    codexGoalJobManifestPath({ registryRootDir, jobId: input.jobId }),
-    `${JSON.stringify(manifest, null, 2)}\n`,
-    { encoding: "utf8", mode: 0o600 },
-  );
+  const manifestPath = codexGoalJobManifestPath({
+    registryRootDir,
+    jobId: input.jobId,
+  });
+  await durableReplaceJsonFile({ path: manifestPath, value: manifest });
   return manifest;
 }
 
