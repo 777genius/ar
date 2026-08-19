@@ -269,6 +269,16 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
         rootDir: reviewedWorkerOutputRoot(controller.registryRootDir),
         locks,
       });
+      const terminalRecoveryLedgerRoots =
+        controller.scope.consumedOutputLedgerRoots ??
+        loaded.manifest.projectAccessScope?.consumedOutputLedgerRoots ??
+        [];
+      const terminalRecoveryScope = terminalHandoffDependencyRecovery
+        ? {
+            ...controller.scope,
+            consumedOutputLedgerRoots: terminalRecoveryLedgerRoots,
+          }
+        : controller.scope;
       const reviewedContinuation =
         workspaceDirty && reviewedOutputId
           ? await resolveReviewedWorkerContinuation({
@@ -286,7 +296,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
             producer: loaded.manifest,
             workspacePath: workspace.canonicalWorkspacePath,
             snapshotter: reviewedOutputDeps.snapshotter,
-            consumedOutputLedgerRoots: controller.scope.consumedOutputLedgerRoots ?? [],
+            consumedOutputLedgerRoots: terminalRecoveryLedgerRoots,
           })
         : undefined;
       if (reviewedContinuation) {
@@ -373,7 +383,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
           producer: loaded.manifest,
           workspacePath: workspace.canonicalWorkspacePath,
           snapshotter: reviewedOutputDeps.snapshotter,
-          consumedOutputLedgerRoots: controller.scope.consumedOutputLedgerRoots ?? [],
+          consumedOutputLedgerRoots: terminalRecoveryLedgerRoots,
           expected: terminalRecovery,
         });
         await assertReviewedWorkerContinuationEnvironmentLocked(
@@ -462,7 +472,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
         const broker = deps.codexProjectControlBroker({
           registryRootDir: controller.registryRootDir,
           controller: controller.controller,
-          scope: controller.scope,
+          scope: terminalRecoveryScope,
           startLaunch: reservedLaunch,
           startManifest: loaded.manifest,
           ...(startAdmissionWorkspaceMode
