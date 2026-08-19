@@ -28,11 +28,14 @@ import {
 } from "../codex-goal-jobs";
 import { projectControlLedgerEpochMigrationView } from
   "../codex-goal-mcp-project-control-ledger-epoch";
-import { seedAuthenticD0aPreparedEpochV1, seedLegacyAdmissionHandlerFixture,
-  prepareAuthenticD0aFixture } from
+import { seedAuthenticD0aPreparedEpochV1, prepareAuthenticD0aFixture } from
   "./codex-goal-ledger-epoch-legacy-admission-fixture";
 import { buildLedgerEpochLegacyAdmissionAnchor } from
   "../application/project-control/codex-goal-ledger-epoch-legacy-admission";
+import { assertPublicationLockAdmissionGuardrails } from
+  "./codex-goal-ledger-epoch-publication-lock-fixture";
+import { loadOrSeedHandlerAdmissionFixture } from
+  "./codex-goal-ledger-epoch-handler-resume-fixture";
 import { buildCodexProjectAdmissionSnapshot } from
   "../application/project-control/codex-goal-project-admission";
 import {
@@ -74,7 +77,7 @@ const shardTestNames: Readonly<Record<string, readonly RegExp[]>> = {
   ],
   recovery: [
     /^binds every preview, locked, and revalidation admission/,
-    /^confirms a fresh preview/,
+    /^confirms retained info debt/,
     /^resumes the immutable stored plan/,
     /^denies a hash-valid stored plan/,
     /^denies a new-root parent symlink/,
@@ -476,21 +479,11 @@ describe("project control ledger epoch handler", () => {
     expect(await exactTreeBytes(fixture.root)).toEqual(before);
   });
 
-  it("confirms a fresh preview under the actual publication locks", async () => {
+  it("confirms retained info debt but rejects blocking debt under publication locks", async () => {
     const fixture = await handlerFixture();
-    const preview = await projectControlLedgerEpochMigrationView(
-      fixture.args(), fixture.deps);
-    const planSha256 = String(preview.planSha256);
-
-    await expect(projectControlLedgerEpochMigrationView(
-      fixture.args({
-        confirmLedgerEpochMigration: true,
-        expectedLedgerEpochPlanSha256: planSha256,
-      }),
-      fixture.deps,
-    )).resolves.toMatchObject({
-      ok: true,
-      receipt: { planSha256, status: "active" },
+    await assertPublicationLockAdmissionGuardrails({
+      fixture,
+      exactTreeBytes,
     });
   });
 
@@ -658,15 +651,7 @@ export async function handlerFixture(
   const oldRoot = join(root, "ledgers", "v1");
   const newRoot = join(root, "ledgers", "v2");
   const persistedAdmissionPath = join(root, ".handler-admission-fixture.json");
-  let admissionSnapshot: Awaited<ReturnType<
-    typeof seedLegacyAdmissionHandlerFixture
-  >> | undefined;
-  if (resuming) {
-    admissionSnapshot = JSON.parse(await readFile(
-      persistedAdmissionPath,
-      "utf8",
-    ));
-  } else {
+  if (!resuming) {
     await mkdir(join(oldRoot, "items"), { recursive: true });
     await mkdir(controllerJobRoot, { recursive: true });
     await Promise.all([
@@ -675,38 +660,16 @@ export async function handlerFixture(
       mkdir(join(root, "worktrees"), { recursive: true }),
       mkdir(join(root, "secrets"), { recursive: true }),
     ]);
-    const seededAdmission = legacyConsumedCount === undefined
-      ? undefined
-      : await seedLegacyAdmissionHandlerFixture({
-          root,
-          oldRoot,
-          consumedCount: legacyConsumedCount,
-          fastOrphanBoundaries,
-        });
-    admissionSnapshot = seededAdmission && currentSocialDebt
-      ? { ...seededAdmission, debt: [
-        ...seededAdmission.debt.filter((item) => item.reason ===
-          ProjectDebtReason.UnconsumedCompletedJob).map((item) =>
-            ({ ...item, reason: ProjectDebtReason.ConsumedDirtyWorkspace })),
-        ...seededAdmission.debt.filter((item) => item.reason ===
-          ProjectDebtReason.OrphanLegacyWorkspace).slice(0, 57),
-        ...Array.from({ length: 377 }, (_, index) => ({
-          reason: ProjectDebtReason.UnreadableRoot,
-          subject: `${root}/unreadable/${index}`,
-          severity: "blocking" as const,
-          evidence: [`unreadable root ${index}`],
-        })),
-      ] }
-      : seededAdmission;
-    if (admissionSnapshot) {
-      await writeFile(
-        persistedAdmissionPath,
-        `${JSON.stringify(admissionSnapshot)}\n`,
-      );
-    } else {
-      await writeFile(join(oldRoot, "items", "legacy.json"), "not-json\n");
-    }
   }
+  const admissionSnapshot = await loadOrSeedHandlerAdmissionFixture({
+    resuming,
+    persistedAdmissionPath,
+    root,
+    oldRoot,
+    ...(legacyConsumedCount === undefined ? {} : { legacyConsumedCount }),
+    fastOrphanBoundaries,
+    currentSocialDebt,
+  });
   const scope: ProjectAccessScope = {
     projectId: "social-monitor",
     readRoots: [root],

@@ -2,6 +2,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -29,6 +30,7 @@ import {
 } from "../application/project-control/codex-goal-project-terminal-handoff-recovery";
 import { localReviewedWorkerOutputDeps } from "../reviewed-worker-output";
 import { projectControlStartStoredJobView } from "../codex-goal-mcp-project-control-actions";
+import { createCodexProjectControlBroker } from "../codex-goal-mcp-project-broker";
 import { recordRejectedUncapturedOutput } from "../codex-goal-mcp-project-control-reviewed-rejection";
 import { assertCodexGoalProjectJobNotTerminal } from "../application/project-control/codex-goal-consumed-output-ledger-io";
 import { git, gitInitRepository } from "./codex-goal-mcp-test-support";
@@ -221,6 +223,122 @@ describe("terminal worker handoff dependency recovery", () => {
     );
     expect(started).toMatchObject({ ok: true, jobId: fixture.jobId });
     expect(startCalled).toBe(true);
+  });
+
+  it("uses controller ledger roots for a legacy producer without project scope", async () => {
+    const fixture = await actionFixture({ producerHasProjectScope: false });
+    await writeRejectedUncapturedReview(fixture);
+    let startCalled = false;
+
+    const started = await projectControlStartStoredJobView(
+      fixture.startArgs,
+      {
+        ...fixture.deps(async () => {}),
+        codexProjectControlBroker: () => ({
+          startWorker: async () => {
+            startCalled = true;
+            return { status: "started" };
+          },
+        }) as unknown as ProjectControlBroker,
+      },
+    );
+
+    expect(started).toMatchObject({ ok: true, jobId: fixture.jobId });
+    expect(startCalled).toBe(true);
+  });
+
+  it("falls back to producer ledger roots when controller roots are omitted", async () => {
+    const fixture = await actionFixture({ controllerHasLedgerRoots: false });
+    await writeRejectedUncapturedReview(fixture);
+    let startCalled = false;
+
+    const started = await projectControlStartStoredJobView(
+      fixture.startArgs,
+      {
+        ...fixture.deps(async () => {}),
+        codexProjectControlBroker: (input) => ({
+          startWorker: async () => {
+            startCalled = true;
+            const recovery = input.rejectedUncapturedTerminalHandoffRecovery;
+            expect(input.scope.consumedOutputLedgerRoots).toEqual([
+              fixture.ledgerRoot,
+            ]);
+            if (!recovery) throw new Error("expected rejected recovery");
+            await assertCodexGoalProjectJobNotTerminal({
+              roots: input.scope.consumedOutputLedgerRoots ?? [],
+              projectId: input.scope.projectId,
+              controllerJobId: input.controller.jobId,
+              jobId: fixture.jobId,
+              taskId: fixture.jobId,
+              workspacePath: fixture.workspacePath,
+              rejectedUncapturedContinuationPatchSha256:
+                recovery.patchSha256,
+            });
+            return { status: "started" };
+          },
+        }) as unknown as ProjectControlBroker,
+      },
+    );
+
+    expect(started).toMatchObject({ ok: true, jobId: fixture.jobId });
+    expect(startCalled).toBe(true);
+  });
+
+  it("rechecks producer ledger roots at final admission when controller roots are omitted", async () => {
+    const fixture = await actionFixture({ controllerHasLedgerRoots: false });
+    let admissionCalled = false;
+
+    await expect(
+      projectControlStartStoredJobView(fixture.startArgs, {
+        ...fixture.deps(async () => {}),
+        codexProjectControlBroker: (input) => {
+          const broker = createCodexProjectControlBroker({
+            ...input,
+            admissionDeps: {
+              listJobs: async () => [],
+              buildOverviewItems: async () => [],
+            },
+          });
+          return {
+            startWorker: async (
+              startInput: Parameters<ProjectControlBroker["startWorker"]>[0],
+            ) => {
+              admissionCalled = true;
+              expect(input.scope.consumedOutputLedgerRoots).toEqual([
+                fixture.ledgerRoot,
+              ]);
+              await recordRejectedUncapturedOutput({
+                scope: fixture.scope,
+                jobId: fixture.jobId,
+                jobRootDir: fixture.jobRootDir,
+                workspacePath: fixture.workspacePath,
+                closedAt: "2026-07-21T00:00:00.000Z",
+                reason: "Concurrent terminal decision before final admission.",
+              });
+              return await broker.startWorker(startInput);
+            },
+          } as unknown as ProjectControlBroker;
+        },
+      }),
+    ).rejects.toThrow("project_control_terminal_job_start_denied");
+    expect(admissionCalled).toBe(true);
+  });
+
+  it("keeps an explicit empty controller ledger root set authoritative", async () => {
+    const fixture = await actionFixture({ controllerHasEmptyLedgerRoots: true });
+    await writeRejectedUncapturedReview(fixture);
+    let brokerCreated = false;
+
+    await expect(
+      projectControlStartStoredJobView(fixture.startArgs, {
+        ...fixture.deps(async () => {}),
+        codexProjectControlBroker: () => {
+          brokerCreated = true;
+          throw new Error("unexpected broker start");
+        },
+      }),
+    ).rejects.toThrow("project_control_terminal_handoff_already_reviewed");
+    expect(brokerCreated).toBe(false);
   });
 
   it("rejects archive tamper at recovery and terminal admission", async () => {
@@ -597,9 +715,17 @@ async function writeTerminalResult(
   );
 }
 
-async function actionFixture() {
-  const root = await mkdtemp(
-    join(tmpdir(), "subscription-runtime-terminal-recovery-action-"),
+async function actionFixture(
+  options: {
+    readonly controllerHasEmptyLedgerRoots?: boolean;
+    readonly controllerHasLedgerRoots?: boolean;
+    readonly producerHasProjectScope?: boolean;
+  } = {},
+) {
+  const root = await realpath(
+    await mkdtemp(
+      join(tmpdir(), "subscription-runtime-terminal-recovery-action-"),
+    ),
   );
   roots.push(root);
   const registryRootDir = join(root, "registry");
@@ -633,7 +759,7 @@ async function actionFixture() {
   });
   if (!handoff) throw new Error("expected handoff");
   await writeTerminalResult(jobRootDir, jobId, handoff);
-  const scope: ProjectAccessScope = {
+  const scopeWithoutLedgerRoots: ProjectAccessScope = {
     projectId: "project",
     workspaceRoots: [canonicalWorkspacePath],
     worktreeRoots: [worktreeRoot],
@@ -643,9 +769,17 @@ async function actionFixture() {
     allowedAccountIds: ["account-a", "account-b"],
     allowedBranches: ["main"],
     allowedGitRemotes: ["origin"],
+  };
+  const scope: ProjectAccessScope = {
+    ...scopeWithoutLedgerRoots,
     consumedOutputLedgerRoots: [ledgerRoot],
     consumedOutputEvidenceRoots: [evidenceRoot],
   };
+  const controllerScope = options.controllerHasLedgerRoots === false
+    ? scopeWithoutLedgerRoots
+    : options.controllerHasEmptyLedgerRoots
+      ? { ...scopeWithoutLedgerRoots, consumedOutputLedgerRoots: [] }
+      : scope;
   await createCodexGoalJob({
     registryRootDir,
     manifest: {
@@ -657,8 +791,12 @@ async function actionFixture() {
       taskId: jobId,
       accounts: ["account-a"],
       tmuxSession: jobId,
-      accessBoundary: AccessBoundary.ProjectScopedControl,
-      projectAccessScope: scope,
+      ...(options.producerHasProjectScope === false
+        ? {}
+        : {
+            accessBoundary: AccessBoundary.ProjectScopedControl,
+            projectAccessScope: scope,
+          }),
       networkAccess: NetworkAccessMode.Restricted,
     },
   });
@@ -673,14 +811,16 @@ async function actionFixture() {
     taskId: "project-controller",
     accounts: ["account-a"],
     accessBoundary: AccessBoundary.ProjectScopedControl,
-    projectAccessScope: scope,
+    projectAccessScope: controllerScope,
   } as CodexGoalJobManifest;
   const producer = {
     jobId,
     taskId: jobId,
     workspacePath,
     jobRootDir,
-    projectAccessScope: scope,
+    ...(options.producerHasProjectScope === false
+      ? {}
+      : { projectAccessScope: scope }),
   } as CodexGoalJobManifest;
   const snapshotter = localReviewedWorkerOutputDeps({
     rootDir: join(root, "reviewed-output"),
@@ -708,7 +848,7 @@ async function actionFixture() {
       loadProjectControlController: async () => ({
         registryRootDir,
         controller,
-        scope,
+        scope: controllerScope,
       }),
       loadJobLaunch: async () => {
         throw new Error("unexpected loadJobLaunch");
