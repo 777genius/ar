@@ -1,14 +1,8 @@
-export const ledgerEpochUpgradeCrashBoundaries = [
-  ...Array.from({ length: 205 }, (_, index) =>
-    `source-orphan-${String(index).padStart(4, "0")}.json`
-  ),
-  "plan.json",
-  "owner.json",
-  "state.json",
-  "receipt.json",
-  "final-sidecar",
-  "intent",
-] as const;
+import { preparedEpochV1UpgradeCrashBoundaries } from
+  "../application/project-control/codex-goal-consumed-output-ledger-epoch-target";
+
+export const ledgerEpochUpgradeCrashBoundaries =
+  preparedEpochV1UpgradeCrashBoundaries(205);
 
 export const ledgerEpochUpgradeCrashBoundaryShards = [
   [0, 4], [4, 8], [8, 12], [12, 16], [16, 20], [20, 24], [24, 28],
@@ -19,5 +13,5 @@ export const ledgerEpochUpgradeCrashBoundaryShards = [
   [132, 136], [136, 140], [140, 144], [144, 148], [148, 152], [152, 156],
   [156, 160], [160, 164], [164, 168], [168, 172], [172, 176], [176, 180],
   [180, 184], [184, 188], [188, 192], [192, 196], [196, 200], [200, 204],
-  [204, 208], [208, 211],
+  [204, 208], [208, 212], [212, 213],
 ] as const;

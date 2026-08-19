@@ -645,47 +645,67 @@ export async function handlerFixture(
   fastOrphanBoundaries = true,
   currentSocialDebt = false,
   observeDefaultAdmission = false,
+  resumeRoot?: string,
 ) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "ledger-epoch-handler-")));
+  const resuming = resumeRoot !== undefined;
+  const root = resuming
+    ? await realpath(resumeRoot)
+    : await realpath(await mkdtemp(join(tmpdir(), "ledger-epoch-handler-")));
   fixtureRoots.add(root);
   const registryRootDir = join(root, "registry");
   const controllerJobId = "social-monitor-controller-v4";
   const controllerJobRoot = join(registryRootDir, controllerJobId);
   const oldRoot = join(root, "ledgers", "v1");
   const newRoot = join(root, "ledgers", "v2");
-  await mkdir(join(oldRoot, "items"), { recursive: true });
-  await mkdir(controllerJobRoot, { recursive: true });
-  await Promise.all([
-    mkdir(join(root, "workspaces"), { recursive: true }),
-    mkdir(join(root, "workspaces", "controller"), { recursive: true }),
-    mkdir(join(root, "worktrees"), { recursive: true }),
-    mkdir(join(root, "secrets"), { recursive: true }),
-  ]);
-  const seededAdmission = legacyConsumedCount === undefined
-    ? undefined
-    : await seedLegacyAdmissionHandlerFixture({
-        root,
-        oldRoot,
-        consumedCount: legacyConsumedCount,
-        fastOrphanBoundaries,
-      });
-  const admissionSnapshot = seededAdmission && currentSocialDebt
-    ? { ...seededAdmission, debt: [
-      ...seededAdmission.debt.filter((item) => item.reason ===
-        ProjectDebtReason.UnconsumedCompletedJob).map((item) =>
-          ({ ...item, reason: ProjectDebtReason.ConsumedDirtyWorkspace })),
-      ...seededAdmission.debt.filter((item) => item.reason ===
-        ProjectDebtReason.OrphanLegacyWorkspace).slice(0, 57),
-      ...Array.from({ length: 377 }, (_, index) => ({
-        reason: ProjectDebtReason.UnreadableRoot,
-        subject: `${root}/unreadable/${index}`,
-        severity: "blocking" as const,
-        evidence: [`unreadable root ${index}`],
-      })),
-    ] }
-    : seededAdmission;
-  if (!admissionSnapshot) {
-    await writeFile(join(oldRoot, "items", "legacy.json"), "not-json\n");
+  const persistedAdmissionPath = join(root, ".handler-admission-fixture.json");
+  let admissionSnapshot: Awaited<ReturnType<
+    typeof seedLegacyAdmissionHandlerFixture
+  >> | undefined;
+  if (resuming) {
+    admissionSnapshot = JSON.parse(await readFile(
+      persistedAdmissionPath,
+      "utf8",
+    ));
+  } else {
+    await mkdir(join(oldRoot, "items"), { recursive: true });
+    await mkdir(controllerJobRoot, { recursive: true });
+    await Promise.all([
+      mkdir(join(root, "workspaces"), { recursive: true }),
+      mkdir(join(root, "workspaces", "controller"), { recursive: true }),
+      mkdir(join(root, "worktrees"), { recursive: true }),
+      mkdir(join(root, "secrets"), { recursive: true }),
+    ]);
+    const seededAdmission = legacyConsumedCount === undefined
+      ? undefined
+      : await seedLegacyAdmissionHandlerFixture({
+          root,
+          oldRoot,
+          consumedCount: legacyConsumedCount,
+          fastOrphanBoundaries,
+        });
+    admissionSnapshot = seededAdmission && currentSocialDebt
+      ? { ...seededAdmission, debt: [
+        ...seededAdmission.debt.filter((item) => item.reason ===
+          ProjectDebtReason.UnconsumedCompletedJob).map((item) =>
+            ({ ...item, reason: ProjectDebtReason.ConsumedDirtyWorkspace })),
+        ...seededAdmission.debt.filter((item) => item.reason ===
+          ProjectDebtReason.OrphanLegacyWorkspace).slice(0, 57),
+        ...Array.from({ length: 377 }, (_, index) => ({
+          reason: ProjectDebtReason.UnreadableRoot,
+          subject: `${root}/unreadable/${index}`,
+          severity: "blocking" as const,
+          evidence: [`unreadable root ${index}`],
+        })),
+      ] }
+      : seededAdmission;
+    if (admissionSnapshot) {
+      await writeFile(
+        persistedAdmissionPath,
+        `${JSON.stringify(admissionSnapshot)}\n`,
+      );
+    } else {
+      await writeFile(join(oldRoot, "items", "legacy.json"), "not-json\n");
+    }
   }
   const scope: ProjectAccessScope = {
     projectId: "social-monitor",
@@ -713,7 +733,12 @@ export async function handlerFixture(
     networkAccess: NetworkAccessMode.Restricted,
     projectAccessScope: scope,
   };
-  await writeFile(join(controllerJobRoot, "job.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  if (!resuming) {
+    await writeFile(
+      join(controllerJobRoot, "job.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+    );
+  }
   const load = async () => {
     const controller = await readCodexGoalJob({ registryRootDir, jobId: controllerJobId });
     return { registryRootDir, controller, scope: controller.projectAccessScope! };
@@ -816,6 +841,7 @@ export async function handlerFixture(
   let captureMutationAt = 2;
   let captureMutation: (() => Promise<void>) | undefined;
   let upgradeCrashAfter: string | undefined;
+  let upgradeCrashBoundary: ((boundary: string) => void) | undefined;
   const observedAdmissionControllerJobIds: string[] = [];
   const admissionDeps = {
     listJobs: async () => [],
@@ -900,6 +926,11 @@ export async function handlerFixture(
     setUpgradeCrashAfter: (value: string | undefined) => {
       upgradeCrashAfter = value;
     },
+    setUpgradeCrashBoundary: (
+      value: ((boundary: string) => void) | undefined,
+    ) => {
+      upgradeCrashBoundary = value;
+    },
     freezePreparedV1Baseline: async () => {
       preparedBaselineRoot = await mkdtemp(join(tmpdir(), "ledger-epoch-v1-baseline-"));
       fixtureRoots.add(preparedBaselineRoot);
@@ -924,6 +955,7 @@ export async function handlerFixture(
       writerGuardFailureAt = Number.POSITIVE_INFINITY;
       processInventorySha = "a".repeat(64);
       upgradeCrashAfter = undefined;
+      upgradeCrashBoundary = undefined;
     },
     args: (extra: Record<string, unknown> = {}) => ({
       registryRootDir,
@@ -995,6 +1027,9 @@ export async function handlerFixture(
         };
       },
       preparedV1UpgradeCrashAfter: () => upgradeCrashAfter,
+      preparedV1UpgradeCrashBoundary: (boundary: string) => {
+        upgradeCrashBoundary?.(boundary);
+      },
     },
   };
 }

@@ -53,7 +53,7 @@ export function certifyLedgerEpochCrashBoundaryShard(input: {
     try {
       const module = await import("./codex-goal-ledger-epoch-handler.test");
       // The public handler must admit the authentic 495 consumed registrations
-      // plus 205 source orphans before it can enter the 211-boundary upgrade.
+      // plus 205 source orphans before it can enter the 213-boundary upgrade.
       // Keep that production-shaped admission contract here; range mode below
       // removes the accidental duplicate execution that exhausted the budget.
       fixture = await module.handlerFixture(495, true);
@@ -84,7 +84,7 @@ export function certifyLedgerEpochCrashBoundaryShard(input: {
     delete process.env.CODEX_LEDGER_EPOCH_CRASH_SAVE_SNAPSHOT;
   });
 
-  describe(`exact-211 public-handler crash boundary shard ${input.shard}`, () => {
+  describe(`exact-213 public-handler interruption boundary shard ${input.shard}`, () => {
     for (let groupStart = input.start; groupStart < input.end; groupStart += 4) {
       const groupEnd = Math.min(groupStart + 4, input.end);
       it.runIf(process.env.CODEX_LEDGER_EPOCH_CRASH_RANGE_ONLY === "1")(

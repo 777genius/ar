@@ -120,6 +120,8 @@ export type ProjectControlLedgerEpochDeps = {
   ) => Promise<LegacyAttemptProcessEvidence>;
   /** Deterministic crash boundary used only by restart certification. */
   readonly preparedV1UpgradeCrashAfter?: () => string | undefined;
+  /** Process-level crash hook used only by restart certification. */
+  readonly preparedV1UpgradeCrashBoundary?: (boundary: string) => void;
 };
 
 export async function projectControlLedgerEpochMigrationView(
@@ -615,6 +617,9 @@ export async function projectControlLedgerEpochMigrationView(
           processEvidence,
           expectedPlanSha256,
           ...(crashAfter === undefined ? {} : { crashAfter }),
+          ...(deps.preparedV1UpgradeCrashBoundary
+            ? { crashBoundary: deps.preparedV1UpgradeCrashBoundary }
+            : {}),
         });
         await assertPreparedEpochV2Sidecar(
           plan,

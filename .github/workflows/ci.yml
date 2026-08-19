@@ -73,7 +73,7 @@ jobs:
           SHARD_LANE: ${{ matrix.lane }}
         run: |
           shard="$SHARD_LANE"
-          while [ "$shard" -le 52 ]; do
+          while [ "$shard" -le 53 ]; do
             file="src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-${shard}.test.ts"
             timeout --signal=TERM --kill-after=10s 240s \
               npm run test:crash-shard -- "$file"
