@@ -810,6 +810,7 @@ describe("codex goal MCP project-control server", () => {
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerJobRoot = join(root, "worker-jobs", "infinity-context-controller-v1");
     const ledgerRoot = join(root, "worker-jobs", "consumed-output-ledger");
+    const evidenceRoot = join(root, "worker-jobs", "archives");
     const workspacePath = join(root, "workspaces", "infinity-context-main");
     const remotePath = join(root, "remote.git");
     const server = createCodexGoalMcpServer();
@@ -860,6 +861,7 @@ describe("codex goal MCP project-control server", () => {
           allowedBranches: ["main"],
           allowedGitRemotes: ["origin"],
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [evidenceRoot],
           commitIdentity: {
             name: "Subscription Runtime Tests",
             email: "tests@example.com",

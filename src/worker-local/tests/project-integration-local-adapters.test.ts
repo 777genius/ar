@@ -1013,16 +1013,21 @@ describe("local project integration adapters", () => {
     });
   });
 
-  it("prepares evidence before push and finalizes an idempotent terminal ledger", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "prepares custody-readable evidence before push and finalizes an idempotent terminal ledger",
+    async () => {
     const fixture = await createGitFixture();
     await writeFile(
       join(fixture.workspacePath, "src", "memory.ts"),
       "export const value = 3;\n",
     );
     const ledgerRoot = join(fixture.rootDir, "ledger");
+    const evidenceRoot = join(fixture.rootDir, "archives");
+    await Promise.all([mkdir(ledgerRoot), mkdir(evidenceRoot)]);
     const adapter = new LocalIntegratedOutputLedgerAdapter({
       ledgerRoots: [ledgerRoot],
-      archiveRoot: join(fixture.rootDir, "archives"),
+      evidenceRoots: [evidenceRoot],
+      archiveRoot: evidenceRoot,
       custodyRoot: fixture.rootDir,
     });
     const attempt = {
@@ -1040,6 +1045,11 @@ describe("local project integration adapters", () => {
     });
     await expect(readFile(preparation.patchPath, "utf8"))
       .resolves.toContain("export const value = 2");
+    expect(preparation.archivePath.startsWith(`${evidenceRoot}/`)).toBe(true);
+    await expect(readFile(preparation.statusPath, "utf8"))
+      .resolves.toEqual(expect.any(String));
+    await expect(readFile(preparation.numstatPath, "utf8"))
+      .resolves.toContain("src/memory.ts");
     await expect(adapter.preflightFinalize({ preparation }))
       .resolves.toBeUndefined();
 
@@ -1059,7 +1069,8 @@ describe("local project integration adapters", () => {
     });
     expect(first.idempotentReplay).toBe(false);
     expect(replay.idempotentReplay).toBe(true);
-  });
+    },
+  );
 
   it("rejects conflicting terminal decisions for the same worker", async () => {
     const fixture = await createGitFixture();

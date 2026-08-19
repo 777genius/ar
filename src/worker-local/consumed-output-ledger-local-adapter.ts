@@ -551,6 +551,7 @@ function sha256Bytes(bytes: Uint8Array): string {
 
 export type LocalIntegratedOutputLedgerAdapterOptions = {
   readonly ledgerRoots: readonly string[];
+  readonly evidenceRoots: readonly string[];
   readonly archiveRoot: string;
   readonly custodyRoot?: string;
   readonly gitBinaryPath?: string;
@@ -565,6 +566,7 @@ export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedge
     this.writer = new LocalConsumedOutputLedgerWriter(
       undefined,
       options.custodyRoot,
+      options.evidenceRoots,
     );
   }
 
@@ -573,34 +575,32 @@ export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedge
     readonly commitSha: string;
   }): Promise<IntegratedOutputLedgerPreparation> {
     const ledgerRoot = this.requiredLedgerRoot();
-    const archivePath = join(
-      this.options.archiveRoot,
-      `${safeLedgerName(input.attempt.workerOutput.workerJobId)}-integrated-${input.commitSha.slice(0, 12)}-${safeLedgerName(input.attempt.attemptId)}`,
-    );
-    await mkdir(archivePath, { recursive: true });
+    const archiveRoot = this.requiredEvidenceRoot();
+    const archiveName = [
+      safeLedgerName(input.attempt.workerOutput.workerJobId),
+      "integrated",
+      input.commitSha.slice(0, 12),
+      safeLedgerName(input.attempt.attemptId),
+    ].join("-");
+    const archivePath = join(archiveRoot, archiveName);
     const statusPath = join(archivePath, "git-status.txt");
     const patchPath = join(archivePath, "tracked.diff");
     const numstatPath = join(archivePath, "tracked.numstat");
-    await publishExactText(
-      statusPath,
+    const status = Buffer.from(
       await this.gitOutput(input.attempt.workerOutput.workspacePath, [
         "status",
         "--short",
       ]),
     );
-    await publishExactBytes(
-      patchPath,
-      await this.gitOutputBytes(input.attempt.targetWorkspacePath, [
-        "show",
-        "--format=",
-        "--binary",
-        input.commitSha,
-        "--",
-        ...input.attempt.workerOutput.changedFiles,
-      ]),
-    );
-    await publishExactText(
-      numstatPath,
+    const patch = await this.gitOutputBytes(input.attempt.targetWorkspacePath, [
+      "show",
+      "--format=",
+      "--binary",
+      input.commitSha,
+      "--",
+      ...input.attempt.workerOutput.changedFiles,
+    ]);
+    const numstat = Buffer.from(
       await this.gitOutput(input.attempt.targetWorkspacePath, [
         "show",
         "--format=",
@@ -610,6 +610,24 @@ export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedge
         ...input.attempt.workerOutput.changedFiles,
       ]),
     );
+    const custody = new LocalProjectControlEvidenceCustody();
+    await Promise.all([
+      custody.publishImmutableBytes({
+        root: archiveRoot, directories: [archiveName],
+        fileName: "git-status.txt", bytes: status,
+        expectedSha256: sha256Bytes(status),
+      }),
+      custody.publishImmutableBytes({
+        root: archiveRoot, directories: [archiveName],
+        fileName: "tracked.diff", bytes: patch,
+        expectedSha256: sha256Bytes(patch),
+      }),
+      custody.publishImmutableBytes({
+        root: archiveRoot, directories: [archiveName],
+        fileName: "tracked.numstat", bytes: numstat,
+        expectedSha256: sha256Bytes(numstat),
+      }),
+    ]);
     const preparation: IntegratedOutputLedgerPreparation = {
       attemptId: input.attempt.attemptId,
       workerJobId: input.attempt.workerOutput.workerJobId,
@@ -620,14 +638,16 @@ export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedge
       patchPath,
       numstatPath,
     };
-    await publishExactJson(
-      join(
-        ledgerRoot,
-        "preparations",
-        `${safeLedgerName(input.attempt.attemptId)}.json`,
-      ),
-      preparation,
+    const preparationBytes = Buffer.from(
+      `${JSON.stringify(preparation, null, 2)}\n`,
     );
+    await custody.publishImmutableBytes({
+      root: ledgerRoot,
+      directories: ["preparations"],
+      fileName: `${safeLedgerName(input.attempt.attemptId)}.json`,
+      bytes: preparationBytes,
+      expectedSha256: sha256Bytes(preparationBytes),
+    });
     return preparation;
   }
 
@@ -747,6 +767,13 @@ export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedge
       throw new Error("project_integration_consumed_output_ledger_required");
     }
     return this.options.ledgerRoots[0]!;
+  }
+
+  private requiredEvidenceRoot(): string {
+    if (this.options.evidenceRoots.length !== 1) {
+      throw new Error("project_integration_consumed_output_evidence_root_required");
+    }
+    return resolve(this.options.evidenceRoots[0]!);
   }
 
   private async gitOutput(

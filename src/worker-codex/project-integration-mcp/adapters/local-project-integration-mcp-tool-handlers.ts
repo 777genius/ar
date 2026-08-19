@@ -98,20 +98,21 @@ function localProjectIntegrationDeps(
   controller: ProjectIntegrationMcpController,
 ): ProjectIntegrationMcpUseCaseDeps {
   const rootDir = join(controller.controller.jobRootDir, "project-integration");
-  const archiveRoot = projectIntegrationArchiveRoot(controller);
+  const controllerArchiveRoot = projectIntegrationArchiveRoot(controller);
   return {
     store: new LocalIntegrationAttemptStore({ rootDir }),
     git: new LocalGitIntegrationAdapter({
       allowedPatchRoots: projectIntegrationAllowedPatchRoots(controller),
       workerJobRootParent: dirname(controller.controller.jobRootDir),
-      controllerArchiveRoot: archiveRoot,
+      controllerArchiveRoot,
     }),
     commitIdentity: new ConfiguredCommitIdentityAdapter(
       controller.scope.commitIdentity,
     ),
     integratedOutputLedger: new LocalIntegratedOutputLedgerAdapter({
       ledgerRoots: controller.scope.consumedOutputLedgerRoots ?? [],
-      archiveRoot,
+      evidenceRoots: controller.scope.consumedOutputEvidenceRoots ?? [],
+      archiveRoot: controllerArchiveRoot,
       custodyRoot: dirname(dirname(controller.registryRootDir)),
     }),
     checks: new LocalProjectCheckRunner(),
