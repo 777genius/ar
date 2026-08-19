@@ -17,6 +17,7 @@ import {
   type AttemptUsage,
   BoundedSubscriptionWorkerPool,
   SafeExecutionRunner,
+  safeExecutionAttemptMetadataFromError,
   SubscriptionWorkerError,
   WorkerControlService,
   type AttemptJournal,
@@ -307,6 +308,10 @@ export class FileBackendCodexSafeExecutor {
       maxAccountCycles,
       policy,
     } = codexSafeExecutionInput(input);
+    const reservedAccountId =
+      this.options.accounts.length === 1
+        ? safeExecutorAccountLabel(this.options.accounts[0]!, 0)
+        : undefined;
     return this.runner.run({
       taskId,
       workspace: {
@@ -391,6 +396,14 @@ export class FileBackendCodexSafeExecutor {
       },
       summarizeResult: (result) => result.outputText,
       summarizeErrorOutput: codexWorkerErrorOutputSummary,
+      attemptMetadata: ({ error }) => ({
+        ...(error === undefined
+          ? {}
+          : safeExecutionAttemptMetadataFromError(error)),
+        ...(reservedAccountId === undefined
+          ? {}
+          : { accountId: reservedAccountId }),
+      }),
       attemptUsage: codexWorkerResultUsage,
       controlTarget: codexControlTarget({
         jobId,
