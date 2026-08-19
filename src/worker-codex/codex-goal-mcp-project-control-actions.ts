@@ -25,6 +25,10 @@ import {
 } from "./application/project-control/codex-goal-project-pre-start-admission";
 import { validateProjectRefillPreStartAdmissionLocked } from "./application/project-control/codex-goal-project-refill-admission";
 import {
+  readValidatedInputPatchWorkerLaunchSpec,
+  type ValidatedPendingInputPatchAdmission,
+} from "./application/project-control/codex-goal-project-pending-input-patch-admission";
+import {
   terminalHandoffDependencyRecoveryRequested,
   verifyTerminalHandoffRecovery,
 } from "./application/project-control/codex-goal-project-terminal-handoff-recovery";
@@ -191,13 +195,24 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
       confirmDependencyBootstrap:
         booleanValue(args.confirmDependencyBootstrap) === true,
     });
+  const freshAdmittedInputPatchCandidate =
+    workspaceDirty &&
+    continuationDecision === undefined &&
+    reviewedOutputId === undefined &&
+    !terminalHandoffDependencyRecovery &&
+    status.resultExists === false &&
+    loaded.manifest.projectPreStartAdmission !== undefined;
   if (workspaceDirty && continuationDecision === undefined) {
     if (!args.forceStart) {
       throw new Error(
         "project_control_reviewed_dirty_continuation_force_required",
       );
     }
-    if (!reviewedOutputId && !terminalHandoffDependencyRecovery) {
+    if (
+      !reviewedOutputId &&
+      !terminalHandoffDependencyRecovery &&
+      !freshAdmittedInputPatchCandidate
+    ) {
       throw new Error(
         "project_control_reviewed_dirty_continuation_output_required",
       );
@@ -232,6 +247,12 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
         });
       }
       if ((lockedStatus.workspaceDirty === true) !== workspaceDirty) {
+        throw new Error("project_control_workspace_state_changed_before_start");
+      }
+      if (
+        freshAdmittedInputPatchCandidate &&
+        lockedStatus.resultExists !== false
+      ) {
         throw new Error("project_control_workspace_state_changed_before_start");
       }
       if (
@@ -360,8 +381,12 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
       });
       assertProjectControlDependencyBootstrapReady(dependencyPreflight);
       let authorizedContinuationWorkspaceMode:
+        | "admitted_input_patch"
         | "admitted_input_patch_continuation"
         | "clean_capacity_continuation"
+        | undefined;
+      let pendingInputPatchAdmission:
+        | ValidatedPendingInputPatchAdmission
         | undefined;
       if (reviewedContinuation) {
         await assertReviewedWorkerOutputStillMatchesLocked(
@@ -408,12 +433,23 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
           await validateProjectRefillPreStartAdmissionLocked({
             manifest: loaded.manifest,
             scope: controller.scope,
+            ...(freshAdmittedInputPatchCandidate
+              ? { admittedInputPatch: true }
+              : {}),
           });
         if (
+          validatedWorkspaceMode === "admitted_input_patch" ||
           validatedWorkspaceMode === "admitted_input_patch_continuation" ||
           validatedWorkspaceMode === "clean_capacity_continuation"
         ) {
           authorizedContinuationWorkspaceMode = validatedWorkspaceMode;
+        }
+        if (validatedWorkspaceMode === "admitted_input_patch") {
+          pendingInputPatchAdmission =
+            await readValidatedInputPatchWorkerLaunchSpec({
+              manifest: loaded.manifest,
+              scope: controller.scope,
+            });
         }
       }
       const continuationReservation = await codexProjectContinuationReservationInput({
@@ -478,6 +514,9 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
           ...(startAdmissionWorkspaceMode
             ? { startAdmissionWorkspaceMode }
             : {}),
+          ...(pendingInputPatchAdmission
+            ? { startPendingInputPatchAdmission: pendingInputPatchAdmission }
+            : {}),
           startWorkspaceLease: workspace,
           startSkipDoctor: booleanValue(args.skipDoctor) ?? false,
           ...(reviewedContinuation ? { reviewedContinuation } : {}),
@@ -500,6 +539,9 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
                 ? { workerRole: ProjectAdmissionWorkerRole.Adoption }
                 : {}),
               ...(loaded.manifest.tags ? { tags: loaded.manifest.tags } : {}),
+              ...(pendingInputPatchAdmission
+                ? { ownedPaths: pendingInputPatchAdmission.ownedPaths }
+                : {}),
             }),
         });
       } catch (error) {
