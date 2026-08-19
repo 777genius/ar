@@ -300,10 +300,15 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
         controller.scope.consumedOutputLedgerRoots ??
         loaded.manifest.projectAccessScope?.consumedOutputLedgerRoots ??
         [];
+      const terminalRecoveryEvidenceRoots =
+        controller.scope.consumedOutputEvidenceRoots ??
+        loaded.manifest.projectAccessScope?.consumedOutputEvidenceRoots ??
+        [];
       const terminalRecoveryScope = terminalHandoffDependencyRecovery
         ? {
             ...controller.scope,
             consumedOutputLedgerRoots: terminalRecoveryLedgerRoots,
+            consumedOutputEvidenceRoots: terminalRecoveryEvidenceRoots,
           }
         : controller.scope;
       const reviewedContinuation =
@@ -324,6 +329,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
             workspacePath: workspace.canonicalWorkspacePath,
             snapshotter: reviewedOutputDeps.snapshotter,
             consumedOutputLedgerRoots: terminalRecoveryLedgerRoots,
+            consumedOutputEvidenceRoots: terminalRecoveryEvidenceRoots,
           })
         : undefined;
       if (reviewedContinuation) {
@@ -430,6 +436,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
           workspacePath: workspace.canonicalWorkspacePath,
           snapshotter: reviewedOutputDeps.snapshotter,
           consumedOutputLedgerRoots: terminalRecoveryLedgerRoots,
+          consumedOutputEvidenceRoots: terminalRecoveryEvidenceRoots,
           expected: terminalRecovery,
         });
         await assertReviewedWorkerContinuationEnvironmentLocked(
