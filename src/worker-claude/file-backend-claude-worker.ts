@@ -260,9 +260,7 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
       ...(options.strictMcpConfig === undefined
         ? {}
         : { strictMcpConfig: options.strictMcpConfig }),
-      ...(options.outputSchemas === undefined
-        ? {}
-        : { outputSchemas: options.outputSchemas }),
+      ...(options.outputSchemas === undefined ? {} : { outputSchemas: options.outputSchemas }),
     });
 
     this.runtime = createSubscriptionRuntime({
