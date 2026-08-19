@@ -8,6 +8,7 @@ import {
   createLocalAgentRuntimeTaskRunner,
   runSubscriptionAgentRuntimeTaskCli,
   AgentRuntimeTaskProvider,
+  ClaudeAgentRuntimeBackend,
   type AgentRuntimeTaskWorkerFactoryInput,
   type AgentRuntimeTaskWorkerJob,
 } from "../agent-runtime-task-runner";
@@ -250,13 +251,102 @@ describe("agent-runtime-task HIB contract", () => {
     await runner.dispose();
   });
 
-  it.each([
-    { workspaceInstructionPolicy: "deny_project_instructions_v1" },
-    { outputSchema: { type: "object" } },
-  ])("returns a v2 task-mode failure for unsupported Codex controls", async (controls) => {
+  it("forwards the bounded HIB contract to the Claude Agent SDK adapter", async () => {
+    let factoryInput: AgentRuntimeTaskWorkerFactoryInput | undefined;
+    let workerJob: AgentRuntimeTaskWorkerJob | undefined;
+    const runner = createLocalAgentRuntimeTaskRunner({
+      provider: AgentRuntimeTaskProvider.Claude,
+      claudeBackend: ClaudeAgentRuntimeBackend.AgentSdk,
+      stateRootDir: "/tmp/runtime-state",
+      encryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      workspaceRoot: process.cwd(),
+      env: {},
+      workerFactory: (input) => {
+        factoryInput = input;
+        return {
+          async start() {},
+          async run(job) {
+            workerJob = job;
+            return {
+              outputText: "structured",
+              structuredOutput: { verdict: "approve" },
+              warnings: [],
+            };
+          },
+        };
+      },
+    });
+    const result = await runner.run({
+      protocolVersion: 2,
+      task: {
+        kind: "review",
+        prompt: "review this",
+        execution: { mode: AgentRuntimeExecutionMode.SingleRun },
+        controls: {
+          accessBoundary: AgentRuntimeAccessBoundary.ReadOnly,
+          workspaceInstructionPolicy: "deny_project_instructions_v1",
+          toolPolicy: {
+            allow: [AgentRuntimeTool.ReadFile, AgentRuntimeTool.SearchFiles],
+            deny: [
+              AgentRuntimeTool.Shell,
+              AgentRuntimeTool.WebAccess,
+              AgentRuntimeTool.EditFile,
+              AgentRuntimeTool.WriteFile,
+              AgentRuntimeTool.DelegateAgent,
+              AgentRuntimeTool.WorktreeControl,
+              AgentRuntimeTool.NotebookEdit,
+            ],
+            onUnsupported: "fail",
+          },
+          responseFormat: "json",
+          outputSchema: {
+            type: "object",
+            required: ["verdict"],
+            properties: { verdict: { type: "string" } },
+            additionalProperties: false,
+          },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      protocolVersion: 2,
+      status: "completed",
+      structuredOutput: { verdict: "approve" },
+    });
+    expect(factoryInput).toMatchObject({
+      provider: AgentRuntimeTaskProvider.Claude,
+      claudeBackend: ClaudeAgentRuntimeBackend.AgentSdk,
+    });
+    expect(Object.keys(factoryInput?.outputSchemas ?? {})).toHaveLength(1);
+    expect(workerJob?.outputSchemaName).toMatch(/^inline-[a-f0-9]{16}$/);
+    expect(factoryInput?.outputSchemas?.[workerJob!.outputSchemaName!]).toEqual({
+      type: "object",
+      required: ["verdict"],
+      properties: { verdict: { type: "string" } },
+      additionalProperties: false,
+    });
+    expect(workerJob?.controls).toMatchObject({
+      editMode: "read-only",
+      workspaceInstructionPolicy: "deny_project_instructions_v1",
+      allowedTools: ["Read", "Grep", "Glob"],
+      disallowedTools: expect.arrayContaining([
+        "Bash",
+        "WebFetch",
+        "WebSearch",
+        "Edit",
+        "Write",
+        "NotebookEdit",
+      ]),
+    });
+    await runner.dispose();
+  });
+
+  it("fails closed when HIB instruction isolation is requested on Claude background", async () => {
     let factoryCalled = false;
     const runner = createLocalAgentRuntimeTaskRunner({
       provider: AgentRuntimeTaskProvider.Claude,
+      claudeBackend: ClaudeAgentRuntimeBackend.Background,
       stateRootDir: "/tmp/runtime-state",
       encryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
       workspaceRoot: process.cwd(),
@@ -272,9 +362,12 @@ describe("agent-runtime-task HIB contract", () => {
         kind: "review",
         prompt: "review this",
         execution: { mode: AgentRuntimeExecutionMode.SingleRun },
-        controls,
+        controls: {
+          workspaceInstructionPolicy: "deny_project_instructions_v1",
+          outputSchema: { type: "object" },
+        },
       },
-    } as never);
+    });
 
     expect(result).toMatchObject({
       protocolVersion: 2,

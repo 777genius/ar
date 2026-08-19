@@ -17,7 +17,7 @@ import {
   ClaudeAgentRuntimeBackend,
 } from "../../../agent-runtime-task-runner/domain";
 
-export { AgentRuntimeTaskProvider };
+export { AgentRuntimeTaskProvider, ClaudeAgentRuntimeBackend };
 
 export type ProviderName = AgentRuntimeTaskProvider;
 

@@ -110,6 +110,91 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
     }
   });
 
+  it("enforces the HIB schema, instruction isolation, and denied tools in SDK options", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-hib-"));
+    let captured: Options | undefined;
+    const schema = {
+      type: "object",
+      required: ["verdict"],
+      properties: { verdict: { type: "string" } },
+      additionalProperties: false,
+    } as const;
+    try {
+      const engine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: ({ options }: { options: Options }) => {
+            captured = options;
+            return successfulQuery({ verdict: "approve" });
+          },
+        }),
+      });
+
+      const result = await engine.run(taskInput(workspace, {
+        outputSchema: schema,
+        allowedTools: ["Read", "Grep", "Glob"],
+        disallowedTools: [
+          "Bash",
+          "WebFetch",
+          "WebSearch",
+          "Edit",
+          "Write",
+          "NotebookEdit",
+        ],
+        editMode: AgentRuntimeEditMode.ReadOnly,
+      }));
+
+      expect(result.structuredOutput).toEqual({ verdict: "approve" });
+      expect(captured).toMatchObject({
+        outputFormat: { type: "json_schema", schema },
+        settingSources: [],
+        permissionMode: "dontAsk",
+        tools: ["Read", "Grep", "Glob"],
+        allowedTools: ["Read", "Grep", "Glob"],
+        disallowedTools: [
+          "Bash",
+          "WebFetch",
+          "WebSearch",
+          "Edit",
+          "Write",
+          "NotebookEdit",
+        ],
+      });
+      const hook = captured?.hooks?.PreToolUse?.[0]?.hooks[0];
+      for (const toolName of ["Bash", "WebSearch", "Write"]) {
+        const decision = await hook?.({
+          hook_event_name: "PreToolUse",
+          tool_name: toolName,
+          tool_input: {},
+          tool_use_id: `tool-${toolName}`,
+          cwd: workspace,
+          session_id: "session-1",
+          transcript_path: "",
+          permission_mode: "dontAsk",
+        }, `tool-${toolName}`, { signal: new AbortController().signal });
+        expect(decision, toolName).toMatchObject({
+          hookSpecificOutput: { permissionDecision: "deny" },
+        });
+      }
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when Claude omits requested structured output", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-schema-"));
+    try {
+      const engine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({ query: () => successfulQuery() }),
+      });
+
+      await expect(engine.run(taskInput(workspace, {
+        outputSchema: { type: "object" },
+      }))).rejects.toThrow("claude_structured_output_invalid");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("forks a persisted SDK session for typed logical-thread continuation", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-thread-"));
     let captured: Options | undefined;
@@ -477,7 +562,7 @@ function taskInput(
   };
 }
 
-function successfulQuery(): Query {
+function successfulQuery(structuredOutput?: unknown): Query {
   const stream = (async function* () {
     yield {
       type: "result",
@@ -493,6 +578,9 @@ function successfulQuery(): Query {
       usage: {},
       modelUsage: {},
       permission_denials: [],
+      ...(structuredOutput === undefined
+        ? {}
+        : { structured_output: structuredOutput }),
       uuid: "result-1",
     } as unknown as SDKResultMessage;
   })();

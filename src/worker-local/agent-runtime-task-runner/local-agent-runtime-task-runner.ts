@@ -150,7 +150,7 @@ export function createDefaultAgentRuntimeTaskWorker(
   input: AgentRuntimeTaskWorkerFactoryInput,
 ): AgentRuntimeTaskWorker {
   if (input.provider === AgentRuntimeTaskProvider.Claude) {
-    if (input.outputSchemas || input.reasoningEffort || input.serviceTier) {
+    if (input.reasoningEffort || input.serviceTier) {
       throw new Error("Codex execution options cannot be used with Claude");
     }
     const backend = input.claudeBackend ?? ClaudeAgentRuntimeBackend.AgentSdk;
@@ -165,6 +165,7 @@ export function createDefaultAgentRuntimeTaskWorker(
       workspacePath: input.cwd,
       ...(input.model ? { model: input.model } : {}),
       ...(input.timeoutMs ? { taskTimeoutMs: input.timeoutMs } : {}),
+      ...(input.outputSchemas ? { outputSchemas: input.outputSchemas } : {}),
       ...(input.claudePath ? { claudePath: input.claudePath } : {}),
       ...(backend === ClaudeAgentRuntimeBackend.AgentSdk
         ? {
@@ -311,7 +312,11 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
         signal,
       );
       try {
-        const prepared = prepareAgentRuntimeTask(this.input.provider, taskRequest);
+        const prepared = prepareAgentRuntimeTask(
+          this.input.provider,
+          taskRequest,
+          this.input.claudeBackend,
+        );
         if (prepared.result) return prepared.result;
         const { task, codexExecutionPlan: compiledCodexExecutionPlan } = prepared;
         const goalValidation = validateGoalRequest(

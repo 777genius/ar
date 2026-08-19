@@ -9,6 +9,7 @@ import type { ProviderTask } from "@vioxen/subscription-runtime/core";
 import { resolveInlineOutputSchemas } from "../inline-output-schema";
 import {
   AgentRuntimeTaskProvider,
+  ClaudeAgentRuntimeBackend,
   type ProviderName,
 } from "./ports";
 import {
@@ -30,6 +31,7 @@ export type PreparedAgentRuntimeTask = {
 export function prepareAgentRuntimeTask(
   provider: ProviderName,
   request: AgentRuntimeTaskRequest,
+  claudeBackend: ClaudeAgentRuntimeBackend | undefined = undefined,
 ): PreparedAgentRuntimeTask {
   const inlineOutputSchema = resolveInlineOutputSchemas(request.task);
   const mappedTask = mapProviderToolPolicy(
@@ -39,15 +41,15 @@ export function prepareAgentRuntimeTask(
   const task = inlineOutputSchema
     ? { ...mappedTask, outputSchemaName: inlineOutputSchema.name }
     : mappedTask;
-  if (inlineOutputSchema && provider !== AgentRuntimeTaskProvider.Codex) {
-    return unsupportedTaskMode("Inline output schemas require Codex.");
-  }
   if (
-    task.controls?.workspaceInstructionPolicy !== undefined &&
-    provider !== AgentRuntimeTaskProvider.Codex
+    provider === AgentRuntimeTaskProvider.Claude &&
+    (inlineOutputSchema !== undefined ||
+      task.controls?.workspaceInstructionPolicy !== undefined) &&
+    (claudeBackend ?? ClaudeAgentRuntimeBackend.AgentSdk) !==
+      ClaudeAgentRuntimeBackend.AgentSdk
   ) {
     return unsupportedTaskMode(
-      "Workspace instruction isolation is unsupported for this provider.",
+      "Strict HIB controls require the Claude Agent SDK backend.",
     );
   }
   try {

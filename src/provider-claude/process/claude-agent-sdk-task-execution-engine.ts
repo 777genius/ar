@@ -126,6 +126,14 @@ export class ClaudeAgentSdkTaskExecutionEngine
         ...(input.disallowedTools === undefined
           ? {}
           : { disallowedTools: [...input.disallowedTools] }),
+        ...(input.outputSchema === undefined
+          ? {}
+          : {
+              outputFormat: {
+                type: "json_schema" as const,
+                schema: input.outputSchema,
+              },
+            }),
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
@@ -193,6 +201,9 @@ function resultFromSdkMessage(
     throw new ClaudeProviderFailureError(
       failureFromSdkMessage(message, input, policyAudit),
     );
+  }
+  if (input.outputSchema !== undefined && message.structured_output === undefined) {
+    throw new Error("claude_structured_output_invalid");
   }
   const outputText = input.redactor.redact(message.result);
   input.redactor.assertNoKnownSecret(outputText, "claude-agent-sdk-result");
