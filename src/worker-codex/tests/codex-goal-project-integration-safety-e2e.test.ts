@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -163,6 +163,11 @@ describe("project integration safety kernel e2e", () => {
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerRoot = join(root, "worker-jobs", "controller-v1");
     const ledgerRoot = join(root, "control", "consumed-output-ledger");
+    const historicalEvidenceRoot = join(
+      root,
+      "control-historical",
+      "archives",
+    );
     const evidenceRoot = join(root, "control", "archives");
     await git(root, ["init", "--bare", remotePath]);
     await mkdir(join(seedPath, "src"), { recursive: true });
@@ -190,6 +195,7 @@ describe("project integration safety kernel e2e", () => {
       mkdir(controllerRoot, { recursive: true }),
       mkdir(registryRootDir, { recursive: true }),
       mkdir(ledgerRoot, { recursive: true }),
+      mkdir(historicalEvidenceRoot, { recursive: true }),
       mkdir(evidenceRoot, { recursive: true }),
     ]);
 
@@ -213,7 +219,7 @@ describe("project integration safety kernel e2e", () => {
         registryRoot: registryRootDir,
         workspaceRoots: [targetPath, workerPath],
         consumedOutputLedgerRoots: [ledgerRoot],
-        consumedOutputEvidenceRoots: [evidenceRoot],
+        consumedOutputEvidenceRoots: [historicalEvidenceRoot, evidenceRoot],
         jobIdPrefixes: ["synthetic-"],
         commitIdentity: {
           name: "Approved Integrator",
@@ -291,7 +297,7 @@ describe("project integration safety kernel e2e", () => {
 
     const ledger = await readCodexGoalConsumedOutputLedgers({
       roots: [ledgerRoot],
-      evidenceRoots: [evidenceRoot],
+      evidenceRoots: [historicalEvidenceRoot, evidenceRoot],
     });
     const record = consumedOutputRecordFor({
       ledger,
@@ -328,6 +334,7 @@ describe("project integration safety kernel e2e", () => {
     });
     expect(integratedRecord.archivePath.startsWith(`${evidenceRoot}/`))
       .toBe(true);
+    await expect(readdir(historicalEvidenceRoot)).resolves.toEqual([]);
     await expect(readFile(integratedRecord.backup.patchPath, "utf8"))
       .resolves.toContain("export const value = 2");
     },

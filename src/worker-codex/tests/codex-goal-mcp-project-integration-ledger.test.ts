@@ -11,7 +11,7 @@ describe("codex goal MCP project integration ledger preflight", () => {
       args: { attemptId: "attempt-1", confirmPush: true },
       loadController: async () => controller(
         ["/project/ledger"],
-        ["/project/archives"],
+        ["/project/historical/archives", "/project/active/archives"],
       ),
       pushApprovedCommitHandler: async () => {
         pushed = true;

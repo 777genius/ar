@@ -552,7 +552,7 @@ function sha256Bytes(bytes: Uint8Array): string {
 export type LocalIntegratedOutputLedgerAdapterOptions = {
   readonly ledgerRoots: readonly string[];
   readonly evidenceRoots: readonly string[];
-  readonly archiveRoot: string;
+  readonly activeEvidenceRoot?: string;
   readonly custodyRoot?: string;
   readonly gitBinaryPath?: string;
 };
@@ -575,7 +575,7 @@ export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedge
     readonly commitSha: string;
   }): Promise<IntegratedOutputLedgerPreparation> {
     const ledgerRoot = this.requiredLedgerRoot();
-    const archiveRoot = this.requiredEvidenceRoot();
+    const archiveRoot = this.requiredActiveEvidenceRoot();
     const archiveName = [
       safeLedgerName(input.attempt.workerOutput.workerJobId),
       "integrated",
@@ -686,7 +686,7 @@ export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedge
   }): Promise<RejectedOutputLedgerPreparation> {
     const ledgerRoot = this.requiredLedgerRoot();
     const captured = await captureLocalTerminalOutputBackup({
-      archiveRoot: this.options.archiveRoot,
+      archiveRoot: this.requiredActiveEvidenceRoot(),
       archiveName: `${input.attempt.workerOutput.workerJobId}-rejected-${input.attempt.attemptId}`,
       workspacePath: input.attempt.workerOutput.workspacePath,
       changedFiles: input.attempt.workerOutput.changedFiles,
@@ -769,11 +769,19 @@ export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedge
     return this.options.ledgerRoots[0]!;
   }
 
-  private requiredEvidenceRoot(): string {
-    if (this.options.evidenceRoots.length !== 1) {
+  private requiredActiveEvidenceRoot(): string {
+    const latestRoot = this.options.evidenceRoots.at(-1);
+    if (!latestRoot) {
       throw new Error("project_integration_consumed_output_evidence_root_required");
     }
-    return resolve(this.options.evidenceRoots[0]!);
+    if (!this.options.activeEvidenceRoot) {
+      throw new Error("project_integration_consumed_output_evidence_root_required");
+    }
+    const activeRoot = resolve(this.options.activeEvidenceRoot);
+    if (activeRoot !== resolve(latestRoot)) {
+      throw new Error("project_integration_consumed_output_active_evidence_root_mismatch");
+    }
+    return activeRoot;
   }
 
   private async gitOutput(

@@ -28,6 +28,8 @@ import {
   reviewedWorkerOutputRoot,
 } from "../../reviewed-worker-output";
 import { projectControlWorkspaceLockRoot } from "../../codex-goal-project-workspace-lock";
+import { projectControlConsumedOutputEvidenceRoot } from
+  "../../codex-goal-mcp-project-scope";
 
 export type CreateLocalProjectIntegrationMcpToolHandlersOptions = Pick<
   CreateProjectIntegrationMcpToolHandlersOptions,
@@ -99,6 +101,10 @@ function localProjectIntegrationDeps(
 ): ProjectIntegrationMcpUseCaseDeps {
   const rootDir = join(controller.controller.jobRootDir, "project-integration");
   const controllerArchiveRoot = projectIntegrationArchiveRoot(controller);
+  const evidenceRoots = controller.scope.consumedOutputEvidenceRoots ?? [];
+  const activeEvidenceRoot = evidenceRoots.length > 0
+    ? projectControlConsumedOutputEvidenceRoot(controller.scope)
+    : undefined;
   return {
     store: new LocalIntegrationAttemptStore({ rootDir }),
     git: new LocalGitIntegrationAdapter({
@@ -111,8 +117,8 @@ function localProjectIntegrationDeps(
     ),
     integratedOutputLedger: new LocalIntegratedOutputLedgerAdapter({
       ledgerRoots: controller.scope.consumedOutputLedgerRoots ?? [],
-      evidenceRoots: controller.scope.consumedOutputEvidenceRoots ?? [],
-      archiveRoot: controllerArchiveRoot,
+      evidenceRoots,
+      ...(activeEvidenceRoot ? { activeEvidenceRoot } : {}),
       custodyRoot: dirname(dirname(controller.registryRootDir)),
     }),
     checks: new LocalProjectCheckRunner(),
