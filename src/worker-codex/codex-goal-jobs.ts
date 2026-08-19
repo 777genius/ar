@@ -221,13 +221,8 @@ export async function createCodexGoalJob(input: {
     registryRootDir,
     jobId: manifest.jobId,
   });
-  if (await pathExists(path)) {
-    await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-      flag: input.overwrite ? "w" : "wx",
-    });
-    return manifest;
+  if (!input.overwrite && await pathExists(path)) {
+    throw codexGoalJobManifestAlreadyExists(path);
   }
   const custodyCertification = await bootstrapInitialProjectControlCustody(
     manifest,
@@ -267,6 +262,7 @@ export async function updateCodexGoalJob(input: {
   readonly patch: CodexGoalJobManifestPatch;
   readonly cwd?: string;
   readonly now?: Date;
+  readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
 }): Promise<CodexGoalJobManifest> {
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
   const existing = await readCodexGoalJob({
@@ -294,8 +290,40 @@ export async function updateCodexGoalJob(input: {
     registryRootDir,
     jobId: input.jobId,
   });
-  await durableReplaceJsonFile({ path: manifestPath, value: manifest });
-  return manifest;
+  const custodyCertification = requiresProjectControlCustodyCertification(
+      existing,
+      manifest,
+    )
+    ? await bootstrapInitialProjectControlCustody(
+        manifest,
+        input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
+      )
+    : undefined;
+  try {
+    await custodyCertification?.revalidate();
+    await durableReplaceJsonFile({ path: manifestPath, value: manifest });
+    return manifest;
+  } finally {
+    await custodyCertification?.close();
+  }
+}
+
+function requiresProjectControlCustodyCertification(
+  existing: CodexGoalJobManifest,
+  manifest: CodexGoalJobManifest,
+): boolean {
+  return manifest.accessBoundary === AccessBoundary.ProjectScopedControl &&
+    existing.accessBoundary !== AccessBoundary.ProjectScopedControl;
+}
+
+function codexGoalJobManifestAlreadyExists(path: string): NodeJS.ErrnoException {
+  const error = new Error(
+    `EEXIST: file already exists, open '${path}'`,
+  ) as NodeJS.ErrnoException;
+  error.code = "EEXIST";
+  error.path = path;
+  error.syscall = "open";
+  return error;
 }
 
 export function codexGoalJobToArgs(
@@ -712,7 +740,12 @@ export async function bootstrapInitialProjectControlCustody(
       if (configuredRoots.every((root) => pathStrictlyInside(canonical, root))) {
         candidates.push(canonical);
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof Error &&
+        error.message ===
+          "project_control_evidence_custody_platform_unsupported") {
+        throw error;
+      }
       // Only an already-existing, canonical project-owned root may be an anchor.
     }
   }

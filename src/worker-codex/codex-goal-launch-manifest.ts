@@ -6,6 +6,8 @@ import {
   type CodexGoalJobManifestPatch,
 } from "./codex-goal-jobs";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
+import type { ProjectControlEvidenceCustodyPort } from
+  "@vioxen/subscription-runtime/worker-core";
 
 export type CodexGoalLaunchManifestMetadata = {
   readonly description?: string;
@@ -16,6 +18,7 @@ export async function upsertCodexGoalLaunchManifest(input: {
   readonly registryRootDir: string;
   readonly launch: CodexGoalLaunchInput;
   readonly metadata?: CodexGoalLaunchManifestMetadata;
+  readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
 }): Promise<CodexGoalJobManifest> {
   const manifestInput = codexGoalLaunchManifestInputFromLaunch(
     input.launch,
@@ -25,6 +28,9 @@ export async function upsertCodexGoalLaunchManifest(input: {
     return await createCodexGoalJob({
       registryRootDir: input.registryRootDir,
       manifest: manifestInput,
+      ...(input.evidenceCustody
+        ? { evidenceCustody: input.evidenceCustody }
+        : {}),
     });
   } catch (error) {
     if (!isFileAlreadyExistsError(error)) throw error;
@@ -32,6 +38,9 @@ export async function upsertCodexGoalLaunchManifest(input: {
       registryRootDir: input.registryRootDir,
       jobId: manifestInput.jobId,
       patch: codexGoalLaunchManifestPatch(manifestInput),
+      ...(input.evidenceCustody
+        ? { evidenceCustody: input.evidenceCustody }
+        : {}),
     });
   }
 }

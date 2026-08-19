@@ -28,6 +28,8 @@ import {
   type CodexGoalJobManifestInput,
 } from "../codex-goal-jobs";
 import { upsertCodexGoalLaunchManifest } from "../codex-goal-launch-manifest";
+import { loadProjectControlController } from
+  "../codex-goal-mcp-project-control-deps";
 import {
   localProjectControlEvidenceCustodySupported,
   LocalProjectControlEvidenceCustody,
@@ -415,6 +417,48 @@ describe("codex goal job registry", () => {
     }
     });
 
+  it.runIf(!localProjectControlEvidenceCustodySupported)(
+    "reports the explicit unsupported-platform error for project-control custody",
+    async () => {
+      const root = await mkdtemp(join(
+        tmpdir(),
+        "subscription-runtime-jobs-unsupported-custody-",
+      ));
+      const workspace = join(root, "workspace");
+      const registryRootDir = join(root, "registry");
+      await mkdir(workspace);
+      try {
+        await expect(createCodexGoalJob({
+          registryRootDir,
+          manifest: {
+            ...jobManifest(root),
+            jobId: "infinity-context-unsupported-custody",
+            tmuxSession: "infinity-context-unsupported-custody",
+            accessBoundary: AccessBoundary.ProjectScopedControl,
+            projectAccessScope: {
+              projectId: "infinity-context",
+              registryRoot: registryRootDir,
+              workspaceRoots: [workspace],
+              consumedOutputLedgerRoots: [
+                join(workspace, "custody", "ledger"),
+              ],
+              consumedOutputEvidenceRoots: [
+                join(workspace, "custody", "archives"),
+              ],
+              jobIdPrefixes: ["infinity-context-"],
+              tmuxSessionPrefixes: ["infinity-context-"],
+              allowedAccountIds: ["account-a", "account-b"],
+            },
+          },
+        })).rejects.toThrow(
+          "project_control_evidence_custody_platform_unsupported",
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.runIf(localProjectControlEvidenceCustodySupported)(
     "revalidates custody immediately before initial controller publication", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-jobs-custody-drift-"));
@@ -460,18 +504,31 @@ describe("codex goal job registry", () => {
     }
     });
 
-  it("skips custody for duplicate, overwrite-existing, and upsert-existing jobs", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "materializes custody before overwrite and upsert project-control transitions",
+    async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-jobs-existing-"));
     const registryRootDir = join(root, "registry");
     const workspace = join(root, "workspace");
     const ledgerRoot = join(workspace, "custody", "ledger");
     const evidenceRoot = join(workspace, "custody", "archives");
-    await mkdir(workspace);
+    const upsertWorkspace = join(root, "upsert-workspace");
+    const upsertLedgerRoot = join(upsertWorkspace, "custody", "ledger");
+    const upsertEvidenceRoot = join(upsertWorkspace, "custody", "archives");
+    await Promise.all([mkdir(workspace), mkdir(upsertWorkspace)]);
     const jobId = "infinity-context-existing";
+    const upsertJobId = "infinity-context-existing-upsert";
     const existing = {
       ...jobManifest(root),
       jobId,
       tmuxSession: jobId,
+    } satisfies CodexGoalJobManifestInput;
+    const upsertExisting = {
+      ...existing,
+      jobId: upsertJobId,
+      tmuxSession: upsertJobId,
+      workspacePath: upsertWorkspace,
+      cwd: upsertWorkspace,
     } satisfies CodexGoalJobManifestInput;
     const control = {
       ...existing,
@@ -485,6 +542,16 @@ describe("codex goal job registry", () => {
         jobIdPrefixes: ["infinity-context-"],
         tmuxSessionPrefixes: ["infinity-context-"],
         allowedAccountIds: ["account-a", "account-b"],
+      },
+    } satisfies CodexGoalJobManifestInput;
+    const upsertControl = {
+      ...upsertExisting,
+      accessBoundary: AccessBoundary.ProjectScopedControl,
+      projectAccessScope: {
+        ...control.projectAccessScope,
+        workspaceRoots: [upsertWorkspace],
+        consumedOutputLedgerRoots: [upsertLedgerRoot],
+        consumedOutputEvidenceRoots: [upsertEvidenceRoot],
       },
     } satisfies CodexGoalJobManifestInput;
     let custodyCalls = 0;
@@ -502,6 +569,7 @@ describe("codex goal job registry", () => {
 
     try {
       await createCodexGoalJob({ registryRootDir, manifest: existing });
+      await createCodexGoalJob({ registryRootDir, manifest: upsertExisting });
       await expect(createCodexGoalJob({
         registryRootDir,
         manifest: control,
@@ -516,37 +584,53 @@ describe("codex goal job registry", () => {
         overwrite: true,
         evidenceCustody: custody,
       });
-      expect(custodyCalls).toBe(0);
-      await expect(lstat(evidenceRoot)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(custodyCalls).toBeGreaterThan(0);
+      await expect(lstat(ledgerRoot)).resolves.toMatchObject({});
+      await expect(lstat(evidenceRoot)).resolves.toMatchObject({});
+      await expect(loadProjectControlController({
+        registryRootDir,
+        controllerJobId: jobId,
+      })).resolves.toMatchObject({
+        controller: { jobId },
+      });
 
+      custodyCalls = 0;
       await upsertCodexGoalLaunchManifest({
         registryRootDir,
+        evidenceCustody: custody,
         launch: {
           config: {
-            jobId,
-            jobRootDir: control.jobRootDir,
-            authRootDir: control.authRootDir!,
-            workspacePath: control.workspacePath,
-            promptPath: control.promptPath,
-            taskId: control.taskId,
-            accounts: control.accounts.map((name) => ({ name })),
-            accessBoundary: control.accessBoundary,
-            projectAccessScope: control.projectAccessScope,
-            networkAccess: control.networkAccess!,
+            jobId: upsertJobId,
+            jobRootDir: upsertControl.jobRootDir,
+            authRootDir: upsertControl.authRootDir!,
+            workspacePath: upsertControl.workspacePath,
+            promptPath: upsertControl.promptPath,
+            taskId: upsertControl.taskId,
+            accounts: upsertControl.accounts.map((name) => ({ name })),
+            accessBoundary: upsertControl.accessBoundary,
+            projectAccessScope: upsertControl.projectAccessScope,
+            networkAccess: upsertControl.networkAccess!,
           },
-          tmuxSession: control.tmuxSession,
-          cwd: control.cwd!,
-          logPath: control.logPath!,
+          tmuxSession: upsertControl.tmuxSession,
+          cwd: upsertControl.cwd!,
+          logPath: upsertControl.logPath!,
           cliCommand: ["codex"],
         },
       });
-      expect(custodyCalls).toBe(0);
-      await expect(lstat(ledgerRoot)).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(lstat(evidenceRoot)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(custodyCalls).toBeGreaterThan(0);
+      await expect(lstat(upsertLedgerRoot)).resolves.toMatchObject({});
+      await expect(lstat(upsertEvidenceRoot)).resolves.toMatchObject({});
+      await expect(loadProjectControlController({
+        registryRootDir,
+        controllerJobId: upsertJobId,
+      })).resolves.toMatchObject({
+        controller: { jobId: upsertJobId },
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
 });
 
 function jobManifest(root: string): CodexGoalJobManifestInput {

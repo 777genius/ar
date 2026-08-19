@@ -626,6 +626,9 @@ export async function projectControlUpdateControllerScopeView(
       registryRootDir: current.registryRootDir,
       jobId: current.controller.jobId,
       patch: { projectAccessScope: proposedScope },
+      ...(deps.evidenceCustody
+        ? { evidenceCustody: deps.evidenceCustody }
+        : {}),
     });
   } finally {
     try {
