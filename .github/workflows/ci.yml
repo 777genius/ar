@@ -52,6 +52,8 @@ jobs:
       - run: npm run check:packed-consumer
 
   crash-boundary-shards:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
@@ -63,6 +65,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -83,6 +86,8 @@ jobs:
           done
 
   crash-boundary-shards-complete:
+    permissions:
+      contents: read
     if: ${{ always() }}
     needs: [crash-boundary-shards]
     runs-on: ubuntu-latest

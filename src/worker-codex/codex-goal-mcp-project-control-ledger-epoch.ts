@@ -102,7 +102,6 @@ import {
 } from "./application/project-control/codex-goal-ledger-epoch-handler-custody";
 
 type JsonObject = Readonly<Record<string, unknown>>;
-
 type LoadedController = {
   readonly registryRootDir: string;
   readonly controller: CodexGoalJobManifest;
