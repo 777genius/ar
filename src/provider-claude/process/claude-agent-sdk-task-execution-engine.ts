@@ -49,6 +49,8 @@ type AgentSdkModule = Pick<
   "query"
 >;
 
+const claudeStructuredOutputToolName = "StructuredOutput";
+
 export type ClaudeAgentSdkTaskExecutionEngineOptions = {
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
   readonly binaryPath?: string;
@@ -101,9 +103,18 @@ export class ClaudeAgentSdkTaskExecutionEngine
           })
         : undefined;
       const tools = toolsForInput(input);
+      const providerTools = appendInternalTool(
+        tools,
+        input.outputSchema === undefined ? undefined : claudeStructuredOutputToolName,
+      );
       const allowedTools = goalProtocol
-        ? [...(tools ?? []), claudeGoalCompletionToolName]
-        : tools;
+        ? [...(providerTools ?? []), claudeGoalCompletionToolName]
+        : providerTools;
+      const disallowedTools = input.outputSchema === undefined
+        ? input.disallowedTools
+        : input.disallowedTools?.filter(
+            (tool) => tool !== claudeStructuredOutputToolName,
+          );
       const policyAudit = new Set<string>();
       const evaluateToolPolicy = createToolPolicyEvaluator(
         input,
@@ -117,15 +128,15 @@ export class ClaudeAgentSdkTaskExecutionEngine
         ...(input.maxBudgetUsd === undefined
           ? {}
           : { maxBudgetUsd: input.maxBudgetUsd }),
-        ...(tools === undefined
+        ...(providerTools === undefined
           ? {}
-          : { tools: [...tools] }),
+          : { tools: [...providerTools] }),
         ...(allowedTools === undefined
           ? {}
           : { allowedTools: [...allowedTools] }),
-        ...(input.disallowedTools === undefined
+        ...(disallowedTools === undefined
           ? {}
-          : { disallowedTools: [...input.disallowedTools] }),
+          : { disallowedTools: [...disallowedTools] }),
         ...(input.outputSchema === undefined
           ? {}
           : {
@@ -279,6 +290,7 @@ function sdkErrorDetails(
   const sdkErrors = input.redactor.redact(message.errors.join("; ")).slice(0, 1000);
   input.redactor.assertNoKnownSecret(sdkErrors, "claude-agent-sdk-error-details");
   return {
+    sdkSubtype: message.subtype,
     permissionDenials: String(message.permission_denials.length),
     hostPolicyDenials:
       policyAudit.size === 0 ? "none" : [...policyAudit].join(","),
@@ -332,6 +344,16 @@ function createToolPolicyEvaluator(
     : new Set(input.allowedTools);
   const denied = new Set(input.disallowedTools ?? []);
   return async (toolName, toolInput) => {
+    if (toolName === claudeStructuredOutputToolName) {
+      return input.outputSchema === undefined
+        ? rejectWithAudit(
+            audit,
+            toolName,
+            ToolPolicyDenialReason.OutsidePolicy,
+            "Structured output is unavailable without an output schema.",
+          )
+        : accept();
+    }
     goalProtocol?.noteToolUse(toolName);
     if (toolName === claudeGoalCompletionToolName) return accept();
     if (denied.has(toolName) || (allowed !== undefined && !allowed.has(toolName))) {
@@ -410,6 +432,14 @@ function createToolPolicyEvaluator(
           "Tool path must stay within the task workspace.",
         );
   };
+}
+
+function appendInternalTool(
+  tools: readonly string[] | undefined,
+  internalTool: string | undefined,
+): readonly string[] | undefined {
+  if (internalTool === undefined || tools === undefined) return tools;
+  return tools.includes(internalTool) ? tools : [...tools, internalTool];
 }
 
 function assertBoundedClaudeGoal(input: ClaudeTaskEngineInput): void {

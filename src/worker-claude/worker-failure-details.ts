@@ -10,5 +10,25 @@ export function workerFailureDetails(
     ...(failure.causeCategory === undefined
       ? {}
       : { causeCategory: failure.causeCategory }),
+    ...providerDiagnostics(failure.details),
   };
+}
+
+const providerDiagnosticKeys = [
+  "sdkSubtype",
+  "sdkErrors",
+  "permissionDenials",
+  "hostPolicyDenials",
+  "deniedTools",
+] as const;
+
+function providerDiagnostics(
+  details: Readonly<Record<string, string>> | undefined,
+): Readonly<Record<string, string>> {
+  if (details === undefined) return {};
+  return Object.fromEntries(
+    providerDiagnosticKeys.flatMap((key) =>
+      details[key] === undefined ? [] : [[key, details[key].slice(0, 1_000)]],
+    ),
+  );
 }

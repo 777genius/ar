@@ -124,7 +124,7 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
         sdkLoader: async () => ({
           query: ({ options }: { options: Options }) => {
             captured = options;
-            return successfulQuery({ verdict: "approve" });
+            return structuredOutputPolicyQuery(options, { verdict: "approve" });
           },
         }),
       });
@@ -148,8 +148,8 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
         outputFormat: { type: "json_schema", schema },
         settingSources: [],
         permissionMode: "dontAsk",
-        tools: ["Read", "Grep", "Glob"],
-        allowedTools: ["Read", "Grep", "Glob"],
+        tools: ["Read", "Grep", "Glob", "StructuredOutput"],
+        allowedTools: ["Read", "Grep", "Glob", "StructuredOutput"],
         disallowedTools: [
           "Bash",
           "WebFetch",
@@ -160,6 +160,27 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
         ],
       });
       const hook = captured?.hooks?.PreToolUse?.[0]?.hooks[0];
+      const structuredHookDecision = await hook?.({
+        hook_event_name: "PreToolUse",
+        tool_name: "StructuredOutput",
+        tool_input: { verdict: "approve" },
+        tool_use_id: "tool-structured-output",
+        cwd: workspace,
+        session_id: "session-1",
+        transcript_path: "",
+        permission_mode: "dontAsk",
+      }, "tool-structured-output", { signal: new AbortController().signal });
+      expect(structuredHookDecision).toMatchObject({
+        hookSpecificOutput: { permissionDecision: "allow" },
+      });
+      await expect(captured?.canUseTool?.(
+        "StructuredOutput",
+        { verdict: "approve" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-structured-output",
+        },
+      )).resolves.toMatchObject({ behavior: "allow" });
       for (const toolName of ["Bash", "WebSearch", "Write"]) {
         const decision = await hook?.({
           hook_event_name: "PreToolUse",
@@ -175,6 +196,53 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
           hookSpecificOutput: { permissionDecision: "deny" },
         });
       }
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps StructuredOutput internal and unavailable without a schema", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-no-schema-"));
+    let captured: Options | undefined;
+    try {
+      const engine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: ({ options }: { options: Options }) => {
+            captured = options;
+            return successfulQuery();
+          },
+        }),
+      });
+
+      await engine.run(taskInput(workspace, {
+        allowedTools: ["Read"],
+        editMode: AgentRuntimeEditMode.ReadOnly,
+      }));
+
+      expect(captured?.tools).toEqual(["Read"]);
+      expect(captured?.allowedTools).toEqual(["Read"]);
+      await expect(captured?.canUseTool?.(
+        "StructuredOutput",
+        {},
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-structured-output",
+        },
+      )).resolves.toMatchObject({ behavior: "deny" });
+      const hook = captured?.hooks?.PreToolUse?.[0]?.hooks[0];
+      const hookDecision = await hook?.({
+        hook_event_name: "PreToolUse",
+        tool_name: "StructuredOutput",
+        tool_input: {},
+        tool_use_id: "tool-structured-output",
+        cwd: workspace,
+        session_id: "session-1",
+        transcript_path: "",
+        permission_mode: "dontAsk",
+      }, "tool-structured-output", { signal: new AbortController().signal });
+      expect(hookDecision).toMatchObject({
+        hookSpecificOutput: { permissionDecision: "deny" },
+      });
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -348,6 +416,35 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
             causeCategory: "error_max_budget_usd",
           },
         });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves bounded SDK structured-output diagnostics", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-output-error-"));
+    try {
+      const engine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: () => errorQuery("error_max_structured_output_retries"),
+        }),
+      });
+
+      await expect(engine.run(taskInput(workspace, {
+        outputSchema: { type: "object" },
+      }))).rejects.toMatchObject({
+        name: "ClaudeProviderFailureError",
+        failure: {
+          code: "provider_output_invalid",
+          retryable: true,
+          causeCategory: "error_max_structured_output_retries",
+          details: {
+            sdkSubtype: "error_max_structured_output_retries",
+            sdkErrors: "StructuredOutput was denied by host policy",
+            permissionDenials: "0",
+          },
+        },
+      });
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -587,6 +684,86 @@ function successfulQuery(structuredOutput?: unknown): Query {
   return Object.assign(stream, { close() {} }) as Query;
 }
 
+function structuredOutputPolicyQuery(
+  options: Options,
+  structuredOutput: unknown,
+): Query {
+  const stream = (async function* () {
+    const context = {
+      signal: new AbortController().signal,
+      toolUseID: "tool-structured-output",
+    };
+    const permission = await options.canUseTool?.(
+      "StructuredOutput",
+      structuredOutput as Record<string, unknown>,
+      context,
+    );
+    const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
+    const hookDecision = await hook?.({
+      hook_event_name: "PreToolUse",
+      tool_name: "StructuredOutput",
+      tool_input: structuredOutput,
+      tool_use_id: "tool-structured-output",
+      cwd: options.cwd ?? "/workspace",
+      session_id: "session-1",
+      transcript_path: "",
+      permission_mode: options.permissionMode ?? "default",
+    }, "tool-structured-output", context);
+    const hookAllowed = hookDecision !== undefined &&
+      "hookSpecificOutput" in hookDecision &&
+      hookDecision.hookSpecificOutput !== undefined &&
+      "permissionDecision" in hookDecision.hookSpecificOutput &&
+      hookDecision.hookSpecificOutput.permissionDecision === "allow";
+    if (permission?.behavior !== "allow" || !hookAllowed) {
+      yield sdkErrorMessage("error_max_structured_output_retries");
+      return;
+    }
+    yield sdkSuccessMessage(structuredOutput);
+  })();
+  return Object.assign(stream, { close() {} }) as Query;
+}
+
+function sdkSuccessMessage(structuredOutput?: unknown): SDKResultMessage {
+  return {
+    type: "result",
+    subtype: "success",
+    duration_ms: 10,
+    duration_api_ms: 8,
+    is_error: false,
+    num_turns: 2,
+    result: "completed",
+    stop_reason: "end_turn",
+    session_id: "session-1",
+    total_cost_usd: 0.1,
+    usage: {},
+    modelUsage: {},
+    permission_denials: [],
+    ...(structuredOutput === undefined ? {} : { structured_output: structuredOutput }),
+    uuid: "result-1",
+  } as unknown as SDKResultMessage;
+}
+
+function sdkErrorMessage(
+  subtype: "error_max_structured_output_retries",
+): SDKResultMessage {
+  return {
+    type: "result",
+    subtype,
+    duration_ms: 10,
+    duration_api_ms: 8,
+    is_error: true,
+    num_turns: 3,
+    stop_reason: null,
+    total_cost_usd: 0.1,
+    usage: {},
+    modelUsage: {},
+    permission_denials: [],
+    errors: ["StructuredOutput was denied by host policy"],
+    uuid: "result-1",
+    session_id: "session-1",
+  } as unknown as SDKResultMessage;
+}
+
 function errorQuery(
   subtype:
     | "error_during_execution"
@@ -595,22 +772,24 @@ function errorQuery(
     | "error_max_structured_output_retries",
 ): Query {
   const stream = (async function* () {
-    yield {
-      type: "result",
-      subtype,
-      duration_ms: 10,
-      duration_api_ms: 8,
-      is_error: true,
-      num_turns: 3,
-      stop_reason: null,
-      total_cost_usd: 0.1,
-      usage: {},
-      modelUsage: {},
-      permission_denials: [],
-      errors: [],
-      uuid: "result-1",
-      session_id: "session-1",
-    } as unknown as SDKResultMessage;
+    yield subtype === "error_max_structured_output_retries"
+      ? sdkErrorMessage(subtype)
+      : {
+          type: "result",
+          subtype,
+          duration_ms: 10,
+          duration_api_ms: 8,
+          is_error: true,
+          num_turns: 3,
+          stop_reason: null,
+          total_cost_usd: 0.1,
+          usage: {},
+          modelUsage: {},
+          permission_denials: [],
+          errors: [],
+          uuid: "result-1",
+          session_id: "session-1",
+        } as unknown as SDKResultMessage;
   })();
   return Object.assign(stream, { close() {} }) as Query;
 }
