@@ -49,6 +49,7 @@ async function runArtifactCheck() {
     await mkdir(runtimeTmp);
     for (const artifact of [first, second]) {
       assertCapabilities(artifact.outputPath, checkRoot, runtimeTmp);
+      assertStdinForwarding(artifact.outputPath, checkRoot, runtimeTmp);
     }
     const leftovers = (await readdir(runtimeTmp)).filter((name) =>
       name.startsWith("subscription-runtime-artifact.")
@@ -116,5 +117,34 @@ function assertCapabilities(artifactPath, home, runtimeTmp) {
   const capabilities = JSON.parse(result.stdout);
   if (JSON.stringify(capabilities) !== JSON.stringify(expectedCapabilities)) {
     throw new Error(`unexpected capabilities: ${result.stdout.trim()}`);
+  }
+}
+
+function assertStdinForwarding(artifactPath, home, runtimeTmp) {
+  const result = spawnSync(
+    artifactPath,
+    ["--provider", "claude", "--ephemeral", "--format", "result-json"],
+    {
+      encoding: "utf8",
+      input: "{}\n",
+      timeout: 30_000,
+      maxBuffer: 256 * 1024,
+      env: Object.fromEntries(
+        ["PATH", "LANG", "LC_ALL"].flatMap((key) =>
+          process.env[key] === undefined ? [] : [[key, process.env[key]]]
+        ).concat([["HOME", home], ["TMPDIR", runtimeTmp]]),
+      ),
+    },
+  );
+  if (result.error || result.status !== 2 || result.stdout === "") {
+    throw new Error(
+      `stdin probe did not reach request parsing: ${result.error?.message ?? `exit ${result.status}`}`,
+    );
+  }
+  if (
+    result.stderr.includes("Unexpected end of JSON input") ||
+    result.stdout.includes("Unexpected end of JSON input")
+  ) {
+    throw new Error("artifact launcher replaced request stdin with /dev/null");
   }
 }

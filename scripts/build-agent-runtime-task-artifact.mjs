@@ -174,7 +174,7 @@ function renderLauncher() {
     "trap 'forward_and_exit INT 130' INT",
     "trap 'forward_and_exit TERM 143' TERM",
     "tail -n +__ARCHIVE_LINE__ \"$artifact_path\" | tar -xzf - -C \"$runtime_dir\"",
-    "node \"$runtime_dir/package/dist/worker-local/agent-runtime-task-runner-cli.js\" \"$@\" &",
+    "node \"$runtime_dir/package/dist/worker-local/agent-runtime-task-runner-cli.js\" \"$@\" <&0 &",
     "child_pid=$!",
     "set +e",
     "wait \"$child_pid\"",
