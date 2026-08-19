@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import {
   recordTerminalOutputDecision,
@@ -16,6 +15,8 @@ import {
   captureGitWorkspacePatch,
 } from "./codex-goal-runtime-result-io";
 import type { ReviewedWorkerOutputSnapshot } from "./reviewed-worker-output";
+import { projectControlConsumedOutputEvidenceRoot } from
+  "./codex-goal-mcp-project-scope";
 
 export async function recordRejectedReviewedOutput(input: {
   readonly scope: ProjectAccessScope;
@@ -37,7 +38,8 @@ export async function recordRejectedReviewedOutput(input: {
     throw new Error("project_control_consumed_output_ledger_required");
   }
   const backup = await captureLocalTerminalOutputBackup({
-    archiveRoot: join(input.jobRootDir, "archives"),
+    requireEvidenceCustody: true,
+    archiveRoot: projectControlConsumedOutputEvidenceRoot(input.scope),
     archiveName:
       `${input.snapshot.workerJobId}-rejected-reviewed-` +
       input.snapshot.reviewedOutputId,
@@ -53,6 +55,7 @@ export async function recordRejectedReviewedOutput(input: {
       writer: new LocalConsumedOutputLedgerWriter(
         undefined,
         input.custodyRoot ?? dirname(dirname(input.jobRootDir)),
+        input.scope.consumedOutputEvidenceRoots ?? ledgerRoots,
       ),
     },
     {
@@ -101,45 +104,15 @@ export async function recordRejectedUncapturedOutput(input: {
   }
   const patchSha256 = createHash("sha256").update(patch).digest("hex");
   const attemptId = `uncaptured-rejection-${patchSha256}`;
-  const archiveRoot = join(input.jobRootDir, "archives");
-  const sourcePatchPath = join(archiveRoot, `.${attemptId}.patch`);
-  await mkdir(archiveRoot, { recursive: true, mode: 0o700 });
-  await writeFile(sourcePatchPath, patch, {
-    encoding: "utf8",
-    mode: 0o600,
-    flag: "wx",
+  const archiveRoot = projectControlConsumedOutputEvidenceRoot(input.scope);
+  const backup = await captureLocalTerminalOutputBackup({
+    requireEvidenceCustody: true,
+    archiveRoot,
+    archiveName: `${input.jobId}-rejected-uncaptured-${patchSha256}`,
+    workspacePath: input.workspacePath,
+    changedFiles,
+    sourcePatchBytes: Buffer.from(patch),
   });
-  const sourceIdentity = await lstat(sourcePatchPath);
-  if (!sourceIdentity.isFile() || sourceIdentity.isSymbolicLink()) {
-    throw new Error("uncaptured_rejected_output_provenance_unsafe");
-  }
-  let backup;
-  try {
-    backup = await captureLocalTerminalOutputBackup({
-      archiveRoot,
-      archiveName: `${input.jobId}-rejected-uncaptured-${patchSha256}`,
-      workspacePath: input.workspacePath,
-      changedFiles,
-      sourcePatchPath,
-    });
-  } finally {
-    let current;
-    try {
-      current = await lstat(sourcePatchPath);
-    } catch (error) {
-      throw new Error(
-        "uncaptured_rejected_output_provenance_drift",
-        { cause: error },
-      );
-    }
-    if (!current.isFile() || current.isSymbolicLink() ||
-      current.dev !== sourceIdentity.dev || current.ino !== sourceIdentity.ino ||
-      current.size !== Buffer.byteLength(patch) ||
-      createHash("sha256").update(await readFile(sourcePatchPath)).digest("hex") !==
-        patchSha256
-    ) throw new Error("uncaptured_rejected_output_provenance_drift");
-    await rm(sourcePatchPath);
-  }
   if (!backup.hasAuthoredOutput) {
     throw new Error("uncaptured_rejected_output_authored_output_required");
   }
@@ -148,6 +121,7 @@ export async function recordRejectedUncapturedOutput(input: {
       writer: new LocalConsumedOutputLedgerWriter(
         undefined,
         input.custodyRoot ?? dirname(dirname(input.jobRootDir)),
+        input.scope.consumedOutputEvidenceRoots ?? ledgerRoots,
       ),
     },
     {

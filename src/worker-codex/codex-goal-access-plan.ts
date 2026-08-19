@@ -192,6 +192,11 @@ export function parseCodexGoalProjectAccessScope(
       "consumedOutputLedgerRoots",
       fieldName,
     ),
+    ...stringArrayProperty(
+      value.consumedOutputEvidenceRoots,
+      "consumedOutputEvidenceRoots",
+      fieldName,
+    ),
     ...(value.commitIdentity === undefined
       ? {}
       : { commitIdentity: parseCommitIdentity(value.commitIdentity, `${fieldName}.commitIdentity`) }),

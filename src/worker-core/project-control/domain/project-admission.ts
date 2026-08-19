@@ -67,6 +67,19 @@ export type ProjectAdmissionSnapshot = {
   readonly stale?: boolean;
   readonly unavailable?: boolean;
   readonly debt: readonly ProjectDebtItem[];
+  /** Append-only audit visibility for registry summaries suppressed by CAS. */
+  readonly retiredLegacyJobSummaries?: readonly {
+    readonly jobId: string;
+    readonly manifestSha256: string;
+    readonly retainedRegistrationJobId: string;
+    readonly receiptPath: string;
+  }[];
+  readonly supersededFrozenOutputSummaries?: readonly {
+    readonly jobId: string;
+    readonly manifestSha256: string;
+    readonly retainedRegistrationJobId: string;
+    readonly receiptPath: string;
+  }[];
   readonly counts?: {
     readonly inactiveDirtyWorkspaces?: number;
     readonly unconsumedCompletedJobs?: number;

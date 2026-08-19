@@ -9,7 +9,9 @@ import {
 import { withMcpErrors } from "./codex-goal-mcp-response";
 import {
   projectControlAdmissionSnapshot,
+  projectControlImportFrozenOutput,
   projectControlRepairLegacyOutputDebt,
+  projectControlRetireLegacyJobSummary,
   projectControlReconcileStaleIntegrations,
   projectControlQuarantineLegacyIntegrationAttempts,
   projectControlLedgerEpochMigration,
@@ -22,6 +24,70 @@ import {
 } from "./codex-goal-mcp-project-control-tool-schemas";
 
 export function registerCodexGoalProjectControlAdminTools(server: McpServer): void {
+  server.registerTool(
+    "codex_goal_project_import_frozen_output",
+    {
+      title: "Project Import Frozen Output",
+      description:
+        "Preview or confirm hash-bound immutable import into canonical project evidence custody and append-only supersession of exact stopped dirty manifest-only summaries.",
+      inputSchema: {
+        ...jobRegistryInputSchema(),
+        controllerJobId: z.string().optional(),
+        frozenOutputSourcePath: z.string().min(1).max(4096),
+        frozenOutputSourceSha256: z.string().regex(/^[a-f0-9]{64}$/),
+        frozenOutputSourceLength: z.number().int().nonnegative().max(64 * 1024 * 1024),
+        frozenOutputSourceManifestPath: z.string().min(1).max(4096),
+        frozenOutputSourceManifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+        destinationEvidenceRoot: z.string().min(1).max(4096),
+        destinationLedgerRoot: z.string().min(1).max(4096),
+        changedPaths: z.array(z.string().min(1).max(1024)).min(1).max(10_000),
+        baseCommit: z.string().regex(/^[a-f0-9]{40}([a-f0-9]{24})?$/),
+        headCommit: z.string().regex(/^[a-f0-9]{40}([a-f0-9]{24})?$/),
+        patchSha256: z.string().regex(/^[a-f0-9]{64}$/),
+        retainedRegistrationJobId: z.string().min(1).max(255),
+        expectedRetainedRegistrationManifestSha256:
+          z.string().regex(/^[a-f0-9]{64}$/),
+        expectedRetainedOutputSha256: z.string().regex(/^[a-f0-9]{64}$/),
+        supersededLegacySummaries: z.array(z.object({
+          jobId: z.string().min(1).max(255),
+          manifestPath: z.string().min(1).max(4096),
+          manifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+        })).min(1).max(1_000),
+        expectedFrozenOutputImportPlanSha256:
+          z.string().regex(/^[a-f0-9]{64}$/).optional(),
+        confirmFrozenOutputImport: z.boolean().optional(),
+      },
+    },
+    async (args) => withMcpErrors(async () =>
+      projectControlImportFrozenOutput(args as ProjectControlMcpArgs),
+    ),
+  );
+
+  server.registerTool(
+    "codex_goal_project_retire_legacy_job_summary",
+    {
+      title: "Project Retire Legacy Job Summary",
+      description:
+        "Preview or confirm append-only CAS retirement of an unlaunched missing-workspace legacy summary while retaining its exact sibling registration and immutable audit receipt.",
+      inputSchema: {
+        ...jobRegistryInputSchema(),
+        controllerJobId: z.string().optional(),
+        jobId: z.string(),
+        expectedJobManifestPath: z.string(),
+        expectedJobManifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+        expectedWorkspacePath: z.string(),
+        retainedRegistrationJobId: z.string(),
+        expectedRetainedRegistrationManifestSha256:
+          z.string().regex(/^[a-f0-9]{64}$/),
+        expectedRetirementPlanSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+        confirmRetirement: z.boolean().optional(),
+      },
+    },
+    async (args) => withMcpErrors(async () =>
+      projectControlRetireLegacyJobSummary(args as ProjectControlMcpArgs),
+    ),
+  );
+
   server.registerTool(
     "codex_goal_project_reconcile_stale_integrations",
     {

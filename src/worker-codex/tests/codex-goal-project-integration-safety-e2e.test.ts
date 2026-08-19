@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -12,6 +12,8 @@ import {
   consumedOutputRecordFor,
   evaluateProjectAdmission,
 } from "@vioxen/subscription-runtime/worker-core";
+import { localProjectControlEvidenceCustodySupported } from
+  "@vioxen/subscription-runtime/worker-local";
 import { createLocalProjectIntegrationMcpToolHandlers } from "../project-integration-mcp/adapters/local-project-integration-mcp-tool-handlers";
 import type { ProjectIntegrationMcpController } from "../project-integration-mcp";
 import { readCodexGoalConsumedOutputLedgers } from "../application/project-control/codex-goal-consumed-output-ledger-io";
@@ -148,7 +150,9 @@ describe("project integration safety kernel e2e", () => {
     }
   });
 
-  it("applies, checks, commits, pushes, records and reopens producer admission", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "applies, checks, commits, pushes, records and reopens producer admission",
+    async () => {
     const root = await mkdtemp(
       join(tmpdir(), "project-integration-safety-e2e-"),
     );
@@ -159,6 +163,12 @@ describe("project integration safety kernel e2e", () => {
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerRoot = join(root, "worker-jobs", "controller-v1");
     const ledgerRoot = join(root, "control", "consumed-output-ledger");
+    const historicalEvidenceRoot = join(
+      root,
+      "control-historical",
+      "archives",
+    );
+    const evidenceRoot = join(root, "control", "archives");
     await git(root, ["init", "--bare", remotePath]);
     await mkdir(join(seedPath, "src"), { recursive: true });
     await git(seedPath, ["init", "-b", "main"]);
@@ -181,8 +191,13 @@ describe("project integration safety kernel e2e", () => {
     ]);
     await git(root, ["clone", remotePath, targetPath]);
     await git(root, ["clone", remotePath, workerPath]);
-    await mkdir(controllerRoot, { recursive: true });
-    await mkdir(registryRootDir, { recursive: true });
+    await Promise.all([
+      mkdir(controllerRoot, { recursive: true }),
+      mkdir(registryRootDir, { recursive: true }),
+      mkdir(ledgerRoot, { recursive: true }),
+      mkdir(historicalEvidenceRoot, { recursive: true }),
+      mkdir(evidenceRoot, { recursive: true }),
+    ]);
 
     await writeFile(
       join(workerPath, "src", "feature.ts"),
@@ -204,6 +219,7 @@ describe("project integration safety kernel e2e", () => {
         registryRoot: registryRootDir,
         workspaceRoots: [targetPath, workerPath],
         consumedOutputLedgerRoots: [ledgerRoot],
+        consumedOutputEvidenceRoots: [historicalEvidenceRoot, evidenceRoot],
         jobIdPrefixes: ["synthetic-"],
         commitIdentity: {
           name: "Approved Integrator",
@@ -281,6 +297,7 @@ describe("project integration safety kernel e2e", () => {
 
     const ledger = await readCodexGoalConsumedOutputLedgers({
       roots: [ledgerRoot],
+      evidenceRoots: [historicalEvidenceRoot, evidenceRoot],
     });
     const record = consumedOutputRecordFor({
       ledger,
@@ -310,13 +327,22 @@ describe("project integration safety kernel e2e", () => {
       "items",
       "synthetic-worker-1--synthetic-attempt-1.json",
     );
-    expect(JSON.parse(await readFile(ledgerPath, "utf8"))).toMatchObject({
+    const integratedRecord = JSON.parse(await readFile(ledgerPath, "utf8"));
+    expect(integratedRecord).toMatchObject({
       jobId: "synthetic-worker-1",
       status: "integrated",
     });
-  });
+    expect(integratedRecord.archivePath.startsWith(`${evidenceRoot}/`))
+      .toBe(true);
+    await expect(readdir(historicalEvidenceRoot)).resolves.toEqual([]);
+    await expect(readFile(integratedRecord.backup.patchPath, "utf8"))
+      .resolves.toContain("export const value = 2");
+    },
+  );
 
-  it("archives rejected output and safely adopts its controller-owned patch", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "archives rejected output and safely adopts its controller-owned patch",
+    async () => {
     const root = await mkdtemp(
       join(tmpdir(), "project-integration-rejection-e2e-"),
     );
@@ -325,6 +351,7 @@ describe("project integration safety kernel e2e", () => {
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerRoot = join(root, "worker-jobs", "controller-v1");
     const ledgerRoot = join(root, "control", "consumed-output-ledger");
+    const evidenceRoot = join(controllerRoot, "archives");
 
     try {
       await mkdir(targetPath, { recursive: true });
@@ -349,6 +376,7 @@ describe("project integration safety kernel e2e", () => {
       );
       await mkdir(controllerRoot, { recursive: true });
       await mkdir(registryRootDir, { recursive: true });
+      await mkdir(evidenceRoot, { recursive: true });
 
       const baseCommit = (
         await gitOutput(targetPath, ["rev-parse", "HEAD"])
@@ -361,6 +389,7 @@ describe("project integration safety kernel e2e", () => {
           registryRoot: registryRootDir,
           workspaceRoots: [targetPath, workerPath],
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [evidenceRoot],
           jobIdPrefixes: ["synthetic-"],
           allowedBranches: ["main"],
           allowedGitRemotes: ["origin"],
@@ -414,6 +443,7 @@ describe("project integration safety kernel e2e", () => {
 
       const ledger = await readCodexGoalConsumedOutputLedgers({
         roots: [ledgerRoot],
+        evidenceRoots: [evidenceRoot],
       });
       const record = consumedOutputRecordFor({
         ledger,
@@ -551,7 +581,8 @@ describe("project integration safety kernel e2e", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
 });
 
 async function git(cwd: string, args: readonly string[]): Promise<void> {

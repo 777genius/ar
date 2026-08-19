@@ -16,6 +16,21 @@ import { matchesProjectControlPrefix, nodeErrorCode } from
   "./codex-goal-project-utils";
 
 const execFileAsync = promisify(execFile);
+export const ORPHAN_GIT_STATUS_TIMEOUT_ENV =
+  "SUBSCRIPTION_RUNTIME_ORPHAN_GIT_STATUS_TIMEOUT_MS";
+export const DEFAULT_ORPHAN_GIT_STATUS_TIMEOUT_MS = 30_000;
+export const MAX_ORPHAN_GIT_STATUS_TIMEOUT_MS = 120_000;
+
+export function normalizeOrphanGitStatusTimeoutMs(
+  value: string | undefined,
+): number {
+  if (value === undefined || !/^[1-9]\d*$/.test(value)) {
+    return DEFAULT_ORPHAN_GIT_STATUS_TIMEOUT_MS;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) return DEFAULT_ORPHAN_GIT_STATUS_TIMEOUT_MS;
+  return Math.min(parsed, MAX_ORPHAN_GIT_STATUS_TIMEOUT_MS);
+}
 
 export async function orphanDirtyWorkspaceDebt(input: {
   readonly root: string;
@@ -27,6 +42,9 @@ export async function orphanDirtyWorkspaceDebt(input: {
   readonly deniedRoots: readonly string[];
 }): Promise<readonly ProjectDebtItem[]> {
   const root = resolve(input.root);
+  const gitStatusTimeoutMs = normalizeOrphanGitStatusTimeoutMs(
+    process.env[ORPHAN_GIT_STATUS_TIMEOUT_ENV],
+  );
   let entries;
   try {
     entries = await readdir(root, { withFileTypes: true });
@@ -61,7 +79,7 @@ export async function orphanDirtyWorkspaceDebt(input: {
       debt.push(...consumedRecordDebt(input.consumedOutput, consumed));
       continue;
     }
-    const status = await gitStatusShort(workspacePath);
+    const status = await gitStatusShort(workspacePath, gitStatusTimeoutMs);
     if (status.ok && status.lines.length === 0) continue;
     const binding = input.orphanWorkspaceBindings.find((candidate) =>
       candidate.state === "quarantined" &&
@@ -136,14 +154,14 @@ async function optionalRealPath(path: string): Promise<string | undefined> {
   }
 }
 
-async function gitStatusShort(path: string): Promise<
+async function gitStatusShort(path: string, timeoutMs: number): Promise<
   | { readonly ok: true; readonly lines: readonly string[] }
   | { readonly ok: false; readonly error: string }
 > {
   try {
     const result = await execFileAsync("git", [
       "-C", path, "status", "--short", "--untracked-files=all",
-    ], { timeout: 8_000, maxBuffer: 1024 * 1024 });
+    ], { timeout: timeoutMs, maxBuffer: 1024 * 1024 });
     return {
       ok: true,
       lines: result.stdout.split(/\n/).filter((line) => line.length > 0),
@@ -151,7 +169,14 @@ async function gitStatusShort(path: string): Promise<
   } catch (error) {
     return {
       ok: false,
-      error: error instanceof Error ? error.message : String(error),
+      error: gitStatusError(error, timeoutMs),
     };
   }
+}
+
+function gitStatusError(error: unknown, timeoutMs: number): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return error instanceof Error && "killed" in error && error.killed === true
+    ? `timed out after ${timeoutMs}ms: ${message}`
+    : message;
 }

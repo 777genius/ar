@@ -1,5 +1,6 @@
-import { relative, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import {
+  ProjectDebtReason,
   summarizeProjectAdmissionDebt,
   type ConsumedOutputLedgerEpochAdmissionSummary,
   type ProjectAccessScope,
@@ -19,6 +20,7 @@ import {
 export type LedgerEpochAdmissionSnapshotBuilder = (input: {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
+  readonly controllerJobId: string;
   readonly allowPendingEpochOrphanQuarantine?: boolean;
   readonly skipActiveProposedAdmissionNormalization?: boolean;
 }) => Promise<ProjectAdmissionSnapshot>;
@@ -26,6 +28,7 @@ export type LedgerEpochAdmissionSnapshotBuilder = (input: {
 export async function ledgerEpochAdmissionSummary(input: {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
+  readonly controllerJobId: string;
   readonly deps: CodexProjectAdmissionDeps;
   readonly snapshotBuilder?: LedgerEpochAdmissionSnapshotBuilder | undefined;
   readonly rejectBlocking?: boolean;
@@ -34,10 +37,12 @@ export async function ledgerEpochAdmissionSummary(input: {
   readonly revalidateBeforeNormalization?: (
     snapshot: ProjectAdmissionSnapshot,
   ) => Promise<void>;
+  readonly unpublishedLedgerRoot?: string;
 }): Promise<ConsumedOutputLedgerEpochAdmissionSummary> {
   let snapshot = await buildRawLedgerEpochAdmissionSnapshot({
     registryRootDir: input.registryRootDir,
     scope: input.scope,
+    controllerJobId: input.controllerJobId,
     admissionDeps: input.deps,
     snapshotBuilder: input.snapshotBuilder,
     allowPendingEpochOrphanQuarantine: input.allowPendingEpochOrphanQuarantine,
@@ -49,6 +54,12 @@ export async function ledgerEpochAdmissionSummary(input: {
       snapshot,
     });
   }
+  if (input.unpublishedLedgerRoot) {
+    snapshot = withoutCurrentUnpublishedLedgerDebt(
+      snapshot,
+      input.unpublishedLedgerRoot,
+    );
+  }
   if (input.rejectBlocking && snapshot.debt.some((item) =>
     item.severity !== "info" && item.severity !== "warning"
   )) throw new Error("ledger_epoch_proposed_admission_blocked");
@@ -58,9 +69,32 @@ export async function ledgerEpochAdmissionSummary(input: {
   };
 }
 
+function withoutCurrentUnpublishedLedgerDebt(
+  snapshot: ProjectAdmissionSnapshot,
+  ledgerRoot: string,
+): ProjectAdmissionSnapshot {
+  const expectedSubject = resolve(join(ledgerRoot, "items"));
+  const expectedEvidence =
+    `consumed output ledger unreadable: ENOENT: no such file or directory, scandir '${expectedSubject}'`;
+  const debt = snapshot.debt.filter((item) => !(
+    item.reason === ProjectDebtReason.UnreadableRoot &&
+    resolve(item.subject) === expectedSubject &&
+    item.severity === "blocking" &&
+    item.evidence.length === 1 &&
+    item.evidence[0] === expectedEvidence
+  ));
+  if (debt.length === snapshot.debt.length) return snapshot;
+  return {
+    ...snapshot,
+    debt,
+    counts: summarizeProjectAdmissionDebt(debt).counts,
+  };
+}
+
 export async function buildRawLedgerEpochAdmissionSnapshot(input: {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
+  readonly controllerJobId: string;
   readonly admissionDeps: CodexProjectAdmissionDeps;
   readonly snapshotBuilder?: LedgerEpochAdmissionSnapshotBuilder | undefined;
   readonly allowPendingEpochOrphanQuarantine?: boolean | undefined;
@@ -68,6 +102,7 @@ export async function buildRawLedgerEpochAdmissionSnapshot(input: {
   const common = {
     registryRootDir: input.registryRootDir,
     scope: input.scope,
+    controllerJobId: input.controllerJobId,
     ...(input.allowPendingEpochOrphanQuarantine === undefined ? {} : {
       allowPendingEpochOrphanQuarantine: input.allowPendingEpochOrphanQuarantine,
     }),
@@ -75,7 +110,10 @@ export async function buildRawLedgerEpochAdmissionSnapshot(input: {
   };
   return input.snapshotBuilder
     ? await input.snapshotBuilder(common)
-    : await buildCodexProjectAdmissionSnapshot({ ...common, deps: input.admissionDeps });
+    : await buildCodexProjectAdmissionSnapshot({
+        ...common,
+        deps: input.admissionDeps,
+      });
 }
 
 export async function assertCanonicalLedgerRootsAllowed(
@@ -86,6 +124,7 @@ export async function assertCanonicalLedgerRootsAllowed(
   const allowed = await Promise.all([
     ...(scope.readRoots ?? []), ...(scope.workspaceRoots ?? []),
     ...(scope.worktreeRoots ?? []), ...(scope.observedWorkspaceRoots ?? []),
+    ...(scope.registryRoot ? [scope.registryRoot] : []),
   ].map(async (root) => await canonicalConsumedOutputLedgerRoot(root, true)));
   const denied = await Promise.all((scope.deniedRoots ?? []).map(
     async (root) => await canonicalConsumedOutputLedgerRoot(root, false),

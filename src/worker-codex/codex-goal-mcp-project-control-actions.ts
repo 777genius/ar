@@ -61,9 +61,13 @@ import {
   projectTmuxSessionRequiredView,
   projectWorkerAlreadyRunningView,
   reapProjectPreStartCapacitySupervisor,
+  isProjectPreStartTerminalSupervisorDecision,
   sameProjectPreStartContinuation,
 } from "./codex-goal-project-continuation-runtime";
-import { isCapacityContinuationDecision } from "./application/project-control/codex-goal-project-pre-start-continuation";
+import {
+  projectRuntimeContinuationCause,
+  resolveProjectControlledRuntimeInPlaceContinuation,
+} from "./application/project-control/codex-goal-project-in-place-continuation";
 import { isSafeStartAction } from "./codex-goal-mcp-decision";
 import {
   assertReviewedWorkerContinuationEnvironmentLocked,
@@ -146,7 +150,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
   const { status, decision: continuationDecision } = loaded;
   if (
     loaded.workerAlive &&
-    !isCapacityContinuationDecision(continuationDecision)
+    !isProjectPreStartTerminalSupervisorDecision(continuationDecision)
   ) {
     return projectWorkerAlreadyRunningView({
       controllerJobId: controller.controller.jobId,
@@ -238,7 +242,9 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
         lockedObservation;
       if (
         lockedObservation.workerAlive &&
-        !isCapacityContinuationDecision(lockedContinuationDecision)
+        !isProjectPreStartTerminalSupervisorDecision(
+          lockedContinuationDecision,
+        )
       ) {
         return projectWorkerAlreadyRunningView({
           controllerJobId: controller.controller.jobId,
@@ -294,10 +300,15 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
         controller.scope.consumedOutputLedgerRoots ??
         loaded.manifest.projectAccessScope?.consumedOutputLedgerRoots ??
         [];
+      const terminalRecoveryEvidenceRoots =
+        controller.scope.consumedOutputEvidenceRoots ??
+        loaded.manifest.projectAccessScope?.consumedOutputEvidenceRoots ??
+        [];
       const terminalRecoveryScope = terminalHandoffDependencyRecovery
         ? {
             ...controller.scope,
             consumedOutputLedgerRoots: terminalRecoveryLedgerRoots,
+            consumedOutputEvidenceRoots: terminalRecoveryEvidenceRoots,
           }
         : controller.scope;
       const reviewedContinuation =
@@ -318,6 +329,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
             workspacePath: workspace.canonicalWorkspacePath,
             snapshotter: reviewedOutputDeps.snapshotter,
             consumedOutputLedgerRoots: terminalRecoveryLedgerRoots,
+            consumedOutputEvidenceRoots: terminalRecoveryEvidenceRoots,
           })
         : undefined;
       if (reviewedContinuation) {
@@ -358,6 +370,18 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
           workspaceMode: continuationDecision.workspaceMode,
         });
       }
+      const runtimeContinuationCause = projectRuntimeContinuationCause(
+        lockedContinuationDecision,
+        lockedStatus,
+      );
+      const controlledRuntimeInPlaceContinuation = runtimeContinuationCause
+        ? await resolveProjectControlledRuntimeInPlaceContinuation({
+            manifest: loaded.manifest,
+            scope: controller.scope,
+            cause: runtimeContinuationCause,
+            workspacePath: workspace.canonicalWorkspacePath,
+          })
+        : undefined;
       const capacitySupervisorReap =
         await reapProjectPreStartCapacitySupervisor({
           workerAlive: lockedObservation.workerAlive,
@@ -369,6 +393,9 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
           manifest: loaded.manifest,
           launch: canonicalLaunch,
           workspace,
+          ...(controlledRuntimeInPlaceContinuation
+            ? { controlledRuntimeInPlaceContinuation }
+            : {}),
         });
       const dependencyPreflight = await (
         deps.dependencyBootstrap ?? runDependencyBootstrap
@@ -409,6 +436,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
           workspacePath: workspace.canonicalWorkspacePath,
           snapshotter: reviewedOutputDeps.snapshotter,
           consumedOutputLedgerRoots: terminalRecoveryLedgerRoots,
+          consumedOutputEvidenceRoots: terminalRecoveryEvidenceRoots,
           expected: terminalRecovery,
         });
         await assertReviewedWorkerContinuationEnvironmentLocked(
@@ -477,7 +505,9 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
           ? { verifiedTerminalHandoffRecovery: true }
           : {}),
         ...(continuationDecision?.workspaceMode ===
-          "admitted_input_patch_continuation"
+            "admitted_input_patch_continuation" ||
+          continuationDecision?.workspaceMode ===
+            "admitted_input_patch_runtime_continuation"
           ? {
               verifiedAdmittedInputPatchContinuation: true,
               immutableManifestAccountIds: loaded.manifest.accounts,
@@ -520,6 +550,9 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
           startWorkspaceLease: workspace,
           startSkipDoctor: booleanValue(args.skipDoctor) ?? false,
           ...(reviewedContinuation ? { reviewedContinuation } : {}),
+          ...(controlledRuntimeInPlaceContinuation
+            ? { controlledRuntimeInPlaceContinuation }
+            : {}),
           rejectedUncapturedTerminalHandoffRecovery: terminalRecovery?.reviewDisposition === "rejected_uncaptured"
             ? { patchSha256: terminalRecovery.patchSha256 } : undefined,
         });
@@ -541,6 +574,11 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
               ...(loaded.manifest.tags ? { tags: loaded.manifest.tags } : {}),
               ...(pendingInputPatchAdmission
                 ? { ownedPaths: pendingInputPatchAdmission.ownedPaths }
+                : controlledRuntimeInPlaceContinuation
+                  ? {
+                      ownedPaths:
+                        controlledRuntimeInPlaceContinuation.ownedPaths,
+                    }
                 : {}),
             }),
         });

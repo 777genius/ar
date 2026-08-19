@@ -48,6 +48,7 @@ describe("pending admitted input-patch admission", () => {
     const fixture = await pendingInputPatchFixture();
     const gate = () => codexProjectAdmissionGate({
       registryRootDir: fixture.registryRootDir,
+      controllerJobId: "project-controller",
       scope: fixture.scope,
       deps: fixture.deps,
     });
@@ -112,6 +113,7 @@ describe("pending admitted input-patch admission", () => {
     );
     await expect(codexProjectAdmissionGate({
       registryRootDir: fixture.registryRootDir,
+      controllerJobId: "project-controller",
       scope: fixture.scope,
       deps: fixture.deps,
     }).evaluate({
@@ -144,6 +146,7 @@ describe("pending admitted input-patch admission", () => {
       };
       await expect(codexProjectAdmissionGate({
         registryRootDir: fixture.registryRootDir,
+        controllerJobId: "project-controller",
         scope: fixture.scope,
         deps,
       }).evaluate({
@@ -384,6 +387,7 @@ describe("pending admitted input-patch admission", () => {
     };
     const admission = codexProjectAdmissionGate({
       registryRootDir: fixture.registryRootDir,
+      controllerJobId: "project-controller",
       scope: fixture.scope,
       deps,
       admittedInputPatchTarget: {

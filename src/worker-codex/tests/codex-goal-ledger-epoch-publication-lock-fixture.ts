@@ -19,9 +19,24 @@ export async function assertPublicationLockAdmissionGuardrails(input: {
   readonly exactTreeBytes: (path: string) => Promise<unknown>;
 }): Promise<void> {
   const { fixture } = input;
+  const blockingDeps: MigrationDeps = {
+    ...fixture.deps,
+    buildAdmissionSnapshot: async () => ({
+      schemaVersion: 1 as const,
+      projectId: "social-monitor",
+      observedAt: "2026-08-08T00:00:00.000Z",
+      debt: [{
+        reason: ProjectDebtReason.UnreadableRoot,
+        subject: join(fixture.oldRoot, "unrelated-blocking-root"),
+        severity: "blocking" as const,
+        evidence: ["unrelated blocking debt must survive normalization"],
+      }],
+      counts: { unreadableRoots: 1 },
+    }),
+  };
   const blockedPreview = await projectControlLedgerEpochMigrationView(
     fixture.args(),
-    fixture.deps,
+    blockingDeps,
   );
   const beforeBlockedConfirmation = await input.exactTreeBytes(fixture.oldRoot);
   await expect(stat(fixture.newRoot)).rejects.toMatchObject({ code: "ENOENT" });
@@ -30,7 +45,7 @@ export async function assertPublicationLockAdmissionGuardrails(input: {
       confirmLedgerEpochMigration: true,
       expectedLedgerEpochPlanSha256: String(blockedPreview.planSha256),
     }),
-    fixture.deps,
+    blockingDeps,
   )).rejects.toThrow("ledger_epoch_proposed_admission_blocked");
   expect(await input.exactTreeBytes(fixture.oldRoot)).toEqual(beforeBlockedConfirmation);
   await expect(stat(fixture.newRoot)).rejects.toMatchObject({ code: "ENOENT" });

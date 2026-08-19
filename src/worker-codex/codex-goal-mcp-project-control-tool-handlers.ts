@@ -15,6 +15,11 @@ import { projectControlLedgerEpochMigrationView } from "./codex-goal-mcp-project
 import { projectControlLegacyAttemptQuarantineView } from
   "./codex-goal-mcp-project-control-legacy-attempt-quarantine";
 import {
+  projectControlImportFrozenOutputView,
+  projectControlRetireLegacyJobSummaryView,
+} from
+  "./codex-goal-mcp-project-control-debt-remediation";
+import {
   projectControlCreateWorktreeView,
   projectControlIntegrateCommitView,
   projectControlPushBranchView,
@@ -48,6 +53,7 @@ import {
   codexProjectControlBroker,
   loadJobLaunch,
   loadProjectControlController,
+  projectControlEvidenceCustody,
 } from "./codex-goal-mcp-project-control-deps";
 
 const serverVersion = process.env.npm_package_version ?? "0.0.0";
@@ -58,6 +64,7 @@ function projectControlAdminDeps() {
   return {
     loadProjectControlController,
     admissionDeps: codexProjectAdmissionDeps,
+    evidenceCustody: projectControlEvidenceCustody,
   };
 }
 
@@ -69,6 +76,24 @@ export async function projectControlRepairLegacyOutputDebt(
   args: ProjectControlMcpArgs,
 ) {
   return mcpJson(await projectControlRepairLegacyOutputDebtView(
+    args,
+    projectControlAdminDeps(),
+  ));
+}
+
+export async function projectControlRetireLegacyJobSummary(
+  args: ProjectControlMcpArgs,
+) {
+  return mcpJson(await projectControlRetireLegacyJobSummaryView(
+    args,
+    projectControlAdminDeps(),
+  ));
+}
+
+export async function projectControlImportFrozenOutput(
+  args: ProjectControlMcpArgs,
+) {
+  return mcpJson(await projectControlImportFrozenOutputView(
     args,
     projectControlAdminDeps(),
   ));

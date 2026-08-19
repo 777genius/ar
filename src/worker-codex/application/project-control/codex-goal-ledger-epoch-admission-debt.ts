@@ -27,6 +27,7 @@ export async function readLedgerEpochAdmissionState(input: {
   return {
     consumedOutput: await readCodexGoalConsumedOutputLedgers({
       roots: active ? [active.ledgerRoot] : configured,
+      evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? configured,
     }),
     quarantineDebt: ledgerEpochQuarantineDebt(
       active?.epochReceipt ?? active?.pendingEpochPlan,

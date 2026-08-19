@@ -77,6 +77,8 @@ const requiredCodexGoalMcpTools = [
   "codex_goal_project_reconcile_stale_integrations",
   "brokered_project_manifest_repair",
   "codex_goal_project_repair_legacy_output_debt",
+  "codex_goal_project_retire_legacy_job_summary",
+  "codex_goal_project_import_frozen_output",
   "codex_goal_project_controller_launch_plan",
   "codex_goal_project_controller_start",
   "codex_goal_project_controller_status",

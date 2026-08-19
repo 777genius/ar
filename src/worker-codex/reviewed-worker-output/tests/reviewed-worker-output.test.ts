@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -503,6 +503,46 @@ describe("reviewed worker output", () => {
       changedFiles: ["src/config.fixture.env", "src/new.ts", "src/value.ts"],
       patch: expect.stringContaining("config.fixture.env"),
     });
+  });
+
+  it("uses the configured git binary for every non-empty snapshot read", async () => {
+    const fixture = await reviewedOutputFixture();
+    const shimRoot = await mkdtemp(join(tmpdir(), "reviewed-output-git-shim-"));
+    roots.push(shimRoot);
+    const invocationLog = join(shimRoot, "invocations.log");
+    const gitBinaryPath = join(shimRoot, "configured-git");
+    await writeFile(
+      gitBinaryPath,
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${invocationLog}'\nexec /usr/bin/git "$@"\n`,
+    );
+    await chmod(gitBinaryPath, 0o700);
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = shimRoot;
+    try {
+      await expect(new GitReviewedWorkerOutputSnapshotter({
+        tempRootDir: join(fixture.storeRoot, ".captures"),
+        gitBinaryPath,
+      }).capture({ workspacePath: fixture.workspacePath })).resolves.toMatchObject({
+        changedFiles: ["src/new.ts", "src/value.ts"],
+        patch: expect.stringContaining("src/value.ts"),
+      });
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    }
+
+    const invocations = await readFile(invocationLog, "utf8");
+    for (const command of [
+      "rev-parse --verify HEAD",
+      "read-tree",
+      "diff",
+      "ls-files",
+      "ls-tree",
+      "cat-file --batch",
+    ]) {
+      expect(invocations).toContain(command);
+    }
   });
 
   it("captures both sides of a rename with the immutable handoff patch", async () => {

@@ -10,6 +10,7 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const MAX_ORPHAN_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_CONCURRENT_ORPHAN_OBSERVATIONS = 8;
 
 export type LedgerEpochOrphanWorkspaceBindingRevalidation =
   | { readonly matches: true }
@@ -48,9 +49,15 @@ export async function bindLedgerEpochOrphanWorkspace(input: {
     return { declaredPath, state: "denied", canonicalPath };
   }
   let topLevel: string;
+  let head: string;
   try {
-    topLevel = (await gitBytes(canonicalPath, ["rev-parse", "--show-toplevel"]))
-      .toString("utf8").trim();
+    const identity = (await gitBytes(canonicalPath, [
+      "rev-parse",
+      "--show-toplevel",
+      "HEAD",
+    ])).toString("utf8").trim().split("\n");
+    topLevel = identity[0] ?? "";
+    head = identity[1] ?? "";
   } catch (error) {
     if (input.failOnObservationError) throw error;
     return undefined;
@@ -60,15 +67,14 @@ export async function bindLedgerEpochOrphanWorkspace(input: {
     "status", "--porcelain=v1", "-z", "--untracked-files=all",
   ]);
   if (status.length === 0) return undefined;
-  const head = (await gitBytes(canonicalPath, ["rev-parse", "HEAD"]))
-    .toString("utf8").trim();
   if (!/^[a-f0-9]{40,64}$/.test(head)) {
     throw new Error("ledger_epoch_orphan_workspace_head_invalid");
   }
   const trackedDiff = await gitBytes(canonicalPath, ["diff", "--binary", "HEAD", "--"]);
-  const untracked = nulValues(await gitBytes(canonicalPath, [
-    "ls-files", "--others", "--exclude-standard", "-z",
-  ])).sort();
+  const untracked = nulValues(status)
+    .filter((entry) => entry.startsWith("?? "))
+    .map((entry) => entry.slice(3))
+    .sort();
   const contentHash = createHash("sha256")
     .update("ledger-epoch-orphan-workspace-v1\0")
     .update(head).update("\0")
@@ -111,16 +117,28 @@ export async function bindLedgerEpochOrphanWorkspaces(input: {
   readonly requiredWorkspacePaths: ReadonlySet<string>;
   readonly deniedRoots: readonly string[];
 }): Promise<readonly ConsumedOutputLedgerEpochOrphanWorkspaceBinding[]> {
-  const bindings = await Promise.all(input.workspacePaths.map(async (workspacePath) => {
-    const binding = await bindLedgerEpochOrphanWorkspace({
-      workspacePath,
-      deniedRoots: input.deniedRoots,
-    });
-    if (!binding && input.requiredWorkspacePaths.has(resolve(workspacePath))) {
-      throw new Error("ledger_epoch_clean_or_missing_orphan_refused");
+  const bindings = new Array<
+    ConsumedOutputLedgerEpochOrphanWorkspaceBinding | undefined
+  >(input.workspacePaths.length);
+  let nextIndex = 0;
+  const observe = async (): Promise<void> => {
+    while (nextIndex < input.workspacePaths.length) {
+      const index = nextIndex++;
+      const workspacePath = input.workspacePaths[index]!;
+      const binding = await bindLedgerEpochOrphanWorkspace({
+        workspacePath,
+        deniedRoots: input.deniedRoots,
+      });
+      if (!binding && input.requiredWorkspacePaths.has(resolve(workspacePath))) {
+        throw new Error("ledger_epoch_clean_or_missing_orphan_refused");
+      }
+      bindings[index] = binding;
     }
-    return binding;
-  }));
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(MAX_CONCURRENT_ORPHAN_OBSERVATIONS, input.workspacePaths.length) },
+    observe,
+  ));
   return bindings.filter(
     (binding): binding is ConsumedOutputLedgerEpochOrphanWorkspaceBinding =>
       binding !== undefined,

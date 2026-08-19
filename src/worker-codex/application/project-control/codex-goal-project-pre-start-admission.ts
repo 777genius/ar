@@ -16,20 +16,15 @@ import type {
   CodexGoalProjectPreStartAdmission,
 } from "../../codex-goal-jobs";
 import {
-  captureCodexGoalContinuationWorkspaceFingerprint,
-  captureCodexGoalHandoffPatchFingerprint,
-} from "../../codex-goal-handoff-artifacts";
-import {
   materializeBuiltinWorkerLaunchSpec,
   validateBuiltinWorkerLaunchSpec,
   workerLaunchSpecHasOwnershipBoundWorkKey,
 } from "./codex-goal-project-builtin-pre-start-admission";
-import { readControlledRuntimeInterruptionSnapshot } from "./codex-goal-project-verifier-handoff";
 import {
   parseWorkerLaunchSpec,
-  workerLaunchOwnsChangedPath,
   type WorkerLaunchSpec,
 } from "./worker-launch-spec";
+import { controlledRuntimeInputPatchBindingValid } from "./codex-goal-project-runtime-input-patch-binding";
 import type { ProjectPreStartAdmissionLaunchWorkspaceMode } from "./codex-goal-project-pre-start-admission-types";
 export type {
   ProjectPreStartAdmissionDirtyContinuationMode,
@@ -346,9 +341,9 @@ export async function assertProjectPreStartAdmissionLaunchBinding(input: {
         ? verifiedInputPatchBindingValid(binding, verifiedInputPatch)
         : binding.workspaceStatus === "";
   const inputPatchBindingValid = admittedInputPatchRuntimeContinuation
-    ? await controlledRuntimeInputPatchBindingValid({
+      ? await controlledRuntimeInputPatchBindingValid({
         manifest: input.manifest,
-        descriptor,
+        builtin: isBuiltinDescriptor(descriptor),
         contract,
         binding,
         verifiedInputPatch,
@@ -407,6 +402,18 @@ export async function readLaunchAuthorizedWorkerLaunchSpec(input: {
   readonly manifest: CodexGoalJobManifest;
   readonly scope: ProjectAccessScope;
 }): Promise<WorkerLaunchSpec> {
+  return (await readLaunchAuthorizedWorkerLaunchAttestation(input)).launch;
+}
+
+export type LaunchAuthorizedWorkerLaunchAttestation = {
+  readonly launch: WorkerLaunchSpec;
+  readonly receiptSha256: string;
+};
+
+export async function readLaunchAuthorizedWorkerLaunchAttestation(input: {
+  readonly manifest: CodexGoalJobManifest;
+  readonly scope: ProjectAccessScope;
+}): Promise<LaunchAuthorizedWorkerLaunchAttestation> {
   const descriptor = input.manifest.projectPreStartAdmission;
   if (!descriptor) {
     throw new Error("project_control_pre_start_admission_required");
@@ -415,8 +422,9 @@ export async function readLaunchAuthorizedWorkerLaunchSpec(input: {
     input.manifest,
     descriptor,
   );
-  const [contractBefore, receiptBefore] = await Promise.all([
+  const [contractBefore, stateBefore, receiptBefore] = await Promise.all([
     readBoundedFile(descriptor.contractPath, MAX_CONTRACT_BYTES, "contract"),
+    readBoundedFile(descriptor.statePath, MAX_STATE_BYTES, "state"),
     readBoundedFile(descriptor.receiptPath, 64 * 1024, "receipt"),
   ]);
   const receipt = JSON.parse(receiptBefore) as JsonObject;
@@ -430,22 +438,23 @@ export async function readLaunchAuthorizedWorkerLaunchSpec(input: {
       ? "clean_capacity_continuation"
       : "reviewed_dirty_continuation",
   });
-  const [contractAfter, receiptAfter] = await Promise.all([
+  const [contractAfter, stateAfter, receiptAfter] = await Promise.all([
     readBoundedFile(descriptor.contractPath, MAX_CONTRACT_BYTES, "contract"),
+    readBoundedFile(descriptor.statePath, MAX_STATE_BYTES, "state"),
     readBoundedFile(descriptor.receiptPath, 64 * 1024, "receipt"),
   ]);
-  if (contractBefore !== contractAfter || receiptBefore !== receiptAfter) {
+  if (
+    contractBefore !== contractAfter ||
+    stateBefore !== stateAfter ||
+    receiptBefore !== receiptAfter
+  ) {
     throw new Error("project_control_pre_start_attestation_changed_during_read");
   }
   const contract = JSON.parse(contractBefore) as JsonObject;
   if (!isBuiltinDescriptor(descriptor)) {
     throw new Error("project_control_pre_start_builtin_attestation_required");
   }
-  const state = await readJsonObject(
-    descriptor.statePath,
-    "state",
-    MAX_STATE_BYTES,
-  );
+  const state = JSON.parse(stateBefore) as JsonObject;
   await validateBuiltinWorkerLaunchSpec({
     contract,
     state,
@@ -458,63 +467,10 @@ export async function readLaunchAuthorizedWorkerLaunchSpec(input: {
       "project_control_pre_start_ownership_bound_work_key_required",
     );
   }
-  return launch;
-}
-
-async function controlledRuntimeInputPatchBindingValid(input: {
-  readonly manifest: CodexGoalJobManifest;
-  readonly descriptor: CodexGoalProjectPreStartAdmission;
-  readonly contract: JsonObject;
-  readonly binding: Awaited<ReturnType<typeof captureProjectPreStartBinding>>;
-  readonly verifiedInputPatch:
-    ReturnType<typeof verifiedInputPatchFromReceipt> | undefined;
-}): Promise<boolean> {
-  if (!isBuiltinDescriptor(input.descriptor)) {
-    return false;
-  }
-  const launch = parseWorkerLaunchSpec(input.contract);
-  const snapshot = await readControlledRuntimeInterruptionSnapshot({
-    producer: input.manifest,
-  });
-  const fresh = snapshot.kind === "materialized_handoff"
-    ? await captureCodexGoalHandoffPatchFingerprint({
-        workspacePath: input.manifest.workspacePath,
-        expectedBaseCommit: launch.phaseStartSha,
-      })
-    : await captureCodexGoalContinuationWorkspaceFingerprint({
-        workspacePath: input.manifest.workspacePath,
-        expectedBaseCommit: launch.phaseStartSha,
-      });
-  const freshSha = fresh && ("patchSha256" in fresh
-    ? fresh.patchSha256
-    : fresh.sha256);
-  const handoffBindingValid =
-    fresh !== null &&
-    snapshot.baseCommit === launch.phaseStartSha &&
-    fresh.baseCommit === snapshot.baseCommit &&
-    freshSha === snapshot.sha256 &&
-    snapshot.changedPaths.length > 0 &&
-    samePaths(fresh.changedPaths, snapshot.changedPaths);
-  if (
-    input.verifiedInputPatch !== undefined &&
-    verifiedInputPatchBindingValid(input.binding, input.verifiedInputPatch)
-  ) {
-    return handoffBindingValid;
-  }
-  if (launch.reviewKind === "review") return false;
-  return (
-    handoffBindingValid &&
-    snapshot.changedPaths.every((path) =>
-      workerLaunchOwnsChangedPath(launch, path),
-    )
-  );
-}
-
-function samePaths(left: readonly string[], right: readonly string[]): boolean {
-  return (
-    left.length === right.length &&
-    left.every((path, index) => path === right[index])
-  );
+  return {
+    launch,
+    receiptSha256: sha256(Buffer.from(receiptBefore)),
+  };
 }
 
 export async function rebindProjectPreStartAdmissionManifest(input: {

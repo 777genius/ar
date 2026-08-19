@@ -19,6 +19,8 @@ import {
 } from "@vioxen/subscription-runtime/worker-core";
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { captureGitWorkspacePatch } from "../codex-goal-runtime-result-io";
+import { localProjectControlEvidenceCustodySupported } from
+  "../../worker-local/project-control-evidence-custody-local-adapter";
 import {
   callToolJson,
   git,
@@ -34,13 +36,18 @@ afterEach(async () => {
 });
 
 describe("Codex project reviewed worker output", () => {
-  it("captures through mark_reviewed and resolves through open_integration_attempt", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "captures through mark_reviewed and resolves through open_integration_attempt",
+    async () => {
     const root = await mkdtemp(
       join(tmpdir(), "subscription-runtime-reviewed-mcp-"),
     );
     roots.push(root);
     const registryRootDir = join(root, "worker-jobs", "registry");
-    const ledgerRoot = join(root, "control", "consumed-output-ledger");
+    const workerJobsRoot = join(root, "worker-jobs");
+    const controlRoot = join(root, "control");
+    const ledgerRoot = join(controlRoot, "consumed-output-ledger");
+    const evidenceRoot = join(controlRoot, "archives");
     const controllerJobId = "project-controller";
     const workerJobId = "project-worker";
     const controllerJobRoot = join(root, "worker-jobs", controllerJobId);
@@ -51,6 +58,7 @@ describe("Codex project reviewed worker output", () => {
       mkdir(workerWorkspacePath, { recursive: true }),
       mkdir(targetWorkspacePath, { recursive: true }),
       mkdir(workerJobRoot, { recursive: true }),
+      mkdir(controlRoot, { recursive: true }),
     ]);
     await gitInitRepository(workerWorkspacePath);
     await gitInitRepository(targetWorkspacePath);
@@ -116,7 +124,7 @@ describe("Codex project reviewed worker output", () => {
         join(workerJobRoot, "prompt.md"),
         "Continue reviewed remediation.\n",
       );
-      await callToolJson(client, "codex_goal_create_job", {
+      const controller = await callToolJson(client, "codex_goal_create_job", {
         registryRootDir,
         jobId: controllerJobId,
         jobRootDir: controllerJobRoot,
@@ -129,10 +137,12 @@ describe("Codex project reviewed worker output", () => {
         networkAccess: NetworkAccessMode.Restricted,
         projectAccessScope: {
           projectId: "project",
+          readRoots: [controlRoot, workerJobsRoot],
           workspaceRoots: [targetWorkspacePath],
           worktreeRoots: [join(root, "worktrees")],
           registryRoot: registryRootDir,
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [evidenceRoot],
           jobIdPrefixes: ["project-"],
           tmuxSessionPrefixes: ["project-"],
           allowedAccountIds: ["account-a"],
@@ -141,6 +151,7 @@ describe("Codex project reviewed worker output", () => {
         },
       });
 
+      expect(controller).toMatchObject({ ok: true });
       const reviewed = await callToolJson(
         client,
         "codex_goal_project_mark_reviewed",
@@ -394,15 +405,21 @@ describe("Codex project reviewed worker output", () => {
       await client.close();
       await server.close();
     }
-  });
+    },
+  );
 
-  it("quarantines an over-limit rejected workspace without a reviewed snapshot", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "quarantines an over-limit rejected workspace without a reviewed snapshot",
+    async () => {
     const root = await mkdtemp(
       join(tmpdir(), "subscription-runtime-rejected-uncaptured-mcp-"),
     );
     roots.push(root);
     const registryRootDir = join(root, "worker-jobs", "registry");
-    const ledgerRoot = join(root, "control", "consumed-output-ledger");
+    const workerJobsRoot = join(root, "worker-jobs");
+    const controlRoot = join(root, "control");
+    const ledgerRoot = join(controlRoot, "consumed-output-ledger");
+    const evidenceRoot = join(controlRoot, "archives");
     const controllerJobId = "project-controller";
     const workerJobId = "project-over-limit-worker";
     const controllerJobRoot = join(root, "worker-jobs", controllerJobId);
@@ -413,6 +430,7 @@ describe("Codex project reviewed worker output", () => {
       mkdir(workerWorkspacePath, { recursive: true }),
       mkdir(targetWorkspacePath, { recursive: true }),
       mkdir(workerJobRoot, { recursive: true }),
+      mkdir(controlRoot, { recursive: true }),
     ]);
     await gitInitRepository(workerWorkspacePath);
     await gitInitRepository(targetWorkspacePath);
@@ -480,7 +498,7 @@ describe("Codex project reviewed worker output", () => {
         codexBinaryPath: join(root, "missing-codex"),
         networkAccess: NetworkAccessMode.Restricted,
       });
-      await callToolJson(client, "codex_goal_create_job", {
+      const controller = await callToolJson(client, "codex_goal_create_job", {
         registryRootDir,
         jobId: controllerJobId,
         jobRootDir: controllerJobRoot,
@@ -493,10 +511,12 @@ describe("Codex project reviewed worker output", () => {
         networkAccess: NetworkAccessMode.Restricted,
         projectAccessScope: {
           projectId: "project",
+          readRoots: [controlRoot, workerJobsRoot],
           workspaceRoots: [targetWorkspacePath],
           worktreeRoots: [join(root, "worktrees")],
           registryRoot: registryRootDir,
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [evidenceRoot],
           jobIdPrefixes: ["project-"],
           tmuxSessionPrefixes: ["project-"],
           allowedAccountIds: ["account-a"],
@@ -505,6 +525,7 @@ describe("Codex project reviewed worker output", () => {
         },
       });
 
+      expect(controller).toMatchObject({ ok: true });
       await expect(
         callToolJson(client, "codex_goal_project_mark_reviewed", {
           registryRootDir,
@@ -609,7 +630,8 @@ describe("Codex project reviewed worker output", () => {
       await client.close();
       await server.close();
     }
-  });
+    },
+  );
 });
 
 function sha256(value: string): string {

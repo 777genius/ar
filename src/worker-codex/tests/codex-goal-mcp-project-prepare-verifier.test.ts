@@ -772,7 +772,8 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
             })}\n`,
           );
           const archivedPreexistingPatchPath = join(
-            verifierManifest.jobRootDir,
+            root,
+            "control",
             "archives",
             "project-verifier-failed-no-output-verifier-account-unavailable",
             "preexisting-workspace.patch",
