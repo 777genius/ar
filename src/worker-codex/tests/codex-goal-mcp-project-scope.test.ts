@@ -11,6 +11,7 @@ import {
   assertProjectControlScopeRepairAllowed,
   projectControlCanonicalWorkspacePath,
   projectControlChildScope,
+  projectControlConsumedOutputEvidenceRoot,
   projectControlDependencyBootstrapMode,
   projectControlPathArg,
   projectControlWorkerRole,
@@ -101,6 +102,54 @@ describe("codex goal MCP project scope helpers", () => {
     await symlink(realArchives, linked);
     await expect(assertProjectControlEvidenceRootsCanonical([linked]))
       .rejects.toThrow("evidence_root_noncanonical");
+  });
+
+  it("uses the latest append-only evidence root for writes", async () => {
+    const root = await realpath(await mkdtemp(
+      join(tmpdir(), "project-evidence-active-root-"),
+    ));
+    addedScopeRoots.add(root);
+    const historical = join(root, "historical", "archives");
+    const active = join(root, "active", "archives");
+    await Promise.all([historical, active].map((path) =>
+      mkdir(path, { recursive: true })
+    ));
+    const existing = {
+      ...projectScope(),
+      readRoots: [root],
+      consumedOutputEvidenceRoots: [historical],
+    };
+    const proposed = {
+      ...existing,
+      consumedOutputEvidenceRoots: [historical, active],
+    };
+
+    expect(() => assertProjectControlScopeRepairAllowed({ existing, proposed }))
+      .not.toThrow();
+    await expect(assertProjectControlEvidenceRootsCanonical(
+      proposed.consumedOutputEvidenceRoots,
+      proposed,
+    )).resolves.toBeUndefined();
+    expect(projectControlConsumedOutputEvidenceRoot(proposed)).toBe(active);
+    expect(proposed.consumedOutputEvidenceRoots).toEqual([historical, active]);
+
+    expect(() => assertProjectControlScopeRepairAllowed({
+      existing: proposed,
+      proposed: {
+        ...proposed,
+        consumedOutputEvidenceRoots: [active, historical],
+      },
+    })).toThrow("evidence_roots_repair_denied");
+    expect(() => assertProjectControlScopeRepairAllowed({
+      existing: proposed,
+      proposed: {
+        ...proposed,
+        consumedOutputEvidenceRoots: [
+          ...proposed.consumedOutputEvidenceRoots,
+          "/tmp/outside/archives",
+        ],
+      },
+    })).toThrow("evidence_root_outside_scope");
   });
 
   it("rejects foreign evidence and denied-root overlap in both directions", async () => {

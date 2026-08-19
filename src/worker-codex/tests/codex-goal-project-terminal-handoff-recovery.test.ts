@@ -32,8 +32,17 @@ import { localReviewedWorkerOutputDeps } from "../reviewed-worker-output";
 import { projectControlStartStoredJobView } from "../codex-goal-mcp-project-control-actions";
 import { createCodexProjectControlBroker } from "../codex-goal-mcp-project-broker";
 import { recordRejectedUncapturedOutput } from "../codex-goal-mcp-project-control-reviewed-rejection";
-import { assertCodexGoalProjectJobNotTerminal } from "../application/project-control/codex-goal-consumed-output-ledger-io";
+import {
+  assertCodexGoalProjectJobNotTerminal,
+  readCodexGoalConsumedOutputLedgers,
+} from "../application/project-control/codex-goal-consumed-output-ledger-io";
+import {
+  assertProjectControlEvidenceRootsCanonical,
+  assertProjectControlScopeRepairAllowed,
+} from "../codex-goal-mcp-project-scope";
 import { git, gitInitRepository } from "./codex-goal-mcp-test-support";
+import { localProjectControlEvidenceCustodySupported } from
+  "../../worker-local/project-control-evidence-custody-local-adapter";
 
 const roots: string[] = [];
 
@@ -76,6 +85,69 @@ describe("terminal worker handoff dependency recovery", () => {
       expect(terminalHandoffDependencyRecoveryRequested(invalid)).toBe(false);
     }
   });
+
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "writes and reads rejected output after an evidence-root repair",
+    async () => {
+    const root = await realpath(await mkdtemp(
+      join(tmpdir(), "subscription-runtime-repaired-evidence-root-"),
+    ));
+    roots.push(root);
+    const workspacePath = join(root, "workspace");
+    const jobRootDir = join(root, "jobs", "project-worker");
+    const ledgerRoot = join(root, "custody", "consumed-output-ledger");
+    const historicalEvidenceRoot = join(root, "custody-v1", "archives");
+    const activeEvidenceRoot = join(root, "custody-v2", "archives");
+    await Promise.all([
+      workspacePath,
+      jobRootDir,
+      join(ledgerRoot, "items"),
+      historicalEvidenceRoot,
+      activeEvidenceRoot,
+    ].map((path) => mkdir(path, { recursive: true })));
+    await gitInitRepository(workspacePath);
+    await writeFile(join(workspacePath, "owned.ts"), "export const value = 1;\n");
+    await git(workspacePath, ["add", "owned.ts"]);
+    await git(workspacePath, ["commit", "-m", "test: base"]);
+    await writeFile(join(workspacePath, "owned.ts"), "export const value = 2;\n");
+    const existingScope: ProjectAccessScope = {
+      projectId: "project",
+      readRoots: [root],
+      workspaceRoots: [root],
+      consumedOutputLedgerRoots: [ledgerRoot],
+      consumedOutputEvidenceRoots: [historicalEvidenceRoot],
+    };
+    const repairedScope: ProjectAccessScope = {
+      ...existingScope,
+      consumedOutputEvidenceRoots: [historicalEvidenceRoot, activeEvidenceRoot],
+    };
+    assertProjectControlScopeRepairAllowed({
+      existing: existingScope,
+      proposed: repairedScope,
+    });
+    await assertProjectControlEvidenceRootsCanonical(
+      repairedScope.consumedOutputEvidenceRoots ?? [],
+      repairedScope,
+    );
+
+    const receipt = await recordRejectedUncapturedOutput({
+      scope: repairedScope,
+      jobId: "project-worker",
+      jobRootDir,
+      workspacePath,
+      closedAt: "2026-07-21T00:00:00.000Z",
+      reason: "Rejected after evidence-root repair.",
+    });
+    const decision = JSON.parse(await readFile(receipt.ledgerPath, "utf8"));
+    expect(decision.archivePath.startsWith(`${activeEvidenceRoot}/`)).toBe(true);
+    const ledger = await readCodexGoalConsumedOutputLedgers({
+      roots: [ledgerRoot],
+      evidenceRoots: repairedScope.consumedOutputEvidenceRoots ?? [],
+    });
+    expect(ledger.byJobId.get("project-worker")).toMatchObject({ valid: true });
+    expect(ledger.debt).toEqual([]);
+    },
+  );
 
   it("permits only the exact runtime-captured dirty workspace", async () => {
     const root = await mkdtemp(

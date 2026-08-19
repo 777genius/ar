@@ -134,9 +134,8 @@ export function assertProjectControlScopeRepairAllowed(input: {
       throw new Error("project_control_consumed_output_ledger_root_denied");
     }
   }
-  const existingEvidenceRoots = new Set(
-    input.existing.consumedOutputEvidenceRoots ?? [],
-  );
+  const existingEvidenceRoots =
+    input.existing.consumedOutputEvidenceRoots ?? [];
   for (const root of input.proposed.consumedOutputEvidenceRoots ?? []) {
     if (!isAbsolute(root) || resolve(root) === dirname(resolve(root))) {
       throw new Error("project_control_consumed_output_evidence_root_invalid");
@@ -150,8 +149,10 @@ export function assertProjectControlScopeRepairAllowed(input: {
   }
   const proposedEvidenceRoots = input.proposed.consumedOutputEvidenceRoots ?? [];
   if (
-    proposedEvidenceRoots.length < existingEvidenceRoots.size ||
-    [...existingEvidenceRoots].some((root) => !proposedEvidenceRoots.includes(root))
+    proposedEvidenceRoots.length < existingEvidenceRoots.length ||
+    existingEvidenceRoots.some(
+      (root, index) => proposedEvidenceRoots[index] !== root,
+    )
   ) {
     throw new Error("project_control_consumed_output_evidence_roots_repair_denied");
   }
@@ -247,10 +248,12 @@ export function projectControlConsumedOutputEvidenceRoot(
   scope: ProjectAccessScope,
 ): string {
   const roots = scope.consumedOutputEvidenceRoots ?? [];
-  if (roots.length !== 1) {
+  // Scope repair preserves historical read roots and appends the active writer.
+  const activeRoot = roots.at(-1);
+  if (!activeRoot) {
     throw new Error("project_control_consumed_output_evidence_root_required");
   }
-  return resolve(roots[0]!);
+  return resolve(activeRoot);
 }
 
 function projectControlAllowedBranchesAppendAllowed(input: {
