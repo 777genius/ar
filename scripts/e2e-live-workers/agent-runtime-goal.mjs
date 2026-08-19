@@ -39,6 +39,9 @@ import {
 import {
   evaluateLogicalThreadContinuation,
 } from "../../dist/testing/logical-thread-continuation-eval.js";
+import {
+  runLogicalThreadContinuationScenario,
+} from "./logical-thread-continuation-scenario.mjs";
 
 if (!process.argv.includes("--allow-live")) {
   throw new Error("live Agent Runtime Goal V3 E2E requires --allow-live");
@@ -54,144 +57,51 @@ const provider = providerArg(process.argv.slice(2));
 const encryptionKey = randomBytes(32);
 const threadId = `agent-runtime-goal-v3-${provider}-${randomBytes(8).toString("hex")}`;
 const firstContextToken = `logical-context-r1-${randomBytes(16).toString("hex")}`;
+const longHorizonContextToken = `logical-context-long-${randomBytes(16).toString("hex")}`;
 const secondContextToken = `logical-context-r2-${randomBytes(16).toString("hex")}`;
 const goalCompletionCondition = "Satisfy every requirement in the current round prompt exactly, verify the resulting workspace state, and then mark the active Goal complete before the final summary.";
 const providerInvocations = [];
-const exactReplayChecks = [];
-const exactContextRecallChecks = [];
-let exactReplayProviderSideEffects = 0;
-let runnerRestartCount = 0;
-let staleWorkspaceFailedClosed = false;
-let contextStayedOutOfWorkspaceUntilRequested = false;
 let runner;
 
 try {
   seedGitWorkspace();
-
-  const firstRequest = goalRequest({
-    executionId: "goal-round-1",
-    runId: `agent-runtime-goal-v3-${provider}-round-1`,
-    prompt: [
-      `Remember this opaque context token for later logical-thread rounds: ${firstContextToken}`,
-      "Keep the token only in conversation context. Do not write it into any file in this round.",
-      "Edit only round-one.txt so it contains exactly ready followed by one newline.",
-      "Verify context.txt still contains exactly unset followed by one newline.",
-      "Verify round-three.txt still contains exactly unset followed by one newline.",
-      "After the exact verification succeeds, mark the active Goal complete before the final summary.",
-    ].join("\n"),
-  });
-  const secondRequest = goalRequest({
-    executionId: "goal-round-2",
-    runId: `agent-runtime-goal-v3-${provider}-round-2`,
-    prompt: [
-      "Continue the same logical thread.",
-      "Recall the exact opaque context token supplied in the previous round; it is intentionally not repeated here.",
-      "Edit only context.txt so it contains that exact token followed by one newline.",
-      `Also remember this second opaque token for the next round: ${secondContextToken}`,
-      "Keep the second token only in conversation context in this round.",
-      "Do not modify round-one.txt, round-three.txt, or any other file.",
-      "After the exact verification succeeds, mark the active Goal complete before the final summary.",
-    ].join("\n"),
-  });
-  const thirdRequest = goalRequest({
-    executionId: "goal-round-3",
-    runId: `agent-runtime-goal-v3-${provider}-round-3`,
-    prompt: [
-      "Continue the same logical thread.",
-      "Recall both opaque context tokens supplied in the two previous rounds; neither token is repeated here.",
-      "Edit only round-three.txt so its first line is the first-round token and its second line is the second-round token, with a final newline.",
-      "Do not modify round-one.txt, context.txt, or any other file.",
-      "After the exact verification succeeds, mark the active Goal complete before the final summary.",
-    ].join("\n"),
-  });
-  for (const request of [secondRequest, thirdRequest]) {
-    assert.deepEqual(
-      firstRequest.task.execution,
-      request.task.execution,
-      "V3 rounds must keep identical execution compatibility inputs",
-    );
-    assert.deepEqual(
-      firstRequest.task.controls,
-      request.task.controls,
-      "V3 rounds must keep identical control compatibility inputs",
-    );
-  }
-
   runner = createRunner();
-  const first = await runner.run(firstRequest);
-  assertCompleted(first, AgentRuntimeThreadOutcome.StartedFresh, "round one");
-  assert.equal(await readFile(join(workspace, "round-one.txt"), "utf8"), "ready\n");
-  assert.equal(await readFile(join(workspace, "context.txt"), "utf8"), "unset\n");
-  assert.equal(providerInvocations.length, 1, "round one must invoke the real provider once");
-
-  await restartRunner({ replayOnly: true });
-  const beforeFirstReplay = providerInvocations.length;
-  const firstReplay = await runner.run(firstRequest);
-  exactReplayChecks.push(isDeepStrictEqual(firstReplay, first));
-  exactReplayProviderSideEffects += providerInvocations.length - beforeFirstReplay;
-
-  await restartRunner();
-  const second = await runner.run(secondRequest);
-  assertCompleted(second, AgentRuntimeThreadOutcome.Continued, "round two");
-  exactContextRecallChecks.push(
-    await readFile(join(workspace, "context.txt"), "utf8") ===
-      `${firstContextToken}\n`,
-  );
-  assert.equal(
-    await readFile(join(workspace, "round-three.txt"), "utf8"),
-    "unset\n",
-    "round two must keep the second token out of the workspace",
-  );
-  contextStayedOutOfWorkspaceUntilRequested =
-    !(await workspaceFixtureText()).includes(secondContextToken);
-  assert.equal(providerInvocations.length, 2, "two Goal rounds must invoke the provider twice");
-
-  await restartRunner({ replayOnly: true });
-  const beforeSecondReplay = providerInvocations.length;
-  const secondReplay = await runner.run(secondRequest);
-  exactReplayChecks.push(isDeepStrictEqual(secondReplay, second));
-  exactReplayProviderSideEffects += providerInvocations.length - beforeSecondReplay;
-
-  await restartRunner();
-  const third = await runner.run(thirdRequest);
-  assertCompleted(third, AgentRuntimeThreadOutcome.Continued, "round three");
-  exactContextRecallChecks.push(
-    await readFile(join(workspace, "round-three.txt"), "utf8") ===
-      `${firstContextToken}\n${secondContextToken}\n`,
-  );
-  assert.equal(providerInvocations.length, 3, "three Goal rounds must invoke the provider three times");
+  const scenario = await runLogicalThreadContinuationScenario({
+    createRequest: goalRequest,
+    runIdPrefix: `agent-runtime-goal-v3-${provider}`,
+    firstToken: firstContextToken,
+    longHorizonToken: longHorizonContextToken,
+    secondToken: secondContextToken,
+    outcomes: {
+      startedFresh: AgentRuntimeThreadOutcome.StartedFresh,
+      continued: AgentRuntimeThreadOutcome.Continued,
+    },
+    restart: restartRunner,
+    run: (request) => runner.run(request),
+    assertCompleted,
+    readWorkspaceFile: (path) => readFile(join(workspace, path), "utf8"),
+    writeWorkspaceFile: (path, content) =>
+      writeFile(join(workspace, path), content, "utf8"),
+    providerInvocationCount: () => providerInvocations.length,
+    readWorkspaceSnapshot: workspaceFixtureText,
+    resultOutputText: (result) => result.outputText,
+    observeFinalWorkspaceBoundary: observeWorkspaceBoundary,
+    matchesStaleFailure: (result) => matchesFailure(
+      result,
+      AgentRuntimeFailureCode.StaleGeneration,
+      AgentRuntimeFailureLifecycleState.PreflightFailed,
+    ) && result.failure.details?.control === "workspace_effect",
+  });
+  const { first, second, third } = scenario.results;
+  const { first: firstRequest, second: secondRequest, third: thirdRequest } =
+    scenario.requests;
   assert.deepEqual(
     providerInvocations.map((record) => record.hadPreviousCheckpoint),
     [false, true, true],
     "later rounds must receive the durable provider checkpoint",
   );
 
-  await restartRunner({ replayOnly: true });
-  const beforeThirdReplay = providerInvocations.length;
-  const thirdReplay = await runner.run(thirdRequest);
-  exactReplayChecks.push(isDeepStrictEqual(thirdReplay, third));
-  exactReplayProviderSideEffects += providerInvocations.length - beforeThirdReplay;
-
-  await writeFile(join(workspace, "round-three.txt"), "tampered\n", "utf8");
-  const staleReplay = await runner.run(thirdRequest);
-  staleWorkspaceFailedClosed = matchesFailure(
-    staleReplay,
-    AgentRuntimeFailureCode.StaleGeneration,
-    AgentRuntimeFailureLifecycleState.PreflightFailed,
-  ) && staleReplay.failure.details?.control === "workspace_effect" &&
-    providerInvocations.length === beforeThirdReplay;
-
-  await writeFile(
-    join(workspace, "round-three.txt"),
-    `${firstContextToken}\n${secondContextToken}\n`,
-    "utf8",
-  );
-  const restoredReplay = await runner.run(thirdRequest);
-  const restoredEffectRecovered = isDeepStrictEqual(restoredReplay, third) &&
-    providerInvocations.length === beforeThirdReplay;
-
   await runDeterministicFailureProbes();
-  const workspaceBoundaryPreserved = observeWorkspaceBoundary();
   const evalReport = evaluateLogicalThreadContinuation({
     expectedRounds: 3,
     completedRounds: 3,
@@ -202,14 +112,17 @@ try {
       thirdRequest.executionId,
     ],
     outcomes: [first.thread.outcome, second.thread.outcome, third.thread.outcome],
-    exactContextRecallChecks,
-    runnerRestartCount,
-    exactReplayChecks,
-    exactReplayProviderSideEffects,
-    restoredEffectRecovered,
-    staleWorkspaceFailedClosed,
-    contextStayedOutOfWorkspaceUntilRequested,
-    workspaceBoundaryPreserved,
+    exactContextRecallChecks: scenario.exactContextRecallChecks,
+    runnerRestartCount: scenario.restartCount,
+    exactReplayChecks: scenario.exactReplayChecks,
+    exactReplayProviderSideEffects: scenario.exactReplayProviderSideEffects,
+    restoredEffectRecovered: scenario.restoredEffectRecovered,
+    staleWorkspaceFailedClosed: scenario.staleWorkspaceFailedClosed,
+    forbiddenTokensAbsentFromWorkspaceSnapshots:
+      scenario.forbiddenTokensAbsentFromWorkspaceSnapshots,
+    longHorizonTokenAbsentFromRoundTwoOutput:
+      scenario.longHorizonTokenAbsentFromRoundTwoOutput,
+    workspaceBoundaryPreserved: scenario.workspaceBoundaryPreserved,
   });
   assert.equal(evalReport.passed, true, `logical-thread eval failed: ${JSON.stringify(evalReport)}`);
 
@@ -228,17 +141,17 @@ try {
         thirdRequest.executionId,
       ],
       outcomes: [first.thread.outcome, second.thread.outcome, third.thread.outcome],
-      contextPreserved: exactContextRecallChecks.every(Boolean),
-      runnerRestartCount,
+      contextPreserved: scenario.exactContextRecallChecks.every(Boolean),
+      runnerRestartCount: scenario.restartCount,
     },
     providerExecution: {
       runCount: providerInvocations.length,
-      exactReplaySideEffects: exactReplayProviderSideEffects,
+      exactReplaySideEffects: scenario.exactReplayProviderSideEffects,
     },
     durableReplay: {
-      exactAfterRestart: exactReplayChecks.every(Boolean),
-      staleWorkspaceFailClosed: staleWorkspaceFailedClosed,
-      restoredEffectRecovered,
+      exactAfterRestart: scenario.exactReplayChecks.every(Boolean),
+      staleWorkspaceFailClosed: scenario.staleWorkspaceFailedClosed,
+      restoredEffectRecovered: scenario.restoredEffectRecovered,
     },
     deterministicFailureProbes: {
       cancellation: true,
@@ -246,7 +159,7 @@ try {
       terminalFailureExactReplay: true,
     },
     changedFiles: ["context.txt", "round-one.txt", "round-three.txt"],
-    outsideWorkspaceUnchanged: workspaceBoundaryPreserved,
+    outsideWorkspaceUnchanged: scenario.workspaceBoundaryPreserved,
     toolSurface: provider === AgentRuntimeTaskProvider.Codex
       ? "bounded-workspace-mcp"
       : "provider-native-guarded",
@@ -304,7 +217,6 @@ function createRunner(options = {}) {
 async function restartRunner(options) {
   await runner?.dispose();
   runner = createRunner(options);
-  runnerRestartCount += 1;
 }
 
 function replayOnlyWorkerFactory() {
@@ -591,14 +503,19 @@ function matchesFailure(result, code, lifecycle) {
     result.lifecycle.state === lifecycle;
 }
 
-function observeWorkspaceBoundary() {
+async function observeWorkspaceBoundary() {
   try {
     const status = gitWorkspaceStatus();
     return isDeepStrictEqual(
       status.map((entry) => entry.slice(3)).sort(),
       ["context.txt", "round-one.txt", "round-three.txt"],
     ) && status.every((entry) => /^(?: M|M |MM) /.test(entry)) &&
-      readFileSync(outsideCanary, "utf8") === "outside-safe\n";
+      readFileSync(outsideCanary, "utf8") === "outside-safe\n" &&
+      await readFile(join(workspace, "round-one.txt"), "utf8") === "ready\n" &&
+      await readFile(join(workspace, "context.txt"), "utf8") ===
+        `${firstContextToken}\n` &&
+      await readFile(join(workspace, "round-three.txt"), "utf8") ===
+        `${firstContextToken}\n${longHorizonContextToken}\n${secondContextToken}\n`;
   } catch {
     return false;
   }

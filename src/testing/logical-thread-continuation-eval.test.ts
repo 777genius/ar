@@ -106,7 +106,8 @@ function passingEvidence(): LogicalThreadContinuationEvalEvidence {
     exactReplayProviderSideEffects: 0,
     restoredEffectRecovered: true,
     staleWorkspaceFailedClosed: true,
-    contextStayedOutOfWorkspaceUntilRequested: true,
+    forbiddenTokensAbsentFromWorkspaceSnapshots: true,
+    longHorizonTokenAbsentFromRoundTwoOutput: true,
     workspaceBoundaryPreserved: true,
   };
 }

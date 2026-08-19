@@ -9,7 +9,7 @@ export enum LogicalThreadEvalCriterionId {
   RestartContinuity = "restart_continuity",
   ExactReplayIdempotence = "exact_replay_idempotence",
   StaleWorkspaceFailsClosed = "stale_workspace_fails_closed",
-  ContextLeakPrevention = "context_leak_prevention",
+  WorkspaceSnapshotIsolation = "workspace_snapshot_isolation",
   WorkspaceBoundary = "workspace_boundary",
 }
 
@@ -25,7 +25,8 @@ export interface LogicalThreadContinuationEvalEvidence {
   readonly exactReplayProviderSideEffects: number;
   readonly restoredEffectRecovered: boolean;
   readonly staleWorkspaceFailedClosed: boolean;
-  readonly contextStayedOutOfWorkspaceUntilRequested: boolean;
+  readonly forbiddenTokensAbsentFromWorkspaceSnapshots: boolean;
+  readonly longHorizonTokenAbsentFromRoundTwoOutput: boolean;
   readonly workspaceBoundaryPreserved: boolean;
 }
 
@@ -116,9 +117,10 @@ export function evaluateLogicalThreadContinuation(
       evidence.staleWorkspaceFailedClosed,
     ),
     criterion(
-      LogicalThreadEvalCriterionId.ContextLeakPrevention,
+      LogicalThreadEvalCriterionId.WorkspaceSnapshotIsolation,
       5,
-      evidence.contextStayedOutOfWorkspaceUntilRequested,
+      evidence.forbiddenTokensAbsentFromWorkspaceSnapshots &&
+        evidence.longHorizonTokenAbsentFromRoundTwoOutput,
     ),
     criterion(
       LogicalThreadEvalCriterionId.WorkspaceBoundary,

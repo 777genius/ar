@@ -6,16 +6,20 @@ workspace and must never be pointed at a user or Quanta project.
 
 The three rounds prove progressively stronger behavior:
 
-1. Start a fresh thread, retain an opaque token only in provider context, and
-   make one bounded workspace edit.
-2. Restart the runtime, recall the first token exactly, retain a second token
-   without writing it, and replay the completed execution without provider work.
-3. Restart again, recall both tokens cumulatively, verify exact replay, and
-   prove a tampered workspace fails closed before provider execution.
+1. Start a fresh thread, ask the provider to retain a primary and a separate
+   long-horizon token, and make one bounded workspace edit. The exact workspace
+   snapshot at the round boundary must contain neither token.
+2. Restart the runtime, recall only the primary token, retain a third token,
+   and replay without provider work. The boundary snapshot must contain neither
+   token reserved for round three, and provider output must not repeat the
+   long-horizon token.
+3. Restart again, recall all three tokens cumulatively, verify exact replay,
+   prove a tampered workspace fails closed, and compare every fixture byte with
+   the expected final state.
 
 The command emits a diagnostic machine-readable score from 0 to 10 showing how
 much evidence survived. A run passes only when every replay, continuation,
-recall, leakage, fail-closed, and workspace-boundary criterion passes. Normal
+recall, snapshot-isolation, fail-closed, and workspace-boundary criterion passes. Normal
 unit tests cover scoring behavior without provider calls.
 
 ```bash
