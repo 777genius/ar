@@ -148,6 +148,7 @@
     "@modelcontextprotocol/sdk",
     "@types/node",
     "@vioxen/agent-account-observability",
+    "ajv",
     "libsodium-wrappers",
     "zod"
   ],
@@ -186,6 +187,7 @@
     "@vioxen/agent-account-observability": "file:packages/agent-account-observability",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^22.20.0",
+    "ajv": "8.20.0",
     "libsodium-wrappers": "^0.8.4",
     "zod": "^4.4.3"
   },

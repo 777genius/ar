@@ -184,7 +184,7 @@ describe("Codex provider adapter", () => {
     const runner = new StaticRunner(
       `${JSON.stringify({
         type: "agent_message",
-        message: JSON.stringify({ verdict: "ok" }),
+        message: JSON.stringify({ verdict: "ok", tldr: null }),
       })}\n`,
       async (input) => {
         const schemaFlagIndex = input.args.indexOf("--output-schema");
@@ -193,8 +193,11 @@ describe("Codex provider adapter", () => {
         expect(schemaPath).toEqual(expect.any(String));
         expect(JSON.parse(await readFile(schemaPath!, "utf8"))).toEqual({
           type: "object",
-          properties: { verdict: { type: "string" } },
-          required: ["verdict"],
+          properties: {
+            tldr: { anyOf: [{ type: "string" }, { type: "null" }] },
+            verdict: { type: "string" },
+          },
+          required: ["tldr", "verdict"],
           additionalProperties: false,
         });
       },
@@ -209,7 +212,10 @@ describe("Codex provider adapter", () => {
       outputSchemas: {
         "review-verdict": {
           type: "object",
-          properties: { verdict: { type: "string" } },
+          properties: {
+            verdict: { type: "string" },
+            tldr: { type: "string" },
+          },
           required: ["verdict"],
           additionalProperties: false,
         },

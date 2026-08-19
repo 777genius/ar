@@ -540,6 +540,7 @@ describe("Codex provider app-server adapter", () => {
       type: "object",
       properties: {
         verdict: { type: "string" },
+        tldr: { type: "string" },
       },
       required: ["verdict"],
       additionalProperties: false,
@@ -562,7 +563,7 @@ describe("Codex provider app-server adapter", () => {
         session: sessionArtifactFromCodexAuthJson(validAuthJson),
         task: {
           kind: "structured-prompt",
-          prompt: JSON.stringify({ verdict: "APPROVE" }),
+          prompt: JSON.stringify({ verdict: "APPROVE", tldr: null }),
           controls: {
             outputSchemaName: "review-verdict",
           },
@@ -580,7 +581,15 @@ describe("Codex provider app-server adapter", () => {
       const turnStart = fakeFactory.requests.find(
         (request) => request.method === "turn/start",
       );
-      expect(turnStart?.params?.outputSchema).toEqual(reviewVerdictSchema);
+      expect(turnStart?.params?.outputSchema).toEqual({
+        type: "object",
+        properties: {
+          tldr: { anyOf: [{ type: "string" }, { type: "null" }] },
+          verdict: { type: "string" },
+        },
+        required: ["tldr", "verdict"],
+        additionalProperties: false,
+      });
     } finally {
       await driver.dispose();
       await rm(workspace, { recursive: true, force: true });
