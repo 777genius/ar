@@ -2,6 +2,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   readdir,
   rename,
   rm,
@@ -15,7 +16,10 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { ProjectAccessScope, ProjectControlEvidenceCustodyPort } from "@vioxen/subscription-runtime/worker-core";
 import { LocalConsumedOutputLedgerWriter } from
   "@vioxen/subscription-runtime/worker-local";
-import { LocalProjectControlEvidenceCustody } from
+import {
+  localProjectControlEvidenceCustodySupported,
+  LocalProjectControlEvidenceCustody,
+} from
   "../../worker-local/project-control-evidence-custody-local-adapter";
 import type { CodexGoalJobManifest } from "../codex-goal-jobs";
 import {
@@ -59,7 +63,9 @@ afterAll(async () => await Promise.all([...remediationRoots].map((root) =>
 )));
 describe("consumed output evidence scope", () => {
   it("allows ledger epoch roots beneath the configured canonical registry root", async () => {
-    const root = await mkdtemp(join(tmpdir(), "ledger-registry-scope-"));
+    const root = await realpath(await mkdtemp(
+      join(tmpdir(), "ledger-registry-scope-"),
+    ));
     remediationRoots.add(root);
     const registryRoot = join(root, "registry");
     const oldRoot = join(registryRoot, "controller", "ledger-v1");
@@ -75,7 +81,9 @@ describe("consumed output evidence scope", () => {
   });
 
   it("reads hosted sibling archives only through the explicit narrow evidence root", async () => {
-    const root = await mkdtemp(join(tmpdir(), "hosted-evidence-root-"));
+    const root = await realpath(await mkdtemp(
+      join(tmpdir(), "hosted-evidence-root-"),
+    ));
     remediationRoots.add(root);
     const ledgerRoot = join(root, "codex-goal-jobs", "controller", "consumed-output-ledger");
     const evidenceRoot = join(root, "controller", "archives");
@@ -122,7 +130,9 @@ describe("consumed output evidence scope", () => {
   });
 
   it("rejects a symlink-swapped evidence leaf before publishing the ledger", async () => {
-    const root = await mkdtemp(join(tmpdir(), "evidence-preflight-"));
+    const root = await realpath(await mkdtemp(
+      join(tmpdir(), "evidence-preflight-"),
+    ));
     remediationRoots.add(root);
     const ledgerRoot = join(root, "ledger");
     const evidenceRoot = join(root, "archives");
@@ -155,7 +165,8 @@ describe("consumed output evidence scope", () => {
 
 const evidenceCustody = new LocalProjectControlEvidenceCustody();
 
-describe("immutable evidence publication recovery", () => {
+describe.runIf(localProjectControlEvidenceCustodySupported)(
+  "immutable evidence publication recovery", () => {
   for (const crashPoint of [
     "after_temp_write",
     "after_temp_fsync",
@@ -245,7 +256,7 @@ describe("immutable evidence publication recovery", () => {
       name.startsWith(".custody-publish-")
     )).toEqual([]);
   });
-});
+  });
 
 describe("project-control debt confirmation controller CAS", () => {
   it("rejects a controller or scope reloaded with any drift under the lock", () => {
@@ -271,7 +282,8 @@ describe("project-control debt confirmation controller CAS", () => {
   });
 });
 
-describe("legacy job summary retirement", () => {
+describe.runIf(localProjectControlEvidenceCustodySupported)(
+  "legacy job summary retirement", () => {
   it("publishes an immutable idempotent receipt and suppresses only the exact manifest", async () => {
     const fixture = await retirementFixture();
     const plan = await fixture.plan();
@@ -451,9 +463,10 @@ describe("legacy job summary retirement", () => {
     const foreign = await retirementFixture("foreign");
     await expect(foreign.plan()).rejects.toThrow("project_mismatch");
   });
-});
+  });
 
-describe("frozen output import and summary supersession", () => {
+describe.runIf(localProjectControlEvidenceCustodySupported)(
+  "frozen output import and summary supersession", () => {
   it("copies hash-bound bytes, fsyncs an append-only receipt, replays idempotently, and projects exact summaries", async () => {
     const fixture = await frozenFixture();
     const authoredPath = join(fixture.workspace, "authored.txt");
@@ -837,9 +850,15 @@ describe("frozen output import and summary supersession", () => {
     })).rejects.toThrow("root_noncanonical");
     expect(await readdir(outsideRoot)).toEqual([]);
   });
-});
+  });
 
-certifyControlDebtPhaseB({ custody: evidenceCustody, retirementFixture, frozenFixture });
+if (localProjectControlEvidenceCustodySupported) {
+  certifyControlDebtPhaseB({
+    custody: evidenceCustody,
+    retirementFixture,
+    frozenFixture,
+  });
+}
 
 async function retirementFixture(
   targetProjectId = "p0",

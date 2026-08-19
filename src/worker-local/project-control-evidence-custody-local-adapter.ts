@@ -25,10 +25,12 @@ export class LocalProjectControlEvidenceCustody implements
     readonly evidenceRoots: readonly string[];
     readonly deniedRoots: readonly string[];
   }): Promise<ProjectControlCustodyBootstrapCertification> {
+    assertLocalProjectControlEvidenceCustodySupported();
     return await materializeApprovedProjectControlCustody(input, this.crashHook);
   }
 
   async canonicalDirectory(path: string, allowMissing = false): Promise<string> {
+    assertLocalProjectControlEvidenceCustodySupported();
     const lexical = resolve(path);
     try {
       const handle = await openAbsoluteDirectoryNoSymlinks(lexical);
@@ -42,6 +44,7 @@ export class LocalProjectControlEvidenceCustody implements
   }
 
   async readImmutableFile(path: string, maxBytes: number): Promise<ImmutableEvidenceFile> {
+    assertLocalProjectControlEvidenceCustodySupported();
     const lexical = resolve(path);
     const held = await openAbsoluteFileNoSymlinks(lexical);
     const handle = held.handle;
@@ -83,6 +86,7 @@ export class LocalProjectControlEvidenceCustody implements
   }
 
   async inspectImmutablePatch(path: string, maxBytes: number): Promise<ImmutablePatchEvidence> {
+    assertLocalProjectControlEvidenceCustodySupported();
     const lexical = resolve(path);
     const held = await openAbsoluteFileNoSymlinks(lexical);
     const handle = held.handle;
@@ -143,6 +147,7 @@ export class LocalProjectControlEvidenceCustody implements
   }
 
   async pathKind(path: string) {
+    assertLocalProjectControlEvidenceCustodySupported();
     const lexical = resolve(path);
     if (lexical === "/") return "directory" as const;
     let candidate = lexical;
@@ -166,6 +171,7 @@ export class LocalProjectControlEvidenceCustody implements
   }
 
   async openDirectoryForInspection(path: string): Promise<EvidenceDirectoryInspection> {
+    assertLocalProjectControlEvidenceCustodySupported();
     const lexical = resolve(path);
     const parentPath = dirname(lexical);
     const parent = lexical === "/"
@@ -224,6 +230,7 @@ export class LocalProjectControlEvidenceCustody implements
   }
 
   async listDirectory(path: string): Promise<readonly EvidenceDirectoryEntry[]> {
+    assertLocalProjectControlEvidenceCustodySupported();
     const lexical = resolve(path);
     let held: HeldLexicalDirectory;
     try {
@@ -256,6 +263,7 @@ export class LocalProjectControlEvidenceCustody implements
     readonly fileName: string; readonly bytes: Uint8Array;
     readonly expectedSha256: string;
   }) {
+    assertLocalProjectControlEvidenceCustodySupported();
     if (createHash("sha256").update(input.bytes).digest("hex") !==
       input.expectedSha256) throw new Error("evidence_custody_source_drift");
     const boundary = await openBoundary(input.root, input.directories,
@@ -282,6 +290,7 @@ export class LocalProjectControlEvidenceCustody implements
     readonly root: string; readonly directories: readonly string[];
     readonly fileName: string;
   }) {
+    assertLocalProjectControlEvidenceCustodySupported();
     const sourcePath = resolve(input.sourcePath);
     const source = await openAbsoluteFileNoSymlinks(sourcePath);
     let boundary: Awaited<ReturnType<typeof openBoundary>> | undefined;
@@ -315,6 +324,20 @@ export class LocalProjectControlEvidenceCustody implements
       await closeHeldLexicalFile(source);
       await boundary?.close();
     }
+  }
+}
+
+/**
+ * This adapter uses Linux procfs fd paths so traversal stays relative to held
+ * directory handles. Falling back to lexical paths would reintroduce TOCTOU
+ * races at the evidence boundary, so unsupported hosts fail closed.
+ */
+export const localProjectControlEvidenceCustodySupported =
+  process.platform === "linux";
+
+export function assertLocalProjectControlEvidenceCustodySupported(): void {
+  if (!localProjectControlEvidenceCustodySupported) {
+    throw new Error("project_control_evidence_custody_platform_unsupported");
   }
 }
 

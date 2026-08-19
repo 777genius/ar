@@ -1,7 +1,10 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { LocalProjectControlEvidenceCustody } from
+import {
+  localProjectControlEvidenceCustodySupported,
+  LocalProjectControlEvidenceCustody,
+} from
   "../../worker-local/project-control-evidence-custody-local-adapter";
 import { planFromFrozenOutputReceipt } from
   "../application/project-control/codex-goal-frozen-output-contract";
@@ -26,7 +29,8 @@ afterAll(async () => await Promise.all([...roots].map((root) =>
   rm(root, { recursive: true, force: true })
 )));
 
-describe("R37 control-debt regressions", () => {
+describe.runIf(localProjectControlEvidenceCustodySupported)(
+  "R37 control-debt regressions", () => {
   it("fails closed when retirement absence listing loses its lexical binding", async () => {
     const fixture = await createRetirementFixture(custody, retainRoot);
     const listedRoot = fixture.manifest.jobRootDir;
@@ -101,7 +105,7 @@ describe("R37 control-debt regressions", () => {
       planFromFrozenOutputReceipt(supersession.receipt),
     )).toBe(supersession.receipt.planSha256);
   });
-});
+  });
 
 function listSwapCustody(
   listedRoot: string,

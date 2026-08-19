@@ -550,6 +550,9 @@ export async function frozenOutputSupersessionProjection(input: {
   readonly active: readonly CodexGoalJobSummary[];
   readonly supersessions: readonly FrozenOutputSupersessionReceiptProjection[];
 }> {
+  if (input.evidenceRoots.length === 0) {
+    return { active: input.summaries, supersessions: [] };
+  }
   const lexicalAuthorization = buildFrozenOutputPathAuthorization({
     scope: input.scope,
     registryRootDir: input.registryRootDir,

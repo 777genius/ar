@@ -6,6 +6,14 @@ They are preview-first and require an exact plan hash on confirmation.
 
 ## Evidence custody scope
 
+The local evidence-custody adapter is Linux-only. It requires procfs fd paths
+to keep traversal and publication relative to held directory handles. On other
+platforms, project-control operations that require evidence custody fail closed
+with `project_control_evidence_custody_platform_unsupported`; ordinary runtime
+operations that do not request this custody boundary remain available. A
+lexical-path fallback is intentionally forbidden because it would weaken the
+TOCTOU guarantees described below.
+
 Controllers that read or write terminal-output evidence declare an explicit,
 narrow `projectAccessScope.consumedOutputEvidenceRoots` array. Each root must be
 an existing canonical directory named `archives`; the lexical path must equal

@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  localProjectControlEvidenceCustodySupported,
   LocalProjectControlEvidenceCustody,
   writeAll,
 } from "../project-control-evidence-custody-local-adapter";
@@ -35,7 +36,8 @@ const fixtureBootstrap = [
   `await import(${JSON.stringify(pathToFileURL(fixturePath).href)});`,
 ].join("\n");
 
-describe("local project-control evidence custody durability", () => {
+describe.runIf(localProjectControlEvidenceCustodySupported)(
+  "local project-control evidence custody durability", () => {
   it("classifies a leaf relative to an open no-follow parent capability", async () => {
     const outer = await mkdtemp(join(tmpdir(), "custody-inspection-"));
     const parent = join(outer, "parent");
@@ -447,7 +449,17 @@ describe("local project-control evidence custody durability", () => {
     }
     expect(reapError?.code).toBe("ESRCH");
   });
-});
+  });
+
+describe.runIf(!localProjectControlEvidenceCustodySupported)(
+  "local project-control evidence custody platform boundary", () => {
+    it("fails closed before touching evidence on unsupported platforms", async () => {
+      const custody = new LocalProjectControlEvidenceCustody();
+      await expect(custody.canonicalDirectory(tmpdir())).rejects.toThrow(
+        "project_control_evidence_custody_platform_unsupported",
+      );
+    });
+  });
 
 async function runFixture(input: {
   readonly root: string;

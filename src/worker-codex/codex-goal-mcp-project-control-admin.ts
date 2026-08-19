@@ -10,10 +10,12 @@ import {
   ProjectOperation,
   evaluateProjectAdmission,
   type ProjectAccessScope,
+  type ProjectControlCustodyBootstrapCertification,
   type ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
   codexGoalJobToArgs,
+  bootstrapInitialProjectControlCustody,
   readCodexGoalJob,
   summarizeCodexGoalJob,
   updateCodexGoalJob,
@@ -591,6 +593,8 @@ export async function projectControlUpdateControllerScopeView(
     owner: `controller-scope-update:${controller.controller.jobId}`,
   });
   let manifest;
+  let custodyCertification:
+    ProjectControlCustodyBootstrapCertification | undefined;
   try {
     const current = await deps.loadProjectControlController(args);
     const currentManifestSha256 = createHash("sha256")
@@ -607,13 +611,28 @@ export async function projectControlUpdateControllerScopeView(
       proposedScope.consumedOutputEvidenceRoots ?? [],
       proposedScope,
     );
+    if ((proposedScope.consumedOutputLedgerRoots?.length ?? 0) > 0 ||
+      (proposedScope.consumedOutputEvidenceRoots?.length ?? 0) > 0) {
+      if (!deps.evidenceCustody) {
+        throw new Error("project_control_evidence_custody_required");
+      }
+      custodyCertification = await bootstrapInitialProjectControlCustody(
+        { ...current.controller, projectAccessScope: proposedScope },
+        deps.evidenceCustody,
+      );
+      await custodyCertification?.revalidate();
+    }
     manifest = await updateCodexGoalJob({
       registryRootDir: current.registryRootDir,
       jobId: current.controller.jobId,
       patch: { projectAccessScope: proposedScope },
     });
   } finally {
-    await locks.release(lease);
+    try {
+      await custodyCertification?.close();
+    } finally {
+      await locks.release(lease);
+    }
   }
   return {
     ok: true,

@@ -50,6 +50,8 @@ import {
   writeClaudeRunArtifacts,
   writeFakeAuth,
 } from "./codex-goal-mcp-test-support";
+import { localProjectControlEvidenceCustodySupported } from
+  "../../worker-local/project-control-evidence-custody-local-adapter";
 
 const execFileAsync = promisify(execFile);
 
@@ -346,7 +348,9 @@ describe("codex goal MCP server", () => {
     }
   });
 
-  it("updates controller consumed-output ledger roots through scoped repair only", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "updates controller consumed-output ledger roots through scoped repair only",
+    async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-controller-scope-repair-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerJobRoot = join(root, "worker-jobs", "infinity-context-controller-v1");
@@ -645,7 +649,8 @@ describe("codex goal MCP server", () => {
       await server.close();
       await rm(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
 
   it("denies generic start for project-scoped controller jobs", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-project-generic-start-"));

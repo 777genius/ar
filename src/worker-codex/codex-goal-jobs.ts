@@ -675,7 +675,7 @@ async function assertCodexGoalJobManifestAccessConsistency(
   }
 }
 
-async function bootstrapInitialProjectControlCustody(
+export async function bootstrapInitialProjectControlCustody(
   manifest: CodexGoalJobManifest,
   custody: ProjectControlEvidenceCustodyPort,
 ): Promise<ProjectControlCustodyBootstrapCertification | undefined> {

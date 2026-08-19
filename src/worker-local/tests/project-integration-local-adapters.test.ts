@@ -13,6 +13,7 @@ import {
 import {
   ConfiguredCommitIdentityAdapter,
   captureLocalTerminalOutputBackup,
+  localProjectControlEvidenceCustodySupported,
   LocalConsumedOutputLedgerWriter,
   LocalGitIntegrationAdapter,
   LocalIntegratedOutputLedgerAdapter,
@@ -1136,7 +1137,9 @@ describe("local project integration adapters", () => {
       workspacePath: fixture.workspacePath,
       changedFiles: [],
       sourcePatchPath,
-    })).rejects.toThrow("evidence_custody_immutable_conflict");
+    })).rejects.toThrow(localProjectControlEvidenceCustodySupported
+      ? "evidence_custody_immutable_conflict"
+      : "integrated_output_ledger_preparation_conflict");
   });
 
 });

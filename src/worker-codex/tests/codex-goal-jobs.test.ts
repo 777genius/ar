@@ -28,7 +28,10 @@ import {
   type CodexGoalJobManifestInput,
 } from "../codex-goal-jobs";
 import { upsertCodexGoalLaunchManifest } from "../codex-goal-launch-manifest";
-import { LocalProjectControlEvidenceCustody } from
+import {
+  localProjectControlEvidenceCustodySupported,
+  LocalProjectControlEvidenceCustody,
+} from
   "../../worker-local/project-control-evidence-custody-local-adapter";
 
 describe("codex goal job registry", () => {
@@ -359,7 +362,8 @@ describe("codex goal job registry", () => {
     }
   });
 
-  it("allows brokered project-scoped control manifests but rejects missing scope", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "allows brokered project-scoped control manifests but rejects missing scope", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-jobs-"));
     const workspace = join(root, "workspace");
     const ledgerRoot = join(workspace, "custody", "ledger");
@@ -409,9 +413,10 @@ describe("codex goal job registry", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+    });
 
-  it("revalidates custody immediately before initial controller publication", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "revalidates custody immediately before initial controller publication", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-jobs-custody-drift-"));
     const workspace = join(root, "workspace");
     const ledgerRoot = join(workspace, "custody", "ledger");
@@ -453,7 +458,7 @@ describe("codex goal job registry", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+    });
 
   it("skips custody for duplicate, overwrite-existing, and upsert-existing jobs", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-jobs-existing-"));

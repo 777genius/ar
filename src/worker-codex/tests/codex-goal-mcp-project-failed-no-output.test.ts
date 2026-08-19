@@ -26,6 +26,8 @@ import {
   readCodexGoalConsumedOutputLedgers,
 } from "../application/project-control/codex-goal-consumed-output-ledger-io";
 import type { ReviewedWorkerOutputSnapshot } from "../reviewed-worker-output";
+import { localProjectControlEvidenceCustodySupported } from
+  "../../worker-local/project-control-evidence-custody-local-adapter";
 import { git, gitInitRepository } from "./codex-goal-mcp-test-support";
 
 describe("project failed_no_output lifecycle", () => {
@@ -48,7 +50,9 @@ describe("project failed_no_output lifecycle", () => {
     }
   });
 
-  it("corrects empty rejected output append-only and rejects dirty workspaces", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "corrects empty rejected output append-only and rejects dirty workspaces",
+    async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-failed-no-output-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const ledgerRoot = join(root, "control", "consumed-output-ledger");
@@ -80,7 +84,7 @@ describe("project failed_no_output lifecycle", () => {
         accessBoundary: AccessBoundary.ProjectScopedControl,
         projectAccessScope: {
           projectId: "project",
-          readRoots: [],
+          readRoots: [root],
           workspaceRoots: [controllerWorkspace],
           worktreeRoots: [worktreeRoot],
           registryRoot: registryRootDir,
@@ -342,7 +346,8 @@ describe("project failed_no_output lifecycle", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
 });
 
 function rejectedContinuationSnapshot(input: {

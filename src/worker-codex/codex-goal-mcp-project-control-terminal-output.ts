@@ -434,6 +434,7 @@ async function recordInitialFailedNoOutput(input: {
         throw new Error("failed_no_output_clean_workspace_required");
       }
       const backup = await captureLocalTerminalOutputBackup({
+        requireEvidenceCustody: true,
         archiveRoot: projectControlConsumedOutputEvidenceRoot(
           input.controller.scope,
         ),

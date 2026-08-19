@@ -258,9 +258,15 @@ export async function buildCodexProjectAdmissionSnapshot(
     : summaries.filter((summary) =>
         matchesProjectControlPrefix(summary.jobId, prefixes)
       );
-  const retirementProjection = input.deps.evidenceCustody
+  const custodyProjectionEnabled = input.deps.evidenceCustody !== undefined &&
+    ((input.scope.consumedOutputEvidenceRoots?.length ?? 0) > 0 ||
+      (input.scope.consumedOutputLedgerRoots?.length ?? 0) > 0);
+  const evidenceCustody = custodyProjectionEnabled
+    ? input.deps.evidenceCustody
+    : undefined;
+  const retirementProjection = custodyProjectionEnabled
     ? await projectRetirementProjection({
-        custody: input.deps.evidenceCustody,
+        custody: evidenceCustody!,
         registryRootDir: input.registryRootDir,
         projectId: input.scope.projectId,
         ...(input.controllerJobId
@@ -274,9 +280,9 @@ export async function buildCodexProjectAdmissionSnapshot(
         },
       })
     : { active: matchingProjectSummariesBeforeRetirement, retired: [] };
-  const frozenProjection = input.deps.evidenceCustody
+  const frozenProjection = custodyProjectionEnabled
     ? await frozenOutputSupersessionProjection({
-        custody: input.deps.evidenceCustody,
+        custody: evidenceCustody!,
         scope: input.scope,
         registryRootDir: input.registryRootDir,
         evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],

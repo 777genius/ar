@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -13,9 +13,9 @@ export async function createGitFixture(): Promise<{
   readonly workspacePath: string;
   readonly workerCommitSha: string;
 }> {
-  const rootDir = await mkdtemp(
+  const rootDir = await realpath(await mkdtemp(
     join(tmpdir(), "project-integration-adapters-"),
-  );
+  ));
   tempRoots.push(rootDir);
   const workspacePath = join(rootDir, "workspace");
   const remotePath = join(rootDir, "remote.git");

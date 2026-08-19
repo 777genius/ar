@@ -38,6 +38,7 @@ export async function recordRejectedReviewedOutput(input: {
     throw new Error("project_control_consumed_output_ledger_required");
   }
   const backup = await captureLocalTerminalOutputBackup({
+    requireEvidenceCustody: true,
     archiveRoot: projectControlConsumedOutputEvidenceRoot(input.scope),
     archiveName:
       `${input.snapshot.workerJobId}-rejected-reviewed-` +
@@ -105,6 +106,7 @@ export async function recordRejectedUncapturedOutput(input: {
   const attemptId = `uncaptured-rejection-${patchSha256}`;
   const archiveRoot = projectControlConsumedOutputEvidenceRoot(input.scope);
   const backup = await captureLocalTerminalOutputBackup({
+    requireEvidenceCustody: true,
     archiveRoot,
     archiveName: `${input.jobId}-rejected-uncaptured-${patchSha256}`,
     workspacePath: input.workspacePath,

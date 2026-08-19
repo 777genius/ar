@@ -45,6 +45,8 @@ import {
   writeClaudeRunArtifacts,
   writeFakeAuth,
 } from "./codex-goal-mcp-test-support";
+import { localProjectControlEvidenceCustodySupported } from
+  "../../worker-local/project-control-evidence-custody-local-adapter";
 
 const execFileAsync = promisify(execFile);
 
@@ -801,7 +803,9 @@ describe("codex goal MCP project-control server", () => {
     }
   });
 
-  it("runs project integration lifecycle tools through policy and local adapters", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "runs project integration lifecycle tools through policy and local adapters",
+    async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-project-integration-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerJobRoot = join(root, "worker-jobs", "infinity-context-controller-v1");
@@ -848,6 +852,7 @@ describe("codex goal MCP project-control server", () => {
         networkAccess: NetworkAccessMode.Restricted,
         projectAccessScope: {
           projectId: "infinity-context",
+          readRoots: [join(root, "worker-jobs")],
           workspaceRoots: [workspacePath],
           registryRoot: registryRootDir,
           jobIdPrefixes: ["infinity-context-"],
@@ -985,5 +990,6 @@ describe("codex goal MCP project-control server", () => {
       await server.close();
       await rm(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
 });

@@ -23,7 +23,10 @@ import type {
   TerminalOutputDecision,
   TerminalOutputDecisionReceipt,
 } from "@vioxen/subscription-runtime/worker-core";
-import { LocalProjectControlEvidenceCustody } from
+import {
+  localProjectControlEvidenceCustodySupported,
+  LocalProjectControlEvidenceCustody,
+} from
   "./project-control-evidence-custody-local-adapter";
 import { CONSUMED_OUTPUT_LEDGER_RETIRED_MARKER } from
   "@vioxen/subscription-runtime/worker-core";
@@ -462,6 +465,7 @@ export async function captureLocalTerminalOutputBackup(input: {
   readonly sourcePatchPath?: string;
   readonly sourcePatchBytes?: Uint8Array;
   readonly gitBinaryPath?: string;
+  readonly requireEvidenceCustody?: boolean;
 }): Promise<LocalTerminalOutputBackupCapture> {
   const archivePath = join(
     input.archiveRoot,
@@ -497,6 +501,22 @@ export async function captureLocalTerminalOutputBackup(input: {
             ? { gitBinaryPath: input.gitBinaryPath }
             : {}),
         }));
+  if (!localProjectControlEvidenceCustodySupported &&
+    !input.requireEvidenceCustody) {
+    await mkdir(archivePath, { recursive: true });
+    await Promise.all([
+      publishExactBytes(statusPath, status),
+      publishExactBytes(patchPath, patch),
+      publishExactBytes(numstatPath, numstat),
+    ]);
+    return {
+      archivePath,
+      statusPath,
+      patchPath,
+      numstatPath,
+      hasAuthoredOutput: await anyFileHasBytes([patchPath, numstatPath]),
+    };
+  }
   const custody = new LocalProjectControlEvidenceCustody();
   const directory = safeLedgerName(input.archiveName);
   await Promise.all([
@@ -650,6 +670,7 @@ export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedge
       archiveName: `${input.attempt.workerOutput.workerJobId}-rejected-${input.attempt.attemptId}`,
       workspacePath: input.attempt.workerOutput.workspacePath,
       changedFiles: input.attempt.workerOutput.changedFiles,
+      requireEvidenceCustody: this.options.custodyRoot !== undefined,
       ...(input.attempt.workerOutput.patchPath
         ? { sourcePatchPath: input.attempt.workerOutput.patchPath }
         : {}),
