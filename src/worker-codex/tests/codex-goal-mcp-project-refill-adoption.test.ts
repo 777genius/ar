@@ -20,6 +20,8 @@ import { materializeCodexGoalHandoffArtifacts } from "../codex-goal-handoff-arti
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import { captureGitWorkspacePatch } from "../codex-goal-runtime-result-io";
 import { stagedPatchSha256 } from "../application/project-control/codex-goal-project-git";
+import { localProjectControlEvidenceCustodySupported } from
+  "../../worker-local/project-control-evidence-custody-local-adapter";
 import {
   callToolJson,
   git,
@@ -29,7 +31,7 @@ import {
 } from "./codex-goal-mcp-test-support";
 
 describe("project refill adoption", () => {
-  it.each([
+  it.runIf(localProjectControlEvidenceCustodySupported).each([
     {
       name: "retries rejected output from a rolled-back stale branch after canonical advance",
       canonicalPath: "unrelated.md",
@@ -196,6 +198,7 @@ describe("project refill adoption", () => {
         networkAccess: NetworkAccessMode.Restricted,
         projectAccessScope: {
           projectId: "project",
+          readRoots: [join(root, "worker-jobs")],
           workspaceRoots: [sourceWorkspacePath],
           worktreeRoots: [join(root, "worktrees")],
           registryRoot: registryRootDir,

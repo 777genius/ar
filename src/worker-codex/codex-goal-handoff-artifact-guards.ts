@@ -41,6 +41,20 @@ export function assertSafeHandoffId(value: string, label: string): void {
   }
 }
 
+export function assertSafeHandoffRelativePath(path: string): string {
+  if (
+    !path ||
+    Buffer.byteLength(path) > 4096 ||
+    isAbsolute(path) ||
+    /[\u0000-\u001f\u007f]/.test(path) ||
+    path.includes("\\") ||
+    path.split("/").some((part) => !part || part === "." || part === "..")
+  ) {
+    throw new Error("handoff_changed_path_invalid");
+  }
+  return path;
+}
+
 export function isHandoffNodeError(
   error: unknown,
   code: string,

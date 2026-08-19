@@ -327,11 +327,14 @@ export async function assertTerminalRecoveryAdmission(
 export async function verifyActionFixture(
   fixture: Awaited<ReturnType<typeof recoveryActionFixture>>,
   roots: readonly string[] = [fixture.ledgerRoot],
+  evidenceRoots: readonly string[] =
+    fixture.scope.consumedOutputEvidenceRoots ?? [],
 ) {
   return await verifyTerminalHandoffRecovery({
     producer: fixture.producer,
     workspacePath: fixture.workspacePath,
     snapshotter: fixture.snapshotter,
     consumedOutputLedgerRoots: roots,
+    consumedOutputEvidenceRoots: evidenceRoots,
   });
 }

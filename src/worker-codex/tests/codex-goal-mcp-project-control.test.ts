@@ -821,7 +821,10 @@ describe("codex goal MCP project-control server", () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
     try {
-      await mkdir(join(workspacePath, "src"), { recursive: true });
+      await Promise.all([
+        mkdir(join(workspacePath, "src"), { recursive: true }),
+        mkdir(join(root, "worker-jobs"), { recursive: true }),
+      ]);
       await gitInitRepository(workspacePath);
       await writeFile(join(workspacePath, "src", "memory.ts"), "export const value = 1;\n");
       await git(workspacePath, ["add", "."]);

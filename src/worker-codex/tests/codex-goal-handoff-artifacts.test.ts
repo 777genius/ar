@@ -209,6 +209,7 @@ describe("Codex goal handoff artifact materialization", () => {
     const fixture = await createFixture();
     await writeFile(join(fixture.workspacePath, "README.md"), "changed\n");
     await git(fixture.workspacePath, ["add", "README.md"]);
+    await git(fixture.workspacePath, ["update-index", "--split-index"]);
 
     expect(await gitOutput(fixture.workspacePath, ["diff", "--name-only"]))
       .toBe("");
@@ -219,10 +220,22 @@ describe("Codex goal handoff artifact materialization", () => {
         "--name-only",
       ]),
     ).toBe("README.md");
+    const liveIndexPath = await gitOutput(fixture.workspacePath, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-path",
+      "index",
+    ]);
+    const liveIndexBefore = await readFile(liveIndexPath);
     const staged = await captureCodexGoalContinuationWorkspaceFingerprint({
       workspacePath: fixture.workspacePath,
       expectedBaseCommit: fixture.baseCommit,
     });
+    await expect(captureCodexGoalContinuationWorkspaceFingerprint({
+      workspacePath: fixture.workspacePath,
+      expectedBaseCommit: fixture.baseCommit,
+    })).resolves.toEqual(staged);
+    expect(await readFile(liveIndexPath)).toEqual(liveIndexBefore);
 
     await git(fixture.workspacePath, ["reset", "--", "README.md"]);
     expect(

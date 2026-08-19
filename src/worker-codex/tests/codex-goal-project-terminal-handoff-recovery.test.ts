@@ -356,6 +356,7 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
             if (!recovery) throw new Error("expected rejected recovery");
             await assertCodexGoalProjectJobNotTerminal({
               roots: input.scope.consumedOutputLedgerRoots ?? [],
+              evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
               projectId: input.scope.projectId,
               controllerJobId: input.controller.jobId,
               jobId: fixture.jobId,

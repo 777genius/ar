@@ -1,8 +1,10 @@
 import { createServer } from "vite";
+import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
 
 const mode = process.env.CODEX_LEDGER_EPOCH_PROCESS_CRASH_MODE;
 const root = process.env.CODEX_LEDGER_EPOCH_PROCESS_CRASH_ROOT;
 const planSha256 = process.env.CODEX_LEDGER_EPOCH_PROCESS_CRASH_PLAN_SHA256;
+const markerPath = process.env.CODEX_LEDGER_EPOCH_PROCESS_CRASH_MARKER;
 if ((mode !== "crash" && mode !== "resume") || !root || !planSha256) {
   throw new Error("ledger_epoch_process_crash_fixture_required");
 }
@@ -20,8 +22,17 @@ try {
   );
   const fixture = await handlerFixture(676, true, true, false, root);
   if (mode === "crash") {
+    if (!markerPath) throw new Error("ledger_epoch_process_crash_marker_required");
     fixture.setUpgradeCrashBoundary((boundary) => {
-      if (boundary === "final-sidecar") process.kill(process.pid, "SIGKILL");
+      if (boundary !== "final-sidecar") return;
+      const marker = openSync(markerPath, "wx", 0o600);
+      try {
+        writeSync(marker, "final-sidecar\n");
+        fsyncSync(marker);
+      } finally {
+        closeSync(marker);
+      }
+      process.kill(process.pid, "SIGKILL");
     });
   }
   const request = fixture.args({

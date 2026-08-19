@@ -112,12 +112,16 @@ describe("exact-213 monotonic public-handler interruption chain", () => {
         );
         fixture = await handlerFixture(676, true, true);
         const plan = await fixture.seedPreparedV1();
+        const crashMarkerPath = join(fixture.root, "process-crash-before-kill.marker");
         const crashed = await runProcessCrashChild({
           mode: "crash",
           root: fixture.root,
           planSha256: plan.planSha256,
+          markerPath: crashMarkerPath,
         });
-        expect(crashed.signal).toBe("SIGKILL");
+        expect(crashed.signal, crashed.stderr).toBe("SIGKILL");
+        await expect(readFile(crashMarkerPath, "utf8"))
+          .resolves.toBe("final-sidecar\n");
 
         const resumed = await runProcessCrashChild({
           mode: "resume",
@@ -142,6 +146,7 @@ async function runProcessCrashChild(input: {
   readonly mode: "crash" | "resume";
   readonly root: string;
   readonly planSha256: string;
+  readonly markerPath?: string;
 }): Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }> {
   const childTest = join(
     import.meta.dirname,
@@ -155,6 +160,9 @@ async function runProcessCrashChild(input: {
       CODEX_LEDGER_EPOCH_PROCESS_CRASH_MODE: input.mode,
       CODEX_LEDGER_EPOCH_PROCESS_CRASH_ROOT: input.root,
       CODEX_LEDGER_EPOCH_PROCESS_CRASH_PLAN_SHA256: input.planSha256,
+      ...(input.markerPath
+        ? { CODEX_LEDGER_EPOCH_PROCESS_CRASH_MARKER: input.markerPath }
+        : {}),
     },
     stdio: ["ignore", "ignore", "pipe"],
   });

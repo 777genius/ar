@@ -529,12 +529,18 @@ describe("codex goal job registry", () => {
       tmuxSession: upsertJobId,
       workspacePath: upsertWorkspace,
       cwd: upsertWorkspace,
+      projectAccessScope: {
+        projectId: "infinity-context",
+        workspaceRoots: [upsertWorkspace],
+        jobIdPrefixes: ["infinity-context-"],
+      },
     } satisfies CodexGoalJobManifestInput;
     const control = {
       ...existing,
       accessBoundary: AccessBoundary.ProjectScopedControl,
       projectAccessScope: {
         projectId: "infinity-context",
+        readRoots: [root],
         registryRoot: registryRootDir,
         workspaceRoots: [workspace],
         consumedOutputLedgerRoots: [ledgerRoot],

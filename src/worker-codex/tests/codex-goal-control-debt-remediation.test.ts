@@ -345,10 +345,17 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
           activeWriterRiskReasons: ["dirty_workspace_without_worker"],
         })),
     };
+    const admissionEvidenceRoot = join(
+      fixture.registry,
+      "controller",
+      "archives",
+    );
+    await mkdir(admissionEvidenceRoot, { recursive: true });
     const scope: ProjectAccessScope = {
       projectId: "p0",
       registryRoot: fixture.registry,
       workspaceRoots: [fixture.root],
+      consumedOutputEvidenceRoots: [admissionEvidenceRoot],
       jobIdPrefixes: ["legacy", "retained", "new-"],
       allowedAccountIds: ["account-a"],
     };

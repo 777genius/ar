@@ -371,6 +371,7 @@ describe("codex goal MCP server", () => {
       allowedBranches: ["main"],
       allowedAccountIds: ["account-a"],
     };
+    await mkdir(controlRoot, { recursive: true });
     const server = createCodexGoalMcpServer();
     const client = new Client({
       name: "subscription-runtime-test",
