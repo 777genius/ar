@@ -37,6 +37,8 @@ import {
   "./codex-goal-ledger-epoch-legacy-admission-fixture";
 import { buildLedgerEpochLegacyAdmissionAnchor } from
   "../application/project-control/codex-goal-ledger-epoch-legacy-admission";
+import { assertPublicationLockAdmissionGuardrails } from
+  "./codex-goal-ledger-epoch-publication-lock-fixture";
 const realHandlerUpgradeCrashBoundaries = [
   ...Array.from({ length: 205 }, (_, index) =>
     `source-orphan-${String(index).padStart(4, "0")}.json`
@@ -488,23 +490,11 @@ describe("project control ledger epoch handler", () => {
     expect(await exactTreeBytes(fixture.root)).toEqual(before);
   });
 
-  it("confirms a fresh preview under the actual publication locks", async () => {
+  it("confirms retained info debt but rejects blocking debt under publication locks", async () => {
     const fixture = await handlerFixture();
-    const preview = await projectControlLedgerEpochMigrationView(
-      fixture.args(),
-      fixture.deps,
-    );
-    const planSha256 = String(preview.planSha256);
-
-    await expect(projectControlLedgerEpochMigrationView(
-      fixture.args({
-        confirmLedgerEpochMigration: true,
-        expectedLedgerEpochPlanSha256: planSha256,
-      }),
-      fixture.deps,
-    )).resolves.toMatchObject({
-      ok: true,
-      receipt: { planSha256, status: "active" },
+    await assertPublicationLockAdmissionGuardrails({
+      fixture,
+      exactTreeBytes,
     });
   });
 
