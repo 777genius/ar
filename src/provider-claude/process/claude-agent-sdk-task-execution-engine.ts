@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 import type {
@@ -19,6 +19,7 @@ import {
   AgentRuntimeEditMode,
   AgentRuntimeFailureCode,
   AgentRuntimeProviderSandboxMode,
+  isProjectInstructionPath,
   type ProviderFailure,
   type ProviderTaskTelemetry,
 } from "@vioxen/subscription-runtime/core";
@@ -404,6 +405,19 @@ function createToolPolicyEvaluator(
     if (pathField === null) return accept();
     const candidate = toolInput[pathField];
     if (candidate === undefined && (toolName === "Grep" || toolName === "Glob")) {
+      if (
+        input.workspaceInstructionPolicy === "deny_project_instructions_v1" &&
+        (toolName === "Grep" ||
+          (typeof toolInput.pattern === "string" &&
+            isProjectInstructionPath(toolInput.pattern)))
+      ) {
+        return rejectWithAudit(
+          audit,
+          toolName,
+          ToolPolicyDenialReason.ProjectInstructionPath,
+          "Search could expose project instruction paths under this task policy.",
+        );
+      }
       return accept();
     }
     if (typeof candidate !== "string" || candidate.trim().length === 0) {
@@ -412,6 +426,22 @@ function createToolPolicyEvaluator(
         toolName,
         ToolPolicyDenialReason.InvalidPath,
         "Tool path is missing or invalid.",
+      );
+    }
+    if (
+      input.workspaceInstructionPolicy === "deny_project_instructions_v1" &&
+      await targetsProjectInstructions(
+        input.workspacePath,
+        toolName,
+        candidate,
+        toolInput,
+      )
+    ) {
+      return rejectWithAudit(
+        audit,
+        toolName,
+        ToolPolicyDenialReason.ProjectInstructionPath,
+        "Project instruction paths are unavailable under this task policy.",
       );
     }
     const pathDecision = await workspacePathDecision(
@@ -441,6 +471,33 @@ function createToolPolicyEvaluator(
           "Tool path must stay within the task workspace.",
         );
   };
+}
+
+async function targetsProjectInstructions(
+  workspacePath: string,
+  toolName: string,
+  candidate: string,
+  toolInput: Readonly<Record<string, unknown>>,
+): Promise<boolean> {
+  if (isProjectInstructionPath(candidate)) return true;
+  const selector = toolName === "Glob"
+    ? toolInput.pattern
+    : toolName === "Grep"
+      ? toolInput.glob
+      : undefined;
+  if (typeof selector === "string" && isProjectInstructionPath(selector)) {
+    return true;
+  }
+  const root = await realpath(resolve(workspacePath));
+  try {
+    const canonical = await realpath(resolve(root, candidate));
+    if (isProjectInstructionPath(relative(root, canonical))) return true;
+    // Native Grep recursively reads directory contents and cannot exclude the
+    // denied instruction files. It is safe here only for one explicit file.
+    return toolName === "Grep" && !(await lstat(canonical)).isFile();
+  } catch {
+    return toolName === "Grep";
+  }
 }
 
 function appendInternalTool(
@@ -487,6 +544,7 @@ enum ToolPolicyDenialReason {
   InvalidPath = "invalid_path",
   PathOutsideWorkspace = "path_outside_workspace",
   GitMetadataPath = "git_metadata_path",
+  ProjectInstructionPath = "project_instruction_path",
 }
 
 function toolsForInput(

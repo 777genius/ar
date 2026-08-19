@@ -18,6 +18,7 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { isProjectInstructionPath } from "@vioxen/subscription-runtime/core";
 
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const DEFAULT_MAX_SEARCH_BYTES = 8 * 1024 * 1024;
@@ -349,29 +350,6 @@ export class BoundedWorkspaceFiles {
       if (this.writeTails.get(path) === current) this.writeTails.delete(path);
     }
   }
-}
-
-export function isProjectInstructionPath(path: string): boolean {
-  const segments = path.split(/[\\/]/).filter(Boolean).map((value) =>
-    value.toLowerCase()
-  );
-  const basename = segments.at(-1);
-  if (!basename) return false;
-  if ([
-    "agents.md",
-    "agents.override.md",
-    "skill.md",
-    "claude.md",
-    "gemini.md",
-    ".cursorrules",
-    "copilot-instructions.md",
-  ].includes(basename)) return true;
-  return segments.some((segment, index) =>
-    segment === ".codex" ||
-    (segment === ".claude" && segments[index + 1] === "rules") ||
-    (segment === ".cursor" && segments[index + 1] === "rules") ||
-    (segment === ".agents" && segments[index + 1] === "skills")
-  );
 }
 
 async function* walkRegularFiles(root: string): AsyncGenerator<string> {

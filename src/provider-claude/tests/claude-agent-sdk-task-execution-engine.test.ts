@@ -120,6 +120,14 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
       additionalProperties: false,
     } as const;
     try {
+      await writeFile(join(workspace, "source.ts"), "export const value = 1;\n");
+      await writeFile(join(workspace, "AGENTS.md"), "untrusted instructions\n");
+      await symlink(join(workspace, "AGENTS.md"), join(workspace, "alias.md"));
+      await mkdir(join(workspace, ".claude", "rules"), { recursive: true });
+      await writeFile(
+        join(workspace, ".claude", "rules", "project.md"),
+        "untrusted rule\n",
+      );
       const engine = new ClaudeAgentSdkTaskExecutionEngine({
         sdkLoader: async () => ({
           query: ({ options }: { options: Options }) => {
@@ -181,6 +189,57 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
         {
           signal: new AbortController().signal,
           toolUseID: "tool-structured-output",
+        },
+      )).resolves.toMatchObject({ behavior: "allow" });
+      const deniedInstructionCalls = [
+        ["Read", { file_path: "AGENTS.md" }],
+        ["Read", { file_path: "src/../AGENTS.md" }],
+        ["Read", { file_path: "alias.md" }],
+        ["Read", { file_path: ".claude/rules/project.md" }],
+        ["Grep", { pattern: "secret" }],
+        ["Grep", { pattern: "secret", path: workspace }],
+        ["Glob", { pattern: "**/AGENTS.md" }],
+      ] as const;
+      for (const [toolName, toolInput] of deniedInstructionCalls) {
+        await expect(captured?.canUseTool?.(
+          toolName,
+          toolInput,
+          {
+            signal: new AbortController().signal,
+            toolUseID: `tool-${toolName}`,
+          },
+        ), `${toolName} ${JSON.stringify(toolInput)}`).resolves.toMatchObject({
+          behavior: "deny",
+        });
+        await expect(hook?.({
+          hook_event_name: "PreToolUse",
+          tool_name: toolName,
+          tool_input: toolInput,
+          tool_use_id: `tool-${toolName}`,
+          cwd: workspace,
+          session_id: "session-1",
+          transcript_path: "",
+          permission_mode: "dontAsk",
+        }, `tool-${toolName}`, {
+          signal: new AbortController().signal,
+        })).resolves.toMatchObject({
+          hookSpecificOutput: { permissionDecision: "deny" },
+        });
+      }
+      await expect(captured?.canUseTool?.(
+        "Read",
+        { file_path: "source.ts" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-read-source",
+        },
+      )).resolves.toMatchObject({ behavior: "allow" });
+      await expect(captured?.canUseTool?.(
+        "Grep",
+        { pattern: "value", path: "source.ts" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-grep-source",
         },
       )).resolves.toMatchObject({ behavior: "allow" });
       for (const toolName of ["Bash", "WebSearch", "Write"]) {
