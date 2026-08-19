@@ -333,7 +333,9 @@ describe("project integration safety kernel e2e", () => {
     },
   );
 
-  it("archives rejected output and safely adopts its controller-owned patch", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "archives rejected output and safely adopts its controller-owned patch",
+    async () => {
     const root = await mkdtemp(
       join(tmpdir(), "project-integration-rejection-e2e-"),
     );
@@ -572,7 +574,8 @@ describe("project integration safety kernel e2e", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
 });
 
 async function git(cwd: string, args: readonly string[]): Promise<void> {

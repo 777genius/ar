@@ -80,7 +80,9 @@ describe("codex goal MCP project scope helpers", () => {
   });
 
   it("allows append-only narrow canonical evidence roots and rejects broad or symlink scope", async () => {
-    const root = await mkdtemp(join(tmpdir(), "project-evidence-scope-"));
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), "project-evidence-scope-")),
+    );
     addedScopeRoots.add(root);
     const archives = join(root, "controller", "archives");
     const realArchives = join(root, "real", "archives");
@@ -153,7 +155,9 @@ describe("codex goal MCP project scope helpers", () => {
   });
 
   it("rejects foreign evidence and denied-root overlap in both directions", async () => {
-    const root = await mkdtemp(join(tmpdir(), "project-evidence-owned-"));
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), "project-evidence-owned-")),
+    );
     addedScopeRoots.add(root);
     const owned = join(root, "owned");
     const archives = join(owned, "archives");
