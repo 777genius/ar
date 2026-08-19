@@ -342,8 +342,30 @@ function packageManagerInstallCommands(
         ? ["--store-dir", join(cacheRoot, "pnpm-store")]
         : [];
       return [
-        ["pnpm", "fetch", "--frozen-lockfile", ...storeArgs],
-        ["pnpm", "install", "--offline", "--frozen-lockfile", ...storeArgs],
+        [
+          "pnpm",
+          "fetch",
+          "--frozen-lockfile",
+          "--package-import-method=copy",
+          "--config.side-effects-cache=false",
+          ...storeArgs,
+        ],
+        [
+          "pnpm",
+          "install",
+          "--offline",
+          "--frozen-lockfile",
+          "--package-import-method=copy",
+          "--ignore-scripts",
+          "--config.side-effects-cache=false",
+          ...storeArgs,
+        ],
+        [
+          "pnpm",
+          "rebuild",
+          "--config.side-effects-cache=false",
+          ...storeArgs,
+        ],
       ];
     }
     case "npm":
