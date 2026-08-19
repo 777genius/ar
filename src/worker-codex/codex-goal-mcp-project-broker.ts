@@ -36,6 +36,10 @@ import {
 } from "./application/project-control/codex-goal-project-pre-start-launch-authorization";
 import type { ProjectPreStartAdmissionLaunchWorkspaceMode } from "./application/project-control/codex-goal-project-pre-start-admission";
 import {
+  assertPendingInputPatchTerminalFree,
+  type ValidatedPendingInputPatchAdmission,
+} from "./application/project-control/codex-goal-project-pending-input-patch-admission";
+import {
   assertCodexGoalProjectJobNotTerminal,
 } from "./application/project-control/codex-goal-consumed-output-ledger-io";
 import {
@@ -128,6 +132,7 @@ export type CodexProjectControlBrokerInput = {
   readonly startLaunch?: CodexGoalLaunchInput;
   readonly startManifest?: CodexGoalJobManifest;
   readonly startAdmissionWorkspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
+  readonly startPendingInputPatchAdmission?: ValidatedPendingInputPatchAdmission;
   readonly startWorkspaceLease?: ProjectControlWorkspaceLease;
   readonly startSkipDoctor?: boolean;
   readonly controlledRuntimeInPlaceContinuation?:
@@ -403,6 +408,18 @@ function codexProjectControlPorts(
                   scope: input.scope,
                   ...(input.startAdmissionWorkspaceMode
                     ? { workspaceMode: input.startAdmissionWorkspaceMode }
+                    : {}),
+                  ...(input.startPendingInputPatchAdmission
+                    ? {
+                        expectedPendingInputPatch:
+                          input.startPendingInputPatchAdmission,
+                        assertLaunchEligible: async () =>
+                          assertPendingInputPatchTerminalFree(
+                            await collectCodexGoalStatus(
+                              statusInput(startLaunch),
+                            ),
+                          ),
+                      }
                     : {}),
                 },
                 async () => await startCodexGoalTmux(startLaunch),

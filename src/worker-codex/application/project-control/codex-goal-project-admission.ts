@@ -59,6 +59,8 @@ import {
   uniqueProjectControlStrings,
 } from "./codex-goal-project-utils";
 import { readLaunchAuthorizedWorkerLaunchSpec } from "./codex-goal-project-pre-start-admission";
+import { pendingAdmittedInputPatchPathEvidence } from
+  "./codex-goal-project-pending-input-patch-admission";
 import { orphanDirtyWorkspaceDebt } from
   "./codex-goal-project-orphan-workspace-admission";
 import { resolveLedgerEpochDebtCustody } from
@@ -691,6 +693,16 @@ async function debtFromOverviewItem(input: {
       workspacePath,
       input.requestedWorkspacePath,
     );
+  const pendingInputPatchEvidence =
+    await pendingAdmittedInputPatchPathEvidence({
+      item,
+      summary: input.summariesByJobId.get(jobId),
+      workerAlive,
+      duplicateWorkspaceIdentity: input.duplicateWorkspaceIdentity,
+      registryRootDir: input.registryRootDir,
+      scope: input.scope,
+      ...(input.readJob ? { readJob: input.readJob } : {}),
+    });
   if (
     malformedDirtyWriterObservation ||
     terminalConsumptionWorkspaceMismatch ||
@@ -711,13 +723,17 @@ async function debtFromOverviewItem(input: {
       scope: input.scope,
       readJob: input.readJob,
     });
+    const pathEvidence = pendingInputPatchEvidence ?? pathDisjointProducerEvidence;
     debt.push({
       reason: ProjectDebtReason.ActiveWriterConflict,
       subject: jobId,
       severity: "blocking",
-      ...pathDisjointProducerEvidence,
+      ...pathEvidence,
       evidence: uniqueProjectControlStrings([
         ...safeStringArray(item.activeWriterRiskReasons),
+        ...(pendingInputPatchEvidence
+          ? ["broker-admitted input patch is validated and pending start"]
+          : []),
         ...(sameRequestedWorkspace
           ? [`requested workspace already has active worker: ${workspacePath}`]
           : []),
@@ -729,6 +745,7 @@ async function debtFromOverviewItem(input: {
     });
   }
   if (item.workspaceDirty !== true) return debt;
+  if (pendingInputPatchEvidence) return debt;
   const subject = workspacePath ?? jobId;
   const stale = item.silentStale === true || item.workerFreshProgressAlive === false;
   if (workerAlive && stale) {

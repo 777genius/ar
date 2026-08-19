@@ -75,7 +75,6 @@ export async function withoutCapacityContinuationSiblingDebt(input: {
   }
   const debt: ProjectDebtItem[] = [];
   for (const item of input.snapshot.debt) {
-    const selfDebt = await admissionBindingHasSelfDebt({ item, binding });
     const selfInactiveWorkspace =
       item.reason === ProjectDebtReason.InactiveDirtyWorkspace &&
       await admissionWorkspacePathsMatch(item.subject, binding.workspacePath);
@@ -83,18 +82,7 @@ export async function withoutCapacityContinuationSiblingDebt(input: {
       item.reason === ProjectDebtReason.ActiveWriterConflict &&
       item.subject === binding.jobId &&
       item.evidence.includes("dirty_workspace_without_worker");
-    const unrelatedHeldOutput =
-      item.reason === ProjectDebtReason.UnconsumedCompletedJob && !selfDebt;
-    const unrelatedInactiveOutputRisk =
-      item.reason === ProjectDebtReason.ActiveWriterConflict &&
-      !selfDebt &&
-      item.evidence.includes("dirty_workspace_without_worker");
-    if (
-      !selfInactiveWorkspace &&
-      !selfDirtyWithoutRunner &&
-      !unrelatedHeldOutput &&
-      !unrelatedInactiveOutputRisk
-    ) {
+    if (!selfInactiveWorkspace && !selfDirtyWithoutRunner) {
       debt.push(item);
     }
   }
@@ -130,7 +118,6 @@ export async function withoutAdmittedInputPatchDebt(input: {
       if (!selfOrphanWorkspace) debt.push(item);
       continue;
     }
-    const selfDebt = await admissionBindingHasSelfDebt({ item, binding });
     const selfInactiveWorkspace =
       item.reason === ProjectDebtReason.InactiveDirtyWorkspace &&
       await admissionWorkspacePathsMatch(item.subject, binding.workspacePath);
@@ -138,34 +125,15 @@ export async function withoutAdmittedInputPatchDebt(input: {
       item.reason === ProjectDebtReason.ActiveWriterConflict &&
       item.subject === binding.jobId &&
       item.evidence.includes("dirty_workspace_without_worker");
-    const unrelatedHeldOutput =
-      item.reason === ProjectDebtReason.UnconsumedCompletedJob && !selfDebt;
-    const unrelatedInactiveOutputRisk =
-      item.reason === ProjectDebtReason.ActiveWriterConflict &&
-      !selfDebt &&
-      item.evidence.includes("dirty_workspace_without_worker");
     if (
       !selfInactiveWorkspace &&
       !selfOrphanWorkspace &&
-      !selfDirtyWithoutRunner &&
-      !unrelatedHeldOutput &&
-      !unrelatedInactiveOutputRisk
+      !selfDirtyWithoutRunner
     ) {
       debt.push(item);
     }
   }
   return withNormalizedDebt(input.snapshot, debt);
-}
-
-async function admissionBindingHasSelfDebt(input: {
-  readonly item: ProjectDebtItem;
-  readonly binding: ProjectAdmissionJobWorkspaceBinding;
-}): Promise<boolean> {
-  return input.item.subject === input.binding.jobId ||
-    await admissionWorkspacePathsMatch(
-      input.item.subject,
-      input.binding.workspacePath,
-    );
 }
 
 function withNormalizedDebt(

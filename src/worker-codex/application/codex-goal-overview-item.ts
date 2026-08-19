@@ -95,6 +95,9 @@ export async function buildCodexGoalOverviewItem(
       baseRevisionStatus: brief.baseRevisionStatus,
       baseRevisionReasons: brief.baseRevisionReasons,
       recommendedAction,
+      ...(status.resultExists === undefined
+        ? {}
+        : { resultExists: status.resultExists }),
       resultStatus: status.resultStatus,
       resultReason: status.resultReason,
       progressPath: status.progressPath,

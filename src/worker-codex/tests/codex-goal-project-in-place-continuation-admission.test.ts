@@ -39,6 +39,8 @@ import {
   createBuiltinFixture,
   withOwnershipBoundWorkKey,
 } from "./codex-goal-project-pre-start-admission-fixture";
+import { localProjectControlEvidenceCustodySupported } from
+  "../../worker-local/project-control-evidence-custody-local-adapter";
 
 afterEach(cleanupProjectPreStartAdmissionFixtures);
 
@@ -156,7 +158,9 @@ describe("controlled runtime in-place continuation admission", () => {
     }
   });
 
-  it("binds the workspace fingerprint and exact rejected patch hash", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "binds the workspace fingerprint and exact rejected patch hash",
+    async () => {
     const fixture = await createBuiltinFixture();
     await mkdir(join(fixture.root, "archives"), { recursive: true });
     const scope: ProjectAccessScope = {
@@ -286,7 +290,8 @@ describe("controlled runtime in-place continuation admission", () => {
     })).rejects.toThrow(
       "project_control_runtime_interruption_continuation_binding_mismatch",
     );
-  });
+    },
+  );
 });
 
 function jobSummary(input: {
