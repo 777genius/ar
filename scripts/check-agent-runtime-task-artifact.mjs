@@ -17,43 +17,53 @@ const expectedCapabilities = {
   boundedReadOnlyWorkspace: true,
   instructionPathDeny: true,
 };
-const checkRoot = await mkdtemp(join(tmpdir(), "subscription-runtime-artifact-check-"));
-
-try {
-  assertWrongPlatformPackageFails();
-  const first = await buildAgentRuntimeTaskArtifact({
-    outputPath: join(checkRoot, "first", "subscription-runtime-run-agent-runtime-task"),
-  });
-  const second = await buildAgentRuntimeTaskArtifact({
-    outputPath: join(checkRoot, "second", "subscription-runtime-run-agent-runtime-task"),
-  });
-  if (first.payloadSha256 !== second.payloadSha256) {
-    throw new Error("package payload hash is not deterministic");
-  }
-  if (first.sha256 !== second.sha256) throw new Error("artifact hash is not deterministic");
-  if (!Buffer.from(await readFile(first.outputPath)).equals(await readFile(second.outputPath))) {
-    throw new Error("artifact bytes are not deterministic");
-  }
-  const runtimeTmp = join(checkRoot, "runtime-tmp");
-  await mkdir(runtimeTmp);
-  for (const artifact of [first, second]) {
-    assertCapabilities(artifact.outputPath, checkRoot, runtimeTmp);
-  }
-  const leftovers = (await readdir(runtimeTmp)).filter((name) =>
-    name.startsWith("subscription-runtime-artifact.")
-  );
-  if (leftovers.length !== 0) {
-    throw new Error(`artifact launcher left runtime directories: ${leftovers.join(",")}`);
-  }
+assertWrongPlatformPackageFails();
+if (process.platform !== "linux" || process.arch !== "x64") {
   process.stdout.write(`${JSON.stringify({
-    status: "ok",
-    sha256: first.sha256,
-    payloadSha256: first.payloadSha256,
-    sizeBytes: first.sizeBytes,
-    capabilities: expectedCapabilities,
+    status: "skipped",
+    reason: `Linux x64 artifact check cannot run on ${process.platform}/${process.arch}`,
   })}\n`);
-} finally {
-  await rm(checkRoot, { recursive: true, force: true });
+} else {
+  await runArtifactCheck();
+}
+
+async function runArtifactCheck() {
+  const checkRoot = await mkdtemp(join(tmpdir(), "subscription-runtime-artifact-check-"));
+  try {
+    const first = await buildAgentRuntimeTaskArtifact({
+      outputPath: join(checkRoot, "first", "subscription-runtime-run-agent-runtime-task"),
+    });
+    const second = await buildAgentRuntimeTaskArtifact({
+      outputPath: join(checkRoot, "second", "subscription-runtime-run-agent-runtime-task"),
+    });
+    if (first.payloadSha256 !== second.payloadSha256) {
+      throw new Error("package payload hash is not deterministic");
+    }
+    if (first.sha256 !== second.sha256) throw new Error("artifact hash is not deterministic");
+    if (!Buffer.from(await readFile(first.outputPath)).equals(await readFile(second.outputPath))) {
+      throw new Error("artifact bytes are not deterministic");
+    }
+    const runtimeTmp = join(checkRoot, "runtime-tmp");
+    await mkdir(runtimeTmp);
+    for (const artifact of [first, second]) {
+      assertCapabilities(artifact.outputPath, checkRoot, runtimeTmp);
+    }
+    const leftovers = (await readdir(runtimeTmp)).filter((name) =>
+      name.startsWith("subscription-runtime-artifact.")
+    );
+    if (leftovers.length !== 0) {
+      throw new Error(`artifact launcher left runtime directories: ${leftovers.join(",")}`);
+    }
+    process.stdout.write(`${JSON.stringify({
+      status: "ok",
+      sha256: first.sha256,
+      payloadSha256: first.payloadSha256,
+      sizeBytes: first.sizeBytes,
+      capabilities: expectedCapabilities,
+    })}\n`);
+  } finally {
+    await rm(checkRoot, { recursive: true, force: true });
+  }
 }
 
 function assertWrongPlatformPackageFails() {

@@ -39,9 +39,9 @@ export async function buildAgentRuntimeTaskArtifact({
 } = {}) {
   assertLinuxX64BuildHost();
   assertCleanGitSource();
-  const ownedPackRoot = await mkdtemp(join(tmpdir(), "subscription-runtime-pack-"));
+  const buildRoot = await mkdtemp(join(tmpdir(), "subscription-runtime-build-"));
   try {
-    const tarballPath = await packCurrentPackage(ownedPackRoot);
+    const tarballPath = await packCleanPackage(buildRoot);
     await assertPackageTarball(tarballPath);
     const payload = await readFile(tarballPath);
     const header = renderLauncher();
@@ -66,36 +66,63 @@ export async function buildAgentRuntimeTaskArtifact({
       ...source,
     };
   } finally {
-    await rm(ownedPackRoot, { recursive: true, force: true });
+    await rm(buildRoot, { recursive: true, force: true });
   }
 }
 
-export async function packCurrentPackage(destination) {
-  const resolvedDestination = resolve(destination);
-  await mkdir(resolvedDestination, { recursive: true });
-  const result = spawnSync(
+async function packCleanPackage(buildRoot) {
+  const sourceArchive = join(buildRoot, "source.tar");
+  const sourceRoot = join(buildRoot, "source");
+  const packRoot = join(buildRoot, "pack");
+  const buildHome = join(buildRoot, "home");
+  const buildTmp = join(buildRoot, "tmp");
+  await mkdir(sourceRoot);
+  await mkdir(packRoot);
+  await mkdir(buildHome);
+  await mkdir(buildTmp);
+  runChecked(
+    "git",
+    ["archive", "--format=tar", "--output", sourceArchive, "HEAD"],
+    { cwd: rootDir, env: buildMinimalEnvironment() },
+  );
+  runChecked("tar", ["-xf", sourceArchive, "-C", sourceRoot], {
+    cwd: buildRoot,
+    env: buildMinimalEnvironment(),
+  });
+  const npmEnvironment = buildNpmEnvironment(buildRoot, buildHome, buildTmp);
+  runChecked(
+    "npm",
+    [
+      "ci",
+      "--ignore-scripts",
+      "--include=optional",
+      "--os=linux",
+      "--cpu=x64",
+      "--no-audit",
+      "--no-fund",
+    ],
+    { cwd: sourceRoot, env: npmEnvironment, timeout: 300_000 },
+  );
+  runChecked("npm", ["run", "build"], {
+    cwd: sourceRoot,
+    env: npmEnvironment,
+    timeout: 300_000,
+  });
+  const result = runChecked(
     "npm",
     [
       "pack",
       "--ignore-scripts",
-      "--offline",
       "--json",
       "--pack-destination",
-      resolvedDestination,
+      packRoot,
     ],
     {
-      cwd: rootDir,
-      encoding: "utf8",
-      env: buildPackEnvironment(),
+      cwd: sourceRoot,
+      env: npmEnvironment,
       timeout: 120_000,
-      maxBuffer: 4 * 1024 * 1024,
     },
   );
-  if (result.error || result.status !== 0 || result.stderr.trim() !== "") {
-    throw new Error(
-      `npm pack failed: ${result.error?.message ?? (result.stderr.trim() || `exit ${result.status}`)}`,
-    );
-  }
   let report;
   try {
     report = JSON.parse(result.stdout);
@@ -108,8 +135,8 @@ export async function packCurrentPackage(destination) {
   if (typeof filename !== "string" || basename(filename) !== filename) {
     throw new Error("npm pack returned an unsafe artifact filename");
   }
-  const tarballPath = join(resolvedDestination, filename);
-  const realDestination = await realpath(resolvedDestination);
+  const tarballPath = join(packRoot, filename);
+  const realDestination = await realpath(packRoot);
   const realTarball = await realpath(tarballPath);
   if (!realTarball.startsWith(`${realDestination}${sep}`)) {
     throw new Error("npm pack artifact escaped its destination");
@@ -201,13 +228,16 @@ async function assertNotSymlink(path) {
   }
 }
 
-function buildPackEnvironment() {
+function buildNpmEnvironment(buildRoot, buildHome, buildTmp) {
   return {
     ...buildMinimalEnvironment(),
-    npm_config_offline: "true",
+    HOME: buildHome,
+    TMPDIR: buildTmp,
     npm_config_audit: "false",
+    npm_config_cache: join(buildRoot, "npm-cache"),
     npm_config_fund: "false",
     npm_config_ignore_scripts: "true",
+    npm_config_userconfig: "/dev/null",
   };
 }
 
@@ -248,6 +278,22 @@ function gitOutput(args) {
     env: buildMinimalEnvironment(),
   });
   return result.status === 0 ? result.stdout.trim() : null;
+}
+
+function runChecked(command, args, options) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    timeout: options.timeout ?? 120_000,
+    maxBuffer: 16 * 1024 * 1024,
+    cwd: options.cwd,
+    env: options.env,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(
+      `${command} ${args[0] ?? ""} failed: ${result.error?.message ?? (result.stderr.trim() || `exit ${result.status}`)}`,
+    );
+  }
+  return result;
 }
 
 function sha256(bytes) {
