@@ -10,6 +10,7 @@ import {
 import { assertControlledRuntimeInterruptionSignal } from "./application/project-control/codex-goal-project-controlled-runtime-interruption-continuation";
 import { assertReadablePrompt } from "./application/project-control/codex-goal-project-refill";
 import { readControlledRuntimeInterruptionSnapshot } from "./application/project-control/codex-goal-project-verifier-handoff";
+import { directCodexAppServerFailureCause } from "./application/project-control/codex-app-server-failure-cause";
 import {
   projectPreStartContinuationDecision,
   type ProjectPreStartContinuationDecision,
@@ -377,10 +378,14 @@ async function isRecoverableAdmittedInputPatchProviderFailure(input: {
       return false;
     }
     const rawCause = parsed.details.rawCause;
+    const directCause =
+      typeof rawCause === "string"
+        ? directCodexAppServerFailureCause(rawCause)
+        : undefined;
     return (
-      typeof rawCause === "string" &&
-      (rawCause.startsWith(APP_SERVER_RECONNECT_TIMEOUT_PREFIX) ||
-        rawCause.startsWith(APP_SERVER_PROVIDER_ERROR_PREFIX))
+      directCause !== undefined &&
+      (directCause.startsWith(APP_SERVER_RECONNECT_TIMEOUT_PREFIX) ||
+        directCause.startsWith(APP_SERVER_PROVIDER_ERROR_PREFIX))
     );
   } catch {
     return false;
