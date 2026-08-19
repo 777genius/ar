@@ -334,7 +334,70 @@ async function patchOutputState(input: {
       "local_git_integration_output_rollback_patch_index_mismatch",
     );
   }
+  if (
+    !(await indexEntriesMatchTargetOrOutput({
+      ...input,
+      indexTree,
+      targetTree: patchOutput.targetTree,
+      outputTree: patchOutput.outputTree,
+    }))
+  ) {
+    throw new Error(
+      "local_git_integration_output_rollback_patch_index_mismatch",
+    );
+  }
   return "mixed-index-applied";
+}
+
+async function indexEntriesMatchTargetOrOutput(input: {
+  readonly runtime: LocalGitOutputRollbackRuntime;
+  readonly workspacePath: string;
+  readonly appliedFiles: readonly string[];
+  readonly indexTree: string;
+  readonly targetTree: string;
+  readonly outputTree: string;
+}): Promise<boolean> {
+  for (const rawFile of input.appliedFiles) {
+    const file = normalizeProjectRelativePath(rawFile);
+    const [matchesTarget, matchesOutput] = await Promise.all([
+      treePathMatches({
+        ...input,
+        file,
+        expectedTree: input.targetTree,
+      }),
+      treePathMatches({
+        ...input,
+        file,
+        expectedTree: input.outputTree,
+      }),
+    ]);
+    if (!matchesTarget && !matchesOutput) return false;
+  }
+  return true;
+}
+
+async function treePathMatches(input: {
+  readonly runtime: LocalGitOutputRollbackRuntime;
+  readonly workspacePath: string;
+  readonly indexTree: string;
+  readonly expectedTree: string;
+  readonly file: string;
+}): Promise<boolean> {
+  const result = await input.runtime.tryGit(
+    [
+      "diff",
+      "--quiet",
+      "--no-renames",
+      input.expectedTree,
+      input.indexTree,
+      "--",
+      input.file,
+    ],
+    input.workspacePath,
+  );
+  if (result.exitCode === 0) return true;
+  if (result.exitCode === 1) return false;
+  throw new Error("local_git_integration_output_rollback_patch_index_mismatch");
 }
 
 async function assertRollbackTarget(input: {
