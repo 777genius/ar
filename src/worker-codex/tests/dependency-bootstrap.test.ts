@@ -1,10 +1,13 @@
 import {
   access,
+  copyFile,
+  link,
   mkdir,
   mkdtemp,
   readFile,
   realpath,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -125,6 +128,141 @@ describe("dependency bootstrap", () => {
         nodeModulesPath: join(await realpath(workspace), "node_modules"),
         cacheRoot,
       });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("copies and rebuilds pnpm native artifacts exactly once per workspace", async () => {
+    const root = await mkTestWorkspace("subscription-runtime-deps-pnpm-native-");
+    const cacheRoot = join(root, "cache");
+    const storeArtifact = join(
+      cacheRoot,
+      "pnpm-store",
+      "better-sqlite3",
+      "build",
+      "Release",
+      "better_sqlite3.node",
+    );
+    const workspaces = [join(root, "workspace-a"), join(root, "workspace-b")];
+    const expectedCommands = [
+      [
+        "pnpm",
+        "fetch",
+        "--frozen-lockfile",
+        "--package-import-method=copy",
+        "--config.side-effects-cache=false",
+        "--store-dir",
+        join(cacheRoot, "pnpm-store"),
+      ],
+      [
+        "pnpm",
+        "install",
+        "--offline",
+        "--frozen-lockfile",
+        "--package-import-method=copy",
+        "--ignore-scripts",
+        "--config.side-effects-cache=false",
+        "--store-dir",
+        join(cacheRoot, "pnpm-store"),
+      ],
+      [
+        "pnpm",
+        "rebuild",
+        "--config.side-effects-cache=false",
+        "--store-dir",
+        join(cacheRoot, "pnpm-store"),
+      ],
+    ];
+    try {
+      await mkdir(join(storeArtifact, ".."), { recursive: true });
+      await writeFile(storeArtifact, "electron-abi-143");
+
+      const installedArtifacts: string[] = [];
+      let lifecycleRuns = 0;
+      for (const workspace of workspaces) {
+        await mkdir(workspace, { recursive: true });
+        await writeFile(
+          join(workspace, "package.json"),
+          JSON.stringify({ packageManager: "pnpm@9.15.0" }),
+        );
+        await writeFile(
+          join(workspace, "pnpm-lock.yaml"),
+          "lockfileVersion: '9.0'\n",
+        );
+        const installedArtifact = join(
+          workspace,
+          "node_modules",
+          ".pnpm",
+          "better-sqlite3",
+          "build",
+          "Release",
+          "better_sqlite3.node",
+        );
+        installedArtifacts.push(installedArtifact);
+
+        const commands: string[][] = [];
+        const result = await runDependencyBootstrap({
+          workspacePath: workspace,
+          cacheRoot,
+          mode: "install",
+          confirmInstall: true,
+          runCommand: async (command, args) => {
+            commands.push([command, ...args]);
+            if (args[0] === "fetch") {
+              await mkdir(join(installedArtifact, ".."), { recursive: true });
+              // Model pnpm's earliest virtual-store materialization: without
+              // both fetch flags this fixture would hardlink the native binary.
+              const isolatedFetch =
+                args.includes("--package-import-method=copy") &&
+                args.includes("--config.side-effects-cache=false");
+              if (isolatedFetch) {
+                await copyFile(storeArtifact, installedArtifact);
+              } else {
+                await link(storeArtifact, installedArtifact);
+              }
+              const [storeStats, fetchedStats] = await Promise.all([
+                stat(storeArtifact),
+                stat(installedArtifact),
+              ]);
+              expect(fetchedStats.ino).not.toBe(storeStats.ino);
+            }
+            if (args[0] === "rebuild") {
+              lifecycleRuns += 1;
+              await expect(readFile(installedArtifact, "utf8")).resolves.toBe(
+                "electron-abi-143",
+              );
+              await writeFile(
+                installedArtifact,
+                `node-abi-${process.versions.modules}`,
+              );
+            }
+          },
+        });
+        expect(result.status).toBe("installed");
+        expect(commands).toEqual(expectedCommands);
+      }
+
+      expect(lifecycleRuns).toBe(workspaces.length);
+      await expect(readFile(installedArtifacts[0] ?? "", "utf8")).resolves.toBe(
+        `node-abi-${process.versions.modules}`,
+      );
+      const [storeStats, firstStats, secondStats] = await Promise.all([
+        stat(storeArtifact),
+        stat(installedArtifacts[0] ?? ""),
+        stat(installedArtifacts[1] ?? ""),
+      ]);
+      expect(firstStats.ino).not.toBe(storeStats.ino);
+      expect(secondStats.ino).not.toBe(storeStats.ino);
+      expect(firstStats.ino).not.toBe(secondStats.ino);
+
+      await writeFile(installedArtifacts[0] ?? "", "workspace-a-mutation");
+      await expect(readFile(installedArtifacts[1] ?? "", "utf8")).resolves.toBe(
+        `node-abi-${process.versions.modules}`,
+      );
+      await expect(readFile(storeArtifact, "utf8")).resolves.toBe(
+        "electron-abi-143",
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
