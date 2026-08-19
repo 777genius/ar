@@ -27,20 +27,21 @@ const requiredArchiveEntries = [
   "package/package.json",
   "package/dist/worker-local/agent-runtime-task-runner-cli.js",
   "package/node_modules/@anthropic-ai/claude-agent-sdk/package.json",
+  "package/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/package.json",
 ];
+const claudeNativePackagePrefix =
+  "package/node_modules/@anthropic-ai/claude-agent-sdk-";
+const expectedClaudeNativePackage =
+  "package/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/package.json";
 
 export async function buildAgentRuntimeTaskArtifact({
   outputPath = defaultOutput,
-  packageTarball,
 } = {}) {
-  if (!packageTarball) assertCleanGitSource();
-  const ownedPackRoot = packageTarball
-    ? undefined
-    : await mkdtemp(join(tmpdir(), "subscription-runtime-pack-"));
+  assertLinuxX64BuildHost();
+  assertCleanGitSource();
+  const ownedPackRoot = await mkdtemp(join(tmpdir(), "subscription-runtime-pack-"));
   try {
-    const tarballPath = packageTarball
-      ? resolve(packageTarball)
-      : await packCurrentPackage(ownedPackRoot);
+    const tarballPath = await packCurrentPackage(ownedPackRoot);
     await assertPackageTarball(tarballPath);
     const payload = await readFile(tarballPath);
     const header = renderLauncher();
@@ -65,7 +66,7 @@ export async function buildAgentRuntimeTaskArtifact({
       ...source,
     };
   } finally {
-    if (ownedPackRoot) await rm(ownedPackRoot, { recursive: true, force: true });
+    await rm(ownedPackRoot, { recursive: true, force: true });
   }
 }
 
@@ -171,8 +172,23 @@ async function assertPackageTarball(tarballPath) {
     throw new Error(`invalid package tarball: ${result.error?.message ?? result.stderr.trim()}`);
   }
   const entries = new Set(result.stdout.split("\n").filter(Boolean));
+  assertLinuxX64ArchiveEntries(entries);
   for (const entry of requiredArchiveEntries) {
     if (!entries.has(entry)) throw new Error(`package tarball is missing ${entry}`);
+  }
+}
+
+export function assertLinuxX64ArchiveEntries(entries) {
+  const nativePackages = [...entries].filter((entry) =>
+    entry.startsWith(claudeNativePackagePrefix) && entry.endsWith("/package.json")
+  );
+  if (
+    nativePackages.length !== 1 ||
+    nativePackages[0] !== expectedClaudeNativePackage
+  ) {
+    throw new Error(
+      `package tarball must contain only the Linux x64 Claude SDK binary; found ${nativePackages.join(",") || "none"}`,
+    );
   }
 }
 
@@ -217,6 +233,14 @@ function assertCleanGitSource() {
   }
 }
 
+function assertLinuxX64BuildHost() {
+  if (process.platform !== "linux" || process.arch !== "x64") {
+    throw new Error(
+      `agent runtime artifact must be built on Linux x64, got ${process.platform}/${process.arch}`,
+    );
+  }
+}
+
 function gitOutput(args) {
   const result = spawnSync("git", args, {
     cwd: rootDir,
@@ -235,9 +259,7 @@ function parseArguments(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--output") options.outputPath = requireValue(argv, ++index, argument);
-    else if (argument === "--package-tarball") {
-      options.packageTarball = requireValue(argv, ++index, argument);
-    } else throw new Error(`unknown argument: ${argument}`);
+    else throw new Error(`unknown argument: ${argument}`);
   }
   return options;
 }

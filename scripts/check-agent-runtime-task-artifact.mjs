@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildAgentRuntimeTaskArtifact,
-  packCurrentPackage,
+  assertLinuxX64ArchiveEntries,
 } from "./build-agent-runtime-task-artifact.mjs";
 
 const expectedCapabilities = {
@@ -20,14 +20,11 @@ const expectedCapabilities = {
 const checkRoot = await mkdtemp(join(tmpdir(), "subscription-runtime-artifact-check-"));
 
 try {
-  const firstTarball = await packCurrentPackage(join(checkRoot, "pack-first"));
-  const secondTarball = await packCurrentPackage(join(checkRoot, "pack-second"));
+  assertWrongPlatformPackageFails();
   const first = await buildAgentRuntimeTaskArtifact({
-    packageTarball: firstTarball,
     outputPath: join(checkRoot, "first", "subscription-runtime-run-agent-runtime-task"),
   });
   const second = await buildAgentRuntimeTaskArtifact({
-    packageTarball: secondTarball,
     outputPath: join(checkRoot, "second", "subscription-runtime-run-agent-runtime-task"),
   });
   if (first.payloadSha256 !== second.payloadSha256) {
@@ -57,6 +54,22 @@ try {
   })}\n`);
 } finally {
   await rm(checkRoot, { recursive: true, force: true });
+}
+
+function assertWrongPlatformPackageFails() {
+  const wrongPlatformEntries = new Set([
+    "package/package.json",
+    "package/dist/worker-local/agent-runtime-task-runner-cli.js",
+    "package/node_modules/@anthropic-ai/claude-agent-sdk/package.json",
+    "package/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/package.json",
+  ]);
+  try {
+    assertLinuxX64ArchiveEntries(wrongPlatformEntries);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("Linux x64")) return;
+    throw error;
+  }
+  throw new Error("wrong-platform Claude SDK package was accepted");
 }
 
 function assertCapabilities(artifactPath, home, runtimeTmp) {
