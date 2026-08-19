@@ -156,7 +156,8 @@ export class ClaudeAgentSdkTaskExecutionEngine
           ? {
               // This contract is stronger than an empty settings source list:
               // safe mode also disables CLAUDE.md, skills, plugins, hooks,
-              // MCP, and other user/project customizations.
+              // MCP, and other settings-sourced customizations. Programmatic
+              // SDK hooks and MCP servers remain explicit options below.
               extraArgs: { "safe-mode": null },
             }
           : {}),
