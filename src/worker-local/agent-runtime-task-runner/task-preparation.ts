@@ -13,6 +13,7 @@ import {
   type ProviderName,
 } from "./ports";
 import {
+  assertWorkspaceInstructionPolicyCompatibility,
   compileCodexExecutionPlan,
   type CodexExecutionPlan,
 } from "./codex-execution-plan";
@@ -53,6 +54,9 @@ export function prepareAgentRuntimeTask(
     );
   }
   try {
+    if (provider === AgentRuntimeTaskProvider.Claude) {
+      assertWorkspaceInstructionPolicyCompatibility(task);
+    }
     const codexExecutionPlan = provider === AgentRuntimeTaskProvider.Codex
       ? compileCodexExecutionPlan(task)
       : undefined;

@@ -35,23 +35,7 @@ export function compileCodexExecutionPlan(
     mode: AgentRuntimeExecutionMode.SingleRun,
   };
   const workspaceToolPolicy = compileWorkspaceToolPolicy(task);
-  if (
-    task.controls?.workspaceInstructionPolicy ===
-      AgentRuntimeWorkspaceInstructionPolicy.DenyProjectInstructionsV1 &&
-    (
-      task.controls.accessBoundary !== AgentRuntimeAccessBoundary.ReadOnly ||
-      workspaceToolPolicy === undefined ||
-      workspaceToolPolicy.allowedTools.length === 0 ||
-      workspaceToolPolicy.allowedTools.some((tool) =>
-        tool !== AgentRuntimeTool.ReadFile &&
-        tool !== AgentRuntimeTool.SearchFiles
-      )
-    )
-  ) {
-    throw new Error(
-      "workspace_instruction_policy_requires_bounded_read_only_tools",
-    );
-  }
+  assertWorkspaceInstructionPolicyCompatibility(task, workspaceToolPolicy);
   const rolloutBudget = task.controls?.budget?.metric ===
       AgentRuntimeBudgetMetric.WeightedTokens
     ? { weightedTokenLimit: task.controls.budget.limit }
@@ -74,6 +58,29 @@ export function compileCodexExecutionPlan(
     ...(workspaceToolPolicy ? { workspaceToolPolicy } : {}),
     ...(rolloutBudget ? { rolloutBudget } : {}),
   };
+}
+
+export function assertWorkspaceInstructionPolicyCompatibility(
+  task: ProviderTask,
+  workspaceToolPolicy = compileWorkspaceToolPolicy(task),
+): void {
+  if (
+    task.controls?.workspaceInstructionPolicy ===
+      AgentRuntimeWorkspaceInstructionPolicy.DenyProjectInstructionsV1 &&
+    (
+      task.controls.accessBoundary !== AgentRuntimeAccessBoundary.ReadOnly ||
+      workspaceToolPolicy === undefined ||
+      workspaceToolPolicy.allowedTools.length === 0 ||
+      workspaceToolPolicy.allowedTools.some((tool) =>
+        tool !== AgentRuntimeTool.ReadFile &&
+        tool !== AgentRuntimeTool.SearchFiles
+      )
+    )
+  ) {
+    throw new Error(
+      "workspace_instruction_policy_requires_bounded_read_only_tools",
+    );
+  }
 }
 
 function compileWorkspaceToolPolicy(

@@ -13,6 +13,7 @@ import {
   type AgentRuntimeTaskWorkerJob,
 } from "../agent-runtime-task-runner";
 import { resolveInlineOutputSchemas } from "../inline-output-schema";
+import { prepareAgentRuntimeTask } from "../agent-runtime-task-runner/task-preparation";
 import {
   fakeAgentRuntimeTaskCliIo,
 } from "./agent-runtime-task-runner-cli-test-support";
@@ -376,6 +377,68 @@ describe("agent-runtime-task HIB contract", () => {
     });
     expect(factoryCalled).toBe(false);
     await runner.dispose();
+  });
+
+  it("rejects non-bounded Claude instruction-isolation tools during preparation", () => {
+    expect(prepareAgentRuntimeTask(
+      AgentRuntimeTaskProvider.Claude,
+      {
+        protocolVersion: 2,
+        task: {
+          kind: "review",
+          prompt: "review this",
+          execution: { mode: AgentRuntimeExecutionMode.SingleRun },
+          controls: {
+            accessBoundary: AgentRuntimeAccessBoundary.ReadOnly,
+            workspaceInstructionPolicy: "deny_project_instructions_v1",
+            toolPolicy: {
+              allow: [AgentRuntimeTool.ReadFile, AgentRuntimeTool.Shell],
+              onUnsupported: "fail",
+            },
+          },
+        },
+      },
+      ClaudeAgentRuntimeBackend.AgentSdk,
+    )).toMatchObject({
+      result: {
+        status: "failed",
+        failure: {
+          code: "task_mode_unsupported",
+          safeMessage: "workspace_instruction_policy_requires_bounded_read_only_tools",
+        },
+      },
+    });
+  });
+
+  it("rejects a writable Claude instruction-isolation task during preparation", () => {
+    expect(prepareAgentRuntimeTask(
+      AgentRuntimeTaskProvider.Claude,
+      {
+        protocolVersion: 2,
+        task: {
+          kind: "review",
+          prompt: "review this",
+          execution: { mode: AgentRuntimeExecutionMode.SingleRun },
+          controls: {
+            accessBoundary: AgentRuntimeAccessBoundary.IsolatedWorkspaceWrite,
+            workspaceInstructionPolicy: "deny_project_instructions_v1",
+            toolPolicy: {
+              allow: [AgentRuntimeTool.ReadFile, AgentRuntimeTool.SearchFiles],
+              onUnsupported: "fail",
+            },
+          },
+        },
+      },
+      ClaudeAgentRuntimeBackend.AgentSdk,
+    )).toMatchObject({
+      result: {
+        status: "failed",
+        failure: {
+          code: "task_mode_unsupported",
+          safeMessage: "workspace_instruction_policy_requires_bounded_read_only_tools",
+        },
+      },
+    });
   });
 
   it("emits a v2 task-mode failure when the CLI policy plan is not bounded", async () => {
