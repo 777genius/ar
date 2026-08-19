@@ -488,7 +488,7 @@ describe("Codex project admission snapshot", () => {
     }
   });
 
-  it("admits a bound input patch past only unrelated held output debt", async () => {
+  it("admits a bound input patch through only its own dirty debt", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-admitted-patch-debt-"));
     const worktreeRoot = join(root, "worktrees");
     const workspacePath = join(worktreeRoot, "project-remediation");
@@ -570,8 +570,21 @@ describe("Codex project admission snapshot", () => {
       });
       await expect(gate(deps()).evaluate(
         request(ProjectOperation.CreateWorktree),
-      )).resolves.toMatchObject({ allowed: true, debt: [] });
+      )).resolves.toMatchObject({
+        allowed: false,
+        reason: "output_debt_present",
+      });
       await expect(gate(deps()).evaluate(
+        request(ProjectOperation.StartWorker),
+      )).resolves.toMatchObject({
+        allowed: false,
+        reason: "output_debt_present",
+      });
+      const targetOnlyDeps: CodexProjectAdmissionDeps = {
+        listJobs: async () => [summary("project-remediation", workspacePath)],
+        buildOverviewItems: async () => [targetOverview()],
+      };
+      await expect(gate(targetOnlyDeps).evaluate(
         request(ProjectOperation.StartWorker),
       )).resolves.toMatchObject({ allowed: true, debt: [] });
       await expect(gate(deps()).evaluate({
@@ -629,10 +642,10 @@ describe("Codex project admission snapshot", () => {
         lifecycleMarkerTypes: [],
       })).evaluate(request(ProjectOperation.StartWorker))).resolves.toMatchObject({
         allowed: false,
-        debt: [expect.objectContaining({
+        debt: expect.arrayContaining([expect.objectContaining({
           reason: ProjectDebtReason.InactiveDirtyWorkspace,
           subject: siblingWorkspacePath,
-        })],
+        })]),
       });
 
       await expect(gate(deps(targetOverview({
@@ -641,10 +654,10 @@ describe("Codex project admission snapshot", () => {
         lifecycleMarkerTypes: ["review"],
       }))).evaluate(request(ProjectOperation.StartWorker))).resolves.toMatchObject({
         allowed: false,
-        debt: [expect.objectContaining({
+        debt: expect.arrayContaining([expect.objectContaining({
           reason: ProjectDebtReason.UnconsumedCompletedJob,
           subject: workspacePath,
-        })],
+        })]),
       });
 
       await expect(gate(deps(targetOverview(), {
@@ -779,6 +792,32 @@ describe("Codex project admission snapshot", () => {
         reason: "output_debt_present",
       });
       await expect(continuationGate.evaluate({
+        operation: ProjectOperation.StartWorker,
+        jobId: "project-continuation",
+        workerRole: ProjectAdmissionWorkerRole.Producer,
+        workspacePath: continuationWorkspace,
+      })).resolves.toMatchObject({
+        allowed: false,
+        reason: "output_debt_present",
+      });
+      const selfOnlyContinuationGate = codexProjectAdmissionGate({
+        ...input,
+        deps: {
+          listJobs: async () => [
+            (await deps.listJobs({
+              registryRootDir: input.registryRootDir,
+            }))[0]!,
+          ],
+          buildOverviewItems: async () => [
+            (await deps.buildOverviewItems([]))[0]!,
+          ],
+        },
+        capacityContinuationTarget: {
+          jobId: "project-continuation",
+          workspacePath: continuationWorkspace,
+        },
+      });
+      await expect(selfOnlyContinuationGate.evaluate({
         operation: ProjectOperation.StartWorker,
         jobId: "project-continuation",
         workerRole: ProjectAdmissionWorkerRole.Producer,

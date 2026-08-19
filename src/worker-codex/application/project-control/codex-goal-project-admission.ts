@@ -47,6 +47,8 @@ import {
   uniqueProjectControlStrings,
 } from "./codex-goal-project-utils";
 import { readLaunchAuthorizedWorkerLaunchSpec } from "./codex-goal-project-pre-start-admission";
+import { pendingAdmittedInputPatchPathEvidence } from
+  "./codex-goal-project-pending-input-patch-admission";
 import { orphanDirtyWorkspaceDebt } from
   "./codex-goal-project-orphan-workspace-admission";
 import { resolveLedgerEpochDebtCustody } from
@@ -151,7 +153,7 @@ export function codexProjectAdmissionGate(
           ? { admittedInputPatchRequest: request }
           : {}),
       });
-      const snapshot = await withoutCapacityContinuationSiblingDebt({
+      const snapshot = await withoutCapacityContinuationSelfDebt({
         snapshot: observedSnapshot,
         request,
         binding: input.capacityContinuationTarget,
@@ -167,7 +169,7 @@ export function codexProjectAdmissionGate(
   };
 }
 
-async function withoutCapacityContinuationSiblingDebt(input: {
+async function withoutCapacityContinuationSelfDebt(input: {
   readonly snapshot: ProjectAdmissionSnapshot;
   readonly request: {
     readonly operation: ProjectOperation;
@@ -191,10 +193,6 @@ async function withoutCapacityContinuationSiblingDebt(input: {
   }
   const debt: ProjectDebtItem[] = [];
   for (const item of input.snapshot.debt) {
-    const selfDebt = await admissionBindingHasSelfDebt({
-      item,
-      binding,
-    });
     const selfInactiveWorkspace =
       item.reason === ProjectDebtReason.InactiveDirtyWorkspace &&
       await admissionWorkspacePathsMatch(item.subject, binding.workspacePath);
@@ -202,18 +200,7 @@ async function withoutCapacityContinuationSiblingDebt(input: {
       item.reason === ProjectDebtReason.ActiveWriterConflict &&
       item.subject === binding.jobId &&
       item.evidence.includes("dirty_workspace_without_worker");
-    const unrelatedHeldOutput =
-      item.reason === ProjectDebtReason.UnconsumedCompletedJob && !selfDebt;
-    const unrelatedInactiveOutputRisk =
-      item.reason === ProjectDebtReason.ActiveWriterConflict &&
-      !selfDebt &&
-      item.evidence.includes("dirty_workspace_without_worker");
-    if (
-      !selfInactiveWorkspace &&
-      !selfDirtyWithoutRunner &&
-      !unrelatedHeldOutput &&
-      !unrelatedInactiveOutputRisk
-    ) {
+    if (!selfInactiveWorkspace && !selfDirtyWithoutRunner) {
       debt.push(item);
     }
   }
@@ -253,10 +240,6 @@ async function withoutAdmittedInputPatchDebt(input: {
       if (!selfOrphanWorkspace) debt.push(item);
       continue;
     }
-    const selfDebt = await admissionBindingHasSelfDebt({
-      item,
-      binding,
-    });
     const selfInactiveWorkspace =
       item.reason === ProjectDebtReason.InactiveDirtyWorkspace &&
       await admissionWorkspacePathsMatch(item.subject, binding.workspacePath);
@@ -264,18 +247,10 @@ async function withoutAdmittedInputPatchDebt(input: {
       item.reason === ProjectDebtReason.ActiveWriterConflict &&
       item.subject === binding.jobId &&
       item.evidence.includes("dirty_workspace_without_worker");
-    const unrelatedHeldOutput =
-      item.reason === ProjectDebtReason.UnconsumedCompletedJob && !selfDebt;
-    const unrelatedInactiveOutputRisk =
-      item.reason === ProjectDebtReason.ActiveWriterConflict &&
-      !selfDebt &&
-      item.evidence.includes("dirty_workspace_without_worker");
     if (
       !selfInactiveWorkspace &&
       !selfOrphanWorkspace &&
-      !selfDirtyWithoutRunner &&
-      !unrelatedHeldOutput &&
-      !unrelatedInactiveOutputRisk
+      !selfDirtyWithoutRunner
     ) {
       debt.push(item);
     }
@@ -285,20 +260,6 @@ async function withoutAdmittedInputPatchDebt(input: {
     debt,
     counts: projectAdmissionDebtCounts(debt),
   };
-}
-
-async function admissionBindingHasSelfDebt(input: {
-  readonly item: ProjectDebtItem;
-  readonly binding: {
-    readonly jobId: string;
-    readonly workspacePath: string;
-  };
-}): Promise<boolean> {
-  return input.item.subject === input.binding.jobId ||
-    await admissionWorkspacePathsMatch(
-      input.item.subject,
-      input.binding.workspacePath,
-    );
 }
 
 export async function readCodexProjectAdmissionSnapshot(
@@ -701,6 +662,16 @@ async function debtFromOverviewItem(input: {
       workspacePath,
       input.requestedWorkspacePath,
     );
+  const pendingInputPatchEvidence =
+    await pendingAdmittedInputPatchPathEvidence({
+      item,
+      summary: input.summariesByJobId.get(jobId),
+      workerAlive,
+      duplicateWorkspaceIdentity: input.duplicateWorkspaceIdentity,
+      registryRootDir: input.registryRootDir,
+      scope: input.scope,
+      ...(input.readJob ? { readJob: input.readJob } : {}),
+    });
   if (
     malformedDirtyWriterObservation ||
     terminalConsumptionWorkspaceMismatch ||
@@ -721,13 +692,17 @@ async function debtFromOverviewItem(input: {
       scope: input.scope,
       readJob: input.readJob,
     });
+    const pathEvidence = pendingInputPatchEvidence ?? pathDisjointProducerEvidence;
     debt.push({
       reason: ProjectDebtReason.ActiveWriterConflict,
       subject: jobId,
       severity: "blocking",
-      ...pathDisjointProducerEvidence,
+      ...pathEvidence,
       evidence: uniqueProjectControlStrings([
         ...safeStringArray(item.activeWriterRiskReasons),
+        ...(pendingInputPatchEvidence
+          ? ["broker-admitted input patch is validated and pending start"]
+          : []),
         ...(sameRequestedWorkspace
           ? [`requested workspace already has active worker: ${workspacePath}`]
           : []),
@@ -739,6 +714,7 @@ async function debtFromOverviewItem(input: {
     });
   }
   if (item.workspaceDirty !== true) return debt;
+  if (pendingInputPatchEvidence) return debt;
   const subject = workspacePath ?? jobId;
   const stale = item.silentStale === true || item.workerFreshProgressAlive === false;
   if (workerAlive && stale) {

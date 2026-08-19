@@ -22,6 +22,7 @@ export type ProjectPreStartBinding = {
   readonly workspaceHead: string;
   readonly workspaceStatus: string;
   readonly workspaceStagedPatchSha256: string;
+  readonly workspaceStagedPaths: readonly string[];
   readonly workspaceUnstagedDirty: boolean;
   readonly workspacePatchSha256: string;
   readonly contractSha256: string;
@@ -64,6 +65,23 @@ export async function captureProjectPreStartBinding(
   const workspaceStagedPatchSha256 = await stagedPatchSha256(
     manifest.workspacePath,
   );
+  const workspaceStagedPaths = parseNullSeparatedPaths((
+    await execFileAsync(
+      "git",
+      [
+        "-C",
+        manifest.workspacePath,
+        "diff",
+        "--cached",
+        "--name-only",
+        "-z",
+        "--no-renames",
+        "HEAD",
+        "--",
+      ],
+      { encoding: "utf8", timeout: VALIDATOR_TIMEOUT_MS },
+    )
+  ).stdout);
   const workspaceUnstagedPaths = (
     await execFileAsync(
       "git",
@@ -94,6 +112,7 @@ export async function captureProjectPreStartBinding(
     workspaceHead,
     workspaceStatus,
     workspaceStagedPatchSha256,
+    workspaceStagedPaths,
     workspaceUnstagedDirty:
       workspaceUnstagedPaths.length > 0 || workspaceUntrackedPaths.length > 0,
     workspacePatchSha256,
@@ -117,6 +136,10 @@ export async function captureProjectPreStartBinding(
       ),
     ),
   };
+}
+
+function parseNullSeparatedPaths(value: string): readonly string[] {
+  return value.split("\0").filter((path) => path.length > 0);
 }
 
 export function verifiedInputPatchBindingValid(
