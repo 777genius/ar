@@ -185,10 +185,16 @@ export function accountPoolRootFromArgs(args: CodexAccountPoolArgs): string {
   );
 }
 
-export function accountAuthRootFromArgs(args: CodexAccountPoolArgs): string {
+export function accountAuthRootFromArgs(
+  args: CodexAccountPoolArgs,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   if (args.authRootDir) return resolvePath(process.cwd(), args.authRootDir);
   if (args.pool) return join(accountPoolRootFromArgs(args), args.pool);
-  return resolvePath(process.cwd(), defaultCodexGoalAuthRoot);
+  return resolvePath(
+    process.cwd(),
+    env.SUBSCRIPTION_RUNTIME_CODEX_AUTH_ROOT ?? defaultCodexGoalAuthRoot,
+  );
 }
 
 export async function listAccountPools(
