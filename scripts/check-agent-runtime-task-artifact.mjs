@@ -122,8 +122,15 @@ function assertCapabilities(artifactPath, home, runtimeTmp) {
 
 function assertStdinForwarding(artifactPath, home, runtimeTmp) {
   const result = spawnSync(
-    artifactPath,
-    ["--provider", "claude", "--ephemeral", "--format", "result-json"],
+    "/bin/dash",
+    [
+      artifactPath,
+      "--provider",
+      "claude",
+      "--ephemeral",
+      "--format",
+      "result-json",
+    ],
     {
       encoding: "utf8",
       input: "{}\n",
