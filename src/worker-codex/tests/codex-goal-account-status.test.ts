@@ -6,6 +6,26 @@ import { codexAccountCapacityStore } from "../application/codex-account-capacity
 import { listCodexGoalAccountStatuses } from "../codex-goal-account-status";
 
 describe("Codex goal account status", () => {
+  it("auto-discovers only canonical account-prefixed slot directories", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-goal-account-discovery-"));
+    try {
+      const authRootDir = join(root, "auth");
+      await Promise.all([
+        writeTestAuth(authRootDir, "account-a", "canonical-account"),
+        writeTestAuth(authRootDir, "k", "legacy-account"),
+        mkdir(join(authRootDir, ".subscription-runtime-account-capacity"), {
+          recursive: true,
+        }),
+      ]);
+
+      const accounts = await listCodexGoalAccountStatuses({ authRootDir });
+
+      expect(accounts.map((account) => account.name)).toEqual(["account-a"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("reads Codex app-server quota limits during live account status", async () => {
     const root = await mkdtemp(join(tmpdir(), "codex-goal-account-status-"));
     try {
@@ -197,6 +217,29 @@ exit 1
     }
   });
 });
+
+async function writeTestAuth(
+  authRootDir: string,
+  slot: string,
+  accountId: string,
+): Promise<void> {
+  await mkdir(join(authRootDir, slot), { recursive: true });
+  await writeFile(
+    join(authRootDir, slot, "auth.json"),
+    `${JSON.stringify({
+      auth_mode: "chatgpt",
+      last_refresh: new Date().toISOString(),
+      tokens: {
+        refresh_token: "test-refresh-token",
+        access_token: "test-access-token",
+        id_token: fakeJwt({
+          email: "test@example.com",
+          "https://api.openai.com/auth": { chatgpt_account_id: accountId },
+        }),
+      },
+    })}\n`,
+  );
+}
 
 function fakeJwt(payload: Record<string, unknown>): string {
   return [
