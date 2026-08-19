@@ -66,6 +66,7 @@ export type SubscriptionAgentRuntimeTaskCliRunOptions = {
 
 export const agentRuntimeTaskRunnerCapabilities = {
   schemaVersion: 1,
+  // The packaged HIB artifact intentionally exposes only its stable v2 contract.
   protocolVersions: [2],
   inlineOutputSchema: true,
   reasoningEffort: true,
