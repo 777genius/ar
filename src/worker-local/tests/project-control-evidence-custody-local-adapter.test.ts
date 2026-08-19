@@ -149,6 +149,62 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
     expect(await readFile(join(moved, "evidence", "artifact.bin"))).toEqual(bytes);
   });
 
+  it("rejects a nested ancestor replacement before publication", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-ancestor-race-"));
+    const root = join(outer, "root");
+    const ancestor = join(root, "frozen-output-imports");
+    const moved = join(root, "frozen-output-imports-original");
+    const replacementFinal = join(ancestor, "plan-1");
+    await mkdir(root);
+    let swapped = false;
+    const custody = new LocalProjectControlEvidenceCustody(async (point) => {
+      if (point !== "after_temp_fsync" || swapped) return;
+      swapped = true;
+      await rename(ancestor, moved);
+      await mkdir(replacementFinal, { recursive: true });
+    });
+    const bytes = Buffer.from("ancestor-bound publication\n");
+    await expect(custody.publishImmutableBytes({
+      root,
+      directories: ["frozen-output-imports", "plan-1"],
+      fileName: "artifact.bin",
+      bytes,
+      expectedSha256: sha(bytes),
+    })).rejects.toThrow("publication_boundary_drift");
+    expect(swapped).toBe(true);
+    await expect(readFile(join(replacementFinal, "artifact.bin")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(moved, "plan-1", "artifact.bin")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a final directory replacement after publication", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-final-race-"));
+    const root = join(outer, "root");
+    const final = join(root, "frozen-output-imports", "plan-1");
+    const moved = join(root, "frozen-output-imports", "plan-1-original");
+    await mkdir(root);
+    let swapped = false;
+    const custody = new LocalProjectControlEvidenceCustody(async (point) => {
+      if (point !== "after_publish_before_directory_fsync" || swapped) return;
+      swapped = true;
+      await rename(final, moved);
+      await mkdir(final);
+    });
+    const bytes = Buffer.from("final-directory-bound publication\n");
+    await expect(custody.publishImmutableBytes({
+      root,
+      directories: ["frozen-output-imports", "plan-1"],
+      fileName: "artifact.bin",
+      bytes,
+      expectedSha256: sha(bytes),
+    })).rejects.toThrow("publication_boundary_drift");
+    expect(swapped).toBe(true);
+    await expect(readFile(join(final, "artifact.bin")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(moved, "artifact.bin"))).toEqual(bytes);
+  });
+
   it.each(["read", "inspect", "copy"] as const)(
     "rejects deterministic lexical leaf replacement after a held-FD %s",
     async (operation) => {

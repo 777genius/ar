@@ -275,7 +275,8 @@ export class LocalProjectControlEvidenceCustody implements
         fileName: input.fileName,
         expectedSha256: input.expectedSha256,
         expectedLength: input.bytes.byteLength,
-        assertBoundary: boundary.assertRootBinding,
+        assertBoundary: boundary.assertBinding,
+        assertSuccessBoundary: boundary.assertSuccessBinding,
         write: async (handle) => await writeAll(handle, input.bytes),
         ...(this.crashHook ? { crashHook: this.crashHook } : {}),
       });
@@ -317,7 +318,8 @@ export class LocalProjectControlEvidenceCustody implements
         fileName: input.fileName,
         expectedSha256: input.expectedSha256,
         expectedLength: input.expectedLength,
-        assertBoundary: boundary.assertRootBinding,
+        assertBoundary: boundary.assertBinding,
+        assertSuccessBoundary: boundary.assertSuccessBinding,
         ...(this.crashHook ? { crashHook: this.crashHook } : {}),
       });
     } finally {
@@ -352,6 +354,12 @@ async function openBoundary(root: string, directories: readonly string[],
     await rootHandle.close().catch(() => undefined);
     throw error;
   }
+  const chain: HeldBoundaryDirectory[] = [{
+    lexical: canonicalRoot,
+    handle: rootHandle,
+    parent: undefined,
+    identity: rootIdentity,
+  }];
   let handle = rootHandle;
   try {
     for (const [index, segment] of directories.entries()) {
@@ -381,33 +389,71 @@ async function openBoundary(root: string, directories: readonly string[],
         await handle.sync();
         await crashHook?.("after_ancestor_parent_fsync",
           join(canonicalRoot, ...directories.slice(0, index + 1)));
-        const previous = handle;
         handle = next;
+        chain.push({
+          lexical: join(canonicalRoot, ...directories.slice(0, index + 1)),
+          handle,
+          parent: chain[index]!.handle,
+          identity: await handle.stat(),
+        });
         next = undefined;
-        if (previous !== rootHandle) await previous.close();
       } finally {
         await next?.close().catch(() => undefined);
       }
     }
     return {
       handle,
-      assertRootBinding: async () => {
+      assertBinding: async () => await assertHeldBoundaryChain(chain),
+      assertSuccessBinding: async () => {
         await crashHook?.("before_publication_success_boundary_revalidation",
           canonicalRoot);
-        await assertHeldRootLexicalBinding(canonicalRoot, rootHandle, rootIdentity);
+        await assertHeldBoundaryChain(chain);
       },
       close: async () => {
-        if (handle === rootHandle) {
-          await rootHandle.close();
-          return;
+        let closeError: unknown;
+        for (const directory of [...chain].reverse()) {
+          try {
+            await directory.handle.close();
+          } catch (error) {
+            closeError ??= error;
+          }
         }
-        await handle.close().finally(async () => await rootHandle.close());
+        if (closeError) throw closeError;
       },
     };
   } catch (error) {
-    if (handle !== rootHandle) await handle.close().catch(() => undefined);
-    await rootHandle.close().catch(() => undefined);
+    for (const directory of [...chain].reverse()) {
+      await directory.handle.close().catch(() => undefined);
+    }
     throw error;
+  }
+}
+
+type HeldBoundaryDirectory = Parameters<typeof assertInspectionLexicalBinding>[0];
+async function assertHeldBoundaryChain(
+  chain: readonly HeldBoundaryDirectory[]): Promise<void> {
+  try {
+    const root = chain[0]!;
+    await assertHeldRootLexicalBinding(root.lexical, root.handle, root.identity);
+    for (const directory of chain.slice(1)) {
+      await assertInspectionLexicalBinding(directory);
+    }
+
+    const final = chain.at(-1)!;
+    const reopenedFinal = await openAbsoluteDirectoryNoSymlinks(final.lexical);
+    try {
+      const identity = await reopenedFinal.stat();
+      if (identity.dev !== final.identity.dev || identity.ino !== final.identity.ino) {
+        throw new Error("evidence_custody_publication_boundary_drift");
+      }
+    } finally {
+      await reopenedFinal.close();
+    }
+  } catch (error) {
+    if (error instanceof Error &&
+      (error.message === "evidence_custody_publication_boundary_drift" ||
+        error.message === "evidence_custody_publication_root_drift")) throw error;
+    throw new Error("evidence_custody_publication_boundary_drift", { cause: error });
   }
 }
 
@@ -613,6 +659,7 @@ async function copyThroughHandle(input: {
   readonly fileName: string; readonly expectedSha256: string;
   readonly expectedLength: number;
   readonly assertBoundary: () => Promise<void>;
+  readonly assertSuccessBoundary: () => Promise<void>;
   readonly crashHook?: PublicationCrashHook;
 }) {
   return await publishThroughHandle({
@@ -622,6 +669,7 @@ async function copyThroughHandle(input: {
     expectedSha256: input.expectedSha256,
     expectedLength: input.expectedLength,
     assertBoundary: input.assertBoundary,
+    assertSuccessBoundary: input.assertSuccessBoundary,
     ...(input.crashHook ? { crashHook: input.crashHook } : {}),
     write: async (target) => {
       const hash = createHash("sha256");
@@ -677,6 +725,7 @@ async function publishThroughHandle(input: {
   readonly parentFd: number; readonly lexicalPath: string; readonly fileName: string;
   readonly expectedSha256: string; readonly expectedLength: number;
   readonly assertBoundary: () => Promise<void>;
+  readonly assertSuccessBoundary: () => Promise<void>;
   readonly write: (handle: Awaited<ReturnType<typeof open>>) => Promise<void>;
   readonly crashHook?: PublicationCrashHook;
 }) {
@@ -697,7 +746,7 @@ async function publishThroughHandle(input: {
       expectedLength: input.expectedLength,
       removeMatching: true,
     })) await syncDirectory(parent);
-    await input.assertBoundary();
+    await input.assertSuccessBoundary();
     return { path: input.lexicalPath, created: false };
   } catch (error) {
     if (code(error) !== "ENOENT") throw error;
@@ -738,6 +787,7 @@ async function publishThroughHandle(input: {
       simulatedCrash = true;
       throw error;
     }
+    await input.assertBoundary();
     try {
       await link(temporaryPath, path);
       published = true;
@@ -750,7 +800,10 @@ async function publishThroughHandle(input: {
       } finally {
         await linked.close();
       }
+      await input.assertBoundary();
     } catch (error) {
+      if (error instanceof Error &&
+        error.message === "evidence_custody_publication_boundary_drift") throw error;
       if (code(error) !== "EEXIST" && code(error) !== "ENOENT") throw error;
       const existing = await readViaHandle(path, input.expectedLength);
       if (existing.sha256 !== input.expectedSha256 ||
@@ -762,7 +815,7 @@ async function publishThroughHandle(input: {
       });
       temporaryExists = false;
       await syncDirectory(parent);
-      await input.assertBoundary();
+      await input.assertSuccessBoundary();
       return { path: input.lexicalPath, created: false };
     }
     try {
@@ -774,6 +827,7 @@ async function publishThroughHandle(input: {
       simulatedCrash = true;
       throw error;
     }
+    await input.assertBoundary();
     await syncDirectory(parent);
     await target.close();
     targetClosed = true;
@@ -793,7 +847,7 @@ async function publishThroughHandle(input: {
       expectedLength: input.expectedLength,
       removeMatching: true,
     })) await syncDirectory(parent);
-    await input.assertBoundary();
+    await input.assertSuccessBoundary();
     return { path: input.lexicalPath, created: true };
   } finally {
     if (!targetClosed) await target.close().catch(() => undefined);
