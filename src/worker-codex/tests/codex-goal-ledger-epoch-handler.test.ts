@@ -488,12 +488,44 @@ describe("project control ledger epoch handler", () => {
     expect(await exactTreeBytes(fixture.root)).toEqual(before);
   });
 
-  it("confirms a fresh preview under the actual publication locks", async () => {
+  it("confirms retained info debt but rejects blocking debt under publication locks", async () => {
     const fixture = await handlerFixture();
-    const preview = await projectControlLedgerEpochMigrationView(
+    const blockedPreview = await projectControlLedgerEpochMigrationView(
       fixture.args(),
       fixture.deps,
     );
+    const beforeBlockedConfirmation = await exactTreeBytes(fixture.oldRoot);
+    await expect(stat(fixture.newRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(projectControlLedgerEpochMigrationView(
+      fixture.args({
+        confirmLedgerEpochMigration: true,
+        expectedLedgerEpochPlanSha256: String(blockedPreview.planSha256),
+      }),
+      fixture.deps,
+    )).rejects.toThrow("ledger_epoch_proposed_admission_blocked");
+    expect(await exactTreeBytes(fixture.oldRoot)).toEqual(beforeBlockedConfirmation);
+    await expect(stat(fixture.newRoot)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const deps = {
+      ...fixture.deps,
+      buildAdmissionSnapshot: async () => ({
+        schemaVersion: 1 as const,
+        projectId: "social-monitor",
+        observedAt: "2026-08-08T00:00:00.000Z",
+        debt: [{
+          reason: ProjectDebtReason.LegacyOutputQuarantineRequired,
+          subject: join(fixture.newRoot, "legacy-preservation"),
+          severity: "info" as const,
+          evidence: ["fixture record retained by the epoch"],
+        }],
+        counts: { legacyOutputQuarantineRequired: 1 },
+      }),
+    };
+    const preview = await projectControlLedgerEpochMigrationView(
+      fixture.args(),
+      deps,
+    );
+    expect(preview.oldRootFileCount).toBe(1);
     const planSha256 = String(preview.planSha256);
 
     await expect(projectControlLedgerEpochMigrationView(
@@ -501,7 +533,7 @@ describe("project control ledger epoch handler", () => {
         confirmLedgerEpochMigration: true,
         expectedLedgerEpochPlanSha256: planSha256,
       }),
-      fixture.deps,
+      deps,
     )).resolves.toMatchObject({
       ok: true,
       receipt: { planSha256, status: "active" },
