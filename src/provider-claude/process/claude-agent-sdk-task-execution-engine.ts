@@ -152,6 +152,14 @@ export class ClaudeAgentSdkTaskExecutionEngine
             ? {}
             : { append: input.appendSystemPrompt }),
         },
+        ...(input.workspaceInstructionPolicy === "deny_project_instructions_v1"
+          ? {
+              // This contract is stronger than an empty settings source list:
+              // safe mode also disables CLAUDE.md, skills, plugins, hooks,
+              // MCP, and other user/project customizations.
+              extraArgs: { "safe-mode": null },
+            }
+          : {}),
         ...(this.options.binaryPath === undefined
           ? {}
           : { pathToClaudeCodeExecutable: this.options.binaryPath }),

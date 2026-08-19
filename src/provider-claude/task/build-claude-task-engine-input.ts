@@ -95,6 +95,7 @@ export function prepareClaudeTaskEngineInput(
     input.task.controls?.disallowedTools ?? options.disallowedTools;
   const editMode = input.task.controls?.editMode;
   const providerSandboxMode = input.task.controls?.providerSandboxMode;
+  const workspaceInstructionPolicy = input.task.controls?.workspaceInstructionPolicy;
   const outputSchemaName =
     input.task.controls?.outputSchemaName ?? input.task.outputSchemaName;
   const configuredOutputSchema = outputSchemaName === undefined
@@ -132,6 +133,7 @@ export function prepareClaudeTaskEngineInput(
     mcpConfig: options.mcpConfig,
     editMode,
     providerSandboxMode,
+    workspaceInstructionPolicy,
     strictMcpConfig: options.strictMcpConfig,
     outputSchemaName,
     outputSchema,
@@ -152,6 +154,7 @@ type OptionalEngineInputKey =
   | "mcpConfig"
   | "editMode"
   | "providerSandboxMode"
+  | "workspaceInstructionPolicy"
   | "strictMcpConfig"
   | "outputSchemaName"
   | "outputSchema"
@@ -191,6 +194,12 @@ function withOptionalEngineInputValues(
     result = {
       ...result,
       providerSandboxMode: optional.providerSandboxMode,
+    };
+  }
+  if (optional.workspaceInstructionPolicy !== undefined) {
+    result = {
+      ...result,
+      workspaceInstructionPolicy: optional.workspaceInstructionPolicy,
     };
   }
   if (optional.strictMcpConfig !== undefined) {

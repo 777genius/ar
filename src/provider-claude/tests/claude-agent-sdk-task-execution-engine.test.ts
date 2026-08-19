@@ -131,6 +131,7 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
 
       const result = await engine.run(taskInput(workspace, {
         outputSchema: schema,
+        workspaceInstructionPolicy: "deny_project_instructions_v1",
         allowedTools: ["Read", "Grep", "Glob"],
         disallowedTools: [
           "Bash",
@@ -147,6 +148,7 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
       expect(captured).toMatchObject({
         outputFormat: { type: "json_schema", schema },
         settingSources: [],
+        extraArgs: { "safe-mode": null },
         permissionMode: "dontAsk",
         tools: ["Read", "Grep", "Glob", "StructuredOutput"],
         allowedTools: ["Read", "Grep", "Glob", "StructuredOutput"],
@@ -221,6 +223,7 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
 
       expect(captured?.tools).toEqual(["Read"]);
       expect(captured?.allowedTools).toEqual(["Read"]);
+      expect(captured?.extraArgs).toBeUndefined();
       await expect(captured?.canUseTool?.(
         "StructuredOutput",
         {},
