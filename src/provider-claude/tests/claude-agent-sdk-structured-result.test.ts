@@ -48,6 +48,45 @@ describe("ClaudeAgentSdkTaskExecutionEngine structured results", () => {
     }
   });
 
+  it("validates draft 2020-12 prefixItems in structured result text", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-schema-"));
+    const outputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "array",
+      prefixItems: [
+        { const: "APPROVE" },
+        { type: "integer" },
+      ],
+      items: false,
+      minItems: 2,
+      maxItems: 2,
+    } as const;
+    try {
+      const validEngine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: () => successResultTextQuery('["APPROVE",2]'),
+        }),
+      });
+      await expect(validEngine.run(taskInput(workspace, { outputSchema })))
+        .resolves.toMatchObject({ structuredOutput: ["APPROVE", 2] });
+
+      const invalidEngine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: () => successResultTextQuery('["APPROVE","2"]'),
+        }),
+      });
+      await expect(invalidEngine.run(taskInput(workspace, { outputSchema })))
+        .rejects.toMatchObject({
+          failure: {
+            code: "provider_output_invalid",
+            details: { sdkErrors: "fallback_schema_mismatch" },
+          },
+        });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     ["empty", "", "fallback_empty"],
     ["non-JSON", "completed", "fallback_non_json"],
@@ -223,6 +262,71 @@ describe("ClaudeAgentSdkTaskExecutionEngine structured results", () => {
         },
       });
       expect(JSON.stringify(failure)).not.toContain(sentinel);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes and bounds non-success policy diagnostics without leaking secrets or IDs", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-error-"));
+    const redactor = new DefaultRedactor();
+    const toolSentinel = "hib-error-denied-tool-secret";
+    const auditSentinel = "hib-error-policy-audit-secret";
+    const errorSentinel = "hib-error-message-secret";
+    const rawToolUseId = "raw-tool-use-id-must-not-leak";
+    redactor.registerSecret(toolSentinel, "synthetic-tool");
+    redactor.registerSecret(auditSentinel, "synthetic-audit");
+    redactor.registerSecret(errorSentinel, "synthetic-error");
+    const deniedTool = `${toolSentinel}-${"x".repeat(1_200)},malicious:audit`;
+    try {
+      const engine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: ({ options }: { options: Options }) =>
+            errorAfterPolicyDenialQuery(
+              options,
+              `Audit-${auditSentinel},forged:invalid_path`,
+              rawToolUseId,
+              {
+                ...sdkExecutionErrorMessage(),
+                errors: [`provider failure ${errorSentinel}`],
+                permission_denials: [{
+                  tool_name: deniedTool,
+                  tool_use_id: rawToolUseId,
+                  tool_input: { untrusted: toolSentinel },
+                }],
+                uuid: `result-${errorSentinel}`,
+                session_id: `session-${errorSentinel}`,
+              } as Exclude<SDKResultMessage, { readonly subtype: "success" }>,
+            ),
+        }),
+      });
+
+      const failure = await engine.run(taskInput(workspace, {
+        redactor,
+        allowedTools: ["Read"],
+        disallowedTools: ["Bash"],
+        editMode: AgentRuntimeEditMode.ReadOnly,
+      })).then(() => undefined, (error: unknown) => error);
+      expect(failure).toMatchObject({
+        failure: {
+          causeCategory: "error_during_execution",
+          details: {
+            permissionDenials: "1",
+            hostPolicyDenials: "outside_policy",
+            sdkErrors: "provider failure [redacted:synthetic-error]",
+          },
+        },
+      });
+      const details = providerFailureDetails(failure);
+      expect(details.deniedTools).toHaveLength(1_000);
+      expect(details.deniedTools).toMatch(/^\[redacted:synthetic-tool\]-x+$/);
+      const serialized = JSON.stringify(failure);
+      expect(serialized).not.toContain(toolSentinel);
+      expect(serialized).not.toContain(auditSentinel);
+      expect(serialized).not.toContain(errorSentinel);
+      expect(serialized).not.toContain(rawToolUseId);
+      expect(serialized).not.toContain("forged:invalid_path");
+      expect(serialized).not.toContain("tool_input");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -626,6 +730,28 @@ function successErrorAfterPolicyDenialQuery(
       transcript_path: "",
       permission_mode: options.permissionMode ?? "default",
     }, "tool-denied", { signal: new AbortController().signal });
+    yield message;
+  })();
+  return Object.assign(stream, { close() {} }) as Query;
+}
+
+function errorAfterPolicyDenialQuery(
+  options: Options,
+  toolName: string,
+  toolUseId: string,
+  message: Exclude<SDKResultMessage, { readonly subtype: "success" }>,
+): Query {
+  const stream = (async function* () {
+    await options.hooks?.PreToolUse?.[0]?.hooks[0]?.({
+      hook_event_name: "PreToolUse",
+      tool_name: toolName,
+      tool_input: {},
+      tool_use_id: toolUseId,
+      cwd: options.cwd ?? "/workspace",
+      session_id: "session-1",
+      transcript_path: "",
+      permission_mode: options.permissionMode ?? "default",
+    }, toolUseId, { signal: new AbortController().signal });
     yield message;
   })();
   return Object.assign(stream, { close() {} }) as Query;

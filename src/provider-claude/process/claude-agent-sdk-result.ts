@@ -1,5 +1,5 @@
 import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import Ajv from "ajv";
+import Ajv2020 from "ajv/dist/2020.js";
 import {
   AgentRuntimeCostCurrency,
   AgentRuntimeFailureCode,
@@ -99,7 +99,7 @@ function structuredOutputFromSdkMessage(
   }
 
   try {
-    const validate = new Ajv({
+    const validate = new Ajv2020({
       allErrors: true,
       ownProperties: true,
       strict: true,
@@ -175,17 +175,14 @@ function sdkSuccessDetails(
   redactor: ClaudeTaskEngineInput["redactor"],
   safeDiagnostics: Readonly<Record<string, string>> = {},
 ): Readonly<Record<string, string>> {
-  const deniedTools = redactor.redact([...new Set(
-    message.permission_denials.map((denial) => denial.tool_name),
-  )].join(",")).slice(0, 1_000);
-  redactor.assertNoKnownSecret(deniedTools, "claude-agent-sdk-denied-tools");
+  const deniedTools = safeDeniedTools(message.permission_denials, redactor);
   return {
     sdkSubtype: message.subtype,
     sdkErrors: safeReason,
     permissionDenials: String(message.permission_denials.length),
     hostPolicyDenials: safeHostPolicyDenials(policyAudit),
     ...safeDiagnostics,
-    ...(message.permission_denials.length === 0 ? {} : { deniedTools }),
+    ...(deniedTools === undefined ? {} : { deniedTools }),
   };
 }
 
@@ -206,6 +203,18 @@ function safeHostPolicyDenials(policyAudit: ReadonlySet<string>): string {
     ) ?? "unknown_policy_denial"
   ))];
   return reasons.join(",").slice(0, 1_000);
+}
+
+function safeDeniedTools(
+  permissionDenials: readonly { readonly tool_name: string }[],
+  redactor: ClaudeTaskEngineInput["redactor"],
+): string | undefined {
+  if (permissionDenials.length === 0) return undefined;
+  const deniedTools = redactor.redact([...new Set(
+    permissionDenials.map((denial) => denial.tool_name),
+  )].join(",")).slice(0, 1_000);
+  redactor.assertNoKnownSecret(deniedTools, "claude-agent-sdk-denied-tools");
+  return deniedTools;
 }
 
 function failureFromSdkMessage(
@@ -259,20 +268,17 @@ function sdkErrorDetails(
   input: ClaudeTaskEngineInput,
   policyAudit: ReadonlySet<string>,
 ): Readonly<Record<string, string>> {
-  const sdkErrors = input.redactor.redact(message.errors.join("; ")).slice(0, 1000);
+  const sdkErrors = input.redactor.redact(message.errors.join("; ")).slice(0, 1_000);
   input.redactor.assertNoKnownSecret(sdkErrors, "claude-agent-sdk-error-details");
+  const deniedTools = safeDeniedTools(
+    message.permission_denials,
+    input.redactor,
+  );
   return {
     sdkSubtype: message.subtype,
     permissionDenials: String(message.permission_denials.length),
-    hostPolicyDenials:
-      policyAudit.size === 0 ? "none" : [...policyAudit].join(","),
-    ...(message.permission_denials.length === 0
-      ? {}
-      : {
-          deniedTools: [...new Set(
-            message.permission_denials.map((denial) => denial.tool_name),
-          )].join(","),
-        }),
+    hostPolicyDenials: safeHostPolicyDenials(policyAudit),
+    ...(deniedTools === undefined ? {} : { deniedTools }),
     ...(sdkErrors.length === 0 ? {} : { sdkErrors }),
   };
 }
