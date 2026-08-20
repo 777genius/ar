@@ -27,6 +27,97 @@ import { assertProjectControlDependencyBootstrapReady } from "../codex-goal-mcp-
 const execFileAsync = promisify(execFile);
 
 describe("dependency bootstrap", () => {
+  it("skips cache placement in off mode while preserving diagnostic evidence", async () => {
+    const root = await mkTestWorkspace("subscription-runtime-deps-off-");
+    const workspace = join(root, "workspace");
+    const jobRoot = join(root, "job");
+    const previousConfig =
+      process.env.SUBSCRIPTION_RUNTIME_DEPENDENCY_CACHE_CONFIG;
+    try {
+      await workspaceWithUnmatchedCachePlacement(root, workspace);
+
+      const result = await runDependencyBootstrap({
+        workspacePath: workspace,
+        jobRootDir: jobRoot,
+        mode: "off",
+      });
+
+      expect(result).toMatchObject({
+        mode: "off",
+        workspacePath: await realpath(workspace),
+        status: "off",
+        diagnosticPath: join(jobRoot, "dependency-preflight.json"),
+      });
+      expect(result.cacheRoot).toBeUndefined();
+      const diagnostic = JSON.parse(
+        await readFile(join(jobRoot, "dependency-preflight.json"), "utf8"),
+      ) as Record<string, unknown>;
+      expect(diagnostic).toMatchObject({
+        mode: "off",
+        status: "off",
+        diagnosticPath: join(jobRoot, "dependency-preflight.json"),
+      });
+    } finally {
+      restoreDependencyCacheConfig(previousConfig);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still rejects unsafe cross-worktree links when placement is skipped", async () => {
+    const root = await mkTestWorkspace("subscription-runtime-deps-off-unsafe-");
+    const workspace = join(root, "workspace");
+    const foreign = join(root, "foreign", "node_modules");
+    const previousConfig =
+      process.env.SUBSCRIPTION_RUNTIME_DEPENDENCY_CACHE_CONFIG;
+    try {
+      await workspaceWithUnmatchedCachePlacement(root, workspace);
+      await Promise.all([
+        mkdir(foreign, { recursive: true }),
+        mkdir(workspace, { recursive: true }),
+      ]);
+      await symlink(foreign, join(workspace, "node_modules"));
+
+      const result = await runDependencyBootstrap({
+        workspacePath: workspace,
+        mode: "off",
+      });
+
+      expect(result).toMatchObject({
+        mode: "off",
+        status: "unsafe",
+        unsafeDependencyPaths: ["node_modules"],
+      });
+      expect(() =>
+        assertProjectControlDependencyBootstrapReady(result),
+      ).toThrow("project_control_dependency_environment_unsafe:node_modules");
+    } finally {
+      restoreDependencyCacheConfig(previousConfig);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["preflight", "install"] as const)(
+    "keeps cache placement fail-closed in %s mode",
+    async (mode) => {
+      const root = await mkTestWorkspace(
+        `subscription-runtime-deps-${mode}-placement-`,
+      );
+      const workspace = join(root, "workspace");
+      const previousConfig =
+        process.env.SUBSCRIPTION_RUNTIME_DEPENDENCY_CACHE_CONFIG;
+      try {
+        await workspaceWithUnmatchedCachePlacement(root, workspace);
+
+        await expect(
+          runDependencyBootstrap({ workspacePath: workspace, mode }),
+        ).rejects.toThrowError("dependency_cache_placement_not_found");
+      } finally {
+        restoreDependencyCacheConfig(previousConfig);
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("detects pnpm without sharing node_modules", async () => {
     const root = await mkTestWorkspace("subscription-runtime-deps-pnpm-");
     try {
@@ -762,6 +853,40 @@ describe("dependency bootstrap", () => {
 
 async function mkTestWorkspace(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
+}
+
+async function workspaceWithUnmatchedCachePlacement(
+  root: string,
+  workspace: string,
+): Promise<void> {
+  const allowedWorkspace = join(root, "allowed");
+  await Promise.all([
+    mkdir(allowedWorkspace, { recursive: true }),
+    mkdir(workspace, { recursive: true }),
+  ]);
+  const configPath = join(root, "dependency-cache-placement.json");
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      placements: [
+        {
+          workspaceRoot: allowedWorkspace,
+          cacheRoot: join(root, "cache"),
+        },
+      ],
+    }),
+    { mode: 0o600 },
+  );
+  process.env.SUBSCRIPTION_RUNTIME_DEPENDENCY_CACHE_CONFIG = configPath;
+}
+
+function restoreDependencyCacheConfig(previous: string | undefined): void {
+  if (previous === undefined) {
+    delete process.env.SUBSCRIPTION_RUNTIME_DEPENDENCY_CACHE_CONFIG;
+  } else {
+    process.env.SUBSCRIPTION_RUNTIME_DEPENDENCY_CACHE_CONFIG = previous;
+  }
 }
 
 async function mkGitDependencyWorkspace(

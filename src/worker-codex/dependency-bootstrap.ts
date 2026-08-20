@@ -114,6 +114,14 @@ async function runDependencyBootstrapUnlocked(
 ): Promise<DependencyPreflightResult> {
   const mode = input.mode ?? "preflight";
   const preflight = await inspectDependencyBootstrap(input.workspacePath, mode);
+  if (mode === "off") {
+    if (!input.jobRootDir) return preflight;
+    const diagnosticPath = await writeDependencyPreflightDiagnostic(
+      input.jobRootDir,
+      preflight,
+    );
+    return { ...preflight, diagnosticPath };
+  }
   const cacheRoot = await resolveDependencyCacheRoot(input);
   let withCommand = attachInstallCommand(preflight, cacheRoot);
 
