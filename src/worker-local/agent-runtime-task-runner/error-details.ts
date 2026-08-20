@@ -62,6 +62,16 @@ const providerDiagnosticKeys = [
   "permissionDenials",
   "hostPolicyDenials",
   "deniedTools",
+  "apiRetryCount",
+  "apiErrorHttpStatus",
+  "terminalReason",
+  "lastObservedApiRetryError",
+  "lastObservedApiRetryHttpStatus",
+  "lastObservedAssistantError",
+  "lastObservedRateLimitStatus",
+  "lastObservedRateLimitType",
+  "lastObservedOverageStatus",
+  "lastObservedRateLimitReason",
 ] as const;
 
 function copyProviderDiagnostics(

@@ -18,34 +18,74 @@ describe("Claude worker failure details", () => {
         permissionDenials: "1",
         hostPolicyDenials: "StructuredOutput:outside_policy",
         deniedTools: "StructuredOutput",
+        apiRetryCount: "2",
+        apiErrorHttpStatus: "http_429",
+        terminalReason: "api_error",
+        lastObservedApiRetryError: "overloaded",
+        lastObservedApiRetryHttpStatus: "http_529",
+        lastObservedAssistantError: "billing_error",
+        lastObservedRateLimitStatus: "rejected",
+        lastObservedRateLimitType: "overage",
+        lastObservedOverageStatus: "rejected",
+        lastObservedRateLimitReason: "credits_required",
+        rawProviderContent: "must-not-cross-worker",
+        providerRequestId: "must-not-cross-worker",
         ignored: "must-not-cross",
       },
     });
 
-    expect(details).toMatchObject({
+    expect(details).toEqual({
       code: "provider_output_invalid",
+      retryable: "true",
+      reconnectRequired: "false",
       causeCategory: "error_max_structured_output_retries",
       sdkSubtype: "error_max_structured_output_retries",
+      sdkErrors: "x".repeat(1_000),
       permissionDenials: "1",
       hostPolicyDenials: "StructuredOutput:outside_policy",
       deniedTools: "StructuredOutput",
+      apiRetryCount: "2",
+      apiErrorHttpStatus: "http_429",
+      terminalReason: "api_error",
+      lastObservedApiRetryError: "overloaded",
+      lastObservedApiRetryHttpStatus: "http_529",
+      lastObservedAssistantError: "billing_error",
+      lastObservedRateLimitStatus: "rejected",
+      lastObservedRateLimitType: "overage",
+      lastObservedOverageStatus: "rejected",
+      lastObservedRateLimitReason: "credits_required",
     });
-    expect(details.sdkErrors).toHaveLength(1_000);
-    expect(details).not.toHaveProperty("ignored");
 
     const encoded = errorDetails(new SubscriptionWorkerError(
       "subscription_worker_run_failed",
       "Claude provider output was invalid.",
-      { details },
+      {
+        details: {
+          ...details,
+          rawProviderContent: "must-not-cross-cli",
+          providerRequestId: "must-not-cross-cli",
+          lastObservedRawError: "must-not-cross-cli",
+        },
+      },
     ));
-    expect(encoded).toMatchObject({
+    expect(encoded).toEqual({
       subscriptionWorkerCode: "subscription_worker_run_failed",
       providerFailureCode: "provider_output_invalid",
       sdkSubtype: "error_max_structured_output_retries",
+      sdkErrors: "x".repeat(1_000),
       permissionDenials: "1",
       hostPolicyDenials: "StructuredOutput:outside_policy",
       deniedTools: "StructuredOutput",
+      apiRetryCount: "2",
+      apiErrorHttpStatus: "http_429",
+      terminalReason: "api_error",
+      lastObservedApiRetryError: "overloaded",
+      lastObservedApiRetryHttpStatus: "http_529",
+      lastObservedAssistantError: "billing_error",
+      lastObservedRateLimitStatus: "rejected",
+      lastObservedRateLimitType: "overage",
+      lastObservedOverageStatus: "rejected",
+      lastObservedRateLimitReason: "credits_required",
     });
-    expect(encoded?.sdkErrors).toHaveLength(1_000);
   });
 });
