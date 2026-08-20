@@ -39,6 +39,7 @@ import type {
 } from "../task/engine-contract";
 import { claudeCliChildEnv } from "./claude-cli-env";
 import { resultFromSdkMessage } from "./claude-agent-sdk-result";
+import { createClaudeAgentSdkSafeDiagnostics } from "./claude-agent-sdk-safe-diagnostics";
 
 type AgentSdkModule = Pick<
   typeof import("@anthropic-ai/claude-agent-sdk"),
@@ -186,9 +187,16 @@ export class ClaudeAgentSdkTaskExecutionEngine
         settingSources: [],
       };
       stream = query({ prompt: input.prompt, options });
+      const safeDiagnostics = createClaudeAgentSdkSafeDiagnostics();
       for await (const message of stream) {
+        safeDiagnostics.observe(message);
         if (message.type !== "result") continue;
-        const result = resultFromSdkMessage(message, input, policyAudit);
+        const result = resultFromSdkMessage(
+          message,
+          input,
+          policyAudit,
+          safeDiagnostics,
+        );
         if (goalProtocol && !goalProtocol.isComplete()) {
           throw new ClaudeProviderFailureError({
             code: AgentRuntimeFailureCode.GoalSliceExhausted,

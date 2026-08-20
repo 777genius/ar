@@ -14,11 +14,13 @@ import type {
   ClaudeTaskEngineInput,
   ClaudeTaskExecutionResult,
 } from "../task/engine-contract";
+import type { ClaudeAgentSdkSafeDiagnostics } from "./claude-agent-sdk-safe-diagnostics";
 
 export function resultFromSdkMessage(
   message: SDKResultMessage,
   input: ClaudeTaskEngineInput,
   policyAudit: ReadonlySet<string>,
+  safeDiagnostics: ClaudeAgentSdkSafeDiagnostics,
 ): ClaudeTaskExecutionResult {
   if (message.subtype !== "success") {
     throw new ClaudeProviderFailureError(
@@ -34,6 +36,7 @@ export function resultFromSdkMessage(
         outputText,
         policyAudit,
         input.redactor,
+        safeDiagnostics,
       ),
     );
   }
@@ -146,6 +149,7 @@ function failureFromSdkSuccessError(
   redactedOutputText: string,
   policyAudit: ReadonlySet<string>,
   redactor: ClaudeTaskEngineInput["redactor"],
+  safeDiagnostics: ClaudeAgentSdkSafeDiagnostics,
 ): ProviderFailure {
   const classified = classifyClaudeFailure(new Error(redactedOutputText));
   const causeCategory = classified.causeCategory === "unknown_runtime_failure"
@@ -159,6 +163,7 @@ function failureFromSdkSuccessError(
       policyAudit,
       "success_is_error",
       redactor,
+      safeDiagnostics.successErrorDetails(message),
     ),
   };
 }
@@ -168,6 +173,7 @@ function sdkSuccessDetails(
   policyAudit: ReadonlySet<string>,
   safeReason: SdkSuccessFailureReason,
   redactor: ClaudeTaskEngineInput["redactor"],
+  safeDiagnostics: Readonly<Record<string, string>> = {},
 ): Readonly<Record<string, string>> {
   const deniedTools = redactor.redact([...new Set(
     message.permission_denials.map((denial) => denial.tool_name),
@@ -178,6 +184,7 @@ function sdkSuccessDetails(
     sdkErrors: safeReason,
     permissionDenials: String(message.permission_denials.length),
     hostPolicyDenials: safeHostPolicyDenials(policyAudit),
+    ...safeDiagnostics,
     ...(message.permission_denials.length === 0 ? {} : { deniedTools }),
   };
 }
