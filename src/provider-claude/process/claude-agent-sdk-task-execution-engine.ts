@@ -10,6 +10,7 @@ import type {
   Query,
   SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import Ajv from "ajv";
 import {
   AgentRuntimeBudgetEnforcement,
   AgentRuntimeBudgetMetric,
@@ -223,16 +224,18 @@ function resultFromSdkMessage(
       failureFromSdkMessage(message, input, policyAudit),
     );
   }
-  if (input.outputSchema !== undefined && message.structured_output === undefined) {
-    throw new Error("claude_structured_output_invalid");
-  }
   const outputText = input.redactor.redact(message.result);
   input.redactor.assertNoKnownSecret(outputText, "claude-agent-sdk-result");
+  const structuredOutput = structuredOutputFromSdkMessage(
+    message,
+    input.outputSchema,
+    outputText,
+  );
   return {
     outputText,
-    ...(message.structured_output === undefined
+    ...(structuredOutput === undefined
       ? {}
-      : { structuredOutput: message.structured_output }),
+      : { structuredOutput }),
     telemetry: {
       durationMs: message.duration_ms,
       turns: message.num_turns,
@@ -244,6 +247,30 @@ function resultFromSdkMessage(
     } satisfies ProviderTaskTelemetry,
     warnings: [],
   };
+}
+
+function structuredOutputFromSdkMessage(
+  message: Extract<SDKResultMessage, { readonly subtype: "success" }>,
+  outputSchema: Readonly<Record<string, unknown>> | undefined,
+  redactedOutputText: string,
+): unknown {
+  if (message.structured_output !== undefined) return message.structured_output;
+  if (outputSchema === undefined) return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(redactedOutputText);
+    const validate = new Ajv({
+      allErrors: true,
+      ownProperties: true,
+      strict: true,
+    }).compile(outputSchema);
+    if (validate(parsed)) return parsed;
+  } catch {
+    // The native SDK result attachment remains authoritative. Its text fallback
+    // is accepted only when it is strict JSON matching the requested schema.
+  }
+  throw new Error("claude_structured_output_invalid");
 }
 
 function failureFromSdkMessage(

@@ -310,15 +310,69 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
     }
   });
 
-  it("fails closed when Claude omits requested structured output", async () => {
+  it("recovers a schema-valid structured result from the SDK result text", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-schema-"));
     try {
       const engine = new ClaudeAgentSdkTaskExecutionEngine({
-        sdkLoader: async () => ({ query: () => successfulQuery() }),
+        sdkLoader: async () => ({
+          query: () => successResultTextQuery('{"verdict":"APPROVE"}'),
+        }),
       });
 
       await expect(engine.run(taskInput(workspace, {
-        outputSchema: { type: "object" },
+        outputSchema: {
+          type: "object",
+          properties: { verdict: { const: "APPROVE" } },
+          required: ["verdict"],
+          additionalProperties: false,
+        },
+      }))).resolves.toMatchObject({
+        outputText: '{"verdict":"APPROVE"}',
+        structuredOutput: { verdict: "APPROVE" },
+      });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["non-JSON", "completed"],
+    ["schema mismatch", '{"verdict":"NEEDS_WORK"}'],
+    ["additional property", '{"verdict":"APPROVE","__proto__":{}}'],
+  ])("fails closed for %s SDK result text without structured output", async (
+    _case,
+    resultText,
+  ) => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-schema-"));
+    try {
+      const engine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({ query: () => successResultTextQuery(resultText) }),
+      });
+
+      await expect(engine.run(taskInput(workspace, {
+        outputSchema: {
+          type: "object",
+          properties: { verdict: { const: "APPROVE" } },
+          required: ["verdict"],
+          additionalProperties: false,
+        },
+      }))).rejects.toThrow("claude_structured_output_invalid");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when fallback schema formats have no validator", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-schema-"));
+    try {
+      const engine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: () => successResultTextQuery('"not-an-email"'),
+        }),
+      });
+
+      await expect(engine.run(taskInput(workspace, {
+        outputSchema: { type: "string", format: "email" },
       }))).rejects.toThrow("claude_structured_output_invalid");
     } finally {
       await rm(workspace, { recursive: true, force: true });
@@ -742,6 +796,16 @@ function successfulQuery(structuredOutput?: unknown): Query {
         : { structured_output: structuredOutput }),
       uuid: "result-1",
     } as unknown as SDKResultMessage;
+  })();
+  return Object.assign(stream, { close() {} }) as Query;
+}
+
+function successResultTextQuery(result: string): Query {
+  const stream = (async function* () {
+    yield {
+      ...sdkSuccessMessage(),
+      result,
+    } as SDKResultMessage;
   })();
   return Object.assign(stream, { close() {} }) as Query;
 }
