@@ -1,6 +1,6 @@
 {
   "name": "@vioxen/subscription-runtime",
-  "version": "0.1.0-main.28",
+  "version": "0.1.0-main.29",
   "description": "Provider-neutral subscription runtime for backend workers, Codex subscription execution, and pluggable session custody.",
   "license": "UNLICENSED",
   "type": "module",
@@ -143,12 +143,19 @@
     "docs",
     "LICENSE"
   ],
-  "bundleDependencies": [
-    "@vioxen/agent-account-observability"
+  "bundledDependencies": [
+    "@anthropic-ai/claude-agent-sdk",
+    "@modelcontextprotocol/sdk",
+    "@types/node",
+    "@vioxen/agent-account-observability",
+    "ajv",
+    "libsodium-wrappers",
+    "zod"
   ],
   "scripts": {
     "clean:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean:dist && npm run build:packages && tsc -p tsconfig.build.json && node scripts/rewrite-dist-esm-imports.mjs",
+    "build:agent-runtime-task-artifact": "node scripts/build-agent-runtime-task-artifact.mjs",
     "build:packages": "npm run --prefix packages/agent-account-observability build",
     "prepack": "npm run build",
     "typecheck": "npm run build:packages && tsc --noEmit -p tsconfig.json && npm run typecheck:packages",
@@ -175,15 +182,18 @@
     "check:dist-policy": "node scripts/check-dist-policy.mjs && node scripts/check-dist-policy-self-test.mjs",
     "check:dist": "node scripts/check-dist.mjs",
     "check:packed-consumer": "node scripts/check-packed-consumer.mjs",
+    "check:agent-runtime-task-artifact": "node scripts/check-agent-runtime-task-artifact.mjs",
     "check:publish-preflight": "node scripts/publish-preflight-self-test.mjs",
     "check:publish-registry-contract": "node scripts/check-publish-registry-contract.mjs",
-    "check": "npm run check:diff && npm run check:dist-policy && npm run typecheck && npm run build && npm run check:dist && npm test && npm run check:boundaries && npm pack --dry-run && npm run check:packed-consumer",
+    "check": "npm run check:diff && npm run check:dist-policy && npm run typecheck && npm run build && npm run check:dist && npm test && npm run check:boundaries && npm pack --dry-run && npm run check:packed-consumer && npm run check:agent-runtime-task-artifact",
     "check:architecture-guardrails": "node scripts/check-architecture-guardrails.mjs && node scripts/check-architecture-guardrails-self-test.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.237",
     "@vioxen/agent-account-observability": "file:packages/agent-account-observability",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^22.20.0",
+    "ajv": "8.20.0",
     "libsodium-wrappers": "^0.8.4",
     "zod": "^4.4.3"
   },
@@ -198,8 +208,5 @@
   "devDependencies": {
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"
-  },
-  "optionalDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.173"
   }
 }

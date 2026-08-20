@@ -5,6 +5,7 @@ import {
   AgentRuntimeExecutionMode,
   AgentRuntimeTool,
   AgentRuntimeTurnLimitEnforcement,
+  AgentRuntimeWorkspaceInstructionPolicy,
   type AgentCapabilities,
   type AgentRuntimeToolName,
   type ProviderTask,
@@ -20,6 +21,7 @@ export type CodexExecutionPlan = {
   };
   readonly workspaceToolPolicy?: {
     readonly allowedTools: readonly AgentRuntimeToolName[];
+    readonly denyProjectInstructions?: true;
   };
   readonly rolloutBudget?: {
     readonly weightedTokenLimit: number;
@@ -33,6 +35,7 @@ export function compileCodexExecutionPlan(
     mode: AgentRuntimeExecutionMode.SingleRun,
   };
   const workspaceToolPolicy = compileWorkspaceToolPolicy(task);
+  assertWorkspaceInstructionPolicyCompatibility(task, workspaceToolPolicy);
   const rolloutBudget = task.controls?.budget?.metric ===
       AgentRuntimeBudgetMetric.WeightedTokens
     ? { weightedTokenLimit: task.controls.budget.limit }
@@ -55,6 +58,29 @@ export function compileCodexExecutionPlan(
     ...(workspaceToolPolicy ? { workspaceToolPolicy } : {}),
     ...(rolloutBudget ? { rolloutBudget } : {}),
   };
+}
+
+export function assertWorkspaceInstructionPolicyCompatibility(
+  task: ProviderTask,
+  workspaceToolPolicy = compileWorkspaceToolPolicy(task),
+): void {
+  if (
+    task.controls?.workspaceInstructionPolicy ===
+      AgentRuntimeWorkspaceInstructionPolicy.DenyProjectInstructionsV1 &&
+    (
+      task.controls.accessBoundary !== AgentRuntimeAccessBoundary.ReadOnly ||
+      workspaceToolPolicy === undefined ||
+      workspaceToolPolicy.allowedTools.length === 0 ||
+      workspaceToolPolicy.allowedTools.some((tool) =>
+        tool !== AgentRuntimeTool.ReadFile &&
+        tool !== AgentRuntimeTool.SearchFiles
+      )
+    )
+  ) {
+    throw new Error(
+      "workspace_instruction_policy_requires_bounded_read_only_tools",
+    );
+  }
 }
 
 function compileWorkspaceToolPolicy(
@@ -93,7 +119,13 @@ function compileWorkspaceToolPolicy(
   ) {
     return undefined;
   }
-  return { allowedTools };
+  return {
+    allowedTools,
+    ...(task.controls?.workspaceInstructionPolicy ===
+        AgentRuntimeWorkspaceInstructionPolicy.DenyProjectInstructionsV1
+      ? { denyProjectInstructions: true as const }
+      : {}),
+  };
 }
 
 export function codexCapabilitiesForExecutionPlan(

@@ -20,6 +20,11 @@ import { pruneCodexChildEnv } from "./codex-cli-domain";
 import { composeCodexPrompt } from "./codex-prompt-composer";
 import { codexProviderEgressCliConfigArgs } from "./codex-provider-egress-policy";
 import { parseCodexStructuredOutput } from "./structured-output";
+import {
+  normalizeCodexStructuredOutput,
+  prepareCodexStructuredOutputSchema,
+  type CodexStructuredOutputSchemaPlan,
+} from "./codex-structured-output-schema";
 
 export type CodexReasoningEffort =
   | "minimal"
@@ -91,6 +96,8 @@ export type CodexExecutionInput = {
   readonly serviceTier?: CodexServiceTier;
   readonly sandboxMode?: CodexSandboxMode;
   readonly outputSchema?: unknown;
+  /** Provider-internal immutable plan reused across app-server fallback. */
+  readonly outputSchemaPlan?: CodexStructuredOutputSchemaPlan;
   readonly abortSignal: AbortSignal;
   readonly onTextDelta?: (text: string) => void;
 };
@@ -200,9 +207,12 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
   readonly serviceTier?: CodexServiceTier;
   readonly sandboxMode?: CodexSandboxMode;
   readonly outputSchema?: unknown;
+  readonly outputSchemaPlan?: CodexStructuredOutputSchemaPlan;
   readonly abortSignal: AbortSignal;
   }): Promise<CodexExecutionResult> {
-    const schemaFile = await writeOutputSchemaFile(input.outputSchema);
+    const schemaPlan = input.outputSchemaPlan ??
+      prepareCodexOutputSchemaPlan(input.outputSchema);
+    const schemaFile = await writeOutputSchemaFile(schemaPlan);
     try {
       const args = buildCodexJsonExecArgs({
         jsonFlag: this.options.jsonFlag ?? "--json",
@@ -257,7 +267,10 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
       if (input.outputSchema) {
         return {
           outputText,
-          structuredOutput: parseStructuredOutput(outputText),
+          structuredOutput: normalizeCodexOutput(
+            schemaPlan,
+            parseStructuredOutput(outputText),
+          ),
           warnings: [],
         };
       }
@@ -346,15 +359,14 @@ export function buildCodexJsonExecArgs(input: {
 }
 
 async function writeOutputSchemaFile(
-  outputSchema: unknown,
+  schemaPlan: CodexStructuredOutputSchemaPlan | undefined,
 ): Promise<{ readonly path: string; dispose(): Promise<void> } | null> {
-  const schema = codexOutputSchemaPayload(outputSchema);
-  if (schema === undefined) return null;
+  if (schemaPlan === undefined) return null;
   const dir = await createCodexRuntimeTempRoot({
     prefix: "subscription-runtime-codex-schema-",
   });
   const path = join(dir, "schema.json");
-  await writeFile(path, `${JSON.stringify(schema, null, 2)}\n`, {
+  await writeFile(path, `${JSON.stringify(schemaPlan.codexSchema, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
@@ -367,19 +379,49 @@ async function writeOutputSchemaFile(
 }
 
 export function codexOutputSchemaPayload(outputSchema: unknown): unknown | undefined {
+  return prepareCodexOutputSchemaPlan(outputSchema)?.codexSchema;
+}
+
+export function normalizeCodexStructuredOutputForSchema(
+  outputSchema: unknown,
+  value: unknown,
+): unknown {
+  return normalizeCodexOutput(prepareCodexOutputSchemaPlan(outputSchema), value);
+}
+
+export function prepareCodexOutputSchemaPlan(
+  outputSchema: unknown,
+): CodexStructuredOutputSchemaPlan | undefined {
+  const schema = providerNeutralOutputSchema(outputSchema);
+  return schema === undefined
+    ? undefined
+    : prepareCodexStructuredOutputSchema(schema);
+}
+
+function providerNeutralOutputSchema(outputSchema: unknown): unknown | undefined {
   if (outputSchema === undefined || outputSchema === null) return undefined;
-  if (typeof outputSchema !== "object") return outputSchema;
-  if ("schema" in outputSchema) {
+  if (typeof outputSchema !== "object" || Array.isArray(outputSchema)) {
+    throw new Error("codex_output_schema_invalid:$:expected_schema_object");
+  }
+  if (Object.hasOwn(outputSchema, "schema")) {
     return (outputSchema as CodexOutputSchemaRequest).schema;
   }
   if (
-    "type" in outputSchema ||
-    "$schema" in outputSchema ||
-    "properties" in outputSchema
+    Object.hasOwn(outputSchema, "type") ||
+    Object.hasOwn(outputSchema, "$schema") ||
+    Object.hasOwn(outputSchema, "$ref") ||
+    Object.hasOwn(outputSchema, "properties")
   ) {
     return outputSchema;
   }
   return undefined;
+}
+
+function normalizeCodexOutput(
+  plan: CodexStructuredOutputSchemaPlan | undefined,
+  value: unknown,
+): unknown {
+  return plan === undefined ? value : normalizeCodexStructuredOutput(plan, value);
 }
 
 export function codexSandboxModeForControls(

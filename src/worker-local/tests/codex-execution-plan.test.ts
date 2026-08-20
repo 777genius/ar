@@ -54,6 +54,27 @@ describe("Codex execution-plan compilation", () => {
     });
   });
 
+  it("opts into instruction isolation only with the bounded read-only contract", () => {
+    expect(compileCodexExecutionPlan(task({
+      accessBoundary: AgentRuntimeAccessBoundary.ReadOnly,
+      workspaceInstructionPolicy: "deny_project_instructions_v1",
+      toolPolicy: {
+        allow: [AgentRuntimeTool.ReadFile, AgentRuntimeTool.SearchFiles],
+      },
+    }))).toEqual({
+      execution: { mode: AgentRuntimeExecutionMode.SingleRun },
+      workspaceToolPolicy: {
+        allowedTools: [AgentRuntimeTool.ReadFile, AgentRuntimeTool.SearchFiles],
+        denyProjectInstructions: true,
+      },
+    });
+
+    expect(() => compileCodexExecutionPlan(task({
+      accessBoundary: AgentRuntimeAccessBoundary.ReadOnly,
+      workspaceInstructionPolicy: "deny_project_instructions_v1",
+    }))).toThrow("workspace_instruction_policy_requires_bounded_read_only_tools");
+  });
+
   it("refuses implicit writes, native tools, provider tools, and broad boundaries", () => {
     expect(compileCodexExecutionPlan(task({
       toolPolicy: { allow: [AgentRuntimeTool.WriteFile] },

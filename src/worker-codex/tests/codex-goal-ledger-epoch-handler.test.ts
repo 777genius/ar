@@ -478,7 +478,6 @@ describe("project control ledger epoch handler", () => {
     )).rejects.toThrow("ledger_epoch_legacy_admission_exact_count_mismatch");
     expect(await exactTreeBytes(fixture.root)).toEqual(before);
   });
-
   it("confirms retained info debt but rejects blocking debt under publication locks", async () => {
     const fixture = await handlerFixture();
     await assertPublicationLockAdmissionGuardrails({

@@ -85,6 +85,7 @@ export type FileBackendClaudeWorkerOptions = {
   readonly allowedTools?: readonly string[];
   readonly mcpConfig?: readonly string[];
   readonly strictMcpConfig?: boolean;
+  readonly outputSchemas?: Readonly<Record<string, unknown>>;
   readonly warmupPrompt?: string | false;
   readonly taskTimeoutMs?: number;
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
@@ -259,6 +260,7 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
       ...(options.strictMcpConfig === undefined
         ? {}
         : { strictMcpConfig: options.strictMcpConfig }),
+      ...(options.outputSchemas === undefined ? {} : { outputSchemas: options.outputSchemas }),
     });
 
     this.runtime = createSubscriptionRuntime({

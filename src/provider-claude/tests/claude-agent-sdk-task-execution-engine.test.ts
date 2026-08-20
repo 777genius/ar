@@ -110,6 +110,211 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
     }
   });
 
+  it("enforces the HIB schema, instruction isolation, and denied tools in SDK options", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-hib-"));
+    let captured: Options | undefined;
+    const schema = {
+      type: "object",
+      required: ["verdict"],
+      properties: { verdict: { type: "string" } },
+      additionalProperties: false,
+    } as const;
+    try {
+      await writeFile(join(workspace, "source.ts"), "export const value = 1;\n");
+      await writeFile(join(workspace, "AGENTS.md"), "untrusted instructions\n");
+      await symlink(join(workspace, "AGENTS.md"), join(workspace, "alias.md"));
+      await mkdir(join(workspace, ".claude", "rules"), { recursive: true });
+      await writeFile(
+        join(workspace, ".claude", "rules", "project.md"),
+        "untrusted rule\n",
+      );
+      const engine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: ({ options }: { options: Options }) => {
+            captured = options;
+            return structuredOutputPolicyQuery(options, { verdict: "approve" });
+          },
+        }),
+      });
+
+      const result = await engine.run(taskInput(workspace, {
+        outputSchema: schema,
+        workspaceInstructionPolicy: "deny_project_instructions_v1",
+        allowedTools: ["Read", "Grep", "Glob"],
+        disallowedTools: [
+          "Bash",
+          "WebFetch",
+          "WebSearch",
+          "Edit",
+          "Write",
+          "NotebookEdit",
+        ],
+        editMode: AgentRuntimeEditMode.ReadOnly,
+      }));
+
+      expect(result.structuredOutput).toEqual({ verdict: "approve" });
+      expect(captured).toMatchObject({
+        outputFormat: { type: "json_schema", schema },
+        settingSources: [],
+        extraArgs: { "safe-mode": null },
+        permissionMode: "dontAsk",
+        tools: ["Read", "Grep", "Glob", "StructuredOutput"],
+        allowedTools: ["Read", "Grep", "Glob", "StructuredOutput"],
+        disallowedTools: [
+          "Bash",
+          "WebFetch",
+          "WebSearch",
+          "Edit",
+          "Write",
+          "NotebookEdit",
+        ],
+      });
+      const hook = captured?.hooks?.PreToolUse?.[0]?.hooks[0];
+      const structuredHookDecision = await hook?.({
+        hook_event_name: "PreToolUse",
+        tool_name: "StructuredOutput",
+        tool_input: { verdict: "approve" },
+        tool_use_id: "tool-structured-output",
+        cwd: workspace,
+        session_id: "session-1",
+        transcript_path: "",
+        permission_mode: "dontAsk",
+      }, "tool-structured-output", { signal: new AbortController().signal });
+      expect(structuredHookDecision).toMatchObject({
+        hookSpecificOutput: { permissionDecision: "allow" },
+      });
+      await expect(captured?.canUseTool?.(
+        "StructuredOutput",
+        { verdict: "approve" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-structured-output",
+          requestId: "request-tool-structured-output",
+        },
+      )).resolves.toMatchObject({ behavior: "allow" });
+      const deniedInstructionCalls = [
+        ["Read", { file_path: "AGENTS.md" }],
+        ["Read", { file_path: "src/../AGENTS.md" }],
+        ["Read", { file_path: "alias.md" }],
+        ["Read", { file_path: ".claude/rules/project.md" }],
+        ["Grep", { pattern: "secret" }],
+        ["Grep", { pattern: "secret", path: workspace }],
+        ["Glob", { pattern: "**/AGENTS.md" }],
+      ] as const;
+      for (const [toolName, toolInput] of deniedInstructionCalls) {
+        await expect(captured?.canUseTool?.(
+          toolName,
+          toolInput,
+          {
+            signal: new AbortController().signal,
+            toolUseID: `tool-${toolName}`,
+            requestId: `request-${toolName}`,
+          },
+        ), `${toolName} ${JSON.stringify(toolInput)}`).resolves.toMatchObject({
+          behavior: "deny",
+        });
+        await expect(hook?.({
+          hook_event_name: "PreToolUse",
+          tool_name: toolName,
+          tool_input: toolInput,
+          tool_use_id: `tool-${toolName}`,
+          cwd: workspace,
+          session_id: "session-1",
+          transcript_path: "",
+          permission_mode: "dontAsk",
+        }, `tool-${toolName}`, {
+          signal: new AbortController().signal,
+        })).resolves.toMatchObject({
+          hookSpecificOutput: { permissionDecision: "deny" },
+        });
+      }
+      await expect(captured?.canUseTool?.(
+        "Read",
+        { file_path: "source.ts" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-read-source",
+          requestId: "request-read-source",
+        },
+      )).resolves.toMatchObject({ behavior: "allow" });
+      await expect(captured?.canUseTool?.(
+        "Grep",
+        { pattern: "value", path: "source.ts" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-grep-source",
+          requestId: "request-grep-source",
+        },
+      )).resolves.toMatchObject({ behavior: "allow" });
+      for (const toolName of ["Bash", "WebSearch", "Write"]) {
+        const decision = await hook?.({
+          hook_event_name: "PreToolUse",
+          tool_name: toolName,
+          tool_input: {},
+          tool_use_id: `tool-${toolName}`,
+          cwd: workspace,
+          session_id: "session-1",
+          transcript_path: "",
+          permission_mode: "dontAsk",
+        }, `tool-${toolName}`, { signal: new AbortController().signal });
+        expect(decision, toolName).toMatchObject({
+          hookSpecificOutput: { permissionDecision: "deny" },
+        });
+      }
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps StructuredOutput internal and unavailable without a schema", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-no-schema-"));
+    let captured: Options | undefined;
+    try {
+      const engine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: ({ options }: { options: Options }) => {
+            captured = options;
+            return successfulQuery();
+          },
+        }),
+      });
+
+      await engine.run(taskInput(workspace, {
+        allowedTools: ["Read"],
+        editMode: AgentRuntimeEditMode.ReadOnly,
+      }));
+
+      expect(captured?.tools).toEqual(["Read"]);
+      expect(captured?.allowedTools).toEqual(["Read"]);
+      expect(captured?.extraArgs).toBeUndefined();
+      await expect(captured?.canUseTool?.(
+        "StructuredOutput",
+        {},
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-structured-output",
+          requestId: "request-tool-structured-output",
+        },
+      )).resolves.toMatchObject({ behavior: "deny" });
+      const hook = captured?.hooks?.PreToolUse?.[0]?.hooks[0];
+      const hookDecision = await hook?.({
+        hook_event_name: "PreToolUse",
+        tool_name: "StructuredOutput",
+        tool_input: {},
+        tool_use_id: "tool-structured-output",
+        cwd: workspace,
+        session_id: "session-1",
+        transcript_path: "",
+        permission_mode: "dontAsk",
+      }, "tool-structured-output", { signal: new AbortController().signal });
+      expect(hookDecision).toMatchObject({
+        hookSpecificOutput: { permissionDecision: "deny" },
+      });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("forks a persisted SDK session for typed logical-thread continuation", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-thread-"));
     let captured: Options | undefined;
@@ -268,6 +473,35 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
     }
   });
 
+  it("preserves bounded SDK structured-output diagnostics", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-output-error-"));
+    try {
+      const engine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: () => errorQuery("error_max_structured_output_retries"),
+        }),
+      });
+
+      await expect(engine.run(taskInput(workspace, {
+        outputSchema: { type: "object" },
+      }))).rejects.toMatchObject({
+        name: "ClaudeProviderFailureError",
+        failure: {
+          code: "provider_output_invalid",
+          retryable: true,
+          causeCategory: "error_max_structured_output_retries",
+          details: {
+            sdkSubtype: "error_max_structured_output_retries",
+            sdkErrors: "StructuredOutput was denied by host policy",
+            permissionDenials: "0",
+          },
+        },
+      });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("accepts canonical aliases inside the workspace without weakening symlink escape checks", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-alias-"));
     const workspace = join(root, "workspace");
@@ -398,6 +632,7 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
           {
             signal: new AbortController().signal,
             toolUseID: `tool-${toolName}`,
+            requestId: `request-${toolName}`,
           },
         );
         expect(permission, `${toolName} canUseTool`).toMatchObject({
@@ -431,6 +666,7 @@ describe("ClaudeAgentSdkTaskExecutionEngine", () => {
           {
             signal: new AbortController().signal,
             toolUseID: `benign-${toolName}`,
+            requestId: `request-benign-${toolName}`,
           },
         );
         expect(permission, `${toolName} benign canUseTool`).toMatchObject({
@@ -477,7 +713,7 @@ function taskInput(
   };
 }
 
-function successfulQuery(): Query {
+function successfulQuery(structuredOutput?: unknown): Query {
   const stream = (async function* () {
     yield {
       type: "result",
@@ -493,10 +729,96 @@ function successfulQuery(): Query {
       usage: {},
       modelUsage: {},
       permission_denials: [],
+      ...(structuredOutput === undefined
+        ? {}
+        : { structured_output: structuredOutput }),
       uuid: "result-1",
     } as unknown as SDKResultMessage;
   })();
   return Object.assign(stream, { close() {} }) as Query;
+}
+
+function structuredOutputPolicyQuery(
+  options: Options,
+  structuredOutput: unknown,
+): Query {
+  const stream = (async function* () {
+    const context = {
+      signal: new AbortController().signal,
+      toolUseID: "tool-structured-output",
+      requestId: "request-tool-structured-output",
+    };
+    const permission = await options.canUseTool?.(
+      "StructuredOutput",
+      structuredOutput as Record<string, unknown>,
+      context,
+    );
+    const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
+    const hookDecision = await hook?.({
+      hook_event_name: "PreToolUse",
+      tool_name: "StructuredOutput",
+      tool_input: structuredOutput,
+      tool_use_id: "tool-structured-output",
+      cwd: options.cwd ?? "/workspace",
+      session_id: "session-1",
+      transcript_path: "",
+      permission_mode: options.permissionMode ?? "default",
+    }, "tool-structured-output", context);
+    const hookAllowed = hookDecision !== undefined &&
+      "hookSpecificOutput" in hookDecision &&
+      hookDecision.hookSpecificOutput !== undefined &&
+      "permissionDecision" in hookDecision.hookSpecificOutput &&
+      hookDecision.hookSpecificOutput.permissionDecision === "allow";
+    if (permission?.behavior !== "allow" || !hookAllowed) {
+      yield sdkErrorMessage("error_max_structured_output_retries");
+      return;
+    }
+    yield sdkSuccessMessage(structuredOutput);
+  })();
+  return Object.assign(stream, { close() {} }) as Query;
+}
+
+function sdkSuccessMessage(
+  structuredOutput?: unknown,
+): Extract<SDKResultMessage, { readonly subtype: "success" }> {
+  return {
+    type: "result",
+    subtype: "success",
+    duration_ms: 10,
+    duration_api_ms: 8,
+    is_error: false,
+    num_turns: 2,
+    result: "completed",
+    stop_reason: "end_turn",
+    session_id: "session-1",
+    total_cost_usd: 0.1,
+    usage: {},
+    modelUsage: {},
+    permission_denials: [],
+    ...(structuredOutput === undefined ? {} : { structured_output: structuredOutput }),
+    uuid: "result-1",
+  } as unknown as Extract<SDKResultMessage, { readonly subtype: "success" }>;
+}
+
+function sdkErrorMessage(
+  subtype: "error_max_structured_output_retries",
+): SDKResultMessage {
+  return {
+    type: "result",
+    subtype,
+    duration_ms: 10,
+    duration_api_ms: 8,
+    is_error: true,
+    num_turns: 3,
+    stop_reason: null,
+    total_cost_usd: 0.1,
+    usage: {},
+    modelUsage: {},
+    permission_denials: [],
+    errors: ["StructuredOutput was denied by host policy"],
+    uuid: "result-1",
+    session_id: "session-1",
+  } as unknown as SDKResultMessage;
 }
 
 function errorQuery(
@@ -507,22 +829,24 @@ function errorQuery(
     | "error_max_structured_output_retries",
 ): Query {
   const stream = (async function* () {
-    yield {
-      type: "result",
-      subtype,
-      duration_ms: 10,
-      duration_api_ms: 8,
-      is_error: true,
-      num_turns: 3,
-      stop_reason: null,
-      total_cost_usd: 0.1,
-      usage: {},
-      modelUsage: {},
-      permission_denials: [],
-      errors: [],
-      uuid: "result-1",
-      session_id: "session-1",
-    } as unknown as SDKResultMessage;
+    yield subtype === "error_max_structured_output_retries"
+      ? sdkErrorMessage(subtype)
+      : {
+          type: "result",
+          subtype,
+          duration_ms: 10,
+          duration_api_ms: 8,
+          is_error: true,
+          num_turns: 3,
+          stop_reason: null,
+          total_cost_usd: 0.1,
+          usage: {},
+          modelUsage: {},
+          permission_denials: [],
+          errors: [],
+          uuid: "result-1",
+          session_id: "session-1",
+        } as unknown as SDKResultMessage;
   })();
   return Object.assign(stream, { close() {} }) as Query;
 }

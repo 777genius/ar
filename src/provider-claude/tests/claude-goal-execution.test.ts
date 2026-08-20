@@ -97,6 +97,84 @@ describe("Claude Goal execution", () => {
     });
   });
 
+  it("keeps the programmatic Goal MCP available in instruction-isolation safe mode", async () => {
+    let captured: Options | undefined;
+    const engine = new ClaudeAgentSdkTaskExecutionEngine({
+      sdkLoader: async () => ({
+        query: ({ options }: { options: Options }) => {
+          captured = options;
+          return successfulQuery(options);
+        },
+      }),
+    });
+    const driver = new ClaudeTaskAgentDriver({ engine });
+
+    const result = await driver.runTask({
+      session: sessionArtifactFromClaudeOAuth({
+        oauthToken: "claude-oauth-secret",
+        configDir: "/tmp/claude-goal-safe-mode-config",
+        refreshedAt: "2026-07-17T00:00:00.000Z",
+      }),
+      task: {
+        kind: "structured-prompt",
+        prompt: "inspect the fixture",
+        execution: {
+          mode: AgentRuntimeExecutionMode.Goal,
+          completionCondition: "the fixture was inspected",
+        },
+        controls: {
+          maxTurns: 4,
+          allowedTools: ["Read"],
+          editMode: AgentRuntimeEditMode.ReadOnly,
+          workspaceInstructionPolicy: "deny_project_instructions_v1",
+          budget: {
+            metric: AgentRuntimeBudgetMetric.Usd,
+            limit: 0.25,
+          },
+        },
+      },
+      workspace: { path: "/tmp/claude-goal-safe-mode-workspace" },
+      runner: new StaticRunner(),
+      redactor: new DefaultRedactor(),
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(result).toMatchObject({ status: "completed" });
+    expect(captured).toMatchObject({
+      extraArgs: { "safe-mode": null },
+      settingSources: [],
+      allowedTools: [
+        "Read",
+        "mcp__agent_runtime_goal__report_completion",
+      ],
+      mcpServers: { agent_runtime_goal: expect.any(Object) },
+    });
+    await expect(captured?.canUseTool?.(
+      "mcp__agent_runtime_goal__report_completion",
+      { evidence: "the fixture was inspected" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "goal-completion-tool",
+        requestId: "request-goal-completion-tool",
+      },
+    )).resolves.toMatchObject({ behavior: "allow" });
+    const hook = captured?.hooks?.PreToolUse?.[0]?.hooks[0];
+    await expect(hook?.({
+      hook_event_name: "PreToolUse",
+      tool_name: "mcp__agent_runtime_goal__report_completion",
+      tool_input: { evidence: "the fixture was inspected" },
+      tool_use_id: "goal-completion-tool",
+      cwd: "/tmp/claude-goal-safe-mode-workspace",
+      session_id: "session-1",
+      transcript_path: "",
+      permission_mode: "dontAsk",
+    }, "goal-completion-tool", {
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: "allow" },
+    });
+  });
+
   it("blocks a normal stop until the completion report tool is called", async () => {
     const protocol = createClaudeAgentSdkGoalProtocol({
       completionCondition: "value.txt contains exactly 42",

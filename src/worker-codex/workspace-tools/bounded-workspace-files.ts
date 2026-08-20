@@ -18,6 +18,7 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { isProjectInstructionPath } from "@vioxen/subscription-runtime/core";
 
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const DEFAULT_MAX_SEARCH_BYTES = 8 * 1024 * 1024;
@@ -36,6 +37,7 @@ export type BoundedWorkspaceFilesOptions = {
   readonly maxSearchBytes?: number;
   readonly maxSearchFiles?: number;
   readonly maxSearchResults?: number;
+  readonly denyProjectInstructions?: boolean;
 };
 
 export class BoundedWorkspaceFiles {
@@ -76,10 +78,12 @@ export class BoundedWorkspaceFiles {
         DEFAULT_MAX_SEARCH_RESULTS,
         "maxSearchResults",
       ),
+      denyProjectInstructions: options.denyProjectInstructions ?? false,
     });
   }
 
   async readFile(path: string): Promise<string> {
+    this.assertReadablePath(path);
     const absolutePath = await this.resolveRegularFile(path, true);
     return this.readUtf8File(absolutePath);
   }
@@ -139,11 +143,17 @@ export class BoundedWorkspaceFiles {
       throw new Error("workspace_search_result_limit_exceeded");
     }
     const searchRoot = await this.resolveDirectory(input.path ?? ".");
+    this.assertReadablePath(relative(this.root, searchRoot) || ".");
     const matches: WorkspaceSearchMatch[] = [];
     let scannedBytes = 0;
     let scannedFiles = 0;
 
     for await (const absolutePath of walkRegularFiles(searchRoot)) {
+      const relativePath = relative(this.root, absolutePath);
+      if (
+        this.limits.denyProjectInstructions &&
+        isProjectInstructionPath(relativePath)
+      ) continue;
       scannedFiles += 1;
       if (scannedFiles > this.limits.maxSearchFiles) {
         throw new Error("workspace_search_file_limit_exceeded");
@@ -159,7 +169,6 @@ export class BoundedWorkspaceFiles {
       if (scannedBytes > this.limits.maxSearchBytes) {
         throw new Error("workspace_search_byte_limit_exceeded");
       }
-      const relativePath = relative(this.root, absolutePath);
       const lines = content.split(/\r?\n/);
       for (let index = 0; index < lines.length; index += 1) {
         const column = lines[index]!.indexOf(input.query);
@@ -287,6 +296,15 @@ export class BoundedWorkspaceFiles {
       throw new Error("workspace_git_metadata_rejected");
     }
     return absolutePath;
+  }
+
+  private assertReadablePath(path: string): void {
+    if (
+      this.limits.denyProjectInstructions &&
+      isProjectInstructionPath(path)
+    ) {
+      throw new Error("workspace_project_instruction_rejected");
+    }
   }
 
   private async assertRealDirectoryWithinRoot(path: string): Promise<void> {

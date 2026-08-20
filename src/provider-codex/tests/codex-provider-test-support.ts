@@ -12,6 +12,7 @@ import type {
   RunnerPort,
 } from "@vioxen/subscription-runtime/core";
 import type { CodexExecutionEngine } from "../codex-json-execution-engine";
+import type { CodexStructuredOutputSchemaPlan } from "../codex-structured-output-schema";
 
 export const validAuthJson = JSON.stringify({
   auth_mode: "chatgpt",
@@ -147,6 +148,7 @@ export class RecordingJsonEngine implements CodexExecutionEngine {
   readonly codexHomes: string[] = [];
   readonly prompts: string[] = [];
   readonly systemPrompts: Array<string | undefined> = [];
+  readonly outputSchemaPlans: Array<CodexStructuredOutputSchemaPlan | undefined> = [];
 
   constructor(private readonly fixedOutputText?: string) {}
 
@@ -154,6 +156,7 @@ export class RecordingJsonEngine implements CodexExecutionEngine {
     this.codexHomes.push(input.session.codexHome);
     this.prompts.push(input.prompt);
     this.systemPrompts.push(input.systemPrompt);
+    this.outputSchemaPlans.push(input.outputSchemaPlan);
     return {
       outputText: this.fixedOutputText ?? `json output:${input.prompt}`,
       warnings: [],

@@ -80,6 +80,7 @@ export type FileBackendCodexWorkerOptions = {
   readonly executionProfile?: CodexExecutionProfile;
   readonly boundedWorkspaceTools?: {
     readonly allowedTools: readonly AgentRuntimeToolName[];
+    readonly denyProjectInstructions?: boolean;
   };
   readonly rolloutBudget?: {
     readonly weightedTokenLimit: number;
@@ -96,7 +97,6 @@ export type FileBackendCodexWorkerOptions = {
   readonly capacityAccountId?: string;
   readonly capacityPolicy?: CodexWorkerCapacityPolicy;
 };
-
 export type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 export type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
 export type { FileBackendCodexManagedRunResumeInput } from "./file-backend-codex-managed-run-recovery";

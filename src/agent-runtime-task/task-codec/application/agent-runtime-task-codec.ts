@@ -659,6 +659,12 @@ function parseAgentRuntimeTaskPayload(
     ...optionalControlsField(input, "controls", `${path}.controls`),
     ...optionalMetadataField(input, "metadata", `${path}.metadata`),
   };
+  if (base.outputSchemaName === "") {
+    throw protocolError(
+      "agent_runtime_task_request_invalid",
+      `${path}.outputSchemaName must not be empty`,
+    );
+  }
   if (protocolVersion === agentRuntimeTaskProtocolVersionV1) return base;
   return {
     ...base,

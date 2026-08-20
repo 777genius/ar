@@ -26,7 +26,8 @@ import type {
   CodexSandboxMode,
   CodexServiceTier,
 } from "./codex-json-execution-engine";
-import { codexOutputSchemaPayload } from "./codex-json-execution-engine";
+import { prepareCodexOutputSchemaPlan } from "./codex-json-execution-engine";
+import type { CodexStructuredOutputSchemaPlan } from "./codex-structured-output-schema";
 import { InMemoryManagedRunStore } from "./codex-app-server-managed-run-store";
 import type {
   CodexAppServerChildProcess,
@@ -60,7 +61,6 @@ import {
   assertPositiveInteger,
   isAbortLikeError,
   isCodexAppServerBudgetExceededError,
-  parseStructuredOutput,
 } from "./app-server/domain/app-server-errors";
 import {
   appServerFallbackWarning,
@@ -69,11 +69,11 @@ import {
 } from "./app-server/application/app-server-fallback-policy";
 import {
   assertManagedRunCanResume,
-  failManagedRunForProviderOutput,
   isManagedRunResumeValidationError,
 } from "./app-server/application/app-server-managed-run-mapper";
 import { AppServerSlotPool } from "./app-server/application/app-server-slot-pool";
 import { runCodexAppServerLogicalThread } from "./app-server/application/app-server-logical-thread-runner";
+import { parseCodexAppServerStructuredOutput } from "./app-server/application/app-server-structured-output";
 import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
 
 export type {
@@ -190,10 +190,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   }
 
   async run(input: CodexExecutionInput): Promise<CodexExecutionResult> {
+    const schemaPlan = input.outputSchemaPlan ?? prepareCodexOutputSchemaPlan(input.outputSchema);
     try {
-      const result = await this.runViaAppServer(input);
+      const result = await this.runViaAppServer(input, schemaPlan);
       if (result.status === "waiting_for_input") return result;
-      return await this.parseStructuredOutputIfRequested(result, input);
+      return await this.parseStructuredOutput(result, input, schemaPlan);
     } catch (error) {
       await this.slotPool.disposeSessionSlot(input.session);
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
@@ -201,7 +202,10 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       if (isCodexModelUnavailableError(error)) throw error;
       if (!this.options.fallback) throw error;
 
-      const fallbackResult = await this.options.fallback.run(input);
+      const fallbackResult = await this.options.fallback.run({
+        ...input,
+        ...(schemaPlan === undefined ? {} : { outputSchemaPlan: schemaPlan }),
+      });
       return {
         ...fallbackResult,
         warnings: [appServerFallbackWarning(error), ...fallbackResult.warnings],
@@ -214,7 +218,9 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       readonly previousCheckpoint?: string;
     },
   ): Promise<CodexLogicalThreadExecutionResult> {
+    const schemaPlan = input.outputSchemaPlan ?? prepareCodexOutputSchemaPlan(input.outputSchema);
     return await runCodexAppServerLogicalThread(input, {
+      ...(schemaPlan === undefined ? {} : { schemaPlan }),
       goalMode: this.options.goalMode ?? false,
       timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
       maxGoalTurns: this.options.maxGoalTurns ?? defaultMaxGoalTurns,
@@ -230,7 +236,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
           redactor: input.redactor,
         }),
       parse: async (result, parseInput) =>
-        await this.parseStructuredOutputIfRequested(result, parseInput),
+        await this.parseStructuredOutput(result, parseInput, schemaPlan),
       disposeSession: () => this.slotPool.disposeSessionSlot(input.session),
     });
   }
@@ -251,10 +257,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     readonly outputSchema?: unknown;
     readonly abortSignal: AbortSignal;
   }): Promise<CodexExecutionResult> {
+    const schemaPlan = prepareCodexOutputSchemaPlan(input.outputSchema);
     try {
-      const result = await this.resumeViaAppServer(input);
+      const result = await this.resumeViaAppServer(input, schemaPlan);
       if (result.status === "waiting_for_input") return result;
-      return await this.parseStructuredOutputIfRequested(result, input);
+      return await this.parseStructuredOutput(result, input, schemaPlan);
     } catch (error) {
       if (!isManagedRunResumeValidationError(error)) {
         await this.slotPool.disposeSessionSlot(input.session);
@@ -345,9 +352,9 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     readonly outputSchema?: unknown;
     readonly abortSignal: AbortSignal;
     readonly onTextDelta?: (text: string) => void;
-  }): Promise<CodexExecutionResult> {
+  }, schemaPlan: CodexStructuredOutputSchemaPlan | undefined): Promise<CodexExecutionResult> {
     const slot = await this.slotPool.ensureSlot(input);
-    const outputSchema = codexOutputSchemaPayload(input.outputSchema);
+    const outputSchema = schemaPlan?.codexSchema;
     const schemaWarnings = input.outputSchema && outputSchema === undefined
       ? [appServerOutputSchemaNotNativeWarning()]
       : [];
@@ -403,7 +410,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     readonly sandboxMode?: CodexSandboxMode;
     readonly outputSchema?: unknown;
     readonly abortSignal: AbortSignal;
-  }): Promise<CodexExecutionResult> {
+  }, schemaPlan: CodexStructuredOutputSchemaPlan | undefined): Promise<CodexExecutionResult> {
     if (!this.options.goalMode) {
       throw new Error("codex_app_server_resume_requires_goal_mode");
     }
@@ -415,7 +422,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       workspacePath: input.workspacePath,
     });
     const slot = await this.slotPool.ensureSlot(input);
-    const outputSchema = codexOutputSchemaPayload(input.outputSchema);
+    const outputSchema = schemaPlan?.codexSchema;
     const schemaWarnings = input.outputSchema && outputSchema === undefined
       ? [appServerOutputSchemaNotNativeWarning()]
       : [];
@@ -468,27 +475,22 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     };
   }
 
-  private async parseStructuredOutputIfRequested(
+  private async parseStructuredOutput(
     result: CodexExecutionResult,
     input: {
       readonly runId?: string;
       readonly outputSchema?: unknown;
     },
+    schemaPlan: CodexStructuredOutputSchemaPlan | undefined,
   ): Promise<CodexExecutionResult> {
-    if (!input.outputSchema) return result;
-    try {
-      return {
-        ...result,
-        structuredOutput: parseStructuredOutput(result.outputText),
-      };
-    } catch (error) {
-      await failManagedRunForProviderOutput({
-        goalMode: this.options.goalMode,
-        runId: input.runId,
-        runStore: this.runStore,
-      });
-      throw error;
-    }
+    return await parseCodexAppServerStructuredOutput({
+      result,
+      requested: Boolean(input.outputSchema),
+      ...(schemaPlan === undefined ? {} : { schemaPlan }),
+      goalMode: this.options.goalMode,
+      ...(input.runId === undefined ? {} : { runId: input.runId }),
+      runStore: this.runStore,
+    });
   }
 
   private maxOutputBytes(): number {
