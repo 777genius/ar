@@ -100,6 +100,7 @@ function structuredOutputFromSdkMessage(
 
   try {
     const validate = new Ajv2020({
+      allowUnionTypes: true,
       allErrors: true,
       ownProperties: true,
       strict: true,

@@ -87,6 +87,42 @@ describe("ClaudeAgentSdkTaskExecutionEngine structured results", () => {
     }
   });
 
+  it("validates draft 2020-12 union types in structured result text", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-schema-"));
+    const outputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: ["string", "null"],
+    } as const;
+    try {
+      const stringEngine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: () => successResultTextQuery('"APPROVE"'),
+        }),
+      });
+      await expect(stringEngine.run(taskInput(workspace, { outputSchema })))
+        .resolves.toMatchObject({ structuredOutput: "APPROVE" });
+
+      const nullEngine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({ query: () => successResultTextQuery("null") }),
+      });
+      await expect(nullEngine.run(taskInput(workspace, { outputSchema })))
+        .resolves.toMatchObject({ structuredOutput: null });
+
+      const numberEngine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({ query: () => successResultTextQuery("42") }),
+      });
+      await expect(numberEngine.run(taskInput(workspace, { outputSchema })))
+        .rejects.toMatchObject({
+          failure: {
+            code: "provider_output_invalid",
+            details: { sdkErrors: "fallback_schema_mismatch" },
+          },
+        });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     ["empty", "", "fallback_empty"],
     ["non-JSON", "completed", "fallback_non_json"],
