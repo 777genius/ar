@@ -155,6 +155,7 @@ describe("Claude Goal execution", () => {
       {
         signal: new AbortController().signal,
         toolUseID: "goal-completion-tool",
+        requestId: "request-goal-completion-tool",
       },
     )).resolves.toMatchObject({ behavior: "allow" });
     const hook = captured?.hooks?.PreToolUse?.[0]?.hooks[0];

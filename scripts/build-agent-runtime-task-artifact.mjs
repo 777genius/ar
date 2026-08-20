@@ -33,6 +33,8 @@ const claudeNativePackagePrefix =
   "package/node_modules/@anthropic-ai/claude-agent-sdk-";
 const expectedClaudeNativePackage =
   "package/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/package.json";
+const expectedClaudeSdkVersion = "0.3.237";
+const expectedClaudeCodeVersion = "2.1.237";
 
 export async function buildAgentRuntimeTaskArtifact({
   outputPath = defaultOutput,
@@ -205,6 +207,44 @@ async function assertPackageTarball(tarballPath) {
   for (const entry of requiredArchiveEntries) {
     if (!entries.has(entry)) throw new Error(`package tarball is missing ${entry}`);
   }
+  assertClaudeSdkVersions({
+    sdkManifest: readArchiveEntry(
+      tarballPath,
+      "package/node_modules/@anthropic-ai/claude-agent-sdk/package.json",
+    ),
+    nativeManifest: readArchiveEntry(tarballPath, expectedClaudeNativePackage),
+  });
+}
+
+export function assertClaudeSdkVersions({ sdkManifest, nativeManifest }) {
+  let sdk;
+  let native;
+  try {
+    sdk = JSON.parse(sdkManifest);
+    native = JSON.parse(nativeManifest);
+  } catch {
+    throw new Error("Claude SDK artifact manifests must be valid JSON");
+  }
+  if (
+    sdk?.version !== expectedClaudeSdkVersion ||
+    sdk?.claudeCodeVersion !== expectedClaudeCodeVersion ||
+    native?.version !== expectedClaudeSdkVersion
+  ) {
+    throw new Error("Claude SDK artifact versions do not match the pinned runtime");
+  }
+}
+
+function readArchiveEntry(tarballPath, entry) {
+  const result = spawnSync("tar", ["-xOzf", tarballPath, entry], {
+    encoding: "utf8",
+    timeout: 60_000,
+    maxBuffer: 1024 * 1024,
+    env: buildMinimalEnvironment(),
+  });
+  if (result.error || result.status !== 0 || result.stderr.trim() !== "") {
+    throw new Error(`unable to read Claude SDK artifact manifest: ${result.error?.message ?? result.stderr.trim()}`);
+  }
+  return result.stdout;
 }
 
 export function assertLinuxX64ArchiveEntries(entries) {

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildAgentRuntimeTaskArtifact,
+  assertClaudeSdkVersions,
   assertLinuxX64ArchiveEntries,
   assertMatchingGitSourceIdentity,
 } from "./build-agent-runtime-task-artifact.mjs";
@@ -19,6 +20,7 @@ const expectedCapabilities = {
   instructionPathDeny: true,
 };
 assertWrongPlatformPackageFails();
+assertWrongClaudeSdkVersionFails();
 assertSourceMovementFails();
 if (process.platform !== "linux" || process.arch !== "x64") {
   process.stdout.write(`${JSON.stringify({
@@ -83,6 +85,22 @@ function assertWrongPlatformPackageFails() {
     throw error;
   }
   throw new Error("wrong-platform Claude SDK package was accepted");
+}
+
+function assertWrongClaudeSdkVersionFails() {
+  try {
+    assertClaudeSdkVersions({
+      sdkManifest: JSON.stringify({
+        version: "0.3.236",
+        claudeCodeVersion: "2.1.236",
+      }),
+      nativeManifest: JSON.stringify({ version: "0.3.236" }),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("pinned runtime")) return;
+    throw error;
+  }
+  throw new Error("wrong Claude SDK artifact versions were accepted");
 }
 
 function assertSourceMovementFails() {
