@@ -102,8 +102,17 @@ function structuredOutputFromSdkMessage(
     const validate = new Ajv2020({
       allowUnionTypes: true,
       allErrors: true,
+      logger: {
+        log() {},
+        warn(message) {
+          throw new Error(`ajv_warning:${String(message).slice(0, 300)}`);
+        },
+        error(message) {
+          throw new Error(`ajv_error:${String(message).slice(0, 300)}`);
+        },
+      },
       ownProperties: true,
-      strict: true,
+      strict: false,
     }).compile(outputSchema);
     if (validate(parsed)) return parsed;
   } catch {

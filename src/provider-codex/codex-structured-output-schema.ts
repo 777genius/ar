@@ -214,7 +214,7 @@ function normalizeNode(
         );
         if (validators.accepts(branch, candidate)) candidates.push(candidate);
       } catch (error) {
-        if (isAmbiguousNormalization(error)) throw error;
+        if (isFatalNormalization(error)) throw error;
         // A different alternative can still be the unique valid branch.
       }
     }
@@ -540,10 +540,11 @@ function safeError(error: unknown): string {
     : "unknown";
 }
 
-function isAmbiguousNormalization(error: unknown): boolean {
+function isFatalNormalization(error: unknown): boolean {
   return error instanceof Error &&
     error.message.includes("codex_structured_output_invalid:") &&
-    error.message.endsWith(":ambiguous_alternatives");
+    (error.message.endsWith(":ambiguous_alternatives") ||
+      error.message.endsWith(":schema_depth_exceeded"));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

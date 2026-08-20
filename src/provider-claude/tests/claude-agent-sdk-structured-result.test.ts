@@ -123,6 +123,47 @@ describe("ClaudeAgentSdkTaskExecutionEngine structured results", () => {
     }
   });
 
+  it("accepts schema annotations without bypassing canonical constraints", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-runtime-sdk-schema-"));
+    const outputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      $comment: "provider-facing annotation",
+      examples: [{ verdict: "APPROVE" }],
+      "x-provider-annotation": { owner: "hib" },
+      type: "object",
+      properties: { verdict: { const: "APPROVE" } },
+      required: ["verdict"],
+      additionalProperties: false,
+    } as const;
+    try {
+      const validEngine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: () => successResultTextQuery('{"verdict":"APPROVE"}'),
+        }),
+      });
+      await expect(validEngine.run(taskInput(workspace, { outputSchema })))
+        .resolves.toMatchObject({
+          structuredOutput: { verdict: "APPROVE" },
+          warnings: [{ code: "claude_structured_output_text_fallback" }],
+        });
+
+      const mismatchEngine = new ClaudeAgentSdkTaskExecutionEngine({
+        sdkLoader: async () => ({
+          query: () => successResultTextQuery('{"verdict":"NEEDS_WORK"}'),
+        }),
+      });
+      await expect(mismatchEngine.run(taskInput(workspace, { outputSchema })))
+        .rejects.toMatchObject({
+          failure: {
+            code: "provider_output_invalid",
+            details: { sdkErrors: "fallback_schema_mismatch" },
+          },
+        });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     ["empty", "", "fallback_empty"],
     ["non-JSON", "completed", "fallback_non_json"],

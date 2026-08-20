@@ -329,6 +329,30 @@ describe("Codex strict structured-output schema adapter", () => {
     },
   );
 
+  it.each(["anyOf", "oneOf"] as const)(
+    "preserves schema_depth_exceeded through recursive %s alternatives",
+    (keyword) => {
+      const schema = {
+        type: "object",
+        properties: { choice: { $ref: "#/$defs/recursive" } },
+        required: ["choice"],
+        additionalProperties: false,
+        $defs: {
+          recursive: {
+            [keyword]: [
+              { $ref: "#/$defs/recursive" },
+              { type: "null" },
+            ],
+          },
+        },
+      };
+      const plan = prepareCodexOutputSchemaPlan(schema)!;
+      expect(() => plan.normalize({ choice: "not-null" })).toThrow(
+        "codex_structured_output_invalid:$.choice:schema_depth_exceeded",
+      );
+    },
+  );
+
   it("clones, freezes and compiles one provider schema plan", () => {
     const callerSchema = structuredClone(hibModuleResultSchema) as Record<string, any>;
     const plan = prepareCodexOutputSchemaPlan(callerSchema)!;
