@@ -2,6 +2,8 @@ export * from "./account-diagnostics-cli";
 export * from "./agent-run-watch";
 export * from "./claude-run-watch";
 export * from "./claude-controlled-agent-local";
+export * from "./claude-provider-runtime-adapter";
+export * from "./provider-runtime-registry";
 export * from "./host-command";
 export * from "./git-blob-batch-reader";
 export * from "./node-process-runner";

@@ -136,8 +136,11 @@ const forbidden = [
       runtimeSubpathPattern(
         "(?:provider-|worker-(?:codex|claude)|queue-|store-|runner-)",
       ),
+      // `provider-runtime` is worker-core's own neutral ports slice, so it is
+      // exempt here; `provider-codex`/`provider-claude` stay blocked (and are
+      // also caught by the codex/claude specifier rules below).
       internalPathPattern(
-        "(?:provider-|worker-(?:codex|claude)|queue-|store-|runner-)",
+        "(?:provider-(?!runtime)|worker-(?:codex|claude)|queue-|store-|runner-)",
       ),
       /bullmq/,
       /claude/i,

@@ -2,23 +2,20 @@ import {
   LocalFileRunEventProjectionStateStore,
   LocalFileRunEventStore,
 } from "@vioxen/subscription-runtime/store-local-file";
-import {
-  watchClaudeRuns,
-  type ClaudeRunWatchArgs,
-} from "@vioxen/subscription-runtime/worker-local";
+import { createLocalProviderRuntimeRegistry } from "@vioxen/subscription-runtime/worker-local";
 import {
   RunEventProviderKind,
   RunObservationService,
   projectRunObservationEvents,
   projectRunReadModelsFromEvents,
+  providerFailedRunObservationSnapshot,
   runEventProviderKindFromString,
+  type ProviderRunObservationInput,
+  type ProviderRuntimeRegistry,
   type RunEventReadResult,
   type RunObservationSnapshot,
 } from "@vioxen/subscription-runtime/worker-core";
-import { CodexRunObservationAdapter } from "./codex-run-observation";
 import {
-  failedRunObservationSnapshot,
-  observeOrphanCodexRun,
   summarizeRunObservationSnapshots,
 } from "./codex-goal-mcp-observation-projection";
 import {
@@ -43,37 +40,25 @@ import {
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
+let cachedProviderRuntimeRegistry: ProviderRuntimeRegistry | undefined;
+
+function defaultProviderRuntimeRegistry(): ProviderRuntimeRegistry {
+  return (cachedProviderRuntimeRegistry ??= createLocalProviderRuntimeRegistry());
+}
+
 export async function watchAgentRuns(
   args: AgentRunWatchMcpArgs,
+  registry: ProviderRuntimeRegistry = defaultProviderRuntimeRegistry(),
 ): Promise<JsonObject> {
   const providerKindInput = stringValue(args.providerKind) ?? RunEventProviderKind.Codex;
   const providerKind = runEventProviderKindFromString(providerKindInput);
-  if (providerKind === RunEventProviderKind.Claude) {
-    const jobId = stringValue(args.jobId);
-    const staleAfterMs = numberValue(args.staleAfterMs);
-    const tailLines = numberValue(args.tailLines);
-    const limit = numberValue(args.limit);
-    return watchClaudeRuns({
-      includeChangedFiles: booleanValue(args.includeChangedFiles) === true,
-      includeLogTail: booleanValue(args.includeLogTail) === true,
-      ...(args.stateRootDir === undefined ? {} : { stateRootDir: args.stateRootDir }),
-      ...(args.runArtifactsRootDir === undefined
-        ? {}
-        : { runArtifactsRootDir: args.runArtifactsRootDir }),
-      ...(jobId === undefined ? {} : { jobId }),
-      ...(args.jobIds === undefined ? {} : { jobIds: args.jobIds }),
-      ...(staleAfterMs === undefined ? {} : { staleAfterMs }),
-      ...(tailLines === undefined ? {} : { tailLines }),
-      ...(limit === undefined ? {} : { limit }),
-    } satisfies ClaudeRunWatchArgs);
-  }
-  if (providerKind !== RunEventProviderKind.Codex) {
+  if (!registry.supported().includes(providerKind)) {
     return {
       ok: false,
       mode: "read_only",
       sideEffects: [],
       providerKind,
-      supportedProviderKinds: [RunEventProviderKind.Codex, RunEventProviderKind.Claude],
+      supportedProviderKinds: registry.supported(),
       reason: "provider_observation_not_implemented",
       safeMessage:
         `Run observation for provider '${providerKindInput}' is not implemented yet. Watch did not start, stop, continue, recover or deliver work.`,
@@ -82,13 +67,21 @@ export async function watchAgentRuns(
   const registryRootDir = registryRootFromArgs(args);
   const staleAfterMs = numberValue(args.staleAfterMs);
   const tailLines = numberValue(args.tailLines);
-  const adapter = new CodexRunObservationAdapter({
+  const observationInput: ProviderRunObservationInput = {
     registryRootDir,
-    ...(args.cwd ? { cwd: args.cwd } : {}),
+    ...(args.stateRootDir === undefined ? {} : { stateRootDir: args.stateRootDir }),
+    ...(args.runArtifactsRootDir === undefined
+      ? {}
+      : { runArtifactsRootDir: args.runArtifactsRootDir }),
+    ...(stringValue(args.cwd) === undefined
+      ? {}
+      : { cwd: stringValue(args.cwd) as string }),
     ...(staleAfterMs === undefined ? {} : { staleAfterMs }),
     ...(tailLines === undefined ? {} : { tailLines }),
-  });
-  const service = new RunObservationService(adapter);
+    includeLogTail: booleanValue(args.includeLogTail) === true,
+  };
+  const observation = registry.get(providerKind).observation(observationInput);
+  const service = new RunObservationService(observation);
   const explicitJobIds = [
     ...(stringValue(args.jobId) ? [stringValue(args.jobId) as string] : []),
     ...jobIdsFromValue(args.jobIds),
@@ -110,20 +103,10 @@ export async function watchAgentRuns(
           includeLogTail: booleanValue(args.includeLogTail) === true,
         });
       } catch (error) {
-        const orphan = await observeOrphanCodexRun({
-          runId,
-          error,
-          args,
-          providerKind,
-          staleAfterMs: staleAfterMs ?? 10 * 60_000,
-          tailLines: tailLines ?? 20,
-        });
-        if (orphan) return orphan;
-        return failedRunObservationSnapshot({
-          runId,
-          providerKind,
-          error,
-        });
+        if (observation.observeFailedRun) {
+          return observation.observeFailedRun({ runId, error });
+        }
+        return providerFailedRunObservationSnapshot({ runId, providerKind, error });
       }
     }),
   );
@@ -141,8 +124,8 @@ export async function watchAgentRuns(
     ok: observationFailures.length === 0,
     mode: "read_only",
     sideEffects: [],
-    providerKind: "codex",
-    registryRootDir,
+    providerKind,
+    ...observation.responseLocator,
     totalRuns: listedRunIds.length,
     returnedRuns: snapshots.length,
     truncated: limit === undefined ? false : listedRunIds.length > runIds.length,
@@ -319,19 +302,17 @@ export async function compactAgentRunEvents(
 
 export async function projectAgentRunEvents(
   args: AgentRunProjectEventsMcpArgs,
+  registry: ProviderRuntimeRegistry = defaultProviderRuntimeRegistry(),
 ): Promise<JsonObject> {
   const providerKind = optionalRunEventProviderKind(args.providerKind) ??
     RunEventProviderKind.Codex;
-  if (
-    providerKind !== RunEventProviderKind.Codex &&
-    providerKind !== RunEventProviderKind.Claude
-  ) {
+  if (!registry.supported().includes(providerKind)) {
     return {
       ok: false,
       mode: "project_events",
       sideEffects: [],
       providerKind,
-      supportedProviderKinds: [RunEventProviderKind.Codex, RunEventProviderKind.Claude],
+      supportedProviderKinds: registry.supported(),
       reason: "provider_event_projection_not_implemented",
       safeMessage:
         `Run event projection for provider '${providerKind}' is not implemented yet. Projection did not start, stop, continue, recover or deliver work.`,
@@ -344,7 +325,7 @@ export async function projectAgentRunEvents(
     providerKind,
     includeChangedFiles: booleanValue(args.includeChangedFiles) === true,
     includeLogTail: false,
-  });
+  }, registry);
   const snapshots = Array.isArray(watch.snapshots)
     ? watch.snapshots as readonly RunObservationSnapshot[]
     : [];

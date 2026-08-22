@@ -48,6 +48,8 @@ import {
 import {
   createInMemoryProjectControllerProviderRegistry,
 } from "./application/project-control/codex-goal-project-controller-runtime";
+import { createLocalProviderRuntimeRegistry } from "@vioxen/subscription-runtime/worker-local";
+import type { ProviderRuntimeRegistry } from "@vioxen/subscription-runtime/worker-core";
 import {
   codexProjectAdmissionDeps,
   codexProjectControlBroker,
@@ -59,6 +61,12 @@ import {
 const serverVersion = process.env.npm_package_version ?? "0.0.0";
 const projectControllerProviderRegistry =
   createInMemoryProjectControllerProviderRegistry();
+
+let cachedProviderRuntimeRegistry: ProviderRuntimeRegistry | undefined;
+
+function defaultProviderRuntimeRegistry(): ProviderRuntimeRegistry {
+  return (cachedProviderRuntimeRegistry ??= createLocalProviderRuntimeRegistry());
+}
 
 function projectControlAdminDeps() {
   return {
@@ -138,36 +146,73 @@ export async function projectControlLedgerEpochMigration(
   ));
 }
 
-function projectControllerDeps() {
+function projectControllerDeps(providerRuntimeRegistry?: ProviderRuntimeRegistry) {
   return {
     loadProjectControlController,
     runtimeVersion: serverVersion,
     providerRegistry: projectControllerProviderRegistry,
+    providerRuntimeRegistry: providerRuntimeRegistry ?? defaultProviderRuntimeRegistry(),
   };
 }
 
-export async function projectControllerLaunchPlan(args: ProjectControllerLaunchPlanMcpArgs) {
-  return mcpJson(await projectControllerLaunchPlanView(args, projectControllerDeps()));
+export async function projectControllerLaunchPlan(
+  args: ProjectControllerLaunchPlanMcpArgs,
+  providerRuntimeRegistry?: ProviderRuntimeRegistry,
+) {
+  return mcpJson(await projectControllerLaunchPlanView(
+    args,
+    projectControllerDeps(providerRuntimeRegistry),
+  ));
 }
 
-export async function projectControllerStart(args: ProjectControllerLaunchPlanMcpArgs) {
-  return mcpJson(await projectControllerStartView(args, projectControllerDeps()));
+export async function projectControllerStart(
+  args: ProjectControllerLaunchPlanMcpArgs,
+  providerRuntimeRegistry?: ProviderRuntimeRegistry,
+) {
+  return mcpJson(await projectControllerStartView(
+    args,
+    projectControllerDeps(providerRuntimeRegistry),
+  ));
 }
 
-export async function projectControllerStatus(args: ProjectControllerLaunchPlanMcpArgs) {
-  return mcpJson(await projectControllerStatusView(args, projectControllerDeps()));
+export async function projectControllerStatus(
+  args: ProjectControllerLaunchPlanMcpArgs,
+  providerRuntimeRegistry?: ProviderRuntimeRegistry,
+) {
+  return mcpJson(await projectControllerStatusView(
+    args,
+    projectControllerDeps(providerRuntimeRegistry),
+  ));
 }
 
-export async function projectControllerConsumeGuidance(args: ProjectControllerLaunchPlanMcpArgs) {
-  return mcpJson(await projectControllerConsumeGuidanceView(args, projectControllerDeps()));
+export async function projectControllerConsumeGuidance(
+  args: ProjectControllerLaunchPlanMcpArgs,
+  providerRuntimeRegistry?: ProviderRuntimeRegistry,
+) {
+  return mcpJson(await projectControllerConsumeGuidanceView(
+    args,
+    projectControllerDeps(providerRuntimeRegistry),
+  ));
 }
 
-export async function projectControllerStop(args: ProjectControllerLaunchPlanMcpArgs) {
-  return mcpJson(await projectControllerStopView(args, projectControllerDeps()));
+export async function projectControllerStop(
+  args: ProjectControllerLaunchPlanMcpArgs,
+  providerRuntimeRegistry?: ProviderRuntimeRegistry,
+) {
+  return mcpJson(await projectControllerStopView(
+    args,
+    projectControllerDeps(providerRuntimeRegistry),
+  ));
 }
 
-export async function projectControllerReconcile(args: ProjectControllerLaunchPlanMcpArgs) {
-  return mcpJson(await projectControllerReconcileView(args, projectControllerDeps()));
+export async function projectControllerReconcile(
+  args: ProjectControllerLaunchPlanMcpArgs,
+  providerRuntimeRegistry?: ProviderRuntimeRegistry,
+) {
+  return mcpJson(await projectControllerReconcileView(
+    args,
+    projectControllerDeps(providerRuntimeRegistry),
+  ));
 }
 
 function projectControlJobsDeps() {

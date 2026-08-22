@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import type { ProviderRuntimeRegistry } from "./codex-goal-provider-runtime";
 import {
   jobRegistryInputSchema,
   type AgentRunEventCompactionMcpArgs,
@@ -21,7 +22,15 @@ import {
   watchAgentRuns,
 } from "./codex-goal-mcp-run-events";
 
-export function registerCodexGoalRunEventTools(server: McpServer): void {
+export type CodexGoalRunEventToolOptions = {
+  readonly providerRuntimeRegistry?: ProviderRuntimeRegistry;
+};
+
+export function registerCodexGoalRunEventTools(
+  server: McpServer,
+  options: CodexGoalRunEventToolOptions = {},
+): void {
+  const providerRuntimeRegistry = options.providerRuntimeRegistry;
   const agentRunWatchTool = {
     title: "Agent Run Watch",
     description:
@@ -45,7 +54,10 @@ export function registerCodexGoalRunEventTools(server: McpServer): void {
     "agent_run_watch",
     agentRunWatchTool,
     async (args) => withMcpErrors(async () => {
-      const watch = await watchAgentRuns(args as AgentRunWatchMcpArgs);
+      const watch = await watchAgentRuns(
+        args as AgentRunWatchMcpArgs,
+        providerRuntimeRegistry,
+      );
       return mcpJson(watch);
     }),
   );
@@ -59,7 +71,10 @@ export function registerCodexGoalRunEventTools(server: McpServer): void {
         "Codex-scoped read-only run observation. Reports status, liveness, progress, logs, workspace changes, capacity hints and read-only recommendations without starting, stopping or continuing workers.",
     },
     async (args) => withMcpErrors(async () => {
-      const watch = await watchAgentRuns(args as AgentRunWatchMcpArgs);
+      const watch = await watchAgentRuns(
+        args as AgentRunWatchMcpArgs,
+        providerRuntimeRegistry,
+      );
       return mcpJson(watch);
     }),
   );
@@ -209,7 +224,10 @@ export function registerCodexGoalRunEventTools(server: McpServer): void {
     "agent_run_project_events",
     agentRunProjectEventsTool,
     async (args) => withMcpErrors(async () => {
-      const projected = await projectAgentRunEvents(args as AgentRunProjectEventsMcpArgs);
+      const projected = await projectAgentRunEvents(
+        args as AgentRunProjectEventsMcpArgs,
+        providerRuntimeRegistry,
+      );
       return mcpJson(projected);
     }),
   );
@@ -226,7 +244,7 @@ export function registerCodexGoalRunEventTools(server: McpServer): void {
       const projected = await projectAgentRunEvents({
         ...(args as AgentRunProjectEventsMcpArgs),
         providerKind: "codex",
-      });
+      }, providerRuntimeRegistry);
       return mcpJson(projected);
     }),
   );
