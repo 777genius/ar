@@ -1,15 +1,16 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
-import { promisify } from "node:util";
 import { detectSecretLikeContent } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifest } from "../../codex-goal-jobs";
 import { captureCodexGoalHandoffPatchFingerprint } from "../../codex-goal-handoff-artifacts";
 import { readControlledRuntimeInterruptionEvidence } from "../../codex-goal-runtime-control-evidence";
 import { readRuntimeResultBrief } from "../codex-goal-runtime-result";
+import {
+  defaultProjectControlGitPort,
+  type ProjectControlGitPort,
+} from "./adapters/host-command-adapters";
 
-const execFileAsync = promisify(execFile);
 const maxManifestBytes = 1024 * 1024;
 const maxPatchBytes = 16 * 1024 * 1024;
 const runtimePreservedContinuationReasons = new Set([
@@ -417,12 +418,13 @@ function assertDescriptor(
 async function patchChangedPaths(
   workspacePath: string,
   patchPath: string,
+  git: ProjectControlGitPort = defaultProjectControlGitPort,
 ): Promise<readonly string[]> {
-  const { stdout } = await execFileAsync(
-    "git",
-    ["-C", workspacePath, "apply", "--numstat", "-z", patchPath],
-    { encoding: "utf8", timeout: 15_000, maxBuffer: 2 * 1024 * 1024 },
-  );
+  const { stdout } = await git.run({
+    args: ["-C", workspacePath, "apply", "--numstat", "-z", patchPath],
+    timeoutMs: 15_000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
   return uniqueSorted(
     stdout
       .split("\0")

@@ -1,7 +1,5 @@
-import { execFile } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
 import {
   ProjectAdmissionWorkerRole,
   ProjectDebtReason,
@@ -71,8 +69,13 @@ import {
 } from "./codex-goal-legacy-job-summary-retirement";
 import { frozenOutputSupersessionProjection } from
   "./codex-goal-frozen-output-import";
+import {
+  defaultHostDiskUsagePort,
+  defaultProjectControlGitPort,
+  type HostDiskUsagePort,
+  type ProjectControlGitPort,
+} from "./adapters/host-command-adapters";
 type JsonObject = Readonly<Record<string, unknown>>;
-const execFileAsync = promisify(execFile);
 export type CodexProjectAdmissionDeps = {
   readonly listJobs: (input: {
     readonly registryRootDir: string;
@@ -958,17 +961,17 @@ async function rememberKnownWorkspacePath(
   }
 }
 
-async function diskPressureDebt(root: string): Promise<readonly ProjectDebtItem[]> {
+async function diskPressureDebt(
+  root: string,
+  diskUsage: HostDiskUsagePort = defaultHostDiskUsagePort,
+): Promise<readonly ProjectDebtItem[]> {
   const minFreeKb = Number(process.env.SUBSCRIPTION_RUNTIME_PROJECT_ADMISSION_MIN_FREE_KB ?? "0");
   if (!Number.isFinite(minFreeKb) || minFreeKb <= 0) return [];
   try {
-    const result = await execFileAsync("df", ["-Pk", root], {
-      timeout: 8_000,
-      maxBuffer: 256 * 1024,
-    });
-    const [, line] = result.stdout.trim().split(/\n/);
-    const availableKb = Number(line?.trim().split(/\s+/)[3]);
-    if (Number.isFinite(availableKb) && availableKb < minFreeKb) {
+    const availableBytes = await diskUsage.availableBytes({ path: root });
+    if (availableBytes === undefined) return [];
+    const availableKb = availableBytes / 1024;
+    if (availableKb < minFreeKb) {
       return [{
         reason: ProjectDebtReason.DiskPressure,
         subject: root,
@@ -998,19 +1001,17 @@ async function pathLooksLikeGitWorkspace(path: string): Promise<boolean> {
   }
 }
 
-async function gitStatusShort(path: string): Promise<
+async function gitStatusShort(
+  path: string,
+  git: ProjectControlGitPort = defaultProjectControlGitPort,
+): Promise<
   | { readonly ok: true; readonly lines: readonly string[] }
   | { readonly ok: false; readonly error: string }
 > {
   try {
-    const result = await execFileAsync("git", [
-      "-C",
-      path,
-      "status",
-      "--short",
-      "--untracked-files=all",
-    ], {
-      timeout: 8_000,
+    const result = await git.run({
+      args: ["-C", path, "status", "--short", "--untracked-files=all"],
+      timeoutMs: 8_000,
       maxBuffer: 1024 * 1024,
     });
     return {

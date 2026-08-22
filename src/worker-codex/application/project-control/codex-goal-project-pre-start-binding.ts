@@ -1,16 +1,17 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
-import { promisify } from "node:util";
 import type {
   CodexGoalJobManifest,
   CodexGoalJobManifestInput,
   CodexGoalProjectPreStartAdmission,
 } from "../../codex-goal-jobs";
 import { captureGitWorkspacePatch } from "../../codex-goal-runtime-result-io";
+import {
+  defaultProjectControlGitPort,
+  type ProjectControlGitPort,
+} from "./adapters/host-command-adapters";
 import { stagedPatchSha256 } from "./codex-goal-project-git";
 
-const execFileAsync = promisify(execFile);
 const VALIDATOR_TIMEOUT_MS = 60_000;
 const MAX_CONTRACT_BYTES = 256 * 1024;
 const MAX_STATE_BYTES = 1024 * 1024;
@@ -38,37 +39,33 @@ export type VerifiedInputPatchBinding = {
 export async function captureProjectPreStartBinding(
   manifest: CodexGoalJobManifest | CodexGoalJobManifestInput,
   descriptor: CodexGoalProjectPreStartAdmission,
+  git: ProjectControlGitPort = defaultProjectControlGitPort,
 ): Promise<ProjectPreStartBinding> {
   const workspaceHead = (
-    await execFileAsync(
-      "git",
-      ["-C", manifest.workspacePath, "rev-parse", "HEAD"],
-      {
-        encoding: "utf8",
-        timeout: VALIDATOR_TIMEOUT_MS,
-      },
-    )
+    await git.run({
+      args: ["-C", manifest.workspacePath, "rev-parse", "HEAD"],
+      timeoutMs: VALIDATOR_TIMEOUT_MS,
+    })
   ).stdout.trim();
   const workspaceStatus = (
-    await execFileAsync(
-      "git",
-      [
+    await git.run({
+      args: [
         "-C",
         manifest.workspacePath,
         "status",
         "--porcelain",
         "--untracked-files=all",
       ],
-      { encoding: "utf8", timeout: VALIDATOR_TIMEOUT_MS },
-    )
+      timeoutMs: VALIDATOR_TIMEOUT_MS,
+    })
   ).stdout.trim();
   const workspaceStagedPatchSha256 = await stagedPatchSha256(
     manifest.workspacePath,
+    git,
   );
   const workspaceStagedPaths = parseNullSeparatedPaths((
-    await execFileAsync(
-      "git",
-      [
+    await git.run({
+      args: [
         "-C",
         manifest.workspacePath,
         "diff",
@@ -79,20 +76,18 @@ export async function captureProjectPreStartBinding(
         "HEAD",
         "--",
       ],
-      { encoding: "utf8", timeout: VALIDATOR_TIMEOUT_MS },
-    )
+      timeoutMs: VALIDATOR_TIMEOUT_MS,
+    })
   ).stdout);
   const workspaceUnstagedPaths = (
-    await execFileAsync(
-      "git",
-      ["-C", manifest.workspacePath, "diff", "--name-only", "-z", "--"],
-      { encoding: "utf8", timeout: VALIDATOR_TIMEOUT_MS },
-    )
+    await git.run({
+      args: ["-C", manifest.workspacePath, "diff", "--name-only", "-z", "--"],
+      timeoutMs: VALIDATOR_TIMEOUT_MS,
+    })
   ).stdout;
   const workspaceUntrackedPaths = (
-    await execFileAsync(
-      "git",
-      [
+    await git.run({
+      args: [
         "-C",
         manifest.workspacePath,
         "ls-files",
@@ -100,8 +95,8 @@ export async function captureProjectPreStartBinding(
         "--exclude-standard",
         "-z",
       ],
-      { encoding: "utf8", timeout: VALIDATOR_TIMEOUT_MS },
-    )
+      timeoutMs: VALIDATOR_TIMEOUT_MS,
+    })
   ).stdout;
   const workspacePatchSha256 = sha256(
     Buffer.from(
