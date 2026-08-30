@@ -1,0 +1,3 @@
+#!/bin/sh
+export SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_TOOL=grep
+exec "${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER:?subscription_runtime_global_scan_guard_wrapper_unset}" "$@"

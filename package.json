@@ -139,6 +139,7 @@
   },
   "files": [
     "dist",
+    "host-integration",
     "README.md",
     "docs",
     "LICENSE"
@@ -160,7 +161,8 @@
     "prepack": "npm run build",
     "typecheck": "npm run build:packages && tsc --noEmit -p tsconfig.json && npm run typecheck:packages",
     "typecheck:packages": "npm run --prefix packages/agent-account-observability typecheck",
-    "test": "npm run build:packages && vitest run && npm run test:packages && npm run check:publish-preflight",
+    "test": "npm run test:global-scan-guard && npm run build:packages && vitest run && npm run test:packages && npm run check:publish-preflight",
+    "test:global-scan-guard": "node --test host-integration/global-scan-guard/global-scan-guard.node-test.mjs",
     "test:packages": "npm run --prefix packages/agent-account-observability test",
     "test:crash-shard": "vitest run --config vitest.crash-shard.config.ts --maxWorkers=1",
     "e2e:live-workers": "npm run build && node scripts/e2e-live-workers/run.mjs",

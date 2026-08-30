@@ -365,6 +365,26 @@ describe("Codex provider adapter", () => {
     expect(env).not.toHaveProperty("GH_TOKEN");
   });
 
+  it("preserves only the hosted global scan guard launch configuration", () => {
+    const env = pruneCodexChildEnv({
+      PATH: "/global-scan-guard/codex-bin:/usr/bin",
+      SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+      SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_CODEX_SOURCE: "/opt/codex/bin/codex",
+      SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_SOURCE: "/opt/tools/rg",
+      SUBSCRIPTION_RUNTIME_UNRELATED_HOST_SETTING: "must-not-pass",
+      OPENAI_API_KEY: "must-not-pass",
+    });
+
+    expect(env).toMatchObject({
+      SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+      SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_CODEX_SOURCE: "/opt/codex/bin/codex",
+      SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_SOURCE: "/opt/tools/rg",
+    });
+    expect(env.PATH!.split(delimiter)[0]).toBe("/global-scan-guard/codex-bin");
+    expect(env).not.toHaveProperty("SUBSCRIPTION_RUNTIME_UNRELATED_HOST_SETTING");
+    expect(env).not.toHaveProperty("OPENAI_API_KEY");
+  });
+
   it("passes only validated job-scoped tool temp environment to Codex", () => {
     const env = pruneCodexChildEnv({
       PATH: "/codex/bin",

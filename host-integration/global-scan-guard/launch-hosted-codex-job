@@ -1,0 +1,96 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ "${SUBSCRIPTION_RUNTIME_SANDBOX_KIND:-}" != "hosted-codex-job" ]]; then
+  printf '%s\n' 'subscription_runtime_global_scan_guard_wrong_scope expected=hosted-codex-job exit_code=64' >&2
+  exit 64
+fi
+if (( $# == 0 )); then
+  printf '%s\n' 'subscription_runtime_global_scan_guard_command_required exit_code=64' >&2
+  exit 64
+fi
+if [[ -z "${PATH:-}" ]]; then
+  printf '%s\n' 'subscription_runtime_global_scan_guard_path_unavailable exit_code=70' >&2
+  exit 70
+fi
+
+script_dir="${BASH_SOURCE[0]%/*}"
+if [[ "${script_dir}" == "${BASH_SOURCE[0]}" ]]; then
+  script_dir=.
+fi
+readonly integration_dir="$(cd -- "${script_dir}" && pwd -P)"
+unset script_dir
+readonly wrapper="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER:-${integration_dir}/subscription-runtime-global-scan-guard}"
+readonly find_entry="${integration_dir}/bin/find"
+readonly rg_entry="${integration_dir}/bin/rg"
+readonly grep_entry="${integration_dir}/bin/grep"
+readonly bwrap="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_BWRAP:-/usr/bin/bwrap}"
+readonly find_real="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_SOURCE:-/usr/bin/find}"
+readonly rg_real="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_SOURCE:-/usr/bin/rg}"
+readonly grep_real="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_SOURCE:-/usr/bin/grep}"
+readonly find_target="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_TARGET:-/usr/bin/find}"
+readonly rg_target="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_TARGET:-/usr/bin/rg}"
+readonly grep_target="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_TARGET:-/usr/bin/grep}"
+readonly private_dir="${integration_dir}/private"
+
+for executable in \
+  "${wrapper}" \
+  "${find_entry}" \
+  "${rg_entry}" \
+  "${grep_entry}" \
+  "${bwrap}" \
+  "${find_real}" \
+  "${rg_real}" \
+  "${grep_real}"
+do
+  if [[ "${executable}" != /* || ! -x "${executable}" ]]; then
+    printf 'subscription_runtime_global_scan_guard_prerequisite_missing path=%s exit_code=70\n' "${executable}" >&2
+    exit 70
+  fi
+done
+real_sources=("${find_real}" "${rg_real}" "${grep_real}")
+guard_entries=("${find_entry}" "${rg_entry}" "${grep_entry}")
+mount_targets=("${find_target}" "${rg_target}" "${grep_target}")
+for (( source_index=0; source_index<${#real_sources[@]}; source_index+=1 )); do
+  if [[ "${real_sources[source_index]}" -ef "${guard_entries[source_index]}" ]]; then
+    printf 'subscription_runtime_global_scan_guard_recursive_source path=%s exit_code=70\n' "${real_sources[source_index]}" >&2
+    exit 70
+  fi
+  if [[ "${mount_targets[source_index]}" -ef "${guard_entries[source_index]}" ]]; then
+    printf 'subscription_runtime_global_scan_guard_recursive_target path=%s exit_code=70\n' "${mount_targets[source_index]}" >&2
+    exit 70
+  fi
+done
+unset real_sources guard_entries mount_targets source_index
+for mount_target in \
+  "${find_target}" \
+  "${rg_target}" \
+  "${grep_target}" \
+  "${private_dir}/find.real" \
+  "${private_dir}/rg.real" \
+  "${private_dir}/grep.real"
+do
+  if [[ "${mount_target}" != /* || ! -f "${mount_target}" ]]; then
+    printf 'subscription_runtime_global_scan_guard_mount_target_missing path=%s exit_code=70\n' "${mount_target}" >&2
+    exit 70
+  fi
+done
+
+# This mount namespace is the enforcement boundary. Both PATH lookups and the
+# canonical absolute executable paths resolve to guard entrypoints. The real
+# tools remain reachable only at private namespace paths used by the guard.
+exec "${bwrap}" \
+  --die-with-parent \
+  --bind / / \
+  --ro-bind "${find_real}" "${private_dir}/find.real" \
+  --ro-bind "${rg_real}" "${private_dir}/rg.real" \
+  --ro-bind "${grep_real}" "${private_dir}/grep.real" \
+  --ro-bind "${find_entry}" "${find_target}" \
+  --ro-bind "${rg_entry}" "${rg_target}" \
+  --ro-bind "${grep_entry}" "${grep_target}" \
+  --setenv SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER "${wrapper}" \
+  --setenv SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL "${private_dir}/find.real" \
+  --setenv SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL "${private_dir}/rg.real" \
+  --setenv SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL "${private_dir}/grep.real" \
+  --setenv PATH "${integration_dir}/bin:${PATH}" \
+  -- "$@"
