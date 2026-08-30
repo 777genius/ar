@@ -182,7 +182,7 @@ export function registerCodexGoalAccountTools(server: McpServer): void {
     {
       title: "Codex Account Slot Status",
       description:
-        "Inspect Codex account slot auth files without printing tokens.",
+        "Inspect Codex account slot auth files without printing tokens. Follows auth-root symlinks and reports the resolved root.",
       inputSchema: {
         poolRootDir: z.string().optional(),
         pool: z.string().optional(),

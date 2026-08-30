@@ -63,7 +63,11 @@ If you inherit a running Codex worker pool, do this first:
 5. Check the latest result JSON if it exists. If it does not exist, the task is
    usually still running.
 6. Use `codex_accounts_status` for the selected pool. It must print only slot
-   status and sanitized metadata.
+   status and sanitized metadata. Use its `summary.configured` and
+   `summary.ready` values as the account count. The command follows auth-root
+   symlinks and reports `resolvedAuthRootDir` plus `authRootUsesSymlink`; a
+   filesystem count that does not follow symlinks is not evidence of an empty
+   pool.
 7. If the runner stopped because of quota, capacity, auth or reconnect, restart
    a continuation through `codex_goal_continue` with the same stored job only
    when `codex_goal_brief.safeToContinue` is true.
