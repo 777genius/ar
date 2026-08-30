@@ -256,6 +256,13 @@ export function buildCodexGoalNoTmuxCommand(input: CodexGoalLaunchInput): string
   const envAssignments: string[] = [
     `PATH=${shellQuote(codexChildPath(process.env))}`,
   ];
+  for (
+    const [key, value] of hostedGlobalScanGuardEnvironment(
+      config.sourceEnv ?? process.env,
+    )
+  ) {
+    envAssignments.push(`${key}=${shellQuote(value)}`);
+  }
   const extraWritableRoots = config.projectAccessScope
     ? ""
     : process.env.SUBSCRIPTION_RUNTIME_CODEX_EXTRA_WRITABLE_ROOTS?.trim();
@@ -279,6 +286,26 @@ export function buildCodexGoalNoTmuxCommand(input: CodexGoalLaunchInput): string
   }
   const envPrefix = envAssignments.length ? `${envAssignments.join(" ")} ` : "";
   return `${envPrefix}${args.map(shellQuote).join(" ")}`;
+}
+
+function hostedGlobalScanGuardEnvironment(
+  sourceEnv: Readonly<Record<string, string | undefined>>,
+): readonly (readonly [string, string])[] {
+  const keys = [
+    "SUBSCRIPTION_RUNTIME_SANDBOX_KIND",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_BWRAP",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_CODEX_SOURCE",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_SOURCE",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_TARGET",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_SOURCE",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_TARGET",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_SOURCE",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_TARGET",
+  ] as const;
+  return keys.flatMap((key) => {
+    const value = sourceEnv[key];
+    return value === undefined ? [] : [[key, value] as const];
+  });
 }
 
 export function buildCodexGoalTmuxCommand(
