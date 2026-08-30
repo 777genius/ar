@@ -624,6 +624,34 @@ describe("codex goal runner", () => {
     });
   });
 
+  it("enables the global-scan-only policy for hosted jobs without an access plan", () => {
+    const root = "/tmp/subscription-runtime-hosted-scan-policy";
+    const options = buildCodexGoalExecutorOptions({
+      stateRootDir: join(root, "state"),
+      encryptionKey: new Uint8Array(32).fill(1),
+      config: {
+        jobRootDir: join(root, "job"),
+        authRootDir: join(root, "auth"),
+        workspacePath: join(root, "workspace"),
+        promptPath: join(root, "prompt.md"),
+        taskId: "task-hosted-scan-policy",
+        accounts: codexGoalAccountSlots(["account-a"]),
+        sourceEnv: {
+          SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+        },
+      },
+    });
+
+    expect(options.accounts[0]?.worker.commandPolicy).toEqual({
+      validateCommands: true,
+      deniedExecutableNames: [],
+      deniedGitSubcommands: [],
+      deniedPathPrefixes: [],
+      deniedInlineCodeExecutables: [],
+      deniedScriptExecutables: [],
+    });
+  });
+
   it("fails closed for Codex project scoped control until broker-only tools are enforced", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-goal-access-"));
     const promptPath = join(root, "prompt.md");

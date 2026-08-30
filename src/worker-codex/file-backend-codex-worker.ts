@@ -578,6 +578,16 @@ function assertWorkerOptions(options: FileBackendCodexWorkerOptions): void {
   ) {
     throw new Error("file_backend_codex_execution_engine_invalid");
   }
+  const hostedGlobalScanGuard =
+    options.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  const hostedExecutionEngine = options.executionEngine ?? "app-server";
+  if (
+    hostedGlobalScanGuard &&
+    hostedExecutionEngine !== "app-server" &&
+    hostedExecutionEngine !== "app-server-goal"
+  ) {
+    throw new Error("file_backend_codex_hosted_scan_guard_engine_invalid");
+  }
   assertPositiveInteger(
     options.appServerStartupTimeoutMs,
     "file_backend_codex_app_server_startup_timeout_invalid",

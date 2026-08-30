@@ -1,4 +1,5 @@
 export * from "./host-command/safe-command-policy";
+export * from "./host-command/global-filesystem-scan-policy";
 
 export type HostExecutableResolutionSource =
   | "env"

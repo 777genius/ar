@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
   createSubscriptionRuntime,
@@ -15,6 +16,7 @@ import {
   CodexJsonAgentDriver,
   CodexWorkerCacheSessionPoolMaterializer,
   PackagedCodexJsonExecutionEngine,
+  codexJsonHomeConfigToml,
   defaultCodexModel,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { createLocalFileBackendRuntimeAdapters } from "@vioxen/subscription-runtime/store-local-file";
@@ -202,6 +204,8 @@ function createCodexAgentDriver(input: {
 }): CodexJsonAgentDriver | CodexCliAgentDriver {
   const { options } = input;
   const executionEngine = options.executionEngine ?? "app-server";
+  const hostedGlobalScanGuard =
+    options.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
   const workspaceToolsProfile = options.boundedWorkspaceTools && options.workspacePath
     ? buildCodexWorkspaceToolsProfile({
         workspaceRoot: options.workspacePath,
@@ -241,6 +245,9 @@ function createCodexAgentDriver(input: {
           ...(options.rolloutBudget
             ? { rolloutBudget: options.rolloutBudget }
             : {}),
+          ...(hostedGlobalScanGuard && !workspaceToolsProfile
+            ? { bypassHookTrust: true }
+            : {}),
           ...(workspaceToolsProfile
             ? {
                 executionProfile: {
@@ -277,6 +284,7 @@ function createCodexAgentDriver(input: {
           runStore: input.managedRunStore,
           ...(
             executionEngine === "app-server-goal" ||
+            hostedGlobalScanGuard ||
             workspaceToolsProfile ||
             options.rolloutBudget
             ? {}
@@ -291,6 +299,10 @@ function createCodexAgentDriver(input: {
       scrubAuthOnDispose: true,
       ...(workspaceToolsProfile
         ? { configToml: workspaceToolsProfile.configToml }
+        : hostedGlobalScanGuard
+        ? {
+            configToml: hostedGlobalScanConfigToml(),
+          }
         : {}),
     }),
     model: options.model ?? defaultCodexModel,
@@ -305,6 +317,29 @@ function createCodexAgentDriver(input: {
       ? { warmupPrompt: options.warmupPrompt }
       : {}),
   });
+}
+
+function hostedGlobalScanConfigToml(): string {
+  const hookPath = fileURLToPath(
+    new URL("./hosted-global-scan-pre-tool-hook.js", import.meta.url),
+  );
+  const command = `${shellQuote(process.execPath)} ${shellQuote(hookPath)}`;
+  return [
+    codexJsonHomeConfigToml({ hooksEnabled: true }),
+    "[hooks]",
+    "[[hooks.PreToolUse]]",
+    'matcher = "Bash|exec"',
+    "[[hooks.PreToolUse.hooks]]",
+    'type = "command"',
+    `command = ${JSON.stringify(command)}`,
+    "timeout = 5",
+    'statusMessage = "Checking command scope"',
+    "",
+  ].join("\n");
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 function hashText(value: string): string {

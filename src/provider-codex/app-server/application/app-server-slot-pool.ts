@@ -46,6 +46,7 @@ export class AppServerSlotPool {
       readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
       readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
       readonly rolloutBudget?: CodexAppServerRolloutBudget;
+      readonly bypassHookTrust?: boolean;
       readonly cleanThreadPrewarm: boolean;
       readonly timeoutMs?: number;
       readonly startupTimeoutMs?: number;
@@ -92,6 +93,9 @@ export class AppServerSlotPool {
       ...(this.options.rolloutBudget === undefined
         ? {}
         : { rolloutBudget: this.options.rolloutBudget }),
+      ...(this.options.bypassHookTrust === undefined
+        ? {}
+        : { bypassHookTrust: this.options.bypassHookTrust }),
       timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
       startupTimeoutMs: appServerStartupTimeoutMs({
         ...(this.options.timeoutMs === undefined

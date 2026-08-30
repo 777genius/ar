@@ -352,6 +352,28 @@ describe("FileBackendCodexWorker", () => {
     }
   });
 
+  it.each(["packaged-exec", "plain-exec"] as const)(
+    "fails closed when hosted scan protection is unavailable for %s",
+    async (executionEngine) => {
+      const rootDir = await mkdtemp(join(tmpdir(), "codex-worker-"));
+
+      try {
+        expect(() => new FileBackendCodexWorker({
+          providerInstanceId: "codex:test",
+          stateRootDir: rootDir,
+          codexBinaryPath: "codex",
+          encryptionKey: new Uint8Array(32).fill(12),
+          executionEngine,
+          sourceEnv: {
+            SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+          },
+        })).toThrow("file_backend_codex_hosted_scan_guard_engine_invalid");
+      } finally {
+        await rm(rootDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("runs coding work through packaged Codex exec when selected", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "codex-worker-"));
     const callerWorkspace = await mkdtemp(join(tmpdir(), "codex-exec-workspace-"));

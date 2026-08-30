@@ -1,3 +1,9 @@
+import {
+  blockedGlobalFilesystemScan,
+  blockedGlobalFilesystemScanCommand,
+  unverifiableGlobalFilesystemScanCommand,
+} from "./global-filesystem-scan-policy";
+
 export type CommandPolicy = {
   readonly validateCommands: boolean;
   readonly deniedExecutableNames: readonly string[];
@@ -16,6 +22,8 @@ export enum CommandValidationDecisionReason {
   DeniedPathPrefix = "denied_path_prefix",
   InlineCodeDenied = "inline_code_denied",
   ScriptInterpreterDenied = "script_interpreter_denied",
+  GlobalFilesystemScanDenied = "global_filesystem_scan_denied",
+  GlobalFilesystemScanUnverifiable = "global_filesystem_scan_unverifiable",
 }
 
 export type CommandValidationDecision = {
@@ -70,6 +78,28 @@ export function validateCommandAgainstPolicy(input: {
     return commandDenied(CommandValidationDecisionReason.ScriptInterpreterDenied, {
       executableName,
       evidence: [`${executableName} script execution is denied`],
+    });
+  }
+  const unverifiableScan = typeof input.command === "string"
+    ? unverifiableGlobalFilesystemScanCommand(input.command)
+    : null;
+  if (unverifiableScan !== null) {
+    return commandDenied(CommandValidationDecisionReason.GlobalFilesystemScanUnverifiable, {
+      executableName,
+      evidence: [
+        `subscription_runtime_global_scan_unverifiable expression=${unverifiableScan.expression} remediation=use a literal executable and bounded filesystem path, or a guard-owned executable environment reference exit_code=64`,
+      ],
+    });
+  }
+  const blockedScan = typeof input.command === "string"
+    ? blockedGlobalFilesystemScanCommand(input.command)
+    : blockedGlobalFilesystemScan(args);
+  if (blockedScan !== null) {
+    return commandDenied(CommandValidationDecisionReason.GlobalFilesystemScanDenied, {
+      executableName,
+      evidence: [
+        `subscription_runtime_global_scan_blocked tool=${blockedScan.tool} root=${blockedScan.root} remediation=search an assigned workspace/job descendant, or run the search from the current directory exit_code=64`,
+      ],
     });
   }
   const commandText = args.join(" ");

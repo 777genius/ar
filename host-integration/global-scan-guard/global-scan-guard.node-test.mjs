@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -13,6 +13,10 @@ const wrapper = join(integrationDir, "subscription-runtime-global-scan-guard");
 const launcher = join(integrationDir, "launch-hosted-codex-job");
 const hostLauncher = join(integrationDir, "launch-hosted-subscription-runtime-job");
 const guardedCodex = join(integrationDir, "codex-bin/codex");
+const sliceInstaller = join(
+  integrationDir,
+  "install-subscription-runtime-hosted-slice",
+);
 const blockedRoots = [
   "/",
   "/bin",
@@ -47,9 +51,6 @@ let disposableDir;
 let fakeFind;
 let fakeRg;
 let fakeGrep;
-let findTarget;
-let rgTarget;
-let grepTarget;
 let baseEnv;
 
 beforeEach(async () => {
@@ -57,9 +58,6 @@ beforeEach(async () => {
   fakeFind = await writeExecutable("find.real", delegatedExecutable());
   fakeRg = await writeExecutable("rg.real", delegatedExecutable());
   fakeGrep = await writeExecutable("grep.real", delegatedExecutable());
-  findTarget = await writeTarget("find.target");
-  rgTarget = await writeTarget("rg.target");
-  grepTarget = await writeTarget("grep.target");
   baseEnv = {
     ...process.env,
     SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER: wrapper,
@@ -76,12 +74,6 @@ afterEach(async () => {
 async function writeExecutable(name, contents) {
   const path = join(disposableDir, name);
   await writeFile(path, contents, { mode: 0o755 });
-  return path;
-}
-
-async function writeTarget(name) {
-  const path = join(disposableDir, name);
-  await writeFile(path, "mount target\n");
   return path;
 }
 
@@ -109,27 +101,15 @@ async function expectDelegated(tool, args) {
   assert.match((await runGuard(tool, args)).stdout, /^delegated:/);
 }
 
-function launcherEnv(fakeBwrap, overrides = {}) {
+function launcherEnv(overrides = {}) {
   return {
     ...process.env,
     SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
-    SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_BWRAP: fakeBwrap,
     SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_SOURCE: fakeFind,
     SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_SOURCE: fakeRg,
     SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_SOURCE: fakeGrep,
-    SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_TARGET: findTarget,
-    SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_TARGET: rgTarget,
-    SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_TARGET: grepTarget,
     ...overrides,
   };
-}
-
-function readMountPlan(stdout) {
-  const args = stdout.trim().split("\n");
-  const mounts = args.flatMap((value, index) =>
-    value === "--ro-bind" ? [[args[index + 1], args[index + 2]]] : [],
-  );
-  return { args, mounts };
 }
 
 function spawnWithInput(command, args, options, input) {
@@ -192,6 +172,10 @@ describe("hosted Codex global scan argument guards", () => {
 
   it("blocks any broad find root in a multi-root invocation", async () => {
     await expectBlocked("find", [join(disposableDir, "job"), "/usr", "-type", "f"], "/usr");
+  });
+
+  it("blocks a broad find root after the option terminator", async () => {
+    await expectBlocked("find", ["--", "/", "-type", "f"], "/");
   });
 
   it("blocks equivalent roots with lexical separators", async () => {
@@ -266,66 +250,88 @@ describe("hosted Codex global scan argument guards", () => {
   });
 });
 
-describe("hosted Codex global scan namespace launch", () => {
-  it("keeps the production mount-target defaults canonical", async () => {
+describe("hosted Codex global scan launch", () => {
+  it("installs the reviewed slice with a generated all-device drop-in", async () => {
+    const repositoryRoot = join(disposableDir, "repository");
+    const generatorDir = join(
+      repositoryRoot,
+      "dist/provider-codex/app-server/adapters",
+    );
+    const unitDir = join(disposableDir, "systemd");
+    const systemctlLog = join(disposableDir, "systemctl.log");
+    await mkdir(generatorDir, { recursive: true });
+    await mkdir(unitDir, { recursive: true });
+    await writeFile(
+      join(generatorDir, "print-hosted-aggregate-io-drop-in.js"),
+      'process.stdout.write("[Slice]\\nIOReadBandwidthMax=/ 120M\\nIOReadIOPSMax=/ 8000\\nIOWriteBandwidthMax=/ 60M\\nIOWriteIOPSMax=/ 4000\\n");\n',
+    );
+    const fakeUnshare = await writeExecutable("unshare", "#!/bin/sh\nexit 0\n");
+    const fakeSetpriv = await writeExecutable("setpriv", "#!/bin/sh\nexit 0\n");
+    const fakeSystemctl = await writeExecutable(
+      "systemctl",
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(systemctlLog)}\n`,
+    );
+
+    await execFile(sliceInstaller, [], {
+      env: {
+        ...process.env,
+        SUBSCRIPTION_RUNTIME_REPOSITORY_ROOT: repositoryRoot,
+        SUBSCRIPTION_RUNTIME_SYSTEMD_UNIT_DIR: unitDir,
+        SUBSCRIPTION_RUNTIME_SYSTEMCTL_PATH: fakeSystemctl,
+        SUBSCRIPTION_RUNTIME_UNSHARE_PATH: fakeUnshare,
+        SUBSCRIPTION_RUNTIME_SETPRIV_PATH: fakeSetpriv,
+      },
+    });
+
+    assert.match(
+      await readFile(join(unitDir, "subscription-runtime-hosted.slice"), "utf8"),
+      /CPUQuota=500%/,
+    );
+    assert.equal(
+      await readFile(
+        join(
+          unitDir,
+          "subscription-runtime-hosted.slice.d/20-io-limits.conf",
+        ),
+        "utf8",
+      ),
+      "[Slice]\nIOReadBandwidthMax=/ 120M\nIOReadIOPSMax=/ 8000\nIOWriteBandwidthMax=/ 60M\nIOWriteIOPSMax=/ 4000\n",
+    );
+    assert.equal(
+      await readFile(systemctlLog, "utf8"),
+      "daemon-reload\nstart subscription-runtime-hosted.slice\nis-active --quiet subscription-runtime-hosted.slice\n",
+    );
+  });
+
+  it("does not nest the Codex provider sandbox inside another mount namespace", async () => {
     const source = await readFile(launcher, "utf8");
 
-    assert.match(source, /readonly find_target="\$\{SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_TARGET:-\/usr\/bin\/find\}"/);
-    assert.match(source, /readonly rg_target="\$\{SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_TARGET:-\/usr\/bin\/rg\}"/);
-    assert.match(source, /readonly grep_target="\$\{SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_TARGET:-\/usr\/bin\/grep\}"/);
+    assert.doesNotMatch(source, /bwrap|--ro-bind|--bind \/ \//);
+    assert.match(source, /export PATH="\$\{integration_dir\}\/bin:\$\{PATH\}"/);
+    assert.match(source, /exec "\$@"/);
   });
 
   it("refuses launcher use outside the new hosted Codex sandbox scope", async () => {
-    await assert.rejects(execFile(launcher, ["/bin/true"], { env: process.env }), { code: 64 });
-    await assert.rejects(execFile(hostLauncher, ["/bin/true"], { env: process.env }), { code: 64 });
-    await assert.rejects(execFile(guardedCodex, ["--version"], { env: process.env }), { code: 64 });
+    const outsideHostedEnv = { ...process.env };
+    delete outsideHostedEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND;
+    await assert.rejects(execFile(launcher, ["/bin/true"], { env: outsideHostedEnv }), { code: 64 });
+    await assert.rejects(execFile(hostLauncher, ["/bin/true"], { env: outsideHostedEnv }), { code: 64 });
+    await assert.rejects(execFile(guardedCodex, ["--version"], { env: outsideHostedEnv }), { code: 64 });
   });
 
-  it("builds a namespace plan that intercepts PATH and all absolute executables", async () => {
-    const fakeBwrap = await writeExecutable("bwrap", "#!/bin/sh\nprintf '%s\\n' \"$@\"\n");
-    const result = await execFile(launcher, ["/opt/codex/bin/codex", "app-server"], {
-      env: launcherEnv(fakeBwrap),
-    });
-    const { args, mounts } = readMountPlan(result.stdout);
-
-    assert.ok(mounts.some((pair) => pair[0] === join(integrationDir, "bin/find") && pair[1] === findTarget));
-    assert.ok(mounts.some((pair) => pair[0] === join(integrationDir, "bin/rg") && pair[1] === rgTarget));
-    assert.ok(mounts.some((pair) => pair[0] === join(integrationDir, "bin/grep") && pair[1] === grepTarget));
-    assert.ok(mounts.some((pair) => pair[0] === fakeFind && pair[1] === join(integrationDir, "private/find.real")));
-    assert.ok(mounts.some((pair) => pair[0] === fakeRg && pair[1] === join(integrationDir, "private/rg.real")));
-    assert.ok(mounts.some((pair) => pair[0] === fakeGrep && pair[1] === join(integrationDir, "private/grep.real")));
-    assert.ok(args.includes(join(integrationDir, "bin") + ":" + process.env.PATH));
-    assert.ok(args.includes("--die-with-parent"));
-    assert.ok(!args.includes("--new-session"));
-    assert.deepEqual(args.slice(-3), ["--", "/opt/codex/bin/codex", "app-server"]);
-  });
-
-  it("copies a same-file source and target before overlaying the target with the guard", async () => {
-    const fakeBwrap = await writeExecutable("bwrap", "#!/bin/sh\nprintf '%s\\n' \"$@\"\n");
-    const result = await execFile(launcher, ["/bin/true"], {
-      env: launcherEnv(fakeBwrap, {
-        SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_TARGET: fakeFind,
-      }),
-    });
-    const { args } = readMountPlan(result.stdout);
-    const privateMountIndex = args.findIndex((argument, index) =>
-      argument === "--ro-bind"
-      && args[index + 1] === fakeFind
-      && args[index + 2] === join(integrationDir, "private/find.real")
+  it("intercepts PATH scans and returns the detailed exit-64 diagnostic", async () => {
+    const scan = await writeExecutable("scan", "#!/bin/sh\nexec rg --files /\n");
+    await assert.rejects(
+      execFile(launcher, [scan], { env: launcherEnv() }),
+      (error) => {
+        assert.equal(error.code, 64);
+        assert.match(error.stderr, /subscription_runtime_global_scan_blocked tool=rg root=\//);
+        return true;
+      },
     );
-    const guardMountIndex = args.findIndex((argument, index) =>
-      argument === "--ro-bind"
-      && args[index + 1] === join(integrationDir, "bin/find")
-      && args[index + 2] === fakeFind
-    );
-
-    assert.ok(privateMountIndex >= 0, "the real executable is mounted at its private path");
-    assert.ok(guardMountIndex >= 0, "the guard is mounted over the original target");
-    assert.ok(privateMountIndex < guardMountIndex, "the private real mount precedes the guard overlay");
   });
 
   it("routes an explicit --codex-binary codex through the guarded entrypoint", async () => {
-    const fakeBwrap = await writeExecutable("bwrap", "#!/bin/sh\nprintf '%s\\n' \"$@\"\n");
     const fakeCodex = await writeExecutable("codex.real", delegatedExecutable());
     const fakeHost = await writeExecutable("subscription-runtime-host", `#!/bin/sh
 codex_binary=codex
@@ -346,20 +352,14 @@ exec "$codex_binary" app-server --listen stdio://
       "--codex-binary",
       "codex",
     ], {
-      env: launcherEnv(fakeBwrap, {
+      env: launcherEnv({
         SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_CODEX_SOURCE: fakeCodex,
       }),
     });
-    const { args } = readMountPlan(result.stdout);
-    assert.deepEqual(args.slice(-5), ["--", fakeCodex, "app-server", "--listen", "stdio://"]);
+    assert.equal(result.stdout, "delegated:app-server --listen stdio://\n");
   });
 
   it("preserves app-server stdio and the direct process identity", async () => {
-    const fakeBwrap = await writeExecutable("bwrap", `#!/bin/sh
-while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
-[ "$#" -gt 0 ] && shift
-exec "$@"
-`);
     const fakeCodex = await writeExecutable("codex.real", `#!/bin/sh
 IFS= read -r request
 printf 'pid=%s args=%s request=%s\\n' "$$" "$*" "$request"
@@ -372,7 +372,7 @@ exec codex app-server --listen stdio://
       [fakeHost, "--provider", "codex", "--codex-binary", "codex"],
       {
         detached: true,
-        env: launcherEnv(fakeBwrap, {
+        env: launcherEnv({
           SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_CODEX_SOURCE: fakeCodex,
         }),
       },
@@ -386,11 +386,10 @@ exec codex app-server --listen stdio://
     assert.match(result.stdout, /request=\{"method":"initialize"\}/);
   });
 
-  it("fails closed when a namespace prerequisite is unavailable", async () => {
-    const fakeBwrap = await writeExecutable("bwrap", "#!/bin/sh\nexit 99\n");
+  it("fails closed when an executable prerequisite is unavailable", async () => {
     await assert.rejects(
       execFile(launcher, ["/bin/true"], {
-        env: launcherEnv(fakeBwrap, {
+        env: launcherEnv({
           SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_SOURCE: join(disposableDir, "missing-grep"),
         }),
       }),
@@ -401,8 +400,8 @@ exec codex app-server --listen stdio://
       },
     );
     await assert.rejects(
-      execFile(hostLauncher, ["/bin/true"], {
-        env: launcherEnv(fakeBwrap),
+      execFile(hostLauncher, [process.execPath], {
+        env: launcherEnv(),
       }),
       (error) => {
         assert.equal(error.code, 70);
@@ -412,32 +411,16 @@ exec codex app-server --listen stdio://
     );
   });
 
-  it("fails closed for missing, non-file, non-absolute, or recursive mount targets", async () => {
-    const fakeBwrap = await writeExecutable("bwrap", "#!/bin/sh\nexit 99\n");
-    for (const target of [join(disposableDir, "missing-target"), disposableDir, "relative-target"]) {
-      await assert.rejects(
-        execFile(launcher, ["/bin/true"], {
-          env: launcherEnv(fakeBwrap, {
-            SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_TARGET: target,
-          }),
-        }),
-        (error) => {
-          assert.equal(error.code, 70);
-          assert.match(error.stderr, /subscription_runtime_global_scan_guard_mount_target_missing/);
-          return true;
-        },
-      );
-    }
-
+  it("fails closed when a wrapper is configured as its own real executable", async () => {
     await assert.rejects(
       execFile(launcher, ["/bin/true"], {
-        env: launcherEnv(fakeBwrap, {
-          SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_TARGET: join(integrationDir, "bin/rg"),
+        env: launcherEnv({
+          SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_SOURCE: join(integrationDir, "bin/rg"),
         }),
       }),
       (error) => {
         assert.equal(error.code, 70);
-        assert.match(error.stderr, /subscription_runtime_global_scan_guard_recursive_target/);
+        assert.match(error.stderr, /subscription_runtime_global_scan_guard_recursive_source/);
         return true;
       },
     );

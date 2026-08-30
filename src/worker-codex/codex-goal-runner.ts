@@ -10,7 +10,6 @@ import {
   ActiveAttemptInterruptMonitor,
   AccessBoundary,
   InMemoryActiveAttemptRegistry,
-  LaunchPlanStatus,
   type NetworkAccessMode,
   type ProjectAccessScope,
   type SafeExecutionPolicy,
@@ -45,6 +44,7 @@ import type {
 import {
   assertCodexGoalAccessLaunchAllowed,
   buildCodexGoalAccessLaunchPlan,
+  commandPolicyForHostedCodexGoal,
   codexGoalControlsForAccessBoundary,
 } from "./codex-goal-access-plan";
 import { readLocalGitHeadCommit } from "./codex-goal-git-revision";
@@ -388,11 +388,10 @@ export function buildCodexGoalExecutorOptions(input: {
 }): FileBackendCodexSafeExecutorOptions {
   const { config } = input;
   const accessLaunchPlan = buildCodexGoalAccessLaunchPlan(config);
-  const commandPolicy =
-    accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
-    accessLaunchPlan.commandPolicy.validateCommands
-      ? accessLaunchPlan.commandPolicy
-      : undefined;
+  const commandPolicy = commandPolicyForHostedCodexGoal({
+    accessLaunchPlan,
+    sourceEnv: config.sourceEnv,
+  });
   return {
     ...(config.executorId ? { executorId: config.executorId } : {}),
     authRootDir: config.authRootDir,

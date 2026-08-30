@@ -66,6 +66,7 @@ import {
   stringField,
 } from "../protocol/app-server-content-parser";
 import { turnFailureError } from "./app-server-turn-failure";
+import { codexAppServerProcessArgs } from "./app-server-process-args";
 
 export {
   CodexAppServerTurnError,
@@ -124,6 +125,7 @@ export class CodexAppServerClient {
       readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
       readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
       readonly rolloutBudget?: CodexAppServerRolloutBudget;
+      readonly bypassHookTrust?: boolean;
       readonly timeoutMs: number;
       readonly startupTimeoutMs: number;
       readonly reconnectGraceMs: number;
@@ -142,7 +144,7 @@ export class CodexAppServerClient {
     };
     this.child = this.options.processFactory({
       command: this.options.codexBinaryPath,
-      args: ["app-server", "--listen", "stdio://"],
+      args: codexAppServerProcessArgs(this.options),
       cwd: this.options.session.home,
       env,
     });
@@ -207,12 +209,19 @@ export class CodexAppServerClient {
     const timeout = setTimeout(() => {
       this.options.signalChildProcess(child, "SIGKILL");
     }, 5_000);
+    let exitDeadline: NodeJS.Timeout | undefined;
     try {
-      await exit;
+      await Promise.race([
+        exit,
+        new Promise<void>((resolve) => {
+          exitDeadline = setTimeout(resolve, 10_000);
+        }),
+      ]);
     } catch {
       // Best-effort shutdown.
     } finally {
       clearTimeout(timeout);
+      if (exitDeadline !== undefined) clearTimeout(exitDeadline);
       this.options.signalChildProcess(child, "SIGKILL");
     }
   }
@@ -259,6 +268,7 @@ export class CodexAppServerClient {
       nativeToolSurface: this.options.nativeToolSurface,
       fastMode: input.serviceTier === "fast",
       goalMode: input.goalMode === true,
+      trustedHooksEnabled: this.options.bypassHookTrust === true,
     });
     const response = await this.send(
       "thread/start",

@@ -106,8 +106,8 @@ export type CodexAppServerExecutionEngineOptions = {
   readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
   readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
   readonly rolloutBudget?: CodexAppServerRolloutBudget;
+  readonly bypassHookTrust?: boolean;
 };
-
 export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   readonly kind: "app-server-pool" | "app-server-goal";
   readonly capabilities: CodexExecutionEngine["capabilities"];
@@ -178,6 +178,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ...(options.rolloutBudget === undefined
         ? {}
         : { rolloutBudget: options.rolloutBudget }),
+      ...(options.bypassHookTrust === undefined ? {} : { bypassHookTrust: options.bypassHookTrust }),
       cleanThreadPrewarm: options.cleanThreadPrewarm ?? true,
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.startupTimeoutMs === undefined

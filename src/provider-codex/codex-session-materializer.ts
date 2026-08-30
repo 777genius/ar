@@ -455,7 +455,9 @@ async function snapshotCodexSession(input: {
   return sessionArtifactFromCodexAuthJson(authJson);
 }
 
-function codexJsonHomeConfigToml(): string {
+export function codexJsonHomeConfigToml(input?: {
+  readonly hooksEnabled?: boolean;
+}): string {
   return [
     'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
@@ -466,7 +468,7 @@ function codexJsonHomeConfigToml(): string {
     "",
     "[features]",
     "apps = false",
-    "hooks = false",
+    `hooks = ${input?.hooksEnabled === true ? "true" : "false"}`,
     "memories = false",
     "multi_agent = false",
     "shell_snapshot = false",
@@ -482,8 +484,8 @@ function codexJsonHomeConfigToml(): string {
     "log_user_prompt = false",
     "",
     "[shell_environment_policy]",
-    'inherit = "none"',
-    'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
+    'inherit = "all"',
+    'include_only = ["PATH", "HOME", "CI", "CODEX_HOME", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL"]',
     "",
     codexProviderEgressConfigToml(),
   ].join("\n");

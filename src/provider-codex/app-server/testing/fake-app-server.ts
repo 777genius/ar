@@ -73,16 +73,19 @@ export class FakeAppServerFactory {
   readonly requests: FakeAppServerRequest[] = [];
   readonly responses: FakeAppServerResponse[] = [];
   readonly processes: FakeAppServerProcess[] = [];
+  readonly spawnArgs: string[][] = [];
 
   constructor(private readonly options: FakeAppServerFactoryOptions = {}) {}
 
   readonly create = (input: {
     readonly env: Readonly<Record<string, string>>;
     readonly cwd: string;
+    readonly args: readonly string[];
   }) => {
     this.spawnCount += 1;
     this.codexHomes.push(input.env.CODEX_HOME ?? "");
     this.cwds.push(input.cwd);
+    this.spawnArgs.push([...input.args]);
     const process = new FakeAppServerProcess({
       ...this.options,
       onPrompt: (prompt) => this.prompts.push(prompt),

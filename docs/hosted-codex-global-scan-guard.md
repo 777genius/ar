@@ -52,37 +52,78 @@ configuration fails closed with exit 70 before Codex starts.
 
 ## Enforcement and process behavior
 
-`launch-hosted-codex-job` creates a Bubblewrap mount namespace for the complete
-Codex process tree. Inside that namespace it both prepends the guarded tool
-directory to `PATH` and read-only bind mounts the entrypoints over:
+The host-owned Codex `PreToolUse` hook installed inside each hosted job's
+isolated `CODEX_HOME` rejects ordinary accidental broad scans before they
+start. Codex invokes it before ordinary shell commands and before the top-level
+code-mode `exec` call. For code mode it extracts static
+`tools.exec_command({cmd: ...})` values. PATH wrappers provide the same stable
+diagnostic when a guarded executable is reached directly.
+
+Code-mode `cmd` values must be static string literals. Computed commands fail
+closed with `subscription_runtime_dynamic_command_blocked`, because their final
+filesystem scope cannot be proven before the nested tool runs.
+
+Shell executable and scan-root parameter expansions that the policy recognizes
+also fail closed when their value cannot be proven before execution. The
+host-owned
+`SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_{FIND,RG,GREP}_REAL` executable
+references remain supported because the guard maps those exact references to a
+known tool; arbitrary variables and command substitutions are not trusted for
+executable or scan-root selection.
+
+The runtime enables hooks only for processes marked
+`SUBSCRIPTION_RUNTIME_SANDBOX_KIND=hosted-codex-job`, writes the versioned hook
+into that job's generated `config.toml`, and starts app-server with
+`--dangerously-bypass-hook-trust` only for that immutable host-owned
+configuration.
+
+The command recognizer is intentionally not an adversarial shell or JavaScript
+security boundary. Hosted Linux app-server process trees also run as transient
+systemd services inside `subscription-runtime-hosted.slice`, with aggregate and
+per-job CPU, bandwidth, IOPS, memory, and task ceilings. The service makes the
+cgroup tree read-only and starts a trusted util-linux boundary that creates a
+private PID namespace with a fresh `/proc`. Before Node or Codex starts,
+`setpriv` clears the complete child capability bounding, inheritable, and
+ambient sets. Direct host buses remain hidden, and host process-root aliases
+cannot re-open them. The host filesystem is not chrooted or rebound, so the
+Codex provider still owns its repository sandbox.
+This containment is the host-availability
+boundary when command construction, shell expansion, a different executable
+path, or nested execution bypasses the early diagnostic. It throttles the
+worker tree rather than production services, so a missed scan shape cannot
+consume the whole host or move itself outside the bounded slice.
+
+Hosted jobs fail closed when an execution engine cannot load the trusted hook.
+The guarded runtime currently permits `app-server` and `app-server-goal`; an
+explicit `packaged-exec` or `plain-exec` selection is rejected with
+`file_backend_codex_hosted_scan_guard_engine_invalid` instead of silently
+running with partial protection.
+
+The bounded-workspace MCP profile is the exception: it exposes no native shell
+or code-mode exec surface, accepts only workspace-relative paths, and therefore
+does not enable or bypass-trust for this shell hook.
 
 ```text
-/usr/bin/find
-/usr/bin/rg
-/usr/bin/grep
+find /var/data
+/usr/bin/rg --files /
+grep -R needle /tmp
 ```
 
-The real executables are mounted at private namespace paths used only for guard
-delegation. The inert mount-target files shipped in `private/` are deliberately
-not executable on the host. A PATH-only deployment is not supported.
+Every launcher layer uses `exec` and inherits stdin/stdout/stderr unchanged. Codex
+therefore owns the only provider sandbox; a second outer mount namespace is
+deliberately forbidden because it prevents the Codex sandbox from launching
+ordinary repository-bounded commands on production kernels.
 
-Every launcher layer uses `exec`, inherits stdin/stdout/stderr unchanged, and
-does not request Bubblewrap's `--new-session`. Codex app-server therefore keeps
-its stdio transport and the detached process group established by the runtime;
-the runtime's existing group-signal cleanup still targets the whole job.
-Bubblewrap's `--die-with-parent` also ensures that losing the host runtime
-terminates the namespaced job.
-
-The mount namespace is per newly launched Codex process. It does not modify
-host `/usr/bin`, an administrator's PATH, production container entrypoints,
-existing processes, or any project. The launcher admits only processes marked
-`SUBSCRIPTION_RUNTIME_SANDBOX_KIND=hosted-codex-job`.
+The guard does not modify host `/usr/bin`, an administrator's PATH, production
+container entrypoints, existing processes, or any project. The launcher admits
+only processes marked `SUBSCRIPTION_RUNTIME_SANDBOX_KIND=hosted-codex-job`.
 
 ## Deployable host entrypoint integration
 
 Install the versioned `global-scan-guard` directory read-only, preserving file
-modes. Bubblewrap, GNU Bash, and executable host copies of find, ripgrep, grep,
-and Codex are prerequisites. For example, install the package directory at:
+modes. GNU Bash, util-linux `unshare`/`setpriv`, and executable host copies of
+find, ripgrep, grep, and Codex are prerequisites. For example, install the
+package directory at:
 
 ```text
 /opt/subscription-runtime/global-scan-guard
@@ -106,13 +147,11 @@ exec env \
 The host adapter prepends only `codex-bin/` to that one job's PATH and then
 executes the normal subscription-runtime entrypoint. Consequently both the
 runtime default `codex` and an explicit `--codex-binary codex` resolve to the
-guarded Codex entrypoint. That entrypoint, in turn, enters the mount namespace
-before starting the configured real Codex binary. The host subscription-runtime
-process itself remains outside the namespace; Codex and all of its descendants
-are inside it.
+guarded Codex entrypoint. That entrypoint starts the configured real Codex binary
+without nesting its provider sandbox.
 
-If a host already resolves a different executable path for a tool, configure
-its exact absolute source without changing the canonical interception targets:
+If a host resolves a different executable path for a tool, configure its exact
+absolute source:
 
 ```sh
 SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_SOURCE=/host/path/find
@@ -120,17 +159,9 @@ SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_SOURCE=/host/path/rg
 SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_SOURCE=/host/path/grep
 ```
 
-The `/usr/bin/find`, `/usr/bin/rg`, and `/usr/bin/grep` targets must exist. The
-launcher fails closed rather than silently omitting an interception. Keep all
-source overrides scoped to this hosted-job entrypoint; the Bubblewrap override
-is intended for the disposable test harness, not deployment.
-
-Deterministic harnesses may set the corresponding
-`SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_{FIND,RG,GREP}_TARGET` variables to
-absolute disposable files. Their production defaults remain the canonical
-`/usr/bin/find`, `/usr/bin/rg`, and `/usr/bin/grep` paths. Source executable
-bindings and guard mount targets remain separate; missing, relative, or
-guard-recursive configurations fail closed.
+The launcher fails closed rather than silently omitting a configured source.
+Keep all source overrides scoped to this hosted-job entrypoint. Missing,
+relative, or guard-recursive source configurations fail closed.
 
 For a host integration that starts Codex directly, the guarded binary
 entrypoint is also deployable on its own:
@@ -145,14 +176,32 @@ Roll out by replacing only the new hosted-job template's entrypoint. Do not
 install a system-wide `codex`, `find`, `rg`, or `grep` wrapper, edit a global
 shell profile, change an admin SSH command path, or restart existing jobs.
 
+Build the release, then install the shipped aggregate slice before enabling the
+hosted marker. The installer discovers every writable block device from the
+host mount table and generates hard aggregate bandwidth and IOPS ceilings for
+each one:
+
+```sh
+SUBSCRIPTION_RUNTIME_REPOSITORY_ROOT=/opt/subscription-runtime/repo \
+  /opt/subscription-runtime/global-scan-guard/install-subscription-runtime-hosted-slice
+```
+
+Each marked hosted app-server is then started as a transient service under this
+slice. Its cwd, arguments, and full environment are delivered through a private
+stdin launch frame, so tokens never enter the `systemd-run` command line. The
+launcher consumes only that first frame and forwards all remaining bytes as the
+normal app-server protocol. Existing process trees are not moved or restarted;
+the limits apply to newly started hosted jobs.
+
 ## Verification
 
 The focused suite delegates only to disposable fake executables and uses
 disposable directories. It covers argument roles, all forbidden roots, lexical
 normalization, direct mount roots, allowed deeper descendants, benign patterns,
 clustered recursive grep flags, the stable exit contract, fail-closed
-prerequisites, the exact mount plan, host `--codex-binary codex` resolution,
-direct process identity, and app-server stdio passthrough.
+prerequisites, nested-sandbox avoidance, host `--codex-binary codex` resolution,
+launch-frame validation, mount-device coverage, and app-server stdio
+passthrough.
 
 ```sh
 npm run test:global-scan-guard

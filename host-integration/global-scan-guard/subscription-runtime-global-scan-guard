@@ -65,6 +65,7 @@ guard_find() {
       continue
     fi
     case "${arg}" in
+      --) continue ;;
       -H|-L|-P) continue ;;
       -D) consume_next=1; continue ;;
       -D*|-O*) continue ;;
