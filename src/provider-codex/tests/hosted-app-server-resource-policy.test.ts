@@ -27,6 +27,11 @@ describe("hosted app-server resource policy", () => {
     const perJob = hostedAppServerSystemdProperties(["/", "/mnt/volume one"]);
     expect(perJob).toContain("IOReadBandwidthMax=/ 40M");
     expect(perJob).toContain("IOWriteIOPSMax=/mnt/volume\\x20one 1500");
+    expect(perJob).toContain("NoNewPrivileges=yes");
+    expect(perJob).toContain("ProtectControlGroups=yes");
+    expect(perJob).toContain(
+      "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP",
+    );
     expect(perJob).toContain(
       "InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user",
     );

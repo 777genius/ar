@@ -18,6 +18,9 @@ const systemdRunPath = "/usr/bin/systemd-run";
 const systemctlPath = "/usr/bin/systemctl";
 const unsharePath = "/usr/bin/unshare";
 const setprivPath = "/usr/bin/setpriv";
+// Namespace-local identity, deliberately distinct from Linux's overflow ID 65534.
+// The host UID/GID and ownership of workspaces/auth files are not changed.
+const hostedNamespaceIdentity = "65532";
 const hostedLauncherPath = fileURLToPath(
   new URL("./hosted-app-server-launcher.js", import.meta.url),
 );
@@ -126,6 +129,12 @@ export function codexAppServerProcessInvocation(input: {
       ...properties.map((property) => `--property=${property}`),
       "--",
       unsharePath,
+      `--map-user=${hostedNamespaceIdentity}`,
+      `--map-group=${hostedNamespaceIdentity}`,
+      // Only the trusted setpriv bootstrap retains namespace capabilities; it
+      // drops every set before Node/Codex runs. A capability-less UID 0 cannot
+      // create the nested user namespace required by bubblewrap on Linux 5.12+.
+      "--keep-caps",
       "--pid",
       "--fork",
       "--mount-proc",
