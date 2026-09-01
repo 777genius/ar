@@ -53,15 +53,59 @@ function commandApprovalVector(input: {
   readonly commandText?: string;
 }): readonly string[] | null {
   if (input.command !== undefined) {
+    if (
+      input.command.length === 3 &&
+      isShellExecutable(input.command[0] ?? "") &&
+      (input.command[1] === "-c" || input.command[1] === "-lc")
+    ) {
+      return commandTextApprovalVector(input.command[2] ?? "");
+    }
     return input.command.length > 0 && input.command.every((part) => part.trim())
       ? input.command
       : null;
   }
-  const commandText = input.commandText?.trim();
+  return commandTextApprovalVector(input.commandText ?? "");
+}
+
+function commandTextApprovalVector(commandTextInput: string): readonly string[] | null {
+  const commandText = commandTextInput.trim();
   if (!commandText) return null;
+  const shellPayload = shellCommandTextPayload(commandText);
+  if (shellPayload !== undefined) {
+    return shellPayload === null
+      ? ["sh", "-lc", commandText]
+      : commandTextApprovalVector(shellPayload);
+  }
   if (/[`$<>|;&\n\r]/.test(commandText)) {
     return ["sh", "-lc", commandText];
   }
   const parts = commandText.split(/\s+/).filter(Boolean);
   return parts.length > 0 ? parts : null;
+}
+
+function isShellExecutable(value: string): boolean {
+  const executable = value.replaceAll("\\", "/").split("/").filter(Boolean).at(-1);
+  return executable === "bash" || executable === "sh" || executable === "zsh";
+}
+
+function shellCommandTextPayload(value: string): string | null | undefined {
+  const match = value.match(/^(?:\S*\/)?(?:bash|sh|zsh)\s+(?:-lc|-c)\s+(.+)$/);
+  if (!match) return undefined;
+  const encodedPayload = match[1]?.trim() ?? "";
+  if (!encodedPayload) return null;
+  if (
+    encodedPayload.startsWith("'") &&
+    encodedPayload.endsWith("'") &&
+    !encodedPayload.slice(1, -1).includes("'")
+  ) {
+    return encodedPayload.slice(1, -1);
+  }
+  if (
+    encodedPayload.startsWith('"') &&
+    encodedPayload.endsWith('"') &&
+    !encodedPayload.slice(1, -1).includes('"')
+  ) {
+    return encodedPayload.slice(1, -1);
+  }
+  return /\s|['"]/.test(encodedPayload) ? null : encodedPayload;
 }
