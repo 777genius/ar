@@ -26,6 +26,45 @@ describe("Codex goal account status", () => {
     }
   });
 
+  it("reports a quarantined metadata slot without touching its auth file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-goal-account-quarantine-"));
+    try {
+      const authRootDir = join(root, "auth");
+      await mkdir(authRootDir, { recursive: true });
+      await writeFile(
+        join(authRootDir, "account-labels.json"),
+        `${JSON.stringify({
+          accounts: { "account-a": { email: "operator@example.com" } },
+          "account-a": {
+            quarantined: true,
+            quarantineReason: "manual host investigation",
+            quarantinedAt: "2026-09-01T12:00:00.000Z",
+          },
+        })}\n`,
+      );
+
+      const accounts = await listCodexGoalAccountStatuses({
+        authRootDir,
+        liveCheck: true,
+      });
+
+      expect(accounts[0]).toMatchObject({
+        name: "account-a",
+        email: "operator@example.com",
+        quarantined: true,
+        quarantineReason: "manual host investigation",
+        quarantinedAt: "2026-09-01T12:00:00.000Z",
+        status: "quarantined",
+        availability: "unknown",
+        schedulerEligible: false,
+        recommendedAction: "inspect",
+        safeMessage: "account slot is quarantined by operator: manual host investigation",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("reads Codex app-server quota limits during live account status", async () => {
     const root = await mkdtemp(join(tmpdir(), "codex-goal-account-status-"));
     try {

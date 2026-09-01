@@ -45,7 +45,8 @@ import {
 export type CodexGoalAccountStatus =
   | "ready"
   | "auth_missing"
-  | "auth_invalid";
+  | "auth_invalid"
+  | "quarantined";
 
 export type CodexGoalAccountSlotStatus = {
   readonly name: string;
@@ -53,6 +54,9 @@ export type CodexGoalAccountSlotStatus = {
   readonly email?: string;
   readonly shortName?: string;
   readonly operatorLabel?: string;
+  readonly quarantined?: boolean;
+  readonly quarantineReason?: string;
+  readonly quarantinedAt?: string;
   readonly authJsonPath: string;
   readonly status: CodexGoalAccountStatus;
   readonly availability: ProviderAccountAvailability;
@@ -90,13 +94,25 @@ export type CodexGoalAccountStatusInput = {
 export async function listCodexGoalAccountStatuses(
   input: CodexGoalAccountStatusInput,
 ): Promise<readonly CodexGoalAccountSlotStatus[]> {
-  const accountNames = input.accounts?.length
-    ? input.accounts
-    : await listAccountDirectories(input.authRootDir);
   const accountMetadata = {
     ...(await readCodexAccountDisplayMetadata(input.authRootDir)),
     ...(input.accountMetadata ?? {}),
   };
+  const discoveredAccountNames = await listAccountDirectories(input.authRootDir);
+  const accountNames = input.accounts?.length
+    ? input.accounts
+    : [
+        ...new Set([
+          ...discoveredAccountNames,
+          ...Object.entries(accountMetadata)
+            .filter(
+              ([name, metadata]) =>
+                metadata.quarantined &&
+                /^account-[a-z0-9][a-z0-9_-]*$/i.test(name),
+            )
+            .map(([name]) => name),
+        ]),
+      ].sort((left, right) => left.localeCompare(right));
   if (input.stateRootDir && !input.accountCapacityStore) {
     migrateLegacyCodexAccountCapacity({
       authRootDir: input.authRootDir,
@@ -107,17 +123,19 @@ export async function listCodexGoalAccountStatuses(
   const accountCapacityStore = resolveAccountCapacityStore(input);
   if (input.recheckDueCapacity && accountCapacityStore) {
     await Promise.all(
-      accountNames.map((name) =>
-        recheckDueCodexAccountCapacity({
-          store: accountCapacityStore,
-          accountId: name,
-          authJsonPath: join(input.authRootDir, name, "auth.json"),
-          codexBinaryPath: input.codexBinaryPath ?? "codex",
-          now: new Date(),
-          ...(input.liveCheckTimeoutMs
-            ? { timeoutMs: input.liveCheckTimeoutMs }
-            : {}),
-        }),
+      accountNames
+        .filter((name) => !accountMetadata[name]?.quarantined)
+        .map((name) =>
+          recheckDueCodexAccountCapacity({
+            store: accountCapacityStore,
+            accountId: name,
+            authJsonPath: join(input.authRootDir, name, "auth.json"),
+            codexBinaryPath: input.codexBinaryPath ?? "codex",
+            now: new Date(),
+            ...(input.liveCheckTimeoutMs
+              ? { timeoutMs: input.liveCheckTimeoutMs }
+              : {}),
+          }),
       ),
     );
   }
@@ -152,6 +170,21 @@ async function inspectCodexGoalAccount(input: {
     input.name,
     input.displayMetadata,
   );
+  if (display.quarantined) {
+    return {
+      name: input.name,
+      ...display,
+      authJsonPath,
+      status: "quarantined",
+      availability: "unknown",
+      schedulerEligible: false,
+      recommendedAction: "inspect",
+      warnings: [],
+      safeMessage: display.quarantineReason
+        ? `account slot is quarantined by operator: ${display.quarantineReason}`
+        : "account slot is quarantined by operator",
+    };
+  }
   try {
     const authJsonBytes = await readFile(authJsonPath, "utf8");
     const validation = validateCodexAuthJsonBytes({ authJsonBytes });

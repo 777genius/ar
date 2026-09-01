@@ -221,6 +221,15 @@ describe("project continuation accounts", () => {
     ).rejects.toThrow(
       "project_control_continuation_account_auth_unavailable:account-c",
     );
+    await expect(
+      withProjectContinuationAccounts({
+        ...base,
+        requestedAccounts: ["account-c"],
+        listAccountStatuses: async () => [quarantinedAccount("account-c")],
+      }),
+    ).rejects.toThrow(
+      "project_control_continuation_account_quarantined:account-c",
+    );
   });
 });
 
@@ -274,5 +283,17 @@ function missingAccount(name: string): CodexGoalAccountSlotStatus {
     schedulerEligible: false,
     recommendedAction: "relogin",
     safeMessage: "auth missing",
+  };
+}
+
+function quarantinedAccount(name: string): CodexGoalAccountSlotStatus {
+  return {
+    ...readyAccount(name),
+    status: "quarantined",
+    availability: "unknown",
+    schedulerEligible: false,
+    recommendedAction: "inspect",
+    quarantined: true,
+    safeMessage: "account slot is quarantined by operator",
   };
 }
