@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CommandPolicyRunner } from "../index";
+import { codexAppServerCommandApprovalPolicy } from "../file-backend-codex-command-policy";
 import {
   MemoryWorkerObservability,
   StaticRunner,
@@ -43,6 +44,69 @@ describe("CommandPolicyRunner", () => {
       abortSignal: new AbortController().signal,
     })).resolves.toMatchObject({ exitCode: 0, stdout: "clean" });
     expect(inner.lastArgs).toEqual(["status", "--short"]);
+  });
+
+  it.each([
+    ["bash", "-c"],
+    ["bash", "-lc"],
+    ["sh", "-c"],
+    ["sh", "-lc"],
+    ["zsh", "-c"],
+    ["zsh", "-lc"],
+  ])("evaluates the nested vector for %s %s wrappers", (shell, option) => {
+    const policy = codexAppServerCommandApprovalPolicy(
+      isolatedWorkspaceCommandPolicy(),
+      new MemoryWorkerObservability(),
+      {},
+    );
+
+    expect(policy.reviewCommand({
+      source: "command_execution",
+      command: [shell, option, "git status --short"],
+    })).toEqual({ approved: true, reason: "command_policy_allowed" });
+  });
+
+  it("does not allow a forbidden nested command to bypass policy", () => {
+    const policy = codexAppServerCommandApprovalPolicy(
+      isolatedWorkspaceCommandPolicy(),
+      new MemoryWorkerObservability(),
+      {},
+    );
+
+    expect(policy.reviewCommand({
+      source: "command_execution",
+      command: ["/usr/bin/zsh", "-lc", "git push origin main"],
+    })).toEqual({ approved: false, reason: "denied_git_subcommand" });
+  });
+
+  it.each([
+    ["bash -lc 'git status && git push origin main'"],
+    ['sh -c "git status; git push origin main"'],
+    ["zsh -lc 'git status' trailing-text"],
+  ])("represents complex or ambiguous wrapper text conservatively: %s", (commandText) => {
+    const policy = codexAppServerCommandApprovalPolicy(
+      isolatedWorkspaceCommandPolicy(),
+      new MemoryWorkerObservability(),
+      {},
+    );
+
+    expect(policy.reviewCommand({
+      source: "thread_shell_command",
+      commandText,
+    })).toEqual({ approved: false, reason: "script_interpreter_denied" });
+  });
+
+  it("does not rewrite shell-looking text in an argument of a non-wrapper command", () => {
+    const policy = codexAppServerCommandApprovalPolicy(
+      isolatedWorkspaceCommandPolicy(),
+      new MemoryWorkerObservability(),
+      {},
+    );
+
+    expect(policy.reviewCommand({
+      source: "command_execution",
+      command: ["printf", "%s", "bash -lc 'git push origin main'"],
+    })).toEqual({ approved: true, reason: "command_policy_allowed" });
   });
 
   it("emits a redacted audit event when a command is denied", async () => {
