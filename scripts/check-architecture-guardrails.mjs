@@ -17,7 +17,7 @@ const legacyLineCaps = {
   "src/agent-task/task-codec/application/agent-task-codec.ts": 1013,
   "src/agent-runtime-task/task-codec/application/agent-runtime-task-codec.ts": 1007,
   "src/provider-claude/tests/claude-provider.test.ts": 1254,
-  "src/provider-codex/app-server/application/app-server-client.ts": 1127,
+  "src/provider-codex/app-server/application/app-server-client.ts": 1107,
   "src/worker-codex/application/project-control/codex-goal-project-admission.ts": 1051,
   "src/worker-codex/application/project-control/codex-goal-project-pre-start-admission.ts": 1135,
   "src/worker-codex/codex-goal-mcp-project-control-actions.ts": 1020,
@@ -43,7 +43,7 @@ const tightenedLineCaps = {
   "src/worker-claude/file-backend-claude-worker.ts": 1000,
   "src/worker-codex/codex-goal-cli.ts": 950,
   "src/worker-codex/codex-goal-ops.ts": 980,
-  "src/worker-codex/file-backend-codex-worker.ts": 620,
+  "src/worker-codex/file-backend-codex-worker.ts": 553,
   "src/worker-core/safe-execution.ts": 25,
   "src/worker-core/worker-pool.ts": 820,
 };

@@ -40,6 +40,11 @@ import {
 } from "../domain/app-server-errors";
 import { CodexAppServerThreadForkError } from "./app-server-thread-fork-error";
 import {
+  createTurnState,
+  type PendingRequest,
+  type TurnState,
+} from "./app-server-turn-state";
+import {
   codexAppServerRolloutBudgetConfig,
   type CodexAppServerRolloutBudget,
 } from "../domain/app-server-rollout-budget";
@@ -80,23 +85,6 @@ export type AppServerTurnResult = {
   readonly usage: AgentUsage | undefined;
   readonly completed: boolean;
   readonly error: Error | null;
-};
-
-type TurnState = {
-  outputText: string;
-  onTextDelta: ((text: string) => void) | null;
-  usage: AgentUsage | undefined;
-  completed: boolean;
-  error: Error | null;
-  waiters: ((state: TurnState) => void)[];
-  reconnectGraceTimer: NodeJS.Timeout | null;
-};
-
-type PendingRequest = {
-  readonly method: string;
-  readonly resolve: (value: CodexAppServerJsonRpcResponse) => void;
-  readonly reject: (error: Error) => void;
-  readonly timer: NodeJS.Timeout;
 };
 
 export class CodexAppServerClient {
@@ -1116,16 +1104,4 @@ export class CodexAppServerClient {
       this.resolveTurn(turn);
     }
   }
-}
-
-function createTurnState(): TurnState {
-  return {
-    outputText: "",
-    onTextDelta: null,
-    usage: undefined,
-    completed: false,
-    error: null,
-    waiters: [],
-    reconnectGraceTimer: null,
-  };
 }
