@@ -632,7 +632,12 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
               expectedInputPatchArtifactSha256:
                 handoff.manifest.artifacts.patch.sha256,
             }),
-          ).resolves.toBeUndefined();
+          ).resolves.toEqual({
+            baseSha: producerBase,
+            inputPatchHash: handoff.manifest.artifacts.patch.sha256,
+            packetRevision: "remediation-r1",
+            phaseStartSha: null,
+          });
           expect(await revision(verifierWorkspacePath)).toBe(canonicalSha);
           const verifierManifest = parseCodexGoalJobManifest(
             JSON.parse(
@@ -656,7 +661,12 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
               scope,
               workspaceMode: "admitted_input_patch",
             }),
-          ).resolves.toBeUndefined();
+          ).resolves.toEqual({
+            baseSha: producerBase,
+            inputPatchHash: handoff.manifest.artifacts.patch.sha256,
+            packetRevision: "review-r1",
+            phaseStartSha: null,
+          });
           await authorizeProjectPreStartAdmissionLaunch({
             manifest: verifierManifest,
             scope,
