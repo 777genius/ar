@@ -14,6 +14,7 @@ export * from "./project-integration-local-operator-artifact-recovery";
 export * from "./consumed-output-ledger-local-adapter";
 export * from "./consumed-output-ledger-maintenance-lock";
 export * from "./project-control-evidence-custody-local-adapter";
+export * from "./project-authority-tuple-local-adapter";
 export * from "./stdout-run-event-publisher";
 export * from "./temp-workspace";
 export * from "./webhook-run-event-publisher";

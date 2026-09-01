@@ -1,6 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 import { readFile, rename, writeFile } from "node:fs/promises";
-import type { ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
+import {
+  ProjectAuthorityMode, initializeProjectAuthorityPreState,
+  type ProjectAccessScope,
+  type ProjectAuthorityTupleStorePort,
+} from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifest } from "../../codex-goal-jobs";
 import {
   assertProjectPreStartAdmissionLaunchBinding,
@@ -28,6 +32,7 @@ export async function authorizeProjectPreStartAdmissionLaunch(input: {
   readonly workspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
   readonly expectedPendingInputPatch?: ValidatedPendingInputPatchAdmission;
   readonly assertLaunchEligible?: () => Promise<void>;
+  readonly authorityStore?: ProjectAuthorityTupleStorePort;
 }): Promise<ProjectPreStartAdmissionLaunchAuthorization | undefined> {
   const descriptor = input.manifest.projectPreStartAdmission;
   if (!descriptor) {
@@ -49,6 +54,21 @@ export async function authorizeProjectPreStartAdmissionLaunch(input: {
       manifest: input.manifest,
       expected: input.expectedPendingInputPatch,
     });
+  }
+  const authorityPreState = await assertProjectPreStartAdmissionLaunchBinding({
+    manifest: input.manifest,
+    scope: input.scope,
+    ...(input.workspaceMode ? { workspaceMode: input.workspaceMode } : {}),
+  });
+  if (input.scope.preStartAdmission?.authorityMode ===
+      ProjectAuthorityMode.HostedWebCoreV1) {
+    if (!input.scope.preStartAdmission.required || !input.authorityStore || !authorityPreState) {
+      throw new Error("project_authority_explicit_pre_start_configuration_required");
+    }
+    await initializeProjectAuthorityPreState(
+      input.authorityStore,
+      authorityPreState,
+    );
   }
   const authorizationCount =
     typeof receipt.launchAuthorizationCount === "number" &&
@@ -105,6 +125,7 @@ export async function withProjectPreStartAdmissionLaunchAuthorization<T>(
     readonly workspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
     readonly expectedPendingInputPatch?: ValidatedPendingInputPatchAdmission;
     readonly assertLaunchEligible?: () => Promise<void>;
+    readonly authorityStore?: ProjectAuthorityTupleStorePort;
   },
   start: () => Promise<T>,
 ): Promise<T> {

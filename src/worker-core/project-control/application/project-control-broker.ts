@@ -1,5 +1,7 @@
 import {
   AccessDecisionReason,
+  ProjectAuthorityMode,
+  ProjectToolCapability,
   ProjectOperation,
   createAccessPolicyService,
   type AccessPolicyContext,
@@ -17,6 +19,12 @@ import {
   type ProjectAdmissionGate,
   type ProjectAdmissionWorkerRole,
 } from "../domain/project-admission";
+import {
+  adoptProjectAuthorityTuple,
+  type AdoptProjectAuthorityTupleInput,
+} from "./adopt-project-authority-tuple";
+import type { ProjectAuthorityTupleStorePort } from
+  "../ports/project-authority-tuple-store-port";
 
 export enum ProjectControlAuditEventType {
   DecisionRecorded = "project_control.decision_recorded",
@@ -117,6 +125,7 @@ export type ProjectControlBrokerPorts = {
   readonly supervisor: ProjectWorkerSupervisorPort;
   readonly workspace: ProjectWorkspacePort;
   readonly git: ProjectGitPort;
+  readonly authority: ProjectAuthorityTupleStorePort;
   readonly admission?: ProjectAdmissionGate;
   readonly audit?: ProjectControlAuditPort;
   readonly clock?: { now(): Date };
@@ -145,11 +154,15 @@ export class ProjectControlAdmissionDeniedError extends Error {
 export class ProjectControlBroker {
   private readonly policy: AccessPolicyService;
   private readonly clock: { now(): Date };
+  private readonly authorityMode: ProjectAuthorityMode | undefined;
 
   constructor(
     context: AccessPolicyContext | AccessPolicyService,
     private readonly ports: ProjectControlBrokerPorts,
   ) {
+    this.authorityMode = isPolicyService(context)
+      ? undefined
+      : context.scope?.preStartAdmission?.authorityMode;
     this.policy = isPolicyService(context)
       ? context
       : createAccessPolicyService(context);
@@ -228,6 +241,19 @@ export class ProjectControlBroker {
   ): Promise<ProjectControlOperationResult> {
     await this.authorize(this.policy.canPushBranch(input));
     return this.ports.git.pushBranch(input);
+  }
+
+  async adoptAuthorityTuple(
+    input: AdoptProjectAuthorityTupleInput,
+  ): Promise<ProjectControlOperationResult> {
+    if (this.authorityMode !== ProjectAuthorityMode.HostedWebCoreV1) {
+      throw new Error("project_authority_explicit_mode_required");
+    }
+    await this.authorize(this.policy.canUseTool({
+      tool: ProjectToolCapability.ProjectControlBroker,
+    }));
+    const status = await adoptProjectAuthorityTuple(this.ports.authority, input);
+    return { status };
   }
 
   private async authorize(decision: PolicyDecision): Promise<void> {

@@ -9,7 +9,10 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
-import type { ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
+import type {
+  ProjectAccessScope,
+  ProjectAuthorityPreState,
+} from "@vioxen/subscription-runtime/worker-core";
 import type {
   CodexGoalJobManifest,
   CodexGoalJobManifestInput,
@@ -36,6 +39,7 @@ import {
 } from "./codex-goal-project-input-patch-policy";
 import {
   captureProjectPreStartBinding,
+  type ProjectPreStartArtifactSnapshot,
   readVerifiedInputPatchFromExistingReceipt,
   verifiedInputPatchBindingValid,
   verifiedInputPatchFromReceipt,
@@ -263,7 +267,7 @@ export async function assertProjectPreStartAdmissionLaunchBinding(input: {
   readonly scope: ProjectAccessScope;
   readonly expectedInputPatchArtifactSha256?: string;
   readonly workspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
-}): Promise<void> {
+}): Promise<ProjectAuthorityPreState | undefined> {
   const descriptor = input.manifest.projectPreStartAdmission;
   if (!descriptor) {
     if (
@@ -273,20 +277,22 @@ export async function assertProjectPreStartAdmissionLaunchBinding(input: {
     ) {
       throw new Error("project_control_pre_start_admission_required");
     }
-    return;
+    return undefined;
   }
   assertDescriptorPaths(descriptor, input.manifest.jobRootDir);
   await assertArtifactRootSecure(input.manifest.jobRootDir);
-  const contract = await readJsonObject(
+  const contractSnapshot = await readJsonObjectSnapshot(
     descriptor.contractPath,
     "contract",
     MAX_CONTRACT_BYTES,
   );
-  const state = await readJsonObject(
+  const stateSnapshot = await readJsonObjectSnapshot(
     descriptor.statePath,
     "state",
     MAX_STATE_BYTES,
   );
+  const contract = contractSnapshot.value;
+  const state = stateSnapshot.value;
   const receipt = await readJsonObject(
     descriptor.receiptPath,
     "receipt",
@@ -301,6 +307,8 @@ export async function assertProjectPreStartAdmissionLaunchBinding(input: {
   const binding = await captureProjectPreStartBinding(
     input.manifest,
     descriptor,
+    undefined,
+    artifactSnapshot(contractSnapshot, stateSnapshot),
   );
   const validatorReceiptValid = projectPreStartValidatorReceiptValid({
     descriptor,
@@ -389,6 +397,19 @@ export async function assertProjectPreStartAdmissionLaunchBinding(input: {
       `project_control_pre_start_launch_binding_mismatch:${mismatches.join(",")}`,
     );
   }
+  if (
+    typeof contract.packetRevision !== "string" ||
+    typeof contract.baseSha !== "string" ||
+    typeof contract.inputPatchHash !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    packetRevision: contract.packetRevision,
+    baseSha: contract.baseSha,
+    phaseStartSha: null,
+    inputPatchHash: contract.inputPatchHash,
+  };
 }
 
 /**
@@ -492,16 +513,18 @@ export async function rebindProjectPreStartAdmissionManifest(input: {
   }
   assertDescriptorPaths(descriptor, input.manifest.jobRootDir);
   await assertArtifactRootSecure(input.manifest.jobRootDir);
-  const contract = await readJsonObject(
+  const contractSnapshot = await readJsonObjectSnapshot(
     descriptor.contractPath,
     "contract",
     MAX_CONTRACT_BYTES,
   );
-  const state = await readJsonObject(
+  const stateSnapshot = await readJsonObjectSnapshot(
     descriptor.statePath,
     "state",
     MAX_STATE_BYTES,
   );
+  const contract = contractSnapshot.value;
+  const state = stateSnapshot.value;
   const receipt = await readJsonObject(
     descriptor.receiptPath,
     "receipt",
@@ -516,6 +539,8 @@ export async function rebindProjectPreStartAdmissionManifest(input: {
   const binding = await captureProjectPreStartBinding(
     input.manifest,
     descriptor,
+    undefined,
+    artifactSnapshot(contractSnapshot, stateSnapshot),
   );
   const verifiedInputPatch = verifiedInputPatchFromReceipt(receipt, contract);
   const reviewedDirtyContinuation =
@@ -641,16 +666,18 @@ async function validateProjectPreStartAdmission(input: {
   await assertProjectPreStartAdmissionNotAuthorized(descriptor);
   assertDescriptorPaths(descriptor, input.manifest.jobRootDir);
   await assertArtifactRootSecure(input.manifest.jobRootDir);
-  const contract = await readJsonObject(
+  const contractSnapshot = await readJsonObjectSnapshot(
     descriptor.contractPath,
     "contract",
     MAX_CONTRACT_BYTES,
   );
-  const state = await readJsonObject(
+  const stateSnapshot = await readJsonObjectSnapshot(
     descriptor.statePath,
     "state",
     MAX_STATE_BYTES,
   );
+  const contract = contractSnapshot.value;
+  const state = stateSnapshot.value;
   assertProjectInputPatchContract({
     builtin: isBuiltinDescriptor(descriptor),
     contract,
@@ -669,6 +696,8 @@ async function validateProjectPreStartAdmission(input: {
   const beforeBinding = await captureProjectPreStartBinding(
     input.manifest,
     descriptor,
+    undefined,
+    artifactSnapshot(contractSnapshot, stateSnapshot),
   );
   const adoptionInput = isAdoptionManifest(input.manifest);
   const beforeBindingValid = verifiedInputPatch
@@ -997,6 +1026,34 @@ async function readJsonObject(
   } catch {
     throw new Error(`project_control_pre_start_${label}_invalid`);
   }
+}
+
+type JsonObjectSnapshot = {
+  readonly value: JsonObject;
+  readonly bytes: Uint8Array;
+};
+
+async function readJsonObjectSnapshot(
+  path: string,
+  label: string,
+  maxBytes: number,
+): Promise<JsonObjectSnapshot> {
+  try {
+    const bytes = await readFile(path);
+    if (bytes.byteLength > maxBytes) throw new Error("size_limit_exceeded");
+    const value: unknown = JSON.parse(bytes.toString("utf8"));
+    if (!isObject(value)) throw new Error("not_object");
+    return { value, bytes };
+  } catch {
+    throw new Error(`project_control_pre_start_${label}_invalid`);
+  }
+}
+
+function artifactSnapshot(
+  contract: JsonObjectSnapshot,
+  state: JsonObjectSnapshot,
+): ProjectPreStartArtifactSnapshot {
+  return { contractBytes: contract.bytes, stateBytes: state.bytes };
 }
 
 async function writeJsonArtifact(
