@@ -236,7 +236,10 @@ export class LocalProjectControlEvidenceCustody implements
     try {
       held = await openHeldLexicalDirectory(lexical);
     } catch (error) {
-      if (deepCode(error) === "ENOENT" && await this.pathKind(lexical) === "absent") {
+      const missingDirectory = deepCode(error) === "ENOENT" ||
+        (error instanceof Error &&
+          error.message === "evidence_custody_root_noncanonical");
+      if (missingDirectory && await this.pathKind(lexical) === "absent") {
         return [];
       }
       throw error;
@@ -978,12 +981,10 @@ function safeSegment(value: string): void {
   if (!value || value === "." || value === ".." || value.includes("/") ||
     value.includes("\\")) throw new Error("evidence_custody_path_invalid");
 }
-
 function code(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error &&
     typeof error.code === "string" ? error.code : undefined;
 }
-
 function deepCode(error: unknown): string | undefined {
   const direct = code(error);
   if (direct) return direct;
@@ -991,7 +992,6 @@ function deepCode(error: unknown): string | undefined {
     ? deepCode(error.cause)
     : undefined;
 }
-
 function custodyError(message: string, cause: unknown): Error & { code?: string } {
   const error: Error & { code?: string } = new Error(message, { cause });
   const causeCode = deepCode(cause);
