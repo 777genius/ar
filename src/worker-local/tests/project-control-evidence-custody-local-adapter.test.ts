@@ -81,6 +81,22 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
       .rejects.toThrow();
   });
 
+  it("returns an empty listing when the final directory is absent", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-list-missing-final-"));
+    const custody = new LocalProjectControlEvidenceCustody();
+
+    await expect(custody.listDirectory(join(outer, "missing")))
+      .resolves.toEqual([]);
+  });
+
+  it("returns an empty listing when an ancestor directory is absent", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-list-missing-ancestor-"));
+    const custody = new LocalProjectControlEvidenceCustody();
+
+    await expect(custody.listDirectory(join(outer, "missing", "nested")))
+      .resolves.toEqual([]);
+  });
+
   it("rejects a parent swap during custody pathKind absence proof", async () => {
     const outer = await mkdtemp(join(tmpdir(), "custody-path-kind-race-"));
     const parent = join(outer, "parent");
