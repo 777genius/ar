@@ -83,7 +83,6 @@ describe("consumed-output ledger epoch migration", () => {
     expect(JSON.stringify(plan)).not.toContain("never-print-this-secret");
     expect((await fixture.buildPlan()).planSha256).toBe(plan.planSha256);
   });
-
   it("commits exact legacy-attempt quarantine provenance into plan and receipt", async () => {
     const fixture = await ledgerFixture();
     const legacyAttemptQuarantine = {
@@ -107,18 +106,25 @@ describe("consumed-output ledger epoch migration", () => {
     expect((await resolveConsumedOutputLedgerEpochReceipt(fixture.newRoot))
       .legacyAttemptQuarantine).toEqual(legacyAttemptQuarantine);
   });
-
   it("quarantines a current record whose donor evidence is missing", async () => {
     const fixture = await ledgerFixture({ missingDonor: true });
     const plan = await fixture.buildPlan();
-
-    expect(plan.files).toContainEqual(expect.objectContaining({
-      relativePath: "items/current-v4.json",
-      disposition: "quarantine",
-      quarantineReason: "invalid_or_missing_evidence",
-    }));
+    expect(plan.files.find((file) => file.relativePath === "items/current-v4.json"))
+      .toMatchObject({ disposition: "quarantine", quarantineReason: "invalid_or_missing_evidence" });
   });
-
+  it("quarantines an invalid record with an external archive path before binding evidence", async () => {
+    const fixture = await ledgerFixture();
+    const ledgerPath = join(fixture.oldRoot, "items", "current-v4.json");
+    const record = {
+      ...JSON.parse(await readFile(ledgerPath, "utf8")) as Record<string, unknown>,
+      archivePath: join(dirname(fixture.root), "external-archive.tar"),
+    };
+    await writeFile(ledgerPath, `${JSON.stringify(record)}\n`);
+    const plan = await fixture.buildPlan();
+    expect(plan.files.find((file) => file.relativePath === "items/current-v4.json"))
+      .toMatchObject({ disposition: "quarantine", quarantineReason: "invalid_or_missing_evidence" });
+    expect(plan.evidenceBindings.some((binding) => binding.declaredPath === record.archivePath)).toBe(false);
+  });
   it("never trusts terminal evidence below a denied root", async () => {
     const fixture = await ledgerFixture();
     const plan = await buildConsumedOutputLedgerEpochPlan({
@@ -160,7 +166,6 @@ describe("consumed-output ledger epoch migration", () => {
     });
     expect(applied.receipt.status).toBe("active");
   });
-
   it("rejects an invalid expected plan hash before writing", async () => {
     const fixture = await ledgerFixture();
     const plan = await fixture.buildPlan();
@@ -171,7 +176,6 @@ describe("consumed-output ledger epoch migration", () => {
     })).rejects.toThrow("ledger_epoch_plan_hash_mismatch");
     await expect(stat(fixture.newRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
-
   it("fails closed when the old root drifts after preview", async () => {
     const fixture = await ledgerFixture();
     const plan = await fixture.buildPlan();

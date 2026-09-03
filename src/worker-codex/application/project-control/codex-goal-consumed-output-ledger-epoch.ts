@@ -160,9 +160,6 @@ export async function buildConsumedOutputLedgerEpochPlan(
     let value: unknown;
     try {
       value = JSON.parse(await readFile(file.path, "utf8"));
-      for (const path of terminalLedgerEpochEvidencePaths(value)) {
-        evidencePathValues.add(path);
-      }
     } catch {
       return {
         ...base,
@@ -177,6 +174,12 @@ export async function buildConsumedOutputLedgerEpochPlan(
         disposition: "quarantine",
         quarantineReason: "invalid_or_missing_evidence",
       };
+    }
+    for (const path of terminalLedgerEpochEvidencePaths(value)) {
+      if (evidenceRoots.some((root) => pathInsideOrEqual(path, root)) ||
+        deniedRoots.some((root) => pathInsideOrEqual(path, root))) {
+        evidencePathValues.add(path);
+      }
     }
     const record = await consumedOutputRecordFromJson({
       value,
