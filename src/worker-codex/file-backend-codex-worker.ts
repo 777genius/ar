@@ -20,7 +20,7 @@ import {
 import {
   type CodexExecutionProfile,
   CodexJsonAgentDriver,
-  type CodexAppServerProcessFactory,
+  type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler,
   type CodexReasoningEffort,
   type CodexServiceTier,
 } from "@vioxen/subscription-runtime/provider-codex";
@@ -77,6 +77,7 @@ export type FileBackendCodexWorkerOptions = {
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly executionEngine?: CodexWorkerExecutionEngine;
   readonly appServerProcessFactory?: CodexAppServerProcessFactory;
+  readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
   readonly executionProfile?: CodexExecutionProfile;
   readonly boundedWorkspaceTools?: {
     readonly allowedTools: readonly AgentRuntimeToolName[];
@@ -101,7 +102,6 @@ export type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-fa
 export type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
 export type { FileBackendCodexManagedRunResumeInput } from "./file-backend-codex-managed-run-recovery";
 import { assertWorkerOptions } from "./file-backend-codex-worker-options";
-
 export type FileBackendCodexWorkerJob = {
   readonly runId?: string;
   readonly prompt: string;

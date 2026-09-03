@@ -72,6 +72,12 @@ import {
 } from "../protocol/app-server-content-parser";
 import { turnFailureError } from "./app-server-turn-failure";
 import { codexAppServerProcessArgs } from "./app-server-process-args";
+import { tryHandleAppServerApprovalRequest } from "./app-server-approval-request-handler";
+import {
+  AppServerRateLimitsMonitor,
+  isCodexAppServerRateLimitsRejectedError,
+  type CodexAppServerRateLimitsSnapshotHandler,
+} from "./app-server-rate-limits-monitor";
 
 export {
   CodexAppServerTurnError,
@@ -100,6 +106,7 @@ export class CodexAppServerClient {
   private readonly backgroundWarnings: AppServerWarning[] = [];
   private exited = false;
   private terminalError: Error | null = null;
+  private readonly rateLimitsMonitor: AppServerRateLimitsMonitor | null;
 
   constructor(
     private readonly options: {
@@ -118,8 +125,37 @@ export class CodexAppServerClient {
       readonly startupTimeoutMs: number;
       readonly reconnectGraceMs: number;
       readonly abortSignal: AbortSignal;
+      readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
     },
-  ) {}
+  ) {
+    this.rateLimitsMonitor = options.rateLimitsSnapshotHandler
+      ? new AppServerRateLimitsMonitor({
+          read: async () => {
+            const response = await this.send(
+              "account/rateLimits/read",
+              {},
+              {
+                timeoutMs: Math.min(this.options.timeoutMs, 5_000),
+                abortSignal: this.options.abortSignal,
+              },
+            );
+            if (response.error) {
+              throw new Error(
+                `codex_app_server_rate_limits_read_failed:${response.error.message ?? "unknown"}`,
+              );
+            }
+            return response.result ?? {};
+          },
+          handle: options.rateLimitsSnapshotHandler,
+          onBackgroundError: (error) => {
+            this.backgroundWarnings.push({
+              code: "codex_app_server_rate_limits_update_failed",
+              safeMessage: `Codex app-server rate-limit update failed: ${safeMessage(error)}`,
+            });
+          },
+        })
+      : null;
+  }
 
   async start(): Promise<void> {
     throwIfAborted(this.options.abortSignal);
@@ -178,9 +214,19 @@ export class CodexAppServerClient {
         `codex_app_server_initialize_failed:${response.error.message ?? "unknown"}`,
       );
     }
+    try {
+      await this.rateLimitsMonitor?.prime();
+    } catch (error) {
+      if (isCodexAppServerRateLimitsRejectedError(error)) throw error;
+      this.backgroundWarnings.push({
+        code: "codex_app_server_rate_limits_read_failed",
+        safeMessage: `Codex app-server rate-limit read failed: ${safeMessage(error)}`,
+      });
+    }
   }
 
   async stop(): Promise<void> {
+    await this.rateLimitsMonitor?.flush().catch(() => undefined);
     const child = this.child;
     this.child = null;
     if (!child) return;
@@ -734,6 +780,10 @@ export class CodexAppServerClient {
     }
 
     if (typeof record.method !== "string") return;
+    if (record.method === "account/rateLimits/updated") {
+      this.rateLimitsMonitor?.notifyRateLimitsUpdated();
+      return;
+    }
     if (record.method === "item/agentMessage/delta") {
       const turnId = stringField(params, "turnId");
       const turn = this.ensureTurn(turnId);
@@ -882,76 +932,21 @@ export class CodexAppServerClient {
     method: string,
     params: Record<string, unknown> | null,
   ): void {
-    if (this.tryHandleApprovalServerRequest(id, method, params)) return;
+    if (tryHandleAppServerApprovalRequest({
+      id,
+      method,
+      params,
+      reviewCommand: (request) => this.reviewCommandApproval(request),
+      warn: (warning) => this.serverRequests.push(warning),
+      respond: (requestId, result) => this.respondServerRequest(requestId, result),
+      respondError: (requestId, message) =>
+        this.respondServerRequestError(requestId, message),
+    })) return;
     this.serverRequests.push({
       code: "codex_app_server_unsupported_request",
       safeMessage: `Codex app-server requested unsupported client method: ${method}`,
     });
     this.respondServerRequestError(id, `unsupported_server_request:${method}`);
-  }
-
-  private tryHandleApprovalServerRequest(
-    id: number,
-    method: string,
-    params: Record<string, unknown> | null,
-  ): boolean {
-    if (method === "item/commandExecution/requestApproval") {
-      const commandText = stringField(params, "command") ?? undefined;
-      const cwd = stringField(params, "cwd") ?? undefined;
-      const decision = this.reviewCommandApproval({
-        source: "command_execution",
-        ...(commandText === undefined ? {} : { commandText }),
-        ...(cwd === undefined ? {} : { cwd }),
-      });
-      this.respondServerRequest(id, {
-        decision: decision.approved ? "accept" : "decline",
-      });
-      return true;
-    }
-    if (method === "execCommandApproval") {
-      const command = stringArrayField(params, "command") ?? undefined;
-      const cwd = stringField(params, "cwd") ?? undefined;
-      const decision = this.reviewCommandApproval({
-        source: "legacy_exec",
-        ...(command === undefined ? {} : { command }),
-        ...(cwd === undefined ? {} : { cwd }),
-      });
-      this.respondServerRequest(id, {
-        decision: decision.approved ? "approved" : "denied",
-      });
-      return true;
-    }
-    if (method === "item/fileChange/requestApproval") {
-      this.serverRequests.push({
-        code: "codex_app_server_file_change_approval_denied",
-        safeMessage:
-          "Codex app-server requested file change approval; subscription-runtime denies provider-side file grants.",
-      });
-      this.respondServerRequest(id, { decision: "decline" });
-      return true;
-    }
-    if (method === "applyPatchApproval") {
-      this.serverRequests.push({
-        code: "codex_app_server_apply_patch_approval_denied",
-        safeMessage:
-          "Codex app-server requested patch approval; subscription-runtime denies provider-side patch grants.",
-      });
-      this.respondServerRequest(id, { decision: "denied" });
-      return true;
-    }
-    if (method === "item/permissions/requestApproval") {
-      this.serverRequests.push({
-        code: "codex_app_server_permission_request_denied",
-        safeMessage:
-          "Codex app-server requested additional permissions; subscription-runtime denies provider-side permission expansion.",
-      });
-      this.respondServerRequestError(
-        id,
-        "codex_app_server_permission_request_denied",
-      );
-      return true;
-    }
-    return false;
   }
 
   private reviewCommandApproval(

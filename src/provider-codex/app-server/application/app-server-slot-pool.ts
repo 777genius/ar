@@ -23,6 +23,7 @@ import {
 import { CodexAppServerClient } from "./app-server-client";
 import { AppServerGoalRunner } from "./app-server-goal-runner";
 import { AppServerTurnRunner } from "./app-server-turn-runner";
+import type { CodexAppServerRateLimitsSnapshotHandler } from "./app-server-rate-limits-monitor";
 
 export type AppServerSlot = {
   readonly key: string;
@@ -47,6 +48,7 @@ export class AppServerSlotPool {
       readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
       readonly rolloutBudget?: CodexAppServerRolloutBudget;
       readonly bypassHookTrust?: boolean;
+      readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
       readonly cleanThreadPrewarm: boolean;
       readonly timeoutMs?: number;
       readonly startupTimeoutMs?: number;
@@ -107,6 +109,12 @@ export class AppServerSlotPool {
       }),
       reconnectGraceMs: this.options.reconnectGraceMs ?? defaultReconnectGraceMs,
       abortSignal: input.abortSignal,
+      ...(this.options.rateLimitsSnapshotHandler === undefined
+        ? {}
+        : {
+            rateLimitsSnapshotHandler:
+              this.options.rateLimitsSnapshotHandler,
+          }),
     });
     try {
       await client.start();

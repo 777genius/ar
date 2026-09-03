@@ -49,6 +49,7 @@ import {
 } from "./file-backend-codex-worker";
 import { CodexAccountCapacityRechecker } from "./application/codex-account-capacity-rechecker";
 import { CodexAccountCapacityAliasStore } from "./application/codex-account-capacity-alias-store";
+import { recordCodexAppServerRateLimitsSnapshot } from "./application/codex-live-quota-capacity";
 
 const REPLACEMENT_GOAL_OBJECTIVE =
   "Continue the same authorized task using broker-delivered replacement wording.";
@@ -232,6 +233,20 @@ export class FileBackendCodexSafeExecutor {
             ...(account.worker.observability || !observability
               ? {}
               : { observability }),
+            rateLimitsSnapshotHandler: async (input) => {
+              const admission = recordCodexAppServerRateLimitsSnapshot({
+                accountId:
+                  account.worker.capacityAccountId ??
+                  safeExecutorAccountLabel(account, slotIndex),
+                result: input.result,
+                observedAt: input.observedAt,
+                store: this.accountCapacityStore,
+              });
+              if (admission.status === "rejected") return admission;
+              return (
+                account.worker.rateLimitsSnapshotHandler?.(input) ?? admission
+              );
+            },
             workerId: account.worker.workerId ?? workerId,
             workspacePath: options.workspacePath,
             ...(options.outputSchemas === undefined

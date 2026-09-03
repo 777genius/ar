@@ -10,10 +10,7 @@ import {
   AgentRuntimeExecutionMode,
   AgentRuntimeTurnLimitEnforcement,
 } from "@vioxen/subscription-runtime/core";
-import type {
-  CodexExecutionProfile,
-  ResolvedCodexExecutionProfile,
-} from "./codex-execution-profile";
+import type { ResolvedCodexExecutionProfile } from "./codex-execution-profile";
 import { resolveCodexExecutionProfile } from "./codex-execution-profile";
 import type {
   CodexExecutionEngine,
@@ -75,6 +72,11 @@ import { AppServerSlotPool } from "./app-server/application/app-server-slot-pool
 import { runCodexAppServerLogicalThread } from "./app-server/application/app-server-logical-thread-runner";
 import { parseCodexAppServerStructuredOutput } from "./app-server/application/app-server-structured-output";
 import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
+import {
+  isCodexAppServerRateLimitsRejectedError,
+  type CodexAppServerRateLimitsSnapshotHandler,
+} from "./app-server/application/app-server-rate-limits-monitor";
+import type { CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
 
 export type {
   CodexAppServerChildProcess,
@@ -86,28 +88,9 @@ export type {
   CodexAppServerCommandApprovalPolicy,
   CodexAppServerNativeToolSurface,
   CodexAppServerRolloutBudget,
+  CodexAppServerRateLimitsSnapshotHandler,
 };
-
-export type CodexAppServerExecutionEngineOptions = {
-  readonly codexBinaryPath: string;
-  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
-  readonly timeoutMs?: number;
-  readonly startupTimeoutMs?: number;
-  readonly maxOutputBytes?: number;
-  readonly fallback?: CodexExecutionEngine;
-  readonly processFactory?: CodexAppServerProcessFactory;
-  readonly executionProfile?: CodexExecutionProfile;
-  readonly cleanThreadPrewarm?: boolean;
-  readonly reconnectGraceMs?: number;
-  readonly goalMode?: boolean;
-  readonly maxGoalTurns?: number;
-  readonly goalContinuePrompt?: string;
-  readonly runStore?: ManagedRunStorePort;
-  readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
-  readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
-  readonly rolloutBudget?: CodexAppServerRolloutBudget;
-  readonly bypassHookTrust?: boolean;
-};
+export type { CodexAppServerExecutionEngineOptions };
 export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   readonly kind: "app-server-pool" | "app-server-goal";
   readonly capabilities: CodexExecutionEngine["capabilities"];
@@ -179,6 +162,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         ? {}
         : { rolloutBudget: options.rolloutBudget }),
       ...(options.bypassHookTrust === undefined ? {} : { bypassHookTrust: options.bypassHookTrust }),
+      ...(options.rateLimitsSnapshotHandler === undefined
+        ? {}
+        : {
+            rateLimitsSnapshotHandler: options.rateLimitsSnapshotHandler,
+          }),
       cleanThreadPrewarm: options.cleanThreadPrewarm ?? true,
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.startupTimeoutMs === undefined
@@ -200,6 +188,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       await this.slotPool.disposeSessionSlot(input.session);
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (isCodexAppServerBudgetExceededError(error)) throw error;
+      if (isCodexAppServerRateLimitsRejectedError(error)) throw error;
       if (isCodexModelUnavailableError(error)) throw error;
       if (!this.options.fallback) throw error;
 

@@ -242,6 +242,12 @@ function createCodexAgentDriver(input: {
           ...(options.appServerProcessFactory
             ? { processFactory: options.appServerProcessFactory }
             : {}),
+          ...(options.rateLimitsSnapshotHandler
+            ? {
+                rateLimitsSnapshotHandler:
+                  options.rateLimitsSnapshotHandler,
+              }
+            : {}),
           ...(options.rolloutBudget
             ? { rolloutBudget: options.rolloutBudget }
             : {}),
