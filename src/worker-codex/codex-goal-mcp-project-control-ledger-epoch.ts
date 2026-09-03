@@ -2,6 +2,7 @@ import { readdir, readFile, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   ProjectDebtReason,
+  projectAdmissionDebtFingerprint,
   type ProjectAccessScope,
   type ProjectAdmissionSnapshot,
 } from "@vioxen/subscription-runtime/worker-core";
@@ -100,7 +101,6 @@ import {
   ledgerEpochCustodyPaths as custodyPathsFor,
   ledgerEpochDirectoryIdentity as directoryIdentity,
 } from "./application/project-control/codex-goal-ledger-epoch-handler-custody";
-
 type JsonObject = Readonly<Record<string, unknown>>;
 type LoadedController = {
   readonly registryRootDir: string;
@@ -120,7 +120,6 @@ export type ProjectControlLedgerEpochDeps = {
   readonly preparedV1UpgradeCrashAfter?: () => string | undefined;
   readonly preparedV1UpgradeCrashBoundary?: (boundary: string) => void;
 };
-
 export async function projectControlLedgerEpochMigrationView(
   args: ProjectControlMcpArgs,
   deps: ProjectControlLedgerEpochDeps,
@@ -480,7 +479,8 @@ export async function projectControlLedgerEpochMigrationView(
         admissionDeps: deps.admissionDeps,
         snapshotBuilder: deps.buildAdmissionSnapshot,
       });
-      if (JSON.stringify(currentAdmission.debt) !== JSON.stringify(lockedAdmission.debt)) {
+      if (projectAdmissionDebtFingerprint(currentAdmission.debt) !==
+          projectAdmissionDebtFingerprint(lockedAdmission.debt)) {
         throw new Error("ledger_epoch_admission_debt_drift");
       }
       const currentProposedAdmission = lockedProposedAdmission
@@ -493,8 +493,9 @@ export async function projectControlLedgerEpochMigrationView(
             allowPendingEpochOrphanQuarantine: true,
           })
         : undefined;
-      if (lockedProposedAdmission && JSON.stringify(currentProposedAdmission?.debt) !==
-          JSON.stringify(lockedProposedAdmission.debt)) {
+      if (lockedProposedAdmission && projectAdmissionDebtFingerprint(
+        currentProposedAdmission?.debt ?? [],
+      ) !== projectAdmissionDebtFingerprint(lockedProposedAdmission.debt)) {
         throw new Error("ledger_epoch_proposed_admission_debt_drift");
       }
       await assertNoLegacyWriterProcesses();
@@ -862,7 +863,6 @@ export async function projectControlLedgerEpochMigrationView(
       : {}),
   };
 }
-
 async function buildCurrentPlanFor(
   persisted: Awaited<ReturnType<typeof buildConsumedOutputLedgerEpochPlan>>,
   build: (
