@@ -31,7 +31,7 @@ describe("LocalFileRunEventStore streaming reads", () => {
     const read = await store.read({ limit: 1 });
 
     expect(read.events.map((item) => item.eventId)).toEqual([first.eventId]);
-    expect(read.nextCursor?.value).toBe("1");
+    expectCursorLine(read.nextCursor?.value, 1);
     expect(read.warnings).toEqual([]);
   });
 
@@ -62,14 +62,15 @@ describe("LocalFileRunEventStore streaming reads", () => {
     });
 
     expect(page.events.map((item) => item.eventId)).toEqual([matching.eventId]);
-    expect(page.nextCursor?.value).toBe("5");
+    expectCursorLine(page.nextCursor?.value, 5);
     expect(page.warnings).toEqual([
       expect.objectContaining({ code: "invalid_event_json", lineNumber: 4 }),
     ]);
-    await expect(store.read({ cursor: { value: "99" } })).resolves.toMatchObject({
+    const beyondEnd = await store.read({ cursor: { value: "99" } });
+    expect(beyondEnd).toMatchObject({
       events: [],
-      nextCursor: { value: "99" },
       warnings: [],
+      nextCursor: { value: "99" },
     });
   });
 
@@ -99,7 +100,7 @@ describe("LocalFileRunEventStore streaming reads", () => {
     await writeFile(emptyPath, "\n");
     await expect(
       new LocalFileRunEventStore({ rootDir, eventLogPath: emptyPath }).read(),
-    ).resolves.toMatchObject({ nextCursor: { value: "0" } });
+    ).resolves.toMatchObject({ nextCursor: { value: expect.stringMatching(/^v2\./) } });
   });
 });
 
@@ -112,4 +113,10 @@ function event(runId: string, type: RunEventType, idempotencyPart: string) {
     payload: { idempotencyPart },
     idempotencyParts: [idempotencyPart],
   });
+}
+
+function expectCursorLine(value: string | undefined, line: number): void {
+  expect(value).toMatch(/^v2\./);
+  const parsed = JSON.parse(Buffer.from((value as string).slice(3), "base64url").toString("utf8"));
+  expect(parsed.l).toBe(line);
 }

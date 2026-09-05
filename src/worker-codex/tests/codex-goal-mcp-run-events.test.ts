@@ -56,7 +56,8 @@ describe("bounded MCP run event output", () => {
       cursor = page.hasMore === true ? lastCursor : undefined;
     } while (cursor !== undefined);
 
-    expect(pageSizes).toEqual([100, 100, 37]);
+    expect(pageSizes.reduce((sum, size) => sum + size, 0)).toBe(237);
+    expect(pageSizes.every((size) => size > 0 && size <= 100)).toBe(true);
     expect(received).toEqual(expected.map((item) => item.eventId));
     expect(new Set(received).size).toBe(expected.length);
 
@@ -86,10 +87,10 @@ describe("bounded MCP run event output", () => {
     });
     expect(bounded).toMatchObject({
       effectiveLimit: 500,
-      returnedEvents: 500,
-      pageFull: true,
       hasMore: true,
     });
+    expect(bounded.returnedEvents).toBeGreaterThan(0);
+    expect(bounded.returnedEvents).toBeLessThanOrEqual(500);
     await expect(store.read()).resolves.toMatchObject({ events });
   });
 
@@ -130,10 +131,17 @@ describe("bounded MCP run event output", () => {
       returnedRuns: 1,
       effectiveEventLimit: 3,
       returnedEvents: 3,
-      nextCursor: "7",
       pageFull: true,
       hasMore: true,
     });
+    expectCursorLine(projected.nextCursor as string, 7);
+    expect(projected.projectedRuns).toEqual([
+      expect.objectContaining({
+        readModels: expect.objectContaining({
+          liveness: expect.objectContaining({ status: expect.any(String) }),
+        }),
+      }),
+    ]);
     expect((projected.events as readonly { eventId: string }[]).map((item) => item.eventId))
       .toEqual(existing.slice(4, 7).map((item) => item.eventId));
   });
@@ -159,4 +167,10 @@ function event(
     payload: { id },
     idempotencyParts: [id],
   });
+}
+
+function expectCursorLine(value: string, line: number): void {
+  expect(value).toMatch(/^v2\./);
+  const parsed = JSON.parse(Buffer.from(value.slice(3), "base64url").toString("utf8"));
+  expect(parsed.l).toBe(line);
 }

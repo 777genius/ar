@@ -41,8 +41,21 @@ import type {
 } from "../ports/run-event-store-contracts";
 import {
   eventLogNeedsSeparatorNewline,
+  eventLogGeneration,
   visitEventLogLines,
 } from "./local-run-event-log-reader";
+import {
+  cursorLineNumber,
+  encodeRunEventCursor,
+  resolveRunEventCursor,
+  validateRunEventDeliveryCursors,
+} from "./local-run-event-cursor";
+import {
+  clearRunEventDedupeCache,
+  refreshRunEventDedupeCache,
+  updateRunEventDedupeCache,
+} from "./local-run-event-dedupe-cache";
+import { withDirectoryLock } from "./local-run-event-lock";
 
 export type LocalFileRunEventStoreOptions = {
   readonly rootDir: string;
@@ -56,7 +69,6 @@ export class LocalFileRunEventStore
   implements RunEventStorePort, RunEventCompactionPort
 {
   constructor(private readonly options: LocalFileRunEventStoreOptions) {}
-
   async append(events: readonly RunEvent[]): Promise<RunEventAppendResult> {
     if (events.length === 0) {
       return {
@@ -67,56 +79,102 @@ export class LocalFileRunEventStore
     return this.withEventLogLock(async () => {
       const path = this.eventLogPath();
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-      const existing = await this.readAllEventsForDedupe(path);
+      const existing = await refreshRunEventDedupeCache(path);
       const lines: string[] = [];
+      const pendingIds = new Set<string>();
+      const appendedEventIds: string[] = [];
+      const skippedDuplicateEventIds: string[] = [];
       let skippedDuplicateCount = 0;
       for (const event of events) {
-        if (existing.has(event.eventId)) {
+        if (existing.has(event.eventId) || pendingIds.has(event.eventId)) {
           skippedDuplicateCount += 1;
+          skippedDuplicateEventIds.push(event.eventId);
           continue;
         }
-        existing.add(event.eventId);
-        lines.push(JSON.stringify(event));
+        pendingIds.add(event.eventId);
+        appendedEventIds.push(event.eventId);
+        try {
+          lines.push(JSON.stringify(event));
+        } catch (error) {
+          clearRunEventDedupeCache(path);
+          throw error;
+        }
       }
       if (lines.length === 0) {
         return {
           appendedCount: 0,
           skippedDuplicateCount,
+          appendedEventIds,
+          skippedDuplicateEventIds,
         };
       }
       const prefix = await this.needsSeparatorNewline(path) ? "\n" : "";
-      await writeFile(path, `${prefix}${lines.join("\n")}\n`, {
-        encoding: "utf8",
-        flag: "a",
-        mode: 0o600,
-      });
+      try {
+        await writeFile(path, `${prefix}${lines.join("\n")}\n`, {
+          encoding: "utf8",
+          flag: "a",
+          mode: 0o600,
+        });
+        for (const eventId of pendingIds) existing.add(eventId);
+        await updateRunEventDedupeCache(path, existing);
+      } catch (error) {
+        clearRunEventDedupeCache(path);
+        throw error;
+      }
       return {
         appendedCount: lines.length,
         skippedDuplicateCount,
+        appendedEventIds,
+        skippedDuplicateEventIds,
       };
     });
   }
 
   async read(input: RunEventReadRequest = {}): Promise<RunEventReadResult> {
     const path = this.eventLogPath();
-    const startLine = parseCursor(input.cursor?.value);
+    const resolved = await resolveRunEventCursor(path, input.cursor?.value);
     const events: RunEvent[] = [];
     const warnings: RunEventReadWarning[] = [];
+    const eventPositions: { readonly offset: number; readonly line: number }[] = [];
     const typeFilter = input.types === undefined ? null : new Set(input.types);
     const runIdFilter = runEventRunIdFilter(input.runId, input.runIds);
-    let nextLine = startLine;
+    let totalWarningCount = 0;
+    const warningCounts: Record<string, number> = {};
+    const maxWarnings = input.maxWarnings;
+    const addWarning = (warning: RunEventReadWarning): void => {
+      totalWarningCount += 1;
+      warningCounts[warning.code] = (warningCounts[warning.code] ?? 0) + 1;
+      if (maxWarnings === undefined || warnings.length < maxWarnings) warnings.push(warning);
+    };
+    if (resolved.warning) addWarning(resolved.warning);
+    let hitEventLimit = false;
 
-    const exists = await visitEventLogLines({
+    const visited = await visitEventLogLines({
       path,
-      startLine,
-      visit: (line, index) => {
-        nextLine = index + 1;
+      startLine: resolved.line,
+      startOffset: resolved.offset,
+      ...(resolved.generation === undefined ? {} : { expectedGeneration: resolved.generation }),
+      ...(resolved.discardPartialLine === true ? { discardPartialLine: true } : {}),
+      ...(input.maxScannedBytes === undefined ? {} : { maxBytes: input.maxScannedBytes }),
+      ...(input.maxScannedLines === undefined ? {} : { maxLines: input.maxScannedLines }),
+      ...(input.maxLineBytes === undefined && input.maxScannedBytes === undefined
+        ? {}
+        : { maxLineBytes: input.maxLineBytes ?? input.maxScannedBytes }),
+      visit: ({ line, lineNumber: index, nextOffset, oversized }) => {
+        if (oversized) {
+          addWarning({
+            code: "event_line_too_large",
+            message: "Skipped run event line exceeding the configured read bound.",
+            lineNumber: index + 1,
+          });
+          return false;
+        }
         if (!line.trim()) return false;
         let parsed: unknown;
         try {
           parsed = JSON.parse(line);
         } catch {
-          warnings.push({
+          addWarning({
             code: "invalid_event_json",
             message: "Skipped invalid run event JSON line.",
             lineNumber: index + 1,
@@ -125,7 +183,7 @@ export class LocalFileRunEventStore
         }
         const event = parseRunEvent(parsed);
         if (!event) {
-          warnings.push({
+          addWarning({
             code: "invalid_event_shape",
             message: "Skipped run event with invalid schema.",
             lineNumber: index + 1,
@@ -143,15 +201,53 @@ export class LocalFileRunEventStore
         ) return false;
         if (typeFilter && !typeFilter.has(event.type)) return false;
         events.push(event);
-        return input.limit !== undefined && events.length >= input.limit;
+        eventPositions.push({ offset: nextOffset, line: index + 1 });
+        hitEventLimit = input.limit !== undefined && events.length >= input.limit;
+        return hitEventLimit;
       },
     });
-    if (!exists) return { events: [], warnings: [] };
+    if (!visited.exists) return { events: [], warnings, totalWarningCount };
+    if (visited.generationChanged) {
+      addWarning({
+        code: "cursor_generation_changed",
+        message: "The event log was replaced; reading restarted from the beginning and may repeat events.",
+      });
+    }
+    if (visited.cursorOutOfRange) {
+      addWarning({
+        code: "cursor_offset_out_of_range",
+        message: "The event cursor offset exceeded the current log; reading restarted from the beginning.",
+      });
+    }
+    const generation = visited.generation;
+    const nextCursor = resolved.futureLegacyCursor !== undefined && visited.scannedLines === 0
+      ? { value: resolved.futureLegacyCursor }
+      : generation === undefined
+      ? { value: String(visited.nextLine) }
+      : encodeRunEventCursor(
+        generation,
+        visited.nextOffset,
+        visited.nextLine,
+        visited.nextLineIncomplete,
+      );
+    const scanLimited = visited.hasMore && !hitEventLimit;
 
     return {
       events,
-      nextCursor: { value: String(nextLine) },
+      nextCursor,
       warnings,
+      eventCursors: generation === undefined ? [] : eventPositions.map((position) =>
+        encodeRunEventCursor(generation, position.offset, position.line)
+      ),
+      hasMore: visited.hasMore,
+      scanStopReason: hitEventLimit && visited.hasMore
+        ? "event_limit"
+        : scanLimited ? "scan_limit" : "end_of_log",
+      scannedBytes: visited.scannedBytes,
+      scannedLines: visited.scannedLines,
+      totalWarningCount,
+      warningsTruncated: warnings.length < totalWarningCount,
+      warningCounts,
     };
   }
 
@@ -188,7 +284,22 @@ export class LocalFileRunEventStore
             { encoding: "utf8", mode: 0o600 },
           );
           await rename(tempPath, path);
-          for (const rewrite of planned.plan.cursorRewrites) {
+          const compactedFile = await stat(path, { bigint: true });
+          const compactedGeneration = eventLogGeneration(compactedFile);
+          const retainedOffsets = lineEndOffsets(planned.retainedLines);
+          const cursorRewrites = planned.plan.cursorRewrites.map((rewrite) => {
+            const nextLine = cursorLineNumber(rewrite.nextCursor.value);
+            return {
+              ...rewrite,
+              nextCursor: encodeRunEventCursor(
+                compactedGeneration,
+                retainedOffsets[Math.min(nextLine, retainedOffsets.length - 1)] ?? 0,
+                nextLine,
+              ),
+            };
+          });
+          clearRunEventDedupeCache(path);
+          for (const rewrite of cursorRewrites) {
             await this.writeDeliveryCursorSnapshot({
               consumerId: rewrite.consumerId,
               cursor: rewrite.nextCursor,
@@ -196,6 +307,7 @@ export class LocalFileRunEventStore
           }
           return {
             ...planned.plan,
+            cursorRewrites,
             compacted: true,
           };
         } catch (error) {
@@ -216,40 +328,14 @@ export class LocalFileRunEventStore
   }
 
   private async withEventLogLock<T>(fn: () => Promise<T>): Promise<T> {
-    const lockPath = this.eventLogLockPath();
-    const startedAt = Date.now();
-    await mkdir(dirname(this.eventLogPath()), { recursive: true, mode: 0o700 });
-    while (true) {
-      try {
-        await mkdir(lockPath, { recursive: false, mode: 0o700 });
-        break;
-      } catch (error) {
-        if (!isNodeError(error) || error.code !== "EEXIST") throw error;
-        if (await this.removeStaleLock(lockPath)) continue;
-        if (Date.now() - startedAt > this.lockAcquireTimeoutMs()) {
-          throw new Error("local_run_event_store_lock_timeout");
-        }
-        await sleep(this.lockPollMs());
-      }
-    }
-    try {
-      return await fn();
-    } finally {
-      await rm(lockPath, { recursive: true, force: true });
-    }
-  }
-
-  private async removeStaleLock(lockPath: string): Promise<boolean> {
-    let item;
-    try {
-      item = await stat(lockPath);
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") return true;
-      throw error;
-    }
-    if (Date.now() - item.mtimeMs < this.lockTtlMs()) return false;
-    await rm(lockPath, { recursive: true, force: true });
-    return true;
+    return withDirectoryLock({
+      lockPath: this.eventLogLockPath(),
+      parentDir: dirname(this.eventLogPath()),
+      lockTtlMs: this.lockTtlMs(),
+      lockAcquireTimeoutMs: this.lockAcquireTimeoutMs(),
+      lockPollMs: this.lockPollMs(),
+      timeoutError: "local_run_event_store_lock_timeout",
+    }, fn);
   }
 
   private lockTtlMs(): number {
@@ -262,27 +348,6 @@ export class LocalFileRunEventStore
 
   private lockPollMs(): number {
     return this.options.lockPollMs ?? defaultLockPollMs;
-  }
-
-  private async readAllEventsForDedupe(path: string): Promise<Set<string>> {
-    const seen = new Set<string>();
-    let contents: string;
-    try {
-      contents = await readFile(path, "utf8");
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") return seen;
-      throw error;
-    }
-    for (const line of contents.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const event = parseRunEvent(JSON.parse(line));
-        if (event) seen.add(event.eventId);
-      } catch {
-        continue;
-      }
-    }
-    return seen;
   }
 
   private async needsSeparatorNewline(path: string): Promise<boolean> {
@@ -299,7 +364,13 @@ export class LocalFileRunEventStore
       RunEventCompactionSafetyMode.PreserveDeliveryCursors;
     const lines = await this.readEventLogLines();
     const records = lines.map((line, index) => eventLogLineRecord(line, index));
-    const deliveryCursors = await this.readDeliveryCursorSnapshots();
+    const savedDeliveryCursors = await this.readDeliveryCursorSnapshots();
+    const validatedCursors = await validateRunEventDeliveryCursors(
+      this.eventLogPath(),
+      savedDeliveryCursors,
+      lineEndOffsets(lines),
+    );
+    const deliveryCursors = validatedCursors.cursors;
     const cursorFloorLine = deliveryCursors.length === 0
       ? lines.length
       : Math.min(...deliveryCursors.map((cursor) => cursor.lineNumber));
@@ -335,9 +406,12 @@ export class LocalFileRunEventStore
     const cursorRewrites = deliveryCursors.map((cursor) =>
       cursorRewriteForRemovedLines(cursor, removableIndexes)
     );
-    const warnings = records
+    const warnings = [
+      ...validatedCursors.warnings,
+      ...records
       .filter((record) => record.warning !== undefined)
-      .map((record) => record.warning as RunEventReadWarning);
+      .map((record) => record.warning as RunEventReadWarning),
+    ];
     return {
       plan: {
         schemaVersion: 1,
@@ -401,6 +475,7 @@ export class LocalFileRunEventStore
       lockTtlMs: this.lockTtlMs(),
       lockAcquireTimeoutMs: this.lockAcquireTimeoutMs(),
       lockPollMs: this.lockPollMs(),
+      timeoutError: "local_run_event_cursor_lock_timeout",
     }, fn);
   }
 }
@@ -504,6 +579,7 @@ export class LocalFileRunEventDeliveryCursorStore
       lockAcquireTimeoutMs: this.options.lockAcquireTimeoutMs ??
         defaultLockAcquireTimeoutMs,
       lockPollMs: this.options.lockPollMs ?? defaultLockPollMs,
+      timeoutError: "local_run_event_cursor_lock_timeout",
     }, fn);
   }
 }
@@ -631,6 +707,14 @@ function splitEventLogLines(contents: string): readonly string[] {
   return normalized ? normalized.split("\n") : [];
 }
 
+function lineEndOffsets(lines: readonly string[]): readonly number[] {
+  const offsets = [0];
+  for (const line of lines) {
+    offsets.push((offsets[offsets.length - 1] ?? 0) + Buffer.byteLength(line) + 1);
+  }
+  return offsets;
+}
+
 function deliveryCursorDir(rootDir: string): string {
   return join(rootDir, "run-event-delivery-cursors");
 }
@@ -670,7 +754,7 @@ async function readDeliveryCursorFile(
   ) {
     return null;
   }
-  const lineNumber = parseCursor(parsed.cursor);
+  const lineNumber = cursorLineNumber(parsed.cursor);
   return {
     consumerId: parsed.consumerId,
     cursor: { value: parsed.cursor },
@@ -708,62 +792,6 @@ async function writeDeliveryCursorFile(
   }
 }
 
-async function withDirectoryLock<T>(
-  input: {
-    readonly lockPath: string;
-    readonly parentDir: string;
-    readonly lockTtlMs: number;
-    readonly lockAcquireTimeoutMs: number;
-    readonly lockPollMs: number;
-  },
-  fn: () => Promise<T>,
-): Promise<T> {
-  const startedAt = Date.now();
-  await mkdir(input.parentDir, { recursive: true, mode: 0o700 });
-  while (true) {
-    try {
-      await mkdir(input.lockPath, { recursive: false, mode: 0o700 });
-      break;
-    } catch (error) {
-      if (!isNodeError(error) || error.code !== "EEXIST") throw error;
-      if (await removeStaleDirectoryLock(input.lockPath, input.lockTtlMs)) {
-        continue;
-      }
-      if (Date.now() - startedAt > input.lockAcquireTimeoutMs) {
-        throw new Error("local_run_event_cursor_lock_timeout");
-      }
-      await sleep(input.lockPollMs);
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    await rm(input.lockPath, { recursive: true, force: true });
-  }
-}
-
-async function removeStaleDirectoryLock(
-  lockPath: string,
-  lockTtlMs: number,
-): Promise<boolean> {
-  let item;
-  try {
-    item = await stat(lockPath);
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return true;
-    throw error;
-  }
-  if (Date.now() - item.mtimeMs < lockTtlMs) return false;
-  await rm(lockPath, { recursive: true, force: true });
-  return true;
-}
-
-function parseCursor(value: string | undefined): number {
-  if (value === undefined) return 0;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) return 0;
-  return parsed;
-}
 
 function parseProjectionState(value: unknown): RunEventProjectionState | null {
   if (!isRecord(value)) return null;
@@ -969,8 +997,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

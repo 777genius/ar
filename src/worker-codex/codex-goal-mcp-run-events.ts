@@ -37,6 +37,12 @@ import {
   type AgentRunStateMcpArgs,
   type AgentRunWatchMcpArgs,
 } from "./codex-goal-mcp-inputs";
+import {
+  boundedEventHistoryMetadataResponse,
+  boundedRunEventCompactionPlan,
+  boundedRunEventResponse,
+  boundedRunEventWarnings,
+} from "./codex-goal-mcp-run-event-response";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -48,6 +54,10 @@ function defaultProviderRuntimeRegistry(): ProviderRuntimeRegistry {
 
 const DEFAULT_MCP_EVENT_LIMIT = 100;
 const MAX_MCP_EVENT_LIMIT = 500;
+const MAX_MCP_SCAN_BYTES = 4 * 1024 * 1024;
+const MAX_MCP_SCAN_LINES = 10_000;
+const MAX_MCP_WARNINGS = 50;
+const MAX_MCP_EVENT_LINE_BYTES = 3 * 1024 * 1024;
 
 function mcpEventLimit(value: unknown): number {
   const requested = numberValue(value);
@@ -162,24 +172,28 @@ export async function readAgentRunEvents(
       ? {}
       : { runId: stringValue(args.jobId) as string }),
     limit: effectiveLimit,
+    maxScannedBytes: MAX_MCP_SCAN_BYTES,
+    maxScannedLines: MAX_MCP_SCAN_LINES,
+    maxWarnings: MAX_MCP_WARNINGS,
+    maxLineBytes: MAX_MCP_EVENT_LINE_BYTES,
     ...(providerKind === undefined ? {} : { sourceProviderKind: providerKind }),
     ...runEventTypeFilter(args),
   });
-  return {
+  return boundedRunEventResponse({
+    base: {
     ok: result.warnings.length === 0,
     mode: "read_only",
     sideEffects: [],
     providerKind: providerKind ?? "all",
     registryRootDir,
     eventRootDir,
+    },
+    read: result,
+    ...(stringValue(args.cursor) === undefined
+      ? {}
+      : { requestedCursor: stringValue(args.cursor) as string }),
     effectiveLimit,
-    returnedEvents: result.events.length,
-    pageFull: result.events.length === effectiveLimit,
-    hasMore: result.events.length === effectiveLimit,
-    nextCursor: result.nextCursor?.value,
-    warnings: result.warnings,
-    events: result.events,
-  };
+  });
 }
 
 export async function readAgentRunState(
@@ -195,13 +209,13 @@ export async function readAgentRunState(
   const state = await stateStore.readProjectionState(runId);
   if (state === null) {
     const eventStore = new LocalFileRunEventStore({ rootDir: eventRootDir });
-    const read = await eventStore.read({ runId });
+    const read = await eventStore.read({ runId, maxWarnings: MAX_MCP_WARNINGS });
     const replayed = projectRunReadModelsFromEvents(read.events);
     if (
       replayed !== null &&
       (providerKind === undefined || replayed.providerKind === providerKind)
     ) {
-      return {
+      return boundedEventHistoryMetadataResponse({
         ok: read.warnings.length === 0,
         mode: "read_only_state",
         sideEffects: [],
@@ -211,9 +225,12 @@ export async function readAgentRunState(
         runId,
         observedAt: replayed.observedAt,
         replayOnly: true,
-        warnings: read.warnings,
+        ...boundedRunEventWarnings(read.warnings, {
+          totalWarningCount: read.totalWarningCount ?? read.warnings.length,
+          warningCounts: read.warningCounts ?? {},
+        }),
         readModels: replayed,
-      };
+      });
     }
     return {
       ok: false,
@@ -242,7 +259,7 @@ export async function readAgentRunState(
         "Projected run state exists for a different provider. No worker action was taken.",
     };
   }
-  return {
+  return boundedEventHistoryMetadataResponse({
     ok: true,
     mode: "read_only_state",
     sideEffects: [],
@@ -255,7 +272,7 @@ export async function readAgentRunState(
     liveness: state.liveness,
     readModels: state.readModels,
     state,
-  };
+  });
 }
 
 export async function planAgentRunEventCompaction(
@@ -266,15 +283,15 @@ export async function planAgentRunEventCompaction(
   const eventStore = new LocalFileRunEventStore({ rootDir: eventRootDir });
   const policy = runEventRetentionPolicyFromArgs(args);
   const plan = await eventStore.planCompaction(policy);
-  return {
+  return boundedEventHistoryMetadataResponse({
     ok: plan.warnings.length === 0,
     mode: "compaction_plan",
     sideEffects: [],
     registryRootDir,
     eventRootDir,
     policy,
-    plan,
-  };
+    plan: boundedRunEventCompactionPlan(plan),
+  });
 }
 
 export async function compactAgentRunEvents(
@@ -286,7 +303,7 @@ export async function compactAgentRunEvents(
   if (booleanValue(args.confirmCompact) !== true) {
     const eventStore = new LocalFileRunEventStore({ rootDir: eventRootDir });
     const plan = await eventStore.planCompaction(policy);
-    return {
+    return boundedEventHistoryMetadataResponse({
       ok: false,
       mode: "compact_events",
       sideEffects: [],
@@ -296,12 +313,12 @@ export async function compactAgentRunEvents(
       reason: "confirm_compact_required",
       safeMessage:
         "Compaction rewrites the local event log. Re-run with confirmCompact=true after reviewing the plan.",
-      plan,
-    };
+      plan: boundedRunEventCompactionPlan(plan),
+    });
   }
   const eventStore = new LocalFileRunEventStore({ rootDir: eventRootDir });
   const result = await eventStore.compact(policy);
-  return {
+  return boundedEventHistoryMetadataResponse({
     ok: result.warnings.length === 0 &&
       result.cursorRewrites.every((rewrite) => !rewrite.invalidatedUnreadEvents),
     mode: "compact_events",
@@ -309,8 +326,8 @@ export async function compactAgentRunEvents(
     registryRootDir,
     eventRootDir,
     policy,
-    result,
-  };
+    result: boundedRunEventCompactionPlan(result),
+  });
 }
 
 export async function projectAgentRunEvents(
@@ -346,9 +363,7 @@ export async function projectAgentRunEvents(
   const stateStore = new LocalFileRunEventProjectionStateStore({
     rootDir: eventRootDir,
   });
-  const projectedRuns = [];
-  let appendedCount = 0;
-  let skippedDuplicateCount = 0;
+  const projections = [];
   for (const snapshot of snapshots) {
     const previousState = await stateStore.readProjectionState(snapshot.runId);
     const projection = projectRunObservationEvents({
@@ -359,21 +374,29 @@ export async function projectAgentRunEvents(
         : { hostId: stringValue(args.hostId) as string }),
       registryRootDir,
     });
-    const appendResult = await eventStore.append(projection.events);
-    await stateStore.writeProjectionState(projection.nextState);
-    appendedCount += appendResult.appendedCount;
-    skippedDuplicateCount += appendResult.skippedDuplicateCount;
-    projectedRuns.push({
+    projections.push({ snapshot, projection });
+  }
+  const appendResult = await eventStore.append(
+    projections.flatMap(({ projection }) => projection.events),
+  );
+  await Promise.all(
+    projections.map(({ projection }) => stateStore.writeProjectionState(projection.nextState)),
+  );
+  const appendedIds = new Set(appendResult.appendedEventIds ?? []);
+  const skippedIds = new Set(appendResult.skippedDuplicateEventIds ?? []);
+  const projectedRuns = projections.map(({ snapshot, projection }) => {
+    const projectedEventIds = projection.events.map((event) => event.eventId);
+    return {
       runId: snapshot.runId,
       projectedEvents: projection.events.length,
-      appendedEvents: appendResult.appendedCount,
-      skippedDuplicateEvents: appendResult.skippedDuplicateCount,
+      appendedEvents: projectedEventIds.filter((id) => appendedIds.has(id)).length,
+      skippedDuplicateEvents: projectedEventIds.filter((id) => skippedIds.has(id)).length,
       eventTypes: projection.events.map((event) => event.type),
       decision: snapshot.readOnlyDecision.kind,
       status: snapshot.status,
       readModels: projection.nextState.readModels,
-    });
-  }
+    };
+  });
   const projectedRunIds = snapshots.map((snapshot) => snapshot.runId);
   const effectiveEventLimit = mcpEventLimit(args.eventLimit);
   const readBack: RunEventReadResult = await eventStore.read({
@@ -384,9 +407,15 @@ export async function projectAgentRunEvents(
     sourceProviderKind: providerKind,
     sourceRegistryRootDir: registryRootDir,
     limit: effectiveEventLimit,
+    maxScannedBytes: MAX_MCP_SCAN_BYTES,
+    maxScannedLines: MAX_MCP_SCAN_LINES,
+    maxWarnings: MAX_MCP_WARNINGS,
+    maxLineBytes: MAX_MCP_EVENT_LINE_BYTES,
     ...runEventTypeFilter(args),
   });
-  return {
+  const boundedProjectedRuns = projectedRuns.slice(0, 50);
+  return boundedRunEventResponse({
+    base: {
     ok: watch.ok === true && readBack.warnings.length === 0,
     mode: "project_events",
     sideEffects: ["append_run_events", "write_projection_state"],
@@ -395,15 +424,17 @@ export async function projectAgentRunEvents(
     eventRootDir,
     totalRuns: watch.totalRuns,
     returnedRuns: snapshots.length,
-    appendedCount,
-    skippedDuplicateCount,
+    appendedCount: appendResult.appendedCount,
+    skippedDuplicateCount: appendResult.skippedDuplicateCount,
     effectiveEventLimit,
-    returnedEvents: readBack.events.length,
-    pageFull: readBack.events.length === effectiveEventLimit,
-    hasMore: readBack.events.length === effectiveEventLimit,
-    warnings: readBack.warnings,
-    projectedRuns,
-    nextCursor: readBack.nextCursor?.value,
-    events: readBack.events,
-  };
+    totalProjectedRuns: projectedRuns.length,
+    projectedRunsTruncated: boundedProjectedRuns.length < projectedRuns.length,
+    projectedRuns: boundedProjectedRuns,
+    },
+    read: readBack,
+    ...(stringValue(args.cursor) === undefined
+      ? {}
+      : { requestedCursor: stringValue(args.cursor) as string }),
+    effectiveLimit: effectiveEventLimit,
+  });
 }
