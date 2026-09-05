@@ -57,8 +57,9 @@ import {
   loadProjectControlController,
   projectControlEvidenceCustody,
 } from "./codex-goal-mcp-project-control-deps";
+import { subscriptionRuntimePackageVersion } from
+  "./subscription-runtime-package-version";
 
-const serverVersion = process.env.npm_package_version ?? "0.0.0";
 const projectControllerProviderRegistry =
   createInMemoryProjectControllerProviderRegistry();
 
@@ -149,7 +150,7 @@ export async function projectControlLedgerEpochMigration(
 function projectControllerDeps(providerRuntimeRegistry?: ProviderRuntimeRegistry) {
   return {
     loadProjectControlController,
-    runtimeVersion: serverVersion,
+    runtimeVersion: subscriptionRuntimePackageVersion,
     providerRegistry: projectControllerProviderRegistry,
     providerRuntimeRegistry: providerRuntimeRegistry ?? defaultProviderRuntimeRegistry(),
   };

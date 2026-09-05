@@ -202,16 +202,7 @@ export class FileBackendCodexManagedRunCoordinator {
   ): Promise<ManagedRunWorkerResult> {
     if (result.status === "failed") {
       this.options.recordFailure(result.failure);
-      throw new SubscriptionWorkerError(
-        "subscription_worker_run_failed",
-        result.failure.safeMessage,
-        {
-          details: {
-            code: result.failure.code,
-            ...(result.failure.details ?? {}),
-          },
-        },
-      );
+      throw managedRunFailureToWorkerError(result);
     }
     if (result.status === "waiting_for_input") {
       const waiting = this.workerWaitingResult(result);
@@ -410,6 +401,24 @@ export class FileBackendCodexManagedRunCoordinator {
       );
     }
   }
+}
+
+export function managedRunFailureToWorkerError(
+  result: Extract<ProviderTaskResult, { readonly status: "failed" }>,
+): SubscriptionWorkerError {
+  return new SubscriptionWorkerError(
+    "subscription_worker_run_failed",
+    result.failure.safeMessage,
+    {
+      ...(result.telemetry?.usage === undefined
+        ? {}
+        : { usage: result.telemetry.usage }),
+      details: {
+        code: result.failure.code,
+        ...(result.failure.details ?? {}),
+      },
+    },
+  );
 }
 
 export function buildManagedRunRecoveryPacket(input: {

@@ -18,6 +18,7 @@ import {
   BoundedSubscriptionWorkerPool,
   SafeExecutionRunner,
   safeExecutionAttemptMetadataFromError,
+  subscriptionWorkerUsageFromError,
   SubscriptionWorkerError,
   WorkerControlService,
   type AttemptJournal,
@@ -420,6 +421,7 @@ export class FileBackendCodexSafeExecutor {
           : { accountId: reservedAccountId }),
       }),
       attemptUsage: codexWorkerResultUsage,
+      attemptUsageFromError: codexWorkerErrorUsage,
       controlTarget: codexControlTarget({
         jobId,
         taskId,
@@ -519,6 +521,10 @@ function codexWorkerErrorOutputSummary(error: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+function codexWorkerErrorUsage(error: unknown): AttemptUsage | undefined {
+  return subscriptionWorkerUsageFromError(error);
 }
 
 function errorCauseChain(error: unknown): readonly unknown[] {

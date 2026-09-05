@@ -10,8 +10,9 @@ import {
 } from "@vioxen/subscription-runtime/core";
 import { BoundedWorkspaceFiles } from "./workspace-tools/bounded-workspace-files";
 import { normalizeBoundedWorkspaceTools } from "./workspace-tools/bounded-workspace-tool-policy";
+import { subscriptionRuntimePackageVersion } from
+  "./subscription-runtime-package-version";
 
-const serverVersion = process.env.npm_package_version ?? "0.0.0";
 export type WorkspaceToolsMcpServerOptions = {
   readonly workspaceRoot: string;
   readonly allowedTools: readonly AgentRuntimeToolName[];
@@ -27,7 +28,7 @@ export async function createWorkspaceToolsMcpServer(
   });
   const server = new McpServer({
     name: "agent-runtime-workspace-tools",
-    version: serverVersion,
+    version: subscriptionRuntimePackageVersion,
   });
 
   if (allowedTools.has(AgentRuntimeTool.ReadFile)) {
