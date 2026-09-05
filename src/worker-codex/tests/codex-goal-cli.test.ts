@@ -54,7 +54,7 @@ describe("codex goal cli", () => {
       promptPath: "/tmp/job/prompt.md",
       codexGoalObjective: "Short objective with docs links.",
       taskId: "task-1",
-      model: "gpt-5.5",
+      model: "gpt-6-astra",
       reasoningEffort: "high",
       serviceTier: "default",
       executionEngine: "app-server-goal",

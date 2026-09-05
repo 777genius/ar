@@ -91,6 +91,7 @@ export type JobWatchMcpArgs = JobOverviewMcpArgs & {
 };
 
 export type AgentRunWatchMcpArgs = JobOverviewMcpArgs & {
+  readonly cursor?: string;
   readonly providerKind?: string;
   readonly jobId?: string;
   readonly jobIds?: string | readonly string[];

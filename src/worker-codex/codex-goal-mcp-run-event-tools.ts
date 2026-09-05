@@ -34,7 +34,7 @@ export function registerCodexGoalRunEventTools(
   const agentRunWatchTool = {
     title: "Agent Run Watch",
     description:
-      "Read-only provider-neutral run observation. Reports status, liveness, progress, logs, workspace changes, capacity hints and read-only recommendations without starting, stopping or continuing workers.",
+      "Read-only provider-neutral run observation. Reports status, liveness, progress, logs, workspace changes, capacity hints and read-only recommendations without starting, stopping or continuing workers. Defaults to 25 runs (max 100) and a 64 KiB complete response; follow nextCursor using cursor with unchanged filters. Summary covers only returned snapshots; oversized snapshots are explicitly omitted.",
     inputSchema: {
       ...jobRegistryInputSchema(),
       providerKind: z.string().optional(),
@@ -45,6 +45,7 @@ export function registerCodexGoalRunEventTools(
       staleAfterMs: z.number().int().positive().optional(),
       tailLines: z.number().int().positive().optional(),
       limit: z.number().int().positive().optional(),
+      cursor: z.string().optional(),
       includeChangedFiles: z.boolean().optional(),
       includeLogTail: z.boolean().optional(),
     },
@@ -68,7 +69,7 @@ export function registerCodexGoalRunEventTools(
       ...agentRunWatchTool,
       title: "Codex Goal Run Watch",
       description:
-        "Codex-scoped read-only run observation. Reports status, liveness, progress, logs, workspace changes, capacity hints and read-only recommendations without starting, stopping or continuing workers.",
+        "Codex-scoped read-only run observation. Reports status, liveness, progress, logs, workspace changes, capacity hints and read-only recommendations without starting, stopping or continuing workers. Defaults to 25 runs (max 100) and a 64 KiB complete response; follow nextCursor using cursor with unchanged filters. Summary covers only returned snapshots; oversized snapshots are explicitly omitted.",
     },
     async (args) => withMcpErrors(async () => {
       const watch = await watchAgentRuns(

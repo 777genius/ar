@@ -55,6 +55,7 @@ export function parseCodexGoalCliMcpShortcut(
         ...(values.values.get("--run-artifacts-root")
           ? { runArtifactsRootDir: values.values.get("--run-artifacts-root") }
           : {}),
+        ...optionalStringArg(values, "--cursor", "cursor"),
         ...optionalNumberArg(values, "--stale-after-ms", "staleAfterMs"),
         ...optionalNumberArg(values, "--tail-lines", "tailLines"),
         ...optionalNumberArg(values, "--limit", "limit"),

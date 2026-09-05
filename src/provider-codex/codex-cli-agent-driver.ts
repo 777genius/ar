@@ -14,6 +14,7 @@ import { pruneCodexChildEnv } from "./codex-cli-domain";
 import { cleanupCodexRuntimeTempRoot } from "./codex-cli-temp-cleanup";
 import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 import { composeCodexPrompt } from "./codex-prompt-composer";
+import type { CodexReasoningEffort } from "./codex-json-execution-engine";
 import { codexSandboxModeForControls } from "./codex-json-execution-engine";
 import {
   codexProviderEgressConfigToml,
@@ -30,6 +31,7 @@ import { classifyCodexFailure } from "./failure-classifier";
 export type CodexCliAgentDriverOptions = {
   readonly codexBinaryPath?: string;
   readonly model?: string;
+  readonly reasoningEffort?: CodexReasoningEffort;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly timeoutMs?: number;
 };
@@ -94,6 +96,9 @@ export class CodexCliAgentDriver implements AgentDriver {
           sandboxMode,
           "--model",
           this.options.model ?? defaultCodexModel,
+          ...(this.options.reasoningEffort === undefined ? [] : [
+            "--config", `model_reasoning_effort=${JSON.stringify(this.options.reasoningEffort)}`,
+          ]),
           // Verified with codex-cli 0.139.0: `codex exec -- -` reads the prompt from stdin.
           "--",
           "-",

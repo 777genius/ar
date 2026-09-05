@@ -1,6 +1,6 @@
 # Codex goal long-session audit
 
-Date: 2026-09-05. Scope: goal launch, continuation, MCP monitoring, log tails and
+Updated: 2026-09-06. Scope: goal launch, continuation, MCP monitoring, log tails and
 event history. Verification uses fake executors, in-memory MCP and temporary test
 artifacts only. No production worker or real project runtime was launched.
 
@@ -19,9 +19,12 @@ artifacts only. No production worker or real project runtime was launched.
 | All MCP text JSON used indentation | Formatting overhead on every tool result | Compact serialization, preserving structured result compatibility |
 | Corrupt warnings and oversized event records bypassed count limits | A 100-event request could return nearly a megabyte of diagnostics | Bound the complete MCP envelope, aggregate diagnostics and expose explicit record omissions with progressing cursors |
 | Every status read loaded the full runtime-event log | Polling cost grew with the session | Read at most 256 KiB from a fixed suffix; return a safe warning when the latest record cannot be established |
-| Append rebuilt every event ID on every call | Repeated O(history) reads during projection | Refresh an exact process cache from the new suffix under the event-log lock; batch projection appends |
-| MCP server versions were stale constants or caller environment values | Clients could not identify the installed package | All three MCP surfaces use the packaged 0.1.0-main.31 version |
+| Append rebuilt every event ID on every call | Repeated O(history) reads during projection | Refresh an exact process cache from the new suffix under the event-log lock; append each run's transition events together |
+| MCP server versions were stale constants or caller environment values | Clients could not identify the installed package | All three MCP surfaces use the packaged runtime version |
 | Event-log directory locks expired during long operations | A competing writer could reclaim a live lock and corrupt append/compaction ordering | Renew the owned directory inode; protect live same-host owners and fence recovery/release with owner tokens |
+| Repeated transitions reused event IDs, including clean/dirty and unsafe/watch cycles | Replay could retain an earlier workspace or safety state | Persist a monotonic projection revision; serialize observation and projection per run; recover pending events before publishing projection state |
+| Control views rescanned every receipt for every signal | Inbox processing became quadratic in history size | Index receipts once per snapshot and reuse reconciled views for observation |
+| Run-watch observed the whole registry concurrently and returned every snapshot | Large registries caused process bursts and growing tool responses | Bound observation concurrency and reuse process/workspace context; return pages of 25 runs by default, maximum 100, within a 64 KiB complete MCP envelope |
 
 Log redaction is also applied to direct CLI tail, the tail use case and orphan
 MCP observations. The 16 KiB text limit is enforced again after redaction; JSON
@@ -41,6 +44,8 @@ counts, account charges or measured production savings.
 | Log containing a giant line followed by recent normal lines | 3,145,791 bytes read | At most 65,536 bytes read; 81-byte excerpt |
 | Filtered 237-event history | All events in one response | 100 / 100 / 37, then empty; no gaps or duplicates |
 | 10,000 corrupt lines followed by one valid event | 969,303 bytes of inner result JSON in the original reproduction | Two progressing pages; largest complete MCP envelope 5484 bytes; valid event returned exactly once |
+| 1000 fake jobs observed through run-watch | 1000 simultaneous observations | At most 4 simultaneous observations; all 1000 visited through bounded pages |
+| 5000 signals plus 5000 receipts, instrumented receipt-ID reads | 25,000,000 reads | 10,000 reads with equivalent signal states, ordering and filters |
 
 The brief regression fixture lives in
 `src/worker-codex/tests/codex-goal-mcp-brief-response.test.ts`; log and pagination
@@ -62,6 +67,11 @@ tokenizer, client rendering and cached input behavior.
 5. Paginate event history with the same filters and `nextCursor`. A full page
    sets conservative `hasMore: true`; the next page may be empty. Projection's
    `limit` selects runs and `eventLimit` bounds event output.
+6. Run-watch pages expose `nextCursor` while `truncated` is true. Keep the same
+   filters and registry membership while paging; a changed selection explicitly
+   invalidates the cursor. Summaries describe returned snapshots on that page.
+   Oversized snapshots have explicit omission records and must not be treated as
+   complete evidence. Internal event projection retains complete run selection.
 
 Revisions bind to job, resolved registry, output options and semantic state.
 Heartbeat timestamps, ages and log byte growth alone do not invalidate them.
@@ -88,8 +98,9 @@ reduce billed tokens.
   batches reuse process and workspace snapshots within a batch.
 - `afterRevision` reduces returned context, not poll count or server-side status
   collection. There is no new long-poll or background scheduler in this change.
-- `overview`, run-watch and control-inbox inventory can still grow with registry
-  size. Use explicit job/run filters and available limits; do not read a whole
+- `overview` and control-inbox inventory can still grow with registry size.
+  Run-watch bounds observation concurrency and output, but listing the selected
+  registry still scales with membership. Use explicit job/run filters; do not read a whole
   registry as a periodic single-job monitor. No safety conflict scan was capped.
 - Versioned cursors bind generation, byte position and line position. A legacy
   numeric cursor needs one compatibility scan; a replaced log explicitly resets
@@ -156,6 +167,13 @@ reduce billed tokens.
   initially; the complete runner suite needed one unrelated macOS temporary-path
   alias assertion correction. Medium implementation and xhigh review were used;
   no controlled cost/speed comparison was performed.
+- The 2026-09-06 follow-up used `gpt-6-astra/medium` for implementation and
+  `gpt-6-astra/xhigh` for targeted review. First production patch took roughly
+  ten minutes. The first focused run passed 60/61 cases; the failure was an
+  expected old-default assertion. Subsequent focused sets passed 96/96 and
+  49/49. Review caught cursor progress, CLI cursor forwarding, oversized
+  metadata and capacity-effort consistency defects; all were corrected before
+  delivery. Independent event and monitor review found no remaining P1/P2.
 - This report records source verification. Hosted verification is recorded in
   each immutable release's `release.json`; its `activation-receipt.json` link
   resolves to the external activation journal. Both bind exact commit and tree
@@ -170,6 +188,12 @@ builds new-worker commands from its own installed CLI. After activation,
 reconnect the local HTTP-to-SSH MCP proxy so future launches use the new release.
 Already-running workers and controllers retain their original executable; an
 explicit version pin also intentionally overrides the default where supported.
+
+New Codex goal jobs default to model `gpt-6-astra` with reasoning effort `high`.
+Explicit CLI, environment, launch configuration and stored job settings retain
+their documented precedence. Existing jobs are not silently migrated. Model
+availability remains an active-account provider catalog concern; the runtime
+does not silently substitute another model when the requested model is unavailable.
 
 Release activation uses an exact main commit and verified Git bundle, with
 separate build/verification receipts and atomic current/previous symlinks.

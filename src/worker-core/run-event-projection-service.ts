@@ -54,27 +54,39 @@ export class RunEventProjectionService {
     input: RunObservationRequest,
   ): Promise<RunEventProjectionResult & {
     readonly appendResult: RunEventAppendResult;
+    readonly recoveryAppendResult?: RunEventAppendResult;
   }> {
-    const snapshot = await this.observationService.observeRun(input);
-    const storedState = await this.options.stateStore.readProjectionState(
-      snapshot.runId,
-    );
-    const previousState = storedState ??
-      await this.recoverProjectionStateFromEvents(snapshot.runId);
-    const projected = projectRunObservationEvents({
-      snapshot,
-      previousState,
-      ...(this.options.hostId === undefined ? {} : { hostId: this.options.hostId }),
-      ...(this.options.registryRootDir === undefined
-        ? {}
-        : { registryRootDir: this.options.registryRootDir }),
+    return this.options.stateStore.withProjectionLock(input.runId, async () => {
+      // A prepared transaction survives both a partial append and a failed state write.
+      // Complete it before reading a fresh observation, even when runtime state changed.
+      const pending = await this.options.stateStore.readPendingProjection(input.runId);
+      const recoveryAppendResult = pending ? await this.commitProjection(pending) : undefined;
+      const snapshot = await this.observationService.observeRun(input);
+      if (snapshot.runId !== input.runId) throw new Error("run_event_projection_run_id_mismatch");
+      const storedState = await this.options.stateStore.readProjectionState(snapshot.runId);
+      const previousState = storedState ??
+        await this.recoverProjectionStateFromEvents(snapshot.runId);
+      const projected = projectRunObservationEvents({
+        snapshot,
+        previousState,
+        ...(this.options.hostId === undefined ? {} : { hostId: this.options.hostId }),
+        ...(this.options.registryRootDir === undefined
+          ? {}
+          : { registryRootDir: this.options.registryRootDir }),
+      });
+      await this.options.stateStore.writePendingProjection(projected);
+      const appendResult = await this.commitProjection(projected);
+      return { ...projected, appendResult,
+        ...(recoveryAppendResult === undefined ? {} : { recoveryAppendResult }),
+      };
     });
+  }
+
+  private async commitProjection(projected: RunEventProjectionResult): Promise<RunEventAppendResult> {
     const appendResult = await this.options.eventStore.append(projected.events);
     await this.options.stateStore.writeProjectionState(projected.nextState);
-    return {
-      ...projected,
-      appendResult,
-    };
+    await this.options.stateStore.clearPendingProjection(projected.nextState.runId);
+    return appendResult;
   }
 
   private async recoverProjectionStateFromEvents(
@@ -92,7 +104,11 @@ export function projectRunObservationEvents(input: {
   readonly registryRootDir?: string;
   readonly sequenceStart?: number;
 }): RunEventProjectionResult {
-  const nextState = runEventProjectionStateFromSnapshot(input.snapshot);
+  const revision = (input.previousState?.revision ?? 0) + 1;
+  if (!Number.isSafeInteger(revision) || revision < 1) {
+    throw new Error("run_event_projection_revision_exhausted");
+  }
+  const nextState = { ...runEventProjectionStateFromSnapshot(input.snapshot), revision };
   const previous = input.previousState ?? null;
   const events: RunEvent[] = [];
   const source = runEventSourceFromSnapshot({
@@ -119,8 +135,8 @@ export function projectRunObservationEvents(input: {
       occurredAt: input.snapshot.observedAt,
       ...(sequence === undefined ? {} : { sequence }),
       source,
-      payload,
-      idempotencyParts,
+      payload: { ...payload, projectionRevision: revision },
+      idempotencyParts: ["projection", revision, ...idempotencyParts],
     }));
   };
 

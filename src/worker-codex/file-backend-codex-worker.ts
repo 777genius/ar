@@ -180,7 +180,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     this.capacityTracker = new FileBackendCodexCapacityState({
       clock: this.clock,
       providerInstanceId: options.providerInstanceId,
-      reasoningEffort: options.reasoningEffort ?? "low",
+      ...(options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }),
       ...(options.model === undefined ? {} : { model: options.model }),
       ...(options.capacityAccountId === undefined
         ? {}

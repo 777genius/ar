@@ -152,7 +152,7 @@ Create one stored job per logical goal and per writer worktree:
   "progressHeartbeatMs": 60000,
   "accounts": ["account-a", "account-b", "account-c"],
   "tmuxSession": "my-task",
-  "model": "gpt-5.5",
+  "model": "gpt-6-astra",
   "reasoningEffort": "high",
   "serviceTier": "default",
   "executionEngine": "app-server-goal",

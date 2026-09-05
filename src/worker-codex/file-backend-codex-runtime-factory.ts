@@ -1,3 +1,4 @@
+import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -17,7 +18,6 @@ import {
   CodexWorkerCacheSessionPoolMaterializer,
   PackagedCodexJsonExecutionEngine,
   codexJsonHomeConfigToml,
-  defaultCodexModel,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { createLocalFileBackendRuntimeAdapters } from "@vioxen/subscription-runtime/store-local-file";
 import type { CommandPolicy } from "@vioxen/subscription-runtime/worker-core";
@@ -80,7 +80,7 @@ export function createFileBackendCodexWorkerRuntime(input: {
   );
   const sessionDriver = new CodexCliSessionDriver({
     codexBinaryPath: options.codexBinaryPath,
-    model: options.model ?? defaultCodexModel,
+    model: options.model ?? CODEX_WORKER_DEFAULT_MODEL,
     ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
     refreshMode: "lazy-refresh",
     ...(runners.refreshBootstrapRunner
@@ -218,7 +218,8 @@ function createCodexAgentDriver(input: {
   if (executionEngine === "plain-exec") {
     return new CodexCliAgentDriver({
       codexBinaryPath: options.codexBinaryPath,
-      model: options.model ?? defaultCodexModel,
+      model: options.model ?? CODEX_WORKER_DEFAULT_MODEL,
+      reasoningEffort: options.reasoningEffort ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT,
       ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
       ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
     });
@@ -311,8 +312,8 @@ function createCodexAgentDriver(input: {
           }
         : {}),
     }),
-    model: options.model ?? defaultCodexModel,
-    reasoningEffort: options.reasoningEffort ?? "low",
+    model: options.model ?? CODEX_WORKER_DEFAULT_MODEL,
+    reasoningEffort: options.reasoningEffort ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT,
     ...(options.serviceTier === undefined
       ? {}
       : { serviceTier: options.serviceTier }),

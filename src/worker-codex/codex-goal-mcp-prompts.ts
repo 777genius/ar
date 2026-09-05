@@ -36,7 +36,7 @@ function codexGoalPromptText(name: string, jobId: string | undefined): string {
     "Never print auth.json or tokens. Do not run two writer workers in the same worktree. " +
     "Treat codex_goal_overview as the registry monitor, codex_goal_brief as the single-job monitor, and codex_goal_decision as the read-only action gate for safeToContinue, blockers, evidence and nextBestCommand.";
   if (name === "start_codex_goal_worker") {
-    return `${shared} First call codex_goal_decision. Start or continue only when decision.safeToContinue is true, otherwise follow decision.checklist and decision.nextBestCommand. If no job exists yet, create one with model gpt-5.5, reasoningEffort high, serviceTier default, app-server-goal behavior and 72h timeout.`;
+    return `${shared} First call codex_goal_decision. Start or continue only when decision.safeToContinue is true, otherwise follow decision.checklist and decision.nextBestCommand. If no job exists yet, create one with model gpt-6-astra, reasoningEffort high, serviceTier default, app-server-goal behavior and 72h timeout.`;
   }
   if (name === "monitor_codex_goal_worker") {
     return `${shared} Use codex_goal_overview once for pool context, then poll codex_goal_brief in compact mode. Pass each revision back as afterRevision and back off polling while unchanged. Do not repeatedly fetch overview, decision, accounts or logs unless compact state changes or action is required. Call codex_goal_decision immediately before taking action. If worker is alive and silentStale is false, keep monitoring instead of starting another worker. If silentStale is true, request a log tail and verify progress heartbeat, tmux, runner process, app-server process and git status before stopping or recovery.`;
