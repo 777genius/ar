@@ -13,10 +13,15 @@ artifacts only. No production worker or real project runtime was launched.
 | Tail read the entire log and limited only line count | A single large JSONL line could cause large disk reads, allocations and tool responses | Read at most 64 KiB from the suffix; at most 16 KiB raw excerpt, with truncation marker; omit incomplete leading and oversized lines |
 | Event calls without a limit returned all history; projection ignored the caller cursor | Replayed history grew with the session | Default 100-event pages, maximum 500, continuation cursor, separate projection `eventLimit` |
 | Goal usage snapshots were added as if they were per-turn deltas | 100 then 250 cumulative tokens appeared as 350 when turn usage was unavailable | Keep the latest defined goal snapshot; retain detailed per-turn usage precedence |
-| Max-turn exhaustion discarded measured usage at the provider boundary | Long-session slice failures lost their token measurements before returning a provider result | Carry sanitized usage in a typed slice-exhaustion error through failed provider telemetry; durable failed-attempt accounting remains a separate gap below |
-| Event pages and append newline checks loaded the entire JSONL file | Small reads allocated memory proportional to session history | Stream event pages from a fixed file-size snapshot and stop at the requested page size; inspect only the final byte for newline separation |
+| Max-turn exhaustion discarded measured usage | Failed slices undercounted durable usage | Carry sanitized provider usage through typed worker errors, wrapped causes and the failed attempt journal; retain it across resume |
+| Event pages and append newline checks loaded the entire JSONL file | Small reads allocated memory proportional to session history | Generation-aware byte cursors seek directly to a bounded page; legacy numeric cursors migrate safely; inspect only the final byte for newline separation |
 | Continuation packets inserted the complete diff stat | Large generated changes could add megabytes to the next prompt | Bound the rendered stat to 8000 characters / 100 lines with an omission marker; keep task/control instructions and structured snapshot intact |
 | All MCP text JSON used indentation | Formatting overhead on every tool result | Compact serialization, preserving structured result compatibility |
+| Corrupt warnings and oversized event records bypassed count limits | A 100-event request could return nearly a megabyte of diagnostics | Bound the complete MCP envelope, aggregate diagnostics and expose explicit record omissions with progressing cursors |
+| Every status read loaded the full runtime-event log | Polling cost grew with the session | Read at most 256 KiB from a fixed suffix; return a safe warning when the latest record cannot be established |
+| Append rebuilt every event ID on every call | Repeated O(history) reads during projection | Refresh an exact process cache from the new suffix under the event-log lock; batch projection appends |
+| MCP server versions were stale constants or caller environment values | Clients could not identify the installed package | All three MCP surfaces use the packaged 0.1.0-main.31 version |
+| Event-log directory locks expired during long operations | A competing writer could reclaim a live lock and corrupt append/compaction ordering | Renew the owned directory inode; protect live same-host owners and fence recovery/release with owner tokens |
 
 Log redaction is also applied to direct CLI tail, the tail use case and orphan
 MCP observations. The 16 KiB text limit is enforced again after redaction; JSON
@@ -35,6 +40,7 @@ counts, account charges or measured production savings.
 | Repeated unchanged brief compared with the full fixture | 2087 bytes | 179 bytes (91.4% smaller) |
 | Log containing a giant line followed by recent normal lines | 3,145,791 bytes read | At most 65,536 bytes read; 81-byte excerpt |
 | Filtered 237-event history | All events in one response | 100 / 100 / 37, then empty; no gaps or duplicates |
+| 10,000 corrupt lines followed by one valid event | 969,303 bytes of inner result JSON in the original reproduction | Two progressing pages; largest complete MCP envelope 5484 bytes; valid event returned exactly once |
 
 The brief regression fixture lives in
 `src/worker-codex/tests/codex-goal-mcp-brief-response.test.ts`; log and pagination
@@ -85,19 +91,32 @@ reduce billed tokens.
 - `overview`, run-watch and control-inbox inventory can still grow with registry
   size. Use explicit job/run filters and available limits; do not read a whole
   registry as a periodic single-job monitor. No safety conflict scan was capped.
-- Event output is paginated and the local file store streams a stable file-size
-  snapshot, stopping when a requested page is full. Selective filters can still
-  scan a long prefix because the log has no secondary index. Unbounded internal
-  replay remains complete so read models are not silently cut off.
+- Versioned cursors bind generation, byte position and line position. A legacy
+  numeric cursor needs one compatibility scan; a replaced log explicitly resets
+  an external cursor and may replay existing event IDs. Preserve-mode compaction
+  validates delivery boundaries against the current generation before removal.
+- The exact dedupe cache is process-local and disposable. Cold start, eviction,
+  file replacement, compaction or invalidation requires a rebuild from durable
+  history. It avoids repeated full scans in a warm MCP process without creating
+  a second persistent source of truth. Compaction remains an explicit operation
+  governed by delivery cursors; this patch does not silently delete history.
+  Its exact ID set still uses memory proportional to retained history.
+- Internal event replay remains complete. MCP scan/response caps apply at the
+  observation boundary; a caller requesting full internal history still incurs
+  work proportional to that history.
+- MCP parsing skips records larger than 3 MiB with explicit diagnostics and a
+  progressing cursor. Their event identity cannot be recovered through that
+  bounded page; use the durable artifact or internal replay. Generation checks
+  detect replacement, not arbitrary external destructive edits to the same inode.
+- Event-log leases support local filesystems and same-host processes. A foreign
+  hostname fails closed; this is not a shared-filesystem distributed lock.
 - Lower-level provider callers bypassing `runCodexGoal` still need a compact
   explicit objective for a long prompt. This patch changes the goal worker
   contract without silently changing every provider consumer.
-- Failed max-turn usage now survives in the provider result. Managed recovery
-  still converts that failed result to a `SubscriptionWorkerError` without usage,
-  and safe-execution failed attempt records have no usage hook. Durable totals
-  can therefore still undercount failed slices. Do not treat this patch as
-  complete end-to-end token accounting; that needs a separate failed-result
-  contract and recovery regression coverage.
+- Failed usage now survives the managed recovery and safe-execution journal
+  path. Unknown provider usage remains absent rather than becoming zero.
+  This improves internal accounting; it does not independently certify provider
+  billing or measure production token savings.
 
 ## Verification and delivery state
 
@@ -106,8 +125,8 @@ reduce billed tokens.
   observation, CLI and continuation behavior using only fake/temp fixtures.
 - Event-store focused regression: 2 files, 14 tests passed, including filtered
   pagination, UTF-8, corrupt lines, numeric cursor compatibility and append
-  newline handling. Numeric cursors still require scanning preceding lines;
-  this change bounds allocations, not every poll's total disk I/O.
+  newline handling. This first checkpoint bounded allocations; the subsequent
+  byte-cursor checkpoint also removes preceding-history scans on warm reads.
 - Pinned project TypeScript checks passed. Global `tsc7` rejects the existing
   `baseUrl` configuration, so the project compiler was used without changing
   configuration or adding dependencies.
@@ -121,6 +140,14 @@ reduce billed tokens.
   treated as line delimiters, which could invalidate existing numeric cursors.
   LF-only parsing and a compatibility regression fixed this before release;
   the final independent review reported no blocking findings.
+- Final event-history hardening regression: six files, 40 tests passed before
+  integration. Independent review covered cursor progress, compaction delivery
+  boundaries, append-cache durability, complete MCP envelope limits and lock
+  ownership. All identified P1/P2 findings were corrected before delivery.
+- Integrated event/core/relay regression: nine files, 60 tests passed. Compiled
+  canaries additionally covered warning floods, oversized escaped UTF-8 payloads
+  and a 5 MiB corrupt line. Each complete MCP envelope stayed below 64 KiB and
+  pagination returned the trailing valid event exactly once.
 - Model split observations: the goal implementation lane produced its first
   patch in approximately four minutes. Its three new objective cases passed
   initially; the complete runner suite needed one unrelated macOS temporary-path
@@ -130,3 +157,17 @@ reduce billed tokens.
   separately in each immutable release's `release.json` and
   `activation-receipt.json`, keyed by exact commit and tree SHA. No live paid
   worker or real-project runtime was used for validation.
+
+## Hosted release selection
+
+The installed CLI and MCP wrappers resolve the immutable release through
+`/var/data/runtimes/subscription-runtime/current`. A newly connected MCP process
+builds new-worker commands from its own installed CLI. After activation,
+reconnect the local HTTP-to-SSH MCP proxy so future launches use the new release.
+Already-running workers and controllers retain their original executable; an
+explicit version pin also intentionally overrides the default where supported.
+
+Release activation uses an exact main commit and verified Git bundle, with
+separate build/verification receipts and atomic current/previous symlinks.
+The previous release remains available for rollback. Updating a release never
+rebuilds the live current directory in place.

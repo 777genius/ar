@@ -194,6 +194,8 @@ export type RunEventCompactionPort = {
 export type RunEventAppendResult = {
   readonly appendedCount: number;
   readonly skippedDuplicateCount: number;
+  readonly appendedEventIds?: readonly string[];
+  readonly skippedDuplicateEventIds?: readonly string[];
 };
 
 export type RunEventReadWarning = {
@@ -210,12 +212,24 @@ export type RunEventReadRequest = {
   readonly sourceProviderKind?: RunEventProviderKind;
   readonly sourceRegistryRootDir?: string;
   readonly types?: readonly RunEventType[];
+  readonly maxScannedBytes?: number;
+  readonly maxScannedLines?: number;
+  readonly maxWarnings?: number;
+  readonly maxLineBytes?: number;
 };
 
 export type RunEventReadResult = {
   readonly events: readonly RunEvent[];
   readonly nextCursor?: RunEventCursor;
   readonly warnings: readonly RunEventReadWarning[];
+  readonly eventCursors?: readonly RunEventCursor[];
+  readonly hasMore?: boolean;
+  readonly scanStopReason?: "event_limit" | "scan_limit" | "end_of_log";
+  readonly scannedBytes?: number;
+  readonly scannedLines?: number;
+  readonly totalWarningCount?: number;
+  readonly warningsTruncated?: boolean;
+  readonly warningCounts?: Readonly<Record<string, number>>;
 };
 
 export type RunEventStorePort = {

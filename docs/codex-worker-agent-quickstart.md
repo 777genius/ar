@@ -123,10 +123,15 @@ task belongs in `promptPath`. If the objective is omitted, the runner generates
 a short reference to the full initial task and its acceptance criteria, preserving
 the complete task instructions in the first message.
 
-For event history, `agent_run_events` / `codex_goal_events` return 100 events by
-default, at most 500. Pass `nextCursor` as `cursor` on the next call; `hasMore` is
-conservative and a full final page can require one empty follow-up. Projection
-tools use `eventLimit` for returned events and retain `limit` for run selection.
+For event history, `agent_run_events` / `codex_goal_events` request 100 events by
+default, at most 500. The complete MCP response is capped at 64 KiB, including
+text and structured output. A scan or response budget can return fewer events,
+including zero, while `hasMore` remains true. Continue with the exact opaque
+`nextCursor`; do not calculate cursor offsets or stop only because a page is empty.
+Large records have explicit omission diagnostics and remain in the durable log.
+Projection tools use `eventLimit` for events and retain `limit` for run selection.
+Legacy numeric cursors remain accepted. A replaced log invalidates an external
+versioned cursor and reports a restart warning; replayed events retain event IDs.
 These cursors do not replace a fresh decision before a lifecycle action.
 
 See [long-session audit](codex-long-session-audit.md) for measurements and limits.
