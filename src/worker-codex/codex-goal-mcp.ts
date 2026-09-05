@@ -26,6 +26,8 @@ import {
   registerCodexGoalLaunchTools,
 } from "./codex-goal-mcp-operation-tools";
 import { registerCodexGoalAccountTools } from "./codex-goal-mcp-account-tools";
+import { subscriptionRuntimePackageVersion } from
+  "./subscription-runtime-package-version";
 export { buildCodexGoalBrief } from "./codex-goal-mcp-brief";
 export {
   projectControllerPendingGuidancePromptContext,
@@ -36,8 +38,6 @@ export {
   visibleCodexGoalAccountPoolSlots,
 } from "./codex-goal-mcp-accounts";
 
-const serverVersion = "0.1.0-main.2";
-
 export type CodexGoalMcpServerOptions = CodexGoalWorkerControlToolOptions & {
   readonly providerRuntimeRegistry?: ProviderRuntimeRegistry;
 };
@@ -47,7 +47,7 @@ export function createCodexGoalMcpServer(
 ): McpServer {
   const server = new McpServer({
     name: "subscription-runtime-codex-goal",
-    version: serverVersion,
+    version: subscriptionRuntimePackageVersion,
   });
 
   registerCodexGoalJobResource(server);
