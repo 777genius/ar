@@ -48,6 +48,7 @@ import {
   readCodexGoalResultSummary,
   readLastCodexGoalRuntimeEvent,
 } from "./codex-goal-status-files";
+import { readBoundedCodexGoalLogTail } from "./codex-goal-log-tail";
 
 export { listCodexGoalAccountStatuses };
 export { doctorCodexGoal };
@@ -709,8 +710,7 @@ export async function tailCodexGoalLog(
   logPath: string,
   lines: number,
 ): Promise<string> {
-  const text = await readFile(logPath, "utf8");
-  return `${text.split(/\r?\n/).slice(-lines).join("\n")}\n`;
+  return readBoundedCodexGoalLogTail(logPath, lines);
 }
 
 export function recommendCodexGoalAction(input: {

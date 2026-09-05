@@ -34,6 +34,7 @@ import {
   startCodexGoalTmux,
   tailCodexGoalLog,
 } from "./codex-goal-ops";
+import { redactLogTail } from "./application/codex-goal-log-view";
 import {
   callCodexGoalMcpTool,
   doctorCodexGoalControlSurface,
@@ -202,7 +203,9 @@ export async function runCodexGoalCli(
       return result.ok ? 0 : 1;
     }
     if (command.kind === "tail") {
-      io.writeStdout(await tailCodexGoalLog(command.logPath, command.lines));
+      io.writeStdout(
+        redactLogTail(await tailCodexGoalLog(command.logPath, command.lines)),
+      );
       return 0;
     }
     if (command.kind === "relay-events") {

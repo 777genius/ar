@@ -40,6 +40,10 @@ export type FakeAppServerFactoryOptions = {
   readonly abortTurnReason?: string;
   readonly suppressOutputTurnNumbers?: readonly number[];
   readonly goalStatusesAfterTurns?: readonly string[];
+  readonly goalUsageAfterTurns?: readonly (
+    | Record<string, unknown>
+    | undefined
+  )[];
   readonly turnUsage?: Record<string, unknown>;
   readonly mismatchTurnStartResponseId?: boolean;
   readonly reuseActualTurnId?: string;
@@ -262,7 +266,7 @@ export class FakeAppServerProcess extends EventEmitter {
                 objective: goal.objective,
                 status: goal.status,
                 tokenBudget: null,
-                tokensUsed: 0,
+                ...this.goalUsageForCurrentTurn(),
                 timeUsedSeconds: 0,
                 createdAt: 0,
                 updatedAt: 0,
@@ -498,12 +502,19 @@ export class FakeAppServerProcess extends EventEmitter {
         objective: goal.objective,
         status: nextStatus,
         tokenBudget: null,
-        tokensUsed: 0,
+        ...this.goalUsageForCurrentTurn(),
         timeUsedSeconds: 0,
         createdAt: 0,
         updatedAt: 0,
       },
     });
+  }
+
+  private goalUsageForCurrentTurn(): Record<string, unknown> {
+    if (this.options.goalUsageAfterTurns === undefined) {
+      return { tokensUsed: 0 };
+    }
+    return this.options.goalUsageAfterTurns[this.completedTurnCount - 1] ?? {};
   }
 
   private respond(id: number, result: Record<string, unknown>): void {

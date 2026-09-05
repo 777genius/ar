@@ -39,6 +39,10 @@ import type {
   RunEventRetentionPolicy,
   RunEventStorePort,
 } from "../ports/run-event-store-contracts";
+import {
+  eventLogNeedsSeparatorNewline,
+  visitEventLogLines,
+} from "./local-run-event-log-reader";
 
 export type LocalFileRunEventStoreOptions = {
   readonly rootDir: string;
@@ -95,65 +99,54 @@ export class LocalFileRunEventStore
 
   async read(input: RunEventReadRequest = {}): Promise<RunEventReadResult> {
     const path = this.eventLogPath();
-    let contents: string;
-    try {
-      contents = await readFile(path, "utf8");
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") {
-        return {
-          events: [],
-          warnings: [],
-        };
-      }
-      throw error;
-    }
     const startLine = parseCursor(input.cursor?.value);
-    const lines = splitEventLogLines(contents);
     const events: RunEvent[] = [];
     const warnings: RunEventReadWarning[] = [];
     const typeFilter = input.types === undefined ? null : new Set(input.types);
     const runIdFilter = runEventRunIdFilter(input.runId, input.runIds);
     let nextLine = startLine;
 
-    for (let index = startLine; index < lines.length; index += 1) {
-      const line = lines[index];
-      nextLine = index + 1;
-      if (line === undefined || !line.trim()) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        warnings.push({
-          code: "invalid_event_json",
-          message: "Skipped invalid run event JSON line.",
-          lineNumber: index + 1,
-        });
-        continue;
-      }
-      const event = parseRunEvent(parsed);
-      if (!event) {
-        warnings.push({
-          code: "invalid_event_shape",
-          message: "Skipped run event with invalid schema.",
-          lineNumber: index + 1,
-        });
-        continue;
-      }
-      if (!runIdFilter(event.runId)) continue;
-      if (
-        input.sourceProviderKind !== undefined &&
-        event.source.providerKind !== input.sourceProviderKind
-      ) continue;
-      if (
-        input.sourceRegistryRootDir !== undefined &&
-        event.source.registryRootDir !== input.sourceRegistryRootDir
-      ) continue;
-      if (typeFilter && !typeFilter.has(event.type)) continue;
-      events.push(event);
-      if (input.limit !== undefined && events.length >= input.limit) {
-        break;
-      }
-    }
+    const exists = await visitEventLogLines({
+      path,
+      startLine,
+      visit: (line, index) => {
+        nextLine = index + 1;
+        if (!line.trim()) return false;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          warnings.push({
+            code: "invalid_event_json",
+            message: "Skipped invalid run event JSON line.",
+            lineNumber: index + 1,
+          });
+          return false;
+        }
+        const event = parseRunEvent(parsed);
+        if (!event) {
+          warnings.push({
+            code: "invalid_event_shape",
+            message: "Skipped run event with invalid schema.",
+            lineNumber: index + 1,
+          });
+          return false;
+        }
+        if (!runIdFilter(event.runId)) return false;
+        if (
+          input.sourceProviderKind !== undefined &&
+          event.source.providerKind !== input.sourceProviderKind
+        ) return false;
+        if (
+          input.sourceRegistryRootDir !== undefined &&
+          event.source.registryRootDir !== input.sourceRegistryRootDir
+        ) return false;
+        if (typeFilter && !typeFilter.has(event.type)) return false;
+        events.push(event);
+        return input.limit !== undefined && events.length >= input.limit;
+      },
+    });
+    if (!exists) return { events: [], warnings: [] };
 
     return {
       events,
@@ -293,13 +286,7 @@ export class LocalFileRunEventStore
   }
 
   private async needsSeparatorNewline(path: string): Promise<boolean> {
-    try {
-      const contents = await readFile(path, "utf8");
-      return contents.length > 0 && !contents.endsWith("\n");
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") return false;
-      throw error;
-    }
+    return eventLogNeedsSeparatorNewline(path);
   }
 
   private async buildCompactionPlan(

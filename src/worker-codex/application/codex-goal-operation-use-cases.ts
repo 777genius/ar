@@ -25,6 +25,7 @@ import {
 import {
   resolvePath,
 } from "./codex-goal-input-values";
+import { redactLogTail } from "./codex-goal-log-view";
 import {
   projectControlGenericScopeDenial,
   projectControlGenericToolDenial,
@@ -187,6 +188,8 @@ export async function tailCodexGoalRunLog(input: {
   if (!logPath) throw new Error("logPath or jobRootDir with taskId is required");
 
   const resolvedLogPath = resolvePath(cwd, logPath);
-  const text = await tailCodexGoalLog(resolvedLogPath, input.lines ?? 100);
+  const text = redactLogTail(
+    await tailCodexGoalLog(resolvedLogPath, input.lines ?? 100),
+  );
   return { ok: true, logPath: resolvedLogPath, text };
 }

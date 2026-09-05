@@ -46,6 +46,17 @@ function defaultProviderRuntimeRegistry(): ProviderRuntimeRegistry {
   return (cachedProviderRuntimeRegistry ??= createLocalProviderRuntimeRegistry());
 }
 
+const DEFAULT_MCP_EVENT_LIMIT = 100;
+const MAX_MCP_EVENT_LIMIT = 500;
+
+function mcpEventLimit(value: unknown): number {
+  const requested = numberValue(value);
+  if (requested === undefined || !Number.isInteger(requested) || requested <= 0) {
+    return DEFAULT_MCP_EVENT_LIMIT;
+  }
+  return Math.min(requested, MAX_MCP_EVENT_LIMIT);
+}
+
 export async function watchAgentRuns(
   args: AgentRunWatchMcpArgs,
   registry: ProviderRuntimeRegistry = defaultProviderRuntimeRegistry(),
@@ -141,6 +152,7 @@ export async function readAgentRunEvents(
   const registryRootDir = registryRootFromArgs(args);
   const eventRootDir = runEventRootFromArgs(args, registryRootDir);
   const providerKind = optionalRunEventProviderKind(args.providerKind);
+  const effectiveLimit = mcpEventLimit(args.limit);
   const eventStore = new LocalFileRunEventStore({ rootDir: eventRootDir });
   const result = await eventStore.read({
     ...(stringValue(args.cursor) === undefined
@@ -149,9 +161,7 @@ export async function readAgentRunEvents(
     ...(stringValue(args.jobId) === undefined
       ? {}
       : { runId: stringValue(args.jobId) as string }),
-    ...(numberValue(args.limit) === undefined
-      ? {}
-      : { limit: numberValue(args.limit) as number }),
+    limit: effectiveLimit,
     ...(providerKind === undefined ? {} : { sourceProviderKind: providerKind }),
     ...runEventTypeFilter(args),
   });
@@ -162,7 +172,10 @@ export async function readAgentRunEvents(
     providerKind: providerKind ?? "all",
     registryRootDir,
     eventRootDir,
+    effectiveLimit,
     returnedEvents: result.events.length,
+    pageFull: result.events.length === effectiveLimit,
+    hasMore: result.events.length === effectiveLimit,
     nextCursor: result.nextCursor?.value,
     warnings: result.warnings,
     events: result.events,
@@ -362,13 +375,15 @@ export async function projectAgentRunEvents(
     });
   }
   const projectedRunIds = snapshots.map((snapshot) => snapshot.runId);
+  const effectiveEventLimit = mcpEventLimit(args.eventLimit);
   const readBack: RunEventReadResult = await eventStore.read({
+    ...(stringValue(args.cursor) === undefined
+      ? {}
+      : { cursor: { value: stringValue(args.cursor) as string } }),
     runIds: projectedRunIds,
     sourceProviderKind: providerKind,
     sourceRegistryRootDir: registryRootDir,
-    ...(numberValue(args.limit) === undefined
-      ? {}
-      : { limit: numberValue(args.limit) as number }),
+    limit: effectiveEventLimit,
     ...runEventTypeFilter(args),
   });
   return {
@@ -382,6 +397,10 @@ export async function projectAgentRunEvents(
     returnedRuns: snapshots.length,
     appendedCount,
     skippedDuplicateCount,
+    effectiveEventLimit,
+    returnedEvents: readBack.events.length,
+    pageFull: readBack.events.length === effectiveEventLimit,
+    hasMore: readBack.events.length === effectiveEventLimit,
     warnings: readBack.warnings,
     projectedRuns,
     nextCursor: readBack.nextCursor?.value,
