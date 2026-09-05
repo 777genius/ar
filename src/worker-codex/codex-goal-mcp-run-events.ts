@@ -1,3 +1,5 @@
+import { mapCodexGoalObservations } from "./application/codex-goal-bounded-map";
+import { boundedRunWatchResponse, runWatchPage } from "./codex-goal-mcp-run-watch-page";
 import {
   LocalFileRunEventProjectionStateStore,
   LocalFileRunEventStore,
@@ -6,18 +8,16 @@ import { createLocalProviderRuntimeRegistry } from "@vioxen/subscription-runtime
 import {
   RunEventProviderKind,
   RunObservationService,
-  projectRunObservationEvents,
+  RunEventProjectionService,
   projectRunReadModelsFromEvents,
   providerFailedRunObservationSnapshot,
   runEventProviderKindFromString,
   type ProviderRunObservationInput,
+  type ProviderRunObservation,
   type ProviderRuntimeRegistry,
   type RunEventReadResult,
   type RunObservationSnapshot,
 } from "@vioxen/subscription-runtime/worker-core";
-import {
-  summarizeRunObservationSnapshots,
-} from "./codex-goal-mcp-observation-projection";
 import {
   booleanValue,
   numberValue,
@@ -82,9 +82,28 @@ export async function watchAgentRuns(
       supportedProviderKinds: registry.supported(),
       reason: "provider_observation_not_implemented",
       safeMessage:
-        `Run observation for provider '${providerKindInput}' is not implemented yet. Watch did not start, stop, continue, recover or deliver work.`,
+        `Run observation for provider '${providerKindInput.slice(0, 256)}' is not implemented yet. Watch did not start, stop, continue, recover or deliver work.`,
     };
   }
+  const { observation, service, listedRunIds, tailLines } = await prepareRunObservation(args, registry, providerKind);
+  const page = runWatchPage({
+    runIds: listedRunIds,
+    filter: { providerKind, registryRootDir: registryRootFromArgs(args), stateRootDir: args.stateRootDir,
+      runArtifactsRootDir: args.runArtifactsRootDir, cwd: args.cwd,
+      jobIds: [...new Set([stringValue(args.jobId), ...jobIdsFromValue(args.jobIds)].filter(Boolean))].sort(),
+      staleAfterMs: args.staleAfterMs, tailLines: args.tailLines,
+      includeChangedFiles: args.includeChangedFiles === true, includeLogTail: args.includeLogTail === true },
+    ...(numberValue(args.limit) === undefined ? {} : { limit: numberValue(args.limit) as number }),
+    ...(stringValue(args.cursor) === undefined ? {} : { cursor: stringValue(args.cursor) as string }),
+  });
+  const snapshots = await mapCodexGoalObservations(page.runIds, (runId) => observeSafely(runId, args, providerKind, observation, service, tailLines));
+  return boundedRunWatchResponse({
+    base: { ok: true, mode: "read_only", sideEffects: [], providerKind, ...observation.responseLocator },
+    snapshots, page,
+  });
+}
+
+async function prepareRunObservation(args: AgentRunWatchMcpArgs, registry: ProviderRuntimeRegistry, providerKind: RunEventProviderKind) {
   const registryRootDir = registryRootFromArgs(args);
   const staleAfterMs = numberValue(args.staleAfterMs);
   const tailLines = numberValue(args.tailLines);
@@ -107,53 +126,26 @@ export async function watchAgentRuns(
     ...(stringValue(args.jobId) ? [stringValue(args.jobId) as string] : []),
     ...jobIdsFromValue(args.jobIds),
   ];
-  const limit = numberValue(args.limit);
-  const listedRunIds = explicitJobIds.length
-    ? explicitJobIds
-    : await service.listRunIds();
-  const runIds = limit === undefined
-    ? listedRunIds
-    : listedRunIds.slice(0, limit);
-  const snapshots = await Promise.all(
-    runIds.map(async (runId) => {
-      try {
-        return await service.observeRun({
-          runId,
-          ...(tailLines === undefined ? {} : { tailLines }),
-          includeChangedFiles: booleanValue(args.includeChangedFiles) === true,
-          includeLogTail: booleanValue(args.includeLogTail) === true,
-        });
-      } catch (error) {
-        if (observation.observeFailedRun) {
-          return observation.observeFailedRun({ runId, error });
-        }
-        return providerFailedRunObservationSnapshot({ runId, providerKind, error });
-      }
-    }),
-  );
-  const observationFailures = snapshots
-    .filter((snapshot) =>
-      snapshot.warnings.some((warning) => warning.code === "run_observation_failed")
-    )
-    .map((snapshot) => ({
-      runId: snapshot.runId,
-      warnings: snapshot.warnings.filter((warning) =>
-        warning.code === "run_observation_failed"
-      ),
-    }));
-  return {
-    ok: observationFailures.length === 0,
-    mode: "read_only",
-    sideEffects: [],
-    providerKind,
-    ...observation.responseLocator,
-    totalRuns: listedRunIds.length,
-    returnedRuns: snapshots.length,
-    truncated: limit === undefined ? false : listedRunIds.length > runIds.length,
-    summary: summarizeRunObservationSnapshots(snapshots),
-    ...(observationFailures.length ? { observationFailures } : {}),
-    snapshots,
-  };
+  const listedRunIds = [...new Set(explicitJobIds.length ? explicitJobIds : await service.listRunIds())];
+  return { observation, service, listedRunIds, registryRootDir, tailLines };
+}
+
+async function observeSafely(
+  runId: string, args: AgentRunWatchMcpArgs, providerKind: RunEventProviderKind,
+  observation: ProviderRunObservation,
+  service: RunObservationService, tailLines: number | undefined,
+): Promise<RunObservationSnapshot> {
+  try {
+    return await service.observeRun({ runId,
+      ...(tailLines === undefined ? {} : { tailLines }),
+      includeChangedFiles: booleanValue(args.includeChangedFiles) === true,
+      includeLogTail: booleanValue(args.includeLogTail) === true,
+    });
+  } catch (error) {
+    return observation.observeFailedRun
+      ? observation.observeFailedRun({ runId, error })
+      : providerFailedRunObservationSnapshot({ runId, providerKind, error });
+  }
 }
 
 export async function readAgentRunEvents(
@@ -350,53 +342,47 @@ export async function projectAgentRunEvents(
   }
   const registryRootDir = registryRootFromArgs(args);
   const eventRootDir = runEventRootFromArgs(args, registryRootDir);
-  const watch = await watchAgentRuns({
-    ...args,
-    providerKind,
-    includeChangedFiles: booleanValue(args.includeChangedFiles) === true,
-    includeLogTail: false,
-  }, registry);
-  const snapshots = Array.isArray(watch.snapshots)
-    ? watch.snapshots as readonly RunObservationSnapshot[]
-    : [];
+  const { observation, service, listedRunIds, tailLines } = await prepareRunObservation(args, registry, providerKind);
+  // Public watch pagination must never limit the internal projection selection.
+  const limit = numberValue(args.limit);
+  const runIds = limit === undefined ? listedRunIds : listedRunIds.slice(0, limit);
   const eventStore = new LocalFileRunEventStore({ rootDir: eventRootDir });
-  const stateStore = new LocalFileRunEventProjectionStateStore({
-    rootDir: eventRootDir,
+  const stateStore = new LocalFileRunEventProjectionStateStore({ rootDir: eventRootDir });
+  const snapshots: RunObservationSnapshot[] = [];
+  const projectedRuns = [];
+  let appendedCount = 0;
+  let skippedDuplicateCount = 0;
+  let recoveredAppendedCount = 0;
+  let recoveredSkippedDuplicateCount = 0;
+  const projectionService = new RunEventProjectionService({
+    observationPort: {
+      observeRun: async ({ runId }) => {
+        const snapshot = await observeSafely(runId, { ...args, includeLogTail: false }, providerKind, observation, service, tailLines);
+        snapshots.push(snapshot);
+        return snapshot;
+      },
+    },
+    eventStore, stateStore, registryRootDir,
+    ...(stringValue(args.hostId) === undefined ? {} : { hostId: stringValue(args.hostId) as string }),
   });
-  const projections = [];
-  for (const snapshot of snapshots) {
-    const previousState = await stateStore.readProjectionState(snapshot.runId);
-    const projection = projectRunObservationEvents({
-      snapshot,
-      previousState,
-      ...(stringValue(args.hostId) === undefined
-        ? {}
-        : { hostId: stringValue(args.hostId) as string }),
-      registryRootDir,
-    });
-    projections.push({ snapshot, projection });
-  }
-  const appendResult = await eventStore.append(
-    projections.flatMap(({ projection }) => projection.events),
-  );
-  await Promise.all(
-    projections.map(({ projection }) => stateStore.writeProjectionState(projection.nextState)),
-  );
-  const appendedIds = new Set(appendResult.appendedEventIds ?? []);
-  const skippedIds = new Set(appendResult.skippedDuplicateEventIds ?? []);
-  const projectedRuns = projections.map(({ snapshot, projection }) => {
-    const projectedEventIds = projection.events.map((event) => event.eventId);
-    return {
-      runId: snapshot.runId,
+  for (const runId of runIds) {
+    const projection = await projectionService.projectRun({ runId });
+    appendedCount += projection.appendResult.appendedCount;
+    skippedDuplicateCount += projection.appendResult.skippedDuplicateCount;
+    recoveredAppendedCount += projection.recoveryAppendResult?.appendedCount ?? 0;
+    recoveredSkippedDuplicateCount += projection.recoveryAppendResult?.skippedDuplicateCount ?? 0;
+    projectedRuns.push({
+      runId,
       projectedEvents: projection.events.length,
-      appendedEvents: projectedEventIds.filter((id) => appendedIds.has(id)).length,
-      skippedDuplicateEvents: projectedEventIds.filter((id) => skippedIds.has(id)).length,
+      appendedEvents: projection.appendResult.appendedCount,
+      skippedDuplicateEvents: projection.appendResult.skippedDuplicateCount,
+      ...(projection.recoveryAppendResult ? { recoveryAppendResult: projection.recoveryAppendResult } : {}),
       eventTypes: projection.events.map((event) => event.type),
-      decision: snapshot.readOnlyDecision.kind,
-      status: snapshot.status,
+      decision: projection.nextState.decisionKind,
+      status: projection.nextState.status,
       readModels: projection.nextState.readModels,
-    };
-  });
+    });
+  }
   const projectedRunIds = snapshots.map((snapshot) => snapshot.runId);
   const effectiveEventLimit = mcpEventLimit(args.eventLimit);
   const readBack: RunEventReadResult = await eventStore.read({
@@ -416,16 +402,20 @@ export async function projectAgentRunEvents(
   const boundedProjectedRuns = projectedRuns.slice(0, 50);
   return boundedRunEventResponse({
     base: {
-    ok: watch.ok === true && readBack.warnings.length === 0,
+    ok: snapshots.every((snapshot) => !snapshot.warnings.some((warning) => warning.code === "run_observation_failed")) && readBack.warnings.length === 0,
     mode: "project_events",
     sideEffects: ["append_run_events", "write_projection_state"],
     providerKind,
     registryRootDir,
     eventRootDir,
-    totalRuns: watch.totalRuns,
+    totalRuns: listedRunIds.length,
     returnedRuns: snapshots.length,
-    appendedCount: appendResult.appendedCount,
-    skippedDuplicateCount: appendResult.skippedDuplicateCount,
+    appendedCount,
+    skippedDuplicateCount,
+    recoveredAppendedCount,
+    recoveredSkippedDuplicateCount,
+    totalAppendedCount: appendedCount + recoveredAppendedCount,
+    totalSkippedDuplicateCount: skippedDuplicateCount + recoveredSkippedDuplicateCount,
     effectiveEventLimit,
     totalProjectedRuns: projectedRuns.length,
     projectedRunsTruncated: boundedProjectedRuns.length < projectedRuns.length,

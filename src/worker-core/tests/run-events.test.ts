@@ -604,6 +604,20 @@ describe("run events", () => {
 
 class MemoryProjectionStateStore implements RunEventProjectionStateStorePort {
   private readonly states = new Map<string, RunEventProjectionState>();
+  private readonly pending = new Map<string, ReturnType<typeof projectRunObservationEvents>>();
+  private readonly locks = new Map<string, Promise<unknown>>();
+
+  async withProjectionLock<T>(runId: string, operation: () => Promise<T>): Promise<T> {
+    const next = (this.locks.get(runId) ?? Promise.resolve()).catch(() => undefined).then(operation);
+    this.locks.set(runId, next);
+    try { return await next; } finally { if (this.locks.get(runId) === next) this.locks.delete(runId); }
+  }
+  async readPendingProjection(runId: string) { return this.pending.get(runId) ?? null; }
+  async writePendingProjection(projection: ReturnType<typeof projectRunObservationEvents>) {
+    this.pending.set(projection.nextState.runId, projection);
+  }
+  async clearPendingProjection(runId: string) { this.pending.delete(runId); }
+
 
   async readProjectionState(runId: string): Promise<RunEventProjectionState | null> {
     return this.states.get(runId) ?? null;

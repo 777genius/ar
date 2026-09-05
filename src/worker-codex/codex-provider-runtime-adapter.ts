@@ -1,3 +1,4 @@
+import { createCodexGoalObservationContext } from "./application/codex-goal-observation-context";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { SessionArtifact } from "@vioxen/subscription-runtime/core";
@@ -49,6 +50,7 @@ class CodexProviderRuntimeAdapter implements ProviderRuntimeAdapter {
     const staleAfterMs = input.staleAfterMs ?? defaultStaleAfterMs;
     const tailLines = input.tailLines ?? defaultTailLines;
     const adapter = new CodexRunObservationAdapter({
+      observationContext: createCodexGoalObservationContext(),
       registryRootDir,
       ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input.staleAfterMs === undefined ? {} : { staleAfterMs: input.staleAfterMs }),

@@ -144,7 +144,7 @@ export function usage(): string {
   subscription-runtime-codex-goal tail --job-root <dir> --task-id <id> [--lines 100]
   subscription-runtime-codex-goal doctor-control
   subscription-runtime-codex-goal overview [--registry-root <dir>] [--job-prefix <prefix>]
-  subscription-runtime-codex-goal run-watch [jobId] [--provider codex|claude|agent-runtime-task] [--registry-root <dir>] [--state-root <dir>] [--include-log-tail] [--include-changed-files] [--json|--text]
+  subscription-runtime-codex-goal run-watch [jobId] [--cursor <nextCursor>] [--limit <n: default 25, max 100>] [--provider codex|claude|agent-runtime-task] [--registry-root <dir>] [--state-root <dir>] [--include-log-tail] [--include-changed-files] [--json|--text]
   subscription-runtime-codex-goal events [jobId] [--provider codex|claude|local|agent-runtime-task|unknown] [--registry-root <dir>] [--event-root <dir>] [--cursor <cursor>] [--type <event-type>] [--limit 100]
   subscription-runtime-codex-goal state <jobId> [--provider codex|claude|local|agent-runtime-task|unknown] [--registry-root <dir>] [--event-root <dir>]
   subscription-runtime-codex-goal event-compaction-plan [--registry-root <dir>] [--event-root <dir>] [--compact-delivered] [--keep-latest-per-run 100] [--drop-invalid-lines]
@@ -176,7 +176,7 @@ export function usage(): string {
   subscription-runtime-codex-goal prompt <mcp_prompt_name> [--args-json '{"jobId":"..."}' | --args-file args.json]
 
 defaults:
-  --model gpt-5.5 --effort high --service-tier default --execution-engine app-server-goal --timeout 72h --max-account-cycles 5
+  --model gpt-6-astra --effort high --service-tier default --execution-engine app-server-goal --timeout 72h --max-account-cycles 5
   --codex-goal-objective <text> sets a short app-server goal objective, max 4000 chars. Keep long instructions in --prompt.
 
 escape hatches:

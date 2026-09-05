@@ -36,7 +36,14 @@ export function runEventProjectionStateFromEvents(
   events: readonly RunEvent[],
 ): RunEventProjectionState | null {
   const replayed = replayRunObservationSnapshotFromEvents(events);
-  return replayed === null ? null : runEventProjectionStateFromSnapshot(replayed);
+  return replayed === null ? null : {
+    ...runEventProjectionStateFromSnapshot(replayed),
+    revision: events.reduce((latest, event) => {
+      const revision = event.payload.projectionRevision;
+      return typeof revision === "number" && Number.isSafeInteger(revision)
+        ? Math.max(latest, revision) : latest;
+    }, 0),
+  };
 }
 
 function replayRunObservationSnapshotFromEvents(

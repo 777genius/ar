@@ -1,3 +1,4 @@
+import { LocalRunEventProjectionTransaction } from "./local-run-event-projection-transaction";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -31,6 +32,7 @@ import type {
   RunEventDeliveryCursorSnapshot,
   RunEventDeliveryCursorStorePort,
   RunEventProjectionState,
+  RunEventProjectionResult,
   RunEventProjectionStateStorePort,
   RunEventReadModels,
   RunEventReadRequest,
@@ -497,6 +499,16 @@ export class LocalFileRunEventProjectionStateStore
 {
   constructor(private readonly options: LocalFileRunEventStoreOptions) {}
 
+  private transaction() {
+    return new LocalRunEventProjectionTransaction(this.options, (id) => this.statePath(id), parseProjectionState);
+  }
+  withProjectionLock<T>(runId: string, operation: () => Promise<T>): Promise<T> {
+    return this.transaction().withProjectionLock(runId, operation);
+  }
+  readPendingProjection(runId: string) { return this.transaction().readPendingProjection(runId); }
+  writePendingProjection(projection: RunEventProjectionResult) { return this.transaction().writePendingProjection(projection); }
+  clearPendingProjection(runId: string) { return this.transaction().clearPendingProjection(runId); }
+
   async readProjectionState(
     runId: string,
   ): Promise<RunEventProjectionState | null> {
@@ -521,27 +533,12 @@ export class LocalFileRunEventProjectionStateStore
   }
 
   async writeProjectionState(state: RunEventProjectionState): Promise<void> {
-    const path = this.statePath(state.runId);
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    const tempPath = join(dirname(path), `${randomUUID()}.tmp`);
-    try {
-      await writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`, {
-        encoding: "utf8",
-        mode: 0o600,
-      });
-      await rename(tempPath, path);
-    } catch (error) {
-      await rm(tempPath, { force: true });
-      throw error;
-    }
+    await this.transaction().writeAtomic(this.statePath(state.runId), state);
   }
 
   private statePath(runId: string): string {
-    return join(
-      this.options.rootDir,
-      "run-event-projection-state",
-      createHash("sha256").update(runId).digest("hex"),
-    );
+    const key = createHash("sha256").update(runId).digest("hex");
+    return join(this.options.rootDir, "run-event-projection-state", key);
   }
 }
 
@@ -805,6 +802,8 @@ function parseProjectionState(value: unknown): RunEventProjectionState | null {
   ) {
     return null;
   }
+  if (value.revision !== undefined && (typeof value.revision !== "number" ||
+      !Number.isSafeInteger(value.revision) || value.revision < 0)) return null;
   if (!optionalString(value.progressStatus)) return null;
   if (!optionalString(value.progressUpdatedAt)) return null;
   if (!optionalString(value.resultStatus)) return null;
@@ -820,6 +819,7 @@ function parseProjectionState(value: unknown): RunEventProjectionState | null {
   return {
     schemaVersion: 1,
     runId: value.runId,
+    ...(value.revision === undefined ? {} : { revision: value.revision as number }),
     providerKind,
     observedAt: value.observedAt,
     status: value.status,
