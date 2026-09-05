@@ -27,6 +27,7 @@ export async function codexAccountStatusPayload(input: {
   readonly stateRootDir?: string;
   readonly accounts?: readonly string[];
   readonly liveCheck?: boolean;
+  readonly recheckDueCapacity?: boolean;
   readonly codexBinaryPath?: string;
   readonly liveCheckTimeoutMs?: number;
 }) {
@@ -36,6 +37,7 @@ export async function codexAccountStatusPayload(input: {
     ...(input.accounts?.length ? { accounts: input.accounts } : {}),
     ...(input.stateRootDir ? { stateRootDir: input.stateRootDir } : {}),
     ...(input.liveCheck ? { liveCheck: input.liveCheck } : {}),
+    ...(input.recheckDueCapacity ? { recheckDueCapacity: true } : {}),
     ...(input.codexBinaryPath ? { codexBinaryPath: input.codexBinaryPath } : {}),
     ...(input.liveCheckTimeoutMs
       ? { liveCheckTimeoutMs: input.liveCheckTimeoutMs }
@@ -56,6 +58,7 @@ export async function codexAccountStatusPayload(input: {
     ...authRootDiagnostic,
     capacityAware: true,
     liveCheck: Boolean(input.liveCheck),
+    recheckDueCapacity: Boolean(input.recheckDueCapacity),
     ...(input.stateRootDir ? { stateRootDir: input.stateRootDir } : {}),
     count: slots.length,
     available: availableDedupedSlots.length,
