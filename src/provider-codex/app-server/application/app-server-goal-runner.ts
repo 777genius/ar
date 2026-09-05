@@ -278,7 +278,7 @@ export class AppServerGoalRunner {
       if (!goal) {
         throw new Error("codex_app_server_goal_missing");
       }
-      goalUsage = mergeAgentUsage(goalUsage, goal.usage);
+      goalUsage = goal.usage ?? goalUsage;
       if (goal.status === "complete") {
         input.warnings.push(...this.options.client.drainWarnings());
         await this.options.runStore.complete({
@@ -320,6 +320,7 @@ export class AppServerGoalRunner {
     throw goalMaxTurnsExceededError({
       maxGoalTurns: input.maxGoalTurns,
       outputText,
+      ...usageField(preferredUsage(turnUsage, goalUsage)),
     });
   }
 

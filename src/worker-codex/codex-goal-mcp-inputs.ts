@@ -123,6 +123,7 @@ export type AgentRunEventCompactionMcpArgs = JobRegistryMcpArgs & {
 
 export type AgentRunProjectEventsMcpArgs = AgentRunEventsMcpArgs & {
   readonly hostId?: string;
+  readonly eventLimit?: number;
 };
 
 export type JobIdMcpArgs = JobRegistryMcpArgs & {
@@ -285,9 +286,17 @@ export type JobLifecycleMcpArgs = JobIdMcpArgs & {
 export type JobBriefMcpArgs = JobIdMcpArgs & {
   readonly staleAfterMs?: number;
   readonly tailLines?: number;
+  readonly includeLogTail?: boolean;
+  readonly detail?: CodexGoalBriefDetail;
+  readonly afterRevision?: string;
   readonly targetCommit?: string;
   readonly targetWorkspacePath?: string;
 };
+
+export enum CodexGoalBriefDetail {
+  Compact = "compact",
+  Full = "full",
+}
 
 export type JobResultReconcileMcpArgs = JobBriefMcpArgs & {
   readonly forceWrite?: boolean;

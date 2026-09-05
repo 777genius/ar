@@ -82,7 +82,7 @@ export function registerCodexGoalRunEventTools(
   const agentRunEventsTool = {
     title: "Agent Run Events",
     description:
-      "Read normalized durable run events from the local outbox. This is read-only and does not observe, start, stop, continue or recover workers.",
+      "Read normalized durable run events from the local outbox in pages of 100 events by default (maximum 500). Pass nextCursor as cursor until hasMore is false. This is read-only and does not observe, start, stop, continue or recover workers.",
     inputSchema: {
       ...jobRegistryInputSchema(),
       providerKind: z.string().optional(),
@@ -91,7 +91,7 @@ export function registerCodexGoalRunEventTools(
       cursor: z.string().optional(),
       type: z.union([z.string(), z.array(z.string())]).optional(),
       types: z.union([z.string(), z.array(z.string())]).optional(),
-      limit: z.number().int().positive().optional(),
+      limit: z.number().int().positive().max(500).optional(),
     },
   };
 
@@ -110,7 +110,7 @@ export function registerCodexGoalRunEventTools(
       ...agentRunEventsTool,
       title: "Codex Goal Events",
       description:
-        "Read normalized durable Codex goal run events from the local outbox. This is read-only and does not observe, start, stop, continue or recover workers.",
+        "Read normalized durable Codex goal run events from the local outbox in pages of 100 events by default (maximum 500). Pass nextCursor as cursor until hasMore is false. This is read-only and does not observe, start, stop, continue or recover workers.",
     },
     async (args) => withMcpErrors(async () => {
       const events = await readAgentRunEvents({
@@ -210,11 +210,13 @@ export function registerCodexGoalRunEventTools(
   const agentRunProjectEventsTool = {
     title: "Agent Run Project Events",
     description:
-      "Observe runs and project normalized durable RunEvent records into the local outbox. This writes event/projection state only; it does not start, stop, continue or recover workers.",
+      "Observe runs and project normalized durable RunEvent records into the local outbox, returning an event page of 100 by default (maximum 500). limit selects runs; eventLimit bounds returned events. Pass nextCursor as cursor until hasMore is false. This writes event/projection state only; it does not start, stop, continue or recover workers.",
     inputSchema: {
       ...agentRunWatchTool.inputSchema,
       eventRootDir: z.string().optional(),
       hostId: z.string().optional(),
+      cursor: z.string().optional(),
+      eventLimit: z.number().int().positive().max(500).optional(),
       type: z.union([z.string(), z.array(z.string())]).optional(),
       types: z.union([z.string(), z.array(z.string())]).optional(),
     },
@@ -238,7 +240,7 @@ export function registerCodexGoalRunEventTools(
       ...agentRunProjectEventsTool,
       title: "Codex Goal Project Events",
       description:
-        "Observe Codex goal runs and project normalized durable RunEvent records into the local outbox. This writes event/projection state only; it does not start, stop, continue or recover workers.",
+        "Observe Codex goal runs and project normalized durable RunEvent records into the local outbox, returning an event page of 100 by default (maximum 500). limit selects runs; eventLimit bounds returned events. Pass nextCursor as cursor until hasMore is false. This writes event/projection state only; it does not start, stop, continue or recover workers.",
     },
     async (args) => withMcpErrors(async () => {
       const projected = await projectAgentRunEvents({

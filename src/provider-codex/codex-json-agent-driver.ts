@@ -20,6 +20,7 @@ import {
   defaultCodexModel,
 } from "./capabilities";
 import { classifyCodexFailure } from "./failure-classifier";
+import { AppServerGoalMaxTurnsExceededError } from "./app-server/domain/app-server-goal-policy";
 import {
   type CodexExecutionEngine,
   type CodexMaterializedSession,
@@ -248,6 +249,9 @@ export class CodexJsonAgentDriver implements AgentDriver {
         telemetry: {
           durationMs: Date.now() - startedAt,
           finishReason: finishReasonForFailure(failure.failure.code),
+          ...(error instanceof AppServerGoalMaxTurnsExceededError && error.usage
+            ? { usage: error.usage }
+            : {}),
         },
       };
     } finally {
@@ -393,6 +397,9 @@ export class CodexJsonAgentDriver implements AgentDriver {
         telemetry: {
           durationMs: Date.now() - startedAt,
           finishReason: finishReasonForFailure(failure.failure.code),
+          ...(error instanceof AppServerGoalMaxTurnsExceededError && error.usage
+            ? { usage: error.usage }
+            : {}),
         },
       };
     } finally {

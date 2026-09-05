@@ -69,6 +69,14 @@ subscription-runtime-codex-goal tool codex_goal_continue --args-json '{"jobId":"
    stop and resolve the single-writer conflict before continuing any job.
 3. Call `codex_goal_get_job({ jobId })`.
 4. Call `codex_goal_brief({ jobId })`.
+   The default `detail: "compact"` omits logs and verbose diagnostics. Save the
+   returned `revision` and pass it as `afterRevision` on subsequent polls.
+   `unchanged: true` contains no repeated `brief` or `status`; retain the previous
+   snapshot. Heartbeat timestamps alone do not change this revision, but stale,
+   liveness, result, safety and next-action transitions do.
+   Poll later with backoff while unchanged; avoid repeating overview, manifest,
+   decision and log calls on every poll. Use `detail: "full"` when diagnostic
+   fields are needed, or `includeLogTail: true` for an explicit bounded log tail.
 5. Call `codex_goal_decision({ jobId })` when you need to act. It returns
    `decision.action`, `decision.severity`, `decision.blockers`, `decision.evidence`,
    `decision.checklist` and `decision.nextBestCommand`.
@@ -85,6 +93,7 @@ subscription-runtime-codex-goal tool codex_goal_continue --args-json '{"jobId":"
    `brief.lifecycleMarkers` and `codex_goal_overview.jobs[].lifecycleMarkers`
    show existing pause, review and stop markers so agents do not have to inspect
    jobRootDir by hand.
+   Request `codex_goal_brief({ jobId, detail: "full" })` for these diagnostics.
    Prefer `brief.progressUpdatedAt` and `brief.progressHeartbeatAgeMs` over
    stdout silence when deciding whether a worker is actually stale.
    If stdout log is empty, inspect `brief.runtimeEventsPath`,
@@ -108,6 +117,19 @@ Use exact Codex model IDs. GPT-5.6 Sol is `gpt-5.6-sol`, not `gpt-5.6`, and
 requires Codex CLI `0.144.0` or newer. Availability remains account-specific;
 on a model rejection, the app-server runtime reports the current account's
 `model/list` catalog instead of silently selecting another model.
+
+Keep an explicit `codexGoalObjective` short (at most 4000 characters). The full
+task belongs in `promptPath`. If the objective is omitted, the runner generates
+a short reference to the full initial task and its acceptance criteria, preserving
+the complete task instructions in the first message.
+
+For event history, `agent_run_events` / `codex_goal_events` return 100 events by
+default, at most 500. Pass `nextCursor` as `cursor` on the next call; `hasMore` is
+conservative and a full final page can require one empty follow-up. Projection
+tools use `eventLimit` for returned events and retain `limit` for run selection.
+These cursors do not replace a fresh decision before a lifecycle action.
+
+See [long-session audit](codex-long-session-audit.md) for measurements and limits.
 
 Create one stored job per logical goal and per writer worktree:
 

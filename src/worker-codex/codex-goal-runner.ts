@@ -63,6 +63,7 @@ import {
   changedFilesFromWorkspace,
   uniqueStrings,
 } from "./codex-goal-workspace-changes";
+import { resolveCodexGoalObjective } from "./codex-goal-objective";
 export type {
   CodexGoalRuntimeEvent,
   CodexGoalRuntimeEventLevel,
@@ -322,7 +323,7 @@ export async function runCodexGoal(
       }),
       metadata: {
         goal: config.goalSummary ?? config.taskId,
-        codexGoalObjective: config.codexGoalObjective ?? prompt,
+        codexGoalObjective: resolveCodexGoalObjective(config),
       },
     });
     await resultRecorder.record(await codexRuntimeResultInput({

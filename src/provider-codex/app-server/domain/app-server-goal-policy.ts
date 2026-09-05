@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { ManagedRunInputRequest } from "@vioxen/subscription-runtime/core";
+import type {
+  AgentUsage,
+  ManagedRunInputRequest,
+} from "@vioxen/subscription-runtime/core";
 import {
   appServerGoalObjectiveMaxChars,
   type CodexThreadGoal,
@@ -44,13 +47,50 @@ export function goalInputRequest(input: {
 export function goalMaxTurnsExceededError(input: {
   readonly maxGoalTurns: number;
   readonly outputText: string;
-}): Error {
-  const error = new Error(
-    `codex_app_server_goal_max_turns_exceeded:${input.maxGoalTurns}`,
-  ) as Error & { lastOutputText?: string };
-  const outputText = input.outputText.trim();
-  if (outputText) error.lastOutputText = outputText;
-  return error;
+  readonly usage?: AgentUsage;
+}): AppServerGoalMaxTurnsExceededError {
+  return new AppServerGoalMaxTurnsExceededError(input);
+}
+
+export class AppServerGoalMaxTurnsExceededError extends Error {
+  readonly lastOutputText?: string;
+  readonly usage?: AgentUsage;
+
+  constructor(input: {
+    readonly maxGoalTurns: number;
+    readonly outputText: string;
+    readonly usage?: AgentUsage;
+  }) {
+    super(`codex_app_server_goal_max_turns_exceeded:${input.maxGoalTurns}`);
+    this.name = "AppServerGoalMaxTurnsExceededError";
+    const outputText = input.outputText.trim();
+    if (outputText) this.lastOutputText = outputText;
+    const usage = sanitizedAgentUsage(input.usage);
+    if (usage) this.usage = usage;
+  }
+}
+
+function sanitizedAgentUsage(usage: AgentUsage | undefined): AgentUsage | undefined {
+  if (usage === undefined) return undefined;
+  const inputTokens = sanitizedTokenCount(usage.inputTokens);
+  const outputTokens = sanitizedTokenCount(usage.outputTokens);
+  const totalTokens = sanitizedTokenCount(usage.totalTokens);
+  if (
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    totalTokens === undefined
+  ) return undefined;
+  return {
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+  };
+}
+
+function sanitizedTokenCount(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
 }
 
 export function formatGoalSetError(

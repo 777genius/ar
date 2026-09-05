@@ -45,6 +45,7 @@ import {
 } from "./codex-goal-ops";
 import { codexGoalProgressPath } from "./codex-goal-runner";
 import { isCodexGoalHeartbeatOnlyNoOutput } from "./application/codex-goal-decision";
+import { boundCodexGoalLogTailText } from "./codex-goal-log-tail";
 
 const defaultAuthRoot = "~/.cache/subscription-runtime/live-codex-auth";
 const defaultStaleAfterMs = 10 * 60_000;
@@ -453,7 +454,11 @@ export class CodexRunObservationAdapter implements RunObservationPort {
       return {
         ...log,
         tailLines: lines,
-        tail: this.redactor.redact(await tailCodexGoalLog(input.status.logPath, lines)),
+        tail: boundCodexGoalLogTailText(
+          this.redactor.redact(
+            await tailCodexGoalLog(input.status.logPath, lines),
+          ),
+        ),
         ...(input.status.logByteLength === undefined
           ? {}
           : { truncated: input.status.logByteLength > 0 }),
