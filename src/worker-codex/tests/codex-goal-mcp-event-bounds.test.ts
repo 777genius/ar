@@ -10,6 +10,7 @@ import {
   type RunEvent,
 } from "@vioxen/subscription-runtime/worker-core";
 import { mcpJson } from "../codex-goal-mcp-response";
+import { boundedRunEventResponse } from "../codex-goal-mcp-run-event-response";
 import {
   compactAgentRunEvents,
   planAgentRunEventCompaction,
@@ -27,6 +28,44 @@ afterEach(async () => {
 });
 
 describe("Codex goal MCP event history bounds", () => {
+  it("bounds deeply nested projected-run metadata without changing small responses", () => {
+    const small = boundedRunEventResponse({
+      base: {
+        ok: true,
+        mode: "project_events",
+        projectedRuns: [{
+          status: "stopped",
+          readModels: { liveness: { status: "dead" } },
+        }],
+      },
+      read: { events: [], warnings: [], hasMore: false, eventCursors: [] },
+      effectiveLimit: 100,
+    });
+    expect(small.projectedRuns).toEqual([expect.objectContaining({
+      status: "stopped",
+      readModels: { liveness: { status: "dead" } },
+    })]);
+
+    const response = boundedRunEventResponse({
+      base: {
+        ok: true,
+        mode: "project_events",
+        projectedRuns: Array.from({ length: 50 }, () => ({
+          readModels: nestedMetadata(10),
+        })),
+      },
+      read: {
+        events: [],
+        warnings: [],
+        hasMore: false,
+        eventCursors: [],
+      },
+      effectiveLimit: 100,
+    });
+
+    expect(envelopeBytes(response)).toBeLessThanOrEqual(MCP_ENVELOPE_MAX_BYTES);
+  });
+
   it("bounds warning floods for compaction planning, execution, and state replay", async () => {
     const fixture = await eventLogFixture();
     const replayable = makeRunEvent({
@@ -310,4 +349,13 @@ function eventIds(page: Readonly<Record<string, unknown>>): string[] {
 function omittedEventIds(page: Readonly<Record<string, unknown>>): string[] {
   return ((page.omittedEvents ?? []) as readonly { readonly eventId: string }[])
     .map((item) => item.eventId);
+}
+
+function nestedMetadata(depth: number): unknown {
+  if (depth === 0) return { status: "alive" };
+  const child = nestedMetadata(depth - 1);
+  return Object.fromEntries(Array.from({ length: 10 }, (_, index) => [
+      `branch-${index}`,
+      child,
+    ]));
 }

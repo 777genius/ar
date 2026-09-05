@@ -16,7 +16,7 @@ const MCP_WARNING_SAMPLES = 20;
 type JsonObject = Readonly<Record<string, unknown>>;
 
 export function boundedEventHistoryMetadataResponse(value: JsonObject): JsonObject {
-  const bounded = boundMetadata(value, 0) as JsonObject;
+  const bounded = boundMetadata(value, 0, { remaining: 8_000 }) as JsonObject;
   if (mcpSerializedBytes(bounded) <= MCP_RESPONSE_MAX_BYTES) return bounded;
   const details = isObject(value.plan)
     ? value.plan
@@ -256,7 +256,7 @@ function boundedString(value: string): string {
 }
 
 function boundedBase(value: JsonObject): JsonObject {
-  const bounded = boundMetadata(value, 0) as Record<string, unknown>;
+  const bounded = boundMetadata(value, 0, { remaining: 8_000 }) as Record<string, unknown>;
   const projectedRuns = Array.isArray(bounded.projectedRuns)
     ? bounded.projectedRuns as unknown[]
     : undefined;
@@ -275,17 +275,23 @@ function boundedBase(value: JsonObject): JsonObject {
   };
 }
 
-function boundMetadata(value: unknown, depth: number): unknown {
+function boundMetadata(
+  value: unknown,
+  depth: number,
+  budget: { remaining: number },
+): unknown {
+  if (budget.remaining <= 0) return "[metadata truncated]";
+  budget.remaining -= 1;
   if (typeof value === "string") return boundedString(value);
   if (value === null || typeof value !== "object") return value;
-  if (depth >= 4) return "[metadata truncated]";
+  if (depth >= 8) return "[metadata truncated]";
   if (Array.isArray(value)) {
-    return value.slice(0, 50).map((item) => boundMetadata(item, depth + 1));
+    return value.slice(0, 50).map((item) => boundMetadata(item, depth + 1, budget));
   }
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
       .slice(0, 50)
-      .map(([key, item]) => [key, boundMetadata(item, depth + 1)]),
+      .map(([key, item]) => [key, boundMetadata(item, depth + 1, budget)]),
   );
 }
 

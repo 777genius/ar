@@ -135,6 +135,13 @@ describe("bounded MCP run event output", () => {
       hasMore: true,
     });
     expectCursorLine(projected.nextCursor as string, 7);
+    expect(projected.projectedRuns).toEqual([
+      expect.objectContaining({
+        readModels: expect.objectContaining({
+          liveness: expect.objectContaining({ status: expect.any(String) }),
+        }),
+      }),
+    ]);
     expect((projected.events as readonly { eventId: string }[]).map((item) => item.eventId))
       .toEqual(existing.slice(4, 7).map((item) => item.eventId));
   });

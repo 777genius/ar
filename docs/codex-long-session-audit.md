@@ -148,14 +148,18 @@ reduce billed tokens.
   canaries additionally covered warning floods, oversized escaped UTF-8 payloads
   and a 5 MiB corrupt line. Each complete MCP envelope stayed below 64 KiB and
   pagination returned the trailing valid event exactly once.
+- Full CI additionally caught a projection compatibility regression: compact
+  metadata had dropped the stopped worker's liveness read model. Restoring that
+  small read model preserves stop/restart consumers within the response budget.
 - Model split observations: the goal implementation lane produced its first
   patch in approximately four minutes. Its three new objective cases passed
   initially; the complete runner suite needed one unrelated macOS temporary-path
   alias assertion correction. Medium implementation and xhigh review were used;
   no controlled cost/speed comparison was performed.
-- This report records source verification. Hosted activation is recorded
-  separately in each immutable release's `release.json` and
-  `activation-receipt.json`, keyed by exact commit and tree SHA. No live paid
+- This report records source verification. Hosted verification is recorded in
+  each immutable release's `release.json`; its `activation-receipt.json` link
+  resolves to the external activation journal. Both bind exact commit and tree
+  SHA, and activation also binds the complete installed manifest. No live paid
   worker or real-project runtime was used for validation.
 
 ## Hosted release selection
@@ -170,4 +174,8 @@ explicit version pin also intentionally overrides the default where supported.
 Release activation uses an exact main commit and verified Git bundle, with
 separate build/verification receipts and atomic current/previous symlinks.
 The previous release remains available for rollback. Updating a release never
-rebuilds the live current directory in place.
+rebuilds the live current directory in place. Failed staging cleans its temporary
+directory; retries validate an existing final artifact. Activation can recover
+after a symlink switch without overwriting the previous release. Runtime files,
+dependencies and provenance are read-only; mutable activation receipts live
+outside that payload.

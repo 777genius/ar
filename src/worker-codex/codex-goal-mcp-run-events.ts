@@ -394,6 +394,7 @@ export async function projectAgentRunEvents(
       eventTypes: projection.events.map((event) => event.type),
       decision: snapshot.readOnlyDecision.kind,
       status: snapshot.status,
+      readModels: projection.nextState.readModels,
     };
   });
   const projectedRunIds = snapshots.map((snapshot) => snapshot.runId);
