@@ -24,6 +24,10 @@ artifacts only. No production worker or real project runtime was launched.
 | Event-log directory locks expired during long operations | A competing writer could reclaim a live lock and corrupt append/compaction ordering | Renew the owned directory inode; protect live same-host owners and fence recovery/release with owner tokens |
 | Repeated transitions reused event IDs, including clean/dirty and unsafe/watch cycles | Replay could retain an earlier workspace or safety state | Persist a monotonic projection revision; serialize observation and projection per run; recover pending events before publishing projection state |
 | Control views rescanned every receipt for every signal | Inbox processing became quadratic in history size | Index receipts once per snapshot and reuse reconciled views for observation |
+| Projection state and locks used only the run ID in a shared outbox | Equal IDs from different providers or registries could overwrite state or suppress events | Scope state, pending transactions, locks, replay and compaction by provider plus registry; migrate only source-proven legacy transactions |
+| Lifecycle-only observations emitted no new event | Replay could retain stale or alive status after recovery or completion | Emit semantic lifecycle observations, including cleared stale flags, without emitting heartbeat-age noise |
+| Interrupt monitoring discarded the signal's attempt/session constraints | A signal for an old attempt could interrupt a newer one | Intersect monitor and signal targets; require specified registry fields to be known and equal |
+| Inbox polling reread every historical payload and accepted claim | Repeated parsing and disk reads grew with retained history | Use a bounded process-local cache validated by file identity, size and nanosecond modification/change times; preserve all claim tombstones and receipt history |
 | Run-watch observed the whole registry concurrently and returned every snapshot | Large registries caused process bursts and growing tool responses | Bound observation concurrency and reuse process/workspace context; return pages of 25 runs by default, maximum 100, within a 64 KiB complete MCP envelope |
 
 Log redaction is also applied to direct CLI tail, the tail use case and orphan
@@ -46,6 +50,7 @@ counts, account charges or measured production savings.
 | 10,000 corrupt lines followed by one valid event | 969,303 bytes of inner result JSON in the original reproduction | Two progressing pages; largest complete MCP envelope 5484 bytes; valid event returned exactly once |
 | 1000 fake jobs observed through run-watch | 1000 simultaneous observations | At most 4 simultaneous observations; all 1000 visited through bounded pages |
 | 5000 signals plus 5000 receipts, instrumented receipt-ID reads | 25,000,000 reads | 10,000 reads with equivalent signal states, ordering and filters |
+| 1000 delivered signals and accepted claims, eight warm empty polls | 8016 payload reads / 15,656,960 bytes | Zero payload reads / zero bytes, with complete receipt history retained |
 
 The brief regression fixture lives in
 `src/worker-codex/tests/codex-goal-mcp-brief-response.test.ts`; log and pagination
@@ -112,6 +117,14 @@ reduce billed tokens.
   a second persistent source of truth. Compaction remains an explicit operation
   governed by delivery cursors; this patch does not silently delete history.
   Its exact ID set still uses memory proportional to retained history.
+- Inbox caching retains at most 4096 file entries and 16 MiB of source payload
+  bytes; parsed JavaScript objects have additional memory overhead. Polling still
+  scans metadata and clones records in O(history). Cold starts, edits, replacements
+  and capacity eviction require fresh reads; histories larger than cache capacity
+  can lose most of the benefit. No claim tombstone or receipt is deleted.
+- Legacy unscoped projection state is rebuilt only from an exact-source journal
+  with a provable initial observation. A compacted or ambiguous baseline reports
+  an explicit migration error instead of adopting another source's state.
 - Internal event replay remains complete. MCP scan/response caps apply at the
   observation boundary; a caller requesting full internal history still incurs
   work proportional to that history.
@@ -174,6 +187,14 @@ reduce billed tokens.
   49/49. Review caught cursor progress, CLI cursor forwarding, oversized
   metadata and capacity-effort consistency defects; all were corrected before
   delivery. Independent event and monitor review found no remaining P1/P2.
+- The state/control follow-up used two `gpt-6-astra/medium` implementation
+  agents and independent `gpt-6-astra/xhigh` review. The control patch arrived in
+  roughly five minutes; its initial 10/10 targeted cases passed, with 39/39 in the
+  final suite. Event implementation took roughly 35 minutes; the initial 33/35
+  run required two expected lifecycle-event assertion updates, with 49/49 in the
+  final suite. Review caught unknown-session matching, provider-discovery lock
+  ordering, duplicate legacy-WAL recovery and unscoped SDK compatibility before
+  release. These observations are not a controlled model cost comparison.
 - This report records source verification. Hosted verification is recorded in
   each immutable release's `release.json`; its `activation-receipt.json` link
   resolves to the external activation journal. Both bind exact commit and tree

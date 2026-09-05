@@ -198,10 +198,23 @@ export async function readAgentRunState(
   const stateStore = new LocalFileRunEventProjectionStateStore({
     rootDir: eventRootDir,
   });
-  const state = await stateStore.readProjectionState(runId);
+  let resolvedProvider = providerKind;
+  if (resolvedProvider === undefined) {
+    const candidates = new Set<RunEventProviderKind>();
+    const history = await new LocalFileRunEventStore({ rootDir: eventRootDir }).read({ runId, sourceRegistryRootDir: registryRootDir });
+    for (const event of history.events) candidates.add(event.source.providerKind);
+    for (const kind of Object.values(RunEventProviderKind)) {
+      if (await stateStore.readProjectionState(runId, { providerKind: kind, registryRootDir })) candidates.add(kind);
+    }
+    if (candidates.size > 1) return { ok: false, mode: "read_only_state", sideEffects: [], runId,
+      reason: "run_event_state_source_ambiguous", safeMessage: "Specify providerKind for this registry and run." };
+    resolvedProvider = [...candidates][0] ?? RunEventProviderKind.Codex;
+  }
+  const source = { providerKind: resolvedProvider, registryRootDir };
+  const state = await stateStore.readProjectionState(runId, source);
   if (state === null) {
     const eventStore = new LocalFileRunEventStore({ rootDir: eventRootDir });
-    const read = await eventStore.read({ runId, maxWarnings: MAX_MCP_WARNINGS });
+    const read = await eventStore.read({ runId, sourceProviderKind: source.providerKind, sourceRegistryRootDir: registryRootDir, maxWarnings: MAX_MCP_WARNINGS });
     const replayed = projectRunReadModelsFromEvents(read.events);
     if (
       replayed !== null &&
@@ -362,7 +375,7 @@ export async function projectAgentRunEvents(
         return snapshot;
       },
     },
-    eventStore, stateStore, registryRootDir,
+    eventStore, stateStore, registryRootDir, providerKind,
     ...(stringValue(args.hostId) === undefined ? {} : { hostId: stringValue(args.hostId) as string }),
   });
   for (const runId of runIds) {

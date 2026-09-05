@@ -1,3 +1,5 @@
+import { RunProcessAliveReason, RunProcessSupervisorKind } from "./run-observability";
+import { sameRunEventSource } from "./run-event-source";
 import type {
   RunCapacityHint,
   RunControlInboxSummary,
@@ -38,6 +40,7 @@ export function runEventProjectionStateFromEvents(
   const replayed = replayRunObservationSnapshotFromEvents(events);
   return replayed === null ? null : {
     ...runEventProjectionStateFromSnapshot(replayed),
+    source: events[0]!.source,
     revision: events.reduce((latest, event) => {
       const revision = event.payload.projectionRevision;
       return typeof revision === "number" && Number.isSafeInteger(revision)
@@ -52,7 +55,10 @@ function replayRunObservationSnapshotFromEvents(
   const first = events[0];
   if (first === undefined) return null;
   const runId = first.runId;
-  const sourceEvents = events.filter((event) => event.runId === runId);
+  if (events.some(event => event.runId !== runId || !sameRunEventSource(event.source, first.source))) {
+    throw new Error("run_event_replay_source_mismatch");
+  }
+  const sourceEvents = events;
   const latest = sourceEvents[sourceEvents.length - 1] ?? first;
   let status: RunObservationSnapshot["status"] = "unknown";
   let liveness: RunObservationSnapshot["liveness"] = "unknown";
@@ -65,6 +71,7 @@ function replayRunObservationSnapshotFromEvents(
   };
   let workspace: RunObservationWorkspace | undefined;
   let progress: RunObservationProgress | undefined;
+  let process: RunObservationSnapshot["process"];
   let result: RunObservationResult | undefined;
   let logs: RunLogExcerpt | undefined;
   let capacity: readonly RunCapacityHint[] | undefined;
@@ -73,6 +80,17 @@ function replayRunObservationSnapshotFromEvents(
   for (const event of sourceEvents) {
     switch (event.type) {
       case RunEventType.ObservationRecorded:
+        if (event.payload.progress !== undefined) progress = progressFromPayload(objectFromJson(event.payload.progress) ?? {});
+        if (event.payload.process !== undefined) {
+          const value = objectFromJson(event.payload.process) ?? {};
+          const alive = booleanFromJson(value.alive), pid = numberFromJson(value.pid);
+          const aliveReason = stringFromJson(value.aliveReason) as RunProcessAliveReason | undefined;
+          const supervisor = stringFromJson(value.supervisor) as RunProcessSupervisorKind | undefined;
+          process = { ...(alive === undefined ? {} : { alive }), ...(pid === undefined ? {} : { pid }),
+            ...(aliveReason !== undefined && Object.values(RunProcessAliveReason).includes(aliveReason) ? { aliveReason } : {}),
+            ...(supervisor !== undefined && Object.values(RunProcessSupervisorKind).includes(supervisor) ? { supervisor } : {}),
+          };
+        }
         status = observationStatusFromPayload(event.payload) ?? status;
         liveness = observationLivenessFromPayload(event.payload) ?? liveness;
         readOnlyDecision = decisionFromPayload(event.payload) ?? readOnlyDecision;
@@ -172,6 +190,7 @@ function replayRunObservationSnapshotFromEvents(
     readOnlyDecision,
     ...(workspace === undefined ? {} : { workspace }),
     ...(progress === undefined ? {} : { progress }),
+    ...(process === undefined ? {} : { process }),
     ...(result === undefined ? {} : { result }),
     ...(logs === undefined ? {} : { logs }),
     ...(capacity === undefined ? {} : { capacity }),

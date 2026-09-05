@@ -1,20 +1,11 @@
-import { LocalRunEventProjectionTransaction } from "./local-run-event-projection-transaction";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import {
   parseRunEvent,
-  runEventProviderKindFromString,
-  RunAccountCapacityStatus,
+  runEventSourceKey,
   RunEventCompactionSafetyMode,
-  RunControlInboxStatus,
-  RunLivenessStatus,
-  RunOutcomeStatus,
-  RunRuntimeIssueKind,
-  RunSafetyConfidence,
-  RunSafetyStatus,
-  RunWorkspaceStatus,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
   localRunEventLogDefaultLockAcquireTimeoutMs as defaultLockAcquireTimeoutMs,
@@ -31,10 +22,6 @@ import type {
   RunEventDeliveryCursorRewrite,
   RunEventDeliveryCursorSnapshot,
   RunEventDeliveryCursorStorePort,
-  RunEventProjectionState,
-  RunEventProjectionResult,
-  RunEventProjectionStateStorePort,
-  RunEventReadModels,
   RunEventReadRequest,
   RunEventReadResult,
   RunEventReadWarning,
@@ -494,53 +481,7 @@ function runEventRunIdFilter(
   };
 }
 
-export class LocalFileRunEventProjectionStateStore
-  implements RunEventProjectionStateStorePort
-{
-  constructor(private readonly options: LocalFileRunEventStoreOptions) {}
-
-  private transaction() {
-    return new LocalRunEventProjectionTransaction(this.options, (id) => this.statePath(id), parseProjectionState);
-  }
-  withProjectionLock<T>(runId: string, operation: () => Promise<T>): Promise<T> {
-    return this.transaction().withProjectionLock(runId, operation);
-  }
-  readPendingProjection(runId: string) { return this.transaction().readPendingProjection(runId); }
-  writePendingProjection(projection: RunEventProjectionResult) { return this.transaction().writePendingProjection(projection); }
-  clearPendingProjection(runId: string) { return this.transaction().clearPendingProjection(runId); }
-
-  async readProjectionState(
-    runId: string,
-  ): Promise<RunEventProjectionState | null> {
-    const path = this.statePath(runId);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(await readFile(path, "utf8"));
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") return null;
-      if (error instanceof SyntaxError) {
-        await rm(path, { force: true });
-        return null;
-      }
-      throw error;
-    }
-    const state = parseProjectionState(parsed);
-    if (!state || state.runId !== runId) {
-      await rm(path, { force: true });
-      return null;
-    }
-    return state;
-  }
-
-  async writeProjectionState(state: RunEventProjectionState): Promise<void> {
-    await this.transaction().writeAtomic(this.statePath(state.runId), state);
-  }
-
-  private statePath(runId: string): string {
-    const key = createHash("sha256").update(runId).digest("hex");
-    return join(this.options.rootDir, "run-event-projection-state", key);
-  }
-}
+export { LocalFileRunEventProjectionStateStore } from "./local-run-event-projection-state-store";
 
 export class LocalFileRunEventDeliveryCursorStore
   implements RunEventDeliveryCursorStorePort
@@ -634,9 +575,10 @@ function latestLineIndexesByRun(
   const byRun = new Map<string, EventLogLineRecord[]>();
   for (const record of records) {
     if (!record.event) continue;
-    const existing = byRun.get(record.event.runId) ?? [];
+    const key = JSON.stringify([record.event.runId, runEventSourceKey(record.event.source)]);
+    const existing = byRun.get(key) ?? [];
     existing.push(record);
-    byRun.set(record.event.runId, existing);
+    byRun.set(key, existing);
   }
   for (const recordsForRun of byRun.values()) {
     for (const record of recordsForRun.slice(-keepLatestEventsPerRun)) {
@@ -790,211 +732,9 @@ async function writeDeliveryCursorFile(
 }
 
 
-function parseProjectionState(value: unknown): RunEventProjectionState | null {
-  if (!isRecord(value)) return null;
-  if (
-    value.schemaVersion !== 1 ||
-    typeof value.runId !== "string" ||
-    typeof value.providerKind !== "string" ||
-    typeof value.observedAt !== "string" ||
-    typeof value.status !== "string" ||
-    typeof value.liveness !== "string"
-  ) {
-    return null;
-  }
-  if (value.revision !== undefined && (typeof value.revision !== "number" ||
-      !Number.isSafeInteger(value.revision) || value.revision < 0)) return null;
-  if (!optionalString(value.progressStatus)) return null;
-  if (!optionalString(value.progressUpdatedAt)) return null;
-  if (!optionalString(value.resultStatus)) return null;
-  if (!optionalString(value.resultReason)) return null;
-  if (!optionalString(value.resultUpdatedAt)) return null;
-  if (!optionalNumber(value.logByteLength)) return null;
-  if (!optionalString(value.workspaceSignature)) return null;
-  if (!optionalString(value.capacitySignature)) return null;
-  if (!optionalString(value.controlInboxSignature)) return null;
-  if (!optionalString(value.decisionKind)) return null;
-  if (!optionalString(value.decisionReason)) return null;
-  const providerKind = runEventProviderKindFromString(value.providerKind);
-  return {
-    schemaVersion: 1,
-    runId: value.runId,
-    ...(value.revision === undefined ? {} : { revision: value.revision as number }),
-    providerKind,
-    observedAt: value.observedAt,
-    status: value.status,
-    liveness: value.liveness,
-    ...(value.progressStatus === undefined
-      ? {}
-      : { progressStatus: value.progressStatus }),
-    ...(value.progressUpdatedAt === undefined
-      ? {}
-      : { progressUpdatedAt: value.progressUpdatedAt }),
-    ...(value.resultStatus === undefined ? {} : { resultStatus: value.resultStatus }),
-    ...(value.resultReason === undefined ? {} : { resultReason: value.resultReason }),
-    ...(value.resultUpdatedAt === undefined
-      ? {}
-      : { resultUpdatedAt: value.resultUpdatedAt }),
-    ...(value.logByteLength === undefined
-      ? {}
-      : { logByteLength: value.logByteLength }),
-    ...(value.workspaceSignature === undefined
-      ? {}
-      : { workspaceSignature: value.workspaceSignature }),
-    ...(value.capacitySignature === undefined
-      ? {}
-      : { capacitySignature: value.capacitySignature }),
-    ...(value.controlInboxSignature === undefined
-      ? {}
-      : { controlInboxSignature: value.controlInboxSignature }),
-    ...(value.decisionKind === undefined ? {} : { decisionKind: value.decisionKind }),
-    ...(value.decisionReason === undefined
-      ? {}
-      : { decisionReason: value.decisionReason }),
-    readModels: parseReadModels(value.readModels) ?? unknownReadModels({
-      runId: value.runId,
-      providerKind,
-      observedAt: value.observedAt,
-      ...(value.decisionReason === undefined ? {} : { reason: value.decisionReason }),
-    }),
-  };
-}
-
-function parseReadModels(value: unknown): RunEventReadModels | null {
-  if (!isRecord(value) || value.schemaVersion !== 1) return null;
-  if (
-    typeof value.runId !== "string" ||
-    typeof value.providerKind !== "string" ||
-    typeof value.observedAt !== "string" ||
-    !isRecord(value.safety) ||
-    !isRecord(value.liveness) ||
-    !isRecord(value.workspace) ||
-    !isRecord(value.accountCapacity) ||
-    !isRecord(value.outcome) ||
-    !isRecord(value.controlInbox)
-  ) {
-    return null;
-  }
-  if (!Object.values(RunSafetyStatus).includes(value.safety.status as RunSafetyStatus)) {
-    return null;
-  }
-  if (
-    typeof value.safety.safeToContinue !== "boolean" ||
-    typeof value.safety.reviewOnly !== "boolean" ||
-    typeof value.safety.issueKind !== "string" ||
-    !Object.values(RunRuntimeIssueKind).includes(
-      value.safety.issueKind as RunRuntimeIssueKind,
-    ) ||
-    typeof value.safety.reason !== "string" ||
-    typeof value.safety.confidence !== "string" ||
-    !Object.values(RunSafetyConfidence).includes(
-      value.safety.confidence as RunSafetyConfidence,
-    ) ||
-    !stringArray(value.safety.evidence)
-  ) {
-    return null;
-  }
-  if (!Object.values(RunLivenessStatus).includes(value.liveness.status as RunLivenessStatus)) {
-    return null;
-  }
-  if (!Object.values(RunWorkspaceStatus).includes(value.workspace.status as RunWorkspaceStatus)) {
-    return null;
-  }
-  if (
-    typeof value.workspace.reviewOnly !== "boolean" ||
-    !stringArray(value.workspace.changedFilesSample)
-  ) {
-    return null;
-  }
-  if (
-    !Object.values(RunAccountCapacityStatus).includes(
-      value.accountCapacity.status as RunAccountCapacityStatus,
-    ) ||
-    typeof value.accountCapacity.totalHints !== "number" ||
-    typeof value.accountCapacity.blockedCount !== "number" ||
-    typeof value.accountCapacity.cooldownCount !== "number" ||
-    !stringArray(value.accountCapacity.maskedAccounts) ||
-    !stringArray(value.accountCapacity.reasons)
-  ) {
-    return null;
-  }
-  if (!Object.values(RunOutcomeStatus).includes(value.outcome.status as RunOutcomeStatus)) {
-    return null;
-  }
-  if (
-    !Object.values(RunControlInboxStatus).includes(
-      value.controlInbox.status as RunControlInboxStatus,
-    ) ||
-    typeof value.controlInbox.pendingCount !== "number" ||
-    typeof value.controlInbox.deliveredCount !== "number" ||
-    typeof value.controlInbox.blockedDeliveryCount !== "number"
-  ) {
-    return null;
-  }
-  return value as unknown as RunEventReadModels;
-}
-
-function unknownReadModels(input: {
-  readonly runId: string;
-  readonly providerKind: RunEventReadModels["providerKind"];
-  readonly observedAt: string;
-  readonly reason?: string;
-}): RunEventReadModels {
-  return {
-    schemaVersion: 1,
-    runId: input.runId,
-    providerKind: input.providerKind,
-    observedAt: input.observedAt,
-    safety: {
-      status: RunSafetyStatus.Unknown,
-      safeToContinue: false,
-      reviewOnly: true,
-      issueKind: RunRuntimeIssueKind.Unknown,
-      reason: input.reason ?? "legacy_projection_without_read_models",
-      confidence: RunSafetyConfidence.Low,
-      evidence: [],
-    },
-    liveness: { status: RunLivenessStatus.Unknown },
-    workspace: {
-      status: RunWorkspaceStatus.Unknown,
-      reviewOnly: true,
-      changedFilesSample: [],
-    },
-    accountCapacity: {
-      status: RunAccountCapacityStatus.Unknown,
-      totalHints: 0,
-      blockedCount: 0,
-      cooldownCount: 0,
-      maskedAccounts: [],
-      reasons: [],
-    },
-    outcome: { status: RunOutcomeStatus.Unknown },
-    controlInbox: {
-      status: RunControlInboxStatus.Unknown,
-      pendingCount: 0,
-      deliveredCount: 0,
-      blockedDeliveryCount: 0,
-    },
-  };
-}
-
-function stringArray(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
-function optionalString(value: unknown): value is string | undefined {
-  return value === undefined || typeof value === "string";
-}
-
-function optionalNumber(value: unknown): value is number | undefined {
-  return value === undefined ||
-    (typeof value === "number" && Number.isFinite(value));
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
 }

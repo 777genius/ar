@@ -239,11 +239,11 @@ export type RunEventStorePort = {
 
 export type RunEventProjectionStateStorePort = {
   /** Serialize the complete recovery/observation/append/commit transaction per run. */
-  withProjectionLock<T>(runId: string, operation: () => Promise<T>): Promise<T>;
-  readPendingProjection(runId: string): Promise<RunEventProjectionResult | null>;
+  withProjectionLock<T>(runId: string, operation: () => Promise<T>, source?: RunEventSource): Promise<T>;
+  readPendingProjection(runId: string, source?: RunEventSource): Promise<RunEventProjectionResult | null>;
   writePendingProjection(projection: RunEventProjectionResult): Promise<void>;
-  clearPendingProjection(runId: string): Promise<void>;
-  readProjectionState(runId: string): Promise<RunEventProjectionState | null>;
+  clearPendingProjection(runId: string, source?: RunEventSource): Promise<void>;
+  readProjectionState(runId: string, source?: RunEventSource): Promise<RunEventProjectionState | null>;
   writeProjectionState(state: RunEventProjectionState): Promise<void>;
 };
 
@@ -268,6 +268,8 @@ export type RunEventRelayResult = {
 };
 
 export type RunEventProjectionState = {
+  readonly source?: RunEventSource;
+  readonly lifecycleSignature?: string;
   /** Absent on legacy projection state. */
   readonly revision?: number;
   readonly schemaVersion: 1;
