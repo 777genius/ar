@@ -69,6 +69,12 @@ import {
   stringField,
 } from "../protocol/app-server-content-parser";
 import { turnFailureError } from "./app-server-turn-failure";
+import { appendTurnOutput, mergeTurnOutput, replaceTurnOutput } from "./app-server-turn-output";
+import {
+  AppServerExecutionMayHaveStartedError,
+  AppServerRequestMayHaveReachedProviderError,
+} from "../domain/app-server-execution-safety";
+import { sendAppServerRequest } from "./app-server-request-sender";
 import { codexAppServerProcessArgs } from "./app-server-process-args";
 import { tryHandleAppServerApprovalRequest } from "./app-server-approval-request-handler";
 import {
@@ -123,6 +129,7 @@ export class CodexAppServerClient {
       readonly timeoutMs: number;
       readonly startupTimeoutMs: number;
       readonly reconnectGraceMs: number;
+      readonly maxOutputBytes: number;
       readonly abortSignal: AbortSignal;
       readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
     },
@@ -585,17 +592,29 @@ export class CodexAppServerClient {
 
     const turnId = nestedString(response.result, ["turn", "id"]);
     if (!turnId) {
-      throw turnFailureError(new Error("codex_app_server_turn_id_missing"), {
+      throw turnFailureError(new AppServerRequestMayHaveReachedProviderError(
+        new Error("codex_app_server_turn_id_missing"),
+        "turn/start",
+      ), {
         phase: "turn_start_rejected",
         turnNumber: input.turnNumber,
         elapsedMs: Date.now() - startedAt,
       });
     }
-    const turn = await this.waitForTurn(turnId, input);
+    let turn: TurnState;
+    try {
+      turn = await this.waitForTurn(turnId, input);
+    } catch (error) {
+      throw turnFailureError(new AppServerExecutionMayHaveStartedError(error), {
+        phase: "turn_error_before_output",
+        turnNumber: input.turnNumber,
+        elapsedMs: Date.now() - startedAt,
+      });
+    }
     if (!turn.error) return turn;
     return {
       ...turn,
-      error: turnFailureError(turn.error, {
+      error: turnFailureError(new AppServerExecutionMayHaveStartedError(turn.error), {
         phase:
           turn.outputText.length > 0
             ? "turn_error_after_output"
@@ -621,43 +640,14 @@ export class CodexAppServerClient {
     const id = this.nextId;
     this.nextId += 1;
 
-    return new Promise((resolve, reject) => {
-      const timeoutMs = input.timeoutMs ?? this.options.timeoutMs;
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        input.abortSignal?.removeEventListener("abort", abort);
-        reject(new Error(`codex_app_server_request_timeout:${method}`));
-      }, timeoutMs);
-      const abort = () => {
-        clearTimeout(timer);
-        this.pending.delete(id);
-        reject(new Error(`codex_app_server_aborted:${method}`));
-      };
-      input.abortSignal?.addEventListener("abort", abort, { once: true });
-      this.pending.set(id, {
-        method,
-        resolve: (value) => {
-          input.abortSignal?.removeEventListener("abort", abort);
-          resolve(value);
-        },
-        reject: (error) => {
-          input.abortSignal?.removeEventListener("abort", abort);
-          reject(error);
-        },
-        timer,
-      });
-      try {
-        this.child!.stdin.write(encodeJsonRpcMessage({ id, method, params }));
-      } catch (error) {
-        clearTimeout(timer);
-        input.abortSignal?.removeEventListener("abort", abort);
-        this.pending.delete(id);
-        reject(
-          error instanceof Error
-            ? error
-            : new Error("codex_app_server_write_failed"),
-        );
-      }
+    return sendAppServerRequest({
+      id,
+      method,
+      params,
+      timeoutMs: input.timeoutMs ?? this.options.timeoutMs,
+      ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
+      pending: this.pending,
+      write: (message) => this.child!.stdin.write(message),
     });
   }
 
@@ -788,8 +778,10 @@ export class CodexAppServerClient {
       const turn = this.ensureTurn(turnId);
       this.clearReconnectGraceTimer(turn);
       const delta = stringField(params, "delta") ?? "";
-      turn.outputText += delta;
-      if (delta) this.emitTextDelta(turn, delta);
+      if (appendTurnOutput({
+        turn, text: delta, maxOutputBytes: this.options.maxOutputBytes,
+        reject: () => this.resolveTurn(turn),
+      })) this.emitTextDelta(turn, delta);
       return;
     }
     if (record.method === "turn/started") {
@@ -819,7 +811,10 @@ export class CodexAppServerClient {
         if (text) {
           const turn = this.ensureTurn(turnId);
           this.clearReconnectGraceTimer(turn);
-          turn.outputText = text;
+          replaceTurnOutput({
+            turn, text, maxOutputBytes: this.options.maxOutputBytes,
+            reject: () => this.resolveTurn(turn),
+          });
         }
       }
       return;
@@ -1057,8 +1052,12 @@ export class CodexAppServerClient {
     if (!actual) return;
     const expected = this.turns.get(expectedTurnId);
     if (expected) {
-      expected.outputText += actual.outputText;
-      if (actual.outputText) this.emitTextDelta(expected, actual.outputText);
+      if (mergeTurnOutput({
+        expected, actual, maxOutputBytes: this.options.maxOutputBytes,
+        reject: () => this.resolveTurn(expected),
+      })) {
+        this.emitTextDelta(expected, actual.outputText);
+      }
       expected.completed = expected.completed || actual.completed;
       expected.error = expected.error ?? actual.error;
       expected.usage = actual.usage ?? expected.usage;
@@ -1098,4 +1097,5 @@ export class CodexAppServerClient {
       this.resolveTurn(turn);
     }
   }
+
 }

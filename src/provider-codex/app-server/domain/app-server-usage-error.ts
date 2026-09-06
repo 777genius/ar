@@ -4,9 +4,11 @@ import { sanitizeAgentUsage } from "./app-server-usage";
 
 export class AppServerUsageError extends Error {
   readonly usage?: AgentUsage;
-  constructor(error: unknown, usage?: AgentUsage) {
+  readonly executionMayHaveStarted: boolean;
+  constructor(error: unknown, usage?: AgentUsage, executionMayHaveStarted = false) {
     super(safeMessage(error), { cause: error });
     this.name = "AppServerUsageError";
+    this.executionMayHaveStarted = executionMayHaveStarted;
     const sanitized = sanitizeAgentUsage(usage);
     if (sanitized) this.usage = sanitized;
   }

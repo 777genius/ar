@@ -85,6 +85,7 @@ export class AppServerSlotPool {
       readonly timeoutMs?: number;
       readonly startupTimeoutMs?: number;
       readonly reconnectGraceMs?: number;
+      readonly maxOutputBytes: number;
     },
   ) {}
 
@@ -185,6 +186,7 @@ export class AppServerSlotPool {
           : { startupTimeoutMs: this.options.startupTimeoutMs }),
       }),
       reconnectGraceMs: this.options.reconnectGraceMs ?? defaultReconnectGraceMs,
+      maxOutputBytes: this.options.maxOutputBytes,
       abortSignal: input.abortSignal,
       ...(this.options.rateLimitsSnapshotHandler === undefined
         ? {}

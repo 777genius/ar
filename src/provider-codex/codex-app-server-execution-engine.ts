@@ -1,4 +1,4 @@
-import { AppServerUsageError, usageFromError } from "./app-server/domain/app-server-usage-error";
+import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
 import type {
   ManagedRunResumeHandle,
   ManagedRunStorePort,
@@ -62,9 +62,10 @@ import {
 } from "./app-server/domain/app-server-errors";
 import {
   appServerFallbackWarning,
+  appServerFallbackIsSafe,
   isAppServerWaitingForInputResult,
-  redactWaitingForInputResult,
 } from "./app-server/application/app-server-fallback-policy";
+import { redactCompletedAppServerResult } from "./app-server/application/app-server-result-redactor";
 import {
   assertManagedRunCanResume,
   isManagedRunResumeValidationError,
@@ -179,6 +180,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ...(options.reconnectGraceMs === undefined
         ? {}
         : { reconnectGraceMs: options.reconnectGraceMs }),
+      maxOutputBytes: this.maxOutputBytes(),
     });
   }
 
@@ -195,7 +197,12 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       if (isCodexAppServerBudgetExceededError(error)) throw error;
       if (isCodexAppServerRateLimitsRejectedError(error)) throw error;
       if (isCodexModelUnavailableError(error)) throw error;
-      if (!this.options.fallback || usageFromError(error)) throw error;
+      if (
+        !this.options.fallback ||
+        !appServerFallbackIsSafe(error)
+      ) {
+        throw error;
+      }
 
       const fallbackResult = await this.options.fallback.run({
         ...input,
@@ -222,10 +229,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ensureSlot: (slotInput) => this.slotPool.ensureSlot(slotInput),
       disposeSessionSlot: (session) => this.slotPool.disposeSessionSlot(session),
       redact: (result, schemaWarnings) =>
-        this.redactAppServerResult({
+        redactCompletedAppServerResult({
           result,
           schemaWarnings,
           redactor: input.redactor,
+          maxOutputBytes: this.maxOutputBytes(),
         }),
       parse: async (result, parseInput, schemaPlan) =>
         await this.parseStructuredOutput(result, parseInput, schemaPlan),
@@ -382,10 +390,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
             this.options.goalContinuePrompt ?? defaultGoalContinuePrompt,
         })
       : await slot.turnRunner.runCleanTurn(common);
-    return this.redactAppServerResult({
+    return redactCompletedAppServerResult({
       result,
       schemaWarnings,
       redactor: input.redactor,
+      maxOutputBytes: this.maxOutputBytes(),
     });
   }
 
@@ -439,37 +448,12 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         this.options.goalContinuePrompt ?? defaultGoalContinuePrompt,
       skipResumeValidation: true,
     });
-    return this.redactAppServerResult({
+    return redactCompletedAppServerResult({
       result,
       schemaWarnings,
       redactor: input.redactor,
+      maxOutputBytes: this.maxOutputBytes(),
     });
-  }
-
-  private redactAppServerResult(input: {
-    readonly result: AppServerRunResult;
-    readonly schemaWarnings: readonly AppServerWarning[];
-    readonly redactor: RedactorPort;
-  }): CodexExecutionResult {
-    try {
-      const outputText = input.redactor.redact(input.result.outputText);
-      input.redactor.assertNoKnownSecret(outputText, "codex-app-server-output");
-      assertOutputWithinBounds(outputText, this.maxOutputBytes());
-      if (isAppServerWaitingForInputResult(input.result)) {
-        return redactWaitingForInputResult({
-          result: input.result,
-          outputText,
-          redactor: input.redactor,
-        });
-      }
-      return {
-        outputText,
-        ...(input.result.usage === undefined ? {} : { usage: input.result.usage }),
-        warnings: [...input.schemaWarnings, ...input.result.warnings],
-      };
-    } catch (error) {
-      throw new AppServerUsageError(error, input.result.usage);
-    }
   }
 
   private async parseStructuredOutput(
@@ -490,7 +474,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         runStore: this.runStore,
       });
     } catch (error) {
-      throw new AppServerUsageError(error, result.usage);
+      throw new AppServerUsageError(error, result.usage, true);
     }
   }
 

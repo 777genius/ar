@@ -14,6 +14,9 @@ import {
   type PreparedThread,
 } from "../domain/app-server-types";
 import type { CodexAppServerClient } from "./app-server-client";
+import { isExplicitTurnStartRejection } from "./app-server-turn-failure";
+import { isAppServerExecutionReplayUnsafe } from "../domain/app-server-execution-safety";
+import { isCodexAppServerOutputLimitError } from "../domain/app-server-errors";
 
 export class AppServerTurnRunner {
   private preparedThread: PreparedThread | null = null;
@@ -62,7 +65,16 @@ export class AppServerTurnRunner {
       threadId,
     }).catch(
       async (error: unknown) => {
-        if (!preparedThread || emittedText || usageFromError(error)) throw error;
+        if (
+          !preparedThread ||
+          emittedText ||
+          usageFromError(error) ||
+          isCodexAppServerOutputLimitError(error) ||
+          isAppServerExecutionReplayUnsafe(error) ||
+          !isExplicitTurnStartRejection(error)
+        ) {
+          throw error;
+        }
         warnings.push({
           code: "codex_app_server_prepared_thread_failed",
           safeMessage:
@@ -78,7 +90,11 @@ export class AppServerTurnRunner {
     );
     if (turn.error) throw new AppServerUsageError(turn.error, turn.usage);
     if (!turn.outputText.trim()) {
-      throw new AppServerUsageError(new Error("codex_app_server_final_message_missing"), turn.usage);
+      throw new AppServerUsageError(
+        new Error("codex_app_server_final_message_missing"),
+        turn.usage,
+        true,
+      );
     }
     if (input.prepareNext ?? true) {
       this.prepareCleanThreadBestEffort(input);

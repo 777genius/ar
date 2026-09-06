@@ -3,6 +3,8 @@ import type { CodexAppServerJsonRpcResponse } from "../protocol/app-server-json-
 
 export type TurnState = {
   outputText: string;
+  outputBytes: number;
+  deliveredOutputBytes: number;
   onTextDelta: ((text: string) => void) | null;
   usage: AgentUsage | undefined;
   usageBaseline?: AgentUsage | undefined;
@@ -22,6 +24,8 @@ export type PendingRequest = {
 export function createTurnState(): TurnState {
   return {
     outputText: "",
+    outputBytes: 0,
+    deliveredOutputBytes: 0,
     onTextDelta: null,
     usage: undefined,
     completed: false,

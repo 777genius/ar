@@ -40,6 +40,12 @@ export type FakeAppServerFactoryOptions = {
   readonly abortTurnNumbers?: readonly number[];
   readonly abortTurnReason?: string;
   readonly suppressOutputTurnNumbers?: readonly number[];
+  readonly agentMessageDeltas?: readonly string[];
+  readonly completedAgentMessageText?: string;
+  readonly completedAgentMessageAfterEachDelta?: string;
+  readonly completedAgentMessageAfterEarlyDelta?: string;
+  readonly suppressTurnCompletion?: boolean;
+  readonly emitDeltaBeforeTurnStarted?: boolean;
   readonly goalStatusesAfterTurns?: readonly string[];
   readonly goalUsageAfterTurns?: readonly (
     | Record<string, unknown>
@@ -301,6 +307,9 @@ export class FakeAppServerProcess extends EventEmitter {
         const turnId = this.options.reuseActualTurnId ?? generatedTurnId;
         this.nextTurnId += 1;
         const prompt = extractFakePrompt(request.params);
+        const outputDeltas = this.options.agentMessageDeltas ?? [
+          `app-server output:${prompt}`,
+        ];
         this.options.onPrompt?.(prompt);
         const responseTurnId = this.options.mismatchTurnStartResponseId
           ? `response-${generatedTurnId}`
@@ -320,19 +329,14 @@ export class FakeAppServerProcess extends EventEmitter {
                   turn: { id: turnId, status: "inProgress" },
                 },
               }),
-              JSON.stringify({
+              ...outputDeltas.map((delta) => JSON.stringify({
                 method: "item/agentMessage/delta",
-                params: {
-                  turnId,
-                  delta: `app-server output:${prompt}`,
-                },
-              }),
-              JSON.stringify({
+                params: { turnId, delta },
+              })),
+              ...(this.options.suppressTurnCompletion ? [] : [JSON.stringify({
                 method: "turn/completed",
-                params: {
-                  turn: this.completedTurn(turnId),
-                },
-              }),
+                params: { turn: this.completedTurn(turnId) },
+              })]),
             ].join("\n") + "\n",
           );
           continue;
@@ -388,6 +392,24 @@ export class FakeAppServerProcess extends EventEmitter {
               turn: { id: turnId, status: "inProgress" },
             });
             return;
+          }
+          const earlyDeltas = this.options.emitDeltaBeforeTurnStarted
+            ? outputDeltas.slice(0, 1)
+            : [];
+          for (const delta of earlyDeltas) {
+            this.notify("item/agentMessage/delta", { turnId, delta });
+            if (this.options.completedAgentMessageAfterEarlyDelta) {
+              this.notify("item/completed", {
+                turnId,
+                item: {
+                  type: "agentMessage",
+                  content: [{
+                    type: "output_text",
+                    text: this.options.completedAgentMessageAfterEarlyDelta,
+                  }],
+                },
+              });
+            }
           }
           this.notify("turn/started", {
             threadId: String(request.params?.threadId ?? ""),
@@ -452,7 +474,7 @@ export class FakeAppServerProcess extends EventEmitter {
                   content: [
                     {
                       type: "output_text",
-                      text: `app-server output:${prompt}`,
+                      text: this.options.completedAgentMessageText ?? `app-server output:${prompt}`,
                     },
                     ...(this.options.appendCompletedAgentMessageToolContent
                       ? [
@@ -471,15 +493,26 @@ export class FakeAppServerProcess extends EventEmitter {
                 },
               });
             } else {
-              this.notify("item/agentMessage/delta", {
-                turnId,
-                delta: `app-server output:${prompt}`,
-              });
+              for (const delta of outputDeltas.slice(earlyDeltas.length)) {
+                this.notify("item/agentMessage/delta", { turnId, delta });
+                if (this.options.completedAgentMessageAfterEachDelta) {
+                  this.notify("item/completed", {
+                    turnId,
+                    item: {
+                      type: "agentMessage",
+                      content: [{
+                        type: "output_text",
+                        text: this.options.completedAgentMessageAfterEachDelta,
+                      }],
+                    },
+                  });
+                }
+              }
             }
           }
-          this.notify("turn/completed", {
-            turn: this.completedTurn(turnId),
-          });
+          if (!this.options.suppressTurnCompletion) {
+            this.notify("turn/completed", { turn: this.completedTurn(turnId) });
+          }
         }, 5);
         continue;
       }

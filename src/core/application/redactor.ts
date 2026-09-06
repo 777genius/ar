@@ -1,5 +1,6 @@
 import { BoundaryViolationError } from "../domain/errors";
-import type { RedactorPort } from "../ports";
+import type { RedactedTextStream, RedactorPort } from "../ports";
+import { DefaultRedactedTextStream } from "./redacted-text-stream";
 
 const textDecoder = new TextDecoder();
 
@@ -16,22 +17,45 @@ export class DefaultRedactor implements RedactorPort {
   }
 
   redact(input: string): string {
+    return this.redactWithPreviousCharacter(input);
+  }
+
+  private redactWithPreviousCharacter(
+    input: string,
+    previousInputChar?: string,
+  ): string {
     let output = input;
     for (const [secret, label] of this.secrets.entries()) {
       output = output.split(secret).join(`[redacted:${label}]`);
     }
     output = output.replace(
       /["']?\b(?:access_token|refresh_token|id_token|api_key|token)\b["']?\s*[:=]\s*["']?[^"',}\s]+["']?/gi,
-      (match) => {
+      (match, offset: number) => {
+        if (
+          offset === 0 &&
+          isWordCharacter(previousInputChar) &&
+          !startsWithQuote(match)
+        ) return match;
         const key = match.match(/["']?([A-Za-z_]+)["']?\s*[:=]/)?.[1];
         return `${key ?? "token"}=[redacted:token-field]`;
       },
     );
     output = output.replace(
       /\bBearer\s+[A-Za-z0-9._~+/=-]+/g,
-      "Bearer [redacted]",
+      (match, offset: number) =>
+        offset === 0 && isWordCharacter(previousInputChar)
+          ? match
+          : "Bearer [redacted]",
     );
     return output;
+  }
+
+  createTextStream(): RedactedTextStream {
+    return new DefaultRedactedTextStream(
+      (input, previousInputChar) =>
+        this.redactWithPreviousCharacter(input, previousInputChar),
+      () => Array.from(this.secrets.keys()),
+    );
   }
 
   assertNoKnownSecret(input: string, context: string): void {
@@ -43,6 +67,14 @@ export class DefaultRedactor implements RedactorPort {
       }
     }
   }
+}
+
+function isWordCharacter(value: string | undefined): boolean {
+  return value !== undefined && /[A-Za-z0-9_]/.test(value);
+}
+
+function startsWithQuote(value: string): boolean {
+  return value.startsWith('"') || value.startsWith("'");
 }
 
 export class NullObservability {

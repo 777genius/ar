@@ -243,6 +243,222 @@ describe("Codex provider app-server adapter", () => {
     }
   });
 
+  it("does not replenish streamed output allowance after completed-message replacement", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-replacement-stream-limit-test-"));
+    const delta = "x".repeat(1_000);
+    const fakeFactory = new FakeAppServerFactory({
+      agentMessageDeltas: Array.from({ length: 20 }, () => delta),
+      completedAgentMessageAfterEachDelta: "x",
+      suppressTurnCompletion: true,
+    });
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        cleanThreadPrewarm: false,
+        maxOutputBytes: 1_024,
+        timeoutMs: 250,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+    const delivered: string[] = [];
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "replacement stream limit" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+        onTextDelta: (text) => delivered.push(text),
+      });
+
+      expect(result.status).toBe("failed");
+      expect(Buffer.byteLength(delivered.join(""), "utf8")).toBeLessThanOrEqual(1_024);
+      expect(fakeFactory.prompts).toEqual(["replacement stream limit"]);
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts an exact-limit delta followed by its completed-message replacement", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-replacement-exact-limit-test-"));
+    const delta = "é".repeat(512);
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: new FakeAppServerFactory({
+          agentMessageDeltas: [delta],
+          completedAgentMessageAfterEachDelta: delta,
+        }).create,
+        cleanThreadPrewarm: false,
+        maxOutputBytes: 1_024,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "replacement exact limit" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result).toMatchObject({ status: "completed", outputText: delta });
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves an exact byte limit when an early turn aliases to its response id", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-alias-limit-test-"));
+    const delta = "é".repeat(256);
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: new FakeAppServerFactory({
+          mismatchTurnStartResponseId: true,
+          emitDeltaBeforeTurnStarted: true,
+          agentMessageDeltas: [delta, delta],
+        }).create,
+        cleanThreadPrewarm: false,
+        maxOutputBytes: 1_024,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "alias stream limit" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result).toMatchObject({ status: "completed", outputText: delta.repeat(2) });
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the early turn's streamed budget after alias replacement", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-alias-replacement-limit-test-"));
+    const delta = "x".repeat(1_000);
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: new FakeAppServerFactory({
+          mismatchTurnStartResponseId: true,
+          emitDeltaBeforeTurnStarted: true,
+          completedAgentMessageAfterEarlyDelta: "x",
+          agentMessageDeltas: [delta, delta],
+          suppressTurnCompletion: true,
+        }).create,
+        cleanThreadPrewarm: false,
+        maxOutputBytes: 1_024,
+        timeoutMs: 250,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "alias replacement limit" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result.status).toBe("failed");
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects early same-chunk overflow despite a later completion notification", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-early-stream-limit-test-"));
+    const delta = "x".repeat(1_024);
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: new FakeAppServerFactory({
+          emitTurnEventsWithStartResponse: true,
+          mismatchTurnStartResponseId: true,
+          agentMessageDeltas: [delta, delta],
+        }).create,
+        cleanThreadPrewarm: false,
+        maxOutputBytes: 1_024,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "early stream limit" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result.status).toBe("failed");
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects oversized completed agent-message replacement", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-completed-limit-test-"));
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: new FakeAppServerFactory({
+          completedAgentMessageContentOnly: true,
+          completedAgentMessageText: "🧪".repeat(300),
+        }).create,
+        cleanThreadPrewarm: false,
+        maxOutputBytes: 1_024,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "completed limit" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result.status).toBe("failed");
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("parses app-server structured output from completed content parts", async () => {
     const workspace = await mkdtemp(
       join(tmpdir(), "codex-app-content-structured-test-"),
@@ -477,8 +693,7 @@ describe("Codex provider app-server adapter", () => {
         failure: {
           code: "unknown_runtime_failure",
           details: {
-            phase: "turn_error_after_output",
-            outputObserved: "true",
+            rawCause: "bounded_delta_queue_full",
           },
         },
       });

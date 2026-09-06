@@ -1,6 +1,9 @@
 import type { RedactorPort } from "@vioxen/subscription-runtime/core";
 import type { CodexExecutionResult } from "../../codex-json-execution-engine";
 import { safeMessage } from "../domain/app-server-errors";
+import { isCodexAppServerOutputLimitError } from "../domain/app-server-errors";
+import { isAppServerExecutionReplayUnsafe } from "../domain/app-server-execution-safety";
+import { usageFromError } from "../domain/app-server-usage-error";
 import type {
   AppServerWaitingForInputResult,
   AppServerWarning,
@@ -11,6 +14,12 @@ export function appServerFallbackWarning(error: unknown): AppServerWarning {
     code: "codex_app_server_fallback",
     safeMessage: `Codex app-server failed; used codex exec fallback: ${safeMessage(error)}`,
   };
+}
+
+export function appServerFallbackIsSafe(error: unknown): boolean {
+  return !usageFromError(error) &&
+    !isCodexAppServerOutputLimitError(error) &&
+    !isAppServerExecutionReplayUnsafe(error);
 }
 
 export function isAppServerWaitingForInputResult(

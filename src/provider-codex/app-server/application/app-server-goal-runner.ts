@@ -247,6 +247,7 @@ export class AppServerGoalRunner {
   }): Promise<AppServerRunResult> {
     let outputText = "";
     let turnUsage: AgentUsage | undefined;
+    let executionMayHaveStarted = false;
     let goalBaseline = input.resumed ? (await this.options.client.getGoal({
       threadId: input.threadId,
       timeoutMs: controlRequestTimeoutMs(input.timeoutMs),
@@ -277,6 +278,7 @@ export class AppServerGoalRunner {
               elapsedMs: Date.now() - startedAt,
             });
           });
+        executionMayHaveStarted = true;
         turnUsage = mergeAgentUsage(turnUsage, turn.usage);
         detailedSinceGoal = mergeAgentUsage(detailedSinceGoal, turn.usage);
         missingUsageSinceGoal ||= turn.usage === undefined;
@@ -346,13 +348,17 @@ export class AppServerGoalRunner {
       }
 
     } catch (error) {
-      throw new AppServerUsageError(error, turnUsage);
+      throw new AppServerUsageError(error, turnUsage, executionMayHaveStarted);
     }
-    throw goalMaxTurnsExceededError({
-      maxGoalTurns: input.maxGoalTurns,
-      outputText,
-      ...usageField(turnUsage),
-    });
+    throw new AppServerUsageError(
+      goalMaxTurnsExceededError({
+        maxGoalTurns: input.maxGoalTurns,
+        outputText,
+        ...usageField(turnUsage),
+      }),
+      turnUsage,
+      executionMayHaveStarted,
+    );
   }
 
   private async waitForGoalInput(input: {
