@@ -1,3 +1,4 @@
+import { AppServerUsageError, usageFromError } from "../domain/app-server-usage-error";
 import type {
   AgentUsage,
   ManagedRunInputRequest,
@@ -26,7 +27,7 @@ import {
 } from "../domain/app-server-types";
 import {
   mergeAgentUsage,
-  preferredUsage,
+  subtractAgentUsage,
   usageField,
 } from "../domain/app-server-usage";
 import type { CodexAppServerClient } from "./app-server-client";
@@ -213,6 +214,7 @@ export class AppServerGoalRunner {
         ...input,
         threadId,
         firstPrompt: buildGoalResumePrompt(input),
+        resumed: true,
         warnings: this.options.client.drainWarnings(),
       });
     } catch (error) {
@@ -241,86 +243,115 @@ export class AppServerGoalRunner {
     readonly goalContinuePrompt: string;
     readonly warnings: AppServerWarning[];
     readonly allowWaitingForInput?: boolean;
+    readonly resumed?: boolean;
   }): Promise<AppServerRunResult> {
     let outputText = "";
     let turnUsage: AgentUsage | undefined;
-    let goalUsage: AgentUsage | undefined;
-    for (
-      let turnNumber = 1;
-      turnNumber <= input.maxGoalTurns;
-      turnNumber += 1
-    ) {
-      const startedAt = Date.now();
-      const turn = await this.options.client
-        .startTurn({
-          ...input,
-          goalMode: true,
-          turnNumber,
-          prompt:
-            turnNumber === 1 ? input.firstPrompt : input.goalContinuePrompt,
-        })
-        .catch((error: unknown) => {
-          throw turnFailureError(error, {
-            phase: "turn_start_rejected",
+    let goalBaseline = input.resumed ? (await this.options.client.getGoal({
+      threadId: input.threadId,
+      timeoutMs: controlRequestTimeoutMs(input.timeoutMs),
+      abortSignal: input.abortSignal,
+    }))?.usage : { totalTokens: 0 };
+    let detailedSinceGoal: AgentUsage | undefined;
+    let missingUsageSinceGoal = false;
+    try {
+      for (
+        let turnNumber = 1;
+        turnNumber <= input.maxGoalTurns;
+        turnNumber += 1
+      ) {
+        const startedAt = Date.now();
+        const turn = await this.options.client
+          .startTurn({
+            ...input,
+            goalMode: true,
             turnNumber,
-            elapsedMs: Date.now() - startedAt,
+            prompt:
+              turnNumber === 1 ? input.firstPrompt : input.goalContinuePrompt,
+          })
+          .catch((error: unknown) => {
+            turnUsage = mergeAgentUsage(turnUsage, usageFromError(error));
+            throw turnFailureError(error, {
+              phase: "turn_start_rejected",
+              turnNumber,
+              elapsedMs: Date.now() - startedAt,
+            });
           });
-        });
-      if (turn.error) throw turn.error;
-      outputText = turn.outputText;
-      turnUsage = mergeAgentUsage(turnUsage, turn.usage);
+        turnUsage = mergeAgentUsage(turnUsage, turn.usage);
+        detailedSinceGoal = mergeAgentUsage(detailedSinceGoal, turn.usage);
+        missingUsageSinceGoal ||= turn.usage === undefined;
+        if (turn.error) throw turn.error;
+        outputText = turn.outputText;
 
-      const goal = await this.options.client.getGoal({
-        threadId: input.threadId,
-        timeoutMs: controlRequestTimeoutMs(input.timeoutMs),
-        abortSignal: input.abortSignal,
-      });
-      if (!goal) {
-        throw new Error("codex_app_server_goal_missing");
-      }
-      goalUsage = goal.usage ?? goalUsage;
-      if (goal.status === "complete") {
-        input.warnings.push(...this.options.client.drainWarnings());
-        await this.options.runStore.complete({
-          runId: input.runId,
-          outputText,
-          now: new Date(),
-        });
-        return {
-          status: "completed",
-          outputText,
-          ...usageField(preferredUsage(turnUsage, goalUsage)),
-          warnings: input.warnings,
-        };
-      }
-      if (goal.status === "blocked" || goal.status === "paused") {
-        if (input.allowWaitingForInput === false) {
-          throw new Error(
-            "codex_logical_thread_goal_waiting_for_input_invalid",
-          );
-        }
-        return this.waitForGoalInput({
-          runId: input.runId,
+        const goal = await this.options.client.getGoal({
           threadId: input.threadId,
-          goal,
-          outputText,
-          workspacePath: input.workspacePath,
-          ...usageField(preferredUsage(turnUsage, goalUsage)),
-          warnings: input.warnings,
+          timeoutMs: controlRequestTimeoutMs(input.timeoutMs),
+          abortSignal: input.abortSignal,
         });
+        if (!goal) {
+          throw new Error("codex_app_server_goal_missing");
+        }
+        const reportedTotal = goal.usage?.totalTokens;
+        if (
+          reportedTotal !== undefined &&
+          reportedTotal >= (goalBaseline?.totalTokens ?? 0)
+        ) {
+          if (goalBaseline && missingUsageSinceGoal) {
+            const windowUsage = subtractAgentUsage(goal.usage, goalBaseline);
+            turnUsage = mergeAgentUsage(
+              turnUsage,
+              subtractAgentUsage(windowUsage, detailedSinceGoal),
+            );
+          }
+          goalBaseline = goal.usage;
+          detailedSinceGoal = undefined;
+          missingUsageSinceGoal = false;
+        }
+        if (goal.status === "complete") {
+          input.warnings.push(...this.options.client.drainWarnings());
+          await this.options.runStore.complete({
+            runId: input.runId,
+            outputText,
+            now: new Date(),
+          });
+          return {
+            status: "completed",
+            outputText,
+            ...usageField(turnUsage),
+            warnings: input.warnings,
+          };
+        }
+        if (goal.status === "blocked" || goal.status === "paused") {
+          if (input.allowWaitingForInput === false) {
+            throw new Error(
+              "codex_logical_thread_goal_waiting_for_input_invalid",
+            );
+          }
+          return await this.waitForGoalInput({
+            runId: input.runId,
+            threadId: input.threadId,
+            goal,
+            outputText,
+            workspacePath: input.workspacePath,
+            ...usageField(turnUsage),
+            warnings: input.warnings,
+          });
+        }
+        if (goal.status !== "active") {
+          throw new Error(`codex_app_server_goal_${goal.status}`);
+        }
+        if (!outputText.trim()) {
+          throw new Error("codex_app_server_goal_turn_output_missing");
+        }
       }
-      if (goal.status !== "active") {
-        throw new Error(`codex_app_server_goal_${goal.status}`);
-      }
-      if (!outputText.trim()) {
-        throw new Error("codex_app_server_goal_turn_output_missing");
-      }
-    }
 
+    } catch (error) {
+      throw new AppServerUsageError(error, turnUsage);
+    }
     throw goalMaxTurnsExceededError({
       maxGoalTurns: input.maxGoalTurns,
       outputText,
-      ...usageField(preferredUsage(turnUsage, goalUsage)),
+      ...usageField(turnUsage),
     });
   }
 

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import { AgentRuntimeExecutionMode, DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import {
   CodexAppServerExecutionEngine,
   CodexJsonAgentDriver,
@@ -18,6 +18,92 @@ import {
 } from "./codex-provider-test-support";
 
 describe("Codex app-server goal usage", () => {
+  it("replaces repeated cumulative snapshots and excludes unrelated notifications", async () => {
+    const first = { inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 80, cacheWriteInputTokens: 10, reasoningOutputTokens: 5 };
+    const last = { inputTokens: 60, outputTokens: 20, totalTokens: 80, cachedInputTokens: 40, cacheWriteInputTokens: 5, reasoningOutputTokens: 3 };
+    const total = { inputTokens: 160, outputTokens: 40, totalTokens: 200, cachedInputTokens: 120, cacheWriteInputTokens: 15, reasoningOutputTokens: 8 };
+    const result = await runSyntheticGoalUsage({
+      tokenUsageNotifications: [
+        { total: first, last: first },
+        { total, last }, { total, last },
+        { total: first, last: first },
+        { threadId: "wrong-thread", total: { totalTokens: 99999 }, last: { totalTokens: 99999 } },
+        { turnId: "wrong-turn", total: { totalTokens: 99999 }, last: { totalTokens: 99999 } },
+      ],
+    });
+    expect(result.telemetry?.usage).toEqual(total);
+  });
+
+  it("does not charge a quota notification replaying the previous cumulative snapshot", async () => {
+    const usage = { inputTokens: 100, outputTokens: 25, totalTokens: 125 };
+    const result = await runSyntheticGoalUsage({ tokenUsageNotifications: [{ total: usage, last: usage }], abortTurnNumbers: [2] });
+    expect(result.status).toBe("failed");
+    expect(result.telemetry?.usage).toEqual(usage);
+  });
+
+  it("does not count stale cumulative goal snapshots twice", async () => {
+    const result = await runSyntheticGoalUsage({ goalStatusesAfterTurns: ["active", "active", "complete"], goalUsageAfterTurns: [{ tokensUsed: 100 }, { tokensUsed: 50 }, { tokensUsed: 150 }] });
+    expect(result.telemetry?.usage).toEqual({ totalTokens: 150 });
+  });
+
+  it("subtracts known detailed tokens from a later cumulative fallback window", async () => {
+    const result = await runSyntheticGoalUsage({ turnUsageAfterTurns: [{ totalTokens: 125 }, undefined], goalUsageAfterTurns: [undefined, { tokensUsed: 250 }] });
+    expect(result.telemetry?.usage).toEqual({ totalTokens: 250 });
+  });
+
+  it("only fills the missing window when fully reported detailed and goal counters differ", async () => {
+    const result = await runSyntheticGoalUsage({ turnUsageAfterTurns: [{ totalTokens: 10 }, undefined], goalUsageAfterTurns: [{ tokensUsed: 100 }, { tokensUsed: 200 }] });
+    expect(result.telemetry?.usage).toEqual({ totalTokens: 110 });
+  });
+
+  it("retains fork replay arriving synchronously after the fork response", async () => {
+    const result = await runSyntheticGoalUsage({ goalStatusesAfterTurns: ["complete"], forkUsageReplay: { totalTokens: 200 }, tokenUsageNotifications: [{ total: { totalTokens: 225 }, last: { totalTokens: 25 } }] }, false, "historical-fixture-thread");
+    expect(result.telemetry?.usage).toEqual({ totalTokens: 25 });
+  });
+
+  it("preserves known goal fallback on usageLimited", async () => {
+    const result = await runSyntheticGoalUsage({ goalStatusesAfterTurns: ["usageLimited"], goalUsageAfterTurns: [{ tokensUsed: 125 }] });
+    expect(result.status).toBe("failed");
+    expect(result.telemetry?.usage).toEqual({ totalTokens: 125 });
+  });
+
+  it("retains previous fallback when a subsequent turn aborts", async () => {
+    const result = await runSyntheticGoalUsage({ goalUsageAfterTurns: [{ tokensUsed: 125 }], abortTurnNumbers: [2] });
+    expect(result.status).toBe("failed");
+    expect(result.telemetry?.usage).toEqual({ totalTokens: 125 });
+  });
+
+  it("includes usage observed on the failing turn exactly once", async () => {
+    const result = await runSyntheticGoalUsage({ turnUsage: { inputTokens: 100, outputTokens: 25, totalTokens: 125 }, abortTurnNumbers: [2] });
+    expect(result.status).toBe("failed");
+    expect(result.telemetry?.usage).toEqual({ inputTokens: 200, outputTokens: 50, totalTokens: 250 });
+  });
+
+  it("subtracts previously reported goal tokens on resume", async () => {
+    const result = await runSyntheticGoalUsage({ goalStatusesAfterTurns: ["blocked", "complete"], goalUsageAfterTurns: [{ tokensUsed: 200 }, { tokensUsed: 230 }] }, true);
+    expect(result.telemetry?.usage).toEqual({ totalTokens: 30 });
+  });
+
+  it("keeps current detailed usage when getGoal fails", async () => {
+    const result = await runSyntheticGoalUsage({ turnUsage: { totalTokens: 125 }, throwOnRequestMethod: "thread/goal/get" });
+    expect(result.status).toBe("failed");
+    expect(result.telemetry?.usage).toEqual({ totalTokens: 125 });
+  });
+
+  it("retains usage when the next turn start request fails", async () => {
+    let starts = 0;
+    const result = await runSyntheticGoalUsage({ goalUsageAfterTurns: [{ tokensUsed: 125 }],
+      onRequest: (request) => { if (request.method === "turn/start" && ++starts === 2) throw new Error("synthetic start failure"); },
+    });
+    expect(result.status).toBe("failed");
+    expect(result.telemetry?.usage).toEqual({ totalTokens: 125 });
+  });
+
+  it("tracks usage through provider turn-id aliases", async () => {
+    const result = await runSyntheticGoalUsage({ mismatchTurnStartResponseId: true, turnUsage: { totalTokens: 125 } });
+    expect(result.telemetry?.usage).toEqual({ totalTokens: 250 });
+  });
+
   it("reports the latest cumulative goal usage snapshot", async () => {
     const result = await runSyntheticGoalUsage({
       goalUsageAfterTurns: [{ tokensUsed: 100 }, { tokensUsed: 250 }],
@@ -91,7 +177,7 @@ describe("Codex app-server goal usage", () => {
   });
 });
 
-async function runSyntheticGoalUsage(options: FakeAppServerFactoryOptions) {
+async function runSyntheticGoalUsage(options: FakeAppServerFactoryOptions, resume = false, previousCheckpoint?: string) {
   const workspace = await mkdtemp(join(tmpdir(), "codex-app-goal-usage-test-"));
   const fakeFactory = new FakeAppServerFactory({
     goalStatusesAfterTurns: ["active", "complete"],
@@ -103,16 +189,18 @@ async function runSyntheticGoalUsage(options: FakeAppServerFactoryOptions) {
       processFactory: fakeFactory.create,
       cleanThreadPrewarm: false,
       goalMode: true,
-      maxGoalTurns: 2,
+      maxGoalTurns: Math.max(2, options.goalStatusesAfterTurns?.length ?? 0),
     }),
     model: "gpt-test",
     reasoningEffort: "low",
   });
   try {
-    return await driver.runTask({
+    const initial = await driver.runTask({
+      ...(previousCheckpoint ? { logicalThread: { threadId: "fixture-logical-thread", previousCheckpoint, onCheckpoint: () => {} } } : {}),
       session: sessionArtifactFromCodexAuthJson(validAuthJson),
       task: {
         kind: "structured-prompt",
+        ...(previousCheckpoint ? { execution: { mode: AgentRuntimeExecutionMode.Goal, completionCondition: "complete fixture" } } : {}),
         prompt: "measure cumulative goal usage",
         controls: { editMode: "allow-edits" },
       },
@@ -120,6 +208,15 @@ async function runSyntheticGoalUsage(options: FakeAppServerFactoryOptions) {
       runner: new StaticRunner(""),
       redactor: new DefaultRedactor(),
       abortSignal: new AbortController().signal,
+    });
+    if (!resume || initial.status !== "waiting_for_input") return initial;
+    return await driver.resumeManagedRun({
+      session: sessionArtifactFromCodexAuthJson(validAuthJson),
+      runId: initial.runId, requestId: initial.request.id, answer: "continue",
+      resumeHandle: initial.resumeHandle,
+      task: { controls: { editMode: "allow-edits" } },
+      workspace: { path: workspace }, runner: new StaticRunner(""),
+      redactor: new DefaultRedactor(), abortSignal: new AbortController().signal,
     });
   } finally {
     await driver.dispose();

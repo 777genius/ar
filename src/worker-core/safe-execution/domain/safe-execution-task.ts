@@ -58,6 +58,9 @@ export type AttemptUsage = {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly totalTokens?: number;
+  readonly cachedInputTokens?: number;
+  readonly cacheWriteInputTokens?: number;
+  readonly reasoningOutputTokens?: number;
 };
 
 export type AttemptPatchStatsSource =

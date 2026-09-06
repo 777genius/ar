@@ -1,3 +1,4 @@
+import { mergeAgentUsage, readUsageFromRecords } from "../domain/app-server-usage";
 import { EventEmitter } from "node:events";
 
 export type FakeAppServerFactoryOptions = {
@@ -45,6 +46,14 @@ export type FakeAppServerFactoryOptions = {
     | undefined
   )[];
   readonly turnUsage?: Record<string, unknown>;
+  readonly turnUsageAfterTurns?: readonly (Record<string, unknown> | undefined)[];
+  readonly forkUsageReplay?: Record<string, unknown>;
+  readonly tokenUsageNotifications?: readonly {
+    readonly threadId?: string;
+    readonly turnId?: string;
+    readonly total: Record<string, unknown>;
+    readonly last: Record<string, unknown>;
+  }[];
   readonly mismatchTurnStartResponseId?: boolean;
   readonly reuseActualTurnId?: string;
   readonly emitServerRequestOnTurn?: {
@@ -131,6 +140,7 @@ export class FakeAppServerProcess extends EventEmitter {
   private emittedTurnErrors = 0;
   private completedTurnCount = 0;
   private exited = false;
+  private readonly tokenTotals = new Map<string, ReturnType<typeof readUsageFromRecords>>();
   private readonly goals = new Map<
     string,
     { objective: string; status: string }
@@ -235,6 +245,16 @@ export class FakeAppServerProcess extends EventEmitter {
         this.respond(request.id, {
           thread: { id: threadId },
         });
+        if (this.options.forkUsageReplay) {
+          this.notify("thread/tokenUsage/updated", {
+            threadId,
+            turnId: "restored-history-turn",
+            tokenUsage: {
+              total: this.options.forkUsageReplay,
+              last: this.options.forkUsageReplay,
+            },
+          });
+        }
         continue;
       }
       if (request.method === "thread/goal/set") {
@@ -382,6 +402,17 @@ export class FakeAppServerProcess extends EventEmitter {
               })}\n`,
             );
           }
+          const threadId = String(request.params?.threadId ?? "");
+          const usage = readUsageFromRecords(this.options.turnUsageAfterTurns
+            ? this.options.turnUsageAfterTurns[turnNumber - 1]
+            : this.options.turnUsage);
+          const total = mergeAgentUsage(this.tokenTotals.get(threadId), usage);
+          this.tokenTotals.set(threadId, total);
+          const snapshots = this.options.tokenUsageNotifications ?? (usage ? [{ total, last: usage }] : []);
+          for (const snapshot of snapshots) this.notify("thread/tokenUsage/updated", {
+            threadId: ("threadId" in snapshot ? snapshot.threadId : undefined) ?? threadId, turnId: ("turnId" in snapshot ? snapshot.turnId : undefined) ?? turnId,
+            tokenUsage: { total: snapshot.total, last: snapshot.last, modelContextWindow: 200000 },
+          });
           const topLevelError = this.configuredTurnError();
           if (topLevelError) {
             this.stdout.emit(
@@ -477,9 +508,7 @@ export class FakeAppServerProcess extends EventEmitter {
     return {
       id: turnId,
       status: { type: "completed" },
-      ...(this.options.turnUsage === undefined
-        ? {}
-        : { usage: this.options.turnUsage }),
+
     };
   }
 

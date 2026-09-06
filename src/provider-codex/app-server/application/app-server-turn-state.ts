@@ -5,6 +5,7 @@ export type TurnState = {
   outputText: string;
   onTextDelta: ((text: string) => void) | null;
   usage: AgentUsage | undefined;
+  usageBaseline?: AgentUsage | undefined;
   completed: boolean;
   error: Error | null;
   waiters: ((state: TurnState) => void)[];

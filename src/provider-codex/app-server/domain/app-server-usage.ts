@@ -19,11 +19,17 @@ export function mergeAgentUsage(
   if (!right) return left;
   const inputTokens = sumOptional(left.inputTokens, right.inputTokens);
   const outputTokens = sumOptional(left.outputTokens, right.outputTokens);
+  const cachedInputTokens = sumOptional(left.cachedInputTokens, right.cachedInputTokens);
+  const cacheWriteInputTokens = sumOptional(left.cacheWriteInputTokens, right.cacheWriteInputTokens);
+  const reasoningOutputTokens = sumOptional(left.reasoningOutputTokens, right.reasoningOutputTokens);
   const totalTokens = sumOptional(left.totalTokens, right.totalTokens);
   return {
     ...(inputTokens === undefined ? {} : { inputTokens }),
     ...(outputTokens === undefined ? {} : { outputTokens }),
     ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    ...(cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens }),
+    ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
   };
 }
 
@@ -77,6 +83,9 @@ function normalizeUsageRecord(
     "totalOutputTokens",
     "total_output_tokens",
   );
+  const cachedInputTokens = numberField(record, "cachedInputTokens", "cached_input_tokens");
+  const cacheWriteInputTokens = numberField(record, "cacheWriteInputTokens", "cache_write_input_tokens");
+  const reasoningOutputTokens = numberField(record, "reasoningOutputTokens", "reasoning_output_tokens");
   const totalTokens =
     numberField(
       record,
@@ -90,7 +99,10 @@ function normalizeUsageRecord(
   if (
     inputTokens === undefined &&
     outputTokens === undefined &&
-    totalTokens === undefined
+    totalTokens === undefined &&
+    cachedInputTokens === undefined &&
+    cacheWriteInputTokens === undefined &&
+    reasoningOutputTokens === undefined
   ) {
     return undefined;
   }
@@ -98,6 +110,9 @@ function normalizeUsageRecord(
     ...(inputTokens === undefined ? {} : { inputTokens }),
     ...(outputTokens === undefined ? {} : { outputTokens }),
     ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    ...(cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens }),
+    ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
   };
 }
 
@@ -133,4 +148,34 @@ function sumOptional(
   if (left === undefined) return right;
   if (right === undefined) return left;
   return left + right;
+}
+
+// Both operands are snapshots, never additive deltas.
+export function subtractAgentUsage(total: AgentUsage | undefined, baseline: AgentUsage | undefined): AgentUsage | undefined {
+  if (!total) return undefined;
+  const result: Record<string, number> = {};
+  for (const key of usageKeys) {
+    const value = total[key];
+    if (value !== undefined) result[key] = Math.max(0, value - (baseline?.[key] ?? 0));
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+
+const usageKeys = ["inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "cacheWriteInputTokens", "reasoningOutputTokens"] as const;
+
+export function sanitizeAgentUsage(usage: AgentUsage | undefined): AgentUsage | undefined {
+  const result: Record<string, number> = {};
+  for (const key of usageKeys) {
+    const value = usage?.[key];
+    if (value !== undefined && Number.isFinite(value) && value >= 0) result[key] = value;
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+
+export function maximumAgentUsage(left: AgentUsage | undefined, right: AgentUsage | undefined): AgentUsage | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  return Object.fromEntries(Object.entries({ ...left, ...right }).map(
+    ([key, value]) => [key, Math.max(value, left[key as keyof AgentUsage] ?? 0)],
+  ));
 }

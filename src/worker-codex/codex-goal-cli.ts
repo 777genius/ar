@@ -70,6 +70,10 @@ import {
   runProjectControlOperationFile,
 } from "./project-control-operation-lifecycle";
 
+enum ControllerSupervisorCliEventType {
+  Failure = "failure",
+}
+
 type CodexGoalCliCommand =
   | RunCommand
   | StatusCommand
@@ -281,6 +285,12 @@ export async function runCodexGoalCli(
             io.writeStdout(`${event.type} ${JSON.stringify(event.result)}\n`);
           },
         });
+        if (!result.ok && result.reason !== undefined) {
+          const failure = { ok: false, reason: result.reason, safeMessage: result.safeMessage };
+          io.writeStdout(command.format === "json"
+            ? `${JSON.stringify({ type: ControllerSupervisorCliEventType.Failure, result: failure })}\n`
+            : `failure ${result.reason}: ${result.safeMessage ?? "Controller supervision needs attention."}\n`);
+        }
         return result.ok ? 0 : 1;
       } finally {
         process.off("SIGINT", onSignal);

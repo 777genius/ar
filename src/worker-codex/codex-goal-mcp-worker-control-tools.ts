@@ -1,3 +1,4 @@
+import { ControlListState, listCodexGoalControlSignalsMcp, type ControlListInput } from "./codex-goal-mcp-control-list";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
@@ -12,7 +13,6 @@ import {
 import {
   enqueueCodexGoalControlSignal,
   inspectCodexGoalControlDecision,
-  listCodexGoalControlSignals,
   pauseCodexGoalWorker,
   reconcileCodexGoalControlInbox,
   sendCodexGoalGuidance,
@@ -111,14 +111,17 @@ export function registerCodexGoalWorkerControlTools(
     {
       title: "List Codex Goal Control Signals",
       description:
-        "List durable control inbox signals for a stored Codex goal job.",
+        "List compact control signals, default pending (50 per page). Use state=all for archive; follow page.nextCursor. Responses are capped at 64 KiB including bodies; oversized bodies have explicit retrieval guidance.",
       inputSchema: {
         ...jobIdInputSchema(),
         includeBodies: z.boolean().optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        cursor: z.string().regex(/^v1\.[a-f0-9]{64}\.[a-f0-9]{64}$/).optional(),
+        state: z.nativeEnum(ControlListState).optional(),
       },
     },
     async (args) => withMcpErrors(async () =>
-      mcpJson(await listCodexGoalControlSignals(args as WorkerControlMcpArgs)),
+      listCodexGoalControlSignalsMcp(args as ControlListInput),
     ),
   );
 

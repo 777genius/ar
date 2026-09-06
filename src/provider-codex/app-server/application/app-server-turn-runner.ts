@@ -1,3 +1,4 @@
+import { AppServerUsageError, usageFromError } from "../domain/app-server-usage-error";
 import type { AgentUsage } from "@vioxen/subscription-runtime/core";
 import type {
   CodexReasoningEffort,
@@ -61,7 +62,7 @@ export class AppServerTurnRunner {
       threadId,
     }).catch(
       async (error: unknown) => {
-        if (!preparedThread || emittedText) throw error;
+        if (!preparedThread || emittedText || usageFromError(error)) throw error;
         warnings.push({
           code: "codex_app_server_prepared_thread_failed",
           safeMessage:
@@ -75,9 +76,9 @@ export class AppServerTurnRunner {
         });
       },
     );
-    if (turn.error) throw turn.error;
+    if (turn.error) throw new AppServerUsageError(turn.error, turn.usage);
     if (!turn.outputText.trim()) {
-      throw new Error("codex_app_server_final_message_missing");
+      throw new AppServerUsageError(new Error("codex_app_server_final_message_missing"), turn.usage);
     }
     if (input.prepareNext ?? true) {
       this.prepareCleanThreadBestEffort(input);

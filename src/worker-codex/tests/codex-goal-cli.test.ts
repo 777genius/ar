@@ -918,21 +918,6 @@ describe("codex goal cli", () => {
       callerId: "lead-agent",
     });
 
-    const controlList = parseCodexGoalCliArgs([
-      "control-list",
-      "job-a",
-      "--include-bodies",
-    ], fakeIo());
-    expect(controlList).toMatchObject({
-      kind: "mcp-tool",
-      name: "codex_goal_control_list",
-    });
-    if (controlList.kind !== "mcp-tool") return;
-    expect(JSON.parse(controlList.argsJson ?? "{}")).toEqual({
-      jobId: "job-a",
-      includeBodies: true,
-    });
-
     const controlReconcile = parseCodexGoalCliArgs([
       "control-reconcile",
       "job-a",

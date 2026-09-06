@@ -1,4 +1,6 @@
 import { EventEmitter, once as onceEvent } from "node:events";
+import { AppServerTokenUsageTracker } from "./app-server-turn-usage";
+import { AppServerUsageError } from "../domain/app-server-usage-error";
 import type { AgentUsage } from "@vioxen/subscription-runtime/core";
 import { pruneCodexChildEnv } from "../../codex-cli-domain";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
@@ -29,10 +31,6 @@ import {
   type CodexThreadGoal,
   type CodexThreadGoalStatus,
 } from "../domain/app-server-types";
-import {
-  mergeAgentUsage,
-  readUsageFromRecords,
-} from "../domain/app-server-usage";
 import {
   codexAppServerProviderError,
   safeMessage,
@@ -98,6 +96,7 @@ export class CodexAppServerClient {
   private child: CodexAppServerChildProcess | null = null;
   private stdoutBuffer = "";
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly tokenUsage = new AppServerTokenUsageTracker();
   private readonly turns = new Map<string, TurnState>();
   private readonly pendingTurnIdsByThread = new Map<string, string>();
   private readonly earlyTurnIdsByThread = new Map<string, string>();
@@ -525,6 +524,7 @@ export class CodexAppServerClient {
     readonly turnNumber?: number;
     readonly onTextDelta?: (text: string) => void;
   }): Promise<AppServerTurnResult> {
+    this.tokenUsage.ensureThread(input.threadId);
     const startedAt = Date.now();
     const disableTools = this.disableAllTools(input.goalMode);
     const disableNativeEnvironments = this.disableNativeEnvironments(
@@ -726,12 +726,12 @@ export class CodexAppServerClient {
       const timer = setTimeout(() => {
         this.clearTurnTracking(turnId, input.threadId);
         input.abortSignal.removeEventListener("abort", abort);
-        reject(new Error(`codex_app_server_turn_timeout:${turnId}`));
+        reject(new AppServerUsageError(new Error(`codex_app_server_turn_timeout:${turnId}`), turn.usage));
       }, input.timeoutMs);
       const abort = () => {
         clearTimeout(timer);
         this.clearTurnTracking(turnId, input.threadId);
-        reject(new Error(`codex_app_server_turn_aborted:${turnId}`));
+        reject(new AppServerUsageError(new Error(`codex_app_server_turn_aborted:${turnId}`), turn.usage));
       };
       input.abortSignal.addEventListener("abort", abort, { once: true });
       const turn = existing ?? createTurnState();
@@ -769,6 +769,7 @@ export class CodexAppServerClient {
       if (!pending) return;
       clearTimeout(pending.timer);
       this.pending.delete(record.id);
+      this.tokenUsage.registerResponse(pending.method, record.result);
       pending.resolve(record as CodexAppServerJsonRpcResponse);
       return;
     }
@@ -782,6 +783,10 @@ export class CodexAppServerClient {
     if (typeof record.method !== "string") return;
     if (record.method === "account/rateLimits/updated") {
       this.rateLimitsMonitor?.notifyRateLimitsUpdated();
+      return;
+    }
+    if (record.method === "thread/tokenUsage/updated") {
+      this.tokenUsage.observe(params, this.pendingTurnIdsByThread, this.earlyTurnIdsByThread, this.turnIdAliases, (id) => this.ensureTurn(id));
       return;
     }
     if (record.method === "item/agentMessage/delta") {
@@ -830,10 +835,6 @@ export class CodexAppServerClient {
       const turnId = stringField(turn, "id");
       const state = this.ensureTurn(turnId);
       state.completed = true;
-      state.usage = mergeAgentUsage(
-        state.usage,
-        readUsageFromRecords(turn, params, record),
-      );
       const status = readRecord(turn?.status);
       const statusType = stringField(turn, "status") ??
         stringField(status, "type");
@@ -1064,6 +1065,8 @@ export class CodexAppServerClient {
       if (actual.outputText) this.emitTextDelta(expected, actual.outputText);
       expected.completed = expected.completed || actual.completed;
       expected.error = expected.error ?? actual.error;
+      expected.usage = actual.usage ?? expected.usage;
+      expected.usageBaseline = actual.usageBaseline ?? expected.usageBaseline;
       expected.waiters.push(...actual.waiters);
       if (expected.completed || expected.error) {
         this.resolveTurn(expected);

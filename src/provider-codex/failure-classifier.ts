@@ -1,3 +1,4 @@
+import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
 import type { ProviderFailure } from "@vioxen/subscription-runtime/core";
 import { classifyCodexRuntimeFailure } from "./codex-cli-domain";
 import { CodexAppServerTurnError } from "./app-server/application/app-server-client";
@@ -7,6 +8,13 @@ import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog"
 import { isCodexAppServerRateLimitsRejectedError } from "./app-server/application/app-server-rate-limits-monitor";
 
 export function classifyCodexFailure(error: unknown): ProviderFailure {
+  if (
+    error instanceof AppServerUsageError &&
+    error.constructor === AppServerUsageError &&
+    error.cause instanceof Error
+  ) {
+    return classifyCodexFailure(error.cause);
+  }
   if (
     isCodexAppServerRateLimitsRejectedError(error) &&
     error.reason === "quota_limited"

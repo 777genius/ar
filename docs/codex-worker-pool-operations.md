@@ -1527,3 +1527,24 @@ Do not run two writers in the same worktree.
 If quota/capacity/auth/reconnect happens, use pool continuation.
 If unknown/runtime/test failure happens, inspect dirty work before retry.
 ```
+
+### Bounded control inbox listing
+
+`control-list` / `codex_goal_control_list` returns compact pending signals by
+default, with counts for every state. The default page has at most 50 signals;
+`--limit` accepts 1-100. Use `--state all` (or a specific delivery state) to
+inspect delivered history. Follow `page.nextCursor` using `--cursor`; preserve
+the job and state filter. Ordering is ascending creation time, then signal ID.
+Cursors remain usable if the last row changes state; missing rows produce an
+explicit stale-cursor error. Pages are live reads, not snapshots: restart without
+a cursor to observe older rows that became pending during pagination.
+
+The entire MCP result, including duplicated text and structured content, is
+capped at 64 KiB. `--include-bodies` still respects this cap. If one body cannot
+fit, its row explicitly reports `bodyOmitted`, `bodyBytes`, and retrieval guidance;
+remaining rows remain reachable through pagination. Compact rows omit target,
+metadata and full receipt details; oversized identifier/diagnostic fields report
+`truncatedFields`. Full storage and SDK history are unchanged: use
+`WorkerControlService.listSignals({target, includeBodies:true, includeExpired:true})`
+to retrieve complete signals and bodies. This output cap does not bound the cost
+of reading the stored archive or provide a snapshot across pages.

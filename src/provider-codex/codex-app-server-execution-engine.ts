@@ -1,3 +1,4 @@
+import { AppServerUsageError, usageFromError } from "./app-server/domain/app-server-usage-error";
 import type {
   ManagedRunResumeHandle,
   ManagedRunStorePort,
@@ -190,7 +191,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       if (isCodexAppServerBudgetExceededError(error)) throw error;
       if (isCodexAppServerRateLimitsRejectedError(error)) throw error;
       if (isCodexModelUnavailableError(error)) throw error;
-      if (!this.options.fallback) throw error;
+      if (!this.options.fallback || usageFromError(error)) throw error;
 
       const fallbackResult = await this.options.fallback.run({
         ...input,
@@ -448,21 +449,25 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     readonly schemaWarnings: readonly AppServerWarning[];
     readonly redactor: RedactorPort;
   }): CodexExecutionResult {
-    const outputText = input.redactor.redact(input.result.outputText);
-    input.redactor.assertNoKnownSecret(outputText, "codex-app-server-output");
-    assertOutputWithinBounds(outputText, this.maxOutputBytes());
-    if (isAppServerWaitingForInputResult(input.result)) {
-      return redactWaitingForInputResult({
-        result: input.result,
+    try {
+      const outputText = input.redactor.redact(input.result.outputText);
+      input.redactor.assertNoKnownSecret(outputText, "codex-app-server-output");
+      assertOutputWithinBounds(outputText, this.maxOutputBytes());
+      if (isAppServerWaitingForInputResult(input.result)) {
+        return redactWaitingForInputResult({
+          result: input.result,
+          outputText,
+          redactor: input.redactor,
+        });
+      }
+      return {
         outputText,
-        redactor: input.redactor,
-      });
+        ...(input.result.usage === undefined ? {} : { usage: input.result.usage }),
+        warnings: [...input.schemaWarnings, ...input.result.warnings],
+      };
+    } catch (error) {
+      throw new AppServerUsageError(error, input.result.usage);
     }
-    return {
-      outputText,
-      ...(input.result.usage === undefined ? {} : { usage: input.result.usage }),
-      warnings: [...input.schemaWarnings, ...input.result.warnings],
-    };
   }
 
   private async parseStructuredOutput(
@@ -473,14 +478,18 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     },
     schemaPlan: CodexStructuredOutputSchemaPlan | undefined,
   ): Promise<CodexExecutionResult> {
-    return await parseCodexAppServerStructuredOutput({
-      result,
-      requested: Boolean(input.outputSchema),
-      ...(schemaPlan === undefined ? {} : { schemaPlan }),
-      goalMode: this.options.goalMode,
-      ...(input.runId === undefined ? {} : { runId: input.runId }),
-      runStore: this.runStore,
-    });
+    try {
+      return await parseCodexAppServerStructuredOutput({
+        result,
+        requested: Boolean(input.outputSchema),
+        ...(schemaPlan === undefined ? {} : { schemaPlan }),
+        goalMode: this.options.goalMode,
+        ...(input.runId === undefined ? {} : { runId: input.runId }),
+        runStore: this.runStore,
+      });
+    } catch (error) {
+      throw new AppServerUsageError(error, result.usage);
+    }
   }
 
   private maxOutputBytes(): number {

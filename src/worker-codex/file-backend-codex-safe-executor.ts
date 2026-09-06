@@ -500,6 +500,9 @@ function codexWorkerResultUsage(
   const usage = result.usage;
   if (!usage) return undefined;
   return {
+    ...(usage.cachedInputTokens === undefined ? {} : { cachedInputTokens: usage.cachedInputTokens }),
+    ...(usage.cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens: usage.cacheWriteInputTokens }),
+    ...(usage.reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens: usage.reasoningOutputTokens }),
     ...(usage.inputTokens === undefined
       ? {}
       : { inputTokens: usage.inputTokens }),
