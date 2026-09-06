@@ -30,11 +30,11 @@ describe("host operator namespace and publication adapter (mock files only)", ()
     fs.readlink.mockRejectedValue(new Error("private path"));
     await expect(assertHostedTestEgressOperator()).rejects.toThrow("host_operator_required");
   });
-  it("publishes only the finite record through exclusive temporary file, sync and atomic rename", async () => {
+  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("publishes the finite record through exclusive temporary file, sync and atomic rename: %s", async profileId => {
     const file = { writeFile: vi.fn(), sync: vi.fn(), close: vi.fn() };
     fs.open.mockResolvedValue(file);
     const grant: HostedTestEgressGrant = { schemaVersion: 1 as const, jobId: "exact", jobRootDir: "/synthetic/job",
-      workspacePath: "/synthetic/workspace", profileId: CodexProviderEgressProfileId.TestNpmQualification };
+      workspacePath: "/synthetic/workspace", profileId };
     await writeHostedTestEgressGrant(grant);
     expect(fs.open.mock.calls[0]).toEqual([expect.stringMatching(new RegExp(`^${hostedTestEgressGrantRoot}/[a-f0-9]{64}\\.json\\..*\\.tmp$`)), "wx", 0o600]);
     expect(file.writeFile).toHaveBeenCalledWith(JSON.stringify(grant) + "\n");

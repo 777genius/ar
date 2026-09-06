@@ -162,11 +162,12 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
     if (!options.cacheKey.trim()) {
       throw new Error("codex_worker_cache_key_required");
     }
-    this.options = { ...options, providerEgressPolicy: codexProviderEgressPolicy(
+    const providerEgressPolicy = codexProviderEgressPolicy(
       options.providerEgressPolicy?.profileId ?? CodexProviderEgressProfileId.ProviderApi,
-    ) };
-    this.cacheKeyHash = stableHash(this.options.providerEgressPolicy?.profileId === CodexProviderEgressProfileId.TestNpmQualification
-      ? `${options.cacheKey}:${CodexProviderEgressProfileId.TestNpmQualification}` : options.cacheKey).slice(0, 32);
+    );
+    this.options = { ...options, providerEgressPolicy };
+    this.cacheKeyHash = stableHash(providerEgressPolicy.profileId !== CodexProviderEgressProfileId.ProviderApi
+      ? `${options.cacheKey}:${providerEgressPolicy.profileId}` : options.cacheKey).slice(0, 32);
   }
 
   async materialize(input: {

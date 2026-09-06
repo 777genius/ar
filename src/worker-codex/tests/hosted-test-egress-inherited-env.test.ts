@@ -51,6 +51,8 @@ describe("direct factory hosted environment selection", () => {
   it.each([
     { name: "inherited hosted TEST", explicit: false, profile: CodexProviderEgressProfileId.TestNpmQualification },
     { name: "explicit hosted TEST", explicit: true, profile: CodexProviderEgressProfileId.TestNpmQualification },
+    { name: "inherited hosted managed", explicit: false, profile: CodexProviderEgressProfileId.TestManagedQualification },
+    { name: "explicit hosted managed", explicit: true, profile: CodexProviderEgressProfileId.TestManagedQualification },
     { name: "inherited hosted API", explicit: false, profile: CodexProviderEgressProfileId.ProviderApi },
     { name: "inherited hosted default ignores spoofed TEST marker", explicit: false, profile: undefined },
   ])("$name retains hosted namespace and hooks", async ({ explicit, profile }) => {
@@ -81,7 +83,8 @@ describe("direct factory hosted environment selection", () => {
         // Only the synthetic materialized home's config is read; no real session is used.
         const config = await readFile(join(launch.env.CODEX_HOME!, "config.toml"), "utf8");
         expect(config).toContain("[[hooks.PreToolUse]]");
-        expect(config.includes("registry.npmjs.org")).toBe(profile === CodexProviderEgressProfileId.TestNpmQualification);
+        expect(config.includes("registry.npmjs.org")).toBe(expectedPolicy.profileId !== CodexProviderEgressProfileId.ProviderApi);
+        expect(config.includes("api.github.com")).toBe(profile === CodexProviderEgressProfileId.TestManagedQualification);
         const invocation = codexAppServerProcessInvocation({
           ...launch, platform: "linux", ioLimitPaths: [],
           systemdUnit: "synthetic-inherited-env.service",

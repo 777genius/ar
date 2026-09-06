@@ -20,7 +20,7 @@ vi.mock("../hosted-test-egress-files", () => ({
 describe("normal runner trusted admission", () => {
   beforeEach(() => { vi.spyOn(process, "getuid").mockReturnValue(0); });
   afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks(); });
-  it("reads once per start, propagates to every rotating account, and re-admits revocation", async () => {
+  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("reads once per start, propagates to every rotating account, and re-admits revocation: %s", async selectedProfile => {
     const root = await mkdtemp(join(tmpdir(), "egress-runner-"));
     const config = {
       jobId: "exact-job", taskId: "task-label", jobRootDir: join(root, "job"),
@@ -28,16 +28,16 @@ describe("normal runner trusted admission", () => {
       authRootDir: join(root, "unused-synthetic-auth"), accounts: codexGoalAccountSlots(["fake-a", "fake-b"]),
       sourceEnv: { SUBSCRIPTION_RUNTIME_CODEX_EGRESS_GRANT_ROOT: join(root, "untrusted-authority"),
         SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
-        SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: CodexProviderEgressProfileId.TestNpmQualification },
+        SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: selectedProfile },
     };
     const grant: HostedTestEgressGrant = { schemaVersion: 1, jobId: config.jobId,
       jobRootDir: config.jobRootDir, workspacePath: config.workspacePath,
-      profileId: CodexProviderEgressProfileId.TestNpmQualification };
+      profileId: selectedProfile };
     try {
       await mkdir(config.jobRootDir); await mkdir(config.workspacePath);
       await writeFile(config.promptPath, "Offline synthetic task");
       files.read.mockResolvedValueOnce(grant).mockResolvedValueOnce(null);
-      for (const profileId of [CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.ProviderApi]) {
+      for (const profileId of [selectedProfile, CodexProviderEgressProfileId.ProviderApi]) {
         await runCodexGoal(config, { createExecutor(options) {
           expect(options.accounts).toHaveLength(2);
           for (const account of options.accounts) {
@@ -57,10 +57,10 @@ describe("normal runner trusted admission", () => {
       expect(files.read.mock.calls[0]?.[1]).toMatchObject({ jobId: "exact-job", jobRootDir: config.jobRootDir, workspacePath: config.workspacePath });
       const events = await readFile(codexGoalRuntimeEventsPath(config), "utf8");
       expect(events).toContain(CodexProviderEgressProfileId.ProviderApi);
-      expect(events).toContain(CodexProviderEgressProfileId.TestNpmQualification);
+      expect(events).toContain(selectedProfile);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
-  it("retains the admitted profile during an actual safe-executor quota rotation", async () => {
+  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("retains the admitted profile during a mock safe-executor quota rotation: %s", async selectedProfile => {
     const root = await mkdtemp(join(tmpdir(), "egress-rotation-"));
     const config = { jobId: "rotation", taskId: "rotation", jobRootDir: join(root, "job"),
       workspacePath: join(root, "workspace"), promptPath: join(root, "prompt"),
@@ -74,7 +74,7 @@ describe("normal runner trusted admission", () => {
     try {
       await mkdir(config.jobRootDir); await mkdir(config.workspacePath); await writeFile(config.promptPath, "Offline rotation");
       files.read.mockResolvedValue({ schemaVersion: 1, jobId: config.jobId, jobRootDir: config.jobRootDir,
-        workspacePath: config.workspacePath, profileId: CodexProviderEgressProfileId.TestNpmQualification });
+        workspacePath: config.workspacePath, profileId: selectedProfile });
       const result = await runCodexGoal(config, { createExecutor: options => new FileBackendCodexSafeExecutor({
         ...options, requireGitWorkspace: false, prewarmOnStart: false, clock,
         accounts: options.accounts.map((account, index) => ({
@@ -92,7 +92,7 @@ describe("normal runner trusted admission", () => {
       expect(result.attempts).toHaveLength(2);
       expect(result.attempts[0]?.failureReason).toBe("quota_limited");
       expect(new Set(launches.map(launch => launch.account))).toEqual(new Set([0, 1]));
-      expect(launches.every(launch => launch.profile === CodexProviderEgressProfileId.TestNpmQualification)).toBe(true);
+      expect(launches.every(launch => launch.profile === selectedProfile)).toBe(true);
       expect(files.read).toHaveBeenCalledOnce();
     } finally { await rm(root, { recursive: true, force: true }); }
   });

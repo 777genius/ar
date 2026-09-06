@@ -1,8 +1,13 @@
-# Finite hosted TEST npm egress
+# Finite hosted TEST egress
 
 The optional `codex-test-npm-qualification` profile allows exactly
 `api.openai.com`, `registry.npmjs.org`, and `tuf-repo-cdn.sigstore.dev`.
-It applies only to Linux hosted `app-server-goal` jobs. Login, refresh,
+The optional `codex-test-managed-qualification` profile allows exactly those
+three domains plus `api.github.com` and `raw.githubusercontent.com`, for the
+published managed authority reader's current-main and exact-registry requests.
+API-only remains exactly `api.openai.com`; the npm profile remains three domains.
+Neither arbitrary domains, wildcards, redirects nor URL prefixes authorize hosts.
+Each TEST profile applies only to Linux hosted `app-server-goal` jobs. Login, refresh,
 ordinary API-only jobs, and other engines do not inherit this authorization.
 This implementation has offline fixture coverage; actual npm/TUF reachability
 and unrelated-host denial require the separately reviewed disposable TEST canary.
@@ -12,8 +17,13 @@ outside hosted namespaces, as host root (replace the explicit placeholders):
 
 ```sh
 node /installed/subscription-runtime/host-integration/codex-test-egress.mjs grant JOB_ID /canonical/existing/job-root /canonical/existing/test-workspace
+node /installed/subscription-runtime/host-integration/codex-test-egress.mjs grant-managed JOB_ID /canonical/existing/job-root /canonical/existing/test-workspace
 node /installed/subscription-runtime/host-integration/codex-test-egress.mjs revoke JOB_ID
 ```
+
+`grant` selects only npm; `grant-managed` selects only managed. Choose one for
+the job. Both require exactly JOB ROOT WORKSPACE; `revoke` requires exactly one
+nonempty JOB. Workers must never invoke these root orchestration operations.
 
 Publication validates existing canonical directories and atomically replaces a
 0600 record named `sha256(JOB_ID).json` under the fixed 0700 directory
@@ -28,6 +38,9 @@ Publication validates existing canonical directories and atomically replaces a
   "profileId": "codex-test-npm-qualification"
 }
 ```
+
+The only accepted schemaVersion 1 profile values are the two TEST IDs above;
+API-only, unknown profiles and extra record keys are rejected.
 
 There is no domain list or alternate root argument. Environment, task labels,
 config files, manifests, CLI create/start flags, and MCP cannot issue grants.
@@ -62,7 +75,7 @@ Normal start/restart reads authorization once before account/session work.
 The immutable effective policy reaches every account slot, config, prewarm,
 resume and final process arguments. The final `--config` overrides pin the
 network proxy and replace its complete finite domain table. Cache keys separate
-TEST from API-only sessions; generated config is rewritten on materialization.
+API-only, npm and managed sessions while preserving the existing API/npm keys; generated config is rewritten on materialization.
 Existing hooks, filesystem/auth restrictions, UID65532, capabilities, resources,
 and systemd control-socket restrictions are retained. The existing `/run/user`
 exclusion also protects the records from namespaces launched by revision 0465270.
@@ -72,3 +85,11 @@ policy until stopped through existing lifecycle controls. `/run` is ephemeral:
 reboot removes authorization. `runner_starting` records the effective profile and
 a SHA256 admission identity digest for observation only; neither grants authority.
 A reviewed host release and native CI/canary remain operator responsibilities.
+
+Managed selection has offline synthetic coverage only. Delivery owns native CI,
+independent exact-source review and immutable staging. Live TEST proof must use
+the unchanged SRI-verified published authority reader with real repository/Cohort
+inputs and anonymous requests to both GitHub hosts. Root gh requests are not
+sandbox egress proof. Preserve API/npm reader denial and unrelated-host denial;
+if denial stops at the API request, do not claim separate raw-host live denial.
+No browser, SSH, fixture response, credential or engine fallback is authorized.

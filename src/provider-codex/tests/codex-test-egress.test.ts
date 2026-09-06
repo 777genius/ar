@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,9 +6,9 @@ import { describe, expect, it } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import {
   codexProviderApiEgressPolicy, codexProviderEgressPolicy, CodexProviderEgressProfileId,
-  codexProviderEgressConfigToml, codexProviderEgressCliConfigArgs, codexProviderEgressEnv,
+  codexProviderEgressPolicyFromEnv, codexProviderEgressConfigToml, codexProviderEgressCliConfigArgs, codexProviderEgressEnv,
 } from "../codex-provider-egress-policy";
-import { CodexWorkerCacheSessionPoolMaterializer } from "../codex-session-materializer";
+import { codexJsonHomeConfigToml, CodexWorkerCacheSessionPoolMaterializer } from "../codex-session-materializer";
 import { sessionArtifactFromCodexAuthJson } from "../codex-auth-json-codec";
 import { buildCodexRefreshBootstrapPlan } from "../codex-cli-domain";
 import { codexAppServerSandboxPolicy } from "../app-server/domain/app-server-types";
@@ -16,20 +17,33 @@ import { codexAppServerProcessInvocation } from "../app-server/adapters/node-app
 import type { CodexAppServerChildProcess, CodexAppServerProcessFactory } from "../app-server/application/app-server-process-port";
 
 const testPolicy = () => codexProviderEgressPolicy(CodexProviderEgressProfileId.TestNpmQualification);
+const managedPolicy = () => codexProviderEgressPolicy(CodexProviderEgressProfileId.TestManagedQualification);
+const policies = [codexProviderApiEgressPolicy(), testPolicy(), managedPolicy()];
 describe("finite TEST egress propagation", () => {
   it("keeps defaults API-only, freezes domains, and refuses unknown profiles", () => {
     expect(codexProviderApiEgressPolicy().domains).toEqual(["api.openai.com"]);
     expect(testPolicy().domains).toEqual(["api.openai.com", "registry.npmjs.org", "tuf-repo-cdn.sigstore.dev"]);
+    expect(managedPolicy().domains).toEqual(["api.openai.com", "registry.npmjs.org", "tuf-repo-cdn.sigstore.dev", "api.github.com", "raw.githubusercontent.com"]);
+    for (const policy of policies) {
+      expect(Object.isFrozen(policy)).toBe(true);
+      expect(Object.isFrozen(policy.domains)).toBe(true);
+      expect(codexProviderEgressPolicyFromEnv(codexProviderEgressEnv(policy))).toEqual(policy);
+    }
+    for (const marker of ["unknown", "api.github.com", "*.github.com", "https://api.github.com/", ""]) {
+      expect(codexProviderEgressPolicyFromEnv({ SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: marker })).toBeNull();
+      expect(() => codexProviderEgressPolicy(marker as CodexProviderEgressProfileId)).toThrow("codex_provider_egress_profile_invalid");
+    }
     expect(() => (testPolicy().domains as string[]).push("*")).toThrow();
     expect(() => codexProviderEgressPolicy("other" as CodexProviderEgressProfileId)).toThrow();
     expect(codexProviderEgressConfigToml()).not.toContain("registry.npmjs.org");
   });
-  it("reconstructs a fixed domain set even if a caller tampers with the policy object", () => {
-    const forged = { profileId: CodexProviderEgressProfileId.TestNpmQualification, domains: ["evil.example"] };
+  it.each(policies)("reconstructs a fixed domain set even if a caller tampers: $profileId", policy => {
+    const forged = { profileId: policy.profileId, domains: ["evil.example", "*.github.com", "https://api.github.com/"] };
     expect(codexProviderEgressConfigToml(forged)).not.toContain("evil.example");
-    expect(codexProviderEgressCliConfigArgs(forged).join(" ")).toContain("registry.npmjs.org");
+    expect(codexProviderEgressCliConfigArgs(forged)).toEqual(codexProviderEgressCliConfigArgs(policy));
+    expect(codexProviderEgressConfigToml(forged)).toBe(codexProviderEgressConfigToml(policy));
   });
-  it.each([codexProviderApiEgressPolicy(), testPolicy()])("captures policy before namespace launch: $profileId", policy => {
+  it.each(policies)("captures policy before namespace launch: $profileId", policy => {
     const observed: Parameters<CodexAppServerProcessFactory>[0][] = [];
     const spawn: CodexAppServerProcessFactory = input => {
       observed.push(input); return {} as CodexAppServerChildProcess;
@@ -62,27 +76,33 @@ describe("finite TEST egress propagation", () => {
     expect(plan.args.join(" ")).not.toContain("registry.npmjs.org");
     expect(plan.args.join(" ")).not.toContain("tuf-repo-cdn.sigstore.dev");
   });
-  it("isolates TEST cache from later API-only materialization with the same worker key", async () => {
+  it("isolates and reopens all three cache roots with the same worker key", async () => {
     const root = await mkdtemp(join(tmpdir(), "test-egress-cache-"));
     const materializers: CodexWorkerCacheSessionPoolMaterializer[] = [];
     const auth = JSON.stringify({ auth_mode: "chatgpt", tokens: { id_token: "fixture-id", access_token: "fixture-access", refresh_token: "fixture-refresh", account_id: "fixture-account" }, last_refresh: "2026-09-06T00:00:00.000Z" });
     const input = { session: sessionArtifactFromCodexAuthJson(auth), redactor: new DefaultRedactor() };
     try {
       const homes: string[] = [];
-      for (const policy of [testPolicy(), codexProviderApiEgressPolicy(), testPolicy()]) {
+      for (const policy of [...policies, ...policies]) {
         const m = new CodexWorkerCacheSessionPoolMaterializer({
           cacheKey: "same-test-worker", slots: 1, rootDir: root,
           providerEgressPolicy: policy, preserveOnDispose: true, scrubAuthOnDispose: true,
         });
         materializers.push(m);
         const session = await m.materialize(input);
-        homes.push(session.codexHome);
-        const config = await readFile(join(session.codexHome, "config.toml"), "utf8");
-        expect(config.includes("registry.npmjs.org")).toBe(policy.profileId === CodexProviderEgressProfileId.TestNpmQualification);
-        expect(session.env).toMatchObject(codexProviderEgressEnv(policy));
-        await session.release(); await m.dispose();
+        try {
+          homes.push(session.codexHome);
+          const config = await readFile(join(session.codexHome, "config.toml"), "utf8");
+          expect(config).toBe(codexJsonHomeConfigToml({ providerEgressPolicy: policy }));
+          const key = "same-test-worker:slot:1" + (policy.profileId === CodexProviderEgressProfileId.ProviderApi ? "" : `:${policy.profileId}`);
+          const hash = createHash("sha256").update(key).digest("hex").slice(0, 32);
+          expect(session.codexHome).toBe(join(root, `codex-${hash}`, "codex-home"));
+          expect(session.env).toMatchObject(codexProviderEgressEnv(policy));
+        } finally { await session.release(); }
+        await m.dispose();
       }
-      expect(homes[0]).not.toBe(homes[1]); expect(homes[0]).toBe(homes[2]);
+      expect(new Set(homes.slice(0, 3)).size).toBe(3);
+      expect(homes.slice(3)).toEqual(homes.slice(0, 3));
     } finally {
       await Promise.all(materializers.map(m => m.dispose()));
       await rm(root, { recursive: true, force: true });

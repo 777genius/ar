@@ -95,7 +95,7 @@ describe("finite admission eligibility and identity ancestor custody (synthetic 
     expect(createExecutor).not.toHaveBeenCalled();
     expect(fs.readFile).not.toHaveBeenCalledWith("/TEST/must-not-read", "utf8");
   });
-  it("carries accepted identity through the actual runner to executor launch with no rename-capable parent", async () => {
+  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("carries accepted identity through the mock runner launch: %s", async profileId => {
     // UID/mode metadata is synthetic; this is not a kernel or deployed namespace test.
     const inspected = new Map<string, ReturnType<typeof directory>>();
     fs.lstat.mockImplementation(async (path: string) => {
@@ -109,7 +109,7 @@ describe("finite admission eligibility and identity ancestor custody (synthetic 
     try {
       await mkdir(config.jobRootDir); await mkdir(config.workspacePath); await writeFile(config.promptPath, "offline");
       const file = await fs.open();
-      file.readFile = async () => JSON.stringify({ ...grant, jobRootDir: config.jobRootDir, workspacePath: config.workspacePath });
+      file.readFile = async () => JSON.stringify({ ...grant, profileId, jobRootDir: config.jobRootDir, workspacePath: config.workspacePath });
       let launched = false;
       await runCodexGoal(config, { createExecutor(options) {
         // At admission-to-launch, Unix rename needs write permission on the parent.
@@ -127,7 +127,7 @@ describe("finite admission eligibility and identity ancestor custody (synthetic 
             if (parent === "/") break;
           }
         }
-        expect(options.accounts[0]?.worker.providerEgressPolicy?.profileId).toBe(CodexProviderEgressProfileId.TestNpmQualification);
+        expect(options.accounts[0]?.worker.providerEgressPolicy?.profileId).toBe(profileId);
         return { async run() { launched = true; return { status: "completed", attempts: [], task: { outputText: "offline" } } as never; }, async dispose() {} };
       } });
       expect(launched).toBe(true);

@@ -7,7 +7,8 @@ export type HostedTestEgressGrant = {
   readonly jobId: string;
   readonly jobRootDir: string;
   readonly workspacePath: string;
-  readonly profileId: CodexProviderEgressProfileId.TestNpmQualification;
+  readonly profileId: CodexProviderEgressProfileId.TestNpmQualification
+    | CodexProviderEgressProfileId.TestManagedQualification;
 };
 
 export type HostedTestEgressIdentity = Pick<
@@ -20,7 +21,8 @@ export function parseHostedTestEgressGrant(value: unknown): HostedTestEgressGran
   if (Object.keys(record).sort().join(",") !==
       "jobId,jobRootDir,profileId,schemaVersion,workspacePath" ||
       record.schemaVersion !== 1 ||
-      record.profileId !== CodexProviderEgressProfileId.TestNpmQualification ||
+      (record.profileId !== CodexProviderEgressProfileId.TestNpmQualification &&
+       record.profileId !== CodexProviderEgressProfileId.TestManagedQualification) ||
       typeof record.jobId !== "string" || !record.jobId.trim() ||
       record.jobId.length > 256 ||
       typeof record.jobRootDir !== "string" || !record.jobRootDir ||
@@ -30,7 +32,7 @@ export function parseHostedTestEgressGrant(value: unknown): HostedTestEgressGran
     jobId: record.jobId,
     jobRootDir: record.jobRootDir,
     workspacePath: record.workspacePath,
-    profileId: CodexProviderEgressProfileId.TestNpmQualification,
+    profileId: record.profileId,
   });
 }
 

@@ -38,12 +38,19 @@ describe("trusted hosted TEST egress custody", () => {
     expect(await readHostedTestEgressGrantFile(authority, identity, uid)).toEqual(grant());
     expect(await readHostedTestEgressGrantFile(authority, { ...identity, jobId: "other" }, uid)).toBeNull();
   });
+  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("roundtrips a frozen closed TEST grant: %s", profileId => {
+    const value = { ...grant(), profileId };
+    const parsed = parseHostedTestEgressGrant(JSON.parse(JSON.stringify(value)));
+    expect(parsed).toEqual(value);
+    expect(Object.isFrozen(parsed)).toBe(true);
+    expect(() => parseHostedTestEgressGrant({ ...value, domains: ["api.github.com"] })).toThrow("hosted_test_egress_grant_invalid");
+  });
   it.each(["jobId", "jobRootDir", "workspacePath"] as const)("refuses a changed %s binding", async field => {
     const other = { ...identity, [field]: identity[field] + "-changed" };
     expect(() => assertHostedTestEgressIdentity(parseHostedTestEgressGrant(grant()), other)).toThrow();
   });
   it.each([
-    { schemaVersion: 2 }, { profileId: "arbitrary" }, { domains: ["*"] },
+    { schemaVersion: 2 }, { profileId: CodexProviderEgressProfileId.ProviderApi }, { profileId: "arbitrary" }, { domains: ["*"] },
     { approved: true }, { jobId: "" },
   ])("rejects malformed or extra authority fields: %j", delta => {
     expect(() => parseHostedTestEgressGrant({ ...grant(), ...delta })).toThrow();

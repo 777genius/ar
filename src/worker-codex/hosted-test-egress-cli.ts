@@ -2,17 +2,21 @@
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { writeHostedTestEgressGrant, revokeHostedTestEgressGrant } from "./hosted-test-egress-files";
 
-const [operation, jobId, jobRootDir, workspacePath, ...extra] = process.argv.slice(2);
+const operands = process.argv.slice(2);
+const [operation, jobId, jobRootDir, workspacePath] = operands;
 try {
-  if (operation === "grant" && jobId && jobRootDir && workspacePath && !extra.length) {
+  if ((operation === "grant" || operation === "grant-managed") &&
+      operands.length === 4 && jobId?.trim() && jobRootDir?.trim() && workspacePath?.trim()) {
     await writeHostedTestEgressGrant({
       schemaVersion: 1, jobId, jobRootDir, workspacePath,
-      profileId: CodexProviderEgressProfileId.TestNpmQualification,
+      profileId: operation === "grant-managed"
+        ? CodexProviderEgressProfileId.TestManagedQualification
+        : CodexProviderEgressProfileId.TestNpmQualification,
     });
-  } else if (operation === "revoke" && jobId && !jobRootDir) {
+  } else if (operation === "revoke" && operands.length === 2 && jobId?.trim()) {
     await revokeHostedTestEgressGrant(jobId);
   } else {
-    throw new Error("usage: hosted-test-egress-cli grant JOB ROOT WORKSPACE | revoke JOB");
+    throw new Error("usage: hosted-test-egress-cli grant JOB ROOT WORKSPACE | grant-managed JOB ROOT WORKSPACE | revoke JOB");
   }
   process.stdout.write(JSON.stringify({ operation, jobId, success: true }) + "\n");
 } catch {

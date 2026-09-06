@@ -22,13 +22,14 @@ function runtime(options: FileBackendCodexWorkerOptions) {
 }
 describe("factory admitted policy propagation", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
-  it("uses one snapshot for prewarm, task, child CLI and cached homes across TEST/API/TEST", async () => {
+  it("uses one snapshot for prewarm, task, child CLI and cached homes across all three profiles and reopenings", async () => {
     const root = await mkdtemp(join(tmpdir(), "egress-factory-"));
     const workspacePath = join(root, "workspace"); await mkdir(workspacePath);
     const homes: string[] = [];
     try {
-      for (const profileId of [CodexProviderEgressProfileId.TestNpmQualification,
-        CodexProviderEgressProfileId.ProviderApi, CodexProviderEgressProfileId.TestNpmQualification]) {
+      const profiles = [CodexProviderEgressProfileId.ProviderApi, CodexProviderEgressProfileId.TestNpmQualification,
+        CodexProviderEgressProfileId.TestManagedQualification];
+      for (const profileId of [...profiles, ...profiles]) {
         const fake = new FakeAppServerFactory({ goalStatusesAfterTurns: ["blocked", "complete"] });
         const launches: Parameters<typeof fake.create>[0][] = [];
         const admitted = { profileId, domains: ["ignored.invalid"] };
@@ -65,7 +66,9 @@ describe("factory admitted policy propagation", () => {
             expect(launch.args.slice(-6)).toEqual(codexProviderEgressCliConfigArgs(codexProviderEgressPolicy(profileId)));
             const home = launch.env!.CODEX_HOME!;
             const config = await readFile(join(home, "config.toml"), "utf8");
-            expect(config.includes("registry.npmjs.org")).toBe(profileId === CodexProviderEgressProfileId.TestNpmQualification);
+            expect(config.includes("registry.npmjs.org")).toBe(profileId !== CodexProviderEgressProfileId.ProviderApi);
+            expect(config.includes("api.github.com")).toBe(profileId === CodexProviderEgressProfileId.TestManagedQualification);
+            expect(config.includes("raw.githubusercontent.com")).toBe(profileId === CodexProviderEgressProfileId.TestManagedQualification);
             expect(config).toContain("[[hooks.PreToolUse]]");
             expect(config).toContain("network_access = true");
           }
@@ -75,12 +78,13 @@ describe("factory admitted policy propagation", () => {
           for (const turn of turns) expect(turn.params).toMatchObject({ sandboxPolicy: { networkAccess: true } });
         } finally { await driver.dispose(); }
       }
-      expect(homes[0]).not.toBe(homes[1]); expect(homes[0]).toBe(homes[2]);
+      expect(new Set(homes.slice(0, 3)).size).toBe(3);
+      expect(homes.slice(3)).toEqual(homes.slice(0, 3));
     } finally { await rm(root, { recursive: true, force: true }); }
   });
-  it("defaults a caller with inherited spoofed markers to API-only while preserving inherited PATH", async () => {
+  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification])("defaults inherited spoofed %s to API-only while preserving PATH", async profileId => {
     const root = await mkdtemp(join(tmpdir(), "egress-inherited-"));
-    vi.stubEnv("SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE", CodexProviderEgressProfileId.TestNpmQualification);
+    vi.stubEnv("SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE", profileId);
     vi.stubEnv("PATH", "/synthetic/inherited/bin");
     vi.stubEnv("SUBSCRIPTION_RUNTIME_SANDBOX_KIND", "hosted-codex-job");
     const fake = new FakeAppServerFactory();

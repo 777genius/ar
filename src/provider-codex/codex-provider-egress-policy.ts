@@ -4,6 +4,7 @@ export const codexProviderEgressProfileEnvVar =
 export enum CodexProviderEgressProfileId {
   ProviderApi = "codex-provider-api",
   TestNpmQualification = "codex-test-npm-qualification",
+  TestManagedQualification = "codex-test-managed-qualification",
 }
 export const codexProviderApiEgressProfileId = CodexProviderEgressProfileId.ProviderApi;
 
@@ -25,6 +26,14 @@ export function codexProviderEgressPolicy(
           "api.openai.com", "registry.npmjs.org", "tuf-repo-cdn.sigstore.dev",
         ]),
       });
+    case CodexProviderEgressProfileId.TestManagedQualification:
+      return Object.freeze({
+        profileId,
+        domains: Object.freeze([
+          "api.openai.com", "registry.npmjs.org", "tuf-repo-cdn.sigstore.dev",
+          "api.github.com", "raw.githubusercontent.com",
+        ]),
+      });
     default:
       throw new Error("codex_provider_egress_profile_invalid");
   }
@@ -40,7 +49,8 @@ export function codexProviderEgressPolicyFromEnv(
 ): CodexProviderEgressPolicy | null {
   const profileId = sourceEnv?.[codexProviderEgressProfileEnvVar]?.trim();
   if (profileId === CodexProviderEgressProfileId.ProviderApi ||
-      profileId === CodexProviderEgressProfileId.TestNpmQualification) {
+      profileId === CodexProviderEgressProfileId.TestNpmQualification ||
+      profileId === CodexProviderEgressProfileId.TestManagedQualification) {
     return codexProviderEgressPolicy(profileId);
   }
   return null;
