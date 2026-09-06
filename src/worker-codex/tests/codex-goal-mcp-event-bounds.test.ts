@@ -72,7 +72,7 @@ describe("Codex goal MCP event history bounds", () => {
       runId: "run-warning-state",
       type: RunEventType.Completed,
       occurredAt: "2026-09-05T00:00:00.000Z",
-      source: { providerKind: RunEventProviderKind.Codex },
+      source: { providerKind: RunEventProviderKind.Codex, registryRootDir: fixture.registryRootDir },
       payload: { status: "completed" },
       idempotencyParts: ["warning-state"],
     });

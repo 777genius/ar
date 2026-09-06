@@ -297,7 +297,7 @@ describe("run events", () => {
         RunEventType.Failed,
       ]),
     );
-    expect(result.events.map((event) => event.sequence)).toEqual([10, 11, 12]);
+    expect(result.events.map((event) => event.sequence)).toEqual([10, 11, 12, 13]);
   });
 
   it("rebuilds read models from durable events when projection state is gone", () => {
@@ -406,7 +406,7 @@ describe("run events", () => {
         });
       },
     };
-    const service = new RunEventProjectionService({
+    const service = new RunEventProjectionService({ providerKind: RunEventProviderKind.Codex,
       observationPort,
       eventStore: events,
       stateStore: states,
@@ -439,7 +439,7 @@ describe("run events", () => {
         });
       },
     };
-    const service = new RunEventProjectionService({
+    const service = new RunEventProjectionService({ providerKind: RunEventProviderKind.Codex,
       observationPort,
       eventStore: events,
       stateStore: states,
@@ -479,7 +479,7 @@ describe("run events", () => {
         };
       },
     };
-    const service = new RunEventProjectionService({
+    const service = new RunEventProjectionService({ providerKind: RunEventProviderKind.Codex,
       observationPort,
       eventStore: events,
       stateStore: states,
@@ -505,7 +505,7 @@ describe("run events", () => {
     });
     const recovered = await service.projectRun({ runId: "run-a" });
 
-    expect(recovered.events.map((event) => event.type)).not.toContain(
+    expect(recovered.events.map((event) => event.type)).toContain(
       RunEventType.ObservationRecorded,
     );
     expect(recovered.events.map((event) => event.type)).toEqual(

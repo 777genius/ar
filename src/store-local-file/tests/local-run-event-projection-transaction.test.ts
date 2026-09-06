@@ -45,23 +45,23 @@ describe("durable run projection transactions", () => {
     const eventStore = new LocalFileRunEventStore({ rootDir: root });
     const stateStore = new LocalFileRunEventProjectionStateStore({ rootDir: root });
     let current = snapshot();
-    const service = new RunEventProjectionService({ eventStore, stateStore, observationPort: { observeRun: async () => current } });
+    const service = new RunEventProjectionService({ providerKind: RunEventProviderKind.Codex, eventStore, stateStore, observationPort: { observeRun: async () => current } });
     await service.projectRun({ runId: "fake-run" });
     current = snapshot(true, true);
     vi.spyOn(stateStore, "writeProjectionState").mockRejectedValueOnce(new Error("fake_state_write_crash"));
     await expect(service.projectRun({ runId: "fake-run" })).rejects.toThrow("fake_state_write_crash");
-    expect((await stateStore.readProjectionState("fake-run"))?.revision).toBe(1);
-    expect(await stateStore.readPendingProjection("fake-run")).not.toBeNull();
+    expect((await stateStore.readProjectionState("fake-run", { providerKind: RunEventProviderKind.Codex }))?.revision).toBe(1);
+    expect(await stateStore.readPendingProjection("fake-run", { providerKind: RunEventProviderKind.Codex })).not.toBeNull();
     current = snapshot();
     // New objects simulate process restart, including independent local-store instances.
-    const restarted = new RunEventProjectionService({
+    const restarted = new RunEventProjectionService({ providerKind: RunEventProviderKind.Codex,
       eventStore: new LocalFileRunEventStore({ rootDir: root }),
       stateStore: new LocalFileRunEventProjectionStateStore({ rootDir: root }),
       observationPort: { observeRun: async () => current },
     });
     await restarted.projectRun({ runId: "fake-run" });
-    expect(await stateStore.readPendingProjection("fake-run")).toBeNull();
-    expect((await stateStore.readProjectionState("fake-run"))?.revision).toBe(3);
+    expect(await stateStore.readPendingProjection("fake-run", { providerKind: RunEventProviderKind.Codex })).toBeNull();
+    expect((await stateStore.readProjectionState("fake-run", { providerKind: RunEventProviderKind.Codex }))?.revision).toBe(3);
     const events = (await eventStore.read()).events;
     expect(events.filter((event) => event.type === RunEventType.WorkspaceChanged).map((event) => event.payload.dirty)).toEqual([false, true, false]);
     expect(new Set(events.map((event) => event.eventId)).size).toBe(events.length);
@@ -75,10 +75,10 @@ describe("durable run projection transactions", () => {
       await append(events.slice(0, 1)); throw new Error("fake_partial_append");
     });
     let observations = 0;
-    const service = new RunEventProjectionService({ eventStore, stateStore, observationPort: { observeRun: async () => { observations++; return snapshot(); } } });
+    const service = new RunEventProjectionService({ providerKind: RunEventProviderKind.Codex, eventStore, stateStore, observationPort: { observeRun: async () => { observations++; return snapshot(); } } });
     await expect(service.projectRun({ runId: "fake-run" })).rejects.toThrow("fake_partial_append");
-    expect(await stateStore.readProjectionState("fake-run")).toBeNull();
-    const pending = await stateStore.readPendingProjection("fake-run");
+    expect(await stateStore.readProjectionState("fake-run", { providerKind: RunEventProviderKind.Codex })).toBeNull();
+    const pending = await stateStore.readPendingProjection("fake-run", { providerKind: RunEventProviderKind.Codex });
     expect(pending).not.toBeNull();
     const recovered = await service.projectRun({ runId: "fake-run" });
     expect(recovered.recoveryAppendResult).toMatchObject({ appendedCount: (pending?.events.length ?? 0) - 1, skippedDuplicateCount: 1 });
@@ -89,7 +89,7 @@ describe("durable run projection transactions", () => {
     const root = await rootDir();
     let active = 0, peak = 0, index = 0;
     const flags = [false, true, false, true, false];
-    const services = flags.map(() => new RunEventProjectionService({
+    const services = flags.map(() => new RunEventProjectionService({ providerKind: RunEventProviderKind.Codex,
       eventStore: new LocalFileRunEventStore({ rootDir: root }),
       stateStore: new LocalFileRunEventProjectionStateStore({ rootDir: root, lockPollMs: 1 }),
       observationPort: { observeRun: async () => {
@@ -103,6 +103,6 @@ describe("durable run projection transactions", () => {
     expect(peak).toBe(1);
     const events = (await new LocalFileRunEventStore({ rootDir: root }).read()).events;
     expect(events.filter((event) => event.type === RunEventType.WorkspaceChanged).map((event) => event.payload.dirty)).toEqual(flags);
-    expect((await new LocalFileRunEventProjectionStateStore({ rootDir: root }).readProjectionState("fake-run"))?.revision).toBe(5);
+    expect((await new LocalFileRunEventProjectionStateStore({ rootDir: root }).readProjectionState("fake-run", { providerKind: RunEventProviderKind.Codex }))?.revision).toBe(5);
   });
 });

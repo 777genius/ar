@@ -1,3 +1,5 @@
+import { sameRunEventSource } from "./run-event-source";
+import type { RunEventSource } from "./run-event-types";
 import {
   type RunObservationPort,
   type RunObservationRequest,
@@ -40,6 +42,7 @@ export class RunEventProjectionService {
     readonly observationPort: RunObservationPort;
     readonly eventStore: RunEventStorePort;
     readonly stateStore: RunEventProjectionStateStorePort;
+    readonly providerKind?: RunEventSource["providerKind"];
     readonly hostId?: string;
     readonly registryRootDir?: string;
     readonly clock?: { now(): Date };
@@ -56,44 +59,54 @@ export class RunEventProjectionService {
     readonly appendResult: RunEventAppendResult;
     readonly recoveryAppendResult?: RunEventAppendResult;
   }> {
-    return this.options.stateStore.withProjectionLock(input.runId, async () => {
-      // A prepared transaction survives both a partial append and a failed state write.
-      // Complete it before reading a fresh observation, even when runtime state changed.
-      const pending = await this.options.stateStore.readPendingProjection(input.runId);
-      const recoveryAppendResult = pending ? await this.commitProjection(pending) : undefined;
-      const snapshot = await this.observationService.observeRun(input);
-      if (snapshot.runId !== input.runId) throw new Error("run_event_projection_run_id_mismatch");
-      const storedState = await this.options.stateStore.readProjectionState(snapshot.runId);
-      const previousState = storedState ??
-        await this.recoverProjectionStateFromEvents(snapshot.runId);
-      const projected = projectRunObservationEvents({
-        snapshot,
-        previousState,
-        ...(this.options.hostId === undefined ? {} : { hostId: this.options.hostId }),
-        ...(this.options.registryRootDir === undefined
-          ? {}
-          : { registryRootDir: this.options.registryRootDir }),
-      });
-      await this.options.stateStore.writePendingProjection(projected);
-      const appendResult = await this.commitProjection(projected);
-      return { ...projected, appendResult,
-        ...(recoveryAppendResult === undefined ? {} : { recoveryAppendResult }),
-      };
-    });
+    const transact = async (source: RunEventSource) =>
+      this.options.stateStore.withProjectionLock(input.runId, async () => {
+        const pending = await this.options.stateStore.readPendingProjection(input.runId, source);
+        if (pending && !sameRunEventSource(pending.nextState.source, source)) {
+          throw new Error("run_event_projection_source_mismatch");
+        }
+        const recoveryAppendResult = pending ? await this.commitProjection(pending) : undefined;
+        const snapshot = await this.observationService.observeRun(input);
+        if (snapshot.runId !== input.runId || snapshot.providerKind !== source.providerKind) {
+          throw new Error("run_event_projection_source_mismatch");
+        }
+        const storedState = await this.options.stateStore.readProjectionState(snapshot.runId, source);
+        if (storedState && !sameRunEventSource(storedState.source, source)) {
+          throw new Error("run_event_projection_source_mismatch");
+        }
+        const previousState = storedState ?? await this.recoverProjectionStateFromEvents(snapshot.runId, source);
+        const projected = projectRunObservationEvents({ snapshot, previousState, ...source });
+        await this.options.stateStore.writePendingProjection(projected);
+        const appendResult = await this.commitProjection(projected);
+        return { ...projected, appendResult,
+          ...(recoveryAppendResult === undefined ? {} : { recoveryAppendResult }),
+        };
+      }, source);
+    const sourceOptions = {
+      ...(this.options.hostId === undefined ? {} : { hostId: this.options.hostId }),
+      ...(this.options.registryRootDir === undefined ? {} : { registryRootDir: this.options.registryRootDir }),
+    };
+    if (this.options.providerKind !== undefined) {
+      return transact({ providerKind: this.options.providerKind, ...sourceOptions });
+    }
+    // Compatibility discovery does not publish state; observe afresh under the source lock.
+    const snapshot = await this.observationService.observeRun(input);
+    return transact({ providerKind: snapshot.providerKind, ...sourceOptions });
   }
 
   private async commitProjection(projected: RunEventProjectionResult): Promise<RunEventAppendResult> {
     const appendResult = await this.options.eventStore.append(projected.events);
     await this.options.stateStore.writeProjectionState(projected.nextState);
-    await this.options.stateStore.clearPendingProjection(projected.nextState.runId);
+    await this.options.stateStore.clearPendingProjection(projected.nextState.runId, projected.nextState.source);
     return appendResult;
   }
 
   private async recoverProjectionStateFromEvents(
-    runId: string,
+    runId: string, source: RunEventSource,
   ): Promise<RunEventProjectionState | null> {
-    const replayed = await this.options.eventStore.read({ runId });
-    return runEventProjectionStateFromEvents(replayed.events);
+    const replayed = await this.options.eventStore.read({ runId, sourceProviderKind: source.providerKind,
+      ...(source.registryRootDir === undefined ? {} : { sourceRegistryRootDir: source.registryRootDir }) });
+    return runEventProjectionStateFromEvents(replayed.events.filter(event => sameRunEventSource(event.source, source)));
   }
 }
 
@@ -108,7 +121,7 @@ export function projectRunObservationEvents(input: {
   if (!Number.isSafeInteger(revision) || revision < 1) {
     throw new Error("run_event_projection_revision_exhausted");
   }
-  const nextState = { ...runEventProjectionStateFromSnapshot(input.snapshot), revision };
+  let nextState = { ...runEventProjectionStateFromSnapshot(input.snapshot), revision };
   const previous = input.previousState ?? null;
   const events: RunEvent[] = [];
   const source = runEventSourceFromSnapshot({
@@ -119,6 +132,8 @@ export function projectRunObservationEvents(input: {
       ? {}
       : { registryRootDir: input.registryRootDir }),
   });
+  nextState = { ...nextState, source };
+  if (previous && previous.source && !sameRunEventSource(previous.source, source)) throw new Error("run_event_projection_source_mismatch");
   const push = (
     type: RunEventType,
     severity: RunEventSeverity,
@@ -140,11 +155,17 @@ export function projectRunObservationEvents(input: {
     }));
   };
 
-  if (!previous) {
+  const lifecycleChanged = !previous || previous.status !== nextState.status ||
+    previous.liveness !== nextState.liveness ||
+    previous.lifecycleSignature !== nextState.lifecycleSignature;
+  if (lifecycleChanged) {
     push(
       RunEventType.ObservationRecorded,
       RunEventSeverity.Info,
-      snapshotPayload(input.snapshot),
+      { ...snapshotPayload(input.snapshot), progress: compactJsonObject({ ...input.snapshot.progress }),
+        process: compactJsonObject({ alive: input.snapshot.process?.alive,
+          aliveReason: input.snapshot.process?.aliveReason, supervisor: input.snapshot.process?.supervisor,
+          pid: input.snapshot.process?.pid }) },
       ["initial", nextState.status, nextState.liveness],
     );
   }
