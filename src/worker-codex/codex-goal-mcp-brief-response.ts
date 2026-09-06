@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { boundCodexGoalBriefCompactMcpEnvelope } from "./codex-goal-mcp-compact-bounds";
 import { CodexGoalBriefDetail } from "./codex-goal-mcp-inputs";
 
 type JsonObject = Readonly<Record<string, unknown>>;
@@ -36,6 +37,7 @@ const statusKeys = [
   "progressResultStatus", "progressResultReason", "progressAttemptCount",
   "progressCurrentAccount", "runtimeEventsExists",
   "lastRuntimeEvent", "lastRuntimeEventLevel", "recommendedAction", "warnings",
+  "dirtyFileCount", "dirtyFilesCount",
 ] as const;
 
 const workerHealthKeys = [
@@ -61,6 +63,18 @@ function pick(source: JsonObject, keys: readonly string[]): Record<string, unkno
     if (source[key] !== undefined) output[key] = source[key];
   }
   return output;
+}
+
+function withChangedFileCounts(brief: Record<string, unknown>, status: Record<string, unknown>): void {
+  const briefChangedFiles = brief.changedFiles;
+  const statusChangedFiles = status.changedFiles;
+  if (Array.isArray(briefChangedFiles) && brief.changedFileCount === undefined) {
+    brief.changedFileCount = briefChangedFiles.length;
+  }
+  if (Array.isArray(statusChangedFiles)) {
+    if (status.changedFileCount === undefined) status.changedFileCount = statusChangedFiles.length;
+    if (status.dirtyFileCount === undefined) status.dirtyFileCount = statusChangedFiles.length;
+  }
 }
 
 function stableValue(value: unknown): unknown {
@@ -109,7 +123,8 @@ export function buildCodexGoalBriefMcpResponse(
     brief.recentCommands = full.brief.recentCommands;
     brief.recentLogTail = full.brief.recentLogTail;
   }
-  const projected: JsonObject = {
+  withChangedFileCounts(brief, status);
+  const semanticProjected: JsonObject = {
     ok: true,
     registryRootDir: full.registryRootDir,
     jobId: full.jobId,
@@ -118,20 +133,22 @@ export function buildCodexGoalBriefMcpResponse(
     brief,
     status,
   };
-  const revision = semanticRevision(projected, {
+  // Hash before bounding. A change after a visible array/string prefix must still
+  // invalidate afterRevision, otherwise polling can falsely report unchanged.
+  const revision = semanticRevision(semanticProjected, {
     ...options,
     registryRootDir: full.registryRootDir,
     jobId: full.jobId,
   });
   if (options.afterRevision === revision) {
-    return {
+    return boundCodexGoalBriefCompactMcpEnvelope({
       ok: true,
       registryRootDir: full.registryRootDir,
       jobId: full.jobId,
       detail: CodexGoalBriefDetail.Compact,
       unchanged: true,
       revision,
-    };
+    });
   }
-  return { ...projected, revision };
+  return boundCodexGoalBriefCompactMcpEnvelope({ ...semanticProjected, revision });
 }

@@ -220,4 +220,111 @@ describe("codex_goal_brief MCP response projection", () => {
     expect(bytes(compact)).toBeLessThan(bytes(full));
     expect(bytes(unchanged)).toBeLessThan(bytes(compact));
   });
+
+  it("bounds the actual MCP envelope while retaining safety through tight depth limits", () => {
+    const changedFiles = Array.from(
+      { length: 3_000 },
+      (_, index) => `packages/${index.toString().padStart(5, "0")}-${"😀/quoted\\path/".repeat(40)}.ts`,
+    );
+    const full = fullFixture();
+    (full.brief as Record<string, unknown>).changedFiles = changedFiles;
+    (full.status as Record<string, unknown>).changedFiles = changedFiles;
+    (full.status as Record<string, unknown>).warnings = Array.from(
+      { length: 1_000 },
+      (_, index) => [`warning ${index}: ${"⚠️ diagnostics ".repeat(100)}`],
+    );
+    (full.brief as Record<string, unknown>).recentLogTail = "log line \\ \" 😀\n".repeat(20_000);
+    const brief = full.brief as Record<string, unknown>;
+    const status = full.status as Record<string, unknown>;
+    const workerHealth = brief.workerHealth as Record<string, unknown>;
+    workerHealth.activeWriterRisk = {
+      diagnosticNoise: "x".repeat(100_000),
+      nestedDiagnostics: [["x".repeat(100_000)]],
+      risky: true,
+      safeToContinue: false,
+    };
+    const compactString = "\"".repeat(100_000);
+    Object.assign(brief, Object.fromEntries([
+      "workerSupervisorKind", "workerAliveReason", "baseRevision", "baseRevisionStatus",
+      "handoffBaseCommit", "handoffPatchPath", "handoffSummaryPath", "handoffManifestPath",
+      "handoffManifestSha256", "handoffArtifactError", "progressStatus", "progressResultStatus",
+      "progressResultReason", "progressCurrentAccount", "currentAccount", "lastFailureReason",
+      "nextBestTool", "nextBestReason", "nextBestCommand",
+    ].map((key) => [key, compactString])));
+    Object.assign(status, Object.fromEntries([
+      "resultStatus", "resultReason", "progressStatus", "progressResultStatus",
+      "progressResultReason", "progressCurrentAccount", "lastRuntimeEvent",
+      "lastRuntimeEventLevel", "recommendedAction",
+    ].map((key) => [key, compactString])));
+    Object.assign(brief.statusView as Record<string, unknown>, Object.fromEntries([
+      "model", "effort", "serviceTier", "account", "runtimeVersion", "runtimeBuild",
+      "accessBoundary", "baseCommit", "targetCommit", "baseStatus", "handoffStatus",
+      "nextBestActionHint",
+    ].map((key) => [key, compactString])));
+
+    const compact = buildCodexGoalBriefMcpResponse(full, {
+      ...options,
+      logTailLines: 20,
+    });
+    expect(Buffer.byteLength(JSON.stringify(mcpJson(compact)))).toBeLessThanOrEqual(64 * 1024);
+    expect(compact).toMatchObject({
+      brief: {
+        workerAlive: true,
+        safeToContinue: false,
+        workerHealth: { activeWriterRisk: { risky: true, safeToContinue: false } },
+      },
+      status: { workspaceDirty: true, dirtyFileCount: changedFiles.length },
+      truncation: { truncated: true },
+    });
+    expect((compact.truncation as Record<string, unknown>).omitted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ unit: "depth" }),
+      ]),
+    );
+  });
+
+  it("retains an authoritative dirty file count while exposing the observed file count", () => {
+    const full = fullFixture();
+    (full.status as Record<string, unknown>).changedFiles = ["src/a.ts", "src/b.ts"];
+    (full.status as Record<string, unknown>).dirtyFileCount = 17;
+    const compact = buildCodexGoalBriefMcpResponse(full, options);
+    expect(compact).toMatchObject({
+      status: { dirtyFileCount: 17, changedFileCount: 2 },
+    });
+  });
+
+  it("changes revision when a value beyond a truncated prefix changes", () => {
+    const first = fullFixture();
+    const changedFiles = Array.from({ length: 3_000 }, (_, index) => `src/${index}.ts`);
+    (first.brief as Record<string, unknown>).changedFiles = changedFiles;
+    (first.status as Record<string, unknown>).changedFiles = changedFiles;
+    const revision = String(buildCodexGoalBriefMcpResponse(first, options).revision);
+
+    const changed = fullFixture();
+    const changedAfterPrefix = [...changedFiles];
+    changedAfterPrefix[changedAfterPrefix.length - 1] = "src/changed-after-prefix.ts";
+    (changed.brief as Record<string, unknown>).changedFiles = changedAfterPrefix;
+    (changed.status as Record<string, unknown>).changedFiles = changedAfterPrefix;
+    expect(buildCodexGoalBriefMcpResponse(changed, {
+      ...options,
+      afterRevision: revision,
+    })).toMatchObject({ unchanged: false });
+  });
+
+  it("bounds compact and unchanged envelopes for oversized job and registry paths", () => {
+    const full = fullFixture({
+      registryRootDir: `/sandbox/${"😀".repeat(30_000)}`,
+      jobId: `job-${"x".repeat(100_000)}`,
+    });
+    const compact = buildCodexGoalBriefMcpResponse(full, options);
+    const unchanged = buildCodexGoalBriefMcpResponse(full, {
+      ...options,
+      afterRevision: String(compact.revision),
+    });
+    for (const value of [compact, unchanged]) {
+      expect(Buffer.byteLength(JSON.stringify(mcpJson(value)))).toBeLessThanOrEqual(64 * 1024);
+      expect(value.revision).toMatch(/^[a-f0-9]{64}$/);
+    }
+    expect(unchanged).toMatchObject({ unchanged: true, truncation: { truncated: true } });
+  });
 });

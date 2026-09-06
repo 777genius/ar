@@ -312,7 +312,7 @@ export function registerCodexGoalJobTools(server: McpServer): void {
     {
       title: "Codex Goal Brief",
       description:
-        "Poll one job. Compact is the default and returns a revision; pass it as afterRevision on the next poll to receive a small unchanged response. Use full for diagnostics, and request a log tail only when needed.",
+        "Poll one job. Compact is the default, stays within a 64 KiB MCP envelope, and returns a revision; pass it as afterRevision on the next poll to receive a small unchanged response. Inspect truncation guidance or use full for complete diagnostics, and request a log tail only when needed.",
       inputSchema: {
         ...jobIdInputSchema(),
         staleAfterMs: z.number().int().positive().optional(),

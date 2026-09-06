@@ -62,6 +62,24 @@ import {
   validAuthJson,
 } from "./codex-provider-test-support";
 
+function abortAfterTurnStartResponse(
+  factory: FakeAppServerFactory,
+  controller: AbortController,
+) {
+  return (input: Parameters<typeof factory.create>[0]) => {
+    const child = factory.create(input);
+    const emit = child.stdout.emit.bind(child.stdout);
+    child.stdout.emit = ((event: string | symbol, ...args: unknown[]) => {
+      const emitted = emit(event, ...args);
+      if (event === "data" && factory.requests.at(-1)?.method === "turn/start") {
+        controller.abort();
+      }
+      return emitted;
+    }) as typeof child.stdout.emit;
+    return child;
+  };
+}
+
 describe("Codex provider app-server adapter", () => {
   it("runs Codex JSON tasks through reusable app-server slots", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-app-server-test-"));
@@ -271,6 +289,7 @@ describe("Codex provider app-server adapter", () => {
 
   it("handles app-server turn events emitted before the turn waiter is registered", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-app-early-turn-test-"));
+    const controller = new AbortController();
     const fakeFactory = new FakeAppServerFactory({
       emitTurnEventsWithStartResponse: true,
       mismatchTurnStartResponseId: true,
@@ -278,7 +297,7 @@ describe("Codex provider app-server adapter", () => {
     const driver = new CodexJsonAgentDriver({
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: "/bin/codex-test",
-        processFactory: fakeFactory.create,
+        processFactory: abortAfterTurnStartResponse(fakeFactory, controller),
         cleanThreadPrewarm: false,
         timeoutMs: 250,
       }),
@@ -293,12 +312,84 @@ describe("Codex provider app-server adapter", () => {
         workspace: { path: workspace },
         runner: new StaticRunner(""),
         redactor: new DefaultRedactor(),
-        abortSignal: new AbortController().signal,
+        abortSignal: controller.signal,
       });
 
       expect(result).toMatchObject({
         status: "completed",
         outputText: "app-server output:early turn events",
+      });
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("cancels when turn/start responds before the turn waiter is registered", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-start-abort-test-"));
+    const controller = new AbortController();
+    const fakeFactory = new FakeAppServerFactory();
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: abortAfterTurnStartResponse(fakeFactory, controller),
+        cleanThreadPrewarm: false,
+        timeoutMs: 250,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "cancel after turn start" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: controller.signal,
+      });
+
+      expect(result).toMatchObject({
+        status: "failed",
+        failure: { code: "task_cancelled" },
+        telemetry: { finishReason: "cancelled" },
+      });
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("cancels a waiting turn when its output callback aborts", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-output-abort-test-"));
+    const controller = new AbortController();
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: new FakeAppServerFactory().create,
+        cleanThreadPrewarm: false,
+        timeoutMs: 250,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "cancel from output callback" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: controller.signal,
+        onTextDelta: () => controller.abort(),
+      });
+
+      expect(result).toMatchObject({
+        status: "failed",
+        failure: { code: "task_cancelled" },
+        telemetry: { finishReason: "cancelled" },
       });
     } finally {
       await driver.dispose();

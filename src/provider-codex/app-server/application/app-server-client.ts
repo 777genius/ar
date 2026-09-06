@@ -1,6 +1,5 @@
 import { EventEmitter, once as onceEvent } from "node:events";
 import { AppServerTokenUsageTracker } from "./app-server-turn-usage";
-import { AppServerUsageError } from "../domain/app-server-usage-error";
 import type { AgentUsage } from "@vioxen/subscription-runtime/core";
 import { pruneCodexChildEnv } from "../../codex-cli-domain";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
@@ -42,6 +41,7 @@ import {
   type PendingRequest,
   type TurnState,
 } from "./app-server-turn-state";
+import { waitForAppServerTurn } from "./app-server-turn-waiter";
 import {
   codexAppServerRolloutBudgetConfig,
   type CodexAppServerRolloutBudget,
@@ -722,28 +722,22 @@ export class CodexAppServerClient {
       });
     }
 
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.clearTurnTracking(turnId, input.threadId);
-        input.abortSignal.removeEventListener("abort", abort);
-        reject(new AppServerUsageError(new Error(`codex_app_server_turn_timeout:${turnId}`), turn.usage));
-      }, input.timeoutMs);
-      const abort = () => {
-        clearTimeout(timer);
-        this.clearTurnTracking(turnId, input.threadId);
-        reject(new AppServerUsageError(new Error(`codex_app_server_turn_aborted:${turnId}`), turn.usage));
-      };
-      input.abortSignal.addEventListener("abort", abort, { once: true });
-      const turn = existing ?? createTurnState();
-      if (!existing) this.attachTextDeltaSink(turn, input.onTextDelta);
-      turn.waiters.push((state) => {
-        clearTimeout(timer);
-        input.abortSignal.removeEventListener("abort", abort);
-        this.clearTurnTracking(turnId, input.threadId);
-        resolve(state);
-      });
-      this.turns.set(turnId, turn);
-      this.pendingTurnIdsByThread.set(input.threadId, turnId);
+    const turn = existing ?? createTurnState();
+    if (!existing) this.attachTextDeltaSink(turn, input.onTextDelta);
+    if (turn.completed || turn.error) {
+      this.clearTurnTracking(turnId, input.threadId);
+      return Promise.resolve(turn);
+    }
+    return waitForAppServerTurn({
+      turn,
+      turnId,
+      timeoutMs: input.timeoutMs,
+      abortSignal: input.abortSignal,
+      register: () => {
+        this.turns.set(turnId, turn);
+        this.pendingTurnIdsByThread.set(input.threadId, turnId);
+      },
+      clear: () => this.clearTurnTracking(turnId, input.threadId),
     });
   }
 
@@ -1040,6 +1034,8 @@ export class CodexAppServerClient {
   }
 
   private clearTurnTracking(turnId: string, threadId: string): void {
+    const turn = this.turns.get(turnId);
+    if (turn) this.clearReconnectGraceTimer(turn);
     this.turns.delete(turnId);
     this.pendingTurnIdsByThread.delete(threadId);
     this.earlyTurnIdsByThread.delete(threadId);

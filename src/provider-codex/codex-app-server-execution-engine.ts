@@ -69,8 +69,11 @@ import {
   assertManagedRunCanResume,
   isManagedRunResumeValidationError,
 } from "./app-server/application/app-server-managed-run-mapper";
-import { AppServerSlotPool } from "./app-server/application/app-server-slot-pool";
-import { runCodexAppServerLogicalThread } from "./app-server/application/app-server-logical-thread-runner";
+import {
+  AppServerSlotPool,
+  AppServerSlotAcquireAbortedError,
+} from "./app-server/application/app-server-slot-pool";
+import { runCodexAppServerLogicalThreadWithSlot } from "./app-server/application/app-server-logical-thread-slot-lifecycle";
 import { parseCodexAppServerStructuredOutput } from "./app-server/application/app-server-structured-output";
 import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
 import {
@@ -186,6 +189,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       if (result.status === "waiting_for_input") return result;
       return await this.parseStructuredOutput(result, input, schemaPlan);
     } catch (error) {
+      if (error instanceof AppServerSlotAcquireAbortedError) throw error;
       await this.slotPool.disposeSessionSlot(input.session);
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (isCodexAppServerBudgetExceededError(error)) throw error;
@@ -209,26 +213,22 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       readonly previousCheckpoint?: string;
     },
   ): Promise<CodexLogicalThreadExecutionResult> {
-    const schemaPlan = input.outputSchemaPlan ?? prepareCodexOutputSchemaPlan(input.outputSchema);
-    return await runCodexAppServerLogicalThread(input, {
-      ...(schemaPlan === undefined ? {} : { schemaPlan }),
+    return await runCodexAppServerLogicalThreadWithSlot(input, {
       goalMode: this.options.goalMode ?? false,
       timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
       maxGoalTurns: this.options.maxGoalTurns ?? defaultMaxGoalTurns,
       goalContinuePrompt:
         this.options.goalContinuePrompt ?? defaultGoalContinuePrompt,
-      runGoal: async (goalInput) =>
-        await (await this.slotPool.ensureSlot(input)).goalRunner
-          .runLogicalThreadGoal(goalInput),
+      ensureSlot: (slotInput) => this.slotPool.ensureSlot(slotInput),
+      disposeSessionSlot: (session) => this.slotPool.disposeSessionSlot(session),
       redact: (result, schemaWarnings) =>
         this.redactAppServerResult({
           result,
           schemaWarnings,
           redactor: input.redactor,
         }),
-      parse: async (result, parseInput) =>
+      parse: async (result, parseInput, schemaPlan) =>
         await this.parseStructuredOutput(result, parseInput, schemaPlan),
-      disposeSession: () => this.slotPool.disposeSessionSlot(input.session),
     });
   }
 
@@ -254,6 +254,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       if (result.status === "waiting_for_input") return result;
       return await this.parseStructuredOutput(result, input, schemaPlan);
     } catch (error) {
+      if (error instanceof AppServerSlotAcquireAbortedError) throw error;
       if (!isManagedRunResumeValidationError(error)) {
         await this.slotPool.disposeSessionSlot(input.session);
       }
@@ -323,6 +324,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         warnings,
       };
     } catch (error) {
+      if (error instanceof AppServerSlotAcquireAbortedError) throw error;
       await this.slotPool.disposeSessionSlot(input.session);
       throw error;
     }

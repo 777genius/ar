@@ -69,7 +69,10 @@ subscription-runtime-codex-goal tool codex_goal_continue --args-json '{"jobId":"
    stop and resolve the single-writer conflict before continuing any job.
 3. Call `codex_goal_get_job({ jobId })`.
 4. Call `codex_goal_brief({ jobId })`.
-   The default `detail: "compact"` omits logs and verbose diagnostics. Save the
+   The default `detail: "compact"` omits logs and verbose diagnostics and keeps
+   its complete MCP envelope within 64 KiB. When fields are shortened it returns
+   `truncation.truncated`, omitted counts, and retrieval guidance; totals such as
+   `status.dirtyFileCount` remain available. Save the
    returned `revision` and pass it as `afterRevision` on subsequent polls.
    `unchanged: true` contains no repeated `brief` or `status`; retain the previous
    snapshot. Heartbeat timestamps alone do not change this revision, but stale,
