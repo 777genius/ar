@@ -61,11 +61,11 @@ import {
   isCodexAppServerBudgetExceededError,
 } from "./app-server/domain/app-server-errors";
 import {
-  appServerFallbackWarning,
   appServerFallbackIsSafe,
-  isAppServerWaitingForInputResult,
+  redactFallbackAppServerResult,
 } from "./app-server/application/app-server-fallback-policy";
 import { redactCompletedAppServerResult } from "./app-server/application/app-server-result-redactor";
+import { redactBoundedAppServerWarnings } from "./app-server/application/app-server-warning-collector";
 import {
   assertManagedRunCanResume,
   isManagedRunResumeValidationError,
@@ -208,10 +208,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         ...input,
         ...(schemaPlan === undefined ? {} : { outputSchemaPlan: schemaPlan }),
       });
-      return {
-        ...fallbackResult,
-        warnings: [appServerFallbackWarning(error), ...fallbackResult.warnings],
-      };
+      return redactFallbackAppServerResult({
+        error,
+        result: fallbackResult,
+        redactor: input.redactor,
+      });
     }
   }
 
@@ -329,7 +330,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         kind: this.kind,
         reusable: true,
         warmedAt: new Date(),
-        warnings,
+        warnings: redactBoundedAppServerWarnings({
+          warnings,
+          redactor: input.redactor,
+          context: "codex-app-server-prewarm-warning",
+        }),
       };
     } catch (error) {
       if (error instanceof AppServerSlotAcquireAbortedError) throw error;

@@ -13,7 +13,9 @@ afterEach(async () => {
   await Promise.all(
     tempRoots
       .splice(0)
-      .map((path) => rm(path, { recursive: true, force: true })),
+      .map((path) =>
+        rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 }),
+      ),
   );
 });
 

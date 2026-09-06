@@ -14,6 +14,10 @@ export type CodexAppServerExecutionEngineOptions = {
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly timeoutMs?: number;
   readonly startupTimeoutMs?: number;
+  /**
+   * Maximum retained turn output. App-server JSON-RPC frames allow sixfold
+   * JSON escaping headroom and reject values requiring more than 64 MiB.
+   */
   readonly maxOutputBytes?: number;
   readonly fallback?: CodexExecutionEngine;
   readonly processFactory?: CodexAppServerProcessFactory;

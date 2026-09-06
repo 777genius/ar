@@ -7,6 +7,7 @@ import {
   isAppServerWaitingForInputResult,
   redactWaitingForInputResult,
 } from "./app-server-fallback-policy";
+import { redactBoundedAppServerWarnings } from "./app-server-warning-collector";
 
 export function redactCompletedAppServerResult(input: {
   readonly result: AppServerRunResult;
@@ -18,13 +19,23 @@ export function redactCompletedAppServerResult(input: {
     const outputText = input.redactor.redact(input.result.outputText);
     input.redactor.assertNoKnownSecret(outputText, "codex-app-server-output");
     assertOutputWithinBounds(outputText, input.maxOutputBytes);
+    const warnings = redactBoundedAppServerWarnings({
+      warnings: [...input.schemaWarnings, ...input.result.warnings],
+      redactor: input.redactor,
+      context: "codex-app-server-result-warning",
+    });
     if (isAppServerWaitingForInputResult(input.result)) {
-      return redactWaitingForInputResult({ result: input.result, outputText, redactor: input.redactor });
+      return redactWaitingForInputResult({
+        result: input.result,
+        outputText,
+        redactor: input.redactor,
+        warnings,
+      });
     }
     return {
       outputText,
       ...(input.result.usage === undefined ? {} : { usage: input.result.usage }),
-      warnings: [...input.schemaWarnings, ...input.result.warnings],
+      warnings,
     };
   } catch (error) {
     throw new AppServerUsageError(error, input.result.usage, true);

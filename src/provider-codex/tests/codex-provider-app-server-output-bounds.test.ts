@@ -57,4 +57,37 @@ describe("Codex app-server output bounds", () => {
       await rm(workspace, { recursive: true, force: true });
     }
   });
+
+  it("closes an oversized protocol frame before turn acknowledgement without fallback", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-frame-limit-test-"));
+    const fakeFactory = new FakeAppServerFactory();
+    const fallback = new RecordingJsonEngine("fallback must not run");
+    let injected = false;
+    const processFactory = (input: Parameters<typeof fakeFactory.create>[0]) => {
+      const child = fakeFactory.create(input);
+      const emit = child.stdout.emit.bind(child.stdout);
+      child.stdout.emit = ((event: string | symbol, ...args: unknown[]) => {
+        if (event === "data" && !injected) {
+          const packet = JSON.parse(String(args[0])) as { readonly id?: number };
+          const request = fakeFactory.requests.find((entry) => entry.id === packet.id);
+          if (request?.method === "turn/start") {
+            injected = true;
+            return emit("data", "x".repeat(5 * 1024 * 1024));
+          }
+        }
+        return emit(event, ...args);
+      }) as typeof child.stdout.emit;
+      return child;
+    };
+    const driver = new CodexJsonAgentDriver({ engine: new CodexAppServerExecutionEngine({ codexBinaryPath: "/bin/codex-test", processFactory, fallback, cleanThreadPrewarm: false }), model: "gpt-test", reasoningEffort: "low" });
+    try {
+      const result = await driver.runTask({ session: sessionArtifactFromCodexAuthJson(validAuthJson), task: { kind: "review", prompt: "frame limit" }, workspace: { path: workspace }, runner: new StaticRunner(""), redactor: new DefaultRedactor(), abortSignal: new AbortController().signal });
+      expect(result).toMatchObject({ status: "failed", failure: { details: { rawCause: expect.stringContaining("codex_app_server_json_rpc_frame_limit_exceeded") } } });
+      expect(fallback.prompts).toEqual([]);
+      expect(fakeFactory.processes[0]?.isExited()).toBe(true);
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
 });

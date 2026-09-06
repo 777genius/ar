@@ -222,6 +222,45 @@ describe("Codex provider app-server adapter", () => {
     }
   });
 
+  it("redacts an app-server failure before exposing the fallback warning without replaying it", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-fallback-warning-redaction-test-"));
+    const secret = "app-server-fallback-warning-canary";
+    const fakeFactory = new FakeAppServerFactory({
+      failThreadStart: true,
+      threadStartError: secret,
+    });
+    const fallback = new RecordingJsonEngine("fallback output");
+    const redactor = new DefaultRedactor();
+    redactor.registerSecret(secret, "fallback-test");
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        fallback,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "redact fallback warning" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor,
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result).toMatchObject({ status: "completed", outputText: "fallback output" });
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(fallback.prompts).toEqual(["redact fallback warning"]);
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("does not replay when app-server errors after turn start responds", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-app-turn-error-fallback-test-"));
     const fakeFactory = new FakeAppServerFactory({

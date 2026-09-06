@@ -58,6 +58,32 @@ fixtures are adjacent. Reducing response bytes also reduces context supplied by
 clients that include these results, but the exact token effect depends on the
 tokenizer, client rendering and cached input behavior.
 
+## App-server protocol hardening (.39)
+
+Synthetic provider regressions identified additional long-session failure modes:
+
+| Fixture | Before | After |
+| --- | ---: | ---: |
+| Unterminated stdout frame, 32 chunks of 512 KiB | 16,777,216 bytes retained; process alive | Reject above 4 MiB by default, clear buffer and stop process |
+| 10,000 unsolicited turn deltas while idle | 10,000 retained turn states | Zero retained turn states |
+| Late deltas for 50 completed turns | 50 retained turn states | Zero retained turn states |
+| 3,000 unsupported-method warnings | 433,891 serialized bytes | 264 bytes, including an omission count |
+| Registered synthetic secret in unsupported-method or fallback warnings | Secret exposed in result warnings | Secret absent from result warnings |
+
+The incremental decoder limits each UTF-8 JSON-RPC frame before concatenation
+and parsing; a batch may exceed the limit when its individual frames fit.
+Explicit output limits reserve sixfold JSON escaping headroom plus 64 KiB,
+with a 64 MiB frame ceiling. Invalid or larger output settings fail validation.
+Turn and alias retention is capped at 128 entries, and idle/finished state is
+cleared. Protocol failure closes the process without waiting on a stuck quota
+handler and does not replay work whose turn-start acknowledgement was lost.
+
+The shared warning collector deduplicates records, bounds serialized JSON to
+64 KiB and 256 entries, and reports omissions. Completed, waiting, prewarm and
+fallback results redact warning fields; a sanitizer failure after execution
+retains usage and the replay-unsafe marker. These are memory and response-byte
+bounds, not measured provider token savings or a session-wide token budget.
+
 ## Monitoring contract
 
 1. Read a compact brief and retain its snapshot plus revision.
