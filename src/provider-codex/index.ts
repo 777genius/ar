@@ -13,3 +13,5 @@ export * from "./codex-cli-provider-driver";
 export * from "./codex-cli-session-driver";
 export * from "./failure-classifier";
 export * from "./manifest";
+
+export { egressBoundCodexProcessFactory } from "./app-server/adapters/egress-bound-process";

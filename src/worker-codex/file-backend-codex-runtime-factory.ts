@@ -18,6 +18,12 @@ import {
   CodexWorkerCacheSessionPoolMaterializer,
   PackagedCodexJsonExecutionEngine,
   codexJsonHomeConfigToml,
+  codexProviderApiEgressPolicy,
+  codexProviderEgressEnv,
+  codexProviderEgressPolicy,
+  CodexProviderEgressProfileId,
+  egressBoundCodexProcessFactory,
+  type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { createLocalFileBackendRuntimeAdapters } from "@vioxen/subscription-runtime/store-local-file";
 import type { CommandPolicy } from "@vioxen/subscription-runtime/worker-core";
@@ -204,8 +210,20 @@ function createCodexAgentDriver(input: {
 }): CodexJsonAgentDriver | CodexCliAgentDriver {
   const { options } = input;
   const executionEngine = options.executionEngine ?? "app-server";
+  const sourceEnv = options.sourceEnv ?? process.env;
   const hostedGlobalScanGuard =
-    options.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+    sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  const providerEgressPolicy = codexProviderEgressPolicy(
+    (options.providerEgressPolicy ?? codexProviderApiEgressPolicy()).profileId,
+  );
+  if (providerEgressPolicy.profileId !== CodexProviderEgressProfileId.ProviderApi &&
+      (process.platform !== "linux" || !hostedGlobalScanGuard ||
+       executionEngine !== "app-server-goal" || options.boundedWorkspaceTools)) {
+    throw new Error("hosted_test_egress_engine_unsupported");
+  }
+  const appServerEnv = {
+    ...sourceEnv, ...codexProviderEgressEnv(providerEgressPolicy),
+  };
   const workspaceToolsProfile = options.boundedWorkspaceTools && options.workspacePath
     ? buildCodexWorkspaceToolsProfile({
         workspaceRoot: options.workspacePath,
@@ -235,14 +253,14 @@ function createCodexAgentDriver(input: {
       ? packagedExec
       : new CodexAppServerExecutionEngine({
           codexBinaryPath: options.codexBinaryPath,
-          ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
+          sourceEnv: appServerEnv,
           ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
           ...(options.appServerStartupTimeoutMs
             ? { startupTimeoutMs: options.appServerStartupTimeoutMs }
             : {}),
-          ...(options.appServerProcessFactory
-            ? { processFactory: options.appServerProcessFactory }
-            : {}),
+          processFactory: egressBoundCodexProcessFactory(
+            providerEgressPolicy, options.appServerProcessFactory,
+          ),
           ...(options.rateLimitsSnapshotHandler
             ? {
                 rateLimitsSnapshotHandler:
@@ -300,6 +318,7 @@ function createCodexAgentDriver(input: {
         }),
     sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
       cacheKey: `codex:${options.providerInstanceId}:${input.workerId}`,
+      providerEgressPolicy,
       slots: options.sessionCacheSlots ?? 1,
       rootDir: join(options.stateRootDir, "codex-session-cache"),
       preserveOnDispose: true,
@@ -308,7 +327,7 @@ function createCodexAgentDriver(input: {
         ? { configToml: workspaceToolsProfile.configToml }
         : hostedGlobalScanGuard
         ? {
-            configToml: hostedGlobalScanConfigToml(),
+            configToml: hostedGlobalScanConfigToml(providerEgressPolicy),
           }
         : {}),
     }),
@@ -326,13 +345,13 @@ function createCodexAgentDriver(input: {
   });
 }
 
-function hostedGlobalScanConfigToml(): string {
+function hostedGlobalScanConfigToml(providerEgressPolicy: CodexProviderEgressPolicy): string {
   const hookPath = fileURLToPath(
     new URL("./hosted-global-scan-pre-tool-hook.js", import.meta.url),
   );
   const command = `${shellQuote(process.execPath)} ${shellQuote(hookPath)}`;
   return [
-    codexJsonHomeConfigToml({ hooksEnabled: true }),
+    codexJsonHomeConfigToml({ hooksEnabled: true, providerEgressPolicy }),
     "[hooks]",
     "[[hooks.PreToolUse]]",
     'matcher = "Bash|exec"',

@@ -1,32 +1,47 @@
 export const codexProviderEgressProfileEnvVar =
   "SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE";
 
-export const codexProviderApiEgressProfileId = "codex-provider-api" as const;
-
-export type CodexProviderEgressProfileId =
-  typeof codexProviderApiEgressProfileId;
+export enum CodexProviderEgressProfileId {
+  ProviderApi = "codex-provider-api",
+  TestNpmQualification = "codex-test-npm-qualification",
+}
+export const codexProviderApiEgressProfileId = CodexProviderEgressProfileId.ProviderApi;
 
 export type CodexProviderEgressPolicy = {
   readonly profileId: CodexProviderEgressProfileId;
   readonly domains: readonly string[];
 };
 
-const codexProviderApiDomains = ["api.openai.com"] as const;
-
-export function codexProviderApiEgressPolicy(): CodexProviderEgressPolicy {
-  return {
-    profileId: codexProviderApiEgressProfileId,
-    domains: codexProviderApiDomains,
-  };
+export function codexProviderEgressPolicy(
+  profileId: CodexProviderEgressProfileId,
+): CodexProviderEgressPolicy {
+  switch (profileId) {
+    case CodexProviderEgressProfileId.ProviderApi:
+      return Object.freeze({ profileId, domains: Object.freeze(["api.openai.com"]) });
+    case CodexProviderEgressProfileId.TestNpmQualification:
+      return Object.freeze({
+        profileId,
+        domains: Object.freeze([
+          "api.openai.com", "registry.npmjs.org", "tuf-repo-cdn.sigstore.dev",
+        ]),
+      });
+    default:
+      throw new Error("codex_provider_egress_profile_invalid");
+  }
 }
 
+export function codexProviderApiEgressPolicy(): CodexProviderEgressPolicy {
+  return codexProviderEgressPolicy(CodexProviderEgressProfileId.ProviderApi);
+}
+
+/** A marker transports an already admitted policy; it never authorizes a job. */
 export function codexProviderEgressPolicyFromEnv(
   sourceEnv: Readonly<Record<string, string | undefined>> | undefined,
 ): CodexProviderEgressPolicy | null {
   const profileId = sourceEnv?.[codexProviderEgressProfileEnvVar]?.trim();
-  if (!profileId) return null;
-  if (profileId === codexProviderApiEgressProfileId) {
-    return codexProviderApiEgressPolicy();
+  if (profileId === CodexProviderEgressProfileId.ProviderApi ||
+      profileId === CodexProviderEgressProfileId.TestNpmQualification) {
+    return codexProviderEgressPolicy(profileId);
   }
   return null;
 }
@@ -47,7 +62,7 @@ export function codexProviderEgressConfigToml(
   policy: CodexProviderEgressPolicy = codexProviderApiEgressPolicy(),
 ): string {
   return [
-    "# Provider egress stays constrained to the trusted Codex model API profile.",
+    "# Provider egress is selected by trusted host admission.",
     "[sandbox_workspace_write]",
     "network_access = true",
     "",
@@ -72,9 +87,7 @@ export function codexProviderEgressCliConfigArgs(
 }
 
 function tomlDomainRules(policy: CodexProviderEgressPolicy): string {
-  return policy.domains.map((domain) => `${tomlString(domain)} = "allow"`).join(", ");
-}
-
-function tomlString(value: string): string {
-  return JSON.stringify(value);
+  // Reconstruct the finite policy rather than trusting a caller's domain array.
+  return codexProviderEgressPolicy(policy.profileId).domains
+    .map((domain) => `${JSON.stringify(domain)} = "allow"`).join(", ");
 }

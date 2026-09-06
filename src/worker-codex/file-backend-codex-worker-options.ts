@@ -1,6 +1,56 @@
-// Options validation for FileBackendCodexWorker, split out to keep the
-// worker decomposed (quality guardrail: tightened line cap).
-import type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker";
+import type { AgentRuntimeToolName, ClockPort, ObservabilityPort, RuntimeDeps } from "@vioxen/subscription-runtime/core";
+import type { CodexExecutionProfile, CodexProviderEgressPolicy, CodexAppServerProcessFactory, CodexAppServerRateLimitsSnapshotHandler, CodexReasoningEffort, CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
+import type { CommandPolicy } from "@vioxen/subscription-runtime/worker-core";
+import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
+import type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
+
+export type FileBackendCodexWorkerOptions = {
+  readonly workerId?: string;
+  readonly providerInstanceId: string;
+  readonly stateRootDir: string;
+  readonly codexBinaryPath: string;
+  readonly encryptionKey: Uint8Array | string;
+  readonly model?: string;
+  readonly reasoningEffort?: CodexReasoningEffort;
+  readonly serviceTier?: CodexServiceTier;
+  readonly sessionCacheSlots?: number;
+  /**
+   * Prompt used to fully warm the Codex app-server and model path.
+   * Set to false to warm only the daemon process.
+   */
+  readonly warmupPrompt?: string | false;
+  readonly taskTimeoutMs?: number;
+  readonly appServerStartupTimeoutMs?: number;
+  readonly refreshFreshnessMs?: number;
+  readonly refreshBeforeExpiryMs?: number;
+  readonly maxSessionAgeMs?: number;
+  readonly refreshConflictRetryMaxMs?: number;
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  readonly executionEngine?: CodexWorkerExecutionEngine;
+  /** Already admitted by the trusted host; never taken from job configuration. */
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy;
+  readonly appServerProcessFactory?: CodexAppServerProcessFactory;
+  readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
+  readonly executionProfile?: CodexExecutionProfile;
+  readonly boundedWorkspaceTools?: {
+    readonly allowedTools: readonly AgentRuntimeToolName[];
+    readonly denyProjectInstructions?: boolean;
+  };
+  readonly rolloutBudget?: {
+    readonly weightedTokenLimit: number;
+  };
+  readonly maxGoalTurns?: number;
+  readonly cleanThreadPrewarm?: boolean;
+  readonly outputSchemas?: Readonly<Record<string, unknown>>;
+  readonly observability?: ObservabilityPort;
+  readonly runner?: RuntimeDeps["runner"];
+  readonly commandPolicy?: CommandPolicy;
+  readonly workspace?: RuntimeDeps["workspace"];
+  readonly workspacePath?: string;
+  readonly clock?: ClockPort;
+  readonly capacityAccountId?: string;
+  readonly capacityPolicy?: CodexWorkerCapacityPolicy;
+};
 
 export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): void {
   if (!options.providerInstanceId.trim()) {

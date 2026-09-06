@@ -1,3 +1,5 @@
+import { admitHostedTestEgress, hostedTestEgressEvidence } from "./hosted-test-egress-admission";
+import { codexProviderEgressPolicy, type CodexProviderEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -187,6 +189,8 @@ export type CodexGoalProgressSnapshot = {
 };
 
 export type CodexGoalRunDeps = {
+  /** Trusted adapter port, never supplied by serialized job configuration. */
+  readonly admitProviderEgress?: typeof admitHostedTestEgress;
   readonly createExecutor?: (
     options: FileBackendCodexSafeExecutorOptions,
   ) => CodexGoalExecutor;
@@ -206,6 +210,14 @@ export async function runCodexGoal(
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   assertCodexGoalRunConfig(config);
   assertCodexGoalAccessLaunchAllowed(config);
+  const admittedEgress = await (deps.admitProviderEgress ?? admitHostedTestEgress)({
+    jobId: config.jobId ?? config.taskId,
+    jobRootDir: config.jobRootDir,
+    workspacePath: config.workspacePath,
+    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
+    sourceEnv: config.sourceEnv ?? process.env,
+  });
+  const providerEgressPolicy = codexProviderEgressPolicy(admittedEgress.profileId);
   const prompt = await readFile(config.promptPath, "utf8");
   const progressPath = codexGoalProgressPath(config);
   const runtimeEventsPath = codexGoalRuntimeEventsPath(config);
@@ -226,6 +238,7 @@ export async function runCodexGoal(
     jobId: config.jobId ?? config.taskId,
     executionEngine: config.executionEngine ?? "app-server-goal",
     accountCount: config.accounts.length,
+    ...hostedTestEgressEvidence(config, providerEgressPolicy),
   });
   const baseCommit = await readLocalGitHeadCommit(config.workspacePath);
   const linkedWorktreeHandoff = await codexGoalLinkedWorktreeHandoffPreflight({
@@ -272,6 +285,7 @@ export async function runCodexGoal(
       ((options) => new FileBackendCodexSafeExecutor(options))
     )(buildCodexGoalExecutorOptions({
       config,
+      providerEgressPolicy,
       stateRootDir,
       encryptionKey,
       observability,
@@ -381,6 +395,7 @@ export async function runCodexGoal(
 
 export function buildCodexGoalExecutorOptions(input: {
   readonly config: CodexGoalRunConfig;
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly stateRootDir: string;
   readonly encryptionKey: Uint8Array;
   readonly observability?: ObservabilityPort;
@@ -441,6 +456,7 @@ export function buildCodexGoalExecutorOptions(input: {
         codexBinaryPath: config.codexBinaryPath ?? "codex",
         encryptionKey: input.encryptionKey,
         executionEngine: config.executionEngine ?? "app-server-goal",
+        ...(input.providerEgressPolicy ? { providerEgressPolicy: input.providerEgressPolicy } : {}),
         capacityAccountId: account.name,
         taskTimeoutMs: config.taskTimeoutMs ?? 72 * 60 * 60 * 1000,
         ...(config.appServerStartupTimeoutMs === undefined

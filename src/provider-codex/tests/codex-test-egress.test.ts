@@ -1,0 +1,91 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import {
+  codexProviderApiEgressPolicy, codexProviderEgressPolicy, CodexProviderEgressProfileId,
+  codexProviderEgressConfigToml, codexProviderEgressCliConfigArgs, codexProviderEgressEnv,
+} from "../codex-provider-egress-policy";
+import { CodexWorkerCacheSessionPoolMaterializer } from "../codex-session-materializer";
+import { sessionArtifactFromCodexAuthJson } from "../codex-auth-json-codec";
+import { buildCodexRefreshBootstrapPlan } from "../codex-cli-domain";
+import { codexAppServerSandboxPolicy } from "../app-server/domain/app-server-types";
+import { egressBoundCodexProcessFactory } from "../app-server/adapters/egress-bound-process";
+import { codexAppServerProcessInvocation } from "../app-server/adapters/node-app-server-process";
+import type { CodexAppServerChildProcess, CodexAppServerProcessFactory } from "../app-server/application/app-server-process-port";
+
+const testPolicy = () => codexProviderEgressPolicy(CodexProviderEgressProfileId.TestNpmQualification);
+describe("finite TEST egress propagation", () => {
+  it("keeps defaults API-only, freezes domains, and refuses unknown profiles", () => {
+    expect(codexProviderApiEgressPolicy().domains).toEqual(["api.openai.com"]);
+    expect(testPolicy().domains).toEqual(["api.openai.com", "registry.npmjs.org", "tuf-repo-cdn.sigstore.dev"]);
+    expect(() => (testPolicy().domains as string[]).push("*")).toThrow();
+    expect(() => codexProviderEgressPolicy("other" as CodexProviderEgressProfileId)).toThrow();
+    expect(codexProviderEgressConfigToml()).not.toContain("registry.npmjs.org");
+  });
+  it("reconstructs a fixed domain set even if a caller tampers with the policy object", () => {
+    const forged = { profileId: CodexProviderEgressProfileId.TestNpmQualification, domains: ["evil.example"] };
+    expect(codexProviderEgressConfigToml(forged)).not.toContain("evil.example");
+    expect(codexProviderEgressCliConfigArgs(forged).join(" ")).toContain("registry.npmjs.org");
+  });
+  it.each([codexProviderApiEgressPolicy(), testPolicy()])("captures policy before namespace launch: $profileId", policy => {
+    const observed: Parameters<CodexAppServerProcessFactory>[0][] = [];
+    const spawn: CodexAppServerProcessFactory = input => {
+      observed.push(input); return {} as CodexAppServerChildProcess;
+    };
+    egressBoundCodexProcessFactory(policy, spawn)({
+      command: "/synthetic/codex", args: ["app-server", "--listen", "stdio://", "--config", "features.network_proxy.enabled=false",
+        "--config", 'features.network_proxy.domains={ "unrelated.invalid" = "allow" }'], cwd: "/synthetic/home",
+      env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+        SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "forged" },
+    });
+    const input = observed[0]!;
+    expect(input.env).toMatchObject(codexProviderEgressEnv(policy));
+    expect(input.args.slice(-6)).toEqual(codexProviderEgressCliConfigArgs(policy));
+    // The final whole-table CLI assignment follows any conflicting earlier overrides.
+    expect(input.args.at(-1)).not.toContain("unrelated.invalid");
+    expect(codexAppServerSandboxPolicy({ workspacePath: "/synthetic/workspace",
+      sourceEnv: input.env })).toMatchObject({ networkAccess: true });
+    const invocation = codexAppServerProcessInvocation({ ...input, platform: "linux", ioLimitPaths: [] });
+    expect(invocation.command).toBe("/usr/bin/systemd-run");
+    expect(invocation.args).toContain("--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user");
+    expect(invocation.args).toContain("--map-user=65532");
+    expect(invocation.args).toContain("--bounding-set=-all");
+    expect(JSON.parse(invocation.stdinBootstrap!).args).toEqual(input.args);
+  });
+  it("keeps refresh bootstrap explicitly API-only", () => {
+    const plan = buildCodexRefreshBootstrapPlan({ codexBinaryPath: "/synthetic/codex",
+      tempHome: "/synthetic/home", tempCodexHome: "/synthetic/codex-home",
+      emptyWorkingDirectory: "/synthetic/empty", authJsonPath: "/synthetic/auth.json" });
+    expect(plan.args).toEqual(expect.arrayContaining([...codexProviderEgressCliConfigArgs()]));
+    expect(plan.args.join(" ")).not.toContain("registry.npmjs.org");
+    expect(plan.args.join(" ")).not.toContain("tuf-repo-cdn.sigstore.dev");
+  });
+  it("isolates TEST cache from later API-only materialization with the same worker key", async () => {
+    const root = await mkdtemp(join(tmpdir(), "test-egress-cache-"));
+    const materializers: CodexWorkerCacheSessionPoolMaterializer[] = [];
+    const auth = JSON.stringify({ auth_mode: "chatgpt", tokens: { id_token: "fixture-id", access_token: "fixture-access", refresh_token: "fixture-refresh", account_id: "fixture-account" }, last_refresh: "2026-09-06T00:00:00.000Z" });
+    const input = { session: sessionArtifactFromCodexAuthJson(auth), redactor: new DefaultRedactor() };
+    try {
+      const homes: string[] = [];
+      for (const policy of [testPolicy(), codexProviderApiEgressPolicy(), testPolicy()]) {
+        const m = new CodexWorkerCacheSessionPoolMaterializer({
+          cacheKey: "same-test-worker", slots: 1, rootDir: root,
+          providerEgressPolicy: policy, preserveOnDispose: true, scrubAuthOnDispose: true,
+        });
+        materializers.push(m);
+        const session = await m.materialize(input);
+        homes.push(session.codexHome);
+        const config = await readFile(join(session.codexHome, "config.toml"), "utf8");
+        expect(config.includes("registry.npmjs.org")).toBe(policy.profileId === CodexProviderEgressProfileId.TestNpmQualification);
+        expect(session.env).toMatchObject(codexProviderEgressEnv(policy));
+        await session.release(); await m.dispose();
+      }
+      expect(homes[0]).not.toBe(homes[1]); expect(homes[0]).toBe(homes[2]);
+    } finally {
+      await Promise.all(materializers.map(m => m.dispose()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -1,3 +1,4 @@
+import "./hosted-test-egress-default-fixture";
 import { execFile } from "node:child_process";
 import {
   mkdir,
