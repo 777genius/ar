@@ -1,3 +1,4 @@
+import type { AppServerExecutionLease } from "./app-server-admission";
 import type { AgentUsage } from "@vioxen/subscription-runtime/core";
 import type { CodexAppServerJsonRpcResponse } from "../protocol/app-server-json-rpc";
 
@@ -16,6 +17,7 @@ export type TurnState = {
 
 export type PendingRequest = {
   readonly method: string;
+  readonly usageLease?: AppServerExecutionLease;
   readonly resolve: (value: CodexAppServerJsonRpcResponse) => void;
   readonly reject: (error: Error) => void;
   readonly timer: NodeJS.Timeout;

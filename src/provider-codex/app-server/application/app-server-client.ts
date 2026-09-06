@@ -1,3 +1,6 @@
+import { AppServerAdmission, AppServerExecutionLease, appServerTurnCapacity } from "./app-server-admission";
+import { AppServerUsageError } from "../domain/app-server-usage-error";
+import { appServerTurnStartParams } from "./app-server-turn-start-params";
 import { AppServerTokenUsageTracker } from "./app-server-turn-usage";
 import type { AgentUsage } from "@vioxen/subscription-runtime/core";
 import { pruneCodexChildEnv } from "../../codex-cli-domain";
@@ -103,11 +106,13 @@ export type AppServerTurnResult = {
   readonly error: Error | null;
 };
 
-const maxRetainedTurnStates = 128;
+const maxRetainedTurnStates = appServerTurnCapacity;
 const maxRetainedEarlyTurnIds = 128;
 const maxRetainedTurnAliases = 128;
 
 export class CodexAppServerClient {
+  private readonly executionAdmission = new AppServerAdmission();
+  private readonly turnAdmission = new AppServerAdmission();
   private nextId = 1;
   private child: CodexAppServerChildProcess | null = null;
   private readonly stdoutDecoder: AppServerJsonRpcLineDecoder;
@@ -261,7 +266,12 @@ export class CodexAppServerClient {
     this.warnings.push(warning);
   }
 
+  acquireExecution(): AppServerExecutionLease {
+    return new AppServerExecutionLease(this.executionAdmission.acquire(), (id) => this.tokenUsage.pin(id));
+  }
+
   async startThread(input: {
+    readonly usageLease?: AppServerExecutionLease;
     readonly workspacePath: string;
     readonly model: string;
     readonly reasoningEffort: CodexReasoningEffort;
@@ -371,6 +381,7 @@ export class CodexAppServerClient {
   }
 
   async forkThread(input: {
+    readonly usageLease?: AppServerExecutionLease;
     readonly threadId: string;
     readonly timeoutMs: number;
     readonly abortSignal: AbortSignal;
@@ -514,113 +525,102 @@ export class CodexAppServerClient {
     readonly turnNumber?: number;
     readonly onTextDelta?: (text: string) => void;
   }): Promise<AppServerTurnResult> {
-    this.tokenUsage.ensureThread(input.threadId);
-    this.startingTurnThreads.add(input.threadId);
-    const startedAt = Date.now();
-    const { disableTools, disableNativeEnvironments } = appServerThreadToolPolicy({
-      disableTools: this.options.executionProfile.disableTools,
-      nativeToolSurface: this.options.nativeToolSurface,
-      goalMode: input.goalMode,
-    });
-    let response: CodexAppServerJsonRpcResponse;
+    const release = this.turnAdmission.acquire(input.threadId);
+    const usage = this.tokenUsage.activate(input.threadId);
     try {
-      response = await this.send(
-        "turn/start",
-        {
-          threadId: input.threadId,
-          input: [
-            {
-              type: "text",
-              text: input.prompt,
-              text_elements: [],
-            },
-          ],
-          responsesapiClientMetadata: null,
-          additionalContext: null,
-          ...(disableTools || disableNativeEnvironments
-            ? { environments: [] }
-            : {}),
-          cwd: null,
-          runtimeWorkspaceRoots: null,
-          approvalPolicy: appServerApprovalPolicy(this.options.commandApprovalPolicy),
-          approvalsReviewer: null,
-          sandboxPolicy: this.sandboxPolicyFor(input),
-          model: input.model,
-          serviceTier: input.serviceTier ?? null,
-          effort: input.reasoningEffort,
-          summary: "none",
-          personality: null,
-          outputSchema: input.outputSchema ?? null,
-          collaborationMode: null,
-        },
-        input,
-      );
-    } catch (error) {
-      this.clearStartingTurn(input.threadId);
-      throw turnFailureError(error, {
-        phase: "turn_start_rejected",
-        turnNumber: input.turnNumber,
-        elapsedMs: Date.now() - startedAt,
+      this.startingTurnThreads.add(input.threadId);
+      const startedAt = Date.now();
+      const { disableTools, disableNativeEnvironments } = appServerThreadToolPolicy({
+        disableTools: this.options.executionProfile.disableTools,
+        nativeToolSurface: this.options.nativeToolSurface,
+        goalMode: input.goalMode,
       });
-    }
-    if (response.error) {
-      this.clearStartingTurn(input.threadId);
-      throw turnFailureError(
-        new Error(
-          `codex_app_server_turn_start_failed:${response.error.message ?? "unknown"}`,
-        ),
-        {
+      let response: CodexAppServerJsonRpcResponse;
+      try {
+        response = await this.send(
+          "turn/start",
+          appServerTurnStartParams(input, {
+            disableTools, disableNativeEnvironments,
+            ...(this.options.commandApprovalPolicy === undefined ? {} : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
+            sandboxPolicy: this.sandboxPolicyFor(input),
+          }),
+          input,
+        );
+      } catch (error) {
+        this.clearStartingTurn(input.threadId);
+        throw turnFailureError(error, {
           phase: "turn_start_rejected",
           turnNumber: input.turnNumber,
           elapsedMs: Date.now() - startedAt,
-        },
-      );
-    }
+        });
+      }
+      if (response.error) {
+        this.clearStartingTurn(input.threadId);
+        throw turnFailureError(
+          new Error(
+            `codex_app_server_turn_start_failed:${response.error.message ?? "unknown"}`,
+          ),
+          {
+            phase: "turn_start_rejected",
+            turnNumber: input.turnNumber,
+            elapsedMs: Date.now() - startedAt,
+          },
+        );
+      }
 
-    const turnId = nestedString(response.result, ["turn", "id"]);
-    if (!turnId) {
-      this.clearStartingTurn(input.threadId);
-      throw turnFailureError(new AppServerRequestMayHaveReachedProviderError(
-        new Error("codex_app_server_turn_id_missing"),
-        "turn/start",
-      ), {
-        phase: "turn_start_rejected",
-        turnNumber: input.turnNumber,
-        elapsedMs: Date.now() - startedAt,
-      });
-    }
-    let turn: TurnState;
-    try {
-      turn = await this.waitForTurn(turnId, input);
+      const turnId = nestedString(response.result, ["turn", "id"]);
+      if (!turnId) {
+        this.clearStartingTurn(input.threadId);
+        throw turnFailureError(new AppServerRequestMayHaveReachedProviderError(
+          new Error("codex_app_server_turn_id_missing"),
+          "turn/start",
+        ), {
+          phase: "turn_start_rejected",
+          turnNumber: input.turnNumber,
+          elapsedMs: Date.now() - startedAt,
+        });
+      }
+      let turn: TurnState;
+      try {
+        turn = await this.waitForTurn(turnId, input);
+      } catch (error) {
+        this.clearStartingTurn(input.threadId);
+        throw turnFailureError(new AppServerExecutionMayHaveStartedError(error), {
+          phase: "turn_error_before_output",
+          turnNumber: input.turnNumber,
+          elapsedMs: Date.now() - startedAt,
+        });
+      }
+      this.startingTurnThreads.delete(input.threadId);
+      this.clearIdleTurnState();
+      if (!turn.error) return turn;
+      return {
+        ...turn,
+        usage: turn.usage ?? usage.usage,
+        error: turnFailureError(new AppServerExecutionMayHaveStartedError(turn.error), {
+          phase:
+            turn.outputText.length > 0
+              ? "turn_error_after_output"
+              : "turn_error_before_output",
+          turnNumber: input.turnNumber,
+          outputText: turn.outputText,
+          elapsedMs: Date.now() - startedAt,
+        }),
+      };
     } catch (error) {
-      this.clearStartingTurn(input.threadId);
-      throw turnFailureError(new AppServerExecutionMayHaveStartedError(error), {
-        phase: "turn_error_before_output",
-        turnNumber: input.turnNumber,
-        elapsedMs: Date.now() - startedAt,
-      });
+      if (usage.usage) throw new AppServerUsageError(error, usage.usage, true);
+      throw error;
+    } finally {
+      this.tokenUsage.deactivate(input.threadId);
+      release();
     }
-    this.startingTurnThreads.delete(input.threadId);
-    this.clearIdleTurnState();
-    if (!turn.error) return turn;
-    return {
-      ...turn,
-      error: turnFailureError(new AppServerExecutionMayHaveStartedError(turn.error), {
-        phase:
-          turn.outputText.length > 0
-            ? "turn_error_after_output"
-            : "turn_error_before_output",
-        turnNumber: input.turnNumber,
-        outputText: turn.outputText,
-        elapsedMs: Date.now() - startedAt,
-      }),
-    };
   }
 
   private send(
     method: string,
     params: unknown,
     input: {
+      readonly usageLease?: AppServerExecutionLease;
       readonly timeoutMs?: number;
       readonly abortSignal?: AbortSignal;
     } = {},
@@ -637,6 +637,7 @@ export class CodexAppServerClient {
       params,
       timeoutMs: input.timeoutMs ?? this.options.timeoutMs,
       ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
+      ...(input.usageLease === undefined ? {} : { usageLease: input.usageLease }),
       pending: this.pending,
       write: (message) => this.child!.stdin.write(message),
     });
@@ -717,7 +718,7 @@ export class CodexAppServerClient {
       if (!pending) return;
       clearTimeout(pending.timer);
       this.pending.delete(record.id);
-      this.tokenUsage.registerResponse(pending.method, record.result);
+      this.tokenUsage.registerResponse(pending.method, record.result, pending.usageLease);
       pending.resolve(record as CodexAppServerJsonRpcResponse);
       return;
     }

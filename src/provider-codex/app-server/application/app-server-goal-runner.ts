@@ -64,27 +64,33 @@ export class AppServerGoalRunner {
     readonly maxGoalTurns: number;
     readonly goalContinuePrompt: string;
   }): Promise<AppServerRunResult> {
-    const warnings = this.options.client.drainWarnings();
-    const runId = normalizeRunId(input.runId);
-    const threadId = await this.options.client.startThread({
-      ...input,
-      goalMode: true,
-    });
-    await this.options.client.setGoal({
-      threadId,
-      objective: input.goalObjective ?? input.prompt,
-      status: "active",
-      timeoutMs: input.timeoutMs,
-      abortSignal: input.abortSignal,
-    });
+    const usageLease = this.options.client.acquireExecution();
+    try {
+      const warnings = this.options.client.drainWarnings();
+      const runId = normalizeRunId(input.runId);
+      const threadId = await this.options.client.startThread({
+        usageLease,
+        ...input,
+        goalMode: true,
+      });
+      await this.options.client.setGoal({
+        threadId,
+        objective: input.goalObjective ?? input.prompt,
+        status: "active",
+        timeoutMs: input.timeoutMs,
+        abortSignal: input.abortSignal,
+      });
 
-    return this.continueGoal({
-      ...input,
-      runId,
-      threadId,
-      firstPrompt: input.prompt,
-      warnings,
-    });
+      return await this.continueGoal({
+        ...input,
+        runId,
+        threadId,
+        firstPrompt: input.prompt,
+        warnings,
+      });
+    } finally {
+      usageLease.release();
+    }
   }
 
   async runLogicalThreadGoal(input: {
@@ -111,67 +117,75 @@ export class AppServerGoalRunner {
     readonly providerCheckpoint: string;
     readonly outcome: ProviderLogicalThreadOutcome;
   }> {
-    const warnings = this.options.client.drainWarnings();
-    const runId = normalizeRunId(input.runId);
-    let outcome = ProviderLogicalThreadOutcome.StartedFresh;
-    let threadId: string;
-    if (input.previousCheckpoint === undefined) {
-      threadId = await this.options.client.startThread({
-        ...input,
-        goalMode: true,
-      });
-    } else {
-      try {
-        threadId = await this.options.client.forkThread({
-          threadId: input.previousCheckpoint,
-          timeoutMs: input.timeoutMs,
-          abortSignal: input.abortSignal,
-        });
-        outcome = ProviderLogicalThreadOutcome.Continued;
-      } catch (error) {
-        if (input.abortSignal.aborted) throw error;
-        if (
-          !(error instanceof CodexAppServerThreadForkError) ||
-          !error.sourceThreadUnavailable
-        ) {
-          throw error;
-        }
+    const usageLease = this.options.client.acquireExecution();
+    try {
+      const warnings = this.options.client.drainWarnings();
+      const runId = normalizeRunId(input.runId);
+      let outcome = ProviderLogicalThreadOutcome.StartedFresh;
+      let threadId: string;
+      if (input.previousCheckpoint === undefined) {
         threadId = await this.options.client.startThread({
+          usageLease,
           ...input,
           goalMode: true,
         });
-        outcome = ProviderLogicalThreadOutcome.RecoveredFresh;
-        warnings.push({
-          code: "codex_app_server_thread_recovered_fresh",
-          safeMessage:
-            "Codex source thread was unavailable; execution started fresh before any turn.",
-        });
+      } else {
+        try {
+          threadId = await this.options.client.forkThread({
+            usageLease,
+            threadId: input.previousCheckpoint,
+            timeoutMs: input.timeoutMs,
+            abortSignal: input.abortSignal,
+          });
+          outcome = ProviderLogicalThreadOutcome.Continued;
+        } catch (error) {
+          if (input.abortSignal.aborted) throw error;
+          if (
+            !(error instanceof CodexAppServerThreadForkError) ||
+            !error.sourceThreadUnavailable
+          ) {
+            throw error;
+          }
+          threadId = await this.options.client.startThread({
+            usageLease,
+            ...input,
+            goalMode: true,
+          });
+          outcome = ProviderLogicalThreadOutcome.RecoveredFresh;
+          warnings.push({
+            code: "codex_app_server_thread_recovered_fresh",
+            safeMessage:
+              "Codex source thread was unavailable; execution started fresh before any turn.",
+          });
+        }
       }
+      await this.options.client.setGoal({
+        threadId,
+        objective: input.goalObjective ?? input.prompt,
+        status: "active",
+        timeoutMs: input.timeoutMs,
+        abortSignal: input.abortSignal,
+      });
+      const result = await this.continueGoal({
+        ...input,
+        runId,
+        threadId,
+        firstPrompt: input.prompt,
+        warnings,
+        allowWaitingForInput: false,
+      });
+      if (result.status === "waiting_for_input") {
+        throw new Error("codex_logical_thread_goal_waiting_for_input_invalid");
+      }
+      return {
+        ...result,
+        status: "completed",
+        providerCheckpoint: threadId,
+        outcome,
+      };
+    } finally {
+      usageLease.release();
     }
-    await this.options.client.setGoal({
-      threadId,
-      objective: input.goalObjective ?? input.prompt,
-      status: "active",
-      timeoutMs: input.timeoutMs,
-      abortSignal: input.abortSignal,
-    });
-    const result = await this.continueGoal({
-      ...input,
-      runId,
-      threadId,
-      firstPrompt: input.prompt,
-      warnings,
-      allowWaitingForInput: false,
-    });
-    if (result.status === "waiting_for_input") {
-      throw new Error("codex_logical_thread_goal_waiting_for_input_invalid");
-    }
-    return {
-      ...result,
-      status: "completed",
-      providerCheckpoint: threadId,
-      outcome,
-    };
   }
 
   async resumeGoal(input: {
@@ -191,39 +205,45 @@ export class AppServerGoalRunner {
     readonly goalContinuePrompt: string;
     readonly skipResumeValidation?: boolean;
   }): Promise<AppServerRunResult> {
-    const threadId = input.resumeHandle.threadId;
-    if (!threadId) throw new Error("codex_managed_run_thread_missing");
-    if (!input.skipResumeValidation) {
-      await assertManagedRunCanResume({
-        runStore: this.options.runStore,
+    const usageLease = this.options.client.acquireExecution();
+    try {
+      const threadId = input.resumeHandle.threadId;
+      if (threadId) usageLease.retain(threadId);
+      if (!threadId) throw new Error("codex_managed_run_thread_missing");
+      if (!input.skipResumeValidation) {
+        await assertManagedRunCanResume({
+          runStore: this.options.runStore,
+          runId: input.runId,
+          requestId: input.requestId,
+          resumeHandle: input.resumeHandle,
+          workspacePath: input.workspacePath,
+        });
+      }
+      await this.options.runStore.resume({
         runId: input.runId,
         requestId: input.requestId,
-        resumeHandle: input.resumeHandle,
-        workspacePath: input.workspacePath,
-      });
-    }
-    await this.options.runStore.resume({
-      runId: input.runId,
-      requestId: input.requestId,
-      answer: input.answer,
-      now: new Date(),
-    });
-
-    try {
-      return await this.continueGoal({
-        ...input,
-        threadId,
-        firstPrompt: buildGoalResumePrompt(input),
-        resumed: true,
-        warnings: this.options.client.drainWarnings(),
-      });
-    } catch (error) {
-      await this.options.runStore.fail({
-        runId: input.runId,
-        failure: managedRunFailureFromError(error),
+        answer: input.answer,
         now: new Date(),
       });
-      throw error;
+
+      try {
+        return await this.continueGoal({
+          ...input,
+          threadId,
+          firstPrompt: buildGoalResumePrompt(input),
+          resumed: true,
+          warnings: this.options.client.drainWarnings(),
+        });
+      } catch (error) {
+        await this.options.runStore.fail({
+          runId: input.runId,
+          failure: managedRunFailureFromError(error),
+          now: new Date(),
+        });
+        throw error;
+      }
+    } finally {
+      usageLease.release();
     }
   }
 

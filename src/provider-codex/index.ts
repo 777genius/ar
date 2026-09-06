@@ -15,3 +15,5 @@ export * from "./failure-classifier";
 export * from "./manifest";
 
 export { egressBoundCodexProcessFactory } from "./app-server/adapters/egress-bound-process";
+
+export { AppServerAdmissionError, isAppServerAdmissionError } from "./app-server/application/app-server-admission";

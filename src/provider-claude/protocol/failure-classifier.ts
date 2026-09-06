@@ -1,6 +1,8 @@
+import { ClaudeTaskTelemetryError, numericClaudeTelemetry } from "./task-telemetry";
 import {
   isProviderFailureCode,
   type ProviderFailure,
+  type ProviderTaskTelemetry,
 } from "@vioxen/subscription-runtime/core";
 
 type FailureRedactor = {
@@ -10,8 +12,11 @@ type FailureRedactor = {
 export class ClaudeProviderFailureError extends Error {
   readonly name = "ClaudeProviderFailureError";
 
-  constructor(readonly failure: ProviderFailure) {
+  readonly telemetry: ProviderTaskTelemetry | undefined;
+
+  constructor(readonly failure: ProviderFailure, telemetry?: ProviderTaskTelemetry) {
     super(failure.safeMessage);
+    this.telemetry = telemetry === undefined ? undefined : numericClaudeTelemetry(telemetry);
   }
 }
 
@@ -19,6 +24,11 @@ export function classifyClaudeFailure(
   error: unknown,
   options: { readonly redactor?: FailureRedactor } = {},
 ): ProviderFailure {
+  const seen = new Set<unknown>();
+  while (error instanceof ClaudeTaskTelemetryError && !seen.has(error)) {
+    seen.add(error);
+    error = error.cause;
+  }
   const existingFailure = providerFailureFromUnknown(error);
   if (existingFailure) return redactProviderFailure(existingFailure, options.redactor);
 

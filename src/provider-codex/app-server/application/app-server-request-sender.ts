@@ -1,3 +1,4 @@
+import type { AppServerExecutionLease } from "./app-server-admission";
 import { encodeJsonRpcMessage, type CodexAppServerJsonRpcResponse } from "../protocol/app-server-json-rpc";
 import type { PendingRequest } from "./app-server-turn-state";
 import { AppServerRequestMayHaveReachedProviderError } from "../domain/app-server-execution-safety";
@@ -5,6 +6,7 @@ import { AppServerRequestMayHaveReachedProviderError } from "../domain/app-serve
 export function sendAppServerRequest(input: {
   readonly id: number;
   readonly method: string;
+  readonly usageLease?: AppServerExecutionLease;
   readonly params: unknown;
   readonly timeoutMs: number;
   readonly abortSignal?: AbortSignal;
@@ -31,6 +33,7 @@ export function sendAppServerRequest(input: {
     input.abortSignal?.addEventListener("abort", abort, { once: true });
     input.pending.set(input.id, {
       method: input.method,
+      ...(input.usageLease === undefined ? {} : { usageLease: input.usageLease }),
       resolve: (value) => {
         input.abortSignal?.removeEventListener("abort", abort);
         resolve(value);

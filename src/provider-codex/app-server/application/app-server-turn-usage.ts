@@ -1,3 +1,4 @@
+import type { AppServerExecutionLease } from "./app-server-admission";
 import type { AgentUsage } from "@vioxen/subscription-runtime/core";
 import { readRecord } from "../domain/app-server-record";
 import { maximumAgentUsage, readUsageFromRecords, subtractAgentUsage } from "../domain/app-server-usage";
@@ -5,12 +6,17 @@ import type { TurnState } from "./app-server-turn-state";
 
 /** A bounded read model of provider cumulative snapshots, including attach replay. */
 export class AppServerTokenUsageTracker {
+  private readonly pins = new Map<string, number>();
+  private readonly active = new Map<string, { usage?: AgentUsage }>();
   private readonly totals = new Map<string, AgentUsage | undefined>();
 
-  registerResponse(method: string, result: unknown): void {
+  registerResponse(method: string, result: unknown, lease?: AppServerExecutionLease): void {
     if (method !== "thread/start" && method !== "thread/fork") return;
     const threadId = readRecord(readRecord(result)?.thread)?.id;
-    if (typeof threadId === "string") this.registerThread(threadId, method === "thread/start");
+    if (typeof threadId === "string") {
+      lease?.retain(threadId);
+      this.registerThread(threadId, method === "thread/start");
+    }
   }
 
   ensureThread(threadId: string): void {
@@ -19,7 +25,40 @@ export class AppServerTokenUsageTracker {
 
   registerThread(threadId: string, fresh: boolean): void {
     this.totals.set(threadId, fresh ? {} : undefined);
-    if (this.totals.size > 128) this.totals.delete(this.totals.keys().next().value!);
+    this.pruneIdle();
+  }
+
+  activate(threadId: string): { usage?: AgentUsage } {
+    const usage = {};
+    this.active.set(threadId, usage);
+    this.ensureThread(threadId);
+    return usage;
+  }
+
+  deactivate(threadId: string): void {
+    this.active.delete(threadId);
+    this.pruneIdle();
+  }
+
+  pin(threadId: string): () => void {
+    this.pins.set(threadId, (this.pins.get(threadId) ?? 0) + 1);
+    return () => {
+      const count = this.pins.get(threadId) ?? 0;
+      if (count <= 1) this.pins.delete(threadId);
+      else this.pins.set(threadId, count - 1);
+      this.pruneIdle();
+    };
+  }
+
+  private pruneIdle(): void {
+    let idle = [...this.totals.keys()].filter((id) => !this.active.has(id) && !this.pins.has(id)).length;
+    for (const threadId of this.totals.keys()) {
+      if (idle <= 128) break;
+      if (!this.active.has(threadId) && !this.pins.has(threadId)) {
+        this.totals.delete(threadId);
+        idle -= 1;
+      }
+    }
   }
 
   observe(
@@ -49,6 +88,8 @@ export class AppServerTokenUsageTracker {
       if (!previous) return;
     }
     updateTurnUsage(state, total);
+    const active = this.active.get(threadId);
+    if (active && state.usage) active.usage = state.usage;
   }
 }
 

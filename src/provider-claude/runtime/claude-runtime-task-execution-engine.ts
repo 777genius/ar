@@ -1,3 +1,4 @@
+import { ClaudeTaskTelemetryError } from "../protocol/task-telemetry";
 import { randomUUID } from "node:crypto";
 import type {
   ProviderTaskEvent,
@@ -64,7 +65,7 @@ export class ClaudeRuntimeTaskExecutionEngine
     }
     if (!completed) throw new Error("claude_runtime_result_missing");
     if (completed.result.status === "failed") {
-      throw new ClaudeProviderFailureError(completed.result.failure);
+      throw new ClaudeProviderFailureError(completed.result.failure, completed.result.telemetry);
     }
     return {
       outputText: completed.result.outputText,
@@ -130,61 +131,15 @@ export class ClaudeRuntimeTaskExecutionEngine
     };
 
     try {
-      for await (const event of provider.observe(handle, {
-        abortSignal: input.abortSignal,
-        ...(this.options.pollIntervalMs === undefined
-            ? {}
-            : { pollIntervalMs: this.options.pollIntervalMs }),
-      })) {
-        if (isAssistantMessageEvent(event)) {
-          const text = input.redactor.redact(event.text);
-          textParts.push(text);
-          yield {
-            type: "text_delta",
-            occurredAt: new Date(),
-            text,
-            telemetry,
-          };
-        }
-        if (isToolUseEvent(event)) {
-          yield {
-            type: "tool_call",
-            occurredAt: new Date(),
-            toolCall: toolUseCall(event, input.redactor),
-            telemetry,
-          };
-        }
-        if (isToolResultEvent(event)) {
-          yield {
-            type: "tool_call",
-            occurredAt: new Date(),
-            toolCall: toolResultCall(event, input.redactor),
-            telemetry,
-          };
-        }
-        if (isUsageEvent(event)) {
-          const usage = runtimeUsage(event.usage);
-          telemetry = { ...telemetry, usage };
-          yield {
-            type: "usage",
-            occurredAt: new Date(),
-            usage,
-            telemetry,
-          };
-        }
-        if (isDiagnosticEvent(event)) {
-          const warning = diagnosticWarning(event, input.redactor);
-          warnings.push(warning);
-          yield {
-            type: "warning",
-            occurredAt: new Date(),
-            warning,
-            telemetry,
-          };
-        }
-        if (isResultAvailableEvent(event)) {
-          const text = input.redactor.redact(resultText(event.result));
-          if (text.length > 0 && !hasEquivalentTextPart(textParts, text)) {
+      try {
+        for await (const event of provider.observe(handle, {
+          abortSignal: input.abortSignal,
+          ...(this.options.pollIntervalMs === undefined
+              ? {}
+              : { pollIntervalMs: this.options.pollIntervalMs }),
+        })) {
+          if (isAssistantMessageEvent(event)) {
+            const text = input.redactor.redact(event.text);
             textParts.push(text);
             yield {
               type: "text_delta",
@@ -193,33 +148,83 @@ export class ClaudeRuntimeTaskExecutionEngine
               telemetry,
             };
           }
-          telemetry = {
-            ...telemetry,
-            ...(event.result.usage === undefined
-              ? {}
-              : { usage: runtimeUsage(event.result.usage) }),
-          };
+          if (isToolUseEvent(event)) {
+            yield {
+              type: "tool_call",
+              occurredAt: new Date(),
+              toolCall: toolUseCall(event, input.redactor),
+              telemetry,
+            };
+          }
+          if (isToolResultEvent(event)) {
+            yield {
+              type: "tool_call",
+              occurredAt: new Date(),
+              toolCall: toolResultCall(event, input.redactor),
+              telemetry,
+            };
+          }
+          if (isUsageEvent(event)) {
+            const usage = runtimeUsage(event.usage);
+            telemetry = { ...telemetry, usage };
+            yield {
+              type: "usage",
+              occurredAt: new Date(),
+              usage,
+              telemetry,
+            };
+          }
+          if (isDiagnosticEvent(event)) {
+            const warning = diagnosticWarning(event, input.redactor);
+            warnings.push(warning);
+            yield {
+              type: "warning",
+              occurredAt: new Date(),
+              warning,
+              telemetry,
+            };
+          }
+          if (isResultAvailableEvent(event)) {
+            telemetry = {
+              ...telemetry,
+              ...(event.result.usage === undefined
+                ? {}
+                : { usage: runtimeUsage(event.result.usage) }),
+            };
+            const text = input.redactor.redact(resultText(event.result));
+            if (text.length > 0 && !hasEquivalentTextPart(textParts, text)) {
+              textParts.push(text);
+              yield {
+                type: "text_delta",
+                occurredAt: new Date(),
+                text,
+                telemetry,
+              };
+            }
+          }
         }
+      } finally {
+        await provider.remove(handle).catch(() => undefined);
       }
-    } finally {
-      await provider.remove(handle).catch(() => undefined);
-    }
 
-    const outputText = input.redactor.redact(textParts.join("\n"));
-    yield {
-      type: "completed",
-      occurredAt: new Date(),
-      result: {
-        status: "completed",
-        outputText,
-        ...(input.outputSchemaName === undefined
-          ? {}
-          : { structuredOutput: parseStructuredJson(outputText) }),
+      const outputText = input.redactor.redact(textParts.join("\n"));
+      yield {
+        type: "completed",
+        occurredAt: new Date(),
+        result: {
+          status: "completed",
+          outputText,
+          ...(input.outputSchemaName === undefined
+            ? {}
+            : { structuredOutput: parseStructuredJson(outputText) }),
+          telemetry,
+          warnings,
+        },
         telemetry,
-        warnings,
-      },
-      telemetry,
-    };
+      };
+    } catch (error) {
+      throw new ClaudeTaskTelemetryError(error, telemetry);
+    }
   }
 }
 

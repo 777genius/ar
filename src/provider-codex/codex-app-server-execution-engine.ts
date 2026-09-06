@@ -1,3 +1,4 @@
+import { isAppServerAdmissionError } from "./app-server/application/app-server-admission";
 import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
 import type {
   ManagedRunResumeHandle,
@@ -191,7 +192,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       if (result.status === "waiting_for_input") return result;
       return await this.parseStructuredOutput(result, input, schemaPlan);
     } catch (error) {
-      if (error instanceof AppServerSlotAcquireAbortedError) throw error;
+      if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       await this.slotPool.disposeSessionSlot(input.session);
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (isCodexAppServerBudgetExceededError(error)) throw error;
@@ -263,7 +264,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       if (result.status === "waiting_for_input") return result;
       return await this.parseStructuredOutput(result, input, schemaPlan);
     } catch (error) {
-      if (error instanceof AppServerSlotAcquireAbortedError) throw error;
+      if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       if (!isManagedRunResumeValidationError(error)) {
         await this.slotPool.disposeSessionSlot(input.session);
       }
@@ -337,7 +338,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         }),
       };
     } catch (error) {
-      if (error instanceof AppServerSlotAcquireAbortedError) throw error;
+      if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       await this.slotPool.disposeSessionSlot(input.session);
       throw error;
     }

@@ -1,3 +1,4 @@
+import { isAppServerAdmissionError } from "./app-server-admission";
 import { AppServerUsageError, usageFromError } from "../domain/app-server-usage-error";
 import type { AgentUsage } from "@vioxen/subscription-runtime/core";
 import type {
@@ -48,63 +49,70 @@ export class AppServerTurnRunner {
     readonly usage?: AgentUsage;
     readonly warnings: readonly AppServerWarning[];
   }> {
-    const warnings = this.options.client.drainWarnings();
-    const preparedThread = this.takePreparedThread(input);
-    const threadId =
-      preparedThread?.threadId ?? (await this.options.client.startThread(input));
-    let emittedText = false;
-    const onTextDelta = input.onTextDelta === undefined
-      ? undefined
-      : (text: string): void => {
-          emittedText = true;
-          input.onTextDelta?.(text);
-        };
-    const turn = await this.options.client.startTurn({
-      ...input,
-      ...(onTextDelta === undefined ? {} : { onTextDelta }),
-      threadId,
-    }).catch(
-      async (error: unknown) => {
-        if (
-          !preparedThread ||
-          emittedText ||
-          usageFromError(error) ||
-          isCodexAppServerOutputLimitError(error) ||
-          isAppServerExecutionReplayUnsafe(error) ||
-          !isExplicitTurnStartRejection(error)
-        ) {
-          throw error;
-        }
-        warnings.push({
-          code: "codex_app_server_prepared_thread_failed",
-          safeMessage:
-            "Codex app-server prepared thread failed; retried with a fresh thread.",
-        });
-        const retryThreadId = await this.options.client.startThread(input);
-        return await this.options.client.startTurn({
-          ...input,
-          ...(onTextDelta === undefined ? {} : { onTextDelta }),
-          threadId: retryThreadId,
-        });
-      },
-    );
-    if (turn.error) throw new AppServerUsageError(turn.error, turn.usage);
-    if (!turn.outputText.trim()) {
-      throw new AppServerUsageError(
-        new Error("codex_app_server_final_message_missing"),
-        turn.usage,
-        true,
+    const usageLease = this.options.client.acquireExecution();
+    try {
+      const warnings = this.options.client.drainWarnings();
+      const preparedThread = this.takePreparedThread(input);
+      const threadId =
+        preparedThread?.threadId ?? (await this.options.client.startThread({ ...input, usageLease }));
+      usageLease.retain(threadId);
+      let emittedText = false;
+      const onTextDelta = input.onTextDelta === undefined
+        ? undefined
+        : (text: string): void => {
+            emittedText = true;
+            input.onTextDelta?.(text);
+          };
+      const turn = await this.options.client.startTurn({
+        ...input,
+        ...(onTextDelta === undefined ? {} : { onTextDelta }),
+        threadId,
+      }).catch(
+        async (error: unknown) => {
+          if (
+            isAppServerAdmissionError(error) ||
+            !preparedThread ||
+            emittedText ||
+            usageFromError(error) ||
+            isCodexAppServerOutputLimitError(error) ||
+            isAppServerExecutionReplayUnsafe(error) ||
+            !isExplicitTurnStartRejection(error)
+          ) {
+            throw error;
+          }
+          warnings.push({
+            code: "codex_app_server_prepared_thread_failed",
+            safeMessage:
+              "Codex app-server prepared thread failed; retried with a fresh thread.",
+          });
+          const retryThreadId = await this.options.client.startThread({ ...input, usageLease });
+          return await this.options.client.startTurn({
+            ...input,
+            ...(onTextDelta === undefined ? {} : { onTextDelta }),
+            threadId: retryThreadId,
+          });
+        },
       );
+      if (turn.error) throw new AppServerUsageError(turn.error, turn.usage);
+      if (!turn.outputText.trim()) {
+        throw new AppServerUsageError(
+          new Error("codex_app_server_final_message_missing"),
+          turn.usage,
+          true,
+        );
+      }
+      if (input.prepareNext ?? true) {
+        this.prepareCleanThreadBestEffort(input);
+      }
+      warnings.push(...this.options.client.drainWarnings());
+      return {
+        outputText: turn.outputText,
+        ...(turn.usage === undefined ? {} : { usage: turn.usage }),
+        warnings,
+      };
+    } finally {
+      usageLease.release();
     }
-    if (input.prepareNext ?? true) {
-      this.prepareCleanThreadBestEffort(input);
-    }
-    warnings.push(...this.options.client.drainWarnings());
-    return {
-      outputText: turn.outputText,
-      ...(turn.usage === undefined ? {} : { usage: turn.usage }),
-      warnings,
-    };
   }
 
   async prewarmCleanThread(input: {
