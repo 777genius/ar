@@ -2,7 +2,6 @@ import { AppServerAdmission, AppServerExecutionLease, appServerTurnCapacity } fr
 import { AppServerUsageError } from "../domain/app-server-usage-error";
 import { appServerTurnStartParams } from "./app-server-turn-start-params";
 import { AppServerTokenUsageTracker } from "./app-server-turn-usage";
-import type { AgentUsage } from "@vioxen/subscription-runtime/core";
 import { pruneCodexChildEnv } from "../../codex-cli-domain";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
 import type {
@@ -37,6 +36,7 @@ import {
 } from "../domain/app-server-errors";
 import { CodexAppServerThreadForkError } from "./app-server-thread-fork-error";
 import {
+  type AppServerTurnResult,
   createTurnState,
   type PendingRequest,
   type TurnState,
@@ -99,12 +99,7 @@ export {
 } from "./app-server-turn-failure";
 export { CodexAppServerThreadForkError, turnFailureError };
 
-export type AppServerTurnResult = {
-  readonly outputText: string;
-  readonly usage: AgentUsage | undefined;
-  readonly completed: boolean;
-  readonly error: Error | null;
-};
+export type { AppServerTurnResult } from "./app-server-turn-state";
 
 const maxRetainedTurnStates = appServerTurnCapacity;
 const maxRetainedEarlyTurnIds = 128;
@@ -117,7 +112,7 @@ export class CodexAppServerClient {
   private child: CodexAppServerChildProcess | null = null;
   private readonly stdoutDecoder: AppServerJsonRpcLineDecoder;
   private readonly pending = new Map<number, PendingRequest>();
-  private readonly tokenUsage = new AppServerTokenUsageTracker();
+  private readonly tokenUsage = new AppServerTokenUsageTracker((warning) => this.warnings.push(warning));
   private readonly turns = new Map<string, TurnState>();
   private readonly startingTurnThreads = new Set<string>();
   private readonly pendingTurnIdsByThread = new Map<string, string>();
@@ -1038,8 +1033,7 @@ export class CodexAppServerClient {
       }
       expected.completed = expected.completed || actual.completed;
       expected.error = expected.error ?? actual.error;
-      expected.usage = actual.usage ?? expected.usage;
-      expected.usageBaseline = actual.usageBaseline ?? expected.usageBaseline;
+      this.tokenUsage.adoptAliasedTurn(expected, actual);
       expected.waiters.push(...actual.waiters);
       if (expected.completed || expected.error) {
         this.resolveTurn(expected);

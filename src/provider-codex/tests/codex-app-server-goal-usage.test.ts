@@ -18,25 +18,67 @@ import {
 } from "./codex-provider-test-support";
 
 describe("Codex app-server goal usage", () => {
-  it("replaces repeated cumulative snapshots and excludes unrelated notifications", async () => {
+  it("bills every exact snapshot a turn owns, once, and excludes unrelated notifications", async () => {
     const first = { inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 80, cacheWriteInputTokens: 10, reasoningOutputTokens: 5 };
-    const last = { inputTokens: 60, outputTokens: 20, totalTokens: 80, cachedInputTokens: 40, cacheWriteInputTokens: 5, reasoningOutputTokens: 3 };
-    const total = { inputTokens: 160, outputTokens: 40, totalTokens: 200, cachedInputTokens: 120, cacheWriteInputTokens: 15, reasoningOutputTokens: 8 };
+    const second = { inputTokens: 60, outputTokens: 20, totalTokens: 80, cachedInputTokens: 40, cacheWriteInputTokens: 5, reasoningOutputTokens: 3 };
+    // The thread counter is cumulative across BOTH turns, exactly as the
+    // protocol defines it: each turn makes two model responses costing `first`
+    // then `second`, and `total` only ever grows.
+    const afterTurn1 = { inputTokens: 160, outputTokens: 40, totalTokens: 200, cachedInputTokens: 120, cacheWriteInputTokens: 15, reasoningOutputTokens: 8 };
+    const midTurn2 = { inputTokens: 260, outputTokens: 60, totalTokens: 320, cachedInputTokens: 200, cacheWriteInputTokens: 25, reasoningOutputTokens: 13 };
+    const afterTurn2 = { inputTokens: 320, outputTokens: 80, totalTokens: 400, cachedInputTokens: 240, cacheWriteInputTokens: 30, reasoningOutputTokens: 16 };
+    const distractors = [
+      { threadId: "wrong-thread", total: { totalTokens: 99999 }, last: { totalTokens: 99999 } },
+      { turnId: "wrong-turn", total: { totalTokens: 99999 }, last: { totalTokens: 99999 } },
+    ];
     const result = await runSyntheticGoalUsage({
-      tokenUsageNotifications: [
-        { total: first, last: first },
-        { total, last }, { total, last },
-        { total: first, last: first },
-        { threadId: "wrong-thread", total: { totalTokens: 99999 }, last: { totalTokens: 99999 } },
-        { turnId: "wrong-turn", total: { totalTokens: 99999 }, last: { totalTokens: 99999 } },
+      tokenUsageNotificationsAfterTurns: [
+        [
+          { total: first, last: first },
+          { total: afterTurn1, last: second }, { total: afterTurn1, last: second },
+          ...distractors,
+        ],
+        [
+          { total: midTurn2, last: first },
+          { total: afterTurn2, last: second }, { total: afterTurn2, last: second },
+          ...distractors,
+        ],
       ],
     });
-    expect(result.telemetry?.usage).toEqual(total);
+    // Each turn is billed both of its responses — never one of them, never
+    // twice — so the repeated notification adds nothing, and the foreign-thread
+    // / stale-turn 99999 distractors never reach either turn.
+    expect(result.telemetry?.usage).toEqual({
+      inputTokens: 320, outputTokens: 80, totalTokens: 400,
+      cachedInputTokens: 240, cacheWriteInputTokens: 30, reasoningOutputTokens: 16,
+    });
+  });
+
+  it("never backfills a turn whose exact usage was untrusted from the goal counter", async () => {
+    const exact = { inputTokens: 30, outputTokens: 10, totalTokens: 40 };
+    const result = await runSyntheticGoalUsage({
+      tokenUsageNotificationsAfterTurns: [
+        // Turn 1's exact snapshot is malformed, so the turn reports nothing.
+        [{ total: { inputTokens: 400, outputTokens: 100, totalTokens: 500 }, last: { inputTokens: -1 } }],
+        [{ total: { inputTokens: 430, outputTokens: 110, totalTokens: 540 }, last: exact }],
+      ],
+      // The goal's own cumulative counter knows turn 1's 500 tokens and would
+      // hand them to anyone willing to subtract a checkpoint baseline. A turn
+      // that reported nothing may be backfilled that way; a turn whose number
+      // was untrusted may not, or the fail-closed decision is undone.
+      goalUsageAfterTurns: [{ tokensUsed: 500 }, { tokensUsed: 540 }],
+    });
+    expect(result.status).toBe("completed");
+    expect(result.telemetry?.usage).toEqual(exact);
+    expect(result.warnings?.map((warning) => warning.code))
+      .toContain("codex_app_server_turn_usage_untrusted");
   });
 
   it("does not charge a quota notification replaying the previous cumulative snapshot", async () => {
     const usage = { inputTokens: 100, outputTokens: 25, totalTokens: 125 };
-    const result = await runSyntheticGoalUsage({ tokenUsageNotifications: [{ total: usage, last: usage }], abortTurnNumbers: [2] });
+    // No `last`: a pure cumulative replay carries no exact turn usage, so the
+    // second turn's identical snapshot must add nothing.
+    const result = await runSyntheticGoalUsage({ tokenUsageNotifications: [{ total: usage }], abortTurnNumbers: [2] });
     expect(result.status).toBe("failed");
     expect(result.telemetry?.usage).toEqual(usage);
   });
