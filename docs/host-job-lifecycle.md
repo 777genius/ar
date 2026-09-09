@@ -1,0 +1,15 @@
+# Host job lifecycle
+
+The opt-in `scripts/ops/host-job-transport.mjs` client exposes `hostTransport({host, machineId, socketDir}).request(request)`.
+The executable entrypoint is `node scripts/ops/host-job-cli.mjs HOST MACHINE_ID ABSOLUTE_SOCKET_DIR < request.json`. It supplies the configured machine identity to the JSON stdin request, rejects conflicting identities, and prints the structured result. Keep the socket directory private; no credentials belong in requests.
+Install the fixed endpoint with `sh host-integration/host-jobs/install` on an explicitly approved Linux host. No installer or live launch is run by tests.
+
+Start requests contain `operation: "start"`, `jobId`, exact 32-character `machineId`, absolute `argv[0]`, absolute `cwd`, and integer `runtimeSeconds`, `stopSeconds`, `memoryMiB`, `tasksMax`, `cpuPercent`. Status and stop requests contain `operation` and `jobId`. The endpoint runs under the SSH account's user systemd manager. Ensure lingering and resource delegation as appropriate for that host before admission.
+
+The client caches one multiplex transport per host/machine identity. A private socket-directory lock serializes all calls across independent CLI processes, including master creation; this conservative first slice therefore runs only one short command per host. All callers for a host identity must use the same private socket directory. Queue waits are bounded to 30 seconds. Lock ownership records include PID and process start time; stale or ambiguous locks fail closed for operator reconciliation, never automatic takeover while a job result could be uncertain. SSH never silently falls back to a standalone connection. One bounded transport retry uses the identical job request.
+
+Host admission verifies machine identity and at least 5 GiB available on the working filesystem. Every transient `.service` has a deterministic SHA-256 name, KillMode=control-group, runtime and stop deadlines, memory/CPU/task caps. Records under `~/.local/state/subscription-runtime/host-jobs` persist request fingerprints without argv or credentials. Completed IDs cannot be reused. A crash between record creation and launch is reported as unresolved rather than rerunning a potentially executed job.
+
+Status and stop also require the expected `machineId`; alias drift fails closed before unit access. Status reconciles persisted records with systemd and verifies the description fingerprint before any stop. Active units are live even after an uncertain launch response. Missing units with uncertain/starting records are unresolved; no timeout alone establishes abandonment. Unknown units are never stopped. This first slice does not scan or terminate SSH/login sessions. It does not yet own separately launched provider services: hosted Codex detached app-server launch fails closed when the host-job marker is present. Provider ownership, session monitoring and automatic orphan cleanup remain follow-up work; this adapter is not yet a replacement for hosted Codex worker provisioning.
+
+Focused verification: `node --test host-integration/host-jobs/host-jobs.node-test.mjs`.

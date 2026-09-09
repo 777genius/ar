@@ -23,3 +23,11 @@
 
 - Use conventional commit messages.
 - Do not use branch names with `codex/` prefix.
+
+## Host Access
+
+- Use `node scripts/ops/host-job-cli.mjs HOST MACHINE_ID SOCKET_DIR` with a JSON request on stdin for managed launches. Long-running work belongs to an owned service; respect the documented outer-job-only limitation.
+- Direct SSH is limited to bounded read-only checks, status, and explicitly authorized installation/bootstrap. Reuse multiplex host aliases and combine independent checks in one bounded request.
+- Never launch work using nohup, disown, setsid, or background shell children.
+- A transport timeout is an uncertain result. Check status using the same jobId and expected machineId before taking further action; never create a replacement job blindly.
+- Never blanket-kill sessions or unknown processes. Cancel only units whose persisted ownership has been verified.

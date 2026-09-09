@@ -1,10 +1,23 @@
 import { describe, expect, it } from "vitest";
+import { pruneCodexChildEnv } from "../codex-cli-domain";
 import {
   codexAppServerProcessInvocation,
   signalHostedSystemdUnit,
 } from "../app-server/adapters/node-app-server-process";
 
 describe("hosted Codex app-server resource containment", () => {
+  it("rejects detached provider units without durable host-job ownership", () => {
+    expect(() => codexAppServerProcessInvocation({
+      command: "/opt/codex/bin/codex",
+      args: ["app-server"],
+      cwd: "/sandbox",
+      env: pruneCodexChildEnv({
+        SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+        SUBSCRIPTION_RUNTIME_HOST_JOB_ID: "sandbox-job",
+      }),
+      platform: "linux",
+    })).toThrow("host-job detached provider ownership is not supported");
+  });
   it("places hosted Linux app-server trees in the bounded worker slice", () => {
     expect(
       codexAppServerProcessInvocation({

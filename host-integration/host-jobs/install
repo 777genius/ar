@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+# Run explicitly as root on an approved host; never invoked by tests.
+source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+target=/usr/local/lib/subscription-runtime/host-jobs
+install -d -m 755 "$target"
+for file in contract.mjs manager.mjs read-request.mjs endpoint.mjs; do
+  install -m 644 "$source_dir/$file" "$target/$file"
+done

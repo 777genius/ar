@@ -103,6 +103,10 @@ export function codexAppServerProcessInvocation(input: {
   ) {
     return { command: input.command, args: input.args };
   }
+  // Detached provider units need persisted ownership before host jobs can own them.
+  if (input.env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID !== undefined) {
+    throw new Error("host-job detached provider ownership is not supported");
+  }
   const systemdUnit =
     input.systemdUnit ?? `subscription-runtime-hosted-${randomUUID()}.service`;
   const properties = hostedAppServerSystemdProperties(

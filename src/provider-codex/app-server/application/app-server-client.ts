@@ -183,11 +183,13 @@ export class CodexAppServerClient {
     this.terminalError = null;
     this.stopping = null;
     this.stdoutDecoder.clear();
-    const env = {
+    const env: Record<string, string> = {
       ...pruneCodexChildEnv(this.options.sourceEnv ?? process.env),
       ...this.options.session.env,
       CI: "true",
     };
+    const hostJobId = (this.options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_HOST_JOB_ID;
+    if (hostJobId !== undefined) env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID = hostJobId;
     this.child = this.options.processFactory({
       command: this.options.codexBinaryPath,
       args: codexAppServerProcessArgs(this.options),
