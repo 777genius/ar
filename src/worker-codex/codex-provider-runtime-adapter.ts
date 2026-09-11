@@ -1,3 +1,5 @@
+import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
+import { withControlledAgentEgress } from "./controlled-agent/codex-controlled-agent-profile";
 import { createCodexGoalObservationContext } from "./application/codex-goal-observation-context";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -104,7 +106,12 @@ class CodexProviderRuntimeAdapter implements ProviderRuntimeAdapter {
   ): Promise<ProviderControlledAgentResult> {
     const launch = input.launch as CodexGoalLaunchInput;
     const options = input.controllerOptions as ProjectControllerOptions;
-    const profile = input.profile.rawProfile as CodexControlledAgentProfile;
+    if (!input.scope.authRoot) throw new Error("project_control_controller_auth_root_scope_required");
+    if (resolve(launch.config.authRootDir) !== resolve(input.scope.authRoot)) {
+      throw new Error("project_control_controller_auth_root_outside_scope");
+    }
+    const admitted = await admitHostedControllerLaunch(launch);
+    const profile = withControlledAgentEgress(input.profile.rawProfile as CodexControlledAgentProfile, admitted.policy);
     const account = await controlledAgentCodexAccount({
       scope: input.scope,
       launch,
@@ -113,6 +120,8 @@ class CodexProviderRuntimeAdapter implements ProviderRuntimeAdapter {
     return {
       provider: new CodexControlledAgentProvider({
         profile,
+        processFactory: admitted.processFactory,
+        sourceEnv: launch.config.sourceEnv ?? process.env,
         sessionArtifact: account.sessionArtifact,
         workspacePath: launch.config.workspacePath,
         codexBinaryPath: launch.config.codexBinaryPath ?? "codex",

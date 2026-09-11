@@ -66,7 +66,7 @@ describe("hosted Codex app-server resource containment", () => {
         "--property=NoNewPrivileges=yes",
         "--property=ProtectControlGroups=yes",
         "--property=CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP",
-        "--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user",
+        "--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user -/var/lib/subscription-runtime-host-policy",
         "--",
         "/usr/bin/unshare",
         "--map-user=65532",

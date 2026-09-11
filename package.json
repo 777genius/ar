@@ -146,6 +146,7 @@
   ],
   "bundledDependencies": [
     "@anthropic-ai/claude-agent-sdk",
+    "@anthropic-ai/sdk",
     "@modelcontextprotocol/sdk",
     "@types/node",
     "@vioxen/agent-account-observability",
@@ -192,6 +193,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.237",
+    "@anthropic-ai/sdk": "0.110.0",
     "@vioxen/agent-account-observability": "file:packages/agent-account-observability",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^22.20.0",

@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
+import { assertReadonlyEnrollmentProfile } from "./hosted-readonly-custody";
+import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
+import { admitHostedOrdinaryIdentity, isHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import {
   codexProviderApiEgressPolicy,
   codexProviderEgressPolicy,
   type CodexProviderEgressPolicy,
-  type CodexProviderEgressProfileId,
+  CodexProviderEgressProfileId,
+  requiresHostedProcessAdmission,
 } from "@vioxen/subscription-runtime/provider-codex";
 import {
   assertHostedTestEgressOperator,
@@ -19,14 +23,30 @@ export async function admitHostedTestEgress(
     readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   },
 ): Promise<CodexProviderEgressPolicy> {
-  // Non-root callers cannot receive this host-root authorization. Decide before
-  // touching its inaccessible parents; eligible callers still fail closed on errors.
-  if (process.platform !== "linux" || process.getuid?.() !== 0) return codexProviderApiEgressPolicy();
+  // Namespace/local non-root callers never read host-private authority or gain
+  // TEST egress from a marker. Actual ordinary-runtime membership still denies
+  // a wrong principal before entering its selected route.
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    if (isHostedOrdinaryRuntime()) admitHostedOrdinaryIdentity(input);
+    return codexProviderApiEgressPolicy();
+  }
+  const hosted = requiresHostedProcessAdmission(input.sourceEnv ?? process.env);
+  if (hosted && isHostedOrdinaryRuntime()) {
+    const profile = admitHostedOrdinaryIdentity(input);
+    if (profile === CodexProviderEgressProfileId.TestNpmQualification &&
+        ((input.executionEngine ?? "app-server-goal") !== "app-server-goal" ||
+          input.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job")) throw new Error("hosted_test_egress_engine_unsupported");
+    return codexProviderEgressPolicy(profile);
+  }
   let grant;
   try {
     grant = await readHostedTestEgressGrantFile(hostedTestEgressGrantRoot, input);
   } catch {
     throw new Error("hosted_test_egress_admission_invalid");
+  }
+  assertReadonlyEnrollmentProfile(input.jobId, grant?.profileId === CodexProviderEgressProfileId.TestManagedQualification);
+  if (hosted) {
+    new HostedReadonlySupervisorHost().assertManagedAdmission(input, grant?.profileId ?? CodexProviderEgressProfileId.ProviderApi);
   }
   if (!grant) return codexProviderApiEgressPolicy();
   await assertHostedTestEgressOperator();

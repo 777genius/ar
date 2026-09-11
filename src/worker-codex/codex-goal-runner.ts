@@ -1,3 +1,6 @@
+import { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
+export { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
+import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
 import { admitHostedTestEgress, hostedTestEgressEvidence } from "./hosted-test-egress-admission";
 import { codexProviderEgressPolicy, type CodexProviderEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
 import { execFile } from "node:child_process";
@@ -26,6 +29,7 @@ import {
   type WorkerReport,
 } from "@vioxen/subscription-runtime/worker-core";
 import type {
+  CodexAppServerProcessFactory,
   CodexReasoningEffort,
   CodexServiceTier,
 } from "@vioxen/subscription-runtime/provider-codex";
@@ -124,39 +128,6 @@ export type CodexGoalRunConfig = {
 
 export type CodexGoalWorkerReportMode = "runtime-only" | "structured-output";
 
-export const codexWorkerReportSchemaName = "codex-worker-report";
-
-export const codexWorkerReportSchema = {
-  type: "object",
-  properties: {
-    outcome: {
-      type: "string",
-      enum: ["done", "partial", "blocked", "failed"],
-    },
-    evidence: {
-      type: "array",
-      items: { type: "string" },
-    },
-    blockers: {
-      type: "array",
-      items: { type: "string" },
-    },
-    nextActionHint: { type: "string" },
-    summary: { type: "string" },
-  },
-  required: ["outcome", "evidence", "blockers", "nextActionHint", "summary"],
-  additionalProperties: false,
-} as const;
-
-export const codexWorkerReportSystemPrompt = [
-  "When your task is finished or blocked, make the final assistant response a JSON object matching the codex-worker-report schema.",
-  "Use outcome done only when the requested work is complete.",
-  "Use partial when useful workspace changes exist but verification or completion is incomplete.",
-  "Use blocked when you need operator input, account capacity, auth, permissions, or another external condition.",
-  "Use failed when no useful result can be preserved.",
-  "Keep evidence and blockers concise and factual.",
-].join("\n");
-
 export const codexGoalLinkedWorktreeHandoffSystemPrompt = [
   "Linked git worktree sandbox rule:",
   "You are edit/test/handoff-only in this isolated linked worktree.",
@@ -218,6 +189,14 @@ export async function runCodexGoal(
     sourceEnv: config.sourceEnv ?? process.env,
   });
   const providerEgressPolicy = codexProviderEgressPolicy(admittedEgress.profileId);
+  const appServerProcessFactory = admitHostedReadonlyInputs({
+    jobId: config.jobId ?? config.taskId,
+    jobRootDir: config.jobRootDir,
+    workspacePath: config.workspacePath,
+    providerEgressPolicy,
+    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
+    sourceEnv: config.sourceEnv ?? process.env,
+  });
   const prompt = await readFile(config.promptPath, "utf8");
   const progressPath = codexGoalProgressPath(config);
   const runtimeEventsPath = codexGoalRuntimeEventsPath(config);
@@ -286,6 +265,7 @@ export async function runCodexGoal(
     )(buildCodexGoalExecutorOptions({
       config,
       providerEgressPolicy,
+      ...(appServerProcessFactory ? { appServerProcessFactory } : {}),
       stateRootDir,
       encryptionKey,
       observability,
@@ -396,6 +376,7 @@ export async function runCodexGoal(
 export function buildCodexGoalExecutorOptions(input: {
   readonly config: CodexGoalRunConfig;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
+  readonly appServerProcessFactory?: CodexAppServerProcessFactory;
   readonly stateRootDir: string;
   readonly encryptionKey: Uint8Array;
   readonly observability?: ObservabilityPort;
@@ -457,6 +438,7 @@ export function buildCodexGoalExecutorOptions(input: {
         encryptionKey: input.encryptionKey,
         executionEngine: config.executionEngine ?? "app-server-goal",
         ...(input.providerEgressPolicy ? { providerEgressPolicy: input.providerEgressPolicy } : {}),
+        ...(input.appServerProcessFactory ? { appServerProcessFactory: input.appServerProcessFactory } : {}),
         capacityAccountId: account.name,
         taskTimeoutMs: config.taskTimeoutMs ?? 72 * 60 * 60 * 1000,
         ...(config.appServerStartupTimeoutMs === undefined

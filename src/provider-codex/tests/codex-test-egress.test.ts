@@ -63,7 +63,7 @@ describe("finite TEST egress propagation", () => {
       sourceEnv: input.env })).toMatchObject({ networkAccess: true });
     const invocation = codexAppServerProcessInvocation({ ...input, platform: "linux", ioLimitPaths: [] });
     expect(invocation.command).toBe("/usr/bin/systemd-run");
-    expect(invocation.args).toContain("--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user");
+    expect(invocation.args).toContain("--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user -/var/lib/subscription-runtime-host-policy");
     expect(invocation.args).toContain("--map-user=65532");
     expect(invocation.args).toContain("--bounding-set=-all");
     expect(JSON.parse(invocation.stdinBootstrap!).args).toEqual(input.args);

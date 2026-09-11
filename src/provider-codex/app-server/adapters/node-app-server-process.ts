@@ -7,7 +7,9 @@ import type {
   CodexAppServerChildProcessSignaler,
   CodexAppServerProcessFactory,
 } from "../application/app-server-process-port";
+import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait } from "./hosted-process-activation";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
+import { hostedReadonlyMountProperties, type HostedReadonlyMounts } from "./hosted-readonly-mounts";
 import {
   hostedAppServerSystemdProperties,
   hostedIoLimitPaths,
@@ -25,6 +27,9 @@ const hostedLauncherPath = fileURLToPath(
   new URL("./hosted-app-server-launcher.js", import.meta.url),
 );
 const hostedSystemdUnits = new WeakMap<CodexAppServerChildProcess, string>();
+// A synchronous host-fence callback may submit one exact service, only while
+// that callback is active. Launch arguments cannot supply or retain this ticket.
+const hostedSubmissions = new WeakSet<object>();
 
 export type HostedSystemctlResult = {
   readonly status: number | null;
@@ -96,11 +101,12 @@ export function codexAppServerProcessInvocation(input: {
   readonly nodePath?: string;
   readonly platform?: NodeJS.Platform;
   readonly systemdUnit?: string;
-}): CodexAppServerProcessInvocation {
+}, admittedMounts?: HostedReadonlyMounts): CodexAppServerProcessInvocation {
   if (
     (input.platform ?? process.platform) !== "linux" ||
     input.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== hostedSandboxKind
   ) {
+    if (admittedMounts) throw new Error("hosted_readonly_engine_unsupported");
     return { command: input.command, args: input.args };
   }
   // Detached provider units need persisted ownership before host jobs can own them.
@@ -131,6 +137,8 @@ export function codexAppServerProcessInvocation(input: {
       "--service-type=exec",
       "--slice=subscription-runtime-hosted.slice",
       ...properties.map((property) => `--property=${property}`),
+      ...(admittedMounts ? hostedReadonlyMountProperties(admittedMounts)
+        .map(property => `--property=${property}`) : []),
       "--",
       unsharePath,
       `--map-user=${hostedNamespaceIdentity}`,
@@ -159,8 +167,25 @@ export function spawnCodexAppServerProcess(input: {
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
-}): CodexAppServerChildProcess {
-  const invocation = codexAppServerProcessInvocation(input);
+}, admittedMounts?: HostedReadonlyMounts, reservedSystemdUnit?: string, submission?: object): CodexAppServerChildProcess {
+  if (submission && !hostedSubmissions.has(submission)) throw new Error("hosted_custody_synchronous_fence_required");
+  if (!submission && requiresHostedProcessAdmission(input.env)) {
+    if (admittedMounts || reservedSystemdUnit) throw new Error("hosted_custody_synchronous_fence_required");
+    return submitHostedOrdinaryProcess(input, unit => spawnInvocation(input,
+      codexAppServerProcessInvocation({ ...input, systemdUnit: unit })));
+  }
+  const invocation = codexAppServerProcessInvocation({
+    command: input.command, args: input.args, cwd: input.cwd, env: input.env,
+    ...(reservedSystemdUnit ? { systemdUnit: reservedSystemdUnit } : {}),
+  }, admittedMounts);
+  if (invocation.systemdUnit !== undefined && (!submission || !hostedSubmissions.delete(submission))) {
+    throw new Error("hosted_custody_synchronous_fence_required");
+  }
+  return spawnInvocation(input, invocation);
+}
+
+function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
+  invocation: CodexAppServerProcessInvocation): CodexAppServerChildProcess {
   const child = spawn(invocation.command, invocation.args, {
     cwd: input.cwd,
     env: input.env,
@@ -176,6 +201,27 @@ export function spawnCodexAppServerProcess(input: {
   return child;
 }
 
+/** Admission and per-spawn custody checks belong to the worker-owned closure. */
+export function admittedReadonlyCodexProcessFactory(
+  policy: HostedReadonlyMounts,
+  submitSystemdUnit?: (unit: string, submit: () => CodexAppServerChildProcess) => CodexAppServerChildProcess,
+): CodexAppServerProcessFactory {
+  hostedReadonlyMountProperties(policy);
+  const mounts = Object.freeze({
+    workspacePath: policy.workspacePath,
+    readonlyPaths: Object.freeze([...policy.readonlyPaths]),
+  });
+  return input => {
+    if (!submitSystemdUnit) throw new Error("hosted_custody_synchronous_fence_required");
+    const unit = `subscription-runtime-hosted-${randomUUID()}.service`;
+    const ticket = {};
+    const submit = () => spawnCodexAppServerProcess(input, mounts, unit, ticket);
+    hostedSubmissions.add(ticket);
+    try { return submitSystemdUnit(unit, submit); }
+    finally { hostedSubmissions.delete(ticket); }
+  };
+}
+
 export type {
   CodexAppServerChildProcess,
   CodexAppServerChildProcessSignaler,
@@ -186,6 +232,7 @@ export function signalCodexAppServerChildGroup(
   child: CodexAppServerChildProcess,
   signal: NodeJS.Signals,
 ): void {
+  invalidateHostedOrdinaryWait(child);
   try {
     const systemdUnit = hostedSystemdUnits.get(child);
     if (systemdUnit !== undefined) {

@@ -1,3 +1,6 @@
+import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
+import { isHostedGoalLaunch, stopHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
+import { CodexGoalLaunchState, buildCodexGoalNoTmuxCommand } from "./codex-goal-ops";
 import { appendFile, mkdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import {
@@ -379,6 +382,20 @@ function codexProjectControlPorts(
                   }
               : {}),
           });
+          if (!input.startManifest && input.scope.preStartAdmission?.required) {
+            throw new Error("project_control_start_manifest_required");
+          }
+          // Broker authorization publishes a receipt. Managed broker requests
+          // must already be enclosed by the fixed CLI outer command before it.
+          await admitHostedControllerLaunch(startLaunch);
+          const previousBrokeredStart =
+            process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START;
+          process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START = "1";
+          const launchWorker = async () => {
+            const outerStatus = await routeHostedGoalLaunch(startLaunch);
+            if (outerStatus !== undefined) {
+              return { args: [], preview: buildCodexGoalNoTmuxCommand(startLaunch), launchState: outerStatus === 0 ? CodexGoalLaunchState.Completed : CodexGoalLaunchState.Failed };
+            }
           await prepareCodexGoalLaunchPaths(startLaunch);
           if (!input.startSkipDoctor) {
             const doctor = await doctorCodexGoal({
@@ -393,12 +410,8 @@ function codexProjectControlPorts(
               );
             }
           }
-          if (!input.startManifest && input.scope.preStartAdmission?.required) {
-            throw new Error("project_control_start_manifest_required");
-          }
-          const previousBrokeredStart =
-            process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START;
-          process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START = "1";
+            return await startCodexGoalTmux(startLaunch);
+          };
           let command: Awaited<ReturnType<typeof startCodexGoalTmux>>;
           try {
             command = input.startManifest
@@ -422,9 +435,9 @@ function codexProjectControlPorts(
                       }
                     : {}),
                 },
-                async () => await startCodexGoalTmux(startLaunch),
+                launchWorker,
               )
-              : await startCodexGoalTmux(startLaunch);
+              : await launchWorker();
           } finally {
             if (previousBrokeredStart === undefined) {
               delete process.env
@@ -434,7 +447,8 @@ function codexProjectControlPorts(
                 previousBrokeredStart;
             }
           }
-          return operationResult(command.preview);
+          if (command.launchState === CodexGoalLaunchState.Failed) throw new Error("hosted_custody_foreground_failed_after_submission");
+          return operationResult(`${command.launchState ?? CodexGoalLaunchState.Scheduled}: ${command.preview}`);
         };
         return await start();
       },
@@ -463,6 +477,10 @@ function codexProjectControlPorts(
         });
         if (!stopPolicy.allowed) {
           throw new Error(stopPolicy.reason);
+        }
+        if (isHostedGoalLaunch(input.stopLaunch)) {
+          stopHostedGoalLaunch(input.stopLaunch);
+          return operationResult("hosted stop requested; terminal custody remains unproven");
         }
         if (input.stopLaunch.tmuxSession) {
           if (status.tmuxAlive === false) {

@@ -25,3 +25,4 @@ export * from "./status-view";
 export * from "./project-control-broker";
 export * from "./worker-health";
 export * from "./worker-pool";
+export * from "./hosted-custody";

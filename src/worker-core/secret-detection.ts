@@ -1,3 +1,5 @@
+import { isProvedGenericFixture, isProvedSignatureFixture } from "./proved-secret-fixtures";
+
 export type SecretLikeContentKind =
   | "private_key"
   | "openai_token"
@@ -104,7 +106,7 @@ export function detectSecretLikeContent(
 ): SecretLikeContentKind | undefined {
   const text = typeof value === "string" ? value : value.toString("utf8");
   const authoritativeMatch = authoritativeSecretPolicies.find((policy) =>
-    matchesPolicy(text, policy)
+    containsUnsafeAuthoritativeMatch(text, policy, context)
   );
   if (authoritativeMatch) return authoritativeMatch.kind;
   if (containsCompactJwt(text)) return "jwt_token";
@@ -161,8 +163,8 @@ function isAllowedFixtureLiteral(
   literal: string,
   filePath: string | undefined,
 ): boolean {
-  return explicitFixtureLiterals.has(literal) &&
-    isExplicitFixtureContext(filePath);
+  return isProvedGenericFixture(filePath, literal) ||
+    (explicitFixtureLiterals.has(literal) && isExplicitFixtureContext(filePath));
 }
 
 function isExplicitFixtureContext(filePath: string | undefined): boolean {
@@ -174,8 +176,19 @@ function isExplicitFixtureContext(filePath: string | undefined): boolean {
   return /(?:^|[._-])(?:test|spec|fixture)(?:[._-]|$)/.test(fileName);
 }
 
-function matchesPolicy(text: string, policy: SecretLikeContentPolicy): boolean {
-  return matchesPattern(text, policy.pattern);
+function containsUnsafeAuthoritativeMatch(
+  text: string,
+  policy: SecretLikeContentPolicy,
+  context: SecretDetectionContext,
+): boolean {
+  const pattern = new RegExp(policy.pattern.source, policy.pattern.flags + "g");
+  for (const match of text.matchAll(pattern)) {
+    if (
+      (policy.kind !== "openai_token" && policy.kind !== "bearer_token") ||
+      !isProvedSignatureFixture(context.filePath, match[0], text, match.index)
+    ) return true;
+  }
+  return false;
 }
 
 function matchesPattern(text: string, pattern: RegExp): boolean {

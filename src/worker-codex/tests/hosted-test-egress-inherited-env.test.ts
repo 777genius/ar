@@ -60,11 +60,17 @@ describe("direct factory hosted environment selection", () => {
     const launches: Parameters<CodexAppServerProcessFactory>[0][] = [];
     const explicitEnv = { ...hostedEnv, PATH: "/synthetic/explicit/bin" };
     if (explicit) delete process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND;
-    const driver = runtime(root, {
+    const options: Partial<FileBackendCodexWorkerOptions> = {
       ...(explicit ? { sourceEnv: explicitEnv } : {}),
       ...(profile === undefined ? {} : { providerEgressPolicy: codexProviderEgressPolicy(profile) }),
       appServerProcessFactory: input => { launches.push(input); return fake.create(input); },
-    }).agentDriver as CodexJsonAgentDriver;
+    };
+    if (profile === CodexProviderEgressProfileId.TestManagedQualification) {
+      expect(() => runtime(root, options)).toThrow("hosted_readonly_admitted_factory_required");
+      expect(launches).toEqual([]);
+      return;
+    }
+    const driver = runtime(root, options).agentDriver as CodexJsonAgentDriver;
     const expectedPolicy = codexProviderEgressPolicy(profile ?? CodexProviderEgressProfileId.ProviderApi);
     try {
       const result = await driver.runTask({
@@ -84,7 +90,7 @@ describe("direct factory hosted environment selection", () => {
         const config = await readFile(join(launch.env.CODEX_HOME!, "config.toml"), "utf8");
         expect(config).toContain("[[hooks.PreToolUse]]");
         expect(config.includes("registry.npmjs.org")).toBe(expectedPolicy.profileId !== CodexProviderEgressProfileId.ProviderApi);
-        expect(config.includes("api.github.com")).toBe(profile === CodexProviderEgressProfileId.TestManagedQualification);
+        expect(config.includes("api.github.com")).toBe(false);
         const invocation = codexAppServerProcessInvocation({
           ...launch, platform: "linux", ioLimitPaths: [],
           systemdUnit: "synthetic-inherited-env.service",

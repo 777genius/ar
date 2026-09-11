@@ -161,6 +161,9 @@ export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
   readonly confirmFastForwardExisting?: boolean;
   readonly confirmIntegrate?: boolean;
   readonly confirmUpdate?: boolean;
+  readonly confirmRelocate?: boolean;
+  readonly historicalNeverRunAttestation?: import("./application/project-control/codex-goal-controller-historical-attestation").ControllerHistoricalAttestation;
+  readonly expectedManifestSha256?: string;
   readonly confirmPush?: boolean;
   readonly confirmStart?: boolean;
   readonly continuationAccounts?: string | readonly string[];

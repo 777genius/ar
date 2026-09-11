@@ -33,7 +33,7 @@ describe("hosted app-server resource policy", () => {
       "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP",
     );
     expect(perJob).toContain(
-      "InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user",
+      "InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user -/var/lib/subscription-runtime-host-policy",
     );
 
     expect(hostedAggregateIoDropIn(["/mnt/volume one"])).toContain(

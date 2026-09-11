@@ -1,3 +1,4 @@
+import { initializeControllerStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import {
   lstat,
   mkdir,
@@ -31,6 +32,7 @@ import {
   optionalCodexGoalEditMode,
   optionalCodexGoalProviderSandboxMode,
 } from "./codex-goal-control-modes";
+import { withCodexGoalManifestUpdate, withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
 import { durableReplaceJsonFile } from "./project-control-operation-file-store";
 
 export const codexGoalJobManifestSchemaVersion = 1;
@@ -221,28 +223,36 @@ export async function createCodexGoalJob(input: {
     registryRootDir,
     jobId: manifest.jobId,
   });
-  if (!input.overwrite && await pathExists(path)) {
-    throw codexGoalJobManifestAlreadyExists(path);
-  }
-  const custodyCertification = await bootstrapInitialProjectControlCustody(
-    manifest,
-    input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
-  );
-  try {
-    await mkdir(join(registryRootDir, manifest.jobId), {
-      recursive: true,
-      mode: 0o700,
-    });
-    await custodyCertification?.revalidate();
-    await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-      flag: input.overwrite ? "w" : "wx",
-    });
-    return manifest;
-  } finally {
-    await custodyCertification?.close();
-  }
+  return await withCodexGoalRegistryMutation({
+    registryRootDir,
+    effect: async () => {
+      if (!input.overwrite && await pathExists(path)) {
+        throw codexGoalJobManifestAlreadyExists(path);
+      }
+      if (!await pathExists(path) && manifest.accessBoundary === AccessBoundary.ProjectScopedControl) {
+        await initializeControllerStateOrigin(manifest);
+      }
+      const custodyCertification = await bootstrapInitialProjectControlCustody(
+        manifest,
+        input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
+      );
+      try {
+        await mkdir(join(registryRootDir, manifest.jobId), {
+          recursive: true,
+          mode: 0o700,
+        });
+        await custodyCertification?.revalidate();
+        await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
+          encoding: "utf8",
+          mode: 0o600,
+          flag: input.overwrite ? "w" : "wx",
+        });
+        return manifest;
+      } finally {
+        await custodyCertification?.close();
+      }
+    },
+  });
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -263,49 +273,59 @@ export async function updateCodexGoalJob(input: {
   readonly cwd?: string;
   readonly now?: Date;
   readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
+  readonly expectedManifestSha256?: string;
 }): Promise<CodexGoalJobManifest> {
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
-  const existing = await readCodexGoalJob({
+  const lockedManifestPath = codexGoalJobManifestPath({ registryRootDir, jobId: input.jobId });
+  return await withCodexGoalManifestUpdate({
     registryRootDir,
-    jobId: input.jobId,
-  });
-  const manifest = parseCodexGoalJobManifest({
-    ...existing,
-    ...input.patch,
-    jobId: existing.jobId,
-    schemaVersion: codexGoalJobManifestSchemaVersion,
-    createdAt: existing.createdAt,
-    updatedAt: (input.now ?? new Date()).toISOString(),
-  });
-  assertCodexGoalStoredAccessBoundaryAllowed(manifest);
-  await assertCodexGoalJobManifestAccessConsistency(
-    manifest,
-    registryRootDir,
-    {
-      requireProjectControllerCreateAuthorization:
-        existing.accessBoundary !== AccessBoundary.ProjectScopedControl,
-    },
-  );
-  const manifestPath = codexGoalJobManifestPath({
-    registryRootDir,
-    jobId: input.jobId,
-  });
-  const custodyCertification = requiresProjectControlCustodyCertification(
-      existing,
-      manifest,
-    )
-    ? await bootstrapInitialProjectControlCustody(
+    manifestPath: lockedManifestPath,
+    ...(input.expectedManifestSha256 === undefined
+      ? {} : { expectedManifestSha256: input.expectedManifestSha256 }),
+    effect: async () => {
+      const existing = await readCodexGoalJob({
+        registryRootDir,
+        jobId: input.jobId,
+      });
+      const manifest = parseCodexGoalJobManifest({
+        ...existing,
+        ...input.patch,
+        jobId: existing.jobId,
+        schemaVersion: codexGoalJobManifestSchemaVersion,
+        createdAt: existing.createdAt,
+        updatedAt: (input.now ?? new Date()).toISOString(),
+      });
+      assertCodexGoalStoredAccessBoundaryAllowed(manifest);
+      await assertCodexGoalJobManifestAccessConsistency(
         manifest,
-        input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
-      )
-    : undefined;
-  try {
-    await custodyCertification?.revalidate();
-    await durableReplaceJsonFile({ path: manifestPath, value: manifest });
-    return manifest;
-  } finally {
-    await custodyCertification?.close();
-  }
+        registryRootDir,
+        {
+          requireProjectControllerCreateAuthorization:
+            existing.accessBoundary !== AccessBoundary.ProjectScopedControl,
+        },
+      );
+      const manifestPath = codexGoalJobManifestPath({
+        registryRootDir,
+        jobId: input.jobId,
+      });
+      const custodyCertification = requiresProjectControlCustodyCertification(
+          existing,
+          manifest,
+        )
+        ? await bootstrapInitialProjectControlCustody(
+            manifest,
+            input.evidenceCustody ?? new LocalProjectControlEvidenceCustody(),
+          )
+        : undefined;
+      try {
+        await custodyCertification?.revalidate();
+        await durableReplaceJsonFile({ path: manifestPath, value: manifest });
+        return manifest;
+      } finally {
+        await custodyCertification?.close();
+      }
+    },
+  });
 }
 
 function requiresProjectControlCustodyCertification(

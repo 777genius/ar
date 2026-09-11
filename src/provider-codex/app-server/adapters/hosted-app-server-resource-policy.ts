@@ -126,7 +126,7 @@ export function hostedAppServerSystemdProperties(
     // CAP_SETFCAP is needed only to map the outer host UID 0. The trusted
     // namespace bootstrap drops all capabilities before launching Node/Codex.
     "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP",
-    "InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user",
+    "InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user -/var/lib/subscription-runtime-host-policy",
   ];
 }
 

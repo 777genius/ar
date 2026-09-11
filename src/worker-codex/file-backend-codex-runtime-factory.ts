@@ -1,3 +1,4 @@
+import { assertReadonlyAdmittedFactory } from "./hosted-readonly-admission";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -220,6 +221,9 @@ function createCodexAgentDriver(input: {
       (process.platform !== "linux" || !hostedGlobalScanGuard ||
        executionEngine !== "app-server-goal" || options.boundedWorkspaceTools)) {
     throw new Error("hosted_test_egress_engine_unsupported");
+  }
+  if (providerEgressPolicy.profileId === CodexProviderEgressProfileId.TestManagedQualification) {
+    assertReadonlyAdmittedFactory(options.appServerProcessFactory, options.workspacePath);
   }
   const appServerEnv = {
     ...sourceEnv, ...codexProviderEgressEnv(providerEgressPolicy),

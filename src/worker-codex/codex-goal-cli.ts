@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+import { routeHostedRuntimeCommand } from "./hosted-readonly-foreground";
+import { CodexGoalLaunchState } from "./codex-goal-ops";
+import type { HostedGoalLifecycleRequest } from "./application/codex-goal-foreground-command";
+import { buildCodexGoalCliLaunchInput, parseHostedGoalLifecycleRequest, runHostedGoalLifecycleCommand } from "./hosted-readonly-lifecycle-cli";
+import { routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
 import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { execPath } from "node:process";
@@ -93,6 +98,7 @@ type CodexGoalCliCommand =
 
 export type RunCommand = {
   readonly kind: "run";
+  readonly lifecycle?: HostedGoalLifecycleRequest;
   readonly config: CodexGoalRunConfig;
   readonly tmuxSession?: string;
   readonly dryRun: boolean;
@@ -225,6 +231,10 @@ export async function runCodexGoalCli(
         writeJsonOrText(command.format, oneShotGuard, io);
         return 1;
       }
+      if (command.name === "codex_goal_project_start") {
+        const outerStatus = await routeHostedRuntimeCommand([currentCliPath(), ...argv]);
+        if (outerStatus !== undefined) return outerStatus;
+      }
       writeJsonOrText(
         command.format,
         await callCodexGoalMcpTool({
@@ -268,6 +278,8 @@ export async function runCodexGoalCli(
       return result.ok ? 0 : 1;
     }
     if (command.kind === "controller-supervise") {
+      const outerStatus = await routeHostedRuntimeCommand([currentCliPath(), ...argv]);
+      if (outerStatus !== undefined) return outerStatus;
       const abortController = new AbortController();
       const onSignal = () => abortController.abort();
       process.once("SIGINT", onSignal);
@@ -309,6 +321,9 @@ export async function runCodexGoalCli(
       writeJsonOrText(command.format, result, io);
       return result.ok ? 0 : 1;
     }
+    if (command.lifecycle) {
+      return await runHostedGoalLifecycleCommand(command, cliLaunchInput(command), io);
+    }
     if (command.tmuxSession) {
       const tmuxCommand = buildTmuxCommand(command);
       if (command.dryRun || command.printCommand) {
@@ -316,18 +331,22 @@ export async function runCodexGoalCli(
         return 0;
       }
       await assertRunCommandProjectControlAllowed(command);
+      const outerStatus = await routeHostedGoalLaunch(cliLaunchInput(command));
+      if (outerStatus !== undefined) return outerStatus;
       await upsertRunCommandManifest(command);
-      await startCodexGoalTmux(cliLaunchInput(command));
+      const launched = await startCodexGoalTmux(cliLaunchInput(command));
       io.writeStdout(
-        `started ${command.tmuxSession} for ${command.config.taskId}\n`,
+        `${launched.launchState ?? CodexGoalLaunchState.Scheduled} ${command.tmuxSession} for ${command.config.taskId}\n`,
       );
-      return 0;
+      return launched.launchState === CodexGoalLaunchState.Failed ? 1 : 0;
     }
     if (command.dryRun || command.printCommand) {
       io.writeStdout(`${buildNoTmuxShellCommand(command)}\n`);
       return 0;
     }
     await assertRunCommandProjectControlAllowed(command);
+    const outerStatus = await routeHostedGoalLaunch(cliLaunchInput(command));
+    if (outerStatus !== undefined) return outerStatus;
     await upsertRunCommandManifest(command);
     const result = await runCodexGoal(command.config);
     writeJsonOrText(command.format, result, io);
@@ -479,14 +498,7 @@ async function assertRunCommandProjectControlAllowed(command: RunCommand): Promi
 }
 
 function cliLaunchInput(command: RunCommand) {
-  return {
-    config: command.config,
-    ...(command.tmuxSession ? { tmuxSession: command.tmuxSession } : {}),
-    cwd: command.cwd,
-    logPath: command.logPath,
-    format: command.format,
-    cliCommand: [execPath, currentCliPath()],
-  } as const;
+  return buildCodexGoalCliLaunchInput(command, [execPath, currentCliPath()]);
 }
 
 function parseRun(
@@ -510,8 +522,10 @@ function parseRun(
     "CODEX_GOAL_REGISTRY_ROOT",
   ]);
   const registryMetadata = registryMetadataFromFlags(values);
+  const lifecycle = parseHostedGoalLifecycleRequest(values);
   return {
     kind: "run",
+    ...(lifecycle ? { lifecycle } : {}),
     config,
     ...(option(values, env, "--tmux-session", []) || flag(values, "--tmux")
       ? { tmuxSession: option(values, env, "--tmux-session", []) ?? taskId }
