@@ -8,6 +8,7 @@
 - Do not put orchestrator policy into runtime adapters. Runtime reports facts, normalized events and safety decisions; orchestrators decide what to do.
 - Keep Temporal, JetStream, Redis, webhooks and file-system details out of `worker-core`; add them only through adapter packages/layers.
 - Prefer shared runtime read models over duplicated status parsing in CLI, MCP, dashboard, daemons or orchestrators.
+- When the destination is Agent Runtime contained-turn, refuse named anti-patterns `SR-AP-1` … `SR-AP-11` in `docs/architecture.md`. They describe this product's history, not a spawn template to copy.
 
 ## Type Safety
 

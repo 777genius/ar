@@ -6,6 +6,13 @@ This document defines how `subscription-runtime` should grow from a
 Codex-focused task runtime into a provider-neutral runtime for Claude, Codex and
 future agents without turning host applications into provider glue.
 
+For contained-turn launch, Agent Runtime is canonical (Codex App Server JSONL
+and Claude Agent SDK `query()` under Host Custody). This document is the
+product-task contract for *this* package, not a spawn template for that
+runtime. Refuse named anti-patterns `SR-AP-1` … `SR-AP-11` from
+`docs/architecture.md` and
+`/Users/belief/dev/projects/agent-teams-ai/agent-runtime/docs/architecture/subscription-runtime-port-candidates.md`.
+
 ## Decision
 
 `subscription-runtime/core` is the canonical public contract. New agents plug in
