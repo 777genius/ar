@@ -51,7 +51,7 @@ describe("project failed_no_output lifecycle", () => {
   });
 
   it.runIf(localProjectControlEvidenceCustodySupported)(
-    "corrects empty rejected output append-only and rejects dirty workspaces",
+    "closes failed jobs sharing archived output, corrects empty rejected output append-only and rejects dirty workspaces",
     async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-failed-no-output-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
@@ -162,6 +162,48 @@ describe("project failed_no_output lifecycle", () => {
         terminalAttemptId: "terminalize-project-worker-fresh-v1",
         failureCode: "stale_source_before_task",
       };
+      const archivedJobId = "project-worker-archived-v1";
+      await createStoredJob({
+        registryRootDir,
+        root,
+        authRoot,
+        jobId: archivedJobId,
+        workspacePath: join(worktreeRoot, freshWorkerJobId),
+      });
+      await writeMislabeledNoOutput({
+        root,
+        ledgerRoot,
+        jobId: archivedJobId,
+        archiveRoot: evidenceRoot,
+      });
+      const archivedLedgerPath = join(ledgerRoot, "items", `${archivedJobId}.json`);
+      const archivedRecord = JSON.parse(await readFile(archivedLedgerPath, "utf8"));
+      archivedRecord.backup.workspace = join(worktreeRoot, freshWorkerJobId);
+      archivedRecord.note = "Completed output archived after review rejection.";
+      await writeFile(archivedRecord.backup.statusPath, " M README.md\n");
+      await writeFile(archivedRecord.backup.patchPath,
+        "diff --git a/README.md b/README.md\n" +
+        "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-base\n+rejected output\n");
+      await writeFile(archivedRecord.backup.numstatPath, "1\t1\tREADME.md\n");
+      await writeFile(archivedLedgerPath, `${JSON.stringify(archivedRecord, null, 2)}\n`);
+      const archivedPaths = [
+        archivedLedgerPath,
+        archivedRecord.backup.statusPath,
+        archivedRecord.backup.patchPath,
+        archivedRecord.backup.numstatPath,
+      ];
+      const archivedBytes = await Promise.all(archivedPaths.map((path) => readFile(path)));
+      const beforeLedger = await readCodexGoalConsumedOutputLedgers({
+        roots: [ledgerRoot],
+        evidenceRoots: [evidenceRoot],
+      });
+      expect(beforeLedger.byJobId.has(freshWorkerJobId)).toBe(false);
+      expect(beforeLedger.byJobId.get(archivedJobId)).toMatchObject({
+        jobId: archivedJobId,
+        status: "rejected",
+        valid: true,
+        workspace: join(worktreeRoot, freshWorkerJobId),
+      });
       await expect(projectControlRecordFailedNoOutputView(freshArgs, deps)).resolves
         .toMatchObject({
           ok: false,
@@ -191,6 +233,17 @@ describe("project failed_no_output lifecycle", () => {
           },
           output: { authoredChanges: false, workspaceDirty: false },
         },
+      });
+      expect(await Promise.all(archivedPaths.map((path) => readFile(path))))
+        .toEqual(archivedBytes);
+      const afterLedger = await readCodexGoalConsumedOutputLedgers({
+        roots: [ledgerRoot],
+        evidenceRoots: [evidenceRoot],
+      });
+      expect(afterLedger.byJobId.get(freshWorkerJobId)).toMatchObject({
+        jobId: freshWorkerJobId,
+        status: "failed_no_output",
+        valid: true,
       });
       const freshDecision = freshRecorded.decision as {
         readonly archivePath: string;

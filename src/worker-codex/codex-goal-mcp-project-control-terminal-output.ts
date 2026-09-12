@@ -110,7 +110,7 @@ export async function projectControlRecordFailedNoOutputView(
   const note =
     stringValue(args.note) ??
     `Closed ${loaded.manifest.jobId} after infrastructure failure without authored output.`;
-  if (!sourceRecord) {
+  if (!sourceRecord || sourceRecord.jobId !== loaded.manifest.jobId) {
     return await recordInitialFailedNoOutput({
       controller,
       loaded,
@@ -207,7 +207,7 @@ export async function projectControlRecordFailedNoOutputView(
         jobId: loaded.manifest.jobId,
         workspacePath: workspace.canonicalWorkspacePath,
       });
-      if (!lockedSourceRecord) {
+      if (!lockedSourceRecord || lockedSourceRecord.jobId !== loaded.manifest.jobId) {
         throw new Error("failed_no_output_source_record_required");
       }
       await assertBackupPathsReadable(lockedSourceRecord.backup, {
