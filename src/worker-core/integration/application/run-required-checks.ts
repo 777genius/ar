@@ -15,6 +15,7 @@ import {
   IntegrationErrorReason,
 } from "../domain/integration-errors";
 import { IntegrationAuditEventType } from "../domain/integration-events";
+import type { GitPort } from "../ports/git-port";
 import type { CheckRunnerPort } from "../ports/check-runner-port";
 import type { WorkspaceLockPort } from "../ports/workspace-lock-port";
 import {
@@ -26,6 +27,7 @@ import {
 } from "./common";
 
 export type RunRequiredChecksDeps = IntegrationUseCaseDeps & {
+  readonly git?: GitPort;
   readonly checks: CheckRunnerPort;
   readonly locks: WorkspaceLockPort;
 };
@@ -76,10 +78,14 @@ async function runRequiredChecksLocked(
     occurredAt: startedAt,
   });
 
+  const checkedReviewedTree = await reviewedTree(deps, running);
   const checkRuns = await runDeclaredRequiredChecks(deps, running);
+  if (checkedReviewedTree !== await reviewedTree(deps, running)) {
+    throw new Error("reviewed_output_check_tree_changed");
+  }
 
   const completedAt = nowIso(deps.clock);
-  const updated = recordCheckRuns(running, {
+  const updated = recordCheckRuns({ ...running, ...(checkedReviewedTree === undefined ? {} : { checkedReviewedTree }) }, {
     checkRuns,
     now: completedAt,
   });
@@ -159,4 +165,10 @@ function auditEventTypeForCheckRuns(
   return allCheckRunsPassed(checkRuns)
     ? IntegrationAuditEventType.ChecksPassed
     : IntegrationAuditEventType.ChecksFailed;
+}
+
+async function reviewedTree(deps: RunRequiredChecksDeps, attempt: IntegrationAttempt): Promise<string | undefined> {
+  if (attempt.workerOutput.reviewedOutputFileByteAllowance === undefined) return undefined;
+  if (!deps.git?.verifyReviewedOutputTree) throw new Error("reviewed_output_tree_verifier_required");
+  return deps.git.verifyReviewedOutputTree(attempt);
 }

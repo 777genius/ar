@@ -84,6 +84,9 @@ export async function projectControlMarkReviewedView(
   });
   const captureReviewedOutput =
     booleanValue(args.captureReviewedOutput) === true;
+  if (!captureReviewedOutput && args.reviewedOutputFileByteAllowance !== undefined) {
+    throw new Error("project_control_reviewed_output_capture_required");
+  }
   const reviewDecision =
     args.reviewDecision === undefined
       ? undefined
@@ -157,6 +160,9 @@ export async function projectControlMarkReviewedView(
               reviewedOutputCapture: {
                 projectId: controller.scope.projectId,
                 controllerJobId: controller.controller.jobId,
+                ...(args.reviewedOutputFileByteAllowance === undefined
+                  ? {}
+                  : { reviewedOutputFileByteAllowance: args.reviewedOutputFileByteAllowance }),
                 expectedPatchSha256: requiredRawString(
                   args.expectedPatchSha256,
                   "expectedPatchSha256",

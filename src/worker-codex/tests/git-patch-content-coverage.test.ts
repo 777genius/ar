@@ -243,3 +243,19 @@ it("keeps custom prefix paths bound and rejects malformed headers and unsafe ali
     await expect(validate(patch)).rejects.toThrow("git_patch_secret_");
   }
 });
+
+it("retains envelope secrets across long runs of already-scanned blob lines", async () => {
+  const { assertTextAndEnvelopeCoverage } = await import("../git-patch-content-coverage");
+  const count = 10000;
+  const contents = "safe\n".repeat(count);
+  const covered = Array.from({ length: count }, (_, index) => ({
+    patchLine: index + 1, content: "safe", newLine: index + 1,
+  }));
+  const coverage = {
+    lines: ["secret =", ...Array<string>(count).fill("+safe"), '"' + "synthetic-envelope-".repeat(3) + '"'],
+    sections: [{ startLine: 0, oldPath: undefined, newPath: "safe.txt", text: covered }],
+    copySources: [],
+  };
+  expect(() => assertTextAndEnvelopeCoverage(coverage, new Map(), new Map([["safe.txt", Buffer.from(contents)]]), new Set()))
+    .toThrow("git_patch_secret_envelope_content");
+});
