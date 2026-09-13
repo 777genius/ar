@@ -84,7 +84,7 @@ describe("Codex project admission snapshot", () => {
         Object.assign(historical, overrides);
         const decision = await gate.evaluate(request);
         expect(decision.allowed).toBe(false);
-        if (overrides.ok === false) {
+        if ("ok" in overrides && overrides.ok === false) {
           expect(decision.debt).toEqual([expect.objectContaining({
             reason: ProjectDebtReason.UnreadableRoot,
             subject: "project-historical",
