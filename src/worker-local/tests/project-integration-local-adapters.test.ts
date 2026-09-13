@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -1185,6 +1186,20 @@ describe("local project integration adapters", () => {
       fixture.rootDir,
     );
     const ledgerRoot = join(fixture.rootDir, "ledger");
+    const archivePath = join(fixture.rootDir, "archive", "one");
+    const conflictingArchivePath = join(fixture.rootDir, "archive", "two");
+    await Promise.all([
+      mkdir(archivePath, { recursive: true }),
+      mkdir(conflictingArchivePath, { recursive: true }),
+    ]);
+    const statusPath = join(archivePath, "status");
+    const patchPath = join(archivePath, "patch");
+    const preexistingPatchPath = join(archivePath, "preexisting.patch");
+    await Promise.all([
+      writeFile(statusPath, ""),
+      writeFile(patchPath, ""),
+      writeFile(preexistingPatchPath, ""),
+    ]);
     const base = {
       schemaVersion: 1 as const,
       jobId: "worker-1",
@@ -1192,22 +1207,22 @@ describe("local project integration adapters", () => {
       status: "integrated" as const,
       closedAt: "2026-07-12T00:00:00.000Z",
       commitSha: "abc1234",
-      archivePath: "/archive/one",
+      archivePath,
       note: "approved integration",
       backup: {
         workspace: fixture.workspacePath,
-        statusPath: "/archive/one/status",
-        patchPath: "/archive/one/patch",
+        statusPath,
+        patchPath,
       },
     };
     await writer.record({ ledgerRoot, decision: base });
     await expect(writer.assertCanRecord({
       ledgerRoot,
-      decision: { ...base, archivePath: "/archive/two" },
+      decision: { ...base, archivePath: conflictingArchivePath },
     })).rejects.toThrow("consumed_output_ledger_terminal_conflict");
     await expect(writer.record({
       ledgerRoot,
-      decision: { ...base, archivePath: "/archive/two" },
+      decision: { ...base, archivePath: conflictingArchivePath },
     })).rejects.toThrow("consumed_output_ledger_terminal_conflict");
     await expect(writer.record({
       ledgerRoot,
@@ -1222,8 +1237,8 @@ describe("local project integration adapters", () => {
       decision: {
         ...base,
         preexistingWorkspacePatch: {
-          path: "/archive/one/preexisting.patch",
-          sha256: "a".repeat(64),
+          path: preexistingPatchPath,
+          sha256: createHash("sha256").update("").digest("hex"),
         },
       },
     })).rejects.toThrow("consumed_output_ledger_terminal_conflict");
