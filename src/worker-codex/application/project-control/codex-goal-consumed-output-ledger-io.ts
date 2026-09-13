@@ -239,8 +239,10 @@ export class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSour
       if (!realEvidenceRoots.some((root) => pathInsideOrEqual(realPath, root))) {
         throw new Error("consumed_output_evidence_path_outside_root");
       }
-      const result = await inspectRetainedTerminalArchive(path, false, realPath);
-      await this.evidenceFileMetadata(path);
+      const result = await inspectRetainedTerminalArchive(path, { expectedCanonicalPath: realPath });
+      if (!await this.evidenceFileMetadata(path)) {
+        throw new Error("consumed_output_evidence_file_changed");
+      }
       return result.sha256;
     } catch (error) {
       if (nodeErrorCode(error) === "ENOENT") {

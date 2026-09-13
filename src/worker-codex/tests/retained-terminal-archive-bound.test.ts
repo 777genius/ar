@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { MAX_RETAINED_TERMINAL_ARCHIVE_PATCH_BYTES as cap, type ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
-import { captureLocalTerminalOutputBackup, LocalConsumedOutputLedgerWriter, inspectRetainedTerminalArchive } from "@vioxen/subscription-runtime/worker-local";
+import { captureLocalTerminalOutputBackup, LocalIntegratedOutputLedgerAdapter, LocalConsumedOutputLedgerWriter, inspectRetainedTerminalArchive } from "@vioxen/subscription-runtime/worker-local";
 import { recordRejectedUncapturedOutput } from "../codex-goal-mcp-project-control-reviewed-rejection";
 import { assertGitPatchBlobsSecretSafe } from "../git-patch-secret-validator";
 import { captureGitWorkspacePatch } from "../codex-goal-runtime-result-io";
@@ -15,7 +15,7 @@ import { restrictedLedgerEpochEvidenceSource, bindLedgerEpochEvidencePath, asser
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "retained-archive-bound-")); roots.push(root);
+  const root = await realpath(await mkdtemp(join(tmpdir(), "retained-archive-bound-"))); roots.push(root);
   const workspace = join(root, "workspace"), archive = join(root, "archive"), ledger = join(root, "ledger");
   for (const path of [workspace, archive, ledger]) await mkdir(path);
   execFileSync("git", ["init", "--quiet", workspace]);
@@ -25,7 +25,7 @@ const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest(
 
 it("roundtrips real uncaptured rejection >16 MiB through admission, replay and continuation tamper checks", async () => {
   const f = await fixture();
-  // Individually below the unchanged command limit; combined above 16 MiB.
+  // Aggregate retention also covers multiple files.
   for (const name of ["a", "b", "c"]) await writeFile(join(f.workspace, name), ("x".repeat(1023) + "\n").repeat(9 * 1024));
   const scope: ProjectAccessScope = { projectId: "test", consumedOutputLedgerRoots: [f.ledger], consumedOutputEvidenceRoots: [f.archive] };
   const input = { scope, custodyRoot: f.root, jobId: "large", jobRootDir: join(f.root, "jobs", "large"), workspacePath: f.workspace, closedAt: "2026-09-13T00:00:00Z", reason: "test" };
@@ -147,4 +147,60 @@ else if (args.includes("--no-index")) {
   expect(Buffer.byteLength(await captureGitWorkspacePatch({ workspacePath: f.workspace, gitBinaryPath: shim }))).toBe(cap);
   await writeFile(shim, script(1), { mode: 0o700 });
   await expect(captureGitWorkspacePatch({ workspacePath: f.workspace, gitBinaryPath: shim })).rejects.toThrow("too_large");
+});
+
+it("rejects disappearance during the final metadata recheck", async () => {
+  const f = await fixture(); const path = join(f.archive, "patch"); await writeFile(path, "patch");
+  const source = new LocalConsumedOutputLedgerSource([f.archive]);
+  const internals = source as unknown as { evidenceFileMetadata(path: string): Promise<import("node:fs").Stats | undefined> };
+  const metadata = internals.evidenceFileMetadata.bind(source);
+  let calls = 0;
+  vi.spyOn(internals, "evidenceFileMetadata").mockImplementation(async (value) => {
+    if (++calls === 2) await rm(value);
+    return metadata(value);
+  });
+  await expect(source.pathSha256(path)).rejects.toThrow("consumed_output_evidence_file_changed");
+});
+
+it.each(["tracked", "untracked"])("retains a single real 17 MiB %s diff and retention fallback", async (kind) => {
+  const f = await fixture(); const path = join(f.workspace, "large");
+  if (kind === "tracked") {
+    await writeFile(path, "base\n");
+    execFileSync("git", ["-C", f.workspace, "add", "large"]);
+    execFileSync("git", ["-C", f.workspace, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "test: base"]);
+  }
+  await writeFile(path, ("x".repeat(1023) + "\n").repeat(17 * 1024));
+  const patch = await captureGitWorkspacePatch({ workspacePath: f.workspace });
+  expect(Buffer.byteLength(patch)).toBeGreaterThan(17 * 1024 * 1024);
+  expect(Buffer.byteLength(patch)).toBeLessThan(cap);
+  if (kind === "tracked") {
+    const backup = await captureLocalTerminalOutputBackup({ archiveRoot: f.archive, archiveName: "fallback-large", workspacePath: f.workspace, changedFiles: ["large"] });
+    expect(await readFile(backup.patchPath, "utf8")).toBe(patch);
+  }
+});
+
+it.each(["tracked", "untracked", "fallback", "integrated-show"])("uses the exact retention cap for a single %s command", async (kind) => {
+  const f = await fixture(); const shim = join(f.root, "git-shim");
+  const script = (size: number) => `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args.includes("rev-parse")) process.exit(0);
+if (args.includes("ls-files")) process.stdout.write(${JSON.stringify(kind === "untracked" ? "large\0" : "")});
+else if (args.includes("--binary") && (${JSON.stringify(kind)} !== "untracked" || args.includes("--no-index"))) {
+  process.stdout.write("x".repeat(${size} - 1) + "\\n");
+  if (args.includes("--no-index")) process.exitCode = 1;
+}
+`;
+  const integrated = new LocalIntegratedOutputLedgerAdapter({ ledgerRoots: [f.ledger], evidenceRoots: [f.archive], gitBinaryPath: shim }) as unknown as {
+    gitOutputBytes(cwd: string, args: readonly string[]): Promise<Buffer>;
+  };
+  const capture = () => kind === "integrated-show"
+    ? integrated.gitOutputBytes(f.workspace, ["show", "--binary", "--format=", "HEAD"])
+    : kind === "fallback"
+    ? captureLocalTerminalOutputBackup({ archiveRoot: f.archive, archiveName: "exact-fallback", workspacePath: f.workspace, changedFiles: ["large"], gitBinaryPath: shim })
+    : captureGitWorkspacePatch({ workspacePath: f.workspace, gitBinaryPath: shim });
+  await writeFile(shim, script(cap), { mode: 0o700 });
+  const exact = await capture();
+  expect(typeof exact === "string" ? Buffer.byteLength(exact) : Buffer.isBuffer(exact) ? exact.length : (await readFile(exact.patchPath)).length).toBe(cap);
+  await writeFile(shim, script(cap + 1), { mode: 0o700 });
+  await expect(capture()).rejects.toThrow("retained_terminal_archive_patch_too_large");
 });

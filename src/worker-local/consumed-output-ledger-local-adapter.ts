@@ -1,4 +1,4 @@
-import { assertRetainedTerminalArchivePatchSize } from "@vioxen/subscription-runtime/worker-core";
+import { assertRetainedTerminalArchivePatchSize, MAX_RETAINED_TERMINAL_ARCHIVE_PATCH_BYTES } from "@vioxen/subscription-runtime/worker-core";
 import { inspectRetainedTerminalArchive } from "./retained-terminal-archive-io";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -73,10 +73,6 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
     readonly ledgerRoot: string;
     readonly decision: TerminalOutputDecision;
   }): Promise<TerminalOutputDecisionReceipt> {
-    await assertTerminalEvidenceInCanonicalRoots(
-      input.decision,
-      this.evidenceRoots,
-    );
     const maintenanceLease = await acquireConsumedOutputLedgerMaintenanceLock({
       ledgerRoot: input.ledgerRoot,
       owner: `terminal-record:${input.decision.jobId}`,
@@ -205,7 +201,7 @@ async function assertTerminalEvidenceInCanonicalRoots(
     }
   }
   if (decision.backup.patchPath) {
-    await inspectRetainedTerminalArchive(decision.backup.patchPath, false, resolve(decision.backup.patchPath));
+    await inspectRetainedTerminalArchive(decision.backup.patchPath, { expectedCanonicalPath: resolve(decision.backup.patchPath) });
   }
 }
 
@@ -502,7 +498,7 @@ export async function captureLocalTerminalOutputBackup(input: {
   const patch = input.sourcePatchBytes
     ? Buffer.from(input.sourcePatchBytes)
     : input.sourcePatchPath
-    ? (await inspectRetainedTerminalArchive(input.sourcePatchPath, true)).bytes!
+    ? (await inspectRetainedTerminalArchive(input.sourcePatchPath, { collect: true })).bytes!
     : input.changedFiles.length === 0
         ? Buffer.alloc(0)
         : await localGitOutputBytes({
@@ -821,17 +817,11 @@ export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedge
     cwd: string,
     args: readonly string[],
   ): Promise<Buffer> {
-    const result = await execFileAsync(
-      this.options.gitBinaryPath ?? "git",
-      [...args],
-      {
-        cwd,
-        encoding: "buffer",
-        maxBuffer: 10 * 1024 * 1024,
-        timeout: 60_000,
-      },
-    );
-    return result.stdout;
+    return await localGitOutputBytes({
+      cwd,
+      args,
+      ...(this.options.gitBinaryPath ? { gitBinaryPath: this.options.gitBinaryPath } : {}),
+    });
   }
 }
 
@@ -853,17 +843,26 @@ async function localGitOutputBytes(input: {
   readonly args: readonly string[];
   readonly gitBinaryPath?: string;
 }): Promise<Buffer> {
-  const result = await execFileAsync(
-    input.gitBinaryPath ?? "git",
-    [...input.args],
-    {
-      cwd: input.cwd,
-      encoding: "buffer",
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: 60_000,
-    },
-  );
-  return result.stdout;
+  try {
+    const result = await execFileAsync(
+      input.gitBinaryPath ?? "git",
+      [...input.args],
+      {
+        cwd: input.cwd,
+        encoding: "buffer",
+        maxBuffer: MAX_RETAINED_TERMINAL_ARCHIVE_PATCH_BYTES,
+        timeout: 60_000,
+      },
+    );
+    assertRetainedTerminalArchivePatchSize(result.stdout.byteLength);
+    return result.stdout;
+  } catch (error) {
+    if (isNodeErrorCode(error, "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") &&
+        error instanceof Error && error.message.includes("stdout")) {
+      assertRetainedTerminalArchivePatchSize(MAX_RETAINED_TERMINAL_ARCHIVE_PATCH_BYTES + 1);
+    }
+    throw error;
+  }
 }
 
 function sameTerminalDecision(

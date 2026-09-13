@@ -82,7 +82,7 @@ export function restrictedLedgerEpochEvidenceSource(input: {
     try {
       const canonical = await realpath(path);
       if (!canonicallyAllowed(canonical)) return undefined;
-      return await inspectRetainedTerminalArchive(path, false, canonical);
+      return await inspectRetainedTerminalArchive(path, { expectedCanonicalPath: canonical });
     } catch (error) {
       if (isExpectedEvidencePathError(error)) return undefined;
       throw error;
@@ -253,7 +253,7 @@ export async function bindLedgerEpochEvidencePath(input: {
       return { declaredPath: input.declaredPath, state: "directory", canonicalPath };
     }
     if (!metadata.isFile()) return { declaredPath: input.declaredPath, state: "denied" };
-    const evidence = await inspectRetainedTerminalArchive(resolved, false, canonicalPath);
+    const evidence = await inspectRetainedTerminalArchive(resolved, { expectedCanonicalPath: canonicalPath });
     return {
       declaredPath: input.declaredPath,
       state: "file",
@@ -301,7 +301,9 @@ export async function assertLedgerEpochEvidenceBindingsUnchanged(
           canonicalPath: await realpath(binding.declaredPath),
         };
       } else if (metadata.isFile()) {
-        const evidence = await inspectRetainedTerminalArchive(binding.declaredPath, false, binding.canonicalPath);
+        const evidence = await inspectRetainedTerminalArchive(binding.declaredPath, {
+          ...(binding.canonicalPath === undefined ? {} : { expectedCanonicalPath: binding.canonicalPath }),
+        });
         current = {
           declaredPath: binding.declaredPath,
           state: "file",

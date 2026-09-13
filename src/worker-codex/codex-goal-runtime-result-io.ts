@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
   StrictResultRecorder,
+  MAX_RETAINED_TERMINAL_ARCHIVE_PATCH_BYTES,
   assertRetainedTerminalArchivePatchSize,
   type RuntimePatchPreserverPort,
   type RuntimeResultArtifact,
@@ -75,6 +76,7 @@ export async function captureGitWorkspacePatch(input: {
     workspacePath: input.workspacePath,
   });
   const trackedPatch = await gitDiff({
+    retention: true,
     gitBinaryPath,
     workspacePath: input.workspacePath,
     args: hasHead
@@ -93,6 +95,7 @@ export async function captureGitWorkspacePatch(input: {
   append(trackedPatch);
   for (const path of await gitUntrackedPaths({ gitBinaryPath, workspacePath: input.workspacePath })) {
     append(await gitDiff({
+      retention: true,
       gitBinaryPath, workspacePath: input.workspacePath,
       args: ["diff", "--binary", "--no-index", "--", "/dev/null", path],
       allowDifferenceExitCode: true,
@@ -167,6 +170,7 @@ async function gitDiff(input: {
   readonly workspacePath: string;
   readonly args: readonly string[];
   readonly allowDifferenceExitCode?: boolean;
+  readonly retention?: boolean;
 }): Promise<string> {
   try {
     const { stdout } = await execFileAsync(input.gitBinaryPath, [
@@ -174,11 +178,16 @@ async function gitDiff(input: {
       input.workspacePath,
       ...input.args,
     ], {
-      maxBuffer: 16 * 1024 * 1024,
+      maxBuffer: input.retention ? MAX_RETAINED_TERMINAL_ARCHIVE_PATCH_BYTES : 16 * 1024 * 1024,
       timeout: defaultGitCommandTimeoutMs,
     });
     return stdout;
   } catch (error) {
+    if (input.retention && isRecord(error) &&
+        error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" &&
+        typeof error.message === "string" && error.message.includes("stdout")) {
+      assertRetainedTerminalArchivePatchSize(MAX_RETAINED_TERMINAL_ARCHIVE_PATCH_BYTES + 1);
+    }
     if (
       input.allowDifferenceExitCode === true &&
       isExecDifferenceWithStdout(error)

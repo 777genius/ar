@@ -4,12 +4,16 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { assertRetainedTerminalArchivePatchSize } from "@vioxen/subscription-runtime/worker-core";
 
 /** Fixed-size descriptor reads; callers remain responsible for authorized roots. */
-export async function inspectRetainedTerminalArchive(path: string, collect = false, expectedCanonicalPath?: string): Promise<{
+export async function inspectRetainedTerminalArchive(path: string, options: {
+  readonly collect?: boolean;
+  readonly expectedCanonicalPath?: string;
+} = {}): Promise<{
   size: number; sha256: string; bytes?: Buffer;
 }> {
+  const { collect = false, expectedCanonicalPath } = options;
   const canonical = await realpath(path);
   if (expectedCanonicalPath !== undefined && canonical !== expectedCanonicalPath) {
-    throw new Error("consumed_output_evidence_path_outside_root");
+    throw new Error("consumed_output_evidence_file_changed");
   }
   const initial = await lstat(path);
   if (!initial.isFile() || initial.isSymbolicLink()) {
@@ -41,7 +45,7 @@ export async function inspectRetainedTerminalArchive(path: string, collect = fal
     }
     return { size: before.size, sha256: hash.digest("hex"), ...(bytes ? { bytes } : {}) };
   } finally {
-    await handle.close();
+    await handle.close().catch(() => undefined);
   }
 }
 
