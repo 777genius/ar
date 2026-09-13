@@ -59,4 +59,3 @@ it.each(["archive-write", "archive-sync", "archive-link", "ledger-write", "ledge
   expect(await readFile(earlier.decision.backup.patchPath!)).toEqual(earlierPatch);
   expect((await readdir(join(ledger, "items"))).some((name) => name.endsWith(".tmp"))).toBe(false);
 });
-
