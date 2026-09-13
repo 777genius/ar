@@ -621,6 +621,24 @@ async function duplicateWorkspaceIdentityJobIds(
     const jobId = stringValue(item.jobId);
     const workspacePath = stringValue(item.workspacePath);
     if (!jobId || !workspacePath) continue;
+    // A clean completed run no longer competes for its registered workspace.
+    // Explicit result evidence distinguishes it from a not-yet-launched job;
+    // review markers and workerAlive:false alone cannot prove completion.
+    // Only omit duplicate participation: ordinary debt/risk checks still run.
+    if (
+      item.ok === true &&
+      item.workerAlive === false &&
+      item.workspaceDirty === false &&
+      item.resultExists === true &&
+      item.resultStatus === "completed" &&
+      item.activeWriterRisk === "none" &&
+      item.workspaceConflict !== true
+    ) {
+      // Overview projects failed Git reads as workspaceDirty:false. Require a
+      // successful fresh observation, not existence or a warning heuristic.
+      const status = await gitStatusShort(workspacePath);
+      if (status.ok && status.lines.length === 0) continue;
+    }
     const identity = await optionalRealPathForAdmission(workspacePath) ??
       resolve(workspacePath);
     const jobs = jobsByWorkspaceIdentity.get(identity) ?? [];
