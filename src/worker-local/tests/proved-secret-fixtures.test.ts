@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { detectSecretLikeContent, matchesSecretLikeContentPatterns } from "../secret-detection";
+import { detectSecretLikeContent, matchesSecretLikeContentPatterns } from "@vioxen/subscription-runtime/worker-core";
 
 // Verified retained source lines, stored as data only; never import fixture code.
 const redactionFixturePath = "src/worker-local/tests/project-integration-local-adapters.test.ts";
