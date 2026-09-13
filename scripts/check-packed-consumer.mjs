@@ -13,9 +13,11 @@ try {
   const pack = spawnSync("npm", ["pack", "--json"], {
     cwd: rootDir,
     encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
   });
   if (pack.status !== 0) {
-    process.stderr.write(pack.stderr);
+    if (pack.error) process.stderr.write(`${pack.error.message}\n`);
+    process.stderr.write(pack.stderr ?? "");
     process.exit(pack.status ?? 1);
   }
   const [{ filename }] = parseNpmPackJson(pack.stdout);

@@ -8,6 +8,7 @@ export interface ReviewedWorkerOutputSnapshotterPort {
   capture(input: {
     readonly workspacePath: string;
     readonly allowEmptyPatch?: boolean;
+    readonly reviewedOutputFileByteAllowance?: number;
   }): Promise<ReviewedWorkerOutputWorkspaceSnapshot>;
 }
 

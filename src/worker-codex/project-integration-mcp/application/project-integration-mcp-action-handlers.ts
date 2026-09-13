@@ -148,6 +148,12 @@ export async function projectIntegrationOpenAttempt(
     targetRemote,
     ...(merge ? { merge } : {}),
     workerOutput: {
+      ...(resolvedReviewedOutput?.workerOutput.reviewedOutputId === undefined
+        ? {}
+        : { reviewedOutputId: resolvedReviewedOutput.workerOutput.reviewedOutputId }),
+      ...(resolvedReviewedOutput?.workerOutput.reviewedOutputFileByteAllowance === undefined
+        ? {}
+        : { reviewedOutputFileByteAllowance: resolvedReviewedOutput.workerOutput.reviewedOutputFileByteAllowance }),
       workerJobId,
       workspacePath: workerWorkspacePath,
       ...(commitSha ? { commitSha } : {}),

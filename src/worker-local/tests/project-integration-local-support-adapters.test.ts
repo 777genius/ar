@@ -31,6 +31,12 @@ describe("local project integration support adapters", () => {
     const fixture = await createGitFixture();
     const ledgerRoot = join(fixture.rootDir, "ledger-lock-test");
     await mkdir(ledgerRoot);
+    const archivePath = join(fixture.rootDir, "archive");
+    await mkdir(archivePath);
+    const statusPath = join(archivePath, "status");
+    const patchPath = join(archivePath, "patch");
+    const numstatPath = join(archivePath, "numstat");
+    await Promise.all([writeFile(statusPath, ""), writeFile(patchPath, ""), writeFile(numstatPath, "")]);
     const mutationLocks = new LocalConsumedOutputLedgerMutationLock();
     const lease = await mutationLocks.acquire({
       ledgerRoots: [ledgerRoot],
@@ -50,9 +56,9 @@ describe("local project integration support adapters", () => {
       note: "writer must share the repair lock domain",
       backup: {
         workspace: fixture.workspacePath,
-        statusPath: "/archive/status",
-        patchPath: "/archive/patch",
-        numstatPath: "/archive/numstat",
+        statusPath,
+        patchPath,
+        numstatPath,
       },
     };
     try {
@@ -114,10 +120,20 @@ describe("local project integration support adapters", () => {
       fixture.rootDir,
     );
     const ledgerRoot = join(fixture.rootDir, "ledger");
+    const archivePath = join(fixture.rootDir, "archive");
+    const rejectedArchivePath = join(archivePath, "rejected");
+    const integratedArchivePath = join(archivePath, "integrated");
+    await Promise.all([
+      mkdir(rejectedArchivePath, { recursive: true }),
+      mkdir(integratedArchivePath, { recursive: true }),
+    ]);
+    const statusPath = join(archivePath, "status");
+    const patchPath = join(archivePath, "patch");
+    await Promise.all([writeFile(statusPath, ""), writeFile(patchPath, "")]);
     const backup = {
       workspace: fixture.workspacePath,
-      statusPath: "/archive/status",
-      patchPath: "/archive/patch",
+      statusPath,
+      patchPath,
     };
     await writer.record({
       ledgerRoot,
@@ -127,7 +143,7 @@ describe("local project integration support adapters", () => {
         attemptId: "rejected-attempt",
         status: "rejected",
         closedAt: "2026-07-12T00:00:00.000Z",
-        archivePath: "/archive/rejected",
+        archivePath: rejectedArchivePath,
         note: "rejected metadata-only attempt",
         backup,
       },
@@ -139,7 +155,7 @@ describe("local project integration support adapters", () => {
       status: "integrated" as const,
       closedAt: "2026-07-12T01:00:00.000Z",
       commitSha: "abc123",
-      archivePath: "/archive/integrated",
+      archivePath: integratedArchivePath,
       note: "integrated reviewed output",
       backup,
     };

@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
-import { constants, type Stats } from "node:fs";
-import { lstat, open, readdir, readFile, readlink, realpath } from "node:fs/promises";
+import { inspectRetainedTerminalArchive } from "@vioxen/subscription-runtime/worker-local";
+import { type Stats } from "node:fs";
+import { lstat, readdir, readFile, readlink, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
   consumedOutputRecordFor,
@@ -152,7 +152,7 @@ export function hasRelevantConsumedOutputDebt(
   });
 }
 
-class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort {
+export class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort {
   private readonly evidenceRoots: readonly string[];
 
   constructor(evidenceRoots: readonly string[]) {
@@ -231,7 +231,6 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
 
   async pathSha256(path: string): Promise<string | undefined> {
     if (!await this.evidenceFileMetadata(path)) return undefined;
-    let handle;
     try {
       const realPath = await realpath(path);
       const realEvidenceRoots = await Promise.all(
@@ -240,39 +239,17 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
       if (!realEvidenceRoots.some((root) => pathInsideOrEqual(realPath, root))) {
         throw new Error("consumed_output_evidence_path_outside_root");
       }
-      handle = await open(
-        realPath,
-        constants.O_RDONLY | constants.O_NOFOLLOW,
-      );
-      const metadata = await handle.stat();
-      if (!metadata.isFile() || metadata.size > 16 * 1024 * 1024) {
-        throw new Error("consumed_output_evidence_file_invalid");
+      const result = await inspectRetainedTerminalArchive(path, { expectedCanonicalPath: realPath });
+      if (!await this.evidenceFileMetadata(path)) {
+        throw new Error("consumed_output_evidence_file_changed");
       }
-      const hash = createHash("sha256");
-      const buffer = Buffer.allocUnsafe(64 * 1024);
-      let position = 0;
-      while (position < metadata.size) {
-        const { bytesRead } = await handle.read(
-          buffer,
-          0,
-          Math.min(buffer.length, metadata.size - position),
-          position,
-        );
-        if (bytesRead === 0) {
-          throw new Error("consumed_output_evidence_file_truncated");
-        }
-        hash.update(buffer.subarray(0, bytesRead));
-        position += bytesRead;
-      }
-      return hash.digest("hex");
+      return result.sha256;
     } catch (error) {
       if (nodeErrorCode(error) === "ENOENT") {
         if (!await this.evidenceFileMetadata(path)) return undefined;
         throw new Error("consumed_output_evidence_file_changed");
       }
       throw error;
-    } finally {
-      await handle?.close().catch(() => undefined);
     }
   }
 

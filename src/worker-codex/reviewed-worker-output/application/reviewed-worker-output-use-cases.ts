@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   assertFilesWithinExpected,
+  reviewedOutputFileByteAllowance,
   normalizeExpectedFiles,
   ReviewDecisionStatus,
   type WorkspaceLock,
@@ -53,10 +54,13 @@ export async function captureReviewedWorkerOutputLocked(
   input: CaptureReviewedWorkerOutputInput,
   lock: WorkspaceLock,
 ): Promise<ReviewedWorkerOutputSnapshot> {
+  const allowance = reviewedOutputFileByteAllowance(input.reviewedOutputFileByteAllowance);
+  const allowanceFields = allowance === undefined ? {} : { reviewedOutputFileByteAllowance: allowance };
   const expectedPatchSha256 = normalizeSha256(input.expectedPatchSha256);
   const approvedFiles = normalizeReviewedFiles(input.approvedFiles);
   const merge = normalizeReviewedOutputMerge(input.merge);
   const captured = await deps.snapshotter.capture({
+    ...allowanceFields,
     workspacePath: lock.workspacePath,
     ...(merge ? { allowEmptyPatch: true } : {}),
   });
@@ -81,6 +85,7 @@ export async function captureReviewedWorkerOutputLocked(
     .now()
     .toISOString();
   const reviewedOutputId = reviewedWorkerOutputId({
+    ...allowanceFields,
     format: reviewedWorkerOutputFormat,
     formatRevision: 1,
     projectId: input.projectId,
@@ -96,6 +101,7 @@ export async function captureReviewedWorkerOutputLocked(
   });
   return await deps.store.create({
     snapshot: {
+      ...allowanceFields,
       format: reviewedWorkerOutputFormat,
       formatRevision: 1,
       reviewedOutputId,
@@ -222,7 +228,13 @@ export async function assertReviewedWorkerOutputStillMatchesLocked(
   snapshot: ReviewedWorkerOutputSnapshot,
   workspace: WorkspaceLock,
 ): Promise<void> {
+  if (reviewedWorkerOutputId(snapshot) !== snapshot.reviewedOutputId) {
+    throw new Error("reviewed_worker_output_manifest_identity_mismatch");
+  }
   const current = await deps.snapshotter.capture({
+    ...(snapshot.reviewedOutputFileByteAllowance === undefined
+      ? {}
+      : { reviewedOutputFileByteAllowance: snapshot.reviewedOutputFileByteAllowance }),
     workspacePath: workspace.workspacePath,
     ...(snapshot.merge ? { allowEmptyPatch: true } : {}),
   });

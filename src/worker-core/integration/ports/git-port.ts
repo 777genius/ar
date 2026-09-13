@@ -24,9 +24,26 @@ export type GitCommitResult = {
   readonly commitSha: string;
   readonly parentCommits?: readonly string[];
   readonly diffStat?: string;
+  readonly reviewedIndexRecoveryPending?: boolean;
+};
+
+export type PreparedReviewedGitCommit = {
+  readonly commitSha: string;
+  readonly parent: string;
+  readonly tree: string;
+  readonly originalIndexTree: string;
 };
 
 export interface GitPort {
+  reconcileReviewedCommit?(attempt: IntegrationAttempt): Promise<GitCommitResult | undefined>;
+  verifyMergeOutputTree?(attempt: IntegrationAttempt): Promise<string>;
+  verifyReviewedOutputTree?(attempt: IntegrationAttempt): Promise<string>;
+
+  reviewedTreeChangedFiles?(input: {
+    readonly attempt: IntegrationAttempt;
+    readonly tree: string;
+  }): Promise<readonly string[]>;
+
   getStatus(input: {
     readonly workspacePath: string;
   }): Promise<GitWorkspaceStatus> | GitWorkspaceStatus;
@@ -52,6 +69,9 @@ export interface GitPort {
     readonly files: readonly string[];
     readonly identity: CommitIdentity;
     readonly expectedParentCommits?: readonly string[];
+    readonly expectedMergeTree?: string;
+    readonly reviewedAttempt?: IntegrationAttempt;
+    readonly onReviewedCommitPrepared?: (prepared: PreparedReviewedGitCommit) => Promise<void>;
   }): Promise<GitCommitResult> | GitCommitResult;
 
   abortMerge?(input: {

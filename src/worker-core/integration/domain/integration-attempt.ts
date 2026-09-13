@@ -49,7 +49,21 @@ export type ProjectIntegrationCheckSpec = {
   readonly timeoutMs?: number;
 };
 
+/** Optional reviewed file bound; omission preserves historical limits and identities. */
+export function reviewedOutputFileByteAllowance(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "number" || !Number.isSafeInteger(value) ||
+    value <= 0 || value > 8 * 1024 * 1024
+  ) {
+    throw new Error("reviewed_output_file_byte_allowance_invalid");
+  }
+  return value;
+}
+
 export type WorkerOutput = {
+  readonly reviewedOutputId?: string;
+  readonly reviewedOutputFileByteAllowance?: number;
   readonly workerJobId: string;
   readonly workspacePath: string;
   readonly commitSha?: string;
@@ -111,6 +125,16 @@ export type CommitCandidate = {
   readonly createdAt: string;
 };
 
+/** Durable evidence written before a reviewed commit can advance the target ref. */
+export type ReviewedCommitPublication = {
+  readonly reviewedOutputId: string;
+  readonly tree: string;
+  readonly parent: string;
+  readonly originalIndexTree: string;
+  readonly identity: { readonly name: string; readonly email: string };
+  readonly candidate: CommitCandidate;
+};
+
 export type PushAttempt = {
   readonly remote: string;
   readonly branch: string;
@@ -135,6 +159,11 @@ export type IntegrationAttempt = {
   readonly status: IntegrationAttemptStatus;
   readonly workerOutput: WorkerOutput;
   readonly reviewDecision: ReviewDecision;
+  readonly checkedReviewedTree?: string;
+  /** Exact resolved merge tree derived from the bound parents and reviewed patch. */
+  readonly authorizedMergeTree?: string;
+  readonly preparedReviewedCommit?: ReviewedCommitPublication;
+  readonly reviewedIndexRecoveryPending?: boolean;
   readonly checkRuns: readonly CheckRun[];
   readonly commitCandidate?: CommitCandidate;
   readonly pushAttempt?: PushAttempt;
@@ -167,6 +196,7 @@ export function openIntegrationAttempt(
       message: "integration_attempt_requires_approved_review",
     });
   }
+  reviewedOutputFileByteAllowance(input.workerOutput.reviewedOutputFileByteAllowance);
   const expectedFiles = normalizeExpectedFiles(
     input.reviewDecision.approvedFiles,
   );

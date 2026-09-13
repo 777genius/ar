@@ -1,8 +1,15 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { detectSecretLikeContent, matchesSecretLikeContentPatterns } from "../secret-detection";
+import { detectSecretLikeContent, matchesSecretLikeContentPatterns } from "@vioxen/subscription-runtime/worker-core";
 
 // Verified retained source lines, stored as data only; never import fixture code.
+const redactionFixturePath = "src/worker-local/tests/project-integration-local-adapters.test.ts";
+const redactionFixtureLines = readFileSync(redactionFixturePath, "utf8")
+  .split("\n").filter((line) => /\bsk-[A-Za-z0-9_-]{20,}\b/.test(line));
+if (redactionFixtureLines.length !== 1) throw new Error("expected one retained signature line");
+
 const cases: readonly (readonly [string, number, string])[] = [
+  [redactionFixturePath, 1005, redactionFixtureLines[0]!],
   [
     "packages/apps/embedded-runtime/tests/contained-turn-provider-access-integration.test.ts",
     492,

@@ -120,6 +120,7 @@ export function assertTextAndEnvelopeCoverage(
   intermediates: ReadonlyMap<number, ReadonlyMap<string, Buffer>> = new Map(),
 ): void {
   const envelope = [...coverage.lines];
+  const coveredLines = new Set<number>();
   const cache = new Map<Buffer, readonly string[]>();
   const bound = (path: string | undefined, number: number | undefined,
     content: string, blobs: ReadonlyMap<string, Buffer>, patchLine: number): boolean => {
@@ -145,7 +146,10 @@ export function assertTextAndEnvelopeCoverage(
         bound(section.oldPath, line.oldLine, line.content, before, line.patchLine);
       const newBound = line.newLine === undefined ||
         bound(section.newPath, line.newLine, line.content, after, line.patchLine);
-      if (oldBound && newBound) envelope[line.patchLine] = "";
+      if (oldBound && newBound) {
+        envelope[line.patchLine] = "";
+        coveredLines.add(line.patchLine);
+      }
       else unbound = true;
     }
     if (unbound) {
@@ -160,8 +164,18 @@ export function assertTextAndEnvelopeCoverage(
       }
     }
   }
-  for (const index of binaryPayloadLines) envelope[index] = "";
-  if (detectSecretLikeContent(envelope.join("\n")) !== undefined) {
+  for (const index of binaryPayloadLines) {
+    envelope[index] = "";
+    coveredLines.add(index);
+  }
+  // Covered bytes were scanned in full reconstructed blobs above. Keep one
+  // synthetic newline per contiguous covered run: thousands of synthetic blank
+  // lines cause pathological whitespace backtracking in envelope detection.
+  // Preserve every unbound byte and a whitespace separator between fragments.
+  const envelopeText = envelope.filter((_line, index) =>
+    !coveredLines.has(index) || !coveredLines.has(index - 1)
+  ).join("\n");
+  if (detectSecretLikeContent(envelopeText) !== undefined) {
     throw new Error("git_patch_secret_envelope_content");
   }
 }
