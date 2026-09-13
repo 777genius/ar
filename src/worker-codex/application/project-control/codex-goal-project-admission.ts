@@ -630,7 +630,9 @@ async function duplicateWorkspaceIdentityJobIds(
       item.workerAlive === false &&
       item.workspaceDirty === false &&
       item.resultExists === true &&
-      item.resultStatus === "completed" &&
+      // Result documents project "done"; runtime observation also supports
+      // legacy "completed". Progress completion alone is not result evidence.
+      (item.resultStatus === "done" || item.resultStatus === "completed") &&
       item.activeWriterRisk === "none" &&
       item.workspaceConflict !== true
     ) {

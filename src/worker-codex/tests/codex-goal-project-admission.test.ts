@@ -31,10 +31,12 @@ import { gitWorkspaceStatus } from "../codex-goal-status-files";
 const execFileAsync = promisify(execFile);
 
 describe("Codex project admission snapshot", () => {
-  it("admits an unrelated producer past two acknowledged clean terminal reviewers", async () => {
+  it.each(["done", "completed"])("admits the captured AR reviewer/reviewer shape with resultStatus %s", async (resultStatus) => {
     await withDuplicateAdmissionFixture(async ({ gate, historical, prepared, request }) => {
       prepared.resultExists = true;
-      prepared.resultStatus = "completed";
+      historical.resultStatus = resultStatus;
+      prepared.resultStatus = resultStatus;
+      prepared.progressStatus = "completed";
       prepared.tags = historical.tags;
       prepared.lifecycleMarkerTypes = ["review"];
       prepared.recommendedAction = "review_completed";
@@ -46,8 +48,9 @@ describe("Codex project admission snapshot", () => {
     });
   });
 
-  it("admits setup and start of the newest unlaunched producer after a clean completed spike", async () => {
+  it.each(["done", "completed"])("admits setup and start for the captured EF spike/prepared shape with resultStatus %s", async (resultStatus) => {
     await withDuplicateAdmissionFixture(async ({ gate, historical, request }) => {
+      historical.resultStatus = resultStatus;
       historical.tags = ["worker-role-producer"];
       historical.lifecycleMarkerTypes = [];
       historical.recommendedAction = "review_completed";
@@ -60,6 +63,14 @@ describe("Codex project admission snapshot", () => {
   });
 
   it.each([
+    ["live stale done with otherwise clean overview", { workerAlive: true }],
+    ["failed result", { resultStatus: "failed" }],
+    ["blocked result", { resultStatus: "blocked" }],
+    ["partial result", { resultStatus: "partial" }],
+    ["canceled result", { resultStatus: "canceled" }],
+    ["cancelled result", { resultStatus: "cancelled" }],
+    ["aborted result", { resultStatus: "aborted" }],
+    ["progress completion without successful result", { resultStatus: undefined }],
     ["live reviewer", { workerAlive: true, activeWriterRisk: "active_worker" }],
     ["live producer", { workerAlive: true, activeWriterRisk: "active_worker", tags: ["worker-role-producer"] }],
     ["missing liveness", { workerAlive: undefined }],
@@ -105,7 +116,7 @@ describe("Codex project admission snapshot", () => {
   );
 
   it.each(["non-Git directory", "missing workspace"])(
-    "retains duplicates for the actual failed Git projection: %s",
+    "retains done duplicates for the actual failed Git projection: %s",
     async (kind) => {
       await withDuplicateAdmissionFixture(async ({ gate, historical, prepared, request }) => {
         await rm(join(request.workspacePath, ".git"), { recursive: true, force: true });
@@ -131,7 +142,7 @@ describe("Codex project admission snapshot", () => {
     },
   );
 
-  it("retains duplicates when fresh Git inspection contradicts a clean overview", async () => {
+  it("retains done duplicates when fresh Git inspection contradicts a clean overview", async () => {
     await withDuplicateAdmissionFixture(async ({ gate, request }) => {
       await writeFile(join(request.workspacePath, "unconsumed.txt"), "held output");
       await expect(gate.evaluate(request)).resolves.toMatchObject({
@@ -1636,7 +1647,9 @@ async function withDuplicateAdmissionFixture(
       ok: true, jobId: "project-historical", workspacePath,
       workspaceDirty: false, changedFiles: [], changedFilesCount: 0,
       workerAlive: false, activeWriterRisk: "none",
-      resultExists: true, resultStatus: "completed",
+      // Captured actual-incident-overviews.json: result document done and
+      // progress completed are distinct fields. Paths and IDs stay synthetic.
+      resultExists: true, resultStatus: "done", progressStatus: "completed",
       tags: ["worker-role-reviewer"], lifecycleMarkerTypes: ["review"],
       recommendedAction: "review_completed",
     };
