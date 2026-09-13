@@ -228,6 +228,7 @@ export class SimpleSecretScanner implements SecretScannerPort {
       [...args],
       {
         cwd: workspacePath,
+        env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null" },
         encoding: "utf8",
         maxBuffer: 1024 * 1024,
         timeout: 15_000,
@@ -254,6 +255,7 @@ export class SimpleSecretScanner implements SecretScannerPort {
       ],
       {
         cwd: workspacePath,
+        env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null" },
         encoding: "utf8",
         maxBuffer: 2 * 1024 * 1024,
         timeout: 15_000,

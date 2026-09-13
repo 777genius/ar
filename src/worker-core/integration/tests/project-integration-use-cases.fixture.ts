@@ -295,6 +295,8 @@ export class FakeGit implements GitPort {
     };
   }
 
+  async verifyMergeOutputTree() { return "e".repeat(40); }
+
   diffCheck() {
     this.calls.push("diffCheck");
     return { ok: true };

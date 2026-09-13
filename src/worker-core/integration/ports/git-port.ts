@@ -36,6 +36,7 @@ export type PreparedReviewedGitCommit = {
 
 export interface GitPort {
   reconcileReviewedCommit?(attempt: IntegrationAttempt): Promise<GitCommitResult | undefined>;
+  verifyMergeOutputTree?(attempt: IntegrationAttempt): Promise<string>;
   verifyReviewedOutputTree?(attempt: IntegrationAttempt): Promise<string>;
 
   reviewedTreeChangedFiles?(input: {
@@ -68,6 +69,7 @@ export interface GitPort {
     readonly files: readonly string[];
     readonly identity: CommitIdentity;
     readonly expectedParentCommits?: readonly string[];
+    readonly expectedMergeTree?: string;
     readonly reviewedAttempt?: IntegrationAttempt;
     readonly onReviewedCommitPrepared?: (prepared: PreparedReviewedGitCommit) => Promise<void>;
   }): Promise<GitCommitResult> | GitCommitResult;

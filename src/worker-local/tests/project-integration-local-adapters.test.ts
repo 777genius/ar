@@ -248,6 +248,7 @@ describe("local project integration adapters", () => {
       message: "merge: integrate current base",
       files: ["src/base-change.ts", "src/memory.ts"],
       identity: { name: "Integrator", email: "integrator@example.com" },
+      expectedMergeTree: (await gitOutput(fixture.workspacePath, ["write-tree"])).trim(),
       expectedParentCommits: [fixture.targetCommit, fixture.sourceCommit],
     });
 
@@ -260,6 +261,7 @@ describe("local project integration adapters", () => {
       message: "merge: integrate current base",
       files: ["src/base-change.ts", "src/memory.ts"],
       identity: { name: "Integrator", email: "integrator@example.com" },
+      expectedMergeTree: (await gitOutput(fixture.workspacePath, ["write-tree"])).trim(),
       expectedParentCommits: [fixture.targetCommit, fixture.sourceCommit],
     })).resolves.toEqual(commit);
     await expect(readFile(
@@ -299,6 +301,8 @@ describe("local project integration adapters", () => {
       message: "merge: integrate reviewed clean base",
       files: ["src/from-base.ts"],
       identity: { name: "Integrator", email: "integrator@example.com" },
+      expectedMergeTree: await adapter.verifyMergeOutputTree({ ...attempt, targetBranch: "main",
+        workerOutput, appliedFiles: ["src/from-base.ts"] } as unknown as IntegrationAttempt),
       expectedParentCommits: [fixture.targetCommit, fixture.sourceCommit],
     });
     expect(commit.parentCommits).toEqual([
@@ -345,6 +349,7 @@ describe("local project integration adapters", () => {
       message: "merge: integrate reviewed source deletion",
       files: expectedFiles,
       identity: { name: "Integrator", email: "integrator@example.com" },
+      expectedMergeTree: (await gitOutput(fixture.workspacePath, ["write-tree"])).trim(),
       expectedParentCommits: [fixture.targetCommit, fixture.sourceCommit],
     });
 
@@ -594,6 +599,7 @@ describe("local project integration adapters", () => {
       message: "merge: integrate reviewed base ancestor",
       files: ["src/base-change.ts", "src/memory.ts"],
       identity: { name: "Integrator", email: "integrator@example.com" },
+      expectedMergeTree: (await gitOutput(fixture.workspacePath, ["write-tree"])).trim(),
       expectedParentCommits: [fixture.targetCommit, fixture.sourceCommit],
     });
 
@@ -685,6 +691,7 @@ describe("local project integration adapters", () => {
       message: "merge: integrate current base",
       files: ["src/base-change.ts", "src/memory.ts"],
       identity: { name: "Integrator", email: "integrator@example.com" },
+      expectedMergeTree: (await gitOutput(fixture.workspacePath, ["write-tree"])).trim(),
       expectedParentCommits: [fixture.targetCommit, fixture.sourceCommit],
     });
 
@@ -693,6 +700,7 @@ describe("local project integration adapters", () => {
       message: "merge: different message",
       files: ["src/base-change.ts", "src/memory.ts"],
       identity: { name: "Integrator", email: "integrator@example.com" },
+      expectedMergeTree: (await gitOutput(fixture.workspacePath, ["write-tree"])).trim(),
       expectedParentCommits: [fixture.targetCommit, fixture.sourceCommit],
     })).rejects.toMatchObject({
       reason: IntegrationErrorReason.MergeCommitRecoveryMismatch,

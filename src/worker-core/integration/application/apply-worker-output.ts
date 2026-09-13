@@ -83,6 +83,10 @@ async function applyWorkerOutputTransaction(
           : {}),
         now,
       });
+      if (updated.merge) {
+        if (!deps.git.verifyMergeOutputTree) throw new Error("merge_output_tree_verifier_required");
+        updated = { ...updated, authorizedMergeTree: await deps.git.verifyMergeOutputTree(updated) };
+      }
       await deps.store.update(updated);
     } catch (error) {
       if (attempt.merge) await rollbackFailedMerge(deps.git, attempt, error);

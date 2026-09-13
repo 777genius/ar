@@ -93,7 +93,7 @@ async function commitApprovedChangesTransaction(
     }));
     if (attempt.preparedReviewedCommit) {
       const prepared = attempt.preparedReviewedCommit;
-      if (!deps.git.reconcileReviewedCommit || !deps.git.reviewedTreeChangedFiles ||
+      if (attempt.merge || !deps.git.reconcileReviewedCommit || !deps.git.reviewedTreeChangedFiles ||
           prepared.reviewedOutputId !== attempt.workerOutput.reviewedOutputId ||
           prepared.tree !== attempt.checkedReviewedTree ||
           prepared.identity.name !== identity.name || prepared.identity.email !== identity.email ||
@@ -120,7 +120,15 @@ async function commitApprovedChangesTransaction(
       });
     }
     let reviewedTree: string | undefined;
-    if (attempt.workerOutput.reviewedOutputFileByteAllowance !== undefined) {
+    let mergeTree: string | undefined;
+    if (attempt.merge) {
+      if (!deps.git.verifyMergeOutputTree) throw new Error("merge_output_tree_verifier_required");
+      mergeTree = await deps.git.verifyMergeOutputTree(attempt);
+      if (mergeTree !== attempt.checkedReviewedTree || mergeTree !== attempt.authorizedMergeTree) {
+        throw new Error("merge_output_checks_migration_required");
+      }
+    }
+    if (!attempt.merge && attempt.workerOutput.reviewedOutputFileByteAllowance !== undefined) {
       if (!deps.git.verifyReviewedOutputTree) throw new Error("reviewed_output_tree_verifier_required");
       if (!deps.git.reconcileReviewedCommit) throw new Error("reviewed_output_publication_reconciler_required");
       reviewedTree = await deps.git.verifyReviewedOutputTree(attempt);
@@ -202,6 +210,7 @@ async function commitApprovedChangesTransaction(
       }),
       ...(attempt.merge
         ? {
+            expectedMergeTree: mergeTree!,
             expectedParentCommits: [
               attempt.merge.expectedTargetCommit,
               attempt.appliedMergeSourceCommit ?? attempt.merge.sourceCommit,

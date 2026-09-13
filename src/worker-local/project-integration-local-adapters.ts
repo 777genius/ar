@@ -1,3 +1,4 @@
+import { verifyLocalMergeOutputTree, assertLocalMergeWorkspaceTree } from "./project-integration-local-merge-tree";
 import { reconcileReviewedIntegrationCommit } from "./project-integration-reviewed-tree-recovery";
 import { commitReviewedIntegrationTree } from "./project-integration-reviewed-tree-commit";
 import { execFile } from "node:child_process";
@@ -19,7 +20,6 @@ import {
   adoptExistingReviewedMergeCommit,
   applyReviewedMerge,
   assertPendingMergeParents,
-  commitParents,
   type LocalGitMergeRuntime,
 } from "./project-integration-local-merge-coordinator";
 import {
@@ -283,6 +283,7 @@ export class LocalGitIntegrationAdapter implements GitPort {
     readonly files: readonly string[];
     readonly identity: CommitIdentity;
     readonly expectedParentCommits?: readonly string[];
+    readonly expectedMergeTree?: string;
     readonly reviewedAttempt?: IntegrationAttempt;
     readonly onReviewedCommitPrepared?: (prepared: PreparedReviewedGitCommit) => Promise<void>;
   }): Promise<GitCommitResult> {
@@ -292,20 +293,38 @@ export class LocalGitIntegrationAdapter implements GitPort {
       throw new Error("local_git_integration_commit_files_required");
     }
     if (input.expectedParentCommits) {
+      if (!input.expectedMergeTree) throw new Error("merge_output_authorized_tree_required");
+      await assertLocalMergeWorkspaceTree(this.mergeRuntime(), workspacePath, input.expectedMergeTree, files);
       const existing = await adoptExistingReviewedMergeCommit({
         runtime: this.mergeRuntime(),
         workspacePath,
         expectedParentCommits: input.expectedParentCommits,
+        expectedMergeTree: input.expectedMergeTree,
         files,
         message: input.message,
         identity: assertCommitIdentity(input.identity),
       });
-      if (existing) return existing;
+      if (existing) {
+        await this.git(["merge", "--quit"], workspacePath);
+        return existing;
+      }
       await assertPendingMergeParents(
         this.mergeRuntime(),
         workspacePath,
         input.expectedParentCommits,
       );
+      const identity = assertCommitIdentity(input.identity);
+      const commitSha = (await this.git(["commit-tree", input.expectedMergeTree,
+        ...input.expectedParentCommits.flatMap((parent) => ["-p", parent]), "-m", input.message], workspacePath, {
+        ...process.env, GIT_AUTHOR_NAME: identity.name, GIT_AUTHOR_EMAIL: identity.email,
+        GIT_COMMITTER_NAME: identity.name, GIT_COMMITTER_EMAIL: identity.email,
+      })).stdout.trim();
+      await assertPendingMergeParents(this.mergeRuntime(), workspacePath, input.expectedParentCommits);
+      await assertLocalMergeWorkspaceTree(this.mergeRuntime(), workspacePath, input.expectedMergeTree, files);
+      await this.git(["update-ref", "HEAD", commitSha, input.expectedParentCommits[0]!], workspacePath);
+      await this.git(["merge", "--quit"], workspacePath);
+      const diffStat = (await this.git(["diff", "--stat", "--no-renames", `${commitSha}^1`, commitSha], workspacePath)).stdout.trim();
+      return { commitSha, parentCommits: input.expectedParentCommits, ...(diffStat ? { diffStat } : {}) };
     }
     if (input.reviewedAttempt) {
       return this.commitReviewedTree(input.reviewedAttempt, input.message, input.identity, input.onReviewedCommitPrepared);
@@ -356,34 +375,14 @@ export class LocalGitIntegrationAdapter implements GitPort {
     const commitSha = (
       await this.git(["rev-parse", "HEAD"], workspacePath)
     ).stdout.trim();
-    const parentCommits = await commitParents(
-      this.mergeRuntime(),
-      workspacePath,
-      commitSha,
-    );
-    if (
-      input.expectedParentCommits &&
-      !sameCommits(parentCommits, input.expectedParentCommits)
-    ) {
-      throw new IntegrationError({
-        reason: IntegrationErrorReason.MergeParentsMismatch,
-        evidence: [
-          `expected:${input.expectedParentCommits.join(",")}`,
-          `actual:${parentCommits.join(",")}`,
-        ],
-      });
-    }
     const diffStat = (
       await this.git(
-        input.expectedParentCommits
-          ? ["diff", "--stat", "--no-renames", `${commitSha}^1`, commitSha]
-          : ["show", "--stat", "--format=", "--no-renames", "HEAD"],
+        ["show", "--stat", "--format=", "--no-renames", "HEAD"],
         workspacePath,
       )
     ).stdout.trim();
     return {
       commitSha,
-      ...(input.expectedParentCommits ? { parentCommits } : {}),
       ...(diffStat ? { diffStat } : {}),
     };
   }
@@ -393,6 +392,10 @@ export class LocalGitIntegrationAdapter implements GitPort {
     const parent = localWorkerOutputTargetCommit(input.attempt.workerOutput);
     const result = await this.git(["diff", "--name-only", "--no-renames", "-z", parent, input.tree, "--"], workspacePath);
     return result.stdout.split("\0").filter(Boolean).map(normalizeProjectRelativePath).sort();
+  }
+
+  async verifyMergeOutputTree(attempt: IntegrationAttempt): Promise<string> {
+    return verifyLocalMergeOutputTree(this.mergeRuntime(), { ...attempt, targetWorkspacePath: await canonicalDirectory(attempt.targetWorkspacePath) });
   }
 
   async verifyReviewedOutputTree(attempt: IntegrationAttempt): Promise<string> {
@@ -661,7 +664,8 @@ export class LocalGitIntegrationAdapter implements GitPort {
       command: this.options.gitBinaryPath ?? "git",
       args,
       cwd,
-      ...(env ? { env } : {}),
+      // Custody binds real object IDs, including commands with an explicit index/identity env.
+      env: { ...(env ?? process.env), GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null" },
       timeoutMs: this.options.timeoutMs ?? 60_000,
       maxBuffer: this.options.maxBuffer ?? 10 * 1024 * 1024,
     });
@@ -673,12 +677,6 @@ function sameFiles(left: readonly string[], right: readonly string[]): boolean {
   const normalizedRight = uniqueSorted(right.map(normalizeProjectRelativePath));
   return normalizedLeft.length === normalizedRight.length &&
     normalizedLeft.every((file, index) => file === normalizedRight[index]);
-}
-
-function sameCommits(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every(
-    (commit, index) => commit.toLowerCase() === right[index]?.toLowerCase(),
-  );
 }
 
 export async function assertProjectIntegrationPatchSha256(

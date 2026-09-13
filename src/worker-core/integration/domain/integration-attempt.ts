@@ -160,6 +160,8 @@ export type IntegrationAttempt = {
   readonly workerOutput: WorkerOutput;
   readonly reviewDecision: ReviewDecision;
   readonly checkedReviewedTree?: string;
+  /** Exact resolved merge tree derived from the bound parents and reviewed patch. */
+  readonly authorizedMergeTree?: string;
   readonly preparedReviewedCommit?: ReviewedCommitPublication;
   readonly reviewedIndexRecoveryPending?: boolean;
   readonly checkRuns: readonly CheckRun[];
