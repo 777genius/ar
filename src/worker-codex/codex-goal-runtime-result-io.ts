@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
   StrictResultRecorder,
+  assertRetainedTerminalArchivePatchSize,
   type RuntimePatchPreserverPort,
   type RuntimeResultArtifact,
   type RuntimeResultEnvelope,
@@ -80,14 +81,24 @@ export async function captureGitWorkspacePatch(input: {
       ? ["diff", "--binary", "--no-renames", "HEAD", "--"]
       : ["diff", "--binary", "--"],
   });
-  const untrackedPatch = await gitUntrackedPatch({
-    gitBinaryPath,
-    workspacePath: input.workspacePath,
-  });
-  return [trackedPatch, untrackedPatch]
-    .filter((value) => value.length > 0)
-    .map(ensureTrailingNewline)
-    .join("");
+  const patches: string[] = [];
+  let bytes = 0;
+  const append = (patch: string) => {
+    if (!patch) return;
+    const size = Buffer.byteLength(patch, "utf8") + (patch.endsWith("\n") ? 0 : 1);
+    assertRetainedTerminalArchivePatchSize(bytes + size);
+    bytes += size;
+    patches.push(ensureTrailingNewline(patch));
+  };
+  append(trackedPatch);
+  for (const path of await gitUntrackedPaths({ gitBinaryPath, workspacePath: input.workspacePath })) {
+    append(await gitDiff({
+      gitBinaryPath, workspacePath: input.workspacePath,
+      args: ["diff", "--binary", "--no-index", "--", "/dev/null", path],
+      allowDifferenceExitCode: true,
+    }));
+  }
+  return patches.join("");
 }
 
 export async function captureGitWorkspaceChangedFiles(input: {
@@ -176,23 +187,6 @@ async function gitDiff(input: {
     }
     throw error;
   }
-}
-
-async function gitUntrackedPatch(input: {
-  readonly gitBinaryPath: string;
-  readonly workspacePath: string;
-}): Promise<string> {
-  const paths = await gitUntrackedPaths(input);
-  const patches: string[] = [];
-  for (const path of paths) {
-    patches.push(await gitDiff({
-      gitBinaryPath: input.gitBinaryPath,
-      workspacePath: input.workspacePath,
-      args: ["diff", "--binary", "--no-index", "--", "/dev/null", path],
-      allowDifferenceExitCode: true,
-    }));
-  }
-  return patches.map(ensureTrailingNewline).join("");
 }
 
 async function gitUntrackedPaths(input: {

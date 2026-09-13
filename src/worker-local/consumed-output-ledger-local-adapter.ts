@@ -1,3 +1,5 @@
+import { assertRetainedTerminalArchivePatchSize } from "@vioxen/subscription-runtime/worker-core";
+import { inspectRetainedTerminalArchive } from "./retained-terminal-archive-io";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -120,19 +122,28 @@ export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWrit
     await mkdir(dirname(ledgerPath), { recursive: true });
     const contents = `${JSON.stringify(ledgerRecord(input.decision), null, 2)}\n`;
     const tmpPath = `${ledgerPath}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmpPath, contents, { flag: "wx" });
+    let removeTemp = true;
     try {
-      await link(tmpPath, ledgerPath);
-      return { ledgerPath, decision: input.decision, idempotentReplay: false };
-    } catch (error) {
-      if (!isNodeErrorCode(error, "EEXIST")) throw error;
-      const existing = await readFile(ledgerPath, "utf8");
-      if (!sameTerminalDecision(existing, input.decision)) {
-        throw new Error("consumed_output_ledger_terminal_conflict");
+      try {
+        await writeFile(tmpPath, contents, { flag: "wx" });
+      } catch (error) {
+        // A failed partial write belongs to us; an existing temporary file does not.
+        if (isNodeErrorCode(error, "EEXIST")) removeTemp = false;
+        throw error;
       }
-      return { ledgerPath, decision: input.decision, idempotentReplay: true };
+      try {
+        await link(tmpPath, ledgerPath);
+        return { ledgerPath, decision: input.decision, idempotentReplay: false };
+      } catch (error) {
+        if (!isNodeErrorCode(error, "EEXIST")) throw error;
+        const existing = await readFile(ledgerPath, "utf8");
+        if (!sameTerminalDecision(existing, input.decision)) {
+          throw new Error("consumed_output_ledger_terminal_conflict");
+        }
+        return { ledgerPath, decision: input.decision, idempotentReplay: true };
+      }
     } finally {
-      await unlink(tmpPath).catch(() => undefined);
+      if (removeTemp) await unlink(tmpPath).catch(() => undefined);
     }
   }
 }
@@ -141,7 +152,10 @@ async function assertTerminalEvidenceInCanonicalRoots(
   decision: TerminalOutputDecision,
   configuredRoots: readonly string[] | undefined,
 ): Promise<void> {
-  if (configuredRoots === undefined) return;
+  if (configuredRoots === undefined) {
+    if (decision.backup.patchPath) await inspectRetainedTerminalArchive(decision.backup.patchPath);
+    return;
+  }
   if (configuredRoots.length === 0) {
     throw new Error("consumed_output_evidence_root_required");
   }
@@ -189,6 +203,9 @@ async function assertTerminalEvidenceInCanonicalRoots(
     ) {
       throw new Error("consumed_output_evidence_file_outside_root");
     }
+  }
+  if (decision.backup.patchPath) {
+    await inspectRetainedTerminalArchive(decision.backup.patchPath, false, resolve(decision.backup.patchPath));
   }
 }
 
@@ -467,6 +484,9 @@ export async function captureLocalTerminalOutputBackup(input: {
   readonly gitBinaryPath?: string;
   readonly requireEvidenceCustody?: boolean;
 }): Promise<LocalTerminalOutputBackupCapture> {
+  if (input.sourcePatchBytes) {
+    assertRetainedTerminalArchivePatchSize(input.sourcePatchBytes.byteLength);
+  }
   const archivePath = join(
     input.archiveRoot,
     safeLedgerName(input.archiveName),
@@ -482,7 +502,7 @@ export async function captureLocalTerminalOutputBackup(input: {
   const patch = input.sourcePatchBytes
     ? Buffer.from(input.sourcePatchBytes)
     : input.sourcePatchPath
-    ? await readFile(input.sourcePatchPath)
+    ? (await inspectRetainedTerminalArchive(input.sourcePatchPath, true)).bytes!
     : input.changedFiles.length === 0
         ? Buffer.alloc(0)
         : await localGitOutputBytes({
@@ -492,6 +512,7 @@ export async function captureLocalTerminalOutputBackup(input: {
               ? { gitBinaryPath: input.gitBinaryPath }
               : {}),
           });
+  assertRetainedTerminalArchivePatchSize(patch.byteLength);
   const numstat = Buffer.from(input.changedFiles.length === 0
       ? ""
       : await localGitOutput({

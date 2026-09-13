@@ -1,3 +1,4 @@
+import { inspectRetainedTerminalArchive } from "@vioxen/subscription-runtime/worker-local";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
@@ -76,12 +77,12 @@ export function restrictedLedgerEpochEvidenceSource(input: {
   const canonicallyAllowed = (path: string) =>
     input.canonicalRoots.some((root) => pathInsideOrEqual(path, root)) &&
     !input.canonicalDeniedRoots.some((root) => pathInsideOrEqual(path, root));
-  const hardenedFile = async (path: string): Promise<Buffer | undefined> => {
+  const hardenedFile = async (path: string): Promise<Awaited<ReturnType<typeof inspectRetainedTerminalArchive>> | undefined> => {
     if (!lexicallyAllowed(path)) return undefined;
     try {
       const canonical = await realpath(path);
       if (!canonicallyAllowed(canonical)) return undefined;
-      return await readHardenedEvidenceFile(path);
+      return await inspectRetainedTerminalArchive(path, false, canonical);
     } catch (error) {
       if (isExpectedEvidencePathError(error)) return undefined;
       throw error;
@@ -92,13 +93,13 @@ export function restrictedLedgerEpochEvidenceSource(input: {
       return lexicallyAllowed(path) && (await hardenedFile(path)) !== undefined;
     },
     async pathSize(path: string): Promise<number | undefined> {
-      return lexicallyAllowed(path) ? (await hardenedFile(path))?.length : undefined;
+      return lexicallyAllowed(path) ? (await hardenedFile(path))?.size : undefined;
     },
     async pathSha256(path: string): Promise<string | undefined> {
       if (!lexicallyAllowed(path)) return undefined;
       const bytes = await hardenedFile(path);
       return bytes
-        ? createHash("sha256").update(bytes).digest("hex")
+        ? bytes.sha256
         : undefined;
     },
     async resolveWorkspacePath(path: string): Promise<string | undefined> {
@@ -252,13 +253,13 @@ export async function bindLedgerEpochEvidencePath(input: {
       return { declaredPath: input.declaredPath, state: "directory", canonicalPath };
     }
     if (!metadata.isFile()) return { declaredPath: input.declaredPath, state: "denied" };
-    const bytes = await readHardenedEvidenceFile(resolved);
+    const evidence = await inspectRetainedTerminalArchive(resolved, false, canonicalPath);
     return {
       declaredPath: input.declaredPath,
       state: "file",
       canonicalPath,
-      size: bytes.length,
-      sha256: createHash("sha256").update(bytes).digest("hex"),
+      size: evidence.size,
+      sha256: evidence.sha256,
     };
   } catch (error) {
     if (isNodeError(error, "ENOENT")) {
@@ -300,13 +301,13 @@ export async function assertLedgerEpochEvidenceBindingsUnchanged(
           canonicalPath: await realpath(binding.declaredPath),
         };
       } else if (metadata.isFile()) {
-        const bytes = await readHardenedEvidenceFile(binding.declaredPath);
+        const evidence = await inspectRetainedTerminalArchive(binding.declaredPath, false, binding.canonicalPath);
         current = {
           declaredPath: binding.declaredPath,
           state: "file",
           canonicalPath: await realpath(binding.declaredPath),
-          size: bytes.length,
-          sha256: createHash("sha256").update(bytes).digest("hex"),
+          size: evidence.size,
+          sha256: evidence.sha256,
         };
       } else {
         current = { declaredPath: binding.declaredPath, state: "denied" };
@@ -358,6 +359,8 @@ export function isExpectedEvidencePathError(error: unknown): boolean {
     (isRecord(error) &&
       (error.message === "ledger_epoch_non_regular_file_denied" ||
         error.message === "ledger_epoch_file_too_large" ||
+        error.message === "retained_terminal_archive_patch_too_large" ||
+        error.message === "consumed_output_evidence_file_invalid" ||
         error.message === "consumed_output_evidence_path_outside_root" ||
         error.message === "evidence_custody_root_noncanonical"));
 }
