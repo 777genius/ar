@@ -69,6 +69,25 @@ async function main() {
     const sentinel = await mkdtemp('/var/lib/managed-launcher-e2e-'); owned.push(sentinel);
     check((await stat(sentinel)).dev === (await stat('/')).dev, 'Sentinel must be backed by root filesystem');
     await chmod(sentinel, 0o777);
+    const forgedJobId = `managed-direct-${randomBytes(16).toString('hex')}`;
+    const forgedRoot = join(sentinel, 'forged-job-root');
+    const forgedPrompt = join(sentinel, 'forged-prompt.txt');
+    const forgedAuth = join(sentinel, 'forged-auth');
+    await mkdir(forgedAuth);
+    await writeFile(forgedPrompt, 'synthetic direct-launch denial probe', { flag: 'wx', mode: 0o600 });
+    const forged = spawnSync(process.execPath, [goalCli, 'run', '--job-root', forgedRoot,
+      '--workspace', join(forgedRoot, 'workspace'), '--prompt', forgedPrompt,
+      '--task-id', forgedJobId, '--job-id', forgedJobId, '--accounts', 'synthetic',
+      '--auth-root', forgedAuth, '--no-tmux', '--no-require-git-workspace'], {
+      encoding: 'utf8', timeout: 15000,
+      env: { PATH: process.env.PATH, SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH: '1',
+        SUBSCRIPTION_RUNTIME_JOB_ID: forgedJobId, SUBSCRIPTION_RUNTIME_JOB_ROOT: forgedRoot },
+    });
+    let forgedRootCreated = true;
+    try { await lstat(forgedRoot); } catch (error) { if (error.code === 'ENOENT') forgedRootCreated = false; else throw error; }
+    check(!forged.error && forged.status !== 0 && !forgedRootCreated && /root-owned launcher|invalid user namespace/i.test(forged.stderr),
+      `Direct managed CLI bypass was not denied before writes: ${forged.error?.message ?? forged.stderr}`);
+    const directBypassEvidence = { denied: true, rootWrites: 0 };
     const faultEvidence = [];
     for (const mode of ['missing-policy', 'untrusted-policy']) {
       const source = await mkdtemp('/var/lib/managed-launcher-policy-'); owned.push(source);
@@ -265,13 +284,13 @@ setTimeout(() => {}, 90000);
     check(properties.ProtectSystem === 'strict' && properties.ReadWritePaths === layout.jobRoot && properties.NoNewPrivileges === 'yes' && properties.MemorySwapMax === '0', `Effective properties mismatch: ${JSON.stringify(properties)}`);
     check(properties.CapabilityBoundingSet?.split(/\s+/).sort().join(' ') === 'cap_setfcap cap_setpcap cap_sys_admin' && properties.AmbientCapabilities === '' && properties.PrivateDevices === 'yes' && properties.RestrictSUIDSGID === 'yes', `Privilege properties mismatch: ${JSON.stringify(properties)}`);
     for (const path of ['/run/systemd/private', '/run/systemd/journal', '/dev/log', '/run/dbus', '/run/docker.sock', '/run/containerd/containerd.sock', '/run/podman/podman.sock']) check(properties.InaccessiblePaths?.split(/\s+/).some(value => value.replace(/^-/, '') === path), `Missing inaccessible path ${path}`);
-    if (Object.hasOwn(properties, 'RequiresMountsFor')) check(properties.RequiresMountsFor.split(/\s+/).includes(policy.storageRoot), 'Missing mount dependency');
-    if (Object.hasOwn(properties, 'LimitCORE')) check(properties.LimitCORE === '0', 'Core dumps are not disabled');
+    check(Object.hasOwn(properties, 'RequiresMountsFor') && properties.RequiresMountsFor.split(/\s+/).includes(policy.storageRoot), 'Missing mount dependency');
+    check(Object.hasOwn(properties, 'LimitCORE') && properties.LimitCORE === '0', 'Core dumps are not disabled');
     for (const [index, stream] of ['stdout', 'stderr'].entries()) {
       check((await readFile(logs[index], 'utf8')).includes(`synthetic-e2e-${stream}`), `Missing external ${stream} log marker`);
     }
     check(properties.StandardOutput === 'null' && properties.StandardError === 'null', 'Guard must open external output itself');
-    console.log(JSON.stringify({ ok: true, scope: 'job-confinement-and-synthetic-goal-runner', machineId: args[4], unit, faultEvidence, providerEvidence, result, properties }, null, 2));
+    console.log(JSON.stringify({ ok: true, scope: 'job-confinement-and-synthetic-goal-runner', machineId: args[4], unit, directBypassEvidence, faultEvidence, providerEvidence, result, properties }, null, 2));
   } catch (error) {
     // These files belong only to this randomized synthetic unit. Surface a
     // bounded diagnostic before cleanup so a failed confinement canary remains
