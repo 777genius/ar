@@ -33,7 +33,7 @@ it("refuses MCP registration and process signal installation", async () => {
 });
 
 it("refuses direct public goal APIs before filesystem or worker access", async () => {
-  const config: CodexGoalRunConfig = { taskId: "synthetic", workspacePath: "/must-not-read", authRootDir: "/must-not-read", promptPath: "/must-not-read", accounts: [], sourceEnv: {} };
+  const config: CodexGoalRunConfig = { taskId: "synthetic", jobRootDir: "/must-not-read", workspacePath: "/must-not-read", authRootDir: "/must-not-read", promptPath: "/must-not-read", accounts: [], sourceEnv: {} };
   const launch: CodexGoalLaunchInput = { config, cwd: "/must-not-read", logPath: "/must-not-write", format: "json", tmuxSession: "must-not-start", cliCommand: ["/must-not-run"] };
   await expect(runCodexGoal(config)).rejects.toThrow("managed entrypoint denied");
   await expect(startCodexGoalTmux(launch)).rejects.toThrow("managed entrypoint denied");
