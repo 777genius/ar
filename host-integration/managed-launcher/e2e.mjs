@@ -252,6 +252,15 @@ setTimeout(() => {}, 90000);
     }
     check(properties.StandardOutput === 'null' && properties.StandardError === 'null', 'Guard must open external output itself');
     console.log(JSON.stringify({ ok: true, scope: 'job-confinement-and-synthetic-goal-runner', machineId: args[4], unit, faultEvidence, providerEvidence, result, properties }, null, 2));
+  } catch (error) {
+    // These files belong only to this randomized synthetic unit. Surface a
+    // bounded diagnostic before cleanup so a failed confinement canary remains
+    // actionable without retaining directories or reading unrelated logs.
+    const payloadLogs = Object.fromEntries(await Promise.all(logs.map(async path => {
+      try { return [path, (await readFile(path, 'utf8')).slice(-65536)]; }
+      catch (readError) { return [path, `<${readError.code ?? 'unavailable'}>`]; }
+    })));
+    throw new Error(`${error.message}; synthetic payload logs: ${JSON.stringify(payloadLogs)}`, { cause: error });
   } finally {
     // The synthetic foreign process is owned directly, independently of systemd.
     if (foreign && foreign.exitCode === null && foreign.signalCode === null) {
