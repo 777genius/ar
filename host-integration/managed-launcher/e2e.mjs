@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Explicitly opt-in: run only as root on a disposable Linux test host.
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, writeFile, chmod, lstat, stat, realpath, rm, unlink, rmdir, open, symlink, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, chmod, lstat, stat, realpath, rm, unlink, rmdir, open, mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { requireHostStorage, prepareManagedJobLayout } from '../host-jobs/storage-policy.mjs';
+import { requireHostStorage, prepareManagedJobLayout, deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
 import { HostJobs } from '../host-jobs/manager.mjs';
 import { unitFor, fingerprint } from '../host-jobs/contract.mjs';
 
@@ -55,7 +55,13 @@ async function main() {
   run('/usr/bin/systemctl', ['show-environment']);
   const jobId = `managed-launcher-e2e-${randomBytes(16).toString('hex')}`;
   const unit = unitFor(jobId);
-  const layout = await prepareManagedJobLayout(jobId);
+  const layout = deriveManagedJobLayout(policy.storageRoot, jobId);
+  async function requireAbsentJobRoot() {
+    try { await lstat(layout.jobRoot); }
+    catch (error) { if (error.code === 'ENOENT') return; throw error; }
+    throw new Error('Positive jobRoot must not exist before HostJobs.start');
+  }
+  await requireAbsentJobRoot();
   const logDirectory = layout.payloadLogs;
   let logDirectoryExisted = true;
   try { await stat(logDirectory); } catch (error) { if (error.code !== 'ENOENT') throw error; logDirectoryExisted = false; }
@@ -167,7 +173,6 @@ async function main() {
       if (state.error || !['inactive', 'failed', 'unknown'].includes(state.stdout.trim())) preserveFiles = true;
       check(!preserveFiles, 'Provider unit not stopped');
     }
-    for (const directory of [work, layout.home]) await symlink(sentinel, join(directory, 'root-link'));
     check((await stat(WRAPPER)).dev === (await stat('/')).dev, 'Trusted hardlink source must be backed by root filesystem');
     const inheritedFile = join(sentinel, 'inherited-fd');
     foreignFd = await open(inheritedFile, 'wx', 0o600);
@@ -189,9 +194,12 @@ async function main() {
     check(/^Uid:\s+0\s+0\s+0\s+0$/m.test(foreignStatus) && /^CapPrm:\s+0000000000000000$/m.test(foreignStatus), 'Foreign process must have host UID 0 and no permitted capabilities');
     check(await realpath(`/proc/${foreign.pid}/cwd`) === sentinel && await realpath(`/proc/${foreign.pid}/fd/3`) === inheritedFile, 'Foreign process did not retain synthetic cwd/fd');
     const resultPath = join(work, 'result.json');
-    const probe = join(work, 'probe.mjs');
-    await writeFile(join(work, 'synthetic-goal.mjs'), await readFile(new URL('./fixtures/synthetic-goal.mjs', import.meta.url)), { flag: 'wx', mode: 0o600 });
-    await writeFile(probe, `import { writeFile, readFile, mkdir, readdir, lstat, statfs, link } from 'node:fs/promises';
+    const probeDirectory = await mkdtemp(join(external, 'managed-launcher-probe-')); owned.push(probeDirectory);
+    check(!probeDirectory.startsWith(`${layout.jobRoot}/`), 'Probe staging must be outside payload jobRoot');
+    await chmod(probeDirectory, 0o755);
+    const probe = join(probeDirectory, 'probe.mjs');
+    await writeFile(join(probeDirectory, 'synthetic-goal.mjs'), await readFile(new URL('./fixtures/synthetic-goal.mjs', import.meta.url)), { flag: 'wx', mode: 0o644 });
+    await writeFile(probe, `import { writeFile, readFile, mkdir, readdir, lstat, statfs, link, symlink } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
 import { runSyntheticGoal } from './synthetic-goal.mjs';
@@ -200,11 +208,14 @@ const activation = await lstat('/opt/subscription-runtime/managed-launcher/manag
 result.activationRouting = { characterDevice: activation.isCharacterDevice(), rdev: activation.rdev };
 if (!result.activationRouting.characterDevice || result.activationRouting.rdev !== 259) throw new Error('Managed activation marker was not masked with /dev/null');
 result.goalRunner = await runSyntheticGoal(${JSON.stringify(goalCli)}, ${JSON.stringify(layout)}, ${JSON.stringify(jobId)});
-result.identity = { uid: process.getuid(), gid: process.getgid(), home: process.env.HOME };
+result.identity = { uid: process.getuid(), gid: process.getgid(), home: process.env.HOME, cwd: process.cwd() };
+try { await writeFile(${JSON.stringify(join(probeDirectory, 'forbidden-write'))}, 'synthetic'); result.probeStagingWrite = 'succeeded'; }
+catch (error) { result.probeStagingWrite = error.code; }
 const cli = spawnSync(process.execPath, [${JSON.stringify(goalCli)}, 'status', '--job-root', ${JSON.stringify(layout.jobRoot)}, '--task-id', ${JSON.stringify(jobId)}, '--workspace', ${JSON.stringify(work)}, '--format', 'json'], { encoding: 'utf8', timeout: 15000 });
 result.goalCli = { status: cli.status, error: cli.error?.code ?? null, stdout: cli.stdout, stderr: cli.stderr };
 result.symlinkWrites = {};
 for (const directory of ${JSON.stringify([work, layout.home])}) {
+ await symlink(${JSON.stringify(sentinel)}, directory + '/root-link');
  try { await writeFile(directory + '/root-link/symlink-escape', 'synthetic'); result.symlinkWrites[directory] = 'succeeded'; }
  catch (error) { result.symlinkWrites[directory] = error.code; }
 }
@@ -264,19 +275,24 @@ console.log('synthetic-e2e-stdout');
 console.error('synthetic-e2e-stderr');
 await writeFile(${JSON.stringify(resultPath)}, JSON.stringify(result));
 setTimeout(() => {}, 90000);
-`, { flag: 'wx', mode: 0o600 });
+`, { flag: 'wx', mode: 0o644 });
     const request = { operation: 'start', jobId, machineId: args[4], argv: [process.execPath, probe],
       memoryMiB: 512, runtimeSeconds: 90, stopSeconds: 30, tasksMax: 64, cpuPercent: 100 };
+    await requireAbsentJobRoot();
     const started = await jobs.start(request);
     check(started.phase === 'started' && started.unit === unit && started.manager === 'system' &&
       started.fingerprint === fingerprint(request), `HostJobs did not start owned job: ${JSON.stringify(started)}`);
+    for (const key of ['jobRoot', 'workspace', 'home', 'tmp', 'payloadLogs', 'state', 'logs', 'output']) {
+      check((await lstat(layout[key])).isDirectory(), `HostJobs launcher did not create ${key}`);
+    }
     const invocationId = run('/usr/bin/systemctl', ['show', unit, '--property=InvocationID', '--value']);
     check(/^[a-f0-9]{32}$/.test(invocationId), 'Missing live systemd invocation identity');
     const retried = await jobs.start(request);
     check(retried.retry === true && retried.unit === unit && launchCount === 1 &&
       run('/usr/bin/systemctl', ['show', unit, '--property=InvocationID', '--value']) === invocationId,
     'Same-ID retry dispatched another launcher or systemd invocation');
-    const hostJobsEvidence = { stateDir, unit, invocationId, launchCount, sameIdRetry: true, machineId: started.machineId };
+    const hostJobsEvidence = { stateDir, unit, invocationId, launchCount, sameIdRetry: true,
+      layoutCreatedFromAbsence: true, machineId: started.machineId };
     let result;
     for (let i = 0; i < 650; i++) {
       try { result = JSON.parse(await readFile(resultPath, 'utf8')); break; } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
@@ -286,6 +302,7 @@ setTimeout(() => {}, 90000);
     check(result.goalRunner.status === 'completed', 'Real synthetic goal runner did not complete');
     check(result.goalCli.status === 0 && result.goalCli.error === null, `Real goal CLI status failed: ${JSON.stringify(result.goalCli)}`);
     check(result.identity.uid === 65532 && result.identity.gid === 65532 && result.identity.home === layout.home, `Identity/HOME mismatch: ${JSON.stringify(result.identity)}`);
+    check(result.identity.cwd === work && result.probeStagingWrite === 'EROFS', 'Launcher cwd or readonly probe staging mismatch');
     check(Object.values(result.symlinkWrites).every(value => value === 'EROFS'), `Symlink escape not denied: ${JSON.stringify(result.symlinkWrites)}`);
     check(['ENOENT', 'EACCES', 'EPERM', 'EBADF', 'EINVAL', 'ENXIO', 'ENODEV'].includes(result.inheritedFd), `Unexpected writable inherited fd: ${result.inheritedFd}`);
     check(foreign.exitCode === null && foreign.signalCode === null, 'Foreign process exited before isolation assertion');
@@ -351,7 +368,9 @@ setTimeout(() => {}, 90000);
     check(!preserveFiles, `A synthetic unit may remain active; preserving ${owned.join(', ')}`);
     for (const path of logs) await unlink(path).catch(error => { if (error.code !== 'ENOENT') throw error; });
     if (!logDirectoryExisted) await rmdir(logDirectory).catch(error => { if (!['ENOENT', 'ENOTEMPTY'].includes(error.code)) throw error; });
-    for (const path of owned.reverse()) await rm(path, { recursive: true, force: false });
+    for (const path of owned.reverse()) await rm(path, { recursive: true, force: false }).catch(error => {
+      if (path !== layout.jobRoot || error.code !== 'ENOENT') throw error;
+    });
   }
 }
 main().catch(error => { console.error(error.message); process.exitCode = 1; });
