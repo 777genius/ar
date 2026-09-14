@@ -323,8 +323,9 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
   submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string }) => CodexAppServerChildProcess): CodexAppServerChildProcess {
   return withHostedActivationFence(fence => {
     const { activation, start, profileId } = readHostedOrdinaryProcessOrigin(fence);
-    if (!str(start.jobRootDir).endsWith(`/jobs/${str(start.jobId)}`) ||
-        start.workspacePath !== `${str(start.jobRootDir)}/workspace`) invalid();
+    const jobRoot = canonical(start.jobRootDir);
+    if (!jobRoot.endsWith(`/jobs/${str(start.jobId)}`) ||
+        canonical(start.workspacePath) !== `${jobRoot}/workspace`) invalid();
     // The real app-server client starts in its materialized account HOME;
     // workspace belongs to the thread, not the provider process. Neither cwd
     // nor HOME supplies origin authority: that was read from the actual cgroup.
