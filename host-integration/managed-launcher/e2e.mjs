@@ -148,6 +148,7 @@ async function main() {
     await writeFile(join(work, 'synthetic-goal.mjs'), await readFile(new URL('./fixtures/synthetic-goal.mjs', import.meta.url)), { flag: 'wx', mode: 0o600 });
     await writeFile(probe, `import { writeFile, readFile, mkdir, readdir, lstat, statfs, link } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { createConnection } from 'node:net';
 import { runSyntheticGoal } from './synthetic-goal.mjs';
 const result = {};
 result.goalRunner = await runSyntheticGoal(${JSON.stringify(goalCli)}, ${JSON.stringify(layout)}, ${JSON.stringify(jobId)});
@@ -179,8 +180,12 @@ const status = await readFile('/proc/self/status', 'utf8');
 result.capabilities = Object.fromEntries(status.split('\\n').filter(line => /^Cap(Eff|Bnd):/.test(line)).map(line => line.trim().split(/:\\s+/)));
 result.controlSockets = {};
 for (const path of ['/run/systemd/private', '/run/dbus/system_bus_socket', '/run/docker.sock', '/var/run/docker.sock', '/run/containerd/containerd.sock', '/run/podman/podman.sock']) {
- try { result.controlSockets[path] = (await lstat(path)).isSocket() ? 'visible-socket' : 'masked'; }
- catch (error) { result.controlSockets[path] = error.code; }
+ result.controlSockets[path] = await new Promise(resolveSocket => {
+  const socket = createConnection({ path });
+  const timer = setTimeout(() => { socket.destroy(); resolveSocket('timeout'); }, 1000);
+  socket.once('connect', () => { clearTimeout(timer); socket.destroy(); resolveSocket('connected'); });
+  socket.once('error', error => { clearTimeout(timer); resolveSocket(error.code ?? 'error'); });
+ });
 }
 result.blockDevices = [];
 async function scanDevices(path) {
