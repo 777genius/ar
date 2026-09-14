@@ -1,8 +1,54 @@
 #!/bin/sh
 set -eu
-# Run explicitly as root on an approved host; never invoked by tests.
+# Run explicitly as root on an approved host; tests use disposable fake installs.
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+fail() { echo "host jobs installation: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || fail 'installation requires root'
+fixed_node=/opt/subscription-runtime/runtime/node
+# Validate every existing lexical ancestor before resolving symlinks. Directory
+# symlinks are rejected; the executable itself may be an administrator-owned link.
+trust_chain() {
+  checked_path=$1
+  while :; do
+    if [ -e "$checked_path" ] || [ -L "$checked_path" ]; then
+      checked_uid=$(stat -c %u "$checked_path") || fail 'cannot inspect Node path owner'
+      [ "$checked_uid" = 0 ] || fail "Node path is not root-owned: $checked_path"
+      if [ -L "$checked_path" ]; then
+        [ "$checked_path" = "$1" ] || fail 'Node directory symlinks are not supported'
+      else
+        checked_mode=$(stat -c %a "$checked_path") || fail 'cannot inspect Node path permissions'
+        [ "$((0$checked_mode & 0022))" = 0 ] || fail "Node path is writable by untrusted users: $checked_path"
+        if [ "$checked_path" != "$1" ]; then
+          [ -d "$checked_path" ] || fail 'Node ancestor is not a directory'
+        fi
+      fi
+    fi
+    [ "$checked_path" != / ] || break
+    checked_path=$(dirname -- "$checked_path")
+  done
+}
+trust_chain "$fixed_node"
+node_exists=false
+if [ -e "$fixed_node" ] || [ -L "$fixed_node" ]; then
+  node_source=$fixed_node
+  node_exists=true
+else
+  node_source=$(command -v node) || fail 'Node is not installed'
+fi
+case "$node_source" in /*) ;; *) fail 'Node must resolve to an absolute executable';; esac
+trust_chain "$node_source"
+canonical_node=$(readlink -f -- "$node_source") || fail 'cannot resolve Node executable'
+[ -f "$canonical_node" ] && [ -x "$canonical_node" ] || fail 'Node target is not an executable regular file'
+trust_chain "$canonical_node"
+if [ "$node_exists" = true ] && [ -L "$fixed_node" ]; then
+  [ "$(readlink -- "$fixed_node")" = "$canonical_node" ] || fail 'fixed Node symlink must point directly to its canonical target'
+fi
+# All Node preflight checks precede either installer writing files.
 sh "$source_dir/../managed-launcher/install"
+if [ "$node_exists" = false ]; then
+  install -d -o root -g root -m 755 /opt/subscription-runtime/runtime
+  ln -s "$canonical_node" "$fixed_node" || fail 'fixed Node appeared during installation'
+fi
 target=/opt/subscription-runtime/host-jobs
 install -d -m 755 "$target"
 for file in contract.mjs manager.mjs read-request.mjs endpoint.mjs storage-policy.mjs; do

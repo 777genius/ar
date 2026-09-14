@@ -1,15 +1,76 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, unlink, rmdir, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, unlink, rmdir, stat, rm, realpath, readlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HostJobs } from './manager.mjs';
+import { HostJobs, systemCommand } from './manager.mjs';
 import { hostTransport, sshOutput } from '../../scripts/ops/host-job-transport.mjs';
 import { hostJobCli } from '../../scripts/ops/host-job-cli.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { hostLock } from '../../scripts/ops/host-job-lock.mjs';
 import { requireHostStorage, loadManagedStorageRoot } from './storage-policy.mjs';
+
+test('system command defaults the user runtime directory and preserves inherited environment', async t => {
+  const previous = process.env.XDG_RUNTIME_DIR;
+  t.after(() => {
+    if (previous === undefined) delete process.env.XDG_RUNTIME_DIR;
+    else process.env.XDG_RUNTIME_DIR = previous;
+  });
+  delete process.env.XDG_RUNTIME_DIR;
+  t.mock.method(process, 'getuid', () => 0);
+  const inherited = { ...process.env };
+  const output = await systemCommand('/usr/bin/systemctl', ['--user', 'show', 'test.service'], async (cmd, args, options) => {
+    assert.equal(cmd, '/usr/bin/systemctl');
+    assert.deepEqual(args, ['--user', 'show', 'test.service']);
+    assert.deepEqual(options, { timeout: 15000, maxBuffer: 1048576, env: { ...inherited, XDG_RUNTIME_DIR: '/run/user/0' } });
+    return { stdout: 'LoadState=not-found' };
+  });
+  assert.equal(output, 'LoadState=not-found');
+  assert.equal(process.env.XDG_RUNTIME_DIR, undefined);
+  for (const explicit of ['/run/user/1234', '']) {
+    process.env.XDG_RUNTIME_DIR = explicit;
+    await systemCommand('/usr/bin/systemctl', ['--user', 'show'], async (_cmd, _args, options) => {
+      assert.equal(options.env.XDG_RUNTIME_DIR, explicit);
+      return { stdout: '' };
+    });
+  }
+});
+
+test('system command retains inherited environment when getuid is unavailable', async t => {
+  const getuid = process.getuid;
+  const previous = process.env.XDG_RUNTIME_DIR;
+  t.after(() => {
+    process.getuid = getuid;
+    if (previous === undefined) delete process.env.XDG_RUNTIME_DIR;
+    else process.env.XDG_RUNTIME_DIR = previous;
+  });
+  process.getuid = undefined;
+  delete process.env.XDG_RUNTIME_DIR;
+  await systemCommand('/usr/bin/systemctl', ['--user', 'show'], async (_cmd, _args, options) => {
+    assert.deepEqual(options.env, { ...process.env });
+    assert.equal(Object.hasOwn(options.env, 'XDG_RUNTIME_DIR'), false);
+    return { stdout: '' };
+  });
+});
+
+test('system command never swallows unavailable user or system bus errors', async () => {
+  for (const scope of [[], ['--user']]) {
+    for (const stderr of ['Failed to connect to bus: No medium found\n', 'Failed to connect to bus: Permission denied\n']) {
+      const failure = Object.assign(new Error(stderr), { code: 1, stdout: '', stderr });
+      await assert.rejects(systemCommand('/usr/bin/systemctl', [...scope, 'show', 'test.service'], async () => { throw failure; }), error => error === failure);
+      const { manager, calls } = await fixture();
+      const run = manager.run;
+      manager.run = async (cmd, args) => {
+        if (args.includes('--user') === scope.includes('--user')) throw failure;
+        return run(cmd, args);
+      };
+      await assert.rejects(manager.start(request), error => error === failure);
+      assert.equal(await manager.read(request.jobId), null);
+      assert.equal(calls.filter(isLaunch).length, 0);
+    }
+  }
+});
 
 function fakeStorage(overrides = {}) {
   const calls = [];
@@ -351,6 +412,48 @@ test('transport serializes host calls and sends payload only on stdin', async ()
   const remote = calls.filter(x => x.stdin);
   assert.ok(remote.every(x => x.args.includes('-oProxyCommand=false')));
   assert.ok(remote.every(x => !x.args.includes(request.jobId)));
+  assert.ok(remote.every(x => JSON.parse(x.stdin).machineId === request.machineId));
+  assert.ok(remote.every(x => JSON.stringify(x.args.slice(-2)) === JSON.stringify([
+    '/opt/subscription-runtime/runtime/node', '/opt/subscription-runtime/host-jobs/endpoint.mjs',
+  ])));
+});
+test('Node installer accepts both layouts and rejects untrusted paths before writes', async () => {
+  const source = await readFile(new URL('./install', import.meta.url), 'utf8');
+  for (const scenario of ['system', 'fixed', 'untrusted-source', 'untrusted-fixed', 'writable-ancestor']) {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'host-node-install-test-')));
+    try {
+      const bin = join(root, 'bin');
+      const runtime = join(root, 'opt/subscription-runtime/runtime');
+      const scripts = join(root, 'host-jobs');
+      const trace = join(root, 'writes');
+      await Promise.all([bin, runtime, scripts, join(root, 'managed-launcher')].map(dir => mkdir(dir, { recursive: true })));
+      const executable = (path, body) => writeFile(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+      await executable(join(bin, 'id'), 'printf "0\\n"');
+      // Fake ownership metadata only; real filesystem checks and resolution run
+      // exclusively inside this disposable installation tree.
+      await executable(join(bin, 'stat'), 'field=$2; shift 2; if [ "$field" = %u ]; then if [ "$1" = "$BAD_OWNER" ]; then echo 1000; else echo 0; fi; else if [ "$1" = "$BAD_MODE" ]; then echo 777; else echo 755; fi; fi');
+      await executable(join(bin, 'install'), 'echo install >> "$TRACE"');
+      await executable(join(root, 'managed-launcher/install'), 'echo managed >> "$TRACE"');
+      await executable(join(bin, 'node'), 'exit 99');
+      const fixed = join(runtime, 'node');
+      if (scenario === 'fixed' || scenario === 'untrusted-fixed') await executable(fixed, 'exit 98');
+      await writeFile(join(scripts, 'install'), source.replaceAll('/opt/subscription-runtime', join(root, 'opt/subscription-runtime')));
+      const invocation = promisify(execFile)('/bin/sh', [join(scripts, 'install')], { env: {
+        PATH: `${bin}:/usr/bin:/bin`, TRACE: trace,
+        BAD_OWNER: scenario === 'untrusted-source' || scenario === 'fixed' ? join(bin, 'node') : scenario === 'untrusted-fixed' ? fixed : '',
+        BAD_MODE: scenario === 'writable-ancestor' ? runtime : '',
+      } });
+      if (scenario === 'system' || scenario === 'fixed') {
+        await invocation;
+        assert.match(await readFile(trace, 'utf8'), /managed/);
+        if (scenario === 'system') assert.equal(await readlink(fixed), join(bin, 'node'));
+        else assert.equal(await readFile(fixed, 'utf8'), '#!/bin/sh\nexit 98\n');
+      } else {
+        await assert.rejects(invocation, /Node path/);
+        await assert.rejects(stat(trace), { code: 'ENOENT' });
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
 });
 test('transport reconnects a lost master once and does not retry endpoint errors', async () => {
   let checks = 0;

@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { hostLock } from './host-job-lock.mjs';
 
 const endpoint = '/opt/subscription-runtime/host-jobs/endpoint.mjs';
+// The installer establishes this trusted executable independently of host PATH.
+const endpointNode = '/opt/subscription-runtime/runtime/node';
 const hosts = new Map();
 export function sshOutput(code, output) {
   if (code === 0 || (code !== 255 && output.trim().startsWith('{'))) return output;
@@ -67,7 +69,7 @@ export function hostTransport({ host, machineId, socketDir, run = command }) {
         await generation;
         // ProxyCommand=false prevents OpenSSH opening a fresh connection if the
         // multiplex socket vanishes between check and command dispatch.
-        const args = [...base, '-oControlMaster=no', '-oProxyCommand=false', host, '/usr/bin/node', endpoint];
+        const args = [...base, '-oControlMaster=no', '-oProxyCommand=false', host, endpointNode, endpoint];
         let output;
         try { output = await run(args, JSON.stringify(request)); }
         catch {

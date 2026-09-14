@@ -12,8 +12,11 @@ function managerArgs(record) {
   if (record.manager === 'user') return ['--user'];
   throw new Error('invalid persisted manager');
 }
-async function systemCommand(cmd, args) {
-  try { return (await execute(cmd, args, { timeout: 15000, maxBuffer: 1048576 })).stdout; }
+export async function systemCommand(cmd, args, executeCommand = execute) {
+  const env = { ...process.env };
+  // Noninteractive SSH may omit the runtime directory of the existing user bus.
+  if (env.XDG_RUNTIME_DIR === undefined && typeof process.getuid === 'function') env.XDG_RUNTIME_DIR = `/run/user/${process.getuid()}`;
+  try { return (await executeCommand(cmd, args, { timeout: 15000, maxBuffer: 1048576, env })).stdout; }
   catch (error) {
     if (cmd === '/usr/bin/systemctl' && args.includes('show') && error.code === 4 && error.stdout.includes('LoadState=not-found')) return error.stdout;
     throw error;
