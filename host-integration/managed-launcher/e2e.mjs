@@ -7,6 +7,8 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { requireHostStorage, prepareManagedJobLayout } from '../host-jobs/storage-policy.mjs';
+import { HostJobs } from '../host-jobs/manager.mjs';
+import { unitFor, fingerprint } from '../host-jobs/contract.mjs';
 
 const POLICY = '/etc/subscription-runtime/storage-policy.json';
 const WRAPPER = '/opt/subscription-runtime/managed-launcher/launch.mjs';
@@ -51,20 +53,34 @@ async function main() {
   check(!providerLauncher.startsWith(`${policy.storageRoot}/`), 'Provider launcher must be outside writable storage');
   check(external.startsWith(`${policy.storageRoot}/`), 'Disposable external root must be a strict descendant of policy.storageRoot');
   run('/usr/bin/systemctl', ['show-environment']);
-  const unit = `subscription-job-${randomBytes(32).toString('hex')}.service`;
   const jobId = `managed-launcher-e2e-${randomBytes(16).toString('hex')}`;
+  const unit = unitFor(jobId);
   const layout = await prepareManagedJobLayout(jobId);
   const logDirectory = layout.payloadLogs;
   let logDirectoryExisted = true;
   try { await stat(logDirectory); } catch (error) { if (error.code !== 'ENOENT') throw error; logDirectoryExisted = false; }
   const logs = ['stdout', 'stderr'].map(stream => join(logDirectory, `${unit}.${stream}.log`));
   const owned = [layout.jobRoot];
-  let child;
+  let jobs;
+  let launchCount = 0;
   let foreign;
   let foreignExit;
   let foreignFd;
   let preserveFiles = false;
   try {
+    const stateDir = await mkdtemp('/var/lib/managed-launcher-ledger-'); owned.push(stateDir);
+    check(!stateDir.startsWith(`${layout.jobRoot}/`), 'HostJobs ledger must be outside payload jobRoot');
+    jobs = new HostJobs({ stateDir, run: async (command, commandArgs) => {
+      const launching = commandArgs[0] === WRAPPER;
+      if (launching) launchCount++;
+      const result = spawnSync(command, commandArgs, {
+        encoding: 'utf8', timeout: 15000,
+        stdio: launching ? ['ignore', 'pipe', 'pipe', foreignFd.fd] : ['ignore', 'pipe', 'pipe'],
+      });
+      if (!result.error && (result.status === 0 || (command === '/usr/bin/systemctl' &&
+        commandArgs.includes('show') && result.status === 4 && result.stdout.includes('LoadState=not-found')))) return result.stdout;
+      throw new Error(`${command} failed: ${result.error?.message ?? result.stderr}`);
+    } });
     const work = layout.workspace;
     const sentinel = await mkdtemp('/var/lib/managed-launcher-e2e-'); owned.push(sentinel);
     check((await stat(sentinel)).dev === (await stat('/')).dev, 'Sentinel must be backed by root filesystem');
@@ -249,22 +265,24 @@ console.error('synthetic-e2e-stderr');
 await writeFile(${JSON.stringify(resultPath)}, JSON.stringify(result));
 setTimeout(() => {}, 90000);
 `, { flag: 'wx', mode: 0o600 });
-    const request = { operation: 'job', unit, payload: [process.execPath, probe],
-      jobId, fingerprint: unit.slice(17, -8),
-      limits: { memoryMiB: 512, runtimeSeconds: 90, stopSeconds: 30, tasksMax: 64, cpuPercent: 100 } };
-    child = spawn(process.execPath, [WRAPPER, 'job', JSON.stringify(request)], { stdio: ['ignore', 'pipe', 'pipe', foreignFd.fd] });
-    let diagnostics = '';
-    child.stdout.on('data', data => { diagnostics = (diagnostics + data).slice(-16000); });
-    child.stderr.on('data', data => { diagnostics = (diagnostics + data).slice(-16000); });
-    let launchError;
-    child.on('error', error => { launchError = error; });
+    const request = { operation: 'start', jobId, machineId: args[4], argv: [process.execPath, probe],
+      memoryMiB: 512, runtimeSeconds: 90, stopSeconds: 30, tasksMax: 64, cpuPercent: 100 };
+    const started = await jobs.start(request);
+    check(started.phase === 'started' && started.unit === unit && started.manager === 'system' &&
+      started.fingerprint === fingerprint(request), `HostJobs did not start owned job: ${JSON.stringify(started)}`);
+    const invocationId = run('/usr/bin/systemctl', ['show', unit, '--property=InvocationID', '--value']);
+    check(/^[a-f0-9]{32}$/.test(invocationId), 'Missing live systemd invocation identity');
+    const retried = await jobs.start(request);
+    check(retried.retry === true && retried.unit === unit && launchCount === 1 &&
+      run('/usr/bin/systemctl', ['show', unit, '--property=InvocationID', '--value']) === invocationId,
+    'Same-ID retry dispatched another launcher or systemd invocation');
+    const hostJobsEvidence = { stateDir, unit, invocationId, launchCount, sameIdRetry: true, machineId: started.machineId };
     let result;
     for (let i = 0; i < 650; i++) {
       try { result = JSON.parse(await readFile(resultPath, 'utf8')); break; } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
-      check(!launchError && (child.exitCode === null || child.exitCode === 0), `Launcher failed: ${launchError?.message ?? diagnostics}`);
       await delay(100);
     }
-    check(result, `Probe timed out: ${diagnostics}`);
+    check(result, 'HostJobs synthetic probe timed out');
     check(result.goalRunner.status === 'completed', 'Real synthetic goal runner did not complete');
     check(result.goalCli.status === 0 && result.goalCli.error === null, `Real goal CLI status failed: ${JSON.stringify(result.goalCli)}`);
     check(result.identity.uid === 65532 && result.identity.gid === 65532 && result.identity.home === layout.home, `Identity/HOME mismatch: ${JSON.stringify(result.identity)}`);
@@ -293,7 +311,7 @@ setTimeout(() => {}, 90000);
       check((await readFile(logs[index], 'utf8')).includes(`synthetic-e2e-${stream}`), `Missing external ${stream} log marker`);
     }
     check(properties.StandardOutput === 'null' && properties.StandardError === 'null', 'Guard must open external output itself');
-    console.log(JSON.stringify({ ok: true, scope: 'job-confinement-and-synthetic-goal-runner', machineId: args[4], unit, directBypassEvidence, faultEvidence, providerEvidence, result, properties }, null, 2));
+    console.log(JSON.stringify({ ok: true, scope: 'host-jobs-confinement-and-synthetic-goal-runner', machineId: args[4], unit, hostJobsEvidence, directBypassEvidence, faultEvidence, providerEvidence, result, properties }, null, 2));
   } catch (error) {
     // These files belong only to this randomized synthetic unit. Surface a
     // bounded diagnostic before cleanup so a failed confinement canary remains
@@ -313,18 +331,23 @@ setTimeout(() => {}, 90000);
       }
     }
     await foreignFd?.close();
-    // Exact randomized unit only. Stop before deleting its writable root.
-    const stop = spawnSync('/usr/bin/systemctl', ['stop', unit], { encoding: 'utf8', timeout: 15000 });
+    // Persisted machine/description ownership must be proven before stopping.
+    const record = await jobs?.read(jobId);
+    check(record || launchCount === 0, `Launcher ran without ownership ledger; preserving ${owned.join(', ')}`);
+    if (record) {
+      const stopped = await jobs.stop(jobId, args[4]);
+      check(record.phase === 'started' && !stopped.live && !stopped.unresolved,
+        `Uncertain HostJobs outcome; preserving ${owned.join(', ')}`);
+    }
     const active = spawnSync('/usr/bin/systemctl', ['is-active', unit], { encoding: 'utf8', timeout: 15000 });
-    check(!stop.error && !active.error && ['inactive', 'failed', 'unknown'].includes(active.stdout.trim()), `Cleanup could not confirm stopped unit ${unit}; preserving ${owned.join(', ')}`);
-    if (['inactive', 'failed'].includes(active.stdout.trim())) {
+    check(!active.error && ['inactive', 'failed', 'unknown'].includes(active.stdout.trim()), `Cleanup could not confirm stopped unit ${unit}; preserving ${owned.join(', ')}`);
+    if (record && ['inactive', 'failed'].includes(active.stdout.trim())) {
       const reset = spawnSync('/usr/bin/systemctl', ['reset-failed', unit], { encoding: 'utf8', timeout: 15000 });
       if (reset.error || reset.status !== 0) {
         const load = spawnSync('/usr/bin/systemctl', ['show', unit, '--property=LoadState', '--value'], { encoding: 'utf8', timeout: 15000 });
         check(!load.error && load.status === 0 && load.stdout.trim() === 'not-found', `Cleanup could not reset synthetic unit ${unit}; preserving ${owned.join(', ')}`);
       }
     }
-    child?.kill('SIGTERM');
     check(!preserveFiles, `A synthetic unit may remain active; preserving ${owned.join(', ')}`);
     for (const path of logs) await unlink(path).catch(error => { if (error.code !== 'ENOENT') throw error; });
     if (!logDirectoryExisted) await rmdir(logDirectory).catch(error => { if (!['ENOENT', 'ENOTEMPTY'].includes(error.code)) throw error; });
