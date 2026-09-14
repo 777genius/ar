@@ -40,8 +40,8 @@ function local(path: string): string {
     const prefix = "/run/user/0/subscription-runtime-host-policy/" + kind;
     if (path === prefix || path.startsWith(prefix + "/")) return join(fixture.root, directory!, path.slice(prefix.length));
   }
-  if (["/managed", "/work"].includes(path)) return fixture.root;
-  for (const workspace of ["/managed/W", "/work/ordinary-job"]) {
+  if (["/managed", "/work", "/jobs", "/jobs/ordinary-job"].includes(path)) return fixture.root;
+  for (const workspace of ["/managed/W", "/jobs/ordinary-job/workspace"]) {
     if (path === workspace || path.startsWith(workspace + "/")) return join(fixture.root, "managed-W", path.slice(workspace.length));
   }
   if (path === stages || path.startsWith(stages + "/")) return join(fixture.root, "stages", path.slice(stages.length));
@@ -109,7 +109,7 @@ const stageName = "stages/" + hash(runtimeDirectory) + ".json";
 function put(name: string, value: unknown) { writeFileSync(join(fixture.root, name), JSON.stringify(value) + "\n", { mode: 0o600 }); }
 function read(name: string) { return JSON.parse(readFileSync(join(fixture.root, name), "utf8")); }
 function creator() { return { creatorId: "ordinary-creator", jobId: "ordinary-job", jobRootDir: "/jobs/ordinary-job",
-  workspacePath: "/work/ordinary-job", launch: { command: process.execPath, args: [join(runtimeDirectory, "dist/worker-codex/codex-goal-cli.js"), "start", "ordinary-job"], cwd: "/work/ordinary-job" } }; }
+  workspacePath: "/jobs/ordinary-job/workspace", launch: { command: process.execPath, args: [join(runtimeDirectory, "dist/worker-codex/codex-goal-cli.js"), "start", "ordinary-job"], cwd: "/jobs/ordinary-job/workspace" } }; }
 beforeEach(() => {
   vi.spyOn(process, "getuid").mockReturnValue(0);
   fixture.root = mkdtempSync(join(tmpdir(), "ordinary-installation-")); fixture.group = "/system.slice/trusted.service";
@@ -864,11 +864,11 @@ describe("actual ordinary outer dispatcher and fixed bootstrap", () => {
 });
 
 it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default factory revalidate on quota account switch: %s", async mode => {
-  const config = { jobId: "ordinary-job", taskId: "ordinary-job", jobRootDir: join(fixture.root, "job"),
-    workspacePath: join(fixture.root, "workspace"), promptPath: join(fixture.root, "prompt"),
+  const config = { jobId: "ordinary-job", taskId: "ordinary-job", jobRootDir: join(fixture.root, "jobs/ordinary-job"),
+    workspacePath: join(fixture.root, "jobs/ordinary-job/workspace"), promptPath: join(fixture.root, "prompt"),
     authRootDir: join(fixture.root, "unused-synthetic-auth"), accounts: codexGoalAccountSlots(["fake-a", "fake-b"]),
     maxAccountCycles: 1, sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } };
-  mkdirSync(config.jobRootDir); mkdirSync(config.workspacePath); writeFileSync(config.promptPath, "Offline rotation");
+  mkdirSync(config.jobRootDir, { recursive: true, mode: 0o700 }); mkdirSync(config.workspacePath); writeFileSync(config.promptPath, "Offline rotation");
   const bound = { ...creator(), jobRootDir: config.jobRootDir, workspacePath: config.workspacePath,
     launch: { ...creator().launch, cwd: config.workspacePath } };
   put("readonly-inventory.json", { ...read("readonly-inventory.json"), ordinaryCreators: [bound] });
