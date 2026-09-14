@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { admitManagedGoal, isAdmittedManagedGoal, type ManagedGoalAdmissionDeps } from "./managed-goal-admission";
+import { admitManagedGoal, usesManagedJobLayout, type ManagedGoalAdmissionDeps } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { ObservabilityPort } from "@vioxen/subscription-runtime/core";
@@ -508,7 +508,7 @@ export function codexGoalOutputPath(
 export function codexGoalRuntimeEventsPath(
   config: Pick<CodexGoalRunConfig, "jobRootDir" | "taskId" | "outputPath">,
 ): string {
-  return join(isAdmittedManagedGoal(config as CodexGoalRunConfig) && config.outputPath
+  return join(usesManagedJobLayout(config as CodexGoalRunConfig) && config.outputPath
     ? dirname(config.outputPath) : config.jobRootDir, `${config.taskId}.events.jsonl`);
 }
 

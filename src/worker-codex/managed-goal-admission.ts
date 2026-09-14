@@ -1,6 +1,5 @@
 import { join } from "node:path";
-import { access } from "node:fs/promises";
-import { requireManagedLaunchKernelProof } from './managed-launch-kernel-proof';
+import { lstat } from "node:fs/promises";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import { deriveManagedJobLayout, MANAGED_JOB_ROOT_ENV, MANAGED_JOB_ID_ENV, MANAGED_MARKER_ENV } from "./managed-job-layout";
 
@@ -8,15 +7,32 @@ export const managedGoalActivationPath = "/opt/subscription-runtime/managed-laun
 export interface ManagedGoalAdmissionDeps {
   readonly platform?: NodeJS.Platform;
   readonly isManagedHost?: () => Promise<boolean>;
-  readonly requireKernelProof?: () => Promise<void>;
 }
 export interface ManagedGoalAdmission {
   readonly config: CodexGoalRunConfig;
   readonly logPath?: string;
   readonly registryRootDir?: string;
 }
-export function isAdmittedManagedGoal(config: CodexGoalRunConfig): boolean {
+/** Layout selection only; never a launch authorization predicate. */
+export function usesManagedJobLayout(config: CodexGoalRunConfig): boolean {
   return config.sourceEnv?.[MANAGED_MARKER_ENV] === "1";
+}
+
+/** Routing only: systemd masks this marker inside the confined payload unit.
+ * This does not attest custody; only the host launcher enforces confinement.
+ */
+export async function isManagedGoalHost(
+  inspect: (path: string) => Promise<{ readonly rdev: number; isCharacterDevice(): boolean }> = lstat,
+): Promise<boolean> {
+  try {
+    const marker = await inspect(managedGoalActivationPath);
+    // Only the launcher's /dev/null bind selects payload routing. A damaged
+    // regular marker (including mode 000), symlink, or other node fails closed.
+    return !(marker.isCharacterDevice() && marker.rdev === 259);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 /** A single read-only host admission, before registry, launch, or runner writes. */
@@ -26,13 +42,10 @@ export async function admitManagedGoal(
   if ((deps.platform ?? process.platform) !== "linux") return input;
   const config = input.config;
   const env = config.sourceEnv ?? process.env;
-  const managed = await (deps.isManagedHost ?? (async () => {
-    try { await access(managedGoalActivationPath); return true; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
-  }))();
-  if (!managed && env[MANAGED_MARKER_ENV] === undefined) return input;
+  const managed = await (deps.isManagedHost ?? isManagedGoalHost)();
+  if (managed) throw new Error('Managed host requires root-owned launcher; submit through Host Jobs API');
+  if (env[MANAGED_MARKER_ENV] === undefined) return input;
   if (env[MANAGED_MARKER_ENV] !== "1" || !env[MANAGED_JOB_ROOT_ENV] || !env[MANAGED_JOB_ID_ENV]) throw new Error('Managed host requires root-owned launcher');
-  await (deps.requireKernelProof ?? requireManagedLaunchKernelProof)();
   const layout = deriveManagedJobLayout(env[MANAGED_JOB_ROOT_ENV]!, env[MANAGED_JOB_ID_ENV]!);
   if (layout.jobId !== (config.jobId ?? config.taskId)) throw new Error('Managed job identity mismatch');
   // taskId becomes a filename, so it has the same closed identifier contract.

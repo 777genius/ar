@@ -2,24 +2,10 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { fstatSync, constants } from 'node:fs';
-import { mkdir, lstat, open, readFile } from 'node:fs/promises';
+import { mkdir, lstat, open } from 'node:fs/promises';
 import { requireFinalJobStorage } from '../host-jobs/storage-policy.mjs';
 
 export const PAYLOAD_GUARD_PATH = '/opt/subscription-runtime/managed-launcher/payload-guard.mjs';
-
-export async function requireMappedHostRootUid({ read = path => readFile(path, 'utf8'), uid = () => process.geteuid(), gid = () => process.getegid() } = {}) {
-  const parse = text => {
-    const lines = text.trim().split('\n').map(line => line.trim().split(/\s+/).map(Number));
-    if (lines.length !== 1 || lines[0].length !== 3 || lines[0].some(value => !Number.isSafeInteger(value))) {
-      throw new Error('managed payload: invalid user namespace');
-    }
-    return lines[0];
-  };
-  const [uidMap, gidMap] = await Promise.all([read('/proc/self/uid_map'), read('/proc/self/gid_map')]).then(values => values.map(parse));
-  if (uid() !== 65532 || gid() !== 65532 || uidMap[0] !== 65532 || uidMap[1] !== 0 || uidMap[2] !== 1 ||
-      gidMap[0] !== 65532 || gidMap[1] !== 0 || gidMap[2] !== 1) throw new Error('managed payload: invalid user namespace');
-  return 65532n;
-}
 
 export async function openJobLogs(directory, unit, device, probe = { mkdir, lstat, open }, expectedUid = 0n) {
   if (!/^subscription-job-[a-f0-9]{64}\.service$/.test(unit)) throw new Error('managed payload: invalid job unit');
@@ -47,7 +33,7 @@ export async function openJobLogs(directory, unit, device, probe = { mkdir, lsta
 // namespace. A missing external mount must never expose a root-backed cwd.
 export async function runGuardedPayload(args, { cwd = process.cwd(), admit = requireFinalJobStorage, launch = spawn,
   fstat = fd => fstatSync(fd, { bigint: true }),
-  owner = requireMappedHostRootUid, jobId, jobUnit, logs = openJobLogs } = {}) {
+  owner = async () => BigInt(process.geteuid()), jobId, jobUnit, logs = openJobLogs } = {}) {
   if (!Array.isArray(args) || !args[0]?.startsWith('/') || args.some(arg => typeof arg !== 'string' || arg.includes('\0'))) {
     throw new Error('managed payload: invalid command');
   }

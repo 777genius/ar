@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSystemdInvocation, managedLauncherInvocation } from './launch.mjs';
-import { runGuardedPayload, PAYLOAD_GUARD_PATH, openJobLogs, requireMappedHostRootUid } from './payload-guard.mjs';
-import { socketFence, bootstrapCaps } from './profiles.mjs';
+import { runGuardedPayload, PAYLOAD_GUARD_PATH, openJobLogs } from './payload-guard.mjs';
+import { socketFence, bootstrapCaps, managedHostMarkerPath } from './profiles.mjs';
 import { deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
 const job = { operation: 'job', unit: `subscription-job-${'a'.repeat(64)}.service`, payload: ['/usr/bin/true'],
   jobId: 'test-1.foo-bar_', fingerprint: 'a'.repeat(64), limits: { runtimeSeconds: 90, stopSeconds: 30, memoryMiB: 256, tasksMax: 64, cpuPercent: 100 } };
@@ -135,14 +135,10 @@ test('job opens external logs after admission and passes actual open descriptors
     launch: (command, args, options) => { events.push('launch'); assert.deepEqual(options.stdio, ['ignore', 7, 8]); } });
   assert.deepEqual(events, ['admit', 'open', 'launch', 'close', 'close']);
 });
-test('final guard accepts only the exact mapped host-root identity', async () => {
-  const read = async path => path.endsWith('uid_map') ? '     65532          0          1\n' : '     65532          0          1\n';
-  assert.equal(await requireMappedHostRootUid({ read, uid: () => 65532, gid: () => 65532 }), 65532n);
-  for (const options of [
-    { read, uid: () => 0, gid: () => 65532 },
-    { read: async () => '0 0 4294967295\n', uid: () => 65532, gid: () => 65532 },
-    { read: async () => '65532 1000 1\n', uid: () => 65532, gid: () => 65532 },
-  ]) await assert.rejects(requireMappedHostRootUid(options), /invalid user namespace/);
+test('launcher masks direct-launch routing only inside the confined unit', async () => {
+  const invocation = await build(job);
+  assert.ok(invocation.args.includes(`--property=BindReadOnlyPaths=/dev/null:${managedHostMarkerPath}:norbind`));
+  assert.ok(invocation.args.includes('--property=ProtectSystem=strict'));
 });
 test('log descriptors reject foreign devices and hard links and close on failure', async () => {
   for (const fault of ['device', 'hardlink', 'directory', 'valid']) {

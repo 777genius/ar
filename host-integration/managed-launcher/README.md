@@ -55,11 +55,17 @@ Directory creation uses retained, validated directory descriptors through
 mkdir onto the root disk.
 
 The installer also installs a stable `managed-host` activation marker separately
-from policy. Direct managed-host goal CLI calls fail before writes unless the
-launcher provides `SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1` with exact bounded
+from policy. Direct managed-host goal CLI calls always fail before writes and
+instruct callers to submit through the Host Jobs API. Environment values cannot
+override the installation marker. The trusted launcher masks that marker with
+systemd `BindReadOnlyPaths=/dev/null:<marker>:norbind` inside the confined unit.
+The runtime recognizes the exact null character-device placeholder as payload
+routing, not custody evidence; malformed regular markers still deny direct launch. The launcher
+provides `SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1` with exact bounded
 `SUBSCRIPTION_RUNTIME_JOB_ROOT` and `SUBSCRIPTION_RUNTIME_JOB_ID` values. TypeScript
 derives convenience paths from that pair; it does not read policy or probe filesystems.
-The marker is operational routing, not a security credential. Missing policy
+Neither the environment nor UID maps nor the routing marker attest custody.
+The host launcher and its kernel profile own enforcement. Missing policy
 cannot silently restore legacy behavior. Nonmanaged Linux and local platforms
 retain legacy operation. The per-job goal registry lives in `state/registry`;
 the authoritative HostJobs lifecycle ledger is separate.
