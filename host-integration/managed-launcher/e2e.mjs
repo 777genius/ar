@@ -282,7 +282,10 @@ setTimeout(() => {}, 90000);
     check(!stop.error && !active.error && ['inactive', 'failed', 'unknown'].includes(active.stdout.trim()), `Cleanup could not confirm stopped unit ${unit}; preserving ${owned.join(', ')}`);
     if (['inactive', 'failed'].includes(active.stdout.trim())) {
       const reset = spawnSync('/usr/bin/systemctl', ['reset-failed', unit], { encoding: 'utf8', timeout: 15000 });
-      check(!reset.error && reset.status === 0, `Cleanup could not reset synthetic unit ${unit}; preserving ${owned.join(', ')}`);
+      if (reset.error || reset.status !== 0) {
+        const load = spawnSync('/usr/bin/systemctl', ['show', unit, '--property=LoadState', '--value'], { encoding: 'utf8', timeout: 15000 });
+        check(!load.error && load.status === 0 && load.stdout.trim() === 'not-found', `Cleanup could not reset synthetic unit ${unit}; preserving ${owned.join(', ')}`);
+      }
     }
     child?.kill('SIGTERM');
     check(!preserveFiles, `A synthetic unit may remain active; preserving ${owned.join(', ')}`);
