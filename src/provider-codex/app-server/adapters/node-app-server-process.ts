@@ -105,7 +105,7 @@ export function codexAppServerProcessInvocation(input: {
     throw new Error("host-job detached provider ownership is not supported");
   }
   const jobId = admittedMounts ? admittedMounts.jobId : input.env.SUBSCRIPTION_RUNTIME_JOB_ID;
-  if (typeof jobId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(jobId)) {
+  if (typeof jobId !== "string" || jobId !== jobId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(jobId)) {
     throw new Error("hosted_managed_job_identity_required");
   }
   const systemdUnit =

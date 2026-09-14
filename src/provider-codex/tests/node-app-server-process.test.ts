@@ -65,7 +65,7 @@ describe("hosted Codex app-server resource containment", () => {
     expect(JSON.parse(invocation.args[2]!).payload).toEqual(["/sandbox/node", "/sandbox/hosted-app-server-launcher.js"]);
   });
 
-  it.each([undefined, "", "../escape", "/absolute", "bad/name", "a".repeat(129)])("rejects invalid managed job identity %j", jobId => {
+  it.each([undefined, "", "../escape", "/absolute", "bad/name", "task:checkpoint", " a", "a".repeat(129)])("rejects invalid managed job identity %j", jobId => {
     expect(() => codexAppServerProcessInvocation({
       command: "/synthetic/codex", args: ["app-server"], cwd: "/synthetic/home",
       env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
@@ -87,7 +87,7 @@ describe("hosted Codex app-server resource containment", () => {
     expect(JSON.parse(invocation.stdinBootstrap!).env.SUBSCRIPTION_RUNTIME_JOB_ID).toBe("admitted");
   });
 
-  it.each(["task:checkpoint", "a", "a".repeat(128)])("accepts managed contract identity %j", jobId => {
+  it.each(["a", "a".repeat(128)])("accepts managed contract identity %j", jobId => {
     const invocation = codexAppServerProcessInvocation({
       command: "/synthetic/codex", args: ["app-server"], cwd: "/synthetic/home",
       env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job", SUBSCRIPTION_RUNTIME_JOB_ID: jobId },
