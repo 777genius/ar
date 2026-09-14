@@ -132,6 +132,7 @@ async function main() {
     manager = new poison.HostJobs({ stateDir, run: scopedSystemctl(record.unit, run) });
     result = await verifyLegacyLifecycle(manager, record);
     stopped = true;
+    if (result.after.ActiveState === 'failed') await run('/usr/bin/systemctl', ['reset-failed', record.unit]);
     legacyUser = await verifyLegacyUserService({ HostJobs: poison.HostJobs, machineId, run,
       scopedSystemctl, verifyLegacyLifecycle });
     assert.equal(poison.evidence.calls, 0, 'Lifecycle accessed storage admission');

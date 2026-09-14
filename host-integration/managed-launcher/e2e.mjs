@@ -280,6 +280,10 @@ setTimeout(() => {}, 90000);
     const stop = spawnSync('/usr/bin/systemctl', ['stop', unit], { encoding: 'utf8', timeout: 15000 });
     const active = spawnSync('/usr/bin/systemctl', ['is-active', unit], { encoding: 'utf8', timeout: 15000 });
     check(!stop.error && !active.error && ['inactive', 'failed', 'unknown'].includes(active.stdout.trim()), `Cleanup could not confirm stopped unit ${unit}; preserving ${owned.join(', ')}`);
+    if (['inactive', 'failed'].includes(active.stdout.trim())) {
+      const reset = spawnSync('/usr/bin/systemctl', ['reset-failed', unit], { encoding: 'utf8', timeout: 15000 });
+      check(!reset.error && reset.status === 0, `Cleanup could not reset synthetic unit ${unit}; preserving ${owned.join(', ')}`);
+    }
     child?.kill('SIGTERM');
     check(!preserveFiles, `A synthetic unit may remain active; preserving ${owned.join(', ')}`);
     for (const path of logs) await unlink(path).catch(error => { if (error.code !== 'ENOENT') throw error; });
