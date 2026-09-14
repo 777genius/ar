@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Explicitly opt-in: run only as root on a disposable Linux test host.
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, writeFile, chmod, stat, realpath, rm, unlink, rmdir, open } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, chmod, stat, realpath, rm, unlink, rmdir, open, symlink, mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { requireHostStorage, prepareManagedJobLayout } from '../host-jobs/storage-policy.mjs';
 
@@ -18,8 +19,8 @@ function run(command, args) {
 
 async function main() {
   const args = process.argv.slice(2);
-  check(args.length === 5 && args[0] === '--allow-live-synthetic' && args[1] === '--external-root' && args[3] === '--expected-machine-id',
-    'Usage: sudo node e2e.mjs --allow-live-synthetic --external-root /disposable/external/test-root --expected-machine-id ID');
+  check(args.length === 9 && args[0] === '--allow-live-synthetic' && args[1] === '--external-root' && args[3] === '--expected-machine-id' && args[5] === '--goal-cli' && args[7] === '--provider-launcher',
+    'Usage: sudo node e2e.mjs --allow-live-synthetic --external-root /disposable/external/test-root --expected-machine-id ID --goal-cli /trusted/dist/worker-codex/codex-goal-cli.js --provider-launcher /trusted/dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js');
   check(process.platform === 'linux' && process.getuid() === 0, 'Requires root on disposable Linux host');
   check((await readFile('/etc/machine-id', 'utf8')).trim() === args[4], 'Machine identity mismatch');
   const external = resolve(args[2]);
@@ -27,11 +28,17 @@ async function main() {
   check((await stat(external)).isDirectory() && (await stat(external)).dev !== (await stat('/')).dev, 'External root must be on another filesystem');
   // Read the deployed policy unchanged so launcher and final namespace guard
   // observe the same trusted admission state.
-  for (const path of [POLICY, WRAPPER, process.execPath]) {
+  const goalCli = resolve(args[6]);
+  const providerLauncher = resolve(args[8]);
+  check(providerLauncher === args[8] && providerLauncher.endsWith('/hosted-app-server-launcher.js'), 'Provider launcher must be an absolute installed runtime path');
+  check(goalCli === args[6] && goalCli.endsWith('/codex-goal-cli.js'), 'Goal CLI must be an absolute installed runtime path');
+  for (const path of [POLICY, WRAPPER, process.execPath, goalCli, providerLauncher]) {
     const metadata = await stat(path);
     check(await realpath(path) === path && metadata.isFile() && metadata.uid === 0 && !(metadata.mode & 0o022), `Untrusted installed file: ${path}`);
   }
   const policy = await requireHostStorage(external, POLICY);
+  check(!goalCli.startsWith(`${policy.storageRoot}/`), 'Goal CLI must be outside writable storage');
+  check(!providerLauncher.startsWith(`${policy.storageRoot}/`), 'Provider launcher must be outside writable storage');
   check(external.startsWith(`${policy.storageRoot}/`), 'Disposable external root must be a strict descendant of policy.storageRoot');
   run('/usr/bin/systemctl', ['--user', 'show-environment']);
   const unit = `subscription-job-${randomBytes(32).toString('hex')}.service`;
@@ -46,11 +53,57 @@ async function main() {
   let foreign;
   let foreignExit;
   let foreignFd;
+  let preserveFiles = false;
   try {
     const work = layout.workspace;
     const sentinel = await mkdtemp('/var/lib/managed-launcher-e2e-'); owned.push(sentinel);
     check((await stat(sentinel)).dev === (await stat('/')).dev, 'Sentinel must be backed by root filesystem');
     await chmod(sentinel, 0o777);
+    const faultEvidence = [];
+    for (const mode of ['lost-storage', 'nested-root']) {
+      const faultLayout = await prepareManagedJobLayout(`managed-e2e-fault-${randomBytes(16).toString('hex')}`);
+      owned.push(faultLayout.jobRoot);
+      const source = await mkdtemp('/var/lib/managed-launcher-fault-'); owned.push(source);
+      await mkdir(join(faultLayout.workspace, 'nested-root'));
+      const fingerprint = randomBytes(32).toString('hex');
+      const faultUnit = `subscription-job-${fingerprint}.service`;
+      const request = { operation: 'job', unit: faultUnit, jobId: faultLayout.jobId, fingerprint,
+        payload: [process.execPath, '-e', 'process.exit(97)'],
+        limits: { memoryMiB: 128, runtimeSeconds: 5, stopSeconds: 5, tasksMax: 32, cpuPercent: 100 } };
+      try {
+        faultEvidence.push(JSON.parse(run('/usr/bin/unshare', ['--mount', '--propagation', 'private', process.execPath,
+          fileURLToPath(new URL('./fixtures/mount-fault.mjs', import.meta.url)),
+          JSON.stringify({ mode, source, layout: faultLayout, request, wrapper: WRAPPER })])));
+      } finally {
+        // Even a broken admission may have dispatched the exact synthetic unit.
+        spawnSync('/usr/bin/systemctl', ['--user', 'stop', faultUnit], { encoding: 'utf8', timeout: 10000 });
+        const state = spawnSync('/usr/bin/systemctl', ['--user', 'is-active', faultUnit], { encoding: 'utf8', timeout: 5000 });
+        if (state.error || !['inactive', 'failed', 'unknown'].includes(state.stdout.trim())) preserveFiles = true;
+        check(!preserveFiles, 'Fault unit not stopped');
+      }
+    }
+    const providerLayout = await prepareManagedJobLayout(`managed-e2e-provider-${randomBytes(16).toString('hex')}`);
+    owned.push(providerLayout.jobRoot);
+    const providerUnit = `subscription-runtime-hosted-${randomUUID()}.service`;
+    let providerEvidence;
+    try {
+      const marker = `synthetic-provider-${randomBytes(16).toString('hex')}`;
+      const frame = { schemaVersion: 1, command: process.execPath,
+        args: ['-e', "let input=''; process.stdin.setEncoding('utf8'); process.stdin.on('data', data => input += data); process.stdin.on('end', () => { process.stdout.write(input); process.stderr.write('synthetic-provider-stderr'); });"],
+        cwd: providerLayout.workspace, env: { HOME: providerLayout.home, TMPDIR: providerLayout.tmp } };
+      const roundtrip = spawnSync(process.execPath, [WRAPPER, 'provider', JSON.stringify({ operation: 'provider',
+        unit: providerUnit, jobId: providerLayout.jobId, payload: [process.execPath, providerLauncher] })],
+      { encoding: 'utf8', input: `${JSON.stringify(frame)}\n${marker}`, timeout: 20000 });
+      check(!roundtrip.error && roundtrip.status === 0 && roundtrip.stdout === marker && roundtrip.stderr.includes('synthetic-provider-stderr'),
+        `Provider pipe roundtrip failed: ${roundtrip.error?.message ?? roundtrip.stderr}`);
+      providerEvidence = { pipeRoundtrip: true, installedLauncher: providerLauncher };
+    } finally {
+      spawnSync('/usr/bin/systemctl', ['stop', providerUnit], { encoding: 'utf8', timeout: 10000 });
+      const state = spawnSync('/usr/bin/systemctl', ['is-active', providerUnit], { encoding: 'utf8', timeout: 5000 });
+      if (state.error || !['inactive', 'failed', 'unknown'].includes(state.stdout.trim())) preserveFiles = true;
+      check(!preserveFiles, 'Provider unit not stopped');
+    }
+    for (const directory of [work, layout.home]) await symlink(sentinel, join(directory, 'root-link'));
     check((await stat(WRAPPER)).dev === (await stat('/')).dev, 'Trusted hardlink source must be backed by root filesystem');
     const inheritedFile = join(sentinel, 'inherited-fd');
     foreignFd = await open(inheritedFile, 'wx', 0o600);
@@ -73,9 +126,22 @@ async function main() {
     check(await realpath(`/proc/${foreign.pid}/cwd`) === sentinel && await realpath(`/proc/${foreign.pid}/fd/3`) === inheritedFile, 'Foreign process did not retain synthetic cwd/fd');
     const resultPath = join(work, 'result.json');
     const probe = join(work, 'probe.mjs');
+    await writeFile(join(work, 'synthetic-goal.mjs'), await readFile(new URL('./fixtures/synthetic-goal.mjs', import.meta.url)), { flag: 'wx', mode: 0o600 });
     await writeFile(probe, `import { writeFile, readFile, mkdir, readdir, lstat, statfs, link } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { runSyntheticGoal } from './synthetic-goal.mjs';
 const result = {};
+result.goalRunner = await runSyntheticGoal(${JSON.stringify(goalCli)}, ${JSON.stringify(layout)}, ${JSON.stringify(jobId)});
+result.identity = { uid: process.getuid(), gid: process.getgid(), home: process.env.HOME };
+const cli = spawnSync(process.execPath, [${JSON.stringify(goalCli)}, 'status', '--job-root', ${JSON.stringify(layout.jobRoot)}, '--task-id', ${JSON.stringify(jobId)}, '--workspace', ${JSON.stringify(work)}, '--format', 'json'], { encoding: 'utf8', timeout: 15000 });
+result.goalCli = { status: cli.status, error: cli.error?.code ?? null, stdout: cli.stdout, stderr: cli.stderr };
+result.symlinkWrites = {};
+for (const directory of ${JSON.stringify([work, layout.home])}) {
+ try { await writeFile(directory + '/root-link/symlink-escape', 'synthetic'); result.symlinkWrites[directory] = 'succeeded'; }
+ catch (error) { result.symlinkWrites[directory] = error.code; }
+}
+try { await writeFile('/proc/self/fd/3', 'synthetic-escape'); result.inheritedFd = 'succeeded'; }
+catch (error) { result.inheritedFd = error.code; }
 result.layoutWrites = {};
 for (const [key, directory] of Object.entries(${JSON.stringify(Object.fromEntries(['workspace', 'home', 'tmp', 'payloadLogs', 'state', 'logs', 'output', 'jobRoot'].map(key => [key, layout[key]])))})) {
  try { await writeFile(directory + '/synthetic-layout-probe', 'synthetic'); result.layoutWrites[key] = 'writable'; }
@@ -124,20 +190,25 @@ setTimeout(() => {}, 90000);
 `, { flag: 'wx', mode: 0o600 });
     const request = { operation: 'job', unit, payload: [process.execPath, probe],
       jobId, fingerprint: unit.slice(17, -8),
-      limits: { memoryMiB: 256, runtimeSeconds: 90, stopSeconds: 30, tasksMax: 64, cpuPercent: 100 } };
-    child = spawn(process.execPath, [WRAPPER, 'job', JSON.stringify(request)], { stdio: ['ignore', 'pipe', 'pipe'] });
+      limits: { memoryMiB: 512, runtimeSeconds: 90, stopSeconds: 30, tasksMax: 64, cpuPercent: 100 } };
+    child = spawn(process.execPath, [WRAPPER, 'job', JSON.stringify(request)], { stdio: ['ignore', 'pipe', 'pipe', foreignFd.fd] });
     let diagnostics = '';
     child.stdout.on('data', data => { diagnostics = (diagnostics + data).slice(-16000); });
     child.stderr.on('data', data => { diagnostics = (diagnostics + data).slice(-16000); });
     let launchError;
     child.on('error', error => { launchError = error; });
     let result;
-    for (let i = 0; i < 150; i++) {
+    for (let i = 0; i < 650; i++) {
       try { result = JSON.parse(await readFile(resultPath, 'utf8')); break; } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
       check(!launchError && (child.exitCode === null || child.exitCode === 0), `Launcher failed: ${launchError?.message ?? diagnostics}`);
       await delay(100);
     }
     check(result, `Probe timed out: ${diagnostics}`);
+    check(result.goalRunner.status === 'completed', 'Real synthetic goal runner did not complete');
+    check(result.goalCli.status === 0 && result.goalCli.error === null, `Real goal CLI status failed: ${JSON.stringify(result.goalCli)}`);
+    check(result.identity.uid === 65532 && result.identity.gid === 65532 && result.identity.home === layout.home, `Identity/HOME mismatch: ${JSON.stringify(result.identity)}`);
+    check(Object.values(result.symlinkWrites).every(value => value === 'EROFS'), `Symlink escape not denied: ${JSON.stringify(result.symlinkWrites)}`);
+    check(['ENOENT', 'EACCES', 'EPERM', 'EBADF', 'EINVAL', 'ENXIO', 'ENODEV'].includes(result.inheritedFd), `Unexpected writable inherited fd: ${result.inheritedFd}`);
     check(foreign.exitCode === null && foreign.signalCode === null, 'Foreign process exited before isolation assertion');
     check(result.foreignProc.visibility === 'ENOENT' && ['ENOENT', 'EACCES', 'EPERM'].includes(result.foreignProc.root) && ['ENOENT', 'EACCES', 'EPERM'].includes(result.foreignProc.fd), `Foreign process exposed: ${JSON.stringify(result.foreignProc)}`);
     check((await readFile(inheritedFile, 'utf8')) === 'synthetic-original', 'Inherited root-backed fd was modified');
@@ -161,7 +232,7 @@ setTimeout(() => {}, 90000);
       check((await readFile(logs[index], 'utf8')).includes(`synthetic-e2e-${stream}`), `Missing external ${stream} log marker`);
     }
     check(properties.StandardOutput === 'null' && properties.StandardError === 'null', 'Guard must open external output itself');
-    console.log(JSON.stringify({ ok: true, machineId: args[4], unit, result, properties }, null, 2));
+    console.log(JSON.stringify({ ok: true, scope: 'job-confinement-and-synthetic-goal-runner', machineId: args[4], unit, faultEvidence, providerEvidence, result, properties }, null, 2));
   } finally {
     // The synthetic foreign process is owned directly, independently of systemd.
     if (foreign && foreign.exitCode === null && foreign.signalCode === null) {
@@ -177,6 +248,7 @@ setTimeout(() => {}, 90000);
     const active = spawnSync('/usr/bin/systemctl', ['--user', 'is-active', unit], { encoding: 'utf8', timeout: 15000 });
     check(!stop.error && !active.error && ['inactive', 'failed', 'unknown'].includes(active.stdout.trim()), `Cleanup could not confirm stopped unit ${unit}; preserving ${owned.join(', ')}`);
     child?.kill('SIGTERM');
+    check(!preserveFiles, `A synthetic unit may remain active; preserving ${owned.join(', ')}`);
     for (const path of logs) await unlink(path).catch(error => { if (error.code !== 'ENOENT') throw error; });
     if (!logDirectoryExisted) await rmdir(logDirectory).catch(error => { if (!['ENOENT', 'ENOTEMPTY'].includes(error.code)) throw error; });
     for (const path of owned.reverse()) await rm(path, { recursive: true, force: false });

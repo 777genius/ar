@@ -52,9 +52,9 @@ mkdir onto the root disk.
 
 The installer also installs a stable `managed-host` activation marker separately
 from policy. Direct managed-host goal CLI calls fail before writes unless the
-launcher provides `SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1` and an exact bounded
-`SUBSCRIPTION_RUNTIME_MANAGED_LAYOUT` JSON value. TypeScript validates this data
-and pins config/environment paths; it does not read policy or probe filesystems.
+launcher provides `SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1` with exact bounded
+`SUBSCRIPTION_RUNTIME_JOB_ROOT` and `SUBSCRIPTION_RUNTIME_JOB_ID` values. TypeScript
+derives convenience paths from that pair; it does not read policy or probe filesystems.
 The marker is operational routing, not a security credential. Missing policy
 cannot silently restore legacy behavior. Nonmanaged Linux and local platforms
 retain legacy operation. The per-job goal registry lives in `state/registry`;
@@ -118,7 +118,7 @@ On a disposable Linux test host only, the opt-in integration harness exercises
 the installed wrapper and real systemd confinement:
 
 ```sh
-sudo node host-integration/managed-launcher/e2e.mjs --allow-live-synthetic --external-root /mnt/test-volume/disposable --expected-machine-id TEST_HOST_MACHINE_ID
+sudo node host-integration/managed-launcher/e2e.mjs --allow-live-synthetic --external-root /mnt/test-volume/disposable --expected-machine-id TEST_HOST_MACHINE_ID --goal-cli /opt/subscription-runtime/dist/worker-codex/codex-goal-cli.js --provider-launcher /opt/subscription-runtime/dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js
 ```
 
 The supplied directory must already exist on a filesystem distinct from `/`,
@@ -136,3 +136,34 @@ harness fails closed if it cannot launch the HostJobs profile. It also checks
 zero effective/bounding capabilities, hidden control sockets, absence of block
 devices, denied mounts, and external stdout/stderr logs. Only its exact log
 files are removed; a newly created empty log directory is removed if possible.
+
+The required `--goal-cli` names the built, root-owned runtime installed outside
+writable storage. The payload invokes its real `run` and `status` commands against
+only the randomized synthetic job. A fake Codex executable consumes the real
+runner's stdin and emits a deterministic JSONL completion; fake ChatGPT-shaped
+tokens exist only in the new external HOME. It asserts completed progress,
+result text, events, encryption state, registry, and provider HOME/temp writes.
+No real provider, account, or project is used.
+The harness also asserts UID/GID 65532, the external HOME, denied writes through
+workspace and HOME symlinks to the root-backed sentinel, and absence of a
+root-backed descriptor deliberately inherited by the outer launcher.
+Mount-fault subtests create child mount namespaces with private propagation,
+bind an empty root-backed directory over storage or below a synthetic workspace,
+and assert both installed wrapper admission and final namespace admission reject
+the fault without writing to that directory. Shared mounts and deployed policy
+are never renamed or unmounted. The required trusted `--provider-launcher`
+executes a synthetic launch frame and verifies stdin/stdout/stderr through the
+real managed provider profile. Every exact randomized provider/fault unit is
+stopped before cleanup; an uncertain stop preserves the files.
+
+The success record is scoped to `job-confinement-and-synthetic-goal-runner`. Release
+acceptance still needs separate disposable-host evidence for these cases:
+
+- Missing deployed policy. This must use a disposable private mount namespace,
+  never rename the deployed policy to simulate failure.
+- Custody canary through its separate control-plane entrypoint, and legacy
+  status/stop using exclusively synthetic lifecycle records. Stopping this
+  harness's systemd unit is cleanup, not evidence for the legacy stop API.
+
+Do not interpret the focused argument tests or this harness's success record
+as evidence that those additional scenarios passed.

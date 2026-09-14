@@ -23,6 +23,7 @@ import {
   parsePositiveInteger,
   requiredOption,
   resolvePath,
+  usage,
   writeJsonOrText,
 } from "./codex-goal-cli-support";
 
@@ -859,65 +860,6 @@ function parseJsonObject(value: string, source: string): Record<string, unknown>
 
 function currentCliPath(): string {
   return fileURLToPath(import.meta.url);
-}
-
-function usage(): string {
-  return `usage:
-  subscription-runtime-codex-goal run --job-root <dir> --workspace <dir> --prompt <file> --task-id <id> --accounts account-a,account-b [--tmux-session <name>] [--registry-root <dir>]
-  subscription-runtime-codex-goal status --job-root <dir> --task-id <id> [--workspace <dir>] [--tmux-session <name>]
-  subscription-runtime-codex-goal doctor --job-root <dir> --workspace <dir> --prompt <file> --task-id <id> --accounts account-a,account-b
-  subscription-runtime-codex-goal tail --job-root <dir> --task-id <id> [--lines 100]
-  subscription-runtime-codex-goal doctor-control
-  subscription-runtime-codex-goal project-control-operation-run --operation-file <file> [--json|--text]
-  subscription-runtime-codex-goal overview [--registry-root <dir>] [--job-prefix <prefix>]
-  subscription-runtime-codex-goal run-watch [jobId] [--cursor <nextCursor>] [--limit <n: default 25, max 100>] [--provider codex|claude|agent-runtime-task] [--registry-root <dir>] [--state-root <dir>] [--include-log-tail] [--include-changed-files] [--json|--text]
-  subscription-runtime-codex-goal events [jobId] [--provider codex|claude|local|agent-runtime-task|unknown] [--registry-root <dir>] [--event-root <dir>] [--cursor <cursor>] [--type <event-type>] [--limit 100]
-  subscription-runtime-codex-goal state <jobId> [--provider codex|claude|local|agent-runtime-task|unknown] [--registry-root <dir>] [--event-root <dir>]
-  subscription-runtime-codex-goal event-compaction-plan [--registry-root <dir>] [--event-root <dir>] [--compact-delivered] [--keep-latest-per-run 100] [--drop-invalid-lines]
-  subscription-runtime-codex-goal event-compact --confirm [--registry-root <dir>] [--event-root <dir>] [--compact-delivered] [--keep-latest-per-run 100] [--drop-invalid-lines] [--force]
-  subscription-runtime-codex-goal project-events [jobId] [--provider codex] [--registry-root <dir>] [--event-root <dir>] [--host-id <id>] [--include-changed-files]
-  subscription-runtime-codex-goal relay-events --event-root <dir> --consumer-id <id> [--publisher stdout|webhook] [--webhook-url <url>] [--limit 100] [--run-id <id>] [--type run.completed]
-  subscription-runtime-codex-goal reconcile-preview [--registry-root <dir>] [--continue-safe-jobs]
-  subscription-runtime-codex-goal tool codex_goal_project_quarantine_legacy_integration_attempts --args-file <json>
-  subscription-runtime-codex-goal brief <jobId> [--registry-root <dir>]
-  subscription-runtime-codex-goal decision <jobId> [--registry-root <dir>]
-  subscription-runtime-codex-goal handoff <jobId> [--registry-root <dir>]
-  subscription-runtime-codex-goal accounts <jobId> [--registry-root <dir>]
-  subscription-runtime-codex-goal control-enqueue <jobId> --body <text> [--intent guidance] [--caller-kind user|operator|orchestrator|runtime|agent] [--caller-id <id>] [--registry-root <dir>]
-  subscription-runtime-codex-goal control-list <jobId> [--include-bodies] [--registry-root <dir>]
-  subscription-runtime-codex-goal control-decision <jobId> [--registry-root <dir>]
-  subscription-runtime-codex-goal control-reconcile <jobId> [--repair] [--accepted-stale-after-ms 300000] [--registry-root <dir>]
-  subscription-runtime-codex-goal control-supersede <jobId> --signal-id <id> [--caller-kind user|operator|orchestrator|runtime|agent] [--caller-id <id>] [--registry-root <dir>]
-  subscription-runtime-codex-goal reconcile-result <jobId> [--force] [--registry-root <dir>]
-  subscription-runtime-codex-goal relogin <jobId> [account] [--registry-root <dir>]
-  subscription-runtime-codex-goal continue-job <jobId> --confirm [--registry-root <dir>]
-  subscription-runtime-codex-goal recover-job <jobId> --confirm [--registry-root <dir>]
-  subscription-runtime-codex-goal stop-job <jobId> --confirm [--registry-root <dir>]
-  subscription-runtime-codex-goal maintenance-pause-job <jobId> --confirm [--reason resize] [--registry-root <dir>]
-  subscription-runtime-codex-goal controller-supervise --controller-job-id <id> [--registry-root <dir>] [--provider codex|claude] [--status-interval-ms 60000]
-  subscription-runtime-codex-goal tools
-  subscription-runtime-codex-goal tool <mcp_tool_name> [--args-json '{"jobId":"..."}' | --args-file args.json]
-  subscription-runtime-codex-goal resources
-  subscription-runtime-codex-goal resource <mcp_resource_uri>
-  subscription-runtime-codex-goal prompts
-  subscription-runtime-codex-goal prompt <mcp_prompt_name> [--args-json '{"jobId":"..."}' | --args-file args.json]
-
-defaults:
-  --model gpt-6-astra --effort high --service-tier default --execution-engine app-server-goal --timeout 72h --app-server-startup-timeout-ms 120000 --max-account-cycles 5
-  --codex-goal-objective <text> sets a short app-server goal objective, max 4000 chars. Keep long instructions in --prompt.
-
-escape hatches:
-  --dry-run, --print-command, --no-tmux, --no-require-git-workspace
-
-registry:
-  pass --registry-root to write or update job.json before starting the worker.
-  optional --description and --tags annotate the manifest.
-
-MCP fallback:
-  use tool/resources/prompts when native MCP tools are unavailable in a Codex thread.
-  These commands call the same in-process MCP server via the SDK, so the API surface matches MCP.
-  Shortcuts like overview, run-watch, events, project-events, reconcile-preview, brief, decision, handoff, accounts, control-*, continue-job, recover-job and stop-job are thin wrappers around MCP tools.
-`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -104,12 +104,14 @@ export function codexAppServerProcessInvocation(input: {
   if (input.env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID !== undefined) {
     throw new Error("host-job detached provider ownership is not supported");
   }
-  const jobId = admittedMounts ? admittedMounts.jobId : input.env.SUBSCRIPTION_RUNTIME_JOB_ID;
+  const systemdUnit =
+    input.systemdUnit ?? `subscription-runtime-hosted-${randomUUID()}.service`;
+  const providerUuid = /^subscription-runtime-hosted-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.service$/.exec(systemdUnit)?.[1];
+  const jobId = admittedMounts ? admittedMounts.jobId :
+    input.env.SUBSCRIPTION_RUNTIME_JOB_ID ?? (providerUuid ? `provider-${providerUuid}` : undefined);
   if (typeof jobId !== "string" || jobId !== jobId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(jobId)) {
     throw new Error("hosted_managed_job_identity_required");
   }
-  const systemdUnit =
-    input.systemdUnit ?? `subscription-runtime-hosted-${randomUUID()}.service`;
   return {
     command: managedLauncherNodePath,
     systemdUnit,

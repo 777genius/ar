@@ -7,6 +7,7 @@ import { deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
 const job = { operation: 'job', unit: `subscription-job-${'a'.repeat(64)}.service`, payload: ['/usr/bin/true'],
   jobId: 'test-1.foo-bar_', fingerprint: 'a'.repeat(64), limits: { runtimeSeconds: 90, stopSeconds: 30, memoryMiB: 256, tasksMax: 64, cpuPercent: 100 } };
 const admit = async () => deriveManagedJobLayout('/TEST', job.jobId);
+const finalAdmission = async () => ({ layout: deriveManagedJobLayout('/TEST', job.jobId), device: 2n });
 const build = (request, options = {}, admission = admit) => buildSystemdInvocation(request, admission, {
   nodePath: '/TRUSTED/node', trust: async () => {},
   logs: async (root, unit) => [`${root}/logs/${unit}.stdout.log`, `${root}/logs/${unit}.stderr.log`], ...options,
@@ -21,9 +22,12 @@ test('explicit job builds fixed confinement and preserves bounded limits and own
   }
   assert.ok(invocation.args.some(x => x.includes('size=256M') && x.includes('size=64M')));
   assert.ok(invocation.args.includes(`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${job.jobId}`));
+  assert.ok(invocation.args.includes(`--setenv=SUBSCRIPTION_RUNTIME_JOB_ID=${job.jobId}`));
   assert.ok(invocation.args.includes('--property=StandardOutput=null'));
   assert.deepEqual(invocation.args.filter(arg => arg.startsWith('--property=ReadWritePaths=')), [`--property=ReadWritePaths=/TEST/jobs/${job.jobId}`]);
   assert.ok(invocation.args.includes('--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1'));
+  assert.ok(invocation.args.includes(`--setenv=SUBSCRIPTION_RUNTIME_JOB_ROOT=/TEST/jobs/${job.jobId}`));
+  assert.equal(invocation.args.some(arg => arg.includes('SUBSCRIPTION_RUNTIME_MANAGED_LAYOUT')), false);
   const command = invocation.args.slice(invocation.args.indexOf('--') + 1);
   assert.deepEqual(command.slice(-8), ['/TRUSTED/node', PAYLOAD_GUARD_PATH, '--job-id', job.jobId, '--job-unit', job.unit, '--', ...job.payload]);
   assert.ok(command.includes('--pid') && command.includes('--mount-proc'));
@@ -46,6 +50,7 @@ test('job limits are bounded positive integers without extra fields', async () =
 test('provider bootstrap is constructed internally and trusted before admission', async () => {
   const trusted = [];
   const invocation = await build(provider, { trust: async path => trusted.push(path) });
+  assert.equal(invocation.args.some(arg => arg.startsWith('--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=')), false);
   assert.deepEqual(trusted, ['/TRUSTED/node', ...provider.payload,
     '/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs', PAYLOAD_GUARD_PATH, '/usr/bin/unshare', '/usr/bin/setpriv']);
   assert.ok(invocation.args.includes(`--property=CapabilityBoundingSet=${bootstrapCaps}`));
@@ -90,8 +95,8 @@ test('final namespace guard refuses lost mount before payload spawn', async () =
 test('final namespace guard preserves payload and inherited streams after admission', async () => {
   const events = [];
   await runGuardedPayload(['/usr/bin/true', 'literal $argument'], { jobId: job.jobId, cwd: `/TEST/jobs/${job.jobId}/workspace`, owner: async () => 0n,
-    admit: async () => { events.push('admit'); return { storageRoot: '/TEST' }; },
-    stat: path => ({ dev: path === '/' ? 1n : 2n }), fstat: () => ({ isFile: () => false, isFIFO: () => true }),
+    admit: async () => { events.push('admit'); return finalAdmission(); },
+    fstat: () => ({ isFile: () => false, isFIFO: () => true }),
     launch: (command, args, options) => { events.push('launch'); assert.equal(command, '/usr/bin/true'); assert.deepEqual(args, ['literal $argument']); assert.deepEqual(options, { cwd: `/TEST/jobs/${job.jobId}/workspace`, stdio: 'inherit' }); } });
   assert.deepEqual(events, ['admit', 'launch']);
 });
@@ -102,8 +107,8 @@ test('trusted payload code cannot live under writable storage', async () => {
 test('regular inherited outputs must use external device; pipes and sockets accepted', async () => {
   for (const device of [1n, 2n]) {
     let launched = false;
-    const invocation = runGuardedPayload(['/usr/bin/true'], { jobId: job.jobId, cwd: `/TEST/jobs/${job.jobId}/workspace`, admit, owner: async () => 0n,
-      stat: path => ({ dev: path === '/' ? 1n : 2n }), fstat: () => ({ isFile: () => true, dev: device }), launch: () => { launched = true; } });
+    const invocation = runGuardedPayload(['/usr/bin/true'], { jobId: job.jobId, cwd: `/TEST/jobs/${job.jobId}/workspace`, admit: finalAdmission, owner: async () => 0n,
+      fstat: () => ({ isFile: () => true, dev: device }), launch: () => { launched = true; } });
     if (device === 1n) await assert.rejects(invocation, /output outside/); else await invocation;
     assert.equal(launched, device === 2n);
   }
@@ -111,7 +116,7 @@ test('regular inherited outputs must use external device; pipes and sockets acce
 test('job opens external logs after admission and passes actual open descriptors', async () => {
   const events = [];
   await runGuardedPayload(['/usr/bin/true'], { jobId: job.jobId, cwd: `/TEST/jobs/${job.jobId}/workspace`, jobUnit: job.unit, owner: async () => 0n,
-    admit: async () => { events.push('admit'); return { storageRoot: '/TEST' }; }, stat: path => ({ dev: path === '/' ? 1n : 2n }),
+    admit: async () => { events.push('admit'); return finalAdmission(); },
     logs: async (root, unit, device) => { events.push('open'); assert.equal(root, `/TEST/jobs/${job.jobId}/payload-logs`); assert.equal(unit, job.unit); assert.equal(device, 2n);
       return [7, 8].map(fd => ({ fd, close: async () => events.push('close') })); },
     launch: (command, args, options) => { events.push('launch'); assert.deepEqual(options.stdio, ['ignore', 7, 8]); } });

@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { access } from "node:fs/promises";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
-import { parseManagedJobLayout, MANAGED_LAYOUT_ENV, MANAGED_MARKER_ENV } from "./managed-job-layout";
+import { deriveManagedJobLayout, MANAGED_JOB_ROOT_ENV, MANAGED_JOB_ID_ENV, MANAGED_MARKER_ENV } from "./managed-job-layout";
 
 export const managedGoalActivationPath = "/usr/local/lib/subscription-runtime/managed-launcher/managed-host";
 export interface ManagedGoalAdmissionDeps {
@@ -28,9 +28,9 @@ export async function admitManagedGoal(
     try { await access(managedGoalActivationPath); return true; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
   }))();
-  if (!managed && env[MANAGED_MARKER_ENV] === undefined && env[MANAGED_LAYOUT_ENV] === undefined) return input;
-  if (env[MANAGED_MARKER_ENV] !== "1" || !env[MANAGED_LAYOUT_ENV]) throw new Error('Managed host requires root-owned launcher');
-  const layout = parseManagedJobLayout(env[MANAGED_LAYOUT_ENV]!);
+  if (!managed && env[MANAGED_MARKER_ENV] === undefined) return input;
+  if (env[MANAGED_MARKER_ENV] !== "1" || !env[MANAGED_JOB_ROOT_ENV] || !env[MANAGED_JOB_ID_ENV]) throw new Error('Managed host requires root-owned launcher');
+  const layout = deriveManagedJobLayout(env[MANAGED_JOB_ROOT_ENV]!, env[MANAGED_JOB_ID_ENV]!);
   if (layout.jobId !== (config.jobId ?? config.taskId)) throw new Error('Managed job identity mismatch');
   // taskId becomes a filename, so it has the same closed identifier contract.
   if (config.taskId !== config.taskId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(config.taskId)) {

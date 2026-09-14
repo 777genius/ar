@@ -65,7 +65,24 @@ describe("hosted Codex app-server resource containment", () => {
     expect(JSON.parse(invocation.args[2]!).payload).toEqual(["/sandbox/node", "/sandbox/hosted-app-server-launcher.js"]);
   });
 
-  it.each([undefined, "", "../escape", "/absolute", "bad/name", "task:checkpoint", " a", "a".repeat(129)])("rejects invalid managed job identity %j", jobId => {
+  it("derives distinct standalone identities from the generated provider unit UUID", () => {
+    const input = {
+      command: "/synthetic/codex", args: ["app-server"], cwd: "/synthetic/home",
+      env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
+      platform: "linux" as const,
+    };
+    const first = codexAppServerProcessInvocation(input);
+    const second = codexAppServerProcessInvocation(input);
+    const request = JSON.parse(first.args[2]!);
+    expect(request.jobId).toMatch(/^provider-[0-9a-f-]{36}$/);
+    expect(first.systemdUnit).toBe(`subscription-runtime-hosted-${request.jobId.slice("provider-".length)}.service`);
+    expect(JSON.parse(first.stdinBootstrap!).env.SUBSCRIPTION_RUNTIME_JOB_ID).toBe(request.jobId);
+    expect(JSON.parse(second.args[2]!).jobId).not.toBe(request.jobId);
+    expect(() => codexAppServerProcessInvocation({ ...input, systemdUnit: "../escape" }))
+      .toThrow("hosted_managed_job_identity_required");
+  });
+
+  it.each(["", "../escape", "/absolute", "bad/name", "task:checkpoint", " a", "a".repeat(129)])("rejects invalid managed job identity %j", jobId => {
     expect(() => codexAppServerProcessInvocation({
       command: "/synthetic/codex", args: ["app-server"], cwd: "/synthetic/home",
       env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",

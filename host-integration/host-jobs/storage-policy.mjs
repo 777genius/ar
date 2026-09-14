@@ -15,20 +15,20 @@ export function deriveManagedJobLayout(storageRoot, jobId) {
   return Object.freeze({ storageRoot, jobId, jobRoot, ...Object.fromEntries(['workspace', 'state', 'logs', 'output', 'home', 'tmp', 'payloadLogs'].map(key => [key, `${jobRoot}/${key === 'payloadLogs' ? 'payload-logs' : key}`])) });
 }
 
-// One final check inside the completed namespace. No capacity or policy reload.
-export async function requireFinalJobStorage(cwd, _policyPath, probe = storageProbe, _uid, jobId, env = process.env) {
-  const text = env.SUBSCRIPTION_RUNTIME_MANAGED_LAYOUT;
-  if (typeof text !== 'string' || Buffer.byteLength(text) > LIMIT) throw denied('missing launcher layout');
-  const value = JSON.parse(text);
-  const layout = deriveManagedJobLayout(value.storageRoot, jobId);
-  if (Object.keys(value).length !== Object.keys(layout).length || Object.entries(layout).some(([key, expected]) => value[key] !== expected) || cwd !== layout.workspace) throw denied('invalid launcher layout');
-  const root = await probe.stat(layout.storageRoot);
-  if (root.dev === (await probe.stat('/')).dev) throw denied('root filesystem forbidden');
-  for (const path of [layout.jobRoot, ...['workspace', 'state', 'logs', 'output', 'home', 'tmp', 'payloadLogs'].map(key => layout[key])]) {
-    await directories(path, probe, root.dev, layout.storageRoot);
+// One final check inside the completed namespace. No policy or capacity reload.
+export async function requireFinalJobStorage({ cwd, jobId, env = process.env, probe = storageProbe }) {
+  const jobRoot = env.SUBSCRIPTION_RUNTIME_JOB_ROOT;
+  const suffix = `/jobs/${jobId}`;
+  if (typeof jobRoot !== 'string' || !jobRoot.endsWith(suffix)) throw denied('invalid launcher boundary');
+  const layout = deriveManagedJobLayout(jobRoot.slice(0, -suffix.length), jobId);
+  if (env.SUBSCRIPTION_RUNTIME_JOB_ID !== jobId || jobRoot !== layout.jobRoot || cwd !== layout.workspace) {
+    throw denied('invalid launcher boundary');
   }
-  requireSafeNestedMounts(await probe.readMountInfo(), layout.jobRoot, root.dev);
-  return layout;
+  const job = await probe.stat(layout.jobRoot);
+  if (job.dev === (await probe.stat('/')).dev) throw denied('root filesystem forbidden');
+  for (const path of [layout.jobRoot, cwd]) await directories(path, probe, job.dev, layout.jobRoot);
+  requireSafeNestedMounts(await probe.readMountInfo(), layout.jobRoot, job.dev);
+  return Object.freeze({ layout, device: job.dev });
 }
 
 export async function prepareManagedJobLayout(jobId, { policyPath = HOST_STORAGE_POLICY_PATH, probe = storageProbe, create = mkdir,

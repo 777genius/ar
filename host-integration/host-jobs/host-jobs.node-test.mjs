@@ -9,7 +9,7 @@ import { hostJobCli } from '../../scripts/ops/host-job-cli.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { hostLock } from '../../scripts/ops/host-job-lock.mjs';
-import { requireHostStorage, loadHostStoragePolicy, prepareManagedJobLayout } from './storage-policy.mjs';
+import { requireHostStorage, loadHostStoragePolicy } from './storage-policy.mjs';
 
 function fakeStorage(overrides = {}) {
   const calls = [];
@@ -189,20 +189,16 @@ test('managed admission rejects untrusted policy, missing paths, symlinks and ne
 });
 
 test('managed policy denial prevents launch and cannot prevent persisted reconciliation, status or stop', async () => {
-  const { probe } = fakeStorage();
-  const prepareLayout = async () => loadHostStoragePolicy('/policy.json', probe);
-  const { manager, calls } = await fixture({ prepareLayout, uncertain: true });
+  const { manager, calls } = await fixture({ denied: true });
   const managedRequest = { ...request };
   const first = await manager.start(managedRequest);
   assert.equal(first.phase, 'uncertain');
-  probe.readPolicy = async () => { throw new Error('missing'); };
   assert.equal((await manager.start(managedRequest)).retry, true);
   await manager.status(request.jobId, request.machineId);
   await manager.stop(request.jobId, request.machineId);
-  const before = calls.length;
-  await assert.rejects(manager.start({ ...managedRequest, jobId: 'new-job' }), /storage admission:/);
-  assert.equal(calls.length, before);
+  assert.equal((await manager.status(request.jobId, request.machineId)).unresolved, true);
   assert.equal(calls.filter(isLaunch).length, 1);
+  assert.equal((await manager.read(request.jobId)).phase, 'uncertain');
 });
 
 const request = { operation: 'start', jobId: 'test-1', machineId: 'a'.repeat(32), argv: ['/bin/test', '$(touch nope)'], runtimeSeconds: 60, stopSeconds: 5, memoryMiB: 128, tasksMax: 16, cpuPercent: 50 };
@@ -211,12 +207,10 @@ async function fixture(options = {}) {
   const calls = [];
   let state = 'LoadState=not-found';
   const manager = new HostJobs({ stateDir: await mkdtemp(join(tmpdir(), 'host-jobs-test-')), machineId: async () => request.machineId,
-    prepareLayout: options.storageProbe
-      ? jobId => prepareManagedJobLayout(jobId, { policyPath: options.storagePolicyPath, probe: options.storageProbe, create: async () => {} })
-      : async () => {},
     run: async (cmd, args) => {
       calls.push({ cmd, args });
       if (isLaunch({ cmd, args })) {
+        if (options.denied) throw new Error('storage admission denied');
         const launch = JSON.parse(args[2]);
         state = `LoadState=loaded\nActiveState=active\nDescription=subscription-job:${launch.fingerprint}`;
         if (options.uncertain) throw new Error('connection lost');
@@ -253,38 +247,47 @@ test('bounded service preserves argv, concurrent and uncertain starts execute on
   await manager.stop(request.jobId, request.machineId);
   assert.ok(calls.some(x => x.args.includes('stop')));
 });
+test('new starts delegate layout exclusively to launcher and persist only bounded lifecycle metadata', async () => {
+  const { manager, calls } = await fixture({
+    prepareLayout: async () => { assert.fail('host manager must not prepare payload layout'); },
+    storageProbe: { lstat: async () => { assert.fail('host manager must not admit storage'); } },
+  });
+  await manager.start(request);
+  assert.equal(calls.filter(isLaunch).length, 1);
+  const record = await manager.read(request.jobId);
+  assert.deepEqual(Object.keys(record).sort(), ['createdAt', 'fingerprint', 'jobId', 'machineId', 'phase', 'unit']);
+  assert.ok(Buffer.byteLength(JSON.stringify(record)) < 1024);
+});
 test('admission and unknown ownership fail closed', async () => {
-  const { manager, calls } = await fixture({ prepareLayout: async () => { throw new Error('admission requires 5 GiB free'); } });
-  await assert.rejects(manager.start(request), /5 GiB/);
+  const { manager, calls } = await fixture({ denied: true });
+  const result = await manager.start(request);
+  assert.equal(result.phase, 'uncertain');
+  assert.equal(result.state.LoadState, 'not-found');
   await assert.rejects(manager.stop('unknown', request.machineId), /unknown job/);
   await assert.rejects(manager.stop('unknown', 'b'.repeat(32)), /machine identity/);
   await assert.rejects(manager.status('unknown'), /machine identity/);
-  assert.equal(calls.length, 0);
+  assert.equal(calls.filter(isLaunch).length, 1);
   const other = await fixture({ run: async () => 'LoadState=loaded\nDescription=other' });
   await assert.rejects(other.manager.start(request), /unowned/);
 });
 test('start rejects caller paths and unknown fields before admission or state writes', async () => {
-  let admissions = 0;
-  const { manager, calls } = await fixture({ prepareLayout: async () => { admissions++; } });
+  const { manager, calls } = await fixture();
   manager.stateDir = join(manager.stateDir, 'not-created');
   for (const extra of [{ cwd: '/sandbox' }, { stateRoot: '/sandbox' }, { unknown: true }, { jobId: 'legacy:1' }]) {
     await assert.rejects(manager.start({ ...request, ...extra }), /unsupported start field|invalid managed jobId/);
   }
-  assert.equal(admissions, 0);
   assert.equal(calls.length, 0);
-  await assert.rejects(stat(manager.stateDir), { code: 'ENOENT' });
-  manager.prepareLayout = async () => { throw new Error('storage denied'); };
-  await assert.rejects(manager.start(request), /storage denied/);
   await assert.rejects(stat(manager.stateDir), { code: 'ENOENT' });
 });
 test('legacy colon IDs retain status and stop without managed storage', async () => {
-  const { manager } = await fixture({ prepareLayout: async () => { throw new Error('storage unavailable'); } });
+  const { manager, calls } = await fixture({ denied: true });
   const { unitFor } = await import('./contract.mjs');
   const legacyId = 'legacy:1';
   await writeFile(manager.path(legacyId), JSON.stringify({ jobId: legacyId, machineId: request.machineId,
     unit: unitFor(legacyId), fingerprint: 'a'.repeat(64), phase: 'started' }));
   assert.equal((await manager.status(legacyId, request.machineId)).live, false);
   assert.equal((await manager.stop(legacyId, request.machineId)).jobId, legacyId);
+  assert.equal(calls.filter(isLaunch).length, 0);
 });
 test('transport serializes host calls and sends payload only on stdin', async () => {
   const pending = [];

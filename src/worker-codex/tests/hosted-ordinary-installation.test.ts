@@ -671,12 +671,15 @@ describe("real default provider primitive under ordinary activation", () => {
     const child = spawnCodexAppServerProcess(input);
     expect(fixture.spawn).toHaveBeenCalledTimes(1);
     const [command, args, options] = fixture.spawn.mock.calls[0]!;
-    expect(command).toBe("/usr/bin/systemd-run");
-    expect(args).toContain("--map-user=65532");
-    expect(args).toContain("--no-new-privs");
-    expect(args.some((arg: string) => arg.includes("BindReadOnlyPaths"))).toBe(false);
+    expect(command).toBe(process.execPath);
+    expect(args.slice(0, 2)).toEqual(["/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
+    const request = JSON.parse(args[2]);
+    expect(request).toEqual({ operation: "provider", jobId: "ordinary-job", unit: store.read().ordinaryStarts[1]!.unit,
+      payload: [process.execPath, expect.stringMatching(/\/hosted-app-server-launcher\.js$/)] });
+    expect(request.readonlyPaths).toBeUndefined();
     expect(options).toEqual(expect.objectContaining({ cwd: input.cwd, env: input.env, stdio: ["pipe", "pipe", "pipe"] }));
-    expect(child.stdin.write).toHaveBeenCalledWith(JSON.stringify({ schemaVersion: 1, ...input }) + "\n");
+    expect(child.stdin.write).toHaveBeenCalledWith(JSON.stringify({ schemaVersion: 1, ...input,
+      env: { ...input.env, SUBSCRIPTION_RUNTIME_JOB_ID: "ordinary-job" } }) + "\n");
     const reservation = store.read().ordinaryStarts[1]!;
     (fixture.child as EventEmitter).emit("exit", 0, null);
     expect(read(`ordinary-completed/${reservation.startId}.json`).startSha256).toBe(hash(readFileSync(join(fixture.root, `ordinary-starts/${reservation.startId}.json`))));
@@ -879,13 +882,17 @@ it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default f
     onRequest: request => { if (request.method === "turn/start" && mode === "npm-grant-deleted") rmSync(join(fixture.root, grant)); } }), new FakeAppServerFactory()];
   const frames: { env: Record<string, string> }[] = [];
   fixture.spawn.mockImplementation((command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
-    expect(command).toBe("/usr/bin/systemd-run");
+    expect(command).toBe(process.execPath);
+    expect(args.slice(0, 2)).toEqual(["/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
     expect(options.cwd).toBe(options.env.HOME);
     expect(options.cwd).not.toBe(config.workspacePath);
     expect(store.read().ordinaryStarts).toHaveLength(frames.length + 2);
     expect(() => withHostedActivationFence(() => {})).toThrow();
-    expect(args).toContain("--bounding-set=-all");
-    expect(args.some(arg => arg.includes("BindReadOnlyPaths"))).toBe(false);
+    const request = JSON.parse(args[2]!);
+    expect(request).toEqual({ operation: "provider", jobId: config.jobId,
+      unit: store.read().ordinaryStarts[frames.length + 1]!.unit,
+      payload: [process.execPath, expect.stringMatching(/\/hosted-app-server-launcher\.js$/)] });
+    expect(request.readonlyPaths).toBeUndefined();
     const child = fakes[frames.length]!.create({ ...options, args });
     const write = child.stdin.write; let bootstrap = true;
     child.stdin.write = chunk => {
@@ -896,7 +903,8 @@ it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default f
   });
   fixture.onStop = () => { for (const fake of fakes) for (const child of fake.processes) child.kill(); };
   const clock = { now: () => new Date("2026-05-31T00:05:00.000Z"), monotonicMs: () => performance.now() };
-  const result = await runCodexGoal(config, { createExecutor: options => new FileBackendCodexSafeExecutor({
+  const result = await runCodexGoal(config, { managedAdmission: { platform: "linux", isManagedHost: async () => false },
+    createExecutor: options => new FileBackendCodexSafeExecutor({
     ...options, requireGitWorkspace: false, prewarmOnStart: false, clock,
     accounts: options.accounts.map((account, index) => ({
       codexAuthJson: codexAuthJsonForAccount(`synthetic-refresh-${index}`, `synthetic-account-${index}`),
@@ -950,7 +958,8 @@ describe("managed inspected installation admission", () => {
       SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job", SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "codex-test-managed-qualification" } });
     if (fault === "exact") {
       launch(); expect(fixture.spawn).toHaveBeenCalledOnce();
-      expect(fixture.spawn.mock.calls[0]![1]).toContain("--property=BindReadOnlyPaths=/managed/W/input:/managed/W/input:norbind");
+      const request = JSON.parse(fixture.spawn.mock.calls[0]![1][2]);
+      expect(request.readonlyPaths).toContain("/managed/W/input");
       expect(read("readonly-epoch.json").reservations).toHaveLength(1);
     } else { expect(launch).toThrow(); expect(fixture.spawn).not.toHaveBeenCalled(); }
   });

@@ -620,8 +620,7 @@ describe("codex goal runner", () => {
       },
     });
 
-    expect(options.runtimeHomeRootDir).toBe(join(root, "home"));
-    expect(options.stateRootDir).toBe(join(root, "state"));
+    expect(options).toMatchObject({ runtimeHomeRootDir: join(root, "home"), stateRootDir: join(root, "state") });
     expect(options.accounts[0]?.worker.commandPolicy).toMatchObject({
       validateCommands: true,
       deniedGitSubcommands: ["push"],

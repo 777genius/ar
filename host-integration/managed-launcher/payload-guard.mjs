@@ -1,9 +1,9 @@
 #!/usr/bin/node
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { fstatSync, statSync, constants } from 'node:fs';
+import { fstatSync, constants } from 'node:fs';
 import { mkdir, lstat, open, readFile } from 'node:fs/promises';
-import { HOST_STORAGE_POLICY_PATH, requireFinalJobStorage, deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
+import { requireFinalJobStorage } from '../host-jobs/storage-policy.mjs';
 
 export const PAYLOAD_GUARD_PATH = '/usr/local/lib/subscription-runtime/managed-launcher/payload-guard.mjs';
 
@@ -46,17 +46,13 @@ export async function openJobLogs(directory, unit, device, probe = { mkdir, lsta
 // Runs inside the completed service mount namespace, not in the launcher host
 // namespace. A missing external mount must never expose a root-backed cwd.
 export async function runGuardedPayload(args, { cwd = process.cwd(), admit = requireFinalJobStorage, launch = spawn,
-  stat = path => statSync(path, { bigint: true }), fstat = fd => fstatSync(fd, { bigint: true }),
+  fstat = fd => fstatSync(fd, { bigint: true }),
   owner = requireMappedHostRootUid, jobId, jobUnit, logs = openJobLogs } = {}) {
   if (!Array.isArray(args) || !args[0]?.startsWith('/') || args.some(arg => typeof arg !== 'string' || arg.includes('\0'))) {
     throw new Error('managed payload: invalid command');
   }
   const expectedUid = await owner();
-  const policy = await admit(cwd, HOST_STORAGE_POLICY_PATH, undefined, expectedUid, jobId);
-  const layout = deriveManagedJobLayout(policy.storageRoot, jobId);
-  if (cwd !== layout.workspace) throw new Error('managed payload: cwd outside job layout');
-  const device = stat(policy.storageRoot).dev;
-  if (device === stat('/').dev) throw new Error('managed payload: external storage lost');
+  const { layout, device } = await admit({ cwd, jobId });
   if (jobUnit !== undefined) {
     const handles = await logs(layout.payloadLogs, jobUnit, device, undefined, expectedUid);
     try { return launch(args[0], args.slice(1), { cwd, stdio: ['ignore', ...handles.map(handle => handle.fd)] }); }
@@ -64,6 +60,8 @@ export async function runGuardedPayload(args, { cwd = process.cwd(), admit = req
     // the caller must attach child error listeners before the next I/O turn.
     finally { void Promise.all(handles.map(handle => handle.close())).catch(() => {}); }
   }
+  // These are the only inherited descriptors: spawn closes every other FD.
+  // Bound the check to actual payload inheritance, never scan the job tree.
   for (const fd of [0, 1, 2]) {
     const metadata = fstat(fd);
     const nullInput = fd === 0 && metadata.isCharacterDevice?.() && metadata.rdev === 259n;

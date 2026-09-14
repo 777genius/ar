@@ -73,8 +73,11 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
   return { command: '/usr/bin/systemd-run', args: [
     ...(operation === 'job' ? ['--user', `--description=subscription-job:${request.fingerprint}`] : ['--quiet', '--wait', '--pipe', '--collect']),
     `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', '--expand-environment=no',
-    `--setenv=HOME=${policy.home}`, `--setenv=TMPDIR=${policy.tmp}`, `--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${request.jobId}`,
-    '--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1', `--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAYOUT=${JSON.stringify(policy)}`,
+    `--setenv=HOME=${policy.home}`, `--setenv=TMPDIR=${policy.tmp}`,
+    ...(operation === 'job' ? [`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${request.jobId}`] : []),
+    `--setenv=SUBSCRIPTION_RUNTIME_JOB_ID=${request.jobId}`,
+    '--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1',
+    `--setenv=SUBSCRIPTION_RUNTIME_JOB_ROOT=${policy.jobRoot}`,
     ...properties.map(property => `--property=${property}`), '--', ...bootstrap,
     nodePath, PAYLOAD_GUARD_PATH, '--job-id', request.jobId, ...(operation === 'job' ? ['--job-unit', unit] : []), '--', ...payload,
   ] };

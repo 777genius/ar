@@ -3,7 +3,6 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { unitFor, validateStart, fingerprint } from './contract.mjs';
-import { prepareManagedJobLayout, storageProbe as defaultStorageProbe, HOST_STORAGE_POLICY_PATH } from './storage-policy.mjs';
 import { managedLauncherInvocation } from '../managed-launcher/launch.mjs';
 
 const execute = promisify(execFile);
@@ -17,10 +16,8 @@ async function systemCommand(cmd, args) {
 export class HostJobs {
   constructor({ stateDir, run = systemCommand,
     machineId = async () => (await readFile('/etc/machine-id', 'utf8')).trim(),
-    storagePolicyPath = HOST_STORAGE_POLICY_PATH, storageProbe = defaultStorageProbe,
-    prepareLayout = jobId => prepareManagedJobLayout(jobId, { policyPath: storagePolicyPath, probe: storageProbe }),
     clock = () => Date.now() }) {
-    Object.assign(this, { stateDir, run, machineId, prepareLayout, clock });
+    Object.assign(this, { stateDir, run, machineId, clock });
   }
   path(id) { return join(this.stateDir, `${unitFor(id)}.json`); }
   async read(id) {
@@ -54,8 +51,9 @@ export class HostJobs {
       // Never rerun a completed or ambiguous job merely because its unit disappeared.
       return { ...record, state, retry: true };
     }
-    await this.prepareLayout(request.jobId);
-    // Small control records are the lifecycle metadata exception, never payload data.
+    // Only the managed launcher admits storage and creates payload layout.
+    // This bounded lifecycle ledger stays outside jobRoot, including on denial,
+    // so an uncertain launcher outcome can never cause a replay.
     await mkdir(this.stateDir, { recursive: true, mode: 0o700 });
     const unit = unitFor(request.jobId);
     const initial = await this.inspect(unit);

@@ -78,15 +78,15 @@ test('a different root descriptor is rejected before the first write', async () 
   assert.equal(closed, true);
 });
 
-test('final namespace check reads layout once and only inspects mounts in its job', async () => {
+test('final namespace check uses minimal boundary and only inspects mounts in its job', async () => {
   const layout = deriveManagedJobLayout('/volume', 'synthetic');
-  const env = { SUBSCRIPTION_RUNTIME_MANAGED_LAYOUT: JSON.stringify(layout) };
+  const env = { SUBSCRIPTION_RUNTIME_JOB_ROOT: layout.jobRoot, SUBSCRIPTION_RUNTIME_JOB_ID: layout.jobId };
   const good = fixture();
   good.options.probe.statfs = async () => assert.fail('capacity must not be repeated');
   good.options.probe.readPolicy = async () => assert.fail('policy must not be reloaded');
   const originalMounts = good.options.probe.readMountInfo;
   good.options.probe.readMountInfo = async () => await originalMounts() + '3 2 0:1 / /volume/jobs/unrelated/root rw - ext4 root rw\n';
-  assert.deepEqual(await requireFinalJobStorage(layout.workspace, undefined, good.options.probe, 0n, layout.jobId, env), layout);
-  await assert.rejects(requireFinalJobStorage(layout.workspace, undefined, fixture('mount').options.probe, 0n, layout.jobId, env), /nested filesystem/);
-  await assert.rejects(requireFinalJobStorage(layout.workspace, undefined, good.options.probe, 0n, layout.jobId, { SUBSCRIPTION_RUNTIME_MANAGED_LAYOUT: JSON.stringify({ ...layout, state: '/root' }) }), /invalid launcher layout/);
+  assert.deepEqual(await requireFinalJobStorage({ cwd: layout.workspace, probe: good.options.probe, jobId: layout.jobId, env }), { layout, device: 257n });
+  await assert.rejects(requireFinalJobStorage({ cwd: layout.workspace, probe: fixture('mount').options.probe, jobId: layout.jobId, env }), /nested filesystem/);
+  await assert.rejects(requireFinalJobStorage({ cwd: layout.workspace, probe: good.options.probe, jobId: layout.jobId, env: { ...env, SUBSCRIPTION_RUNTIME_JOB_ROOT: '/root' } }), /invalid launcher boundary/);
 });
