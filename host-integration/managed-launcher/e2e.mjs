@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Explicitly opt-in: run only as root on a disposable Linux test host.
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, writeFile, chmod, stat, realpath, rm, unlink, rmdir, open, symlink, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, chmod, lstat, stat, realpath, rm, unlink, rmdir, open, symlink, mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
