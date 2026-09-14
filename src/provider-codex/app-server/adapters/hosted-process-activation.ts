@@ -324,8 +324,9 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
   return withHostedActivationFence(fence => {
     const { activation, start, profileId } = readHostedOrdinaryProcessOrigin(fence);
     const jobRoot = canonical(start.jobRootDir);
+    const workspacePath = canonical(start.workspacePath);
     if (!jobRoot.endsWith(`/jobs/${str(start.jobId)}`) ||
-        canonical(start.workspacePath) !== `${jobRoot}/workspace`) invalid();
+        workspacePath !== `${jobRoot}/workspace`) invalid();
     // The real app-server client starts in its materialized account HOME;
     // workspace belongs to the thread, not the provider process. Neither cwd
     // nor HOME supplies origin authority: that was read from the actual cgroup.
@@ -343,7 +344,7 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
     publishOrdinaryActivation(fence, next);
     try {
       createActivationRecord(`ordinary-starts/${startId}.json`, bytes);
-      const child = submit(unit, { jobId: str(start.jobId), workspacePath: str(start.workspacePath) });
+      const child = submit(unit, { jobId: str(start.jobId), workspacePath });
       child.on("error", () => invalidateHostedOrdinaryWait(child));
       child.stdin.on?.("error", () => invalidateHostedOrdinaryWait(child));
       child.on("exit", (code, signal) => {
