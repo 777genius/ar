@@ -1,4 +1,5 @@
 import "./hosted-test-egress-default-fixture";
+import "./unmanaged-goal-host-fixture";
 import { execFile } from "node:child_process";
 import {
   mkdir,
@@ -35,7 +36,6 @@ import {
 } from "./codex-goal-runner-fixtures";
 
 const execFileAsync = promisify(execFile);
-
 describe("codex goal runner", () => {
   it("interrupts an active executor attempt from the durable control inbox", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-goal-control-"));
