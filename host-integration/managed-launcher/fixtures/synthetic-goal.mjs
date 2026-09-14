@@ -41,6 +41,9 @@ process.stdin.on('end', () => {
       'SUBSCRIPTION_RUNTIME_JOB_ROOT', 'SUBSCRIPTION_RUNTIME_HOST_JOB_ID'].includes(key)));
   const run = spawnSync(process.execPath, [cli, 'run', '--job-root', layout.jobRoot,
     '--workspace', layout.workspace, '--prompt', prompt, '--task-id', jobId, '--job-id', jobId,
+    '--output', join(layout.output, `${jobId}.latest-result.json`),
+    '--progress', join(layout.output, `${jobId}.progress.json`),
+    '--log', join(layout.logs, `${jobId}.log`),
     '--accounts', 'synthetic', '--auth-root', authRoot, '--execution-engine', 'packaged-exec',
     '--codex-binary', binary, '--no-tmux', '--no-require-git-workspace', '--timeout', '30s', '--effort', 'low'],
   { encoding: 'utf8', timeout: 45000, env });
