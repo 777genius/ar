@@ -91,25 +91,30 @@ async function main() {
     const sentinel = await mkdtemp('/var/lib/managed-launcher-e2e-'); owned.push(sentinel);
     check((await stat(sentinel)).dev === (await stat('/')).dev, 'Sentinel must be backed by root filesystem');
     await chmod(sentinel, 0o777);
-    const forgedJobId = `managed-direct-${randomBytes(16).toString('hex')}`;
-    const forgedRoot = join(sentinel, 'forged-job-root');
     const forgedPrompt = join(sentinel, 'forged-prompt.txt');
     const forgedAuth = join(sentinel, 'forged-auth');
     await mkdir(forgedAuth);
     await writeFile(forgedPrompt, 'synthetic direct-launch denial probe', { flag: 'wx', mode: 0o600 });
-    const forged = spawnSync(process.execPath, [goalCli, 'run', '--job-root', forgedRoot,
-      '--workspace', join(forgedRoot, 'workspace'), '--prompt', forgedPrompt,
-      '--task-id', forgedJobId, '--job-id', forgedJobId, '--accounts', 'synthetic',
-      '--auth-root', forgedAuth, '--no-tmux', '--no-require-git-workspace'], {
-      encoding: 'utf8', timeout: 15000,
-      env: { PATH: process.env.PATH, SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH: '1',
-        SUBSCRIPTION_RUNTIME_JOB_ID: forgedJobId, SUBSCRIPTION_RUNTIME_JOB_ROOT: forgedRoot },
-    });
-    let forgedRootCreated = true;
-    try { await lstat(forgedRoot); } catch (error) { if (error.code === 'ENOENT') forgedRootCreated = false; else throw error; }
-    check(!forged.error && forged.status !== 0 && !forgedRootCreated && /root-owned launcher|invalid user namespace/i.test(forged.stderr),
-      `Direct managed CLI bypass was not denied before writes: ${forged.error?.message ?? forged.stderr}`);
-    const directBypassEvidence = { denied: true, rootWrites: 0 };
+    const directBypassEvidence = { denied: 0, rootWrites: 0 };
+    for (const forgedEnvironment of [false, true]) {
+      const forgedJobId = `managed-direct-${forgedEnvironment ? 'env' : 'plain'}-${randomBytes(16).toString('hex')}`;
+      const forgedRoot = join(sentinel, `${forgedJobId}-root`);
+      const direct = spawnSync(process.execPath, [goalCli, 'run', '--job-root', forgedRoot,
+        '--workspace', join(forgedRoot, 'workspace'), '--prompt', forgedPrompt,
+        '--task-id', forgedJobId, '--job-id', forgedJobId, '--accounts', 'synthetic',
+        '--auth-root', forgedAuth, '--no-tmux', '--no-require-git-workspace'], {
+        encoding: 'utf8', timeout: 15000,
+        env: { PATH: process.env.PATH, ...(forgedEnvironment ? {
+          SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH: '1', SUBSCRIPTION_RUNTIME_JOB_ID: forgedJobId,
+          SUBSCRIPTION_RUNTIME_JOB_ROOT: forgedRoot,
+        } : {}) },
+      });
+      let rootCreated = true;
+      try { await lstat(forgedRoot); } catch (error) { if (error.code === 'ENOENT') rootCreated = false; else throw error; }
+      check(!direct.error && direct.status !== 0 && !rootCreated && /root-owned launcher|invalid user namespace/i.test(direct.stderr),
+        `Direct managed CLI bypass was not denied before writes: ${direct.error?.message ?? direct.stderr}`);
+      directBypassEvidence.denied++;
+    }
     const faultEvidence = [];
     for (const mode of ['missing-policy', 'untrusted-policy']) {
       const source = await mkdtemp('/var/lib/managed-launcher-policy-'); owned.push(source);
