@@ -26,12 +26,15 @@ let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => { input += chunk; });
 process.stdin.on('end', () => {
-  fs.writeFileSync(${JSON.stringify(providerEvidence)}, JSON.stringify({ stdinBytes: input.length, home: process.env.HOME, temp: process.env.TMPDIR, codexHome: process.env.CODEX_HOME }));
+  const writes = [];
   for (const directory of [process.env.HOME, process.env.TMPDIR]) {
     if (!directory) throw new Error('Missing runner HOME/temp');
     fs.mkdirSync(directory, { recursive: true });
-    fs.writeFileSync(directory + '/synthetic-runner-write', 'synthetic');
+    const path = directory + '/synthetic-runner-write';
+    fs.writeFileSync(path, 'synthetic');
+    writes.push(path);
   }
+  fs.writeFileSync(${JSON.stringify(providerEvidence)}, JSON.stringify({ stdinBytes: input.length, home: process.env.HOME, temp: process.env.TMPDIR, codexHome: process.env.CODEX_HOME, writes }));
   process.stdout.write(JSON.stringify({ type: 'agent_message', message: 'synthetic runner completed' }) + '\\n');
 });
 `, { flag: 'wx', mode: 0o700 });
@@ -54,12 +57,17 @@ process.stdin.on('end', () => {
   const state = await readdir(layout.state);
   const evidence = JSON.parse(await readFile(providerEvidence, 'utf8'));
   if (progress.status !== 'completed' || !output.includes('synthetic runner completed') ||
-      !events.length || !state.includes('encryption-key.hex') || !state.includes('registry') || evidence.stdinBytes < 1) {
+      !events.length || !state.includes('encryption-key.hex') || !state.includes('registry') || evidence.stdinBytes < 1 ||
+      !Array.isArray(evidence.writes) || evidence.writes.length !== 2) {
     throw new Error('Synthetic runner did not persist required completed artifacts');
   }
   for (const path of [evidence.home, evidence.temp, evidence.codexHome]) {
     if (typeof path !== 'string' || !path.startsWith(`${layout.jobRoot}/`)) throw new Error('Runner writable path escaped layout');
   }
-  for (const path of [evidence.home, evidence.temp]) await readFile(join(path, 'synthetic-runner-write'));
+  for (const path of evidence.writes) {
+    if (typeof path !== 'string' || !path.startsWith(`${layout.jobRoot}/`)) throw new Error('Runner write escaped layout');
+  }
+  // HOME is durable; an executor may intentionally clean its per-attempt temp.
+  await readFile(join(evidence.home, 'synthetic-runner-write'));
   return { status: progress.status, events: events.length, state, provider: evidence };
 }
