@@ -2,7 +2,10 @@
 
 Install with `sudo sh host-integration/managed-launcher/install`. The installer
 copies the launcher and the shared storage-policy loader into root-owned,
-non-writable directories under `/usr/local/lib/subscription-runtime`.
+non-writable directories under `/opt/subscription-runtime`.
+The fixed installation path requires `/opt` and every ancestor to be root-owned
+and not group/world writable. It avoids `/usr/local/lib`, which may be owned by
+the deployment user on hosted machines; there is no alternative install path.
 From the repository checkout, provision the policy separately with an explicit
 existing external storage path (the launcher installer does not copy these
 provisioning scripts):

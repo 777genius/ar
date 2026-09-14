@@ -52,7 +52,7 @@ test('provider bootstrap is constructed internally and trusted before admission'
   const invocation = await build(provider, { trust: async path => trusted.push(path) });
   assert.equal(invocation.args.some(arg => arg.startsWith('--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=')), false);
   assert.deepEqual(trusted, ['/TRUSTED/node', ...provider.payload,
-    '/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs', PAYLOAD_GUARD_PATH, '/usr/bin/unshare', '/usr/bin/setpriv']);
+    '/opt/subscription-runtime/managed-launcher/launch.mjs', PAYLOAD_GUARD_PATH, '/usr/bin/unshare', '/usr/bin/setpriv']);
   assert.ok(invocation.args.includes(`--property=CapabilityBoundingSet=${bootstrapCaps}`));
   const command = invocation.args.slice(invocation.args.indexOf('--') + 1);
   assert.deepEqual(command.slice(0, 3), ['/usr/bin/unshare', '--map-user=65532', '--map-group=65532']);

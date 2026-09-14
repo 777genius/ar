@@ -202,7 +202,7 @@ test('managed policy denial prevents launch and cannot prevent persisted reconci
 });
 
 const request = { operation: 'start', jobId: 'test-1', machineId: 'a'.repeat(32), argv: ['/bin/test', '$(touch nope)'], runtimeSeconds: 60, stopSeconds: 5, memoryMiB: 128, tasksMax: 16, cpuPercent: 50 };
-const isLaunch = call => call.cmd === process.execPath && call.args[0] === '/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs';
+const isLaunch = call => call.cmd === process.execPath && call.args[0] === '/opt/subscription-runtime/managed-launcher/launch.mjs';
 async function fixture(options = {}) {
   const calls = [];
   let state = 'LoadState=not-found';

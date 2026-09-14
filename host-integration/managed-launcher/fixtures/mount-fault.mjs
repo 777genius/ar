@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { readdir, stat, readFile } from 'node:fs/promises';
-import { requireFinalJobStorage } from '/usr/local/lib/subscription-runtime/host-jobs/storage-policy.mjs';
+import { requireFinalJobStorage } from '/opt/subscription-runtime/host-jobs/storage-policy.mjs';
 
 // Parent executes this helper under unshare --mount --propagation private.
 // Mounts vanish with the child; no host policy or shared mount is changed.

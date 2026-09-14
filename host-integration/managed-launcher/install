@@ -2,7 +2,7 @@
 set -eu
 [ "$(id -u)" = 0 ] || { echo 'installation requires root' >&2; exit 1; }
 integration_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-destination=/usr/local/lib/subscription-runtime
+destination=/opt/subscription-runtime
 install -d -o root -g root -m 0755 "$destination" "$destination/managed-launcher" "$destination/host-jobs"
 install -o root -g root -m 0644 "$integration_dir/managed-launcher/launch.mjs" "$destination/managed-launcher/launch.mjs"
 install -o root -g root -m 0644 "$integration_dir/managed-launcher/managed-host" "$destination/managed-launcher/managed-host"

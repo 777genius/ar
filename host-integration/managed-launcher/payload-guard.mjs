@@ -5,7 +5,7 @@ import { fstatSync, constants } from 'node:fs';
 import { mkdir, lstat, open, readFile } from 'node:fs/promises';
 import { requireFinalJobStorage } from '../host-jobs/storage-policy.mjs';
 
-export const PAYLOAD_GUARD_PATH = '/usr/local/lib/subscription-runtime/managed-launcher/payload-guard.mjs';
+export const PAYLOAD_GUARD_PATH = '/opt/subscription-runtime/managed-launcher/payload-guard.mjs';
 
 export async function requireMappedHostRootUid({ read = path => readFile(path, 'utf8'), uid = () => process.geteuid(), gid = () => process.getegid() } = {}) {
   const parse = text => {

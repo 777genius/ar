@@ -3,7 +3,7 @@ set -eu
 # Run explicitly as root on an approved host; never invoked by tests.
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 sh "$source_dir/../managed-launcher/install"
-target=/usr/local/lib/subscription-runtime/host-jobs
+target=/opt/subscription-runtime/host-jobs
 install -d -m 755 "$target"
 for file in contract.mjs manager.mjs read-request.mjs endpoint.mjs storage-policy.mjs; do
   install -m 644 "$source_dir/$file" "$target/$file"

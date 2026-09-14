@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { requireHostStorage, prepareManagedJobLayout } from '../host-jobs/storage-policy.mjs';
 
 const POLICY = '/etc/subscription-runtime/storage-policy.json';
-const WRAPPER = '/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs';
+const WRAPPER = '/opt/subscription-runtime/managed-launcher/launch.mjs';
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 function run(command, args) {
   const result = spawnSync(command, args, { encoding: 'utf8', timeout: 15000 });

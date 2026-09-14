@@ -13,7 +13,7 @@ import { hostedReadonlyMountProperties, type HostedReadonlyMounts } from "./host
 
 const hostedSandboxKind = "hosted-codex-job";
 const managedLauncherNodePath = process.execPath;
-const managedLauncherPath = "/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs";
+const managedLauncherPath = "/opt/subscription-runtime/managed-launcher/launch.mjs";
 const systemctlPath = "/usr/bin/systemctl";
 const hostedLauncherPath = fileURLToPath(
   new URL("./hosted-app-server-launcher.js", import.meta.url),

@@ -4,7 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { hostLock } from './host-job-lock.mjs';
 
-const endpoint = '/usr/local/lib/subscription-runtime/host-jobs/endpoint.mjs';
+const endpoint = '/opt/subscription-runtime/host-jobs/endpoint.mjs';
 const hosts = new Map();
 export function sshOutput(code, output) {
   if (code === 0 || (code !== 255 && output.trim().startsWith('{'))) return output;

@@ -4,6 +4,17 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { POLICY_FILE_MODE, parsePolicyArguments, validateCandidate } from './install-policy.mjs';
 
+test('host installers use the fixed trusted /opt installation root', () => {
+  for (const [path, assignment] of [
+    ['./install', 'destination=/opt/subscription-runtime'],
+    ['../host-jobs/install', 'target=/opt/subscription-runtime/host-jobs'],
+  ]) {
+    const source = readFileSync(new URL(path, import.meta.url), 'utf8');
+    assert.equal(spawnSync('/bin/sh', ['-n'], { input: source }).status, 0);
+    assert.ok(source.split('\n').includes(assignment));
+  }
+});
+
 test('policy is readable by non-root managers and writable only by root', () => {
   assert.equal(POLICY_FILE_MODE, 0o644);
   assert.equal(POLICY_FILE_MODE & 0o044, 0o044);

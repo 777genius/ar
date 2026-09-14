@@ -40,7 +40,7 @@ describe("hosted Codex app-server resource containment", () => {
       '{"schemaVersion":1,"command":"/opt/codex/bin/codex","args":["app-server","--listen","stdio://"],"cwd":"/var/data/worktrees/task","env":{"SUBSCRIPTION_RUNTIME_SANDBOX_KIND":"hosted-codex-job","SECRET_TOKEN":"not-in-argv","SUBSCRIPTION_RUNTIME_JOB_ID":"task"}}\n',
     );
     expect(invocation.args.slice(0, 2)).toEqual([
-      "/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs", "provider",
+      "/opt/subscription-runtime/managed-launcher/launch.mjs", "provider",
     ]);
     expect(JSON.parse(invocation.args[2]!)).toEqual({
       operation: "provider", jobId: "task", unit: systemdUnit,
@@ -60,7 +60,7 @@ describe("hosted Codex app-server resource containment", () => {
     });
     expect(invocation.command).toBe(process.execPath);
     expect(invocation.args.slice(0, 2)).toEqual([
-      "/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs", "provider",
+      "/opt/subscription-runtime/managed-launcher/launch.mjs", "provider",
     ]);
     expect(JSON.parse(invocation.args[2]!).payload).toEqual(["/sandbox/node", "/sandbox/hosted-app-server-launcher.js"]);
   });

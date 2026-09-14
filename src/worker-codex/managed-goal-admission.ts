@@ -3,7 +3,7 @@ import { access } from "node:fs/promises";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import { deriveManagedJobLayout, MANAGED_JOB_ROOT_ENV, MANAGED_JOB_ID_ENV, MANAGED_MARKER_ENV } from "./managed-job-layout";
 
-export const managedGoalActivationPath = "/usr/local/lib/subscription-runtime/managed-launcher/managed-host";
+export const managedGoalActivationPath = "/opt/subscription-runtime/managed-launcher/managed-host";
 export interface ManagedGoalAdmissionDeps {
   readonly platform?: NodeJS.Platform;
   readonly isManagedHost?: () => Promise<boolean>;

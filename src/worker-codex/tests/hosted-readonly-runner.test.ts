@@ -137,7 +137,7 @@ it.each(["none", "revoked", "CLOSED", "ORDINARY", "missing"])("rechecks real adm
   facts.spawn.mockImplementation((command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
     expect(command).toBe(process.execPath);
     expect(serviceRecords()).toHaveLength(frames.length + 1);
-    expect(args.slice(0, 2)).toEqual(["/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
+    expect(args.slice(0, 2)).toEqual(["/opt/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
     const request = JSON.parse(args[2]!);
     expect(request).toMatchObject({ operation: "provider", jobId: config.jobId, readonlyPaths: policy.readonlyPaths });
     expect(request).not.toHaveProperty("cwd");

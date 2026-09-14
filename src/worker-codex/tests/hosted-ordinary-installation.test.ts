@@ -672,7 +672,7 @@ describe("real default provider primitive under ordinary activation", () => {
     expect(fixture.spawn).toHaveBeenCalledTimes(1);
     const [command, args, options] = fixture.spawn.mock.calls[0]!;
     expect(command).toBe(process.execPath);
-    expect(args.slice(0, 2)).toEqual(["/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
+    expect(args.slice(0, 2)).toEqual(["/opt/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
     const request = JSON.parse(args[2]);
     expect(request).toEqual({ operation: "provider", jobId: "ordinary-job", unit: store.read().ordinaryStarts[1]!.unit,
       payload: [process.execPath, expect.stringMatching(/\/hosted-app-server-launcher\.js$/)] });
@@ -883,7 +883,7 @@ it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default f
   const frames: { env: Record<string, string> }[] = [];
   fixture.spawn.mockImplementation((command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
     expect(command).toBe(process.execPath);
-    expect(args.slice(0, 2)).toEqual(["/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
+    expect(args.slice(0, 2)).toEqual(["/opt/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
     expect(options.cwd).toBe(options.env.HOME);
     expect(options.cwd).not.toBe(config.workspacePath);
     expect(store.read().ordinaryStarts).toHaveLength(frames.length + 2);

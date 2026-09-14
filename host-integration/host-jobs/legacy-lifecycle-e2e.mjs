@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { registerHooks } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,21 +47,11 @@ async function run(command, args) {
   }
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-  assert.ok(args.length === 3 && args[0] === '--allow-live-synthetic' &&
-    args[1] === '--expected-machine-id',
-  'Usage (disposable Linux test host only): node legacy-lifecycle-e2e.mjs --allow-live-synthetic --expected-machine-id ID');
-  assert.equal(process.platform, 'linux', 'Requires disposable Linux test host');
-  const machineId = (await readFile('/etc/machine-id', 'utf8')).trim();
-  assert.match(machineId, /^[a-f0-9]{32}$/);
-  assert.equal(machineId, args[2], 'Machine identity mismatch');
-  await run('/usr/bin/systemctl', ['--user', 'show-environment']);
-
+async function poisonedLifecycle() {
   // Poison every public storage-policy operation before loading the real
   // HostJobs class. This leaves the actual lifecycle code intact and makes
   // policy reads, capacity admission, and layout creation unconditionally fail.
-  // No real host policy is read or modified by this proof.
+  // No real host policy is read or modified during the lifecycle proof.
   const poisonKey = `legacy-policy-${randomBytes(16).toString('hex')}`;
   globalThis[poisonKey] = { loaded: false, calls: 0 };
   const policyUrl = new URL('./storage-policy.mjs', import.meta.url).href;
@@ -80,51 +70,93 @@ async function main() {
   } });
   const { HostJobs } = await import('./manager.mjs');
   assert.equal(globalThis[poisonKey].loaded, true, 'Storage poison was not installed');
+  return { HostJobs, evidence: globalThis[poisonKey], dispose() {
+    hook.deregister();
+    delete globalThis[poisonKey];
+  } };
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  assert.ok(args.length === 3 && args[0] === '--allow-live-synthetic' &&
+    args[1] === '--expected-machine-id',
+  'Usage (disposable Linux test host only): node legacy-lifecycle-e2e.mjs --allow-live-synthetic --expected-machine-id ID');
+  assert.equal(process.platform, 'linux', 'Requires disposable Linux test host');
+  const machineId = (await readFile('/etc/machine-id', 'utf8')).trim();
+  assert.match(machineId, /^[a-f0-9]{32}$/);
+  assert.equal(machineId, args[2], 'Machine identity mismatch');
+  await run('/usr/bin/systemctl', ['--user', 'show-environment']);
+
+  // A separate module identity keeps setup policy reads outside the poisoned
+  // lifecycle import graph. Only the normal synthetic launch needs admission.
+  const setupStorage = await import('./storage-policy.mjs?legacy-e2e-setup');
+  const policy = await setupStorage.loadHostStoragePolicy();
+  const launchJobId = `legacy-e2e-launch-${randomBytes(24).toString('hex')}`;
+  const layout = setupStorage.deriveManagedJobLayout(policy.storageRoot, launchJobId);
+  await assert.rejects(lstat(layout.jobRoot), { code: 'ENOENT' }, 'Synthetic launch root already exists');
+  const launcher = '/opt/subscription-runtime/managed-launcher/launch.mjs';
+  const metadata = await lstat(launcher);
+  assert.ok(metadata.isFile() && metadata.uid === 0 && !(metadata.mode & 0o022), 'Untrusted installed launcher');
+  assert.equal(await realpath(launcher), launcher, 'Launcher must be canonical');
 
   const jobId = `legacy:e2e:${randomBytes(24).toString('hex')}`;
   const record = { jobId, unit: unitFor(jobId), machineId,
-    fingerprint: randomBytes(32).toString('hex'), phase: 'started', createdAt: Date.now() };
+    fingerprint: unitFor(jobId).slice('subscription-job-'.length, -'.service'.length),
+    phase: 'started', createdAt: Date.now() };
   const stateDir = await mkdtemp(join(tmpdir(), 'subscription-legacy-e2e-'));
-  const manager = new HostJobs({ stateDir, run: scopedSystemctl(record.unit, run) });
+  let manager;
+  let poison;
   let dispatched = false;
   let launchConfirmed = false;
   let stopped = false;
   let result;
   try {
-    const initial = await manager.inspect(record.unit);
-    assert.equal(initial.LoadState, 'not-found', 'Synthetic unit name already exists');
-    await writeFile(manager.path(jobId), JSON.stringify(record), { flag: 'wx', mode: 0o600 });
-    // Seed precisely the old ledger shape, then launch an inert owned service.
-    // This bypass is limited to this fixture: HostJobs.start rejects colon IDs.
+    const initial = await scopedSystemctl(record.unit, run)('/usr/bin/systemctl',
+      ['--user', 'show', record.unit, '--property=LoadState,ActiveState,SubState,ControlGroup,Description']);
+    assert.match(initial, /^LoadState=not-found$/m, 'Synthetic unit name already exists');
+    await writeFile(join(stateDir, `${record.unit}.json`), JSON.stringify(record), { flag: 'wx', mode: 0o600 });
+    // Launch a normal admitted synthetic job, then exercise the old colon-ID
+    // ledger binding to that exact unit. Never call start with the legacy ID.
     dispatched = true; // A timeout is uncertain, so cleanup must reconcile.
-    await run('/usr/bin/systemd-run', ['--user', `--unit=${record.unit}`,
-      `--description=subscription-job:${record.fingerprint}`,
-      '--property=Type=exec', '--property=RuntimeMaxSec=120', '--property=TimeoutStopSec=5',
-      '--property=KillMode=control-group', '--property=MemoryMax=32M', '--property=TasksMax=4',
-      '--property=StandardOutput=null', '--property=StandardError=null', '/usr/bin/sleep', '120']);
+    await run(process.execPath, [launcher, 'job', JSON.stringify({ operation: 'job',
+      jobId: launchJobId, unit: record.unit, fingerprint: record.fingerprint,
+      payload: ['/usr/bin/sleep', '120'],
+      limits: { runtimeSeconds: 120, stopSeconds: 5, memoryMiB: 128, tasksMax: 32, cpuPercent: 100 } })]);
     launchConfirmed = true;
+    poison = await poisonedLifecycle();
+    manager = new poison.HostJobs({ stateDir, run: scopedSystemctl(record.unit, run) });
     result = await verifyLegacyLifecycle(manager, record);
     stopped = true;
-    assert.equal(globalThis[poisonKey].calls, 0, 'Lifecycle accessed storage admission');
+    assert.equal(poison.evidence.calls, 0, 'Lifecycle accessed storage admission');
   } finally {
     // Revalidate ledger, machine, and description through HostJobs even when
     // launch/verification failed. Never stop a unit with unverified ownership.
     if (dispatched && !stopped) {
       try {
+        poison ??= await poisonedLifecycle();
+        manager ??= new poison.HostJobs({ stateDir, run: scopedSystemctl(record.unit, run) });
         const final = await manager.stop(jobId, machineId);
         // An absent unit after an uncertain launch may still be queued.
         stopped = (launchConfirmed && final.state.LoadState === 'not-found') ||
           (final.state.LoadState !== 'not-found' && ['inactive', 'failed'].includes(final.state.ActiveState));
       } catch { stopped = false; }
     }
-    hook.deregister();
-    delete globalThis[poisonKey];
-    if (!dispatched || stopped) await rm(stateDir, { recursive: true, force: false });
-    else throw new Error(`Uncertain synthetic stop: preserving ledger ${stateDir} for ${record.unit}`);
+    poison?.dispose();
+    if (!dispatched || stopped) {
+      if (dispatched) {
+        // Remove only our randomized admitted root, never the storage parent.
+        // A replaced/symlinked root is preserved for explicit reconciliation.
+        try {
+          assert.equal(await realpath(layout.jobRoot), layout.jobRoot, 'Synthetic root changed');
+          await rm(layout.jobRoot, { recursive: true, force: false });
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      await rm(stateDir, { recursive: true, force: false });
+    } else throw new Error(`Uncertain synthetic stop: preserving ledger ${stateDir} and ${layout.jobRoot} for ${record.unit}`);
   }
   console.log(JSON.stringify({ ok: true, scope: 'synthetic-legacy-status-stop',
-    jobId, unit: record.unit, machineId, policyPoisoned: true, storageAdmissionCalls: 0,
-    ledgerRemoved: true, ...result }, null, 2));
+    jobId, launchJobId, unit: record.unit, machineId, policyPoisoned: true, storageAdmissionCalls: 0,
+    ledgerRemoved: true, managedLaunchRootRemoved: true, ...result }, null, 2));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

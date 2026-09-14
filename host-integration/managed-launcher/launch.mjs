@@ -5,7 +5,7 @@ import { prepareManagedJobLayout } from '../host-jobs/storage-policy.mjs';
 import { PAYLOAD_GUARD_PATH } from './payload-guard.mjs';
 import { requireTrustedExecutable, profileProperties } from './profiles.mjs';
 
-export const MANAGED_LAUNCHER_PATH = '/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs';
+export const MANAGED_LAUNCHER_PATH = '/opt/subscription-runtime/managed-launcher/launch.mjs';
 const denied = () => { throw new Error('managed launcher: unsupported invocation'); };
 const safePath = value => typeof value === 'string' && /^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]*$/.test(value) && !value.split('/').some(part => part === '.' || part === '..');
 const bootstrap = ['/usr/bin/unshare', '--map-user=65532', '--map-group=65532', '--keep-caps', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', '/usr/bin/setpriv', '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs'];
