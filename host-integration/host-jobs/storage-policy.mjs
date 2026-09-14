@@ -2,7 +2,7 @@ import { lstat, stat, statfs, realpath, open, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
-export const HOST_STORAGE_POLICY_PATH = '/etc/subscription-runtime/storage-policy.json';
+export const MANAGED_STORAGE_ROOT_CONFIG = '/etc/subscription-runtime/storage-root';
 export const MINIMUM_FREE_BYTES = 5368709120n;
 export const MINIMUM_FREE_INODES = 50000n;
 const LIMIT = 16384;
@@ -15,7 +15,7 @@ export function deriveManagedJobLayout(storageRoot, jobId) {
   return Object.freeze({ storageRoot, jobId, jobRoot, ...Object.fromEntries(['workspace', 'state', 'logs', 'output', 'home', 'tmp', 'payloadLogs'].map(key => [key, `${jobRoot}/${key === 'payloadLogs' ? 'payload-logs' : key}`])) });
 }
 
-// One final check inside the completed namespace. No policy or capacity reload.
+// One final check inside the completed namespace. No config or capacity reload.
 export async function requireFinalJobStorage({ cwd, jobId, env = process.env, probe = storageProbe }) {
   const jobRoot = env.SUBSCRIPTION_RUNTIME_JOB_ROOT;
   const suffix = `/jobs/${jobId}`;
@@ -31,23 +31,23 @@ export async function requireFinalJobStorage({ cwd, jobId, env = process.env, pr
   return Object.freeze({ layout, device: job.dev });
 }
 
-export async function prepareManagedJobLayout(jobId, { policyPath = HOST_STORAGE_POLICY_PATH, probe = storageProbe, create = mkdir,
+export async function prepareManagedJobLayout(jobId, { configPath = MANAGED_STORAGE_ROOT_CONFIG, probe = storageProbe, create = mkdir,
   openDirectory = path => open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW), expectedUid = 0n } = {}) {
-  const policy = await loadHostStoragePolicy(policyPath, probe, expectedUid);
-  const layout = deriveManagedJobLayout(policy.storageRoot, jobId);
-  const root = await probe.stat(policy.storageRoot);
+  const config = await loadManagedStorageRoot(configPath, probe, expectedUid);
+  const layout = deriveManagedJobLayout(config.storageRoot, jobId);
+  const root = await probe.stat(config.storageRoot);
   if (root.dev === (await probe.stat('/')).dev) throw denied('root filesystem forbidden');
   const handles = new Map();
   const validate = metadata => {
     if (!metadata.isDirectory() || metadata.dev !== root.dev || metadata.uid !== expectedUid || (metadata.mode & 0o022n) !== 0n) throw denied('unsafe anchored directory');
   };
   try {
-    const anchor = await openDirectory(policy.storageRoot);
-    handles.set(policy.storageRoot, anchor);
+    const anchor = await openDirectory(config.storageRoot);
+    handles.set(config.storageRoot, anchor);
     const initial = await anchor.stat({ bigint: true });
     validate(initial);
     if (initial.ino !== root.ino) throw denied('storage root changed');
-    for (const path of [`${policy.storageRoot}/jobs`, layout.jobRoot, ...['workspace', 'state', 'logs', 'output', 'home', 'tmp', 'payloadLogs'].map(key => layout[key])]) {
+    for (const path of [`${config.storageRoot}/jobs`, layout.jobRoot, ...['workspace', 'state', 'logs', 'output', 'home', 'tmp', 'payloadLogs'].map(key => layout[key])]) {
       const parent = handles.get(dirname(path));
       validate(await parent.stat({ bigint: true }));
       const anchored = `/proc/self/fd/${parent.fd}/${path.slice(dirname(path).length + 1)}`;
@@ -61,7 +61,7 @@ export async function prepareManagedJobLayout(jobId, { policyPath = HOST_STORAGE
     const final = await anchor.stat({ bigint: true });
     validate(final);
     if (final.ino !== initial.ino) throw denied('storage root changed');
-    await requireHostStorage(layout.workspace, policyPath, probe, expectedUid);
+    await requireHostStorage(layout.workspace, configPath, probe, expectedUid);
     for (const [path, handle] of handles) {
       const pinned = await handle.stat({ bigint: true });
       const visible = await probe.lstat(path);
@@ -90,14 +90,14 @@ export const storageProbe = {
       return buffer.subarray(0, length).toString('utf8');
     } finally { await handle.close(); }
   },
-  async readPolicy(path, expectedUid = 0n) {
+  async readStorageRoot(path, expectedUid = 0n) {
     const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const metadata = await handle.stat({ bigint: true });
-      if (!metadata.isFile() || metadata.uid !== expectedUid || (metadata.mode & 0o022n) !== 0n || metadata.size > BigInt(LIMIT)) throw denied('untrusted policy');
+      if (!metadata.isFile() || metadata.uid !== expectedUid || (metadata.mode & 0o022n) !== 0n || metadata.size > BigInt(LIMIT)) throw denied('untrusted config');
       const buffer = Buffer.alloc(LIMIT + 1);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-      if (bytesRead > LIMIT) throw denied('invalid policy');
+      if (bytesRead > LIMIT) throw denied('invalid config');
       return buffer.subarray(0, bytesRead).toString('utf8');
     } finally { await handle.close(); }
   },
@@ -131,9 +131,9 @@ async function directories(path, probe, expectedDevice, boundary, trustedParents
     const metadata = await probe.lstat(current);
     if (metadata.isSymbolicLink() || !metadata.isDirectory()) throw denied('unsafe path');
     if (trustedParents) {
-      if (metadata.uid !== expectedUid || (metadata.mode & 0o022n) !== 0n) throw denied('untrusted policy parent');
+      if (metadata.uid !== expectedUid || (metadata.mode & 0o022n) !== 0n) throw denied('untrusted config parent');
       const previous = trustedParents.get(current);
-      if (previous && (previous.dev !== metadata.dev || previous.ino !== metadata.ino)) throw denied('policy parent changed');
+      if (previous && (previous.dev !== metadata.dev || previous.ino !== metadata.ino)) throw denied('config parent changed');
       trustedParents.set(current, { dev: metadata.dev, ino: metadata.ino });
     }
     if (expectedDevice !== undefined && (current === boundary || current.startsWith(`${boundary}${sep}`)) && metadata.dev !== expectedDevice) throw denied('filesystem mismatch');
@@ -142,52 +142,51 @@ async function directories(path, probe, expectedDevice, boundary, trustedParents
   return probe.stat(path);
 }
 
-// Trusted composition only: policy path and probes never come from job JSON.
-export async function requireHostStorage(cwd, policyPath, probe = storageProbe, expectedUid = 0n) {
-  return validateHostStorage(() => cwd, policyPath, probe, expectedUid);
+// Trusted composition only: config path and probes never come from job JSON.
+export async function requireHostStorage(cwd, configPath, probe = storageProbe, expectedUid = 0n) {
+  return validateHostStorage(() => cwd, configPath, probe, expectedUid);
 }
 
 // Validate the root before a managed launcher derives or creates its job layout.
-export async function loadHostStoragePolicy(policyPath = HOST_STORAGE_POLICY_PATH, probe = storageProbe, expectedUid = 0n) {
-  return validateHostStorage(policy => policy.storageRoot, policyPath, probe, expectedUid);
+export async function loadManagedStorageRoot(configPath = MANAGED_STORAGE_ROOT_CONFIG, probe = storageProbe, expectedUid = 0n) {
+  return validateHostStorage(config => config.storageRoot, configPath, probe, expectedUid);
 }
 
-async function validateHostStorage(selectCwd, policyPath, probe, expectedUid) {
+async function validateHostStorage(selectCwd, configPath, probe, expectedUid) {
   try {
-    const policyParents = new Map();
-    await directories(dirname(policyPath), probe, undefined, undefined, policyParents, expectedUid);
-    const metadata = await probe.lstat(policyPath);
-    if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.uid !== expectedUid || (metadata.mode & 0o022n) !== 0n) throw denied('untrusted policy');
-    const text = await probe.readPolicy(policyPath, expectedUid);
-    if (Buffer.byteLength(text) > LIMIT) throw denied('invalid policy');
-    const policy = JSON.parse(text);
-    const keys = ['schemaVersion', 'storageRoot'];
-    if (!policy || Object.keys(policy).sort().join(',') !== keys.join(',') || policy.schemaVersion !== 1 ||
-      typeof policy.storageRoot !== 'string' || !isAbsolute(policy.storageRoot)) throw denied('invalid policy');
+    const configParents = new Map();
+    await directories(dirname(configPath), probe, undefined, undefined, configParents, expectedUid);
+    const metadata = await probe.lstat(configPath);
+    if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.uid !== expectedUid || (metadata.mode & 0o022n) !== 0n) throw denied('untrusted config');
+    const text = await probe.readStorageRoot(configPath, expectedUid);
+    if (Buffer.byteLength(text) > LIMIT) throw denied('invalid config');
+    const storageRoot = text.replace(/\n$/, '');
+    if (!/^\/[A-Za-z0-9_./-]+$/.test(storageRoot) || storageRoot === '/' || resolve(storageRoot) !== storageRoot) throw denied('invalid storage root config');
+    const config = { storageRoot };
     const storageParents = new Map();
-    const root = await directories(policy.storageRoot, probe, undefined, undefined, storageParents, expectedUid);
+    const root = await directories(config.storageRoot, probe, undefined, undefined, storageParents, expectedUid);
     if (root.uid !== expectedUid || (root.mode & 0o022n) !== 0n) throw denied('untrusted storage root');
     if (root.dev === (await probe.stat('/')).dev) throw denied('root filesystem forbidden');
-    const cwd = selectCwd(policy);
-    const child = relative(policy.storageRoot, cwd);
+    const cwd = selectCwd(config);
+    const child = relative(config.storageRoot, cwd);
     if (child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child)) throw denied('cwd outside storage root');
-    const working = await directories(cwd, probe, root.dev, policy.storageRoot);
+    const working = await directories(cwd, probe, root.dev, config.storageRoot);
     const capacity = await probe.statfs(cwd);
     if (![capacity.bavail, capacity.bsize, capacity.ffree].every(value => typeof value === 'bigint' && value >= 0n) || capacity.bsize === 0n) throw denied('invalid capacity');
     if (capacity.bavail * capacity.bsize < MINIMUM_FREE_BYTES) throw denied('insufficient bytes');
     if (capacity.ffree < MINIMUM_FREE_INODES) throw denied('insufficient inodes');
     // Recheck after the capacity probe, immediately before launch admission returns.
-    const finalRoot = await directories(policy.storageRoot, probe, undefined, undefined, storageParents, expectedUid);
+    const finalRoot = await directories(config.storageRoot, probe, undefined, undefined, storageParents, expectedUid);
     if (finalRoot.uid !== expectedUid || (finalRoot.mode & 0o022n) !== 0n) throw denied('untrusted storage root');
-    const finalWorking = await directories(cwd, probe, root.dev, policy.storageRoot);
+    const finalWorking = await directories(cwd, probe, root.dev, config.storageRoot);
     if (finalRoot.dev !== root.dev || finalRoot.ino !== root.ino || finalWorking.dev !== root.dev || finalWorking.ino !== working.ino ||
       (await probe.stat('/')).dev === root.dev) throw denied('filesystem changed');
     // Read the bounded kernel mount table, not the potentially large job tree.
-    requireSafeNestedMounts(await probe.readMountInfo(), cwd, root.dev, cwd !== policy.storageRoot);
-    await directories(dirname(policyPath), probe, undefined, undefined, policyParents, expectedUid);
-    return Object.freeze(policy);
+    requireSafeNestedMounts(await probe.readMountInfo(), cwd, root.dev, cwd !== config.storageRoot);
+    await directories(dirname(configPath), probe, undefined, undefined, configParents, expectedUid);
+    return Object.freeze(config);
   } catch (error) {
     if (error.message?.startsWith('storage admission:')) throw error;
-    throw denied('policy or filesystem unavailable');
+    throw denied('config or filesystem unavailable');
   }
 }

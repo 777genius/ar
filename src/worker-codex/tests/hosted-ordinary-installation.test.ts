@@ -903,7 +903,7 @@ it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default f
   });
   fixture.onStop = () => { for (const fake of fakes) for (const child of fake.processes) child.kill(); };
   const clock = { now: () => new Date("2026-05-31T00:05:00.000Z"), monotonicMs: () => performance.now() };
-  const result = await runCodexGoal(config, { managedAdmission: { platform: "linux", isManagedHost: async () => false },
+  const result = await runCodexGoal(config, {
     createExecutor: options => new FileBackendCodexSafeExecutor({
     ...options, requireGitWorkspace: false, prewarmOnStart: false, clock,
     accounts: options.accounts.map((account, index) => ({

@@ -15,8 +15,8 @@ const sentinel = join(source, 'sentinel');
 await mkdir(policyDirectory, { mode: 0o755 });
 await mkdir(sentinel, { mode: 0o755 });
 if (mode === 'untrusted-policy') {
-  const path = join(policyDirectory, 'storage-policy.json');
-  await writeFile(path, await readFile('/etc/subscription-runtime/storage-policy.json'), { flag: 'wx', mode: 0o666 });
+  const path = join(policyDirectory, 'storage-root');
+  await writeFile(path, await readFile('/etc/subscription-runtime/storage-root'), { flag: 'wx', mode: 0o666 });
   await chmod(path, 0o666);
 }
 for (const [from, to] of [[policyDirectory, '/etc/subscription-runtime'], [sentinel, storageRoot]]) {
@@ -24,10 +24,10 @@ for (const [from, to] of [[policyDirectory, '/etc/subscription-runtime'], [senti
   check(!mounted.error && mounted.status === 0, `Private policy fault mount failed: ${mounted.stderr}`);
 }
 const launched = spawnSync(process.execPath, [wrapper, 'job', JSON.stringify(request)], { encoding: 'utf8', timeout: 5000 });
-const expected = mode === 'missing-policy' ? /storage admission: policy or filesystem unavailable/ : /storage admission: untrusted policy/;
+const expected = mode === 'missing-policy' ? /storage admission: config or filesystem unavailable/ : /storage admission: untrusted config/;
 check(!launched.error && launched.status !== null && launched.status !== 0 && expected.test(launched.stderr),
   `Installed launcher did not reject ${mode} at policy admission: ${launched.error?.message ?? launched.stderr}`);
 check((await readdir(sentinel)).length === 0, 'Policy fault created root-backed job files');
-check((await readdir(policyDirectory)).sort().join(',') === (mode === 'missing-policy' ? '' : 'storage-policy.json'),
+check((await readdir(policyDirectory)).sort().join(',') === (mode === 'missing-policy' ? '' : 'storage-root'),
   'Policy fault created unexpected root-backed policy files');
 console.log(JSON.stringify({ mode, admissionDenied: true, rootWrites: 0 }));

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { admitManagedGoal } from "./managed-goal-admission";
+import { assertManagedHostEntrypointAllowed } from "../managed-host-entrypoint";
+import { mapManagedGoalLayout } from "./managed-goal-admission";
 import { routeHostedRuntimeCommand } from "./hosted-readonly-foreground";
 import { CodexGoalLaunchState } from "./codex-goal-ops";
 import type { HostedGoalLifecycleRequest } from "./application/codex-goal-foreground-command";
@@ -200,6 +201,7 @@ export async function runCodexGoalCli(
   io: CodexGoalCliIo = defaultIo,
 ): Promise<number> {
   try {
+    assertManagedHostEntrypointAllowed();
     let command = parseCodexGoalCliArgs(argv, io);
     if (command.kind === "help") {
       io.writeStdout(usage());
@@ -325,7 +327,7 @@ export async function runCodexGoalCli(
       return result.ok ? 0 : 1;
     }
     if (!command.dryRun && !command.printCommand) {
-      command = { ...command, ...await admitManagedGoal(command) };
+      command = { ...command, ...mapManagedGoalLayout(command) };
     }
     if (command.lifecycle) {
       return await runHostedGoalLifecycleCommand(command, cliLaunchInput(command), io);
@@ -461,7 +463,7 @@ export function buildNoTmuxShellCommand(command: RunCommand): string {
 }
 
 export async function upsertRunCommandManifest(command: RunCommand) {
-  command = { ...command, ...await admitManagedGoal(command) };
+  assertManagedHostEntrypointAllowed();
   if (!command.registryRootDir) return undefined;
   return upsertCodexGoalLaunchManifest({
     registryRootDir: command.registryRootDir,

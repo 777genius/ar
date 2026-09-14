@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { POLICY_FILE_MODE, parsePolicyArguments, validateCandidate } from './install-policy.mjs';
+import { CONFIG_FILE_MODE, parseStorageRootArguments, validateCandidate } from './install-policy.mjs';
 
 test('host installers use the fixed trusted /opt installation root', () => {
   for (const [path, assignment] of [
@@ -15,10 +15,10 @@ test('host installers use the fixed trusted /opt installation root', () => {
   }
 });
 
-test('policy is readable by non-root managers and writable only by root', () => {
-  assert.equal(POLICY_FILE_MODE, 0o644);
-  assert.equal(POLICY_FILE_MODE & 0o044, 0o044);
-  assert.equal(POLICY_FILE_MODE & 0o022, 0);
+test('config is readable by non-root managers and writable only by root', () => {
+  assert.equal(CONFIG_FILE_MODE, 0o644);
+  assert.equal(CONFIG_FILE_MODE & 0o044, 0o044);
+  assert.equal(CONFIG_FILE_MODE & 0o022, 0);
 });
 
 test('shell installer resolves and checks Node without a fixed binary location', () => {
@@ -33,11 +33,11 @@ test('shell installer resolves and checks Node without a fixed binary location',
   assert.doesNotMatch(source, /exec \/usr\/bin\/node/);
 });
 
-test('explicit argv policy has only version and root and rejects threshold overrides', () => {
-  assert.deepEqual(parsePolicyArguments(['/volume/jobs']), { check: false, policy: { schemaVersion: 1, storageRoot: '/volume/jobs' } });
-  assert.equal(parsePolicyArguments(['--check', '/volume']).check, true);
+test('explicit argv config has only root and rejects threshold overrides', () => {
+  assert.deepEqual(parseStorageRootArguments(['/volume/jobs']), { check: false, config: { storageRoot: '/volume/jobs' } });
+  assert.equal(parseStorageRootArguments(['--check', '/volume']).check, true);
   for (const args of [[], ['/'], ['relative'], ['/volume/'], ['/volume/../x'], ['/volume%h'], ['/volume', '-1'], ['/volume', '1e9'], ['/volume', '01'], ['/volume', '9007199254740992'], ['/volume', '1', '2', '3'], ['--destination', '/tmp']]) {
-    assert.throws(() => parsePolicyArguments(args));
+    assert.throws(() => parseStorageRootArguments(args));
   }
 });
 
@@ -51,10 +51,10 @@ function syntheticProbe({ rootBacked = false, symlink = false, free = 5368709120
 }
 
 test('candidate checks its external root without inspecting unrelated jobs', async () => {
-  const { policy } = parsePolicyArguments(['/volume']);
-  assert.deepEqual(await validateCandidate(policy, syntheticProbe()), policy);
-  assert.deepEqual(await validateCandidate(policy, syntheticProbe({ nested: true })), policy);
+  const { config } = parseStorageRootArguments(['/volume']);
+  assert.deepEqual(await validateCandidate(config, syntheticProbe()), config);
+  assert.deepEqual(await validateCandidate(config, syntheticProbe({ nested: true })), config);
   for (const options of [{ rootBacked: true }, { symlink: true }, { free: 9n }]) {
-    await assert.rejects(validateCandidate(policy, syntheticProbe(options)), /storage admission:/);
+    await assert.rejects(validateCandidate(config, syntheticProbe(options)), /storage admission:/);
   }
 });

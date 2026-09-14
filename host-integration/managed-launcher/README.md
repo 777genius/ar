@@ -20,12 +20,12 @@ sudo sh host-integration/managed-launcher/install-policy --check /mnt/runtime/jo
 sudo sh host-integration/managed-launcher/install-policy /mnt/runtime/jobs
 ```
 
-Policy contains exactly `schemaVersion: 1` and `storageRoot`. Admission requires
+Configuration contains one absolute storage root path followed by a newline. Admission requires
 5 GiB and 50,000 free inodes as fixed runtime constants; installer arguments and
 policy cannot override them. `--check` validates without writing. Both modes require
 root on Linux and reject root-backed storage, symlinks, noncanonical paths,
 nested foreign filesystems, or insufficient space. The installer reuses runtime
-admission, atomically replaces `/etc/subscription-runtime/storage-policy.json`
+admission, atomically replaces `/etc/subscription-runtime/storage-root`
 with root:root mode 0644 and maintains its trusted parent at mode 0755. The policy
 contains no secrets and is mode 0644; only root can write it. Current Host Jobs
 deployment runs new jobs in the system manager as root. Legacy records without

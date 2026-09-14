@@ -9,18 +9,18 @@ import { hostJobCli } from '../../scripts/ops/host-job-cli.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { hostLock } from '../../scripts/ops/host-job-lock.mjs';
-import { requireHostStorage, loadHostStoragePolicy } from './storage-policy.mjs';
+import { requireHostStorage, loadManagedStorageRoot } from './storage-policy.mjs';
 
 function fakeStorage(overrides = {}) {
   const calls = [];
-  const policy = { schemaVersion: 1, storageRoot: '/volume' };
+  const policy = { storageRoot: '/volume' };
   const metadata = path => ({ dev: path === '/volume' || path.startsWith('/volume/') ? 2n : 1n,
     ino: 10n, uid: 0n, mode: 0o100644n, isFile: () => path === '/policy.json', isDirectory: () => path !== '/policy.json', isSymbolicLink: () => false });
   const probe = {
     lstat: async path => { calls.push(['lstat', path]); return metadata(path); },
     stat: async path => { calls.push(['stat', path]); return metadata(path); },
     realpath: async path => path,
-    readPolicy: async () => JSON.stringify(policy),
+    readStorageRoot: async () => `${policy.storageRoot}\n`,
     readMountInfo: async () => '1 0 0:1 / / rw - ext4 root rw\n2 1 0:2 / /volume rw - ext4 volume rw\n',
     statfs: async path => { calls.push(['statfs', path]); return { bavail: 1310720n, bsize: 4096n, ffree: 50000n }; },
     ...overrides,
@@ -29,24 +29,24 @@ function fakeStorage(overrides = {}) {
 }
 
 test('policy ancestors must stay root-owned, protected and unchanged through admission', async () => {
-  const policyPath = '/etc/runtime/policy.json';
+  const configPath = '/etc/runtime/policy.json';
   for (const ancestor of ['/', '/etc', '/etc/runtime']) {
     for (const change of [{ uid: 1000n }, { mode: 0o40777n }, { mode: 0o40770n }]) {
       for (const race of [false, true]) {
         const { probe, metadata } = fakeStorage();
         let changed = !race;
-        probe.lstat = async path => ({ ...metadata(path === policyPath ? '/policy.json' : path), ...(changed && path === ancestor ? change : {}) });
-        const readPolicy = probe.readPolicy;
-        probe.readPolicy = async () => { changed = true; return readPolicy(); };
-        await assert.rejects(loadHostStoragePolicy(policyPath, probe), /untrusted policy parent/);
+        probe.lstat = async path => ({ ...metadata(path === configPath ? '/policy.json' : path), ...(changed && path === ancestor ? change : {}) });
+        const readStorageRoot = probe.readStorageRoot;
+        probe.readStorageRoot = async () => { changed = true; return readStorageRoot(); };
+        await assert.rejects(loadManagedStorageRoot(configPath, probe), /untrusted config parent/);
       }
     }
     const { probe, metadata } = fakeStorage();
     let changed = false;
-    probe.lstat = async path => ({ ...metadata(path === policyPath ? '/policy.json' : path), ...(changed && path === ancestor ? { ino: 11n } : {}) });
+    probe.lstat = async path => ({ ...metadata(path === configPath ? '/policy.json' : path), ...(changed && path === ancestor ? { ino: 11n } : {}) });
     const readMountInfo = probe.readMountInfo;
     probe.readMountInfo = async () => { changed = true; return readMountInfo(); };
-    await assert.rejects(loadHostStoragePolicy(policyPath, probe), /policy parent changed/);
+    await assert.rejects(loadManagedStorageRoot(configPath, probe), /config parent changed/);
   }
 });
 
@@ -64,19 +64,19 @@ test('storage root must remain root-owned and protected, but job children may be
     probe.stat = async candidate => ({ ...metadata(candidate), ...(candidate === '/volume' ? { mode: 0o40777n } : {}) });
     return capacity(path);
   };
-  await assert.rejects(loadHostStoragePolicy('/policy.json', probe), /untrusted storage root/);
+  await assert.rejects(loadManagedStorageRoot('/policy.json', probe), /untrusted storage root/);
 });
 
 test('final namespace may require the exact mapped host-root owner', async () => {
   const { probe, metadata } = fakeStorage();
   probe.lstat = async path => ({ ...metadata(path), uid: 65532n });
   probe.stat = async path => ({ ...metadata(path), uid: 65532n });
-  probe.readPolicy = async (_path, expectedUid) => {
+  probe.readStorageRoot = async (_path, expectedUid) => {
     assert.equal(expectedUid, 65532n);
-    return JSON.stringify({ schemaVersion: 1, storageRoot: '/volume' });
+    return '/volume\n';
   };
   await requireHostStorage('/volume/job/workspace', '/policy.json', probe, 65532n);
-  await assert.rejects(requireHostStorage('/volume/job/workspace', '/policy.json', probe), /untrusted policy/);
+  await assert.rejects(requireHostStorage('/volume/job/workspace', '/policy.json', probe), /untrusted config/);
 });
 
 test('mount table rejects foreign nested binds below the admitted job and ignores unrelated jobs', async () => {
@@ -98,27 +98,27 @@ test('mount table rejects foreign nested binds below the admitted job and ignore
   }
   for (const invalid of ['', 'invalid', 'x'.repeat(1024 * 1024 + 1)]) {
     probe.readMountInfo = async () => invalid;
-    await assert.rejects(loadHostStoragePolicy('/policy.json', probe), /invalid mount table/);
+    await assert.rejects(loadManagedStorageRoot('/policy.json', probe), /invalid mount table/);
   }
 });
 
 test('trusted policy export returns frozen configuration only after root admission', async () => {
   const { probe, policy, calls } = fakeStorage();
-  const loaded = await loadHostStoragePolicy('/policy.json', probe);
+  const loaded = await loadManagedStorageRoot('/policy.json', probe);
   assert.deepEqual(loaded, policy);
   assert.equal(Object.isFrozen(loaded), true);
   assert.deepEqual(calls.filter(([name]) => name === 'statfs'), [['statfs', '/volume']]);
   probe.statfs = async () => ({ bavail: 0n, bsize: 4096n, ffree: 50000n });
-  await assert.rejects(loadHostStoragePolicy('/policy.json', probe), /insufficient bytes/);
-  probe.readPolicy = async () => '{';
-  await assert.rejects(loadHostStoragePolicy('/policy.json', probe), /storage admission:/);
+  await assert.rejects(loadManagedStorageRoot('/policy.json', probe), /insufficient bytes/);
+  probe.readStorageRoot = async () => '{';
+  await assert.rejects(loadManagedStorageRoot('/policy.json', probe), /storage admission:/);
 });
 
-test('minimal policy rejects legacy threshold fields and all extra configuration', async () => {
-  for (const extra of [{ minimumFreeBytes: 0 }, { minimumFreeInodes: 0 }, { other: true }]) {
-    const { probe, policy } = fakeStorage();
-    probe.readPolicy = async () => JSON.stringify({ ...policy, ...extra });
-    await assert.rejects(loadHostStoragePolicy('/policy.json', probe), /invalid policy/);
+test('storage root config accepts only a single canonical absolute path', async () => {
+  for (const text of ['{"storageRoot":"/volume"}', '/volume\n/other\n', '/volume ', '/volume\n\n', '/', '/volume/../other']) {
+    const { probe } = fakeStorage();
+    probe.readStorageRoot = async () => text;
+    await assert.rejects(loadManagedStorageRoot('/policy.json', probe), /invalid storage root config/);
   }
 });
 
@@ -130,7 +130,7 @@ test('storage ancestors must retain trusted ownership and identity', async () =>
     probe.lstat = async path => ({ ...metadata(path), ...(changed && path === '/volume' ? change : {}) });
     const capacity = probe.statfs;
     probe.statfs = async path => { changed = true; return capacity(path); };
-    await assert.rejects(loadHostStoragePolicy('/policy.json', probe), /untrusted policy parent|policy parent changed/);
+    await assert.rejects(loadManagedStorageRoot('/policy.json', probe), /untrusted config parent|config parent changed/);
   }
 });
 
@@ -151,7 +151,7 @@ test('managed admission uses external cwd, exact bytes/inode thresholds and boun
   }
 });
 
-test('managed admission rejects untrusted policy, missing paths, symlinks and nested root mounts', async () => {
+test('managed admission rejects untrusted config, missing paths, symlinks and nested root mounts', async () => {
   for (const scenario of ['missing-policy', 'invalid-json', 'extra-key', 'oversize', 'policy-owner', 'policy-mode', 'policy-symlink', 'missing-root', 'root-backed', 'ancestor-symlink', 'nested-root', 'noncanonical', 'outside', 'cwd-missing', 'canonical-alias', 'swapped-job', 'replaced-inode']) {
     const { probe, metadata, policy } = fakeStorage();
     let cwd = '/volume/job/workspace';
@@ -170,9 +170,9 @@ test('managed admission rejects untrusted policy, missing paths, symlinks and ne
       return value;
     };
     if (scenario === 'root-backed') probe.stat = async path => ({ ...metadata(path), dev: 1n });
-    if (scenario === 'invalid-json') probe.readPolicy = async () => '{';
-    if (scenario === 'extra-key') policy.other = true;
-    if (scenario === 'oversize') probe.readPolicy = async () => ' '.repeat(16385);
+    if (scenario === 'invalid-json') probe.readStorageRoot = async () => '{';
+    if (scenario === 'extra-key') probe.readStorageRoot = async () => '/volume\nother=true';
+    if (scenario === 'oversize') probe.readStorageRoot = async () => ' '.repeat(16385);
     if (scenario === 'noncanonical') cwd = '/volume/job/../workspace';
     if (scenario === 'outside') cwd = '/elsewhere/workspace';
     if (scenario === 'canonical-alias') probe.realpath = async path => path === cwd ? '/volume/other' : path;

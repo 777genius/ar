@@ -1,10 +1,11 @@
 import { buildCodexGoalForegroundArgv } from "./application/codex-goal-foreground-command";
 export { buildCodexGoalForegroundArgv } from "./application/codex-goal-foreground-command";
 import type { CodexGoalLaunchManifestMetadata } from "./codex-goal-launch-manifest";
+import { assertManagedHostEntrypointAllowed } from "../managed-host-entrypoint";
 import { isHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
 import { execFile } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
-import { admitManagedGoal } from "./managed-goal-admission";
+import { mapManagedGoalLayout } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -293,7 +294,8 @@ export function buildCodexGoalTmuxCommand(
 export async function startCodexGoalTmux(
   input: CodexGoalLaunchInput,
 ): Promise<CodexGoalTmuxCommand> {
-  input = { ...input, ...await admitManagedGoal(input) };
+  assertManagedHostEntrypointAllowed();
+  input = { ...input, ...mapManagedGoalLayout(input) };
   assertCodexGoalAccessLaunchAllowed(input.config);
   const outerStatus = await routeHostedGoalLaunch(input);
   if (outerStatus !== undefined) {

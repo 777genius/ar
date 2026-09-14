@@ -10,7 +10,7 @@ import { requireHostStorage, prepareManagedJobLayout, deriveManagedJobLayout } f
 import { HostJobs } from '../host-jobs/manager.mjs';
 import { unitFor, fingerprint } from '../host-jobs/contract.mjs';
 
-const POLICY = '/etc/subscription-runtime/storage-policy.json';
+const POLICY = '/etc/subscription-runtime/storage-root';
 const WRAPPER = '/opt/subscription-runtime/managed-launcher/launch.mjs';
 // Connect only: never submit a journal message, even when confinement is broken.
 const JOURNAL_DATAGRAM_PROBE = `import errno, socket, sys

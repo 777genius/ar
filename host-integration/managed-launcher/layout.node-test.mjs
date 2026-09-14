@@ -10,7 +10,7 @@ function fixture(fault) {
     isSymbolicLink: () => fault === 'symlink' && path === '/volume/jobs/synthetic/workspace' });
   const probe = {
     lstat: async path => metadata(path), stat: async path => metadata(path), realpath: async path => path,
-    readPolicy: async () => JSON.stringify({ schemaVersion: 1, storageRoot: '/volume' }),
+    readStorageRoot: async () => '/volume\n',
     statfs: async () => ({ bavail: fault === 'full' ? 1n : 5368709120n, bsize: 1n, ffree: 50000n }),
     readMountInfo: async () => `1 0 0:1 / / rw - ext4 root rw\n2 1 1:1 / /volume rw - ext4 volume rw\n${fault === 'mount' ? '3 2 0:1 / /volume/jobs/synthetic/workspace rw - ext4 root rw\n' : ''}`,
   };
@@ -24,7 +24,7 @@ function fixture(fault) {
     descriptors.set(fd, visible);
     return { fd, stat: async () => metadata(visible), close: async () => {} };
   };
-  return { created, options: { policyPath: '/etc/policy', probe, openDirectory, create: async path => {
+  return { created, options: { configPath: '/etc/policy', probe, openDirectory, create: async path => {
     assert.match(path, /^\/proc\/self\/fd\/\d+\//);
     created.push(visiblePath(path));
   } } };
@@ -83,7 +83,7 @@ test('final namespace check uses minimal boundary and only inspects mounts in it
   const env = { SUBSCRIPTION_RUNTIME_JOB_ROOT: layout.jobRoot, SUBSCRIPTION_RUNTIME_JOB_ID: layout.jobId };
   const good = fixture();
   good.options.probe.statfs = async () => assert.fail('capacity must not be repeated');
-  good.options.probe.readPolicy = async () => assert.fail('policy must not be reloaded');
+  good.options.probe.readStorageRoot = async () => assert.fail('policy must not be reloaded');
   const originalMounts = good.options.probe.readMountInfo;
   good.options.probe.readMountInfo = async () => await originalMounts() + '3 2 0:1 / /volume/jobs/unrelated/root rw - ext4 root rw\n';
   assert.deepEqual(await requireFinalJobStorage({ cwd: layout.workspace, probe: good.options.probe, jobId: layout.jobId, env }), { layout, device: 257n });

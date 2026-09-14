@@ -64,10 +64,10 @@ async function poisonedLifecycle() {
       const evidence = globalThis[${JSON.stringify(poisonKey)}];
       evidence.loaded = true;
       function deny() { evidence.calls++; throw new Error('Synthetic storage policy unavailable'); }
-      export const HOST_STORAGE_POLICY_PATH = '/nonexistent-synthetic-policy';
+      export const MANAGED_STORAGE_ROOT_CONFIG = '/nonexistent-synthetic-policy';
       export const MINIMUM_FREE_BYTES = 0n, MINIMUM_FREE_INODES = 0n;
       export const deriveManagedJobLayout = deny, requireFinalJobStorage = deny;
-      export const prepareManagedJobLayout = deny, requireHostStorage = deny, loadHostStoragePolicy = deny;
+      export const prepareManagedJobLayout = deny, requireHostStorage = deny, loadManagedStorageRoot = deny;
       export const storageProbe = new Proxy({}, { get: deny });
     ` };
   } });
@@ -94,7 +94,7 @@ async function main() {
   // A separate module identity keeps setup policy reads outside the poisoned
   // lifecycle import graph. Only the normal synthetic launch needs admission.
   const setupStorage = await import('./storage-policy.mjs?legacy-e2e-setup');
-  const policy = await setupStorage.loadHostStoragePolicy();
+  const policy = await setupStorage.loadManagedStorageRoot();
   const launchJobId = `legacy-e2e-launch-${randomBytes(24).toString('hex')}`;
   const layout = setupStorage.deriveManagedJobLayout(policy.storageRoot, launchJobId);
   await assert.rejects(lstat(layout.jobRoot), { code: 'ENOENT' }, 'Synthetic launch root already exists');
