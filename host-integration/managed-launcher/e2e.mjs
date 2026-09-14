@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { requireHostStorage, prepareManagedJobLayout, deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
 import { HostJobs } from '../host-jobs/manager.mjs';
 import { unitFor, fingerprint } from '../host-jobs/contract.mjs';
+import { publicEntrypoints, provePublicEntrypointDenial } from './fixtures/public-entrypoint-denial.mjs';
 
 const POLICY = '/etc/subscription-runtime/storage-root';
 const WRAPPER = '/opt/subscription-runtime/managed-launcher/launch.mjs';
@@ -44,7 +45,8 @@ async function main() {
   const providerLauncher = resolve(args[8]);
   check(providerLauncher === args[8] && providerLauncher.endsWith('/hosted-app-server-launcher.js'), 'Provider launcher must be an absolute installed runtime path');
   check(goalCli === args[6] && goalCli.endsWith('/codex-goal-cli.js'), 'Goal CLI must be an absolute installed runtime path');
-  for (const path of [POLICY, WRAPPER, process.execPath, goalCli, providerLauncher]) {
+  const publicBins = publicEntrypoints(goalCli);
+  for (const path of [POLICY, WRAPPER, process.execPath, ...Object.values(publicBins), providerLauncher]) {
     const metadata = await stat(path);
     check(await realpath(path) === path && metadata.isFile() && metadata.uid === 0 && !(metadata.mode & 0o022), `Untrusted installed file: ${path}`);
   }
@@ -91,30 +93,7 @@ async function main() {
     const sentinel = await mkdtemp('/var/lib/managed-launcher-e2e-'); owned.push(sentinel);
     check((await stat(sentinel)).dev === (await stat('/')).dev, 'Sentinel must be backed by root filesystem');
     await chmod(sentinel, 0o777);
-    const forgedPrompt = join(sentinel, 'forged-prompt.txt');
-    const forgedAuth = join(sentinel, 'forged-auth');
-    await mkdir(forgedAuth);
-    await writeFile(forgedPrompt, 'synthetic direct-launch denial probe', { flag: 'wx', mode: 0o600 });
-    const directBypassEvidence = { denied: 0, rootWrites: 0 };
-    for (const forgedEnvironment of [false, true]) {
-      const forgedJobId = `managed-direct-${forgedEnvironment ? 'env' : 'plain'}-${randomBytes(16).toString('hex')}`;
-      const forgedRoot = join(sentinel, `${forgedJobId}-root`);
-      const direct = spawnSync(process.execPath, [goalCli, 'run', '--job-root', forgedRoot,
-        '--workspace', join(forgedRoot, 'workspace'), '--prompt', forgedPrompt,
-        '--task-id', forgedJobId, '--job-id', forgedJobId, '--accounts', 'synthetic',
-        '--auth-root', forgedAuth, '--no-tmux', '--no-require-git-workspace'], {
-        encoding: 'utf8', timeout: 15000,
-        env: { PATH: process.env.PATH, ...(forgedEnvironment ? {
-          SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH: '1', SUBSCRIPTION_RUNTIME_JOB_ID: forgedJobId,
-          SUBSCRIPTION_RUNTIME_JOB_ROOT: forgedRoot,
-        } : {}) },
-      });
-      let rootCreated = true;
-      try { await lstat(forgedRoot); } catch (error) { if (error.code === 'ENOENT') rootCreated = false; else throw error; }
-      check(!direct.error && direct.status !== 0 && !rootCreated && /root-owned launcher|invalid user namespace/i.test(direct.stderr),
-        `Direct managed CLI bypass was not denied before writes: ${direct.error?.message ?? direct.stderr}`);
-      directBypassEvidence.denied++;
-    }
+    const directBypassEvidence = await provePublicEntrypointDenial(publicBins, sentinel);
     const faultEvidence = [];
     for (const mode of ['missing-policy', 'untrusted-policy']) {
       const source = await mkdtemp('/var/lib/managed-launcher-policy-'); owned.push(source);

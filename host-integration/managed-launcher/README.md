@@ -136,6 +136,17 @@ the installed wrapper and real systemd confinement:
 sudo node host-integration/managed-launcher/e2e.mjs --allow-live-synthetic --external-root /mnt/test-volume/disposable --expected-machine-id TEST_HOST_MACHINE_ID --goal-cli /opt/subscription-runtime/dist/worker-codex/codex-goal-cli.js --provider-launcher /opt/subscription-runtime/dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js
 ```
 
+The direct-entrypoint phase invokes the installed goal CLI, goal MCP server,
+worker task runner and worker runtime-task runner as literal subprocesses, each
+with plain and forged managed environment variables. All eight must emit the
+host-admission refusal before changing their synthetic sentinel tree. Their
+environment has no credentials or provider executable PATH; MCP receives only
+a synthetic initialize request. Other startup errors do not count as refusal.
+The three sibling executable paths are derived from `--goal-cli` and checked as
+trusted installed files before the phase starts. Run the portable harness tests
+with `node --test host-integration/managed-launcher/public-entrypoint-denial.node-test.mjs`;
+these validate the proof harness with fake executables, not installed host gates.
+
 The supplied directory must already exist on a filesystem distinct from `/`,
 strictly below the deployed policy's storage root and on the same device.
 The harness creates its own randomized job layout under `storageRoot/jobs` and uses no projects or
