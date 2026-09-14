@@ -43,16 +43,19 @@ test('fixed layout rejects hostile identities without path normalization', () =>
 test('layout creates only fixed directories after capacity and mount admission', async () => {
   const good = fixture();
   const calls = { readStorageRoot: 0, statfs: 0, readMountInfo: 0 };
+  const mountInfoCreateCounts = [];
   for (const method of Object.keys(calls)) {
     const original = good.options.probe[method];
     good.options.probe[method] = async (...args) => {
       calls[method]++;
-      assert.equal(good.created.length, 0, `${method} must precede creation`);
+      if (method === 'readMountInfo') mountInfoCreateCounts.push(good.created.length);
+      else assert.equal(good.created.length, 0, `${method} must precede creation`);
       return original(...args);
     };
   }
   await prepareManagedJobLayout('synthetic', good.options);
-  assert.deepEqual(calls, { readStorageRoot: 1, statfs: 1, readMountInfo: 1 });
+  assert.deepEqual(calls, { readStorageRoot: 1, statfs: 1, readMountInfo: 2 });
+  assert.deepEqual(mountInfoCreateCounts, [0, 9]);
   assert.deepEqual(good.created, ['/volume/jobs', '/volume/jobs/synthetic', ...['workspace', 'state', 'logs', 'output', 'home', 'tmp', 'payload-logs'].map(key => `/volume/jobs/synthetic/${key}`)]);
   for (const fault of ['full']) {
     const bad = fixture(fault);
@@ -60,6 +63,7 @@ test('layout creates only fixed directories after capacity and mount admission',
     assert.deepEqual(bad.created, []);
   }
   await assert.rejects(prepareManagedJobLayout('synthetic', fixture('symlink').options), /unsafe path/);
+  await assert.rejects(prepareManagedJobLayout('synthetic', fixture('mount').options), /nested filesystem forbidden/);
 });
 
 test('mount loss after first mkdir retains descriptor writes and fails final admission', async () => {

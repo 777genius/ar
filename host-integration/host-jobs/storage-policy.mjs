@@ -63,6 +63,7 @@ export async function prepareManagedJobLayout(jobId, { configPath = MANAGED_STOR
     if (final.ino !== initial.ino) throw denied('storage root changed');
     // Admission is a single policy/capacity snapshot. Retained descriptors and
     // visible identity checks guard creation; later config edits apply to later jobs.
+    requireSafeNestedMounts(await probe.readMountInfo(), layout.jobRoot, root.dev);
     for (const [path, handle] of handles) {
       const pinned = await handle.stat({ bigint: true });
       const visible = await probe.lstat(path);
