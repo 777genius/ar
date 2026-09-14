@@ -42,7 +42,17 @@ test('fixed layout rejects hostile identities without path normalization', () =>
 
 test('layout creates only fixed directories after capacity and mount admission', async () => {
   const good = fixture();
+  const calls = { readStorageRoot: 0, statfs: 0, readMountInfo: 0 };
+  for (const method of Object.keys(calls)) {
+    const original = good.options.probe[method];
+    good.options.probe[method] = async (...args) => {
+      calls[method]++;
+      assert.equal(good.created.length, 0, `${method} must precede creation`);
+      return original(...args);
+    };
+  }
   await prepareManagedJobLayout('synthetic', good.options);
+  assert.deepEqual(calls, { readStorageRoot: 1, statfs: 1, readMountInfo: 1 });
   assert.deepEqual(good.created, ['/volume/jobs', '/volume/jobs/synthetic', ...['workspace', 'state', 'logs', 'output', 'home', 'tmp', 'payload-logs'].map(key => `/volume/jobs/synthetic/${key}`)]);
   for (const fault of ['full']) {
     const bad = fixture(fault);
@@ -54,14 +64,36 @@ test('layout creates only fixed directories after capacity and mount admission',
 
 test('mount loss after first mkdir retains descriptor writes and fails final admission', async () => {
   const value = fixture();
-  const original = value.options.probe.stat;
-  value.options.probe.stat = async path => {
+  const original = value.options.probe.lstat;
+  value.options.probe.lstat = async path => {
     const metadata = await original(path);
     return value.created.length && path.startsWith('/volume') ? { ...metadata, dev: 1n } : metadata;
   };
-  await assert.rejects(prepareManagedJobLayout('synthetic', value.options), /root filesystem forbidden/);
+  await assert.rejects(prepareManagedJobLayout('synthetic', value.options), /layout changed/);
   // fixture.create asserts every write uses /proc/self/fd, including after loss.
   assert.ok(value.created.length > 1);
+});
+
+test('policy replacement after opening the anchor applies only to later jobs', async () => {
+  const value = fixture();
+  const original = value.options.openDirectory;
+  value.options.openDirectory = async path => {
+    const handle = await original(path);
+    value.options.probe.readStorageRoot = async () => assert.fail('policy must not be reloaded');
+    value.options.probe.statfs = async () => assert.fail('capacity must not be repeated');
+    return handle;
+  };
+  assert.equal((await prepareManagedJobLayout('synthetic', value.options)).storageRoot, '/volume');
+});
+
+test('visible symlink replacement after anchored creation fails closed', async () => {
+  const value = fixture();
+  const original = value.options.probe.lstat;
+  value.options.probe.lstat = async path => ({
+    ...await original(path),
+    isSymbolicLink: () => value.created.length > 0 && path === '/volume/jobs',
+  });
+  await assert.rejects(prepareManagedJobLayout('synthetic', value.options), /layout changed/);
 });
 
 test('a different root descriptor is rejected before the first write', async () => {

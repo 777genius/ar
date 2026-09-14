@@ -61,7 +61,8 @@ export async function prepareManagedJobLayout(jobId, { configPath = MANAGED_STOR
     const final = await anchor.stat({ bigint: true });
     validate(final);
     if (final.ino !== initial.ino) throw denied('storage root changed');
-    await requireHostStorage(layout.workspace, configPath, probe, expectedUid);
+    // Admission is a single policy/capacity snapshot. Retained descriptors and
+    // visible identity checks guard creation; later config edits apply to later jobs.
     for (const [path, handle] of handles) {
       const pinned = await handle.stat({ bigint: true });
       const visible = await probe.lstat(path);

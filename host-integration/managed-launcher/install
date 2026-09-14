@@ -3,9 +3,40 @@ set -eu
 [ "$(id -u)" = 0 ] || { echo 'installation requires root' >&2; exit 1; }
 integration_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 destination=/opt/subscription-runtime
+marker="$destination/managed-launcher/managed-host"
+marker_source="$integration_dir/managed-launcher/managed-host"
+fail() { echo "managed launcher installation: $*" >&2; exit 1; }
+# Check the exact mount target, including bind mounts of individual files. Do
+# this before install creates directories or updates any other installed file.
+[ -r /proc/self/mountinfo ] || fail 'cannot inspect mount table'
+if awk -v target="$marker" '$5 == target { found=1 } END { exit !found }' /proc/self/mountinfo; then
+  fail "marker is an exact mountpoint: $marker; remove the stale mount explicitly before installation"
+else
+  mount_status=$?
+  [ "$mount_status" = 1 ] || fail 'cannot inspect mount table'
+fi
+marker_exists=false
+if [ -e "$marker" ] || [ -L "$marker" ]; then
+  [ ! -L "$marker" ] && [ -f "$marker" ] || fail 'existing marker must be a regular nonsymlink file'
+  marker_uid=$(stat -c %u "$marker") || fail 'cannot inspect marker owner'
+  marker_mode=$(stat -c %a "$marker") || fail 'cannot inspect marker permissions'
+  [ "$marker_uid" = 0 ] && [ "$((0$marker_mode & 0022))" = 0 ] || fail 'existing marker must be root-owned and not group/other writable'
+  cmp -s "$marker_source" "$marker" || fail 'existing marker content does not match the trusted marker'
+  marker_exists=true
+fi
 install -d -o root -g root -m 0755 "$destination" "$destination/managed-launcher" "$destination/host-jobs"
+if [ "$marker_exists" = false ]; then
+  marker_temp=$(mktemp "$destination/managed-launcher/.managed-host.XXXXXX")
+  trap 'rm -f "$marker_temp"' EXIT
+  trap 'exit 1' HUP INT TERM
+  install -o root -g root -m 0644 "$marker_source" "$marker_temp"
+  # A hard link publishes the complete inode atomically without overwriting a
+  # marker that appeared after preflight (unlike rename/install).
+  ln -T "$marker_temp" "$marker" || fail 'marker appeared during installation'
+  rm -f "$marker_temp"
+  trap - EXIT HUP INT TERM
+fi
 install -o root -g root -m 0644 "$integration_dir/managed-launcher/launch.mjs" "$destination/managed-launcher/launch.mjs"
-install -o root -g root -m 0644 "$integration_dir/managed-launcher/managed-host" "$destination/managed-launcher/managed-host"
 install -o root -g root -m 0644 "$integration_dir/managed-launcher/payload-guard.mjs" "$destination/managed-launcher/payload-guard.mjs"
 install -o root -g root -m 0644 "$integration_dir/managed-launcher/profiles.mjs" "$destination/managed-launcher/profiles.mjs"
 install -o root -g root -m 0644 "$integration_dir/host-jobs/storage-policy.mjs" "$destination/host-jobs/storage-policy.mjs"
