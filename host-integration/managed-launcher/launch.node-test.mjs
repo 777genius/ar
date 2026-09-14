@@ -9,7 +9,7 @@ const job = { operation: 'job', unit: `subscription-job-${'a'.repeat(64)}.servic
 const admit = async () => deriveManagedJobLayout('/TEST', job.jobId);
 const finalAdmission = async () => ({ layout: deriveManagedJobLayout('/TEST', job.jobId), device: 2n });
 const build = (request, options = {}, admission = admit) => buildSystemdInvocation(request, admission, {
-  nodePath: '/TRUSTED/node', trust: async () => {},
+  nodePath: '/TRUSTED/node', trust: async () => {}, executable: async () => {},
   logs: async (root, unit) => [`${root}/logs/${unit}.stdout.log`, `${root}/logs/${unit}.stderr.log`], ...options,
 });
 const provider = { operation: 'provider', unit: `subscription-runtime-hosted-${'a'.repeat(36)}.service`, jobId: job.jobId,
@@ -65,7 +65,7 @@ test('provider bootstrap is constructed internally and trusted before admission'
   const invocation = await build(provider, { trust: async path => trusted.push(path) });
   assert.equal(invocation.args.some(arg => arg.startsWith('--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=')), false);
   assert.deepEqual(trusted, ['/TRUSTED/node', ...provider.payload,
-    '/opt/subscription-runtime/managed-launcher/launch.mjs', PAYLOAD_GUARD_PATH, '/usr/bin/unshare', '/usr/bin/setpriv']);
+    '/opt/subscription-runtime/managed-launcher/launch.mjs', PAYLOAD_GUARD_PATH, '/usr/bin/unshare', '/usr/bin/setpriv', '/usr/bin/tini']);
   assert.ok(invocation.args.includes(`--property=CapabilityBoundingSet=${bootstrapCaps}`));
   const command = invocation.args.slice(invocation.args.indexOf('--') + 1);
   assert.deepEqual(command.slice(0, 3), ['/usr/bin/unshare', '--map-user=65532', '--map-group=65532']);
@@ -76,6 +76,29 @@ test('provider bootstrap is constructed internally and trusted before admission'
   let admitted = false;
   await assert.rejects(build(provider, { trust: async () => { throw Error('untrusted'); } }, async () => { admitted = true; }), /untrusted/);
   assert.equal(admitted, false);
+});
+test('both operations run Tini after dropping capabilities and before Node', async () => {
+  for (const request of [job, provider]) {
+    const { args } = await build(request);
+    const command = args.slice(args.indexOf('--') + 1);
+    assert.deepEqual(command.slice(0, command.indexOf(PAYLOAD_GUARD_PATH)), [
+      '/usr/bin/unshare', '--map-user=65532', '--map-group=65532', '--keep-caps',
+      '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', '/usr/bin/setpriv',
+      '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs',
+      '/usr/bin/tini', '--', '/TRUSTED/node',
+    ]);
+    assert.ok(args.includes('--property=KillMode=control-group'));
+    let admitted = false;
+    await assert.rejects(build(request, { trust: async path => {
+      if (path === '/usr/bin/tini') throw Error('untrusted Tini');
+    } }, async () => { admitted = true; return admit(); }), /untrusted Tini/);
+    assert.equal(admitted, false);
+    await assert.rejects(build(request, { executable: async path => {
+      assert.equal(path, '/usr/bin/tini');
+      throw Error('Tini is not executable');
+    } }, async () => { admitted = true; return admit(); }), /not executable/);
+    assert.equal(admitted, false);
+  }
 });
 test('custody is outside the managed launcher', async () => {
   for (const role of ['outer', 'ordinary']) {

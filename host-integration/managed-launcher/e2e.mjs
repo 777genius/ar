@@ -23,6 +23,19 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
     except OSError as error:
         print(errno.errorcode.get(error.errno, 'unexpected-error'))
 `;
+// The direct Python child exits without waiting. Its isolated descendant must
+// be adopted by namespace PID 1 and reaped while the main managed probe lives.
+const ORPHAN_REAP_PROBE = `import json, os, time
+child = os.fork()
+if child:
+    os._exit(0)
+os.setsid()
+deadline = time.monotonic() + 2
+while os.getppid() != 1 and time.monotonic() < deadline:
+    time.sleep(0.01)
+print(json.dumps({'pid': os.getpid(), 'pgid': os.getpgrp(), 'ppid': os.getppid()}), flush=True)
+os._exit(0)
+`;
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 function run(command, args) {
   const result = spawnSync(command, args, { encoding: 'utf8', timeout: 15000 });
@@ -186,8 +199,22 @@ async function main() {
     await writeFile(probe, `import { writeFile, readFile, mkdir, readdir, lstat, statfs, link, symlink } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
+import { setTimeout as delay } from 'node:timers/promises';
 import { runSyntheticGoal } from './synthetic-goal.mjs';
 const result = {};
+const orphan = spawnSync('/usr/bin/python3', ['-c', ${JSON.stringify(ORPHAN_REAP_PROBE)}], { encoding: 'utf8', timeout: 5000 });
+if (orphan.error || orphan.status !== 0) throw new Error('Orphan probe failed: ' + (orphan.error?.message ?? orphan.stderr));
+const descendant = JSON.parse(orphan.stdout);
+if (!Number.isSafeInteger(descendant.pid) || descendant.pid <= 1 || descendant.pgid !== descendant.pid || descendant.ppid !== 1) throw new Error('Descendant was not isolated and adopted by PID 1');
+result.orphanReaping = { ...descendant, groupGone: false, procGone: false };
+for (let attempt = 0; attempt < 100; attempt++) {
+ try { process.kill(-descendant.pgid, 0); }
+ catch (error) { if (error.code !== 'ESRCH') throw error; result.orphanReaping.groupGone = true; break; }
+ await delay(50);
+}
+try { await lstat('/proc/' + descendant.pid); }
+catch (error) { if (error.code !== 'ENOENT') throw error; result.orphanReaping.procGone = true; }
+if (!result.orphanReaping.groupGone || !result.orphanReaping.procGone) throw new Error('PID 1 left an orphan/zombie process group: ' + JSON.stringify(result.orphanReaping));
 const activation = await lstat('/opt/subscription-runtime/managed-launcher/managed-host');
 result.activationRouting = { characterDevice: activation.isCharacterDevice(), rdev: activation.rdev };
 if (!result.activationRouting.characterDevice || result.activationRouting.rdev !== 259) throw new Error('Managed activation marker was not masked with /dev/null');
@@ -283,6 +310,8 @@ setTimeout(() => {}, 90000);
       await delay(100);
     }
     check(result, 'HostJobs synthetic probe timed out');
+    check(result.orphanReaping?.ppid === 1 && result.orphanReaping.groupGone && result.orphanReaping.procGone,
+      `Orphan process group was not reaped while probe remained alive: ${JSON.stringify(result.orphanReaping)}`);
     check(result.goalRunner.status === 'completed', 'Real synthetic goal runner did not complete');
     check(result.goalCli.status === 0 && result.goalCli.error === null, `Real goal CLI status failed: ${JSON.stringify(result.goalCli)}`);
     check(result.identity.uid === 65532 && result.identity.gid === 65532 && result.identity.home === layout.home, `Identity/HOME mismatch: ${JSON.stringify(result.identity)}`);

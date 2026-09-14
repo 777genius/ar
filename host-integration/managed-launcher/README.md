@@ -77,6 +77,14 @@ private 256 MiB `/tmp` and 64 MiB `/var/tmp`, `NoNewPrivileges=yes`,
 `MemorySwapMax=0`, `LimitCORE=0` and a policy-derived `RequiresMountsFor`.
 These require the supported systemd 255 hosts;
 the Linux canary must verify effective enforcement.
+The host must provide `/usr/bin/tini` (the distribution's `tini` package). The
+installer checks that it is executable and that it and every ancestor are
+root-owned, non-symlink and not group/world writable before changing installed
+files. Launch admission also verifies Tini with the trusted bootstrap files.
+Tini runs as namespace PID 1 after `setpriv` drops capabilities and before Node,
+reaping orphaned descendants and forwarding signals to the payload guard.
+Systemd retains `KillMode=control-group` for whole-unit teardown.
+
 The installed payload guard checks the current job device, canonical paths and scoped mounts once inside the completed
 service mount namespace before starting the original command, closing the
 pre-launch mount-loss gap. It inherits stdio and forwards termination signals.

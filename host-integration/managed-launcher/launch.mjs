@@ -1,5 +1,7 @@
 #!/usr/bin/node
 import { spawn } from 'node:child_process';
+import { constants } from 'node:fs';
+import { access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { prepareManagedJobLayout } from '../host-jobs/storage-policy.mjs';
 import { PAYLOAD_GUARD_PATH } from './payload-guard.mjs';
@@ -8,7 +10,11 @@ import { requireTrustedExecutable, profileProperties } from './profiles.mjs';
 export const MANAGED_LAUNCHER_PATH = '/opt/subscription-runtime/managed-launcher/launch.mjs';
 const denied = () => { throw new Error('managed launcher: unsupported invocation'); };
 const safePath = value => typeof value === 'string' && /^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]*$/.test(value) && !value.split('/').some(part => part === '.' || part === '..');
-const bootstrap = ['/usr/bin/unshare', '--map-user=65532', '--map-group=65532', '--keep-caps', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', '/usr/bin/setpriv', '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs'];
+const UNSHARE_PATH = '/usr/bin/unshare';
+const SETPRIV_PATH = '/usr/bin/setpriv';
+const TINI_PATH = '/usr/bin/tini';
+// setpriv execs Tini as namespace PID 1; Node remains its supervised child.
+const bootstrap = [UNSHARE_PATH, '--map-user=65532', '--map-group=65532', '--keep-caps', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', SETPRIV_PATH, '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', TINI_PATH, '--'];
 
 // The request contains identity and payload data, never systemd options.
 export function parseInvocation(request) {
@@ -45,10 +51,11 @@ export function managedLauncherInvocation(request) {
   return { command: process.execPath, args: [MANAGED_LAUNCHER_PATH, request.operation, JSON.stringify(request)] };
 }
 
-export async function buildSystemdInvocation(request, admit = prepareManagedJobLayout, { trust = requireTrustedExecutable, nodePath = process.execPath } = {}) {
+export async function buildSystemdInvocation(request, admit = prepareManagedJobLayout, { trust = requireTrustedExecutable, nodePath = process.execPath, executable = path => access(path, constants.X_OK) } = {}) {
   const { operation, unit, payload, trusted, readonlyPaths = [] } = parseInvocation(request);
-  const confinementExecutables = [MANAGED_LAUNCHER_PATH, PAYLOAD_GUARD_PATH, bootstrap[0], bootstrap[8]];
+  const confinementExecutables = [MANAGED_LAUNCHER_PATH, PAYLOAD_GUARD_PATH, UNSHARE_PATH, SETPRIV_PATH, TINI_PATH];
   for (const path of [nodePath, ...trusted, ...confinementExecutables]) await trust(path);
+  await executable(TINI_PATH);
   const policy = await admit(request.jobId);
   if (!policy || !safePath(policy.storageRoot) || policy.storageRoot === '/') denied();
   const cwd = policy.workspace;

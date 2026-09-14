@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, statSync, lstatSync, readlinkSync, symlinkSync, rmSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, statSync, lstatSync, readlinkSync, symlinkSync, rmSync, readdirSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -17,9 +17,15 @@ function fixture(t) {
     if (!path.endsWith('/managed-host')) writeFileSync(`${destination}/${path}`, 'old installation\n');
   }
   const mountinfo = join(root, 'mountinfo');
+  const tini = join(bin, 'tini');
+  writeFileSync(tini, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   writeFileSync(mountinfo, '1 0 0:1 / / rw - ext4 root rw\n');
   const source = readFileSync(new URL('./install', import.meta.url), 'utf8')
     .replace('destination=/opt/subscription-runtime', `destination=${destination}`)
+    .replace('tini=/usr/bin/tini', `tini=${tini}`)
+    // The fixture root substitutes for /; host temporary ancestors are not
+    // trusted installation paths and may intentionally be writable/symlinked.
+    .replace('[ "$trusted_path" != / ]', `[ "$trusted_path" != "${root}" ]`)
     .replaceAll('/proc/self/mountinfo', mountinfo);
   const installer = `${integration}/managed-launcher/install`;
   writeFileSync(installer, source);
@@ -47,8 +53,30 @@ function fixture(t) {
     visit('');
     return result;
   };
-  return { marker, mountinfo, run, snapshot, trusted: readFileSync(`${integration}/managed-launcher/managed-host`) };
+  return { marker, mountinfo, tini, run, snapshot, trusted: readFileSync(`${integration}/managed-launcher/managed-host`) };
 }
+
+for (const invalid of ['missing', 'not-executable', 'writable', 'symlink', 'directory', 'owner', 'ancestor-writable', 'ancestor-symlink']) test(`invalid Tini (${invalid}) fails before destination writes`, t => {
+  const f = fixture(t);
+  if (invalid === 'missing' || invalid === 'symlink' || invalid === 'directory') rmSync(f.tini);
+  if (invalid === 'symlink') symlinkSync(process.execPath, f.tini);
+  if (invalid === 'directory') mkdirSync(f.tini);
+  if (invalid === 'not-executable') chmodSync(f.tini, 0o644);
+  if (invalid === 'writable') chmodSync(f.tini, 0o777);
+  if (invalid === 'ancestor-writable') chmodSync(join(f.tini, '..'), 0o777);
+  if (invalid === 'ancestor-symlink') {
+    // Exercise an ancestor link using a sibling target within the fixture.
+    const parent = join(f.tini, '..');
+    const moved = parent + '-target';
+    renameSync(parent, moved);
+    symlinkSync(moved, parent);
+  }
+  const before = f.snapshot();
+  const result = f.run(invalid === 'owner' ? { TEST_MARKER_UID: '1000' } : {});
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /[Tt]ini/);
+  assert.deepEqual(f.snapshot(), before);
+});
 
 test('exact marker mountpoint fails before changing installed files', t => {
   const f = fixture(t);

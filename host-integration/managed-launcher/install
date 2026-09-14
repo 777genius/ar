@@ -6,6 +6,20 @@ destination=/opt/subscription-runtime
 marker="$destination/managed-launcher/managed-host"
 marker_source="$integration_dir/managed-launcher/managed-host"
 fail() { echo "managed launcher installation: $*" >&2; exit 1; }
+# Tini must be available before any installed state is changed. Check its full
+# ancestry with the same ownership, symlink and write rules as runtime trust.
+tini=/usr/bin/tini
+[ -f "$tini" ] && [ -x "$tini" ] || fail 'requires executable /usr/bin/tini (install the tini package)'
+trusted_path=$tini
+while :; do
+  [ ! -L "$trusted_path" ] || fail 'untrusted Tini path: symlink'
+  [ "$trusted_path" = "$tini" ] || [ -d "$trusted_path" ] || fail 'untrusted Tini ancestor'
+  trusted_uid=$(stat -c %u "$trusted_path") || fail 'cannot inspect Tini owner'
+  trusted_mode=$(stat -c %a "$trusted_path") || fail 'cannot inspect Tini permissions'
+  [ "$trusted_uid" = 0 ] && [ "$((0$trusted_mode & 0022))" = 0 ] || fail 'Tini and ancestors must be root-owned and not group/other writable'
+  [ "$trusted_path" != / ] || break
+  trusted_path=$(dirname -- "$trusted_path")
+done
 # Check the exact mount target, including bind mounts of individual files. Do
 # this before install creates directories or updates any other installed file.
 [ -r /proc/self/mountinfo ] || fail 'cannot inspect mount table'
