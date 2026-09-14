@@ -281,6 +281,7 @@ export async function runCodexGoalCli(
     if (command.kind === "controller-supervise") {
       const outerStatus = await routeHostedRuntimeCommand([currentCliPath(), ...argv]);
       if (outerStatus !== undefined) return outerStatus;
+      const format = command.format;
       const abortController = new AbortController();
       const onSignal = () => abortController.abort();
       process.once("SIGINT", onSignal);
@@ -291,7 +292,7 @@ export async function runCodexGoalCli(
           statusIntervalMs: command.statusIntervalMs,
           signal: abortController.signal,
           onEvent: (event) => {
-            if (command.format === "json") {
+            if (format === "json") {
               io.writeStdout(`${JSON.stringify(event)}\n`);
               return;
             }
@@ -300,7 +301,7 @@ export async function runCodexGoalCli(
         });
         if (!result.ok && result.reason !== undefined) {
           const failure = { ok: false, reason: result.reason, safeMessage: result.safeMessage };
-          io.writeStdout(command.format === "json"
+          io.writeStdout(format === "json"
             ? `${JSON.stringify({ type: ControllerSupervisorCliEventType.Failure, result: failure })}\n`
             : `failure ${result.reason}: ${result.safeMessage ?? "Controller supervision needs attention."}\n`);
         }
