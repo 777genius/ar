@@ -135,13 +135,14 @@ it.each(["none", "revoked", "CLOSED", "ORDINARY", "missing"])("rechecks real adm
   const frames: { env: Record<string, string>; args: string[] }[] = [];
   const units: string[] = [];
   facts.spawn.mockImplementation((command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
-    expect(command).toBe("/usr/bin/systemd-run");
+    expect(command).toBe(process.execPath);
     expect(serviceRecords()).toHaveLength(frames.length + 1);
-    expect(args).toContain(`--property=BindReadOnlyPaths=${policy.readonlyPaths[0]}:${policy.readonlyPaths[0]}:norbind`);
-    expect(args).toContain(`--property=BindPaths=${config.workspacePath}:${config.workspacePath}:norbind`);
-    expect(args).toContain("--property=PrivateMounts=yes");
-    expect(args).toContain("--bounding-set=-all");
-    units.push(args[0]!);
+    expect(args.slice(0, 2)).toEqual(["/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
+    const request = JSON.parse(args[2]!);
+    expect(request).toMatchObject({ operation: "provider", jobId: config.jobId, readonlyPaths: policy.readonlyPaths });
+    expect(request).not.toHaveProperty("cwd");
+    expect(request).not.toHaveProperty("mounts");
+    units.push(request.unit);
     const child = fakes[frames.length]!.create({ ...options, args });
     // This fixture models the systemd-run proxy, not a directly killed provider.
     // A service cleanly stopped by the synthetic manager acknowledges --wait

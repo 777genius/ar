@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { assertHostedProcessDescriptors } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedCustodyPhase, HostedCustodyReservationState, type HostedCustodyEpoch, type HostedCustodyReservation, type HostedOrdinaryReservation, type HostedOrdinaryStart } from "@vioxen/subscription-runtime/worker-core";
@@ -9,6 +8,7 @@ import { assertReadonlyHostOperator, decodePrivateJson } from "./hosted-readonly
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { HostedReadonlyEpochStore, readonlyEpochPath } from "./hosted-readonly-epoch-store";
 import { readonlySupervisorRoot } from "./hosted-readonly-custody";
+import { TrustedCustodyLaunchRole, trustedCustodySystemdLaunch } from "./trusted-custody-systemd-launch";
 
 export enum HostedReadonlyRuntimeRole { Supervisor = "supervisor", Runtime = "runtime" }
 
@@ -338,20 +338,12 @@ export class HostedReadonlyHostKernel {
     command: string, args: readonly string[], cwd: string): { command: string; args: readonly string[] } {
     assertUnitReservation(record);
     if (!record.unit.startsWith("subscription-runtime-outer-")) invalid();
-    return { command: "/usr/bin/systemd-run", args: ["--quiet", "--wait", "--pipe", "--collect",
-      `--unit=${record.unit}`, "--service-type=exec", "--property=Slice=subscription-runtime-hosted.slice",
-      "--property=KillMode=control-group", "--property=SendSIGKILL=yes", "--property=Delegate=no",
-      `--working-directory=${cwd}`, "--", process.execPath,
-      fileURLToPath(new URL("./hosted-readonly-runtime-bootstrap.js", import.meta.url))] };
+    return trustedCustodySystemdLaunch(TrustedCustodyLaunchRole.Outer, record.startId, cwd);
   }
   ordinaryRuntimeInvocation(record: HostedOrdinaryReservation, cwd: string): { command: string; args: readonly string[] } {
     assertOrdinaryReservation(record);
     if (record.unit !== `subscription-runtime-ordinary-${record.startId}.service` || !path(cwd)) invalid();
-    return { command: "/usr/bin/systemd-run", args: ["--quiet", "--wait", "--pipe", "--collect",
-      `--unit=${record.unit}`, "--service-type=exec", "--property=Slice=subscription-runtime-hosted.slice",
-      "--property=KillMode=control-group", "--property=SendSIGKILL=yes", "--property=Delegate=no",
-      `--working-directory=${cwd}`, "--", process.execPath,
-      fileURLToPath(new URL("./hosted-readonly-host-launch-cli.js", import.meta.url)), "ordinary-bootstrap"] };
+    return trustedCustodySystemdLaunch(TrustedCustodyLaunchRole.Ordinary, record.startId, cwd);
   }
   private enrolledEpoch(): HostedCustodyEpoch | null {
     if (!readHostedPrivateBytes(readonlyEpochPath, 64 * 1024)) return null;

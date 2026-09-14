@@ -8,6 +8,8 @@ export type FileBackendCodexWorkerOptions = {
   readonly workerId?: string;
   readonly providerInstanceId: string;
   readonly stateRootDir: string;
+  /** Payload-writable homes/cache; defaults to stateRootDir for legacy callers. */
+  readonly runtimeHomeRootDir?: string;
   readonly codexBinaryPath: string;
   readonly encryptionKey: Uint8Array | string;
   readonly model?: string;
@@ -58,6 +60,9 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
   }
   if (!options.stateRootDir.trim()) {
     throw new Error("file_backend_codex_state_root_required");
+  }
+  if (options.runtimeHomeRootDir !== undefined && !options.runtimeHomeRootDir.trim()) {
+    throw new Error("file_backend_codex_runtime_home_root_required");
   }
   if (!options.codexBinaryPath.trim()) {
     throw new Error("file_backend_codex_binary_required");

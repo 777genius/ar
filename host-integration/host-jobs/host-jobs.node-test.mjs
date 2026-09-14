@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, unlink, rmdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, unlink, rmdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HostJobs } from './manager.mjs';
@@ -9,16 +9,216 @@ import { hostJobCli } from '../../scripts/ops/host-job-cli.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { hostLock } from '../../scripts/ops/host-job-lock.mjs';
+import { requireHostStorage, loadHostStoragePolicy, prepareManagedJobLayout } from './storage-policy.mjs';
 
-const request = { operation: 'start', jobId: 'test:1', machineId: 'a'.repeat(32), argv: ['/bin/test', '$(touch nope)'], cwd: '/sandbox', runtimeSeconds: 60, stopSeconds: 5, memoryMiB: 128, tasksMax: 16, cpuPercent: 50 };
+function fakeStorage(overrides = {}) {
+  const calls = [];
+  const policy = { schemaVersion: 1, storageRoot: '/volume' };
+  const metadata = path => ({ dev: path === '/volume' || path.startsWith('/volume/') ? 2n : 1n,
+    ino: 10n, uid: 0n, mode: 0o100644n, isFile: () => path === '/policy.json', isDirectory: () => path !== '/policy.json', isSymbolicLink: () => false });
+  const probe = {
+    lstat: async path => { calls.push(['lstat', path]); return metadata(path); },
+    stat: async path => { calls.push(['stat', path]); return metadata(path); },
+    realpath: async path => path,
+    readPolicy: async () => JSON.stringify(policy),
+    readMountInfo: async () => '1 0 0:1 / / rw - ext4 root rw\n2 1 0:2 / /volume rw - ext4 volume rw\n',
+    statfs: async path => { calls.push(['statfs', path]); return { bavail: 1310720n, bsize: 4096n, ffree: 50000n }; },
+    ...overrides,
+  };
+  return { probe, calls, policy, metadata };
+}
+
+test('policy ancestors must stay root-owned, protected and unchanged through admission', async () => {
+  const policyPath = '/etc/runtime/policy.json';
+  for (const ancestor of ['/', '/etc', '/etc/runtime']) {
+    for (const change of [{ uid: 1000n }, { mode: 0o40777n }, { mode: 0o40770n }]) {
+      for (const race of [false, true]) {
+        const { probe, metadata } = fakeStorage();
+        let changed = !race;
+        probe.lstat = async path => ({ ...metadata(path === policyPath ? '/policy.json' : path), ...(changed && path === ancestor ? change : {}) });
+        const readPolicy = probe.readPolicy;
+        probe.readPolicy = async () => { changed = true; return readPolicy(); };
+        await assert.rejects(loadHostStoragePolicy(policyPath, probe), /untrusted policy parent/);
+      }
+    }
+    const { probe, metadata } = fakeStorage();
+    let changed = false;
+    probe.lstat = async path => ({ ...metadata(path === policyPath ? '/policy.json' : path), ...(changed && path === ancestor ? { ino: 11n } : {}) });
+    const readMountInfo = probe.readMountInfo;
+    probe.readMountInfo = async () => { changed = true; return readMountInfo(); };
+    await assert.rejects(loadHostStoragePolicy(policyPath, probe), /policy parent changed/);
+  }
+});
+
+test('storage root must remain root-owned and protected, but job children may be user-owned', async () => {
+  for (const [uid, mode, allowed] of [[0n, 0o40700n, true], [0n, 0o40750n, true], [1000n, 0o40700n, false], [0n, 0o40770n, false], [0n, 0o40702n, false]]) {
+    const { probe, metadata } = fakeStorage();
+    probe.stat = async path => ({ ...metadata(path), ...(path === '/volume' ? { uid, mode } : path.startsWith('/volume/') ? { uid: 1000n, mode: 0o40770n } : {}) });
+    const admission = requireHostStorage('/volume/job/workspace', '/policy.json', probe);
+    if (allowed) await admission;
+    else await assert.rejects(admission, /untrusted storage root/);
+  }
+  const { probe, metadata } = fakeStorage();
+  const capacity = probe.statfs;
+  probe.statfs = async path => {
+    probe.stat = async candidate => ({ ...metadata(candidate), ...(candidate === '/volume' ? { mode: 0o40777n } : {}) });
+    return capacity(path);
+  };
+  await assert.rejects(loadHostStoragePolicy('/policy.json', probe), /untrusted storage root/);
+});
+
+test('final namespace may require the exact mapped host-root owner', async () => {
+  const { probe, metadata } = fakeStorage();
+  probe.lstat = async path => ({ ...metadata(path), uid: 65532n });
+  probe.stat = async path => ({ ...metadata(path), uid: 65532n });
+  probe.readPolicy = async (_path, expectedUid) => {
+    assert.equal(expectedUid, 65532n);
+    return JSON.stringify({ schemaVersion: 1, storageRoot: '/volume' });
+  };
+  await requireHostStorage('/volume/job/workspace', '/policy.json', probe, 65532n);
+  await assert.rejects(requireHostStorage('/volume/job/workspace', '/policy.json', probe), /untrusted policy/);
+});
+
+test('mount table rejects foreign nested binds below the admitted job and ignores unrelated jobs', async () => {
+  const { probe } = fakeStorage();
+  const base = await probe.readMountInfo();
+  for (const [suffix, denied] of [
+    ['', false],
+    ['3 2 0:2 /other /volume/job/workspace/cache rw - ext4 volume rw\n', false],
+    ['3 2 0:1 /root /volume/job/workspace/cache rw - ext4 root rw\n', true],
+    ['3 2 0:3 / /volume/other rw - ext4 other rw\n', false],
+    ['3 2 0:1 /root /volume/job/workspace/cache\\040files rw - ext4 root rw\n', true],
+    ['3 2 0:1 /root /volume/job/workspace/cache\\134name rw - ext4 root rw\n', true],
+    ['3 1 0:1 /root /volume-other rw - ext4 root rw\n', false],
+  ]) {
+    probe.readMountInfo = async () => base + suffix;
+    const admission = requireHostStorage('/volume/job/workspace', '/policy.json', probe);
+    if (denied) await assert.rejects(admission, /nested filesystem forbidden/);
+    else await admission;
+  }
+  for (const invalid of ['', 'invalid', 'x'.repeat(1024 * 1024 + 1)]) {
+    probe.readMountInfo = async () => invalid;
+    await assert.rejects(loadHostStoragePolicy('/policy.json', probe), /invalid mount table/);
+  }
+});
+
+test('trusted policy export returns frozen configuration only after root admission', async () => {
+  const { probe, policy, calls } = fakeStorage();
+  const loaded = await loadHostStoragePolicy('/policy.json', probe);
+  assert.deepEqual(loaded, policy);
+  assert.equal(Object.isFrozen(loaded), true);
+  assert.deepEqual(calls.filter(([name]) => name === 'statfs'), [['statfs', '/volume']]);
+  probe.statfs = async () => ({ bavail: 0n, bsize: 4096n, ffree: 50000n });
+  await assert.rejects(loadHostStoragePolicy('/policy.json', probe), /insufficient bytes/);
+  probe.readPolicy = async () => '{';
+  await assert.rejects(loadHostStoragePolicy('/policy.json', probe), /storage admission:/);
+});
+
+test('minimal policy rejects legacy threshold fields and all extra configuration', async () => {
+  for (const extra of [{ minimumFreeBytes: 0 }, { minimumFreeInodes: 0 }, { other: true }]) {
+    const { probe, policy } = fakeStorage();
+    probe.readPolicy = async () => JSON.stringify({ ...policy, ...extra });
+    await assert.rejects(loadHostStoragePolicy('/policy.json', probe), /invalid policy/);
+  }
+});
+
+test('storage ancestors must retain trusted ownership and identity', async () => {
+  for (const change of [{ uid: 1000n }, { mode: 0o40777n }, { ino: 99n }]) {
+    const { probe, metadata, policy } = fakeStorage();
+    policy.storageRoot = '/volume/managed';
+    let changed = false;
+    probe.lstat = async path => ({ ...metadata(path), ...(changed && path === '/volume' ? change : {}) });
+    const capacity = probe.statfs;
+    probe.statfs = async path => { changed = true; return capacity(path); };
+    await assert.rejects(loadHostStoragePolicy('/policy.json', probe), /untrusted policy parent|policy parent changed/);
+  }
+});
+
+test('managed admission uses external cwd, exact bytes/inode thresholds and bounded bigint probes', async () => {
+  const { probe, calls } = fakeStorage();
+  await requireHostStorage('/volume/job/workspace', '/policy.json', probe);
+  assert.equal(calls.filter(([name]) => name === 'statfs').length, 1);
+  assert.ok(calls.length < 35);
+  probe.statfs = async () => ({ bavail: 2n ** 60n, bsize: 4096n, ffree: 2n ** 60n });
+  await requireHostStorage('/volume/job/workspace', '/policy.json', probe);
+  for (const [capacity, message] of [
+    [{ bavail: 5368709119n, bsize: 1n, ffree: 50000n }, /insufficient bytes/],
+    [{ bavail: 5368709120n, bsize: 1n, ffree: 49999n }, /insufficient inodes/],
+    [{ bavail: 1, bsize: 4096n, ffree: 50000n }, /invalid capacity/],
+  ]) {
+    probe.statfs = async () => capacity;
+    await assert.rejects(requireHostStorage('/volume/job', '/policy.json', probe), message);
+  }
+});
+
+test('managed admission rejects untrusted policy, missing paths, symlinks and nested root mounts', async () => {
+  for (const scenario of ['missing-policy', 'invalid-json', 'extra-key', 'oversize', 'policy-owner', 'policy-mode', 'policy-symlink', 'missing-root', 'root-backed', 'ancestor-symlink', 'nested-root', 'noncanonical', 'outside', 'cwd-missing', 'canonical-alias', 'swapped-job', 'replaced-inode']) {
+    const { probe, metadata, policy } = fakeStorage();
+    let cwd = '/volume/job/workspace';
+    probe.lstat = async path => {
+      if ((scenario === 'missing-policy' && path === '/policy.json') || (scenario === 'missing-root' && path === '/volume') || (scenario === 'cwd-missing' && path === cwd)) throw Object.assign(new Error('private path'), { code: 'ENOENT' });
+      const value = metadata(path);
+      if (path === '/policy.json') {
+        if (scenario === 'policy-owner') value.uid = 1000n;
+        if (scenario === 'policy-mode') value.mode = 0o100666n;
+        if (scenario === 'policy-symlink') value.isSymbolicLink = () => true;
+      }
+      if (path === '/volume/job') {
+        if (scenario === 'ancestor-symlink') value.isSymbolicLink = () => true;
+        if (scenario === 'nested-root') value.dev = 1n;
+      }
+      return value;
+    };
+    if (scenario === 'root-backed') probe.stat = async path => ({ ...metadata(path), dev: 1n });
+    if (scenario === 'invalid-json') probe.readPolicy = async () => '{';
+    if (scenario === 'extra-key') policy.other = true;
+    if (scenario === 'oversize') probe.readPolicy = async () => ' '.repeat(16385);
+    if (scenario === 'noncanonical') cwd = '/volume/job/../workspace';
+    if (scenario === 'outside') cwd = '/elsewhere/workspace';
+    if (scenario === 'canonical-alias') probe.realpath = async path => path === cwd ? '/volume/other' : path;
+    if (scenario === 'swapped-job') probe.statfs = async () => {
+      probe.lstat = async path => ({ ...metadata(path), isSymbolicLink: () => path === '/volume/job' });
+      return { bavail: 5368709120n, bsize: 1n, ffree: 50000n };
+    };
+    if (scenario === 'replaced-inode') probe.statfs = async () => {
+      probe.stat = async path => ({ ...metadata(path), ino: path === cwd ? 11n : 10n });
+      return { bavail: 5368709120n, bsize: 1n, ffree: 50000n };
+    };
+    await assert.rejects(requireHostStorage(cwd, '/policy.json', probe), /storage admission:/, scenario);
+  }
+});
+
+test('managed policy denial prevents launch and cannot prevent persisted reconciliation, status or stop', async () => {
+  const { probe } = fakeStorage();
+  const prepareLayout = async () => loadHostStoragePolicy('/policy.json', probe);
+  const { manager, calls } = await fixture({ prepareLayout, uncertain: true });
+  const managedRequest = { ...request };
+  const first = await manager.start(managedRequest);
+  assert.equal(first.phase, 'uncertain');
+  probe.readPolicy = async () => { throw new Error('missing'); };
+  assert.equal((await manager.start(managedRequest)).retry, true);
+  await manager.status(request.jobId, request.machineId);
+  await manager.stop(request.jobId, request.machineId);
+  const before = calls.length;
+  await assert.rejects(manager.start({ ...managedRequest, jobId: 'new-job' }), /storage admission:/);
+  assert.equal(calls.length, before);
+  assert.equal(calls.filter(isLaunch).length, 1);
+});
+
+const request = { operation: 'start', jobId: 'test-1', machineId: 'a'.repeat(32), argv: ['/bin/test', '$(touch nope)'], runtimeSeconds: 60, stopSeconds: 5, memoryMiB: 128, tasksMax: 16, cpuPercent: 50 };
+const isLaunch = call => call.cmd === process.execPath && call.args[0] === '/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs';
 async function fixture(options = {}) {
   const calls = [];
   let state = 'LoadState=not-found';
-  const manager = new HostJobs({ stateDir: await mkdtemp(join(tmpdir(), 'host-jobs-test-')), machineId: async () => request.machineId, freeBytes: async () => 5 * 1024 ** 3,
+  const manager = new HostJobs({ stateDir: await mkdtemp(join(tmpdir(), 'host-jobs-test-')), machineId: async () => request.machineId,
+    prepareLayout: options.storageProbe
+      ? jobId => prepareManagedJobLayout(jobId, { policyPath: options.storagePolicyPath, probe: options.storageProbe, create: async () => {} })
+      : async () => {},
     run: async (cmd, args) => {
       calls.push({ cmd, args });
-      if (cmd.endsWith('systemd-run')) {
-        state = `LoadState=loaded\nActiveState=active\nDescription=${args.find(x => x.startsWith('--description=')).slice(14)}`;
+      if (isLaunch({ cmd, args })) {
+        const launch = JSON.parse(args[2]);
+        state = `LoadState=loaded\nActiveState=active\nDescription=subscription-job:${launch.fingerprint}`;
         if (options.uncertain) throw new Error('connection lost');
       }
       return state;
@@ -30,10 +230,21 @@ test('bounded service preserves argv, concurrent and uncertain starts execute on
   const first = await manager.start(request);
   assert.equal(first.phase, 'uncertain');
   await Promise.all([manager.start(request), manager.start(request)]);
-  const launches = calls.filter(x => x.cmd.endsWith('systemd-run'));
+  const launches = calls.filter(isLaunch);
   assert.equal(launches.length, 1);
-  assert.ok(launches[0].args.includes('--property=KillMode=control-group'));
-  assert.equal(launches[0].args.at(-1), '$(touch nope)');
+  assert.equal(calls.some(call => call.cmd === '/usr/bin/systemd-run'), false);
+  assert.equal(launches[0].args[1], 'job');
+  const launch = JSON.parse(launches[0].args[2]);
+  assert.deepEqual(launch.payload, request.argv);
+  assert.equal(launch.jobId, request.jobId);
+  assert.equal(Object.hasOwn(launch, 'cwd'), false);
+  assert.deepEqual(launch.limits, {
+    runtimeSeconds: request.runtimeSeconds,
+    stopSeconds: request.stopSeconds,
+    memoryMiB: request.memoryMiB,
+    tasksMax: request.tasksMax,
+    cpuPercent: request.cpuPercent,
+  });
   await assert.rejects(manager.start({ ...request, argv: ['/bin/other'] }), /already bound/);
   const reconciled = await manager.status(request.jobId, request.machineId);
   assert.equal(reconciled.live, true);
@@ -43,7 +254,7 @@ test('bounded service preserves argv, concurrent and uncertain starts execute on
   assert.ok(calls.some(x => x.args.includes('stop')));
 });
 test('admission and unknown ownership fail closed', async () => {
-  const { manager, calls } = await fixture({ freeBytes: async () => 5 * 1024 ** 3 - 1 });
+  const { manager, calls } = await fixture({ prepareLayout: async () => { throw new Error('admission requires 5 GiB free'); } });
   await assert.rejects(manager.start(request), /5 GiB/);
   await assert.rejects(manager.stop('unknown', request.machineId), /unknown job/);
   await assert.rejects(manager.stop('unknown', 'b'.repeat(32)), /machine identity/);
@@ -52,13 +263,37 @@ test('admission and unknown ownership fail closed', async () => {
   const other = await fixture({ run: async () => 'LoadState=loaded\nDescription=other' });
   await assert.rejects(other.manager.start(request), /unowned/);
 });
+test('start rejects caller paths and unknown fields before admission or state writes', async () => {
+  let admissions = 0;
+  const { manager, calls } = await fixture({ prepareLayout: async () => { admissions++; } });
+  manager.stateDir = join(manager.stateDir, 'not-created');
+  for (const extra of [{ cwd: '/sandbox' }, { stateRoot: '/sandbox' }, { unknown: true }, { jobId: 'legacy:1' }]) {
+    await assert.rejects(manager.start({ ...request, ...extra }), /unsupported start field|invalid managed jobId/);
+  }
+  assert.equal(admissions, 0);
+  assert.equal(calls.length, 0);
+  await assert.rejects(stat(manager.stateDir), { code: 'ENOENT' });
+  manager.prepareLayout = async () => { throw new Error('storage denied'); };
+  await assert.rejects(manager.start(request), /storage denied/);
+  await assert.rejects(stat(manager.stateDir), { code: 'ENOENT' });
+});
+test('legacy colon IDs retain status and stop without managed storage', async () => {
+  const { manager } = await fixture({ prepareLayout: async () => { throw new Error('storage unavailable'); } });
+  const { unitFor } = await import('./contract.mjs');
+  const legacyId = 'legacy:1';
+  await writeFile(manager.path(legacyId), JSON.stringify({ jobId: legacyId, machineId: request.machineId,
+    unit: unitFor(legacyId), fingerprint: 'a'.repeat(64), phase: 'started' }));
+  assert.equal((await manager.status(legacyId, request.machineId)).live, false);
+  assert.equal((await manager.stop(legacyId, request.machineId)).jobId, legacyId);
+});
 test('transport serializes host calls and sends payload only on stdin', async () => {
   const pending = [];
   const calls = [];
   const transport = hostTransport({ host: 'fake-test', machineId: request.machineId, socketDir: await mkdtemp(join(tmpdir(), 'host-ssh-test-')),
     run: async (args, stdin) => { calls.push({ args, stdin }); if (!stdin) return ''; return new Promise(resolve => pending.push(() => resolve('{"ok":true,"result":{}}'))); } });
   const starts = Array.from({ length: 4 }, () => transport.request(request));
-  await new Promise(resolve => setTimeout(resolve, 20));
+  const readyDeadline = Date.now() + 5000;
+  while (!pending.length && Date.now() < readyDeadline) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(pending.length, 1);
   const status = transport.request({ operation: 'status', jobId: request.jobId, machineId: request.machineId });
   await new Promise(resolve => setTimeout(resolve, 20));
@@ -94,8 +329,8 @@ test('transport reconnects a lost master once and does not retry endpoint errors
   assert.equal(requests, 3);
 });
 test('uncertain missing service is unresolved, not automatically abandoned', async () => {
-  const { manager } = await fixture({ run: async (cmd) => {
-    if (cmd.endsWith('systemd-run')) throw new Error('unknown outcome');
+  const { manager } = await fixture({ run: async (cmd, args) => {
+    if (isLaunch({ cmd, args })) throw new Error('unknown outcome');
     return 'LoadState=not-found';
   } });
   await manager.start(request);
@@ -110,24 +345,27 @@ test('concurrent first starts reconcile a unit launched after the initial record
   let initialReads = 0;
   let releaseSecond;
   let bothRead;
+  let firstRead;
+  const firstGate = new Promise(resolve => { firstRead = resolve; });
   const secondGate = new Promise(resolve => { releaseSecond = resolve; });
   const readGate = new Promise(resolve => { bothRead = resolve; });
   manager.read = async id => {
     const result = await read(id);
     if (initialReads < 2) {
       initialReads++;
-      if (initialReads === 1) await readGate;
+      if (initialReads === 1) { firstRead(); await readGate; }
       else { bothRead(); await secondGate; }
     }
     return result;
   };
   const first = manager.start(request);
+  await firstGate;
   const second = manager.start(request);
   await first;
   releaseSecond();
   const result = await second;
   assert.equal(result.retry, true);
-  assert.equal(calls.filter(call => call.cmd.endsWith('systemd-run')).length, 1);
+  assert.equal(calls.filter(isLaunch).length, 1);
 });
 test('CLI forwards JSON stdin and configured identity without a real transport', async () => {
   let received;
@@ -157,6 +395,37 @@ test('independent processes cannot enter one host critical section concurrently'
     await rmdir(directory+'/exclusive');
     await release();`;
   await Promise.all(Array.from({ length: 4 }, () => promisify(execFile)(process.execPath, ['--input-type=module', '-e', script, directory])));
+});
+test('lock waiter reconciles owner release during process identity lookup', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'host-lock-release-race-'));
+  const lock = join(directory, 'fake-host.lock');
+  await mkdir(lock, { mode: 0o700 });
+  await writeFile(join(lock, 'owner.json'), JSON.stringify({ pid: 123, started: 'previous-owner' }));
+  const release = await hostLock(directory, 'fake-host', { processIdentity: async pid => {
+    if (pid !== 123) return 'new-owner';
+    await unlink(join(lock, 'owner.json'));
+    await rmdir(lock);
+    return '';
+  } });
+  assert.equal(JSON.parse(await readFile(join(lock, 'owner.json'), 'utf8')).pid, process.pid);
+  await release();
+});
+test('lock waiter preserves unchanged stale owner and does not steal replacement owner', async () => {
+  for (const replacement of [false, true]) {
+    const directory = await mkdtemp(join(tmpdir(), 'host-lock-stale-race-'));
+    const lock = join(directory, 'fake-host.lock');
+    await mkdir(lock, { mode: 0o700 });
+    const previous = { pid: 123, started: 'previous-owner' };
+    const next = { pid: 456, started: 'replacement-owner' };
+    await writeFile(join(lock, 'owner.json'), JSON.stringify(previous));
+    await assert.rejects(hostLock(directory, 'fake-host', { timeoutMs: 50, processIdentity: async pid => {
+      if (replacement && pid === 123) await writeFile(join(lock, 'owner.json'), JSON.stringify(next));
+      return pid === 456 ? next.started : '';
+    } }), replacement ? /queue timeout/ : /stale host lock/);
+    assert.deepEqual(JSON.parse(await readFile(join(lock, 'owner.json'), 'utf8')), replacement ? next : previous);
+    await unlink(join(lock, 'owner.json'));
+    await rmdir(lock);
+  }
 });
 test('lock waiter tolerates unpublished owner and never parses partial temporary JSON', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'host-lock-publication-'));

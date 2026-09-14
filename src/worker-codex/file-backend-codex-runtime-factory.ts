@@ -182,14 +182,14 @@ function createWorkerWorkspaces(input: {
   readonly prewarmWorkspace: RuntimeDeps["workspace"];
 } {
   const defaultWorkspacePath = join(
-    input.options.stateRootDir,
+    input.options.runtimeHomeRootDir ?? input.options.stateRootDir,
     "workspaces",
     hashText(input.workerId),
   );
   const ownedWorkspace = input.options.workspace
     ? null
     : new StableWorkerWorkspace(defaultWorkspacePath, {
-        allowedRootDir: input.options.stateRootDir,
+        allowedRootDir: input.options.runtimeHomeRootDir ?? input.options.stateRootDir,
       });
   const workspace =
     input.options.workspace ??
@@ -324,7 +324,7 @@ function createCodexAgentDriver(input: {
       cacheKey: `codex:${options.providerInstanceId}:${input.workerId}`,
       providerEgressPolicy,
       slots: options.sessionCacheSlots ?? 1,
-      rootDir: join(options.stateRootDir, "codex-session-cache"),
+      rootDir: join(options.runtimeHomeRootDir ?? options.stateRootDir, "codex-session-cache"),
       preserveOnDispose: true,
       scrubAuthOnDispose: true,
       ...(workspaceToolsProfile

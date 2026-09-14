@@ -600,6 +600,7 @@ describe("codex goal runner", () => {
       encryptionKey: new Uint8Array(32).fill(1),
       config: {
         jobRootDir: join(root, "job"),
+        runtimeHomeRootDir: join(root, "home"),
         authRootDir: join(root, "auth"),
         workspacePath: join(root, "workspace"),
         promptPath: join(root, "prompt.md"),
@@ -619,6 +620,8 @@ describe("codex goal runner", () => {
       },
     });
 
+    expect(options.runtimeHomeRootDir).toBe(join(root, "home"));
+    expect(options.stateRootDir).toBe(join(root, "state"));
     expect(options.accounts[0]?.worker.commandPolicy).toMatchObject({
       validateCommands: true,
       deniedGitSubcommands: ["push"],

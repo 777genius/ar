@@ -320,9 +320,11 @@ export function invalidateHostedOrdinaryWait(child: CodexAppServerChildProcess):
 /** Production default primitive calls this with its private synchronous spawn.
  * It never receives worker factory injection, mount options or a managed ticket. */
 export function submitHostedOrdinaryProcess(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
-  submit: (unit: string) => CodexAppServerChildProcess): CodexAppServerChildProcess {
+  submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string }) => CodexAppServerChildProcess): CodexAppServerChildProcess {
   return withHostedActivationFence(fence => {
     const { activation, start, profileId } = readHostedOrdinaryProcessOrigin(fence);
+    if (!str(start.jobRootDir).endsWith(`/jobs/${str(start.jobId)}`) ||
+        start.workspacePath !== `${str(start.jobRootDir)}/workspace`) invalid();
     // The real app-server client starts in its materialized account HOME;
     // workspace belongs to the thread, not the provider process. Neither cwd
     // nor HOME supplies origin authority: that was read from the actual cgroup.
@@ -340,7 +342,7 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
     publishOrdinaryActivation(fence, next);
     try {
       createActivationRecord(`ordinary-starts/${startId}.json`, bytes);
-      const child = submit(unit);
+      const child = submit(unit, { jobId: str(start.jobId), workspacePath: str(start.workspacePath) });
       child.on("error", () => invalidateHostedOrdinaryWait(child));
       child.stdin.on?.("error", () => invalidateHostedOrdinaryWait(child));
       child.on("exit", (code, signal) => {

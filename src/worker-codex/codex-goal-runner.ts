@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { admitManagedGoal, isAdmittedManagedGoal, type ManagedGoalAdmissionDeps } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { ObservabilityPort } from "@vioxen/subscription-runtime/core";
@@ -87,6 +88,7 @@ export type CodexGoalRunConfig = {
   readonly jobId?: string;
   readonly jobRootDir: string;
   readonly stateRootDir?: string;
+  readonly runtimeHomeRootDir?: string;
   readonly encryptionKeyPath?: string;
   readonly authRootDir: string;
   readonly workspacePath: string;
@@ -160,6 +162,7 @@ export type CodexGoalProgressSnapshot = {
 };
 
 export type CodexGoalRunDeps = {
+  readonly managedAdmission?: ManagedGoalAdmissionDeps;
   /** Trusted adapter port, never supplied by serialized job configuration. */
   readonly admitProviderEgress?: typeof admitHostedTestEgress;
   readonly createExecutor?: (
@@ -179,6 +182,7 @@ export async function runCodexGoal(
   config: CodexGoalRunConfig,
   deps: CodexGoalRunDeps = {},
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+  config = (await admitManagedGoal({ config }, deps.managedAdmission)).config;
   assertCodexGoalRunConfig(config);
   assertCodexGoalAccessLaunchAllowed(config);
   const admittedEgress = await (deps.admitProviderEgress ?? admitHostedTestEgress)({
@@ -398,6 +402,7 @@ export function buildCodexGoalExecutorOptions(input: {
       ? { activeAttemptRegistry: input.activeAttemptRegistry }
       : {}),
     stateRootDir: input.stateRootDir,
+    ...(config.runtimeHomeRootDir === undefined ? {} : { runtimeHomeRootDir: config.runtimeHomeRootDir }),
     accountCapacityStore: migrateLegacyCodexAccountCapacity({
       authRootDir: config.authRootDir,
       stateRootDir: input.stateRootDir,
@@ -501,9 +506,10 @@ export function codexGoalOutputPath(
 }
 
 export function codexGoalRuntimeEventsPath(
-  config: Pick<CodexGoalRunConfig, "jobRootDir" | "taskId">,
+  config: Pick<CodexGoalRunConfig, "jobRootDir" | "taskId" | "outputPath">,
 ): string {
-  return join(config.jobRootDir, `${config.taskId}.events.jsonl`);
+  return join(isAdmittedManagedGoal(config as CodexGoalRunConfig) && config.outputPath
+    ? dirname(config.outputPath) : config.jobRootDir, `${config.taskId}.events.jsonl`);
 }
 
 export function codexGoalAccountSlots(

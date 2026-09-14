@@ -70,7 +70,11 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
   const host = new HostedReadonlySupervisorHost();
   const admittedEpoch = host.assertManagedAdmission(identity, input.providerEgressPolicy.profileId);
   const supervisor = new HostedCustodySupervisor(host);
-  const spawn = admittedReadonlyCodexProcessFactory(initial.policy, (unit, submit) => {
+  const spawn = admittedReadonlyCodexProcessFactory({
+    jobId: identity.jobId,
+    workspacePath: identity.workspacePath,
+    readonlyPaths: initial.policy.readonlyPaths,
+  }, (unit, submit) => {
     const startId = unit.slice("subscription-runtime-hosted-".length, -".service".length);
     const reservation = { startId, unit, creatorId: startId };
     return supervisor.start(HostedCustodyLaunchKind.ManagedProvider, admittedEpoch.identity, admittedEpoch.generation, reservation, () => {

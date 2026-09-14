@@ -1,8 +1,10 @@
-import { mkdir, readFile, writeFile, rename, statfs } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { unitFor, validateStart, fingerprint } from './contract.mjs';
+import { prepareManagedJobLayout, storageProbe as defaultStorageProbe, HOST_STORAGE_POLICY_PATH } from './storage-policy.mjs';
+import { managedLauncherInvocation } from '../managed-launcher/launch.mjs';
 
 const execute = promisify(execFile);
 async function systemCommand(cmd, args) {
@@ -15,8 +17,10 @@ async function systemCommand(cmd, args) {
 export class HostJobs {
   constructor({ stateDir, run = systemCommand,
     machineId = async () => (await readFile('/etc/machine-id', 'utf8')).trim(),
-    freeBytes = async path => { const s = await statfs(path); return s.bavail * s.bsize; }, clock = () => Date.now() }) {
-    Object.assign(this, { stateDir, run, machineId, freeBytes, clock });
+    storagePolicyPath = HOST_STORAGE_POLICY_PATH, storageProbe = defaultStorageProbe,
+    prepareLayout = jobId => prepareManagedJobLayout(jobId, { policyPath: storagePolicyPath, probe: storageProbe }),
+    clock = () => Date.now() }) {
+    Object.assign(this, { stateDir, run, machineId, prepareLayout, clock });
   }
   path(id) { return join(this.stateDir, `${unitFor(id)}.json`); }
   async read(id) {
@@ -41,7 +45,6 @@ export class HostJobs {
   }
   async start(request) {
     validateStart(request);
-    await mkdir(this.stateDir, { recursive: true, mode: 0o700 });
     if (await this.machineId() !== request.machineId) throw new Error('machine identity mismatch');
     const digest = fingerprint(request);
     let record = await this.read(request.jobId);
@@ -51,7 +54,9 @@ export class HostJobs {
       // Never rerun a completed or ambiguous job merely because its unit disappeared.
       return { ...record, state, retry: true };
     }
-    if (await this.freeBytes(request.cwd) < 5 * 1024 ** 3) throw new Error('admission requires 5 GiB free');
+    await this.prepareLayout(request.jobId);
+    // Small control records are the lifecycle metadata exception, never payload data.
+    await mkdir(this.stateDir, { recursive: true, mode: 0o700 });
     const unit = unitFor(request.jobId);
     const initial = await this.inspect(unit);
     if (initial.LoadState !== 'not-found') {
@@ -65,12 +70,18 @@ export class HostJobs {
     try { await writeFile(this.path(request.jobId), JSON.stringify(record), { flag: 'wx', mode: 0o600 }); }
     catch (e) { if (e.code === 'EEXIST') return this.start(request); throw e; }
     try {
-      await this.run('/usr/bin/systemd-run', ['--user', `--unit=${unit}`, `--description=subscription-job:${digest}`,
-        '--service-type=exec', '--expand-environment=no', '--property=KillMode=control-group', '--property=Restart=no',
-        `--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${request.jobId}`,
-        `--property=RuntimeMaxSec=${request.runtimeSeconds}`, `--property=TimeoutStopSec=${request.stopSeconds}`,
-        `--property=MemoryMax=${request.memoryMiB}M`, `--property=TasksMax=${request.tasksMax}`,
-        `--property=CPUQuota=${request.cpuPercent}%`, `--working-directory=${request.cwd}`, '--', ...request.argv]);
+      const invocation = managedLauncherInvocation({
+        operation: 'job', unit, payload: request.argv,
+        jobId: request.jobId, fingerprint: digest,
+        limits: {
+          runtimeSeconds: request.runtimeSeconds,
+          stopSeconds: request.stopSeconds,
+          memoryMiB: request.memoryMiB,
+          tasksMax: request.tasksMax,
+          cpuPercent: request.cpuPercent,
+        },
+      });
+      await this.run(invocation.command, invocation.args);
       record.phase = 'started';
     } catch { record.phase = 'uncertain'; }
     await this.save(record);

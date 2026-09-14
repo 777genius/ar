@@ -130,9 +130,22 @@ it("outer service invocation uses a fixed bootstrap and no environment/credentia
   const record = { startId, creatorId: startId, unit: `subscription-runtime-outer-${startId}.service` };
   const invocation = new HostedReadonlyHostKernel().runtimeInvocation(record, "/runtime/node", ["/runtime/cli.js"], "/synthetic/W");
   expect(invocation.command).toBe("/usr/bin/systemd-run");
-  expect(invocation.args).toEqual(expect.arrayContaining(["--wait", "--pipe", "--collect", "--service-type=exec",
-    "--property=KillMode=control-group", "--property=SendSIGKILL=yes", "--property=Delegate=no"]));
+  expect(invocation.args).toContain(`--unit=${record.unit}`);
+  expect(invocation.args).toContain("--working-directory=/synthetic/W");
+  expect(invocation.args.at(-2)).toBe(process.execPath);
   expect(invocation.args.at(-1)).toMatch(/hosted-readonly-runtime-bootstrap\.js$/);
+  expect(invocation.args.some(value => /Environment|setenv|BindPaths/.test(value))).toBe(false);
+});
+it("ordinary service invocation preserves the independent custody cgroup and fixed bootstrap", () => {
+  const record = { ...reservation, unit: `subscription-runtime-ordinary-${startId}.service`,
+    originSha256: "a".repeat(64), generation: 1 };
+  const invocation = new HostedReadonlyHostKernel().ordinaryRuntimeInvocation(record, "/synthetic/W");
+  expect(invocation.command).toBe("/usr/bin/systemd-run");
+  expect(invocation.args).toContain(`--unit=${record.unit}`);
+  expect(invocation.args).toContain("--working-directory=/synthetic/W");
+  expect(invocation.args.at(-3)).toBe(process.execPath);
+  expect(invocation.args.at(-2)).toMatch(/hosted-readonly-host-launch-cli\.js$/);
+  expect(invocation.args.at(-1)).toBe("ordinary-bootstrap");
   expect(invocation.args.some(value => /Environment|setenv|BindPaths/.test(value))).toBe(false);
 });
 it.each(["valid", "wrong-group", "closed", "terminal", "old-generation", "wrong-supervisor"])("outer owner requires actual reserved service membership: %s", scenario => {

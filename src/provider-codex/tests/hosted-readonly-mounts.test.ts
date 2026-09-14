@@ -7,6 +7,7 @@ const { spawn } = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn, spawnSync: vi.fn() }));
 
 const workspacePath = "/fixture/workspace";
+const jobId = "fixture";
 const own = workspacePath + "/source-parent-v6-TEST";
 const readonlyPaths = [
   workspacePath + "/input-contract", workspacePath + "/runtime/node",
@@ -25,13 +26,14 @@ const anchors = [
 ];
 const invocation = {
   command: "/codex", args: ["app-server"], cwd: workspacePath,
-  env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
-  ioLimitPaths: [], platform: "linux" as const, systemdUnit: "fixture.service",
+  env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job", SUBSCRIPTION_RUNTIME_JOB_ID: "fixture" },
+  platform: "linux" as const,
+  systemdUnit: "subscription-runtime-hosted-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.service",
 };
 
 describe("bounded hosted readonly mount adapter", () => {
   it("derives exactly ten writable anchors for the reviewed fourteen-root layout", () => {
-    const properties = hostedReadonlyMountProperties({ workspacePath, readonlyPaths });
+    const properties = hostedReadonlyMountProperties({ jobId, workspacePath, readonlyPaths });
     expect(properties).toEqual([
       "PrivateMounts=yes",
       "BindPaths=" + anchors.map(path => `${path}:${path}:norbind`).join(" "),
@@ -44,7 +46,7 @@ describe("bounded hosted readonly mount adapter", () => {
   it.each(["/", "relative", "/w/", "/w/../x", "/w/./x", "/w//x", "/w/a:b",
     "/w/%t", "/w/a b", "/w/a\tb", "/w/a\nb", "/w/a\\b", "/w/a\u0000b",
     "/w/a\u007fb", "/w/é", "/w/\"a", "/w/$a"])("rejects ambiguous spelling %j", path => {
-    expect(() => hostedReadonlyMountProperties({ workspacePath: "/w", readonlyPaths: [path] }))
+    expect(() => hostedReadonlyMountProperties({ jobId, workspacePath: "/w", readonlyPaths: [path] }))
       .toThrow("hosted_readonly_mounts_invalid");
   });
 
@@ -53,29 +55,28 @@ describe("bounded hosted readonly mount adapter", () => {
     ["/w"], ["/w-sibling/a"], ["/elsewhere/a"], ["/w/" + "a".repeat(4096)],
     Array.from({ length: 65 }, (_, index) => `/w/${index}`),
   ].map(paths => ({ paths })))("rejects empty, overlapping, unbounded or escaping lists $paths", ({ paths }) => {
-    expect(() => hostedReadonlyMountProperties({ workspacePath: "/w", readonlyPaths: paths }))
+    expect(() => hostedReadonlyMountProperties({ jobId, workspacePath: "/w", readonlyPaths: paths }))
       .toThrow("hosted_readonly_mounts_invalid");
   });
 
   it("accepts the maximum root count and sibling prefixes", () => {
-    expect(hostedReadonlyMountProperties({ workspacePath: "/w",
+    expect(hostedReadonlyMountProperties({ jobId, workspacePath: "/w",
       readonlyPaths: Array.from({ length: 64 }, (_, index) => `/w/a${index}`) })).toHaveLength(3);
   });
 
-  it("adds only reviewed mount properties before the existing launch separator", () => {
+  it("adds only reviewed mounts to the explicit provider request", () => {
     const ordinary = codexAppServerProcessInvocation(invocation);
-    const mounted = codexAppServerProcessInvocation(invocation, { workspacePath, readonlyPaths });
-    const separator = ordinary.args.indexOf("--");
-    expect(mounted.args.slice(0, separator)).toEqual(ordinary.args.slice(0, separator));
-    expect(mounted.args.slice(separator, separator + 3)).toEqual(
-      hostedReadonlyMountProperties({ workspacePath, readonlyPaths }).map(p => "--property=" + p));
-    expect(mounted.args.slice(separator + 3)).toEqual(ordinary.args.slice(separator));
+    const mounted = codexAppServerProcessInvocation(invocation, { jobId, workspacePath, readonlyPaths });
+    expect(JSON.parse(ordinary.args[2]!).readonlyPaths).toBeUndefined();
+    expect(JSON.parse(mounted.args[2]!).readonlyPaths).toEqual(readonlyPaths);
+    expect(JSON.parse(mounted.args[2]!)).not.toHaveProperty("mounts");
+    expect(JSON.parse(mounted.args[2]!)).not.toHaveProperty("cwd");
     expect(mounted.stdinBootstrap).toBe(ordinary.stdinBootstrap);
   });
 
   it("fails before spawning on unsupported platform or unmarked hosted mode", () => {
     for (const input of [{ ...invocation, platform: "darwin" as const }, { ...invocation, env: {} }]) {
-      expect(() => codexAppServerProcessInvocation(input, { workspacePath, readonlyPaths }))
+      expect(() => codexAppServerProcessInvocation(input, { jobId, workspacePath, readonlyPaths }))
         .toThrow("hosted_readonly_engine_unsupported");
     }
     expect(spawn).not.toHaveBeenCalled();
@@ -84,7 +85,7 @@ describe("bounded hosted readonly mount adapter", () => {
   it("copies admitted input and ignores mount fields supplied at launch", () => {
     const paths = [...readonlyPaths];
     // Explicit simulated fence; real worker composition is tested separately.
-    const factory = admittedReadonlyCodexProcessFactory({ workspacePath, readonlyPaths: paths }, (_unit, submit) => submit());
+    const factory = admittedReadonlyCodexProcessFactory({ jobId, workspacePath, readonlyPaths: paths }, (_unit, submit) => submit());
     paths[0] = "/attacker";
     const child = { stdin: { write: vi.fn() } };
     spawn.mockReturnValue(child);
@@ -93,8 +94,7 @@ describe("bounded hosted readonly mount adapter", () => {
     expect(factory(launch)).toBe(child);
     const args: string[] = spawn.mock.calls.at(-1)![1];
     expect(args.join(" ")).not.toContain("attacker");
-    expect(args).toContain("--property=BindReadOnlyPaths=" +
-      readonlyPaths.map(path => `${path}:${path}:norbind`).join(" "));
+    expect(JSON.parse(args[2]!).readonlyPaths).toEqual(readonlyPaths);
     expect(spawn.mock.calls.at(-1)![2].stdio).toEqual(["pipe", "pipe", "pipe"]);
   });
   it("rejects unenrolled hosted defaults and caller-supplied tickets before process creation", () => {
@@ -102,7 +102,7 @@ describe("bounded hosted readonly mount adapter", () => {
     // Ordinary default now requires real private origin; this fixture has none.
     expect(() => spawnCodexAppServerProcess(invocation)).toThrow();
     expect(() => spawnCodexAppServerProcess(invocation, undefined, undefined, {})).toThrow("synchronous_fence_required");
-    expect(() => admittedReadonlyCodexProcessFactory({ workspacePath, readonlyPaths })(invocation)).toThrow("synchronous_fence_required");
+    expect(() => admittedReadonlyCodexProcessFactory({ jobId, workspacePath, readonlyPaths })(invocation)).toThrow("synchronous_fence_required");
     expect(spawn).not.toHaveBeenCalled();
   });
   it("permits one synchronous submission and rejects replay or delayed submission outside the fence", () => {
@@ -110,7 +110,7 @@ describe("bounded hosted readonly mount adapter", () => {
     const child = { stdin: { write: vi.fn() } };
     spawn.mockReturnValue(child);
     let deferred: (() => unknown) | undefined;
-    const factory = admittedReadonlyCodexProcessFactory({ workspacePath, readonlyPaths }, (_unit, submit) => {
+    const factory = admittedReadonlyCodexProcessFactory({ jobId, workspacePath, readonlyPaths }, (_unit, submit) => {
       deferred = submit;
       const actual = submit();
       expect(() => submit()).toThrow("synchronous_fence_required");
@@ -123,7 +123,7 @@ describe("bounded hosted readonly mount adapter", () => {
   it("expires an unused submission when the simulated fence returns", () => {
     spawn.mockClear();
     let deferred: (() => unknown) | undefined;
-    const factory = admittedReadonlyCodexProcessFactory({ workspacePath, readonlyPaths }, (_unit, submit) => {
+    const factory = admittedReadonlyCodexProcessFactory({ jobId, workspacePath, readonlyPaths }, (_unit, submit) => {
       deferred = submit;
       return { stdin: { write: vi.fn() } } as never; // Explicit fake, no process submitted.
     });

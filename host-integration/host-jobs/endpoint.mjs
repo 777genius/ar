@@ -3,11 +3,12 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { HostJobs } from './manager.mjs';
 import { readRequest } from './read-request.mjs';
+import { HOST_STORAGE_POLICY_PATH } from './storage-policy.mjs';
 
 // This fixed endpoint receives data only on stdin, never executable shell text.
 try {
   const request = await readRequest(process.stdin);
-  const manager = new HostJobs({ stateDir: join(homedir(), '.local/state/subscription-runtime/host-jobs') });
+  const manager = new HostJobs({ stateDir: join(homedir(), '.local/state/subscription-runtime/host-jobs'), storagePolicyPath: HOST_STORAGE_POLICY_PATH });
   let result;
   switch (request.operation) {
     case 'start': result = await manager.start(request); break;

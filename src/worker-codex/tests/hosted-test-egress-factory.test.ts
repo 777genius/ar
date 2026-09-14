@@ -110,10 +110,11 @@ describe("factory admitted policy propagation", () => {
         expect(launch.env?.PATH?.split(":" )).toContain("/synthetic/inherited/bin");
         expect(launch.env?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND).toBe("hosted-codex-job");
         const invocation = codexAppServerProcessInvocation({ command: "/synthetic", args: launch.args,
-          cwd: root, env: launch.env!, platform: "linux", ioLimitPaths: ["/synthetic"],
+          cwd: root, env: launch.env!, platform: "linux",
           hostedLauncher: "/synthetic/launcher.js", nodePath: "/synthetic/node" });
-        expect(invocation.command).toBe("/usr/bin/systemd-run");
-        expect(invocation.args).toContain("--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user -/var/lib/subscription-runtime-host-policy");
+        expect(invocation.command).toBe(process.execPath);
+        expect(invocation.args[1]).toBe("provider");
+        expect(JSON.parse(invocation.args[2]!).operation).toBe("provider");
         expect(launch.env?.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE).toBe(CodexProviderEgressProfileId.ProviderApi);
         expect(launch.args.join(" ")).not.toContain("registry.npmjs.org");
         expect(await readFile(join(launch.env!.CODEX_HOME!, "config.toml"), "utf8")).not.toContain("registry.npmjs.org");

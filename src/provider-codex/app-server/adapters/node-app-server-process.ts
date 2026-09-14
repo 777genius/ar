@@ -10,19 +10,11 @@ import type {
 import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait } from "./hosted-process-activation";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
 import { hostedReadonlyMountProperties, type HostedReadonlyMounts } from "./hosted-readonly-mounts";
-import {
-  hostedAppServerSystemdProperties,
-  hostedIoLimitPaths,
-} from "./hosted-app-server-resource-policy";
 
 const hostedSandboxKind = "hosted-codex-job";
-const systemdRunPath = "/usr/bin/systemd-run";
+const managedLauncherNodePath = process.execPath;
+const managedLauncherPath = "/usr/local/lib/subscription-runtime/managed-launcher/launch.mjs";
 const systemctlPath = "/usr/bin/systemctl";
-const unsharePath = "/usr/bin/unshare";
-const setprivPath = "/usr/bin/setpriv";
-// Namespace-local identity, deliberately distinct from Linux's overflow ID 65534.
-// The host UID/GID and ownership of workspaces/auth files are not changed.
-const hostedNamespaceIdentity = "65532";
 const hostedLauncherPath = fileURLToPath(
   new URL("./hosted-app-server-launcher.js", import.meta.url),
 );
@@ -97,7 +89,6 @@ export function codexAppServerProcessInvocation(input: {
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
   readonly hostedLauncher?: string;
-  readonly ioLimitPaths?: readonly string[];
   readonly nodePath?: string;
   readonly platform?: NodeJS.Platform;
   readonly systemdUnit?: string;
@@ -113,51 +104,29 @@ export function codexAppServerProcessInvocation(input: {
   if (input.env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID !== undefined) {
     throw new Error("host-job detached provider ownership is not supported");
   }
+  const jobId = admittedMounts ? admittedMounts.jobId : input.env.SUBSCRIPTION_RUNTIME_JOB_ID;
+  if (typeof jobId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(jobId)) {
+    throw new Error("hosted_managed_job_identity_required");
+  }
   const systemdUnit =
     input.systemdUnit ?? `subscription-runtime-hosted-${randomUUID()}.service`;
-  const properties = hostedAppServerSystemdProperties(
-    input.ioLimitPaths ?? hostedIoLimitPaths(),
-  );
   return {
-    command: systemdRunPath,
+    command: managedLauncherNodePath,
     systemdUnit,
     stdinBootstrap: encodeHostedAppServerLaunchFrame({
       schemaVersion: 1,
       command: input.command,
       args: input.args,
       cwd: input.cwd,
-      env: input.env,
+      env: { ...input.env, SUBSCRIPTION_RUNTIME_JOB_ID: jobId },
     }),
     args: [
-      `--unit=${systemdUnit}`,
-      "--pipe",
-      "--wait",
-      "--collect",
-      "--quiet",
-      "--service-type=exec",
-      "--slice=subscription-runtime-hosted.slice",
-      ...properties.map((property) => `--property=${property}`),
-      ...(admittedMounts ? hostedReadonlyMountProperties(admittedMounts)
-        .map(property => `--property=${property}`) : []),
-      "--",
-      unsharePath,
-      `--map-user=${hostedNamespaceIdentity}`,
-      `--map-group=${hostedNamespaceIdentity}`,
-      // Only the trusted setpriv bootstrap retains namespace capabilities; it
-      // drops every set before Node/Codex runs. A capability-less UID 0 cannot
-      // create the nested user namespace required by bubblewrap on Linux 5.12+.
-      "--keep-caps",
-      "--pid",
-      "--fork",
-      "--mount-proc",
-      "--kill-child=SIGKILL",
-      setprivPath,
-      "--bounding-set=-all",
-      "--inh-caps=-all",
-      "--ambient-caps=-all",
-      "--no-new-privs",
-      input.nodePath ?? process.execPath,
-      input.hostedLauncher ?? hostedLauncherPath,
+      managedLauncherPath,
+      "provider",
+      JSON.stringify({ operation: "provider", jobId, unit: systemdUnit,
+        payload: [input.nodePath ?? process.execPath, input.hostedLauncher ?? hostedLauncherPath],
+        ...(admittedMounts ? { readonlyPaths: admittedMounts.readonlyPaths } : {}),
+      }),
     ],
   };
 }
@@ -171,8 +140,9 @@ export function spawnCodexAppServerProcess(input: {
   if (submission && !hostedSubmissions.has(submission)) throw new Error("hosted_custody_synchronous_fence_required");
   if (!submission && requiresHostedProcessAdmission(input.env)) {
     if (admittedMounts || reservedSystemdUnit) throw new Error("hosted_custody_synchronous_fence_required");
-    return submitHostedOrdinaryProcess(input, unit => spawnInvocation(input,
-      codexAppServerProcessInvocation({ ...input, systemdUnit: unit })));
+    return submitHostedOrdinaryProcess(input, (unit, identity) => spawnInvocation(input,
+      codexAppServerProcessInvocation({ ...input, env: { ...input.env,
+        SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit })));
   }
   const invocation = codexAppServerProcessInvocation({
     command: input.command, args: input.args, cwd: input.cwd, env: input.env,
@@ -208,6 +178,7 @@ export function admittedReadonlyCodexProcessFactory(
 ): CodexAppServerProcessFactory {
   hostedReadonlyMountProperties(policy);
   const mounts = Object.freeze({
+    jobId: policy.jobId,
     workspacePath: policy.workspacePath,
     readonlyPaths: Object.freeze([...policy.readonlyPaths]),
   });

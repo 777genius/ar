@@ -1,12 +1,5 @@
 import { readFileSync } from "node:fs";
 
-const perJobIoLimits = {
-  readBandwidth: "40M",
-  readIops: "3000",
-  writeBandwidth: "20M",
-  writeIops: "1500",
-} as const;
-
 const aggregateIoLimits = {
   readBandwidth: "120M",
   readIops: "8000",
@@ -106,28 +99,6 @@ function ioProperties(
       `IOWriteIOPSMax=${escapedPath} ${limits.writeIops}`,
     ];
   });
-}
-
-export function hostedAppServerSystemdProperties(
-  ioPaths: readonly string[],
-): readonly string[] {
-  return [
-    "CPUQuota=200%",
-    "IOWeight=25",
-    ...ioProperties(ioPaths, perJobIoLimits),
-    "MemoryHigh=2G",
-    "MemoryMax=4G",
-    "TasksMax=512",
-    "RuntimeMaxSec=8h",
-    "TimeoutStopSec=30s",
-    "KillMode=control-group",
-    "NoNewPrivileges=yes",
-    "ProtectControlGroups=yes",
-    // CAP_SETFCAP is needed only to map the outer host UID 0. The trusted
-    // namespace bootstrap drops all capabilities before launching Node/Codex.
-    "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP",
-    "InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user -/var/lib/subscription-runtime-host-policy",
-  ];
 }
 
 export function hostedAggregateIoDropIn(
