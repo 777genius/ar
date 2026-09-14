@@ -82,6 +82,11 @@ provisioned with their required identity before entering this boundary. The
 current `unshare --map-user/--map-group --keep-caps` then `setpriv --no-new-privs`
 bootstrap does not depend on acquiring privileges through setuid execution:
 `NoNewPrivileges` retains existing capabilities and permits user namespaces.
+`ProtectKernelTunables` and `ProtectKernelLogs` are intentionally omitted because
+systemd implements them with locked submounts below `/proc`, which prevents the
+child user namespace from mounting its private procfs. The payload has no host
+PID view and drops every capability before executing untrusted code; private
+devices and explicit inaccessible paths retain the relevant protection.
 Compatibility still requires a disposable Linux host canary; argument tests do
 not prove kernel namespace behavior.
 

@@ -20,6 +20,8 @@ test('explicit job builds fixed confinement and preserves bounded limits and own
     `CapabilityBoundingSet=${bootstrapCaps}`, 'AmbientCapabilities=', 'PrivateDevices=yes', `InaccessiblePaths=${socketFence}`, 'MemoryMax=256M', 'RuntimeMaxSec=90']) {
     assert.ok(invocation.args.includes(`--property=${property}`), property);
   }
+  assert.equal(invocation.args.some(arg => /ProtectKernel(?:Tunables|Logs)=/.test(arg)), false,
+    'locked /proc submounts would prevent the private procfs bootstrap');
   assert.ok(invocation.args.some(x => x.includes('size=256M') && x.includes('size=64M')));
   assert.ok(invocation.args.includes(`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${job.jobId}`));
   assert.ok(invocation.args.includes(`--setenv=SUBSCRIPTION_RUNTIME_JOB_ID=${job.jobId}`));

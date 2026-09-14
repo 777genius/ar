@@ -14,7 +14,11 @@ export async function requireTrustedExecutable(path) {
 }
 
 export function profileProperties() {
-  return ['AmbientCapabilities=', 'PrivateDevices=yes', 'ProtectKernelTunables=yes', 'ProtectKernelModules=yes', 'ProtectKernelLogs=yes', 'RestrictSUIDSGID=yes',
+  // ProtectKernelTunables/ProtectKernelLogs create locked submounts below
+  // /proc before ExecStart. Linux then refuses the child user namespace's
+  // private procfs mount. The payload instead enters its private PID/user
+  // namespace and drops every capability before untrusted code executes.
+  return ['AmbientCapabilities=', 'PrivateDevices=yes', 'ProtectKernelModules=yes', 'RestrictSUIDSGID=yes',
     `CapabilityBoundingSet=${bootstrapCaps}`,
     `InaccessiblePaths=${socketFence}`];
 }
