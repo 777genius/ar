@@ -172,6 +172,10 @@ control-plane entrypoint and legacy status/stop using exclusively synthetic
 lifecycle records. Stopping this harness's systemd unit is cleanup, not evidence
 for the legacy stop API.
 
+The positive custody check is the disposable systemd-nspawn guest documented in
+`host-integration/custody-canary/README.md`; it never mounts shared host custody
+state, credentials, jobs, projects, or databases into the guest.
+
 The separate `host-integration/host-jobs/legacy-lifecycle-e2e.mjs` harness checks
 both an admitted system service and a harmless user service whose synthetic
 ledger omits the manager field. Root's user manager must also be reachable
