@@ -10,6 +10,16 @@ import { requireHostStorage, prepareManagedJobLayout } from '../host-jobs/storag
 
 const POLICY = '/etc/subscription-runtime/storage-policy.json';
 const WRAPPER = '/opt/subscription-runtime/managed-launcher/launch.mjs';
+// Connect only: never submit a journal message, even when confinement is broken.
+const JOURNAL_DATAGRAM_PROBE = `import errno, socket, sys
+with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+    client.settimeout(1)
+    try:
+        client.connect(sys.argv[1])
+        print('connected')
+    except OSError as error:
+        print(errno.errorcode.get(error.errno, 'unexpected-error'))
+`;
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 function run(command, args) {
   const result = spawnSync(command, args, { encoding: 'utf8', timeout: 15000 });
@@ -179,13 +189,18 @@ catch (error) { result.hardlink = error.code; }
 const status = await readFile('/proc/self/status', 'utf8');
 result.capabilities = Object.fromEntries(status.split('\\n').filter(line => /^Cap(Eff|Bnd):/.test(line)).map(line => line.trim().split(/:\\s+/)));
 result.controlSockets = {};
-for (const path of ['/run/systemd/private', '/run/dbus/system_bus_socket', '/run/docker.sock', '/var/run/docker.sock', '/run/containerd/containerd.sock', '/run/podman/podman.sock']) {
+for (const path of ['/run/systemd/private', '/run/systemd/journal/stdout', '/run/dbus/system_bus_socket', '/run/docker.sock', '/var/run/docker.sock', '/run/containerd/containerd.sock', '/run/podman/podman.sock']) {
  result.controlSockets[path] = await new Promise(resolveSocket => {
   const socket = createConnection({ path });
   const timer = setTimeout(() => { socket.destroy(); resolveSocket('timeout'); }, 1000);
   socket.once('connect', () => { clearTimeout(timer); socket.destroy(); resolveSocket('connected'); });
   socket.once('error', error => { clearTimeout(timer); resolveSocket(error.code ?? 'error'); });
  });
+}
+for (const path of ['/run/systemd/journal/socket', '/run/systemd/journal/dev-log', '/dev/log']) {
+ const probe = spawnSync('/usr/bin/python3', ['-c', ${JSON.stringify(JOURNAL_DATAGRAM_PROBE)}, path], { encoding: 'utf8', timeout: 5000 });
+ // Missing Python or probe failure must fail the canary, not look like denial.
+ result.controlSockets[path] = !probe.error && probe.status === 0 ? probe.stdout.trim() : 'probe-failed';
 }
 result.blockDevices = [];
 async function scanDevices(path) {
@@ -249,7 +264,7 @@ setTimeout(() => {}, 90000);
     const properties = Object.fromEntries(run('/usr/bin/systemctl', ['show', unit, '--property=ProtectSystem,ReadWritePaths,NoNewPrivileges,MemorySwapMax,TemporaryFileSystem,RequiresMountsFor,LimitCORE,CapabilityBoundingSet,AmbientCapabilities,PrivateDevices,InaccessiblePaths,RestrictSUIDSGID,StandardOutput,StandardError']).split('\n').map(line => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1)]; }));
     check(properties.ProtectSystem === 'strict' && properties.ReadWritePaths === layout.jobRoot && properties.NoNewPrivileges === 'yes' && properties.MemorySwapMax === '0', `Effective properties mismatch: ${JSON.stringify(properties)}`);
     check(properties.CapabilityBoundingSet?.split(/\s+/).sort().join(' ') === 'cap_setfcap cap_setpcap cap_sys_admin' && properties.AmbientCapabilities === '' && properties.PrivateDevices === 'yes' && properties.RestrictSUIDSGID === 'yes', `Privilege properties mismatch: ${JSON.stringify(properties)}`);
-    for (const path of ['/run/systemd/private', '/run/dbus', '/run/docker.sock', '/run/containerd/containerd.sock', '/run/podman/podman.sock']) check(properties.InaccessiblePaths?.split(/\s+/).some(value => value.replace(/^-/, '') === path), `Missing inaccessible path ${path}`);
+    for (const path of ['/run/systemd/private', '/run/systemd/journal', '/dev/log', '/run/dbus', '/run/docker.sock', '/run/containerd/containerd.sock', '/run/podman/podman.sock']) check(properties.InaccessiblePaths?.split(/\s+/).some(value => value.replace(/^-/, '') === path), `Missing inaccessible path ${path}`);
     if (Object.hasOwn(properties, 'RequiresMountsFor')) check(properties.RequiresMountsFor.split(/\s+/).includes(policy.storageRoot), 'Missing mount dependency');
     if (Object.hasOwn(properties, 'LimitCORE')) check(properties.LimitCORE === '0', 'Core dumps are not disabled');
     for (const [index, stream] of ['stdout', 'stderr'].entries()) {

@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { access } from "node:fs/promises";
+import { requireManagedLaunchKernelProof } from './managed-launch-kernel-proof';
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import { deriveManagedJobLayout, MANAGED_JOB_ROOT_ENV, MANAGED_JOB_ID_ENV, MANAGED_MARKER_ENV } from "./managed-job-layout";
 
@@ -7,6 +8,7 @@ export const managedGoalActivationPath = "/opt/subscription-runtime/managed-laun
 export interface ManagedGoalAdmissionDeps {
   readonly platform?: NodeJS.Platform;
   readonly isManagedHost?: () => Promise<boolean>;
+  readonly requireKernelProof?: () => Promise<void>;
 }
 export interface ManagedGoalAdmission {
   readonly config: CodexGoalRunConfig;
@@ -30,6 +32,7 @@ export async function admitManagedGoal(
   }))();
   if (!managed && env[MANAGED_MARKER_ENV] === undefined) return input;
   if (env[MANAGED_MARKER_ENV] !== "1" || !env[MANAGED_JOB_ROOT_ENV] || !env[MANAGED_JOB_ID_ENV]) throw new Error('Managed host requires root-owned launcher');
+  await (deps.requireKernelProof ?? requireManagedLaunchKernelProof)();
   const layout = deriveManagedJobLayout(env[MANAGED_JOB_ROOT_ENV]!, env[MANAGED_JOB_ID_ENV]!);
   if (layout.jobId !== (config.jobId ?? config.taskId)) throw new Error('Managed job identity mismatch');
   // taskId becomes a filename, so it has the same closed identifier contract.

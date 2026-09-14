@@ -14,6 +14,16 @@ const build = (request, options = {}, admission = admit) => buildSystemdInvocati
 });
 const provider = { operation: 'provider', unit: `subscription-runtime-hosted-${'a'.repeat(36)}.service`, jobId: job.jobId,
   payload: ['/usr/bin/node', '/opt/runtime/hosted-app-server-launcher.js'] };
+test('job and provider mask journal IPC without replacing provider pipes', async () => {
+  for (const request of [job, provider]) {
+    const { args } = await build(request);
+    const paths = args.find(arg => arg.startsWith('--property=InaccessiblePaths=')).slice('--property=InaccessiblePaths='.length).split(' ');
+    assert.ok(paths.includes('-/run/systemd/journal'), 'mask native, syslog and stdout journal endpoints');
+    assert.ok(paths.includes('-/dev/log'), 'mask alternate syslog alias');
+    assert.equal(args.includes('--pipe'), request.operation === 'provider');
+    assert.equal(args.includes('--property=StandardOutput=null'), request.operation === 'job');
+  }
+});
 test('explicit job builds fixed confinement and preserves bounded limits and ownership', async () => {
   const invocation = await build(job);
   assert.equal(invocation.args.includes('--user'), false);
