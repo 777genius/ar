@@ -60,6 +60,25 @@ async function main() {
     check((await stat(sentinel)).dev === (await stat('/')).dev, 'Sentinel must be backed by root filesystem');
     await chmod(sentinel, 0o777);
     const faultEvidence = [];
+    for (const mode of ['missing-policy', 'untrusted-policy']) {
+      const source = await mkdtemp('/var/lib/managed-launcher-policy-'); owned.push(source);
+      const fingerprint = randomBytes(32).toString('hex');
+      const faultUnit = `subscription-job-${fingerprint}.service`;
+      const request = { operation: 'job', unit: faultUnit,
+        jobId: `managed-e2e-policy-${randomBytes(16).toString('hex')}`, fingerprint,
+        payload: [process.execPath, '-e', 'process.exit(97)'],
+        limits: { memoryMiB: 128, runtimeSeconds: 5, stopSeconds: 5, tasksMax: 32, cpuPercent: 100 } };
+      try {
+        faultEvidence.push(JSON.parse(run('/usr/bin/unshare', ['--mount', '--propagation', 'private', process.execPath,
+          fileURLToPath(new URL('./fixtures/policy-fault.mjs', import.meta.url)),
+          JSON.stringify({ mode, source, storageRoot: policy.storageRoot, request, wrapper: WRAPPER })])));
+      } finally {
+        spawnSync('/usr/bin/systemctl', ['--user', 'stop', faultUnit], { encoding: 'utf8', timeout: 10000 });
+        const state = spawnSync('/usr/bin/systemctl', ['--user', 'is-active', faultUnit], { encoding: 'utf8', timeout: 5000 });
+        if (state.error || !['inactive', 'failed', 'unknown'].includes(state.stdout.trim())) preserveFiles = true;
+        check(!preserveFiles, 'Policy fault unit not stopped');
+      }
+    }
     for (const mode of ['lost-storage', 'nested-root']) {
       const faultLayout = await prepareManagedJobLayout(`managed-e2e-fault-${randomBytes(16).toString('hex')}`);
       owned.push(faultLayout.jobRoot);

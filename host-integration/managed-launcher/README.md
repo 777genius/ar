@@ -156,14 +156,13 @@ executes a synthetic launch frame and verifies stdin/stdout/stderr through the
 real managed provider profile. Every exact randomized provider/fault unit is
 stopped before cleanup; an uncertain stop preserves the files.
 
-The success record is scoped to `job-confinement-and-synthetic-goal-runner`. Release
-acceptance still needs separate disposable-host evidence for these cases:
-
-- Missing deployed policy. This must use a disposable private mount namespace,
-  never rename the deployed policy to simulate failure.
-- Custody canary through its separate control-plane entrypoint, and legacy
-  status/stop using exclusively synthetic lifecycle records. Stopping this
-  harness's systemd unit is cleanup, not evidence for the legacy stop API.
+The success record is scoped to `job-confinement-and-synthetic-goal-runner` and
+includes missing/untrusted policy rejection inside disposable private mount
+namespaces. It never renames the deployed policy or changes a shared mount.
+Release acceptance still needs a custody canary through its separate
+control-plane entrypoint and legacy status/stop using exclusively synthetic
+lifecycle records. Stopping this harness's systemd unit is cleanup, not evidence
+for the legacy stop API.
 
 Do not interpret the focused argument tests or this harness's success record
 as evidence that those additional scenarios passed.
