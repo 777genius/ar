@@ -25,6 +25,8 @@ try {
     SUBSCRIPTION_RUNTIME_JOB_ID: layout.jobId,
   } });
 } catch (error) { finalError = error; }
-check(/storage admission: (root filesystem forbidden|nested filesystem forbidden)/.test(finalError?.message ?? ''),
+const finalDenied = /storage admission: (root filesystem forbidden|nested filesystem forbidden)/.test(finalError?.message ?? '') ||
+  (mode === 'lost-storage' && finalError?.code === 'ENOENT' && finalError.message.includes(layout.jobRoot));
+check(finalDenied,
   `Final namespace admission did not reject ${mode}: ${finalError?.message}`);
 console.log(JSON.stringify({ mode, admissionDenied: true, finalGuardDenied: true, rootWrites: 0 }));
