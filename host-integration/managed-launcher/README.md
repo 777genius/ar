@@ -28,7 +28,8 @@ nested foreign filesystems, or insufficient space. The installer reuses runtime
 admission, atomically replaces `/etc/subscription-runtime/storage-policy.json`
 with root:root mode 0644 and maintains its trusted parent at mode 0755. The policy
 contains no secrets and is mode 0644; only root can write it. Current Host Jobs
-deployment intentionally uses the root user manager. There is
+deployment runs new jobs in the system manager as root. Legacy records without
+a manager field retain root's user-manager lifecycle operations. There is
 no environment or CLI destination override. Job JSON cannot choose a policy or
 writable root. Installation does not create storage or launch any jobs.
 
@@ -74,7 +75,7 @@ The installed payload guard checks the current job device, canonical paths and s
 service mount namespace before starting the original command, closing the
 pre-launch mount-loss gap. It inherits stdio and forwards termination signals.
 No relaxed retry is permitted if systemd cannot enforce these properties. The
-root user manager must support filesystem namespaces; otherwise launch fails
+system manager must support filesystem namespaces; otherwise launch fails
 closed. After user-namespace setup the payload sees UID/GID 65532, mapped to the
 root manager's host identity so existing file ownership remains compatible.
 Bootstraps that require gaining privileges are incompatible and must be
@@ -99,7 +100,7 @@ job root. It does not hide readable host files. Existing
 read-only custody controls remain necessary for confidentiality and authority.
 
 Operations validate unit identity and exact command shape.
-Arbitrary Host Jobs payloads require the user manager. Jobs and providers use a
+New Host Jobs payloads require the system manager. Jobs and providers use a
 fixed unshare PID namespace with private procfs and setpriv bootstrap; its three
 temporary capabilities are dropped before payload execution. Payloads lose host
 devices, kernel mutation interfaces and systemd/D-Bus/Docker/containerd/Podman
@@ -138,8 +139,7 @@ launcher and its final namespace guard observe the same policy. It checks actual
 writes, bounded tmpfs mounts, and effective systemd properties including zero
 swap, then stops its exact randomized unit before removing its files. If stop
 cannot be confirmed, files are preserved and cleanup fails explicitly.
-The root user manager must be running and reachable (normally with
-`XDG_RUNTIME_DIR=/run/user/0`); it must support the enforced namespaces. The
+The system manager must be running and support the enforced namespaces. The
 harness fails closed if it cannot launch the HostJobs profile. It also checks
 zero effective/bounding capabilities, hidden control sockets, absence of block
 devices, denied mounts, and external stdout/stderr logs. Only its exact log
@@ -171,6 +171,12 @@ Release acceptance still needs a custody canary through its separate
 control-plane entrypoint and legacy status/stop using exclusively synthetic
 lifecycle records. Stopping this harness's systemd unit is cleanup, not evidence
 for the legacy stop API.
+
+The separate `host-integration/host-jobs/legacy-lifecycle-e2e.mjs` harness checks
+both an admitted system service and a harmless user service whose synthetic
+ledger omits the manager field. Root's user manager must also be reachable
+(normally `XDG_RUNTIME_DIR=/run/user/0`); Host Jobs checks both scopes for collisions
+before new starts. Each lifecycle check uses only its owned randomized unit.
 
 Do not interpret the focused argument tests or this harness's success record
 as evidence that those additional scenarios passed.

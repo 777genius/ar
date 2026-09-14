@@ -203,6 +203,48 @@ test('managed policy denial prevents launch and cannot prevent persisted reconci
 
 const request = { operation: 'start', jobId: 'test-1', machineId: 'a'.repeat(32), argv: ['/bin/test', '$(touch nope)'], runtimeSeconds: 60, stopSeconds: 5, memoryMiB: 128, tasksMax: 16, cpuPercent: 50 };
 const isLaunch = call => call.cmd === process.execPath && call.args[0] === '/opt/subscription-runtime/managed-launcher/launch.mjs';
+test('system manager is persisted before launch and used for reconciliation and stop', async () => {
+  let manager;
+  const calls = [];
+  let launched = false;
+  ({ manager } = await fixture({ run: async (cmd, args) => {
+    calls.push(args);
+    if (isLaunch({ cmd, args })) {
+      assert.equal((await manager.read(request.jobId)).manager, 'system');
+      launched = true;
+    }
+    return launched ? `LoadState=loaded\nActiveState=active\nDescription=subscription-job:${(await manager.read(request.jobId)).fingerprint}` : 'LoadState=not-found';
+  } }));
+  await manager.start(request);
+  await manager.stop(request.jobId, request.machineId);
+  assert.equal(calls.filter(args => args.includes('--user')).length, 1);
+  assert.ok(calls.some(args => args[0] === 'stop'));
+});
+test('collisions in either manager deny new launch', async () => {
+  for (const scope of ['system', 'user']) {
+    const { manager, calls } = await fixture({ run: async (cmd, args) => {
+      assert.equal(cmd, '/usr/bin/systemctl');
+      return (args.includes('--user') ? 'user' : 'system') === scope ? 'LoadState=loaded' : 'LoadState=not-found';
+    } });
+    await assert.rejects(manager.start(request), /unowned unit/);
+    assert.equal(await manager.read(request.jobId), null);
+    assert.equal(calls.filter(isLaunch).length, 0);
+  }
+});
+test('invalid persisted manager fails closed and callers cannot select manager', async () => {
+  const { manager, calls } = await fixture();
+  await manager.start(request);
+  const record = await manager.read(request.jobId);
+  for (const value of [null, false, '', 'SYSTEM', '--user', [], {}]) {
+    await manager.save({ ...record, manager: value });
+    const count = calls.length;
+    await assert.rejects(manager.status(request.jobId, request.machineId), /invalid persisted manager/);
+    await assert.rejects(manager.stop(request.jobId, request.machineId), /invalid persisted manager/);
+    await assert.rejects(manager.start(request), /invalid persisted manager/);
+    assert.equal(calls.length, count);
+  }
+  await assert.rejects(manager.start({ ...request, manager: 'user' }), /unsupported start field/);
+});
 async function fixture(options = {}) {
   const calls = [];
   let state = 'LoadState=not-found';
@@ -255,7 +297,7 @@ test('new starts delegate layout exclusively to launcher and persist only bounde
   await manager.start(request);
   assert.equal(calls.filter(isLaunch).length, 1);
   const record = await manager.read(request.jobId);
-  assert.deepEqual(Object.keys(record).sort(), ['createdAt', 'fingerprint', 'jobId', 'machineId', 'phase', 'unit']);
+  assert.deepEqual(Object.keys(record).sort(), ['createdAt', 'fingerprint', 'jobId', 'machineId', 'manager', 'phase', 'unit']);
   assert.ok(Buffer.byteLength(JSON.stringify(record)) < 1024);
 });
 test('admission and unknown ownership fail closed', async () => {

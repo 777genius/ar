@@ -40,7 +40,7 @@ async function main() {
   check(!goalCli.startsWith(`${policy.storageRoot}/`), 'Goal CLI must be outside writable storage');
   check(!providerLauncher.startsWith(`${policy.storageRoot}/`), 'Provider launcher must be outside writable storage');
   check(external.startsWith(`${policy.storageRoot}/`), 'Disposable external root must be a strict descendant of policy.storageRoot');
-  run('/usr/bin/systemctl', ['--user', 'show-environment']);
+  run('/usr/bin/systemctl', ['show-environment']);
   const unit = `subscription-job-${randomBytes(32).toString('hex')}.service`;
   const jobId = `managed-launcher-e2e-${randomBytes(16).toString('hex')}`;
   const layout = await prepareManagedJobLayout(jobId);
@@ -73,8 +73,8 @@ async function main() {
           fileURLToPath(new URL('./fixtures/policy-fault.mjs', import.meta.url)),
           JSON.stringify({ mode, source, storageRoot: policy.storageRoot, request, wrapper: WRAPPER })])));
       } finally {
-        spawnSync('/usr/bin/systemctl', ['--user', 'stop', faultUnit], { encoding: 'utf8', timeout: 10000 });
-        const state = spawnSync('/usr/bin/systemctl', ['--user', 'is-active', faultUnit], { encoding: 'utf8', timeout: 5000 });
+        spawnSync('/usr/bin/systemctl', ['stop', faultUnit], { encoding: 'utf8', timeout: 10000 });
+        const state = spawnSync('/usr/bin/systemctl', ['is-active', faultUnit], { encoding: 'utf8', timeout: 5000 });
         if (state.error || !['inactive', 'failed', 'unknown'].includes(state.stdout.trim())) preserveFiles = true;
         check(!preserveFiles, 'Policy fault unit not stopped');
       }
@@ -95,8 +95,8 @@ async function main() {
           JSON.stringify({ mode, source, layout: faultLayout, request, wrapper: WRAPPER })])));
       } finally {
         // Even a broken admission may have dispatched the exact synthetic unit.
-        spawnSync('/usr/bin/systemctl', ['--user', 'stop', faultUnit], { encoding: 'utf8', timeout: 10000 });
-        const state = spawnSync('/usr/bin/systemctl', ['--user', 'is-active', faultUnit], { encoding: 'utf8', timeout: 5000 });
+        spawnSync('/usr/bin/systemctl', ['stop', faultUnit], { encoding: 'utf8', timeout: 10000 });
+        const state = spawnSync('/usr/bin/systemctl', ['is-active', faultUnit], { encoding: 'utf8', timeout: 5000 });
         if (state.error || !['inactive', 'failed', 'unknown'].includes(state.stdout.trim())) preserveFiles = true;
         check(!preserveFiles, 'Fault unit not stopped');
       }
@@ -241,7 +241,7 @@ setTimeout(() => {}, 90000);
     for (const [path, limit] of [['/tmp', 256 * 1024 ** 2], ['/var/tmp', 64 * 1024 ** 2]]) {
       check(result[path].type === 0x01021994 && result[path].bytes > 0 && result[path].bytes <= limit, `Unbounded/non-tmpfs ${path}`);
     }
-    const properties = Object.fromEntries(run('/usr/bin/systemctl', ['--user', 'show', unit, '--property=ProtectSystem,ReadWritePaths,NoNewPrivileges,MemorySwapMax,TemporaryFileSystem,RequiresMountsFor,LimitCORE,CapabilityBoundingSet,AmbientCapabilities,PrivateDevices,InaccessiblePaths,RestrictSUIDSGID,StandardOutput,StandardError']).split('\n').map(line => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1)]; }));
+    const properties = Object.fromEntries(run('/usr/bin/systemctl', ['show', unit, '--property=ProtectSystem,ReadWritePaths,NoNewPrivileges,MemorySwapMax,TemporaryFileSystem,RequiresMountsFor,LimitCORE,CapabilityBoundingSet,AmbientCapabilities,PrivateDevices,InaccessiblePaths,RestrictSUIDSGID,StandardOutput,StandardError']).split('\n').map(line => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1)]; }));
     check(properties.ProtectSystem === 'strict' && properties.ReadWritePaths === layout.jobRoot && properties.NoNewPrivileges === 'yes' && properties.MemorySwapMax === '0', `Effective properties mismatch: ${JSON.stringify(properties)}`);
     check(properties.CapabilityBoundingSet?.split(/\s+/).sort().join(' ') === 'cap_setfcap cap_setpcap cap_sys_admin' && properties.AmbientCapabilities === '' && properties.PrivateDevices === 'yes' && properties.RestrictSUIDSGID === 'yes', `Privilege properties mismatch: ${JSON.stringify(properties)}`);
     for (const path of ['/run/systemd/private', '/run/dbus', '/run/docker.sock', '/run/containerd/containerd.sock', '/run/podman/podman.sock']) check(properties.InaccessiblePaths?.split(/\s+/).some(value => value.replace(/^-/, '') === path), `Missing inaccessible path ${path}`);
@@ -263,8 +263,8 @@ setTimeout(() => {}, 90000);
     }
     await foreignFd?.close();
     // Exact randomized unit only. Stop before deleting its writable root.
-    const stop = spawnSync('/usr/bin/systemctl', ['--user', 'stop', unit], { encoding: 'utf8', timeout: 15000 });
-    const active = spawnSync('/usr/bin/systemctl', ['--user', 'is-active', unit], { encoding: 'utf8', timeout: 15000 });
+    const stop = spawnSync('/usr/bin/systemctl', ['stop', unit], { encoding: 'utf8', timeout: 15000 });
+    const active = spawnSync('/usr/bin/systemctl', ['is-active', unit], { encoding: 'utf8', timeout: 15000 });
     check(!stop.error && !active.error && ['inactive', 'failed', 'unknown'].includes(active.stdout.trim()), `Cleanup could not confirm stopped unit ${unit}; preserving ${owned.join(', ')}`);
     child?.kill('SIGTERM');
     check(!preserveFiles, `A synthetic unit may remain active; preserving ${owned.join(', ')}`);

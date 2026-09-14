@@ -6,6 +6,12 @@ import { unitFor, validateStart, fingerprint } from './contract.mjs';
 import { managedLauncherInvocation } from '../managed-launcher/launch.mjs';
 
 const execute = promisify(execFile);
+function managerArgs(record) {
+  if (!Object.hasOwn(record, 'manager')) return ['--user'];
+  if (record.manager === 'system') return [];
+  if (record.manager === 'user') return ['--user'];
+  throw new Error('invalid persisted manager');
+}
 async function systemCommand(cmd, args) {
   try { return (await execute(cmd, args, { timeout: 15000, maxBuffer: 1048576 })).stdout; }
   catch (error) {
@@ -30,13 +36,13 @@ export class HostJobs {
     await writeFile(temp, JSON.stringify(record), { mode: 0o600 });
     await rename(temp, path);
   }
-  async inspect(unit) {
-    const output = await this.run('/usr/bin/systemctl', ['--user', 'show', unit, '--property=LoadState,ActiveState,SubState,ControlGroup,Description']);
+  async inspect(unit, scope) {
+    const output = await this.run('/usr/bin/systemctl', [...scope, 'show', unit, '--property=LoadState,ActiveState,SubState,ControlGroup,Description']);
     return Object.fromEntries(output.trim().split('\n').filter(Boolean).map(line => { const n = line.indexOf('='); return [line.slice(0,n), line.slice(n+1)]; }));
   }
   async owned(record) {
     if (record.machineId !== await this.machineId()) throw new Error('machine identity changed');
-    const state = await this.inspect(record.unit);
+    const state = await this.inspect(record.unit, managerArgs(record));
     if (state.LoadState !== 'not-found' && state.Description !== `subscription-job:${record.fingerprint}`) throw new Error('unit ownership mismatch');
     return state;
   }
@@ -56,14 +62,14 @@ export class HostJobs {
     // so an uncertain launcher outcome can never cause a replay.
     await mkdir(this.stateDir, { recursive: true, mode: 0o700 });
     const unit = unitFor(request.jobId);
-    const initial = await this.inspect(unit);
-    if (initial.LoadState !== 'not-found') {
+    const initial = await Promise.all([this.inspect(unit, []), this.inspect(unit, ['--user'])]);
+    if (initial.some(state => state.LoadState !== 'not-found')) {
       // Another endpoint may have claimed and launched after our first read.
       // Re-enter the record/fingerprint check before classifying the unit.
       if (await this.read(request.jobId)) return this.start(request);
       throw new Error('unowned unit already exists');
     }
-    record = { jobId: request.jobId, unit, machineId: request.machineId, fingerprint: digest, phase: 'starting', createdAt: this.clock() };
+    record = { jobId: request.jobId, unit, manager: 'system', machineId: request.machineId, fingerprint: digest, phase: 'starting', createdAt: this.clock() };
     // Exclusive create arbitrates concurrent requests across endpoint processes.
     try { await writeFile(this.path(request.jobId), JSON.stringify(record), { flag: 'wx', mode: 0o600 }); }
     catch (e) { if (e.code === 'EEXIST') return this.start(request); throw e; }
@@ -99,7 +105,7 @@ export class HostJobs {
     if (!record) throw new Error('unknown job');
     const state = await this.owned(record);
     if (state.LoadState === 'not-found' && record.phase === 'starting') throw new Error('start is unresolved; reconcile before stop');
-    if (state.LoadState !== 'not-found') await this.run('/usr/bin/systemctl', ['--user', 'stop', record.unit]);
+    if (state.LoadState !== 'not-found') await this.run('/usr/bin/systemctl', [...managerArgs(record), 'stop', record.unit]);
     return this.status(jobId, expectedMachineId);
   }
 }

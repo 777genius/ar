@@ -10,19 +10,22 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { unitFor } from './contract.mjs';
+import { verifyLegacyUserService } from './fixtures/legacy-user-service.mjs';
 
 const execute = promisify(execFile);
 
 // Scope every lifecycle command to the one synthetic unit. In particular this
 // denies any managed-launcher invocation if status/stop ever regress into start.
-export function scopedSystemctl(unit, run) {
+export function scopedSystemctl(unit, run, manager = 'system') {
+  assert.ok(['system', 'user'].includes(manager));
   return (command, args) => {
     assert.equal(command, '/usr/bin/systemctl', 'Unexpected lifecycle executable');
-    assert.equal(args[0], '--user');
-    assert.equal(args[2], unit, 'Unexpected unit');
-    assert.ok((args[1] === 'stop' && args.length === 3) ||
-      (args[1] === 'show' && args.length === 4 &&
-        args[3] === '--property=LoadState,ActiveState,SubState,ControlGroup,Description'),
+    const bounded = manager === 'user' ? args.slice(1) : args;
+    if (manager === 'user') assert.equal(args[0], '--user');
+    assert.equal(bounded[1], unit, 'Unexpected unit');
+    assert.ok((bounded[0] === 'stop' && bounded.length === 2) ||
+      (bounded[0] === 'show' && bounded.length === 3 &&
+        bounded[2] === '--property=LoadState,ActiveState,SubState,ControlGroup,Description'),
     'Unexpected lifecycle operation');
     return run(command, args);
   };
@@ -85,6 +88,7 @@ async function main() {
   const machineId = (await readFile('/etc/machine-id', 'utf8')).trim();
   assert.match(machineId, /^[a-f0-9]{32}$/);
   assert.equal(machineId, args[2], 'Machine identity mismatch');
+  await run('/usr/bin/systemctl', ['show-environment']);
   await run('/usr/bin/systemctl', ['--user', 'show-environment']);
 
   // A separate module identity keeps setup policy reads outside the poisoned
@@ -100,7 +104,7 @@ async function main() {
   assert.equal(await realpath(launcher), launcher, 'Launcher must be canonical');
 
   const jobId = `legacy:e2e:${randomBytes(24).toString('hex')}`;
-  const record = { jobId, unit: unitFor(jobId), machineId,
+  const record = { jobId, unit: unitFor(jobId), machineId, manager: 'system',
     fingerprint: unitFor(jobId).slice('subscription-job-'.length, -'.service'.length),
     phase: 'started', createdAt: Date.now() };
   const stateDir = await mkdtemp(join(tmpdir(), 'subscription-legacy-e2e-'));
@@ -110,9 +114,10 @@ async function main() {
   let launchConfirmed = false;
   let stopped = false;
   let result;
+  let legacyUser;
   try {
     const initial = await scopedSystemctl(record.unit, run)('/usr/bin/systemctl',
-      ['--user', 'show', record.unit, '--property=LoadState,ActiveState,SubState,ControlGroup,Description']);
+      ['show', record.unit, '--property=LoadState,ActiveState,SubState,ControlGroup,Description']);
     assert.match(initial, /^LoadState=not-found$/m, 'Synthetic unit name already exists');
     await writeFile(join(stateDir, `${record.unit}.json`), JSON.stringify(record), { flag: 'wx', mode: 0o600 });
     // Launch a normal admitted synthetic job, then exercise the old colon-ID
@@ -127,6 +132,8 @@ async function main() {
     manager = new poison.HostJobs({ stateDir, run: scopedSystemctl(record.unit, run) });
     result = await verifyLegacyLifecycle(manager, record);
     stopped = true;
+    legacyUser = await verifyLegacyUserService({ HostJobs: poison.HostJobs, machineId, run,
+      scopedSystemctl, verifyLegacyLifecycle });
     assert.equal(poison.evidence.calls, 0, 'Lifecycle accessed storage admission');
   } finally {
     // Revalidate ledger, machine, and description through HostJobs even when
@@ -156,7 +163,7 @@ async function main() {
   }
   console.log(JSON.stringify({ ok: true, scope: 'synthetic-legacy-status-stop',
     jobId, launchJobId, unit: record.unit, machineId, policyPoisoned: true, storageAdmissionCalls: 0,
-    ledgerRemoved: true, managedLaunchRootRemoved: true, ...result }, null, 2));
+    ledgerRemoved: true, managedLaunchRootRemoved: true, manager: 'system', legacyUser, ...result }, null, 2));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

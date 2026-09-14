@@ -16,6 +16,7 @@ const provider = { operation: 'provider', unit: `subscription-runtime-hosted-${'
   payload: ['/usr/bin/node', '/opt/runtime/hosted-app-server-launcher.js'] };
 test('explicit job builds fixed confinement and preserves bounded limits and ownership', async () => {
   const invocation = await build(job);
+  assert.equal(invocation.args.includes('--user'), false);
   for (const property of ['ProtectSystem=strict', 'RequiresMountsFor=/TEST', 'NoNewPrivileges=yes', 'MemorySwapMax=0', 'LimitCORE=0',
     `CapabilityBoundingSet=${bootstrapCaps}`, 'AmbientCapabilities=', 'PrivateDevices=yes', `InaccessiblePaths=${socketFence}`, 'MemoryMax=256M', 'RuntimeMaxSec=90']) {
     assert.ok(invocation.args.includes(`--property=${property}`), property);

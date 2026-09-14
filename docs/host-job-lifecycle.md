@@ -4,7 +4,7 @@ The opt-in `scripts/ops/host-job-transport.mjs` client exposes `hostTransport({h
 The executable entrypoint is `node scripts/ops/host-job-cli.mjs HOST MACHINE_ID ABSOLUTE_SOCKET_DIR < request.json`. It supplies the configured machine identity to the JSON stdin request, rejects conflicting identities, and prints the structured result. Keep the socket directory private; no credentials belong in requests.
 Install the fixed endpoint with `sh host-integration/host-jobs/install` on an explicitly approved Linux host. This also installs its required managed launcher. No installer or live launch is run by tests.
 
-Start requests contain `operation: "start"`, `jobId`, exact 32-character `machineId`, absolute `argv[0]`, and integer `runtimeSeconds`, `stopSeconds`, `memoryMiB`, `tasksMax`, `cpuPercent`. Caller `cwd` and unknown fields are rejected. New IDs match `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`; legacy IDs remain supported for status/stop. Status and stop requests contain `operation`, `jobId`, and `machineId`. The current host contract runs the endpoint under root's user systemd manager; non-root managers are not supported by this version. Ensure the root user manager is reachable before admission. The payload enters a private PID/user namespace and sees UID/GID 65532, mapped to the host root identity for compatible file ownership.
+Start requests contain `operation: "start"`, `jobId`, exact 32-character `machineId`, absolute `argv[0]`, and integer `runtimeSeconds`, `stopSeconds`, `memoryMiB`, `tasksMax`, `cpuPercent`. Caller `cwd` and unknown fields are rejected. New IDs match `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`; legacy IDs remain supported for status/stop. Status and stop requests contain `operation`, `jobId`, and `machineId`. The endpoint runs as root and new jobs use the system systemd manager. New records persist `manager: "system"` before launch; records without a manager retain root's user-manager status/stop. Unknown manager values fail closed and callers cannot select a manager. Both managers must be reachable for collision checks before new starts. The payload enters a private PID/user namespace and sees UID/GID 65532, mapped to the host root identity for compatible file ownership.
 
 The client caches one multiplex transport per host/machine identity. A private socket-directory lock serializes all calls across independent CLI processes, including master creation; this conservative first slice therefore runs only one short command per host. All callers for a host identity must use the same private socket directory. Queue waits are bounded to 30 seconds. Lock ownership records include PID and process start time; stale or ambiguous locks fail closed for operator reconciliation, never automatic takeover while a job result could be uncertain. SSH never silently falls back to a standalone connection. One bounded transport retry uses the identical job request.
 
@@ -20,7 +20,11 @@ Status and stop also require the expected `machineId`; alias drift fails closed 
 
 Focused verification: `node --test host-integration/host-jobs/host-jobs.node-test.mjs host-integration/host-jobs/legacy-lifecycle-e2e.node-test.mjs`.
 
-On an approved Linux test host, legacy status/stop can be verified without the
-production ledger or storage policy using `node host-integration/host-jobs/legacy-lifecycle-e2e.mjs --allow-live-synthetic --expected-machine-id MACHINE_ID`.
-The harness owns one randomized synthetic unit and disposable ledger, poisons
-all storage-policy calls, and preserves its ledger if stop cannot be confirmed.
+On an approved Linux test host, both manager scopes can be verified without the
+production ledger using `node host-integration/host-jobs/legacy-lifecycle-e2e.mjs --allow-live-synthetic --expected-machine-id MACHINE_ID`.
+The harness launches one admitted managed system service and one fixed harmless
+user-manager sleep service, each with a randomized unit and disposable ledger.
+The user record has no manager field. Both lifecycle checks poison all
+storage-policy calls; only managed service setup reads policy. Both managers
+must be reachable (normally `XDG_RUNTIME_DIR=/run/user/0` for root's user manager).
+An uncertain stop preserves the corresponding ledger and any managed job files.
