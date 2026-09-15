@@ -54,17 +54,18 @@ Directory creation uses retained, validated directory descriptors through
 `/proc/self/fd`, including each fixed parent, so a lost mount cannot redirect
 mkdir onto the root disk.
 
-The installer also installs a stable `managed-host` activation marker separately
-from policy. Direct managed-host goal CLI calls always fail before writes and
-instruct callers to submit through the Host Jobs API. Environment values cannot
-override the installation marker. The trusted launcher masks that marker with
-systemd `BindReadOnlyPaths=/dev/null:<marker>:norbind` inside the confined unit.
-The runtime recognizes the exact null character-device placeholder as payload
-routing, not custody evidence; malformed regular markers still deny direct launch. The launcher
-provides `SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1` with exact bounded
+The trusted custody controller uses its separate control-plane entrypoint;
+providers created by custody still cross the managed launcher boundary.
+The OpenAI HTTP bridge is disabled when `/etc/subscription-runtime/storage-root`
+is present, before configuration or state creation, until managed integration
+is implemented. This service ingress interlock does not grant custody authority.
+It does not route or gate ordinary CLI entrypoints. Restricted SSH ingress admits
+only the Host Jobs protocol and bounded operational requests, preventing remote
+callers from selecting arbitrary commands. The trusted launcher provides
+`SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1` with exact bounded
 `SUBSCRIPTION_RUNTIME_JOB_ROOT` and `SUBSCRIPTION_RUNTIME_JOB_ID` values. TypeScript
 derives convenience paths from that pair; it does not read policy or probe filesystems.
-Neither the environment nor UID maps nor the routing marker attest custody.
+Neither the environment nor UID maps attest custody.
 The host launcher and its kernel profile own enforcement. Missing policy
 cannot silently restore legacy behavior. Nonmanaged Linux and local platforms
 retain legacy operation. The per-job goal registry lives in `state/registry`;
@@ -144,16 +145,9 @@ the installed wrapper and real systemd confinement:
 sudo node host-integration/managed-launcher/e2e.mjs --allow-live-synthetic --external-root /mnt/test-volume/disposable --expected-machine-id TEST_HOST_MACHINE_ID --goal-cli /opt/subscription-runtime/dist/worker-codex/codex-goal-cli.js --provider-launcher /opt/subscription-runtime/dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js
 ```
 
-The direct-entrypoint phase invokes the installed goal CLI, goal MCP server,
-worker task runner and worker runtime-task runner as literal subprocesses, each
-with plain and forged managed environment variables. All eight must emit the
-host-admission refusal before changing their synthetic sentinel tree. Their
-environment has no credentials or provider executable PATH; MCP receives only
-a synthetic initialize request. Other startup errors do not count as refusal.
-The three sibling executable paths are derived from `--goal-cli` and checked as
-trusted installed files before the phase starts. Run the portable harness tests
-with `node --test host-integration/managed-launcher/public-entrypoint-denial.node-test.mjs`;
-these validate the proof harness with fake executables, not installed host gates.
+Restricted SSH ingress is tested separately by the Host Jobs transport tests.
+The launcher harness verifies kernel confinement without maintaining an
+inventory of public CLI gates.
 
 The supplied directory must already exist on a filesystem distinct from `/`,
 strictly below the deployed policy's storage root and on the same device.

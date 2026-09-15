@@ -12,34 +12,29 @@ function fixture(t) {
   const integration = join(root, 'source');
   const bin = join(root, 'bin');
   for (const path of [bin, `${integration}/managed-launcher`, `${integration}/host-jobs`, `${destination}/managed-launcher`, `${destination}/host-jobs`]) mkdirSync(path, { recursive: true });
-  for (const path of ['managed-launcher/managed-host', 'managed-launcher/launch.mjs', 'managed-launcher/payload-guard.mjs', 'managed-launcher/profiles.mjs', 'host-jobs/storage-policy.mjs']) {
+  for (const path of ['managed-launcher/launch.mjs', 'managed-launcher/payload-guard.mjs', 'managed-launcher/profiles.mjs', 'host-jobs/storage-policy.mjs']) {
     writeFileSync(`${integration}/${path}`, `trusted ${path}\n`);
-    if (!path.endsWith('/managed-host')) writeFileSync(`${destination}/${path}`, 'old installation\n');
+    writeFileSync(`${destination}/${path}`, 'old installation\n');
   }
-  const mountinfo = join(root, 'mountinfo');
   const tini = join(bin, 'tini');
   writeFileSync(tini, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  writeFileSync(mountinfo, '1 0 0:1 / / rw - ext4 root rw\n');
   const source = readFileSync(new URL('./install', import.meta.url), 'utf8')
     .replace('destination=/opt/subscription-runtime', `destination=${destination}`)
     .replace('tini=/usr/bin/tini', `tini=${tini}`)
     // The fixture root substitutes for /; host temporary ancestors are not
     // trusted installation paths and may intentionally be writable/symlinked.
-    .replace('[ "$trusted_path" != / ]', `[ "$trusted_path" != "${root}" ]`)
-    .replaceAll('/proc/self/mountinfo', mountinfo);
+    .replaceAll('[ "$trusted_path" != / ]', `[ "$trusted_path" != "${root}" ]`);
   const installer = `${integration}/managed-launcher/install`;
   writeFileSync(installer, source);
   // Simulate root metadata and drop chown options only inside this disposable
   // fixture, allowing the same tests on unprivileged macOS and Linux runners.
   for (const [name, script] of Object.entries({
     id: 'process.stdout.write("0\\n");',
-    ln: `require('node:fs').linkSync(process.argv[3], process.argv[4]); if(process.env.TEST_SIGNAL_AFTER_LINK) process.kill(process.ppid, 'SIGTERM');`,
-    stat: `const fs = require('node:fs'); const s = fs.statSync(process.argv[4]); process.stdout.write(process.argv[3] === '%u' ? (process.env.TEST_MARKER_UID || '0') : (s.mode & 0o7777).toString(8));`,
+    stat: `const fs = require('node:fs'); const s = fs.statSync(process.argv[4]); process.stdout.write(process.argv[3] === '%u' ? (process.argv[4] === process.env.TEST_BAD_UID_PATH ? '1000' : '0') : (s.mode & 0o7777).toString(8));`,
     install: `const {spawnSync} = require('node:child_process'); const args = process.argv.slice(2); const filtered=[]; for(let i=0;i<args.length;i++) { if(args[i]==='-o'||args[i]==='-g') i++; else filtered.push(args[i]); } const r=spawnSync('/usr/bin/install',filtered,{stdio:'inherit'}); process.exit(r.status ?? 1);`,
   })) {
     writeFileSync(join(bin, name), `#!${process.execPath}\n${script}\n`, { mode: 0o755 });
   }
-  const marker = `${destination}/managed-launcher/managed-host`;
   const run = (env = {}) => spawnSync('/bin/sh', [installer], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ...env } });
   const snapshot = () => {
     const result = {};
@@ -53,8 +48,49 @@ function fixture(t) {
     visit('');
     return result;
   };
-  return { marker, mountinfo, tini, run, snapshot, trusted: readFileSync(`${integration}/managed-launcher/managed-host`) };
+  return { root, destination, integration, tini, run, snapshot };
 }
+
+for (const directory of ['', 'managed-launcher', 'host-jobs']) {
+  for (const invalid of ['writable', 'symlink', 'owner']) test(`untrusted destination ${directory || 'root'} (${invalid}) refuses before changes`, t => {
+    const f = fixture(t);
+    const target = join(f.destination, directory);
+    if (invalid === 'writable') chmodSync(target, 0o777);
+    else if (invalid === 'symlink') {
+      const moved = target + '-target';
+      renameSync(target, moved);
+      symlinkSync(moved, target);
+    }
+    const before = f.snapshot();
+    const result = f.run(invalid === 'owner' ? { TEST_BAD_UID_PATH: target } : {});
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /untrusted path|root-owned/);
+    assert.deepEqual(f.snapshot(), before);
+  });
+}
+
+for (const invalid of ['writable', 'symlink', 'ancestor-writable']) test(`untrusted source (${invalid}) refuses before changes`, t => {
+  const f = fixture(t);
+  const source = join(f.integration, 'host-jobs/storage-policy.mjs');
+  if (invalid === 'writable') chmodSync(source, 0o666);
+  if (invalid === 'ancestor-writable') chmodSync(join(f.integration, 'host-jobs'), 0o777);
+  if (invalid === 'symlink') {
+    renameSync(source, source + '.target');
+    symlinkSync(source + '.target', source);
+  }
+  const before = f.snapshot();
+  const result = f.run();
+  assert.notEqual(result.status, 0);
+  assert.deepEqual(f.snapshot(), before);
+});
+
+test('absent trusted destination tree is created successfully', t => {
+  const f = fixture(t);
+  rmSync(f.destination, { recursive: true });
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  for (const directory of ['', 'managed-launcher', 'host-jobs']) assert.equal(statSync(join(f.destination, directory)).mode & 0o777, 0o755);
+});
 
 for (const invalid of ['missing', 'not-executable', 'writable', 'symlink', 'directory', 'owner', 'ancestor-writable', 'ancestor-symlink']) test(`invalid Tini (${invalid}) fails before destination writes`, t => {
   const f = fixture(t);
@@ -72,63 +108,32 @@ for (const invalid of ['missing', 'not-executable', 'writable', 'symlink', 'dire
     symlinkSync(moved, parent);
   }
   const before = f.snapshot();
-  const result = f.run(invalid === 'owner' ? { TEST_MARKER_UID: '1000' } : {});
+  const result = f.run(invalid === 'owner' ? { TEST_BAD_UID_PATH: f.tini } : {});
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /[Tt]ini/);
   assert.deepEqual(f.snapshot(), before);
 });
 
-test('exact marker mountpoint fails before changing installed files', t => {
+for (const invalid of ['writable', 'symlink', 'directory', 'owner']) test(`untrusted destination file (${invalid}) refuses before changes`, t => {
   const f = fixture(t);
-  writeFileSync(f.marker, f.trusted);
-  writeFileSync(f.mountinfo, `2 1 0:1 / ${f.marker} ro - ext4 root rw\n`);
+  const target = join(f.destination, 'managed-launcher/launch.mjs');
+  if (invalid === 'writable') chmodSync(target, 0o666);
+  if (invalid === 'symlink' || invalid === 'directory') rmSync(target);
+  if (invalid === 'symlink') symlinkSync('missing-target', target);
+  if (invalid === 'directory') mkdirSync(target);
   const before = f.snapshot();
-  const result = f.run();
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /exact mountpoint/);
+  assert.notEqual(f.run(invalid === 'owner' ? { TEST_BAD_UID_PATH: target } : {}).status, 0);
   assert.deepEqual(f.snapshot(), before);
 });
 
-for (const invalid of ['content', 'writable', 'symlink', 'directory', 'owner']) test(`invalid marker (${invalid}) fails before destination changes`, t => {
+test('trusted files are installed completely with expected permissions', t => {
   const f = fixture(t);
-  if (invalid === 'symlink') symlinkSync('missing-target', f.marker);
-  else if (invalid === 'directory') mkdirSync(f.marker);
-  else writeFileSync(f.marker, invalid === 'content' ? 'untrusted' : f.trusted);
-  if (invalid === 'writable') chmodSync(f.marker, 0o666);
-  const before = f.snapshot();
-  assert.notEqual(f.run(invalid === 'owner' ? { TEST_MARKER_UID: '1000' } : {}).status, 0);
-  assert.deepEqual(f.snapshot(), before);
-});
-
-test('identical trusted marker remains the same inode across repeated installs', t => {
-  const f = fixture(t);
-  writeFileSync(f.marker, f.trusted, { mode: 0o644 });
-  const before = statSync(f.marker);
-  for (let i = 0; i < 2; i++) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     const result = f.run();
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(statSync(f.marker).ino, before.ino);
-    assert.equal(statSync(f.marker).mtimeMs, before.mtimeMs);
+    for (const path of ['managed-launcher/launch.mjs', 'managed-launcher/payload-guard.mjs', 'managed-launcher/profiles.mjs', 'host-jobs/storage-policy.mjs']) {
+      assert.deepEqual(readFileSync(join(f.destination, path)), readFileSync(join(f.integration, path)));
+      assert.equal(statSync(join(f.destination, path)).mode & 0o777, 0o644);
+    }
   }
-});
-
-test('absent marker is installed completely without temporary residue', t => {
-  const f = fixture(t);
-  const result = f.run();
-  assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(readFileSync(f.marker), f.trusted);
-  assert.equal(statSync(f.marker).mode & 0o777, 0o644);
-  assert.ok(!Object.keys(f.snapshot()).some(path => path.includes('.managed-host.')));
-});
-
-test('termination after marker publication stops before launcher files change', t => {
-  const f = fixture(t);
-  const before = f.snapshot();
-  const result = f.run({ TEST_SIGNAL_AFTER_LINK: '1' });
-  assert.notEqual(result.status, 0);
-  assert.deepEqual(readFileSync(f.marker), f.trusted);
-  const after = f.snapshot();
-  for (const path of ['managed-launcher/launch.mjs', 'managed-launcher/payload-guard.mjs',
-    'managed-launcher/profiles.mjs', 'host-jobs/storage-policy.mjs']) assert.deepEqual(after[path], before[path]);
-  assert.ok(!Object.keys(after).some(path => path.includes('.managed-host.')));
 });

@@ -1,1 +1,0 @@
-Managed host activation marker. Its presence routes direct CLI invocations to launcher-only admission.

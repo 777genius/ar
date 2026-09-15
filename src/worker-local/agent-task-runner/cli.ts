@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { assertManagedHostEntrypointAllowed } from "../../managed-host-entrypoint";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
@@ -91,7 +90,6 @@ export async function runSubscriptionAgentTaskCli(
 ): Promise<number> {
   let tempStateRoot: string | null = null;
   try {
-    assertManagedHostEntrypointAllowed();
     const args = parseArgs(argv);
     const request = parseAgentTaskRequest(
       JSON.parse(

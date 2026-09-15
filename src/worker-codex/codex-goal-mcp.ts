@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { assertManagedHostEntrypointAllowed } from "../managed-host-entrypoint";
 import { realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
@@ -46,7 +45,6 @@ export type CodexGoalMcpServerOptions = CodexGoalWorkerControlToolOptions & {
 export function createCodexGoalMcpServer(
   options: CodexGoalMcpServerOptions = {},
 ): McpServer {
-  assertManagedHostEntrypointAllowed();
   const server = new McpServer({
     name: "subscription-runtime-codex-goal",
     version: subscriptionRuntimePackageVersion,

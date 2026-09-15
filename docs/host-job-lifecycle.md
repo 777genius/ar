@@ -1,10 +1,25 @@
 # Host job lifecycle
 
 The opt-in `scripts/ops/host-job-transport.mjs` client exposes `hostTransport({host, machineId, socketDir}).request(request)`.
-The executable entrypoint is `node scripts/ops/host-job-cli.mjs HOST MACHINE_ID ABSOLUTE_SOCKET_DIR < request.json`. It supplies the configured machine identity to the JSON stdin request, rejects conflicting identities, and prints the structured result. Keep the socket directory private; no credentials belong in requests.
-Install the fixed endpoint with `sh host-integration/host-jobs/install` on an explicitly approved Linux host. This also installs its required managed launcher. No installer or live launch is run by tests.
+The executable entrypoint is `node scripts/ops/host-job-cli.mjs HOST MACHINE_ID ABSOLUTE_SOCKET_DIR < request.json`. It accepts exactly three arguments, supplies the configured machine identity to the JSON stdin request, rejects conflicting identities, pins the remote user to `sr-transport`, and prints the structured result. Keep the socket directory private; no credentials belong in requests.
+Install the fixed endpoint with
+`sh host-integration/host-jobs/install --ssh-public-key /absolute/path/to/key.pub`
+on an explicitly approved Linux host. This also installs its required managed
+launcher and a dedicated `sr-transport` SSH identity. Host clients pass an SSH
+alias without a username; the transport pins `sr-transport@<alias>` and sends
+bounded JSON only on stdin. Administrative SSH remains a separate trusted
+channel. Installation requires the public key and always establishes restricted
+ingress. Tests use disposable fixtures for installer checks and never launch live jobs.
 
-The transport invokes `/opt/subscription-runtime/runtime/node /opt/subscription-runtime/host-jobs/endpoint.mjs`, independently of the SSH session's PATH. The installer validates an existing fixed Node executable or creates a root-owned symlink to the canonical installed Node binary. The executable and its ancestor directories must be root-owned and not group/world writable. Invalid existing fixed paths fail before installation writes. Callers cannot override the executable or endpoint. Requests remain JSON on stdin.
+SSH executes no caller-selected remote command. The root-owned
+forced login shell invokes the exact privileged endpoint, which clears its
+environment, admits one request at a time, requires stdin EOF within 10 seconds
+and bounds the endpoint process to 120 seconds. The installer validates an
+existing fixed Node executable or creates a root-owned symlink to the canonical
+installed Node binary. Runtime executables, copied source staging and their
+ancestor directories must be root-owned and not group/world writable. Invalid
+paths fail before installation writes. Callers cannot override the executable
+or endpoint; requests remain bounded JSON on stdin.
 
 Start requests contain `operation: "start"`, `jobId`, exact 32-character `machineId`, absolute `argv[0]`, and integer `runtimeSeconds`, `stopSeconds`, `memoryMiB`, `tasksMax`, `cpuPercent`. Caller `cwd` and unknown fields are rejected. New IDs match `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`; legacy IDs remain supported for status/stop. Status and stop requests contain `operation`, `jobId`, and `machineId`. The endpoint runs as root and new jobs use the system systemd manager. New records persist `manager: "system"` before launch; records without a manager retain root's user-manager status/stop. Unknown manager values fail closed and callers cannot select a manager. Both managers must be reachable for collision checks before new starts. The payload enters a private PID/user namespace and sees UID/GID 65532, mapped to the host root identity for compatible file ownership.
 

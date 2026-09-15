@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { loadOpenAiCompatibleCodexBridgeConfigFromEnv } from "./config.js";
+import { requireManagedBridgeBoundary } from "./managed-bridge-boundary.js";
 import {
   CodexOpenAiBridgeBackend,
   OpenAiBridgeChatCompletionUseCase,
@@ -16,6 +17,7 @@ async function main(): Promise<void> {
     throw new Error(`unknown_command:${command}`);
   }
 
+  requireManagedBridgeBoundary();
   const config = loadOpenAiCompatibleCodexBridgeConfigFromEnv();
   const backend = new CodexOpenAiBridgeBackend({
     codexBinaryPath: config.codexBinaryPath,

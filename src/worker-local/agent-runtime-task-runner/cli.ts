@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { assertManagedHostEntrypointAllowed } from "../../managed-host-entrypoint";
 import { randomBytes } from "node:crypto";
 import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -105,7 +104,6 @@ export async function runSubscriptionAgentRuntimeTaskCli(
   let tempStateRoot: string | null = null;
   let runner: ReturnType<typeof createLocalAgentRuntimeTaskRunner> | undefined;
   try {
-    assertManagedHostEntrypointAllowed();
     const capabilitiesVersion = requestedCapabilitiesVersion(argv);
     if (capabilitiesVersion !== undefined) {
       if (capabilitiesVersion !== 1) {
@@ -541,7 +539,6 @@ if (await isMainModule()) {
 }
 
 export async function runSubscriptionAgentRuntimeTaskCliFromProcess(): Promise<number> {
-  assertManagedHostEntrypointAllowed();
   const abortController = new AbortController();
   const abort = (): void => abortController.abort();
   process.once("SIGINT", abort);

@@ -9,7 +9,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { requireHostStorage, prepareManagedJobLayout, deriveManagedJobLayout } from '../host-jobs/storage-policy.mjs';
 import { HostJobs } from '../host-jobs/manager.mjs';
 import { unitFor, fingerprint } from '../host-jobs/contract.mjs';
-import { publicEntrypoints, provePublicEntrypointDenial } from './fixtures/public-entrypoint-denial.mjs';
 
 const POLICY = '/etc/subscription-runtime/storage-root';
 const WRAPPER = '/opt/subscription-runtime/managed-launcher/launch.mjs';
@@ -58,8 +57,7 @@ async function main() {
   const providerLauncher = resolve(args[8]);
   check(providerLauncher === args[8] && providerLauncher.endsWith('/hosted-app-server-launcher.js'), 'Provider launcher must be an absolute installed runtime path');
   check(goalCli === args[6] && goalCli.endsWith('/codex-goal-cli.js'), 'Goal CLI must be an absolute installed runtime path');
-  const publicBins = publicEntrypoints(goalCli);
-  for (const path of [POLICY, WRAPPER, process.execPath, ...Object.values(publicBins), providerLauncher]) {
+  for (const path of [POLICY, WRAPPER, process.execPath, goalCli, providerLauncher]) {
     const metadata = await stat(path);
     check(await realpath(path) === path && metadata.isFile() && metadata.uid === 0 && !(metadata.mode & 0o022), `Untrusted installed file: ${path}`);
   }
@@ -106,7 +104,6 @@ async function main() {
     const sentinel = await mkdtemp('/var/lib/managed-launcher-e2e-'); owned.push(sentinel);
     check((await stat(sentinel)).dev === (await stat('/')).dev, 'Sentinel must be backed by root filesystem');
     await chmod(sentinel, 0o777);
-    const directBypassEvidence = await provePublicEntrypointDenial(publicBins, sentinel);
     const faultEvidence = [];
     for (const mode of ['missing-policy', 'untrusted-policy']) {
       const source = await mkdtemp('/var/lib/managed-launcher-policy-'); owned.push(source);
@@ -215,9 +212,6 @@ for (let attempt = 0; attempt < 100; attempt++) {
 try { await lstat('/proc/' + descendant.pid); }
 catch (error) { if (error.code !== 'ENOENT') throw error; result.orphanReaping.procGone = true; }
 if (!result.orphanReaping.groupGone || !result.orphanReaping.procGone) throw new Error('PID 1 left an orphan/zombie process group: ' + JSON.stringify(result.orphanReaping));
-const activation = await lstat('/opt/subscription-runtime/managed-launcher/managed-host');
-result.activationRouting = { characterDevice: activation.isCharacterDevice(), rdev: activation.rdev };
-if (!result.activationRouting.characterDevice || result.activationRouting.rdev !== 259) throw new Error('Managed activation marker was not masked with /dev/null');
 result.goalRunner = await runSyntheticGoal(${JSON.stringify(goalCli)}, ${JSON.stringify(layout)}, ${JSON.stringify(jobId)});
 result.identity = { uid: process.getuid(), gid: process.getgid(), home: process.env.HOME, cwd: process.cwd() };
 try { await writeFile(${JSON.stringify(join(probeDirectory, 'forbidden-write'))}, 'synthetic'); result.probeStagingWrite = 'succeeded'; }
@@ -341,7 +335,7 @@ setTimeout(() => {}, 90000);
       check((await readFile(logs[index], 'utf8')).includes(`synthetic-e2e-${stream}`), `Missing external ${stream} log marker`);
     }
     check(properties.StandardOutput === 'null' && properties.StandardError === 'null', 'Guard must open external output itself');
-    console.log(JSON.stringify({ ok: true, scope: 'host-jobs-confinement-and-synthetic-goal-runner', machineId: args[4], unit, hostJobsEvidence, directBypassEvidence, faultEvidence, providerEvidence, result, properties }, null, 2));
+    console.log(JSON.stringify({ ok: true, scope: 'host-jobs-confinement-and-synthetic-goal-runner', machineId: args[4], unit, hostJobsEvidence, faultEvidence, providerEvidence, result, properties }, null, 2));
   } catch (error) {
     // These files belong only to this randomized synthetic unit. Surface a
     // bounded diagnostic before cleanup so a failed confinement canary remains
