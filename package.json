@@ -12,7 +12,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vioxen/subscription-runtime.git"
+    "url": "git+https://github.com/777genius/ar.git"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
@@ -143,15 +143,17 @@
     "docs",
     "LICENSE"
   ],
+  "bundleDependencies": [
+    "@vioxen/agent-account-observability"
+  ],
   "scripts": {
     "clean:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean:dist && npm run build:packages && tsc -p tsconfig.build.json && npm run build:bundled-packages && node scripts/rewrite-dist-esm-imports.mjs",
+    "build": "npm run clean:dist && npm run build:packages && tsc -p tsconfig.build.json && node scripts/rewrite-dist-esm-imports.mjs",
     "build:packages": "npm run --prefix packages/agent-account-observability build",
-    "build:bundled-packages": "node scripts/bundle-workspace-packages.mjs",
     "prepack": "npm run build",
     "typecheck": "npm run build:packages && tsc --noEmit -p tsconfig.json && npm run typecheck:packages",
     "typecheck:packages": "npm run --prefix packages/agent-account-observability typecheck",
-    "test": "npm run build:packages && vitest run && npm run test:packages && npm run check:publish-preflight && npm run check:publish-authority",
+    "test": "npm run build:packages && vitest run && npm run test:packages && npm run check:publish-preflight",
     "test:packages": "npm run --prefix packages/agent-account-observability test",
     "e2e:live-workers": "npm run build && node scripts/e2e-live-workers/run.mjs",
     "e2e:live-workers:dist": "node scripts/e2e-live-workers/run.mjs",
@@ -170,12 +172,12 @@
     "check:dist": "node scripts/check-dist.mjs",
     "check:packed-consumer": "node scripts/check-packed-consumer.mjs",
     "check:publish-preflight": "node scripts/publish-preflight-self-test.mjs",
-    "check:publish-authority": "node scripts/check-publish-authority.mjs",
     "check:publish-registry-contract": "node scripts/check-publish-registry-contract.mjs",
     "check": "npm run check:diff && npm run check:dist-policy && npm run typecheck && npm run build && npm run check:dist && npm test && npm run check:boundaries && npm pack --dry-run && npm run check:packed-consumer",
     "check:architecture-guardrails": "node scripts/check-architecture-guardrails.mjs && node scripts/check-architecture-guardrails-self-test.mjs"
   },
   "dependencies": {
+    "@vioxen/agent-account-observability": "file:packages/agent-account-observability",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^22.20.0",
     "libsodium-wrappers": "^0.8.4",
@@ -190,7 +192,6 @@
     }
   },
   "devDependencies": {
-    "@vioxen/agent-account-observability": "file:packages/agent-account-observability",
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"
   },

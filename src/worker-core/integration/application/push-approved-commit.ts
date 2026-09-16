@@ -22,6 +22,7 @@ import {
   loadIntegrationAttempt,
   nowIso,
   recordIntegrationAudit,
+  runIntegrationTransaction,
   type IntegrationUseCaseDeps,
 } from "./common";
 
@@ -39,6 +40,15 @@ export type PushApprovedCommitInput = {
 };
 
 export async function pushApprovedCommit(
+  deps: PushApprovedCommitDeps,
+  input: PushApprovedCommitInput,
+): Promise<IntegrationAttempt> {
+  return await runIntegrationTransaction(deps, input.attemptId, async () =>
+    await pushApprovedCommitTransaction(deps, input)
+  );
+}
+
+async function pushApprovedCommitTransaction(
   deps: PushApprovedCommitDeps,
   input: PushApprovedCommitInput,
 ): Promise<IntegrationAttempt> {

@@ -34,11 +34,6 @@ export type AppServerSlot = {
 
 export class AppServerSlotPool {
   private readonly slots = new Map<string, AppServerSlot>();
-  private readonly startingClients = new Set<CodexAppServerClient>();
-  private readonly stoppingClients = new Map<CodexAppServerClient, Promise<void>>();
-  private disposingClients: readonly CodexAppServerClient[] = [];
-  private disposeInFlight: Promise<void> | null = null;
-  private terminal = false;
 
   constructor(
     private readonly options: {
@@ -55,7 +50,6 @@ export class AppServerSlotPool {
       readonly timeoutMs?: number;
       readonly startupTimeoutMs?: number;
       readonly reconnectGraceMs?: number;
-      readonly attestationMode?: "none" | "provider-receipt";
     },
   ) {}
 
@@ -64,7 +58,6 @@ export class AppServerSlotPool {
     readonly workspacePath: string;
     readonly abortSignal: AbortSignal;
   }): Promise<AppServerSlot> {
-    this.assertActive();
     const key = input.session.codexHome;
     const sessionHash = input.session.sessionHash ?? null;
     const existing = this.slots.get(key);
@@ -73,14 +66,11 @@ export class AppServerSlotPool {
     }
 
     if (existing) {
-      const stopping = this.stopClient(existing.client);
+      await existing.client.stop();
       this.slots.delete(key);
-      await stopping;
-      this.assertActive();
     }
 
     throwIfAborted(input.abortSignal);
-    this.assertActive();
     const sourceEnv = {
       ...(this.options.sourceEnv ?? process.env),
       ...input.session.env,
@@ -112,24 +102,13 @@ export class AppServerSlotPool {
           : { startupTimeoutMs: this.options.startupTimeoutMs }),
       }),
       reconnectGraceMs: this.options.reconnectGraceMs ?? defaultReconnectGraceMs,
-      ...(this.options.attestationMode === undefined
-        ? {}
-        : { attestationMode: this.options.attestationMode }),
       abortSignal: input.abortSignal,
     });
-    this.startingClients.add(client);
     try {
       await client.start();
     } catch (error) {
-      await this.stopClient(client).catch(() => undefined);
+      await client.stop().catch(() => undefined);
       throw error;
-    } finally {
-      this.startingClients.delete(client);
-    }
-    if (this.terminal) {
-      client.forceStop();
-      await this.stopClient(client).catch(() => undefined);
-      this.assertActive();
     }
     const slot = {
       key,
@@ -151,48 +130,13 @@ export class AppServerSlotPool {
   async disposeSessionSlot(session: CodexMaterializedSession): Promise<void> {
     const slot = this.slots.get(session.codexHome);
     if (!slot) return;
-    const stopping = this.stopClient(slot.client);
     this.slots.delete(session.codexHome);
-    await stopping;
+    await slot.client.stop();
   }
 
-  dispose(): Promise<void> {
-    if (this.disposeInFlight) return this.disposeInFlight;
-    this.terminal = true;
-    const clients = [...new Set([
-      ...[...this.slots.values()].map((slot) => slot.client),
-      ...this.startingClients,
-      ...this.stoppingClients.keys(),
-    ])];
-    const stops = clients.map((client) => this.stopClient(client));
-    this.disposingClients = clients;
+  async dispose(): Promise<void> {
+    const slots = [...this.slots.values()];
     this.slots.clear();
-    this.disposeInFlight = Promise.all(stops).then(() => undefined);
-    return this.disposeInFlight;
-  }
-
-  forceDispose(): void {
-    this.terminal = true;
-    const clients = new Set([
-      ...[...this.slots.values()].map((slot) => slot.client),
-      ...this.startingClients,
-      ...this.stoppingClients.keys(),
-      ...this.disposingClients,
-    ]);
-    for (const client of clients) client.forceStop();
-  }
-
-  private assertActive(): void {
-    if (this.terminal) throw new Error("codex_app_server_slot_pool_disposed");
-  }
-
-  private stopClient(client: CodexAppServerClient): Promise<void> {
-    const existing = this.stoppingClients.get(client);
-    if (existing) return existing;
-    const stopping = client.stop().finally(() => {
-      this.stoppingClients.delete(client);
-    });
-    this.stoppingClients.set(client, stopping);
-    return stopping;
+    await Promise.all(slots.map((slot) => slot.client.stop()));
   }
 }

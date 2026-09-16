@@ -21,6 +21,7 @@ import {
   loadIntegrationAttempt,
   nowIso,
   recordIntegrationAudit,
+  runIntegrationTransaction,
   type IntegrationUseCaseDeps,
 } from "./common";
 
@@ -34,6 +35,15 @@ export type RunRequiredChecksInput = {
 };
 
 export async function runRequiredChecks(
+  deps: RunRequiredChecksDeps,
+  input: RunRequiredChecksInput,
+): Promise<IntegrationAttempt> {
+  return await runIntegrationTransaction(deps, input.attemptId, async () =>
+    await runRequiredChecksTransaction(deps, input)
+  );
+}
+
+async function runRequiredChecksTransaction(
   deps: RunRequiredChecksDeps,
   input: RunRequiredChecksInput,
 ): Promise<IntegrationAttempt> {

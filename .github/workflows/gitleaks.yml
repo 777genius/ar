@@ -1,4 +1,10 @@
-# Secret-scan gate for the public mirror. No repository secrets are required.
+# Secret-scan gate. Logic lives in vioxen/org-workflows — this is just the stub.
+#
+# On a PR it scans ONLY the commits the PR adds, so pre-existing secrets in this
+# repo's history (QUANTATECH-446) do not fail unrelated PRs. Rotations and
+# history are tracked on 446; this gate stops new leaks.
+#
+# No secrets required.
 name: Gitleaks
 
 on:
@@ -14,12 +20,6 @@ permissions:
 
 jobs:
   scan:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    uses: vioxen/org-workflows/.github/workflows/gitleaks.yml@main
+    with:
+      runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}

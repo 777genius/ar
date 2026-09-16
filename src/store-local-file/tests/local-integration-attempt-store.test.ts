@@ -6,6 +6,10 @@ import { describe, expect, it } from "vitest";
 
 import { LocalIntegrationAttemptStore } from "../index";
 import {
+  acquireLocalControllerMaintenanceFence,
+  releaseLocalControllerMaintenanceFence,
+} from "../local-controller-maintenance-fence";
+import {
   IntegrationAttemptStatus,
   IntegrationAuditEventType,
   ReviewDecisionStatus,
@@ -74,6 +78,27 @@ describe("LocalIntegrationAttemptStore", () => {
     await expect(store.get(attempt.attemptId)).resolves.toEqual(attempt);
     await expect(readFile(join(rootDir, "escape", "attempt.json"), "utf8"))
       .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("blocks create and update while controller maintenance owns the fence", async () => {
+    const controllerRoot = await mkdtemp(join(tmpdir(), "controller-fence-store-"));
+    const rootDir = join(controllerRoot, "project-integration");
+    const store = new LocalIntegrationAttemptStore({ rootDir });
+    const attempt = attemptFixture();
+    const fence = await acquireLocalControllerMaintenanceFence({
+      controllerJobRootDir: controllerRoot,
+      owner: "ledger-epoch-test",
+    });
+    try {
+      await expect(store.create(attempt)).rejects.toThrow(
+        "controller_maintenance_fence_active",
+      );
+      await expect(store.update(attempt)).rejects.toThrow(
+        "controller_maintenance_fence_active",
+      );
+    } finally {
+      await releaseLocalControllerMaintenanceFence(fence);
+    }
   });
 });
 

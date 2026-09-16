@@ -6,15 +6,19 @@ import {
   rmdir,
   writeFile,
 } from "node:fs/promises";
-import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
   AccessBoundary,
   NetworkAccessMode,
-  type ProjectAccessScope,
   type ProjectControlBroker,
   type ProjectControlOperationResult,
 } from "@vioxen/subscription-runtime/worker-core";
+import { withCurrentControllerScopeActivity } from "./application/project-control/codex-goal-current-controller-activity";
+import { projectControlAdmissionOwnedPaths } from "./application/project-control/codex-goal-project-admission-owned-paths";
+import { buildProjectControlRecoverOperationsView } from
+  "./codex-goal-mcp-project-control-recovery";
+import { createBoundedProjectControlOperationView } from
+  "./codex-goal-mcp-project-control-bounded-operation";
 import {
   codexGoalJobToArgs,
   readCodexGoalJob,
@@ -32,18 +36,10 @@ import {
 } from "./codex-goal-ops";
 import {
   type CodexGoalProjectCreateWorktreeInput,
-  type CodexProjectControlBrokerInput,
   projectControlAuditPath,
 } from "./codex-goal-mcp-project-broker";
 import {
-  createOrReuseProjectControlOperation,
-  ProjectControlOperationStatus,
   projectControlOperationExecutionMode,
-  projectControlOperationView,
-  projectControlOperationsRoot,
-  recoverProjectControlOperations,
-  startProjectControlOperationRunner,
-  updateProjectControlOperation,
   type JsonRecord as ProjectControlOperationJsonRecord,
   type ProjectControlOperationToolName,
 } from "./project-control-operation-lifecycle";
@@ -152,20 +148,10 @@ import {
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
-type LoadedProjectControlController = {
-  readonly registryRootDir: string;
-  readonly controller: CodexGoalJobManifest;
-  readonly scope: ProjectAccessScope;
-};
-
-export type CodexGoalMcpProjectControlJobsDeps = {
-  readonly loadProjectControlController: (
-    args: ProjectControlMcpArgs,
-  ) => Promise<LoadedProjectControlController>;
-  readonly codexProjectControlBroker: (
-    input: Omit<CodexProjectControlBrokerInput, "admissionDeps">,
-  ) => ProjectControlBroker;
-};
+import type { CodexGoalMcpProjectControlJobsDeps } from
+  "./codex-goal-mcp-project-control-jobs-types";
+export type { CodexGoalMcpProjectControlJobsDeps } from
+  "./codex-goal-mcp-project-control-jobs-types";
 
 export { projectControlCreateCodexGoalJobView } from "./codex-goal-mcp-project-control-create-job";
 export { projectControlOperationStatusView } from "./codex-goal-mcp-project-control-operation-status";
@@ -487,13 +473,20 @@ export async function projectControlRefillWorkerView(
   let worktreeCreated = false;
   let promptWritten = false;
   let admissionCreatedPaths: readonly string[] = [];
-  let worktree: ProjectControlOperationResult;
-  let createJob: ProjectControlOperationResult;
-  let manifest: CodexGoalJobManifest;
-  let expectedCanonicalWorkspacePath: string;
-  let prompt: { readonly promptPath: string; readonly bytes: number };
+  let worktree!: ProjectControlOperationResult;
+  let createJob!: ProjectControlOperationResult;
+  let manifest!: CodexGoalJobManifest;
+  let expectedCanonicalWorkspacePath!: string;
+  let prompt!: { readonly promptPath: string; readonly bytes: number };
   let dependencyPreflight: DependencyPreflightResult | undefined;
   try {
+    await withCurrentControllerScopeActivity({
+      controllerJobRootDir: controller.controller.jobRootDir,
+      owner: `project-refill-create:${controller.controller.jobId}:${createManifest.jobId}`,
+      expectedScope: controller.scope,
+      loadCurrentScope: async () =>
+        (await deps.loadProjectControlController(args)).scope,
+      effect: async () => {
     const worktreeResult = await createOrReuseProjectWorktree({
       broker: worktreeBroker,
       scope: controller.scope,
@@ -589,6 +582,8 @@ export async function projectControlRefillWorkerView(
       expectedCanonicalWorkspacePath,
       admittedInputPatch: Boolean(producerInputPatch),
     });
+      },
+    });
   } catch (error) {
     await removeProjectPreStartAdmissionPaths(admissionCreatedPaths);
     await removeReviewedOutputAggregateArtifacts(aggregateArtifactCreatedPaths);
@@ -664,19 +659,25 @@ export async function projectControlRefillWorkerView(
             startWorkspaceLease: workspace,
             startSkipDoctor: booleanValue(args.skipDoctor) ?? false,
           });
-          const startResult = await startBroker.startWorker({
-            jobId: manifest.jobId,
-            registryRoot: controller.registryRootDir,
-            workspacePath: manifest.workspacePath,
-            ...(reservedLaunch.tmuxSession
-              ? { tmuxSession: reservedLaunch.tmuxSession }
-              : {}),
-            accounts: [reservedAccount.accountId],
-            workerRole: role,
-            ...(manifest.tags ? { tags: manifest.tags } : {}),
-            ...(requestedOwnedPaths
-              ? { ownedPaths: requestedOwnedPaths }
-              : {}),
+          const startResult = await withCurrentControllerScopeActivity({
+            controllerJobRootDir: controller.controller.jobRootDir,
+            owner: `project-refill:${controller.controller.jobId}:${manifest.jobId}`,
+            expectedScope: controller.scope,
+            loadCurrentScope: async () => (await deps.loadProjectControlController(args)).scope,
+            effect: async () => await startBroker.startWorker({
+                jobId: manifest.jobId,
+                registryRoot: controller.registryRootDir,
+                workspacePath: manifest.workspacePath,
+                ...(reservedLaunch.tmuxSession
+                  ? { tmuxSession: reservedLaunch.tmuxSession }
+                  : {}),
+                accounts: [reservedAccount.accountId],
+                workerRole: role,
+                ...(manifest.tags ? { tags: manifest.tags } : {}),
+                ...(requestedOwnedPaths
+                  ? { ownedPaths: requestedOwnedPaths }
+                  : {}),
+              }),
           });
           return {
             start: startResult,
@@ -936,147 +937,36 @@ async function projectControlRefillWorkerBoundedView(
     executionMode: "sync",
     confirmRefill: true,
   } satisfies ProjectControlOperationJsonRecord;
-  const operationsRootDir = projectControlOperationsRoot(
-    controller.controller.jobRootDir,
-  );
-  const creation = await createOrReuseProjectControlOperation({
-    operationsRootDir,
-    controllerJobId: controller.controller.jobId,
-    toolName: operationToolName,
-    args: operationArgs,
-    targetJobId: createManifest.jobId,
-  });
-  if (!creation.created) {
-    const existing = creation.operation;
-    return {
-      ok: true,
-      mode: "project_control_refill_worker_operation_started",
-      executionMode: "bounded",
-      controllerJobId: controller.controller.jobId,
-      registryRootDir: controller.registryRootDir,
-      auditPath: projectControlAuditPath(controller.controller),
-      operationId: existing.operationId,
-      operationStatusTool: "codex_goal_project_operation_status",
-      operationStatusArgs: {
-        registryRootDir: controller.registryRootDir,
-        controllerJobId: controller.controller.jobId,
-        operationId: existing.operationId,
-      },
-      targetJobId: createManifest.jobId,
-      ...(existing.runner ? { runnerPid: existing.runner.pid } : {}),
-      operation: projectControlOperationView({ operation: existing }),
-    };
-  }
-  const operation = creation.operation;
-  const runner = await startProjectControlOperationRunner({
-    operationFilePath: operation.operationFilePath,
-    cwd: controller.controller.workspacePath,
-  });
-  const updated = await updateProjectControlOperation({
-    operationFilePath: operation.operationFilePath,
-    update: (current) =>
-      current.status === ProjectControlOperationStatus.Queued &&
-      current.runner === undefined
-        ? {
-            runner: {
-              hostname: hostname(),
-              pid: runner.pid,
-              command: runner.command,
-              startedAt: new Date().toISOString(),
-            },
-          }
-        : {},
-  });
-  return {
-    ok: true,
-    mode: "project_control_refill_worker_operation_started",
-    executionMode: "bounded",
-    controllerJobId: controller.controller.jobId,
+  return await createBoundedProjectControlOperationView({
+    controller: controller.controller,
     registryRootDir: controller.registryRootDir,
-    auditPath: projectControlAuditPath(controller.controller),
-    operationId: updated.operationId,
-    operationStatusTool: "codex_goal_project_operation_status",
-    operationStatusArgs: {
-      registryRootDir: controller.registryRootDir,
-      controllerJobId: controller.controller.jobId,
-      operationId: updated.operationId,
-    },
+    operationToolName,
+    operationArgs,
     targetJobId: createManifest.jobId,
-    runnerPid: runner.pid,
-    operation: projectControlOperationView({ operation: updated }),
-  };
+  });
 }
 
 export async function projectControlRecoverOperationsView(
   args: ProjectControlMcpArgs,
   deps: CodexGoalMcpProjectControlJobsDeps,
 ): Promise<JsonObject> {
-  const controller = await deps.loadProjectControlController(args);
-  if (booleanValue(args.confirmRecoverOperations) !== true) {
-    return {
-      ok: false,
-      reason: "confirm_recover_operations_required",
-      mode: "project_control_recover_operations",
-      controllerJobId: controller.controller.jobId,
-      registryRootDir: controller.registryRootDir,
-    };
-  }
-  const summary = await recoverProjectControlOperations({
-    operationsRootDir: projectControlOperationsRoot(
-      controller.controller.jobRootDir,
-    ),
+  return await buildProjectControlRecoverOperationsView({
+    args,
+    deps,
     invokeTool: async (toolName, operationArgs) => {
       if (toolName === "codex_goal_project_prepare_verifier") {
-        return projectControlPrepareVerifierView(
-          operationArgs as ProjectControlMcpArgs,
-          deps,
-        );
+        return projectControlPrepareVerifierView(operationArgs, deps);
       }
       if (toolName === "codex_goal_project_refill_worker") {
-        return projectControlRefillWorkerView(
-          operationArgs as ProjectControlMcpArgs,
-          deps,
-        );
+        return projectControlRefillWorkerView(operationArgs, deps);
       }
       throw new Error("project_control_operation_tool_invalid");
     },
   });
-  return {
-    ok: summary.failed === 0 && summary.invalid === 0,
-    mode: "project_control_recover_operations",
-    controllerJobId: controller.controller.jobId,
-    registryRootDir: controller.registryRootDir,
-    scanned: summary.scanned,
-    attempted: summary.attempted,
-    recovered: summary.recovered,
-    reconciled: summary.reconciled,
-    alreadyRunning: summary.alreadyRunning,
-    terminal: summary.terminal,
-    failed: summary.failed,
-    invalid: summary.invalid,
-    operations: summary.results.map((result) => ({
-      ok: result.ok,
-      disposition: result.disposition,
-      operation: projectControlOperationView({ operation: result.operation }),
-    })),
-  };
 }
 
 function jsonRecordFromProjectControlArgs(
   args: ProjectControlMcpArgs,
 ): ProjectControlOperationJsonRecord {
   return JSON.parse(JSON.stringify(args)) as ProjectControlOperationJsonRecord;
-}
-
-function projectControlAdmissionOwnedPaths(value: unknown): readonly string[] | undefined {
-  if (!value || typeof value !== "object" || !("contract" in value)) return undefined;
-  const contract = value.contract;
-  if (!contract || typeof contract !== "object" || !("ownedPaths" in contract)) {
-    return undefined;
-  }
-  return Array.isArray(contract.ownedPaths) &&
-      contract.ownedPaths.length > 0 &&
-      contract.ownedPaths.every((path): path is string => typeof path === "string")
-    ? contract.ownedPaths
-    : undefined;
 }

@@ -60,10 +60,6 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
   async capture(input: {
     readonly workspacePath: string;
     readonly allowEmptyPatch?: boolean;
-    readonly rejectedCaptureBinding?: {
-      readonly decision: ReviewDecisionStatus.Rejected;
-      readonly expectedPatchSha256: string;
-    };
   }): Promise<ReviewedWorkerOutputWorkspaceSnapshot> {
     const baseCommit = await readLocalGitHeadCommit(input.workspacePath);
     if (!baseCommit)
@@ -93,22 +89,11 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
     if (changedFiles.length === 0) {
       throw new Error("reviewed_worker_output_changed_files_required");
     }
-    const rejectedCaptureBinding = input.rejectedCaptureBinding;
-    if (rejectedCaptureBinding) {
-      if (rejectedCaptureBinding.decision !== ReviewDecisionStatus.Rejected) {
-        throw new Error("reviewed_worker_output_rejected_capture_invalid");
-      }
-      assertSha256(rejectedCaptureBinding.expectedPatchSha256);
-      if (sha256(patch) !== rejectedCaptureBinding.expectedPatchSha256) {
-        throw new Error("reviewed_worker_output_patch_hash_mismatch");
-      }
-    }
     await this.assertPatchAppliesToBase({
       workspacePath: input.workspacePath,
       baseCommit,
       patch,
       changedFiles,
-      allowSecretLikeContent: rejectedCaptureBinding !== undefined,
     });
     return {
       patch,
@@ -122,7 +107,6 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
     readonly baseCommit: string;
     readonly patch: string;
     readonly changedFiles: readonly string[];
-    readonly allowSecretLikeContent: boolean;
   }): Promise<void> {
     await mkdir(this.options.tempRootDir, { recursive: true, mode: 0o700 });
     const tempDir = await mkdtemp(join(this.options.tempRootDir, ".capture-"));
@@ -149,9 +133,6 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
         error instanceof Error &&
         error.message.startsWith("git_patch_secret_like_content:")
       ) {
-        // Secret detection runs only after bounded patch application, changed
-        // path validation, and blob limits have all succeeded.
-        if (input.allowSecretLikeContent) return;
         throw new Error("reviewed_worker_output_secret_like_content");
       }
       if (

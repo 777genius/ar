@@ -12,6 +12,7 @@ export * from "./node-process-runner";
 export * from "./observability";
 export * from "./project-integration-mcp";
 export * from "./temp-workspace";
+export * from "./application/project-control/codex-goal-consumed-output-ledger-epoch";
 export {
   parseWorkerLaunchRequest,
   parseWorkerLaunchSpec,

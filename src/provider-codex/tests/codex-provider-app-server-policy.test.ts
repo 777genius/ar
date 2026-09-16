@@ -223,7 +223,7 @@ describe("Codex provider app-server adapter", () => {
         )?.params,
       ).toMatchObject({
         baseInstructions: expect.stringContaining(
-          "stateless completion worker",
+          "fast backend inference worker",
         ),
         developerInstructions: null,
         dynamicTools: [],

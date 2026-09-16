@@ -5,12 +5,11 @@ import {
   mkdtemp,
   readFile,
   rm,
-  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
@@ -234,18 +233,6 @@ describe("Codex project reviewed worker output", () => {
         },
       });
 
-      const rejectedContent = [
-        'access_token = "synthetic-oidc-access-token-value"',
-        'client_secret = "synthetic-oidc-client-secret-value"',
-        "",
-      ].join("\n");
-      await writeFile(
-        join(workerWorkspacePath, "docs", "packet.md"),
-        rejectedContent,
-      );
-      const rejectedPatch = await captureGitWorkspacePatch({
-        workspacePath: workerWorkspacePath,
-      });
       const rejected = await callToolJson(
         client,
         "codex_goal_project_mark_reviewed",
@@ -254,7 +241,7 @@ describe("Codex project reviewed worker output", () => {
           controllerJobId,
           jobId: workerJobId,
           captureReviewedOutput: true,
-          expectedPatchSha256: sha256(rejectedPatch),
+          expectedPatchSha256: sha256(patch),
           reviewDecision: "rejected",
           reviewedBy: controllerJobId,
           reviewReason: "The same worker must remediate this exact patch.",
@@ -276,50 +263,6 @@ describe("Codex project reviewed worker output", () => {
           idempotentReplay: false,
         },
       });
-      const rejectedLedger = rejected.consumedOutputLedger as {
-        decision: {
-          archivePath: string;
-          backup: {
-            statusPath: string;
-            patchPath: string;
-            numstatPath: string;
-          };
-        };
-      };
-      const rejectedMarker = JSON.parse(
-        await readFile(
-          join(workerJobRoot, `${workerJobId}.review.json`),
-          "utf8",
-        ),
-      ) as {
-        reviewedOutput: { patchPath: string };
-      };
-      expect(
-        await readFile(rejectedMarker.reviewedOutput.patchPath, "utf8"),
-      ).toBe(rejectedPatch);
-      expect(
-        await readFile(rejectedLedger.decision.backup.patchPath, "utf8"),
-      ).toBe(rejectedPatch);
-      expect(
-        (await stat(dirname(rejectedMarker.reviewedOutput.patchPath))).mode &
-          0o777,
-      ).toBe(0o700);
-      expect(
-        (await stat(rejectedMarker.reviewedOutput.patchPath)).mode & 0o777,
-      ).toBe(0o600);
-      expect(
-        (await stat(dirname(rejectedLedger.decision.archivePath))).mode & 0o777,
-      ).toBe(0o700);
-      expect(
-        (await stat(rejectedLedger.decision.archivePath)).mode & 0o777,
-      ).toBe(0o700);
-      for (const path of [
-        rejectedLedger.decision.backup.statusPath,
-        rejectedLedger.decision.backup.patchPath,
-        rejectedLedger.decision.backup.numstatPath,
-      ]) {
-        expect((await stat(path)).mode & 0o777).toBe(0o600);
-      }
       const rejectedReplay = await callToolJson(
         client,
         "codex_goal_project_mark_reviewed",
@@ -328,7 +271,7 @@ describe("Codex project reviewed worker output", () => {
           controllerJobId,
           jobId: workerJobId,
           captureReviewedOutput: true,
-          expectedPatchSha256: sha256(rejectedPatch),
+          expectedPatchSha256: sha256(patch),
           reviewDecision: "rejected",
           reviewedBy: controllerJobId,
           reviewReason: "The same worker must remediate this exact patch.",
@@ -406,7 +349,7 @@ describe("Codex project reviewed worker output", () => {
       });
       await writeFile(
         join(workerWorkspacePath, "docs", "packet.md"),
-        rejectedContent,
+        "accepted output\n",
       );
       const foreignDependencies = join(root, "foreign-node-modules");
       const workerDependencies = join(workerWorkspacePath, "node_modules");

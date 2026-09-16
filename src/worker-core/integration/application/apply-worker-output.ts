@@ -16,6 +16,7 @@ import {
   loadIntegrationAttempt,
   nowIso,
   recordIntegrationAudit,
+  runIntegrationTransaction,
   type IntegrationUseCaseDeps,
 } from "./common";
 
@@ -30,6 +31,15 @@ export type ApplyWorkerOutputInput = {
 };
 
 export async function applyWorkerOutput(
+  deps: ApplyWorkerOutputDeps,
+  input: ApplyWorkerOutputInput,
+): Promise<IntegrationAttempt> {
+  return await runIntegrationTransaction(deps, input.attemptId, async () =>
+    await applyWorkerOutputTransaction(deps, input)
+  );
+}
+
+async function applyWorkerOutputTransaction(
   deps: ApplyWorkerOutputDeps,
   input: ApplyWorkerOutputInput,
 ): Promise<IntegrationAttempt> {

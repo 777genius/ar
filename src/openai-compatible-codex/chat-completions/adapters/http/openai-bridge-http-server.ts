@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
@@ -65,8 +64,7 @@ async function handleRequest(
       const abortController = new AbortController();
       request.once("aborted", () => abortController.abort());
       const result = await options.chatCompletion.complete({
-        request: body.value,
-        requestBodySha256: body.sha256,
+        request: body,
         abortSignal: abortController.signal,
       });
       writeJson(response, 200, result);
@@ -114,15 +112,10 @@ function assertAuthorized(
   }
 }
 
-type OpenAiBridgeJsonBody = {
-  readonly value: unknown;
-  readonly sha256: string;
-};
-
 async function readJsonBody(
   request: IncomingMessage,
   maxBytes: number,
-): Promise<OpenAiBridgeJsonBody> {
+): Promise<unknown> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of request) {
@@ -137,13 +130,9 @@ async function readJsonBody(
     }
     chunks.push(buffer);
   }
-  const rawBytes = Buffer.concat(chunks);
-  const raw = rawBytes.toString("utf8");
+  const raw = Buffer.concat(chunks).toString("utf8");
   try {
-    return {
-      value: JSON.parse(raw),
-      sha256: openAiBridgeRequestBodySha256(rawBytes),
-    };
+    return JSON.parse(raw);
   } catch {
     throw new OpenAiBridgeRequestError(
       "Request body must be valid JSON.",
@@ -151,12 +140,6 @@ async function readJsonBody(
       400,
     );
   }
-}
-
-export function openAiBridgeRequestBodySha256(
-  rawBody: Uint8Array,
-): string {
-  return createHash("sha256").update(rawBody).digest("hex");
 }
 
 function modelsResponse(model: string): OpenAiBridgeModelListResponse {

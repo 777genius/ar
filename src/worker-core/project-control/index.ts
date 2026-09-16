@@ -7,3 +7,4 @@ export * from "./domain/terminal-output-decision";
 export * from "./ports/consumed-output-ledger-writer-port";
 export * from "./domain/project-admission";
 export * from "./domain/project-control-surface";
+export * from "./domain/consumed-output-ledger-epoch";

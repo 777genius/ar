@@ -31,7 +31,7 @@ import { projectControlWorkspaceLockRoot } from "../../codex-goal-project-worksp
 
 export type CreateLocalProjectIntegrationMcpToolHandlersOptions = Pick<
   CreateProjectIntegrationMcpToolHandlersOptions,
-  "loadController" | "resolvePathArg"
+  "loadController" | "resolvePathArg" | "assertAttemptMutable"
 >;
 
 export function createLocalProjectIntegrationMcpToolHandlers(
@@ -112,6 +112,7 @@ function localProjectIntegrationDeps(
     integratedOutputLedger: new LocalIntegratedOutputLedgerAdapter({
       ledgerRoots: controller.scope.consumedOutputLedgerRoots ?? [],
       archiveRoot,
+      custodyRoot: dirname(dirname(controller.registryRootDir)),
     }),
     checks: new LocalProjectCheckRunner(),
     scanner: new SimpleSecretScanner(),

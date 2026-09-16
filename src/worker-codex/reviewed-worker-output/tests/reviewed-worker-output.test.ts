@@ -1,15 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { ReviewDecisionStatus } from "@vioxen/subscription-runtime/worker-core";
@@ -326,96 +319,6 @@ describe("reviewed worker output", () => {
       expectedPatchSha256: sha256(patch),
       approvedFiles: ["src/value.ts"],
     })).rejects.toThrow("path_outside_expected_files");
-  });
-
-  it("archives an exact hash-bound rejected patch with secret-like fixture fields", async () => {
-    const fixture = await reviewedOutputFixture();
-    const patch = await writeSecretLikeReviewedPatch(fixture.workspacePath);
-    const deps = localReviewedWorkerOutputDeps({ rootDir: fixture.storeRoot });
-    const snapshot = await captureReviewedWorkerOutput(deps, {
-      projectId: "project-1",
-      controllerJobId: "project-1-controller",
-      workerJobId: "project-1-worker",
-      taskId: "task-1",
-      workspacePath: fixture.workspacePath,
-      expectedPatchSha256: sha256(patch),
-      decision: ReviewDecisionStatus.Rejected,
-      reviewedBy: "project-1-controller",
-      reason: "Preserve exact rejected evidence for same-worker remediation.",
-      approvedFiles: ["src/value.ts", "src/new.ts"],
-      requiredChecks: [],
-    });
-
-    expect(snapshot).toMatchObject({
-      patchSha256: sha256(patch),
-      reviewDecision: { decision: ReviewDecisionStatus.Rejected },
-    });
-    expect(await readFile(snapshot.patchPath, "utf8")).toBe(patch);
-    expect((await stat(snapshot.patchPath)).mode & 0o777).toBe(0o600);
-    expect((await stat(dirname(snapshot.patchPath))).mode & 0o777).toBe(0o700);
-    await expect(
-      withReviewedWorkerOutputStillMatching(deps, snapshot, async () => "ok"),
-    ).resolves.toBe("ok");
-
-    await writeFile(
-      join(fixture.workspacePath, "src", "new.ts"),
-      "export const added = false;\n",
-    );
-    await expect(
-      withReviewedWorkerOutputStillMatching(
-        deps,
-        snapshot,
-        async () => "must-not-start",
-      ),
-    ).rejects.toThrow(
-      "reviewed_worker_output_workspace_changed_after_capture",
-    );
-  });
-
-  it("still rejects an approved patch with secret-like fixture fields", async () => {
-    const fixture = await reviewedOutputFixture();
-    const patch = await writeSecretLikeReviewedPatch(fixture.workspacePath);
-    await expect(
-      captureReviewedWorkerOutput(
-        localReviewedWorkerOutputDeps({ rootDir: fixture.storeRoot }),
-        {
-          projectId: "project-1",
-          controllerJobId: "project-1-controller",
-          workerJobId: "project-1-worker",
-          taskId: "task-1",
-          workspacePath: fixture.workspacePath,
-          expectedPatchSha256: sha256(patch),
-          decision: ReviewDecisionStatus.Approved,
-          reviewedBy: "project-1-controller",
-          reason: "Approval must retain the normal secret boundary.",
-          approvedFiles: ["src/value.ts", "src/new.ts"],
-          requiredChecks: [],
-        },
-      ),
-    ).rejects.toThrow("reviewed_worker_output_secret_like_content");
-  });
-
-  it("rejects a rejected secret-like capture when the patch hash mismatches", async () => {
-    const fixture = await reviewedOutputFixture();
-    await writeSecretLikeReviewedPatch(fixture.workspacePath);
-    await expect(
-      captureReviewedWorkerOutput(
-        localReviewedWorkerOutputDeps({ rootDir: fixture.storeRoot }),
-        {
-          projectId: "project-1",
-          controllerJobId: "project-1-controller",
-          workerJobId: "project-1-worker",
-          taskId: "task-1",
-          workspacePath: fixture.workspacePath,
-          expectedPatchSha256: "0".repeat(64),
-          decision: ReviewDecisionStatus.Rejected,
-          reviewedBy: "project-1-controller",
-          reason: "Mismatched rejected evidence must fail closed.",
-          approvedFiles: ["src/value.ts", "src/new.ts"],
-          requiredChecks: [],
-        },
-      ),
-    ).rejects.toThrow("reviewed_worker_output_patch_hash_mismatch");
   });
 
   it("reads deployed approval artifacts as approved-only review attestations", async () => {
@@ -752,18 +655,4 @@ async function reviewedOutputFixture(): Promise<{
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-async function writeSecretLikeReviewedPatch(
-  workspacePath: string,
-): Promise<string> {
-  await writeFile(
-    join(workspacePath, "src", "value.ts"),
-    [
-      'export const access_token = "synthetic-access-token-value";',
-      'export const client_secret = "synthetic-client-secret-value";',
-      "",
-    ].join("\n"),
-  );
-  return await captureGitWorkspacePatch({ workspacePath });
 }

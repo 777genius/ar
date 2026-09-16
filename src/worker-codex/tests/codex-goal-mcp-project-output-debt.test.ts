@@ -437,6 +437,8 @@ describe("codex goal MCP server", () => {
       await writeFile(
         join(ledgerRoot, "items", "infinity-context-memory-old-v1.json"),
         `${JSON.stringify({
+          schemaVersion: 1,
+          note: "legacy output already consumed",
           jobId: "infinity-context-memory-old-v1",
           status: "duplicate",
           closedAt: "2026-07-06T00:00:00.000Z",
@@ -598,6 +600,8 @@ describe("codex goal MCP server", () => {
       await writeFile(
         join(ledgerRoot, "items", "infinity-context-memory-retired-v1.json"),
         `${JSON.stringify({
+          schemaVersion: 1,
+          note: "retired output archived",
           jobId: "infinity-context-memory-retired-v1",
           status: "archived",
           closedAt: "2026-07-06T00:00:00.000Z",

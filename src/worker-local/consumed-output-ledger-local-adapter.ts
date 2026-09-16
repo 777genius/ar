@@ -1,15 +1,15 @@
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
 import {
   link,
+  lstat,
   mkdir,
-  open,
   readFile,
+  realpath,
   stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import type {
   ConsumedOutputLedgerWriterPort,
@@ -22,15 +22,27 @@ import type {
   TerminalOutputDecision,
   TerminalOutputDecisionReceipt,
 } from "@vioxen/subscription-runtime/worker-core";
+import { CONSUMED_OUTPUT_LEDGER_RETIRED_MARKER } from
+  "@vioxen/subscription-runtime/worker-core";
+import { LocalWorkspaceIntegrationLock } from "./project-integration-local-adapters";
+import {
+  acquireConsumedOutputLedgerMaintenanceLock,
+  releaseConsumedOutputLedgerMaintenanceLock,
+} from "./consumed-output-ledger-maintenance-lock";
 
 const execFileAsync = promisify(execFile);
 
-export class LocalConsumedOutputLedgerWriter
-  implements ConsumedOutputLedgerWriterPort {
+export class LocalConsumedOutputLedgerWriter implements ConsumedOutputLedgerWriterPort {
+  constructor(
+    private readonly mutationLocks = new LocalConsumedOutputLedgerMutationLock(),
+    private readonly custodyRoot?: string,
+  ) {}
+
   async assertCanRecord(input: {
     readonly ledgerRoot: string;
     readonly decision: TerminalOutputDecision;
   }): Promise<void> {
+    await assertLedgerRootActive(input.ledgerRoot);
     const ledgerPath = terminalLedgerPath(input.ledgerRoot, input.decision);
     let existing: string;
     try {
@@ -48,10 +60,32 @@ export class LocalConsumedOutputLedgerWriter
     readonly ledgerRoot: string;
     readonly decision: TerminalOutputDecision;
   }): Promise<TerminalOutputDecisionReceipt> {
-    const ledgerPath = terminalLedgerPath(
-      input.ledgerRoot,
-      input.decision,
-    );
+    const maintenanceLease = await acquireConsumedOutputLedgerMaintenanceLock({
+      ledgerRoot: input.ledgerRoot,
+      owner: `terminal-record:${input.decision.jobId}`,
+    });
+    let mutationLease;
+    try {
+      mutationLease = await this.mutationLocks.acquire({
+        ledgerRoots: [input.ledgerRoot],
+        owner: `terminal-output-writer:${input.decision.jobId}`,
+        ...(this.custodyRoot ? { custodyRoot: this.custodyRoot } : {}),
+      });
+      await assertLedgerRootActive(input.ledgerRoot);
+      return await this.recordLocked(input);
+    } finally {
+      if (mutationLease) {
+        await this.mutationLocks.release(mutationLease);
+      }
+      await releaseConsumedOutputLedgerMaintenanceLock(maintenanceLease);
+    }
+  }
+
+  private async recordLocked(input: {
+    readonly ledgerRoot: string;
+    readonly decision: TerminalOutputDecision;
+  }): Promise<TerminalOutputDecisionReceipt> {
+    const ledgerPath = terminalLedgerPath(input.ledgerRoot, input.decision);
     await mkdir(dirname(ledgerPath), { recursive: true });
     const contents = `${JSON.stringify(ledgerRecord(input.decision), null, 2)}\n`;
     const tmpPath = `${ledgerPath}.${process.pid}.${Date.now()}.tmp`;
@@ -72,6 +106,139 @@ export class LocalConsumedOutputLedgerWriter
   }
 }
 
+export type ConsumedOutputLedgerMutationLease = {
+  readonly locks: readonly {
+    readonly port: LocalWorkspaceIntegrationLock;
+    readonly lock: Awaited<
+      ReturnType<LocalWorkspaceIntegrationLock["acquire"]>
+    >;
+  }[];
+};
+
+export class LocalConsumedOutputLedgerMutationLock {
+  async acquire(input: {
+    readonly ledgerRoots: readonly string[];
+    readonly owner: string;
+    readonly custodyRoot?: string;
+  }): Promise<ConsumedOutputLedgerMutationLease> {
+    const acquired: Array<ConsumedOutputLedgerMutationLease["locks"][number]> =
+      [];
+    try {
+      for (const ledgerRoot of [...new Set(input.ledgerRoots)].sort()) {
+        const lockRoot = await ensureLocalLedgerLockRoot(
+          ledgerRoot,
+          input.custodyRoot,
+        );
+        const port = new LocalWorkspaceIntegrationLock({
+          rootDir: lockRoot,
+          staleLockMs: 30 * 60_000,
+        });
+        const lock = await port.acquire({
+          workspacePath: ledgerRoot,
+          owner: input.owner,
+        });
+        acquired.push({ port, lock });
+      }
+      return { locks: acquired };
+    } catch (error) {
+      for (const entry of acquired.reverse()) {
+        await entry.port.release(entry.lock).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
+  async release(lease: ConsumedOutputLedgerMutationLease): Promise<void> {
+    for (const entry of [...lease.locks].reverse()) {
+      await entry.port.release(entry.lock);
+    }
+  }
+}
+
+async function ensureLocalLedgerLockRoot(
+  ledgerRootInput: string,
+  custodyRootInput?: string,
+): Promise<string> {
+  const ledgerRoot = resolve(ledgerRootInput);
+  if (custodyRootInput) {
+    await ensureLedgerRootWithinCustody(resolve(custodyRootInput), ledgerRoot);
+  }
+  const rootMetadata = await lstat(ledgerRoot);
+  if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
+    throw new Error("consumed_output_ledger_lock_root_unsafe");
+  }
+  const canonicalRoot = await realpath(ledgerRoot);
+  let parent = ledgerRoot;
+  for (const path of [
+    join(ledgerRoot, ".mutation-locks"),
+    join(ledgerRoot, ".mutation-locks", "workspace-locks"),
+  ]) {
+    try {
+      const metadata = await lstat(path);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+        throw new Error("consumed_output_ledger_lock_root_unsafe");
+      }
+    } catch (error) {
+      if (!isNodeErrorCode(error, "ENOENT")) throw error;
+      await mkdir(path, { recursive: false, mode: 0o700 });
+    }
+    const canonicalPath = await realpath(path);
+    const rest = relative(canonicalRoot, canonicalPath);
+    if (rest === ".." || rest.startsWith(`..${sep}`)) {
+      throw new Error("consumed_output_ledger_lock_root_unsafe");
+    }
+    parent = path;
+  }
+  return dirname(parent);
+}
+
+async function ensureLedgerRootWithinCustody(
+  custodyRoot: string,
+  ledgerRoot: string,
+): Promise<void> {
+  const custodyMetadata = await lstat(custodyRoot);
+  if (custodyMetadata.isSymbolicLink() || !custodyMetadata.isDirectory()) {
+    throw new Error("consumed_output_ledger_lock_root_unsafe");
+  }
+  const lexicalRest = relative(custodyRoot, ledgerRoot);
+  if (
+    lexicalRest === ".." ||
+    lexicalRest.startsWith(`..${sep}`) ||
+    resolve(custodyRoot, lexicalRest) !== ledgerRoot
+  ) {
+    throw new Error("consumed_output_ledger_lock_root_unsafe");
+  }
+  const canonicalCustody = await realpath(custodyRoot);
+  let current = custodyRoot;
+  for (const segment of lexicalRest.split(sep).filter(Boolean)) {
+    current = join(current, segment);
+    try {
+      const metadata = await lstat(current);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+        throw new Error("consumed_output_ledger_lock_root_unsafe");
+      }
+    } catch (error) {
+      if (!isNodeErrorCode(error, "ENOENT")) throw error;
+      await mkdir(current, { recursive: false, mode: 0o700 });
+    }
+    const canonicalCurrent = await realpath(current);
+    const canonicalRest = relative(canonicalCustody, canonicalCurrent);
+    if (canonicalRest === ".." || canonicalRest.startsWith(`..${sep}`)) {
+      throw new Error("consumed_output_ledger_lock_root_unsafe");
+    }
+  }
+}
+
+async function assertLedgerRootActive(ledgerRoot: string): Promise<void> {
+  try {
+    await readFile(join(ledgerRoot, CONSUMED_OUTPUT_LEDGER_RETIRED_MARKER));
+  } catch (error) {
+    if (isNodeErrorCode(error, "ENOENT")) return;
+    throw error;
+  }
+  throw new Error("consumed_output_ledger_root_retired");
+}
+
 export type LocalTerminalOutputBackupCapture = {
   readonly archivePath: string;
   readonly statusPath: string;
@@ -88,17 +255,22 @@ export async function captureLocalTerminalOutputBackup(input: {
   readonly sourcePatchPath?: string;
   readonly gitBinaryPath?: string;
 }): Promise<LocalTerminalOutputBackupCapture> {
-  await ensurePrivateDirectory(input.archiveRoot);
-  const archivePath = join(input.archiveRoot, safeLedgerName(input.archiveName));
-  await ensurePrivateDirectory(archivePath);
+  const archivePath = join(
+    input.archiveRoot,
+    safeLedgerName(input.archiveName),
+  );
+  await mkdir(archivePath, { recursive: true });
   const statusPath = join(archivePath, "git-status.txt");
   const patchPath = join(archivePath, "tracked.diff");
   const numstatPath = join(archivePath, "tracked.numstat");
-  await publishExactText(statusPath, await localGitOutput({
-    cwd: input.workspacePath,
-    args: ["status", "--short"],
-    ...(input.gitBinaryPath ? { gitBinaryPath: input.gitBinaryPath } : {}),
-  }));
+  await publishExactText(
+    statusPath,
+    await localGitOutput({
+      cwd: input.workspacePath,
+      args: ["status", "--short"],
+      ...(input.gitBinaryPath ? { gitBinaryPath: input.gitBinaryPath } : {}),
+    }),
+  );
   if (input.sourcePatchPath) {
     await publishExactFile(patchPath, input.sourcePatchPath);
   } else {
@@ -109,7 +281,9 @@ export async function captureLocalTerminalOutputBackup(input: {
         : await localGitOutputBytes({
             cwd: input.workspacePath,
             args: ["diff", "--binary", "--", ...input.changedFiles],
-            ...(input.gitBinaryPath ? { gitBinaryPath: input.gitBinaryPath } : {}),
+            ...(input.gitBinaryPath
+              ? { gitBinaryPath: input.gitBinaryPath }
+              : {}),
           }),
     );
   }
@@ -120,7 +294,9 @@ export async function captureLocalTerminalOutputBackup(input: {
       : await localGitOutput({
           cwd: input.workspacePath,
           args: ["diff", "--numstat", "--", ...input.changedFiles],
-          ...(input.gitBinaryPath ? { gitBinaryPath: input.gitBinaryPath } : {}),
+          ...(input.gitBinaryPath
+            ? { gitBinaryPath: input.gitBinaryPath }
+            : {}),
         }),
   );
   return {
@@ -135,14 +311,21 @@ export async function captureLocalTerminalOutputBackup(input: {
 export type LocalIntegratedOutputLedgerAdapterOptions = {
   readonly ledgerRoots: readonly string[];
   readonly archiveRoot: string;
+  readonly custodyRoot?: string;
   readonly gitBinaryPath?: string;
 };
 
-export class LocalIntegratedOutputLedgerAdapter
-  implements IntegratedOutputLedgerPort {
-  private readonly writer = new LocalConsumedOutputLedgerWriter();
+export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedgerPort {
+  private readonly writer: LocalConsumedOutputLedgerWriter;
 
-  constructor(private readonly options: LocalIntegratedOutputLedgerAdapterOptions) {}
+  constructor(
+    private readonly options: LocalIntegratedOutputLedgerAdapterOptions,
+  ) {
+    this.writer = new LocalConsumedOutputLedgerWriter(
+      undefined,
+      options.custodyRoot,
+    );
+  }
 
   async prepare(input: {
     readonly attempt: IntegrationAttempt;
@@ -153,23 +336,39 @@ export class LocalIntegratedOutputLedgerAdapter
       this.options.archiveRoot,
       `${safeLedgerName(input.attempt.workerOutput.workerJobId)}-integrated-${input.commitSha.slice(0, 12)}-${safeLedgerName(input.attempt.attemptId)}`,
     );
-    await ensurePrivateDirectory(this.options.archiveRoot);
-    await ensurePrivateDirectory(archivePath);
+    await mkdir(archivePath, { recursive: true });
     const statusPath = join(archivePath, "git-status.txt");
     const patchPath = join(archivePath, "tracked.diff");
     const numstatPath = join(archivePath, "tracked.numstat");
-    await publishExactText(statusPath, await this.gitOutput(
-      input.attempt.workerOutput.workspacePath,
-      ["status", "--short"],
-    ));
-    await publishExactBytes(patchPath, await this.gitOutputBytes(
-      input.attempt.targetWorkspacePath,
-      ["show", "--format=", "--binary", input.commitSha, "--", ...input.attempt.workerOutput.changedFiles],
-    ));
-    await publishExactText(numstatPath, await this.gitOutput(
-      input.attempt.targetWorkspacePath,
-      ["show", "--format=", "--numstat", input.commitSha, "--", ...input.attempt.workerOutput.changedFiles],
-    ));
+    await publishExactText(
+      statusPath,
+      await this.gitOutput(input.attempt.workerOutput.workspacePath, [
+        "status",
+        "--short",
+      ]),
+    );
+    await publishExactBytes(
+      patchPath,
+      await this.gitOutputBytes(input.attempt.targetWorkspacePath, [
+        "show",
+        "--format=",
+        "--binary",
+        input.commitSha,
+        "--",
+        ...input.attempt.workerOutput.changedFiles,
+      ]),
+    );
+    await publishExactText(
+      numstatPath,
+      await this.gitOutput(input.attempt.targetWorkspacePath, [
+        "show",
+        "--format=",
+        "--numstat",
+        input.commitSha,
+        "--",
+        ...input.attempt.workerOutput.changedFiles,
+      ]),
+    );
     const preparation: IntegratedOutputLedgerPreparation = {
       attemptId: input.attempt.attemptId,
       workerJobId: input.attempt.workerOutput.workerJobId,
@@ -181,7 +380,11 @@ export class LocalIntegratedOutputLedgerAdapter
       numstatPath,
     };
     await publishExactJson(
-      join(ledgerRoot, "preparations", `${safeLedgerName(input.attempt.attemptId)}.json`),
+      join(
+        ledgerRoot,
+        "preparations",
+        `${safeLedgerName(input.attempt.attemptId)}.json`,
+      ),
       preparation,
     );
     return preparation;
@@ -223,8 +426,7 @@ export class LocalIntegratedOutputLedgerAdapter
     const ledgerRoot = this.requiredLedgerRoot();
     const captured = await captureLocalTerminalOutputBackup({
       archiveRoot: this.options.archiveRoot,
-      archiveName:
-        `${input.attempt.workerOutput.workerJobId}-rejected-${input.attempt.attemptId}`,
+      archiveName: `${input.attempt.workerOutput.workerJobId}-rejected-${input.attempt.attemptId}`,
       workspacePath: input.attempt.workerOutput.workspacePath,
       changedFiles: input.attempt.workerOutput.changedFiles,
       ...(input.attempt.workerOutput.patchPath
@@ -305,7 +507,10 @@ export class LocalIntegratedOutputLedgerAdapter
     return this.options.ledgerRoots[0]!;
   }
 
-  private async gitOutput(cwd: string, args: readonly string[]): Promise<string> {
+  private async gitOutput(
+    cwd: string,
+    args: readonly string[],
+  ): Promise<string> {
     const result = await execFileAsync(
       this.options.gitBinaryPath ?? "git",
       [...args],
@@ -379,8 +584,11 @@ async function publishExactJson(path: string, value: unknown): Promise<void> {
   await publishExactText(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-async function publishExactFile(path: string, sourcePath: string): Promise<void> {
-  await publishExactBytes(path, await readRegularFileNoFollow(sourcePath));
+async function publishExactFile(
+  path: string,
+  sourcePath: string,
+): Promise<void> {
+  await publishExactBytes(path, await readFile(sourcePath));
 }
 
 async function anyFileHasBytes(paths: readonly string[]): Promise<boolean> {
@@ -394,121 +602,28 @@ async function publishExactText(path: string, contents: string): Promise<void> {
   await publishExactBytes(path, Buffer.from(contents));
 }
 
-async function publishExactBytes(path: string, contents: Buffer): Promise<void> {
+async function publishExactBytes(
+  path: string,
+  contents: Buffer,
+): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmpPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmpPath, contents, { flag: "wx", mode: 0o600 });
+  await writeFile(tmpPath, contents, { flag: "wx" });
   try {
     await link(tmpPath, path);
   } catch (error) {
     if (!isNodeErrorCode(error, "EEXIST")) throw error;
+    if (!(await readFile(path)).equals(contents)) {
+      throw new Error("integrated_output_ledger_preparation_conflict");
+    }
   } finally {
     await unlink(tmpPath).catch(() => undefined);
   }
-  await assertExactPrivateFile(path, contents);
 }
 
-async function ensurePrivateDirectory(path: string): Promise<void> {
-  await mkdir(path, { recursive: true, mode: 0o700 });
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    const item = await handle.stat();
-    if (!item.isDirectory()) {
-      throw new Error("integrated_output_ledger_archive_unsafe");
-    }
-    await handle.chmod(0o700);
-    if (((await handle.stat()).mode & 0o777) !== 0o700) {
-      throw new Error("integrated_output_ledger_archive_unsafe");
-    }
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message === "integrated_output_ledger_archive_unsafe"
-    ) {
-      throw error;
-    }
-    throw new Error("integrated_output_ledger_archive_unsafe");
-  } finally {
-    await handle?.close();
-  }
-}
-
-async function readRegularFileNoFollow(path: string): Promise<Buffer> {
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    const opened = await handle.stat();
-    if (!opened.isFile()) {
-      throw new Error("integrated_output_ledger_source_patch_unsafe");
-    }
-    const contents = await handle.readFile();
-    const confirmed = await handle.stat();
-    if (
-      confirmed.dev !== opened.dev ||
-      confirmed.ino !== opened.ino ||
-      confirmed.size !== opened.size ||
-      confirmed.mtimeMs !== opened.mtimeMs
-    ) {
-      throw new Error("integrated_output_ledger_source_patch_unsafe");
-    }
-    return contents;
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message === "integrated_output_ledger_source_patch_unsafe"
-    ) {
-      throw error;
-    }
-    throw new Error("integrated_output_ledger_source_patch_unsafe");
-  } finally {
-    await handle?.close();
-  }
-}
-
-async function assertExactPrivateFile(
-  path: string,
-  expected: Buffer,
-): Promise<void> {
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    const opened = await handle.stat();
-    if (!opened.isFile() || opened.size !== expected.byteLength) {
-      throw new Error("integrated_output_ledger_preparation_conflict");
-    }
-    const actual = await handle.readFile();
-    if (!actual.equals(expected)) {
-      throw new Error("integrated_output_ledger_preparation_conflict");
-    }
-    await handle.chmod(0o600);
-    const confirmed = await handle.stat();
-    if (
-      confirmed.dev !== opened.dev ||
-      confirmed.ino !== opened.ino ||
-      confirmed.size !== opened.size ||
-      confirmed.mtimeMs !== opened.mtimeMs ||
-      (confirmed.mode & 0o777) !== 0o600
-    ) {
-      throw new Error("integrated_output_ledger_preparation_unsafe");
-    }
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      (
-        error.message === "integrated_output_ledger_preparation_conflict" ||
-        error.message === "integrated_output_ledger_preparation_unsafe"
-      )
-    ) {
-      throw error;
-    }
-    throw new Error("integrated_output_ledger_preparation_unsafe");
-  } finally {
-    await handle?.close();
-  }
-}
-
-function ledgerRecord(decision: TerminalOutputDecision): Record<string, unknown> {
+function ledgerRecord(
+  decision: TerminalOutputDecision,
+): Record<string, unknown> {
   return {
     ...decision,
     consumedAt: decision.closedAt,
@@ -518,11 +633,13 @@ function ledgerRecord(decision: TerminalOutputDecision): Record<string, unknown>
           commit: decision.commitSha,
         }
       : {}),
-    notes: [{
-      status: decision.status,
-      text: decision.note,
-      ...(decision.commitSha ? { commit: decision.commitSha } : {}),
-    }],
+    notes: [
+      {
+        status: decision.status,
+        text: decision.note,
+        ...(decision.commitSha ? { commit: decision.commitSha } : {}),
+      },
+    ],
   };
 }
 

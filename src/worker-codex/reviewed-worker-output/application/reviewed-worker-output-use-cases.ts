@@ -14,7 +14,6 @@ import {
   type CaptureReviewedWorkerOutputInput,
   type ReviewedWorkerOutputIdentity,
   type ReviewedWorkerOutputSnapshot,
-  type ReviewedWorkerOutputWorkspaceSnapshot,
 } from "../domain/reviewed-worker-output";
 import type {
   ReviewedWorkerContinuationEnvironmentPort,
@@ -60,14 +59,6 @@ export async function captureReviewedWorkerOutputLocked(
   const captured = await deps.snapshotter.capture({
     workspacePath: lock.workspacePath,
     ...(merge ? { allowEmptyPatch: true } : {}),
-    ...(input.decision === ReviewDecisionStatus.Rejected
-      ? {
-          rejectedCaptureBinding: {
-            decision: ReviewDecisionStatus.Rejected,
-            expectedPatchSha256,
-          },
-        }
-      : {}),
   });
   const changedFiles = normalizeReviewedFiles(captured.changedFiles, {
     allowEmpty: merge !== undefined,
@@ -231,29 +222,10 @@ export async function assertReviewedWorkerOutputStillMatchesLocked(
   snapshot: ReviewedWorkerOutputSnapshot,
   workspace: WorkspaceLock,
 ): Promise<void> {
-  let current: ReviewedWorkerOutputWorkspaceSnapshot;
-  try {
-    current = await deps.snapshotter.capture({
-      workspacePath: workspace.workspacePath,
-      ...(snapshot.merge ? { allowEmptyPatch: true } : {}),
-      ...(snapshot.reviewDecision.decision === ReviewDecisionStatus.Rejected
-        ? {
-            rejectedCaptureBinding: {
-              decision: ReviewDecisionStatus.Rejected,
-              expectedPatchSha256: snapshot.patchSha256,
-            },
-          }
-        : {}),
-    });
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message === "reviewed_worker_output_patch_hash_mismatch"
-    ) {
-      throw new Error("reviewed_worker_output_workspace_changed_after_capture");
-    }
-    throw error;
-  }
+  const current = await deps.snapshotter.capture({
+    workspacePath: workspace.workspacePath,
+    ...(snapshot.merge ? { allowEmptyPatch: true } : {}),
+  });
   const currentChangedFiles = current.changedFiles.length === 0
     ? []
     : normalizeExpectedFiles(current.changedFiles);

@@ -6,6 +6,7 @@ import {
 } from "@vioxen/subscription-runtime/worker-core";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { CodexGoalJobManifest } from "./codex-goal-jobs";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
 import type { CodexProjectControlBrokerInput } from "./codex-goal-mcp-project-broker";
@@ -207,6 +208,7 @@ export async function projectControlMarkReviewedView(
         if (!snapshot) throw new Error("reviewed_worker_output_not_found");
         consumedOutputLedger = await recordRejectedReviewedOutput({
           scope: controller.scope,
+          custodyRoot: dirname(dirname(controller.registryRootDir)),
           jobRootDir: loaded.manifest.jobRootDir,
           workspacePath: workspace.canonicalWorkspacePath,
           snapshot,
@@ -217,6 +219,7 @@ export async function projectControlMarkReviewedView(
       ) {
         consumedOutputLedger = await recordRejectedUncapturedOutput({
           scope: controller.scope,
+          custodyRoot: dirname(dirname(controller.registryRootDir)),
           jobId: loaded.manifest.jobId,
           jobRootDir: loaded.manifest.jobRootDir,
           workspacePath: workspace.canonicalWorkspacePath,

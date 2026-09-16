@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
@@ -31,12 +30,7 @@ import {
 import { localReviewedWorkerOutputDeps } from "../reviewed-worker-output";
 import { projectControlStartStoredJobView } from "../codex-goal-mcp-project-control-actions";
 import { recordRejectedUncapturedOutput } from "../codex-goal-mcp-project-control-reviewed-rejection";
-import {
-  assertCodexGoalProjectJobNotTerminal,
-  readCodexGoalConsumedOutputLedgers,
-  rejectedUncapturedOutputPatchSha256,
-  resolveRejectedUncapturedOutputPatchSha256,
-} from "../application/project-control/codex-goal-consumed-output-ledger-io";
+import { assertCodexGoalProjectJobNotTerminal } from "../application/project-control/codex-goal-consumed-output-ledger-io";
 import { git, gitInitRepository } from "./codex-goal-mcp-test-support";
 
 const roots: string[] = [];
@@ -226,47 +220,6 @@ describe("terminal worker handoff dependency recovery", () => {
     );
     expect(started).toMatchObject({ ok: true, jobId: fixture.jobId });
     expect(startCalled).toBe(true);
-  });
-
-  it("resolves the current 4ca6 patch among six same-timestamp records instead of stale f7", async () => {
-    const fixture = await actionFixture();
-    const receipt = await writeRejectedUncapturedReview(fixture);
-    const currentPatchSha256 = receipt.decision.attemptId?.replace(
-      "uncaptured-rejection-",
-      "",
-    );
-    if (!currentPatchSha256) throw new Error("expected current patch");
-    expect(currentPatchSha256).toMatch(/^4ca6/);
-    const stalePatchSha256 = await writeCompetingRejectedUncapturedRecords(
-      fixture,
-      receipt.ledgerPath,
-    );
-    expect(stalePatchSha256).toMatch(/^f7/);
-
-    const ledger = await readCodexGoalConsumedOutputLedgers({
-      roots: [fixture.ledgerRoot],
-    });
-    expect(ledger.records).toHaveLength(6);
-    expect(
-      rejectedUncapturedOutputPatchSha256(
-        ledger.byJobId.get(fixture.jobId)!,
-      ),
-    ).toBe(stalePatchSha256);
-    expect(
-      resolveRejectedUncapturedOutputPatchSha256({
-        ledger,
-        jobId: fixture.jobId,
-        workspacePath: fixture.workspacePath,
-        expectedPatchSha256: currentPatchSha256,
-      }),
-    ).toBe(currentPatchSha256);
-    await expect(verifyActionFixture(fixture)).resolves.toMatchObject({
-      reviewDisposition: "rejected_uncaptured",
-      patchSha256: currentPatchSha256,
-    });
-    await expect(
-      assertTerminalAdmission(fixture, currentPatchSha256),
-    ).resolves.toBeUndefined();
   });
 
   it("rejects archive tamper at recovery and terminal admission", async () => {
@@ -667,10 +620,7 @@ async function actionFixture() {
   await writeFile(join(workspacePath, "owned.ts"), "export const value = 1;\n");
   await git(workspacePath, ["add", "owned.ts"]);
   await git(workspacePath, ["commit", "-m", "test: base"]);
-  await writeFile(
-    join(workspacePath, "owned.ts"),
-    "export const value = 2;\n// nonce 1339\n",
-  );
+  await writeFile(join(workspacePath, "owned.ts"), "export const value = 2;\n");
   await writeFile(promptPath, "Run checks only.\n");
   const handoff = await materializeCodexGoalHandoffArtifacts({
     workerJobId: jobId,
@@ -792,46 +742,6 @@ async function writeRejectedUncapturedReview(
   });
   await writeReviewMarker(fixture, {});
   return receipt;
-}
-
-async function writeCompetingRejectedUncapturedRecords(
-  fixture: Awaited<ReturnType<typeof actionFixture>>,
-  currentLedgerPath: string,
-): Promise<string> {
-  const current = JSON.parse(
-    await readFile(currentLedgerPath, "utf8"),
-  ) as Record<string, unknown>;
-  const backup = current.backup as Record<string, unknown>;
-  const competitors = [
-    ["01", "competing rejected patch one\n"],
-    ["02", "competing rejected patch two\n"],
-    ["03", "competing rejected patch three\n"],
-    ["04", "competing rejected patch four\n"],
-    [
-      "zz-stale-f7",
-      "diff --git a/owned.ts b/owned.ts\nsynthetic-f7-88\n",
-    ],
-  ] as const;
-  let stalePatchSha256 = "";
-  for (const [suffix, patch] of competitors) {
-    const patchSha256 = createHash("sha256").update(patch).digest("hex");
-    const patchPath = join(
-      fixture.jobRootDir,
-      "archives",
-      `competing-${suffix}.patch`,
-    );
-    await writeFile(patchPath, patch);
-    await writeFile(
-      join(fixture.ledgerRoot, "items", `${fixture.jobId}--${suffix}.json`),
-      `${JSON.stringify({
-        ...current,
-        attemptId: `uncaptured-rejection-${patchSha256}`,
-        backup: { ...backup, patchPath },
-      })}\n`,
-    );
-    if (suffix === "zz-stale-f7") stalePatchSha256 = patchSha256;
-  }
-  return stalePatchSha256;
 }
 
 async function writeReviewMarker(

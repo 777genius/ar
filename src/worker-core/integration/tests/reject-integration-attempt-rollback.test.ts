@@ -200,6 +200,26 @@ describe("rejectIntegrationAttempt output rollback", () => {
     });
     expect(fixture.finalizeCalls()).toBe(0);
   });
+
+  it("holds one activity lease after terminal update through ledger finalization", async () => {
+    const fixture = createFixture(IntegrationAttemptStatus.Applied);
+    const updateReached = deferred<void>();
+    const continueAfterUpdate = deferred<void>();
+    fixture.store.pauseAfterUpdate = { updateReached, continueAfterUpdate };
+    const rejection = rejectIntegrationAttempt(fixture.deps, {
+      attemptId: fixture.attempt.attemptId,
+      reason: "integration rejected",
+    });
+    await updateReached.promise;
+    expect(fixture.store.activityLeaseDepth).toBe(1);
+    expect(fixture.finalizeCalls()).toBe(0);
+    continueAfterUpdate.resolve(undefined);
+    await expect(rejection).resolves.toMatchObject({
+      status: IntegrationAttemptStatus.Rejected,
+    });
+    expect(fixture.store.activityLeaseDepth).toBe(0);
+    expect(fixture.finalizeCalls()).toBe(1);
+  });
 });
 
 function createFixture(
@@ -361,6 +381,11 @@ function deferred<T>(): {
 class MemoryAttemptStore implements IntegrationAttemptStorePort {
   private current: IntegrationAttempt;
   failNextUpdate: Error | undefined;
+  pauseAfterUpdate: {
+    readonly updateReached: ReturnType<typeof deferred<void>>;
+    readonly continueAfterUpdate: ReturnType<typeof deferred<void>>;
+  } | undefined;
+  activityLeaseDepth = 0;
   readonly events: IntegrationAuditEvent[] = [];
 
   constructor(attempt: IntegrationAttempt) {
@@ -375,16 +400,29 @@ class MemoryAttemptStore implements IntegrationAttemptStorePort {
     return this.current.attemptId === attemptId ? this.current : null;
   }
 
-  update(attempt: IntegrationAttempt): void {
+  async update(attempt: IntegrationAttempt): Promise<void> {
     if (this.failNextUpdate) {
       const error = this.failNextUpdate;
       this.failNextUpdate = undefined;
       throw error;
     }
     this.current = attempt;
+    if (this.pauseAfterUpdate) {
+      this.pauseAfterUpdate.updateReached.resolve(undefined);
+      await this.pauseAfterUpdate.continueAfterUpdate.promise;
+    }
   }
 
   appendEvent(_attemptId: string, event: IntegrationAuditEvent): void {
     this.events.push(event);
+  }
+
+  async withActivityLease<T>(_owner: string, effect: () => Promise<T>): Promise<T> {
+    this.activityLeaseDepth += 1;
+    try {
+      return await effect();
+    } finally {
+      this.activityLeaseDepth -= 1;
+    }
   }
 }

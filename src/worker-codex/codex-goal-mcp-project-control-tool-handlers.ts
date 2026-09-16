@@ -6,9 +6,14 @@ import type {
 } from "./codex-goal-mcp-inputs";
 import {
   projectControlAdmissionSnapshotView,
+  projectControlRepairLegacyOutputDebtView,
+  projectControlReconcileStaleIntegrationsView,
   projectControlRepairJobManifestView,
   projectControlUpdateControllerScopeView,
 } from "./codex-goal-mcp-project-control-admin";
+import { projectControlLedgerEpochMigrationView } from "./codex-goal-mcp-project-control-ledger-epoch";
+import { projectControlLegacyAttemptQuarantineView } from
+  "./codex-goal-mcp-project-control-legacy-attempt-quarantine";
 import {
   projectControlCreateWorktreeView,
   projectControlIntegrateCommitView,
@@ -60,6 +65,33 @@ export async function projectControlAdmissionSnapshot(args: ProjectControlMcpArg
   return mcpJson(await projectControlAdmissionSnapshotView(args, projectControlAdminDeps()));
 }
 
+export async function projectControlRepairLegacyOutputDebt(
+  args: ProjectControlMcpArgs,
+) {
+  return mcpJson(await projectControlRepairLegacyOutputDebtView(
+    args,
+    projectControlAdminDeps(),
+  ));
+}
+
+export async function projectControlReconcileStaleIntegrations(
+  args: ProjectControlMcpArgs,
+) {
+  return mcpJson(await projectControlReconcileStaleIntegrationsView(
+    args,
+    projectControlAdminDeps(),
+  ));
+}
+
+export async function projectControlQuarantineLegacyIntegrationAttempts(
+  args: ProjectControlMcpArgs,
+) {
+  return mcpJson(await projectControlLegacyAttemptQuarantineView(
+    args,
+    projectControlAdminDeps(),
+  ));
+}
+
 export async function projectControlUpdateControllerScope(
   args: ProjectControlMcpArgs,
 ) {
@@ -70,6 +102,15 @@ export async function projectControlRepairJobManifest(
   args: ProjectControlMcpArgs & JobUpdateMcpArgs,
 ) {
   return mcpJson(await projectControlRepairJobManifestView(args, projectControlAdminDeps()));
+}
+
+export async function projectControlLedgerEpochMigration(
+  args: ProjectControlMcpArgs,
+) {
+  return mcpJson(await projectControlLedgerEpochMigrationView(
+    args,
+    projectControlAdminDeps(),
+  ));
 }
 
 function projectControllerDeps() {

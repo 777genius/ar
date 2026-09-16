@@ -113,16 +113,7 @@ function runAppServer() {
       if (typeof request.params?.cwd === "string") {
         threadCwds.set(threadId, request.params.cwd);
       }
-      write({
-        id: request.id,
-        result: {
-          thread: { id: threadId },
-          model: request.params?.model,
-          modelProvider: "openai",
-          serviceTier: request.params?.serviceTier ?? null,
-          reasoningEffort: request.params?.config?.model_reasoning_effort,
-        },
-      });
+      write({ id: request.id, result: { thread: { id: threadId } } });
       return;
     }
     if (request.method === "turn/start") {

@@ -277,7 +277,12 @@ export async function projectControlRecordFailedNoOutputView(
         reason: "worker_failed_no_output",
       });
       const receipt = await recordFailedNoOutput(
-        { writer: new LocalConsumedOutputLedgerWriter() },
+        {
+          writer: new LocalConsumedOutputLedgerWriter(
+            undefined,
+            dirname(dirname(controller.registryRootDir)),
+          ),
+        },
         {
           ...validationInput,
           ...(archivedPreexistingWorkspacePatch
@@ -461,7 +466,12 @@ async function recordInitialFailedNoOutput(input: {
         reason: "worker_failed_no_output",
       });
       const receipt = await recordTerminalOutputDecision(
-        { writer: new LocalConsumedOutputLedgerWriter() },
+        {
+          writer: new LocalConsumedOutputLedgerWriter(
+            undefined,
+            dirname(dirname(input.controller.registryRootDir)),
+          ),
+        },
         {
           allowedLedgerRoots: input.ledgerRoots,
           ledgerRoot: input.ledgerRoot,

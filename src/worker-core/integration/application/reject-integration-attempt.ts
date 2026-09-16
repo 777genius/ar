@@ -12,6 +12,7 @@ import {
   loadIntegrationAttempt,
   nowIso,
   recordIntegrationAudit,
+  runIntegrationTransaction,
   type IntegrationUseCaseDeps,
 } from "./common";
 import type {
@@ -26,12 +27,25 @@ export type RejectIntegrationAttemptInput = {
   readonly reason: string;
 };
 
+type RejectIntegrationAttemptDeps = IntegrationUseCaseDeps & {
+  readonly integratedOutputLedger: IntegratedOutputLedgerPort;
+  readonly git?: GitPort;
+  readonly locks: WorkspaceLockPort;
+};
+
 export async function rejectIntegrationAttempt(
-  deps: IntegrationUseCaseDeps & {
-    readonly integratedOutputLedger: IntegratedOutputLedgerPort;
-    readonly git?: GitPort;
-    readonly locks: WorkspaceLockPort;
-  },
+  deps: RejectIntegrationAttemptDeps,
+  input: RejectIntegrationAttemptInput,
+): Promise<IntegrationAttempt & {
+  readonly consumedOutputLedger: RejectedOutputLedgerReceipt;
+}> {
+  return await runIntegrationTransaction(deps, input.attemptId, async () =>
+    await rejectIntegrationAttemptTransaction(deps, input)
+  );
+}
+
+async function rejectIntegrationAttemptTransaction(
+  deps: RejectIntegrationAttemptDeps,
   input: RejectIntegrationAttemptInput,
 ): Promise<IntegrationAttempt & {
   readonly consumedOutputLedger: RejectedOutputLedgerReceipt;

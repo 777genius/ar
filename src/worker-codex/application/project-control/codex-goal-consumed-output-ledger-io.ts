@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { open, readdir, readFile, realpath, stat } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { lstat, open, readdir, readFile, readlink, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
   consumedOutputRecordFor,
-  consumedOutputRecordForAttempt,
   readConsumedOutputLedgers,
   type ConsumedOutputRecord,
   type ConsumedOutputLedger,
@@ -45,28 +44,16 @@ export function resolveRejectedUncapturedOutputPatchSha256(input: {
   readonly ledger: ConsumedOutputLedger;
   readonly jobId: string;
   readonly workspacePath: string;
-  readonly expectedPatchSha256: string;
 }): string | undefined {
   if (hasRelevantConsumedOutputDebt(input.ledger, input.jobId)) {
     return undefined;
   }
-  const expectedPatchSha256 = input.expectedPatchSha256.toLowerCase();
-  if (!/^[a-f0-9]{64}$/.test(expectedPatchSha256)) {
-    return undefined;
-  }
-  const record = consumedOutputRecordForAttempt({
+  const record = consumedOutputRecordFor({
     ledger: input.ledger,
     jobId: input.jobId,
     workspacePath: input.workspacePath,
-    attemptId: `uncaptured-rejection-${expectedPatchSha256}`,
   });
-  if (
-    !record ||
-    rejectedUncapturedOutputPatchSha256(record) !== expectedPatchSha256
-  ) {
-    return undefined;
-  }
-  return expectedPatchSha256;
+  return record ? rejectedUncapturedOutputPatchSha256(record) : undefined;
 }
 
 export async function assertCodexGoalProjectJobNotTerminal(input: {
@@ -99,8 +86,6 @@ export async function assertCodexGoalProjectJobNotTerminal(input: {
       ledger,
       jobId: input.jobId,
       workspacePath: input.workspacePath,
-      expectedPatchSha256:
-        input.rejectedUncapturedContinuationPatchSha256,
     });
     if (
       patchSha256 ===
@@ -117,7 +102,19 @@ export async function assertCodexGoalProjectJobNotTerminal(input: {
     jobId: input.jobId,
     workspacePath: input.workspacePath,
   });
-  if (!record?.valid) return;
+  if (record?.retentionEvidenceMissing) {
+    throw new Error(
+      "project_control_terminal_job_start_denied:retention_evidence_missing",
+    );
+  }
+  if (!record?.valid) {
+    if (hasRelevantConsumedOutputDebt(ledger, input.jobId)) {
+      throw new Error(
+        "project_control_terminal_job_start_denied:incomplete_consumed_output_record",
+      );
+    }
+    return;
+  }
   if (record.status === "rejected" && input.reviewedContinuation) {
     assertReviewedWorkerContinuationContext(input.reviewedContinuation, {
       projectId: input.projectId,
@@ -222,23 +219,15 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
   }
 
   async pathExists(path: string): Promise<boolean> {
-    try {
-      await stat(path);
-      return true;
-    } catch {
-      return false;
-    }
+    return await this.evidenceFileMetadata(path) !== undefined;
   }
 
   async pathSize(path: string): Promise<number | undefined> {
-    try {
-      return (await stat(path)).size;
-    } catch {
-      return undefined;
-    }
+    return (await this.evidenceFileMetadata(path))?.size;
   }
 
   async pathSha256(path: string): Promise<string | undefined> {
+    if (!await this.evidenceFileMetadata(path)) return undefined;
     let handle;
     try {
       const realPath = await realpath(path);
@@ -246,7 +235,7 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
         this.evidenceRoots.map(async (root) => await realpath(root)),
       );
       if (!realEvidenceRoots.some((root) => pathInsideOrEqual(realPath, root))) {
-        return undefined;
+        throw new Error("consumed_output_evidence_path_outside_root");
       }
       handle = await open(
         realPath,
@@ -254,7 +243,7 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
       );
       const metadata = await handle.stat();
       if (!metadata.isFile() || metadata.size > 16 * 1024 * 1024) {
-        return undefined;
+        throw new Error("consumed_output_evidence_file_invalid");
       }
       const hash = createHash("sha256");
       const buffer = Buffer.allocUnsafe(64 * 1024);
@@ -266,13 +255,19 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
           Math.min(buffer.length, metadata.size - position),
           position,
         );
-        if (bytesRead === 0) return undefined;
+        if (bytesRead === 0) {
+          throw new Error("consumed_output_evidence_file_truncated");
+        }
         hash.update(buffer.subarray(0, bytesRead));
         position += bytesRead;
       }
       return hash.digest("hex");
-    } catch {
-      return undefined;
+    } catch (error) {
+      if (nodeErrorCode(error) === "ENOENT") {
+        if (!await this.evidenceFileMetadata(path)) return undefined;
+        throw new Error("consumed_output_evidence_file_changed");
+      }
+      throw error;
     } finally {
       await handle?.close().catch(() => undefined);
     }
@@ -281,13 +276,104 @@ class LocalConsumedOutputLedgerSource implements ConsumedOutputLedgerSourcePort 
   async resolveWorkspacePath(path: string): Promise<string | undefined> {
     try {
       return await realpath(path);
-    } catch {
+    } catch (error) {
+      if (nodeErrorCode(error) === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+
+  private assertEvidencePath(path: string): void {
+    const resolvedPath = resolve(path);
+    if (!this.evidenceRoots.some((root) => pathInsideOrEqual(resolvedPath, root))) {
+      throw new Error("consumed_output_evidence_path_outside_root");
+    }
+  }
+
+  private async evidenceFileMetadata(path: string): Promise<Stats | undefined> {
+    this.assertEvidencePath(path);
+    let metadata: Stats;
+    try {
+      metadata = await lstat(path);
+    } catch (error) {
+      if (nodeErrorCode(error) !== "ENOENT") throw error;
+      await this.assertGenuinelyMissingEvidencePath(path);
       return undefined;
+    }
+    if (metadata.isSymbolicLink()) {
+      await this.assertEvidenceSymlinkTargetInsideRoot(path);
+      throw new Error("consumed_output_evidence_leaf_symlink_invalid");
+    }
+    if (!metadata.isFile()) {
+      throw new Error("consumed_output_evidence_file_invalid");
+    }
+    await this.assertExistingEvidencePathInsideRoot(path);
+    return metadata;
+  }
+
+  private async assertExistingEvidencePathInsideRoot(path: string): Promise<void> {
+    const [realPath, realEvidenceRoots] = await Promise.all([
+      realpath(path),
+      Promise.all(this.evidenceRoots.map(async (root) => await realpath(root))),
+    ]);
+    if (!realEvidenceRoots.some((root) => pathInsideOrEqual(realPath, root))) {
+      throw new Error("consumed_output_evidence_path_outside_root");
+    }
+  }
+
+  private async assertGenuinelyMissingEvidencePath(
+    path: string,
+  ): Promise<void> {
+    try {
+      const metadata = await lstat(path);
+      if (metadata.isSymbolicLink()) {
+        await this.assertEvidenceSymlinkTargetInsideRoot(path);
+        throw new Error("consumed_output_evidence_leaf_symlink_invalid");
+      }
+      throw new Error("consumed_output_evidence_missing_path_changed");
+    } catch (error) {
+      if (nodeErrorCode(error) !== "ENOENT") throw error;
+    }
+    await this.assertPathOrNearestExistingAncestorInsideRoot(dirname(resolve(path)));
+  }
+
+  private async assertEvidenceSymlinkTargetInsideRoot(path: string): Promise<void> {
+    const target = await readlink(path);
+    const resolvedTarget = resolve(dirname(path), target);
+    this.assertEvidencePath(resolvedTarget);
+    await this.assertPathOrNearestExistingAncestorInsideRoot(resolvedTarget);
+  }
+
+  private async assertPathOrNearestExistingAncestorInsideRoot(
+    path: string,
+  ): Promise<void> {
+    const realEvidenceRoots = await Promise.all(
+      this.evidenceRoots.map(async (root) => await realpath(root)),
+    );
+    let candidate = resolve(path);
+    for (;;) {
+      try {
+        const realCandidate = await realpath(candidate);
+        if (
+          !realEvidenceRoots.some((root) =>
+            pathInsideOrEqual(realCandidate, root)
+          )
+        ) {
+          throw new Error("consumed_output_evidence_path_outside_root");
+        }
+        return;
+      } catch (error) {
+        if (nodeErrorCode(error) !== "ENOENT") throw error;
+        const parent = dirname(candidate);
+        if (parent === candidate) {
+          throw new Error("consumed_output_evidence_ancestor_unavailable");
+        }
+        candidate = parent;
+      }
     }
   }
 }
 
-function ledgerFilenameMatchesPayload(
+export function ledgerFilenameMatchesPayload(
   filename: string,
   value: unknown,
 ): boolean {
@@ -317,6 +403,13 @@ function pathInsideOrEqual(path: string, root: string): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function nodeErrorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error &&
+      typeof error.code === "string"
+    ? error.code
+    : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
