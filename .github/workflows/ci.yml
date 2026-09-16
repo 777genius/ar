@@ -31,8 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Fetch pinned legacy ledger fixture
-        run: git fetch --no-tags --depth=1 origin d0a6885ddac5d90d765819359cfce05b756b7a54
+      - name: Fetch scrubbed public legacy ledger fixture
+        run: git fetch --no-tags --depth=1 origin 7d6d19a096f2cd0e3772f8369e6e09034c8b4280
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -66,6 +66,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Fetch scrubbed public legacy ledger fixture
+        run: git fetch --no-tags --depth=1 origin 7d6d19a096f2cd0e3772f8369e6e09034c8b4280
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
