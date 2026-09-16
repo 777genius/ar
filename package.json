@@ -203,7 +203,7 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.11"
   },
   "peerDependenciesMeta": {
     "vitest": {
@@ -212,6 +212,6 @@
   },
   "devDependencies": {
     "typescript": "^6.0.3",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.11"
   }
 }
