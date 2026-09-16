@@ -14,7 +14,15 @@ export const defaultCodexModel = "gpt-5.5";
 
 export const codexEnvironmentPolicy: ProviderEnvironmentPolicy = {
   inheritHostEnvironment: false,
-  allowlist: ["PATH", "HOME", "CI", "CODEX_HOME"],
+  allowlist: [
+    "PATH",
+    "HOME",
+    "CI",
+    "CODEX_HOME",
+    "SUBSCRIPTION_RUNTIME_SANDBOX_KIND",
+    "SUBSCRIPTION_RUNTIME_HOST_JOB_ID",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_*",
+  ],
   denylist: [
     "GITHUB_TOKEN",
     "GH_TOKEN",

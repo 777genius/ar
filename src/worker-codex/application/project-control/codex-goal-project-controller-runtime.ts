@@ -6,6 +6,7 @@ import {
 } from "@vioxen/subscription-runtime/worker-core";
 
 export type ProjectControllerProviderRegistry = {
+  readonly hasAny?: () => boolean;
   readonly get: (sessionId: string) => ControlledAgentProviderPort | undefined;
   readonly set: (
     sessionId: string,
@@ -20,6 +21,7 @@ export function createInMemoryProjectControllerProviderRegistry():
   ProjectControllerProviderRegistry {
   const providers = new Map<string, ControlledAgentProviderPort>();
   return {
+    hasAny: () => providers.size > 0,
     get(sessionId) {
       return providers.get(sessionId);
     },

@@ -7,6 +7,7 @@ import {
 import {
   codexProviderEgressConfigToml,
   codexProviderEgressEnv,
+  type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 
 export type CodexControlledAgentProfileInput = {
@@ -19,6 +20,7 @@ export type CodexControlledAgentProfileInput = {
 };
 
 export type CodexControlledAgentProfile = {
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly providerKind: RunEventProviderKind.Codex;
   readonly codexHome: string;
   readonly configToml: string;
@@ -170,3 +172,15 @@ function starlarkStringArray(values: readonly string[]): string {
 }
 
 export const codexControlledAgentProviderEgressEnv = codexProviderEgressEnv;
+
+/** Only the adapter applies an authenticated policy to a generated profile. */
+export function withControlledAgentEgress(
+  profile: CodexControlledAgentProfile, policy: CodexProviderEgressPolicy,
+): CodexControlledAgentProfile {
+  const original = codexProviderEgressConfigToml();
+  if (!profile.configToml.endsWith(original + "\n")) {
+    throw new Error("controlled_agent_generated_egress_config_required");
+  }
+  return { ...profile, providerEgressPolicy: policy,
+    configToml: profile.configToml.slice(0, -original.length - 1) + codexProviderEgressConfigToml(policy) + "\n" };
+}

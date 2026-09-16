@@ -6,6 +6,7 @@ import {
   ResourceTemplate,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { ProviderRuntimeRegistry } from "./codex-goal-provider-runtime";
 import {
   listCodexGoalJobs,
   readCodexGoalJob,
@@ -25,6 +26,8 @@ import {
   registerCodexGoalLaunchTools,
 } from "./codex-goal-mcp-operation-tools";
 import { registerCodexGoalAccountTools } from "./codex-goal-mcp-account-tools";
+import { subscriptionRuntimePackageVersion } from
+  "./subscription-runtime-package-version";
 export { buildCodexGoalBrief } from "./codex-goal-mcp-brief";
 export {
   projectControllerPendingGuidancePromptContext,
@@ -35,26 +38,26 @@ export {
   visibleCodexGoalAccountPoolSlots,
 } from "./codex-goal-mcp-accounts";
 
-const serverVersion = "0.1.0-main.2";
-
-export type CodexGoalMcpServerOptions = CodexGoalWorkerControlToolOptions;
+export type CodexGoalMcpServerOptions = CodexGoalWorkerControlToolOptions & {
+  readonly providerRuntimeRegistry?: ProviderRuntimeRegistry;
+};
 
 export function createCodexGoalMcpServer(
   options: CodexGoalMcpServerOptions = {},
 ): McpServer {
   const server = new McpServer({
     name: "subscription-runtime-codex-goal",
-    version: serverVersion,
+    version: subscriptionRuntimePackageVersion,
   });
 
   registerCodexGoalJobResource(server);
   registerCodexGoalPrompts(server);
   registerCodexGoalJobTools(server);
-  registerCodexGoalRunEventTools(server);
+  registerCodexGoalRunEventTools(server, options);
   registerCodexGoalWorkerControlTools(server, options);
   registerCodexGoalAccountTools(server);
   registerCodexGoalLaunchTools(server);
-  registerCodexGoalProjectControlTools(server);
+  registerCodexGoalProjectControlTools(server, options);
   registerCodexGoalInspectionTools(server);
 
   return server;

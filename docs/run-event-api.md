@@ -83,7 +83,10 @@ Current local adapter:
 - dedupes by deterministic `eventId`;
 - supports cursor reads;
 - tolerates corrupt or partial lines by skipping invalid lines;
-- stores projection state per run so polling does not re-emit unchanged facts.
+- stores projection state and pending transactions per run, provider and registry
+  root so shared outboxes cannot mix equal run IDs; host IDs remain metadata;
+- emits lifecycle observations when status, liveness or stale flags change,
+  allowing replay to reproduce transitions even without a new result artifact;
 - exposes explicit retention/compaction primitives. Compaction is never a hidden
   side effect of append/read/project.
 
@@ -211,6 +214,23 @@ and delivery cursors, requires `--confirm`, and never starts, stops, continues
 or recovers workers. `project-events` observes worker state and writes only the
 event outbox plus projection state; it never starts, stops, continues or
 recovers workers.
+
+Projection state readers should pass the source (`providerKind` and
+`registryRootDir`) when using the SDK. Supplying `providerKind` to projection
+also avoids an extra provider-discovery observation. Generic MCP state reads
+without `providerKind` inspect retained history to detect ambiguous providers;
+use an explicit provider for repeated monitoring. Unscoped SDK reads may resolve a unique source;
+multiple sources are explicitly ambiguous. Replay accepts one source at a time.
+Generic event inventory can still return multiple sources; retain source filters
+when replaying or paging a particular run.
+
+Legacy pending transactions migrate only when every event proves the same
+source. Migration writes the scoped transaction before retiring the legacy copy,
+and recovers safely if interrupted between those writes. Legacy state without
+source ownership is rebuilt from exact-source history only when an initial
+observation is retained. If compaction removed that baseline, projection returns
+`legacy_run_event_projection_scope_ambiguous`; inspect the durable history and
+restore a complete baseline before retrying. It does not silently reset state.
 
 ## Important Edge Cases
 

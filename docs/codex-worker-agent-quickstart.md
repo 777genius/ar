@@ -69,6 +69,17 @@ subscription-runtime-codex-goal tool codex_goal_continue --args-json '{"jobId":"
    stop and resolve the single-writer conflict before continuing any job.
 3. Call `codex_goal_get_job({ jobId })`.
 4. Call `codex_goal_brief({ jobId })`.
+   The default `detail: "compact"` omits logs and verbose diagnostics and keeps
+   its complete MCP envelope within 64 KiB. When fields are shortened it returns
+   `truncation.truncated`, omitted counts, and retrieval guidance; totals such as
+   `status.dirtyFileCount` remain available. Save the
+   returned `revision` and pass it as `afterRevision` on subsequent polls.
+   `unchanged: true` contains no repeated `brief` or `status`; retain the previous
+   snapshot. Heartbeat timestamps alone do not change this revision, but stale,
+   liveness, result, safety and next-action transitions do.
+   Poll later with backoff while unchanged; avoid repeating overview, manifest,
+   decision and log calls on every poll. Use `detail: "full"` when diagnostic
+   fields are needed, or `includeLogTail: true` for an explicit bounded log tail.
 5. Call `codex_goal_decision({ jobId })` when you need to act. It returns
    `decision.action`, `decision.severity`, `decision.blockers`, `decision.evidence`,
    `decision.checklist` and `decision.nextBestCommand`.
@@ -85,6 +96,7 @@ subscription-runtime-codex-goal tool codex_goal_continue --args-json '{"jobId":"
    `brief.lifecycleMarkers` and `codex_goal_overview.jobs[].lifecycleMarkers`
    show existing pause, review and stop markers so agents do not have to inspect
    jobRootDir by hand.
+   Request `codex_goal_brief({ jobId, detail: "full" })` for these diagnostics.
    Prefer `brief.progressUpdatedAt` and `brief.progressHeartbeatAgeMs` over
    stdout silence when deciding whether a worker is actually stale.
    If stdout log is empty, inspect `brief.runtimeEventsPath`,
@@ -109,6 +121,24 @@ requires Codex CLI `0.144.0` or newer. Availability remains account-specific;
 on a model rejection, the app-server runtime reports the current account's
 `model/list` catalog instead of silently selecting another model.
 
+Keep an explicit `codexGoalObjective` short (at most 4000 characters). The full
+task belongs in `promptPath`. If the objective is omitted, the runner generates
+a short reference to the full initial task and its acceptance criteria, preserving
+the complete task instructions in the first message.
+
+For event history, `agent_run_events` / `codex_goal_events` request 100 events by
+default, at most 500. The complete MCP response is capped at 64 KiB, including
+text and structured output. A scan or response budget can return fewer events,
+including zero, while `hasMore` remains true. Continue with the exact opaque
+`nextCursor`; do not calculate cursor offsets or stop only because a page is empty.
+Large records have explicit omission diagnostics and remain in the durable log.
+Projection tools use `eventLimit` for events and retain `limit` for run selection.
+Legacy numeric cursors remain accepted. A replaced log invalidates an external
+versioned cursor and reports a restart warning; replayed events retain event IDs.
+These cursors do not replace a fresh decision before a lifecycle action.
+
+See [long-session audit](codex-long-session-audit.md) for measurements and limits.
+
 Create one stored job per logical goal and per writer worktree:
 
 ```json
@@ -125,7 +155,7 @@ Create one stored job per logical goal and per writer worktree:
   "progressHeartbeatMs": 60000,
   "accounts": ["account-a", "account-b", "account-c"],
   "tmuxSession": "my-task",
-  "model": "gpt-5.5",
+  "model": "gpt-6-astra",
   "reasoningEffort": "high",
   "serviceTier": "default",
   "executionEngine": "app-server-goal",
@@ -297,6 +327,8 @@ codex_goal_project_controller_status({ controllerJobId, ... })
 codex_goal_project_start({ controllerJobId, jobId, confirmStart: true })
 codex_goal_project_mark_reviewed({ controllerJobId, jobId })
 codex_goal_project_record_failed_no_output({ controllerJobId, jobId, terminalAttemptId, failureCategory, failureCode, confirmFailedNoOutput: true })
+codex_goal_project_retire_legacy_job_summary({ controllerJobId, jobId, confirmRetirement: false, ... })
+codex_goal_project_import_frozen_output({ controllerJobId, confirmFrozenOutputImport: false, ... })
 codex_goal_project_open_integration_attempt({ controllerJobId, ... })
 codex_goal_project_apply_worker_output({ controllerJobId, attemptId, ... })
 codex_goal_project_run_required_checks({ controllerJobId, attemptId, ... })
@@ -311,6 +343,14 @@ must be clean unless it contains a preexisting producer patch. In that case,
 pass its scoped path and verified SHA-256 with
 `confirmPreexistingWorkspacePatch: true`. The command appends a new terminal
 receipt and never rewrites the original ledger record.
+
+Legacy control debt uses the two distinct preview/confirm surfaces shown above.
+Summary retirement is limited to exact unlaunched missing-workspace manifests;
+frozen-output import is limited to stopped dirty manifest-only summaries and an
+output-bearing retained registration. See
+[project-control-debt-remediation.md](./project-control-debt-remediation.md)
+for their path, CAS, and immutable-receipt contracts. Neither surface creates
+`failed_no_output` evidence.
 
 Child jobs created by `codex_goal_project_create_job` inherit a narrowed scope
 from the controller. They default to

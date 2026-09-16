@@ -212,20 +212,14 @@ function isCodexTimeoutFailure(normalizedMessage: string): boolean {
 function isCodexInvalidOutputFailure(normalizedMessage: string): boolean {
   return (
     normalizedMessage.includes("codex_json_event_invalid") ||
-    normalizedMessage.includes("codex_json_turn_usage_invalid") ||
-    normalizedMessage.includes("codex_json_turn_usage_missing_or_invalid") ||
     normalizedMessage.includes("codex_json_final_message_missing") ||
     normalizedMessage.includes("codex_structured_output_invalid") ||
     normalizedMessage.includes("codex_json_output_too_large") ||
     normalizedMessage.includes("codex_app_server_final_message_missing") ||
     normalizedMessage.includes("codex_app_server_goal_turn_output_missing") ||
     normalizedMessage.includes("codex_app_server_structured_output_invalid") ||
-    normalizedMessage.includes("codex_app_server_output_too_large")
-    || normalizedMessage.includes("codex_app_server_effective_selection_mismatch")
-    || normalizedMessage.includes("codex_app_server_model_rerouted")
-    || normalizedMessage.includes("codex_app_server_execution_receipt_missing")
-    || normalizedMessage.includes("codex_app_server_turn_usage_duplicate")
-    || normalizedMessage.includes("codex_app_server_turn_usage_wrong_turn")
+    normalizedMessage.includes("codex_app_server_output_too_large") ||
+    normalizedMessage.includes("codex_stream_output_invalid")
   );
 }
 

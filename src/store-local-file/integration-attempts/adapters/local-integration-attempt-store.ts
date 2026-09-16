@@ -8,6 +8,10 @@ import type {
   IntegrationAuditEvent,
 } from "../ports/integration-attempt-store-contracts";
 import { hashIntegrationAttemptId } from "../domain/integration-attempt-file-policy";
+import {
+  acquireLocalControllerActivityLease,
+  releaseLocalControllerActivityLease,
+} from "../../local-controller-maintenance-fence";
 
 export type LocalIntegrationAttemptStoreOptions = {
   readonly rootDir: string;
@@ -18,9 +22,11 @@ export class LocalIntegrationAttemptStore implements IntegrationAttemptStorePort
   constructor(private readonly options: LocalIntegrationAttemptStoreOptions) {}
 
   async create(attempt: IntegrationAttempt): Promise<void> {
-    const existing = await this.get(attempt.attemptId);
-    if (existing) throw new Error("integration_attempt_already_exists");
-    await this.writeAttempt(attempt);
+    await this.withActivityLease(`integration-create:${attempt.attemptId}`, async () => {
+      const existing = await this.get(attempt.attemptId);
+      if (existing) throw new Error("integration_attempt_already_exists");
+      await this.writeAttempt(attempt);
+    });
   }
 
   async get(attemptId: string): Promise<IntegrationAttempt | null> {
@@ -34,18 +40,22 @@ export class LocalIntegrationAttemptStore implements IntegrationAttemptStorePort
   }
 
   async update(attempt: IntegrationAttempt): Promise<void> {
-    await this.writeAttempt(attempt);
+    await this.withActivityLease(`integration-update:${attempt.attemptId}`, async () => {
+      await this.writeAttempt(attempt);
+    });
   }
 
   async appendEvent(
     attemptId: string,
     event: IntegrationAuditEvent,
   ): Promise<void> {
-    const path = this.eventsPath(attemptId);
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    await appendFile(path, `${JSON.stringify(event)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
+    await this.withActivityLease(`integration-event:${attemptId}`, async () => {
+      const path = this.eventsPath(attemptId);
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      await appendFile(path, `${JSON.stringify(event)}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
     });
   }
 
@@ -93,6 +103,21 @@ export class LocalIntegrationAttemptStore implements IntegrationAttemptStorePort
   private attemptsDir(): string {
     return this.options.attemptsDir ??
       join(this.options.rootDir, "integration-attempts");
+  }
+
+  async withActivityLease<T>(
+    owner: string,
+    effect: () => Promise<T>,
+  ): Promise<T> {
+    const lease = await acquireLocalControllerActivityLease({
+      controllerJobRootDir: dirname(this.options.rootDir),
+      owner,
+    });
+    try {
+      return await effect();
+    } finally {
+      await releaseLocalControllerActivityLease(lease);
+    }
   }
 }
 

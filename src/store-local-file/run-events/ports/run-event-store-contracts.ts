@@ -9,6 +9,7 @@ export type {
   RunEventDeliveryCursorSnapshot,
   RunEventDeliveryCursorStorePort,
   RunEventProjectionState,
+  RunEventProjectionResult,
   RunEventProjectionStateStorePort,
   RunEventReadModels,
   RunEventReadRequest,

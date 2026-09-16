@@ -12,8 +12,11 @@ import {
 import { cleanupCodexRuntimeTempRoot } from "./codex-cli-temp-cleanup";
 import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 import {
+  CodexProviderEgressProfileId,
+  codexProviderEgressPolicy,
   codexProviderEgressConfigToml,
   codexProviderEgressEnv,
+  type CodexProviderEgressPolicy,
 } from "./codex-provider-egress-policy";
 import type { CodexMaterializedSession } from "./codex-json-execution-engine";
 
@@ -125,6 +128,7 @@ export type CodexWorkerCacheSessionMaterializerOptions = {
   readonly rootDir?: string;
   /** Host-generated Codex config for this isolated worker slot. */
   readonly configToml?: string;
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   /**
    * Keep the cache directory on dispose. The parent must be host-owned private
    * durable state when this is used for logical-thread continuation.
@@ -158,7 +162,12 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
     if (!options.cacheKey.trim()) {
       throw new Error("codex_worker_cache_key_required");
     }
-    this.cacheKeyHash = stableHash(options.cacheKey).slice(0, 32);
+    const providerEgressPolicy = codexProviderEgressPolicy(
+      options.providerEgressPolicy?.profileId ?? CodexProviderEgressProfileId.ProviderApi,
+    );
+    this.options = { ...options, providerEgressPolicy };
+    this.cacheKeyHash = stableHash(providerEgressPolicy.profileId !== CodexProviderEgressProfileId.ProviderApi
+      ? `${options.cacheKey}:${providerEgressPolicy.profileId}` : options.cacheKey).slice(0, 32);
   }
 
   async materialize(input: {
@@ -176,7 +185,7 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
         env: {
           HOME: entry.home,
           CODEX_HOME: entry.codexHome,
-          ...codexProviderEgressEnv(),
+          ...codexProviderEgressEnv(this.options.providerEgressPolicy),
         },
         snapshotSession: () =>
           snapshotCodexSession({ codexHome: entry.codexHome }),
@@ -244,7 +253,7 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
         codexHome: entry.codexHome,
         authJson,
         ...(this.options.configToml === undefined
-          ? {}
+          ? { configToml: codexJsonHomeConfigToml({ providerEgressPolicy: this.options.providerEgressPolicy }) }
           : { configToml: this.options.configToml }),
       });
       entry.sessionHash = sessionHash;
@@ -255,7 +264,7 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
     await writeCodexJsonConfig({
       codexHome: entry.codexHome,
       ...(this.options.configToml === undefined
-        ? {}
+        ? { configToml: codexJsonHomeConfigToml({ providerEgressPolicy: this.options.providerEgressPolicy }) }
         : { configToml: this.options.configToml }),
     });
 
@@ -313,6 +322,7 @@ export type CodexWorkerCacheSessionPoolMaterializerOptions = {
   readonly rootDir?: string;
   /** Host-generated Codex config shared by every isolated pool slot. */
   readonly configToml?: string;
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly preserveOnDispose?: boolean;
   readonly scrubAuthOnDispose?: boolean;
 };
@@ -336,6 +346,7 @@ export class CodexWorkerCacheSessionPoolMaterializer implements CodexSessionMate
     this.slots = Array.from({ length: options.slots }, (_, index) => {
       return new CodexWorkerCacheSessionMaterializer({
         cacheKey: `${options.cacheKey}:slot:${index + 1}`,
+        ...(options.providerEgressPolicy ? { providerEgressPolicy: options.providerEgressPolicy } : {}),
         ...(options.rootDir ? { rootDir: options.rootDir } : {}),
         ...(options.configToml === undefined
           ? {}
@@ -455,7 +466,10 @@ async function snapshotCodexSession(input: {
   return sessionArtifactFromCodexAuthJson(authJson);
 }
 
-function codexJsonHomeConfigToml(): string {
+export function codexJsonHomeConfigToml(input?: {
+  readonly hooksEnabled?: boolean;
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy | undefined;
+}): string {
   return [
     'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
@@ -466,7 +480,7 @@ function codexJsonHomeConfigToml(): string {
     "",
     "[features]",
     "apps = false",
-    "hooks = false",
+    `hooks = ${input?.hooksEnabled === true ? "true" : "false"}`,
     "memories = false",
     "multi_agent = false",
     "shell_snapshot = false",
@@ -482,10 +496,10 @@ function codexJsonHomeConfigToml(): string {
     "log_user_prompt = false",
     "",
     "[shell_environment_policy]",
-    'inherit = "none"',
-    'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
+    'inherit = "all"',
+    'include_only = ["PATH", "HOME", "CI", "CODEX_HOME", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL"]',
     "",
-    codexProviderEgressConfigToml(),
+    codexProviderEgressConfigToml(input?.providerEgressPolicy),
   ].join("\n");
 }
 

@@ -40,8 +40,10 @@ export type ClaudeTaskEngineInput = {
   readonly mcpConfig?: readonly string[];
   readonly editMode?: ProviderTaskControls["editMode"];
   readonly providerSandboxMode?: ProviderTaskControls["providerSandboxMode"];
+  readonly workspaceInstructionPolicy?: ProviderTaskControls["workspaceInstructionPolicy"];
   readonly strictMcpConfig?: boolean;
   readonly outputSchemaName?: string;
+  readonly outputSchema?: Readonly<Record<string, unknown>>;
   readonly runtimeThread?: ClaudeRuntimeThreadInput;
   readonly abortSignal: AbortSignal;
 };

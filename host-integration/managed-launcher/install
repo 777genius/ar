@@ -1,0 +1,58 @@
+#!/bin/sh
+set -eu
+[ "$(id -u)" = 0 ] || { echo 'installation requires root' >&2; exit 1; }
+integration_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+destination=/opt/subscription-runtime
+fail() { echo "managed launcher installation: $*" >&2; exit 1; }
+# Tini must be available before any installed state is changed. Check its full
+# ancestry with the same ownership, symlink and write rules as runtime trust.
+tini=/usr/bin/tini
+[ -f "$tini" ] && [ -x "$tini" ] || fail 'requires executable /usr/bin/tini (install the tini package)'
+trusted_path=$tini
+while :; do
+  [ ! -L "$trusted_path" ] || fail 'untrusted Tini path: symlink'
+  [ "$trusted_path" = "$tini" ] || [ -d "$trusted_path" ] || fail 'untrusted Tini ancestor'
+  trusted_uid=$(stat -c %u "$trusted_path") || fail 'cannot inspect Tini owner'
+  trusted_mode=$(stat -c %a "$trusted_path") || fail 'cannot inspect Tini permissions'
+  [ "$trusted_uid" = 0 ] && [ "$((0$trusted_mode & 0022))" = 0 ] || fail 'Tini and ancestors must be root-owned and not group/other writable'
+  [ "$trusted_path" != / ] || break
+  trusted_path=$(dirname -- "$trusted_path")
+done
+# Missing destination components are allowed, but every existing component
+# must already be trusted. Never let install -d repair an attacker-owned tree.
+check_trusted_path() {
+  trusted_path=$1
+  trusted_kind=$2
+  while :; do
+    if [ -e "$trusted_path" ] || [ -L "$trusted_path" ]; then
+      [ ! -L "$trusted_path" ] || fail "untrusted path: symlink: $trusted_path"
+      if [ "$trusted_kind" = file ]; then
+        [ -f "$trusted_path" ] || fail "trusted source must be a regular file: $trusted_path"
+      else
+        [ -d "$trusted_path" ] || fail "trusted ancestor must be a directory: $trusted_path"
+      fi
+      trusted_uid=$(stat -c %u "$trusted_path") || fail 'cannot inspect path owner'
+      trusted_mode=$(stat -c %a "$trusted_path") || fail 'cannot inspect path permissions'
+      [ "$trusted_uid" = 0 ] && [ "$((0$trusted_mode & 0022))" = 0 ] || fail "path must be root-owned and not group/other writable: $trusted_path"
+    else
+      [ "$trusted_kind" != file ] || fail "missing trusted source: $trusted_path"
+    fi
+    [ "$trusted_path" != / ] || break
+    trusted_path=$(dirname -- "$trusted_path")
+    trusted_kind=directory
+  done
+}
+for target_dir in "$destination" "$destination/managed-launcher" "$destination/host-jobs"; do
+  check_trusted_path "$target_dir" directory
+done
+for source_file in managed-launcher/launch.mjs managed-launcher/payload-guard.mjs managed-launcher/profiles.mjs host-jobs/storage-policy.mjs; do
+  check_trusted_path "$integration_dir/$source_file" file
+  if [ -e "$destination/$source_file" ] || [ -L "$destination/$source_file" ]; then
+    check_trusted_path "$destination/$source_file" file
+  fi
+done
+install -d -o root -g root -m 0755 "$destination" "$destination/managed-launcher" "$destination/host-jobs"
+install -o root -g root -m 0644 "$integration_dir/managed-launcher/launch.mjs" "$destination/managed-launcher/launch.mjs"
+install -o root -g root -m 0644 "$integration_dir/managed-launcher/payload-guard.mjs" "$destination/managed-launcher/payload-guard.mjs"
+install -o root -g root -m 0644 "$integration_dir/managed-launcher/profiles.mjs" "$destination/managed-launcher/profiles.mjs"
+install -o root -g root -m 0644 "$integration_dir/host-jobs/storage-policy.mjs" "$destination/host-jobs/storage-policy.mjs"

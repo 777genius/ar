@@ -174,6 +174,12 @@ describe("Codex provider app-server adapter", () => {
       failThreadStart: true,
     });
     const fallback = new RecordingJsonEngine("fallback output");
+    const outputSchema = {
+      type: "object",
+      properties: { verdict: { type: "string" } },
+      required: ["verdict"],
+      additionalProperties: false,
+    } as const;
     const driver = new CodexJsonAgentDriver({
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: "/bin/codex-test",
@@ -182,12 +188,17 @@ describe("Codex provider app-server adapter", () => {
       }),
       model: "gpt-test",
       reasoningEffort: "low",
+      outputSchemas: { verdict: outputSchema },
     });
 
     try {
       const result = await driver.runTask({
         session: sessionArtifactFromCodexAuthJson(validAuthJson),
-        task: { kind: "review", prompt: "fallback please" },
+        task: {
+          kind: "review",
+          prompt: "fallback please",
+          outputSchemaName: "verdict",
+        },
         workspace: { path: workspace },
         runner: new StaticRunner(""),
         redactor: new DefaultRedactor(),
@@ -202,13 +213,55 @@ describe("Codex provider app-server adapter", () => {
         "codex_app_server_fallback",
       );
       expect(fallback.prompts).toEqual(["fallback please"]);
+      expect(fallback.outputSchemaPlans).toHaveLength(1);
+      expect(fallback.outputSchemaPlans[0]?.providerSchema).toEqual(outputSchema);
+      expect(Object.isFrozen(fallback.outputSchemaPlans[0])).toBe(true);
     } finally {
       await driver.dispose();
       await rm(workspace, { recursive: true, force: true });
     }
   });
 
-  it("falls back when app-server errors after turn start responds", async () => {
+  it("redacts an app-server failure before exposing the fallback warning without replaying it", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-fallback-warning-redaction-test-"));
+    const secret = "app-server-fallback-warning-canary";
+    const fakeFactory = new FakeAppServerFactory({
+      failThreadStart: true,
+      threadStartError: secret,
+    });
+    const fallback = new RecordingJsonEngine("fallback output");
+    const redactor = new DefaultRedactor();
+    redactor.registerSecret(secret, "fallback-test");
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        fallback,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "redact fallback warning" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor,
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result).toMatchObject({ status: "completed", outputText: "fallback output" });
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(fallback.prompts).toEqual(["redact fallback warning"]);
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not replay when app-server errors after turn start responds", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-app-turn-error-fallback-test-"));
     const fakeFactory = new FakeAppServerFactory({
       emitProcessErrorAfterTurnStartResponse: true,
@@ -235,21 +288,15 @@ describe("Codex provider app-server adapter", () => {
         abortSignal: new AbortController().signal,
       });
 
-      expect(result).toMatchObject({
-        status: "completed",
-        outputText: "fallback output",
-      });
-      expect(result.warnings.map((warning) => warning.code)).toContain(
-        "codex_app_server_fallback",
-      );
-      expect(fallback.prompts).toEqual(["fallback after turn start"]);
+      expect(result).toMatchObject({ status: "failed" });
+      expect(fallback.prompts).toEqual([]);
     } finally {
       await driver.dispose();
       await rm(workspace, { recursive: true, force: true });
     }
   });
 
-  it("falls back when writing an app-server request fails", async () => {
+  it("does not replay when writing a turn-start request fails", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-app-write-failure-test-"));
     const fakeFactory = new FakeAppServerFactory({
       throwOnRequestMethod: "turn/start",
@@ -276,21 +323,15 @@ describe("Codex provider app-server adapter", () => {
         abortSignal: new AbortController().signal,
       });
 
-      expect(result).toMatchObject({
-        status: "completed",
-        outputText: "fallback output",
-      });
-      expect(result.warnings.map((warning) => warning.code)).toContain(
-        "codex_app_server_fallback",
-      );
-      expect(fallback.prompts).toEqual(["fallback after write failure"]);
+      expect(result).toMatchObject({ status: "failed" });
+      expect(fallback.prompts).toEqual([]);
     } finally {
       await driver.dispose();
       await rm(workspace, { recursive: true, force: true });
     }
   });
 
-  it("falls back when responding to an unsupported app-server request fails", async () => {
+  it("does not replay when responding to an unsupported app-server request fails", async () => {
     const workspace = await mkdtemp(
       join(tmpdir(), "codex-app-server-response-failure-test-"),
     );
@@ -320,21 +361,15 @@ describe("Codex provider app-server adapter", () => {
         abortSignal: new AbortController().signal,
       });
 
-      expect(result).toMatchObject({
-        status: "completed",
-        outputText: "fallback output",
-      });
-      expect(result.warnings.map((warning) => warning.code)).toContain(
-        "codex_app_server_fallback",
-      );
-      expect(fallback.prompts).toEqual(["fallback after response failure"]);
+      expect(result).toMatchObject({ status: "failed" });
+      expect(fallback.prompts).toEqual([]);
     } finally {
       await driver.dispose();
       await rm(workspace, { recursive: true, force: true });
     }
   });
 
-  it("falls back when the app-server stdin stream errors", async () => {
+  it("does not replay when the app-server stdin stream errors", async () => {
     const workspace = await mkdtemp(
       join(tmpdir(), "codex-app-stdin-stream-error-test-"),
     );
@@ -363,14 +398,8 @@ describe("Codex provider app-server adapter", () => {
         abortSignal: new AbortController().signal,
       });
 
-      expect(result).toMatchObject({
-        status: "completed",
-        outputText: "fallback output",
-      });
-      expect(result.warnings.map((warning) => warning.code)).toContain(
-        "codex_app_server_fallback",
-      );
-      expect(fallback.prompts).toEqual(["fallback after stdin error"]);
+      expect(result).toMatchObject({ status: "failed" });
+      expect(fallback.prompts).toEqual([]);
     } finally {
       await driver.dispose();
       await rm(workspace, { recursive: true, force: true });

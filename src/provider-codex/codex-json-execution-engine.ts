@@ -20,6 +20,11 @@ import { pruneCodexChildEnv } from "./codex-cli-domain";
 import { composeCodexPrompt } from "./codex-prompt-composer";
 import { codexProviderEgressCliConfigArgs } from "./codex-provider-egress-policy";
 import { parseCodexStructuredOutput } from "./structured-output";
+import {
+  normalizeCodexStructuredOutput,
+  prepareCodexStructuredOutputSchema,
+  type CodexStructuredOutputSchemaPlan,
+} from "./codex-structured-output-schema";
 
 export type CodexReasoningEffort =
   | "minimal"
@@ -54,22 +59,11 @@ export type CodexExecutionWarning = {
   readonly safeMessage: string;
 };
 
-export type CodexAppServerExecutionReceipt = {
-  readonly kind: "app-server";
-  readonly threadId: string;
-  readonly turnId: string;
-  readonly model: string;
-  readonly modelProvider: string;
-  readonly reasoningEffort: CodexReasoningEffort;
-  readonly serviceTier?: CodexServiceTier;
-};
-
 export type CodexExecutionCompletedResult = {
   readonly status?: "completed";
   readonly outputText: string;
   readonly structuredOutput?: unknown;
   readonly usage?: AgentUsage;
-  readonly executionReceipt?: CodexAppServerExecutionReceipt;
   readonly warnings: readonly CodexExecutionWarning[];
 };
 
@@ -102,6 +96,8 @@ export type CodexExecutionInput = {
   readonly serviceTier?: CodexServiceTier;
   readonly sandboxMode?: CodexSandboxMode;
   readonly outputSchema?: unknown;
+  /** Provider-internal immutable plan reused across app-server fallback. */
+  readonly outputSchemaPlan?: CodexStructuredOutputSchemaPlan;
   readonly abortSignal: AbortSignal;
   readonly onTextDelta?: (text: string) => void;
 };
@@ -211,9 +207,12 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
   readonly serviceTier?: CodexServiceTier;
   readonly sandboxMode?: CodexSandboxMode;
   readonly outputSchema?: unknown;
+  readonly outputSchemaPlan?: CodexStructuredOutputSchemaPlan;
   readonly abortSignal: AbortSignal;
   }): Promise<CodexExecutionResult> {
-    const schemaFile = await writeOutputSchemaFile(input.outputSchema);
+    const schemaPlan = input.outputSchemaPlan ??
+      prepareCodexOutputSchemaPlan(input.outputSchema);
+    const schemaFile = await writeOutputSchemaFile(schemaPlan);
     try {
       const args = buildCodexJsonExecArgs({
         jsonFlag: this.options.jsonFlag ?? "--json",
@@ -265,19 +264,19 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
       }
 
       const outputText = extractFinalAssistantText(stdout);
-      const usage = extractTurnCompletedUsage(stdout);
       if (input.outputSchema) {
         return {
           outputText,
-          structuredOutput: parseStructuredOutput(outputText),
-          ...(usage === undefined ? {} : { usage }),
+          structuredOutput: normalizeCodexOutput(
+            schemaPlan,
+            parseStructuredOutput(outputText),
+          ),
           warnings: [],
         };
       }
 
       return {
         outputText,
-        ...(usage === undefined ? {} : { usage }),
         warnings: [],
       };
     } finally {
@@ -360,15 +359,14 @@ export function buildCodexJsonExecArgs(input: {
 }
 
 async function writeOutputSchemaFile(
-  outputSchema: unknown,
+  schemaPlan: CodexStructuredOutputSchemaPlan | undefined,
 ): Promise<{ readonly path: string; dispose(): Promise<void> } | null> {
-  const schema = codexOutputSchemaPayload(outputSchema);
-  if (schema === undefined) return null;
+  if (schemaPlan === undefined) return null;
   const dir = await createCodexRuntimeTempRoot({
     prefix: "subscription-runtime-codex-schema-",
   });
   const path = join(dir, "schema.json");
-  await writeFile(path, `${JSON.stringify(schema, null, 2)}\n`, {
+  await writeFile(path, `${JSON.stringify(schemaPlan.codexSchema, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
@@ -381,19 +379,49 @@ async function writeOutputSchemaFile(
 }
 
 export function codexOutputSchemaPayload(outputSchema: unknown): unknown | undefined {
+  return prepareCodexOutputSchemaPlan(outputSchema)?.codexSchema;
+}
+
+export function normalizeCodexStructuredOutputForSchema(
+  outputSchema: unknown,
+  value: unknown,
+): unknown {
+  return normalizeCodexOutput(prepareCodexOutputSchemaPlan(outputSchema), value);
+}
+
+export function prepareCodexOutputSchemaPlan(
+  outputSchema: unknown,
+): CodexStructuredOutputSchemaPlan | undefined {
+  const schema = providerNeutralOutputSchema(outputSchema);
+  return schema === undefined
+    ? undefined
+    : prepareCodexStructuredOutputSchema(schema);
+}
+
+function providerNeutralOutputSchema(outputSchema: unknown): unknown | undefined {
   if (outputSchema === undefined || outputSchema === null) return undefined;
-  if (typeof outputSchema !== "object") return outputSchema;
-  if ("schema" in outputSchema) {
+  if (typeof outputSchema !== "object" || Array.isArray(outputSchema)) {
+    throw new Error("codex_output_schema_invalid:$:expected_schema_object");
+  }
+  if (Object.hasOwn(outputSchema, "schema")) {
     return (outputSchema as CodexOutputSchemaRequest).schema;
   }
   if (
-    "type" in outputSchema ||
-    "$schema" in outputSchema ||
-    "properties" in outputSchema
+    Object.hasOwn(outputSchema, "type") ||
+    Object.hasOwn(outputSchema, "$schema") ||
+    Object.hasOwn(outputSchema, "$ref") ||
+    Object.hasOwn(outputSchema, "properties")
   ) {
     return outputSchema;
   }
   return undefined;
+}
+
+function normalizeCodexOutput(
+  plan: CodexStructuredOutputSchemaPlan | undefined,
+  value: unknown,
+): unknown {
+  return plan === undefined ? value : normalizeCodexStructuredOutput(plan, value);
 }
 
 export function codexSandboxModeForControls(
@@ -483,74 +511,6 @@ function extractFinalAssistantText(stdout: string): string {
     throw new Error("codex_json_final_message_missing");
   }
   return finalText;
-}
-
-function extractTurnCompletedUsage(stdout: string): AgentUsage | undefined {
-  let completedUsage: AgentUsage | undefined;
-  for (const line of stdout.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let event: unknown;
-    try {
-      event = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-    if (!event || typeof event !== "object") continue;
-    const record = event as Record<string, unknown>;
-    if (record.type !== "turn.completed") continue;
-    if (completedUsage !== undefined) {
-      throw new Error("codex_json_turn_usage_invalid:multiple_turns");
-    }
-    completedUsage = parseTurnUsage(record.usage);
-  }
-  return completedUsage;
-}
-
-function parseTurnUsage(value: unknown): AgentUsage {
-  if (!value || typeof value !== "object") {
-    throw new Error("codex_json_turn_usage_invalid:missing");
-  }
-  const record = value as Record<string, unknown>;
-  const inputTokens = parseUsageCount(record.input_tokens, "input_tokens");
-  const outputTokens = parseUsageCount(record.output_tokens, "output_tokens");
-  const cachedInputTokens = parseUsageCount(
-    record.cached_input_tokens,
-    "cached_input_tokens",
-  );
-  const cacheWriteInputTokens = parseUsageCount(
-    record.cache_write_input_tokens ?? 0,
-    "cache_write_input_tokens",
-  );
-  const reasoningOutputTokens = parseUsageCount(
-    record.reasoning_output_tokens,
-    "reasoning_output_tokens",
-  );
-  if (cachedInputTokens > inputTokens) {
-    throw new Error("codex_json_turn_usage_invalid:cached_exceeds_input");
-  }
-  if (reasoningOutputTokens > outputTokens) {
-    throw new Error("codex_json_turn_usage_invalid:reasoning_exceeds_output");
-  }
-  const totalTokens = inputTokens + outputTokens;
-  if (!Number.isSafeInteger(totalTokens)) {
-    throw new Error("codex_json_turn_usage_invalid:total_tokens");
-  }
-  return {
-    inputTokens,
-    cachedInputTokens,
-    cacheWriteInputTokens,
-    outputTokens,
-    reasoningOutputTokens,
-    totalTokens,
-  };
-}
-
-function parseUsageCount(value: unknown, field: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`codex_json_turn_usage_invalid:${field}`);
-  }
-  return value;
 }
 
 function looksLikeJsonLine(value: string): boolean {

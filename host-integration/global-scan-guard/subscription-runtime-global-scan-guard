@@ -1,0 +1,314 @@
+#!/bin/bash
+set -euo pipefail
+
+readonly blocked_exit_code=64
+readonly remediation="search an assigned workspace/job descendant, or run the search from the current directory"
+
+blocked_root() {
+  local candidate="$1"
+  local part
+  local -a parts=()
+  local -a normalized_parts=()
+  if [[ "${candidate}" == /* ]]; then
+    IFS=/ read -r -a parts <<< "${candidate}"
+    for part in "${parts[@]}"; do
+      case "${part}" in
+        ""|.) continue ;;
+        ..)
+          if (( ${#normalized_parts[@]} > 0 )); then
+            unset 'normalized_parts[${#normalized_parts[@]}-1]'
+          fi
+          ;;
+        *) normalized_parts+=("${part}") ;;
+      esac
+    done
+    candidate=/
+    if (( ${#normalized_parts[@]} > 0 )); then
+      local IFS=/
+      candidate="/${normalized_parts[*]}"
+    fi
+  fi
+  case "${candidate}" in
+    /|/bin|/sbin|/lib|/lib64|/boot|/dev|/etc|/proc|/sys|/run|/usr|/opt|/srv|\
+    /snap|/var|/var/data|/var/lib|/var/cache|/var/tmp|/tmp|/root|/home|/mnt|\
+    /media) return 0 ;;
+  esac
+
+  # A provider volume mounted immediately below /mnt or /media is still a
+  # broad host root. Assigned job/workspace paths deeper inside it are safe.
+  if (( ${#normalized_parts[@]} == 2 )) &&
+    [[ "${normalized_parts[0]}" == mnt || "${normalized_parts[0]}" == media ]]
+  then
+    return 0
+  fi
+  return 1
+}
+
+reject_root() {
+  printf '%s\n' \
+    "subscription_runtime_global_scan_blocked tool=${tool} root=$1 remediation=${remediation} exit_code=${blocked_exit_code}" \
+    >&2
+  exit "${blocked_exit_code}"
+}
+
+guard_find() {
+  local arg
+  local paths_finished=0
+  local consume_next=0
+
+  for arg in "$@"; do
+    if (( consume_next )); then
+      consume_next=0
+      continue
+    fi
+    if (( paths_finished )); then
+      continue
+    fi
+    case "${arg}" in
+      --) continue ;;
+      -H|-L|-P) continue ;;
+      -D) consume_next=1; continue ;;
+      -D*|-O*) continue ;;
+      \!|\(|\)|,|-*) paths_finished=1; continue ;;
+    esac
+    blocked_root "${arg}" && reject_root "${arg}"
+  done
+  return 0
+}
+
+rg_option_takes_value() {
+  case "$1" in
+    -A|-B|-C|-d|-E|-M|-e|-f|-g|-j|-m|-r|-t|-T|--after-context|--before-context|\
+    --color|--colors|--context|--context-separator|--dfa-size-limit|--encoding|\
+    --engine|--field-context-separator|--field-match-separator|--file|--glob|\
+    --hostname-bin|--hyperlink-format|--iglob|--ignore-file|--max-columns|\
+    --max-columns-preview|--max-count|\
+    --max-depth|--max-filesize|--path-separator|--pre|--pre-glob|--regexp|\
+    --regex-size-limit|--replace|--sort|--sortr|--threads|--type|--type-add|\
+    --type-clear|--type-not) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+parse_rg_short_options() {
+  local cluster="${1#-}"
+  local option
+
+  while [[ -n "${cluster}" ]]; do
+    option="${cluster:0:1}"
+    cluster="${cluster:1}"
+    case "${option}" in
+      e|f)
+        rg_explicit_pattern=1
+        if [[ -z "${cluster}" ]]; then
+          rg_consume_next=1
+        fi
+        return 0
+        ;;
+      A|B|C|d|E|M|g|j|m|r|t|T)
+        if [[ -z "${cluster}" ]]; then
+          rg_consume_next=1
+        fi
+        return 0
+        ;;
+    esac
+  done
+}
+
+guard_rg() {
+  local arg
+  local index
+  local first_file_operand
+  local options_finished=0
+  local files_mode=0
+  local -a operands=()
+  rg_consume_next=0
+  rg_explicit_pattern=0
+
+  # ripgrep accepts options after positional operands. Defer role assignment so
+  # a later -e, -f or --files still makes every positional value a file path.
+  for arg in "$@"; do
+    if (( rg_consume_next )); then
+      rg_consume_next=0
+      continue
+    fi
+    if (( ! options_finished )); then
+      case "${arg}" in
+        --) options_finished=1; continue ;;
+        --files) files_mode=1; continue ;;
+        -e|-f|--regexp|--file) rg_explicit_pattern=1; rg_consume_next=1; continue ;;
+        --regexp=*|--file=*) rg_explicit_pattern=1; continue ;;
+        --*=*) continue ;;
+        -*)
+          if rg_option_takes_value "${arg}"; then
+            rg_consume_next=1
+          elif [[ "${arg}" != --* ]]; then
+            parse_rg_short_options "${arg}"
+          fi
+          continue
+          ;;
+      esac
+    fi
+
+    operands+=("${arg}")
+  done
+
+  first_file_operand=0
+  if (( ! files_mode && ! rg_explicit_pattern )); then
+    first_file_operand=1
+  fi
+  for (( index=first_file_operand; index<${#operands[@]}; index+=1 )); do
+    blocked_root "${operands[index]}" && reject_root "${operands[index]}"
+  done
+  return 0
+}
+
+grep_long_option_takes_value() {
+  case "$1" in
+    --after-context|--before-context|--binary-files|--context|--devices|\
+    --directories|--exclude|--exclude-from|--exclude-dir|--group-separator|\
+    --include|--label|--max-count) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+parse_grep_short_options() {
+  local cluster="${1#-}"
+  local option
+
+  while [[ -n "${cluster}" ]]; do
+    option="${cluster:0:1}"
+    cluster="${cluster:1}"
+    case "${option}" in
+      r|R)
+        grep_recursive=1
+        ;;
+      e|f)
+        grep_explicit_pattern=1
+        if [[ -z "${cluster}" ]]; then
+          grep_consume_next=1
+          grep_consume_kind=pattern
+        fi
+        return 0
+        ;;
+      d)
+        if [[ -z "${cluster}" ]]; then
+          grep_consume_next=1
+          grep_consume_kind=directories
+        elif [[ "${cluster}" == recurse ]]; then
+          grep_recursive=1
+        fi
+        return 0
+        ;;
+      A|B|C|D|m)
+        if [[ -z "${cluster}" ]]; then
+          grep_consume_next=1
+          grep_consume_kind=value
+        fi
+        return 0
+        ;;
+    esac
+  done
+}
+
+guard_grep() {
+  local arg
+  local index
+  local first_file_operand
+  local options_finished=0
+  local -a operands=()
+  grep_consume_next=0
+  grep_consume_kind=
+  grep_explicit_pattern=0
+  grep_recursive=0
+
+  # GNU grep permutes options around operands. Record positional operands first
+  # and decide their roles only after every option has been examined.
+  for arg in "$@"; do
+    if (( grep_consume_next )); then
+      grep_consume_next=0
+      if [[ "${grep_consume_kind}" == directories && "${arg}" == recurse ]]; then
+        grep_recursive=1
+      fi
+      grep_consume_kind=
+      continue
+    fi
+    if (( ! options_finished )); then
+      case "${arg}" in
+        --) options_finished=1; continue ;;
+        -r|-R|--recursive|--dereference-recursive)
+          grep_recursive=1
+          continue
+          ;;
+        -e|-f|--regexp|--file)
+          grep_explicit_pattern=1
+          grep_consume_next=1
+          grep_consume_kind=pattern
+          continue
+          ;;
+        --regexp=*|--file=*)
+          grep_explicit_pattern=1
+          continue
+          ;;
+        --directories=recurse)
+          grep_recursive=1
+          continue
+          ;;
+        --*=*) continue ;;
+        --*)
+          if grep_long_option_takes_value "${arg}"; then
+            grep_consume_next=1
+            if [[ "${arg}" == --directories ]]; then
+              grep_consume_kind=directories
+            else
+              grep_consume_kind=value
+            fi
+          fi
+          continue
+          ;;
+        -?*)
+          parse_grep_short_options "${arg}"
+          continue
+          ;;
+      esac
+    fi
+    operands+=("${arg}")
+  done
+
+  (( grep_recursive )) || return 0
+  first_file_operand=0
+  if (( ! grep_explicit_pattern )); then
+    first_file_operand=1
+  fi
+  for (( index=first_file_operand; index<${#operands[@]}; index+=1 )); do
+    blocked_root "${operands[index]}" && reject_root "${operands[index]}"
+  done
+  return 0
+}
+
+tool="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_TOOL:-${0##*/}}"
+case "${tool}" in
+  find)
+    guard_find "$@"
+    real_executable="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL:-}"
+    ;;
+  rg)
+    guard_rg "$@"
+    real_executable="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL:-}"
+    ;;
+  grep)
+    guard_grep "$@"
+    real_executable="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL:-}"
+    ;;
+  *)
+    printf 'subscription_runtime_global_scan_guard_invalid_tool tool=%s exit_code=70\n' "${tool}" >&2
+    exit 70
+    ;;
+esac
+
+if [[ -z "${real_executable}" || "${real_executable}" != /* || ! -x "${real_executable}" ]]; then
+  printf 'subscription_runtime_global_scan_guard_real_executable_unavailable tool=%s exit_code=70\n' "${tool}" >&2
+  exit 70
+fi
+
+exec "${real_executable}" "$@"

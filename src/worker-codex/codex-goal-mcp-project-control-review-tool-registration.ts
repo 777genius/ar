@@ -44,6 +44,7 @@ export function registerCodexGoalProjectControlReviewTools(server: McpServer): v
         ...jobIdInputSchema(),
         controllerJobId: z.string().optional(),
         note: z.string().optional(),
+        reviewedOutputFileByteAllowance: z.number().int().positive().max(8 * 1024 * 1024).optional(),
         captureReviewedOutput: z.boolean().optional(),
         expectedPatchSha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
         reviewDecision: z.enum(["approved", "rejected", "needs_human"]).optional(),

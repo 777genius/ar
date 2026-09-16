@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+integration_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repository_root=${SUBSCRIPTION_RUNTIME_REPOSITORY_ROOT:-$(cd "$integration_dir/../.." && pwd)}
+unit_dir=${SUBSCRIPTION_RUNTIME_SYSTEMD_UNIT_DIR:-/etc/systemd/system}
+systemctl_path=${SUBSCRIPTION_RUNTIME_SYSTEMCTL_PATH:-/usr/bin/systemctl}
+node_path=${SUBSCRIPTION_RUNTIME_NODE_PATH:-$(command -v node)}
+unshare_path=${SUBSCRIPTION_RUNTIME_UNSHARE_PATH:-/usr/bin/unshare}
+setpriv_path=${SUBSCRIPTION_RUNTIME_SETPRIV_PATH:-/usr/bin/setpriv}
+drop_in_dir=$unit_dir/subscription-runtime-hosted.slice.d
+candidate=$(mktemp "${TMPDIR:-/tmp}/subscription-runtime-hosted-io.XXXXXX")
+trap 'rm -f "$candidate"' EXIT
+[[ -x $unshare_path ]] || {
+  printf 'subscription-runtime-hosted-install-error: unshare is unavailable at %s\n' \
+    "$unshare_path" >&2
+  exit 1
+}
+[[ -x $setpriv_path ]] || {
+  printf 'subscription-runtime-hosted-install-error: setpriv is unavailable at %s\n' \
+    "$setpriv_path" >&2
+  exit 1
+}
+
+"$node_path" \
+  "$repository_root/dist/provider-codex/app-server/adapters/print-hosted-aggregate-io-drop-in.js" \
+  > "$candidate"
+grep -Fx '[Slice]' "$candidate" >/dev/null
+grep -F 'IOReadBandwidthMax=' "$candidate" >/dev/null
+grep -F 'IOReadIOPSMax=' "$candidate" >/dev/null
+grep -F 'IOWriteBandwidthMax=' "$candidate" >/dev/null
+grep -F 'IOWriteIOPSMax=' "$candidate" >/dev/null
+
+install -m 0644 \
+  "$integration_dir/subscription-runtime-hosted.slice" \
+  "$unit_dir/subscription-runtime-hosted.slice"
+install -d -m 0755 "$drop_in_dir"
+install -m 0644 "$candidate" "$drop_in_dir/20-io-limits.conf"
+"$systemctl_path" daemon-reload
+"$systemctl_path" start subscription-runtime-hosted.slice
+"$systemctl_path" is-active --quiet subscription-runtime-hosted.slice

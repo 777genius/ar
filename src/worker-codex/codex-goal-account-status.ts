@@ -538,7 +538,9 @@ async function listAccountDirectories(authRootDir: string): Promise<readonly str
   try {
     const entries = await readdir(authRootDir, { withFileTypes: true });
     return entries
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) =>
+        entry.isDirectory() && /^account-[a-z0-9][a-z0-9_-]*$/i.test(entry.name)
+      )
       .map((entry) => entry.name)
       .sort((left, right) => left.localeCompare(right));
   } catch {

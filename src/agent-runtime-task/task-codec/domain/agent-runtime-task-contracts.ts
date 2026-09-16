@@ -16,6 +16,7 @@ import {
   type AgentRuntimeToolName,
   type ProviderTaskAccessBoundary,
   type ProviderTaskResponseFormat,
+  type ProviderTaskWorkspaceInstructionPolicy,
   type UnsupportedControlPolicy,
 } from "@vioxen/subscription-runtime/core";
 
@@ -116,6 +117,7 @@ export type AgentRuntimeTaskControls = {
   readonly responseFormat?: ProviderTaskResponseFormat;
   readonly outputSchemaName?: string;
   readonly outputSchema?: JsonObject;
+  readonly workspaceInstructionPolicy?: ProviderTaskWorkspaceInstructionPolicy;
 };
 
 export type AgentRuntimeTaskContext = {

@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import {
   recordTerminalOutputDecision,
@@ -16,9 +15,12 @@ import {
   captureGitWorkspacePatch,
 } from "./codex-goal-runtime-result-io";
 import type { ReviewedWorkerOutputSnapshot } from "./reviewed-worker-output";
+import { projectControlConsumedOutputEvidenceRoot } from
+  "./codex-goal-mcp-project-scope";
 
 export async function recordRejectedReviewedOutput(input: {
   readonly scope: ProjectAccessScope;
+  readonly custodyRoot?: string;
   readonly jobRootDir: string;
   readonly workspacePath: string;
   readonly snapshot: ReviewedWorkerOutputSnapshot;
@@ -36,7 +38,8 @@ export async function recordRejectedReviewedOutput(input: {
     throw new Error("project_control_consumed_output_ledger_required");
   }
   const backup = await captureLocalTerminalOutputBackup({
-    archiveRoot: join(input.jobRootDir, "archives"),
+    requireEvidenceCustody: true,
+    archiveRoot: projectControlConsumedOutputEvidenceRoot(input.scope),
     archiveName:
       `${input.snapshot.workerJobId}-rejected-reviewed-` +
       input.snapshot.reviewedOutputId,
@@ -48,7 +51,13 @@ export async function recordRejectedReviewedOutput(input: {
     throw new Error("reviewed_worker_output_rejected_authored_output_required");
   }
   return await recordTerminalOutputDecision(
-    { writer: new LocalConsumedOutputLedgerWriter() },
+    {
+      writer: new LocalConsumedOutputLedgerWriter(
+        undefined,
+        input.custodyRoot ?? dirname(dirname(input.jobRootDir)),
+        input.scope.consumedOutputEvidenceRoots ?? ledgerRoots,
+      ),
+    },
     {
       allowedLedgerRoots: ledgerRoots,
       ledgerRoot: ledgerRoots[0]!,
@@ -75,6 +84,7 @@ export async function recordRejectedReviewedOutput(input: {
 
 export async function recordRejectedUncapturedOutput(input: {
   readonly scope: ProjectAccessScope;
+  readonly custodyRoot?: string;
   readonly jobId: string;
   readonly jobRootDir: string;
   readonly workspacePath: string;
@@ -94,27 +104,26 @@ export async function recordRejectedUncapturedOutput(input: {
   }
   const patchSha256 = createHash("sha256").update(patch).digest("hex");
   const attemptId = `uncaptured-rejection-${patchSha256}`;
-  const archiveRoot = join(input.jobRootDir, "archives");
-  const sourcePatchPath = join(archiveRoot, `.${attemptId}.patch`);
-  await mkdir(archiveRoot, { recursive: true, mode: 0o700 });
-  await writeFile(sourcePatchPath, patch, { encoding: "utf8", mode: 0o600 });
-  let backup;
-  try {
-    backup = await captureLocalTerminalOutputBackup({
-      archiveRoot,
-      archiveName: `${input.jobId}-rejected-uncaptured-${patchSha256}`,
-      workspacePath: input.workspacePath,
-      changedFiles,
-      sourcePatchPath,
-    });
-  } finally {
-    await rm(sourcePatchPath, { force: true });
-  }
+  const archiveRoot = projectControlConsumedOutputEvidenceRoot(input.scope);
+  const backup = await captureLocalTerminalOutputBackup({
+    requireEvidenceCustody: true,
+    archiveRoot,
+    archiveName: `${input.jobId}-rejected-uncaptured-${patchSha256}`,
+    workspacePath: input.workspacePath,
+    changedFiles,
+    sourcePatchBytes: Buffer.from(patch),
+  });
   if (!backup.hasAuthoredOutput) {
     throw new Error("uncaptured_rejected_output_authored_output_required");
   }
   return await recordTerminalOutputDecision(
-    { writer: new LocalConsumedOutputLedgerWriter() },
+    {
+      writer: new LocalConsumedOutputLedgerWriter(
+        undefined,
+        input.custodyRoot ?? dirname(dirname(input.jobRootDir)),
+        input.scope.consumedOutputEvidenceRoots ?? ledgerRoots,
+      ),
+    },
     {
       allowedLedgerRoots: ledgerRoots,
       ledgerRoot: ledgerRoots[0]!,

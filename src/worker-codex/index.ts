@@ -1,6 +1,7 @@
 export * from "./account-diagnostics-adapter";
 export * from "./command-policy-runner";
 export * from "./controlled-agent";
+export * from "./codex-provider-runtime-adapter";
 export * from "./codex-goal-runner";
 export * from "./codex-goal-jobs";
 export * from "./codex-goal-ops";
@@ -12,6 +13,9 @@ export * from "./node-process-runner";
 export * from "./observability";
 export * from "./project-integration-mcp";
 export * from "./temp-workspace";
+export * from "./application/project-control/codex-goal-consumed-output-ledger-epoch";
+export * from "./application/project-control/codex-goal-legacy-job-summary-retirement";
+export * from "./application/project-control/codex-goal-frozen-output-import";
 export {
   parseWorkerLaunchRequest,
   parseWorkerLaunchSpec,

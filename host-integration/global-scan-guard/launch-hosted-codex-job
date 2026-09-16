@@ -1,0 +1,65 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ "${SUBSCRIPTION_RUNTIME_SANDBOX_KIND:-}" != "hosted-codex-job" ]]; then
+  printf '%s\n' 'subscription_runtime_global_scan_guard_wrong_scope expected=hosted-codex-job exit_code=64' >&2
+  exit 64
+fi
+if (( $# == 0 )); then
+  printf '%s\n' 'subscription_runtime_global_scan_guard_command_required exit_code=64' >&2
+  exit 64
+fi
+if [[ -z "${PATH:-}" ]]; then
+  printf '%s\n' 'subscription_runtime_global_scan_guard_path_unavailable exit_code=70' >&2
+  exit 70
+fi
+
+script_dir="${BASH_SOURCE[0]%/*}"
+if [[ "${script_dir}" == "${BASH_SOURCE[0]}" ]]; then
+  script_dir=.
+fi
+readonly integration_dir="$(cd -- "${script_dir}" && pwd -P)"
+unset script_dir
+readonly wrapper="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER:-${integration_dir}/subscription-runtime-global-scan-guard}"
+readonly find_entry="${integration_dir}/bin/find"
+readonly rg_entry="${integration_dir}/bin/rg"
+readonly grep_entry="${integration_dir}/bin/grep"
+readonly find_real="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_SOURCE:-/usr/bin/find}"
+readonly rg_real="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_SOURCE:-/usr/bin/rg}"
+readonly grep_real="${SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_SOURCE:-/usr/bin/grep}"
+
+for executable in \
+  "${wrapper}" \
+  "${find_entry}" \
+  "${rg_entry}" \
+  "${grep_entry}" \
+  "${find_real}" \
+  "${rg_real}" \
+  "${grep_real}"
+do
+  if [[ "${executable}" != /* || ! -x "${executable}" ]]; then
+    printf 'subscription_runtime_global_scan_guard_prerequisite_missing path=%s exit_code=70\n' "${executable}" >&2
+    exit 70
+  fi
+done
+real_sources=("${find_real}" "${rg_real}" "${grep_real}")
+guard_entries=("${find_entry}" "${rg_entry}" "${grep_entry}")
+for (( source_index=0; source_index<${#real_sources[@]}; source_index+=1 )); do
+  if [[ "${real_sources[source_index]}" -ef "${guard_entries[source_index]}" ]]; then
+    printf 'subscription_runtime_global_scan_guard_recursive_source path=%s exit_code=70\n' "${real_sources[source_index]}" >&2
+    exit 70
+  fi
+done
+unset real_sources guard_entries source_index
+
+# PATH commands receive the detailed exit-64 diagnostic from the wrappers.
+# Canonical absolute commands are enforced by the subscription-runtime
+# app-server command policy. Avoid a second mount namespace here: Codex owns the
+# provider sandbox, and nesting Bubblewrap prevents its normal commands from
+# starting on production kernels.
+export SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER="${wrapper}"
+export SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL="${find_real}"
+export SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL="${rg_real}"
+export SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL="${grep_real}"
+export PATH="${integration_dir}/bin:${PATH}"
+exec "${integration_dir}/../readonly-test-supervisor.mjs" legacy -- "$@"

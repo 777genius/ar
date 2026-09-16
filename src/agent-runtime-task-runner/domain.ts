@@ -25,6 +25,37 @@ export enum ClaudeAgentRuntimeBackend {
   Background = "claude-background",
 }
 
+export enum AgentRuntimeTaskReasoningEffort {
+  High = "high",
+}
+
+export enum AgentRuntimeTaskServiceTier {
+  Default = "default",
+}
+
+export function assertAgentRuntimeTaskExecutionProfile(
+  provider: AgentRuntimeTaskProvider,
+  profile: {
+    readonly reasoningEffort?: unknown;
+    readonly serviceTier?: unknown;
+  },
+): void {
+  if (provider !== AgentRuntimeTaskProvider.Codex) {
+    if (profile.reasoningEffort !== undefined || profile.serviceTier !== undefined) {
+      throw new Error("Codex execution options cannot be used with another provider");
+    }
+    return;
+  }
+  if (
+    profile.reasoningEffort !== undefined &&
+    profile.reasoningEffort !== AgentRuntimeTaskReasoningEffort.High
+  ) throw new Error("reasoningEffort must be high");
+  if (
+    profile.serviceTier !== undefined &&
+    profile.serviceTier !== AgentRuntimeTaskServiceTier.Default
+  ) throw new Error("serviceTier must be default");
+}
+
 export type AgentRuntimeTaskRunnerRunOptions = {
   readonly signal?: AbortSignal;
 };
@@ -84,6 +115,8 @@ export type ClaudeAgentRuntimeConfig =
 
 export type CodexAgentRuntimeConfig = {
   readonly binaryPath?: string;
+  readonly reasoningEffort?: AgentRuntimeTaskReasoningEffort;
+  readonly serviceTier?: AgentRuntimeTaskServiceTier;
 };
 
 type LocalAgentRuntimeTaskRunnerCommonInput = {

@@ -12,6 +12,7 @@ import {
   SafeExecutionRunner,
   SubscriptionWorkerError,
   defaultSafeExecutionErrorClassifier,
+  subscriptionWorkerUsageFromError,
   type WorkspaceSnapshot,
 } from "../../index";
 import {
@@ -28,6 +29,89 @@ describe("SafeExecutionRunner resumed tasks and snapshots", () => {
 
   afterEach(async () => {
     await cleanupTemporaryPaths(cleanupPaths);
+  });
+
+  it("journals failed-attempt usage once and retains it after resume", async () => {
+    const workspacePath = await tempPath(
+      cleanupPaths,
+      "safe-execution-failed-usage-",
+    );
+    const journal = new InMemoryAttemptJournal();
+    const runnerOptions = {
+      lockStore: new InMemoryWorkspaceLockStore(),
+      journal,
+      snapshotter: {
+        async capture() {
+          return {
+            mode: "filesystem" as const,
+            workspacePath,
+            capturedAt: new Date("2026-01-01T00:00:00.000Z"),
+            dirty: false,
+            changedFiles: [],
+            fingerprint: "unchanged",
+            summary: "unchanged synthetic workspace",
+          };
+        },
+      },
+    };
+    const providerFailure = new SubscriptionWorkerError(
+      "subscription_worker_run_failed",
+      "Codex goal reached its turn slice limit.",
+      {
+        details: { code: "goal_slice_exhausted" },
+        usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 },
+      },
+    );
+    const wrappedFailure = new SubscriptionWorkerError(
+      "subscription_worker_pool_slot_failed",
+      "Worker pool slot failed to run a task.",
+      { cause: providerFailure },
+    );
+
+    const first = await new SafeExecutionRunner(runnerOptions).run({
+      taskId: "task-failed-usage",
+      workspace: { mode: "existing_locked", path: workspacePath },
+      effectMode: "workspace_patch",
+      provider: "codex",
+      pool: {
+        async run() {
+          throw wrappedFailure;
+        },
+      },
+      job: { prompt: "continue", workspacePath },
+      originalPrompt: "continue",
+      policy: { maxAttempts: 1 },
+      attemptUsageFromError: subscriptionWorkerUsageFromError,
+    });
+
+    expect(first.attempts[0]).toMatchObject({
+      status: "blocked",
+      usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 },
+      usageSource: "provider_structured",
+    });
+
+    const resumed = await new SafeExecutionRunner(runnerOptions).run({
+      taskId: "task-failed-usage",
+      workspace: { mode: "existing_locked", path: workspacePath },
+      effectMode: "workspace_patch",
+      provider: "codex",
+      pool: {
+        async run() {
+          return { output: "done", usage: { totalTokens: 5 } };
+        },
+      },
+      job: { prompt: "continue", workspacePath },
+      originalPrompt: "continue",
+      policy: { maxAttempts: 2 },
+      continuationJobFactory: ({ job }) => job,
+      attemptUsage: (result) => result.usage,
+    });
+
+    expect(resumed.status).toBe("completed");
+    expect(resumed.attempts.map((attempt) => attempt.usage?.totalTokens)).toEqual([
+      30,
+      5,
+    ]);
   });
 
   it("resumes clean waiting_capacity work with a continuation packet after capacity returns", async () => {

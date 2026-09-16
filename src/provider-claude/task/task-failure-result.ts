@@ -1,17 +1,21 @@
+import { numericClaudeTelemetry } from "../protocol/task-telemetry";
 import type {
   ProviderFailure,
+  ProviderTaskTelemetry,
   ProviderTaskResult,
 } from "@vioxen/subscription-runtime/core";
 
 export function failedClaudeTask(
   failure: ProviderFailure,
   startedAt: number,
+  telemetry?: ProviderTaskTelemetry,
 ): Extract<ProviderTaskResult, { readonly status: "failed" }> {
   return {
     status: "failed",
     failure,
     telemetry: {
       durationMs: Date.now() - startedAt,
+      ...numericClaudeTelemetry(telemetry),
       finishReason: finishReasonForFailure(failure.code),
     },
     warnings: [],

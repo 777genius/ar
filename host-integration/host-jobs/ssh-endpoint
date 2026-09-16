@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+[ "$#" = 0 ] || exit 64
+# One admitted privileged manager at a time, with no queue of Node processes.
+# The installer creates this root-owned lock inode; never truncate or replace it.
+exec 9</opt/subscription-runtime/host-jobs/ingress.lock
+if ! /usr/bin/flock -n 9; then
+  printf '%s\n' '{"ok":false,"error":"ingress busy"}'
+  exit 1
+fi
+# No caller-controlled environment reaches the privileged manager.
+# Timeout bounds the entire process group, including subprocesses, while the
+# 10s reader deadline rejects peers that never finish sending JSON.
+exec /usr/bin/env -i HOME=/root USER=root LOGNAME=root PATH=/usr/bin:/bin \
+  /usr/bin/timeout --kill-after=5s 120s \
+  /opt/subscription-runtime/runtime/node /opt/subscription-runtime/host-jobs/endpoint.mjs

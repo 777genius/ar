@@ -16,6 +16,7 @@ import {
   loadIntegrationAttempt,
   nowIso,
   recordIntegrationAudit,
+  runIntegrationTransaction,
   type IntegrationUseCaseDeps,
 } from "./common";
 
@@ -30,6 +31,15 @@ export type ApplyWorkerOutputInput = {
 };
 
 export async function applyWorkerOutput(
+  deps: ApplyWorkerOutputDeps,
+  input: ApplyWorkerOutputInput,
+): Promise<IntegrationAttempt> {
+  return await runIntegrationTransaction(deps, input.attemptId, async () =>
+    await applyWorkerOutputTransaction(deps, input)
+  );
+}
+
+async function applyWorkerOutputTransaction(
   deps: ApplyWorkerOutputDeps,
   input: ApplyWorkerOutputInput,
 ): Promise<IntegrationAttempt> {
@@ -73,6 +83,10 @@ export async function applyWorkerOutput(
           : {}),
         now,
       });
+      if (updated.merge) {
+        if (!deps.git.verifyMergeOutputTree) throw new Error("merge_output_tree_verifier_required");
+        updated = { ...updated, authorizedMergeTree: await deps.git.verifyMergeOutputTree(updated) };
+      }
       await deps.store.update(updated);
     } catch (error) {
       if (attempt.merge) await rollbackFailedMerge(deps.git, attempt, error);

@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import type { ProviderRuntimeRegistry } from "./codex-goal-provider-runtime";
 import {
   jobRegistryInputSchema,
   type AgentRunEventCompactionMcpArgs,
@@ -21,11 +22,19 @@ import {
   watchAgentRuns,
 } from "./codex-goal-mcp-run-events";
 
-export function registerCodexGoalRunEventTools(server: McpServer): void {
+export type CodexGoalRunEventToolOptions = {
+  readonly providerRuntimeRegistry?: ProviderRuntimeRegistry;
+};
+
+export function registerCodexGoalRunEventTools(
+  server: McpServer,
+  options: CodexGoalRunEventToolOptions = {},
+): void {
+  const providerRuntimeRegistry = options.providerRuntimeRegistry;
   const agentRunWatchTool = {
     title: "Agent Run Watch",
     description:
-      "Read-only provider-neutral run observation. Reports status, liveness, progress, logs, workspace changes, capacity hints and read-only recommendations without starting, stopping or continuing workers.",
+      "Read-only provider-neutral run observation. Reports status, liveness, progress, logs, workspace changes, capacity hints and read-only recommendations without starting, stopping or continuing workers. Defaults to 25 runs (max 100) and a 64 KiB complete response; follow nextCursor using cursor with unchanged filters. Summary covers only returned snapshots; oversized snapshots are explicitly omitted.",
     inputSchema: {
       ...jobRegistryInputSchema(),
       providerKind: z.string().optional(),
@@ -36,6 +45,7 @@ export function registerCodexGoalRunEventTools(server: McpServer): void {
       staleAfterMs: z.number().int().positive().optional(),
       tailLines: z.number().int().positive().optional(),
       limit: z.number().int().positive().optional(),
+      cursor: z.string().optional(),
       includeChangedFiles: z.boolean().optional(),
       includeLogTail: z.boolean().optional(),
     },
@@ -45,7 +55,10 @@ export function registerCodexGoalRunEventTools(server: McpServer): void {
     "agent_run_watch",
     agentRunWatchTool,
     async (args) => withMcpErrors(async () => {
-      const watch = await watchAgentRuns(args as AgentRunWatchMcpArgs);
+      const watch = await watchAgentRuns(
+        args as AgentRunWatchMcpArgs,
+        providerRuntimeRegistry,
+      );
       return mcpJson(watch);
     }),
   );
@@ -56,10 +69,13 @@ export function registerCodexGoalRunEventTools(server: McpServer): void {
       ...agentRunWatchTool,
       title: "Codex Goal Run Watch",
       description:
-        "Codex-scoped read-only run observation. Reports status, liveness, progress, logs, workspace changes, capacity hints and read-only recommendations without starting, stopping or continuing workers.",
+        "Codex-scoped read-only run observation. Reports status, liveness, progress, logs, workspace changes, capacity hints and read-only recommendations without starting, stopping or continuing workers. Defaults to 25 runs (max 100) and a 64 KiB complete response; follow nextCursor using cursor with unchanged filters. Summary covers only returned snapshots; oversized snapshots are explicitly omitted.",
     },
     async (args) => withMcpErrors(async () => {
-      const watch = await watchAgentRuns(args as AgentRunWatchMcpArgs);
+      const watch = await watchAgentRuns(
+        args as AgentRunWatchMcpArgs,
+        providerRuntimeRegistry,
+      );
       return mcpJson(watch);
     }),
   );
@@ -67,7 +83,7 @@ export function registerCodexGoalRunEventTools(server: McpServer): void {
   const agentRunEventsTool = {
     title: "Agent Run Events",
     description:
-      "Read normalized durable run events from the local outbox. This is read-only and does not observe, start, stop, continue or recover workers.",
+      "Read normalized durable run events in pages of 100 events by default (maximum 500), with bounded scans and a 64 KiB MCP response. Large payloads use explicit hashed omission envelopes. Pass nextCursor until hasMore is false. This is read-only and does not control workers.",
     inputSchema: {
       ...jobRegistryInputSchema(),
       providerKind: z.string().optional(),
@@ -76,7 +92,7 @@ export function registerCodexGoalRunEventTools(server: McpServer): void {
       cursor: z.string().optional(),
       type: z.union([z.string(), z.array(z.string())]).optional(),
       types: z.union([z.string(), z.array(z.string())]).optional(),
-      limit: z.number().int().positive().optional(),
+      limit: z.number().int().positive().max(500).optional(),
     },
   };
 
@@ -95,7 +111,7 @@ export function registerCodexGoalRunEventTools(server: McpServer): void {
       ...agentRunEventsTool,
       title: "Codex Goal Events",
       description:
-        "Read normalized durable Codex goal run events from the local outbox. This is read-only and does not observe, start, stop, continue or recover workers.",
+        "Read normalized durable Codex goal run events in pages of 100 events by default (maximum 500), with bounded scans and a 64 KiB MCP response. Large payloads use explicit hashed omission envelopes. Pass nextCursor until hasMore is false. This is read-only and does not control workers.",
     },
     async (args) => withMcpErrors(async () => {
       const events = await readAgentRunEvents({
@@ -195,11 +211,13 @@ export function registerCodexGoalRunEventTools(server: McpServer): void {
   const agentRunProjectEventsTool = {
     title: "Agent Run Project Events",
     description:
-      "Observe runs and project normalized durable RunEvent records into the local outbox. This writes event/projection state only; it does not start, stop, continue or recover workers.",
+      "Observe runs and project normalized durable RunEvent records in one append. limit selects runs; eventLimit returns 100 events by default (maximum 500). Pages use bounded scans and a 64 KiB MCP response; large payloads use explicit hashed omission envelopes. Pass nextCursor until hasMore is false. This writes event/projection state only and does not control workers.",
     inputSchema: {
       ...agentRunWatchTool.inputSchema,
       eventRootDir: z.string().optional(),
       hostId: z.string().optional(),
+      cursor: z.string().optional(),
+      eventLimit: z.number().int().positive().max(500).optional(),
       type: z.union([z.string(), z.array(z.string())]).optional(),
       types: z.union([z.string(), z.array(z.string())]).optional(),
     },
@@ -209,7 +227,10 @@ export function registerCodexGoalRunEventTools(server: McpServer): void {
     "agent_run_project_events",
     agentRunProjectEventsTool,
     async (args) => withMcpErrors(async () => {
-      const projected = await projectAgentRunEvents(args as AgentRunProjectEventsMcpArgs);
+      const projected = await projectAgentRunEvents(
+        args as AgentRunProjectEventsMcpArgs,
+        providerRuntimeRegistry,
+      );
       return mcpJson(projected);
     }),
   );
@@ -220,13 +241,13 @@ export function registerCodexGoalRunEventTools(server: McpServer): void {
       ...agentRunProjectEventsTool,
       title: "Codex Goal Project Events",
       description:
-        "Observe Codex goal runs and project normalized durable RunEvent records into the local outbox. This writes event/projection state only; it does not start, stop, continue or recover workers.",
+        "Observe Codex goal runs and project normalized durable RunEvent records in one append. limit selects runs; eventLimit returns 100 events by default (maximum 500). Pages use bounded scans and a 64 KiB MCP response; large payloads use explicit hashed omission envelopes. Pass nextCursor until hasMore is false. This writes event/projection state only and does not control workers.",
     },
     async (args) => withMcpErrors(async () => {
       const projected = await projectAgentRunEvents({
         ...(args as AgentRunProjectEventsMcpArgs),
         providerKind: "codex",
-      });
+      }, providerRuntimeRegistry);
       return mcpJson(projected);
     }),
   );

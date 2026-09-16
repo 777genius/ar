@@ -6,6 +6,11 @@ import {
   assertProjectPreStartAdmissionLaunchBinding,
   type ProjectPreStartAdmissionLaunchWorkspaceMode,
 } from "./codex-goal-project-pre-start-admission";
+import {
+  readCurrentExpectedPendingInputPatchReceipt,
+  readExpectedPendingInputPatchReceipt,
+  type ValidatedPendingInputPatchAdmission,
+} from "./codex-goal-project-pending-input-patch-admission";
 
 const MAX_RECEIPT_BYTES = 64 * 1024;
 
@@ -21,6 +26,8 @@ export async function authorizeProjectPreStartAdmissionLaunch(input: {
   readonly manifest: CodexGoalJobManifest;
   readonly scope: ProjectAccessScope;
   readonly workspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
+  readonly expectedPendingInputPatch?: ValidatedPendingInputPatchAdmission;
+  readonly assertLaunchEligible?: () => Promise<void>;
 }): Promise<ProjectPreStartAdmissionLaunchAuthorization | undefined> {
   const descriptor = input.manifest.projectPreStartAdmission;
   if (!descriptor) {
@@ -29,12 +36,20 @@ export async function authorizeProjectPreStartAdmissionLaunch(input: {
     }
     return undefined;
   }
-  await assertProjectPreStartAdmissionLaunchBinding({
-    manifest: input.manifest,
-    scope: input.scope,
-    ...(input.workspaceMode ? { workspaceMode: input.workspaceMode } : {}),
-  });
-  const receipt = await readReceipt(descriptor.receiptPath);
+  let receipt = input.expectedPendingInputPatch
+    ? await readExpectedPendingInputPatchReceipt({
+        manifest: input.manifest,
+        scope: input.scope,
+        expected: input.expectedPendingInputPatch,
+      })
+    : await validatedReceipt(input);
+  await input.assertLaunchEligible?.();
+  if (input.expectedPendingInputPatch) {
+    receipt = await readCurrentExpectedPendingInputPatchReceipt({
+      manifest: input.manifest,
+      expected: input.expectedPendingInputPatch,
+    });
+  }
   const authorizationCount =
     typeof receipt.launchAuthorizationCount === "number" &&
       Number.isSafeInteger(receipt.launchAuthorizationCount) &&
@@ -53,6 +68,19 @@ export async function authorizeProjectPreStartAdmissionLaunch(input: {
     previousReceipt: receipt,
     authorizedReceipt,
   };
+}
+
+async function validatedReceipt(input: {
+  readonly manifest: CodexGoalJobManifest;
+  readonly scope: ProjectAccessScope;
+  readonly workspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
+}): Promise<JsonObject> {
+  await assertProjectPreStartAdmissionLaunchBinding({
+    manifest: input.manifest,
+    scope: input.scope,
+    ...(input.workspaceMode ? { workspaceMode: input.workspaceMode } : {}),
+  });
+  return await readReceipt(input.manifest.projectPreStartAdmission!.receiptPath);
 }
 
 export async function rollbackProjectPreStartAdmissionLaunch(
@@ -75,6 +103,8 @@ export async function withProjectPreStartAdmissionLaunchAuthorization<T>(
     readonly manifest: CodexGoalJobManifest;
     readonly scope: ProjectAccessScope;
     readonly workspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
+    readonly expectedPendingInputPatch?: ValidatedPendingInputPatchAdmission;
+    readonly assertLaunchEligible?: () => Promise<void>;
   },
   start: () => Promise<T>,
 ): Promise<T> {

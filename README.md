@@ -56,8 +56,8 @@ orchestrator policy inside filesystem, queue, provider, CLI or MCP code.
 ## Requirements
 
 - Node.js 20 or newer;
-- Git and npm for source builds, or package-registry access when consuming an
-  artifact published by the canonical repository;
+- Git and npm for source builds, or package-registry access when consuming a
+  published artifact;
 - the provider CLI and an authenticated provider session for provider-specific
   execution;
 - `claude-runtime` installed alongside the consumer when using the default
@@ -67,10 +67,10 @@ orchestrator policy inside filesystem, queue, provider, CLI or MCP code.
 Never commit package tokens, provider `auth.json`, cookies or decrypted session
 artifacts.
 
-## Install from this open-source mirror
+## Install from this public repository
 
-Pin a reviewed full commit SHA. The mirror does not publish packages, so build
-an exact source checkout and consume its packed artifact locally:
+Pin a reviewed full commit SHA, build the source and consume the resulting
+tarball:
 
 ```bash
 git clone https://github.com/777genius/ar.git subscription-runtime
@@ -80,14 +80,14 @@ npm ci
 npm run check
 npm pack
 # From the consuming project:
-npm install /absolute/path/to/subscription-runtime/vioxen-subscription-runtime-0.1.0-main.28.tgz
+npm install /absolute/path/to/vioxen-subscription-runtime-*.tgz
 ```
 
-For automated builds, verify that the fetched commit equals the configured SHA
-before running npm. Do not use a floating branch as a production dependency.
-The package keeps the name `@vioxen/subscription-runtime` for API compatibility.
+Do not use a floating branch as a production dependency. The package keeps the
+name `@vioxen/subscription-runtime` for API compatibility while the source
+repository is `777genius/ar`.
 
-## Install from the canonical package registry
+## Install from the existing package registry
 
 Configure the `@vioxen` scope for GitHub Packages:
 

@@ -1,4 +1,7 @@
+import { assertReadonlyAdmittedFactory } from "./hosted-readonly-admission";
+import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
   createSubscriptionRuntime,
@@ -15,7 +18,13 @@ import {
   CodexJsonAgentDriver,
   CodexWorkerCacheSessionPoolMaterializer,
   PackagedCodexJsonExecutionEngine,
-  defaultCodexModel,
+  codexJsonHomeConfigToml,
+  codexProviderApiEgressPolicy,
+  codexProviderEgressEnv,
+  codexProviderEgressPolicy,
+  CodexProviderEgressProfileId,
+  egressBoundCodexProcessFactory,
+  type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { createLocalFileBackendRuntimeAdapters } from "@vioxen/subscription-runtime/store-local-file";
 import type { CommandPolicy } from "@vioxen/subscription-runtime/worker-core";
@@ -78,7 +87,7 @@ export function createFileBackendCodexWorkerRuntime(input: {
   );
   const sessionDriver = new CodexCliSessionDriver({
     codexBinaryPath: options.codexBinaryPath,
-    model: options.model ?? defaultCodexModel,
+    model: options.model ?? CODEX_WORKER_DEFAULT_MODEL,
     ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
     refreshMode: "lazy-refresh",
     ...(runners.refreshBootstrapRunner
@@ -173,14 +182,14 @@ function createWorkerWorkspaces(input: {
   readonly prewarmWorkspace: RuntimeDeps["workspace"];
 } {
   const defaultWorkspacePath = join(
-    input.options.stateRootDir,
+    input.options.runtimeHomeRootDir ?? input.options.stateRootDir,
     "workspaces",
     hashText(input.workerId),
   );
   const ownedWorkspace = input.options.workspace
     ? null
     : new StableWorkerWorkspace(defaultWorkspacePath, {
-        allowedRootDir: input.options.stateRootDir,
+        allowedRootDir: input.options.runtimeHomeRootDir ?? input.options.stateRootDir,
       });
   const workspace =
     input.options.workspace ??
@@ -202,16 +211,37 @@ function createCodexAgentDriver(input: {
 }): CodexJsonAgentDriver | CodexCliAgentDriver {
   const { options } = input;
   const executionEngine = options.executionEngine ?? "app-server";
+  const sourceEnv = options.sourceEnv ?? process.env;
+  const hostedGlobalScanGuard =
+    sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  const providerEgressPolicy = codexProviderEgressPolicy(
+    (options.providerEgressPolicy ?? codexProviderApiEgressPolicy()).profileId,
+  );
+  if (providerEgressPolicy.profileId !== CodexProviderEgressProfileId.ProviderApi &&
+      (process.platform !== "linux" || !hostedGlobalScanGuard ||
+       executionEngine !== "app-server-goal" || options.boundedWorkspaceTools)) {
+    throw new Error("hosted_test_egress_engine_unsupported");
+  }
+  if (providerEgressPolicy.profileId === CodexProviderEgressProfileId.TestManagedQualification) {
+    assertReadonlyAdmittedFactory(options.appServerProcessFactory, options.workspacePath);
+  }
+  const appServerEnv = {
+    ...sourceEnv, ...codexProviderEgressEnv(providerEgressPolicy),
+  };
   const workspaceToolsProfile = options.boundedWorkspaceTools && options.workspacePath
     ? buildCodexWorkspaceToolsProfile({
         workspaceRoot: options.workspacePath,
         allowedTools: options.boundedWorkspaceTools.allowedTools,
+        ...(options.boundedWorkspaceTools.denyProjectInstructions
+          ? { denyProjectInstructions: true }
+          : {}),
       })
     : undefined;
   if (executionEngine === "plain-exec") {
     return new CodexCliAgentDriver({
       codexBinaryPath: options.codexBinaryPath,
-      model: options.model ?? defaultCodexModel,
+      model: options.model ?? CODEX_WORKER_DEFAULT_MODEL,
+      reasoningEffort: options.reasoningEffort ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT,
       ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
       ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
     });
@@ -227,16 +257,25 @@ function createCodexAgentDriver(input: {
       ? packagedExec
       : new CodexAppServerExecutionEngine({
           codexBinaryPath: options.codexBinaryPath,
-          ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
+          sourceEnv: appServerEnv,
           ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
           ...(options.appServerStartupTimeoutMs
             ? { startupTimeoutMs: options.appServerStartupTimeoutMs }
             : {}),
-          ...(options.appServerProcessFactory
-            ? { processFactory: options.appServerProcessFactory }
+          processFactory: egressBoundCodexProcessFactory(
+            providerEgressPolicy, options.appServerProcessFactory,
+          ),
+          ...(options.rateLimitsSnapshotHandler
+            ? {
+                rateLimitsSnapshotHandler:
+                  options.rateLimitsSnapshotHandler,
+              }
             : {}),
           ...(options.rolloutBudget
             ? { rolloutBudget: options.rolloutBudget }
+            : {}),
+          ...(hostedGlobalScanGuard && !workspaceToolsProfile
+            ? { bypassHookTrust: true }
             : {}),
           ...(workspaceToolsProfile
             ? {
@@ -274,6 +313,7 @@ function createCodexAgentDriver(input: {
           runStore: input.managedRunStore,
           ...(
             executionEngine === "app-server-goal" ||
+            hostedGlobalScanGuard ||
             workspaceToolsProfile ||
             options.rolloutBudget
             ? {}
@@ -282,16 +322,21 @@ function createCodexAgentDriver(input: {
         }),
     sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
       cacheKey: `codex:${options.providerInstanceId}:${input.workerId}`,
+      providerEgressPolicy,
       slots: options.sessionCacheSlots ?? 1,
-      rootDir: join(options.stateRootDir, "codex-session-cache"),
+      rootDir: join(options.runtimeHomeRootDir ?? options.stateRootDir, "codex-session-cache"),
       preserveOnDispose: true,
       scrubAuthOnDispose: true,
       ...(workspaceToolsProfile
         ? { configToml: workspaceToolsProfile.configToml }
+        : hostedGlobalScanGuard
+        ? {
+            configToml: hostedGlobalScanConfigToml(providerEgressPolicy),
+          }
         : {}),
     }),
-    model: options.model ?? defaultCodexModel,
-    reasoningEffort: options.reasoningEffort ?? "low",
+    model: options.model ?? CODEX_WORKER_DEFAULT_MODEL,
+    reasoningEffort: options.reasoningEffort ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT,
     ...(options.serviceTier === undefined
       ? {}
       : { serviceTier: options.serviceTier }),
@@ -302,6 +347,29 @@ function createCodexAgentDriver(input: {
       ? { warmupPrompt: options.warmupPrompt }
       : {}),
   });
+}
+
+function hostedGlobalScanConfigToml(providerEgressPolicy: CodexProviderEgressPolicy): string {
+  const hookPath = fileURLToPath(
+    new URL("./hosted-global-scan-pre-tool-hook.js", import.meta.url),
+  );
+  const command = `${shellQuote(process.execPath)} ${shellQuote(hookPath)}`;
+  return [
+    codexJsonHomeConfigToml({ hooksEnabled: true, providerEgressPolicy }),
+    "[hooks]",
+    "[[hooks.PreToolUse]]",
+    'matcher = "Bash|exec"',
+    "[[hooks.PreToolUse.hooks]]",
+    'type = "command"',
+    `command = ${JSON.stringify(command)}`,
+    "timeout = 5",
+    'statusMessage = "Checking command scope"',
+    "",
+  ].join("\n");
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 function hashText(value: string): string {

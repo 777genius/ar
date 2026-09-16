@@ -37,6 +37,7 @@ export async function codexGoalAccountStatusPayload(
   launch: CodexGoalLaunchInput,
   options: {
     readonly liveCheck?: boolean;
+    readonly recheckDueCapacity?: boolean;
     readonly codexBinaryPath?: string;
     readonly liveCheckTimeoutMs?: number;
   } = {},

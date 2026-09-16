@@ -246,6 +246,18 @@ export interface RedactorPort {
   registerSecret(value: string | Uint8Array, label?: string): void;
   redact(input: string): string;
   assertNoKnownSecret(input: string, context: string): void;
+  /**
+   * Opt-in incremental output redaction. Implementations that do not expose
+   * this capability must be treated as unable to safely redact arbitrary
+   * chunk boundaries.
+   */
+  createTextStream?(): RedactedTextStream;
+}
+
+export interface RedactedTextStream {
+  push(input: string): string;
+  flush(): string;
+  discard(): void;
 }
 
 export interface ObservabilityPort {

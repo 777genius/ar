@@ -819,6 +819,8 @@ describe("CommandPolicyRunner", () => {
           codexAuthJson: codexAuthJson("goal-account-a"),
           worker: {
             providerInstanceId: "codex-goal-account-a",
+            capacityAccountId: "account-g",
+            workerId: "worker-g",
             stateRootDir: rootDir,
             codexBinaryPath: "codex",
             encryptionKey: new Uint8Array(32).fill(31),
@@ -851,6 +853,8 @@ describe("CommandPolicyRunner", () => {
       }
       expect(first.reason).toBe("quota_limited");
       expect(first.attempts).toHaveLength(1);
+      expect(first.attempts[0]?.accountId).toBe("account-g");
+      expect(first.attempts[0]?.workerId).toBe("worker-g");
       expect(firstAccountServer.prompts).toEqual(["Finish the long goal."]);
     } finally {
       await firstExecutor.dispose();
@@ -904,6 +908,7 @@ describe("CommandPolicyRunner", () => {
       expect(resumed.replayed).toBe(false);
       expect(resumed.attempts).toHaveLength(2);
       expect(resumed.attempts[0]?.failureReason).toBe("quota_limited");
+      expect(resumed.attempts[1]?.accountId).toBeUndefined();
       expect(secondAccountServers[0]!.prompts).toEqual([]);
       expect(secondAccountServers[1]!.prompts[0]).toContain(
         "Continue the same task",

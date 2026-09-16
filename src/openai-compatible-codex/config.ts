@@ -22,7 +22,6 @@ export type OpenAiCompatibleCodexBridgeConfig = {
   readonly requestBodyMaxBytes: number;
   readonly reasoningEffort: CodexReasoningEffort;
   readonly serviceTier?: CodexServiceTier;
-  readonly attestationSecret: string;
 };
 
 export function loadOpenAiCompatibleCodexBridgeConfigFromEnv(
@@ -34,11 +33,6 @@ export function loadOpenAiCompatibleCodexBridgeConfigFromEnv(
     env.SUBSCRIPTION_RUNTIME_CODEX_AUTH_ROOT;
   if (!authRootDir?.trim()) {
     throw new Error("openai_bridge_auth_root_required");
-  }
-  const attestationSecret =
-    env.SUBSCRIPTION_RUNTIME_OPENAI_BRIDGE_ATTESTATION_SECRET;
-  if (!attestationSecret || Buffer.byteLength(attestationSecret, "utf8") < 32) {
-    throw new Error("openai_bridge_attestation_secret_required");
   }
   const accountNames = csvEnv(env.SUBSCRIPTION_RUNTIME_OPENAI_BRIDGE_ACCOUNTS);
   return {
@@ -80,7 +74,6 @@ export function loadOpenAiCompatibleCodexBridgeConfigFromEnv(
     reasoningEffort: reasoningEffortEnv(
       env.SUBSCRIPTION_RUNTIME_OPENAI_BRIDGE_REASONING_EFFORT,
     ),
-    attestationSecret,
     ...(env.SUBSCRIPTION_RUNTIME_OPENAI_BRIDGE_SERVICE_TIER
       ? { serviceTier: env.SUBSCRIPTION_RUNTIME_OPENAI_BRIDGE_SERVICE_TIER }
       : {}),

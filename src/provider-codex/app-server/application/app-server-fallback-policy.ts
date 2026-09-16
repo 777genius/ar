@@ -1,16 +1,58 @@
 import type { RedactorPort } from "@vioxen/subscription-runtime/core";
 import type { CodexExecutionResult } from "../../codex-json-execution-engine";
 import { safeMessage } from "../domain/app-server-errors";
+import { isCodexAppServerOutputLimitError } from "../domain/app-server-errors";
+import { isAppServerExecutionReplayUnsafe } from "../domain/app-server-execution-safety";
+import { AppServerUsageError, usageFromError } from "../domain/app-server-usage-error";
 import type {
   AppServerWaitingForInputResult,
   AppServerWarning,
 } from "../domain/app-server-types";
+import {
+  redactAppServerWarning,
+  redactBoundedAppServerWarnings,
+} from "./app-server-warning-collector";
 
-export function appServerFallbackWarning(error: unknown): AppServerWarning {
-  return {
+export function appServerFallbackWarning(input: {
+  readonly error: unknown;
+  readonly redactor: RedactorPort;
+}): AppServerWarning {
+  return redactAppServerWarning({
+    warning: {
     code: "codex_app_server_fallback",
-    safeMessage: `Codex app-server failed; used codex exec fallback: ${safeMessage(error)}`,
-  };
+    safeMessage: `Codex app-server failed; used codex exec fallback: ${safeMessage(input.error)}`,
+    },
+    redactor: input.redactor,
+    context: "codex-app-server-fallback-warning",
+  });
+}
+
+export function appServerFallbackIsSafe(error: unknown): boolean {
+  return !usageFromError(error) &&
+    !isCodexAppServerOutputLimitError(error) &&
+    !isAppServerExecutionReplayUnsafe(error);
+}
+
+export function redactFallbackAppServerResult(input: {
+  readonly error: unknown;
+  readonly result: CodexExecutionResult;
+  readonly redactor: RedactorPort;
+}): CodexExecutionResult {
+  try {
+    return {
+      ...input.result,
+      warnings: redactBoundedAppServerWarnings({
+        warnings: [
+          appServerFallbackWarning({ error: input.error, redactor: input.redactor }),
+          ...input.result.warnings,
+        ],
+        redactor: input.redactor,
+        context: "codex-app-server-fallback-result-warning",
+      }),
+    };
+  } catch (error) {
+    throw new AppServerUsageError(error, input.result.usage, true);
+  }
 }
 
 export function isAppServerWaitingForInputResult(
@@ -23,6 +65,7 @@ export function redactWaitingForInputResult(input: {
   readonly result: AppServerWaitingForInputResult;
   readonly outputText: string;
   readonly redactor: RedactorPort;
+  readonly warnings: readonly AppServerWarning[];
 }): CodexExecutionResult {
   const contextSummary = input.result.request.contextSummary;
   const suggestedAnswers = input.result.request.suggestedAnswers?.map((answer) =>
@@ -49,7 +92,7 @@ export function redactWaitingForInputResult(input: {
         ? {}
         : { providerState: redactStringRecord(providerState, input.redactor) }),
     },
-    warnings: input.result.warnings,
+    warnings: input.warnings,
   };
 }
 

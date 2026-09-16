@@ -1,5 +1,10 @@
+import { buildCodexGoalForegroundArgv } from "./application/codex-goal-foreground-command";
+export { buildCodexGoalForegroundArgv } from "./application/codex-goal-foreground-command";
+import type { CodexGoalLaunchManifestMetadata } from "./codex-goal-launch-manifest";
+import { isHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
 import { execFile } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
+import { mapManagedGoalLayout } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -17,6 +22,7 @@ import {
   GitPatchPreserver,
 } from "./codex-goal-runtime-result-io";
 import {
+  runCodexGoal,
   codexGoalOutputPath,
   codexGoalProgressPath,
   codexGoalRuntimeEventsPath,
@@ -48,6 +54,7 @@ import {
   readCodexGoalResultSummary,
   readLastCodexGoalRuntimeEvent,
 } from "./codex-goal-status-files";
+import { readBoundedCodexGoalLogTail } from "./codex-goal-log-tail";
 
 export { listCodexGoalAccountStatuses };
 export { doctorCodexGoal };
@@ -80,6 +87,8 @@ const execFileAsync = promisify(execFile);
 export type CodexGoalOutputFormat = "text" | "json";
 
 export type CodexGoalLaunchInput = {
+  readonly registryRootDir?: string;
+  readonly registryMetadata?: CodexGoalLaunchManifestMetadata;
   readonly config: CodexGoalRunConfig;
   readonly tmuxSession?: string;
   readonly cwd: string;
@@ -88,7 +97,10 @@ export type CodexGoalLaunchInput = {
   readonly cliCommand: readonly string[];
 };
 
+export enum CodexGoalLaunchState { Scheduled = "scheduled", Completed = "completed", Failed = "failed" }
+
 export type CodexGoalTmuxCommand = {
+  readonly launchState?: CodexGoalLaunchState;
   readonly args: readonly string[];
   readonly preview: string;
 };
@@ -198,64 +210,20 @@ export class CodexGoalRuntimeResultReconciler
   }
 }
 
+
 export function buildCodexGoalNoTmuxCommand(input: CodexGoalLaunchInput): string {
   const config = input.config;
-  assertCodexGoalAccessLaunchAllowed(config);
-  const args = [
-    ...input.cliCommand,
-    "run",
-    "--no-tmux",
-    "--job-root",
-    config.jobRootDir,
-    "--auth-root",
-    config.authRootDir,
-    "--workspace",
-    config.workspacePath,
-    "--prompt",
-    config.promptPath,
-    "--task-id",
-    config.taskId,
-    "--accounts",
-    config.accounts.map((account) => account.name).join(","),
-    "--format",
-    input.format ?? "text",
-  ];
-  pushOptional(args, "--state-root", config.stateRootDir);
-  pushOptional(args, "--job-id", config.jobId);
-  pushOptional(args, "--codex-goal-objective", config.codexGoalObjective);
-  pushOptional(args, "--output", config.outputPath);
-  pushOptional(args, "--progress", config.progressPath);
-  pushOptional(args, "--codex-binary", config.codexBinaryPath);
-  pushOptional(args, "--model", config.model);
-  pushOptional(args, "--effort", config.reasoningEffort);
-  pushOptional(args, "--service-tier", config.serviceTier);
-  pushOptional(args, "--execution-engine", config.executionEngine);
-  pushOptionalNumber(args, "--timeout-ms", config.taskTimeoutMs);
-  pushOptionalNumber(
-    args,
-    "--app-server-startup-timeout-ms",
-    config.appServerStartupTimeoutMs,
-  );
-  pushOptionalNumber(args, "--progress-heartbeat-ms", config.progressHeartbeatMs);
-  pushOptionalNumber(args, "--stale-lock-ms", config.staleLockMs);
-  pushOptionalNumber(args, "--max-account-cycles", config.maxAccountCycles);
-  pushOptional(args, "--edit-mode", config.editMode);
-  pushOptional(args, "--provider-sandbox-mode", config.providerSandboxMode);
-  pushOptional(args, "--access-boundary", config.accessBoundary);
-  if (config.projectAccessScope) {
-    args.push(
-      "--project-access-scope-json",
-      JSON.stringify(config.projectAccessScope),
-    );
-  }
-  if (config.allowDangerFullAccess) args.push("--allow-danger-full-access");
-  pushOptional(args, "--network-access", config.networkAccess);
-  if (config.allowDuplicateAccountIdentities) args.push("--allow-duplicate-accounts");
-  if (config.requireGitWorkspace === false) args.push("--no-require-git-workspace");
-  if (config.prewarmOnStart) args.push("--prewarm");
+  const args = buildCodexGoalForegroundArgv(input);
   const envAssignments: string[] = [
     `PATH=${shellQuote(codexChildPath(process.env))}`,
   ];
+  for (
+    const [key, value] of hostedGlobalScanGuardEnvironment(
+      config.sourceEnv ?? process.env,
+    )
+  ) {
+    envAssignments.push(`${key}=${shellQuote(value)}`);
+  }
   const extraWritableRoots = config.projectAccessScope
     ? ""
     : process.env.SUBSCRIPTION_RUNTIME_CODEX_EXTRA_WRITABLE_ROOTS?.trim();
@@ -281,11 +249,30 @@ export function buildCodexGoalNoTmuxCommand(input: CodexGoalLaunchInput): string
   return `${envPrefix}${args.map(shellQuote).join(" ")}`;
 }
 
+function hostedGlobalScanGuardEnvironment(
+  sourceEnv: Readonly<Record<string, string | undefined>>,
+): readonly (readonly [string, string])[] {
+  const keys = [
+    "SUBSCRIPTION_RUNTIME_SANDBOX_KIND",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_CODEX_SOURCE",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_SOURCE",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_SOURCE",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_SOURCE",
+  ] as const;
+  return keys.flatMap((key) => {
+    const value = sourceEnv[key];
+    return value === undefined ? [] : [[key, value] as const];
+  });
+}
+
 export function buildCodexGoalTmuxCommand(
   input: CodexGoalLaunchInput,
 ): CodexGoalTmuxCommand {
   if (!input.tmuxSession) {
     throw new Error("codex_goal_tmux_session_required");
+  }
+  if (isHostedGoalLaunch(input)) {
+    return { args: [], preview: buildCodexGoalNoTmuxCommand(input) };
   }
   const shellCommand = `${buildCodexGoalNoTmuxCommand(input)} 2>&1 | tee -a ${shellQuote(input.logPath)}`;
   const args = [
@@ -306,7 +293,18 @@ export function buildCodexGoalTmuxCommand(
 export async function startCodexGoalTmux(
   input: CodexGoalLaunchInput,
 ): Promise<CodexGoalTmuxCommand> {
+  input = { ...input, ...mapManagedGoalLayout(input) };
   assertCodexGoalAccessLaunchAllowed(input.config);
+  const outerStatus = await routeHostedGoalLaunch(input);
+  if (outerStatus !== undefined) {
+    return { args: [], preview: buildCodexGoalNoTmuxCommand(input), launchState: outerStatus === 0 ? CodexGoalLaunchState.Completed : CodexGoalLaunchState.Failed };
+  }
+  if (isHostedGoalLaunch(input)) {
+    await prepareCodexGoalLaunchPaths(input);
+    const result = await runCodexGoal(input.config).catch(() => ({ status: "failed" }));
+    return { args: [], preview: buildCodexGoalNoTmuxCommand(input),
+      launchState: result.status === "completed" ? CodexGoalLaunchState.Completed : CodexGoalLaunchState.Failed };
+  }
   await prepareCodexGoalLaunchPaths(input);
   const command = buildCodexGoalTmuxCommand(input);
   const tmuxExecutable = await resolveCodexGoalTmuxExecutable();
@@ -686,8 +684,7 @@ export async function tailCodexGoalLog(
   logPath: string,
   lines: number,
 ): Promise<string> {
-  const text = await readFile(logPath, "utf8");
-  return `${text.split(/\r?\n/).slice(-lines).join("\n")}\n`;
+  return readBoundedCodexGoalLogTail(logPath, lines);
 }
 
 export function recommendCodexGoalAction(input: {
@@ -847,23 +844,6 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-function pushOptional(
-  args: string[],
-  flagName: string,
-  value: string | undefined,
-): void {
-  if (value === undefined) return;
-  args.push(flagName, value);
-}
-
-function pushOptionalNumber(
-  args: string[],
-  flagName: string,
-  value: number | undefined,
-): void {
-  if (value === undefined) return;
-  args.push(flagName, String(value));
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

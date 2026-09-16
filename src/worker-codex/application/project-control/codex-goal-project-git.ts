@@ -1,9 +1,7 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 
 import {
   matchesAnyPattern,
@@ -11,26 +9,30 @@ import {
   type ProjectAccessScope,
 } from "@vioxen/subscription-runtime/worker-core";
 import { withLiteralGitPathspecs } from "../../git-literal-pathspecs";
+import {
+  defaultProjectControlGitPort,
+  type ProjectControlGitPort,
+} from "./adapters/host-command-adapters";
 
-const execFileAsync = promisify(execFile);
 export const MAX_STAGED_PATCH_BYTES = 16 * 1024 * 1024;
 
 export async function stagedPatchSha256(
   workspacePath: string,
+  git: ProjectControlGitPort = defaultProjectControlGitPort,
 ): Promise<string> {
   try {
-    const { stdout } = await execFileAsync("git", [
-      "-C",
-      workspacePath,
-      "diff",
-      "--cached",
-      "--binary",
-      "--no-renames",
-      "HEAD",
-      "--",
-    ], {
-      encoding: "buffer",
-      timeout: 120_000,
+    const { stdout } = await git.runBuffered({
+      args: [
+        "-C",
+        workspacePath,
+        "diff",
+        "--cached",
+        "--binary",
+        "--no-renames",
+        "HEAD",
+        "--",
+      ],
+      timeoutMs: 120_000,
       maxBuffer: MAX_STAGED_PATCH_BYTES,
     });
     return createHash("sha256").update(stdout).digest("hex");
@@ -39,46 +41,52 @@ export async function stagedPatchSha256(
   }
 }
 
-export async function stagedPatchSha256ForRevision(input: {
-  readonly workspacePath: string;
-  readonly revision: string;
-  readonly patchPath: string;
-}): Promise<string> {
+export async function stagedPatchSha256ForRevision(
+  input: {
+    readonly workspacePath: string;
+    readonly revision: string;
+    readonly patchPath: string;
+  },
+  git: ProjectControlGitPort = defaultProjectControlGitPort,
+): Promise<string> {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "subscription-runtime-staged-index-"),
   );
   const indexPath = join(temporaryDirectory, "index");
-  const options = {
+  const commonRunInput = {
     env: { ...process.env, GIT_INDEX_FILE: indexPath },
-    encoding: "buffer" as const,
-    timeout: 120_000,
+    timeoutMs: 120_000,
     maxBuffer: MAX_STAGED_PATCH_BYTES,
   };
   try {
-    await execFileAsync("git", [
-      "-C",
-      input.workspacePath,
-      "read-tree",
-      input.revision,
-    ], options);
-    await execFileAsync("git", [
-      "-C",
-      input.workspacePath,
-      "apply",
-      "--cached",
-      "--binary",
-      input.patchPath,
-    ], options);
-    const { stdout } = await execFileAsync("git", [
-      "-C",
-      input.workspacePath,
-      "diff",
-      "--cached",
-      "--binary",
-      "--no-renames",
-      input.revision,
-      "--",
-    ], options);
+    await git.runBuffered({
+      args: ["-C", input.workspacePath, "read-tree", input.revision],
+      ...commonRunInput,
+    });
+    await git.runBuffered({
+      args: [
+        "-C",
+        input.workspacePath,
+        "apply",
+        "--cached",
+        "--binary",
+        input.patchPath,
+      ],
+      ...commonRunInput,
+    });
+    const { stdout } = await git.runBuffered({
+      args: [
+        "-C",
+        input.workspacePath,
+        "diff",
+        "--cached",
+        "--binary",
+        "--no-renames",
+        input.revision,
+        "--",
+      ],
+      ...commonRunInput,
+    });
     return createHash("sha256").update(stdout).digest("hex");
   } catch {
     throw new Error("project_control_input_patch_staged_digest_failed");
@@ -142,21 +150,25 @@ export async function assertGitCurrentBranch(input: {
   }
 }
 
-export async function isGitAncestor(input: {
-  readonly workspacePath: string;
-  readonly ancestor: string;
-  readonly descendant: string;
-}): Promise<boolean> {
+export async function isGitAncestor(
+  input: {
+    readonly workspacePath: string;
+    readonly ancestor: string;
+    readonly descendant: string;
+  },
+  git: ProjectControlGitPort = defaultProjectControlGitPort,
+): Promise<boolean> {
   try {
-    await execFileAsync("git", withLiteralGitPathspecs([
-      "-C",
-      input.workspacePath,
-      "merge-base",
-      "--is-ancestor",
-      input.ancestor,
-      input.descendant,
-    ]), {
-      timeout: 120_000,
+    await git.run({
+      args: withLiteralGitPathspecs([
+        "-C",
+        input.workspacePath,
+        "merge-base",
+        "--is-ancestor",
+        input.ancestor,
+        input.descendant,
+      ]),
+      timeoutMs: 120_000,
       maxBuffer: 1024 * 1024,
     });
     return true;
@@ -560,10 +572,12 @@ async function assertInputPatchHash(
 async function execGitGuard(
   args: readonly string[],
   errorCode: string,
+  git: ProjectControlGitPort = defaultProjectControlGitPort,
 ): Promise<void> {
   try {
-    await execFileAsync("git", withLiteralGitPathspecs(args), {
-      timeout: 120_000,
+    await git.run({
+      args: withLiteralGitPathspecs(args),
+      timeoutMs: 120_000,
       maxBuffer: 1024 * 1024,
     });
   } catch {
@@ -586,20 +600,23 @@ function parseRemoteTrackingRef(value: string): {
   return { remote, branch };
 }
 
-export async function execGit(args: readonly string[]): Promise<void> {
-  await execGitStdout(args);
+export async function execGit(
+  args: readonly string[],
+  git: ProjectControlGitPort = defaultProjectControlGitPort,
+): Promise<void> {
+  await execGitStdout(args, git);
 }
 
-export async function execGitStdout(args: readonly string[]): Promise<string> {
+export async function execGitStdout(
+  args: readonly string[],
+  git: ProjectControlGitPort = defaultProjectControlGitPort,
+): Promise<string> {
   try {
-    const { stdout } = await execFileAsync(
-      "git",
-      withLiteralGitPathspecs(args),
-      {
-        timeout: 120_000,
-        maxBuffer: 1024 * 1024,
-      },
-    );
+    const { stdout } = await git.run({
+      args: withLiteralGitPathspecs(args),
+      timeoutMs: 120_000,
+      maxBuffer: 1024 * 1024,
+    });
     return stdout;
   } catch (error) {
     throw new Error(

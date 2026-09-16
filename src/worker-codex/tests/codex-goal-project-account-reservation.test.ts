@@ -209,6 +209,41 @@ describe("project account reservation", () => {
     );
     const recorded = await journal.readTask({ taskId: "job-1-task" });
     if (!recorded) throw new Error("expected reconnect task");
+    const wrappedReconnectDetails = {
+      rawCause: appServerTurnError(reconnectDetails.rawCause),
+    };
+    await expect(
+      codexProjectContinuationReservationInput({
+        status: {
+          recommendedAction: "inspect_dirty_failure",
+          resultReason: "unknown_error",
+        },
+        launch: scoped.launch,
+        journal: {
+          readTask: async () => withLastFailureDetails(
+            recorded,
+            wrappedReconnectDetails,
+          ),
+        },
+      }),
+    ).resolves.toEqual({
+      excludedAccountIds: [],
+      continuation: { previousAttemptCount: 2 },
+    });
+    await expect(
+      codexProjectContinuationReservationInput({
+        status: {
+          recommendedAction: "inspect_dirty_failure",
+          resultReason: "unknown_error",
+        },
+        launch: scoped.launch,
+        journal: {
+          readTask: async () => withLastFailureDetails(recorded, {
+            rawCause: appServerTurnError(wrappedReconnectDetails.rawCause),
+          }),
+        },
+      }),
+    ).resolves.toEqual({ excludedAccountIds: [] });
     await expect(
       codexProjectContinuationReservationInput({
         status: {
@@ -765,6 +800,31 @@ async function recordUnavailableAttempt(
     reason: failureReason,
     now,
   });
+}
+
+function appServerTurnError(cause: string): string {
+  return `codex_app_server_turn_error:${cause}:details=${JSON.stringify({
+    phase: "turn_error_before_output",
+    turnNumber: 1,
+    outputObserved: false,
+    outputCharCount: 0,
+    elapsedMs: 25,
+  })}`;
+}
+
+function withLastFailureDetails(
+  task: SafeExecutionTaskRecord,
+  details: Readonly<Record<string, string>>,
+): SafeExecutionTaskRecord {
+  return {
+    ...task,
+    lastFailureDetails: details,
+    attempts: task.attempts.map((attempt, index) =>
+      index === task.attempts.length - 1
+        ? { ...attempt, failureDetails: details }
+        : attempt
+    ),
+  };
 }
 
 async function recordQuotaLimitedAttemptWithoutAccount(

@@ -1,3 +1,4 @@
+import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "../codex-worker-defaults";
 import { join } from "node:path";
 import {
   defaultCodexGoalJobRoot,
@@ -71,8 +72,8 @@ export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGo
     ...(args.progressPath ? { progressPath: resolvePath(cwd, args.progressPath) } : {}),
     progressHeartbeatMs: args.progressHeartbeatMs ?? 60_000,
     ...(args.codexBinaryPath ? { codexBinaryPath: args.codexBinaryPath } : {}),
-    model: args.model ?? "gpt-5.5",
-    reasoningEffort: args.reasoningEffort ?? "high",
+    model: args.model ?? CODEX_WORKER_DEFAULT_MODEL,
+    reasoningEffort: args.reasoningEffort ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT,
     serviceTier: args.serviceTier ?? "default",
     executionEngine: args.executionEngine ?? "app-server-goal",
     taskTimeoutMs: args.taskTimeoutMs ?? defaultTimeoutMs,

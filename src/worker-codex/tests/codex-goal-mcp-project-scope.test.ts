@@ -1,18 +1,26 @@
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import type { ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexGoalJobManifestInput } from "../codex-goal-jobs";
 import {
+  assertProjectControlEvidenceRootsCanonical,
+  assertProjectControlCustodyScopeCanonical,
   assertProjectControlCreateManifestPaths,
   assertProjectControlScopeRepairAllowed,
   projectControlCanonicalWorkspacePath,
   projectControlChildScope,
+  projectControlConsumedOutputEvidenceRoot,
   projectControlDependencyBootstrapMode,
   projectControlPathArg,
   projectControlWorkerRole,
 } from "../codex-goal-mcp-project-scope";
+
+const addedScopeRoots = new Set<string>();
+afterAll(async () => await Promise.all([...addedScopeRoots].map((root) =>
+  rm(root, { recursive: true, force: true })
+)));
 
 describe("codex goal MCP project scope helpers", () => {
   it("builds a child scope constrained to the worker workspace", () => {
@@ -69,6 +77,124 @@ describe("codex goal MCP project scope helpers", () => {
         },
       }),
     ).toThrow("project_control_consumed_output_ledger_root_outside_scope");
+  });
+
+  it("allows append-only narrow canonical evidence roots and rejects broad or symlink scope", async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), "project-evidence-scope-")),
+    );
+    addedScopeRoots.add(root);
+    const archives = join(root, "controller", "archives");
+    const realArchives = join(root, "real", "archives");
+    await Promise.all([
+      mkdir(archives, { recursive: true }),
+      mkdir(realArchives, { recursive: true }),
+    ]);
+    const existing = { ...projectScope(), readRoots: [root] };
+    expect(() => assertProjectControlScopeRepairAllowed({
+      existing,
+      proposed: { ...existing, consumedOutputEvidenceRoots: [archives] },
+    })).not.toThrow();
+    await expect(assertProjectControlEvidenceRootsCanonical([archives]))
+      .resolves.toBeUndefined();
+    await expect(assertProjectControlEvidenceRootsCanonical([root]))
+      .rejects.toThrow("evidence_root_not_narrow");
+    const linked = join(root, "linked", "archives");
+    await mkdir(join(root, "linked"), { recursive: true });
+    await symlink(realArchives, linked);
+    await expect(assertProjectControlEvidenceRootsCanonical([linked]))
+      .rejects.toThrow("evidence_root_noncanonical");
+  });
+
+  it("uses the latest append-only evidence root for writes", async () => {
+    const root = await realpath(await mkdtemp(
+      join(tmpdir(), "project-evidence-active-root-"),
+    ));
+    addedScopeRoots.add(root);
+    const historical = join(root, "historical", "archives");
+    const active = join(root, "active", "archives");
+    await Promise.all([historical, active].map((path) =>
+      mkdir(path, { recursive: true })
+    ));
+    const existing = {
+      ...projectScope(),
+      readRoots: [root],
+      consumedOutputEvidenceRoots: [historical],
+    };
+    const proposed = {
+      ...existing,
+      consumedOutputEvidenceRoots: [historical, active],
+    };
+
+    expect(() => assertProjectControlScopeRepairAllowed({ existing, proposed }))
+      .not.toThrow();
+    await expect(assertProjectControlEvidenceRootsCanonical(
+      proposed.consumedOutputEvidenceRoots,
+      proposed,
+    )).resolves.toBeUndefined();
+    expect(projectControlConsumedOutputEvidenceRoot(proposed)).toBe(active);
+    expect(proposed.consumedOutputEvidenceRoots).toEqual([historical, active]);
+
+    expect(() => assertProjectControlScopeRepairAllowed({
+      existing: proposed,
+      proposed: {
+        ...proposed,
+        consumedOutputEvidenceRoots: [active, historical],
+      },
+    })).toThrow("evidence_roots_repair_denied");
+    expect(() => assertProjectControlScopeRepairAllowed({
+      existing: proposed,
+      proposed: {
+        ...proposed,
+        consumedOutputEvidenceRoots: [
+          ...proposed.consumedOutputEvidenceRoots,
+          "/tmp/outside/archives",
+        ],
+      },
+    })).toThrow("evidence_root_outside_scope");
+  });
+
+  it("rejects foreign evidence and denied-root overlap in both directions", async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), "project-evidence-owned-")),
+    );
+    addedScopeRoots.add(root);
+    const owned = join(root, "owned");
+    const archives = join(owned, "archives");
+    const ledger = join(owned, "ledger");
+    await Promise.all([archives, ledger].map((path) =>
+      mkdir(path, { recursive: true })
+    ));
+    const base = {
+      ...projectScope(),
+      readRoots: [owned],
+      consumedOutputEvidenceRoots: [archives],
+      consumedOutputLedgerRoots: [ledger],
+    };
+    await expect(assertProjectControlCustodyScopeCanonical(base))
+      .resolves.toBeUndefined();
+
+    expect(() => assertProjectControlScopeRepairAllowed({
+      existing: { ...base, consumedOutputEvidenceRoots: [] },
+      proposed: {
+        ...base,
+        consumedOutputEvidenceRoots: [join(root, "foreign", "archives")],
+      },
+    })).toThrow("evidence_root_outside_scope");
+
+    const deniedWithinEvidence = join(archives, "secret");
+    await mkdir(deniedWithinEvidence);
+    expect(() => assertProjectControlScopeRepairAllowed({
+      existing: {
+        ...base,
+        deniedRoots: [deniedWithinEvidence],
+        consumedOutputEvidenceRoots: [],
+      },
+      proposed: {
+        ...base,
+        deniedRoots: [deniedWithinEvidence],
+      },
+    })).toThrow("evidence_root_denied");
   });
 
   it("allows append-only account registration during confirmed scope repair", () => {

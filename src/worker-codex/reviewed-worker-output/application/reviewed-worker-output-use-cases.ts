@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   assertFilesWithinExpected,
+  reviewedOutputFileByteAllowance,
   normalizeExpectedFiles,
   ReviewDecisionStatus,
   type WorkspaceLock,
@@ -14,7 +15,6 @@ import {
   type CaptureReviewedWorkerOutputInput,
   type ReviewedWorkerOutputIdentity,
   type ReviewedWorkerOutputSnapshot,
-  type ReviewedWorkerOutputWorkspaceSnapshot,
 } from "../domain/reviewed-worker-output";
 import type {
   ReviewedWorkerContinuationEnvironmentPort,
@@ -54,20 +54,15 @@ export async function captureReviewedWorkerOutputLocked(
   input: CaptureReviewedWorkerOutputInput,
   lock: WorkspaceLock,
 ): Promise<ReviewedWorkerOutputSnapshot> {
+  const allowance = reviewedOutputFileByteAllowance(input.reviewedOutputFileByteAllowance);
+  const allowanceFields = allowance === undefined ? {} : { reviewedOutputFileByteAllowance: allowance };
   const expectedPatchSha256 = normalizeSha256(input.expectedPatchSha256);
   const approvedFiles = normalizeReviewedFiles(input.approvedFiles);
   const merge = normalizeReviewedOutputMerge(input.merge);
   const captured = await deps.snapshotter.capture({
+    ...allowanceFields,
     workspacePath: lock.workspacePath,
     ...(merge ? { allowEmptyPatch: true } : {}),
-    ...(input.decision === ReviewDecisionStatus.Rejected
-      ? {
-          rejectedCaptureBinding: {
-            decision: ReviewDecisionStatus.Rejected,
-            expectedPatchSha256,
-          },
-        }
-      : {}),
   });
   const changedFiles = normalizeReviewedFiles(captured.changedFiles, {
     allowEmpty: merge !== undefined,
@@ -90,6 +85,7 @@ export async function captureReviewedWorkerOutputLocked(
     .now()
     .toISOString();
   const reviewedOutputId = reviewedWorkerOutputId({
+    ...allowanceFields,
     format: reviewedWorkerOutputFormat,
     formatRevision: 1,
     projectId: input.projectId,
@@ -105,6 +101,7 @@ export async function captureReviewedWorkerOutputLocked(
   });
   return await deps.store.create({
     snapshot: {
+      ...allowanceFields,
       format: reviewedWorkerOutputFormat,
       formatRevision: 1,
       reviewedOutputId,
@@ -231,29 +228,16 @@ export async function assertReviewedWorkerOutputStillMatchesLocked(
   snapshot: ReviewedWorkerOutputSnapshot,
   workspace: WorkspaceLock,
 ): Promise<void> {
-  let current: ReviewedWorkerOutputWorkspaceSnapshot;
-  try {
-    current = await deps.snapshotter.capture({
-      workspacePath: workspace.workspacePath,
-      ...(snapshot.merge ? { allowEmptyPatch: true } : {}),
-      ...(snapshot.reviewDecision.decision === ReviewDecisionStatus.Rejected
-        ? {
-            rejectedCaptureBinding: {
-              decision: ReviewDecisionStatus.Rejected,
-              expectedPatchSha256: snapshot.patchSha256,
-            },
-          }
-        : {}),
-    });
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message === "reviewed_worker_output_patch_hash_mismatch"
-    ) {
-      throw new Error("reviewed_worker_output_workspace_changed_after_capture");
-    }
-    throw error;
+  if (reviewedWorkerOutputId(snapshot) !== snapshot.reviewedOutputId) {
+    throw new Error("reviewed_worker_output_manifest_identity_mismatch");
   }
+  const current = await deps.snapshotter.capture({
+    ...(snapshot.reviewedOutputFileByteAllowance === undefined
+      ? {}
+      : { reviewedOutputFileByteAllowance: snapshot.reviewedOutputFileByteAllowance }),
+    workspacePath: workspace.workspacePath,
+    ...(snapshot.merge ? { allowEmptyPatch: true } : {}),
+  });
   const currentChangedFiles = current.changedFiles.length === 0
     ? []
     : normalizeExpectedFiles(current.changedFiles);

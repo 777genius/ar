@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -12,32 +12,41 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  AccessBoundary,
-  NetworkAccessMode,
   ProjectAdmissionWorkerRole,
   type ProjectControlBroker,
   type ProjectAccessScope,
 } from "@vioxen/subscription-runtime/worker-core";
 
 import { materializeCodexGoalHandoffArtifacts } from "../codex-goal-handoff-artifacts";
-import {
-  createCodexGoalJob,
-  type CodexGoalJobManifest,
-} from "../codex-goal-jobs";
+import type { CodexGoalJobManifest } from "../codex-goal-jobs";
 import {
   terminalHandoffDependencyRecoveryRequested,
   verifyTerminalHandoffRecovery,
 } from "../application/project-control/codex-goal-project-terminal-handoff-recovery";
 import { localReviewedWorkerOutputDeps } from "../reviewed-worker-output";
 import { projectControlStartStoredJobView } from "../codex-goal-mcp-project-control-actions";
+import { createCodexProjectControlBroker } from "../codex-goal-mcp-project-broker";
 import { recordRejectedUncapturedOutput } from "../codex-goal-mcp-project-control-reviewed-rejection";
 import {
   assertCodexGoalProjectJobNotTerminal,
   readCodexGoalConsumedOutputLedgers,
-  rejectedUncapturedOutputPatchSha256,
-  resolveRejectedUncapturedOutputPatchSha256,
 } from "../application/project-control/codex-goal-consumed-output-ledger-io";
+import {
+  assertProjectControlEvidenceRootsCanonical,
+  assertProjectControlScopeRepairAllowed,
+} from "../codex-goal-mcp-project-scope";
 import { git, gitInitRepository } from "./codex-goal-mcp-test-support";
+import {
+  assertTerminalRecoveryAdmission as assertTerminalAdmission,
+  recoveryActionFixture,
+  recoveryFixture,
+  verifyActionFixture,
+  writeRecoveryReviewMarker as writeReviewMarker,
+  writeRejectedUncapturedReview,
+  writeTerminalResult,
+} from "./codex-goal-project-terminal-handoff-recovery-test-support";
+import { localProjectControlEvidenceCustodySupported } from
+  "../../worker-local/project-control-evidence-custody-local-adapter";
 
 const roots: string[] = [];
 
@@ -47,7 +56,9 @@ afterEach(async () => {
   );
 });
 
-describe("terminal worker handoff dependency recovery", () => {
+describe.runIf(localProjectControlEvidenceCustodySupported)(
+  "terminal worker handoff dependency recovery",
+  () => {
   it("requires the complete explicit dependency-recovery intent", () => {
     const request = {
       status: {
@@ -80,6 +91,69 @@ describe("terminal worker handoff dependency recovery", () => {
       expect(terminalHandoffDependencyRecoveryRequested(invalid)).toBe(false);
     }
   });
+
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "writes and reads rejected output after an evidence-root repair",
+    async () => {
+    const root = await realpath(await mkdtemp(
+      join(tmpdir(), "subscription-runtime-repaired-evidence-root-"),
+    ));
+    roots.push(root);
+    const workspacePath = join(root, "workspace");
+    const jobRootDir = join(root, "jobs", "project-worker");
+    const ledgerRoot = join(root, "custody", "consumed-output-ledger");
+    const historicalEvidenceRoot = join(root, "custody-v1", "archives");
+    const activeEvidenceRoot = join(root, "custody-v2", "archives");
+    await Promise.all([
+      workspacePath,
+      jobRootDir,
+      join(ledgerRoot, "items"),
+      historicalEvidenceRoot,
+      activeEvidenceRoot,
+    ].map((path) => mkdir(path, { recursive: true })));
+    await gitInitRepository(workspacePath);
+    await writeFile(join(workspacePath, "owned.ts"), "export const value = 1;\n");
+    await git(workspacePath, ["add", "owned.ts"]);
+    await git(workspacePath, ["commit", "-m", "test: base"]);
+    await writeFile(join(workspacePath, "owned.ts"), "export const value = 2;\n");
+    const existingScope: ProjectAccessScope = {
+      projectId: "project",
+      readRoots: [root],
+      workspaceRoots: [root],
+      consumedOutputLedgerRoots: [ledgerRoot],
+      consumedOutputEvidenceRoots: [historicalEvidenceRoot],
+    };
+    const repairedScope: ProjectAccessScope = {
+      ...existingScope,
+      consumedOutputEvidenceRoots: [historicalEvidenceRoot, activeEvidenceRoot],
+    };
+    assertProjectControlScopeRepairAllowed({
+      existing: existingScope,
+      proposed: repairedScope,
+    });
+    await assertProjectControlEvidenceRootsCanonical(
+      repairedScope.consumedOutputEvidenceRoots ?? [],
+      repairedScope,
+    );
+
+    const receipt = await recordRejectedUncapturedOutput({
+      scope: repairedScope,
+      jobId: "project-worker",
+      jobRootDir,
+      workspacePath,
+      closedAt: "2026-07-21T00:00:00.000Z",
+      reason: "Rejected after evidence-root repair.",
+    });
+    const decision = JSON.parse(await readFile(receipt.ledgerPath, "utf8"));
+    expect(decision.archivePath.startsWith(`${activeEvidenceRoot}/`)).toBe(true);
+    const ledger = await readCodexGoalConsumedOutputLedgers({
+      roots: [ledgerRoot],
+      evidenceRoots: repairedScope.consumedOutputEvidenceRoots ?? [],
+    });
+    expect(ledger.byJobId.get("project-worker")).toMatchObject({ valid: true });
+    expect(ledger.debt).toEqual([]);
+    },
+  );
 
   it("permits only the exact runtime-captured dirty workspace", async () => {
     const root = await mkdtemp(
@@ -151,7 +225,7 @@ describe("terminal worker handoff dependency recovery", () => {
   });
 
   it("pins the pre-bootstrap handoff and rejects reviewed output", async () => {
-    const fixture = await recoveryFixture();
+    const fixture = await recoveryFixture(roots);
     const before = await verifyTerminalHandoffRecovery(fixture.verifyInput);
     await writeFile(
       join(fixture.workspacePath, "owned.ts"),
@@ -211,6 +285,7 @@ describe("terminal worker handoff dependency recovery", () => {
             if (!recovery) throw new Error("expected rejected recovery");
             await assertCodexGoalProjectJobNotTerminal({
               roots: input.scope.consumedOutputLedgerRoots ?? [],
+              evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
               projectId: input.scope.projectId,
               controllerJobId: input.controller.jobId,
               jobId: fixture.jobId,
@@ -228,45 +303,219 @@ describe("terminal worker handoff dependency recovery", () => {
     expect(startCalled).toBe(true);
   });
 
-  it("resolves the current 4ca6 patch among six same-timestamp records instead of stale f7", async () => {
-    const fixture = await actionFixture();
-    const receipt = await writeRejectedUncapturedReview(fixture);
-    const currentPatchSha256 = receipt.decision.attemptId?.replace(
-      "uncaptured-rejection-",
-      "",
-    );
-    if (!currentPatchSha256) throw new Error("expected current patch");
-    expect(currentPatchSha256).toMatch(/^4ca6/);
-    const stalePatchSha256 = await writeCompetingRejectedUncapturedRecords(
-      fixture,
-      receipt.ledgerPath,
-    );
-    expect(stalePatchSha256).toMatch(/^f7/);
+  it("uses controller custody roots for a legacy producer without project scope", async () => {
+    const fixture = await actionFixture({ producerHasProjectScope: false });
+    await writeRejectedUncapturedReview(fixture);
+    let startCalled = false;
 
-    const ledger = await readCodexGoalConsumedOutputLedgers({
-      roots: [fixture.ledgerRoot],
+    const started = await projectControlStartStoredJobView(
+      fixture.startArgs,
+      {
+        ...fixture.deps(async () => {}),
+        codexProjectControlBroker: (input) => ({
+          startWorker: async () => {
+            startCalled = true;
+            expect(input.scope.consumedOutputLedgerRoots).toEqual([
+              fixture.ledgerRoot,
+            ]);
+            expect(input.scope.consumedOutputEvidenceRoots).toEqual([
+              fixture.evidenceRoot,
+            ]);
+            return { status: "started" };
+          },
+        }) as unknown as ProjectControlBroker,
+      },
+    );
+
+    expect(started).toMatchObject({ ok: true, jobId: fixture.jobId });
+    expect(startCalled).toBe(true);
+  });
+
+  it("falls back to producer custody roots when controller roots are omitted", async () => {
+    const fixture = await actionFixture({
+      controllerHasEvidenceRoots: false,
+      controllerHasLedgerRoots: false,
     });
-    expect(ledger.records).toHaveLength(6);
-    expect(
-      rejectedUncapturedOutputPatchSha256(
-        ledger.byJobId.get(fixture.jobId)!,
-      ),
-    ).toBe(stalePatchSha256);
-    expect(
-      resolveRejectedUncapturedOutputPatchSha256({
-        ledger,
-        jobId: fixture.jobId,
-        workspacePath: fixture.workspacePath,
-        expectedPatchSha256: currentPatchSha256,
-      }),
-    ).toBe(currentPatchSha256);
-    await expect(verifyActionFixture(fixture)).resolves.toMatchObject({
-      reviewDisposition: "rejected_uncaptured",
-      patchSha256: currentPatchSha256,
-    });
+    await writeRejectedUncapturedReview(fixture);
+    let startCalled = false;
+
+    const started = await projectControlStartStoredJobView(
+      fixture.startArgs,
+      {
+        ...fixture.deps(async () => {}),
+        codexProjectControlBroker: (input) => ({
+          startWorker: async () => {
+            startCalled = true;
+            const recovery = input.rejectedUncapturedTerminalHandoffRecovery;
+            expect(input.scope.consumedOutputLedgerRoots).toEqual([
+              fixture.ledgerRoot,
+            ]);
+            expect(input.scope.consumedOutputEvidenceRoots).toEqual([
+              fixture.evidenceRoot,
+            ]);
+            if (!recovery) throw new Error("expected rejected recovery");
+            await assertCodexGoalProjectJobNotTerminal({
+              roots: input.scope.consumedOutputLedgerRoots ?? [],
+              evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
+              projectId: input.scope.projectId,
+              controllerJobId: input.controller.jobId,
+              jobId: fixture.jobId,
+              taskId: fixture.jobId,
+              workspacePath: fixture.workspacePath,
+              rejectedUncapturedContinuationPatchSha256:
+                recovery.patchSha256,
+            });
+            return { status: "started" };
+          },
+        }) as unknown as ProjectControlBroker,
+      },
+    );
+
+    expect(started).toMatchObject({ ok: true, jobId: fixture.jobId });
+    expect(startCalled).toBe(true);
+  });
+
+  it("rechecks producer ledger roots at final admission when controller roots are omitted", async () => {
+    const fixture = await actionFixture({ controllerHasLedgerRoots: false });
+    let admissionCalled = false;
+
     await expect(
-      assertTerminalAdmission(fixture, currentPatchSha256),
-    ).resolves.toBeUndefined();
+      projectControlStartStoredJobView(fixture.startArgs, {
+        ...fixture.deps(async () => {}),
+        codexProjectControlBroker: (input) => {
+          const broker = createCodexProjectControlBroker({
+            ...input,
+            admissionDeps: {
+              listJobs: async () => [],
+              buildOverviewItems: async () => [],
+            },
+          });
+          return {
+            startWorker: async (
+              startInput: Parameters<ProjectControlBroker["startWorker"]>[0],
+            ) => {
+              admissionCalled = true;
+              expect(input.scope.consumedOutputLedgerRoots).toEqual([
+                fixture.ledgerRoot,
+              ]);
+              await recordRejectedUncapturedOutput({
+                scope: fixture.scope,
+                jobId: fixture.jobId,
+                jobRootDir: fixture.jobRootDir,
+                workspacePath: fixture.workspacePath,
+                closedAt: "2026-07-21T00:00:00.000Z",
+                reason: "Concurrent terminal decision before final admission.",
+              });
+              return await broker.startWorker(startInput);
+            },
+          } as unknown as ProjectControlBroker;
+        },
+      }),
+    ).rejects.toThrow("project_control_terminal_job_start_denied");
+    expect(admissionCalled).toBe(true);
+  });
+
+  it("keeps an explicit empty controller ledger root set authoritative", async () => {
+    const fixture = await actionFixture({ controllerHasEmptyLedgerRoots: true });
+    await writeRejectedUncapturedReview(fixture);
+    let brokerCreated = false;
+
+    await expect(
+      projectControlStartStoredJobView(fixture.startArgs, {
+        ...fixture.deps(async () => {}),
+        codexProjectControlBroker: () => {
+          brokerCreated = true;
+          throw new Error("unexpected broker start");
+        },
+      }),
+    ).rejects.toThrow("project_control_terminal_handoff_already_reviewed");
+    expect(brokerCreated).toBe(false);
+  });
+
+  it("keeps an explicit empty controller evidence root set authoritative", async () => {
+    const fixture = await actionFixture({
+      controllerHasEmptyEvidenceRoots: true,
+    });
+    await writeRejectedUncapturedReview(fixture);
+    let brokerCreated = false;
+
+    await expect(
+      projectControlStartStoredJobView(fixture.startArgs, {
+        ...fixture.deps(async () => {}),
+        codexProjectControlBroker: () => {
+          brokerCreated = true;
+          throw new Error("unexpected broker start");
+        },
+      }),
+    ).rejects.toThrow("project_control_terminal_handoff_already_reviewed");
+    expect(brokerCreated).toBe(false);
+  });
+
+  it("uses a controller-appended active evidence root over producer history", async () => {
+    const fixture = await actionFixture({ controllerAppendsEvidenceRoot: true });
+    await writeRejectedUncapturedReview(fixture, fixture.controllerScope);
+    let startCalled = false;
+
+    const started = await projectControlStartStoredJobView(
+      fixture.startArgs,
+      {
+        ...fixture.deps(async () => {}),
+        codexProjectControlBroker: (input) => ({
+          startWorker: async () => {
+            startCalled = true;
+            expect(input.scope.consumedOutputEvidenceRoots).toEqual([
+              fixture.evidenceRoot,
+              fixture.activeEvidenceRoot,
+            ]);
+            return { status: "started" };
+          },
+        }) as unknown as ProjectControlBroker,
+      },
+    );
+
+    expect(started).toMatchObject({ ok: true, jobId: fixture.jobId });
+    expect(startCalled).toBe(true);
+  });
+
+  it("rechecks a controller-appended evidence root at final admission", async () => {
+    const fixture = await actionFixture({ controllerAppendsEvidenceRoot: true });
+    let admissionCalled = false;
+
+    await expect(
+      projectControlStartStoredJobView(fixture.startArgs, {
+        ...fixture.deps(async () => {}),
+        codexProjectControlBroker: (input) => {
+          const broker = createCodexProjectControlBroker({
+            ...input,
+            admissionDeps: {
+              listJobs: async () => [],
+              buildOverviewItems: async () => [],
+            },
+          });
+          return {
+            startWorker: async (
+              startInput: Parameters<ProjectControlBroker["startWorker"]>[0],
+            ) => {
+              admissionCalled = true;
+              expect(input.scope.consumedOutputEvidenceRoots).toEqual([
+                fixture.evidenceRoot,
+                fixture.activeEvidenceRoot,
+              ]);
+              await recordRejectedUncapturedOutput({
+                scope: fixture.controllerScope,
+                jobId: fixture.jobId,
+                jobRootDir: fixture.jobRootDir,
+                workspacePath: fixture.workspacePath,
+                closedAt: "2026-07-21T00:00:00.000Z",
+                reason: "Concurrent terminal decision in the active evidence root.",
+              });
+              return await broker.startWorker(startInput);
+            },
+          } as unknown as ProjectControlBroker;
+        },
+      }),
+    ).rejects.toThrow("project_control_terminal_job_start_denied");
+    expect(admissionCalled).toBe(true);
   });
 
   it("rejects archive tamper at recovery and terminal admission", async () => {
@@ -580,301 +829,8 @@ describe("terminal worker handoff dependency recovery", () => {
   );
 });
 
-async function recoveryFixture() {
-  const root = await mkdtemp(
-    join(tmpdir(), "subscription-runtime-terminal-recovery-pinned-"),
-  );
-  roots.push(root);
-  const workspacePath = join(root, "workspace");
-  const jobRootDir = join(root, "job");
-  const jobId = "project-worker";
-  await Promise.all([
-    mkdir(workspacePath, { recursive: true }),
-    mkdir(jobRootDir, { recursive: true }),
-  ]);
-  await gitInitRepository(workspacePath);
-  await writeFile(join(workspacePath, "owned.ts"), "export const value = 1;\n");
-  await git(workspacePath, ["add", "owned.ts"]);
-  await git(workspacePath, ["commit", "-m", "test: base"]);
-  await writeFile(join(workspacePath, "owned.ts"), "export const value = 2;\n");
-  const handoff = await materializeCodexGoalHandoffArtifacts({
-    workerJobId: jobId,
-    taskId: jobId,
-    workspacePath,
-    jobRootDir,
-  });
-  if (!handoff) throw new Error("expected handoff");
-  await writeTerminalResult(jobRootDir, jobId, handoff);
-  const producer = {
-    jobId,
-    taskId: jobId,
-    workspacePath,
-    jobRootDir,
-  } as CodexGoalJobManifest;
-  const snapshotter = localReviewedWorkerOutputDeps({
-    rootDir: join(root, "reviewed-output"),
-  }).snapshotter;
-  return {
-    workspacePath,
-    jobRootDir,
-    jobId,
-    verifyInput: { producer, workspacePath, snapshotter },
-  };
-}
-
-async function writeTerminalResult(
-  jobRootDir: string,
-  taskId: string,
-  handoff: NonNullable<
-    Awaited<ReturnType<typeof materializeCodexGoalHandoffArtifacts>>
-  >,
-): Promise<void> {
-  await writeFile(
-    join(jobRootDir, `${taskId}.latest-result.json`),
-    `${JSON.stringify({
-      status: "done",
-      changedFiles: handoff.changedPaths,
-      evidence: [],
-      blockers: [],
-      nextAction: "review_completed",
-      artifacts: handoff.artifacts,
-      details: { baseCommit: handoff.baseCommit },
-    })}\n`,
-  );
-}
-
-async function actionFixture() {
-  const root = await mkdtemp(
-    join(tmpdir(), "subscription-runtime-terminal-recovery-action-"),
-  );
-  roots.push(root);
-  const registryRootDir = join(root, "registry");
-  const worktreeRoot = join(root, "worktrees");
-  const workspacePath = join(worktreeRoot, "project-worker");
-  const canonicalWorkspacePath = join(root, "canonical");
-  const jobRootDir = join(root, "jobs", "project-worker");
-  const promptPath = join(jobRootDir, "prompt.md");
-  const jobId = "project-worker";
-  const ledgerRoot = join(root, "consumed-output-ledger");
-  await Promise.all([
-    mkdir(workspacePath, { recursive: true }),
-    mkdir(canonicalWorkspacePath, { recursive: true }),
-    mkdir(jobRootDir, { recursive: true }),
-    mkdir(join(ledgerRoot, "items"), { recursive: true }),
-  ]);
-  await gitInitRepository(workspacePath);
-  await gitInitRepository(canonicalWorkspacePath);
-  await writeFile(join(workspacePath, "owned.ts"), "export const value = 1;\n");
-  await git(workspacePath, ["add", "owned.ts"]);
-  await git(workspacePath, ["commit", "-m", "test: base"]);
-  await writeFile(
-    join(workspacePath, "owned.ts"),
-    "export const value = 2;\n// nonce 1339\n",
-  );
-  await writeFile(promptPath, "Run checks only.\n");
-  const handoff = await materializeCodexGoalHandoffArtifacts({
-    workerJobId: jobId,
-    taskId: jobId,
-    workspacePath,
-    jobRootDir,
-  });
-  if (!handoff) throw new Error("expected handoff");
-  await writeTerminalResult(jobRootDir, jobId, handoff);
-  const scope: ProjectAccessScope = {
-    projectId: "project",
-    workspaceRoots: [canonicalWorkspacePath],
-    worktreeRoots: [worktreeRoot],
-    registryRoot: registryRootDir,
-    jobIdPrefixes: ["project-"],
-    tmuxSessionPrefixes: ["project-"],
-    allowedAccountIds: ["account-a", "account-b"],
-    allowedBranches: ["main"],
-    allowedGitRemotes: ["origin"],
-    consumedOutputLedgerRoots: [ledgerRoot],
-  };
-  await createCodexGoalJob({
-    registryRootDir,
-    manifest: {
-      jobId,
-      jobRootDir,
-      authRootDir: join(root, "auth"),
-      workspacePath,
-      promptPath,
-      taskId: jobId,
-      accounts: ["account-a"],
-      tmuxSession: jobId,
-      accessBoundary: AccessBoundary.ProjectScopedControl,
-      projectAccessScope: scope,
-      networkAccess: NetworkAccessMode.Restricted,
-    },
-  });
-  const controller = {
-    schemaVersion: 1,
-    jobId: "project-controller",
-    createdAt: "2026-07-14T00:00:00.000Z",
-    updatedAt: "2026-07-14T00:00:00.000Z",
-    jobRootDir: join(root, "jobs", "project-controller"),
-    workspacePath: canonicalWorkspacePath,
-    promptPath: join(root, "jobs", "project-controller", "prompt.md"),
-    taskId: "project-controller",
-    accounts: ["account-a"],
-    accessBoundary: AccessBoundary.ProjectScopedControl,
-    projectAccessScope: scope,
-  } as CodexGoalJobManifest;
-  const producer = {
-    jobId,
-    taskId: jobId,
-    workspacePath,
-    jobRootDir,
-    projectAccessScope: scope,
-  } as CodexGoalJobManifest;
-  const snapshotter = localReviewedWorkerOutputDeps({
-    rootDir: join(root, "reviewed-output"),
-  }).snapshotter;
-  return {
-    registryRootDir,
-    workspacePath,
-    jobRootDir,
-    jobId,
-    ledgerRoot,
-    scope,
-    controller,
-    producer,
-    snapshotter,
-    startArgs: {
-      registryRootDir,
-      controllerJobId: controller.jobId,
-      jobId,
-      confirmStart: true,
-      forceStart: true,
-      dependencyBootstrap: "install" as const,
-      confirmDependencyBootstrap: true,
-    },
-    deps: (duringBootstrap: () => Promise<void>) => ({
-      loadProjectControlController: async () => ({
-        registryRootDir,
-        controller,
-        scope,
-      }),
-      loadJobLaunch: async () => {
-        throw new Error("unexpected loadJobLaunch");
-      },
-      codexProjectControlBroker: () => {
-        throw new Error("unexpected broker start");
-      },
-      dependencyBootstrap: async () => {
-        await duringBootstrap();
-        return {
-          mode: "install" as const,
-          workspacePath,
-          nodeModulesPath: join(workspacePath, "node_modules"),
-          nodeModulesExists: true,
-          binaryChecks: [],
-          fingerprintInputs: [],
-          status: "installed" as const,
-          warnings: [],
-        };
-      },
-    }),
-  };
-}
-
-async function writeRejectedUncapturedReview(
-  fixture: Awaited<ReturnType<typeof actionFixture>>,
+async function actionFixture(
+  options: Parameters<typeof recoveryActionFixture>[1] = {},
 ) {
-  const receipt = await recordRejectedUncapturedOutput({
-    scope: fixture.scope,
-    jobId: fixture.jobId,
-    jobRootDir: fixture.jobRootDir,
-    workspacePath: fixture.workspacePath,
-    closedAt: "2026-07-21T00:00:00.000Z",
-    reason: "Rejected for same-job remediation.",
-  });
-  await writeReviewMarker(fixture, {});
-  return receipt;
-}
-
-async function writeCompetingRejectedUncapturedRecords(
-  fixture: Awaited<ReturnType<typeof actionFixture>>,
-  currentLedgerPath: string,
-): Promise<string> {
-  const current = JSON.parse(
-    await readFile(currentLedgerPath, "utf8"),
-  ) as Record<string, unknown>;
-  const backup = current.backup as Record<string, unknown>;
-  const competitors = [
-    ["01", "competing rejected patch one\n"],
-    ["02", "competing rejected patch two\n"],
-    ["03", "competing rejected patch three\n"],
-    ["04", "competing rejected patch four\n"],
-    [
-      "zz-stale-f7",
-      "diff --git a/owned.ts b/owned.ts\nsynthetic-f7-88\n",
-    ],
-  ] as const;
-  let stalePatchSha256 = "";
-  for (const [suffix, patch] of competitors) {
-    const patchSha256 = createHash("sha256").update(patch).digest("hex");
-    const patchPath = join(
-      fixture.jobRootDir,
-      "archives",
-      `competing-${suffix}.patch`,
-    );
-    await writeFile(patchPath, patch);
-    await writeFile(
-      join(fixture.ledgerRoot, "items", `${fixture.jobId}--${suffix}.json`),
-      `${JSON.stringify({
-        ...current,
-        attemptId: `uncaptured-rejection-${patchSha256}`,
-        backup: { ...backup, patchPath },
-      })}\n`,
-    );
-    if (suffix === "zz-stale-f7") stalePatchSha256 = patchSha256;
-  }
-  return stalePatchSha256;
-}
-
-async function writeReviewMarker(
-  fixture: Awaited<ReturnType<typeof actionFixture>>,
-  overrides: Record<string, unknown>,
-): Promise<void> {
-  await writeFile(
-    join(fixture.jobRootDir, `${fixture.jobId}.review.json`),
-    `${JSON.stringify({
-      schemaVersion: 1,
-      jobId: fixture.jobId,
-      taskId: fixture.jobId,
-      reviewedAt: "2026-07-21T00:00:00.000Z",
-      note: "FORMAL REJECT",
-      status: { resultStatus: "done", workspaceDirty: true },
-      ...overrides,
-    })}\n`,
-  );
-}
-
-async function assertTerminalAdmission(
-  fixture: Awaited<ReturnType<typeof actionFixture>>,
-  patchSha256: string,
-): Promise<void> {
-  await assertCodexGoalProjectJobNotTerminal({
-    roots: [fixture.ledgerRoot],
-    projectId: fixture.scope.projectId,
-    controllerJobId: fixture.controller.jobId,
-    jobId: fixture.jobId,
-    taskId: fixture.jobId,
-    workspacePath: fixture.workspacePath,
-    rejectedUncapturedContinuationPatchSha256: patchSha256,
-  });
-}
-
-async function verifyActionFixture(
-  fixture: Awaited<ReturnType<typeof actionFixture>>,
-  roots: readonly string[] = [fixture.ledgerRoot],
-) {
-  return await verifyTerminalHandoffRecovery({
-    producer: fixture.producer,
-    workspacePath: fixture.workspacePath,
-    snapshotter: fixture.snapshotter,
-    consumedOutputLedgerRoots: roots,
-  });
+  return await recoveryActionFixture(roots, options);
 }

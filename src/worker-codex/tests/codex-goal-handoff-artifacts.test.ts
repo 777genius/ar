@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  chmod,
   mkdtemp,
   mkdir,
   lstat,
@@ -202,6 +203,128 @@ describe("Codex goal handoff artifact materialization", () => {
     await expect(captureCodexGoalContinuationWorkspaceFingerprint({
       workspacePath: fixture.workspacePath,
     })).resolves.not.toMatchObject({ sha256: first?.sha256 });
+  });
+
+  it("accepts exact staged-only or unstaged-only state and rejects mixed layers", async () => {
+    const fixture = await createFixture();
+    await writeFile(join(fixture.workspacePath, "README.md"), "changed\n");
+    await git(fixture.workspacePath, ["add", "README.md"]);
+    await git(fixture.workspacePath, ["update-index", "--split-index"]);
+
+    expect(await gitOutput(fixture.workspacePath, ["diff", "--name-only"]))
+      .toBe("");
+    expect(
+      await gitOutput(fixture.workspacePath, [
+        "diff",
+        "--cached",
+        "--name-only",
+      ]),
+    ).toBe("README.md");
+    const liveIndexPath = await gitOutput(fixture.workspacePath, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-path",
+      "index",
+    ]);
+    const liveIndexBefore = await readFile(liveIndexPath);
+    const staged = await captureCodexGoalContinuationWorkspaceFingerprint({
+      workspacePath: fixture.workspacePath,
+      expectedBaseCommit: fixture.baseCommit,
+    });
+    await expect(captureCodexGoalContinuationWorkspaceFingerprint({
+      workspacePath: fixture.workspacePath,
+      expectedBaseCommit: fixture.baseCommit,
+    })).resolves.toEqual(staged);
+    expect(await readFile(liveIndexPath)).toEqual(liveIndexBefore);
+
+    await git(fixture.workspacePath, ["reset", "--", "README.md"]);
+    expect(
+      await gitOutput(fixture.workspacePath, [
+        "diff",
+        "--cached",
+        "--name-only",
+      ]),
+    ).toBe("");
+    expect(await gitOutput(fixture.workspacePath, ["diff", "--name-only"]))
+      .toBe("README.md");
+    const unstaged = await captureCodexGoalContinuationWorkspaceFingerprint({
+      workspacePath: fixture.workspacePath,
+      expectedBaseCommit: fixture.baseCommit,
+    });
+    expect(unstaged).toEqual(staged);
+
+    await writeFile(join(fixture.workspacePath, "staged-only.txt"), "index\n");
+    await git(fixture.workspacePath, ["add", "staged-only.txt"]);
+    await expect(captureCodexGoalContinuationWorkspaceFingerprint({
+      workspacePath: fixture.workspacePath,
+      expectedBaseCommit: fixture.baseCommit,
+    })).rejects.toThrow("handoff_mixed_index_worktree_state");
+  });
+
+  it("captures executable-bit drift even when core.fileMode is false", async () => {
+    const fixture = await createFixture();
+    await git(fixture.workspacePath, ["config", "core.fileMode", "false"]);
+    await chmod(join(fixture.workspacePath, "README.md"), 0o755);
+
+    expect(await gitOutput(fixture.workspacePath, ["status", "--porcelain"]))
+      .toBe("");
+    await expect(captureCodexGoalContinuationWorkspaceFingerprint({
+      workspacePath: fixture.workspacePath,
+      expectedBaseCommit: fixture.baseCommit,
+    })).resolves.toMatchObject({
+      changedPaths: ["README.md"],
+      sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  });
+
+  it("captures tracked content hidden by skip-worktree", async () => {
+    const fixture = await createFixture();
+    await writeFile(join(fixture.workspacePath, "README.md"), "hidden\n");
+    const expected = await captureCodexGoalContinuationWorkspaceFingerprint({
+      workspacePath: fixture.workspacePath,
+      expectedBaseCommit: fixture.baseCommit,
+    });
+    await git(fixture.workspacePath, ["restore", "README.md"]);
+    await git(fixture.workspacePath, [
+      "update-index",
+      "--skip-worktree",
+      "README.md",
+    ]);
+    await writeFile(join(fixture.workspacePath, "README.md"), "hidden\n");
+
+    expect(await gitOutput(fixture.workspacePath, ["status", "--porcelain"]))
+      .toBe("");
+    await expect(captureCodexGoalContinuationWorkspaceFingerprint({
+      workspacePath: fixture.workspacePath,
+      expectedBaseCommit: fixture.baseCommit,
+    })).resolves.toEqual(expected);
+  });
+
+  it("ignores replace refs for every continuation fingerprint read", async () => {
+    const fixture = await createFixture();
+    await writeFile(join(fixture.workspacePath, "README.md"), "replacement\n");
+    const expected = await captureCodexGoalContinuationWorkspaceFingerprint({
+      workspacePath: fixture.workspacePath,
+      expectedBaseCommit: fixture.baseCommit,
+    });
+    await git(fixture.workspacePath, ["add", "README.md"]);
+    await git(fixture.workspacePath, ["commit", "-m", "replacement tree"]);
+    const replacementCommit = await gitOutput(fixture.workspacePath, [
+      "rev-parse",
+      "HEAD",
+    ]);
+    await git(fixture.workspacePath, ["reset", "--hard", fixture.baseCommit]);
+    await git(fixture.workspacePath, [
+      "replace",
+      fixture.baseCommit,
+      replacementCommit,
+    ]);
+    await writeFile(join(fixture.workspacePath, "README.md"), "replacement\n");
+
+    await expect(captureCodexGoalContinuationWorkspaceFingerprint({
+      workspacePath: fixture.workspacePath,
+      expectedBaseCommit: fixture.baseCommit,
+    })).resolves.toEqual(expected);
   });
 
   it("enforces the remaining aggregate current-file budget before reading", async () => {

@@ -186,15 +186,22 @@ npm run e2e:live-agent-runtime-goal:codex
 npm run e2e:live-agent-runtime-goal:claude
 ```
 
-Each command performs two Goal executions with distinct `executionId` values
+Each command performs three Goal executions with distinct `executionId` values
 in one logical thread. The first prompt supplies a random context token without
 writing it to disk; after the runner is disposed and recreated, the second
-prompt must recover that token from provider-native context and write it to the
-sandbox. Exact completed-result replay is then run with a trap worker whose
+prompt must recover that token while leaving a separate first-round long-horizon
+token unmentioned, then retain another token. After another restart, the third
+prompt must recover all three tokens cumulatively. Exact completed-result
+replay is run after every round with a trap worker whose
 `start()` and `run()` methods fail, proving replay does not reach the provider.
 The harness also verifies durable replay after restart, Git-visible receipt
 invalidation and restoration, provider-checkpoint redaction, timeout/cancel
-lifecycle probes, the exact workspace diff and an outside-workspace canary.
+lifecycle probes, exact workspace snapshots at round boundaries, the exact final
+workspace contents and diff, an outside-workspace canary, and a machine-readable
+continuation scorecard. Snapshot evidence proves only the observed boundary
+states; it does not claim that content was never transiently written between
+observations. Equivalent `eval:logical-thread-continuation:live:*`
+commands make the evaluation purpose explicit.
 It requires `--allow-live` internally and must never be run against a real user
 or Quanta project.
 
@@ -223,8 +230,38 @@ For the CLI, select it explicitly with
 `CLAUDE_RUNTIME_DIST_DIR` never changes the backend. The CLI default is always
 `agent-sdk`.
 
-Codex can override its binary with `providerRuntime.binaryPath`. Keep provider
-runtime wiring in the composition root, not in review/fix business logic.
+Codex can override its binary with `providerRuntime.binaryPath`. It can also set
+the validated execution profile with `reasoningEffort: "high"` and
+`serviceTier: "default"`; the CLI equivalents are `--reasoning-effort high`
+and `--service-tier default`. Other values and non-Codex use fail closed. The
+profile is part of protocol v3 logical-thread compatibility.
+
+For structured results, put the JSON object schema in
+`task.controls.outputSchema`. An explicit `outputSchemaName` is optional; the
+runner generates a deterministic name when absent and registers the schema on
+the Codex worker before execution. The recursive canonical digest ignores JSON
+object key order and is part of v3 compatibility even for explicit names.
+Explicit empty names are invalid.
+
+Read-only reviews can opt into instruction isolation with this exact v2 control:
+
+```json
+"workspaceInstructionPolicy": "deny_project_instructions_v1"
+```
+
+It requires `accessBoundary: "read_only"` and bounded `read_file` /
+`search_files` tools. The Codex adapter then disables native project-document
+discovery and rejects project instruction paths before reads or search results.
+Default consumers remain unchanged. Hosts can preflight support without auth,
+stdin, state initialization or worker startup:
+
+```sh
+subscription-runtime-run-agent-runtime-task --capabilities-json
+```
+
+The response has capability schema version 1; pass an optional `1` to pin it.
+Unknown versions fail closed. Keep provider runtime wiring in the composition
+root, not in review/fix business logic.
 
 `toolPolicy.allow` and `toolPolicy.deny` use provider-neutral
 `AgentRuntimeTool` values. The local runner maps them to concrete provider tool

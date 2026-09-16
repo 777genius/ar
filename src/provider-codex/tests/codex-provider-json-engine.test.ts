@@ -17,6 +17,7 @@ import type {
   ManagedRunStorePort,
   ProcessResult,
   ProviderFailure,
+  RedactorPort,
   RunnerPort,
   RunnerCapabilities,
 } from "@vioxen/subscription-runtime/core";
@@ -62,7 +63,150 @@ import {
   validAuthJson,
 } from "./codex-provider-test-support";
 
+function streamingEngine(
+  run: (input: Parameters<CodexExecutionEngine["run"]>[0]) => void,
+): CodexExecutionEngine {
+  return {
+    kind: "streaming-test",
+    capabilities: {
+      supportsStructuredOutput: false,
+      supportsJsonEvents: true,
+      supportsThreadResume: false,
+      requiresSchemaFile: false,
+    },
+    async run(input) {
+      run(input);
+      return { outputText: "safe output", warnings: [] };
+    },
+  };
+}
+
+async function runStreamingDriver(
+  engine: CodexExecutionEngine,
+  redactor: RedactorPort,
+  controller = new AbortController(),
+  delivered: string[] = [],
+) {
+  const workspace = await mkdtemp(join(tmpdir(), "codex-json-agent-test-"));
+  try {
+    return await new CodexJsonAgentDriver({ engine }).runTask({
+      session: sessionArtifactFromCodexAuthJson(validAuthJson),
+      task: { kind: "review", prompt: "inspect diff" },
+      workspace: { path: workspace },
+      runner: new StaticRunner(""),
+      redactor,
+      abortSignal: controller.signal,
+      onTextDelta: (text) => delivered.push(text),
+    });
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+}
+
 describe("Codex provider adapter", () => {
+  it("reports an oversized sensitive stream as invalid output instead of cancellation", async () => {
+    const engine = streamingEngine((input) => {
+      input.onTextDelta?.(`Bearer ${"a".repeat(9_000)}`);
+      expect(input.abortSignal.aborted).toBe(true);
+      throw new Error("node_process_runner_aborted");
+    });
+    const result = await runStreamingDriver(engine, new DefaultRedactor());
+    expect(result).toMatchObject({
+      status: "failed",
+      failure: { code: "provider_output_invalid" },
+    });
+  });
+
+  it("keeps an explicit caller cancellation classified as cancellation", async () => {
+    const controller = new AbortController();
+    const engine = streamingEngine((input) => {
+      input.onTextDelta?.("ordinary output that remains safe");
+      controller.abort();
+      throw new Error("node_process_runner_aborted");
+    });
+    const result = await runStreamingDriver(engine, new DefaultRedactor(), controller);
+    expect(result).toMatchObject({
+      status: "failed",
+      failure: { code: "task_cancelled" },
+    });
+  });
+
+  it("contains a custom stream creation error in the provider task result", async () => {
+    const redactor: RedactorPort = {
+      registerSecret() {},
+      redact: (text) => text,
+      assertNoKnownSecret() {},
+      createTextStream() {
+        throw new Error("synthetic_custom_stream_creation_failure");
+      },
+    };
+    const result = await runStreamingDriver(streamingEngine(() => {}), redactor);
+    expect(result.status).toBe("failed");
+  });
+
+  it("does not emit legacy redactor text when the engine fails", async () => {
+    const delivered: string[] = [];
+    const redactor: RedactorPort = {
+      registerSecret() {},
+      redact: (text) => text.replaceAll("synthetic-secret", "[redacted]"),
+      assertNoKnownSecret(text) {
+        if (text.includes("synthetic-secret")) throw new Error("leak");
+      },
+    };
+    const result = await runStreamingDriver(
+      streamingEngine((input) => {
+        input.onTextDelta?.("synthetic-secret");
+        throw new Error("synthetic_engine_failure");
+      }),
+      redactor,
+      undefined,
+      delivered,
+    );
+    expect(result.status).toBe("failed");
+    expect(delivered).toEqual([]);
+  });
+
+  it("never releases a secret which spans Codex text deltas", async () => {
+    const secret = "synthetic-stream-secret";
+    const engine: CodexExecutionEngine = {
+      kind: "streaming-test",
+      capabilities: {
+        supportsStructuredOutput: false,
+        supportsJsonEvents: true,
+        supportsThreadResume: false,
+        requiresSchemaFile: false,
+      },
+      async run(input) {
+        input.onTextDelta?.("safe output synthetic-st");
+        input.onTextDelta?.("ream-secret complete");
+        return { outputText: "safe output", warnings: [] };
+      },
+    };
+    const workspace = await mkdtemp(join(tmpdir(), "codex-json-agent-test-"));
+    const redactor = new DefaultRedactor();
+    redactor.registerSecret(secret, "stream");
+    const delivered: string[] = [];
+
+    try {
+      const result = await new CodexJsonAgentDriver({ engine }).runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "inspect diff" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor,
+        abortSignal: new AbortController().signal,
+        onTextDelta: (text) => delivered.push(text),
+      });
+
+      expect(result.status).toBe("completed");
+      expect(delivered.join("")).toContain("safe output ");
+      expect(delivered.join("")).toContain("[redacted:stream]");
+      expect(delivered.join("")).not.toContain(secret);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("builds packaged JSON exec args without the human renderer path", () => {
     expect(
       buildCodexJsonExecArgs({
@@ -141,19 +285,7 @@ describe("Codex provider adapter", () => {
 
   it("runs a Codex JSON task through the packaged execution engine", async () => {
     const runner = new StaticRunner(
-      [
-        JSON.stringify({ type: "agent_message", message: "json review output" }),
-        JSON.stringify({
-          type: "turn.completed",
-          usage: {
-            input_tokens: 101,
-            cached_input_tokens: 40,
-            cache_write_input_tokens: 0,
-            output_tokens: 12,
-            reasoning_output_tokens: 7,
-          },
-        }),
-      ].join("\n"),
+      `${JSON.stringify({ type: "agent_message", message: "json review output" })}\n`,
     );
     const workspace = await mkdtemp(join(tmpdir(), "codex-json-agent-test-"));
     const driver = new CodexJsonAgentDriver({
@@ -179,11 +311,6 @@ describe("Codex provider adapter", () => {
         outputText: "json review output",
         telemetry: {
           finishReason: "completed",
-          usage: {
-            inputTokens: 101,
-            outputTokens: 12,
-            totalTokens: 113,
-          },
         },
       });
       expect(result.telemetry?.durationMs).toEqual(expect.any(Number));
@@ -201,7 +328,7 @@ describe("Codex provider adapter", () => {
     const runner = new StaticRunner(
       `${JSON.stringify({
         type: "agent_message",
-        message: JSON.stringify({ verdict: "ok" }),
+        message: JSON.stringify({ verdict: "ok", tldr: null }),
       })}\n`,
       async (input) => {
         const schemaFlagIndex = input.args.indexOf("--output-schema");
@@ -210,8 +337,11 @@ describe("Codex provider adapter", () => {
         expect(schemaPath).toEqual(expect.any(String));
         expect(JSON.parse(await readFile(schemaPath!, "utf8"))).toEqual({
           type: "object",
-          properties: { verdict: { type: "string" } },
-          required: ["verdict"],
+          properties: {
+            tldr: { anyOf: [{ type: "string" }, { type: "null" }] },
+            verdict: { type: "string" },
+          },
+          required: ["tldr", "verdict"],
           additionalProperties: false,
         });
       },
@@ -226,7 +356,10 @@ describe("Codex provider adapter", () => {
       outputSchemas: {
         "review-verdict": {
           type: "object",
-          properties: { verdict: { type: "string" } },
+          properties: {
+            verdict: { type: "string" },
+            tldr: { type: "string" },
+          },
           required: ["verdict"],
           additionalProperties: false,
         },

@@ -21,6 +21,7 @@ import {
   codexAccountCapacityRootDir,
   codexAccountCapacityStore,
 } from "../codex-account-capacity-store";
+import { directCodexAppServerFailureCause } from "./codex-app-server-failure-cause";
 
 const reservationSchemaVersion = 1 as const;
 const reservationGraceMs = 10 * 60_000;
@@ -519,7 +520,9 @@ function appServerReconnectTimeout(
 ): boolean {
   return (
     typeof details?.rawCause === "string" &&
-    details.rawCause.startsWith(APP_SERVER_RECONNECT_TIMEOUT_PREFIX)
+    directCodexAppServerFailureCause(details.rawCause).startsWith(
+      APP_SERVER_RECONNECT_TIMEOUT_PREFIX,
+    )
   );
 }
 

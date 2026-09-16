@@ -44,6 +44,8 @@ export type FakeAppServerFactoryOptions = {
     readonly relativePath: string;
     readonly content: string;
   };
+  readonly rateLimitsResult?: unknown;
+  readonly rateLimitsError?: string;
 };
 
 export class FakeAppServerFactory {
@@ -53,6 +55,7 @@ export class FakeAppServerFactory {
   readonly envs: Readonly<Record<string, string>>[] = [];
   readonly codexHomes: string[] = [];
   readonly goalObjectives: string[] = [];
+  rateLimitsReadCount = 0;
   private emittedTurnErrors = 0;
 
   constructor(private readonly options: FakeAppServerFactoryOptions = {}) {}
@@ -68,6 +71,9 @@ export class FakeAppServerFactory {
       (cwd) => this.threadCwds.push(cwd),
       (objective) => this.goalObjectives.push(objective),
       () => this.configuredTurnError(),
+      () => {
+        this.rateLimitsReadCount += 1;
+      },
       this.options,
     );
   };
@@ -108,6 +114,7 @@ export class FakeAppServerProcess extends EventEmitter {
     private readonly onThreadCwd: (cwd: string) => void,
     private readonly onGoalObjective: (objective: string) => void,
     private readonly nextTurnError: () => string | null,
+    private readonly onRateLimitsRead: () => void,
     private readonly options: FakeAppServerFactoryOptions,
   ) {
     super();
@@ -130,6 +137,20 @@ export class FakeAppServerProcess extends EventEmitter {
         this.respond(request.id, { userAgent: "fake-codex" });
         continue;
       }
+      if (request.method === "account/rateLimits/read") {
+        this.onRateLimitsRead();
+        if (this.options.rateLimitsError) {
+          this.respondError(request.id, this.options.rateLimitsError);
+          continue;
+        }
+        this.respond(request.id, this.options.rateLimitsResult ?? {
+          rateLimits: {
+            primary: null,
+            secondary: null,
+          },
+        });
+        continue;
+      }
       if (request.method === "thread/start") {
         const threadId = `thread-${this.nextThreadId}`;
         this.nextThreadId += 1;
@@ -138,15 +159,7 @@ export class FakeAppServerProcess extends EventEmitter {
           this.onThreadCwd(cwd);
           this.threadCwdsById.set(threadId, cwd);
         }
-        this.respond(request.id, {
-          thread: { id: threadId },
-          model: request.params?.model,
-          modelProvider: "openai",
-          serviceTier: request.params?.serviceTier ?? null,
-          reasoningEffort:
-            (request.params?.config as Record<string, unknown> | undefined)
-              ?.model_reasoning_effort,
-        });
+        this.respond(request.id, { thread: { id: threadId } });
         continue;
       }
       if (request.method === "thread/goal/set") {
@@ -254,8 +267,15 @@ export class FakeAppServerProcess extends EventEmitter {
     await writeFile(join(cwd, write.relativePath), write.content, "utf8");
   }
 
-  private respond(id: number, result: Record<string, unknown>): void {
+  private respond(id: number, result: unknown): void {
     this.stdout.emit("data", `${JSON.stringify({ id, result })}\n`);
+  }
+
+  private respondError(id: number, message: string): void {
+    this.stdout.emit("data", `${JSON.stringify({
+      id,
+      error: { code: -32000, message },
+    })}\n`);
   }
 
   private notify(method: string, params: Record<string, unknown>): void {

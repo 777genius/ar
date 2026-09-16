@@ -144,13 +144,14 @@ export class WorkerControlService {
       ...(query.target === undefined ? {} : { target: normalizeTarget(query.target) }),
       ...(query.signalIds === undefined ? {} : { signalIds: query.signalIds }),
     });
+    const receiptIndex = indexReceipts(receipts);
     const states = new Set(query.states ?? []);
     return signals
       .map((signal) => signalView({
         signal: query.includeBodies === false
           ? { ...signal, body: "" }
           : signal,
-        receipts,
+        receipts: receiptIndex.get(signal.signalId) ?? [],
         capabilities: defaultCapabilities,
         now,
       }))
@@ -199,6 +200,12 @@ export class WorkerControlService {
   async reconcile(
     input: WorkerControlReconcileInput,
   ): Promise<WorkerControlReconciliationReport> {
+    return (await this.reconcileSnapshot(input)).report;
+  }
+
+  async reconcileSnapshot(
+    input: WorkerControlReconcileInput,
+  ): Promise<{ readonly report: WorkerControlReconciliationReport; readonly signals: readonly WorkerControlSignalView[] }> {
     const target = normalizeTarget(input.target);
     const capabilities = input.capabilities ?? defaultCapabilities;
     const now = input.now ?? this.clock.now();
@@ -224,7 +231,7 @@ export class WorkerControlService {
       view.blockedReason &&
       view.signal.deliveryMode !== "record_only"
     );
-    return {
+    return { signals: views, report: {
       target,
       signalCount: views.length,
       pendingCount: views.filter((view) => view.state === "pending").length,
@@ -244,7 +251,7 @@ export class WorkerControlService {
         : []),
         ...repair.warnings,
       ],
-    };
+    } };
   }
 
   async markSuperseded(
@@ -413,10 +420,11 @@ export class WorkerControlService {
   }): Promise<readonly WorkerControlSignalView[]> {
     const signals = await this.options.store.listSignals({ target: input.target });
     const receipts = await this.options.store.listReceipts({ target: input.target });
+    const receiptIndex = indexReceipts(receipts);
     return signals
       .map((signal) => signalView({
         signal,
-        receipts,
+        receipts: receiptIndex.get(signal.signalId) ?? [],
         capabilities: input.capabilities,
         now: input.now,
       }))
@@ -618,6 +626,17 @@ export function workerControlTargetMatches(
     ) &&
     optionalMatch(normalizedQuery.workspaceId, normalizedTarget.workspaceId)
   );
+}
+
+function indexReceipts(receipts: readonly WorkerControlDeliveryReceipt[]): Map<string, WorkerControlDeliveryReceipt[]> {
+  const index = new Map<string, WorkerControlDeliveryReceipt[]>();
+  for (const receipt of receipts) {
+    const signalId = receipt.signalId;
+    const group = index.get(signalId);
+    if (group) group.push(receipt);
+    else index.set(signalId, [receipt]);
+  }
+  return index;
 }
 
 function signalView(input: {

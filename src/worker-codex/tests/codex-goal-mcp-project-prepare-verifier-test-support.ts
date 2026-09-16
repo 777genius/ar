@@ -28,11 +28,15 @@ export function projectScope(input: {
 }): ProjectAccessScope {
   return {
     projectId: "project",
+    readRoots: [input.root],
     workspaceRoots: [input.sourceWorkspacePath],
     worktreeRoots: [join(input.root, "worktrees")],
     registryRoot: input.registryRootDir,
     consumedOutputLedgerRoots: [
       join(input.root, "control", "consumed-output-ledger"),
+    ],
+    consumedOutputEvidenceRoots: [
+      join(input.root, "control", "archives"),
     ],
     authRoot: join(input.root, "auth"),
     jobIdPrefixes: ["project-"],
@@ -50,7 +54,7 @@ export async function writeRejectedProducerLedger(input: {
   readonly producerWorkspacePath: string;
 }): Promise<void> {
   const ledgerRoot = join(input.root, "control", "consumed-output-ledger");
-  const backupRoot = join(input.root, "control", "producer-rejection-backup");
+  const backupRoot = join(input.root, "control", "archives", "producer-rejection");
   await mkdir(join(ledgerRoot, "items"), { recursive: true });
   await mkdir(backupRoot, { recursive: true });
   const statusPath = join(backupRoot, "status.txt");

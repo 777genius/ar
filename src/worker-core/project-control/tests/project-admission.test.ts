@@ -7,8 +7,10 @@ import {
   ProjectAdmissionWorkerRole,
   ProjectDebtReason,
   evaluateProjectAdmission,
+  projectAdmissionDebtFingerprint,
   summarizeProjectAdmissionDebt,
   type ProjectAdmissionSnapshot,
+  type ProjectDebtItem,
 } from "../index";
 
 describe("evaluateProjectAdmission", () => {
@@ -360,6 +362,45 @@ describe("evaluateProjectAdmission", () => {
       allowed: true,
       reason: ProjectAdmissionDecisionReason.Allowed,
     });
+  });
+
+  it("ignores only volatile disk-pressure counters in the admission CAS fingerprint", () => {
+    const diskPressure = (availableKb: number, minFreeKb = 31_457_280) => ({
+      reason: ProjectDebtReason.DiskPressure,
+      subject: "/var/data",
+      severity: "blocking" as const,
+      evidence: [`availableKb=${availableKb} minFreeKb=${minFreeKb}`],
+    });
+
+    expect(projectAdmissionDebtFingerprint([diskPressure(31_109_064)]))
+      .toBe(projectAdmissionDebtFingerprint([diskPressure(30_900_000)]));
+    expect(projectAdmissionDebtFingerprint([diskPressure(31_109_064, 30_000_000)]))
+      .not.toBe(projectAdmissionDebtFingerprint([diskPressure(31_109_064, 31_457_280)]));
+    expect(projectAdmissionDebtFingerprint([
+      diskPressure(31_109_064),
+      {
+        reason: ProjectDebtReason.ActiveWriterConflict,
+        subject: "writer-1",
+        severity: "blocking",
+        evidence: ["writer is active"],
+      },
+    ])).not.toBe(projectAdmissionDebtFingerprint([diskPressure(31_109_064)]));
+  });
+
+  it("keeps malformed disk-pressure evidence exact so the CAS remains fail-closed", () => {
+    const first: ProjectDebtItem = {
+      reason: ProjectDebtReason.DiskPressure,
+      subject: "/var/data",
+      severity: "blocking",
+      evidence: ["available bytes below threshold"],
+    };
+    const second: ProjectDebtItem = {
+      ...first,
+      evidence: ["available bytes below threshold at a new observation"],
+    };
+
+    expect(projectAdmissionDebtFingerprint([first]))
+      .not.toBe(projectAdmissionDebtFingerprint([second]));
   });
 });
 

@@ -1,4 +1,5 @@
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import { boundCodexGoalLogTailText } from "../codex-goal-log-tail";
 
 const commandRedactor = new DefaultRedactor();
 
@@ -13,10 +14,12 @@ export function extractRecentCommands(logTail: string): readonly string[] {
 }
 
 export function redactLogTail(logTail: string): string {
-  return logTail
-    .split(/\r?\n/)
-    .map((line) => redactCommand(line))
-    .join("\n");
+  return boundCodexGoalLogTailText(
+    logTail
+      .split(/\r?\n/)
+      .map((line) => redactCommand(line))
+      .join("\n"),
+  );
 }
 
 function commandFromLogLine(line: string): string | null {

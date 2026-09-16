@@ -1,12 +1,15 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
-import { promisify } from "node:util";
 import type { ProjectAccessScope } from "@vioxen/subscription-runtime/worker-core";
 import { withLiteralGitPathspecs } from "../../git-literal-pathspecs";
+import {
+  defaultProjectControlGitPort,
+  defaultProjectControlValidatorRunnerPort,
+  type ProjectControlGitPort,
+  type ProjectControlValidatorRunnerPort,
+} from "./adapters/host-command-adapters";
 
-const execFileAsync = promisify(execFile);
 const ADMISSION_DIRECTORY = "pre-start-admission";
 const VALIDATOR_TIMEOUT_MS = 60_000;
 const MAX_VALIDATOR_BYTES = 2 * 1024 * 1024;
@@ -28,12 +31,15 @@ export function configuredValidator(
   return configured;
 }
 
-export async function snapshotValidatorBundle(input: {
-  readonly workspacePath: string;
-  readonly jobRootDir: string;
-  readonly scope: ProjectAccessScope;
-  readonly expectedHead: string;
-}): Promise<string> {
+export async function snapshotValidatorBundle(
+  input: {
+    readonly workspacePath: string;
+    readonly jobRootDir: string;
+    readonly scope: ProjectAccessScope;
+    readonly expectedHead: string;
+  },
+  git: ProjectControlGitPort = defaultProjectControlGitPort,
+): Promise<string> {
   const workspace = await realpath(input.workspacePath);
   const bundle = input.scope.preStartAdmission?.mode === "serial"
     ? input.scope.preStartAdmission.validatorBundle
@@ -42,7 +48,7 @@ export async function snapshotValidatorBundle(input: {
     throw new Error("project_control_pre_start_validator_bundle_required");
   }
   const paths = bundle.map(({ path }) => path);
-  await assertWorkspaceBinding(workspace, input.expectedHead, paths);
+  await assertWorkspaceBinding(workspace, input.expectedHead, paths, git);
   const snapshotRoot = join(input.jobRootDir, ADMISSION_DIRECTORY, "validator-bundle");
   await mkdir(snapshotRoot, { recursive: true, mode: 0o700 });
   if ((await lstat(snapshotRoot)).isSymbolicLink()) {
@@ -79,7 +85,7 @@ export async function snapshotValidatorBundle(input: {
       }
     }
   }
-  await assertWorkspaceBinding(workspace, input.expectedHead, paths);
+  await assertWorkspaceBinding(workspace, input.expectedHead, paths, git);
   return snapshotRoot;
 }
 
@@ -88,12 +94,15 @@ export async function runValidator(
   validatorPath: string,
   args: readonly string[],
   cwd: string,
+  validatorRunner: ProjectControlValidatorRunnerPort =
+    defaultProjectControlValidatorRunnerPort,
 ): Promise<void> {
   try {
-    await execFileAsync(process.execPath, [validatorPath, ...args], {
+    await validatorRunner.run({
+      validatorPath,
+      args,
       cwd,
-      encoding: "utf8",
-      timeout: VALIDATOR_TIMEOUT_MS,
+      timeoutMs: VALIDATOR_TIMEOUT_MS,
       maxBuffer: 256 * 1024,
     });
   } catch {
@@ -119,22 +128,23 @@ async function assertWorkspaceBinding(
   workspace: string,
   expectedHead: string,
   paths: readonly string[],
+  git: ProjectControlGitPort = defaultProjectControlGitPort,
 ): Promise<void> {
-  const head = (await execFileAsync("git", ["-C", workspace, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    timeout: VALIDATOR_TIMEOUT_MS,
+  const head = (await git.run({
+    args: ["-C", workspace, "rev-parse", "HEAD"],
+    timeoutMs: VALIDATOR_TIMEOUT_MS,
   })).stdout.trim();
   if (head !== expectedHead) throw new Error("project_control_pre_start_workspace_head_mismatch");
-  const status = (await execFileAsync("git", withLiteralGitPathspecs([
-    "-C",
-    workspace,
-    "status",
-    "--porcelain",
-    "--",
-    ...paths,
-  ]), {
-    encoding: "utf8",
-    timeout: VALIDATOR_TIMEOUT_MS,
+  const status = (await git.run({
+    args: withLiteralGitPathspecs([
+      "-C",
+      workspace,
+      "status",
+      "--porcelain",
+      "--",
+      ...paths,
+    ]),
+    timeoutMs: VALIDATOR_TIMEOUT_MS,
   })).stdout.trim();
   if (status) throw new Error("project_control_pre_start_validator_bundle_dirty");
 }

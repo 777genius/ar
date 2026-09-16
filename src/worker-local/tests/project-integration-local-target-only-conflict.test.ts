@@ -2,6 +2,7 @@ import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { IntegrationAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { LocalGitIntegrationAdapter } from "../index";
 import {
   createTargetOnlyConflictMergeFixture,
@@ -13,7 +14,9 @@ afterEach(async () => {
   await Promise.all(
     tempRoots
       .splice(0)
-      .map((path) => rm(path, { recursive: true, force: true })),
+      .map((path) =>
+        rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 }),
+      ),
   );
 });
 
@@ -73,6 +76,8 @@ describe("local target-only conflict integration", () => {
       message: "merge: integrate reviewed target-only resolution",
       files: fixture.expectedAppliedFiles,
       identity: { name: "Integrator", email: "integrator@example.com" },
+      expectedMergeTree: await adapter.verifyMergeOutputTree({ ...attempt, targetBranch: "main",
+        workerOutput, appliedFiles: fixture.expectedAppliedFiles } as IntegrationAttempt),
       expectedParentCommits: [fixture.targetCommit, fixture.sourceCommit],
     });
     expect(commit.parentCommits).toEqual([

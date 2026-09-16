@@ -20,6 +20,12 @@ export type SubscriptionWorkerErrorCode =
   | "subscription_worker_pool_slot_restart_failed"
   | "subscription_worker_pool_slot_failed";
 
+export type SubscriptionWorkerUsage = {
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly totalTokens?: number;
+};
+
 export class SubscriptionWorkerError extends Error {
   constructor(
     readonly code: SubscriptionWorkerErrorCode,
@@ -27,6 +33,7 @@ export class SubscriptionWorkerError extends Error {
     options: {
       readonly cause?: unknown;
       readonly details?: Readonly<Record<string, string>>;
+      readonly usage?: SubscriptionWorkerUsage;
     } = {},
   ) {
     super(
@@ -35,13 +42,60 @@ export class SubscriptionWorkerError extends Error {
     );
     this.name = "SubscriptionWorkerError";
     this.details = options.details ?? {};
+    this.usage = sanitizedSubscriptionWorkerUsage(options.usage);
   }
 
   readonly details: Readonly<Record<string, string>>;
+  readonly usage: SubscriptionWorkerUsage | undefined;
 }
 
 export function isSubscriptionWorkerError(
   error: unknown,
 ): error is SubscriptionWorkerError {
   return error instanceof SubscriptionWorkerError;
+}
+
+export function subscriptionWorkerUsageFromError(
+  error: unknown,
+): SubscriptionWorkerUsage | undefined {
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    if (current instanceof SubscriptionWorkerError && current.usage) {
+      return current.usage;
+    }
+    current =
+      current instanceof Error
+        ? (current as Error & { cause?: unknown }).cause
+        : undefined;
+  }
+  return undefined;
+}
+
+function sanitizedSubscriptionWorkerUsage(
+  usage: SubscriptionWorkerUsage | undefined,
+): SubscriptionWorkerUsage | undefined {
+  if (!usage) return undefined;
+  const inputTokens = sanitizedTokenCount(usage.inputTokens);
+  const outputTokens = sanitizedTokenCount(usage.outputTokens);
+  const totalTokens = sanitizedTokenCount(usage.totalTokens);
+  if (
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    totalTokens === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+  };
+}
+
+function sanitizedTokenCount(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
 }

@@ -13,7 +13,7 @@ import { git, gitInitRepository, gitStdout } from "./codex-goal-mcp-test-support
 const execFileAsync = promisify(execFile);
 
 describe("project external rewrite recovery", () => {
-  it("fails closed on incomplete or stale pins and restores only an exact lease", async () => {
+  it("allows cross-branch recovery only with exact local and remote pins", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-rewrite-recovery-"));
     const workspacePath = join(root, "workspace");
     const remotePath = join(root, "remote.git");
@@ -31,6 +31,7 @@ describe("project external rewrite recovery", () => {
       await git(workspacePath, ["remote", "add", "origin", remotePath]);
       await git(workspacePath, ["push", "origin", "HEAD:refs/heads/main"]);
 
+      await git(workspacePath, ["checkout", "-b", "fix/accepted-canonical"]);
       await writeFile(join(workspacePath, "state.txt"), "accepted canonical\n");
       await git(workspacePath, ["add", "state.txt"]);
       await git(workspacePath, ["commit", "-m", "test: accepted canonical"]);
@@ -48,6 +49,12 @@ describe("project external rewrite recovery", () => {
         confirmExternalRewriteRecovery: false,
       } as const;
 
+      await expect(pushProjectBranch({
+        workspacePath,
+        branch: "main",
+        remote: "origin",
+        force: false,
+      })).rejects.toThrow("project_control_branch_mismatch");
       expect(() => resolveProjectExternalRewriteRecovery(baseInput)).toThrow(
         "project_control_confirm_external_rewrite_recovery_required",
       );

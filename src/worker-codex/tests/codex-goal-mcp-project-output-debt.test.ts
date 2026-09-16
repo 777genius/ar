@@ -32,6 +32,8 @@ import {
   createCodexGoalMcpServer,
   projectControllerPendingGuidancePromptContext,
 } from "../codex-goal-mcp";
+import { localProjectControlEvidenceCustodySupported } from
+  "../../worker-local/project-control-evidence-custody-local-adapter";
 import {
   auditDecision,
   callToolJson,
@@ -110,7 +112,7 @@ describe("codex goal MCP server", () => {
         client.connect(clientTransport),
       ]);
 
-      await callToolJson(client, "codex_goal_create_job", {
+      const controller = await callToolJson(client, "codex_goal_create_job", {
         registryRootDir,
         jobId: "infinity-context-controller-v1",
         jobRootDir: controllerJobRoot,
@@ -133,6 +135,7 @@ describe("codex goal MCP server", () => {
         },
       });
 
+      expect(controller).toMatchObject({ ok: true });
       const snapshot = await callToolJson(
         client,
         "codex_goal_project_admission_snapshot",
@@ -302,7 +305,7 @@ describe("codex goal MCP server", () => {
       await git(sourceWorkspacePath, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
       const baseSha = (await gitStdout(sourceWorkspacePath, ["rev-parse", "HEAD"])).trim();
       await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-      await callToolJson(client, "codex_goal_create_job", {
+      const controller = await callToolJson(client, "codex_goal_create_job", {
         registryRootDir,
         jobId: "infinity-context-controller-v1",
         jobRootDir: controllerJobRoot,
@@ -326,6 +329,7 @@ describe("codex goal MCP server", () => {
           preStartAdmission: { required: true, mode: "serial-builtin" },
         },
       });
+      expect(controller).toMatchObject({ ok: true });
       const refill = async (jobId: string, ownedPaths: readonly string[]) => {
         const jobRootDir = join(root, "worker-jobs", jobId);
         const workspacePath = join(worktreeRoot, jobId);
@@ -391,7 +395,9 @@ describe("codex goal MCP server", () => {
     }
   });
 
-  it("admits producer refill when dirty legacy output has valid consumed ledger evidence", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "admits producer refill when dirty legacy output has valid consumed ledger evidence",
+    async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-consumed-output-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerJobRoot = join(root, "worker-jobs", "infinity-context-controller-v1");
@@ -400,7 +406,7 @@ describe("codex goal MCP server", () => {
     const sourceWorkspacePath = join(workspaceRoot, "infinity-context-main");
     const orphanWorkspace = join(legacyWorkspaceRoot, "infinity-context-memory-old-v1");
     const ledgerRoot = join(root, "dirty-worktree-drain");
-    const backupRoot = join(root, "dirty-worktree-backups");
+    const backupRoot = join(root, "archives");
     const producerWorkspace = join(root, "worktrees", "infinity-context-memory-producer-v1");
     const server = createCodexGoalMcpServer();
     const client = new Client({
@@ -430,6 +436,7 @@ describe("codex goal MCP server", () => {
 
       await mkdir(join(ledgerRoot, "items"), { recursive: true });
       await mkdir(backupRoot, { recursive: true });
+      await mkdir(join(root, "worktrees"), { recursive: true });
       const statusPath = join(backupRoot, "infinity-context-memory-old-v1.status.txt");
       const patchPath = join(backupRoot, "infinity-context-memory-old-v1.patch");
       await writeFile(statusPath, " M memory.py\n");
@@ -437,6 +444,8 @@ describe("codex goal MCP server", () => {
       await writeFile(
         join(ledgerRoot, "items", "infinity-context-memory-old-v1.json"),
         `${JSON.stringify({
+          schemaVersion: 1,
+          note: "legacy output already consumed",
           jobId: "infinity-context-memory-old-v1",
           status: "duplicate",
           closedAt: "2026-07-06T00:00:00.000Z",
@@ -453,7 +462,7 @@ describe("codex goal MCP server", () => {
         client.connect(clientTransport),
       ]);
 
-      await callToolJson(client, "codex_goal_create_job", {
+      const controller = await callToolJson(client, "codex_goal_create_job", {
         registryRootDir,
         jobId: "infinity-context-controller-v1",
         jobRootDir: controllerJobRoot,
@@ -466,10 +475,12 @@ describe("codex goal MCP server", () => {
         networkAccess: NetworkAccessMode.Restricted,
         projectAccessScope: {
           projectId: "infinity-context",
+          readRoots: [root],
           workspaceRoots: [workspaceRoot],
           worktreeRoots: [join(root, "worktrees")],
           observedWorkspaceRoots: [legacyWorkspaceRoot],
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [backupRoot],
           registryRoot: registryRootDir,
           jobIdPrefixes: ["infinity-context-"],
           tmuxSessionPrefixes: ["infinity-context-"],
@@ -477,6 +488,7 @@ describe("codex goal MCP server", () => {
         },
       });
 
+      expect(controller).toMatchObject({ ok: true });
       const snapshot = await callToolJson(
         client,
         "codex_goal_project_admission_snapshot",
@@ -558,9 +570,12 @@ describe("codex goal MCP server", () => {
       await server.close();
       await rm(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
 
-  it("counts consumed registry jobs without requiring live overview status", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "counts consumed registry jobs without requiring live overview status",
+    async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-consumed-registry-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerJobRoot = join(root, "worker-jobs", "infinity-context-controller-v1");
@@ -569,7 +584,7 @@ describe("codex goal MCP server", () => {
     const retiredWorkspace = join(root, "worktrees", "infinity-context-memory-retired-v1");
     const retiredJobRoot = join(root, "worker-jobs", "infinity-context-memory-retired-v1");
     const ledgerRoot = join(root, "dirty-worktree-drain");
-    const backupRoot = join(root, "dirty-worktree-backups");
+    const backupRoot = join(root, "archives");
     const server = createCodexGoalMcpServer();
     const client = new Client({
       name: "subscription-runtime-test",
@@ -591,6 +606,7 @@ describe("codex goal MCP server", () => {
 
       await mkdir(join(ledgerRoot, "items"), { recursive: true });
       await mkdir(backupRoot, { recursive: true });
+      await mkdir(join(root, "worktrees"), { recursive: true });
       const statusPath = join(backupRoot, "infinity-context-memory-retired-v1.status.txt");
       const patchPath = join(backupRoot, "infinity-context-memory-retired-v1.patch");
       await writeFile(statusPath, " M memory.py\n");
@@ -598,6 +614,8 @@ describe("codex goal MCP server", () => {
       await writeFile(
         join(ledgerRoot, "items", "infinity-context-memory-retired-v1.json"),
         `${JSON.stringify({
+          schemaVersion: 1,
+          note: "retired output archived",
           jobId: "infinity-context-memory-retired-v1",
           status: "archived",
           closedAt: "2026-07-06T00:00:00.000Z",
@@ -614,7 +632,7 @@ describe("codex goal MCP server", () => {
         client.connect(clientTransport),
       ]);
 
-      await callToolJson(client, "codex_goal_create_job", {
+      const controller = await callToolJson(client, "codex_goal_create_job", {
         registryRootDir,
         jobId: "infinity-context-controller-v1",
         jobRootDir: controllerJobRoot,
@@ -627,15 +645,18 @@ describe("codex goal MCP server", () => {
         networkAccess: NetworkAccessMode.Restricted,
         projectAccessScope: {
           projectId: "infinity-context",
+          readRoots: [root],
           workspaceRoots: [workspaceRoot],
           worktreeRoots: [join(root, "worktrees")],
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [backupRoot],
           registryRoot: registryRootDir,
           jobIdPrefixes: ["infinity-context-"],
           tmuxSessionPrefixes: ["infinity-context-"],
           allowedAccountIds: ["account-a"],
         },
       });
+      expect(controller).toMatchObject({ ok: true });
       const retiredJob = await callToolJson(client, "codex_goal_project_create_job", {
         registryRootDir,
         controllerJobId: "infinity-context-controller-v1",
@@ -681,9 +702,12 @@ describe("codex goal MCP server", () => {
       await server.close();
       await rm(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
 
-  it("blocks producer refill when terminal consumed ledger evidence is incomplete", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "blocks producer refill when terminal consumed ledger evidence is incomplete",
+    async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-incomplete-output-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerJobRoot = join(root, "worker-jobs", "infinity-context-controller-v1");
@@ -692,7 +716,7 @@ describe("codex goal MCP server", () => {
     const sourceWorkspacePath = join(workspaceRoot, "infinity-context-main");
     const orphanWorkspace = join(legacyWorkspaceRoot, "infinity-context-memory-old-v1");
     const ledgerRoot = join(root, "dirty-worktree-drain");
-    const backupRoot = join(root, "dirty-worktree-backups");
+    const backupRoot = join(root, "archives");
     const server = createCodexGoalMcpServer();
     const client = new Client({
       name: "subscription-runtime-test",
@@ -721,6 +745,7 @@ describe("codex goal MCP server", () => {
 
       await mkdir(join(ledgerRoot, "items"), { recursive: true });
       await mkdir(backupRoot, { recursive: true });
+      await mkdir(join(root, "worktrees"), { recursive: true });
       const statusPath = join(backupRoot, "infinity-context-memory-old-v1.status.txt");
       await writeFile(statusPath, " M memory.py\n");
       await writeFile(
@@ -742,7 +767,7 @@ describe("codex goal MCP server", () => {
         client.connect(clientTransport),
       ]);
 
-      await callToolJson(client, "codex_goal_create_job", {
+      const controller = await callToolJson(client, "codex_goal_create_job", {
         registryRootDir,
         jobId: "infinity-context-controller-v1",
         jobRootDir: controllerJobRoot,
@@ -755,10 +780,12 @@ describe("codex goal MCP server", () => {
         networkAccess: NetworkAccessMode.Restricted,
         projectAccessScope: {
           projectId: "infinity-context",
+          readRoots: [root],
           workspaceRoots: [workspaceRoot],
           worktreeRoots: [join(root, "worktrees")],
           observedWorkspaceRoots: [legacyWorkspaceRoot],
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [backupRoot],
           registryRoot: registryRootDir,
           jobIdPrefixes: ["infinity-context-"],
           tmuxSessionPrefixes: ["infinity-context-"],
@@ -766,6 +793,7 @@ describe("codex goal MCP server", () => {
         },
       });
 
+      expect(controller).toMatchObject({ ok: true });
       const snapshot = await callToolJson(
         client,
         "codex_goal_project_admission_snapshot",
@@ -816,7 +844,8 @@ describe("codex goal MCP server", () => {
       await server.close();
       await rm(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
 });
 
 function projectOutputDebtAdmission(input: {

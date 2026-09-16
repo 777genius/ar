@@ -1,3 +1,4 @@
+import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
 import { join } from "node:path";
 import {
   type ParsedFlags,
@@ -46,7 +47,7 @@ export function runConfigFromFlags(
   );
   const reasoningEffort = (option(values, env, "--effort", [
     "CODEX_REASONING_EFFORT",
-  ]) ?? "high") as CodexGoalRunConfig["reasoningEffort"];
+  ]) ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT) as CodexGoalRunConfig["reasoningEffort"];
   const serviceTier = (option(values, env, "--service-tier", [
     "CODEX_SERVICE_TIER",
   ]) ?? "default") as CodexGoalRunConfig["serviceTier"];
@@ -160,7 +161,7 @@ export function runConfigFromFlags(
       option(values, env, "--progress", []) ??
         join(resolvePath(cwd, jobRootDir), `${taskId}.progress.json`),
     ),
-    model: option(values, env, "--model", ["CODEX_MODEL"]) ?? "gpt-5.5",
+    model: option(values, env, "--model", ["CODEX_MODEL"]) ?? CODEX_WORKER_DEFAULT_MODEL,
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(serviceTier ? { serviceTier } : {}),
     ...(executionEngine ? { executionEngine } : {}),

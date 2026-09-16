@@ -1,10 +1,13 @@
 import {
   access,
+  copyFile,
+  link,
   mkdir,
   mkdtemp,
   readFile,
   realpath,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -24,6 +27,97 @@ import { assertProjectControlDependencyBootstrapReady } from "../codex-goal-mcp-
 const execFileAsync = promisify(execFile);
 
 describe("dependency bootstrap", () => {
+  it("skips cache placement in off mode while preserving diagnostic evidence", async () => {
+    const root = await mkTestWorkspace("subscription-runtime-deps-off-");
+    const workspace = join(root, "workspace");
+    const jobRoot = join(root, "job");
+    const previousConfig =
+      process.env.SUBSCRIPTION_RUNTIME_DEPENDENCY_CACHE_CONFIG;
+    try {
+      await workspaceWithUnmatchedCachePlacement(root, workspace);
+
+      const result = await runDependencyBootstrap({
+        workspacePath: workspace,
+        jobRootDir: jobRoot,
+        mode: "off",
+      });
+
+      expect(result).toMatchObject({
+        mode: "off",
+        workspacePath: await realpath(workspace),
+        status: "off",
+        diagnosticPath: join(jobRoot, "dependency-preflight.json"),
+      });
+      expect(result.cacheRoot).toBeUndefined();
+      const diagnostic = JSON.parse(
+        await readFile(join(jobRoot, "dependency-preflight.json"), "utf8"),
+      ) as Record<string, unknown>;
+      expect(diagnostic).toMatchObject({
+        mode: "off",
+        status: "off",
+        diagnosticPath: join(jobRoot, "dependency-preflight.json"),
+      });
+    } finally {
+      restoreDependencyCacheConfig(previousConfig);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still rejects unsafe cross-worktree links when placement is skipped", async () => {
+    const root = await mkTestWorkspace("subscription-runtime-deps-off-unsafe-");
+    const workspace = join(root, "workspace");
+    const foreign = join(root, "foreign", "node_modules");
+    const previousConfig =
+      process.env.SUBSCRIPTION_RUNTIME_DEPENDENCY_CACHE_CONFIG;
+    try {
+      await workspaceWithUnmatchedCachePlacement(root, workspace);
+      await Promise.all([
+        mkdir(foreign, { recursive: true }),
+        mkdir(workspace, { recursive: true }),
+      ]);
+      await symlink(foreign, join(workspace, "node_modules"));
+
+      const result = await runDependencyBootstrap({
+        workspacePath: workspace,
+        mode: "off",
+      });
+
+      expect(result).toMatchObject({
+        mode: "off",
+        status: "unsafe",
+        unsafeDependencyPaths: ["node_modules"],
+      });
+      expect(() =>
+        assertProjectControlDependencyBootstrapReady(result),
+      ).toThrow("project_control_dependency_environment_unsafe:node_modules");
+    } finally {
+      restoreDependencyCacheConfig(previousConfig);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["preflight", "install"] as const)(
+    "keeps cache placement fail-closed in %s mode",
+    async (mode) => {
+      const root = await mkTestWorkspace(
+        `subscription-runtime-deps-${mode}-placement-`,
+      );
+      const workspace = join(root, "workspace");
+      const previousConfig =
+        process.env.SUBSCRIPTION_RUNTIME_DEPENDENCY_CACHE_CONFIG;
+      try {
+        await workspaceWithUnmatchedCachePlacement(root, workspace);
+
+        await expect(
+          runDependencyBootstrap({ workspacePath: workspace, mode }),
+        ).rejects.toThrowError("dependency_cache_placement_not_found");
+      } finally {
+        restoreDependencyCacheConfig(previousConfig);
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("detects pnpm without sharing node_modules", async () => {
     const root = await mkTestWorkspace("subscription-runtime-deps-pnpm-");
     try {
@@ -125,6 +219,141 @@ describe("dependency bootstrap", () => {
         nodeModulesPath: join(await realpath(workspace), "node_modules"),
         cacheRoot,
       });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("copies and rebuilds pnpm native artifacts exactly once per workspace", async () => {
+    const root = await mkTestWorkspace("subscription-runtime-deps-pnpm-native-");
+    const cacheRoot = join(root, "cache");
+    const storeArtifact = join(
+      cacheRoot,
+      "pnpm-store",
+      "better-sqlite3",
+      "build",
+      "Release",
+      "better_sqlite3.node",
+    );
+    const workspaces = [join(root, "workspace-a"), join(root, "workspace-b")];
+    const expectedCommands = [
+      [
+        "pnpm",
+        "fetch",
+        "--frozen-lockfile",
+        "--package-import-method=copy",
+        "--config.side-effects-cache=false",
+        "--store-dir",
+        join(cacheRoot, "pnpm-store"),
+      ],
+      [
+        "pnpm",
+        "install",
+        "--offline",
+        "--frozen-lockfile",
+        "--package-import-method=copy",
+        "--ignore-scripts",
+        "--config.side-effects-cache=false",
+        "--store-dir",
+        join(cacheRoot, "pnpm-store"),
+      ],
+      [
+        "pnpm",
+        "rebuild",
+        "--config.side-effects-cache=false",
+        "--store-dir",
+        join(cacheRoot, "pnpm-store"),
+      ],
+    ];
+    try {
+      await mkdir(join(storeArtifact, ".."), { recursive: true });
+      await writeFile(storeArtifact, "electron-abi-143");
+
+      const installedArtifacts: string[] = [];
+      let lifecycleRuns = 0;
+      for (const workspace of workspaces) {
+        await mkdir(workspace, { recursive: true });
+        await writeFile(
+          join(workspace, "package.json"),
+          JSON.stringify({ packageManager: "pnpm@9.15.0" }),
+        );
+        await writeFile(
+          join(workspace, "pnpm-lock.yaml"),
+          "lockfileVersion: '9.0'\n",
+        );
+        const installedArtifact = join(
+          workspace,
+          "node_modules",
+          ".pnpm",
+          "better-sqlite3",
+          "build",
+          "Release",
+          "better_sqlite3.node",
+        );
+        installedArtifacts.push(installedArtifact);
+
+        const commands: string[][] = [];
+        const result = await runDependencyBootstrap({
+          workspacePath: workspace,
+          cacheRoot,
+          mode: "install",
+          confirmInstall: true,
+          runCommand: async (command, args) => {
+            commands.push([command, ...args]);
+            if (args[0] === "fetch") {
+              await mkdir(join(installedArtifact, ".."), { recursive: true });
+              // Model pnpm's earliest virtual-store materialization: without
+              // both fetch flags this fixture would hardlink the native binary.
+              const isolatedFetch =
+                args.includes("--package-import-method=copy") &&
+                args.includes("--config.side-effects-cache=false");
+              if (isolatedFetch) {
+                await copyFile(storeArtifact, installedArtifact);
+              } else {
+                await link(storeArtifact, installedArtifact);
+              }
+              const [storeStats, fetchedStats] = await Promise.all([
+                stat(storeArtifact),
+                stat(installedArtifact),
+              ]);
+              expect(fetchedStats.ino).not.toBe(storeStats.ino);
+            }
+            if (args[0] === "rebuild") {
+              lifecycleRuns += 1;
+              await expect(readFile(installedArtifact, "utf8")).resolves.toBe(
+                "electron-abi-143",
+              );
+              await writeFile(
+                installedArtifact,
+                `node-abi-${process.versions.modules}`,
+              );
+            }
+          },
+        });
+        expect(result.status).toBe("installed");
+        expect(commands).toEqual(expectedCommands);
+      }
+
+      expect(lifecycleRuns).toBe(workspaces.length);
+      await expect(readFile(installedArtifacts[0] ?? "", "utf8")).resolves.toBe(
+        `node-abi-${process.versions.modules}`,
+      );
+      const [storeStats, firstStats, secondStats] = await Promise.all([
+        stat(storeArtifact),
+        stat(installedArtifacts[0] ?? ""),
+        stat(installedArtifacts[1] ?? ""),
+      ]);
+      expect(firstStats.ino).not.toBe(storeStats.ino);
+      expect(secondStats.ino).not.toBe(storeStats.ino);
+      expect(firstStats.ino).not.toBe(secondStats.ino);
+
+      await writeFile(installedArtifacts[0] ?? "", "workspace-a-mutation");
+      await expect(readFile(installedArtifacts[1] ?? "", "utf8")).resolves.toBe(
+        `node-abi-${process.versions.modules}`,
+      );
+      await expect(readFile(storeArtifact, "utf8")).resolves.toBe(
+        "electron-abi-143",
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -624,6 +853,40 @@ describe("dependency bootstrap", () => {
 
 async function mkTestWorkspace(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
+}
+
+async function workspaceWithUnmatchedCachePlacement(
+  root: string,
+  workspace: string,
+): Promise<void> {
+  const allowedWorkspace = join(root, "allowed");
+  await Promise.all([
+    mkdir(allowedWorkspace, { recursive: true }),
+    mkdir(workspace, { recursive: true }),
+  ]);
+  const configPath = join(root, "dependency-cache-placement.json");
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      placements: [
+        {
+          workspaceRoot: allowedWorkspace,
+          cacheRoot: join(root, "cache"),
+        },
+      ],
+    }),
+    { mode: 0o600 },
+  );
+  process.env.SUBSCRIPTION_RUNTIME_DEPENDENCY_CACHE_CONFIG = configPath;
+}
+
+function restoreDependencyCacheConfig(previous: string | undefined): void {
+  if (previous === undefined) {
+    delete process.env.SUBSCRIPTION_RUNTIME_DEPENDENCY_CACHE_CONFIG;
+  } else {
+    process.env.SUBSCRIPTION_RUNTIME_DEPENDENCY_CACHE_CONFIG = previous;
+  }
 }
 
 async function mkGitDependencyWorkspace(

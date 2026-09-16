@@ -70,6 +70,8 @@ export async function applyReviewedMerge(input: {
   readonly workerOutput: LocalGitMergeWorkerOutput;
   readonly attempt: LocalGitMergeAttempt;
   readonly allowAlreadyApplied?: boolean;
+  /** Offline replay uses only the original, already fetched exact source object. */
+  readonly pinnedSourceCommit?: string;
 }): Promise<GitApplyWorkerOutputResult> {
   const { runtime, workspacePath } = input;
   const merge = input.attempt.merge;
@@ -119,7 +121,7 @@ export async function applyReviewedMerge(input: {
   let mergeStarted = false;
   let mergeConflictFiles: readonly string[] = [];
   try {
-    await runtime.git(
+    if (!input.pinnedSourceCommit) await runtime.git(
       [
         "fetch",
         "--no-tags",
@@ -128,7 +130,7 @@ export async function applyReviewedMerge(input: {
       ],
       workspacePath,
     );
-    const fetchedHead = (
+    const fetchedHead = input.pinnedSourceCommit ?? (
       await runtime.git(["rev-parse", "FETCH_HEAD"], workspacePath)
     ).stdout
       .trim()
@@ -688,8 +690,8 @@ export async function adoptExistingReviewedMergeCommit(input: {
   readonly files: readonly string[];
   readonly message: string;
   readonly identity: CommitIdentity;
+  readonly expectedMergeTree: string;
 }): Promise<GitCommitResult | undefined> {
-  if (await hasMergeHead(input.runtime, input.workspacePath)) return undefined;
   const commitSha = (
     await input.runtime.git(["rev-parse", "HEAD"], input.workspacePath)
   ).stdout
@@ -702,6 +704,10 @@ export async function adoptExistingReviewedMergeCommit(input: {
   );
   if (!sameCommits(parentCommits, input.expectedParentCommits)) {
     return undefined;
+  }
+  const pending = await input.runtime.tryGit(["rev-parse", "--verify", "MERGE_HEAD"], input.workspacePath);
+  if (pending.exitCode === 0 && pending.stdout.trim() !== input.expectedParentCommits[1]) {
+    throw new Error("merge_output_recovery_parent_mismatch");
   }
   const files = await input.runtime.gitNullTerminatedPaths(
     ["diff", "--name-only", "--no-renames", "-z", `${commitSha}^1`, commitSha],
@@ -722,6 +728,7 @@ export async function adoptExistingReviewedMergeCommit(input: {
     .trim()
     .split("\0");
   if (
+    (await input.runtime.git(["rev-parse", `${commitSha}^{tree}`], input.workspacePath)).stdout.trim() !== input.expectedMergeTree ||
     !sameFiles(files, input.files) ||
     message !== input.message.trim() ||
     identityFields.length !== 4 ||

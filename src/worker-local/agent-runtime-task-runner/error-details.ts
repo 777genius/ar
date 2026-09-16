@@ -8,6 +8,7 @@ export function errorDetails(
   const details: Record<string, string> = {};
   for (const item of errorChain(error)) {
     const nestedDetails = objectDetails(item);
+    copyProviderDiagnostics(details, nestedDetails);
     if (isSubscriptionWorkerError(item)) {
       if (isSafeIdentifier(item.code)) {
         details.subscriptionWorkerCode ??= item.code;
@@ -53,6 +54,36 @@ export function errorDetails(
   }
 
   return Object.keys(details).length === 0 ? undefined : details;
+}
+
+const providerDiagnosticKeys = [
+  "sdkSubtype",
+  "sdkErrors",
+  "permissionDenials",
+  "hostPolicyDenials",
+  "deniedTools",
+  "apiRetryCount",
+  "apiErrorHttpStatus",
+  "terminalReason",
+  "lastObservedApiRetryError",
+  "lastObservedApiRetryHttpStatus",
+  "lastObservedAssistantError",
+  "lastObservedRateLimitStatus",
+  "lastObservedRateLimitType",
+  "lastObservedOverageStatus",
+  "lastObservedRateLimitReason",
+] as const;
+
+function copyProviderDiagnostics(
+  destination: Record<string, string>,
+  source: Readonly<Record<string, unknown>> | undefined,
+): void {
+  for (const key of providerDiagnosticKeys) {
+    const value = source?.[key];
+    if (typeof value === "string" && value.length > 0) {
+      destination[key] ??= value.slice(0, 1_000);
+    }
+  }
 }
 
 export function optionalFailureDetails(

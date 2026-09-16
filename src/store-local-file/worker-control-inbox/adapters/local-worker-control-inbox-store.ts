@@ -1,3 +1,4 @@
+import { ValidatedHistoryCache } from "./validated-history-cache";
 import { createHash } from "node:crypto";
 import {
   appendFile,
@@ -45,6 +46,8 @@ type PersistedWorkerControlDeliveryReceipt = Omit<
 export class LocalFileWorkerControlInboxStore
   implements WorkerControlInboxStore
 {
+  private readonly historyCache = new ValidatedHistoryCache();
+
   constructor(
     private readonly options: LocalFileWorkerControlInboxStoreOptions,
   ) {}
@@ -103,6 +106,9 @@ export class LocalFileWorkerControlInboxStore
   async tryClaimDelivery(
     receipt: WorkerControlDeliveryReceipt,
   ): Promise<WorkerControlDeliveryReceipt | null> {
+    // Keep the claim after delivery as an exclusive-create tombstone. Removing
+    // it on confirmation would let a concurrent reader of older history claim
+    // the signal again. Cached reads retain the accepted receipt for history.
     const path = this.claimPath(receipt.target, receipt.signalId);
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     try {
@@ -187,7 +193,7 @@ export class LocalFileWorkerControlInboxStore
     const paths = target
       ? [join(this.jobDir(target.jobId), fileName)]
       : await this.allRecordPaths(fileName);
-    const groups = await Promise.all(paths.map((path) => readJsonLines(path, parse)));
+    const groups = await Promise.all(paths.map((path) => this.historyCache.read(path, (text) => parseJsonLines(text, parse))));
     return groups.flat();
   }
 
@@ -197,7 +203,7 @@ export class LocalFileWorkerControlInboxStore
     const dirs = target
       ? [this.claimDir(target.jobId)]
       : await this.allClaimDirs();
-    const groups = await Promise.all(dirs.map((dir) => readJsonFiles(dir, parseReceipt)));
+    const groups = await Promise.all(dirs.map((dir) => readJsonFiles(dir, parseReceipt, this.historyCache)));
     return groups.flat();
   }
 
@@ -380,16 +386,10 @@ async function appendJsonLines(
   });
 }
 
-async function readJsonLines<T>(
-  path: string,
+function parseJsonLines<T>(
+  text: string,
   parse: (value: unknown) => T | null,
-): Promise<readonly T[]> {
-  let text;
-  try {
-    text = await readFile(path, "utf8");
-  } catch {
-    return [];
-  }
+): readonly T[] {
   return text
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -407,6 +407,7 @@ async function readJsonLines<T>(
 async function readJsonFiles<T>(
   dir: string,
   parse: (value: unknown) => T | null,
+  cache: ValidatedHistoryCache,
 ): Promise<readonly T[]> {
   let entries;
   try {
@@ -418,8 +419,10 @@ async function readJsonFiles<T>(
   for (const entry of entries) {
     if (!entry.isFile()) continue;
     try {
-      const parsed = parse(JSON.parse(await readFile(join(dir, entry.name), "utf8")));
-      if (parsed !== null) records.push(parsed);
+      records.push(...await cache.read(join(dir, entry.name), (text) => {
+        const parsed = parse(JSON.parse(text));
+        return parsed === null ? [] : [parsed];
+      }));
     } catch {
       // Ignore corrupt claim files for the same reason corrupt JSONL rows are ignored.
     }

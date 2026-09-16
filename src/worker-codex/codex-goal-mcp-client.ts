@@ -16,6 +16,10 @@ type SuperviseEvent =
   | { readonly type: "capacity_wait"; readonly result: unknown }
   | { readonly type: "stop"; readonly result: unknown };
 
+export enum ControllerSupervisorFailureReason {
+  ProviderStatusFailed = "provider_status_failed",
+}
+
 export enum ControllerSupervisorObservedStatus {
   Planned = "planned",
   Running = "running",
@@ -73,7 +77,13 @@ const requiredCodexGoalMcpTools = [
   "codex_goal_project_recover_operations",
   "codex_goal_project_admission_snapshot",
   "codex_goal_project_update_controller_scope",
+  "codex_goal_project_relocate_controller_workspace",
+  "codex_goal_project_migrate_consumed_output_ledger_epoch",
+  "codex_goal_project_reconcile_stale_integrations",
   "brokered_project_manifest_repair",
+  "codex_goal_project_repair_legacy_output_debt",
+  "codex_goal_project_retire_legacy_job_summary",
+  "codex_goal_project_import_frozen_output",
   "codex_goal_project_controller_launch_plan",
   "codex_goal_project_controller_start",
   "codex_goal_project_controller_status",
@@ -127,6 +137,8 @@ export async function superviseCodexGoalProjectController(input: {
   readonly ok: boolean;
   readonly start: unknown;
   readonly finalStatus?: unknown;
+  readonly reason?: ControllerSupervisorFailureReason;
+  readonly safeMessage?: string;
   readonly stop?: unknown;
 }> {
   const server = createCodexGoalMcpServer();
@@ -166,9 +178,16 @@ export async function superviseCodexGoalProjectController(input: {
       if (!mcpResultOk(start)) return { ok: false, start };
       lastStatus = start;
 
+      // Three failed probes: default waits of 60s, 120s and 240s (7m total).
+      // A failed observation never authorizes controller guidance or recovery.
+      let consecutiveObservationFailures = 0;
       while (!input.signal?.aborted) {
+        const pollIntervalMs = input.statusIntervalMs ?? 60_000;
+        const delayMs = consecutiveObservationFailures === 0
+          ? pollIntervalMs
+          : Math.min(pollIntervalMs * 2 ** consecutiveObservationFailures, 300_000);
         try {
-          await sleep(input.statusIntervalMs ?? 60_000, undefined, {
+          await sleep(delayMs, undefined, {
             signal: input.signal,
           });
         } catch (error) {
@@ -181,6 +200,21 @@ export async function superviseCodexGoalProjectController(input: {
         }));
         lastStatus = status;
         input.onEvent?.({ type: "status", result: status });
+        if (input.signal?.aborted) break;
+        if (controllerSupervisorObservationFailed(status)) {
+          consecutiveObservationFailures += 1;
+          if (consecutiveObservationFailures >= 3) {
+            return {
+              ok: false,
+              start,
+              finalStatus: status,
+              reason: ControllerSupervisorFailureReason.ProviderStatusFailed,
+              safeMessage: "Controller provider status failed on 3 consecutive probes; controller state is unconfirmed and needs attention.",
+            };
+          }
+          continue;
+        }
+        consecutiveObservationFailures = 0;
         if (!mcpResultOk(status)) {
           return { ok: false, start, finalStatus: status };
         }
@@ -292,9 +326,17 @@ export async function superviseCodexGoalProjectController(input: {
   }
 }
 
+function controllerSupervisorObservationFailed(result: unknown): boolean {
+  return (isRecord(result) &&
+    result.reason === ControllerSupervisorFailureReason.ProviderStatusFailed) ||
+    nestedRecord(result, "liveController")?.providerStatusFailed === true ||
+    nestedRecord(result, "providerObservedError") !== undefined;
+}
+
 export function controllerSupervisorObservedStatus(
   result: unknown,
 ): ControllerSupervisorObservedStatus | undefined {
+  if (controllerSupervisorObservationFailed(result)) return undefined;
   return controllerSupervisorStatusValue([
     nestedRecord(result, "providerObserved")?.status,
     nestedRecord(result, "liveController")?.providerObservedStatus,
@@ -445,6 +487,12 @@ function controllerSupervisorCooldownInstants(result: unknown): readonly number[
 }
 
 export function codexGoalMcpToolTimeoutMs(name: string): number | undefined {
+  if (
+    name === "codex_goal_project_refill_worker" ||
+    name === "codex_goal_project_prepare_verifier"
+  ) {
+    return 1_800_000;
+  }
   if (name.startsWith("codex_goal_project_")) {
     return 300_000;
   }

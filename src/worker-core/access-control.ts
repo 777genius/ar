@@ -132,6 +132,8 @@ export type ProjectAccessScope = {
   readonly readRoots?: readonly string[];
   readonly observedWorkspaceRoots?: readonly string[];
   readonly consumedOutputLedgerRoots?: readonly string[];
+  /** Canonical, project-owned roots containing immutable consumed-output evidence. */
+  readonly consumedOutputEvidenceRoots?: readonly string[];
   readonly commitIdentity?: {
     readonly name: string;
     readonly email: string;

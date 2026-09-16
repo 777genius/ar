@@ -32,7 +32,7 @@ describe("LocalFileRunEventStore", () => {
 
     const page = await store.read({ limit: 1 });
     expect(page.events).toHaveLength(1);
-    expect(page.nextCursor?.value).toBe("1");
+    expectCursorLine(page.nextCursor?.value, 1);
 
     const rest = await store.read(
       page.nextCursor === undefined ? {} : { cursor: page.nextCursor },
@@ -48,7 +48,7 @@ describe("LocalFileRunEventStore", () => {
 
     await store.append([first]);
     const readAll = await store.read();
-    expect(readAll.nextCursor?.value).toBe("1");
+    expectCursorLine(readAll.nextCursor?.value, 1);
 
     await store.append([second]);
     const afterCursor = await store.read(
@@ -107,7 +107,7 @@ describe("LocalFileRunEventStore", () => {
     });
 
     expect(read.events.map((item) => item.eventId)).toEqual([first.eventId]);
-    expect(read.nextCursor?.value).toBe("2");
+    expectCursorLine(read.nextCursor?.value, 2);
   });
 
   it("recovers stale append locks", async () => {
@@ -177,13 +177,13 @@ describe("LocalFileRunEventStore", () => {
         expect.objectContaining({
           consumerId: "consumer-a",
           previousCursor: { value: "2" },
-          nextCursor: { value: "0" },
+          nextCursor: { value: expect.stringMatching(/^v2\./) },
           invalidatedUnreadEvents: false,
         }),
       ],
     });
     await expect(cursors.readDeliveryCursor("consumer-a")).resolves.toEqual({
-      value: "0",
+      value: expect.stringMatching(/^v2\./),
     });
     await expect(store.read()).resolves.toMatchObject({
       events: [expect.objectContaining({ eventId: third.eventId })],
@@ -212,7 +212,7 @@ describe("LocalFileRunEventStore", () => {
       retainedLineCount: 2,
       cursorRewrites: [
         expect.objectContaining({
-          nextCursor: { value: "0" },
+          nextCursor: { value: expect.stringMatching(/^v2\./) },
           invalidatedUnreadEvents: false,
         }),
       ],
@@ -248,7 +248,7 @@ describe("LocalFileRunEventStore", () => {
       blockedByCursorLineCount: 0,
       cursorRewrites: [
         expect.objectContaining({
-          nextCursor: { value: "0" },
+          nextCursor: { value: expect.stringMatching(/^v2\./) },
           invalidatedUnreadEvents: true,
         }),
       ],
@@ -310,6 +310,12 @@ function event(
     payload: { idempotencyPart },
     idempotencyParts: [idempotencyPart],
   });
+}
+
+function expectCursorLine(value: string | undefined, line: number): void {
+  expect(value).toMatch(/^v2\./);
+  const parsed = JSON.parse(Buffer.from((value as string).slice(3), "base64url").toString("utf8"));
+  expect(parsed.l).toBe(line);
 }
 
 function snapshot(): RunObservationSnapshot {

@@ -17,6 +17,8 @@ import {
   type AttemptUsage,
   BoundedSubscriptionWorkerPool,
   SafeExecutionRunner,
+  safeExecutionAttemptMetadataFromError,
+  subscriptionWorkerUsageFromError,
   SubscriptionWorkerError,
   WorkerControlService,
   type AttemptJournal,
@@ -48,6 +50,7 @@ import {
 } from "./file-backend-codex-worker";
 import { CodexAccountCapacityRechecker } from "./application/codex-account-capacity-rechecker";
 import { CodexAccountCapacityAliasStore } from "./application/codex-account-capacity-alias-store";
+import { recordCodexAppServerRateLimitsSnapshot } from "./application/codex-live-quota-capacity";
 
 const REPLACEMENT_GOAL_OBJECTIVE =
   "Continue the same authorized task using broker-delivered replacement wording.";
@@ -64,6 +67,7 @@ export type FileBackendCodexSafeExecutorAccount = {
 export type FileBackendCodexSafeExecutorOptions = {
   readonly executorId?: string;
   readonly stateRootDir: string;
+  readonly runtimeHomeRootDir?: string;
   readonly authRootDir?: string;
   readonly workspacePath: string;
   readonly accounts: readonly FileBackendCodexSafeExecutorAccount[];
@@ -225,12 +229,29 @@ export class FileBackendCodexSafeExecutor {
           }
           const worker = new FileBackendCodexWorker({
             ...account.worker,
+            ...(options.runtimeHomeRootDir === undefined
+              ? {}
+              : { runtimeHomeRootDir: options.runtimeHomeRootDir }),
             capacityAccountId:
               account.worker.capacityAccountId ??
               safeExecutorAccountLabel(account, slotIndex),
             ...(account.worker.observability || !observability
               ? {}
               : { observability }),
+            rateLimitsSnapshotHandler: async (input) => {
+              const admission = recordCodexAppServerRateLimitsSnapshot({
+                accountId:
+                  account.worker.capacityAccountId ??
+                  safeExecutorAccountLabel(account, slotIndex),
+                result: input.result,
+                observedAt: input.observedAt,
+                store: this.accountCapacityStore,
+              });
+              if (admission.status === "rejected") return admission;
+              return (
+                account.worker.rateLimitsSnapshotHandler?.(input) ?? admission
+              );
+            },
             workerId: account.worker.workerId ?? workerId,
             workspacePath: options.workspacePath,
             ...(options.outputSchemas === undefined
@@ -307,6 +328,10 @@ export class FileBackendCodexSafeExecutor {
       maxAccountCycles,
       policy,
     } = codexSafeExecutionInput(input);
+    const reservedAccountId =
+      this.options.accounts.length === 1
+        ? safeExecutorAccountLabel(this.options.accounts[0]!, 0)
+        : undefined;
     return this.runner.run({
       taskId,
       workspace: {
@@ -391,7 +416,16 @@ export class FileBackendCodexSafeExecutor {
       },
       summarizeResult: (result) => result.outputText,
       summarizeErrorOutput: codexWorkerErrorOutputSummary,
+      attemptMetadata: ({ error }) => ({
+        ...(error === undefined
+          ? {}
+          : safeExecutionAttemptMetadataFromError(error)),
+        ...(reservedAccountId === undefined
+          ? {}
+          : { accountId: reservedAccountId }),
+      }),
       attemptUsage: codexWorkerResultUsage,
+      attemptUsageFromError: codexWorkerErrorUsage,
       controlTarget: codexControlTarget({
         jobId,
         taskId,
@@ -470,6 +504,9 @@ function codexWorkerResultUsage(
   const usage = result.usage;
   if (!usage) return undefined;
   return {
+    ...(usage.cachedInputTokens === undefined ? {} : { cachedInputTokens: usage.cachedInputTokens }),
+    ...(usage.cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens: usage.cacheWriteInputTokens }),
+    ...(usage.reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens: usage.reasoningOutputTokens }),
     ...(usage.inputTokens === undefined
       ? {}
       : { inputTokens: usage.inputTokens }),
@@ -491,6 +528,10 @@ function codexWorkerErrorOutputSummary(error: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+function codexWorkerErrorUsage(error: unknown): AttemptUsage | undefined {
+  return subscriptionWorkerUsageFromError(error);
 }
 
 function errorCauseChain(error: unknown): readonly unknown[] {
@@ -644,6 +685,9 @@ function assertSafeExecutorOptions(
 ): void {
   if (!options.stateRootDir.trim()) {
     throw new Error("file_backend_codex_safe_state_root_required");
+  }
+  if (options.runtimeHomeRootDir !== undefined && !options.runtimeHomeRootDir.trim()) {
+    throw new Error("file_backend_codex_safe_runtime_home_root_required");
   }
   if (!options.workspacePath.trim()) {
     throw new Error("file_backend_codex_safe_workspace_required");

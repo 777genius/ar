@@ -1,3 +1,4 @@
+import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
 import { createHash } from "node:crypto";
 import type {
   ClockPort,
@@ -6,7 +7,6 @@ import type {
 } from "@vioxen/subscription-runtime/core";
 import {
   codexAuthJsonFromArtifact,
-  defaultCodexModel,
   type CodexReasoningEffort,
   type CodexServiceTier,
   validateCodexAuthJsonBytes,
@@ -268,8 +268,8 @@ export class FileBackendCodexCapacityState {
           : {}),
         ...(this.quotaGroup ? { quotaGroup: this.quotaGroup } : {}),
         capacityProvider: "codex",
-        capacityModel: this.options.model ?? defaultCodexModel,
-        capacityReasoningEffort: this.options.reasoningEffort ?? "low",
+        capacityModel: this.options.model ?? CODEX_WORKER_DEFAULT_MODEL,
+        capacityReasoningEffort: this.options.reasoningEffort ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT,
         ...(this.options.serviceTier
           ? { capacityServiceTier: this.options.serviceTier }
           : {}),

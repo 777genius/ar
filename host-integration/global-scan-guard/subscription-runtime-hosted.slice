@@ -1,0 +1,13 @@
+[Unit]
+Description=Bounded resources for hosted subscription-runtime workers
+
+[Slice]
+CPUAccounting=yes
+CPUQuota=500%
+IOAccounting=yes
+IOWeight=20
+MemoryAccounting=yes
+MemoryHigh=10G
+MemoryMax=14G
+TasksAccounting=yes
+TasksMax=4096

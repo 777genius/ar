@@ -14,17 +14,17 @@ import { dirname, isAbsolute, join } from "node:path";
 import {
   OpaqueSecretDetectionPolicy,
   ReviewDecisionStatus,
+  reviewedOutputFileByteAllowance,
   type ReviewDecision,
   type WorkspaceLockPort,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
   LocalWorkspaceIntegrationLock,
 } from "@vioxen/subscription-runtime/worker-local";
-import { readLocalGitHeadCommit } from "../../codex-goal-git-revision";
 import {
-  captureGitWorkspaceChangedFiles,
-  captureGitWorkspacePatch,
-} from "../../codex-goal-runtime-result-io";
+  captureCodexGoalExactWorkspacePatch,
+} from "../../codex-goal-handoff-artifacts";
+import { LocalGitRevisionReader } from "../../codex-goal-git-revision";
 import {
   inspectNodeDependencyEnvironment,
   sanitizeNodeDependencyEnvironment,
@@ -60,26 +60,29 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
   async capture(input: {
     readonly workspacePath: string;
     readonly allowEmptyPatch?: boolean;
-    readonly rejectedCaptureBinding?: {
-      readonly decision: ReviewDecisionStatus.Rejected;
-      readonly expectedPatchSha256: string;
-    };
+    readonly reviewedOutputFileByteAllowance?: number;
   }): Promise<ReviewedWorkerOutputWorkspaceSnapshot> {
-    const baseCommit = await readLocalGitHeadCommit(input.workspacePath);
-    if (!baseCommit)
-      throw new Error("reviewed_worker_output_base_commit_required");
-    const patch = await captureGitWorkspacePatch({
+    const maxFileBytes = reviewedOutputFileByteAllowance(input.reviewedOutputFileByteAllowance);
+    const captured = await captureCodexGoalExactWorkspacePatch({
       workspacePath: input.workspacePath,
-      ...(this.options.gitBinaryPath
-        ? { gitBinaryPath: this.options.gitBinaryPath }
-        : {}),
+      ...(this.options.gitBinaryPath === undefined
+        ? {}
+        : { gitBinaryPath: this.options.gitBinaryPath }),
+      ...(maxFileBytes === undefined ? {} : { limits: { maxFileBytes } }),
+      scanSecretContent: false,
+      enforceSingleWorkspaceLayer: false,
     });
-    const changedFiles = await captureGitWorkspaceChangedFiles({
-      workspacePath: input.workspacePath,
-      ...(this.options.gitBinaryPath
-        ? { gitBinaryPath: this.options.gitBinaryPath }
-        : {}),
-    });
+    if (!captured) {
+      if (input.allowEmptyPatch !== true) {
+        throw new Error("reviewed_worker_output_patch_required");
+      }
+      return {
+        patch: "",
+        baseCommit: await this.requireBaseCommit(input.workspacePath),
+        changedFiles: [],
+      };
+    }
+    const { baseCommit, patch, changedPaths: changedFiles } = captured;
     if (!patch.trim()) {
       if (
         input.allowEmptyPatch !== true ||
@@ -93,22 +96,12 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
     if (changedFiles.length === 0) {
       throw new Error("reviewed_worker_output_changed_files_required");
     }
-    const rejectedCaptureBinding = input.rejectedCaptureBinding;
-    if (rejectedCaptureBinding) {
-      if (rejectedCaptureBinding.decision !== ReviewDecisionStatus.Rejected) {
-        throw new Error("reviewed_worker_output_rejected_capture_invalid");
-      }
-      assertSha256(rejectedCaptureBinding.expectedPatchSha256);
-      if (sha256(patch) !== rejectedCaptureBinding.expectedPatchSha256) {
-        throw new Error("reviewed_worker_output_patch_hash_mismatch");
-      }
-    }
     await this.assertPatchAppliesToBase({
       workspacePath: input.workspacePath,
       baseCommit,
       patch,
       changedFiles,
-      allowSecretLikeContent: rejectedCaptureBinding !== undefined,
+      ...(maxFileBytes === undefined ? {} : { maxFileBytes }),
     });
     return {
       patch,
@@ -117,12 +110,22 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
     };
   }
 
+  private async requireBaseCommit(workspacePath: string): Promise<string> {
+    const { commit: baseCommit } = await new LocalGitRevisionReader({
+      ...(this.options.gitBinaryPath
+        ? { gitBinaryPath: this.options.gitBinaryPath }
+        : {}),
+    }).readHeadCommit({ workspacePath });
+    if (!baseCommit) throw new Error("reviewed_worker_output_base_commit_required");
+    return baseCommit;
+  }
+
   private async assertPatchAppliesToBase(input: {
     readonly workspacePath: string;
     readonly baseCommit: string;
     readonly patch: string;
     readonly changedFiles: readonly string[];
-    readonly allowSecretLikeContent: boolean;
+    readonly maxFileBytes?: number;
   }): Promise<void> {
     await mkdir(this.options.tempRootDir, { recursive: true, mode: 0o700 });
     const tempDir = await mkdtemp(join(this.options.tempRootDir, ".capture-"));
@@ -137,6 +140,7 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
         baseCommit: input.baseCommit,
         patchPath,
         changedPaths: input.changedFiles,
+        ...(input.maxFileBytes === undefined ? {} : { maxFileBytes: input.maxFileBytes }),
         tempRootDir: tempDir,
         opaqueContentPolicy:
           OpaqueSecretDetectionPolicy.ScanKnownSignatures,
@@ -149,9 +153,6 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
         error instanceof Error &&
         error.message.startsWith("git_patch_secret_like_content:")
       ) {
-        // Secret detection runs only after bounded patch application, changed
-        // path validation, and blob limits have all succeeded.
-        if (input.allowSecretLikeContent) return;
         throw new Error("reviewed_worker_output_secret_like_content");
       }
       if (
@@ -411,6 +412,9 @@ export class LocalReviewedWorkerOutputStore implements ReviewedWorkerOutputStore
             patchSha256: snapshot.patchSha256,
             changedFiles: snapshot.changedFiles,
             reviewDecision: snapshot.reviewDecision,
+            ...(snapshot.reviewedOutputFileByteAllowance === undefined
+              ? {}
+              : { reviewedOutputFileByteAllowance: snapshot.reviewedOutputFileByteAllowance }),
             ...(snapshot.merge ? { merge: snapshot.merge } : {}),
           }),
         ) !== reviewedOutputId
@@ -621,6 +625,7 @@ function parseSnapshot(
     "patchPath",
     "patchSha256",
     "patchByteLength",
+    "reviewedOutputFileByteAllowance",
     "baseCommit",
     "changedFiles",
     "reviewDecision",
@@ -631,6 +636,7 @@ function parseSnapshot(
   const merge = value.merge === undefined
     ? undefined
     : parseMergePlan(value.merge);
+  const allowance = reviewedOutputFileByteAllowance(value.reviewedOutputFileByteAllowance);
   const patchByteLength = requiredNonNegativeInteger(value.patchByteLength);
   const snapshot: ReviewedWorkerOutputSnapshot = {
     format: reviewedWorkerOutputFormat,
@@ -644,6 +650,7 @@ function parseSnapshot(
     patchPath,
     patchSha256: requiredString(value.patchSha256),
     patchByteLength,
+    ...(allowance === undefined ? {} : { reviewedOutputFileByteAllowance: allowance }),
     baseCommit: requiredString(value.baseCommit),
     changedFiles: requiredReviewedFileList(value.changedFiles, {
       allowEmpty: merge !== undefined,
@@ -895,10 +902,11 @@ function requiredNonNegativeInteger(value: unknown): number {
 function assertReviewedPatchInvariant(
   snapshot: Pick<
     ReviewedWorkerOutputSnapshot,
-    "patchByteLength" | "changedFiles" | "merge"
+    "patchByteLength" | "changedFiles" | "merge" | "reviewedOutputFileByteAllowance"
   >,
   patch?: string,
 ): void {
+  reviewedOutputFileByteAllowance(snapshot.reviewedOutputFileByteAllowance);
   if (snapshot.patchByteLength === 0) {
     if (
       snapshot.merge === undefined ||

@@ -1,6 +1,6 @@
 {
   "name": "@vioxen/subscription-runtime",
-  "version": "0.1.0-main.28",
+  "version": "0.1.0-main.40",
   "description": "Provider-neutral subscription runtime for backend workers, Codex subscription execution, and pluggable session custody.",
   "license": "Apache-2.0",
   "type": "module",
@@ -12,7 +12,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vioxen/subscription-runtime.git"
+    "url": "git+https://github.com/777genius/ar.git"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
@@ -139,26 +139,43 @@
   },
   "files": [
     "dist",
+    "host-integration",
     "README.md",
     "docs",
     "LICENSE"
   ],
+  "bundledDependencies": [
+    "@anthropic-ai/claude-agent-sdk",
+    "@anthropic-ai/sdk",
+    "@modelcontextprotocol/sdk",
+    "@types/node",
+    "@vioxen/agent-account-observability",
+    "ajv",
+    "libsodium-wrappers",
+    "zod"
+  ],
   "scripts": {
     "clean:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean:dist && npm run build:packages && tsc -p tsconfig.build.json && npm run build:bundled-packages && node scripts/rewrite-dist-esm-imports.mjs",
+    "build": "npm run clean:dist && npm run build:packages && tsc -p tsconfig.build.json && node scripts/rewrite-dist-esm-imports.mjs",
+    "build:agent-runtime-task-artifact": "node scripts/build-agent-runtime-task-artifact.mjs",
     "build:packages": "npm run --prefix packages/agent-account-observability build",
-    "build:bundled-packages": "node scripts/bundle-workspace-packages.mjs",
     "prepack": "npm run build",
     "typecheck": "npm run build:packages && tsc --noEmit -p tsconfig.json && npm run typecheck:packages",
     "typecheck:packages": "npm run --prefix packages/agent-account-observability typecheck",
-    "test": "npm run build:packages && vitest run && npm run test:packages && npm run check:publish-preflight && npm run check:publish-authority",
+    "test": "npm run test:global-scan-guard && npm run test:host-storage && npm run build:packages && vitest run && npm run test:packages && npm run check:publish-preflight",
+    "test:global-scan-guard": "node --test host-integration/global-scan-guard/global-scan-guard.node-test.mjs",
+    "test:host-storage": "node --test host-integration/custody-canary/run.node-test.mjs host-integration/host-jobs/host-jobs.node-test.mjs host-integration/host-jobs/legacy-lifecycle-e2e.node-test.mjs host-integration/managed-launcher/install.node-test.mjs host-integration/managed-launcher/install-policy.node-test.mjs host-integration/managed-launcher/launch.node-test.mjs host-integration/managed-launcher/layout.node-test.mjs",
     "test:packages": "npm run --prefix packages/agent-account-observability test",
+    "test:crash-shard": "vitest run --config vitest.crash-shard.config.ts --maxWorkers=1",
     "e2e:live-workers": "npm run build && node scripts/e2e-live-workers/run.mjs",
     "e2e:live-workers:dist": "node scripts/e2e-live-workers/run.mjs",
     "e2e:live-agent-runtime-task": "npm run build && node scripts/e2e-live-workers/agent-runtime-task-module.mjs --allow-live",
     "e2e:live-agent-runtime-goal": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live",
     "e2e:live-agent-runtime-goal:codex": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live --provider=codex",
     "e2e:live-agent-runtime-goal:claude": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live --provider=claude",
+    "eval:logical-thread-continuation:live": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live",
+    "eval:logical-thread-continuation:live:codex": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live --provider=codex",
+    "eval:logical-thread-continuation:live:claude": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live --provider=claude",
     "e2e:live-codex-bounded-workspace": "npm run build && node scripts/e2e-live-workers/codex-bounded-workspace.mjs --allow-live",
     "ops:codex-account-quota": "node scripts/ops/codex-account-quota-table.mjs",
     "ops:sync-codex-auth": "node scripts/ops/sync-codex-auth-to-host.mjs",
@@ -169,15 +186,19 @@
     "check:dist-policy": "node scripts/check-dist-policy.mjs && node scripts/check-dist-policy-self-test.mjs",
     "check:dist": "node scripts/check-dist.mjs",
     "check:packed-consumer": "node scripts/check-packed-consumer.mjs",
+    "check:agent-runtime-task-artifact": "node scripts/check-agent-runtime-task-artifact.mjs",
     "check:publish-preflight": "node scripts/publish-preflight-self-test.mjs",
-    "check:publish-authority": "node scripts/check-publish-authority.mjs",
     "check:publish-registry-contract": "node scripts/check-publish-registry-contract.mjs",
-    "check": "npm run check:diff && npm run check:dist-policy && npm run typecheck && npm run build && npm run check:dist && npm test && npm run check:boundaries && npm pack --dry-run && npm run check:packed-consumer",
-    "check:architecture-guardrails": "node scripts/check-architecture-guardrails.mjs && node scripts/check-architecture-guardrails-self-test.mjs"
+    "check": "npm run check:diff && npm run check:dist-policy && npm run typecheck && npm run build && npm run check:dist && npm test && npm run check:boundaries && npm pack --dry-run && npm run check:packed-consumer && npm run check:agent-runtime-task-artifact",
+    "check:architecture-guardrails": "node scripts/check-architecture-guardrails.mjs && node scripts/check-architecture-guardrails-self-test.mjs && node scripts/check-managed-launch-boundary-self-test.mjs && node scripts/check-managed-launch-boundary.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.237",
+    "@anthropic-ai/sdk": "0.110.0",
+    "@vioxen/agent-account-observability": "file:packages/agent-account-observability",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^22.20.0",
+    "ajv": "8.20.0",
     "libsodium-wrappers": "^0.8.4",
     "zod": "^4.4.3"
   },
@@ -190,11 +211,7 @@
     }
   },
   "devDependencies": {
-    "@vioxen/agent-account-observability": "file:packages/agent-account-observability",
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"
-  },
-  "optionalDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.173"
   }
 }

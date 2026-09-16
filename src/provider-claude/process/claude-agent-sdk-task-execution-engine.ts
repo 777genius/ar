@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 import type {
@@ -8,19 +8,16 @@ import type {
   Options,
   PermissionResult,
   Query,
-  SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   AgentRuntimeBudgetEnforcement,
   AgentRuntimeBudgetMetric,
   AgentRuntimeExecutionMode,
   AgentRuntimeTurnLimitEnforcement,
-  AgentRuntimeCostCurrency,
   AgentRuntimeEditMode,
   AgentRuntimeFailureCode,
   AgentRuntimeProviderSandboxMode,
-  type ProviderFailure,
-  type ProviderTaskTelemetry,
+  isProjectInstructionPath,
 } from "@vioxen/subscription-runtime/core";
 import {
   assertClaudeReadOnlyToolPolicy,
@@ -28,9 +25,7 @@ import {
   isReadOnlyClaudeTool,
   mapClaudePermissionMode,
 } from "../protocol/claude-permission-policy";
-import {
-  ClaudeProviderFailureError,
-} from "../protocol/failure-classifier";
+import { ClaudeProviderFailureError } from "../protocol/failure-classifier";
 import { claudeAgentSdkTaskAgentCapabilities } from "../capabilities";
 import {
   claudeGoalCompletionToolName,
@@ -43,11 +38,15 @@ import type {
   ClaudeTaskExecutionResult,
 } from "../task/engine-contract";
 import { claudeCliChildEnv } from "./claude-cli-env";
+import { resultFromSdkMessage } from "./claude-agent-sdk-result";
+import { createClaudeAgentSdkSafeDiagnostics } from "./claude-agent-sdk-safe-diagnostics";
 
 type AgentSdkModule = Pick<
   typeof import("@anthropic-ai/claude-agent-sdk"),
   "query"
 >;
+
+const claudeStructuredOutputToolName = "StructuredOutput";
 
 export type ClaudeAgentSdkTaskExecutionEngineOptions = {
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
@@ -101,9 +100,18 @@ export class ClaudeAgentSdkTaskExecutionEngine
           })
         : undefined;
       const tools = toolsForInput(input);
+      const providerTools = appendInternalTool(
+        tools,
+        input.outputSchema === undefined ? undefined : claudeStructuredOutputToolName,
+      );
       const allowedTools = goalProtocol
-        ? [...(tools ?? []), claudeGoalCompletionToolName]
-        : tools;
+        ? [...(providerTools ?? []), claudeGoalCompletionToolName]
+        : providerTools;
+      const disallowedTools = input.outputSchema === undefined
+        ? input.disallowedTools
+        : input.disallowedTools?.filter(
+            (tool) => tool !== claudeStructuredOutputToolName,
+          );
       const policyAudit = new Set<string>();
       const evaluateToolPolicy = createToolPolicyEvaluator(
         input,
@@ -117,15 +125,23 @@ export class ClaudeAgentSdkTaskExecutionEngine
         ...(input.maxBudgetUsd === undefined
           ? {}
           : { maxBudgetUsd: input.maxBudgetUsd }),
-        ...(tools === undefined
+        ...(providerTools === undefined
           ? {}
-          : { tools: [...tools] }),
+          : { tools: [...providerTools] }),
         ...(allowedTools === undefined
           ? {}
           : { allowedTools: [...allowedTools] }),
-        ...(input.disallowedTools === undefined
+        ...(disallowedTools === undefined
           ? {}
-          : { disallowedTools: [...input.disallowedTools] }),
+          : { disallowedTools: [...disallowedTools] }),
+        ...(input.outputSchema === undefined
+          ? {}
+          : {
+              outputFormat: {
+                type: "json_schema" as const,
+                schema: input.outputSchema,
+              },
+            }),
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
@@ -133,6 +149,15 @@ export class ClaudeAgentSdkTaskExecutionEngine
             ? {}
             : { append: input.appendSystemPrompt }),
         },
+        ...(input.workspaceInstructionPolicy === "deny_project_instructions_v1"
+          ? {
+              // This contract is stronger than an empty settings source list:
+              // safe mode also disables CLAUDE.md, skills, plugins, hooks,
+              // MCP, and other settings-sourced customizations. Programmatic
+              // SDK hooks and MCP servers remain explicit options below.
+              extraArgs: { "safe-mode": null },
+            }
+          : {}),
         ...(this.options.binaryPath === undefined
           ? {}
           : { pathToClaudeCodeExecutable: this.options.binaryPath }),
@@ -162,9 +187,16 @@ export class ClaudeAgentSdkTaskExecutionEngine
         settingSources: [],
       };
       stream = query({ prompt: input.prompt, options });
+      const safeDiagnostics = createClaudeAgentSdkSafeDiagnostics();
       for await (const message of stream) {
+        safeDiagnostics.observe(message);
         if (message.type !== "result") continue;
-        const result = resultFromSdkMessage(message, input, policyAudit);
+        const result = resultFromSdkMessage(
+          message,
+          input,
+          policyAudit,
+          safeDiagnostics,
+        );
         if (goalProtocol && !goalProtocol.isComplete()) {
           throw new ClaudeProviderFailureError({
             code: AgentRuntimeFailureCode.GoalSliceExhausted,
@@ -172,7 +204,7 @@ export class ClaudeAgentSdkTaskExecutionEngine
             reconnectRequired: false,
             safeMessage:
               "Claude stopped before reporting verified Goal completion.",
-          });
+          }, result.telemetry);
         }
         return result;
       }
@@ -182,104 +214,6 @@ export class ClaudeAgentSdkTaskExecutionEngine
       input.abortSignal.removeEventListener("abort", abort);
     }
   }
-}
-
-function resultFromSdkMessage(
-  message: SDKResultMessage,
-  input: ClaudeTaskEngineInput,
-  policyAudit: ReadonlySet<string>,
-): ClaudeTaskExecutionResult {
-  if (message.subtype !== "success") {
-    throw new ClaudeProviderFailureError(
-      failureFromSdkMessage(message, input, policyAudit),
-    );
-  }
-  const outputText = input.redactor.redact(message.result);
-  input.redactor.assertNoKnownSecret(outputText, "claude-agent-sdk-result");
-  return {
-    outputText,
-    ...(message.structured_output === undefined
-      ? {}
-      : { structuredOutput: message.structured_output }),
-    telemetry: {
-      durationMs: message.duration_ms,
-      turns: message.num_turns,
-      cost: {
-        amount: message.total_cost_usd,
-        currency: AgentRuntimeCostCurrency.Usd,
-      },
-      providerSessionId: message.session_id,
-    } satisfies ProviderTaskTelemetry,
-    warnings: [],
-  };
-}
-
-function failureFromSdkMessage(
-  message: Exclude<SDKResultMessage, { readonly subtype: "success" }>,
-  input: ClaudeTaskEngineInput,
-  policyAudit: ReadonlySet<string>,
-): ProviderFailure {
-  const details = sdkErrorDetails(message, input, policyAudit);
-  switch (message.subtype) {
-    case "error_max_turns":
-      return {
-        code: AgentRuntimeFailureCode.GoalSliceExhausted,
-        retryable: false,
-        reconnectRequired: false,
-        safeMessage: "Claude task exhausted its maximum turn limit.",
-        causeCategory: message.subtype,
-        details,
-      };
-    case "error_max_budget_usd":
-      return {
-        code: AgentRuntimeFailureCode.BudgetExceeded,
-        retryable: false,
-        reconnectRequired: false,
-        safeMessage: "Claude task exhausted its USD budget.",
-        causeCategory: message.subtype,
-        details,
-      };
-    case "error_max_structured_output_retries":
-      return {
-        code: AgentRuntimeFailureCode.ProviderOutputInvalid,
-        retryable: true,
-        reconnectRequired: false,
-        safeMessage: "Claude could not produce valid structured output.",
-        causeCategory: message.subtype,
-        details,
-      };
-    case "error_during_execution":
-      return {
-        code: AgentRuntimeFailureCode.UnknownRuntimeFailure,
-        retryable: true,
-        reconnectRequired: false,
-        safeMessage: "Claude execution failed.",
-        causeCategory: message.subtype,
-        details,
-      };
-  }
-}
-
-function sdkErrorDetails(
-  message: Exclude<SDKResultMessage, { readonly subtype: "success" }>,
-  input: ClaudeTaskEngineInput,
-  policyAudit: ReadonlySet<string>,
-): Readonly<Record<string, string>> {
-  const sdkErrors = input.redactor.redact(message.errors.join("; ")).slice(0, 1000);
-  input.redactor.assertNoKnownSecret(sdkErrors, "claude-agent-sdk-error-details");
-  return {
-    permissionDenials: String(message.permission_denials.length),
-    hostPolicyDenials:
-      policyAudit.size === 0 ? "none" : [...policyAudit].join(","),
-    ...(message.permission_denials.length === 0
-      ? {}
-      : {
-          deniedTools: [...new Set(
-            message.permission_denials.map((denial) => denial.tool_name),
-          )].join(","),
-        }),
-    ...(sdkErrors.length === 0 ? {} : { sdkErrors }),
-  };
 }
 
 type ToolPolicyEvaluator = (
@@ -321,6 +255,16 @@ function createToolPolicyEvaluator(
     : new Set(input.allowedTools);
   const denied = new Set(input.disallowedTools ?? []);
   return async (toolName, toolInput) => {
+    if (toolName === claudeStructuredOutputToolName) {
+      return input.outputSchema === undefined
+        ? rejectWithAudit(
+            audit,
+            toolName,
+            ToolPolicyDenialReason.OutsidePolicy,
+            "Structured output is unavailable without an output schema.",
+          )
+        : accept();
+    }
     goalProtocol?.noteToolUse(toolName);
     if (toolName === claudeGoalCompletionToolName) return accept();
     if (denied.has(toolName) || (allowed !== undefined && !allowed.has(toolName))) {
@@ -362,6 +306,19 @@ function createToolPolicyEvaluator(
     if (pathField === null) return accept();
     const candidate = toolInput[pathField];
     if (candidate === undefined && (toolName === "Grep" || toolName === "Glob")) {
+      if (
+        input.workspaceInstructionPolicy === "deny_project_instructions_v1" &&
+        (toolName === "Grep" ||
+          (typeof toolInput.pattern === "string" &&
+            isProjectInstructionPath(toolInput.pattern)))
+      ) {
+        return rejectWithAudit(
+          audit,
+          toolName,
+          ToolPolicyDenialReason.ProjectInstructionPath,
+          "Search could expose project instruction paths under this task policy.",
+        );
+      }
       return accept();
     }
     if (typeof candidate !== "string" || candidate.trim().length === 0) {
@@ -370,6 +327,22 @@ function createToolPolicyEvaluator(
         toolName,
         ToolPolicyDenialReason.InvalidPath,
         "Tool path is missing or invalid.",
+      );
+    }
+    if (
+      input.workspaceInstructionPolicy === "deny_project_instructions_v1" &&
+      await targetsProjectInstructions(
+        input.workspacePath,
+        toolName,
+        candidate,
+        toolInput,
+      )
+    ) {
+      return rejectWithAudit(
+        audit,
+        toolName,
+        ToolPolicyDenialReason.ProjectInstructionPath,
+        "Project instruction paths are unavailable under this task policy.",
       );
     }
     const pathDecision = await workspacePathDecision(
@@ -399,6 +372,41 @@ function createToolPolicyEvaluator(
           "Tool path must stay within the task workspace.",
         );
   };
+}
+
+async function targetsProjectInstructions(
+  workspacePath: string,
+  toolName: string,
+  candidate: string,
+  toolInput: Readonly<Record<string, unknown>>,
+): Promise<boolean> {
+  if (isProjectInstructionPath(candidate)) return true;
+  const selector = toolName === "Glob"
+    ? toolInput.pattern
+    : toolName === "Grep"
+      ? toolInput.glob
+      : undefined;
+  if (typeof selector === "string" && isProjectInstructionPath(selector)) {
+    return true;
+  }
+  const root = await realpath(resolve(workspacePath));
+  try {
+    const canonical = await realpath(resolve(root, candidate));
+    if (isProjectInstructionPath(relative(root, canonical))) return true;
+    // Native Grep recursively reads directory contents and cannot exclude the
+    // denied instruction files. It is safe here only for one explicit file.
+    return toolName === "Grep" && !(await lstat(canonical)).isFile();
+  } catch {
+    return toolName === "Grep";
+  }
+}
+
+function appendInternalTool(
+  tools: readonly string[] | undefined,
+  internalTool: string | undefined,
+): readonly string[] | undefined {
+  if (internalTool === undefined || tools === undefined) return tools;
+  return tools.includes(internalTool) ? tools : [...tools, internalTool];
 }
 
 function assertBoundedClaudeGoal(input: ClaudeTaskEngineInput): void {
@@ -437,6 +445,7 @@ enum ToolPolicyDenialReason {
   InvalidPath = "invalid_path",
   PathOutsideWorkspace = "path_outside_workspace",
   GitMetadataPath = "git_metadata_path",
+  ProjectInstructionPath = "project_instruction_path",
 }
 
 function toolsForInput(

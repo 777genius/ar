@@ -416,6 +416,13 @@ export enum AgentRuntimeResponseFormat {
 
 export type ProviderTaskResponseFormat = `${AgentRuntimeResponseFormat}`;
 
+export enum AgentRuntimeWorkspaceInstructionPolicy {
+  DenyProjectInstructionsV1 = "deny_project_instructions_v1",
+}
+
+export type ProviderTaskWorkspaceInstructionPolicy =
+  `${AgentRuntimeWorkspaceInstructionPolicy}`;
+
 export enum AgentRuntimeUnsupportedControlPolicy {
   Fail = "fail",
   Warn = "warn",
@@ -454,11 +461,11 @@ export type AgentRuntimeToolName = `${AgentRuntimeTool}`;
 
 export type AgentUsage = {
   readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly totalTokens?: number;
   readonly cachedInputTokens?: number;
   readonly cacheWriteInputTokens?: number;
-  readonly outputTokens?: number;
   readonly reasoningOutputTokens?: number;
-  readonly totalTokens?: number;
 };
 
 export type AgentCost = {
@@ -507,6 +514,7 @@ export type ProviderTaskControls = {
   readonly providerSandboxMode?: ProviderTaskProviderSandboxMode;
   readonly responseFormat?: ProviderTaskResponseFormat;
   readonly outputSchemaName?: string;
+  readonly workspaceInstructionPolicy?: ProviderTaskWorkspaceInstructionPolicy;
 };
 
 export type ProviderTaskTelemetry = {

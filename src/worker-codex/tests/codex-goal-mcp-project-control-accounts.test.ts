@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -49,6 +49,46 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe("codex goal MCP project-control server", () => {
+  it("reports and inspects the resolved target of a symlinked auth root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-auth-symlink-"));
+    const physicalAuthRoot = join(root, "persistent-auth");
+    const linkedAuthRoot = join(root, "live-codex-auth");
+
+    try {
+      await writeFakeAuth(physicalAuthRoot, "account-a", {
+        lastRefresh: "2026-08-30T00:00:00.000Z",
+      });
+      await symlink(physicalAuthRoot, linkedAuthRoot, "dir");
+      const canonicalAuthRoot = await realpath(physicalAuthRoot);
+
+      const server = createCodexGoalMcpServer();
+      const client = new Client({ name: "subscription-runtime-test", version: "0.0.0" });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await Promise.all([
+        server.connect(serverTransport),
+        client.connect(clientTransport),
+      ]);
+
+      try {
+        const status = await callToolJson(client, "codex_accounts_status", {
+          authRootDir: linkedAuthRoot,
+        });
+        expect(status).toMatchObject({
+          authRootDir: linkedAuthRoot,
+          resolvedAuthRootDir: canonicalAuthRoot,
+          authRootUsesSymlink: true,
+          count: 1,
+          summary: { configured: 1, ready: 1, missing: 0 },
+        });
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not treat reviewed stopped jobs as workspace-conflict writers", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-reviewed-conflict-"));
     const registryRootDir = join(root, "registry");

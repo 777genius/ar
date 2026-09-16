@@ -9,6 +9,7 @@ import {
 import {
   jobIdInputSchema,
   jobRegistryInputSchema,
+  CodexGoalBriefDetail,
   type JobBriefMcpArgs,
   type JobCreateMcpArgs,
   type JobDecisionMcpArgs,
@@ -21,6 +22,7 @@ import {
   type JobUpdateMcpArgs,
   type JobWatchMcpArgs,
 } from "./codex-goal-mcp-inputs";
+import { buildCodexGoalBriefMcpResponse } from "./codex-goal-mcp-brief-response";
 import {
   mcpJson,
   withMcpErrors,
@@ -309,18 +311,42 @@ export function registerCodexGoalJobTools(server: McpServer): void {
     "codex_goal_brief",
     {
       title: "Codex Goal Brief",
-      description: "Return a compact agent-friendly status summary by jobId.",
+      description:
+        "Poll one job. Compact is the default, stays within a 64 KiB MCP envelope, and returns a revision; pass it as afterRevision on the next poll to receive a small unchanged response. Inspect truncation guidance or use full for complete diagnostics, and request a log tail only when needed.",
       inputSchema: {
         ...jobIdInputSchema(),
         staleAfterMs: z.number().int().positive().optional(),
         tailLines: z.number().int().positive().optional(),
+        includeLogTail: z.boolean().optional(),
+        detail: z.enum(CodexGoalBriefDetail).optional(),
+        afterRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
         targetCommit: z.string().optional(),
         targetWorkspacePath: z.string().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
-      mcpJson(await buildCodexGoalBriefUseCase(args as JobBriefMcpArgs)),
-    ),
+    async (rawArgs) => withMcpErrors(async () => {
+      const args = rawArgs as JobBriefMcpArgs;
+      const detail = args.detail ?? CodexGoalBriefDetail.Compact;
+      const logTailLines = detail === CodexGoalBriefDetail.Full
+        ? args.tailLines ?? 20
+        : args.tailLines ?? (args.includeLogTail === true ? 20 : 0);
+      const full = await buildCodexGoalBriefUseCase({
+        ...args,
+        tailLines: logTailLines,
+      });
+      return mcpJson(buildCodexGoalBriefMcpResponse(full, {
+        detail,
+        logTailLines,
+        ...(args.registryRootDir === undefined ? {} : { registryRootDir: args.registryRootDir }),
+        ...(args.jobId === undefined ? {} : { jobId: args.jobId }),
+        ...(args.staleAfterMs === undefined ? {} : { staleAfterMs: args.staleAfterMs }),
+        ...(args.targetCommit === undefined ? {} : { targetCommit: args.targetCommit }),
+        ...(args.targetWorkspacePath === undefined
+          ? {}
+          : { targetWorkspacePath: args.targetWorkspacePath }),
+        ...(args.afterRevision === undefined ? {} : { afterRevision: args.afterRevision }),
+      }));
+    }),
   );
 
   server.registerTool(

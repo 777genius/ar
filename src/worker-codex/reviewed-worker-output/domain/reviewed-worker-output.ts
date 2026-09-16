@@ -1,5 +1,6 @@
 import {
   ReviewDecisionStatus,
+  reviewedOutputFileByteAllowance,
   type ProjectIntegrationCheckSpec,
   type MergeIntegrationPlan,
   type ReviewDecision,
@@ -9,6 +10,7 @@ import {
 export const reviewedWorkerOutputFormat = "reviewed-worker-output";
 
 export type ReviewedWorkerOutputSnapshot = {
+  readonly reviewedOutputFileByteAllowance?: number;
   readonly format: typeof reviewedWorkerOutputFormat;
   readonly formatRevision: 1;
   readonly reviewedOutputId: string;
@@ -28,6 +30,7 @@ export type ReviewedWorkerOutputSnapshot = {
 };
 
 export type CaptureReviewedWorkerOutputInput = {
+  readonly reviewedOutputFileByteAllowance?: number;
   readonly projectId: string;
   readonly controllerJobId: string;
   readonly workerJobId: string;
@@ -62,6 +65,7 @@ export type ReviewedWorkerOutputIdentity = Pick<
   | "changedFiles"
   | "reviewDecision"
   | "merge"
+  | "reviewedOutputFileByteAllowance"
 >;
 
 export type ReviewedWorkerOutputReviewAttestation = {
@@ -76,6 +80,7 @@ export type ReviewedWorkerOutputReviewAttestation = {
 export function reviewedWorkerOutputIdentityPayload(
   input: ReviewedWorkerOutputIdentity,
 ): string {
+  const allowance = reviewedOutputFileByteAllowance(input.reviewedOutputFileByteAllowance);
   return JSON.stringify({
     format: input.format,
     formatRevision: input.formatRevision,
@@ -88,6 +93,9 @@ export function reviewedWorkerOutputIdentityPayload(
     patchSha256: input.patchSha256,
     changedFiles: input.changedFiles,
     reviewDecision: input.reviewDecision,
+    ...(allowance === undefined
+      ? {}
+      : { reviewedOutputFileByteAllowance: allowance }),
     ...(input.merge ? { merge: input.merge } : {}),
   });
 }
@@ -96,6 +104,12 @@ export function reviewedOutputAsWorkerOutput(
   snapshot: ReviewedWorkerOutputSnapshot,
 ): WorkerOutput {
   return {
+    ...(snapshot.reviewedOutputFileByteAllowance === undefined
+      ? {}
+      : { reviewedOutputFileByteAllowance: snapshot.reviewedOutputFileByteAllowance }),
+    ...(snapshot.reviewedOutputFileByteAllowance === undefined
+      ? {}
+      : { reviewedOutputId: snapshot.reviewedOutputId }),
     workerJobId: snapshot.workerJobId,
     workspacePath: snapshot.sourceWorkspacePath,
     patchPath: snapshot.patchPath,

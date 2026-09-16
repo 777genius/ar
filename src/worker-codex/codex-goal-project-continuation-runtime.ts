@@ -9,6 +9,8 @@ import {
 } from "./application/codex-goal-worker-control";
 import { assertControlledRuntimeInterruptionSignal } from "./application/project-control/codex-goal-project-controlled-runtime-interruption-continuation";
 import { assertReadablePrompt } from "./application/project-control/codex-goal-project-refill";
+import { readControlledRuntimeInterruptionSnapshot } from "./application/project-control/codex-goal-project-verifier-handoff";
+import { directCodexAppServerFailureCause } from "./application/project-control/codex-app-server-failure-cause";
 import {
   projectPreStartContinuationDecision,
   type ProjectPreStartContinuationDecision,
@@ -19,6 +21,7 @@ import {
 } from "./codex-goal-jobs";
 import { goalLaunchInput } from "./codex-goal-mcp-launch-input";
 import type { CodexProjectControlBrokerInput } from "./codex-goal-mcp-project-broker";
+import type { ProjectControlledRuntimeInPlaceContinuation } from "./application/project-control/codex-goal-project-in-place-continuation";
 import {
   collectCodexGoalStatus,
   resolveCodexGoalWorkerLiveness,
@@ -67,6 +70,16 @@ export async function resolveProjectPreStartContinuation(input: {
       ? { controlledInterruptionEvidence }
       : {}),
   });
+  if (
+    decision?.kind === "capacity" &&
+    decision.workspaceMode === "admitted_input_patch_continuation" &&
+    await hasDurableRuntimePreservedContinuation(input.manifest)
+  ) {
+    return {
+      kind: "capacity",
+      workspaceMode: "admitted_input_patch_runtime_continuation",
+    };
+  }
   if (decision) return decision;
   if (await isRecoverableAdmittedInputPatchProviderFailure(input)) {
     return {
@@ -86,6 +99,19 @@ export async function resolveProjectPreStartContinuation(input: {
         workspaceMode: "admitted_input_patch_continuation",
       }
     : undefined;
+}
+
+async function hasDurableRuntimePreservedContinuation(
+  manifest: CodexGoalJobManifest,
+): Promise<boolean> {
+  try {
+    const snapshot = await readControlledRuntimeInterruptionSnapshot({
+      producer: manifest,
+    });
+    return snapshot.resultPath !== undefined && snapshot.changedPaths.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 export async function assertProjectPreStartContinuationEvidence(input: {
@@ -179,16 +205,29 @@ export async function reapProjectPreStartCapacitySupervisor(input: {
   readonly manifest: CodexGoalJobManifest;
   readonly launch: CodexGoalLaunchInput;
   readonly workspace: ProjectControlWorkspaceLease;
+  readonly controlledRuntimeInPlaceContinuation?:
+    ProjectControlledRuntimeInPlaceContinuation;
 }): Promise<unknown | undefined> {
-  if (!input.workerAlive || input.decision?.kind !== "capacity") return;
+  const decision = input.decision;
+  if (
+    !input.workerAlive ||
+    !decision ||
+    !isProjectPreStartTerminalSupervisorDecision(decision)
+  ) return;
   const broker = input.createBroker({
     registryRootDir: input.registryRootDir,
     controller: input.controller,
     scope: input.scope,
     startLaunch: input.launch,
     startManifest: input.manifest,
-    startAdmissionWorkspaceMode: input.decision.workspaceMode,
+    startAdmissionWorkspaceMode: decision.workspaceMode,
     startWorkspaceLease: input.workspace,
+    ...(input.controlledRuntimeInPlaceContinuation
+      ? {
+          controlledRuntimeInPlaceContinuation:
+            input.controlledRuntimeInPlaceContinuation,
+        }
+      : {}),
     stopLaunch: input.launch,
   });
   const result = await broker.stopWorker({
@@ -207,6 +246,15 @@ export async function reapProjectPreStartCapacitySupervisor(input: {
     throw new Error("project_control_terminal_capacity_supervisor_reap_failed");
   }
   return result;
+}
+
+export function isProjectPreStartTerminalSupervisorDecision(
+  decision: ProjectPreStartContinuationDecision | undefined,
+): boolean {
+  return decision?.kind === "capacity" ||
+    (decision?.kind === "controlled_runtime_interruption" &&
+      decision.workspaceMode ===
+        "admitted_input_patch_runtime_continuation");
 }
 
 export function projectWorkerAlreadyRunningView(input: {
@@ -330,10 +378,14 @@ async function isRecoverableAdmittedInputPatchProviderFailure(input: {
       return false;
     }
     const rawCause = parsed.details.rawCause;
+    const directCause =
+      typeof rawCause === "string"
+        ? directCodexAppServerFailureCause(rawCause)
+        : undefined;
     return (
-      typeof rawCause === "string" &&
-      (rawCause.startsWith(APP_SERVER_RECONNECT_TIMEOUT_PREFIX) ||
-        rawCause.startsWith(APP_SERVER_PROVIDER_ERROR_PREFIX))
+      directCause !== undefined &&
+      (directCause.startsWith(APP_SERVER_RECONNECT_TIMEOUT_PREFIX) ||
+        directCause.startsWith(APP_SERVER_PROVIDER_ERROR_PREFIX))
     );
   } catch {
     return false;

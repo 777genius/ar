@@ -4,12 +4,13 @@ export function codexAppServerToolConfig(input: {
   readonly nativeToolSurface: CodexAppServerNativeToolSurface | undefined;
   readonly fastMode: boolean;
   readonly goalMode: boolean;
+  readonly trustedHooksEnabled: boolean;
 }): Readonly<Record<string, unknown>> {
   const nativeToolsDisabled = input.nativeToolSurface === "disabled";
   return {
     features: {
       apps: false,
-      hooks: false,
+      hooks: input.trustedHooksEnabled,
       memories: false,
       multi_agent: false,
       shell_snapshot: false,

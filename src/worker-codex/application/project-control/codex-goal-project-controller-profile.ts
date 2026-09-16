@@ -3,18 +3,14 @@ import {
   LocalControlledAgentStateStore,
 } from "@vioxen/subscription-runtime/store-local-file";
 import {
-  buildLocalClaudeControlledAgentProfile,
-} from "@vioxen/subscription-runtime/worker-local";
-import {
   AccessBoundary,
   NetworkAccessMode,
-  RunEventProviderKind,
   buildControlledAgentLaunchPlan,
   type ProjectAccessScope,
+  type ProviderControllerProfile,
+  type ProviderControllerProfileInput,
+  type ProviderRuntimeRegistry,
 } from "@vioxen/subscription-runtime/worker-core";
-import {
-  buildCodexControlledAgentProfile,
-} from "../../controlled-agent";
 import type { CodexGoalJobManifest } from "../../codex-goal-jobs";
 import { resolvePath } from "../codex-goal-input-values";
 import {
@@ -22,57 +18,45 @@ import {
   type ProjectControllerOptions,
 } from "./codex-goal-project-controller-options";
 
-type JsonObject = Readonly<Record<string, unknown>>;
-
-export type ProjectControllerProfile =
-  | ReturnType<typeof buildCodexControlledAgentProfile>
-  | ReturnType<typeof buildLocalClaudeControlledAgentProfile>;
+// Provider-neutral controller profile. Kept as a local alias so downstream
+// project-control modules do not need to reach into worker-core directly.
+export type ProjectControllerProfile = ProviderControllerProfile;
 
 export function projectControllerState(
   options: ProjectControllerOptions,
   controller: {
     readonly controller: CodexGoalJobManifest;
   },
+  registry: ProviderRuntimeRegistry,
 ): {
   readonly stateDir: string;
   readonly cwd: string;
   readonly sessionId: string;
   readonly store: LocalControlledAgentStateStore;
+  readonly profile: ProjectControllerProfile;
 } {
   const stateDir = resolvePath(
     options.cwd,
     options.stateDir ?? join(controller.controller.jobRootDir, "controlled-agent"),
   );
+  const profile = registry
+    .get(projectControllerProviderKind(options))
+    .controllerProfile(projectControllerProfileInput(options, stateDir));
   return {
     cwd: options.cwd,
     stateDir,
-    sessionId: projectControllerSessionId(
-      controller.controller.jobId,
-      projectControllerProviderKind(options),
-    ),
+    sessionId: profile.sessionId(controller.controller.jobId),
     store: new LocalControlledAgentStateStore({ rootDir: stateDir }),
+    profile,
   };
 }
 
-function projectControllerSessionId(
-  controllerJobId: string,
-  providerKind: ReturnType<typeof projectControllerProviderKind>,
-): string {
-  if (providerKind === RunEventProviderKind.Codex) {
-    return controllerJobId + ":controlled-agent";
-  }
-  return controllerJobId + ":controlled-agent:" + providerKind;
-}
-
-export function projectControllerProfile(
+function projectControllerProfileInput(
   options: ProjectControllerOptions,
-  state: {
-    readonly stateDir: string;
-    readonly cwd: string;
-  },
-): ProjectControllerProfile {
-  const common = {
-    stateDir: state.stateDir,
+  stateDir: string,
+): ProviderControllerProfileInput {
+  return {
+    stateDir,
     ...(options.mcpServerName === undefined
       ? {}
       : { mcpServerName: options.mcpServerName }),
@@ -82,15 +66,11 @@ export function projectControllerProfile(
     ...(options.mcpArgs === undefined ? {} : { mcpArgs: options.mcpArgs }),
     ...(options.mcpCwd === undefined
       ? {}
-      : { mcpCwd: resolvePath(state.cwd, options.mcpCwd) }),
+      : { mcpCwd: resolvePath(options.cwd, options.mcpCwd) }),
+    ...(options.rawShellMode === undefined
+      ? {}
+      : { rawShellMode: options.rawShellMode }),
   };
-  if (projectControllerProviderKind(options) === RunEventProviderKind.Claude) {
-    return buildLocalClaudeControlledAgentProfile(common);
-  }
-  return buildCodexControlledAgentProfile({
-    ...common,
-    rawShellMode: options.rawShellMode ?? "disabled-by-provider",
-  });
 }
 
 export function projectControllerLaunchInput(
@@ -113,33 +93,4 @@ export function projectControllerLaunchInput(
     provider: profile.enforcement,
     networkAccess: NetworkAccessMode.Restricted,
   });
-}
-
-export function projectControllerAllowedTools(
-  profile: ProjectControllerProfile,
-): readonly string[] {
-  return profile.providerKind === RunEventProviderKind.Codex
-    ? profile.enabledTools
-    : profile.allowedTools;
-}
-
-export function projectControllerProfileReadyJson(
-  profile: ProjectControllerProfile,
-): JsonObject {
-  if (profile.providerKind === RunEventProviderKind.Codex) {
-    return {
-      allowedTools: profile.enabledTools,
-      codexHome: profile.codexHome,
-      configToml: profile.configToml,
-      rulesText: profile.rulesText,
-    };
-  }
-  return {
-    allowedTools: profile.allowedTools,
-    disallowedTools: profile.disallowedTools,
-    configDir: profile.configDir,
-    mcpConfig: profile.mcpConfig,
-    strictMcpConfig: profile.strictMcpConfig,
-    appendSystemPrompt: profile.appendSystemPrompt,
-  };
 }

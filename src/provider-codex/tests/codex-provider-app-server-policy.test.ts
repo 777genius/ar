@@ -187,6 +187,7 @@ describe("Codex provider app-server adapter", () => {
         codexBinaryPath: "/bin/codex-test",
         processFactory: fakeFactory.create,
         executionProfile: "stateless-completion",
+        bypassHookTrust: true,
       }),
       sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
         cacheKey: "provider-account:codex-warm-test",
@@ -215,6 +216,14 @@ describe("Codex provider app-server adapter", () => {
         },
       });
       expect(fakeFactory.spawnCount).toBe(1);
+      expect(fakeFactory.spawnArgs).toEqual([
+        [
+          "--dangerously-bypass-hook-trust",
+          "app-server",
+          "--listen",
+          "stdio://",
+        ],
+      ]);
       expect(fakeFactory.cwds).toEqual([prewarm.home]);
       expect(fakeFactory.prompts).toEqual(["warm slot"]);
       expect(
@@ -223,7 +232,7 @@ describe("Codex provider app-server adapter", () => {
         )?.params,
       ).toMatchObject({
         baseInstructions: expect.stringContaining(
-          "stateless completion worker",
+          "fast backend inference worker",
         ),
         developerInstructions: null,
         dynamicTools: [],
@@ -233,7 +242,7 @@ describe("Codex provider app-server adapter", () => {
           model_verbosity: "low",
           features: {
             apps: false,
-            hooks: false,
+            hooks: true,
             memories: false,
             multi_agent: false,
             shell_snapshot: false,

@@ -36,6 +36,7 @@ export enum ProjectDebtReason {
   OrphanLegacyWorkspace = "orphan_legacy_workspace",
   ConsumedDirtyWorkspace = "consumed_dirty_workspace",
   IncompleteConsumedOutputRecord = "incomplete_consumed_output_record",
+  RetentionEvidenceMissing = "retention_evidence_missing",
   LegacyOutputQuarantineRequired = "legacy_output_quarantine_required",
   ActiveWriterConflict = "active_writer_conflict",
   StaleDirtyWorker = "stale_dirty_worker",
@@ -66,12 +67,26 @@ export type ProjectAdmissionSnapshot = {
   readonly stale?: boolean;
   readonly unavailable?: boolean;
   readonly debt: readonly ProjectDebtItem[];
+  /** Append-only audit visibility for registry summaries suppressed by CAS. */
+  readonly retiredLegacyJobSummaries?: readonly {
+    readonly jobId: string;
+    readonly manifestSha256: string;
+    readonly retainedRegistrationJobId: string;
+    readonly receiptPath: string;
+  }[];
+  readonly supersededFrozenOutputSummaries?: readonly {
+    readonly jobId: string;
+    readonly manifestSha256: string;
+    readonly retainedRegistrationJobId: string;
+    readonly receiptPath: string;
+  }[];
   readonly counts?: {
     readonly inactiveDirtyWorkspaces?: number;
     readonly unconsumedCompletedJobs?: number;
     readonly orphanLegacyWorkspaces?: number;
     readonly consumedDirtyWorkspaces?: number;
     readonly incompleteConsumedOutputRecords?: number;
+    readonly retentionEvidenceMissing?: number;
     readonly legacyOutputQuarantineRequired?: number;
     readonly activeWriterConflicts?: number;
     readonly staleDirtyWorkers?: number;
@@ -283,6 +298,45 @@ export function summarizeProjectAdmissionDebt(
   };
 }
 
+/**
+ * Fingerprint admission debt for CAS checks that span multiple observations.
+ * Disk capacity is sampled at observation time, so its current free-byte
+ * value is intentionally volatile. The configured threshold and every other
+ * debt field remain part of the fingerprint; malformed disk evidence remains
+ * exact and therefore fails closed.
+ */
+export function projectAdmissionDebtFingerprint(
+  debt: readonly ProjectDebtItem[],
+): string {
+  const canonical = debt.map((item) => ({
+    reason: item.reason,
+    subject: item.subject,
+    severity: item.severity ?? "blocking",
+    evidence: canonicalProjectAdmissionEvidence(item),
+    ...(item.affectedPaths
+      ? { affectedPaths: [...item.affectedPaths].sort() }
+      : {}),
+    ...(item.pathDisjointProducerEligible
+      ? { pathDisjointProducerEligible: true as const }
+      : {}),
+  })).sort((left, right) =>
+    JSON.stringify(left).localeCompare(JSON.stringify(right))
+  );
+  return JSON.stringify(canonical);
+}
+
+function canonicalProjectAdmissionEvidence(
+  item: ProjectDebtItem,
+): readonly string[] {
+  if (item.reason !== ProjectDebtReason.DiskPressure) {
+    return [...item.evidence];
+  }
+  return item.evidence.map((evidence) => {
+    const match = /^availableKb=[^\s]+ (minFreeKb=[^\s]+)$/.exec(evidence);
+    return match?.[1] ?? evidence;
+  }).sort();
+}
+
 export function normalizeProjectAdmissionWorkerRole(
   value?: ProjectAdmissionRequest["workerRole"],
   tags: readonly string[] = [],
@@ -330,6 +384,7 @@ function projectAdmissionDebtCounts(
     orphanLegacyWorkspaces: count(ProjectDebtReason.OrphanLegacyWorkspace),
     consumedDirtyWorkspaces: count(ProjectDebtReason.ConsumedDirtyWorkspace),
     incompleteConsumedOutputRecords: count(ProjectDebtReason.IncompleteConsumedOutputRecord),
+    retentionEvidenceMissing: count(ProjectDebtReason.RetentionEvidenceMissing),
     legacyOutputQuarantineRequired: count(
       ProjectDebtReason.LegacyOutputQuarantineRequired,
     ),

@@ -6,122 +6,59 @@ import { spawnSync } from "node:child_process";
 
 const rootDir = new URL("..", import.meta.url).pathname;
 const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-consumer-"));
+const emptyCacheDir = join(tempDir, "npm-cache");
+let tarball;
 
 try {
   const pack = spawnSync("npm", ["pack", "--json"], {
     cwd: rootDir,
     encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
   });
   if (pack.status !== 0) {
-    process.stderr.write(pack.stderr);
+    if (pack.error) process.stderr.write(`${pack.error.message}\n`);
+    process.stderr.write(pack.stderr ?? "");
     process.exit(pack.status ?? 1);
   }
   const [{ filename }] = parseNpmPackJson(pack.stdout);
-  const tarball = join(rootDir, filename);
+  tarball = join(rootDir, filename);
 
   await writeFile(
     join(tempDir, "package.json"),
     JSON.stringify({ type: "module", private: true }, null, 2),
   );
-  run("npm", ["install", "--silent", tarball], { cwd: tempDir });
-  await writeFile(
-    join(tempDir, "handler.mjs"),
+  run(
+    "npm",
     [
-      "export async function runAgentTask(request) {",
-      "  return { protocolVersion: 1, status: 'completed', outputText: `legacy-handler:${request.task.prompt}`, warnings: [] };",
-      "}",
-      "export async function runAgentRuntimeTask(request) {",
-      "  return { protocolVersion: 1, status: 'completed', outputText: `runtime-handler:${request.task.prompt}`, warnings: [] };",
-      "}",
-    ].join("\n"),
+      "install",
+      "--silent",
+      "--offline",
+      "--omit=optional",
+      "--ignore-scripts",
+      "--cache",
+      emptyCacheDir,
+      tarball,
+    ],
+    { cwd: tempDir },
   );
-  const legacyHandlerBinSmoke = spawnSync(
-    join(tempDir, "node_modules/.bin/subscription-runtime-agent-task"),
-    ["--handler", "./handler.mjs", "--format", "result-json"],
-    {
-      cwd: tempDir,
-      encoding: "utf8",
-      input: JSON.stringify({
-        protocolVersion: 1,
-        task: { kind: "structured-prompt", prompt: "packaged legacy handler bin smoke" },
-      }),
-    },
-  );
-  if (
-    legacyHandlerBinSmoke.status !== 0 ||
-    !legacyHandlerBinSmoke.stdout.includes(
-      "legacy-handler:packaged legacy handler bin smoke",
-    )
-  ) {
-    process.stderr.write(legacyHandlerBinSmoke.stdout);
-    process.stderr.write(legacyHandlerBinSmoke.stderr);
-    throw new Error("packed legacy handler bin smoke failed");
-  }
-  const runtimeHandlerBinSmoke = spawnSync(
-    join(tempDir, "node_modules/.bin/subscription-runtime-agent-runtime-task"),
-    ["--handler", "./handler.mjs", "--format", "result-json"],
-    {
-      cwd: tempDir,
-      encoding: "utf8",
-      input: JSON.stringify({
-        protocolVersion: 1,
-        task: { kind: "structured-prompt", prompt: "packaged runtime handler bin smoke" },
-      }),
-    },
-  );
-  if (
-    runtimeHandlerBinSmoke.status !== 0 ||
-    !runtimeHandlerBinSmoke.stdout.includes(
-      "runtime-handler:packaged runtime handler bin smoke",
-    )
-  ) {
-    process.stderr.write(runtimeHandlerBinSmoke.stdout);
-    process.stderr.write(runtimeHandlerBinSmoke.stderr);
-    throw new Error("packed runtime handler bin smoke failed");
-  }
-  const legacyRunnerBinSmoke = spawnSync(
-    join(tempDir, "node_modules/.bin/subscription-runtime-run-agent-task"),
-    ["--provider", "claude", "--state-root", join(tempDir, "state"), "--format", "result-json"],
-    {
-      cwd: tempDir,
-      encoding: "utf8",
-      input: JSON.stringify({
-        protocolVersion: 1,
-        task: { kind: "structured-prompt", prompt: "packaged legacy runner bin smoke" },
-      }),
-    },
-  );
-  if (
-    legacyRunnerBinSmoke.status !== 2 ||
-    !legacyRunnerBinSmoke.stderr.includes(
-      "SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY is required",
-    )
-  ) {
-    process.stderr.write(legacyRunnerBinSmoke.stdout);
-    process.stderr.write(legacyRunnerBinSmoke.stderr);
-    throw new Error("packed legacy runner bin smoke failed");
-  }
-  const runtimeRunnerBinSmoke = spawnSync(
+  const expectedCapabilities =
+    '{"schemaVersion":1,"protocolVersions":[2],"inlineOutputSchema":true,"reasoningEffort":true,"serviceTier":true,"boundedReadOnlyWorkspace":true,"instructionPathDeny":true}\n';
+  const capabilityProbe = spawnSync(
     join(tempDir, "node_modules/.bin/subscription-runtime-run-agent-runtime-task"),
-    ["--provider", "claude", "--state-root", join(tempDir, "state"), "--format", "result-json"],
+    ["--capabilities-json", "1"],
     {
       cwd: tempDir,
       encoding: "utf8",
-      input: JSON.stringify({
-        protocolVersion: 1,
-        task: { kind: "structured-prompt", prompt: "packaged runtime runner bin smoke" },
-      }),
     },
   );
   if (
-    runtimeRunnerBinSmoke.status !== 2 ||
-    !runtimeRunnerBinSmoke.stderr.includes(
-      "SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY is required",
-    )
+    capabilityProbe.status !== 0 ||
+    capabilityProbe.stdout !== expectedCapabilities ||
+    capabilityProbe.stderr !== ""
   ) {
-    process.stderr.write(runtimeRunnerBinSmoke.stdout);
-    process.stderr.write(runtimeRunnerBinSmoke.stderr);
-    throw new Error("packed runtime runner bin smoke failed");
+    process.stderr.write(capabilityProbe.stdout);
+    process.stderr.write(capabilityProbe.stderr);
+    throw new Error("packed runtime capability contract failed");
   }
   await writeFile(
     join(tempDir, "smoke.mjs"),
@@ -222,8 +159,8 @@ try {
     "-p",
     join(tempDir, "tsconfig.json"),
   ], { cwd: tempDir });
-  await rm(tarball, { force: true });
 } finally {
+  if (tarball) await rm(tarball, { force: true });
   await rm(tempDir, { recursive: true, force: true });
 }
 

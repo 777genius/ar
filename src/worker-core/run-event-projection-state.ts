@@ -24,6 +24,10 @@ export function runEventProjectionStateFromSnapshot(
     observedAt: snapshot.observedAt,
     status: snapshot.status,
     liveness: snapshot.liveness,
+    lifecycleSignature: JSON.stringify([snapshot.progress?.stale ?? null,
+      snapshot.progress?.silentStale ?? null, snapshot.progress?.heartbeatOnlyNoOutput ?? null,
+      snapshot.process?.alive ?? null, snapshot.process?.aliveReason ?? null,
+      snapshot.process?.supervisor ?? null, snapshot.process?.pid ?? null]),
     ...(snapshot.progress?.status === undefined
       ? {}
       : { progressStatus: snapshot.progress.status }),

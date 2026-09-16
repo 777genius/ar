@@ -221,9 +221,27 @@ describe("codex goal MCP server", () => {
         "codex_goal_project_commit_approved_changes",
         "codex_goal_project_push_approved_commit",
         "codex_goal_project_reject_integration_attempt",
+        "codex_goal_project_migrate_consumed_output_ledger_epoch",
       ]) {
         expect(toolsByName.has(name)).toBe(true);
       }
+
+      expect(
+        toolsByName.get("codex_goal_project_migrate_consumed_output_ledger_epoch")
+          ?.inputSchema?.properties,
+      ).toMatchObject({
+        registryRootDir: expect.any(Object),
+        controllerJobId: expect.any(Object),
+        oldLedgerRoot: expect.any(Object),
+        newLedgerRoot: expect.any(Object),
+        ledgerEpochCutoff: expect.any(Object),
+        expectedLedgerEpochPlanSha256: expect.any(Object),
+        confirmLedgerEpochMigration: expect.any(Object),
+      });
+      expect(
+        toolsByName.get("codex_goal_project_migrate_consumed_output_ledger_epoch")
+          ?.inputSchema?.required,
+      ).toEqual(["oldLedgerRoot", "newLedgerRoot", "ledgerEpochCutoff"]);
 
       expect(
         toolsByName.get("codex_goal_project_open_integration_attempt")

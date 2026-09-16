@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+[ "$(id -u)" = 0 ] || { echo 'policy installation requires root' >&2; exit 1; }
+installer_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+node_candidate=$(command -v node) || { echo 'Node.js is required' >&2; exit 1; }
+case "$node_candidate" in /*) ;; *) echo 'Node.js must resolve to an absolute path' >&2; exit 1 ;; esac
+# Resolve alternatives/version-manager links once, then execute only the
+# canonical binary. Inspect its entire parent chain to prevent replacement.
+node_binary=$(/usr/bin/readlink -f -- "$node_candidate")
+[ -f "$node_binary" ] && [ -x "$node_binary" ] || { echo 'Node.js must be an executable regular file' >&2; exit 1; }
+trusted_path=$node_binary
+while :; do
+  owner=$(/usr/bin/stat -c %u -- "$trusted_path")
+  mode=$(/usr/bin/stat -c %a -- "$trusted_path")
+  [ "$owner" = 0 ] && [ "$((0$mode & 0022))" = 0 ] || { echo 'Node.js and its parents must be root-owned and not group/world-writable' >&2; exit 1; }
+  [ "$trusted_path" = / ] && break
+  trusted_path=${trusted_path%/*}
+  [ -n "$trusted_path" ] || trusted_path=/
+done
+exec "$node_binary" "$installer_dir/install-policy.mjs" "$@"

@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import type { ProviderRuntimeRegistry } from "@vioxen/subscription-runtime/worker-core";
 import {
   jobRegistryInputSchema,
   type ProjectControllerLaunchPlanMcpArgs,
@@ -17,7 +18,15 @@ import {
   controllerProviderKindSchemaValues,
 } from "./codex-goal-mcp-project-control-tool-schemas";
 
-export function registerCodexGoalProjectControllerTools(server: McpServer): void {
+export type CodexGoalProjectControllerToolOptions = {
+  readonly providerRuntimeRegistry?: ProviderRuntimeRegistry;
+};
+
+export function registerCodexGoalProjectControllerTools(
+  server: McpServer,
+  options: CodexGoalProjectControllerToolOptions = {},
+): void {
+  const providerRuntimeRegistry = options.providerRuntimeRegistry;
   server.registerTool(
     "codex_goal_project_controller_launch_plan",
     {
@@ -43,7 +52,10 @@ export function registerCodexGoalProjectControllerTools(server: McpServer): void
       },
     },
     async (args) => withMcpErrors(async () =>
-      projectControllerLaunchPlan(args as ProjectControllerLaunchPlanMcpArgs),
+      projectControllerLaunchPlan(
+        args as ProjectControllerLaunchPlanMcpArgs,
+        providerRuntimeRegistry,
+      ),
     ),
   );
 
@@ -72,7 +84,10 @@ export function registerCodexGoalProjectControllerTools(server: McpServer): void
       },
     },
     async (args) => withMcpErrors(async () =>
-      projectControllerStart(args as ProjectControllerLaunchPlanMcpArgs),
+      projectControllerStart(
+        args as ProjectControllerLaunchPlanMcpArgs,
+        providerRuntimeRegistry,
+      ),
     ),
   );
 
@@ -90,7 +105,10 @@ export function registerCodexGoalProjectControllerTools(server: McpServer): void
       },
     },
     async (args) => withMcpErrors(async () =>
-      projectControllerStatus(args as ProjectControllerLaunchPlanMcpArgs),
+      projectControllerStatus(
+        args as ProjectControllerLaunchPlanMcpArgs,
+        providerRuntimeRegistry,
+      ),
     ),
   );
 
@@ -107,7 +125,10 @@ export function registerCodexGoalProjectControllerTools(server: McpServer): void
       },
     },
     async (args) => withMcpErrors(async () =>
-      projectControllerConsumeGuidance(args as ProjectControllerLaunchPlanMcpArgs),
+      projectControllerConsumeGuidance(
+        args as ProjectControllerLaunchPlanMcpArgs,
+        providerRuntimeRegistry,
+      ),
     ),
   );
 
@@ -126,7 +147,10 @@ export function registerCodexGoalProjectControllerTools(server: McpServer): void
       },
     },
     async (args) => withMcpErrors(async () =>
-      projectControllerStop(args as ProjectControllerLaunchPlanMcpArgs),
+      projectControllerStop(
+        args as ProjectControllerLaunchPlanMcpArgs,
+        providerRuntimeRegistry,
+      ),
     ),
   );
 
@@ -144,7 +168,10 @@ export function registerCodexGoalProjectControllerTools(server: McpServer): void
       },
     },
     async (args) => withMcpErrors(async () =>
-      projectControllerReconcile(args as ProjectControllerLaunchPlanMcpArgs),
+      projectControllerReconcile(
+        args as ProjectControllerLaunchPlanMcpArgs,
+        providerRuntimeRegistry,
+      ),
     ),
   );
 }

@@ -1,7 +1,5 @@
-import { execFile } from "node:child_process";
-import { lstat, readdir, realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
 import {
   ProjectAdmissionWorkerRole,
   ProjectDebtReason,
@@ -11,18 +9,48 @@ import {
   evaluateProjectAdmission,
   projectAdmissionDebtCounts,
   type ConsumedOutputLedger,
-  type ActiveWriterRiskKind,
   type ProjectAccessScope,
   type ProjectAdmissionGate,
+  type ProjectAdmissionRequest,
   type ProjectAdmissionSnapshot,
   type ProjectDebtItem,
+  type ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
 import type {
   CodexGoalJobManifest,
   CodexGoalJobSummary,
 } from "../../codex-goal-jobs";
 import { stringValue } from "../codex-goal-input-values";
-import { readCodexGoalConsumedOutputLedgers } from "./codex-goal-consumed-output-ledger-io";
+import { readLedgerEpochAdmissionState } from "./codex-goal-ledger-epoch-admission-debt";
+import { resolveConsumedOutputMaintenanceLedgerRoot } from
+  "./codex-goal-consumed-output-ledger-epoch";
+import {
+  assertSocialProposedAdmissionSourceOrphanSeal,
+  assertSocialProposedAdmissionDebtCustody,
+  normalizeAnchoredProposedAdmission,
+  readSocialProposedAdmissionAnchor,
+  SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256,
+  verifySocialPreparedV1SourceOrphanSeal,
+  verifySocialProposedAdmissionAnchorEvidence,
+} from "./codex-goal-ledger-epoch-proposed-admission";
+import { duplicateWorkspaceIdentityJobIds } from "./codex-goal-project-workspace-history";
+import { limitCodexProjectSummariesForInspection } from "./codex-goal-project-admission-summary-limit";
+import {
+  withoutAdmittedInputPatchDebt,
+  withoutCapacityContinuationSiblingDebt,
+  withoutInPlaceContinuationSelfDebt,
+  type ProjectAdmissionInPlaceContinuationBinding,
+  type ProjectAdmissionJobWorkspaceBinding,
+} from "./codex-goal-project-admission-normalization";
+import {
+  admissionWorkspacePathsMatch,
+  optionalRealPathForAdmission,
+} from "./codex-goal-project-admission-paths";
+import {
+  hasBlockingActiveWriterRisk,
+  stoppedWorkspaceTerminalConsumption,
+  terminalConsumptionCoversStoppedRisk,
+} from "./codex-goal-project-terminal-consumption";
 import {
   matchesProjectControlPrefix,
   nodeErrorCode,
@@ -30,11 +58,23 @@ import {
   uniqueProjectControlStrings,
 } from "./codex-goal-project-utils";
 import { readLaunchAuthorizedWorkerLaunchSpec } from "./codex-goal-project-pre-start-admission";
-
+import { pendingAdmittedInputPatchPathEvidence } from
+  "./codex-goal-project-pending-input-patch-admission";
+import { orphanDirtyWorkspaceDebt } from
+  "./codex-goal-project-orphan-workspace-admission";
+import { resolveLedgerEpochDebtCustody } from
+  "./codex-goal-consumed-output-ledger-epoch-switch";
+import {
+  legacyJobSummaryRetirementPath,
+  projectRetirementProjection,
+} from "./codex-goal-legacy-job-summary-retirement";
+import { frozenOutputSupersessionProjection } from
+  "./codex-goal-frozen-output-import";
+import {
+  defaultHostDiskUsagePort,
+  type HostDiskUsagePort,
+} from "./adapters/host-command-adapters";
 type JsonObject = Readonly<Record<string, unknown>>;
-
-const execFileAsync = promisify(execFile);
-
 export type CodexProjectAdmissionDeps = {
   readonly listJobs: (input: {
     readonly registryRootDir: string;
@@ -49,25 +89,40 @@ export type CodexProjectAdmissionDeps = {
     readonly registryRootDir: string;
     readonly jobId: string;
   }) => Promise<CodexGoalJobManifest>;
+  readonly observeManifestRuntime?: (
+    manifest: CodexGoalJobManifest,
+  ) => Promise<{
+    readonly workspaceDirty: boolean;
+    readonly workerAlive: boolean;
+    readonly resultExists: boolean;
+    readonly resultPath?: string;
+  }>;
+  readonly normalizeActiveProposedAdmission?: (
+    scope: ProjectAccessScope,
+    snapshot: ProjectAdmissionSnapshot,
+    summaries: readonly CodexGoalJobSummary[],
+  ) => Promise<ProjectAdmissionSnapshot>;
+  readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
 };
 
 type CodexProjectAdmissionInput = {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
+  readonly controllerJobId?: string;
   readonly deps: CodexProjectAdmissionDeps;
-  readonly admittedInputPatchTarget?: {
-    readonly jobId: string;
-    readonly workspacePath: string;
-  };
-  readonly capacityContinuationTarget?: {
-    readonly jobId: string;
-    readonly workspacePath: string;
-  };
+  readonly admittedInputPatchTarget?: ProjectAdmissionJobWorkspaceBinding;
+  readonly capacityContinuationTarget?: ProjectAdmissionJobWorkspaceBinding;
+  readonly inPlaceContinuationTarget?: ProjectAdmissionInPlaceContinuationBinding;
 };
-
+type CodexProjectMutationAdmissionInput = CodexProjectAdmissionInput & {
+  readonly controllerJobId: string;
+};
 type CodexProjectAdmissionSnapshotInput = CodexProjectAdmissionInput & {
   readonly requestedWorkspacePath?: string;
   readonly blockAnyLiveWriter?: boolean;
+  readonly allowPendingEpochOrphanQuarantine?: boolean;
+  readonly skipActiveProposedAdmissionNormalization?: boolean;
+  readonly admittedInputPatchRequest?: ProjectAdmissionRequest;
 };
 
 export function projectAdmissionDetailView(input: {
@@ -109,7 +164,7 @@ export function projectAdmissionDetailView(input: {
 }
 
 export function codexProjectAdmissionGate(
-  input: CodexProjectAdmissionInput,
+  input: CodexProjectMutationAdmissionInput,
 ): ProjectAdmissionGate {
   return {
     async evaluate(request) {
@@ -122,164 +177,33 @@ export function codexProjectAdmissionGate(
           : {}),
         blockAnyLiveWriter: request.ownedPaths !== undefined ||
           request.workspacePath === undefined,
-      });
-      const inputPatchSnapshot = await withoutAdmittedInputPatchDebt({
-        snapshot: observedSnapshot,
-        request,
-        binding: input.admittedInputPatchTarget,
+        ...(input.admittedInputPatchTarget
+          ? { admittedInputPatchRequest: request }
+          : {}),
       });
       const snapshot = await withoutCapacityContinuationSiblingDebt({
-        snapshot: inputPatchSnapshot,
+        snapshot: observedSnapshot,
         request,
-        binding: input.capacityContinuationTarget,
+        ...(input.capacityContinuationTarget
+          ? { binding: input.capacityContinuationTarget }
+          : {}),
+      });
+      const continuationSnapshot = await withoutInPlaceContinuationSelfDebt({
+        snapshot,
+        request,
+        ...(input.inPlaceContinuationTarget
+          ? { binding: input.inPlaceContinuationTarget }
+          : {}),
       });
       return evaluateProjectAdmission({
         request: {
           ...request,
           projectId: request.projectId ?? input.scope.projectId,
         },
-        snapshot,
+        snapshot: continuationSnapshot,
       });
     },
   };
-}
-
-async function withoutCapacityContinuationSiblingDebt(input: {
-  readonly snapshot: ProjectAdmissionSnapshot;
-  readonly request: {
-    readonly operation: ProjectOperation;
-    readonly jobId?: string;
-    readonly workspacePath?: string;
-  };
-  readonly binding: CodexProjectAdmissionInput["capacityContinuationTarget"];
-}): Promise<ProjectAdmissionSnapshot> {
-  const { binding, request } = input;
-  if (
-    !binding ||
-    request.operation !== ProjectOperation.StartWorker ||
-    request.jobId !== binding.jobId ||
-    !request.workspacePath ||
-    !await admissionWorkspacePathsMatch(
-      request.workspacePath,
-      binding.workspacePath,
-    )
-  ) {
-    return input.snapshot;
-  }
-  const debt: ProjectDebtItem[] = [];
-  for (const item of input.snapshot.debt) {
-    const selfDebt = await admissionBindingHasSelfDebt({
-      item,
-      binding,
-    });
-    const selfInactiveWorkspace =
-      item.reason === ProjectDebtReason.InactiveDirtyWorkspace &&
-      await admissionWorkspacePathsMatch(item.subject, binding.workspacePath);
-    const selfDirtyWithoutRunner =
-      item.reason === ProjectDebtReason.ActiveWriterConflict &&
-      item.subject === binding.jobId &&
-      item.evidence.includes("dirty_workspace_without_worker");
-    const unrelatedHeldOutput =
-      item.reason === ProjectDebtReason.UnconsumedCompletedJob && !selfDebt;
-    const unrelatedInactiveOutputRisk =
-      item.reason === ProjectDebtReason.ActiveWriterConflict &&
-      !selfDebt &&
-      item.evidence.includes("dirty_workspace_without_worker");
-    if (
-      !selfInactiveWorkspace &&
-      !selfDirtyWithoutRunner &&
-      !unrelatedHeldOutput &&
-      !unrelatedInactiveOutputRisk
-    ) {
-      debt.push(item);
-    }
-  }
-  return {
-    ...input.snapshot,
-    debt,
-    counts: projectAdmissionDebtCounts(debt),
-  };
-}
-
-async function withoutAdmittedInputPatchDebt(input: {
-  readonly snapshot: ProjectAdmissionSnapshot;
-  readonly request: {
-    readonly operation: ProjectOperation;
-    readonly jobId?: string;
-    readonly workspacePath?: string;
-  };
-  readonly binding: CodexProjectAdmissionInput["admittedInputPatchTarget"];
-}): Promise<ProjectAdmissionSnapshot> {
-  const { binding, request } = input;
-  if (
-    !binding ||
-    (request.operation !== ProjectOperation.StartWorker &&
-      request.operation !== ProjectOperation.CreateWorktree &&
-      request.operation !== ProjectOperation.CreateJob) ||
-    request.jobId !== binding.jobId ||
-    !request.workspacePath ||
-    !await admissionWorkspacePathsMatch(
-      request.workspacePath,
-      binding.workspacePath,
-    )
-  ) {
-    return input.snapshot;
-  }
-  const debt: ProjectDebtItem[] = [];
-  for (const item of input.snapshot.debt) {
-    const selfOrphanWorkspace =
-      item.reason === ProjectDebtReason.OrphanLegacyWorkspace &&
-      await admissionWorkspacePathsMatch(item.subject, binding.workspacePath);
-    if (request.operation === ProjectOperation.CreateJob) {
-      if (!selfOrphanWorkspace) debt.push(item);
-      continue;
-    }
-    const selfDebt = await admissionBindingHasSelfDebt({
-      item,
-      binding,
-    });
-    const selfInactiveWorkspace =
-      item.reason === ProjectDebtReason.InactiveDirtyWorkspace &&
-      await admissionWorkspacePathsMatch(item.subject, binding.workspacePath);
-    const selfDirtyWithoutRunner =
-      item.reason === ProjectDebtReason.ActiveWriterConflict &&
-      item.subject === binding.jobId &&
-      item.evidence.includes("dirty_workspace_without_worker");
-    const unrelatedHeldOutput =
-      item.reason === ProjectDebtReason.UnconsumedCompletedJob && !selfDebt;
-    const unrelatedInactiveOutputRisk =
-      item.reason === ProjectDebtReason.ActiveWriterConflict &&
-      !selfDebt &&
-      item.evidence.includes("dirty_workspace_without_worker");
-    if (
-      !selfInactiveWorkspace &&
-      !selfOrphanWorkspace &&
-      !selfDirtyWithoutRunner &&
-      !unrelatedHeldOutput &&
-      !unrelatedInactiveOutputRisk
-    ) {
-      debt.push(item);
-    }
-  }
-  return {
-    ...input.snapshot,
-    debt,
-    counts: projectAdmissionDebtCounts(debt),
-  };
-}
-
-async function admissionBindingHasSelfDebt(input: {
-  readonly item: ProjectDebtItem;
-  readonly binding: {
-    readonly jobId: string;
-    readonly workspacePath: string;
-  };
-}): Promise<boolean> {
-  return input.item.subject === input.binding.jobId ||
-    await admissionWorkspacePathsMatch(
-      input.item.subject,
-      input.binding.workspacePath,
-    );
 }
 
 export async function readCodexProjectAdmissionSnapshot(
@@ -306,9 +230,17 @@ export async function buildCodexProjectAdmissionSnapshot(
   const knownWorkspacePaths = new Set<string>();
   const prefixes = input.scope.jobIdPrefixes ?? [];
   const staleAfterMs = 10 * 60_000;
-  const consumedOutput = await readCodexGoalConsumedOutputLedgers({
-    roots: input.scope.consumedOutputLedgerRoots ?? [],
+  const ledgerState = await readLedgerEpochAdmissionState({
+    scope: input.scope,
+    ...(input.allowPendingEpochOrphanQuarantine === undefined
+      ? {}
+      : {
+          allowPendingOrphanQuarantine:
+            input.allowPendingEpochOrphanQuarantine,
+        }),
   });
+  const consumedOutput = ledgerState.consumedOutput;
+  debt.push(...ledgerState.quarantineDebt);
   let summaries;
   try {
     summaries = await input.deps.listJobs({ registryRootDir: input.registryRootDir });
@@ -323,17 +255,61 @@ export async function buildCodexProjectAdmissionSnapshot(
     });
     summaries = [];
   }
-  const matchingProjectSummaries = summaries.filter((summary) =>
-    matchesProjectControlPrefix(summary.jobId, prefixes)
-  );
+  const matchingProjectSummariesBeforeRetirement = summaries.every((summary) =>
+      matchesProjectControlPrefix(summary.jobId, prefixes)
+    )
+    ? summaries
+    : summaries.filter((summary) =>
+        matchesProjectControlPrefix(summary.jobId, prefixes)
+      );
+  const custodyProjectionEnabled = input.deps.evidenceCustody !== undefined &&
+    ((input.scope.consumedOutputEvidenceRoots?.length ?? 0) > 0 ||
+      (input.scope.consumedOutputLedgerRoots?.length ?? 0) > 0);
+  const evidenceCustody = custodyProjectionEnabled
+    ? input.deps.evidenceCustody
+    : undefined;
+  const retirementProjection = custodyProjectionEnabled
+    ? await projectRetirementProjection({
+        custody: evidenceCustody!,
+        registryRootDir: input.registryRootDir,
+        projectId: input.scope.projectId,
+        ...(input.controllerJobId
+          ? { controllerJobId: input.controllerJobId }
+          : {}),
+        jobIdPrefixes: prefixes,
+        summaries: matchingProjectSummariesBeforeRetirement,
+        observeRuntime: async (manifest) => {
+          const state = await projectionRuntimeObservation(input, manifest);
+          return { workerAlive: state.workerAlive };
+        },
+      })
+    : { active: matchingProjectSummariesBeforeRetirement, retired: [] };
+  const frozenProjection = custodyProjectionEnabled
+    ? await frozenOutputSupersessionProjection({
+        custody: evidenceCustody!,
+        scope: input.scope,
+        registryRootDir: input.registryRootDir,
+        evidenceRoots: input.scope.consumedOutputEvidenceRoots ?? [],
+        ledgerRoots: input.scope.consumedOutputLedgerRoots ?? [],
+        projectId: input.scope.projectId,
+        ...(input.controllerJobId
+          ? { controllerJobId: input.controllerJobId }
+          : {}),
+        summaries: retirementProjection.active,
+        observeRuntime: async (manifest) =>
+          await projectionRuntimeObservation(input, manifest),
+      })
+    : { active: retirementProjection.active, supersessions: [] };
+  const matchingProjectSummaries = frozenProjection.active;
   debt.push(...consumedOutputDebtForCurrentRegistry({
     ledger: consumedOutput,
     currentJobIds: new Set(
       matchingProjectSummaries.map((summary) => summary.jobId),
     ),
   }));
-  const projectSummaries = limitCodexProjectSummaries(
+  const projectSummaries = limitCodexProjectSummariesForInspection(
     matchingProjectSummaries,
+    consumedOutput,
   );
   const overviewSummaries: CodexGoalJobSummary[] = [];
   for (const summary of projectSummaries) {
@@ -393,16 +369,100 @@ export async function buildCodexProjectAdmissionSnapshot(
       prefixes,
       knownWorkspacePaths,
       consumedOutput,
+      orphanWorkspaceBindings: ledgerState.orphanWorkspaceBindings,
+      deniedRoots: input.scope.deniedRoots ?? [],
     }));
     debt.push(...await diskPressureDebt(root));
   }
-  return {
+  const rawSnapshot: ProjectAdmissionSnapshot = {
     schemaVersion: 1,
     projectId: input.scope.projectId,
     observedAt: new Date().toISOString(),
     debt,
     counts: projectAdmissionDebtCounts(debt),
+    ...(retirementProjection.retired.length === 0 ? {} : {
+      retiredLegacyJobSummaries: retirementProjection.retired.map((receipt) => ({
+        jobId: receipt.jobId,
+        manifestSha256: receipt.manifestSha256,
+        retainedRegistrationJobId: receipt.retainedRegistrationJobId,
+        receiptPath: legacyJobSummaryRetirementPath({
+          registryRootDir: input.registryRootDir,
+          projectId: receipt.projectId,
+          jobId: receipt.jobId,
+          manifestSha256: receipt.manifestSha256,
+        }),
+      })),
+    }),
+    ...(frozenProjection.supersessions.length === 0 ? {} : {
+      supersededFrozenOutputSummaries: frozenProjection.supersessions.flatMap(
+        ({ receipt, supersededSummaries }) => supersededSummaries.map((summary) => ({
+          jobId: summary.jobId,
+          manifestSha256: summary.manifestSha256,
+          retainedRegistrationJobId: receipt.retainedRegistrationJobId,
+          receiptPath: receipt.receiptPath,
+        })),
+      ),
+    }),
   };
+  const snapshot = await withoutAdmittedInputPatchDebt({
+    snapshot: rawSnapshot,
+    request: input.admittedInputPatchRequest,
+    ...(input.admittedInputPatchTarget
+      ? { binding: input.admittedInputPatchTarget }
+      : {}),
+  });
+  return input.skipActiveProposedAdmissionNormalization
+    ? snapshot
+    : await (input.deps.normalizeActiveProposedAdmission ??
+        normalizeActiveSocialProposedAdmission)(
+          input.scope,
+          snapshot,
+          matchingProjectSummaries,
+        );
+}
+
+async function projectionRuntimeObservation(
+  input: CodexProjectAdmissionSnapshotInput,
+  manifest: CodexGoalJobManifest,
+): Promise<{
+  readonly workspaceDirty: boolean;
+  readonly workerAlive: boolean;
+  readonly resultExists: boolean;
+  readonly resultPath?: string;
+}> {
+  const observeRuntime = input.deps.observeManifestRuntime;
+  if (!observeRuntime) {
+    throw new Error("project_control_projection_runtime_unproven");
+  }
+  return await observeRuntime(manifest);
+}
+
+export async function normalizeActiveSocialProposedAdmission(
+  scope: ProjectAccessScope,
+  snapshot: ProjectAdmissionSnapshot,
+  summaries: readonly CodexGoalJobSummary[],
+): Promise<ProjectAdmissionSnapshot> {
+  if (scope.projectId !== "social-monitor" ||
+    (scope.consumedOutputLedgerRoots?.length ?? 0) !== 1) return snapshot;
+  const active = await resolveConsumedOutputMaintenanceLedgerRoot(scope);
+  const receipt = active.epochReceipt;
+  if (!receipt || receipt.planSha256 !== SOCIAL_PROPOSED_ADMISSION_PLAN_SHA256) {
+    return snapshot;
+  }
+  if (resolve(active.ledgerRoot) !== resolve(receipt.newRoot)) {
+    throw new Error("ledger_epoch_proposed_admission_active_root_mismatch");
+  }
+  const anchor = await readSocialProposedAdmissionAnchor(
+    receipt,
+    receipt.proposedAdmissionAnchorSha256,
+  );
+  if (!anchor) throw new Error("ledger_epoch_proposed_admission_anchor_missing");
+  const sourceOrphanSeal = await verifySocialPreparedV1SourceOrphanSeal(receipt);
+  assertSocialProposedAdmissionSourceOrphanSeal(anchor, sourceOrphanSeal);
+  await verifySocialProposedAdmissionAnchorEvidence(anchor);
+  const currentCustody = await resolveLedgerEpochDebtCustody(snapshot, summaries);
+  assertSocialProposedAdmissionDebtCustody(anchor, currentCustody);
+  return normalizeAnchoredProposedAdmission({ anchor, snapshot });
 }
 
 const LEGACY_FAILED_NO_OUTPUT_DIRTY_EVIDENCE =
@@ -490,12 +550,6 @@ function projectAdmissionCacheTtlMs(): number {
   return Math.min(raw, 120_000);
 }
 
-function projectAdmissionMaxJobSummaries(): number {
-  const raw = Number(process.env.SUBSCRIPTION_RUNTIME_PROJECT_ADMISSION_MAX_JOB_SUMMARIES ?? "0");
-  if (!Number.isFinite(raw) || raw <= 0) return 0;
-  return Math.floor(raw);
-}
-
 function projectAdmissionCacheKey(input: {
   readonly registryRootDir: string;
   readonly scope: ProjectAccessScope;
@@ -509,16 +563,6 @@ function projectAdmissionCacheKey(input: {
     observedWorkspaceRoots: input.scope.observedWorkspaceRoots ?? [],
     consumedOutputLedgerRoots: input.scope.consumedOutputLedgerRoots ?? [],
   });
-}
-
-function limitCodexProjectSummaries(
-  summaries: readonly CodexGoalJobSummary[],
-): readonly CodexGoalJobSummary[] {
-  const max = projectAdmissionMaxJobSummaries();
-  if (max <= 0 || summaries.length <= max) return summaries;
-  return [...summaries]
-    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
-    .slice(-max);
 }
 
 async function debtFromConsumedJobSummary(input: {
@@ -540,6 +584,7 @@ async function debtFromConsumedJobSummary(input: {
     ...(resolvedWorkspacePath ? { resolvedWorkspacePath } : {}),
   });
   if (!consumed) return undefined;
+  if (consumed.retentionEvidenceMissing) return undefined;
   await rememberKnownWorkspacePath(
     input.knownWorkspacePaths,
     input.summary.workspacePath,
@@ -553,35 +598,18 @@ function consumedRecordDebt(
 ): readonly ProjectDebtItem[] {
   const debt = consumedDebt(record);
   const ledgerAlreadyReportedInvalidRecord = ledger.debt.some((item) =>
-    item.reason === ProjectDebtReason.IncompleteConsumedOutputRecord &&
+    (
+      item.reason === ProjectDebtReason.IncompleteConsumedOutputRecord ||
+      item.reason === ProjectDebtReason.RetentionEvidenceMissing
+    ) &&
     item.subject === record.ledgerPath
   );
   return ledgerAlreadyReportedInvalidRecord
     ? debt.filter((item) =>
-      item.reason !== ProjectDebtReason.IncompleteConsumedOutputRecord
+      item.reason !== ProjectDebtReason.IncompleteConsumedOutputRecord &&
+      item.reason !== ProjectDebtReason.RetentionEvidenceMissing
     )
     : debt;
-}
-
-async function duplicateWorkspaceIdentityJobIds(
-  items: readonly JsonObject[],
-): Promise<ReadonlySet<string>> {
-  const jobsByWorkspaceIdentity = new Map<string, string[]>();
-  for (const item of items) {
-    const jobId = stringValue(item.jobId);
-    const workspacePath = stringValue(item.workspacePath);
-    if (!jobId || !workspacePath) continue;
-    const identity = await optionalRealPathForAdmission(workspacePath) ??
-      resolve(workspacePath);
-    const jobs = jobsByWorkspaceIdentity.get(identity) ?? [];
-    jobs.push(jobId);
-    jobsByWorkspaceIdentity.set(identity, jobs);
-  }
-  return new Set(
-    [...jobsByWorkspaceIdentity.values()]
-      .filter((jobIds) => jobIds.length > 1)
-      .flat(),
-  );
 }
 
 async function debtFromOverviewItem(input: {
@@ -608,17 +636,63 @@ async function debtFromOverviewItem(input: {
   }
   const debt: ProjectDebtItem[] = [];
   const workerAlive = item.workerAlive === true;
+  const resolvedWorkspacePath = workspacePath
+    ? await optionalRealPathForAdmission(workspacePath)
+    : undefined;
+  const stoppedTerminalConsumption = stoppedWorkspaceTerminalConsumption({
+    ledger: input.consumedOutput,
+    jobId,
+    workerAlive,
+    workerExplicitlyStopped: item.workerAlive === false,
+    workspacePath,
+    resolvedWorkspacePath,
+  });
+  const stoppedTerminalCandidate = item.workerAlive === false
+    ? consumedOutputRecordFor({
+        ledger: input.consumedOutput,
+        jobId,
+      })
+    : undefined;
+  const terminalConsumptionWorkspaceMismatch =
+    item.workerAlive === false &&
+    item.workspaceDirty === true &&
+    stoppedTerminalCandidate?.structurallyValid === true &&
+    stoppedTerminalConsumption === undefined;
+  const terminalConsumptionCoversStoppedConflict =
+    terminalConsumptionCoversStoppedRisk(
+      stoppedTerminalConsumption,
+      item.activeWriterRisk,
+    );
+  const malformedDirtyWriterObservation =
+    item.workspaceDirty === true &&
+    (typeof item.workerAlive !== "boolean" ||
+      typeof item.activeWriterRisk !== "string" ||
+      item.activeWriterRisk.trim().length === 0);
   const sameRequestedWorkspace = workerAlive && workspacePath !== undefined &&
     input.requestedWorkspacePath !== undefined &&
     await admissionWorkspacePathsMatch(
       workspacePath,
       input.requestedWorkspacePath,
     );
+  const pendingInputPatchEvidence =
+    await pendingAdmittedInputPatchPathEvidence({
+      item,
+      summary: input.summariesByJobId.get(jobId),
+      workerAlive,
+      duplicateWorkspaceIdentity: input.duplicateWorkspaceIdentity,
+      registryRootDir: input.registryRootDir,
+      scope: input.scope,
+      ...(input.readJob ? { readJob: input.readJob } : {}),
+    });
   if (
-    (workerAlive && (input.blockAnyLiveWriter || sameRequestedWorkspace)) ||
-    hasBlockingActiveWriterRisk(item.activeWriterRisk, workerAlive) ||
-    item.workspaceConflict === true ||
-    input.duplicateWorkspaceIdentity
+    malformedDirtyWriterObservation ||
+    terminalConsumptionWorkspaceMismatch ||
+    (!terminalConsumptionCoversStoppedConflict && (
+      (workerAlive && (input.blockAnyLiveWriter || sameRequestedWorkspace)) ||
+      hasBlockingActiveWriterRisk(item.activeWriterRisk, workerAlive) ||
+      item.workspaceConflict === true ||
+      input.duplicateWorkspaceIdentity
+    ))
   ) {
     const pathDisjointProducerEvidence = await healthyLiveProducerPathEvidence({
       item,
@@ -630,13 +704,17 @@ async function debtFromOverviewItem(input: {
       scope: input.scope,
       readJob: input.readJob,
     });
+    const pathEvidence = pendingInputPatchEvidence ?? pathDisjointProducerEvidence;
     debt.push({
       reason: ProjectDebtReason.ActiveWriterConflict,
       subject: jobId,
       severity: "blocking",
-      ...pathDisjointProducerEvidence,
+      ...pathEvidence,
       evidence: uniqueProjectControlStrings([
         ...safeStringArray(item.activeWriterRiskReasons),
+        ...(pendingInputPatchEvidence
+          ? ["broker-admitted input patch is validated and pending start"]
+          : []),
         ...(sameRequestedWorkspace
           ? [`requested workspace already has active worker: ${workspacePath}`]
           : []),
@@ -648,6 +726,7 @@ async function debtFromOverviewItem(input: {
     });
   }
   if (item.workspaceDirty !== true) return debt;
+  if (pendingInputPatchEvidence) return debt;
   const subject = workspacePath ?? jobId;
   const stale = item.silentStale === true || item.workerFreshProgressAlive === false;
   if (workerAlive && stale) {
@@ -660,9 +739,6 @@ async function debtFromOverviewItem(input: {
     return debt;
   }
   if (workerAlive) return debt;
-  const resolvedWorkspacePath = workspacePath
-    ? await optionalRealPathForAdmission(workspacePath)
-    : undefined;
   const markerTypes = safeStringArray(item.lifecycleMarkerTypes);
   const recommendedAction = stringValue(item.recommendedAction);
   if (
@@ -693,7 +769,7 @@ async function debtFromOverviewItem(input: {
   ) {
     return withoutInactiveDirtyWorkspaceConflict(debt, item);
   }
-  const consumed = consumedOutputRecordFor({
+  const consumed = stoppedTerminalConsumption ?? consumedOutputRecordFor({
     ledger: input.consumedOutput,
     jobId,
     ...(workspacePath ? { workspacePath } : {}),
@@ -805,45 +881,6 @@ function withoutInactiveDirtyWorkspaceConflict(
   );
 }
 
-const activeWriterRiskKinds = new Set<string>([
-  "none",
-  "active_worker",
-  "stale_live_worker",
-  "dirty_workspace_without_worker",
-  "state_mismatch",
-  "unknown",
-] satisfies readonly ActiveWriterRiskKind[]);
-
-function hasBlockingActiveWriterRisk(
-  value: unknown,
-  workerAlive: boolean,
-): boolean {
-  // Keep accepting the former boolean overview shape while current status
-  // views publish a typed risk kind. A healthy active worker is only a conflict
-  // when admission targets its workspace; uncertain states still fail closed.
-  if (value === true) return true;
-  const kind = stringValue(value);
-  if (kind === undefined) return false;
-  if (!activeWriterRiskKinds.has(kind)) return true;
-  if (kind === "none") return false;
-  if (kind === "active_worker") return !workerAlive;
-  return true;
-}
-
-async function admissionWorkspacePathsMatch(
-  left: string,
-  right: string,
-): Promise<boolean> {
-  if (resolve(left) === resolve(right)) return true;
-  const [leftRealPath, rightRealPath] = await Promise.all([
-    optionalRealPathForAdmission(left),
-    optionalRealPathForAdmission(right),
-  ]);
-  return leftRealPath !== undefined &&
-    rightRealPath !== undefined &&
-    leftRealPath === rightRealPath;
-}
-
 function workspaceConsumedByAnotherJob(input: {
   readonly ledger: ConsumedOutputLedger;
   readonly jobId: string;
@@ -902,80 +939,17 @@ async function rememberKnownWorkspacePath(
   }
 }
 
-async function orphanDirtyWorkspaceDebt(input: {
-  readonly root: string;
-  readonly prefixes: readonly string[];
-  readonly knownWorkspacePaths: ReadonlySet<string>;
-  readonly consumedOutput: ConsumedOutputLedger;
-}): Promise<readonly ProjectDebtItem[]> {
-  const root = resolve(input.root);
-  let entries;
-  try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch (error) {
-    if (nodeErrorCode(error) === "ENOENT") return [];
-    return [{
-      reason: ProjectDebtReason.UnreadableRoot,
-      subject: root,
-      severity: "blocking",
-      evidence: [
-        `workspace root unreadable: ${error instanceof Error ? error.message : String(error)}`,
-      ],
-    }];
-  }
-  const debt: ProjectDebtItem[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-    if (!matchesProjectControlPrefix(entry.name, input.prefixes)) continue;
-    const workspacePath = join(root, entry.name);
-    if (!await pathLooksLikeGitWorkspace(workspacePath)) continue;
-    const resolved = await optionalRealPathForAdmission(workspacePath);
-    if (
-      input.knownWorkspacePaths.has(resolve(workspacePath)) ||
-      (resolved && input.knownWorkspacePaths.has(resolved))
-    ) {
-      continue;
-    }
-    const consumed = consumedOutputRecordFor({
-      ledger: input.consumedOutput,
-      jobId: entry.name,
-      workspacePath,
-      ...(resolved ? { resolvedWorkspacePath: resolved } : {}),
-    });
-    if (consumed) {
-      debt.push(...consumedRecordDebt(input.consumedOutput, consumed));
-      continue;
-    }
-    const status = await gitStatusShort(workspacePath);
-    if (status.ok && status.lines.length === 0) continue;
-    debt.push({
-      reason: status.ok
-        ? ProjectDebtReason.OrphanLegacyWorkspace
-        : ProjectDebtReason.UnreadableWorkspace,
-      subject: workspacePath,
-      severity: "blocking",
-      evidence: status.ok
-        ? [
-            "dirty project workspace is not represented by the controller registry",
-            ...status.lines.slice(0, 5),
-          ]
-        : [`git status failed: ${status.error}`],
-    });
-  }
-  return debt;
-}
-
-async function diskPressureDebt(root: string): Promise<readonly ProjectDebtItem[]> {
+async function diskPressureDebt(
+  root: string,
+  diskUsage: HostDiskUsagePort = defaultHostDiskUsagePort,
+): Promise<readonly ProjectDebtItem[]> {
   const minFreeKb = Number(process.env.SUBSCRIPTION_RUNTIME_PROJECT_ADMISSION_MIN_FREE_KB ?? "0");
   if (!Number.isFinite(minFreeKb) || minFreeKb <= 0) return [];
   try {
-    const result = await execFileAsync("df", ["-Pk", root], {
-      timeout: 8_000,
-      maxBuffer: 256 * 1024,
-    });
-    const [, line] = result.stdout.trim().split(/\n/);
-    const availableKb = Number(line?.trim().split(/\s+/)[3]);
-    if (Number.isFinite(availableKb) && availableKb < minFreeKb) {
+    const availableBytes = await diskUsage.availableBytes({ path: root });
+    if (availableBytes === undefined) return [];
+    const availableKb = availableBytes / 1024;
+    if (availableKb < minFreeKb) {
       return [{
         reason: ProjectDebtReason.DiskPressure,
         subject: root,
@@ -1002,43 +976,6 @@ async function pathLooksLikeGitWorkspace(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
-  }
-}
-
-export async function optionalRealPathForAdmission(
-  path: string,
-): Promise<string | undefined> {
-  try {
-    return await realpath(path);
-  } catch {
-    return undefined;
-  }
-}
-
-async function gitStatusShort(path: string): Promise<
-  | { readonly ok: true; readonly lines: readonly string[] }
-  | { readonly ok: false; readonly error: string }
-> {
-  try {
-    const result = await execFileAsync("git", [
-      "-C",
-      path,
-      "status",
-      "--short",
-      "--untracked-files=all",
-    ], {
-      timeout: 8_000,
-      maxBuffer: 1024 * 1024,
-    });
-    return {
-      ok: true,
-      lines: result.stdout.split(/\n/).filter((line) => line.length > 0),
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    };
   }
 }
 

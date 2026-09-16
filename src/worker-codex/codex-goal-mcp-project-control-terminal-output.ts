@@ -28,6 +28,7 @@ import { readRuntimeResultBrief } from "./application/codex-goal-runtime-result"
 import { readCodexGoalConsumedOutputLedgers } from "./application/project-control/codex-goal-consumed-output-ledger-io";
 import { assertProjectPreStartAdmissionLaunchBinding } from "./application/project-control/codex-goal-project-pre-start-admission";
 import {
+  projectControlConsumedOutputEvidenceRoot,
   projectControlRealPathOutsideReadScope,
   projectControlRealPathOutsideWorkspaceScope,
 } from "./codex-goal-mcp-project-scope";
@@ -81,6 +82,7 @@ export async function projectControlRecordFailedNoOutputView(
   const ledgerRoot = ledgerRoots[0]!;
   const ledger = await readCodexGoalConsumedOutputLedgers({
     roots: ledgerRoots,
+    evidenceRoots: controller.scope.consumedOutputEvidenceRoots ?? ledgerRoots,
   });
   const sourceRecord = consumedOutputRecordFor({
     ledger,
@@ -198,6 +200,7 @@ export async function projectControlRecordFailedNoOutputView(
     effect: async (workspace) => {
       const lockedLedger = await readCodexGoalConsumedOutputLedgers({
         roots: ledgerRoots,
+        evidenceRoots: controller.scope.consumedOutputEvidenceRoots ?? ledgerRoots,
       });
       const lockedSourceRecord = consumedOutputRecordFor({
         ledger: lockedLedger,
@@ -277,7 +280,13 @@ export async function projectControlRecordFailedNoOutputView(
         reason: "worker_failed_no_output",
       });
       const receipt = await recordFailedNoOutput(
-        { writer: new LocalConsumedOutputLedgerWriter() },
+        {
+          writer: new LocalConsumedOutputLedgerWriter(
+            undefined,
+            dirname(dirname(controller.registryRootDir)),
+            controller.scope.consumedOutputEvidenceRoots ?? ledgerRoots,
+          ),
+        },
         {
           ...validationInput,
           ...(archivedPreexistingWorkspacePatch
@@ -425,7 +434,10 @@ async function recordInitialFailedNoOutput(input: {
         throw new Error("failed_no_output_clean_workspace_required");
       }
       const backup = await captureLocalTerminalOutputBackup({
-        archiveRoot: join(input.loaded.manifest.jobRootDir, "archives"),
+        requireEvidenceCustody: true,
+        archiveRoot: projectControlConsumedOutputEvidenceRoot(
+          input.controller.scope,
+        ),
         archiveName: `${input.loaded.manifest.jobId}-failed-no-output-${input.attemptId}`,
         workspacePath: workspace.canonicalWorkspacePath,
         changedFiles: [],
@@ -461,7 +473,13 @@ async function recordInitialFailedNoOutput(input: {
         reason: "worker_failed_no_output",
       });
       const receipt = await recordTerminalOutputDecision(
-        { writer: new LocalConsumedOutputLedgerWriter() },
+        {
+          writer: new LocalConsumedOutputLedgerWriter(
+            undefined,
+            dirname(dirname(input.controller.registryRootDir)),
+            input.controller.scope.consumedOutputEvidenceRoots ?? input.ledgerRoots,
+          ),
+        },
         {
           allowedLedgerRoots: input.ledgerRoots,
           ledgerRoot: input.ledgerRoot,
@@ -686,6 +704,7 @@ async function assertEvidencePathReadable(
 function projectOwnedEvidenceRoot(
   path: string,
   input: {
+    readonly scope: ProjectAccessScope;
     readonly registryRootDir: string;
     readonly jobId: string;
     readonly jobRootDir: string;
@@ -693,6 +712,9 @@ function projectOwnedEvidenceRoot(
   },
 ): string | undefined {
   const candidate = resolve(path);
+  for (const root of input.scope.consumedOutputEvidenceRoots ?? []) {
+    if (pathInsideOrEqual(candidate, root)) return resolve(root);
+  }
   const jobRoot = resolve(input.jobRootDir);
   if (pathInsideOrEqual(candidate, jobRoot)) return jobRoot;
 

@@ -13,6 +13,35 @@ import {
 } from "../index";
 
 describe("WorkerControlService", () => {
+  it("indexes 5000 signals and receipts linearly and reuses reconciliation views", async () => {
+    const target = { jobId: "fake-linear-inbox" };
+    const now = new Date("2026-09-06T00:00:00Z");
+    const signals: WorkerControlSignal[] = Array.from({ length: 5000 }, (_, i) => ({
+      schemaVersion: 1, signalId: `signal-${i}`, idempotencyKey: `key-${i}`, target,
+      intent: "guidance", deliveryMode: "next_safe_point", body: "fake", createdAt: now,
+      createdBy: "operator", priority: "normal", supersedesSignalIds: [], metadata: {},
+    }));
+    let reads = 0, receiptLists = 0, signalLists = 0;
+    const receipts: WorkerControlDeliveryReceipt[] = signals.map((signal) => ({
+      schemaVersion: 1, receiptId: `receipt-${signal.signalId}`,
+      get signalId() { reads++; return signal.signalId; },
+      target, state: "delivered", createdAt: now, metadata: {},
+    }));
+    const store = new InMemoryWorkerControlInboxStore();
+    store.listSignals = async () => { signalLists++; return signals; };
+    store.listReceipts = async () => { receiptLists++; return receipts; };
+    const service = new WorkerControlService({ store });
+    const views = await service.listSignals({ target, includeExpired: true });
+    expect(views).toHaveLength(5000);
+    expect(reads).toBeLessThanOrEqual(10_000);
+    reads = 0; receiptLists = 0; signalLists = 0;
+    const snapshot = await service.reconcileSnapshot({ target });
+    expect(snapshot.report.deliveredCount).toBe(5000);
+    expect(snapshot.signals).toHaveLength(5000);
+    expect({ receiptLists, signalLists }).toEqual({ receiptLists: 1, signalLists: 1 });
+    expect(reads).toBeLessThanOrEqual(10_000);
+  });
+
   it("dedupes signals and consumes next-safe-point guidance once", async () => {
     const store = new InMemoryWorkerControlInboxStore();
     const service = new WorkerControlService({

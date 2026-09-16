@@ -10,8 +10,6 @@ import {
 } from "@vioxen/subscription-runtime/worker-core";
 import type { ProjectControllerProviderKind } from "./codex-goal-project-controller-options";
 import {
-  projectControllerAllowedTools,
-  projectControllerProfileReadyJson,
   type ProjectControllerProfile,
   type projectControllerLaunchInput,
 } from "./codex-goal-project-controller-profile";
@@ -73,14 +71,14 @@ export function projectControllerLaunchPlanViewJson(input: {
     ...(ready
       ? {
           session: input.plan.session,
-          ...projectControllerProfileReadyJson(input.profile),
+          ...input.profile.readyJson(),
           evidence: input.plan.evidence,
         }
       : {
           reason: input.plan.reason,
           accessReason: input.plan.accessReason,
           evidence: input.plan.evidence,
-          allowedTools: projectControllerAllowedTools(input.profile),
+          allowedTools: input.profile.allowedTools(),
           safeMessage:
             "Controlled LLM controller launch is blocked until the provider can enforce broker-only tools without raw shell.",
         }),
@@ -166,7 +164,7 @@ export function projectControllerStartReadyViewJson(input: {
     ...(input.providerEvidence.sessionArtifact === undefined
       ? {}
       : { sessionArtifact: input.providerEvidence.sessionArtifact }),
-    allowedTools: projectControllerAllowedTools(input.profile),
+    allowedTools: input.profile.allowedTools(),
     safeMessage: input.providerEvidence.safeMessage,
     evidence: input.plan.evidence,
   };

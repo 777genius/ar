@@ -45,6 +45,8 @@ import {
   writeClaudeRunArtifacts,
   writeFakeAuth,
 } from "./codex-goal-mcp-test-support";
+import { localProjectControlEvidenceCustodySupported } from
+  "../../worker-local/project-control-evidence-custody-local-adapter";
 
 const execFileAsync = promisify(execFile);
 
@@ -402,6 +404,7 @@ describe("codex goal MCP project-control server", () => {
       const controllerSignals = await callToolJson(client, "codex_goal_control_list", {
         registryRootDir,
         jobId: "infinity-context-controller-v1",
+        state: "all",
       });
       expect(controllerSignals.signals).toMatchObject([
         {
@@ -412,7 +415,6 @@ describe("codex goal MCP project-control server", () => {
           },
         },
       ]);
-
       const childDecision = await callToolJson(client, "codex_goal_control_decision", {
         registryRootDir,
         jobId: "infinity-context-child-v1",
@@ -801,11 +803,14 @@ describe("codex goal MCP project-control server", () => {
     }
   });
 
-  it("runs project integration lifecycle tools through policy and local adapters", async () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "runs project integration lifecycle tools through policy and local adapters",
+    async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-project-integration-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const controllerJobRoot = join(root, "worker-jobs", "infinity-context-controller-v1");
     const ledgerRoot = join(root, "worker-jobs", "consumed-output-ledger");
+    const evidenceRoot = join(root, "worker-jobs", "archives");
     const workspacePath = join(root, "workspaces", "infinity-context-main");
     const remotePath = join(root, "remote.git");
     const server = createCodexGoalMcpServer();
@@ -816,7 +821,10 @@ describe("codex goal MCP project-control server", () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
     try {
-      await mkdir(join(workspacePath, "src"), { recursive: true });
+      await Promise.all([
+        mkdir(join(workspacePath, "src"), { recursive: true }),
+        mkdir(join(root, "worker-jobs"), { recursive: true }),
+      ]);
       await gitInitRepository(workspacePath);
       await writeFile(join(workspacePath, "src", "memory.ts"), "export const value = 1;\n");
       await git(workspacePath, ["add", "."]);
@@ -848,6 +856,7 @@ describe("codex goal MCP project-control server", () => {
         networkAccess: NetworkAccessMode.Restricted,
         projectAccessScope: {
           projectId: "infinity-context",
+          readRoots: [join(root, "worker-jobs")],
           workspaceRoots: [workspacePath],
           registryRoot: registryRootDir,
           jobIdPrefixes: ["infinity-context-"],
@@ -855,6 +864,7 @@ describe("codex goal MCP project-control server", () => {
           allowedBranches: ["main"],
           allowedGitRemotes: ["origin"],
           consumedOutputLedgerRoots: [ledgerRoot],
+          consumedOutputEvidenceRoots: [evidenceRoot],
           commitIdentity: {
             name: "Subscription Runtime Tests",
             email: "tests@example.com",
@@ -985,5 +995,6 @@ describe("codex goal MCP project-control server", () => {
       await server.close();
       await rm(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
 });

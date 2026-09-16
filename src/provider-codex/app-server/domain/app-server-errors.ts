@@ -23,6 +23,26 @@ export class CodexAppServerProviderError extends Error {
   }
 }
 
+export class CodexAppServerOutputLimitError extends Error {
+  constructor() {
+    super("codex_app_server_output_too_large");
+    this.name = "CodexAppServerOutputLimitError";
+  }
+}
+
+export function isCodexAppServerOutputLimitError(
+  error: unknown,
+): error is CodexAppServerOutputLimitError {
+  const seen = new Set<Error>();
+  let current = error;
+  while (current instanceof Error && !seen.has(current)) {
+    if (current instanceof CodexAppServerOutputLimitError) return true;
+    seen.add(current);
+    current = current.cause;
+  }
+  return false;
+}
+
 export function codexAppServerProviderError(
   prefix: string,
   payload: unknown,

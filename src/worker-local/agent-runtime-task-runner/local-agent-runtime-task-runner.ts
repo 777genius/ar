@@ -6,7 +6,6 @@ import {
   AgentRuntimeFailureCode,
   AgentRuntimeTaskProtocolError,
   agentRuntimeTaskResultToProviderTaskResult,
-  agentRuntimeTaskRequestToProviderTask,
   makeFailedAgentRuntimeTaskResult,
   parseAgentRuntimeTaskRequest,
   providerTaskResultToAgentRuntimeTaskResult,
@@ -44,8 +43,8 @@ import {
 } from "@vioxen/subscription-runtime/provider-codex";
 import {
   AuthSourceKind,
+  assertAgentRuntimeTaskExecutionProfile,
   ClaudeAgentRuntimeBackend,
-  type AgentRuntimeAuthSource,
   type AgentRuntimeTaskRunner,
   type AgentRuntimeTaskRunnerRunOptions,
   type CreateLocalAgentRuntimeTaskRunnerInput as PublicCreateLocalAgentRuntimeTaskRunnerInput,
@@ -80,11 +79,7 @@ import {
   optionalFailureDetails,
 } from "./error-details";
 import {
-  mapProviderToolPolicy,
-} from "./tool-policy";
-import {
   codexCapabilitiesForExecutionPlan,
-  compileCodexExecutionPlan,
   type CodexExecutionPlan,
 } from "./codex-execution-plan";
 import {
@@ -119,13 +114,18 @@ import {
   ProviderRuntimeUnavailableError,
   providerRuntimeUnavailableResult,
 } from "./provider-runtime-unavailable";
+import {
+  authSourceForProvider,
+  type LocalAgentRuntimeTaskRunnerAuthSource,
+} from "./auth-source";
+import { executionProfileCompatibility } from "./execution-profile-compatibility";
+import { prepareAgentRuntimeTask } from "./task-preparation";
 
 export { AuthSourceKind, ClaudeAgentRuntimeBackend };
 export type {
   AgentRuntimeTaskRunnerRunOptions,
 };
-export type LocalAgentRuntimeTaskRunnerAuthSource =
-  AgentRuntimeAuthSource;
+export type { LocalAgentRuntimeTaskRunnerAuthSource } from "./auth-source";
 
 export type CreateLocalAgentRuntimeTaskRunnerInput =
   PublicCreateLocalAgentRuntimeTaskRunnerInput & {
@@ -133,6 +133,8 @@ export type CreateLocalAgentRuntimeTaskRunnerInput =
   readonly claudePath?: string;
   readonly claudeRuntimeDistDir?: string;
   readonly codexBinaryPath?: string;
+  readonly reasoningEffort?: import("../../agent-runtime-task-runner/domain").AgentRuntimeTaskReasoningEffort;
+  readonly serviceTier?: import("../../agent-runtime-task-runner/domain").AgentRuntimeTaskServiceTier;
   readonly codexRuntimeFeatureProbe?: CodexRuntimeFeatureProbe;
   readonly workerFactory?: AgentRuntimeTaskWorkerFactory;
 };
@@ -140,6 +142,7 @@ export type CreateLocalAgentRuntimeTaskRunnerInput =
 export function createLocalAgentRuntimeTaskRunner(
   input: CreateLocalAgentRuntimeTaskRunnerInput,
 ): AgentRuntimeTaskRunner {
+  assertAgentRuntimeTaskExecutionProfile(input.provider, input);
   return new LocalAgentRuntimeTaskRunner(input);
 }
 
@@ -147,6 +150,9 @@ export function createDefaultAgentRuntimeTaskWorker(
   input: AgentRuntimeTaskWorkerFactoryInput,
 ): AgentRuntimeTaskWorker {
   if (input.provider === AgentRuntimeTaskProvider.Claude) {
+    if (input.reasoningEffort || input.serviceTier) {
+      throw new Error("Codex execution options cannot be used with Claude");
+    }
     const backend = input.claudeBackend ?? ClaudeAgentRuntimeBackend.AgentSdk;
     const runtimeModules = backend === ClaudeAgentRuntimeBackend.Background
       ? claudeRuntimeModuleLoaders(input.claudeRuntimeDistDir)
@@ -159,6 +165,7 @@ export function createDefaultAgentRuntimeTaskWorker(
       workspacePath: input.cwd,
       ...(input.model ? { model: input.model } : {}),
       ...(input.timeoutMs ? { taskTimeoutMs: input.timeoutMs } : {}),
+      ...(input.outputSchemas ? { outputSchemas: input.outputSchemas } : {}),
       ...(input.claudePath ? { claudePath: input.claudePath } : {}),
       ...(backend === ClaudeAgentRuntimeBackend.AgentSdk
         ? {
@@ -185,11 +192,16 @@ export function createDefaultAgentRuntimeTaskWorker(
     workspacePath: input.cwd,
     ...(input.model ? { model: input.model } : {}),
     ...(input.timeoutMs ? { taskTimeoutMs: input.timeoutMs } : {}),
+    ...(input.outputSchemas ? { outputSchemas: input.outputSchemas } : {}),
+    ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+    ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
     ...(input.codexExecutionPlan?.workspaceToolPolicy
       ? {
           boundedWorkspaceTools: {
             allowedTools:
               input.codexExecutionPlan.workspaceToolPolicy.allowedTools,
+            denyProjectInstructions: input.codexExecutionPlan.workspaceToolPolicy
+              .denyProjectInstructions === true,
           },
           cleanThreadPrewarm: false,
           warmupPrompt: false,
@@ -300,20 +312,19 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
         signal,
       );
       try {
-        const task = mapProviderToolPolicy(
+        const prepared = prepareAgentRuntimeTask(
           this.input.provider,
-          agentRuntimeTaskRequestToProviderTask(taskRequest),
+          taskRequest,
+          this.input.claudeBackend,
         );
+        if (prepared.result) return prepared.result;
+        const { task, codexExecutionPlan: compiledCodexExecutionPlan } = prepared;
         const goalValidation = validateGoalRequest(
           task,
           timeoutMs,
           this.input.provider,
         );
         if (goalValidation) return goalValidation;
-        const compiledCodexExecutionPlan =
-          this.input.provider === AgentRuntimeTaskProvider.Codex
-            ? compileCodexExecutionPlan(task)
-            : undefined;
         let resolvedCodexPlan: {
           readonly plan?: CodexExecutionPlan;
           readonly result?: AgentRuntimeTaskResult;
@@ -398,6 +409,9 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
           worker = this.createWorker({
             cwd,
             request: taskRequest,
+            ...(prepared.outputSchemas
+              ? { outputSchemas: prepared.outputSchemas }
+              : {}),
             ...(codexExecutionPlan === undefined
               ? {}
               : { codexExecutionPlan }),
@@ -447,11 +461,15 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
                       codexExecutionPlan,
                     ),
                     model: resolvedTaskModel(this.input, task),
+                    ...executionProfileCompatibility(this.input),
                     workspace: cwd,
                     kind: task.kind,
                     execution: task.execution,
                     systemPrompt: task.systemPrompt,
                     outputSchemaName: task.outputSchemaName,
+                    ...(prepared.outputSchemaDigest === undefined
+                      ? {}
+                      : { outputSchemaDigest: prepared.outputSchemaDigest }),
                     controls: task.controls,
                   }),
                   task,
@@ -613,6 +631,7 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
   private createWorker(input: {
     readonly cwd: string;
     readonly request: AgentRuntimeTaskRequest;
+    readonly outputSchemas?: Readonly<Record<string, unknown>>;
     readonly codexExecutionPlan?: CodexExecutionPlan;
     readonly timeoutMs?: number;
   }): AgentRuntimeTaskWorker {
@@ -644,6 +663,9 @@ class LocalAgentRuntimeTaskRunner implements AgentRuntimeTaskRunner {
       ...(this.input.codexBinaryPath
         ? { codexBinaryPath: this.input.codexBinaryPath }
         : {}),
+      ...(this.input.reasoningEffort ? { reasoningEffort: this.input.reasoningEffort } : {}),
+      ...(this.input.serviceTier ? { serviceTier: this.input.serviceTier } : {}),
+      ...(input.outputSchemas ? { outputSchemas: input.outputSchemas } : {}),
       ...(input.codexExecutionPlan
         ? { codexExecutionPlan: input.codexExecutionPlan }
         : {}),
@@ -748,37 +770,6 @@ function claudeRuntimeModuleLoaders(
     runtimeModuleLoader: async () => import(pathToFileURL(runtimePath).href),
     providerModuleLoader: async () => import(pathToFileURL(providerPath).href),
   };
-}
-
-function authSourceForProvider(input: {
-  readonly provider: ProviderName;
-  readonly authSource: LocalAgentRuntimeTaskRunnerAuthSource | undefined;
-}): LocalAgentRuntimeTaskRunnerAuthSource | undefined {
-  if (input.authSource === undefined) return undefined;
-  assertAuthSourceMatchesProvider(input.provider, input.authSource);
-  return input.authSource;
-}
-
-function assertAuthSourceMatchesProvider(
-  provider: ProviderName,
-  authSource: LocalAgentRuntimeTaskRunnerAuthSource,
-): void {
-  if (authSource.kind === AuthSourceKind.PreseededSession) {
-    return;
-  }
-  if (
-    provider === AgentRuntimeTaskProvider.Claude &&
-    authSource.kind === AuthSourceKind.ClaudeOAuthToken
-  ) {
-    return;
-  }
-  if (
-    provider === AgentRuntimeTaskProvider.Codex &&
-    authSource.kind === AuthSourceKind.CodexAuthJsonFile
-  ) {
-    return;
-  }
-  throw new Error(`${authSource.kind} auth source cannot be used with ${provider}`);
 }
 
 async function seedWorker(input: {

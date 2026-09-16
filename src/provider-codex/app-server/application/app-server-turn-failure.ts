@@ -69,6 +69,11 @@ export function turnFailureError(
   });
 }
 
+export function isExplicitTurnStartRejection(error: unknown): boolean {
+  return error instanceof CodexAppServerTurnError &&
+    error.failureDetails.phase === "turn_start_rejected";
+}
+
 function boundedTurnNumber(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return 1;
   return Math.max(1, Math.min(10_000, Math.trunc(value)));

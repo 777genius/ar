@@ -1,15 +1,12 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
-import { promisify } from "node:util";
-import { detectSecretLikeContent } from "@vioxen/subscription-runtime/worker-core";
+import { assertGitPatchBlobsSecretSafe } from "../../git-patch-secret-validator";
 import type { CodexGoalJobManifest } from "../../codex-goal-jobs";
 import { captureCodexGoalHandoffPatchFingerprint } from "../../codex-goal-handoff-artifacts";
 import { readControlledRuntimeInterruptionEvidence } from "../../codex-goal-runtime-control-evidence";
 import { readRuntimeResultBrief } from "../codex-goal-runtime-result";
 
-const execFileAsync = promisify(execFile);
 const maxManifestBytes = 1024 * 1024;
 const maxPatchBytes = 16 * 1024 * 1024;
 const runtimePreservedContinuationReasons = new Set([
@@ -198,12 +195,24 @@ async function readProducerHandoff(input: {
   }
   const patchFile = await readRegularFile(patchPath, maxPatchBytes);
   assertDescriptor(manifest.artifacts.patch, patchPath, patchFile.bytes);
-  if (detectSecretLikeContent(patchFile.bytes) !== undefined) {
-    throw new Error("project_control_verifier_handoff_secret_like_content");
+  const changedPaths = manifest.changedPaths;
+  if (resultHandoff?.baseCommit !== undefined &&
+    resultHandoff.baseCommit !== manifest.baseCommit) {
+    throw new Error("project_control_verifier_handoff_result_base_mismatch");
   }
-  const changedPaths = await patchChangedPaths(producerWorkspace, patchPath);
-  if (!sameStrings(changedPaths, manifest.changedPaths)) {
-    throw new Error("project_control_verifier_handoff_changed_paths_mismatch");
+  try {
+    await assertGitPatchBlobsSecretSafe({
+      workspacePath: producerWorkspace,
+      baseCommit: manifest.baseCommit,
+      changedPaths,
+      patch: patchFile.bytes,
+      tempRootDir: producerJobRoot,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "git_patch_secret_changed_paths_mismatch") {
+      throw new Error("project_control_verifier_handoff_changed_paths_mismatch");
+    }
+    throw new Error("project_control_verifier_handoff_secret_like_content");
   }
   if (
     resultHandoff?.changedFiles &&
@@ -236,6 +245,7 @@ async function currentResultHandoff(input: {
       readonly manifestPath: string;
       readonly manifestSha256: string;
       readonly changedFiles?: readonly string[];
+      readonly baseCommit?: string;
     }
   | undefined
 > {
@@ -294,6 +304,7 @@ async function currentResultHandoff(input: {
     manifestPath: result.manifestPath,
     manifestSha256: result.manifestSha256.toLowerCase(),
     ...(result.changedFiles ? { changedFiles: result.changedFiles } : {}),
+    ...(result.baseCommit === undefined ? {} : { baseCommit: result.baseCommit }),
   };
 }
 
@@ -412,26 +423,6 @@ function assertDescriptor(
   ) {
     throw new Error("project_control_verifier_handoff_descriptor_mismatch");
   }
-}
-
-async function patchChangedPaths(
-  workspacePath: string,
-  patchPath: string,
-): Promise<readonly string[]> {
-  const { stdout } = await execFileAsync(
-    "git",
-    ["-C", workspacePath, "apply", "--numstat", "-z", patchPath],
-    { encoding: "utf8", timeout: 15_000, maxBuffer: 2 * 1024 * 1024 },
-  );
-  return uniqueSorted(
-    stdout
-      .split("\0")
-      .filter(Boolean)
-      .map((record) => {
-        const fields = record.split("\t");
-        return assertSafeChangedPath(fields.slice(2).join("\t"));
-      }),
-  );
 }
 
 async function canonicalDirectory(path: string): Promise<string> {

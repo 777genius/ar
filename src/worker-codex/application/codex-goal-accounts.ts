@@ -1,6 +1,6 @@
-import { readdir } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   listCodexGoalAccountStatuses,
   shellQuote,
@@ -27,14 +27,17 @@ export async function codexAccountStatusPayload(input: {
   readonly stateRootDir?: string;
   readonly accounts?: readonly string[];
   readonly liveCheck?: boolean;
+  readonly recheckDueCapacity?: boolean;
   readonly codexBinaryPath?: string;
   readonly liveCheckTimeoutMs?: number;
 }) {
+  const authRootDiagnostic = await resolveAuthRootDiagnostic(input.authRootDir);
   const slots = await listCodexGoalAccountStatuses({
     authRootDir: input.authRootDir,
     ...(input.accounts?.length ? { accounts: input.accounts } : {}),
     ...(input.stateRootDir ? { stateRootDir: input.stateRootDir } : {}),
     ...(input.liveCheck ? { liveCheck: input.liveCheck } : {}),
+    ...(input.recheckDueCapacity ? { recheckDueCapacity: true } : {}),
     ...(input.codexBinaryPath ? { codexBinaryPath: input.codexBinaryPath } : {}),
     ...(input.liveCheckTimeoutMs
       ? { liveCheckTimeoutMs: input.liveCheckTimeoutMs }
@@ -52,8 +55,10 @@ export async function codexAccountStatusPayload(input: {
   return {
     ok: availableDedupedSlots.length > 0,
     authRootDir: input.authRootDir,
+    ...authRootDiagnostic,
     capacityAware: true,
     liveCheck: Boolean(input.liveCheck),
+    recheckDueCapacity: Boolean(input.recheckDueCapacity),
     ...(input.stateRootDir ? { stateRootDir: input.stateRootDir } : {}),
     count: slots.length,
     available: availableDedupedSlots.length,
@@ -79,6 +84,22 @@ export async function codexAccountStatusPayload(input: {
       ? "Use dedupedAccountNames for worker pools. It keeps the newest ready slot per identity group."
       : "No duplicate identity groups detected.",
   };
+}
+
+async function resolveAuthRootDiagnostic(authRootDir: string) {
+  const requestedAuthRootDir = resolve(authRootDir);
+  try {
+    const resolvedAuthRootDir = await realpath(requestedAuthRootDir);
+    return {
+      resolvedAuthRootDir,
+      authRootUsesSymlink: resolvedAuthRootDir !== requestedAuthRootDir,
+    };
+  } catch {
+    return {
+      authRootResolutionWarning:
+        "auth root does not exist or is inaccessible; a zero count is not proof that the configured pool is empty",
+    };
+  }
 }
 
 export function codexAccountReloginInstructions(input: {
@@ -185,10 +206,16 @@ export function accountPoolRootFromArgs(args: CodexAccountPoolArgs): string {
   );
 }
 
-export function accountAuthRootFromArgs(args: CodexAccountPoolArgs): string {
+export function accountAuthRootFromArgs(
+  args: CodexAccountPoolArgs,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   if (args.authRootDir) return resolvePath(process.cwd(), args.authRootDir);
   if (args.pool) return join(accountPoolRootFromArgs(args), args.pool);
-  return resolvePath(process.cwd(), defaultCodexGoalAuthRoot);
+  return resolvePath(
+    process.cwd(),
+    env.SUBSCRIPTION_RUNTIME_CODEX_AUTH_ROOT ?? defaultCodexGoalAuthRoot,
+  );
 }
 
 export async function listAccountPools(

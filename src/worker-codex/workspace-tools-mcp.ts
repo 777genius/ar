@@ -10,21 +10,25 @@ import {
 } from "@vioxen/subscription-runtime/core";
 import { BoundedWorkspaceFiles } from "./workspace-tools/bounded-workspace-files";
 import { normalizeBoundedWorkspaceTools } from "./workspace-tools/bounded-workspace-tool-policy";
+import { subscriptionRuntimePackageVersion } from
+  "./subscription-runtime-package-version";
 
-const serverVersion = process.env.npm_package_version ?? "0.0.0";
 export type WorkspaceToolsMcpServerOptions = {
   readonly workspaceRoot: string;
   readonly allowedTools: readonly AgentRuntimeToolName[];
+  readonly denyProjectInstructions?: boolean;
 };
 
 export async function createWorkspaceToolsMcpServer(
   options: WorkspaceToolsMcpServerOptions,
 ): Promise<McpServer> {
   const allowedTools = new Set(normalizeBoundedWorkspaceTools(options.allowedTools));
-  const workspace = await BoundedWorkspaceFiles.create(options.workspaceRoot);
+  const workspace = await BoundedWorkspaceFiles.create(options.workspaceRoot, {
+    denyProjectInstructions: options.denyProjectInstructions ?? false,
+  });
   const server = new McpServer({
     name: "agent-runtime-workspace-tools",
-    version: serverVersion,
+    version: subscriptionRuntimePackageVersion,
   });
 
   if (allowedTools.has(AgentRuntimeTool.ReadFile)) {
@@ -152,6 +156,7 @@ function safeWorkspaceToolError(error: unknown): string {
 function parseCliArgs(argv: readonly string[]): WorkspaceToolsMcpServerOptions {
   let workspaceRoot: string | undefined;
   let allowedTools: readonly AgentRuntimeToolName[] | undefined;
+  let denyProjectInstructions = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     const value = argv[index + 1];
@@ -163,13 +168,15 @@ function parseCliArgs(argv: readonly string[]): WorkspaceToolsMcpServerOptions {
         ? []
         : value.split(",") as AgentRuntimeToolName[];
       index += 1;
+    } else if (arg === "--deny-project-instructions") {
+      denyProjectInstructions = true;
     } else {
       throw new Error(`workspace_tools_cli_argument_invalid:${arg ?? "missing"}`);
     }
   }
   if (!workspaceRoot) throw new Error("workspace_tools_cli_root_required");
   if (!allowedTools) throw new Error("workspace_tools_cli_allow_required");
-  return { workspaceRoot, allowedTools };
+  return { workspaceRoot, allowedTools, denyProjectInstructions };
 }
 
 if (await isMainModule()) {

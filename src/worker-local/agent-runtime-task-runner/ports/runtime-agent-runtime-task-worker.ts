@@ -8,12 +8,16 @@ import type {
   AgentRuntimeToolName,
 } from "@vioxen/subscription-runtime/core";
 import { AgentRuntimeExecutionMode } from "@vioxen/subscription-runtime/core";
+import type {
+  AgentRuntimeTaskReasoningEffort,
+  AgentRuntimeTaskServiceTier,
+} from "../../../agent-runtime-task-runner/domain";
 import {
   AgentRuntimeTaskProvider,
   ClaudeAgentRuntimeBackend,
 } from "../../../agent-runtime-task-runner/domain";
 
-export { AgentRuntimeTaskProvider };
+export { AgentRuntimeTaskProvider, ClaudeAgentRuntimeBackend };
 
 export type ProviderName = AgentRuntimeTaskProvider;
 
@@ -70,6 +74,9 @@ export type AgentRuntimeTaskWorkerFactoryInput = {
   readonly claudeBackend?: ClaudeAgentRuntimeBackend;
   readonly claudeRuntimeDistDir?: string;
   readonly codexBinaryPath?: string;
+  readonly reasoningEffort?: AgentRuntimeTaskReasoningEffort;
+  readonly serviceTier?: AgentRuntimeTaskServiceTier;
+  readonly outputSchemas?: Readonly<Record<string, unknown>>;
   readonly codexExecutionPlan?: {
     readonly execution: {
       readonly mode: AgentRuntimeExecutionMode;
@@ -78,6 +85,7 @@ export type AgentRuntimeTaskWorkerFactoryInput = {
     };
     readonly workspaceToolPolicy?: {
       readonly allowedTools: readonly AgentRuntimeToolName[];
+      readonly denyProjectInstructions?: true;
     };
     readonly rolloutBudget?: {
       readonly weightedTokenLimit: number;

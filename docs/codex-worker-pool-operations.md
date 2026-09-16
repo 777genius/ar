@@ -63,13 +63,17 @@ If you inherit a running Codex worker pool, do this first:
 5. Check the latest result JSON if it exists. If it does not exist, the task is
    usually still running.
 6. Use `codex_accounts_status` for the selected pool. It must print only slot
-   status and sanitized metadata.
+   status and sanitized metadata. Use its `summary.configured` and
+   `summary.ready` values as the account count. The command follows auth-root
+   symlinks and reports `resolvedAuthRootDir` plus `authRootUsesSymlink`; a
+   filesystem count that does not follow symlinks is not evidence of an empty
+   pool.
 7. If the runner stopped because of quota, capacity, auth or reconnect, restart
    a continuation through `codex_goal_continue` with the same stored job only
    when `codex_goal_brief.safeToContinue` is true.
 8. If the runner stopped because of provider output, runtime, code, test or
    benchmark failure, inspect the dirty work before retrying.
-9. Keep model `gpt-5.5`, reasoning effort `high`, service tier `fast`, engine
+9. Keep model `gpt-6-astra`, reasoning effort `high`, service tier `fast`, engine
    `app-server-goal`, and a 72 hour task timeout unless the task owner changed
    them explicitly.
 10. Verify with targeted tests before full benchmarks.
@@ -95,7 +99,7 @@ subscription-runtime-codex-goal run \
 
 Defaults:
 
-- model: `gpt-5.5`;
+- model: `gpt-6-astra`;
 - reasoning effort: `high`;
 - service tier: `fast`;
 - task timeout: `72h`;
@@ -529,7 +533,7 @@ await runCodexGoal({
   taskId: "my-task-001",
   accounts: codexGoalAccountSlots(["account-a", "account-b", "account-c"]),
   outputPath: "/Users/me/.cache/subscription-runtime/my-job/my-task-001.latest-result.json",
-  model: "gpt-5.5",
+  model: "gpt-6-astra",
   reasoningEffort: "high",
   serviceTier: "fast",
   taskTimeoutMs: 72 * 60 * 60 * 1000,
@@ -630,7 +634,7 @@ Minimal `codex_goal_create_job` input:
   "taskId": "memo-locomo-cat1-recall",
   "accounts": ["account-a", "account-b", "account-c"],
   "tmuxSession": "memo-locomo-cat1-recall",
-  "model": "gpt-5.5",
+  "model": "gpt-6-astra",
   "reasoningEffort": "high",
   "serviceTier": "fast",
   "executionEngine": "app-server-goal",
@@ -900,7 +904,7 @@ Minimal MCP `codex_goal_start` input:
   "taskId": "my-task-001",
   "accounts": ["account-a", "account-b", "account-c"],
   "tmuxSession": "my-codex-worker",
-  "model": "gpt-5.5",
+  "model": "gpt-6-astra",
   "reasoningEffort": "high",
   "serviceTier": "fast",
   "taskTimeoutMs": 259200000,
@@ -1292,7 +1296,7 @@ const executor = new FileBackendCodexSafeExecutor({
       providerInstanceId: `${taskId}-${accountName}`,
       stateRootDir,
       codexBinaryPath: process.env.CODEX_BINARY_PATH ?? "codex",
-      model: process.env.CODEX_MODEL ?? "gpt-5.5",
+      model: process.env.CODEX_MODEL ?? "gpt-6-astra",
       reasoningEffort: process.env.CODEX_REASONING_EFFORT ?? "high",
       serviceTier: process.env.CODEX_SERVICE_TIER ?? "fast",
       executionEngine: "app-server-goal",
@@ -1354,7 +1358,7 @@ tmux new-session -d -s my-codex-worker -c /path/to/subscription-runtime \
     SUBSCRIPTION_RUNTIME_TASK_ID=my-task-001 \
     SUBSCRIPTION_RUNTIME_PROMPT_PATH=$HOME/.cache/subscription-runtime/my-job/prompt.md \
     SUBSCRIPTION_RUNTIME_TASK_TIMEOUT_MS=259200000 \
-    CODEX_MODEL=gpt-5.5 \
+    CODEX_MODEL=gpt-6-astra \
     CODEX_REASONING_EFFORT=high \
     CODEX_SERVICE_TIER=fast \
     node $HOME/.cache/subscription-runtime/my-job/run-goal.mjs \
@@ -1515,7 +1519,7 @@ tmux: my-codex-worker
 Task id: my-task-001
 Prompt: ~/.cache/subscription-runtime/my-job/prompt.md
 Accounts: account-a,account-b,account-c
-Model: gpt-5.5
+Model: gpt-6-astra
 Effort: high
 Service tier: fast
 Execution engine: app-server-goal
@@ -1523,3 +1527,24 @@ Do not run two writers in the same worktree.
 If quota/capacity/auth/reconnect happens, use pool continuation.
 If unknown/runtime/test failure happens, inspect dirty work before retry.
 ```
+
+### Bounded control inbox listing
+
+`control-list` / `codex_goal_control_list` returns compact pending signals by
+default, with counts for every state. The default page has at most 50 signals;
+`--limit` accepts 1-100. Use `--state all` (or a specific delivery state) to
+inspect delivered history. Follow `page.nextCursor` using `--cursor`; preserve
+the job and state filter. Ordering is ascending creation time, then signal ID.
+Cursors remain usable if the last row changes state; missing rows produce an
+explicit stale-cursor error. Pages are live reads, not snapshots: restart without
+a cursor to observe older rows that became pending during pagination.
+
+The entire MCP result, including duplicated text and structured content, is
+capped at 64 KiB. `--include-bodies` still respects this cap. If one body cannot
+fit, its row explicitly reports `bodyOmitted`, `bodyBytes`, and retrieval guidance;
+remaining rows remain reachable through pagination. Compact rows omit target,
+metadata and full receipt details; oversized identifier/diagnostic fields report
+`truncatedFields`. Full storage and SDK history are unchanged: use
+`WorkerControlService.listSignals({target, includeBodies:true, includeExpired:true})`
+to retrieve complete signals and bodies. This output cap does not bound the cost
+of reading the stored archive or provide a snapshot across pages.

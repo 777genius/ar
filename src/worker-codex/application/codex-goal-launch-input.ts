@@ -1,3 +1,4 @@
+import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "../codex-worker-defaults";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { execPath } from "node:process";
@@ -100,9 +101,9 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
       stringValue(merged.progressPath) ??
         codexGoalProgressPath({ jobRootDir, taskId }),
     ),
-    model: stringValue(merged.model) ?? "gpt-5.5",
+    model: stringValue(merged.model) ?? CODEX_WORKER_DEFAULT_MODEL,
     reasoningEffort:
-      (stringValue(merged.reasoningEffort) ?? "high") as NonNullable<CodexGoalRunConfig["reasoningEffort"]>,
+      (stringValue(merged.reasoningEffort) ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT) as NonNullable<CodexGoalRunConfig["reasoningEffort"]>,
     serviceTier:
       (stringValue(merged.serviceTier) ?? "default") as NonNullable<CodexGoalRunConfig["serviceTier"]>,
     executionEngine:

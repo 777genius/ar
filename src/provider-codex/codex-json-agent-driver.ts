@@ -20,6 +20,8 @@ import {
   defaultCodexModel,
 } from "./capabilities";
 import { classifyCodexFailure } from "./failure-classifier";
+import { createCodexTextDeltaRedactor } from "./codex-text-delta-redactor";
+import { usageFromError } from "./app-server/domain/app-server-usage-error";
 import {
   type CodexExecutionEngine,
   type CodexMaterializedSession,
@@ -148,11 +150,25 @@ export class CodexJsonAgentDriver implements AgentDriver {
     let materialized: Awaited<
       ReturnType<CodexSessionMaterializer["materialize"]>
     > | null = null;
+    const outputAbortController = new AbortController();
+    const outputAbortSignal = AbortSignal.any([
+      input.abortSignal,
+      outputAbortController.signal,
+    ]);
+    let textDeltaRedactor: ReturnType<typeof createCodexTextDeltaRedactor> | undefined;
     try {
       materialized = await this.sessionMaterializer.materialize({
         session: input.session,
         redactor: input.redactor,
       });
+      textDeltaRedactor = input.onTextDelta === undefined
+        ? undefined
+        : createCodexTextDeltaRedactor({
+            redactor: input.redactor,
+            onTextDelta: input.onTextDelta,
+            abortController: outputAbortController,
+          });
+      const activeTextDeltaRedactor = textDeltaRedactor;
       const outputSchemaName =
         input.task.controls?.outputSchemaName ?? input.task.outputSchemaName;
       const goalObjective = readTaskGoalObjective(input.task);
@@ -175,17 +191,12 @@ export class CodexJsonAgentDriver implements AgentDriver {
           ? {}
           : { serviceTier: this.serviceTier }),
         sandboxMode: codexSandboxModeForControls(input.task.controls),
-        abortSignal: input.abortSignal,
-        ...(input.onTextDelta === undefined
+        abortSignal: outputAbortSignal,
+        ...(activeTextDeltaRedactor === undefined
           ? {}
           : {
               onTextDelta: (text: string) => {
-                const redacted = input.redactor.redact(text);
-                input.redactor.assertNoKnownSecret(
-                  redacted,
-                  "codex-app-server-text-delta",
-                );
-                if (redacted) input.onTextDelta?.(redacted);
+                activeTextDeltaRedactor.push(text);
               },
             }),
       };
@@ -201,6 +212,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
         logicalThreadResult === undefined
           ? await this.engine.run(engineInput)
           : logicalThreadResult;
+      textDeltaRedactor?.flush();
       if (result.status === "waiting_for_input") {
         this.managedRunSessions.set(result.runId, materialized);
         materialized = null;
@@ -242,12 +254,20 @@ export class CodexJsonAgentDriver implements AgentDriver {
         warnings: [...result.warnings, ...snapshot.warnings],
       };
     } catch (error) {
-      const failure = codexExecutionFailure(error, input.redactor);
+      textDeltaRedactor?.discard();
+      const outputFailure =
+        !input.abortSignal.aborted && outputAbortController.signal.aborted
+          ? outputAbortController.signal.reason
+          : error;
+      const failure = codexExecutionFailure(outputFailure, input.redactor);
       return {
         ...failure,
         telemetry: {
           durationMs: Date.now() - startedAt,
           finishReason: finishReasonForFailure(failure.failure.code),
+          ...(usageFromError(error)
+            ? { usage: usageFromError(error)! }
+            : {}),
         },
       };
     } finally {
@@ -393,6 +413,9 @@ export class CodexJsonAgentDriver implements AgentDriver {
         telemetry: {
           durationMs: Date.now() - startedAt,
           finishReason: finishReasonForFailure(failure.failure.code),
+          ...(usageFromError(error)
+            ? { usage: usageFromError(error)! }
+            : {}),
         },
       };
     } finally {

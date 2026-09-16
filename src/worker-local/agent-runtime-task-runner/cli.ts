@@ -15,6 +15,8 @@ import {
   type AgentRuntimeTaskResult,
 } from "@vioxen/subscription-runtime/agent-runtime-task";
 import {
+  AgentRuntimeTaskReasoningEffort,
+  AgentRuntimeTaskServiceTier,
   AuthSourceKind,
   ClaudeAgentRuntimeBackend,
 } from "../../agent-runtime-task-runner/domain";
@@ -62,6 +64,17 @@ export type SubscriptionAgentRuntimeTaskCliRunOptions = {
   readonly signal?: AbortSignal;
 };
 
+export const agentRuntimeTaskRunnerCapabilities = {
+  schemaVersion: 1,
+  // The packaged HIB artifact intentionally exposes only its stable v2 contract.
+  protocolVersions: [2],
+  inlineOutputSchema: true,
+  reasoningEffort: true,
+  serviceTier: true,
+  boundedReadOnlyWorkspace: true,
+  instructionPathDeny: true,
+} as const;
+
 type ParsedArgs = {
   readonly provider: ProviderName;
   readonly inputPath?: string;
@@ -77,6 +90,8 @@ type ParsedArgs = {
   readonly claudePath?: string;
   readonly codexBinaryPath?: string;
   readonly model?: string;
+  readonly reasoningEffort?: AgentRuntimeTaskReasoningEffort;
+  readonly serviceTier?: AgentRuntimeTaskServiceTier;
   readonly timeoutMs?: number;
 };
 
@@ -89,6 +104,14 @@ export async function runSubscriptionAgentRuntimeTaskCli(
   let tempStateRoot: string | null = null;
   let runner: ReturnType<typeof createLocalAgentRuntimeTaskRunner> | undefined;
   try {
+    const capabilitiesVersion = requestedCapabilitiesVersion(argv);
+    if (capabilitiesVersion !== undefined) {
+      if (capabilitiesVersion !== 1) {
+        throw new Error("--capabilities-json version must be 1");
+      }
+      io.writeStdout(`${JSON.stringify(agentRuntimeTaskRunnerCapabilities)}\n`);
+      return 0;
+    }
     const args = parseArgs(argv);
     const request = parseAgentRuntimeTaskRequest(
       JSON.parse(
@@ -169,6 +192,10 @@ export async function runSubscriptionAgentRuntimeTaskCli(
           ...(args.codexBinaryPath
             ? { codexBinaryPath: args.codexBinaryPath }
             : {}),
+          ...(args.reasoningEffort
+            ? { reasoningEffort: args.reasoningEffort }
+            : {}),
+          ...(args.serviceTier ? { serviceTier: args.serviceTier } : {}),
         });
 
     const result = await runner.run(runnerRequest, {
@@ -201,6 +228,22 @@ export async function runSubscriptionAgentRuntimeTaskCli(
   }
 }
 
+function requestedCapabilitiesVersion(
+  argv: readonly string[],
+): number | undefined {
+  const index = argv.indexOf("--capabilities-json");
+  if (index < 0) return undefined;
+  if (index !== 0 || argv.length > 2) {
+    throw new Error("--capabilities-json must be used alone with optional version 1");
+  }
+  if (argv.length === 1) return 1;
+  const version = Number(argv[1]);
+  if (!Number.isInteger(version) || version <= 0) {
+    throw new Error("--capabilities-json version must be a positive integer");
+  }
+  return version;
+}
+
 function requestedOutputFormat(
   argv: readonly string[],
 ): ParsedArgs["format"] {
@@ -227,6 +270,8 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   let claudePath: string | undefined;
   let codexBinaryPath: string | undefined;
   let model: string | undefined;
+  let reasoningEffort: AgentRuntimeTaskReasoningEffort | undefined;
+  let serviceTier: AgentRuntimeTaskServiceTier | undefined;
   let timeoutMs: number | undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -320,6 +365,24 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       index += 1;
       continue;
     }
+    if (arg === "--reasoning-effort") {
+      const value = requiredValue(argv, index, arg);
+      if (value !== AgentRuntimeTaskReasoningEffort.High) {
+        throw new Error("--reasoning-effort must be high");
+      }
+      reasoningEffort = AgentRuntimeTaskReasoningEffort.High;
+      index += 1;
+      continue;
+    }
+    if (arg === "--service-tier") {
+      const value = requiredValue(argv, index, arg);
+      if (value !== AgentRuntimeTaskServiceTier.Default) {
+        throw new Error("--service-tier must be default");
+      }
+      serviceTier = AgentRuntimeTaskServiceTier.Default;
+      index += 1;
+      continue;
+    }
     if (arg === "--timeout-ms") {
       timeoutMs = parsePositiveInteger(requiredValue(argv, index, arg), arg);
       index += 1;
@@ -332,6 +395,14 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   }
 
   if (!provider) throw new Error("--provider is required");
+  if (
+    provider !== AgentRuntimeTaskProvider.Codex &&
+    (reasoningEffort !== undefined || serviceTier !== undefined)
+  ) {
+    throw new Error(
+      "--reasoning-effort and --service-tier are supported only for --provider codex",
+    );
+  }
   return {
     provider,
     ...(inputPath ? { inputPath } : {}),
@@ -347,6 +418,8 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     ...(claudePath ? { claudePath } : {}),
     ...(codexBinaryPath ? { codexBinaryPath } : {}),
     ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(serviceTier ? { serviceTier } : {}),
     ...(timeoutMs ? { timeoutMs } : {}),
   };
 }
@@ -431,8 +504,10 @@ function parsePositiveInteger(value: string, flag: string): number {
 function usage(): string {
   return [
     "usage: subscription-runtime-run-agent-runtime-task --provider claude|codex [--input request.json]",
+    "       subscription-runtime-run-agent-runtime-task --capabilities-json [1]",
     "       [--format event-ndjson|result-json] [--state-root dir | --ephemeral]",
     "       [--provider-instance id] [--model model] [--timeout-ms ms]",
+    "       [--reasoning-effort high] [--service-tier default] (Codex only)",
     "       [--claude-backend agent-sdk|claude-background]",
   ].join("\n");
 }

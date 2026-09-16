@@ -54,7 +54,7 @@ describe("codex goal cli", () => {
       promptPath: "/tmp/job/prompt.md",
       codexGoalObjective: "Short objective with docs links.",
       taskId: "task-1",
-      model: "gpt-5.5",
+      model: "gpt-6-astra",
       reasoningEffort: "high",
       serviceTier: "default",
       executionEngine: "app-server-goal",
@@ -916,21 +916,6 @@ describe("codex goal cli", () => {
       idempotencyKey: "guidance-urgent-1",
       callerKind: "agent",
       callerId: "lead-agent",
-    });
-
-    const controlList = parseCodexGoalCliArgs([
-      "control-list",
-      "job-a",
-      "--include-bodies",
-    ], fakeIo());
-    expect(controlList).toMatchObject({
-      kind: "mcp-tool",
-      name: "codex_goal_control_list",
-    });
-    if (controlList.kind !== "mcp-tool") return;
-    expect(JSON.parse(controlList.argsJson ?? "{}")).toEqual({
-      jobId: "job-a",
-      includeBodies: true,
     });
 
     const controlReconcile = parseCodexGoalCliArgs([

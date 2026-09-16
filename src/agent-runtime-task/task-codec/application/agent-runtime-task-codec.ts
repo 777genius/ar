@@ -659,6 +659,12 @@ function parseAgentRuntimeTaskPayload(
     ...optionalControlsField(input, "controls", `${path}.controls`),
     ...optionalMetadataField(input, "metadata", `${path}.metadata`),
   };
+  if (base.outputSchemaName === "") {
+    throw protocolError(
+      "agent_runtime_task_request_invalid",
+      `${path}.outputSchemaName must not be empty`,
+    );
+  }
   if (protocolVersion === agentRuntimeTaskProtocolVersionV1) return base;
   return {
     ...base,
@@ -779,15 +785,10 @@ function parseTelemetry(value: unknown): ProviderTaskTelemetry {
 
 function parseUsage(value: unknown, path: string): AgentUsage {
   const input = objectAt(value, path);
-  return {
-    ...optionalPositiveIntegerField(input, "inputTokens", `${path}.inputTokens`),
-    ...optionalPositiveIntegerField(
-      input,
-      "outputTokens",
-      `${path}.outputTokens`,
-    ),
-    ...optionalPositiveIntegerField(input, "totalTokens", `${path}.totalTokens`),
-  };
+  return Object.assign({}, ...[
+    "inputTokens", "outputTokens", "totalTokens", "cachedInputTokens",
+    "cacheWriteInputTokens", "reasoningOutputTokens",
+  ].map((key) => optionalPositiveIntegerField(input, key, `${path}.${key}`)));
 }
 
 function parseCost(value: unknown, path: string): AgentCost {

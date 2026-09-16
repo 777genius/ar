@@ -1,3 +1,5 @@
+import "./hosted-test-egress-default-fixture";
+import "./unmanaged-goal-host-fixture";
 import { execFile } from "node:child_process";
 import {
   mkdir,
@@ -34,7 +36,6 @@ import {
 } from "./codex-goal-runner-fixtures";
 
 const execFileAsync = promisify(execFile);
-
 describe("codex goal runner", () => {
   it("interrupts an active executor attempt from the durable control inbox", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-goal-control-"));
@@ -599,6 +600,7 @@ describe("codex goal runner", () => {
       encryptionKey: new Uint8Array(32).fill(1),
       config: {
         jobRootDir: join(root, "job"),
+        runtimeHomeRootDir: join(root, "home"),
         authRootDir: join(root, "auth"),
         workspacePath: join(root, "workspace"),
         promptPath: join(root, "prompt.md"),
@@ -618,9 +620,38 @@ describe("codex goal runner", () => {
       },
     });
 
+    expect(options).toMatchObject({ runtimeHomeRootDir: join(root, "home"), stateRootDir: join(root, "state") });
     expect(options.accounts[0]?.worker.commandPolicy).toMatchObject({
       validateCommands: true,
       deniedGitSubcommands: ["push"],
+    });
+  });
+
+  it("enables the global-scan-only policy for hosted jobs without an access plan", () => {
+    const root = "/tmp/subscription-runtime-hosted-scan-policy";
+    const options = buildCodexGoalExecutorOptions({
+      stateRootDir: join(root, "state"),
+      encryptionKey: new Uint8Array(32).fill(1),
+      config: {
+        jobRootDir: join(root, "job"),
+        authRootDir: join(root, "auth"),
+        workspacePath: join(root, "workspace"),
+        promptPath: join(root, "prompt.md"),
+        taskId: "task-hosted-scan-policy",
+        accounts: codexGoalAccountSlots(["account-a"]),
+        sourceEnv: {
+          SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+        },
+      },
+    });
+
+    expect(options.accounts[0]?.worker.commandPolicy).toEqual({
+      validateCommands: true,
+      deniedExecutableNames: [],
+      deniedGitSubcommands: [],
+      deniedPathPrefixes: [],
+      deniedInlineCodeExecutables: [],
+      deniedScriptExecutables: [],
     });
   });
 
@@ -765,7 +796,7 @@ describe("codex goal runner", () => {
     }
   });
 
-  it("captures staged input plus unstaged remediation when completed attempts report no changes", async () => {
+  it("fails closed when completed output has mixed staged and unstaged layers", async () => {
     const root = await realpath(
       await mkdtemp(join(tmpdir(), "subscription-runtime-goal-remediation-")),
     );
@@ -838,26 +869,15 @@ describe("codex goal runner", () => {
         status: "done",
         changedFiles: ["new-packet.md", "packet.md"],
         nextAction: "review_completed",
+        details: {
+          handoffArtifactError: "handoff_mixed_index_worktree_state",
+        },
       });
-      const artifacts = result.artifacts as readonly Record<string, unknown>[];
-      const patchPath = String(
-        artifacts.find((artifact) => artifact.kind === "patch")?.path,
-      );
-      const manifestPath = String(
-        artifacts.find((artifact) => artifact.kind === "manifest")?.path,
-      );
-      const summaryPath = String(
-        artifacts.find((artifact) => artifact.kind === "summary")?.path,
-      );
-      expect(await readFile(patchPath, "utf8")).toContain("remediated");
-      expect(JSON.parse(await readFile(manifestPath, "utf8"))).toMatchObject({
-        workerJobId: "project-remediation",
-        changedPaths: ["new-packet.md", "packet.md"],
-      });
-      expect(JSON.parse(await readFile(summaryPath, "utf8"))).toMatchObject({
-        changedPaths: ["new-packet.md", "packet.md"],
-        changedFileCount: 2,
-      });
+      expect(result.evidence).toEqual(expect.arrayContaining([
+        "handoff_artifact_materialization_failed:handoff_mixed_index_worktree_state",
+        "patch_preserve_unavailable",
+      ]));
+      expect(result).not.toHaveProperty("artifacts");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

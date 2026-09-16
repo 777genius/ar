@@ -6,7 +6,6 @@ import type {
   RuntimeInterruptReason,
   WorkerControlTarget,
 } from "./types";
-import { workerControlTargetMatches } from "./worker-control-service";
 
 type RegisteredActiveAttempt = ActiveAttemptRecord & {
   readonly abortController: AbortController;
@@ -36,7 +35,7 @@ export class InMemoryActiveAttemptRegistry implements ActiveAttemptRegistry {
     const direct = this.attempts.get(activeAttemptKey(target));
     if (direct) return activeAttemptRecord(direct);
     for (const attempt of this.attempts.values()) {
-      if (workerControlTargetMatches(target, attempt.target)) {
+      if (activeTargetMatches(target, attempt.target)) {
         return activeAttemptRecord(attempt);
       }
     }
@@ -67,7 +66,7 @@ export class InMemoryActiveAttemptRegistry implements ActiveAttemptRegistry {
     const direct = this.attempts.get(activeAttemptKey(target));
     if (direct) return direct;
     for (const attempt of this.attempts.values()) {
-      if (workerControlTargetMatches(target, attempt.target)) return attempt;
+      if (activeTargetMatches(target, attempt.target)) return attempt;
     }
     return null;
   }
@@ -93,4 +92,12 @@ function activeAttemptRecord(input: ActiveAttemptRecord): ActiveAttemptRecord {
     target: input.target,
     startedAt: input.startedAt,
   };
+}
+
+// Inbox matching allows broad persisted signals. Registry lookup is directional:
+// an explicitly addressed field must be known and equal on the active attempt.
+function activeTargetMatches(query: WorkerControlTarget, target: WorkerControlTarget): boolean {
+  return (Object.keys(query) as (keyof WorkerControlTarget)[]).every(
+    (key) => query[key] === undefined || query[key] === target[key],
+  );
 }

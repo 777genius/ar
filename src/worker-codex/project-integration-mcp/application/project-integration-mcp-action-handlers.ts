@@ -148,6 +148,12 @@ export async function projectIntegrationOpenAttempt(
     targetRemote,
     ...(merge ? { merge } : {}),
     workerOutput: {
+      ...(resolvedReviewedOutput?.workerOutput.reviewedOutputId === undefined
+        ? {}
+        : { reviewedOutputId: resolvedReviewedOutput.workerOutput.reviewedOutputId }),
+      ...(resolvedReviewedOutput?.workerOutput.reviewedOutputFileByteAllowance === undefined
+        ? {}
+        : { reviewedOutputFileByteAllowance: resolvedReviewedOutput.workerOutput.reviewedOutputFileByteAllowance }),
       workerJobId,
       workspacePath: workerWorkspacePath,
       ...(commitSha ? { commitSha } : {}),
@@ -269,6 +275,7 @@ export async function projectIntegrationApplyWorkerOutput(
 ): Promise<ProjectIntegrationMcpToolResponse> {
   const controller = await options.loadController(args);
   const attemptId = requiredRawString(args.attemptId, "attemptId");
+  await options.assertAttemptMutable?.(controller, attemptId);
   if (!args.confirmApply) {
     return mcpJson({
       ok: false,
@@ -298,6 +305,7 @@ export async function projectIntegrationRunRequiredChecks(
 ): Promise<ProjectIntegrationMcpToolResponse> {
   const controller = await options.loadController(args);
   const attemptId = requiredRawString(args.attemptId, "attemptId");
+  await options.assertAttemptMutable?.(controller, attemptId);
   if (!args.confirmRunChecks) {
     return mcpJson({
       ok: false,
@@ -324,6 +332,7 @@ export async function projectIntegrationCommitApprovedChanges(
 ): Promise<ProjectIntegrationMcpToolResponse> {
   const controller = await options.loadController(args);
   const attemptId = requiredRawString(args.attemptId, "attemptId");
+  await options.assertAttemptMutable?.(controller, attemptId);
   const message = requiredRawString(args.message, "message");
   if (!args.confirmCommit) {
     return mcpJson({
@@ -354,6 +363,7 @@ export async function projectIntegrationPushApprovedCommit(
 ): Promise<ProjectIntegrationMcpToolResponse> {
   const controller = await options.loadController(args);
   const attemptId = requiredRawString(args.attemptId, "attemptId");
+  await options.assertAttemptMutable?.(controller, attemptId);
   const branch = stringValue(args.branch);
   const remote = stringValue(args.remote);
   if (branch) assertSafeGitRefName(branch, "branch");
@@ -391,6 +401,7 @@ export async function projectIntegrationRejectAttempt(
 ): Promise<ProjectIntegrationMcpToolResponse> {
   const controller = await options.loadController(args);
   const attemptId = requiredRawString(args.attemptId, "attemptId");
+  await options.assertAttemptMutable?.(controller, attemptId);
   const reason = requiredRawString(args.reason, "reason");
   if (!args.confirmReject) {
     return mcpJson({

@@ -14,6 +14,7 @@ export type GitBlobBatchOptions = {
   readonly gitBinaryPath?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly timeoutMs?: number;
+  readonly noReplaceObjects?: boolean;
 };
 
 /**
@@ -77,10 +78,16 @@ async function runGitBlobBatch(
     (resolve, reject) => {
       const child = spawn(
         input.gitBinaryPath ?? "git",
-        ["cat-file", "--batch"],
+        [
+          ...(input.noReplaceObjects === true
+            ? ["--no-replace-objects"]
+            : []),
+          "cat-file",
+          "--batch",
+        ],
         {
           cwd: input.workspacePath,
-          env: input.env,
+          env: { ...(input.env ?? process.env), GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null" },
           stdio: ["pipe", "pipe", "pipe"],
         },
       );

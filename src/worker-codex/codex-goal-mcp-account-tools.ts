@@ -39,10 +39,11 @@ export function registerCodexGoalAccountTools(server: McpServer): void {
     {
       title: "Codex Goal Account Status",
       description:
-        "Inspect a stored job's configured account slots by jobId, including job-specific capacity cooldowns.",
+        "Inspect a stored job's configured account slots by jobId. Optional recheckDueCapacity performs a claimed, due-only quota read and updates shared capacity; it does not enable liveCheck or exec probes.",
       inputSchema: {
         ...jobIdInputSchema(),
         liveCheck: z.boolean().optional(),
+        recheckDueCapacity: z.boolean().optional(),
         codexBinaryPath: z.string().optional(),
         liveCheckTimeoutMs: z.number().int().positive().optional(),
       },
@@ -54,6 +55,7 @@ export function registerCodexGoalAccountTools(server: McpServer): void {
         jobId: loaded.manifest.jobId,
         ...(await codexGoalAccountStatusPayload(loaded.launch, {
           liveCheck: booleanValue(args.liveCheck) ?? false,
+          recheckDueCapacity: booleanValue(args.recheckDueCapacity) ?? false,
           ...(stringValue(args.codexBinaryPath)
             ? { codexBinaryPath: stringValue(args.codexBinaryPath) as string }
             : {}),
@@ -182,7 +184,7 @@ export function registerCodexGoalAccountTools(server: McpServer): void {
     {
       title: "Codex Account Slot Status",
       description:
-        "Inspect Codex account slot auth files without printing tokens.",
+        "Inspect Codex account slots without printing tokens. Follows auth-root symlinks. Optional recheckDueCapacity performs a claimed, due-only quota read and updates shared capacity; it does not enable liveCheck or exec probes.",
       inputSchema: {
         poolRootDir: z.string().optional(),
         pool: z.string().optional(),
@@ -190,6 +192,7 @@ export function registerCodexGoalAccountTools(server: McpServer): void {
         stateRootDir: z.string().optional(),
         accounts: z.union([z.string(), z.array(z.string())]).optional(),
         liveCheck: z.boolean().optional(),
+        recheckDueCapacity: z.boolean().optional(),
         codexBinaryPath: z.string().optional(),
         liveCheckTimeoutMs: z.number().int().positive().optional(),
       },
@@ -204,6 +207,7 @@ export function registerCodexGoalAccountTools(server: McpServer): void {
           ? { stateRootDir: resolvePath(process.cwd(), stringValue(args.stateRootDir) as string) }
           : {}),
         liveCheck: booleanValue(args.liveCheck) ?? false,
+        recheckDueCapacity: booleanValue(args.recheckDueCapacity) ?? false,
         ...(stringValue(args.codexBinaryPath)
           ? { codexBinaryPath: stringValue(args.codexBinaryPath) as string }
           : {}),

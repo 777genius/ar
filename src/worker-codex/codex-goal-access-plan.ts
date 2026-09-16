@@ -9,6 +9,7 @@ import {
   parseNetworkAccessMode,
   type LaunchAdapterCapabilities,
   type LaunchPlan,
+  type CommandPolicy,
   type ProjectAccessScope,
 } from "@vioxen/subscription-runtime/worker-core";
 
@@ -118,6 +119,29 @@ export function buildCodexGoalAccessLaunchPlan(
   });
 }
 
+export function commandPolicyForHostedCodexGoal(input: {
+  readonly accessLaunchPlan: LaunchPlan | undefined;
+  readonly sourceEnv: Readonly<Record<string, string | undefined>> | undefined;
+}): CommandPolicy | undefined {
+  if (
+    input.accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
+    input.accessLaunchPlan.commandPolicy.validateCommands
+  ) {
+    return input.accessLaunchPlan.commandPolicy;
+  }
+  if (input.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job") {
+    return undefined;
+  }
+  return {
+    validateCommands: true,
+    deniedExecutableNames: [],
+    deniedGitSubcommands: [],
+    deniedPathPrefixes: [],
+    deniedInlineCodeExecutables: [],
+    deniedScriptExecutables: [],
+  };
+}
+
 export function assertCodexGoalAccessLaunchAllowed(
   config: CodexGoalAccessPlanConfig,
 ): LaunchPlan | undefined {
@@ -190,6 +214,11 @@ export function parseCodexGoalProjectAccessScope(
     ...stringArrayProperty(
       value.consumedOutputLedgerRoots,
       "consumedOutputLedgerRoots",
+      fieldName,
+    ),
+    ...stringArrayProperty(
+      value.consumedOutputEvidenceRoots,
+      "consumedOutputEvidenceRoots",
       fieldName,
     ),
     ...(value.commitIdentity === undefined

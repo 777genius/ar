@@ -1,3 +1,4 @@
+import { claudeTelemetryFromError, numericClaudeTelemetry } from "../protocol/task-telemetry";
 import {
   assertProviderTaskSystemPrompt,
   AgentRuntimeTurnLimitEnforcement,
@@ -102,6 +103,7 @@ export class ClaudeTaskAgentDriver implements AgentDriver, StreamingAgentDriver 
       return failedClaudeTask(missingClaudeSessionFailure(), startedAt);
     }
 
+    let knownTelemetry: ProviderTaskResult["telemetry"];
     try {
       const prepared = prepareClaudeTaskEngineInput(
         this.options,
@@ -110,6 +112,7 @@ export class ClaudeTaskAgentDriver implements AgentDriver, StreamingAgentDriver 
       );
       await input.onTaskStarted?.();
       const result = await this.options.engine.run(prepared.engineInput);
+      knownTelemetry = numericClaudeTelemetry(result.telemetry);
       if (input.logicalThread !== undefined) {
         const checkpoint = result.telemetry?.providerSessionId;
         if (!checkpoint) {
@@ -150,6 +153,7 @@ export class ClaudeTaskAgentDriver implements AgentDriver, StreamingAgentDriver 
       return failedClaudeTask(
         failure,
         startedAt,
+        claudeTelemetryFromError(error) ?? knownTelemetry,
       );
     }
   }
@@ -189,6 +193,7 @@ export class ClaudeTaskAgentDriver implements AgentDriver, StreamingAgentDriver 
       return;
     }
 
+    let knownTelemetry: ProviderTaskResult["telemetry"];
     try {
       const prepared = prepareClaudeTaskEngineInput(
         this.options,
@@ -203,6 +208,9 @@ export class ClaudeTaskAgentDriver implements AgentDriver, StreamingAgentDriver 
         };
       }
       for await (const event of this.options.engine.stream(prepared.engineInput)) {
+        const observedTelemetry = event.type === "completed"
+          ? event.result.telemetry ?? event.telemetry : event.telemetry;
+        if (observedTelemetry !== undefined) knownTelemetry = numericClaudeTelemetry(observedTelemetry);
         yield redactProviderTaskEvent(event, input.redactor);
       }
     } catch (error) {
@@ -210,6 +218,7 @@ export class ClaudeTaskAgentDriver implements AgentDriver, StreamingAgentDriver 
         failedClaudeTask(
           classifyClaudeFailure(error, { redactor: input.redactor }),
           startedAt,
+          claudeTelemetryFromError(error) ?? knownTelemetry,
         ),
         input.redactor,
       );

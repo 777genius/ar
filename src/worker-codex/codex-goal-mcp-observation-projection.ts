@@ -22,6 +22,7 @@ import {
   codexGoalOrphanManualReviewReasons,
   codexGoalOrphanRunStatus,
 } from "./application/codex-goal-orphan-observation-policy";
+import { redactLogTail } from "./application/codex-goal-log-view";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -255,7 +256,11 @@ async function orphanCodexLogExcerpt(input: {
       ? {}
       : { byteLength: input.status.logByteLength }),
     ...(input.includeLogTail
-      ? { tail: await tailCodexGoalLog(input.status.logPath, input.tailLines) }
+      ? {
+          tail: redactLogTail(
+            await tailCodexGoalLog(input.status.logPath, input.tailLines),
+          ),
+        }
       : {}),
   };
 }

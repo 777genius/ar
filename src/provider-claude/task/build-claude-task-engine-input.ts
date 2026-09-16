@@ -32,6 +32,7 @@ export type ClaudeTaskAgentDriverOptions = {
   readonly disallowedTools?: readonly string[];
   readonly mcpConfig?: readonly string[];
   readonly strictMcpConfig?: boolean;
+  readonly outputSchemas?: Readonly<Record<string, unknown>>;
 };
 
 export type ClaudeTaskEnginePreparationInput = {
@@ -94,8 +95,30 @@ export function prepareClaudeTaskEngineInput(
     input.task.controls?.disallowedTools ?? options.disallowedTools;
   const editMode = input.task.controls?.editMode;
   const providerSandboxMode = input.task.controls?.providerSandboxMode;
+  const workspaceInstructionPolicy = input.task.controls?.workspaceInstructionPolicy;
   const outputSchemaName =
     input.task.controls?.outputSchemaName ?? input.task.outputSchemaName;
+  const configuredOutputSchema = outputSchemaName === undefined
+    ? undefined
+    : options.outputSchemas?.[outputSchemaName];
+  if (
+    outputSchemaName !== undefined &&
+    options.outputSchemas !== undefined &&
+    configuredOutputSchema === undefined
+  ) {
+    throw new Error(`claude_output_schema_missing:${outputSchemaName}`);
+  }
+  if (
+    configuredOutputSchema !== undefined &&
+    (configuredOutputSchema === null ||
+      typeof configuredOutputSchema !== "object" ||
+      Array.isArray(configuredOutputSchema))
+  ) {
+    throw new Error(`claude_output_schema_invalid:${outputSchemaName}`);
+  }
+  const outputSchema = configuredOutputSchema as
+    | Readonly<Record<string, unknown>>
+    | undefined;
   const appendSystemPrompt = mergeSystemPrompts(
     options.appendSystemPrompt,
     input.task.systemPrompt,
@@ -110,8 +133,10 @@ export function prepareClaudeTaskEngineInput(
     mcpConfig: options.mcpConfig,
     editMode,
     providerSandboxMode,
+    workspaceInstructionPolicy,
     strictMcpConfig: options.strictMcpConfig,
     outputSchemaName,
+    outputSchema,
     runtimeThread,
   });
   return {
@@ -129,8 +154,10 @@ type OptionalEngineInputKey =
   | "mcpConfig"
   | "editMode"
   | "providerSandboxMode"
+  | "workspaceInstructionPolicy"
   | "strictMcpConfig"
   | "outputSchemaName"
+  | "outputSchema"
   | "runtimeThread";
 
 type OptionalEngineInputValues = {
@@ -169,11 +196,20 @@ function withOptionalEngineInputValues(
       providerSandboxMode: optional.providerSandboxMode,
     };
   }
+  if (optional.workspaceInstructionPolicy !== undefined) {
+    result = {
+      ...result,
+      workspaceInstructionPolicy: optional.workspaceInstructionPolicy,
+    };
+  }
   if (optional.strictMcpConfig !== undefined) {
     result = { ...result, strictMcpConfig: optional.strictMcpConfig };
   }
   if (optional.outputSchemaName !== undefined) {
     result = { ...result, outputSchemaName: optional.outputSchemaName };
+  }
+  if (optional.outputSchema !== undefined) {
+    result = { ...result, outputSchema: optional.outputSchema };
   }
   if (optional.runtimeThread !== undefined) {
     result = { ...result, runtimeThread: optional.runtimeThread };

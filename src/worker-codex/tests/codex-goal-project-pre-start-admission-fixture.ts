@@ -168,6 +168,26 @@ export function withWorkKey<T extends Record<string, unknown>>(
   return { ...contract, workKey };
 }
 
+export function withOwnershipBoundWorkKey<T extends Record<string, unknown>>(
+  contract: T,
+): T & { workKey: string } {
+  const workKey = sha256(Buffer.from(JSON.stringify({
+    kind: contract.kind,
+    format: contract.format,
+    phaseId: contract.phaseId,
+    laneId: contract.laneId,
+    baseSha: contract.baseSha,
+    phaseStartSha: contract.phaseStartSha,
+    packetRevision: contract.packetRevision,
+    inputPatchHash: contract.inputPatchHash,
+    reviewKind: contract.reviewKind,
+    ownedPaths: contract.ownedPaths,
+    revision: contract.revision,
+    merge: contract.merge,
+  })));
+  return { ...contract, workKey };
+}
+
 export function declarativeContract(
   contract: Record<string, unknown>,
 ): Record<string, unknown> {

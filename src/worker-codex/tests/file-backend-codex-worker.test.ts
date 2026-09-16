@@ -50,85 +50,15 @@ import {
   waitUntil,
 } from "./file-backend-codex-worker-test-support";
 
-describe("CommandPolicyRunner", () => {
-  it("exposes wrapper runner id in capabilities for runtime policy negotiation", () => {
-    const inner = new StaticRunner({ exitCode: 0, stdout: "", stderr: "" });
-    const runner = new CommandPolicyRunner(inner, isolatedWorkspaceCommandPolicy());
-
-    expect(runner.runnerId).toBe("node-process:command-policy");
-    expect(runner.capabilities.runnerId).toBe(runner.runnerId);
-  });
-
-  it("blocks denied commands before the inner runner is invoked", async () => {
-    const inner = new StaticRunner({ exitCode: 0, stdout: "", stderr: "" });
-    const runner = new CommandPolicyRunner(inner, isolatedWorkspaceCommandPolicy());
-
-    await expect(runner.run({
-      command: "git",
-      args: ["push", "origin", "main"],
-      cwd: "/tmp/project",
-      env: {},
-      timeoutMs: 1_000,
-      abortSignal: new AbortController().signal,
-    })).rejects.toThrow("command_policy_denied:denied_git_subcommand");
-    expect(inner.lastArgs).toEqual([]);
-  });
-
-  it("delegates allowed commands to the inner runner", async () => {
-    const inner = new StaticRunner({ exitCode: 0, stdout: "clean", stderr: "" });
-    const runner = new CommandPolicyRunner(inner, isolatedWorkspaceCommandPolicy());
-
-    await expect(runner.run({
-      command: "git",
-      args: ["status", "--short"],
-      cwd: "/tmp/project",
-      env: {},
-      timeoutMs: 1_000,
-      abortSignal: new AbortController().signal,
-    })).resolves.toMatchObject({ exitCode: 0, stdout: "clean" });
-    expect(inner.lastArgs).toEqual(["status", "--short"]);
-  });
-
-  it("emits a redacted audit event when a command is denied", async () => {
-    const inner = new StaticRunner({ exitCode: 0, stdout: "", stderr: "" });
-    const observability = new MemoryWorkerObservability();
-    const runner = new CommandPolicyRunner(inner, isolatedWorkspaceCommandPolicy(), {
-      observability,
-      providerId: "codex",
-      metadata: { workerId: "worker-a" },
-    });
-
-    await expect(runner.run({
-      command: "git",
-      args: ["push", "https://secret-token@example.com/repo.git", "main"],
-      cwd: "/tmp/project",
-      env: {},
-      timeoutMs: 1_000,
-      abortSignal: new AbortController().signal,
-    })).rejects.toThrow("command_policy_denied:denied_git_subcommand");
-
-    expect(observability.events).toHaveLength(1);
-    expect(observability.events[0]).toMatchObject({
-      name: "command_policy.denied",
-      providerId: "codex",
-      metadata: {
-        reason: "denied_git_subcommand",
-        executableName: "git",
-        runnerId: "node-process",
-        workerId: "worker-a",
-      },
-    });
-    expect(JSON.stringify(observability.events)).not.toContain("secret-token");
-  });
-});
-
 describe("FileBackendCodexWorker", () => {
-  it("exposes lifecycle, seed, prewarm, health, and dispose", async () => {
+  it.each([false, true])("exposes lifecycle with separate runtime home: %s", async separateHome => {
     const rootDir = await mkdtemp(join(tmpdir(), "codex-worker-"));
+    const runtimeHomeRootDir = separateHome ? join(rootDir, "payload-home") : rootDir;
     const appServer = new FakeAppServerFactory();
     const worker = new FileBackendCodexWorker({
       providerInstanceId: "codex:test",
       stateRootDir: rootDir,
+      ...(separateHome ? { runtimeHomeRootDir } : {}),
       codexBinaryPath: "codex",
       encryptionKey: new Uint8Array(32).fill(7),
       appServerProcessFactory: appServer.create,
@@ -154,7 +84,12 @@ describe("FileBackendCodexWorker", () => {
           engineReusable: "true",
         },
       });
-      await expect(access(join(rootDir, "codex-session-cache"))).resolves.toBeUndefined();
+      await expect(access(join(runtimeHomeRootDir, "codex-session-cache"))).resolves.toBeUndefined();
+      await expect(access(join(rootDir, "sessions"))).resolves.toBeUndefined();
+      if (separateHome) {
+        await expect(access(join(rootDir, "codex-session-cache"))).rejects.toThrow();
+        await expect(access(join(rootDir, "workspaces"))).rejects.toThrow();
+      }
       expect(appServer.spawnCount).toBe(1);
       const expectedPathEntries = [
         ...(process.env.PATH ?? "").split(delimiter).filter(Boolean),
@@ -167,6 +102,7 @@ describe("FileBackendCodexWorker", () => {
       );
       expect(appServer.prompts).toEqual([]);
       const codexHome = appServer.codexHomes[0]!;
+      expect(codexHome.startsWith(join(runtimeHomeRootDir, "codex-session-cache") + "/")).toBe(true);
       await worker.dispose();
       await expect(access(codexHome)).resolves.toBeUndefined();
       await expect(access(join(codexHome, "auth.json"))).rejects.toThrow();
@@ -351,6 +287,28 @@ describe("FileBackendCodexWorker", () => {
       await rm(rootDir, { recursive: true, force: true });
     }
   });
+
+  it.each(["packaged-exec", "plain-exec"] as const)(
+    "fails closed when hosted scan protection is unavailable for %s",
+    async (executionEngine) => {
+      const rootDir = await mkdtemp(join(tmpdir(), "codex-worker-"));
+
+      try {
+        expect(() => new FileBackendCodexWorker({
+          providerInstanceId: "codex:test",
+          stateRootDir: rootDir,
+          codexBinaryPath: "codex",
+          encryptionKey: new Uint8Array(32).fill(12),
+          executionEngine,
+          sourceEnv: {
+            SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+          },
+        })).toThrow("file_backend_codex_hosted_scan_guard_engine_invalid");
+      } finally {
+        await rm(rootDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("runs coding work through packaged Codex exec when selected", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "codex-worker-"));

@@ -81,6 +81,48 @@ describe("bounded Codex workspace tools", () => {
     })).rejects.toThrow("workspace_edit_old_text_must_match_once");
   });
 
+  it("denies project instructions before bounded review reads or searches", async () => {
+    const root = await workspace();
+    await mkdir(join(root, "nested"));
+    await mkdir(join(root, ".claude", "rules"), { recursive: true });
+    await writeFile(join(root, "AGENTS.md"), "instruction-secret\n");
+    await writeFile(join(root, "nested", "Agents.Override.md"), "nested-secret\n");
+    await writeFile(join(root, "nested", "sKiLl.Md"), "skill-secret\n");
+    await writeFile(join(root, ".claude", "rules", "review.md"), "rule-secret\n");
+    await writeFile(join(root, "AGENTS.md.example"), "benign-secret\n");
+    await symlink(join(root, "AGENTS.md"), join(root, "instruction-link.md"));
+    const files = await BoundedWorkspaceFiles.create(root, {
+      denyProjectInstructions: true,
+    });
+
+    await expect(files.readFile("AGENTS.md")).rejects.toThrow(
+      "workspace_project_instruction_rejected",
+    );
+    await expect(files.readFile("nested/../AGENTS.md")).rejects.toThrow(
+      "workspace_project_instruction_rejected",
+    );
+    await expect(files.readFile("nested/sKiLl.Md")).rejects.toThrow(
+      "workspace_project_instruction_rejected",
+    );
+    await expect(files.readFile("nested/Agents.Override.md")).rejects.toThrow(
+      "workspace_project_instruction_rejected",
+    );
+    await expect(files.searchFiles({
+      path: ".claude/rules",
+      query: "rule-secret",
+    })).rejects.toThrow("workspace_project_instruction_rejected");
+    await expect(files.searchFiles({ query: "instruction-secret" })).resolves
+      .toEqual([]);
+    await expect(files.searchFiles({ query: "skill-secret" })).resolves
+      .toEqual([]);
+    await expect(files.readFile("instruction-link.md")).rejects.toThrow(
+      "workspace_symlink_rejected",
+    );
+    await expect(files.readFile("AGENTS.md.example")).resolves.toBe(
+      "benign-secret\n",
+    );
+  });
+
   it("serializes concurrent edits so stale text cannot overwrite a newer edit", async () => {
     const root = await workspace();
     await writeFile(join(root, "value.txt"), "before\n");
@@ -166,6 +208,17 @@ describe("bounded Codex workspace tools", () => {
       workspaceRoot: "/tmp/disposable-workspace",
       allowedTools: [AgentRuntimeTool.Shell],
     })).toThrow("workspace_tool_unsupported:shell");
+  });
+
+  it("disables native project docs for instruction-isolated profiles", () => {
+    const profile = buildCodexWorkspaceToolsProfile({
+      workspaceRoot: "/tmp/disposable-workspace",
+      allowedTools: [AgentRuntimeTool.ReadFile, AgentRuntimeTool.SearchFiles],
+      denyProjectInstructions: true,
+    });
+
+    expect(profile.configToml).toContain("project_doc_max_bytes = 0");
+    expect(profile.configToml).toContain('"--deny-project-instructions"');
   });
 });
 

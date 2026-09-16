@@ -91,6 +91,7 @@ export type JobWatchMcpArgs = JobOverviewMcpArgs & {
 };
 
 export type AgentRunWatchMcpArgs = JobOverviewMcpArgs & {
+  readonly cursor?: string;
   readonly providerKind?: string;
   readonly jobId?: string;
   readonly jobIds?: string | readonly string[];
@@ -123,6 +124,7 @@ export type AgentRunEventCompactionMcpArgs = JobRegistryMcpArgs & {
 
 export type AgentRunProjectEventsMcpArgs = AgentRunEventsMcpArgs & {
   readonly hostId?: string;
+  readonly eventLimit?: number;
 };
 
 export type JobIdMcpArgs = JobRegistryMcpArgs & {
@@ -159,6 +161,9 @@ export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
   readonly confirmFastForwardExisting?: boolean;
   readonly confirmIntegrate?: boolean;
   readonly confirmUpdate?: boolean;
+  readonly confirmRelocate?: boolean;
+  readonly historicalNeverRunAttestation?: import("./application/project-control/codex-goal-controller-historical-attestation").ControllerHistoricalAttestation;
+  readonly expectedManifestSha256?: string;
   readonly confirmPush?: boolean;
   readonly confirmStart?: boolean;
   readonly continuationAccounts?: string | readonly string[];
@@ -173,6 +178,45 @@ export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
   readonly preStartAdmission?: WorkerLaunchAdmission;
   readonly confirmPreStartAdmission?: boolean;
   readonly confirmRepair?: boolean;
+  readonly confirmLegacyOutputRepair?: boolean;
+  readonly retainedRegistrationJobId?: string;
+  readonly expectedJobManifestPath?: string;
+  readonly expectedJobManifestSha256?: string;
+  readonly expectedWorkspacePath?: string;
+  readonly expectedRetainedRegistrationManifestSha256?: string;
+  readonly expectedRetirementPlanSha256?: string;
+  readonly confirmRetirement?: boolean;
+  readonly frozenOutputSourcePath?: string;
+  readonly frozenOutputSourceSha256?: string;
+  readonly frozenOutputSourceLength?: number;
+  readonly frozenOutputSourceManifestPath?: string;
+  readonly frozenOutputSourceManifestSha256?: string;
+  readonly destinationEvidenceRoot?: string;
+  readonly destinationLedgerRoot?: string;
+  readonly changedPaths?: readonly string[];
+  readonly baseCommit?: string;
+  readonly headCommit?: string;
+  readonly patchSha256?: string;
+  readonly expectedRetainedOutputSha256?: string;
+  readonly supersededLegacySummaries?: readonly {
+    readonly jobId?: string;
+    readonly manifestPath?: string;
+    readonly manifestSha256?: string;
+  }[];
+  readonly expectedFrozenOutputImportPlanSha256?: string;
+  readonly confirmFrozenOutputImport?: boolean;
+  readonly oldLedgerRoot?: string;
+  readonly newLedgerRoot?: string;
+  readonly ledgerEpochCutoff?: string;
+  readonly expectedLedgerEpochPlanSha256?: string;
+  readonly expectedLedgerEpochProposedAdmissionAnchorSha256?: string;
+  readonly confirmLedgerEpochMigration?: boolean;
+  readonly expectedStaleIntegrationPlanSha256?: string;
+  readonly confirmStaleIntegrationReconciliation?: boolean;
+  readonly sourceStaleIntegrationPlanSha256?: string;
+  readonly legacyAttemptQuarantineCutoff?: string;
+  readonly expectedLegacyAttemptQuarantinePlanSha256?: string;
+  readonly confirmLegacyAttemptQuarantine?: boolean;
   readonly startWorker?: boolean;
   readonly workerRole?: string;
   readonly dependencyBootstrap?: string;
@@ -194,6 +238,7 @@ export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
   readonly captureReviewedOutput?: boolean;
   readonly reviewedOutputId?: string;
   readonly expectedPatchSha256?: string;
+  readonly reviewedOutputFileByteAllowance?: number;
   readonly reviewDecision?: string;
   readonly reviewedBy?: string;
   readonly reviewReason?: string;
@@ -246,9 +291,17 @@ export type JobLifecycleMcpArgs = JobIdMcpArgs & {
 export type JobBriefMcpArgs = JobIdMcpArgs & {
   readonly staleAfterMs?: number;
   readonly tailLines?: number;
+  readonly includeLogTail?: boolean;
+  readonly detail?: CodexGoalBriefDetail;
+  readonly afterRevision?: string;
   readonly targetCommit?: string;
   readonly targetWorkspacePath?: string;
 };
+
+export enum CodexGoalBriefDetail {
+  Compact = "compact",
+  Full = "full",
+}
 
 export type JobResultReconcileMcpArgs = JobBriefMcpArgs & {
   readonly forceWrite?: boolean;

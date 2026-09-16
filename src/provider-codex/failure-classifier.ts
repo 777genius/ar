@@ -1,11 +1,32 @@
+import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
 import type { ProviderFailure } from "@vioxen/subscription-runtime/core";
 import { classifyCodexRuntimeFailure } from "./codex-cli-domain";
 import { CodexAppServerTurnError } from "./app-server/application/app-server-client";
 import { CodexAppServerThreadForkError } from "./app-server/application/app-server-thread-fork-error";
 import { codexAppServerBudgetExceededError } from "./app-server/domain/app-server-errors";
 import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
+import { isCodexAppServerRateLimitsRejectedError } from "./app-server/application/app-server-rate-limits-monitor";
 
 export function classifyCodexFailure(error: unknown): ProviderFailure {
+  if (
+    error instanceof AppServerUsageError &&
+    error.constructor === AppServerUsageError &&
+    error.cause instanceof Error
+  ) {
+    return classifyCodexFailure(error.cause);
+  }
+  if (
+    isCodexAppServerRateLimitsRejectedError(error) &&
+    error.reason === "quota_limited"
+  ) {
+    return {
+      code: "quota_limited",
+      retryable: true,
+      reconnectRequired: false,
+      safeMessage: "Codex quota or billing limit was reached.",
+      causeCategory: "quota_limited",
+    };
+  }
   const budgetExceededError = codexAppServerBudgetExceededError(error);
   if (budgetExceededError) {
     return {

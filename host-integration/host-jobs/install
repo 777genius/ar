@@ -1,0 +1,142 @@
+#!/bin/sh
+set -eu
+# Run explicitly as root on an approved host; tests use disposable fake installs.
+source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+fail() { echo "host jobs installation: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || fail 'installation requires root'
+ssh_existing=false
+[ "$#" = 2 ] && [ "$1" = --ssh-public-key ] || fail 'usage: install --ssh-public-key PATH'
+ssh_key_path=$2
+[ -f "$ssh_key_path" ] && [ -r "$ssh_key_path" ] || fail 'public key file is not readable'
+# One ordinary key, never caller-supplied authorized_keys options.
+awk 'NF { n++; if ($1 != "ssh-ed25519" || $2 !~ /^[A-Za-z0-9+\/=]+$/) exit 1 } END { if (n != 1) exit 1 }' "$ssh_key_path" || fail 'requires one plain Ed25519 public key'
+/usr/bin/ssh-keygen -l -f "$ssh_key_path" >/dev/null || fail 'invalid public key'
+ssh_public_key=$(awk 'NF { print $1 " " $2 }' "$ssh_key_path")
+[ -x /usr/bin/sudo ] && [ -x /usr/sbin/visudo ] && [ -x /usr/sbin/useradd ] || fail 'sudo, visudo and useradd are required'
+if ssh_account=$(getent passwd sr-transport); then
+  printf '%s\n' "$ssh_account" | awk -F: '$1 == "sr-transport" && $3 == "65531" && $6 == "/var/lib/sr-transport" && $7 == "/opt/subscription-runtime/host-jobs/ssh-ingress-shell" { ok=1 } END { exit !ok }' || fail 'existing transport account does not match the installed identity'
+  [ "$(getent passwd 65531)" = "$ssh_account" ] || fail 'transport UID resolves to a different identity'
+  ssh_existing=true
+elif getent passwd 65531 >/dev/null; then
+  fail 'dedicated transport UID 65531 is already allocated'
+fi
+fixed_node=/opt/subscription-runtime/runtime/node
+# Validate every existing lexical ancestor before resolving symlinks. Directory
+# symlinks are rejected; the executable itself may be an administrator-owned link.
+trust_chain() {
+  checked_path=$1
+  while :; do
+    if [ -e "$checked_path" ] || [ -L "$checked_path" ]; then
+      checked_uid=$(stat -c %u "$checked_path") || fail 'cannot inspect Node path owner'
+      [ "$checked_uid" = 0 ] || fail "Node path is not root-owned: $checked_path"
+      if [ -L "$checked_path" ]; then
+        [ "$checked_path" = "$1" ] || fail 'Node directory symlinks are not supported'
+      else
+        checked_mode=$(stat -c %a "$checked_path") || fail 'cannot inspect Node path permissions'
+        [ "$((0$checked_mode & 0022))" = 0 ] || fail "Node path is writable by untrusted users: $checked_path"
+        if [ "$checked_path" != "$1" ]; then
+          [ -d "$checked_path" ] || fail 'Node ancestor is not a directory'
+        fi
+      fi
+    fi
+    [ "$checked_path" != / ] || break
+    checked_path=$(dirname -- "$checked_path")
+  done
+}
+trust_chain "$fixed_node"
+node_exists=false
+if [ -e "$fixed_node" ] || [ -L "$fixed_node" ]; then
+  node_source=$fixed_node
+  node_exists=true
+else
+  node_source=$(command -v node) || fail 'Node is not installed'
+fi
+case "$node_source" in /*) ;; *) fail 'Node must resolve to an absolute executable';; esac
+trust_chain "$node_source"
+canonical_node=$(readlink -f -- "$node_source") || fail 'cannot resolve Node executable'
+[ -f "$canonical_node" ] && [ -x "$canonical_node" ] || fail 'Node target is not an executable regular file'
+trust_chain "$canonical_node"
+if [ "$node_exists" = true ] && [ -L "$fixed_node" ]; then
+  [ "$(readlink -- "$fixed_node")" = "$canonical_node" ] || fail 'fixed Node symlink must point directly to its canonical target'
+fi
+for executable in /usr/bin/flock /usr/bin/timeout; do
+  [ -f "$executable" ] && [ -x "$executable" ] || fail "requires executable $executable"
+  trust_chain "$executable"
+  trust_chain "$(readlink -f -- "$executable")"
+done
+if [ -e /opt/subscription-runtime/host-jobs/ingress.lock ] || [ -L /opt/subscription-runtime/host-jobs/ingress.lock ]; then
+  [ -f /opt/subscription-runtime/host-jobs/ingress.lock ] && [ ! -L /opt/subscription-runtime/host-jobs/ingress.lock ] || fail 'ingress lock must be a regular nonsymlink file'
+  trust_chain /opt/subscription-runtime/host-jobs/ingress.lock
+fi
+for path in /opt/subscription-runtime/host-jobs /var/lib/sr-transport /etc/sudoers.d; do
+  trust_chain "$path"
+  [ ! -L "$path" ] || fail 'SSH installation directories cannot be symlinks'
+done
+if [ "$ssh_existing" = true ]; then
+  for path in /var/lib/sr-transport /var/lib/sr-transport/.ssh /var/lib/sr-transport/.ssh/authorized_keys /etc/sudoers.d/sr-transport; do
+    [ -e "$path" ] && [ ! -L "$path" ] || fail 'existing transport installation is incomplete or symlinked'
+    trust_chain "$path"
+  done
+  [ -d /var/lib/sr-transport/.ssh ] && [ -f /var/lib/sr-transport/.ssh/authorized_keys ] && [ -f /etc/sudoers.d/sr-transport ] || fail 'existing transport paths have unexpected types'
+  printf 'restrict,command="/opt/subscription-runtime/host-jobs/ssh-ingress-shell" %s\n' "$ssh_public_key" | cmp -s - /var/lib/sr-transport/.ssh/authorized_keys || fail 'existing transport key differs; explicit admin rotation required'
+  printf '%s\n' 'sr-transport ALL=(root) NOPASSWD: /opt/subscription-runtime/host-jobs/ssh-endpoint ""' | cmp -s - /etc/sudoers.d/sr-transport || fail 'existing transport sudoers differs'
+else
+  [ ! -e /var/lib/sr-transport ] && [ ! -L /var/lib/sr-transport ] || fail 'transport home already exists'
+  [ ! -e /etc/sudoers.d/sr-transport ] && [ ! -L /etc/sudoers.d/sr-transport ] || fail 'transport sudoers already exists'
+fi
+# Validate the exact rule before any installed files change.
+printf '%s\n' 'sr-transport ALL=(root) NOPASSWD: /opt/subscription-runtime/host-jobs/ssh-endpoint ""' | /usr/sbin/visudo -cf - >/dev/null || fail 'invalid sudoers policy'
+# Preflight every staged input, including the nested installer, before either
+# installer can write. Source leaves never inherit Node's symlink exception.
+for source_file in contract.mjs manager.mjs read-request.mjs endpoint.mjs storage-policy.mjs ssh-endpoint ssh-ingress-shell ../managed-launcher/install ../managed-launcher/launch.mjs ../managed-launcher/payload-guard.mjs ../managed-launcher/profiles.mjs; do
+  staged_source="$source_dir/$source_file"
+  [ -f "$staged_source" ] && [ ! -L "$staged_source" ] || fail "staged source must be an existing regular nonsymlink file: $staged_source"
+  trust_chain "$staged_source"
+done
+target=/opt/subscription-runtime/host-jobs
+for file in contract.mjs manager.mjs read-request.mjs endpoint.mjs storage-policy.mjs ssh-endpoint ssh-ingress-shell; do
+  installed_leaf="$target/$file"
+  if [ -e "$installed_leaf" ] || [ -L "$installed_leaf" ]; then
+    [ -f "$installed_leaf" ] && [ ! -L "$installed_leaf" ] || fail "installed destination must be a regular nonsymlink file: $installed_leaf"
+    trust_chain "$installed_leaf"
+  fi
+done
+# All preflight checks precede either installer writing files.
+sh "$source_dir/../managed-launcher/install"
+if [ "$node_exists" = false ]; then
+  install -d -o root -g root -m 755 /opt/subscription-runtime/runtime
+  ln -s "$canonical_node" "$fixed_node" || fail 'fixed Node appeared during installation'
+fi
+install -d -o root -g root -m 755 "$target"
+for file in contract.mjs manager.mjs read-request.mjs endpoint.mjs storage-policy.mjs; do
+  install -o root -g root -m 644 "$source_dir/$file" "$target/$file"
+done
+if [ ! -e "$target/ingress.lock" ]; then
+  # noclobber prevents a concurrent installer from replacing the lock inode.
+  (umask 077; set -C; : > "$target/ingress.lock") || fail 'ingress lock appeared during installation'
+  chown root:root "$target/ingress.lock"
+fi
+install -o root -g root -m 755 "$source_dir/ssh-endpoint" "$target/ssh-endpoint"
+install -o root -g root -m 755 "$source_dir/ssh-ingress-shell" "$target/ssh-ingress-shell"
+if [ "$ssh_existing" = false ]; then
+  install -d -o root -g root -m 755 /var/lib/sr-transport
+  install -d -o root -g root -m 755 /var/lib/sr-transport/.ssh
+  # The login shell is restricted too, so a future alternate authentication
+  # method cannot grant this identity a general shell.
+  /usr/sbin/useradd --system --uid 65531 --no-create-home --home-dir /var/lib/sr-transport --shell "$target/ssh-ingress-shell" sr-transport
+  policy_temp=$(mktemp /etc/sudoers.d/.sr-transport.XXXXXX)
+  trap 'rm -f "$policy_temp"' EXIT
+  printf '%s\n' 'sr-transport ALL=(root) NOPASSWD: /opt/subscription-runtime/host-jobs/ssh-endpoint ""' > "$policy_temp"
+  chmod 440 "$policy_temp"
+  chown root:root "$policy_temp"
+  mv "$policy_temp" /etc/sudoers.d/sr-transport
+  trap - EXIT
+  # Publish the key last, once the endpoint and privilege boundary are ready.
+  key_temp=$(mktemp /var/lib/sr-transport/.ssh/.authorized_keys.XXXXXX)
+  trap 'rm -f "$key_temp"' EXIT
+  printf 'restrict,command="/opt/subscription-runtime/host-jobs/ssh-ingress-shell" %s\n' "$ssh_public_key" > "$key_temp"
+  chmod 644 "$key_temp"
+  chown root:root "$key_temp"
+  mv "$key_temp" /var/lib/sr-transport/.ssh/authorized_keys
+  trap - EXIT
+fi

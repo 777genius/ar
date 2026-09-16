@@ -1,3 +1,4 @@
+import { LocalReviewedOutputIntegrationIntegrity } from "../../reviewed-worker-output/adapters/local-reviewed-output-integration-integrity";
 import { dirname, join } from "node:path";
 import { LocalIntegrationAttemptStore } from "@vioxen/subscription-runtime/store-local-file";
 import {
@@ -28,10 +29,12 @@ import {
   reviewedWorkerOutputRoot,
 } from "../../reviewed-worker-output";
 import { projectControlWorkspaceLockRoot } from "../../codex-goal-project-workspace-lock";
+import { projectControlConsumedOutputEvidenceRoot } from
+  "../../codex-goal-mcp-project-scope";
 
 export type CreateLocalProjectIntegrationMcpToolHandlersOptions = Pick<
   CreateProjectIntegrationMcpToolHandlersOptions,
-  "loadController" | "resolvePathArg"
+  "loadController" | "resolvePathArg" | "assertAttemptMutable"
 >;
 
 export function createLocalProjectIntegrationMcpToolHandlers(
@@ -98,23 +101,33 @@ function localProjectIntegrationDeps(
   controller: ProjectIntegrationMcpController,
 ): ProjectIntegrationMcpUseCaseDeps {
   const rootDir = join(controller.controller.jobRootDir, "project-integration");
-  const archiveRoot = projectIntegrationArchiveRoot(controller);
+  const controllerArchiveRoot = projectIntegrationArchiveRoot(controller);
+  const evidenceRoots = controller.scope.consumedOutputEvidenceRoots ?? [];
+  const activeEvidenceRoot = evidenceRoots.length > 0
+    ? projectControlConsumedOutputEvidenceRoot(controller.scope)
+    : undefined;
   return {
     store: new LocalIntegrationAttemptStore({ rootDir }),
     git: new LocalGitIntegrationAdapter({
       allowedPatchRoots: projectIntegrationAllowedPatchRoots(controller),
       workerJobRootParent: dirname(controller.controller.jobRootDir),
-      controllerArchiveRoot: archiveRoot,
+      controllerArchiveRoot,
     }),
     commitIdentity: new ConfiguredCommitIdentityAdapter(
       controller.scope.commitIdentity,
     ),
     integratedOutputLedger: new LocalIntegratedOutputLedgerAdapter({
       ledgerRoots: controller.scope.consumedOutputLedgerRoots ?? [],
-      archiveRoot,
+      evidenceRoots,
+      ...(activeEvidenceRoot ? { activeEvidenceRoot } : {}),
+      custodyRoot: dirname(dirname(controller.registryRootDir)),
     }),
     checks: new LocalProjectCheckRunner(),
     scanner: new SimpleSecretScanner(),
+    reviewedOutputIntegrity: new LocalReviewedOutputIntegrationIntegrity({
+      rootDir: reviewedWorkerOutputRoot(controller.registryRootDir),
+      projectId: controller.scope.projectId,
+    }),
     locks: new LocalWorkspaceIntegrationLock({
       rootDir: projectControlWorkspaceLockRoot(controller.registryRootDir),
       staleLockMs: 30 * 60_000,

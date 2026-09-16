@@ -1,9 +1,10 @@
+import { isAppServerAdmissionError } from "./app-server-admission";
 import type {
   CodexExecutionInput,
   CodexExecutionResult,
   CodexLogicalThreadExecutionResult,
 } from "../../codex-json-execution-engine";
-import { codexOutputSchemaPayload } from "../../codex-json-execution-engine";
+import type { CodexStructuredOutputSchemaPlan } from "../../codex-structured-output-schema";
 import type {
   AppServerRunResult,
   AppServerWarning,
@@ -22,6 +23,7 @@ export async function runCodexAppServerLogicalThread(
     readonly timeoutMs: number;
     readonly maxGoalTurns: number;
     readonly goalContinuePrompt: string;
+    readonly schemaPlan?: CodexStructuredOutputSchemaPlan;
     runGoal(
       input: Parameters<AppServerGoalRunner["runLogicalThreadGoal"]>[0],
     ): ReturnType<AppServerGoalRunner["runLogicalThreadGoal"]>;
@@ -40,7 +42,7 @@ export async function runCodexAppServerLogicalThread(
     throw new Error("codex_app_server_logical_thread_requires_goal_mode");
   }
   try {
-    const outputSchema = codexOutputSchemaPayload(input.outputSchema);
+    const outputSchema = deps.schemaPlan?.codexSchema;
     const schemaWarnings = input.outputSchema && outputSchema === undefined
       ? [appServerOutputSchemaNotNativeWarning()]
       : [];
@@ -83,7 +85,7 @@ export async function runCodexAppServerLogicalThread(
       outcome: result.outcome,
     };
   } catch (error) {
-    await deps.disposeSession();
+    if (!isAppServerAdmissionError(error)) await deps.disposeSession();
     throw error;
   }
 }

@@ -14,11 +14,9 @@ concurrency:
 
 jobs:
   quality:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -30,11 +28,11 @@ jobs:
       - run: npm run check:boundaries
 
   unit-tests:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+      - name: Fetch pinned legacy ledger fixture
+        run: git fetch --no-tags --depth=1 origin d0a6885ddac5d90d765819359cfce05b756b7a54
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -43,11 +41,9 @@ jobs:
       - run: npm test
 
   package:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -55,24 +51,73 @@ jobs:
       - run: npm ci
       - run: npm run check:packed-consumer
 
+  crash-boundary-shards:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        lane: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:packages
+      - name: Certify crash-boundary shards in lane ${{ matrix.lane }}
+        env:
+          CODEX_LEDGER_EPOCH_CRASH_RANGE_ONLY: "1"
+          SHARD_LANE: ${{ matrix.lane }}
+        run: |
+          shard="$SHARD_LANE"
+          while [ "$shard" -le 53 ]; do
+            file="src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-${shard}.test.ts"
+            timeout --signal=TERM --kill-after=10s 240s \
+              npm run test:crash-shard -- "$file"
+            shard=$((shard + 8))
+          done
+
+  crash-boundary-shards-complete:
+    permissions:
+      contents: read
+    if: ${{ always() }}
+    needs: [crash-boundary-shards]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every crash-boundary shard lane passed
+        env:
+          CRASH_BOUNDARY_SHARDS_RESULT: ${{ needs.crash-boundary-shards.result }}
+        run: test "$CRASH_BOUNDARY_SHARDS_RESULT" = "success"
+
   test:
     if: ${{ always() }}
-    needs: [quality, unit-tests, package]
-    runs-on: ubuntu-24.04
+    needs: [quality, unit-tests, package, crash-boundary-shards-complete]
+    runs-on: ubuntu-latest
     steps:
       - name: Verify all CI gates passed
         env:
           QUALITY_RESULT: ${{ needs.quality.result }}
           UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
+          CRASH_BOUNDARY_SHARDS_RESULT: ${{ needs.crash-boundary-shards-complete.result }}
         run: |
           if [ "$QUALITY_RESULT" = "success" ] && \
              [ "$UNIT_TESTS_RESULT" = "success" ] && \
-             [ "$PACKAGE_RESULT" = "success" ]; then
+             [ "$PACKAGE_RESULT" = "success" ] && \
+             [ "$CRASH_BOUNDARY_SHARDS_RESULT" = "success" ]; then
             exit 0
           fi
 
           echo "quality: $QUALITY_RESULT"
           echo "unit-tests: $UNIT_TESTS_RESULT"
           echo "package: $PACKAGE_RESULT"
+          echo "crash-boundary-shards-complete: $CRASH_BOUNDARY_SHARDS_RESULT"
           exit 1

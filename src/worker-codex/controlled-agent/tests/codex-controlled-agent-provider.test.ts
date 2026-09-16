@@ -1,16 +1,18 @@
+import { createCodexProviderRuntimeAdapter } from "../../codex-provider-runtime-adapter";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-  AccessBoundary,
+  AccessBoundary, NetworkAccessMode, createProviderRuntimeRegistry,
   ControlledAgentRunStatus,
   RunEventProviderKind,
   type ControlledAgentRun,
   type ControlledAgentProviderStartInput,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  CodexProviderEgressProfileId, codexProviderEgressPolicy,
   type CodexAppServerChildProcess,
   sessionArtifactFromCodexAuthJson,
 } from "@vioxen/subscription-runtime/provider-codex";
@@ -30,7 +32,7 @@ const validAuthJson = JSON.stringify({
 });
 
 describe("CodexControlledAgentProvider", () => {
-  it("starts a Codex app-server controller with native environments disabled and broker config materialized", async () => {
+  it.each([false, true])("starts the actual controller provider/materializer; managed adapter=%s (synthetic authority and account)", async managed => {
     const root = await mkdtemp(join(tmpdir(), "codex-controlled-agent-provider-"));
     const workspacePath = join(root, "workspace");
     const stateDir = join(root, "state");
@@ -41,7 +43,7 @@ describe("CodexControlledAgentProvider", () => {
       mcpArgs: ["--stdio"],
       rawShellMode: "disabled-by-provider",
     });
-    const provider = new CodexControlledAgentProvider({
+    let provider = new CodexControlledAgentProvider({
       profile,
       sessionArtifact: sessionArtifactFromCodexAuthJson(validAuthJson),
       workspacePath,
@@ -54,6 +56,40 @@ describe("CodexControlledAgentProvider", () => {
       controllerObjective:
         "Create focused sandbox child workers only through broker tools.",
     });
+
+    if (managed) {
+      // Only fixture bytes are read. Admission and account catalog facts are
+      // substituted; dispatch, adapter, provider, driver and materializer are real.
+      const authPath = join(root, "synthetic-auth.json");
+      await writeFile(authPath, validAuthJson);
+      const ops = await import("../../codex-goal-ops");
+      const selection = await import("../../application/project-control/codex-goal-project-controller-account-selection");
+      const egress = await import("../../hosted-test-egress-admission");
+      const readonly = await import("../../hosted-readonly-admission");
+      const order: string[] = [];
+      const grant = vi.spyOn(egress, "admitHostedTestEgress").mockImplementation(async () => {
+        order.push("grant"); return codexProviderEgressPolicy(CodexProviderEgressProfileId.TestManagedQualification);
+      });
+      const admission = vi.spyOn(readonly, "admitHostedReadonlyInputs").mockImplementation(() => {
+        order.push("readonly"); return fakeFactory.create;
+      });
+      const slots = vi.spyOn(ops, "listCodexGoalAccountStatuses").mockImplementation(async () => { order.push("accounts"); return []; });
+      const account = vi.spyOn(selection, "selectProjectControllerCodexAccountSlot").mockReturnValue({ name: "TEST", authJsonPath: authPath } as never);
+      try {
+        const adapter = createCodexProviderRuntimeAdapter();
+        const result = await adapter.controlledAgentProvider({
+          profile: adapter.controllerProfile({ stateDir, mcpCommand: "subscription-runtime-codex-goal-mcp-test", mcpArgs: ["--stdio"] }),
+          scope: { projectId: "TEST", workspaceRoots: [workspacePath], worktreeRoots: [], jobIdPrefixes: ["TEST"], allowedGitRemotes: [], authRoot: root },
+          launch: { config: { jobId: "TEST", taskId: "TEST", jobRootDir: root, workspacePath, authRootDir: root,
+            promptPath: join(root, "synthetic-prompt"), accounts: [{ name: "TEST" }], codexBinaryPath: "/bin/codex-test", model: "gpt-test" } },
+          controllerOptions: { maxGoalTurns: 1 }, registryRootDir: root, cwd: workspacePath,
+          controllerObjective: async () => { order.push("objective"); return "Create focused sandbox child workers only through broker tools."; },
+        });
+        if (!(result.provider instanceof CodexControlledAgentProvider)) throw new Error("wrong provider");
+        provider = result.provider;
+        expect(order).toEqual(["grant", "readonly", "accounts", "objective"]);
+      } finally { grant.mockRestore(); admission.mockRestore(); slots.mockRestore(); account.mockRestore(); }
+    }
 
     try {
       const start = provider.start(startInput());
@@ -107,7 +143,10 @@ describe("CodexControlledAgentProvider", () => {
       expect(configToml).toContain("codex_goal_project_operation_status");
       expect(configToml).toContain("codex_goal_project_controller_consume_guidance");
       expect(configToml).toContain("[features.network_proxy]");
-      expect(configToml).toContain('domains = { "api.openai.com" = "allow" }');
+      if (managed) {
+        expect(configToml).toContain('"registry.npmjs.org" = "allow"');
+        expect(fakeFactory.environments[0]?.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE).toBe(CodexProviderEgressProfileId.TestManagedQualification);
+      } else expect(configToml).toContain('domains = { "api.openai.com" = "allow" }');
       expect(configToml).not.toContain("danger-full-access");
     } finally {
       await provider.stop({
@@ -308,6 +347,7 @@ type FakeAppServerRequest = {
 
 class MinimalAppServerFactory {
   readonly codexHomes: string[] = [];
+  readonly environments: Readonly<Record<string, string>>[] = [];
   readonly prompts: string[] = [];
   readonly processes: MinimalAppServerProcess[] = [];
   readonly requests: FakeAppServerRequest[] = [];
@@ -319,6 +359,7 @@ class MinimalAppServerFactory {
   readonly create = (input: {
     readonly env: Readonly<Record<string, string>>;
   }): CodexAppServerChildProcess => {
+    this.environments.push(input.env);
     this.codexHomes.push(input.env.CODEX_HOME ?? "");
     const process = new MinimalAppServerProcess((request) => {
       this.requests.push(request);
@@ -376,15 +417,7 @@ class MinimalAppServerProcess extends EventEmitter implements CodexAppServerChil
         continue;
       }
       if (request.method === "thread/start") {
-        this.respond(request.id, {
-          thread: { id: `thread-${this.nextThreadId++}` },
-          model: request.params?.model,
-          modelProvider: "openai",
-          serviceTier: request.params?.serviceTier ?? null,
-          reasoningEffort:
-            (request.params?.config as Record<string, unknown> | undefined)
-              ?.model_reasoning_effort,
-        });
+        this.respond(request.id, { thread: { id: `thread-${this.nextThreadId++}` } });
         continue;
       }
       if (request.method === "thread/goal/set") {
@@ -474,3 +507,56 @@ function extractPrompt(params: Record<string, unknown> | undefined): string {
   }
   return "";
 }
+
+it("composes actual controller dispatch, binding, adapter, state and provider with synthetic host/account facts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "TEST-managed-controller-route-"));
+  const workspacePath = join(root, "workspace"), stateDir = join(root, "state"), registryRootDir = join(root, "registry");
+  const authRoot = join(root, "synthetic-auth");
+  await mkdir(workspacePath); await mkdir(authRoot);
+  const promptPath = join(root, "synthetic-prompt"), authPath = join(authRoot, "auth.json");
+  await writeFile(promptPath, "Finish the synthetic controller goal through broker tools.");
+  await writeFile(authPath, validAuthJson);
+  const jobs = await import("../../codex-goal-jobs");
+  const controllerViews = await import("../../codex-goal-mcp-project-controller");
+  const stateLocation = await import("../../application/project-control/codex-goal-controller-state-location");
+  const registry = await import("../../application/project-control/codex-goal-project-controller-runtime");
+  const scope = { projectId: "TEST", workspaceRoots: [workspacePath], worktreeRoots: [], jobIdPrefixes: ["TEST"],
+    allowedGitRemotes: [], authRoot, registryRoot: registryRootDir, allowedAccountIds: ["TEST"] };
+  const controller = await jobs.createCodexGoalJob({ registryRootDir, manifest: {
+    jobId: "TEST-controller", taskId: "TEST-controller", jobRootDir: join(root, "job"), workspacePath,
+    authRootDir: authRoot, promptPath, accounts: ["TEST"], requireGitWorkspace: false,
+    accessBoundary: AccessBoundary.ProjectScopedControl, projectAccessScope: scope,
+    networkAccess: NetworkAccessMode.Restricted, executionEngine: "app-server-goal", model: "gpt-test",
+  } });
+  const factory = new MinimalAppServerFactory(), order: string[] = [];
+  const egress = await import("../../hosted-test-egress-admission"), readonly = await import("../../hosted-readonly-admission");
+  const ops = await import("../../codex-goal-ops"), selection = await import("../../application/project-control/codex-goal-project-controller-account-selection");
+  let admissions = 0;
+  const grant = vi.spyOn(egress, "admitHostedTestEgress").mockImplementation(async () => {
+    expect(await stateLocation.controllerStateLocationForRelocation(controller)).toBe(admissions++ === 0 ? undefined : stateDir);
+    order.push("grant"); return codexProviderEgressPolicy(CodexProviderEgressProfileId.TestManagedQualification);
+  });
+  const admitted = vi.spyOn(readonly, "admitHostedReadonlyInputs").mockImplementation(() => {
+    order.push("readonly"); return input => { order.push("spawn"); return factory.create(input); };
+  });
+  const slots = vi.spyOn(ops, "listCodexGoalAccountStatuses").mockImplementation(async () => { order.push("accounts"); return []; });
+  const account = vi.spyOn(selection, "selectProjectControllerCodexAccountSlot").mockReturnValue({ name: "TEST", authJsonPath: authPath } as never);
+  const deps = { runtimeVersion: "TEST", providerRegistry: registry.createInMemoryProjectControllerProviderRegistry(),
+    providerRuntimeRegistry: createProviderRuntimeRegistry([createCodexProviderRuntimeAdapter()]),
+    loadProjectControlController: async () => ({ controller: await jobs.readCodexGoalJob({ registryRootDir, jobId: controller.jobId }), registryRootDir, scope }) };
+  const args = { controllerJobId: controller.jobId, registryRootDir, stateDir, maxGoalTurns: 1 };
+  try {
+    expect(await controllerViews.projectControllerStartView(args, deps)).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(factory.processes[0]?.killCount).toBeGreaterThan(0));
+    expect(order.slice(0, 5)).toEqual(["grant", "readonly", "grant", "readonly", "accounts"]);
+    expect(order.indexOf("spawn")).toBeGreaterThan(order.indexOf("accounts"));
+    expect(await stateLocation.controllerStateLocationForRelocation(controller)).toBe(stateDir);
+    expect(factory.environments[0]?.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE).toBe(CodexProviderEgressProfileId.TestManagedQualification);
+    const status = await controllerViews.projectControllerStatusView(args, deps);
+    expect(JSON.stringify(status)).toContain("completed");
+  } finally {
+    await controllerViews.projectControllerStopView(args, deps);
+    grant.mockRestore(); admitted.mockRestore(); slots.mockRestore(); account.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
+});

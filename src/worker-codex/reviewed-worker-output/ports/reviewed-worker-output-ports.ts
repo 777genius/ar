@@ -1,4 +1,3 @@
-import { ReviewDecisionStatus } from "@vioxen/subscription-runtime/worker-core";
 import type {
   ReviewedWorkerOutputReviewAttestation,
   ReviewedWorkerOutputSnapshot,
@@ -9,10 +8,7 @@ export interface ReviewedWorkerOutputSnapshotterPort {
   capture(input: {
     readonly workspacePath: string;
     readonly allowEmptyPatch?: boolean;
-    readonly rejectedCaptureBinding?: {
-      readonly decision: ReviewDecisionStatus.Rejected;
-      readonly expectedPatchSha256: string;
-    };
+    readonly reviewedOutputFileByteAllowance?: number;
   }): Promise<ReviewedWorkerOutputWorkspaceSnapshot>;
 }
 
