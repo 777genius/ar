@@ -51,6 +51,19 @@ Reference implementation: `config-logger.factory.redaction.spec.ts`
 (`@vioxen/client`) — chains the real `CustomPinoLogger` output into the real
 redact config, and was mutation-tested twice.
 
+**A door's test that never drives its caller binds the door, not the guard
+(keel 2.5, F-25-32, 2026-09-18).** `JournalFence::authorize_takeover` refused a
+record held by any incarnation other than the one reported Lost, and its test
+proved that refusal with two hand-written numbers. Its ONE caller passed the
+record's own incarnation as the "lost" one, so the live comparison was `x == x`
+and the refusal could never fire: a healthy, restarted governor's announced job
+was taken out from under it on dev2. Both tests were green. The property was
+not "the door refuses" but "the reaper refuses", and only a test driven through
+the real call — the transition's incarnation into the reaper into the door —
+reads that. When a guard has exactly one caller, the binding test is the
+caller's; a unit test on the door is context, and the suite must say so
+(clause 3).
+
 ## Definition 2 — disclosure
 
 **A test whose mock erases the property it appears to assert must say so.**
