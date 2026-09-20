@@ -162,7 +162,7 @@
     "prepack": "npm run build",
     "typecheck": "npm run build:packages && tsc --noEmit -p tsconfig.json && npm run typecheck:packages",
     "typecheck:packages": "npm run --prefix packages/agent-account-observability typecheck",
-    "test": "npm run test:global-scan-guard && npm run test:host-storage && npm run build:packages && vitest run && npm run test:packages && npm run check:publish-preflight",
+    "test": "npm run build && npm run test:global-scan-guard && npm run test:host-storage && vitest run && npm run test:packages && npm run check:publish-preflight",
     "test:global-scan-guard": "node --test host-integration/global-scan-guard/global-scan-guard.node-test.mjs",
     "test:host-storage": "node --test host-integration/custody-canary/run.node-test.mjs host-integration/host-jobs/host-jobs.node-test.mjs host-integration/host-jobs/legacy-lifecycle-e2e.node-test.mjs host-integration/managed-launcher/install.node-test.mjs host-integration/managed-launcher/install-policy.node-test.mjs host-integration/managed-launcher/launch.node-test.mjs host-integration/managed-launcher/layout.node-test.mjs",
     "test:packages": "npm run --prefix packages/agent-account-observability test",

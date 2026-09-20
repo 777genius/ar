@@ -13,11 +13,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import {
   ProjectDebtReason,
   type ProjectAdmissionSnapshot,
+  type ConsumedOutputLedgerMutationLockPort,
 } from "@vioxen/subscription-runtime/worker-core";
-import type {
-  ConsumedOutputLedgerMutationLease,
-  LocalConsumedOutputLedgerMutationLock,
-} from "@vioxen/subscription-runtime/worker-local";
 
 const MAX_LEDGER_RECORD_BYTES = 1024 * 1024;
 const LEGACY_FAILED_NO_OUTPUT_EVIDENCE =
@@ -69,10 +66,7 @@ export async function repairLegacyConsumedOutputDebt(input: {
   readonly allowedJobIdPrefixes: readonly string[];
   readonly admissionSnapshot: ProjectAdmissionSnapshot;
   readonly confirm?: boolean;
-  readonly mutationLocks: Pick<
-    LocalConsumedOutputLedgerMutationLock,
-    "acquire" | "release"
-  >;
+  readonly mutationLocks: ConsumedOutputLedgerMutationLockPort;
   readonly prove: (
     candidate: LegacyConsumedOutputCandidate,
   ) => Promise<LegacyConsumedOutputProof>;
@@ -87,7 +81,7 @@ export async function repairLegacyConsumedOutputDebt(input: {
   readonly beforeManifestTailTruncate?: (manifestPath: string) => Promise<void>;
 }): Promise<LegacyConsumedOutputRepairResult> {
   const roots = await canonicalLedgerRoots(input.authorizedLedgerRoots);
-  let lease: ConsumedOutputLedgerMutationLease | undefined;
+  let lease: object | undefined;
   if (input.confirm === true) {
     lease = await input.mutationLocks.acquire({
       ledgerRoots: roots,
