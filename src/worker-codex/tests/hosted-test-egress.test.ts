@@ -1,5 +1,6 @@
 import { chmod, link, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { parseHostedTestEgressGrant, assertHostedTestEgressIdentity } from "../hosted-test-egress-contract";
@@ -8,6 +9,20 @@ import {
   hostedTestEgressGrantName, hostedTestEgressGrantRoot, readHostedTestEgressGrantFile,
 } from "../hosted-test-egress-files";
 import { buildCodexGoalExecutorOptions, codexGoalAccountSlots } from "../codex-goal-runner";
+
+const custody = vi.hoisted(() => ({ ancestors: new Set<string>() }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...fs, lstat: async (...args: Parameters<typeof fs.lstat>) => {
+    const stat = await fs.lstat(...args);
+    // Model trusted host ancestry only outside the disposable fixture. Every
+    // fixture directory, symlink, file, mode and owner uses real filesystem IO.
+    if (custody.ancestors.has(String(args[0]))) {
+      return Object.assign(stat, { uid: 0, mode: Number(stat.mode) & ~0o022 });
+    }
+    return stat;
+  } };
+});
 
 describe("trusted hosted TEST egress custody", () => {
   let root: string;
@@ -20,13 +35,17 @@ describe("trusted hosted TEST egress custody", () => {
   });
   const filename = () => join(authority, hostedTestEgressGrantName(identity.jobId));
   beforeEach(async () => {
-    // Under the disposable checkout: /tmp is intentionally not trusted grant custody.
-    root = await mkdtemp(join(process.cwd(), ".test-egress-"));
+    root = await mkdtemp(join(tmpdir(), "test-egress-"));
+    custody.ancestors.clear();
+    for (let path = dirname(root); ; path = dirname(path)) {
+      custody.ancestors.add(path);
+      if (path === dirname(path)) break;
+    }
     authority = join(root, "authority");
     identity = { jobId: "test-exact-job", jobRootDir: join(root, "job"), workspacePath: join(root, "workspace") };
     await Promise.all([authority, identity.jobRootDir, identity.workspacePath].map(p => mkdir(p, { mode: 0o700 })));
   });
-  afterEach(async () => { vi.restoreAllMocks(); await rm(root, { recursive: true, force: true }); });
+  afterEach(async () => { vi.restoreAllMocks(); custody.ancestors.clear(); await rm(root, { recursive: true, force: true }); });
 
   it("keeps authority under the path hidden by already-deployed namespaces", () => {
     expect(hostedTestEgressGrantRoot).toBe("/run/user/0/subscription-runtime-host-policy/codex-egress");
@@ -37,6 +56,12 @@ describe("trusted hosted TEST egress custody", () => {
     await writeFile(filename(), JSON.stringify(grant()), { mode: 0o600 });
     expect(await readHostedTestEgressGrantFile(authority, identity, uid)).toEqual(grant());
     expect(await readHostedTestEgressGrantFile(authority, { ...identity, jobId: "other" }, uid)).toBeNull();
+  });
+  it("refuses a writable fixture ancestor before reading a valid grant", async () => {
+    await writeFile(filename(), JSON.stringify(grant()), { mode: 0o600 });
+    await chmod(root, 0o777);
+    await expect(readHostedTestEgressGrantFile(authority, identity, uid))
+      .rejects.toThrow("hosted_test_egress_custody_invalid");
   });
   it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("roundtrips a frozen closed TEST grant: %s", profileId => {
     const value = { ...grant(), profileId };
@@ -64,8 +89,8 @@ describe("trusted hosted TEST egress custody", () => {
     await expect(readHostedTestEgressGrantFile(authority, identity, uid)).rejects.toThrow("grant_invalid");
   });
   it("refuses a traversing directory tuple and any workspace containing the authority root", async () => {
-    await expect(canonicalHostedTestIdentity({ ...identity, workspacePath: root + "/workspace/../workspace" })).rejects.toThrow();
-    await expect(canonicalHostedTestIdentity({ ...identity, workspacePath: "/" })).rejects.toThrow();
+    await expect(canonicalHostedTestIdentity({ ...identity, workspacePath: root + "/workspace/../workspace" }, uid)).rejects.toThrow();
+    await expect(canonicalHostedTestIdentity({ ...identity, workspacePath: "/" }, uid)).rejects.toThrow();
   });
   it("refuses file/parent symlinks and hard links", async () => {
     const other = join(root, "other.json");
@@ -88,7 +113,7 @@ describe("trusted hosted TEST egress custody", () => {
   it("refuses a substituted workspace symlink", async () => {
     const other = join(root, "replacement"); await mkdir(other);
     await rm(identity.workspacePath, { recursive: true }); await symlink(other, identity.workspacePath);
-    await expect(canonicalHostedTestIdentity(identity)).rejects.toThrow();
+    await expect(canonicalHostedTestIdentity(identity, uid)).rejects.toThrow();
   });
   it("refuses a real rename-capable identity ancestor and its intermediate symlink replacement", async () => {
     const parent = join(root, "identities");
