@@ -9,3 +9,7 @@ export * from "./ports/project-control-evidence-custody-port";
 export * from "./domain/project-admission";
 export * from "./domain/project-control-surface";
 export * from "./domain/consumed-output-ledger-epoch";
+
+export * from "./domain/project-control-recovery";
+export * from "./ports/project-control-recovery-store";
+export * from "./ports/consumed-output-ledger-mutation-lock-port";

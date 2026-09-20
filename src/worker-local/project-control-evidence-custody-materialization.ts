@@ -1,13 +1,44 @@
+import { materializeRecoverableCustodyDirectory } from "./project-control-custody-directory-publication";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, open, realpath } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { ProjectControlCustodyBootstrapCertification } from
+import type { ProjectControlCustodyBootstrapCertification, ProjectControlCustodyMaterializationRecovery } from
   "@vioxen/subscription-runtime/worker-core";
+
+export function projectControlCustodyMaterializationPaths(input: {
+  readonly ledgerRoots: readonly string[];
+  readonly evidenceRoots: readonly string[];
+  readonly anchor: string;
+}): readonly string[] {
+  const roots = [...input.ledgerRoots, ...input.evidenceRoots];
+  const paths = new Set<string>();
+  const anchor = input.anchor;
+  const addWithAncestors = (path: string) => {
+    const chain: string[] = [];
+    let current = path;
+    while (current !== anchor && current !== "/") { chain.push(current); current = dirname(current); }
+    if (current === anchor) chain.push(current);
+    for (const value of chain.reverse()) paths.add(value);
+  };
+  for (const root of roots) {
+    addWithAncestors(root);
+    addWithAncestors(join(root, "items"));
+  }
+  for (const root of input.ledgerRoots) {
+    addWithAncestors(join(root, ".mutation-locks"));
+    addWithAncestors(join(dirname(root), ".consumed-output-ledger-mutation-locks",
+      createHash("sha256").update(root).digest("hex")));
+  }
+  return [...paths];
+}
 
 export type CustodyMaterializationCrashHook = (
   point:
+    | "after_custody_staging_creation_before_checkpoint"
+    | "after_custody_staging_checkpoint_before_publication"
+    | "before_custody_directory_publication"
     | "after_custody_directory_creation_before_parent_fsync"
     | "before_custody_manifest_publication_revalidation",
   path: string,
@@ -25,6 +56,7 @@ export async function materializeApprovedProjectControlCustody(input: {
   readonly ledgerRoots: readonly string[];
   readonly evidenceRoots: readonly string[];
   readonly deniedRoots: readonly string[];
+  readonly recovery?: ProjectControlCustodyMaterializationRecovery;
 }, crashHook?: CustodyMaterializationCrashHook):
 Promise<ProjectControlCustodyBootstrapCertification> {
   const anchor = normalizedAbsoluteDirectory(input.approvedAnchor,
@@ -53,37 +85,35 @@ Promise<ProjectControlCustodyBootstrapCertification> {
   const anchorStat = await anchorHandle.stat();
   const identities: CustodyDirectoryIdentity[] = [];
   try {
-    for (const root of configuredRoots) {
-      identities.push(await materializeDirectoryFromAnchor({
-        anchor, anchorHandle, path: root,
-        finalReason: "evidence_custody_bootstrap_root_unsafe",
-        ...(crashHook ? { crashHook } : {}),
-      }));
-    }
-    assertNoDirectoryAliases(identities);
-
-    for (const ledgerRoot of ledgerRoots) {
-      const legacyLock = join(ledgerRoot, ".mutation-locks");
-      identities.push(await materializeDirectoryFromAnchor({
-        anchor, anchorHandle, path: legacyLock,
-        finalReason: "evidence_custody_bootstrap_legacy_lock_unsafe",
-        ancestryReason: "evidence_custody_bootstrap_legacy_lock_unsafe",
-        ...(crashHook ? { crashHook } : {}),
-      }));
-
-      const derivedLock = join(
-        dirname(ledgerRoot),
-        ".consumed-output-ledger-mutation-locks",
-        createHash("sha256").update(ledgerRoot).digest("hex"),
-      );
-      assertCustodyBoundary(anchor, derivedLock);
-      if (deniedRoots.some((denied) => pathsOverlap(derivedLock, denied))) {
-        throw new Error("evidence_custody_bootstrap_derived_lock_unsafe");
+    // This single enumeration is authoritative for both materialization and
+    // certification. It includes every intermediate ancestor, including lock
+    // container directories, so no identity can be omitted.
+    const paths = projectControlCustodyMaterializationPaths({ ledgerRoots, evidenceRoots, anchor });
+    for (const path of paths) {
+      if (path !== anchor) assertCustodyBoundary(anchor, path);
+      if (deniedRoots.some((denied) => pathsOverlap(path, denied))) {
+        throw new Error("evidence_custody_bootstrap_root_denied");
+      }
+      const finalReason = path.endsWith("/.mutation-locks")
+        ? "evidence_custody_bootstrap_legacy_lock_unsafe"
+        : (path.includes("/.consumed-output-ledger-mutation-locks/") ||
+          path.endsWith("/.consumed-output-ledger-mutation-locks"))
+          ? "evidence_custody_bootstrap_derived_lock_unsafe"
+          : basename(path) === "items"
+            ? "evidence_custody_bootstrap_items_unsafe"
+            : configuredRoots.includes(path) || path === anchor
+              ? "evidence_custody_bootstrap_root_unsafe"
+              : "evidence_custody_bootstrap_ancestry_unsafe";
+      if (input.recovery) {
+        await materializeRecoverableCustodyDirectory({
+          path, recovery: input.recovery,
+          ...(crashHook ? { crashHook } : {}),
+        });
       }
       identities.push(await materializeDirectoryFromAnchor({
-        anchor, anchorHandle, path: derivedLock,
-        finalReason: "evidence_custody_bootstrap_derived_lock_unsafe",
-        ancestryReason: "evidence_custody_bootstrap_derived_lock_unsafe",
+        anchor, anchorHandle, path, finalReason,
+        ancestryReason: finalReason,
+        existingOnly: input.recovery !== undefined,
         ...(crashHook ? { crashHook } : {}),
       }));
     }
@@ -166,6 +196,7 @@ async function materializeDirectoryFromAnchor(input: {
   readonly path: string;
   readonly finalReason: string;
   readonly ancestryReason?: string;
+  readonly existingOnly?: boolean;
   readonly crashHook?: CustodyMaterializationCrashHook;
 }): Promise<CustodyDirectoryIdentity> {
   const parts = relative(input.anchor, input.path).split(sep).filter(Boolean);
@@ -179,8 +210,10 @@ async function materializeDirectoryFromAnchor(input: {
         : input.ancestryReason ?? "evidence_custody_bootstrap_ancestry_unsafe";
       let created = false;
       try {
-        await mkdir(child, { mode: 0o700 });
-        created = true;
+        if (!input.existingOnly) {
+          await mkdir(child, { mode: 0o700 });
+          created = true;
+        }
       } catch (error) {
         if (code(error) !== "EEXIST") throw new Error(reason, { cause: error });
       }
@@ -191,10 +224,17 @@ async function materializeDirectoryFromAnchor(input: {
       } catch (error) {
         throw new Error(reason, { cause: error });
       }
+      try {
       if (created) {
         await input.crashHook?.("after_custody_directory_creation_before_parent_fsync",
           join(input.anchor, ...parts.slice(0, index + 1)));
-        await parent.sync();
+      }
+      // Re-sync even when mkdir observed EEXIST: the prior attempt may have
+      // been interrupted before its parent directory entry reached disk.
+      await parent.sync();
+      } catch (error) {
+        await next.close();
+        throw error;
       }
       if (parent !== input.anchorHandle) await parent.close();
       parent = next;
@@ -244,7 +284,7 @@ function assertNoDirectoryAliases(identities: readonly CustodyDirectoryIdentity[
   }
 }
 
-async function openAbsoluteDirectoryNoSymlinks(path: string): Promise<FileHandle> {
+export async function openAbsoluteDirectoryNoSymlinks(path: string): Promise<FileHandle> {
   const lexical = resolve(path);
   let handle = await open("/", constants.O_RDONLY | constants.O_DIRECTORY);
   try {

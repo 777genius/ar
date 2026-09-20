@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   lstat,
   mkdir,
@@ -263,12 +264,20 @@ export async function updateCodexGoalJob(input: {
   readonly cwd?: string;
   readonly now?: Date;
   readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
+  readonly beforeManifestPublication?: () => Promise<void>;
+  readonly expectedManifestSha256?: string;
 }): Promise<CodexGoalJobManifest> {
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
   const existing = await readCodexGoalJob({
     registryRootDir,
     jobId: input.jobId,
   });
+  const assertExpected = (current: CodexGoalJobManifest) => {
+    if (input.expectedManifestSha256 && createHash("sha256").update(JSON.stringify(current)).digest("hex") !== input.expectedManifestSha256) {
+      throw new Error("project_control_controller_scope_cas_mismatch");
+    }
+  };
+  assertExpected(existing);
   const manifest = parseCodexGoalJobManifest({
     ...existing,
     ...input.patch,
@@ -301,7 +310,12 @@ export async function updateCodexGoalJob(input: {
     : undefined;
   try {
     await custodyCertification?.revalidate();
-    await durableReplaceJsonFile({ path: manifestPath, value: manifest });
+    await durableReplaceJsonFile({ path: manifestPath, value: manifest,
+      beforePublication: async () => {
+        await input.beforeManifestPublication?.();
+        if (input.expectedManifestSha256) assertExpected(await readCodexGoalJob({ registryRootDir, jobId: input.jobId }));
+      },
+    });
     return manifest;
   } finally {
     await custodyCertification?.close();
@@ -707,6 +721,14 @@ export async function bootstrapInitialProjectControlCustody(
   manifest: CodexGoalJobManifest,
   custody: ProjectControlEvidenceCustodyPort,
 ): Promise<ProjectControlCustodyBootstrapCertification | undefined> {
+  const plan = await resolveInitialProjectControlCustodyPlan(manifest, custody);
+  return plan ? await custody.materializeApprovedProjectControlCustody(plan) : undefined;
+}
+
+export async function resolveInitialProjectControlCustodyPlan(
+  manifest: CodexGoalJobManifest,
+  custody: ProjectControlEvidenceCustodyPort,
+): Promise<Parameters<ProjectControlEvidenceCustodyPort["materializeApprovedProjectControlCustody"]>[0] | undefined> {
   if (manifest.accessBoundary !== AccessBoundary.ProjectScopedControl ||
     !manifest.projectAccessScope) return undefined;
   const scope = manifest.projectAccessScope;
@@ -751,12 +773,12 @@ export async function bootstrapInitialProjectControlCustody(
   }
   const anchor = candidates.sort((left, right) => right.length - left.length)[0];
   if (!anchor) throw new Error("evidence_custody_bootstrap_anchor_unsafe");
-  return await custody.materializeApprovedProjectControlCustody({
+  return {
     approvedAnchor: anchor,
     ledgerRoots,
     evidenceRoots,
     deniedRoots: scope.deniedRoots ?? [],
-  });
+  };
 }
 
 function pathStrictlyInside(parent: string, child: string): boolean {

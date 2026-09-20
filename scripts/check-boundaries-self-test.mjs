@@ -10,6 +10,34 @@ const checkerPath = join(scriptDir, "check-boundaries.mjs");
 
 const cases = [
   {
+    name: "recovery application relative filesystem adapter violation",
+    files: {
+      "src/worker-codex/codex-goal-project-custody-recovery.ts":
+        "import '../worker-local/project-control-recovery-directory-identity';\n",
+    },
+    expectPass: false,
+    expectText: "project-control recovery application must receive filesystem adapters through core ports",
+  },
+  {
+    name: "project admin package filesystem adapter violation",
+    files: {
+      "src/worker-codex/codex-goal-mcp-project-control-admin.ts":
+        "import '@vioxen/subscription-runtime/worker-local';\n",
+    },
+    expectPass: false,
+    expectText: "project-control recovery application must receive filesystem adapters through core ports",
+  },
+  {
+    name: "recovery composition may inject filesystem adapters",
+    files: {
+      "src/worker-codex/codex-goal-mcp-project-control-deps.ts":
+        "import '../worker-local/project-control-recovery-directory-identity';\n",
+      "src/worker-codex/codex-goal-project-custody-recovery.ts":
+        "import type { ProjectControlRecoveryStore } from '@vioxen/subscription-runtime/worker-core';\n",
+    },
+    expectPass: true,
+  },
+  {
     name: "current package scope violation",
     files: {
       "src/core/bad.ts": "import '@vioxen/subscription-runtime/provider-claude';\n",
