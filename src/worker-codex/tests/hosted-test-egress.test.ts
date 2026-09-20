@@ -1,4 +1,4 @@
-import { chmod, link, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,8 +24,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   } };
 });
 
-describe("trusted hosted TEST egress custody", () => {
+describe.each(["inherited", "symlinked"] as const)("trusted hosted TEST egress custody (%s TMPDIR)", temporaryDirectory => {
   let root: string;
+  let temporaryDirectoryFixture: string | undefined;
   let authority: string;
   let identity: { jobId: string; jobRootDir: string; workspacePath: string };
   const uid = process.getuid?.() ?? 0;
@@ -35,7 +36,18 @@ describe("trusted hosted TEST egress custody", () => {
   });
   const filename = () => join(authority, hostedTestEgressGrantName(identity.jobId));
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), "test-egress-"));
+    if (temporaryDirectory === "symlinked") {
+      temporaryDirectoryFixture = await mkdtemp(join(await realpath(tmpdir()), "test-egress-tmpdir-"));
+      const target = join(temporaryDirectoryFixture, "target");
+      const alias = join(temporaryDirectoryFixture, "alias");
+      await mkdir(target, { mode: 0o700 });
+      await symlink(target, alias);
+      vi.stubEnv("TMPDIR", alias);
+      expect(tmpdir()).toBe(alias);
+      expect(await realpath(tmpdir())).toBe(target);
+    }
+    root = await mkdtemp(join(await realpath(tmpdir()), "test-egress-"));
+    expect(root).toBe(await realpath(root));
     custody.ancestors.clear();
     for (let path = dirname(root); ; path = dirname(path)) {
       custody.ancestors.add(path);
@@ -45,7 +57,15 @@ describe("trusted hosted TEST egress custody", () => {
     identity = { jobId: "test-exact-job", jobRootDir: join(root, "job"), workspacePath: join(root, "workspace") };
     await Promise.all([authority, identity.jobRootDir, identity.workspacePath].map(p => mkdir(p, { mode: 0o700 })));
   });
-  afterEach(async () => { vi.restoreAllMocks(); custody.ancestors.clear(); await rm(root, { recursive: true, force: true }); });
+  afterEach(async () => {
+    vi.restoreAllMocks(); vi.unstubAllEnvs(); custody.ancestors.clear();
+    try {
+      if (root) await rm(root, { recursive: true, force: true });
+    } finally {
+      if (temporaryDirectoryFixture) await rm(temporaryDirectoryFixture, { recursive: true, force: true });
+      temporaryDirectoryFixture = undefined;
+    }
+  });
 
   it("keeps authority under the path hidden by already-deployed namespaces", () => {
     expect(hostedTestEgressGrantRoot).toBe("/run/user/0/subscription-runtime-host-policy/codex-egress");
