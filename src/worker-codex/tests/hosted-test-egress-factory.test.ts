@@ -22,7 +22,7 @@ function runtime(options: FileBackendCodexWorkerOptions) {
 }
 describe("factory admitted policy propagation", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
-  it("uses one snapshot for prewarm, task, child CLI and cached homes across all three profiles and reopenings", async () => {
+  it("uses one snapshot for prewarm, task, child CLI and cached homes across ordinary profiles and reopenings; refuses managed factory substitution", async () => {
     const root = await mkdtemp(join(tmpdir(), "egress-factory-"));
     const workspacePath = join(root, "workspace"); await mkdir(workspacePath);
     const homes: string[] = [];
@@ -33,7 +33,7 @@ describe("factory admitted policy propagation", () => {
         const fake = new FakeAppServerFactory({ goalStatusesAfterTurns: ["blocked", "complete"] });
         const launches: Parameters<typeof fake.create>[0][] = [];
         const admitted = { profileId, domains: ["ignored.invalid"] };
-        const parts = runtime({
+        const options: FileBackendCodexWorkerOptions = {
           providerInstanceId: "synthetic-account", stateRootDir: join(root, "state"), workspacePath,
           codexBinaryPath: "/synthetic/never-executed", encryptionKey: new Uint8Array(32),
           executionEngine: "app-server-goal", warmupPrompt: false,
@@ -41,7 +41,13 @@ describe("factory admitted policy propagation", () => {
           sourceEnv: { PATH: "/synthetic/bin", SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
             SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "forged" },
           appServerProcessFactory: input => { launches.push(input); return fake.create(input); },
-        });
+        };
+        if (profileId === CodexProviderEgressProfileId.TestManagedQualification) {
+          expect(() => runtime(options)).toThrow("hosted_readonly_admitted_factory_required");
+          expect(launches).toEqual([]);
+          continue;
+        }
+        const parts = runtime(options);
         const driver = parts.agentDriver as CodexJsonAgentDriver;
         // An internal caller retaining its original object cannot mutate a constructed runtime.
         admitted.profileId = CodexProviderEgressProfileId.ProviderApi;
@@ -67,8 +73,8 @@ describe("factory admitted policy propagation", () => {
             const home = launch.env!.CODEX_HOME!;
             const config = await readFile(join(home, "config.toml"), "utf8");
             expect(config.includes("registry.npmjs.org")).toBe(profileId !== CodexProviderEgressProfileId.ProviderApi);
-            expect(config.includes("api.github.com")).toBe(profileId === CodexProviderEgressProfileId.TestManagedQualification);
-            expect(config.includes("raw.githubusercontent.com")).toBe(profileId === CodexProviderEgressProfileId.TestManagedQualification);
+            expect(config.includes("api.github.com")).toBe(false);
+            expect(config.includes("raw.githubusercontent.com")).toBe(false);
             expect(config).toContain("[[hooks.PreToolUse]]");
             expect(config).toContain("network_access = true");
           }
@@ -78,8 +84,8 @@ describe("factory admitted policy propagation", () => {
           for (const turn of turns) expect(turn.params).toMatchObject({ sandboxPolicy: { networkAccess: true } });
         } finally { await driver.dispose(); }
       }
-      expect(new Set(homes.slice(0, 3)).size).toBe(3);
-      expect(homes.slice(3)).toEqual(homes.slice(0, 3));
+      expect(new Set(homes.slice(0, 2)).size).toBe(2);
+      expect(homes.slice(2)).toEqual(homes.slice(0, 2));
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification])("defaults inherited spoofed %s to API-only while preserving PATH", async profileId => {
@@ -104,10 +110,11 @@ describe("factory admitted policy propagation", () => {
         expect(launch.env?.PATH?.split(":" )).toContain("/synthetic/inherited/bin");
         expect(launch.env?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND).toBe("hosted-codex-job");
         const invocation = codexAppServerProcessInvocation({ command: "/synthetic", args: launch.args,
-          cwd: root, env: launch.env!, platform: "linux", ioLimitPaths: ["/synthetic"],
+          cwd: root, env: launch.env!, platform: "linux",
           hostedLauncher: "/synthetic/launcher.js", nodePath: "/synthetic/node" });
-        expect(invocation.command).toBe("/usr/bin/systemd-run");
-        expect(invocation.args).toContain("--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user");
+        expect(invocation.command).toBe(process.execPath);
+        expect(invocation.args[1]).toBe("provider");
+        expect(JSON.parse(invocation.args[2]!).operation).toBe("provider");
         expect(launch.env?.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE).toBe(CodexProviderEgressProfileId.ProviderApi);
         expect(launch.args.join(" ")).not.toContain("registry.npmjs.org");
         expect(await readFile(join(launch.env!.CODEX_HOME!, "config.toml"), "utf8")).not.toContain("registry.npmjs.org");

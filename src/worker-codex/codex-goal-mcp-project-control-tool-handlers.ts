@@ -1,3 +1,4 @@
+import { projectControlRelocateControllerWorkspaceView } from "./codex-goal-mcp-project-controller-relocation";
 import { mcpJson } from "./codex-goal-mcp-response";
 import type {
   JobUpdateMcpArgs,
@@ -288,4 +289,15 @@ export async function projectControlRecordFailedNoOutput(
     args,
     projectControlActionDeps(),
   ));
+}
+
+export async function projectControlRelocateControllerWorkspace(args: ProjectControlMcpArgs) {
+  return mcpJson(await projectControlRelocateControllerWorkspaceView(args, {
+    ...projectControlAdminDeps(),
+    assertNoHostedControllers: () => {
+      if (projectControllerProviderRegistry.hasAny?.() !== false) {
+        throw new Error("controller_relocation_hosted_controller_active");
+      }
+    },
+  }));
 }

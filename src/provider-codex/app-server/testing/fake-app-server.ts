@@ -1,6 +1,14 @@
 import { mergeAgentUsage, readUsageFromRecords } from "../domain/app-server-usage";
 import { EventEmitter } from "node:events";
 
+export type FakeTokenUsageNotification = {
+  readonly threadId?: string;
+  readonly turnId?: string;
+  readonly total: Record<string, unknown>;
+  /** Omit to replay a pure cumulative snapshot carrying no exact turn usage. */
+  readonly last?: Record<string, unknown>;
+};
+
 export type FakeAppServerFactoryOptions = {
   readonly failThreadStart?: boolean;
   readonly failThreadStartNumbers?: readonly number[];
@@ -54,12 +62,12 @@ export type FakeAppServerFactoryOptions = {
   readonly turnUsage?: Record<string, unknown>;
   readonly turnUsageAfterTurns?: readonly (Record<string, unknown> | undefined)[];
   readonly forkUsageReplay?: Record<string, unknown>;
-  readonly tokenUsageNotifications?: readonly {
-    readonly threadId?: string;
-    readonly turnId?: string;
-    readonly total: Record<string, unknown>;
-    readonly last: Record<string, unknown>;
-  }[];
+  readonly tokenUsageNotifications?: readonly FakeTokenUsageNotification[];
+  /** Per-turn notification scripts, indexed by turn number, for mixed streams. */
+  readonly tokenUsageNotificationsAfterTurns?: readonly (
+    | readonly FakeTokenUsageNotification[]
+    | undefined
+  )[];
   readonly mismatchTurnStartResponseId?: boolean;
   readonly reuseActualTurnId?: string;
   readonly emitServerRequestOnTurn?: {
@@ -430,7 +438,10 @@ export class FakeAppServerProcess extends EventEmitter {
             : this.options.turnUsage);
           const total = mergeAgentUsage(this.tokenTotals.get(threadId), usage);
           this.tokenTotals.set(threadId, total);
-          const snapshots = this.options.tokenUsageNotifications ?? (usage ? [{ total, last: usage }] : []);
+          const snapshots: readonly FakeTokenUsageNotification[] =
+            this.options.tokenUsageNotificationsAfterTurns?.[turnNumber - 1] ??
+            this.options.tokenUsageNotifications ??
+            (usage ? [{ total: total as Record<string, unknown>, last: usage as Record<string, unknown> }] : []);
           for (const snapshot of snapshots) this.notify("thread/tokenUsage/updated", {
             threadId: ("threadId" in snapshot ? snapshot.threadId : undefined) ?? threadId, turnId: ("turnId" in snapshot ? snapshot.turnId : undefined) ?? turnId,
             tokenUsage: { total: snapshot.total, last: snapshot.last, modelContextWindow: 200000 },

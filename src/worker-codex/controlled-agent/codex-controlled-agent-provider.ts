@@ -45,6 +45,7 @@ export type CodexControlledAgentProviderOptions = {
   readonly reasoningEffort?: CodexReasoningEffort;
   readonly serviceTier?: CodexServiceTier;
   readonly processFactory?: CodexAppServerProcessFactory;
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly redactor?: RedactorPort;
   readonly controllerObjective?: string;
   readonly controllerRegistryRootDir?: string;
@@ -254,6 +255,7 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
     return new CodexJsonAgentDriver({
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: this.options.codexBinaryPath,
+        ...(this.options.sourceEnv === undefined ? {} : { sourceEnv: this.options.sourceEnv }),
         ...(this.options.processFactory === undefined
           ? {}
           : { processFactory: this.options.processFactory }),
@@ -313,7 +315,7 @@ class ControlledCodexSessionMaterializer implements CodexSessionMaterializer {
       env: {
         HOME: home,
         CODEX_HOME: codexHome,
-        ...codexControlledAgentProviderEgressEnv(),
+        ...codexControlledAgentProviderEgressEnv(this.options.profile.providerEgressPolicy),
       },
       snapshotSession: async () =>
         sessionArtifactFromCodexAuthJson(await readFile(join(codexHome, "auth.json"), "utf8")),

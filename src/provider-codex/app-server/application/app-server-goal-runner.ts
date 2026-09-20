@@ -275,6 +275,10 @@ export class AppServerGoalRunner {
     }))?.usage : { totalTokens: 0 };
     let detailedSinceGoal: AgentUsage | undefined;
     let missingUsageSinceGoal = false;
+    // A turn whose exact usage was untrusted is NOT a turn that reported
+    // nothing: backfilling it from the goal's cumulative counter would restore
+    // by the back door exactly the number the turn refused to stand behind.
+    let untrustedUsageSinceGoal = false;
     try {
       for (
         let turnNumber = 1;
@@ -302,6 +306,7 @@ export class AppServerGoalRunner {
         turnUsage = mergeAgentUsage(turnUsage, turn.usage);
         detailedSinceGoal = mergeAgentUsage(detailedSinceGoal, turn.usage);
         missingUsageSinceGoal ||= turn.usage === undefined;
+        untrustedUsageSinceGoal ||= turn.usagePoisoned;
         if (turn.error) throw turn.error;
         outputText = turn.outputText;
 
@@ -318,7 +323,7 @@ export class AppServerGoalRunner {
           reportedTotal !== undefined &&
           reportedTotal >= (goalBaseline?.totalTokens ?? 0)
         ) {
-          if (goalBaseline && missingUsageSinceGoal) {
+          if (goalBaseline && missingUsageSinceGoal && !untrustedUsageSinceGoal) {
             const windowUsage = subtractAgentUsage(goal.usage, goalBaseline);
             turnUsage = mergeAgentUsage(
               turnUsage,
@@ -328,6 +333,7 @@ export class AppServerGoalRunner {
           goalBaseline = goal.usage;
           detailedSinceGoal = undefined;
           missingUsageSinceGoal = false;
+          untrustedUsageSinceGoal = false;
         }
         if (goal.status === "complete") {
           input.warnings.push(...this.options.client.drainWarnings());

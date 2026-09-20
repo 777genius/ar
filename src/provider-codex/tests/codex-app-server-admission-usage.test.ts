@@ -60,10 +60,11 @@ async function setup(options: { lostAck?: boolean; overflowWithAck?: boolean; ti
   const client = [...slots.values()][0]!.client;
   const child = factory.processes[0]!;
   const emit = (packet: unknown) => child.stdout.emit("data", `${JSON.stringify(packet)}\n`);
-  const usage = (index: number, total = measured) => {
+  // `total` is the thread's cumulative counter; `last` is this turn's exact usage.
+  const usage = (index: number, total = measured, last = total) => {
     const request = starts[index]!;
     emit({ method: "thread/tokenUsage/updated", params: {
-      threadId: request.params?.threadId, turnId: `manual-${request.id}`, tokenUsage: { total, last: total },
+      threadId: request.params?.threadId, turnId: `manual-${request.id}`, tokenUsage: { total, last },
     } });
   };
   const complete = (index: number) => {
@@ -185,7 +186,9 @@ describe("Codex usage and local admission", () => {
       expect(await first).toHaveProperty("error");
       const second = outcome(test.client.startTurn({ ...direct, abortSignal: test.input.abortSignal }));
       await waitForStarts(test.starts, 2);
-      test.usage(1, { inputTokens: 200, outputTokens: 50, totalTokens: 250 });
+      // The thread's cumulative counter has advanced to 250, but this turn's
+      // exact usage is `measured` — the exact field is what gets billed.
+      test.usage(1, { inputTokens: 200, outputTokens: 50, totalTokens: 250 }, measured);
       test.complete(1);
       expect(await second).toMatchObject({ value: { usage: measured } });
       expect(test.child.isExited()).toBe(false);
@@ -214,7 +217,8 @@ describe("Codex usage and local admission", () => {
   });
 
   it("pins admitted thread response baselines before any turn continuation", () => {
-    const tracker = new AppServerTokenUsageTracker();
+    const warnings: { code: string }[] = [];
+    const tracker = new AppServerTokenUsageTracker((warning) => warnings.push(warning));
     const release = tracker.pin("fresh");
     tracker.registerThread("fresh", true);
     for (let index = 0; index < 300; index += 1) tracker.registerThread(`idle-${index}`, true);
@@ -222,6 +226,9 @@ describe("Codex usage and local admission", () => {
     tracker.observe({ threadId: "fresh", turnId: "turn", tokenUsage: { total: measured } },
       new Map([["fresh", "turn"]]), new Map(), new Map(), () => state);
     expect(state.usage).toEqual(measured);
+    // Billed from the cumulative counter because the provider reported no
+    // `tokenUsage.last`; the degraded path must announce itself.
+    expect(warnings.map((warning) => warning.code)).toEqual(["codex_app_server_turn_usage_estimated"]);
     release();
   });
 });

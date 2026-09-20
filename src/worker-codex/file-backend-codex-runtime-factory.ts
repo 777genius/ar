@@ -1,3 +1,4 @@
+import { assertReadonlyAdmittedFactory } from "./hosted-readonly-admission";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -181,14 +182,14 @@ function createWorkerWorkspaces(input: {
   readonly prewarmWorkspace: RuntimeDeps["workspace"];
 } {
   const defaultWorkspacePath = join(
-    input.options.stateRootDir,
+    input.options.runtimeHomeRootDir ?? input.options.stateRootDir,
     "workspaces",
     hashText(input.workerId),
   );
   const ownedWorkspace = input.options.workspace
     ? null
     : new StableWorkerWorkspace(defaultWorkspacePath, {
-        allowedRootDir: input.options.stateRootDir,
+        allowedRootDir: input.options.runtimeHomeRootDir ?? input.options.stateRootDir,
       });
   const workspace =
     input.options.workspace ??
@@ -220,6 +221,9 @@ function createCodexAgentDriver(input: {
       (process.platform !== "linux" || !hostedGlobalScanGuard ||
        executionEngine !== "app-server-goal" || options.boundedWorkspaceTools)) {
     throw new Error("hosted_test_egress_engine_unsupported");
+  }
+  if (providerEgressPolicy.profileId === CodexProviderEgressProfileId.TestManagedQualification) {
+    assertReadonlyAdmittedFactory(options.appServerProcessFactory, options.workspacePath);
   }
   const appServerEnv = {
     ...sourceEnv, ...codexProviderEgressEnv(providerEgressPolicy),
@@ -320,7 +324,7 @@ function createCodexAgentDriver(input: {
       cacheKey: `codex:${options.providerInstanceId}:${input.workerId}`,
       providerEgressPolicy,
       slots: options.sessionCacheSlots ?? 1,
-      rootDir: join(options.stateRootDir, "codex-session-cache"),
+      rootDir: join(options.runtimeHomeRootDir ?? options.stateRootDir, "codex-session-cache"),
       preserveOnDispose: true,
       scrubAuthOnDispose: true,
       ...(workspaceToolsProfile

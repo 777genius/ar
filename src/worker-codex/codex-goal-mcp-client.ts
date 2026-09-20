@@ -77,6 +77,7 @@ const requiredCodexGoalMcpTools = [
   "codex_goal_project_recover_operations",
   "codex_goal_project_admission_snapshot",
   "codex_goal_project_update_controller_scope",
+  "codex_goal_project_relocate_controller_workspace",
   "codex_goal_project_migrate_consumed_output_ledger_epoch",
   "codex_goal_project_reconcile_stale_integrations",
   "brokered_project_manifest_repair",

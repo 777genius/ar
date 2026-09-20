@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+import { mapManagedGoalLayout } from "./managed-goal-admission";
+import { routeHostedRuntimeCommand } from "./hosted-readonly-foreground";
+import { CodexGoalLaunchState } from "./codex-goal-ops";
+import type { HostedGoalLifecycleRequest } from "./application/codex-goal-foreground-command";
+import { buildCodexGoalCliLaunchInput, parseHostedGoalLifecycleRequest, runHostedGoalLifecycleCommand } from "./hosted-readonly-lifecycle-cli";
+import { routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
 import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { execPath } from "node:process";
@@ -17,6 +23,7 @@ import {
   parsePositiveInteger,
   requiredOption,
   resolvePath,
+  usage,
   writeJsonOrText,
 } from "./codex-goal-cli-support";
 
@@ -93,6 +100,7 @@ type CodexGoalCliCommand =
 
 export type RunCommand = {
   readonly kind: "run";
+  readonly lifecycle?: HostedGoalLifecycleRequest;
   readonly config: CodexGoalRunConfig;
   readonly tmuxSession?: string;
   readonly dryRun: boolean;
@@ -192,7 +200,7 @@ export async function runCodexGoalCli(
   io: CodexGoalCliIo = defaultIo,
 ): Promise<number> {
   try {
-    const command = parseCodexGoalCliArgs(argv, io);
+    let command = parseCodexGoalCliArgs(argv, io);
     if (command.kind === "help") {
       io.writeStdout(usage());
       return 0;
@@ -224,6 +232,10 @@ export async function runCodexGoalCli(
       if (oneShotGuard !== undefined) {
         writeJsonOrText(command.format, oneShotGuard, io);
         return 1;
+      }
+      if (command.name === "codex_goal_project_start") {
+        const outerStatus = await routeHostedRuntimeCommand([currentCliPath(), ...argv]);
+        if (outerStatus !== undefined) return outerStatus;
       }
       writeJsonOrText(
         command.format,
@@ -268,6 +280,9 @@ export async function runCodexGoalCli(
       return result.ok ? 0 : 1;
     }
     if (command.kind === "controller-supervise") {
+      const outerStatus = await routeHostedRuntimeCommand([currentCliPath(), ...argv]);
+      if (outerStatus !== undefined) return outerStatus;
+      const format = command.format;
       const abortController = new AbortController();
       const onSignal = () => abortController.abort();
       process.once("SIGINT", onSignal);
@@ -278,7 +293,7 @@ export async function runCodexGoalCli(
           statusIntervalMs: command.statusIntervalMs,
           signal: abortController.signal,
           onEvent: (event) => {
-            if (command.format === "json") {
+            if (format === "json") {
               io.writeStdout(`${JSON.stringify(event)}\n`);
               return;
             }
@@ -287,7 +302,7 @@ export async function runCodexGoalCli(
         });
         if (!result.ok && result.reason !== undefined) {
           const failure = { ok: false, reason: result.reason, safeMessage: result.safeMessage };
-          io.writeStdout(command.format === "json"
+          io.writeStdout(format === "json"
             ? `${JSON.stringify({ type: ControllerSupervisorCliEventType.Failure, result: failure })}\n`
             : `failure ${result.reason}: ${result.safeMessage ?? "Controller supervision needs attention."}\n`);
         }
@@ -309,6 +324,12 @@ export async function runCodexGoalCli(
       writeJsonOrText(command.format, result, io);
       return result.ok ? 0 : 1;
     }
+    if (!command.dryRun && !command.printCommand) {
+      command = { ...command, ...mapManagedGoalLayout(command) };
+    }
+    if (command.lifecycle) {
+      return await runHostedGoalLifecycleCommand(command, cliLaunchInput(command), io);
+    }
     if (command.tmuxSession) {
       const tmuxCommand = buildTmuxCommand(command);
       if (command.dryRun || command.printCommand) {
@@ -316,18 +337,22 @@ export async function runCodexGoalCli(
         return 0;
       }
       await assertRunCommandProjectControlAllowed(command);
+      const outerStatus = await routeHostedGoalLaunch(cliLaunchInput(command));
+      if (outerStatus !== undefined) return outerStatus;
       await upsertRunCommandManifest(command);
-      await startCodexGoalTmux(cliLaunchInput(command));
+      const launched = await startCodexGoalTmux(cliLaunchInput(command));
       io.writeStdout(
-        `started ${command.tmuxSession} for ${command.config.taskId}\n`,
+        `${launched.launchState ?? CodexGoalLaunchState.Scheduled} ${command.tmuxSession} for ${command.config.taskId}\n`,
       );
-      return 0;
+      return launched.launchState === CodexGoalLaunchState.Failed ? 1 : 0;
     }
     if (command.dryRun || command.printCommand) {
       io.writeStdout(`${buildNoTmuxShellCommand(command)}\n`);
       return 0;
     }
     await assertRunCommandProjectControlAllowed(command);
+    const outerStatus = await routeHostedGoalLaunch(cliLaunchInput(command));
+    if (outerStatus !== undefined) return outerStatus;
     await upsertRunCommandManifest(command);
     const result = await runCodexGoal(command.config);
     writeJsonOrText(command.format, result, io);
@@ -479,14 +504,7 @@ async function assertRunCommandProjectControlAllowed(command: RunCommand): Promi
 }
 
 function cliLaunchInput(command: RunCommand) {
-  return {
-    config: command.config,
-    ...(command.tmuxSession ? { tmuxSession: command.tmuxSession } : {}),
-    cwd: command.cwd,
-    logPath: command.logPath,
-    format: command.format,
-    cliCommand: [execPath, currentCliPath()],
-  } as const;
+  return buildCodexGoalCliLaunchInput(command, [execPath, currentCliPath()]);
 }
 
 function parseRun(
@@ -510,8 +528,10 @@ function parseRun(
     "CODEX_GOAL_REGISTRY_ROOT",
   ]);
   const registryMetadata = registryMetadataFromFlags(values);
+  const lifecycle = parseHostedGoalLifecycleRequest(values);
   return {
     kind: "run",
+    ...(lifecycle ? { lifecycle } : {}),
     config,
     ...(option(values, env, "--tmux-session", []) || flag(values, "--tmux")
       ? { tmuxSession: option(values, env, "--tmux-session", []) ?? taskId }
@@ -839,65 +859,6 @@ function parseJsonObject(value: string, source: string): Record<string, unknown>
 
 function currentCliPath(): string {
   return fileURLToPath(import.meta.url);
-}
-
-function usage(): string {
-  return `usage:
-  subscription-runtime-codex-goal run --job-root <dir> --workspace <dir> --prompt <file> --task-id <id> --accounts account-a,account-b [--tmux-session <name>] [--registry-root <dir>]
-  subscription-runtime-codex-goal status --job-root <dir> --task-id <id> [--workspace <dir>] [--tmux-session <name>]
-  subscription-runtime-codex-goal doctor --job-root <dir> --workspace <dir> --prompt <file> --task-id <id> --accounts account-a,account-b
-  subscription-runtime-codex-goal tail --job-root <dir> --task-id <id> [--lines 100]
-  subscription-runtime-codex-goal doctor-control
-  subscription-runtime-codex-goal project-control-operation-run --operation-file <file> [--json|--text]
-  subscription-runtime-codex-goal overview [--registry-root <dir>] [--job-prefix <prefix>]
-  subscription-runtime-codex-goal run-watch [jobId] [--cursor <nextCursor>] [--limit <n: default 25, max 100>] [--provider codex|claude|agent-runtime-task] [--registry-root <dir>] [--state-root <dir>] [--include-log-tail] [--include-changed-files] [--json|--text]
-  subscription-runtime-codex-goal events [jobId] [--provider codex|claude|local|agent-runtime-task|unknown] [--registry-root <dir>] [--event-root <dir>] [--cursor <cursor>] [--type <event-type>] [--limit 100]
-  subscription-runtime-codex-goal state <jobId> [--provider codex|claude|local|agent-runtime-task|unknown] [--registry-root <dir>] [--event-root <dir>]
-  subscription-runtime-codex-goal event-compaction-plan [--registry-root <dir>] [--event-root <dir>] [--compact-delivered] [--keep-latest-per-run 100] [--drop-invalid-lines]
-  subscription-runtime-codex-goal event-compact --confirm [--registry-root <dir>] [--event-root <dir>] [--compact-delivered] [--keep-latest-per-run 100] [--drop-invalid-lines] [--force]
-  subscription-runtime-codex-goal project-events [jobId] [--provider codex] [--registry-root <dir>] [--event-root <dir>] [--host-id <id>] [--include-changed-files]
-  subscription-runtime-codex-goal relay-events --event-root <dir> --consumer-id <id> [--publisher stdout|webhook] [--webhook-url <url>] [--limit 100] [--run-id <id>] [--type run.completed]
-  subscription-runtime-codex-goal reconcile-preview [--registry-root <dir>] [--continue-safe-jobs]
-  subscription-runtime-codex-goal tool codex_goal_project_quarantine_legacy_integration_attempts --args-file <json>
-  subscription-runtime-codex-goal brief <jobId> [--registry-root <dir>]
-  subscription-runtime-codex-goal decision <jobId> [--registry-root <dir>]
-  subscription-runtime-codex-goal handoff <jobId> [--registry-root <dir>]
-  subscription-runtime-codex-goal accounts <jobId> [--registry-root <dir>]
-  subscription-runtime-codex-goal control-enqueue <jobId> --body <text> [--intent guidance] [--caller-kind user|operator|orchestrator|runtime|agent] [--caller-id <id>] [--registry-root <dir>]
-  subscription-runtime-codex-goal control-list <jobId> [--include-bodies] [--registry-root <dir>]
-  subscription-runtime-codex-goal control-decision <jobId> [--registry-root <dir>]
-  subscription-runtime-codex-goal control-reconcile <jobId> [--repair] [--accepted-stale-after-ms 300000] [--registry-root <dir>]
-  subscription-runtime-codex-goal control-supersede <jobId> --signal-id <id> [--caller-kind user|operator|orchestrator|runtime|agent] [--caller-id <id>] [--registry-root <dir>]
-  subscription-runtime-codex-goal reconcile-result <jobId> [--force] [--registry-root <dir>]
-  subscription-runtime-codex-goal relogin <jobId> [account] [--registry-root <dir>]
-  subscription-runtime-codex-goal continue-job <jobId> --confirm [--registry-root <dir>]
-  subscription-runtime-codex-goal recover-job <jobId> --confirm [--registry-root <dir>]
-  subscription-runtime-codex-goal stop-job <jobId> --confirm [--registry-root <dir>]
-  subscription-runtime-codex-goal maintenance-pause-job <jobId> --confirm [--reason resize] [--registry-root <dir>]
-  subscription-runtime-codex-goal controller-supervise --controller-job-id <id> [--registry-root <dir>] [--provider codex|claude] [--status-interval-ms 60000]
-  subscription-runtime-codex-goal tools
-  subscription-runtime-codex-goal tool <mcp_tool_name> [--args-json '{"jobId":"..."}' | --args-file args.json]
-  subscription-runtime-codex-goal resources
-  subscription-runtime-codex-goal resource <mcp_resource_uri>
-  subscription-runtime-codex-goal prompts
-  subscription-runtime-codex-goal prompt <mcp_prompt_name> [--args-json '{"jobId":"..."}' | --args-file args.json]
-
-defaults:
-  --model gpt-6-astra --effort high --service-tier default --execution-engine app-server-goal --timeout 72h --app-server-startup-timeout-ms 120000 --max-account-cycles 5
-  --codex-goal-objective <text> sets a short app-server goal objective, max 4000 chars. Keep long instructions in --prompt.
-
-escape hatches:
-  --dry-run, --print-command, --no-tmux, --no-require-git-workspace
-
-registry:
-  pass --registry-root to write or update job.json before starting the worker.
-  optional --description and --tags annotate the manifest.
-
-MCP fallback:
-  use tool/resources/prompts when native MCP tools are unavailable in a Codex thread.
-  These commands call the same in-process MCP server via the SDK, so the API surface matches MCP.
-  Shortcuts like overview, run-watch, events, project-events, reconcile-preview, brief, decision, handoff, accounts, control-*, continue-job, recover-job and stop-job are thin wrappers around MCP tools.
-`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

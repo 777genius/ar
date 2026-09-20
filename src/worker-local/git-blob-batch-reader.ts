@@ -87,7 +87,7 @@ async function runGitBlobBatch(
         ],
         {
           cwd: input.workspacePath,
-          env: input.env,
+          env: { ...(input.env ?? process.env), GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null" },
           stdio: ["pipe", "pipe", "pipe"],
         },
       );

@@ -1,3 +1,6 @@
+import { HostedGoalLifecycleOperation } from "./codex-goal-foreground-command";
+import { CodexGoalLaunchState } from "../codex-goal-ops";
+import { isHostedGoalLaunch, stopHostedGoalLaunch, routeHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import type { CodexGoalJobManifest } from "../codex-goal-jobs";
 import {
   buildCodexGoalNoTmuxCommand,
@@ -76,7 +79,8 @@ export async function continueStoredJobLifecycle(
     requiredTool: "codex_goal_project_start",
   });
   if (projectControlDenial) return projectControlDenial;
-  const status = await collectCodexGoalStatus(statusInput(loaded.launch));
+  const { tmuxSession: _tmuxSession, ...foregroundStatus } = statusInput(loaded.launch);
+  const status = await collectCodexGoalStatus(isHostedGoalLaunch(loaded.launch) ? foregroundStatus : statusInput(loaded.launch));
   const progressStale = status.progressHeartbeatAgeMs !== undefined &&
     status.progressHeartbeatAgeMs > (numberValue(args.staleAfterMs) ?? 10 * 60_000);
   const workerLiveness = resolveCodexGoalWorkerLiveness({
@@ -119,7 +123,7 @@ export async function continueStoredJobLifecycle(
       next: nextActionForStatus(status.recommendedAction),
     };
   }
-  if (!loaded.launch.tmuxSession) {
+  if (!loaded.launch.tmuxSession && !isHostedGoalLaunch(loaded.launch)) {
     return {
       ok: false,
       reason: "tmux_session_required",
@@ -127,11 +131,19 @@ export async function continueStoredJobLifecycle(
       noTmuxCommand: buildCodexGoalNoTmuxCommand(loaded.launch),
     };
   }
+  const outerStatus = await routeHostedGoalLaunch({ ...loaded.launch, registryRootDir: loaded.registryRootDir }, {
+    operation: options.mode === "continue" ? HostedGoalLifecycleOperation.Continue : HostedGoalLifecycleOperation.Recover,
+    jobId: loaded.manifest.jobId, confirmed: args[options.confirmKey] === true,
+    skipDoctor: args.skipDoctor === true, forceStart: args.forceStart === true,
+    ...(args.staleAfterMs === undefined ? {} : { staleAfterMs: args.staleAfterMs }),
+  });
+  if (outerStatus !== undefined) return { ok: outerStatus === 0, jobId: loaded.manifest.jobId,
+    launchState: outerStatus === 0 ? CodexGoalLaunchState.Completed : CodexGoalLaunchState.Failed, exitCode: outerStatus };
   if (!args.skipDoctor) {
     await prepareCodexGoalLaunchPaths(loaded.launch);
     const doctor = await doctorCodexGoal({
       config: loaded.launch.config,
-      tmuxSession: loaded.launch.tmuxSession,
+      ...(isHostedGoalLaunch(loaded.launch) ? {} : { tmuxSession: loaded.launch.tmuxSession }),
     });
     if (!doctor.ok) {
       return {
@@ -151,12 +163,13 @@ export async function continueStoredJobLifecycle(
     : undefined;
   const command = await startCodexGoalTmux(loaded.launch);
   return {
-    ok: true,
+    ok: command.launchState !== CodexGoalLaunchState.Failed,
     mode: options.mode,
     jobId: loaded.manifest.jobId,
     taskId: loaded.launch.config.taskId,
     tmuxSession: loaded.launch.tmuxSession,
     tmuxCommand: command.preview,
+    launchState: command.launchState ?? CodexGoalLaunchState.Scheduled,
     statusBefore: status,
     ...(resultReconciliation === undefined ? {} : { resultReconciliation }),
   };
@@ -281,6 +294,14 @@ export async function stopStoredJobLifecycle(
     staleAfterMs: numberValue(args.staleAfterMs) ?? 10 * 60_000,
     tailLines: numberValue(args.tailLines) ?? 20,
   });
+  if (isHostedGoalLaunch(loaded.launch)) {
+    if (!brief.silentStale && !brief.heartbeatOnlyNoOutput && !args.forceStop) {
+      return { ok: false, reason: "worker_not_silent_stale_or_heartbeat_only_no_output", requiredOverride: "forceStop" };
+    }
+    if (!args.confirmStop) return { ok: false, reason: "confirm_stop_required" };
+    stopHostedGoalLaunch(loaded.launch);
+    return { ok: true, jobId: loaded.manifest.jobId, stopRequested: true, terminalCustodyProven: false };
+  }
   if (!loaded.launch.tmuxSession) {
     return stopDirectCodexGoalRun({
       manifest: loaded.manifest,
@@ -406,6 +427,12 @@ export async function maintenancePauseStoredJobLifecycle(
     staleAfterMs: numberValue(args.staleAfterMs) ?? 10 * 60_000,
     tailLines: numberValue(args.tailLines) ?? 20,
   });
+  if (isHostedGoalLaunch(loaded.launch)) {
+    if (status.workspaceDirty && !args.forcePause) return { ok: false, reason: "workspace_dirty_requires_force_pause" };
+    if (!args.confirmPause) return { ok: false, reason: "confirm_pause_required" };
+    stopHostedGoalLaunch(loaded.launch);
+    return { ok: true, jobId: loaded.manifest.jobId, stopRequested: true, terminalCustodyProven: false };
+  }
   if (!loaded.launch.tmuxSession) {
     return {
       ok: false,

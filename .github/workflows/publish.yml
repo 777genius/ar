@@ -22,7 +22,7 @@ jobs:
   validate_release:
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     outputs:
       release_tag: ${{ steps.validate.outputs.release_tag }}
     steps:
@@ -46,7 +46,7 @@ jobs:
       contents: read
     if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
     needs: [validate_release]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     timeout-minutes: 35
     strategy:
       fail-fast: false
@@ -63,7 +63,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
+      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # retried — only this fetch.
+      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run build:packages
       - name: Certify crash-boundary shards in lane ${{ matrix.lane }}
         env:
@@ -83,7 +86,7 @@ jobs:
       contents: read
     if: ${{ always() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: [crash-boundary-shards]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
       - name: Verify every crash-boundary shard lane passed
         env:
@@ -93,7 +96,7 @@ jobs:
   publish:
     if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
     needs: [validate_release, crash-boundary-shards-complete]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -116,7 +119,10 @@ jobs:
           cache: npm
           registry-url: https://npm.pkg.github.com
           scope: "@vioxen"
-      - run: npm ci
+      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
+      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # retried — only this fetch.
+      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run typecheck
       - run: npm run build
       - run: npm run check:dist

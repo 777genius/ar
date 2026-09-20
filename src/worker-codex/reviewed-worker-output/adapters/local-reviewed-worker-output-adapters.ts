@@ -14,6 +14,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import {
   OpaqueSecretDetectionPolicy,
   ReviewDecisionStatus,
+  reviewedOutputFileByteAllowance,
   type ReviewDecision,
   type WorkspaceLockPort,
 } from "@vioxen/subscription-runtime/worker-core";
@@ -59,12 +60,15 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
   async capture(input: {
     readonly workspacePath: string;
     readonly allowEmptyPatch?: boolean;
+    readonly reviewedOutputFileByteAllowance?: number;
   }): Promise<ReviewedWorkerOutputWorkspaceSnapshot> {
+    const maxFileBytes = reviewedOutputFileByteAllowance(input.reviewedOutputFileByteAllowance);
     const captured = await captureCodexGoalExactWorkspacePatch({
       workspacePath: input.workspacePath,
       ...(this.options.gitBinaryPath === undefined
         ? {}
         : { gitBinaryPath: this.options.gitBinaryPath }),
+      ...(maxFileBytes === undefined ? {} : { limits: { maxFileBytes } }),
       scanSecretContent: false,
       enforceSingleWorkspaceLayer: false,
     });
@@ -97,6 +101,7 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
       baseCommit,
       patch,
       changedFiles,
+      ...(maxFileBytes === undefined ? {} : { maxFileBytes }),
     });
     return {
       patch,
@@ -120,6 +125,7 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
     readonly baseCommit: string;
     readonly patch: string;
     readonly changedFiles: readonly string[];
+    readonly maxFileBytes?: number;
   }): Promise<void> {
     await mkdir(this.options.tempRootDir, { recursive: true, mode: 0o700 });
     const tempDir = await mkdtemp(join(this.options.tempRootDir, ".capture-"));
@@ -134,6 +140,7 @@ export class GitReviewedWorkerOutputSnapshotter implements ReviewedWorkerOutputS
         baseCommit: input.baseCommit,
         patchPath,
         changedPaths: input.changedFiles,
+        ...(input.maxFileBytes === undefined ? {} : { maxFileBytes: input.maxFileBytes }),
         tempRootDir: tempDir,
         opaqueContentPolicy:
           OpaqueSecretDetectionPolicy.ScanKnownSignatures,
@@ -405,6 +412,9 @@ export class LocalReviewedWorkerOutputStore implements ReviewedWorkerOutputStore
             patchSha256: snapshot.patchSha256,
             changedFiles: snapshot.changedFiles,
             reviewDecision: snapshot.reviewDecision,
+            ...(snapshot.reviewedOutputFileByteAllowance === undefined
+              ? {}
+              : { reviewedOutputFileByteAllowance: snapshot.reviewedOutputFileByteAllowance }),
             ...(snapshot.merge ? { merge: snapshot.merge } : {}),
           }),
         ) !== reviewedOutputId
@@ -615,6 +625,7 @@ function parseSnapshot(
     "patchPath",
     "patchSha256",
     "patchByteLength",
+    "reviewedOutputFileByteAllowance",
     "baseCommit",
     "changedFiles",
     "reviewDecision",
@@ -625,6 +636,7 @@ function parseSnapshot(
   const merge = value.merge === undefined
     ? undefined
     : parseMergePlan(value.merge);
+  const allowance = reviewedOutputFileByteAllowance(value.reviewedOutputFileByteAllowance);
   const patchByteLength = requiredNonNegativeInteger(value.patchByteLength);
   const snapshot: ReviewedWorkerOutputSnapshot = {
     format: reviewedWorkerOutputFormat,
@@ -638,6 +650,7 @@ function parseSnapshot(
     patchPath,
     patchSha256: requiredString(value.patchSha256),
     patchByteLength,
+    ...(allowance === undefined ? {} : { reviewedOutputFileByteAllowance: allowance }),
     baseCommit: requiredString(value.baseCommit),
     changedFiles: requiredReviewedFileList(value.changedFiles, {
       allowEmpty: merge !== undefined,
@@ -889,10 +902,11 @@ function requiredNonNegativeInteger(value: unknown): number {
 function assertReviewedPatchInvariant(
   snapshot: Pick<
     ReviewedWorkerOutputSnapshot,
-    "patchByteLength" | "changedFiles" | "merge"
+    "patchByteLength" | "changedFiles" | "merge" | "reviewedOutputFileByteAllowance"
   >,
   patch?: string,
 ): void {
+  reviewedOutputFileByteAllowance(snapshot.reviewedOutputFileByteAllowance);
   if (snapshot.patchByteLength === 0) {
     if (
       snapshot.merge === undefined ||

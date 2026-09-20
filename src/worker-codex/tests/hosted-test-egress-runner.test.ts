@@ -1,12 +1,9 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
-import { codexGoalAccountSlots, codexGoalRuntimeEventsPath, runCodexGoal } from "../codex-goal-runner";
-import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
-import { FakeAppServerFactory } from "../../provider-codex/app-server/testing/fake-app-server";
-import { codexAuthJsonForAccount, StaticRunner } from "./file-backend-codex-worker-test-support";
+import { codexGoalAccountSlots, runCodexGoal } from "../codex-goal-runner";
 import type { HostedTestEgressGrant } from "../hosted-test-egress-contract";
 import type { CodexWorkerExecutionEngine } from "../file-backend-codex-runtime-factory";
 
@@ -17,10 +14,25 @@ vi.mock("../hosted-test-egress-files", () => ({
   assertHostedTestEgressOperator: files.operator,
 }));
 
+// Grant-only transport fixtures have no installed ordinary origin or managed
+// custody. Real ordinary runner/default-factory quota rotation is composed in
+// hosted-ordinary-installation.test.ts with private record and OS fixtures.
+vi.mock("../hosted-readonly-supervisor-host", () => ({
+  HostedReadonlySupervisorHost: class { assertManagedAdmission() {} },
+}));
+
+// These egress fixtures contain no root-approved readonly records. Do not inspect
+// the host's real policy filesystem while testing synthetic egress identities.
+vi.mock("../hosted-readonly-inputs", async importOriginal => ({
+  ...await importOriginal<typeof import("../hosted-readonly-inputs")>(),
+  readHostedReadonlyPolicy: () => null,
+  readHostedPrivateBytes: () => null,
+}));
+
 describe("normal runner trusted admission", () => {
   beforeEach(() => { vi.spyOn(process, "getuid").mockReturnValue(0); });
   afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks(); });
-  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("reads once per start, propagates to every rotating account, and re-admits revocation: %s", async selectedProfile => {
+  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("grant-only runner refuses before executor creation without installed origin/custody: %s", async selectedProfile => {
     const root = await mkdtemp(join(tmpdir(), "egress-runner-"));
     const config = {
       jobId: "exact-job", taskId: "task-label", jobRootDir: join(root, "job"),
@@ -36,31 +48,15 @@ describe("normal runner trusted admission", () => {
     try {
       await mkdir(config.jobRootDir); await mkdir(config.workspacePath);
       await writeFile(config.promptPath, "Offline synthetic task");
-      files.read.mockResolvedValueOnce(grant).mockResolvedValueOnce(null);
-      for (const profileId of [selectedProfile, CodexProviderEgressProfileId.ProviderApi]) {
-        await runCodexGoal(config, { createExecutor(options) {
-          expect(options.accounts).toHaveLength(2);
-          for (const account of options.accounts) {
-            expect(account.worker.providerEgressPolicy?.profileId).toBe(profileId);
-            expect(Object.isFrozen(account.worker.providerEgressPolicy?.domains)).toBe(true);
-          }
-          return { async run() {
-            // Record removal cannot change the policy already captured by this launch.
-            files.read.mockResolvedValue(null);
-            expect(options.accounts[0]!.worker.providerEgressPolicy?.profileId).toBe(profileId);
-            return { status: "completed", attempts: [], task: { outputText: "offline" } } as never;
-          }, async dispose() {} };
-        } });
-      }
-      expect(files.read).toHaveBeenCalledTimes(2);
+      files.read.mockResolvedValue(grant);
+      const createExecutor = vi.fn();
+      await expect(runCodexGoal(config, { createExecutor })).rejects.toThrow(/hosted_(readonly|activation)_/);
+      expect(createExecutor).not.toHaveBeenCalled();
       expect(files.read.mock.calls[0]?.[0]).toBe("/run/user/0/subscription-runtime-host-policy/codex-egress");
       expect(files.read.mock.calls[0]?.[1]).toMatchObject({ jobId: "exact-job", jobRootDir: config.jobRootDir, workspacePath: config.workspacePath });
-      const events = await readFile(codexGoalRuntimeEventsPath(config), "utf8");
-      expect(events).toContain(CodexProviderEgressProfileId.ProviderApi);
-      expect(events).toContain(selectedProfile);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
-  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("retains the admitted profile during a mock safe-executor quota rotation: %s", async selectedProfile => {
+  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("deleting the grant cannot turn an unadmitted hosted runner into ordinary API: %s", async selectedProfile => {
     const root = await mkdtemp(join(tmpdir(), "egress-rotation-"));
     const config = { jobId: "rotation", taskId: "rotation", jobRootDir: join(root, "job"),
       workspacePath: join(root, "workspace"), promptPath: join(root, "prompt"),
@@ -68,32 +64,15 @@ describe("normal runner trusted admission", () => {
       maxAccountCycles: 1,
       sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
     };
-    const fakes = [new FakeAppServerFactory({ emitTopLevelErrorOnTurn: "You've hit your usage limit" }), new FakeAppServerFactory()];
-    const launches: { account: number; profile: string | undefined }[] = [];
-    const clock = { now: () => new Date("2026-05-31T00:05:00.000Z"), monotonicMs: () => performance.now() };
     try {
       await mkdir(config.jobRootDir); await mkdir(config.workspacePath); await writeFile(config.promptPath, "Offline rotation");
       files.read.mockResolvedValue({ schemaVersion: 1, jobId: config.jobId, jobRootDir: config.jobRootDir,
         workspacePath: config.workspacePath, profileId: selectedProfile });
-      const result = await runCodexGoal(config, { createExecutor: options => new FileBackendCodexSafeExecutor({
-        ...options, requireGitWorkspace: false, prewarmOnStart: false, clock,
-        accounts: options.accounts.map((account, index) => ({
-          codexAuthJson: codexAuthJsonForAccount(`synthetic-refresh-${index}`, `synthetic-account-${index}`),
-          worker: { ...account.worker, clock, warmupPrompt: false,
-            runner: new StaticRunner({ exitCode: 0, stdout: "", stderr: "" }),
-            appServerProcessFactory: input => {
-              launches.push({ account: index, profile: input.env?.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE });
-              return fakes[index]!.create(input);
-            },
-          },
-        })),
-      }) });
-      expect(result.status).toBe("completed");
-      expect(result.attempts).toHaveLength(2);
-      expect(result.attempts[0]?.failureReason).toBe("quota_limited");
-      expect(new Set(launches.map(launch => launch.account))).toEqual(new Set([0, 1]));
-      expect(launches.every(launch => launch.profile === selectedProfile)).toBe(true);
-      expect(files.read).toHaveBeenCalledOnce();
+      const createExecutor = vi.fn();
+      await expect(runCodexGoal(config, { createExecutor })).rejects.toThrow(/hosted_(readonly|activation)_/);
+      files.read.mockResolvedValue(null);
+      await expect(runCodexGoal(config, { createExecutor })).rejects.toThrow("hosted_activation_authority_required");
+      expect(createExecutor).not.toHaveBeenCalled();
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it.each(["plain-exec", "packaged-exec", "app-server", "unknown"])("refuses %s before prompt/account/executor work", async executionEngine => {

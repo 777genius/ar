@@ -1,6 +1,9 @@
+import { verifyLocalMergeOutputTree, assertLocalMergeWorkspaceTree } from "./project-integration-local-merge-tree";
+import { reconcileReviewedIntegrationCommit } from "./project-integration-reviewed-tree-recovery";
+import { commitReviewedIntegrationTree } from "./project-integration-reviewed-tree-commit";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import {
   basename,
   dirname,
@@ -10,17 +13,18 @@ import {
   resolve,
 } from "node:path";
 import { promisify } from "node:util";
+import { tmpdir } from "node:os";
 
 import {
   abortPendingMerge,
   adoptExistingReviewedMergeCommit,
   applyReviewedMerge,
   assertPendingMergeParents,
-  commitParents,
   type LocalGitMergeRuntime,
 } from "./project-integration-local-merge-coordinator";
 import {
   inspectLocalPatchOutputTree,
+  writeTemporaryIndexTree,
   localWorkerOutputTargetCommit,
   rollbackLocalWorkerOutput,
 } from "./project-integration-local-output-rollback";
@@ -42,6 +46,7 @@ import {
   type GitCommitResult,
   type GitDiffCheckResult,
   type GitPort,
+  type PreparedReviewedGitCommit,
   type GitWorkspaceStatus,
   type IntegrationAttempt,
   type WorkspaceLock,
@@ -278,6 +283,9 @@ export class LocalGitIntegrationAdapter implements GitPort {
     readonly files: readonly string[];
     readonly identity: CommitIdentity;
     readonly expectedParentCommits?: readonly string[];
+    readonly expectedMergeTree?: string;
+    readonly reviewedAttempt?: IntegrationAttempt;
+    readonly onReviewedCommitPrepared?: (prepared: PreparedReviewedGitCommit) => Promise<void>;
   }): Promise<GitCommitResult> {
     const workspacePath = await canonicalDirectory(input.workspacePath);
     const files = input.files.map(normalizeProjectRelativePath);
@@ -285,20 +293,41 @@ export class LocalGitIntegrationAdapter implements GitPort {
       throw new Error("local_git_integration_commit_files_required");
     }
     if (input.expectedParentCommits) {
+      if (!input.expectedMergeTree) throw new Error("merge_output_authorized_tree_required");
+      await assertLocalMergeWorkspaceTree(this.mergeRuntime(), workspacePath, input.expectedMergeTree, files);
       const existing = await adoptExistingReviewedMergeCommit({
         runtime: this.mergeRuntime(),
         workspacePath,
         expectedParentCommits: input.expectedParentCommits,
+        expectedMergeTree: input.expectedMergeTree,
         files,
         message: input.message,
         identity: assertCommitIdentity(input.identity),
       });
-      if (existing) return existing;
+      if (existing) {
+        await this.git(["merge", "--quit"], workspacePath);
+        return existing;
+      }
       await assertPendingMergeParents(
         this.mergeRuntime(),
         workspacePath,
         input.expectedParentCommits,
       );
+      const identity = assertCommitIdentity(input.identity);
+      const commitSha = (await this.git(["commit-tree", input.expectedMergeTree,
+        ...input.expectedParentCommits.flatMap((parent) => ["-p", parent]), "-m", input.message], workspacePath, {
+        ...process.env, GIT_AUTHOR_NAME: identity.name, GIT_AUTHOR_EMAIL: identity.email,
+        GIT_COMMITTER_NAME: identity.name, GIT_COMMITTER_EMAIL: identity.email,
+      })).stdout.trim();
+      await assertPendingMergeParents(this.mergeRuntime(), workspacePath, input.expectedParentCommits);
+      await assertLocalMergeWorkspaceTree(this.mergeRuntime(), workspacePath, input.expectedMergeTree, files);
+      await this.git(["update-ref", "HEAD", commitSha, input.expectedParentCommits[0]!], workspacePath);
+      await this.git(["merge", "--quit"], workspacePath);
+      const diffStat = (await this.git(["diff", "--stat", "--no-renames", `${commitSha}^1`, commitSha], workspacePath)).stdout.trim();
+      return { commitSha, parentCommits: input.expectedParentCommits, ...(diffStat ? { diffStat } : {}) };
+    }
+    if (input.reviewedAttempt) {
+      return this.commitReviewedTree(input.reviewedAttempt, input.message, input.identity, input.onReviewedCommitPrepared);
     }
     const stagedDeletions = new Set(
       await this.gitNullTerminatedPaths(
@@ -346,36 +375,98 @@ export class LocalGitIntegrationAdapter implements GitPort {
     const commitSha = (
       await this.git(["rev-parse", "HEAD"], workspacePath)
     ).stdout.trim();
-    const parentCommits = await commitParents(
-      this.mergeRuntime(),
-      workspacePath,
-      commitSha,
-    );
-    if (
-      input.expectedParentCommits &&
-      !sameCommits(parentCommits, input.expectedParentCommits)
-    ) {
-      throw new IntegrationError({
-        reason: IntegrationErrorReason.MergeParentsMismatch,
-        evidence: [
-          `expected:${input.expectedParentCommits.join(",")}`,
-          `actual:${parentCommits.join(",")}`,
-        ],
-      });
-    }
     const diffStat = (
       await this.git(
-        input.expectedParentCommits
-          ? ["diff", "--stat", "--no-renames", `${commitSha}^1`, commitSha]
-          : ["show", "--stat", "--format=", "--no-renames", "HEAD"],
+        ["show", "--stat", "--format=", "--no-renames", "HEAD"],
         workspacePath,
       )
     ).stdout.trim();
     return {
       commitSha,
-      ...(input.expectedParentCommits ? { parentCommits } : {}),
       ...(diffStat ? { diffStat } : {}),
     };
+  }
+
+  async reviewedTreeChangedFiles(input: { readonly attempt: IntegrationAttempt; readonly tree: string }): Promise<readonly string[]> {
+    const workspacePath = await canonicalDirectory(input.attempt.targetWorkspacePath);
+    const parent = localWorkerOutputTargetCommit(input.attempt.workerOutput);
+    const result = await this.git(["diff", "--name-only", "--no-renames", "-z", parent, input.tree, "--"], workspacePath);
+    return result.stdout.split("\0").filter(Boolean).map(normalizeProjectRelativePath).sort();
+  }
+
+  async verifyMergeOutputTree(attempt: IntegrationAttempt): Promise<string> {
+    return verifyLocalMergeOutputTree(this.mergeRuntime(), { ...attempt, targetWorkspacePath: await canonicalDirectory(attempt.targetWorkspacePath) });
+  }
+
+  async verifyReviewedOutputTree(attempt: IntegrationAttempt): Promise<string> {
+    if (attempt.merge || !attempt.workerOutput.reviewedOutputId) throw new Error("reviewed_output_tree_source_invalid");
+    const workspacePath = await canonicalDirectory(attempt.targetWorkspacePath);
+    const baseCommit = localWorkerOutputTargetCommit(attempt.workerOutput);
+    const head = (await this.git(["rev-parse", "HEAD"], workspacePath)).stdout.trim();
+    if (head !== baseCommit) throw new Error("reviewed_output_target_head_changed");
+    const expected = await this.reviewedPatchTree(attempt, workspacePath);
+    const actual = await writeTemporaryIndexTree({ runtime: this.mergeRuntime(), workspacePath, baseCommit, worktreeFiles: attempt.expectedFiles });
+    const status = await this.getStatus({ workspacePath });
+    assertFilesWithinExpected(status.dirtyFiles, attempt.expectedFiles);
+    if (status.branch !== attempt.targetBranch) throw new Error("reviewed_output_target_branch_changed");
+    if (actual !== expected.outputTree || !sameFiles(expected.changedFiles, attempt.expectedFiles)) throw new Error("reviewed_output_target_tree_mismatch");
+    for (const file of attempt.expectedFiles) {
+      const entry = (await this.git(["ls-tree", "-z", actual, "--", file], workspacePath)).stdout;
+      if (!entry) {
+        if (await pathExists(join(workspacePath, file))) throw new Error("reviewed_output_target_tree_mismatch");
+        continue;
+      }
+      const objectId = /^(?:100644|100755) blob ([a-f0-9]{40,64})\t/.exec(entry)?.[1];
+      if (!objectId || !(await lstat(join(workspacePath, file))).isFile()) throw new Error("reviewed_output_target_tree_mismatch");
+      const rawObjectId = (await this.git(["hash-object", "--no-filters", "--", file], workspacePath)).stdout.trim();
+      if (rawObjectId !== objectId) throw new Error("reviewed_output_target_tree_mismatch");
+    }
+    return actual;
+  }
+
+  private async reviewedPatchTree(attempt: IntegrationAttempt, workspacePath: string) {
+    if (attempt.merge || !attempt.workerOutput.reviewedOutputId) throw new Error("reviewed_output_tree_source_invalid");
+    const baseCommit = localWorkerOutputTargetCommit(attempt.workerOutput);
+    const patchPath = await this.canonicalWorkerPatch(attempt.workerOutput);
+    if (!attempt.workerOutput.patchSha256) throw new Error("reviewed_output_patch_hash_required");
+    const patchBytes = await readFile(patchPath);
+    if (createHash("sha256").update(patchBytes).digest("hex") !== attempt.workerOutput.patchSha256) throw new Error("local_git_integration_patch_hash_mismatch");
+    const tempRoot = await mkdtemp(join(tmpdir(), "reviewed-tree-patch-"));
+    try {
+      const frozenPatch = join(tempRoot, "reviewed.patch");
+      await writeFile(frozenPatch, patchBytes, { mode: 0o600, flag: "wx" });
+      return await inspectLocalPatchOutputTree({ runtime: this.mergeRuntime(), workspacePath, baseCommit, patchPath: frozenPatch });
+    } finally { await rm(tempRoot, { recursive: true, force: true }); }
+  }
+
+  async reconcileReviewedCommit(attempt: IntegrationAttempt): Promise<GitCommitResult | undefined> {
+    const prepared = attempt.preparedReviewedCommit;
+    if (!prepared || prepared.parent !== localWorkerOutputTargetCommit(attempt.workerOutput) || prepared.tree !== attempt.checkedReviewedTree) {
+      throw new Error("reviewed_output_prepared_identity_mismatch");
+    }
+    const workspacePath = await canonicalDirectory(attempt.targetWorkspacePath);
+    const expected = await this.reviewedPatchTree(attempt, workspacePath);
+    if (expected.outputTree !== prepared.tree || !sameFiles(expected.changedFiles, prepared.candidate.files)) {
+      throw new Error("reviewed_output_prepared_tree_mismatch");
+    }
+    return reconcileReviewedIntegrationCommit({ runtime: this.mergeRuntime(),
+      workspacePath, branch: attempt.targetBranch,
+      indexRecoveryCompleted: attempt.status === IntegrationAttemptStatus.CommitCreated && attempt.reviewedIndexRecoveryPending === false,
+      commitSha: prepared.candidate.commitSha, parent: prepared.parent, tree: prepared.tree,
+      originalIndexTree: prepared.originalIndexTree, identity: prepared.identity, message: prepared.candidate.message });
+  }
+
+  private async commitReviewedTree(attempt: IntegrationAttempt, message: string, rawIdentity: CommitIdentity,
+    onPrepared?: (prepared: PreparedReviewedGitCommit) => Promise<void>): Promise<GitCommitResult> {
+    if (!onPrepared) throw new Error("reviewed_output_prepared_evidence_required");
+    const identity = assertCommitIdentity(rawIdentity);
+    const tree = await this.verifyReviewedOutputTree(attempt);
+    if (tree !== attempt.checkedReviewedTree) throw new Error("reviewed_output_checked_tree_mismatch");
+    const workspacePath = await canonicalDirectory(attempt.targetWorkspacePath);
+    const parent = localWorkerOutputTargetCommit(attempt.workerOutput);
+    return commitReviewedIntegrationTree({ runtime: this.mergeRuntime(), workspacePath,
+      parent, branch: attempt.targetBranch, tree, message, identity, ...(attempt.preparedReviewedCommit ? { prepared: attempt.preparedReviewedCommit } : {}), onPrepared,
+      verify: () => this.verifyReviewedOutputTree(attempt) });
   }
 
   async abortMerge(input: {
@@ -573,7 +664,8 @@ export class LocalGitIntegrationAdapter implements GitPort {
       command: this.options.gitBinaryPath ?? "git",
       args,
       cwd,
-      ...(env ? { env } : {}),
+      // Custody binds real object IDs, including commands with an explicit index/identity env.
+      env: { ...(env ?? process.env), GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null" },
       timeoutMs: this.options.timeoutMs ?? 60_000,
       maxBuffer: this.options.maxBuffer ?? 10 * 1024 * 1024,
     });
@@ -585,12 +677,6 @@ function sameFiles(left: readonly string[], right: readonly string[]): boolean {
   const normalizedRight = uniqueSorted(right.map(normalizeProjectRelativePath));
   return normalizedLeft.length === normalizedRight.length &&
     normalizedLeft.every((file, index) => file === normalizedRight[index]);
-}
-
-function sameCommits(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every(
-    (commit, index) => commit.toLowerCase() === right[index]?.toLowerCase(),
-  );
 }
 
 export async function assertProjectIntegrationPatchSha256(

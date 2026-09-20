@@ -91,7 +91,14 @@ Promise<ProjectControlCustodyBootstrapCertification> {
     const paths = projectControlCustodyMaterializationPaths({ ledgerRoots, evidenceRoots, anchor });
     for (const path of paths) {
       if (path !== anchor) assertCustodyBoundary(anchor, path);
-      if (deniedRoots.some((denied) => pathsOverlap(path, denied))) {
+      // Ancestors are traversed and identity-pinned, not granted as custody
+      // subtrees. A denied sibling beneath them must remain untouched, while
+      // custody roots and lock directories still reject overlapping denials.
+      const traversalOnly = path === anchor ||
+        configuredRoots.some(root => root.startsWith(`${path}${sep}`));
+      if (deniedRoots.some((denied) => traversalOnly
+        ? path === denied || path.startsWith(`${denied}${sep}`)
+        : pathsOverlap(path, denied))) {
         throw new Error("evidence_custody_bootstrap_root_denied");
       }
       const finalReason = path.endsWith("/.mutation-locks")

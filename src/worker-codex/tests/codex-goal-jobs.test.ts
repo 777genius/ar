@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   mkdir,
   lstat,
@@ -88,6 +89,41 @@ describe("codex goal job registry", () => {
       expect(updated.taskTimeoutMs).toBe(42_000);
       expect(updated.createdAt).toBe(created.createdAt);
       expect(updated.updatedAt).toBe("2026-06-01T00:10:00.000Z");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps raw revision CAS and parsed scope CAS distinct and revalidates before publication", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-jobs-cas-"));
+    const registryRootDir = join(root, "registry");
+    const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+    try {
+      const created = await createCodexGoalJob({ registryRootDir, manifest: jobManifest(root) });
+      const input = { registryRootDir, jobId: created.jobId, patch: { description: "updated" } };
+      const path = codexGoalJobManifestPath(input);
+      const raw = await readFile(path, "utf8");
+      const parsed = sha(JSON.stringify(created));
+      expect(sha(raw)).not.toBe(parsed);
+      await expect(updateCodexGoalJob({ ...input, expectedManifestSha256: parsed }))
+        .rejects.toThrow("job_manifest_revision_mismatch");
+      await expect(updateCodexGoalJob({ ...input, expectedParsedManifestSha256: sha(raw) }))
+        .rejects.toThrow("project_control_controller_scope_cas_mismatch");
+      let invoked = false;
+      await expect(updateCodexGoalJob({ ...input,
+        expectedManifestSha256: sha(raw), expectedParsedManifestSha256: parsed,
+        beforeManifestPublication: async () => {
+          invoked = true;
+          await writeFile(path, JSON.stringify({ ...created, description: "concurrent" }));
+        },
+      })).rejects.toThrow("project_control_controller_scope_cas_mismatch");
+      expect(invoked).toBe(true);
+      const current = await readCodexGoalJob(input);
+      expect(current.description).toBe("concurrent");
+      await expect(updateCodexGoalJob({ ...input,
+        expectedManifestSha256: sha(await readFile(path, "utf8")),
+        expectedParsedManifestSha256: sha(JSON.stringify(current)),
+      })).resolves.toMatchObject({ description: "updated" });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

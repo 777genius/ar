@@ -1,3 +1,4 @@
+import { controllerHistoricalAttestationSchema } from "./application/project-control/codex-goal-controller-historical-attestation";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
@@ -17,6 +18,7 @@ import {
   projectControlLedgerEpochMigration,
   projectControlRepairJobManifest,
   projectControlUpdateControllerScope,
+  projectControlRelocateControllerWorkspace,
 } from "./codex-goal-mcp-project-control-tool-handlers";
 import {
   projectAdmissionOperationSchemaValues,
@@ -24,6 +26,21 @@ import {
 } from "./codex-goal-mcp-project-control-tool-schemas";
 
 export function registerCodexGoalProjectControlAdminTools(server: McpServer): void {
+  server.registerTool("codex_goal_project_relocate_controller_workspace", {
+    title: "Relocate Idle Controller Workspace",
+    description: "Host admin preview or exact-revision confirmed relocation to an existing clean workspace within unchanged scope.",
+    inputSchema: {
+      ...jobRegistryInputSchema(),
+      controllerJobId: z.string(),
+      workspacePath: z.string().min(1),
+      expectedWorkspacePath: z.string().optional(),
+      expectedManifestSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+      confirmRelocate: z.boolean().optional(),
+      historicalNeverRunAttestation: controllerHistoricalAttestationSchema.optional(),
+    },
+  }, async (args) => withMcpErrors(async () =>
+    projectControlRelocateControllerWorkspace(args as ProjectControlMcpArgs)));
+
   server.registerTool(
     "codex_goal_project_import_frozen_output",
     {

@@ -15,6 +15,7 @@ export type LedgerEpochWriterSelector = {
   readonly controllerJobId: string;
   readonly ledgerRoot: string;
   readonly selfPid: number;
+  readonly workspacePaths?: readonly string[];
 };
 
 const MCP_ENTRYPOINTS = new Set([
@@ -32,6 +33,8 @@ export function ledgerEpochProcessBlocks(
   selector: LedgerEpochWriterSelector,
 ): boolean {
   if (snapshot.pid === selector.selfPid) return false;
+  if (selector.workspacePaths?.some((path) => snapshot.cwd === path ||
+    snapshot.cwd.startsWith(`${path}/`) || snapshot.argv.includes(path))) return true;
   const entrypoint = processEntrypoint(snapshot.argv);
   if (entrypoint !== undefined && MCP_ENTRYPOINTS.has(entrypoint)) return true;
   if (entrypoint === undefined || !CLI_ENTRYPOINTS.has(entrypoint)) return false;

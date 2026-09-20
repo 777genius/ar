@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const harness = vi.hoisted(() => ({ fail: true }));
+// These cases verify CLI formatting and exit codes, without consulting the host
+// installation or launching a runtime when CI inherits hosted admission markers.
+vi.mock("../hosted-readonly-foreground", () => ({
+  routeHostedRuntimeCommand: async () => undefined,
+}));
 vi.mock("../codex-goal-mcp-client", async (original) => {
   const actual = await original<typeof import("../codex-goal-mcp-client")>();
   return {
@@ -39,9 +44,10 @@ afterEach(() => { harness.fail = true; });
 describe("controller supervisor CLI outcome", () => {
   it("ends JSON output with a compact honest failure event", async () => {
     const io = fakeIo();
-    expect(await runCodexGoalCli([
+    const exitCode = await runCodexGoalCli([
       "controller-supervise", "--controller-job-id", "fake-test-controller", "--format", "json",
-    ], io)).toBe(1);
+    ], io);
+    expect(exitCode, io.stderr).toBe(1);
     const events = io.stdout.trim().split("\n").map((line) => JSON.parse(line));
     expect(events).toHaveLength(2);
     expect(events.at(-1)).toEqual({
@@ -57,9 +63,10 @@ describe("controller supervisor CLI outcome", () => {
 
   it("prints a clear terminal failure message in text mode", async () => {
     const io = fakeIo();
-    expect(await runCodexGoalCli([
+    const exitCode = await runCodexGoalCli([
       "controller-supervise", "--controller-job-id", "fake-test-controller", "--format", "text",
-    ], io)).toBe(1);
+    ], io);
+    expect(exitCode, io.stderr).toBe(1);
     expect(io.stdout.trim().split("\n").at(-1)).toBe(
       "failure provider_status_failed: Controller state is unconfirmed and needs attention.",
     );
@@ -68,9 +75,10 @@ describe("controller supervisor CLI outcome", () => {
   it("does not add a failure diagnostic on success", async () => {
     harness.fail = false;
     const io = fakeIo();
-    expect(await runCodexGoalCli([
+    const exitCode = await runCodexGoalCli([
       "controller-supervise", "--controller-job-id", "fake-test-controller", "--format", "json",
-    ], io)).toBe(0);
+    ], io);
+    expect(exitCode, io.stderr).toBe(0);
     expect(io.stdout.trim().split("\n")).toHaveLength(1);
     expect(io.stdout).not.toContain('"type":"failure"');
   });

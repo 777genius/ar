@@ -1,4 +1,6 @@
-import { readdir, readFile, realpath } from "node:fs/promises";
+import { assertJsonRecordsTerminal } from "./application/project-control/codex-goal-ledger-epoch-record-guard";
+import { codexGoalManifestRevision, publishCodexGoalLedgerScopeUnderMaintenance } from "./codex-goal-job-manifest-revision";
+import { readFile, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   ProjectDebtReason,
@@ -12,6 +14,7 @@ import {
   releaseConsumedOutputLedgerMaintenanceLock,
 } from "@vioxen/subscription-runtime/worker-local";
 import {
+  type LocalControllerMaintenanceFence,
   acquireLocalControllerMaintenanceFence,
   releaseLocalControllerMaintenanceFence,
 } from "@vioxen/subscription-runtime/store-local-file";
@@ -28,7 +31,6 @@ import {
 import {
   codexGoalJobManifestPath,
   listCodexGoalJobs,
-  updateCodexGoalJob,
   type CodexGoalJobManifest,
   type CodexGoalJobSummary,
 } from "./codex-goal-jobs";
@@ -318,7 +320,7 @@ export async function projectControlLedgerEpochMigrationView(
   let result;
   let mutationLease;
   let maintenanceLease;
-  let controllerFence;
+  let controllerFence: LocalControllerMaintenanceFence | undefined;
   let operationError: unknown;
   const debtLocks: Array<Awaited<ReturnType<typeof locks.acquire>>> = [];
   try {
@@ -372,6 +374,10 @@ export async function projectControlLedgerEpochMigrationView(
       controllerJobRootDir: locked.controller.jobRootDir,
       owner: `ledger-epoch:${locked.controller.jobId}:${plan.planSha256}`,
     });
+    const fencedManifestPath = codexGoalJobManifestPath({
+      registryRootDir: locked.registryRootDir, jobId: locked.controller.jobId,
+    });
+    const fencedManifestSha256 = await codexGoalManifestRevision(fencedManifestPath);
     const lockedActiveRoot = await canonicalConsumedOutputLedgerRoot(
       (locked.scope.consumedOutputLedgerRoots ?? [])[0]!,
       true,
@@ -765,10 +771,14 @@ export async function projectControlLedgerEpochMigrationView(
           throw new Error("ledger_epoch_controller_manifest_cas_mismatch");
         }
         await assertControllerLedgerRootState(current.scope, oldRoot, oldRoot);
-        await updateCodexGoalJob({
+        if (!controllerFence) throw new Error("controller_maintenance_fence_missing");
+        await publishCodexGoalLedgerScopeUnderMaintenance({
           registryRootDir: locked.registryRootDir,
-          jobId: locked.controller.jobId,
-          patch: { projectAccessScope: lockedProposedScope },
+          manifestPath: fencedManifestPath,
+          expectedManifestSha256: fencedManifestSha256,
+          controllerJobId: lockedControllerJobId,
+          fence: controllerFence,
+          consumedOutputLedgerRoot: newRoot,
         });
       },
       revalidatePostSwitchBindings: async () => {
@@ -964,32 +974,6 @@ async function assertControllerQuiescent(
   );
 }
 
-async function assertJsonRecordsTerminal(
-  root: string,
-  fileName: string,
-  terminal: ReadonlySet<string>,
-  errorCode: string,
-  quarantinedIds: ReadonlySet<string> = new Set(),
-): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch (error) {
-    if (isNodeError(error, "ENOENT")) return;
-    throw error;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error(errorCode);
-    const value: unknown = JSON.parse(
-      await readFile(join(root, entry.name, fileName), "utf8"),
-    );
-    if (!isRecord(value) || typeof value.status !== "string" ||
-      (!terminal.has(value.status) &&
-        (typeof value.attemptId !== "string" || !quarantinedIds.has(value.attemptId)))) {
-      throw new Error(errorCode);
-    }
-  }
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -645,7 +645,7 @@ export async function projectControlUpdateControllerScopeView(
         patch: { projectAccessScope: proposedScope }, now,
         evidenceCustody: deps.evidenceCustody!,
         beforeManifestPublication: revalidate,
-        expectedManifestSha256: currentManifestSha256,
+        expectedParsedManifestSha256: currentManifestSha256,
       }),
     });
     operationId = result.operationId;

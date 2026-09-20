@@ -364,6 +364,29 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
     expect(ensured).toEqual([join(root, "one"), join(root, "one", "two")]);
   });
 
+  it("allows denied siblings of custody paths while rejecting denied custody and lock subtrees", async () => {
+    const anchor = await mkdtemp(join(tmpdir(), "custody-denied-siblings-"));
+    const ledger = join(anchor, "control", "ledger");
+    const archives = join(anchor, "control", "archives");
+    const deniedRoots = [join(anchor, "private"), join(anchor, "control", "private")];
+    await mkdir(join(anchor, "control"), { recursive: true });
+    for (const path of deniedRoots) await writeFile(path, "untouched");
+    const custody = new LocalProjectControlEvidenceCustody();
+    try {
+      const certification = await custody.materializeApprovedProjectControlCustody({
+        approvedAnchor: anchor, ledgerRoots: [ledger], evidenceRoots: [archives], deniedRoots,
+      });
+      try { await certification.revalidate(); } finally { await certification.close(); }
+      for (const path of deniedRoots) expect(await readFile(path, "utf8")).toBe("untouched");
+      for (const denied of [anchor, join(anchor, "control"), ledger, join(ledger, "items"),
+        join(anchor, "control", ".consumed-output-ledger-mutation-locks", "private")]) {
+        await expect(custody.materializeApprovedProjectControlCustody({
+          approvedAnchor: anchor, ledgerRoots: [ledger], evidenceRoots: [archives], deniedRoots: [denied],
+        })).rejects.toThrow("evidence_custody_bootstrap_root_denied");
+      }
+    } finally { await rm(anchor, { recursive: true, force: true }); }
+  });
+
   it("materializes new and pre-existing custody directories under a held anchor", async () => {
     const outer = await mkdtemp(join(tmpdir(), "custody-bootstrap-"));
     const anchor = join(outer, "project");

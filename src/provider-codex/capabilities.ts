@@ -20,6 +20,7 @@ export const codexEnvironmentPolicy: ProviderEnvironmentPolicy = {
     "CI",
     "CODEX_HOME",
     "SUBSCRIPTION_RUNTIME_SANDBOX_KIND",
+    "SUBSCRIPTION_RUNTIME_HOST_JOB_ID",
     "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_*",
   ],
   denylist: [

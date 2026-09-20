@@ -67,6 +67,7 @@ export type FileBackendCodexSafeExecutorAccount = {
 export type FileBackendCodexSafeExecutorOptions = {
   readonly executorId?: string;
   readonly stateRootDir: string;
+  readonly runtimeHomeRootDir?: string;
   readonly authRootDir?: string;
   readonly workspacePath: string;
   readonly accounts: readonly FileBackendCodexSafeExecutorAccount[];
@@ -228,6 +229,9 @@ export class FileBackendCodexSafeExecutor {
           }
           const worker = new FileBackendCodexWorker({
             ...account.worker,
+            ...(options.runtimeHomeRootDir === undefined
+              ? {}
+              : { runtimeHomeRootDir: options.runtimeHomeRootDir }),
             capacityAccountId:
               account.worker.capacityAccountId ??
               safeExecutorAccountLabel(account, slotIndex),
@@ -681,6 +685,9 @@ function assertSafeExecutorOptions(
 ): void {
   if (!options.stateRootDir.trim()) {
     throw new Error("file_backend_codex_safe_state_root_required");
+  }
+  if (options.runtimeHomeRootDir !== undefined && !options.runtimeHomeRootDir.trim()) {
+    throw new Error("file_backend_codex_safe_runtime_home_root_required");
   }
   if (!options.workspacePath.trim()) {
     throw new Error("file_backend_codex_safe_workspace_required");

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { assertHostedProcessDescriptors } from "./hosted-process-descriptors";
 import {
   decodeHostedAppServerLaunchFrame,
   type HostedAppServerLaunchFrame,
@@ -34,6 +35,9 @@ function onInput(chunk: Buffer): void {
   }
   const pendingInput = buffered.subarray(separator + 1);
   buffered = Buffer.alloc(0);
+
+  try { assertHostedProcessDescriptors(); }
+  catch { fail("hosted_app_server_descriptor_boundary_invalid"); }
 
   const child = spawn(frame.command, frame.args, {
     cwd: frame.cwd,
