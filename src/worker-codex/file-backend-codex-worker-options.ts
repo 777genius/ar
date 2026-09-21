@@ -3,6 +3,10 @@ import type { CodexExecutionProfile, CodexProviderEgressPolicy, CodexAppServerPr
 import type { CommandPolicy } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 import type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
+import {
+  assertCodexSessionHomeProfile,
+  type CodexSessionHomeProfile,
+} from "./codex-session-home-profile";
 
 export type FileBackendCodexWorkerOptions = {
   readonly workerId?: string;
@@ -10,6 +14,8 @@ export type FileBackendCodexWorkerOptions = {
   readonly stateRootDir: string;
   /** Payload-writable homes/cache; defaults to stateRootDir for legacy callers. */
   readonly runtimeHomeRootDir?: string;
+  /** Executor-scoped CODEX_HOME lifecycle. Omitted for legacy preservation. */
+  readonly sessionHomeProfile?: CodexSessionHomeProfile;
   readonly codexBinaryPath: string;
   readonly encryptionKey: Uint8Array | string;
   readonly model?: string;
@@ -64,6 +70,7 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
   if (options.runtimeHomeRootDir !== undefined && !options.runtimeHomeRootDir.trim()) {
     throw new Error("file_backend_codex_runtime_home_root_required");
   }
+  assertCodexSessionHomeProfile(options.sessionHomeProfile);
   if (!options.codexBinaryPath.trim()) {
     throw new Error("file_backend_codex_binary_required");
   }

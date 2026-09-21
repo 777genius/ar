@@ -38,6 +38,10 @@ import { codexAppServerCommandApprovalPolicy } from "./file-backend-codex-comman
 import { LocalFileManagedRunStore } from "./file-backend-codex-managed-run-store";
 import type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker";
 import { buildCodexWorkspaceToolsProfile } from "./workspace-tools/codex-workspace-tools-profile";
+import {
+  codexSessionHomeCacheKey,
+  codexSessionHomePreservedOnDispose,
+} from "./codex-session-home-profile";
 
 export type CodexWorkerExecutionEngine =
   | "app-server"
@@ -321,11 +325,17 @@ function createCodexAgentDriver(input: {
           ),
         }),
     sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
-      cacheKey: `codex:${options.providerInstanceId}:${input.workerId}`,
+      cacheKey: codexSessionHomeCacheKey({
+        profile: options.sessionHomeProfile,
+        providerInstanceId: options.providerInstanceId,
+        workerId: input.workerId,
+      }),
       providerEgressPolicy,
       slots: options.sessionCacheSlots ?? 1,
       rootDir: join(options.runtimeHomeRootDir ?? options.stateRootDir, "codex-session-cache"),
-      preserveOnDispose: true,
+      preserveOnDispose: codexSessionHomePreservedOnDispose(
+        options.sessionHomeProfile,
+      ),
       scrubAuthOnDispose: true,
       ...(workspaceToolsProfile
         ? { configToml: workspaceToolsProfile.configToml }
