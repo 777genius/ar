@@ -51,6 +51,11 @@ import {
 import { CodexAccountCapacityRechecker } from "./application/codex-account-capacity-rechecker";
 import { CodexAccountCapacityAliasStore } from "./application/codex-account-capacity-alias-store";
 import { recordCodexAppServerRateLimitsSnapshot } from "./application/codex-live-quota-capacity";
+import {
+  assertCodexSessionHomeProfile,
+  CodexSessionHomeProfileKind,
+  type CodexSessionHomeProfile,
+} from "./codex-session-home-profile";
 
 const REPLACEMENT_GOAL_OBJECTIVE =
   "Continue the same authorized task using broker-delivered replacement wording.";
@@ -68,6 +73,11 @@ export type FileBackendCodexSafeExecutorOptions = {
   readonly executorId?: string;
   readonly stateRootDir: string;
   readonly runtimeHomeRootDir?: string;
+  /**
+   * Prefer createOneShotExecutor or createContinuationExecutor. Omission keeps
+   * the legacy preserve-on-dispose behavior for existing integrations.
+   */
+  readonly sessionHomeProfile?: CodexSessionHomeProfile;
   readonly authRootDir?: string;
   readonly workspacePath: string;
   readonly accounts: readonly FileBackendCodexSafeExecutorAccount[];
@@ -232,6 +242,9 @@ export class FileBackendCodexSafeExecutor {
             ...(options.runtimeHomeRootDir === undefined
               ? {}
               : { runtimeHomeRootDir: options.runtimeHomeRootDir }),
+            ...(options.sessionHomeProfile === undefined
+              ? {}
+              : { sessionHomeProfile: options.sessionHomeProfile }),
             capacityAccountId:
               account.worker.capacityAccountId ??
               safeExecutorAccountLabel(account, slotIndex),
@@ -315,6 +328,13 @@ export class FileBackendCodexSafeExecutor {
   async run(
     input: FileBackendCodexSafeExecutorRunInput,
   ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+    if (
+      this.options.sessionHomeProfile?.kind ===
+        CodexSessionHomeProfileKind.OneShot &&
+      (input.logicalThread !== undefined || input.recoveryPacket !== undefined)
+    ) {
+      throw new Error("file_backend_codex_one_shot_continuation_invalid");
+    }
     // Provider setup is not a task attempt. A prewarm failure must surface once
     // instead of consuming the account-rotation retry budget.
     if (this.options.prewarmOnStart) await this.start();
@@ -695,6 +715,7 @@ function assertSafeExecutorOptions(
   if (options.accounts.length === 0) {
     throw new Error("file_backend_codex_safe_accounts_required");
   }
+  assertCodexSessionHomeProfile(options.sessionHomeProfile);
   assertMaxAccountCycles(options.maxAccountCycles);
   for (const account of options.accounts) {
     if (account.codexAuthJson && account.codexAuthJsonPath) {

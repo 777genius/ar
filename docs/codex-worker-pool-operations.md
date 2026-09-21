@@ -477,7 +477,7 @@ Use the highest-level surface that still gives the operator enough control:
 | CLI MCP fallback `subscription-runtime-codex-goal tool <name>` | Agents in Codex threads where native MCP tools did not load | Same MCP server via SDK, but called through shell commands |
 | CLI direct commands `subscription-runtime-codex-goal run/status/doctor/tail` | Humans, shell scripts, tmux and simple cron monitors | Smaller surface than MCP, but easy to inspect |
 | `runCodexGoal()` TypeScript API | Host apps or orchestrators that want to own scheduling, UI, notifications or persistence | Caller must preserve the safety policy and account status checks |
-| `FileBackendCodexSafeExecutor` | Advanced integrations that need custom workers, custom account definitions or custom execution policy | Most flexible, most responsibility |
+| `createOneShotExecutor()` / `createContinuationExecutor()` | Advanced integrations that need custom workers, custom account definitions or custom execution policy | Explicit CODEX_HOME lifecycle; caller must still own disposal and safety policy |
 
 The recommended order for agents is native MCP first, CLI MCP fallback second,
 direct API only when the agent is editing a host integration. Direct API should
@@ -541,8 +541,8 @@ await runCodexGoal({
 });
 ```
 
-Use `FileBackendCodexSafeExecutor` directly only when `runCodexGoal()` is too
-high level. Common reasons:
+Use the typed safe-executor factories only when `runCodexGoal()` is too high
+level. Common reasons:
 
 - the host app already owns task queues and wants to construct `run()` input
   itself;
@@ -561,6 +561,32 @@ Even in direct API mode, keep these invariants:
 - inject one shared `accountCapacityStore` for every executor using the same
   auth pool; the Codex goal runner does this automatically from `authRootDir`;
 - never print raw auth files, tokens or provider payloads.
+
+Choose the session-home lifecycle once in the composition root, not per task:
+
+```ts
+import {
+  createContinuationExecutor,
+  createOneShotExecutor,
+} from "@vioxen/subscription-runtime/worker-codex";
+
+const executor = createOneShotExecutor(options);
+
+const resumable = createContinuationExecutor({
+  ...options,
+  sessionId: "stable-application-session-id",
+});
+```
+
+`createOneShotExecutor()` rejects logical-thread and managed-run recovery input
+and removes its materialized `CODEX_HOME` when the executor is disposed.
+`createContinuationExecutor()` requires a non-empty stable `sessionId`, retains
+the matching home across executor restarts and scrubs `auth.json` on disposal.
+Always dispose either executor in `finally`.
+
+Direct `new FileBackendCodexSafeExecutor(options)` remains preserve-on-dispose
+for backward compatibility. New host integrations should use a typed factory so
+agents and job payloads never choose a retention boolean.
 
 ## MCP adapter for agents
 
@@ -1249,7 +1275,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { FileBackendCodexSafeExecutor } from "@vioxen/subscription-runtime/worker-codex";
+import { createContinuationExecutor } from "@vioxen/subscription-runtime/worker-codex";
 
 const root = process.env.SUBSCRIPTION_RUNTIME_JOB_ROOT;
 const authRoot = process.env.SUBSCRIPTION_RUNTIME_CODEX_AUTH_ROOT;
@@ -1285,8 +1311,9 @@ const accountNames = (process.env.CODEX_ACCOUNTS ?? "account-a")
   .map((name) => name.trim())
   .filter(Boolean);
 
-const executor = new FileBackendCodexSafeExecutor({
+const executor = createContinuationExecutor({
   executorId: process.env.SUBSCRIPTION_RUNTIME_EXECUTOR_ID ?? taskId,
+  sessionId: taskId,
   stateRootDir,
   workspacePath,
   maxAccountCycles: Number(process.env.SUBSCRIPTION_RUNTIME_MAX_ACCOUNT_CYCLES ?? 5),
