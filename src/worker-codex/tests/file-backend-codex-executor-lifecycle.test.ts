@@ -9,12 +9,41 @@ import {
   type FileBackendCodexSafeExecutorOptions,
 } from "../index";
 import {
+  codexSessionHomeCacheKey,
+  CodexSessionHomeProfileKind,
+} from "../codex-session-home-profile";
+import {
   FakeAppServerFactory,
   StaticRunner,
   codexAuthJson,
 } from "./file-backend-codex-worker-test-support";
 
 describe("Codex safe executor session-home lifecycle", () => {
+  it("keeps profiled cache identities disjoint from each other and legacy keys", () => {
+    const providerInstanceId = "provider:ambiguous";
+    const legacy = codexSessionHomeCacheKey({
+      profile: undefined,
+      providerInstanceId,
+      workerId: "session:sandbox-session",
+    });
+    const oneShot = codexSessionHomeCacheKey({
+      profile: { kind: CodexSessionHomeProfileKind.OneShot },
+      providerInstanceId,
+      workerId: "session:sandbox-session",
+    });
+    const continuation = codexSessionHomeCacheKey({
+      profile: {
+        kind: CodexSessionHomeProfileKind.Continuation,
+        sessionId: "sandbox-session",
+      },
+      providerInstanceId,
+      workerId: "ignored",
+    });
+
+    expect(legacy).toBe("codex:provider:ambiguous:session:sandbox-session");
+    expect(new Set([legacy, oneShot, continuation])).toHaveLength(3);
+  });
+
   it("cleans one-shot CODEX_HOME on executor disposal", async () => {
     const fixture = await executorFixture("one-shot-cleanup");
     const executor = createOneShotExecutor(fixture.options);

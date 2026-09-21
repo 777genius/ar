@@ -37,10 +37,16 @@ export function codexSessionHomeCacheKey(input: {
   readonly providerInstanceId: string;
   readonly workerId: string;
 }): string {
-  if (input.profile?.kind === CodexSessionHomeProfileKind.Continuation) {
-    return `codex:${input.providerInstanceId}:session:${input.profile.sessionId.trim()}`;
+  if (input.profile === undefined) {
+    return `codex:${input.providerInstanceId}:${input.workerId}`;
   }
-  return `codex:${input.providerInstanceId}:${input.workerId}`;
+  const identity = input.profile.kind === CodexSessionHomeProfileKind.Continuation
+    ? input.profile.sessionId.trim()
+    : input.workerId;
+  return `codex:profile:v1:${input.profile.kind}:${JSON.stringify([
+    input.providerInstanceId,
+    identity,
+  ])}`;
 }
 
 export function codexSessionHomePreservedOnDispose(
