@@ -125,6 +125,15 @@ export function commandPolicyForHostedCodexGoal(input: {
 }): CommandPolicy | undefined {
   if (
     input.accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
+    input.accessLaunchPlan.boundary === AccessBoundary.IsolatedWorkspaceWrite
+  ) {
+    return {
+      ...input.accessLaunchPlan.commandPolicy,
+      validateCommands: false,
+    };
+  }
+  if (
+    input.accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
     input.accessLaunchPlan.commandPolicy.validateCommands
   ) {
     return input.accessLaunchPlan.commandPolicy;
