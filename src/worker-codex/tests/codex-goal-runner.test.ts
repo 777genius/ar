@@ -593,7 +593,7 @@ describe("codex goal runner", () => {
     }
   });
 
-  it("threads isolated workspace command policy into worker options", () => {
+  it("lets the provider sandbox own command execution inside an isolated workspace", () => {
     const root = "/tmp/subscription-runtime-goal-access";
     const options = buildCodexGoalExecutorOptions({
       stateRootDir: join(root, "state"),
@@ -622,8 +622,7 @@ describe("codex goal runner", () => {
 
     expect(options).toMatchObject({ runtimeHomeRootDir: join(root, "home"), stateRootDir: join(root, "state") });
     expect(options.accounts[0]?.worker.commandPolicy).toMatchObject({
-      validateCommands: true,
-      deniedGitSubcommands: ["push"],
+      validateCommands: false,
     });
   });
 
