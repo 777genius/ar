@@ -39,11 +39,13 @@ function inside(root: string, path: string): boolean {
 function validDigest(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
-function onlyKeys(value: unknown, allowed: readonly string[]): value is Record<string, unknown> {
+function onlyKeys(value: unknown, allowed: readonly string[]): boolean {
   return !!value && typeof value === "object" && !Array.isArray(value) &&
     Object.keys(value).every((key) => allowed.includes(key));
 }
 function validIdentity(value: unknown): value is ColdFileIdentity {
+  if (!value || typeof value !== "object" || !("bytes" in value) || !("sha256" in value) ||
+      !("dev" in value) || !("ino" in value)) return false;
   return onlyKeys(value, ["bytes", "sha256", "dev", "ino"]) &&
     typeof value.bytes === "number" && typeof value.dev === "number" && typeof value.ino === "number" &&
     Number.isSafeInteger(value.bytes) && value.bytes >= 0 &&
