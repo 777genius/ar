@@ -9,6 +9,8 @@ import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { HostedReadonlyEpochStore, readonlyEpochPath } from "./hosted-readonly-epoch-store";
 import { readonlySupervisorRoot } from "./hosted-readonly-custody";
 import { TrustedCustodyLaunchRole, trustedCustodySystemdLaunch } from "./trusted-custody-systemd-launch";
+import { assertExactUnitGroup, assertNoQueuedStart, assertPopulatedZero, assertTerminalUnit,
+  custodyControlGroup, observedBootId, observedJobUnits, observedProcessBirth, parseUnitShow } from "./hosted-readonly-observations";
 
 export enum HostedReadonlyRuntimeRole { Supervisor = "supervisor", Runtime = "runtime" }
 
@@ -86,22 +88,20 @@ export class HostedReadonlyHostKernel {
     assertReadonlyHostOperator();
     const inventory = readHostedReadonlyHostInventory();
     const hostId = readFileSync("/etc/machine-id", "utf8").trim();
-    const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-    if (hostId !== inventory.hostId || !/^[a-f0-9-]{36}$/.test(bootId)) invalid();
+    const bootId = observedBootId(readFileSync("/proc/sys/kernel/random/boot_id", "utf8"));
+    if (hostId !== inventory.hostId) invalid();
     const supervisor = this.show(inventory.supervisorUnit);
     const expected = inventory.units.find(row => row.name === inventory.supervisorUnit)!;
-    if (supervisor.ControlGroup !== expected.controlGroup || !/^[1-9]\d*$/.test(supervisor.MainPID ?? "")) invalid();
+    assertExactUnitGroup(inventory.supervisorUnit, supervisor, expected.controlGroup);
+    if (!/^[1-9]\d*$/.test(supervisor.MainPID ?? "")) invalid();
     const callerGroup = readFileSync("/proc/self/cgroup", "utf8").trim();
     // Initial namespace + real cgroup membership, not an inherited env marker.
     if (callerGroup !== `0::${expected.controlGroup}`) {
       const epoch = this.enrolledEpoch(), outer = epoch?.outerRuntime;
       if (!epoch || !outer || outer.state !== HostedCustodyReservationState.Reserved || epoch.bootId !== bootId ||
-          callerGroup !== `0::${unitGroup(outer.unit)}`) invalid();
+          callerGroup !== `0::${custodyControlGroup(outer.unit)}`) invalid();
     }
-    const stat = readFileSync(`/proc/${supervisor.MainPID}/stat`, "utf8");
-    const tail = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/);
-    if (tail.length < 20 || !/^\d+$/.test(tail[19] ?? "")) invalid();
-    return { hostId, bootId, supervisorId: `${supervisor.MainPID}:${tail[19]}` };
+    return { hostId, bootId, supervisorId: processBirth(supervisor.MainPID ?? "") };
   }
 
   verifyExclusiveInventory(): void {
@@ -122,11 +122,12 @@ export class HostedReadonlyHostKernel {
     if (outer?.state === HostedCustodyReservationState.Reserved) {
       assertUnitReservation(outer);
       const current = this.show(outer.unit);
-      if (current.Id !== outer.unit || current.DropInPaths !== "" || (current.ControlGroup && current.ControlGroup !== unitGroup(outer.unit))) invalid();
+      if (current.Id !== outer.unit || current.DropInPaths !== "" || (current.ControlGroup && current.ControlGroup !== custodyControlGroup(outer.unit))) invalid();
     }
     for (const row of inventory.units) {
       const current = this.show(row.name);
-      if (current.Id !== row.name || current.ControlGroup !== row.controlGroup || !path(current.FragmentPath) ||
+      assertExactUnitGroup(row.name, current, row.controlGroup);
+      if (!path(current.FragmentPath) ||
           current.DropInPaths !== "" ||
           hash(readTrustedFragment(current.FragmentPath)) !== row.fragmentSha256) invalid();
     }
@@ -140,17 +141,15 @@ export class HostedReadonlyHostKernel {
       const pids = lines(readFileSync(absolute + "/cgroup.procs", "utf8"));
       if (pids.some(pid => !/^[1-9]\d*$/.test(pid))) invalid();
       if (pids.length && !inventory.units.some(row => row.controlGroup === relative) &&
-          !(outer?.state === HostedCustodyReservationState.Reserved && relative === unitGroup(outer.unit)) &&
+          !(outer?.state === HostedCustodyReservationState.Reserved && relative === custodyControlGroup(outer.unit)) &&
           !(relative === "/init.scope" && pids.length === 1 && pids[0] === "1")) invalid();
       for (const child of readdirSync(absolute, { withFileTypes: true })) {
         if (child.isDirectory()) inspectGroup(relative + "/" + child.name);
       }
     };
     inspectGroup("");
-    for (const line of lines(this.systemctl(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"]))) {
-      const fields = line.trim().split(/\s+/);
-      if (fields.length < 4 || !/^\d+$/.test(fields[0] ?? "") ||
-          (!inventory.units.some(row => row.name === fields[1]) && !(outer?.state === HostedCustodyReservationState.Reserved && fields[1] === outer.unit))) invalid();
+    for (const name of observedJobUnits(this.systemctl(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"]))) {
+      if (!inventory.units.some(row => row.name === name) && !(outer?.state === HostedCustodyReservationState.Reserved && name === outer.unit)) invalid();
     }
   }
 
@@ -171,11 +170,12 @@ export class HostedReadonlyHostKernel {
     const owner = inventory.units.find(row => row.name === inventory.supervisorUnit)!;
     const supervisor = this.show(inventory.supervisorUnit), current = this.show(start.unit);
     const hostId = readFileSync("/etc/machine-id", "utf8").trim();
-    const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-    if (hostId !== inventory.hostId || bootId !== start.bootId || supervisor.Id !== owner.name ||
-        supervisor.ControlGroup !== owner.controlGroup || supervisor.DropInPaths !== "" ||
+    const bootId = observedBootId(readFileSync("/proc/sys/kernel/random/boot_id", "utf8"));
+    assertExactUnitGroup(owner.name, supervisor, owner.controlGroup);
+    assertExactUnitGroup(start.unit, current, start.controlGroup);
+    if (hostId !== inventory.hostId || bootId !== start.bootId || supervisor.DropInPaths !== "" ||
         !path(supervisor.FragmentPath) || hash(readTrustedFragment(supervisor.FragmentPath)) !== owner.fragmentSha256 ||
-        current.Id !== start.unit || current.ControlGroup !== start.controlGroup || current.DropInPaths !== "" ||
+        current.DropInPaths !== "" ||
         !/^[1-9]\d*$/.test(current.MainPID ?? "") ||
         readFileSync("/proc/self/cgroup", "utf8").trim() !== `0::${start.controlGroup}`) invalid();
     const supervisorId = processBirth(supervisor.MainPID ?? "");
@@ -213,9 +213,8 @@ export class HostedReadonlyHostKernel {
     }
     if (lines(this.systemctl(["list-units", "--all", "--type=socket,timer",
       "--state=active,activating,reloading,deactivating", "--no-legend", "--plain", "--no-pager"])).length) invalid();
-    for (const line of lines(this.systemctl(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"]))) {
-      const fields = line.trim().split(/\s+/);
-      if (fields.length < 4 || !/^\d+$/.test(fields[0] ?? "") || inventory.disabledCreators.includes(fields[1] ?? "")) invalid();
+    for (const name of observedJobUnits(this.systemctl(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"]))) {
+      if (inventory.disabledCreators.includes(name)) invalid();
     }
   }
 
@@ -238,11 +237,7 @@ export class HostedReadonlyHostKernel {
   private drainUnitQueue(unit: string): void {
     // No cancellation/absence is promoted into proof. After the creator has
     // been fenced, any remaining manager job keeps the reservation held.
-    for (const line of lines(this.systemctl(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"]))) {
-      const fields = line.trim().split(/\s+/);
-      if (fields.length < 4 || !/^\d+$/.test(fields[0] ?? "")) invalid();
-      if (fields[1] === unit) throw new Error("hosted_custody_start_still_queued");
-    }
+    assertNoQueuedStart(this.systemctl(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"]), unit);
   }
   confirmTerminalDescendants(reservation: HostedCustodyReservation): void {
     assertUnitReservation(reservation);
@@ -258,13 +253,10 @@ export class HostedReadonlyHostKernel {
       if (this.systemctl(["show", "--property=LoadState", "--", unit], true).trim() !== "LoadState=not-found") invalid();
       current = { MainPID: "0", ControlGroup: "" };
     }
-    if (current.MainPID !== "0" || (current.ControlGroup && current.ControlGroup !== unitGroup(unit))) invalid();
-    const events = `/sys/fs/cgroup${unitGroup(unit)}/cgroup.events`;
+    assertTerminalUnit(unit, current);
+    const events = `/sys/fs/cgroup${custodyControlGroup(unit)}/cgroup.events`;
     try {
-      const text = readFileSync(events, "utf8");
-      if (text.split("\n").filter(line => line.startsWith("populated ")).join("\n") !== "populated 0") {
-        throw new Error("hosted_custody_descendants_not_terminal");
-      }
+      assertPopulatedZero(readFileSync(events, "utf8"));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       // Absence is useful only after independent creator and queue fencing; the
@@ -328,11 +320,12 @@ export class HostedReadonlyHostKernel {
     const epoch = this.enrolledEpoch(), outer = epoch?.outerRuntime;
     if (!epoch || epoch.phase !== HostedCustodyPhase.Ready || epoch.revoked || !outer || outer.state !== HostedCustodyReservationState.Reserved ||
         outer.generation !== epoch.generation ||
-        readFileSync("/proc/self/cgroup", "utf8").trim() !== `0::${unitGroup(outer.unit)}`) invalid();
+        readFileSync("/proc/self/cgroup", "utf8").trim() !== `0::${custodyControlGroup(outer.unit)}`) invalid();
     const actual = this.session();
     if (epoch.hostId !== actual.hostId || epoch.bootId !== actual.bootId || epoch.supervisorId !== actual.supervisorId) invalid();
     const current = this.show(outer.unit);
-    if (current.ControlGroup !== unitGroup(outer.unit) || !/^[1-9]\d*$/.test(current.MainPID ?? "")) invalid();
+    assertExactUnitGroup(outer.unit, current, custodyControlGroup(outer.unit));
+    if (!/^[1-9]\d*$/.test(current.MainPID ?? "")) invalid();
   }
   runtimeInvocation(record: Pick<HostedCustodyReservation, "startId" | "unit" | "creatorId">,
     command: string, args: readonly string[], cwd: string): { command: string; args: readonly string[] } {
@@ -356,15 +349,7 @@ export class HostedReadonlyHostKernel {
   }
   private show(name: string): Record<string, string> {
     if (!unit(name)) invalid();
-    const result: Record<string, string> = {};
-    for (const line of lines(this.systemctl(["show", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID", "--", name]))) {
-      const split = line.indexOf("=");
-      const key = line.slice(0, split);
-      if (split < 1 || !["Id", "FragmentPath", "DropInPaths", "ControlGroup", "MainPID"].includes(key) || key in result) invalid();
-      result[key] = line.slice(split + 1);
-    }
-    if (Object.keys(result).length !== 5) invalid();
-    return result;
+    return parseUnitShow(name, this.systemctl(["show", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID", "--", name]));
   }
   private systemctl(args: readonly string[], allowNotFound = false): string {
     const result = spawnSync("/usr/bin/systemctl", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
@@ -387,11 +372,6 @@ export function completionBytes(reservation: Pick<HostedCustodyReservation, "sta
 function assertUnitReservation(value: Pick<HostedCustodyReservation, "startId" | "unit" | "creatorId">): void {
   if (!/^[a-f0-9-]{36}$/.test(value.startId) || value.creatorId !== value.startId ||
       ![`subscription-runtime-hosted-${value.startId}.service`, `subscription-runtime-outer-${value.startId}.service`].includes(value.unit)) invalid();
-}
-function unitGroup(name: string): string {
-  if (!/^subscription-runtime-(?:hosted|outer|ordinary)-[a-f0-9-]{36}\.service$/.test(name)) invalid();
-  // systemd slice names encode their hierarchy at each dash.
-  return `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${name}`;
 }
 function readTrustedFragment(input: string): Buffer {
   const file = realpathSync(input);
@@ -435,11 +415,7 @@ function assertOrdinaryReservation(value: HostedOrdinaryReservation): void {
 }
 function processBirth(pid: string): string {
   if (!/^[1-9][0-9]{0,9}$/.test(pid)) invalid();
-  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-  if (!stat.startsWith(pid + " (") || stat.lastIndexOf(") ") < 0) invalid();
-  const birth = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/)[19];
-  if (!birth || !/^[1-9][0-9]{0,19}$/.test(birth)) invalid();
-  return `${pid}:${birth}`;
+  return observedProcessBirth(pid, readFileSync(`/proc/${pid}/stat`, "utf8"));
 }
 export function ordinaryCompletionPath(startId: string): string {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(startId)) invalid();
