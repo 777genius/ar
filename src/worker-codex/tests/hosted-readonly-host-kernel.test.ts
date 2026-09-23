@@ -149,6 +149,10 @@ describe("host kernel from explicit synthetic OS facts", () => {
     expect(() => kernel.confirmTerminalDescendants(reservation)).toThrow("not_terminal");
     os.files.set(events, "populated 00\n");
     expect(() => kernel.confirmTerminalDescendants(reservation)).toThrow("not_terminal");
+    os.files.set(events, "populated 0\n populated 1\n");
+    expect(() => kernel.confirmTerminalDescendants(reservation)).toThrow("not_terminal");
+    os.files.set(events, "populated 0\nmalformed event row\n");
+    expect(() => kernel.confirmTerminalDescendants(reservation)).toThrow("not_terminal");
   });
   it("rejects foreign completion identity and retained main PID", () => {
     os.records.set(completionPath(reservation), Buffer.from("{}"));

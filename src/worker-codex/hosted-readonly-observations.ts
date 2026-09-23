@@ -62,10 +62,16 @@ export function assertTerminalUnit(unit: string, observed: Readonly<Record<strin
 }
 
 export function assertPopulatedZero(raw: string): void {
-  // Other cgroup.events keys are permitted, but populated must occur exactly
-  // once with the kernel's numeric zero. Duplicates and malformed rows fail.
-  const rows = lines(raw).filter(line => line.startsWith("populated"));
-  if (rows.length !== 1 || rows[0] !== "populated 0") {
-    throw new Error("hosted_custody_descendants_not_terminal");
+  // Parse every record. Whitespace cannot hide a second populated row.
+  let populated = 0;
+  const rows = raw.split("\n");
+  for (const [index, row] of rows.entries()) {
+    if (row === "" && index === rows.length - 1) continue;
+    if (!/^[a-z_]+ [0-9]+$/.test(row)) throw new Error("hosted_custody_descendants_not_terminal");
+    const [key, value] = row.split(" ");
+    if (key === "populated") {
+      if (++populated !== 1 || value !== "0") throw new Error("hosted_custody_descendants_not_terminal");
+    }
   }
+  if (populated !== 1) throw new Error("hosted_custody_descendants_not_terminal");
 }

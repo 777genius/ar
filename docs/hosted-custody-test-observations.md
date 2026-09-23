@@ -1,53 +1,59 @@
 # Bounded custody observations (TEST)
 
-`worker-codex` has one private parser for boot ID, process birth, exact systemd
-unit and ControlGroup, queued jobs, and `cgroup.events`. The production
-`HostedReadonlyHostKernel` retains its fixed host paths, operator guard,
-inventory, reservation and completion fences, mutex and decisions. The parser
-reports OS facts only. It cannot authorize a creator, discharge a lease, stop a
-unit, launch work, or publish an epoch.
+`worker-codex` uses one private Linux collector for production kernel and the
+finite TEST observer. It runs only fixed, bounded, read-only `systemctl show`
+and `list-jobs` calls with the existing fixed environment. Boot and process
+birth come from fixed `/proc` paths; hosted cgroup events come from the fixed
+`/sys/fs/cgroup` hierarchy. The collector reports present or absent events
+explicitly. It never treats an absent cgroup as terminal. The production kernel
+retains its operator guard, whole-host inventory, constructor/composition,
+creator → queue → terminal order, mutex, mutable commands, and post-fence
+absent-cgroup behavior. No launcher or authority record is added here.
 
-The TEST helper in `src/worker-codex/tests/fixtures/hosted-custody-test-observer.ts`
-reads only `identity.json` and `observations.json` in one owner-private
-`/tmp/test-custody-observer-*` directory. It writes one exclusive
-`observation-evidence.json` there. The identity envelope fixes a start ID,
-boot ID and PID birth; the observer derives the only permitted unit and cgroup.
-The directory must be owned by the invoking uid and inaccessible to group or
-other users. Inputs must be regular, singly linked, uid-owned files; symlinks
-are refused and each input is capped at 64 KiB. This protects the synthetic
-fixture boundary, not host authority.
-There is no unit, cgroup, OS root or authority path override in either input.
-The observations must agree with that envelope, contain no queued start, show
-`MainPID=0`, and include exactly one `populated 0` event. Missing events cannot
-prove terminal descendants in TEST. Production's existing post-creator-and-queue
-fenced absent-cgroup behavior remains separate.
+The private helper `src/worker-codex/tests/fixtures/hosted-custody-test-observer.ts`
+selects one externally owned `subscription-runtime-hosted-<startId>.service`.
+Its caller creates a `test-custody-observer-*` directory directly under the
+process's private `TMPDIR` (normally `/tmp`), owned by its UID,
+mode 0700, with `identity.json` containing exactly `startId`, `bootId`, and
+`creatorPid`. The caller must have exclusive ownership of that directory for
+the whole two-phase observation and prohibit concurrent writers. The helper
+also creates an exclusive observer lock and fails if another cooperative
+observer holds it. It checks the root identity before and after each collection.
+Input and evidence descriptors use nonblocking, no-follow opens, `fstat`,
+bounded reads or writes, and mutation/identity rechecks. A claimed PID or file
+content does not authenticate a creator.
 
-The two finite input records have these fields (no extras):
+Call `observeTestCustody(root, "initial")` while the selected creator process is
+live. It verifies boot, exact unit and group, manager InvocationID, no queued
+start, the unit's MainPID, and process birth before and after collection. It
+writes `initial-evidence.json` exclusively. The declared creator or supervisor
+PID is observed separately from the unit's
+MainPID; its birth and actual `/proc` cgroup must stay stable during this first
+phase. Neither the PID nor that group is an independent ownership witness.
+After an independently authorized
+creator/launcher has finished and fenced its work, call
+`observeTestCustody(root, "terminal")`. This phase checks the same boot,
+unit and InvocationID, no queued start, MainPID zero, and an actual
+`cgroup.events` record with exactly one `populated 0`. It writes
+`terminal-evidence.json` exclusively. It does not require the departed PID to
+remain alive. A reused unit or changed identity fails closed. Missing events
+fail in TEST even though production may accept absence after its existing
+creator and queue fences. Bus and permission errors propagate.
 
-| File | Fields | Meaning |
-| --- | --- | --- |
-| `identity.json` | `startId`, `bootId`, `pid`, `processBirth` | Operator-supplied TEST envelope; `processBirth` has `pid:kernel-start-ticks` form. |
-| `observations.json` | `bootId`, `processStat`, `unitShow`, `jobs`, `cgroupEvents` | Synthetic snapshots in the same text formats as `/proc/PID/stat`, `systemctl show`, `list-jobs`, and `cgroup.events`. |
+Both records say `live_observation_only`. They are observations from OS reads,
+not authoritative custody receipts. The external trusted launcher and creator
+fence must be reviewed independently. Real disposable systemd qualification
+remains **NO-GO** until that review; no real fixture is run by this patch.
+JSON snapshots remain only in parser unit tests and are never offered as live
+proof. TEST directory cleanup belongs to the orchestrator.
 
-`unitShow` must have exactly the five expected show keys once each, including
-the ID and ControlGroup derived from `startId`. The observer rejects foreign
-jobs as well as a queued job for its own unit, since this TEST snapshot describes
-only one finite unit. It checks the process birth ticks against the envelope;
-it does not infer a PID's ownership from those ticks. A rejected input creates
-no output. A successful run creates the evidence name once with exclusive file
-creation, so an existing record cannot be overwritten silently.
+Production parsing is deliberately stricter: exact `Id`, positive bounded PID
+birth ticks, boot-ID shape, and every `cgroup.events` row are validated.
+Whitespace-prefixed, duplicate, or malformed `populated` rows now refuse,
+including `populated 0\n populated 1\n`. This can refuse malformed legacy
+observations that the old filter ignored.
 
-All TEST inputs, including the identity envelope, are operator supplied. The
-output is **synthetic observation evidence**, never an authenticated production
-custody receipt or proof that a real launcher owned the process. A path under
-the TEST prefix, including a bind-mounted view, does not convert it into live
-proof. The envelope is sufficient for synthetic consistency checks only.
-Real disposable systemd qualification is **NO-GO** until a separately reviewed
-trusted launcher and host authority provide independent ownership evidence;
-this helper must not be expanded to supply one. Cleanup of the disposable
-directory belongs to the test orchestrator.
-
-This is a private fixed dependency within the existing feature. The reviewed
-Consumer Module Standard reference remains `6b31f20fe3e5fb8324812aa2ee907905751cde71`
-(complete-document SHA-256 `d5bb71e5a700014f9f0a09b17d1f33d24b30b66c49b273c9fb65584672c51e4f`).
-There is no accepted Assembly adoption pin for this consumer.
+The private/static boundary classification and Consumer Module Standard
+reference remain `6b31f20fe3e5fb8324812aa2ee907905751cde71` (complete
+SHA-256 `d5bb71e5a700014f9f0a09b17d1f33d24b30b66c49b273c9fb65584672c51e4f`).
+There is no Assembly adoption pin.
