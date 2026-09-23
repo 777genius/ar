@@ -1,5 +1,5 @@
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** Observed kernel facts only. This is not offline or rescue authorization. */
 export type ColdSourceObservation = {
@@ -61,20 +61,39 @@ export async function observeColdReadOnlySource(sourceRoot: string,
   const mount = mounts[0];
   if (!mount || mount.point !== sourceRoot ||
       !matchesColdMountFacts(mount, bootId, expected)) refuse();
+  await checkReadOnlyBlockDevice(mount.device);
+  const observed = { bootId, mountPoint: mount.point, mountRoot: mount.root,
+    mountSource: mount.source, device: mount.device, filesystem: mount.filesystem };
+  return observed;
+}
+
+/** Traverse partition parents and stacked backing devices; sysfsRoot permits synthetic fixtures. */
+export async function checkReadOnlyBlockDevice(device: string,
+  sysfsRoot = "/sys/dev/block"): Promise<void> {
   const visited = new Set<string>();
   async function checkSysfs(device: string): Promise<void> {
     if (!/^\d+:\d+$/.test(device) || visited.has(device) || visited.size > 32) refuse();
     visited.add(device);
-    const base = `/sys/dev/block/${device}`;
+    const base = join(sysfsRoot, device);
     if ((await readFile(`${base}/ro`, "utf8")).trim() !== "1") refuse();
-    for (const child of await readdir(`${base}/slaves`)) {
+    let partition = false;
+    try { partition = /^\d+$/.test((await readFile(`${base}/partition`, "utf8")).trim()); }
+    catch (e) { if (!isCode(e, "ENOENT")) throw e; }
+    if (partition) {
+      const parent = dirname(await realpath(base));
+      await checkSysfs((await readFile(join(parent, "dev"), "utf8")).trim());
+    }
+    let slaves: string[];
+    try { slaves = await readdir(`${base}/slaves`); }
+    catch (e) { if (!partition || !isCode(e, "ENOENT")) throw e; slaves = []; }
+    for (const child of slaves) {
       if (!/^[A-Za-z0-9_.-]+$/.test(child)) refuse();
       const next = (await readFile(`${base}/slaves/${child}/dev`, "utf8")).trim();
       await checkSysfs(next);
     }
   }
-  await checkSysfs(mount.device);
-  const observed = { bootId, mountPoint: mount.point, mountRoot: mount.root,
-    mountSource: mount.source, device: mount.device, filesystem: mount.filesystem };
-  return observed;
+  await checkSysfs(device);
+}
+function isCode(e: unknown, code: string): boolean {
+  return typeof e === "object" && e !== null && "code" in e && e.code === code;
 }

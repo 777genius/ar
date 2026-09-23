@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -27,8 +27,9 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "test-cold-maintenance-"));
   roots.push(root);
   const sourceRoot = join(root, "source");
-  await mkdir(sourceRoot);
-  const db = join(sourceRoot, "state.db");
+  const selectedJobRoot = join(sourceRoot, "test-job");
+  await mkdir(selectedJobRoot, { recursive: true });
+  const db = join(selectedJobRoot, "state.db");
   const script = `import os,sqlite3,sys
 c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA journal_mode=WAL')
 c.execute('PRAGMA wal_autocheckpoint=0')
@@ -38,7 +39,7 @@ c.commit(); os._exit(0)`;
   await run("python3", ["-c", script, db]);
   const wal = `${db}-wal`;
   const shm = `${db}-shm`;
-  const registry = join(sourceRoot, "registry.json");
+  const registry = join(selectedJobRoot, "registry.json");
   await writeFile(registry, '{"job":"test-job"}\n');
   const source = { role: "state_5", kind: "sqlite" as const, path: db,
     identity: await identity(db), sidecars: { wal: await identity(wal), shm: await identity(shm) },
@@ -46,7 +47,7 @@ c.commit(); os._exit(0)`;
       valueColumn: "value", value: "committed-wal-only" } };
   const artifact = { role: "registry", kind: "artifact" as const,
     path: registry, identity: await identity(registry) };
-  return { root, sourceRoot, db, wal, shm, registry, source, artifact,
+  return { root, sourceRoot, selectedJobRoot, db, wal, shm, registry, source, artifact,
     destination: join(root, "cold-maintenance-1") };
 }
 
@@ -54,7 +55,7 @@ describe("private cold maintenance", () => {
   it("preserves WAL-only commit through staging and refuses changed source or payload", async () => {
     const f = await fixture();
     const before = await Promise.all([f.db, f.wal, f.shm, f.registry].map((path) => readFile(path)));
-    const captured = await capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, expectedSource, selectedJobId: "test-job", sources: [f.source, f.artifact],
+    const captured = await capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job", sources: [f.source, f.artifact],
       destination: f.destination });
     expect((await verifyPrivateColdMaintenance(f.destination, captured.manifestSha256)).files)
       .toHaveLength(2);
@@ -62,8 +63,85 @@ describe("private cold maintenance", () => {
     await writeFile(join(f.destination, "payload", "registry.data"), "tampered");
     await expect(verifyPrivateColdMaintenance(f.destination, captured.manifestSha256))
       .rejects.toThrow("payload_tampered");
-    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, expectedSource, selectedJobId: "test-job", sources: [f.source],
+    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job", sources: [f.source],
       destination: f.destination })).rejects.toThrow("output_exists");
+  });
+
+  it("keeps the raw inventory unchanged when SQLite creates a missing SHM on its working copy", async () => {
+    const f = await fixture();
+    await rm(f.shm);
+    const source = { ...f.source, sidecars: { wal: f.source.sidecars.wal } };
+    const captured = await capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot,
+      selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job",
+      sources: [source], destination: f.destination });
+    const manifest = await verifyPrivateColdMaintenance(f.destination, captured.manifestSha256);
+    expect(manifest.rawFiles.map((file) => file.name)).toEqual(["state_5", "state_5-wal"]);
+    expect((await readdir(join(f.destination, "raw"))).sort()).toEqual(["state_5", "state_5-wal"]);
+    expect(await readdir(f.destination)).not.toContain("working");
+    const receipt = JSON.parse(await readFile(join(f.destination, "maintenance-receipt.json"), "utf8"));
+    expect(receipt).toMatchObject({ currentSelectedJobOnly: true, historicalTreesExcluded: true });
+  });
+
+  it("rejects oversized declarations before source reads and oversized payloads before allocation", async () => {
+    const f = await fixture();
+    const oversized = { ...f.artifact, identity: { ...f.artifact.identity, bytes: 128 * 1024 * 1024 } };
+    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot,
+      selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job",
+      sources: [oversized, f.source], destination: f.destination })).rejects.toThrow("limit_exceeded");
+    const captured = await capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot,
+      selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job",
+      sources: [f.artifact], destination: f.destination });
+    await truncate(join(f.destination, "payload", "registry.data"), 1024 * 1024 * 1024);
+    await expect(verifyPrivateColdMaintenance(f.destination, captured.manifestSha256))
+      .rejects.toThrow("limit_exceeded");
+    await writeFile(join(f.destination, "payload", "registry.data"), await readFile(f.registry));
+    await truncate(join(f.destination, "raw", "registry"), 1024 * 1024 * 1024);
+    await expect(verifyPrivateColdMaintenance(f.destination, captured.manifestSha256))
+      .rejects.toThrow("limit_exceeded");
+  });
+
+  it("excludes historical and project trees from the selected job", async () => {
+    const f = await fixture();
+    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot,
+      selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job",
+      sources: [{ ...f.artifact, path: join(f.sourceRoot, "other-job", "registry.json") }],
+      destination: f.destination })).rejects.toThrow("path_invalid");
+    for (const name of ["archive", "history_2025", "worktrees", "project-1"]) {
+      const tree = join(f.selectedJobRoot, name);
+      await mkdir(tree);
+      const path = join(tree, "registry.json");
+      await writeFile(path, "synthetic");
+      await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot,
+        selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job",
+        sources: [{ ...f.artifact, path, identity: await identity(path) }],
+        destination: f.destination })).rejects.toThrow("path_invalid");
+    }
+  });
+
+  it("checks a partition parent and partition-backed stacked device without a partition slaves directory", async () => {
+    const actual = await vi.importActual<typeof import("../cold-maintenance/private-cold-source-observation")>(
+      "../cold-maintenance/private-cold-source-observation");
+    const root = await mkdtemp(join(tmpdir(), "test-cold-sysfs-"));
+    roots.push(root);
+    const devices = join(root, "devices");
+    const disk = join(devices, "nvme0n1");
+    const partition = join(disk, "nvme0n1p1");
+    const stacked = join(devices, "dm-0");
+    const block = join(root, "dev", "block");
+    await mkdir(partition, { recursive: true });
+    await mkdir(join(stacked, "slaves", "nvme0n1p1"), { recursive: true });
+    await mkdir(join(disk, "slaves"));
+    await mkdir(block, { recursive: true });
+    for (const [path, dev] of [[disk, "259:0"], [partition, "259:1"], [stacked, "253:0"]]) {
+      await writeFile(join(path, "ro"), "1\n");
+      await writeFile(join(path, "dev"), `${dev}\n`);
+      await symlink(path, join(block, dev));
+    }
+    await writeFile(join(partition, "partition"), "1\n");
+    await writeFile(join(stacked, "slaves", "nvme0n1p1", "dev"), "259:1\n");
+    await actual.checkReadOnlyBlockDevice("253:0", block);
+    await writeFile(join(disk, "ro"), "0\n");
+    await expect(actual.checkReadOnlyBlockDevice("253:0", block)).rejects.toThrow();
   });
 
   it("rejects writable source observation and credential or alias entries", async () => {
@@ -83,13 +161,13 @@ describe("private cold maintenance", () => {
       { ...expected, mountSource: "/dev/test" })).toBe(false);
     expect(actual.matchesColdMountFacts({ ...mount, superOptions: ["rw"] }, bootId,
       { ...expected, mountSource: "/dev/test" })).toBe(false);
-    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, expectedSource, selectedJobId: "test-job",
+    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job",
       sources: [f.artifact, { ...f.artifact, role: "result" }], destination: f.destination }))
       .rejects.toThrow("duplicate_alias");
-    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, expectedSource, selectedJobId: "test-job",
+    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job",
       sources: [{ ...f.artifact, path: join(f.sourceRoot, "credential.json") }],
       destination: f.destination })).rejects.toThrow("path_invalid");
-    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, expectedSource,
+    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource,
       selectedJobId: "test-job", sources: [{ ...f.artifact,
         path: `${f.sourceRoot}/../source/registry.json` }], destination: f.destination }))
       .rejects.toThrow("path_invalid");
@@ -99,7 +177,7 @@ describe("private cold maintenance", () => {
     const f = await fixture();
     const linked = join(f.sourceRoot, "linked.json");
     await symlink(f.registry, linked);
-    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, expectedSource, selectedJobId: "test-job",
+    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job",
       sources: [{ ...f.artifact, path: linked }], destination: f.destination }))
       .rejects.toThrow("path_invalid");
     await mkdir(f.destination);
@@ -107,7 +185,7 @@ describe("private cold maintenance", () => {
       .rejects.toThrow("unexpected_payload");
     const linkedDestination = join(f.root, "cold-maintenance-linked");
     await symlink(f.destination, linkedDestination);
-    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, expectedSource,
+    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource,
       selectedJobId: "test-job", sources: [f.artifact], destination: linkedDestination }))
       .rejects.toThrow("output_exists");
   });
@@ -115,11 +193,11 @@ describe("private cold maintenance", () => {
   it("rejects changed source identity and extra payload entries", async () => {
     const f = await fixture();
     await writeFile(f.registry, "changed");
-    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, expectedSource,
+    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource,
       selectedJobId: "test-job", sources: [f.artifact], destination: f.destination }))
       .rejects.toThrow("source_identity_changed");
     const current = { ...f.artifact, identity: await identity(f.registry) };
-    const captured = await capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, expectedSource,
+    const captured = await capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource,
       selectedJobId: "test-job", sources: [f.source, current], destination: f.destination });
     await writeFile(join(f.destination, "payload", "unexpected.data"), "x");
     await expect(verifyPrivateColdMaintenance(f.destination, captured.manifestSha256))
@@ -129,7 +207,7 @@ describe("private cold maintenance", () => {
 
   it("verifies an encrypted disposable restore and rejects a wrong password", async () => {
     const f = await fixture();
-    const captured = await capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, expectedSource, selectedJobId: "test-job", sources: [f.source],
+    const captured = await capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job", sources: [f.source],
       destination: f.destination });
     const password = randomBytes(32).toString("hex");
     const base = { testRoot: f.root, captureDirectory: f.destination,

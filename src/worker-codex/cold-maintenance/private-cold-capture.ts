@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, open, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, realpath, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { observeColdReadOnlySource, type ColdSourceObservation } from "./private-cold-source-observation";
@@ -8,10 +8,12 @@ import { observeColdReadOnlySource, type ColdSourceObservation } from "./private
 const run = promisify(execFile);
 const MAX_FILES = 32;
 const MAX_BYTES = 128 * 1024 * 1024;
+const MAX_METADATA = 256 * 1024;
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const dbRoles = new Set(["state_5", "logs_2", "goals_1", "memories_1", "queue_1", "thread_history_1"]);
 const artifactRole = /^(registry|result|journal|events|artifact_(0|[1-9][0-9]?))$/;
 const forbidden = /(^|[._-])(auth|credential|secret|token|cookie|keychain|password|session)([._-]|$)/i;
+const excludedTree = /^(archive|archives|archived|history|historical|worktree|worktrees|project|projects)(?:[-_][A-Za-z0-9]+)*$/i;
 
 export type ColdFileIdentity = { readonly bytes: number; readonly sha256: string;
   readonly dev: number; readonly ino: number };
@@ -84,18 +86,35 @@ async function noSymlinkPath(root: string, path: string, final: "file" | "direct
   }
   if (final !== "absent" && await realpath(path) !== path) fail("path_invalid");
 }
+async function selectedPath(root: string, path: string): Promise<void> {
+  if (!inside(root, path) || relative(root, path).split(sep).slice(0, -1).some((part) => excludedTree.test(part)))
+    fail("path_invalid");
+  await noSymlinkPath(root, path, "file");
+}
+async function readBounded(path: string, limit: number): Promise<Buffer> {
+  const file = await open(path, "r");
+  try {
+    const info = await file.stat();
+    if (!info.isFile() || info.size > limit) fail("limit_exceeded");
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    for (;;) {
+      const { bytesRead } = await file.read(chunk, 0, Math.min(chunk.length, limit - total + 1), null);
+      if (!bytesRead) break;
+      total += bytesRead;
+      if (total > limit) fail("limit_exceeded");
+      chunks.push(Buffer.from(chunk.subarray(0, bytesRead)));
+    }
+    if ((await file.stat()).size !== total) fail("payload_tampered");
+    return Buffer.concat(chunks, total);
+  } finally { await file.close(); }
+}
 async function exactFile(path: string, expected: ColdFileIdentity): Promise<Buffer> {
   const before = await stat(path);
   if (!before.isFile() || before.dev !== expected.dev || before.ino !== expected.ino ||
       before.size !== expected.bytes) fail("source_identity_changed");
-  const file = await open(path, "r");
-  let bytes: Buffer;
-  try {
-    const opened = await file.stat();
-    if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size)
-      fail("source_identity_changed");
-    bytes = await file.readFile();
-  } finally { await file.close(); }
+  const bytes = await readBounded(path, expected.bytes);
   const after = await stat(path);
   if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size ||
       after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs ||
@@ -142,13 +161,16 @@ async function sqliteCheck(path: string, probe: ColdSource["probe"]): Promise<vo
 /** Private capture. A trusted Host/operator establishes rescue control separately. */
 export async function capturePrivateColdMaintenance(input: {
   readonly sourceRoot: string; readonly expectedSource: ColdSourceObservation;
-  readonly selectedJobId: string;
+  readonly selectedJobId: string; readonly selectedJobRoot: string;
   readonly sources: readonly ColdSource[]; readonly destination: string;
 }): Promise<{ readonly manifestSha256: string; readonly receiptPath: string }> {
   if (!/^[A-Za-z0-9_-]{1,80}$/.test(input.selectedJobId) ||
       !Array.isArray(input.sources) || input.sources.length < 1 || input.sources.length > MAX_FILES)
     fail("allowlist_invalid");
   await exactDirectory(input.sourceRoot);
+  await noSymlinkPath(input.sourceRoot, input.selectedJobRoot, "directory");
+  if (relative(input.sourceRoot, input.selectedJobRoot).split(sep).some((part) => excludedTree.test(part)))
+    fail("path_invalid");
   await exactDirectory(dirname(input.destination));
   await noSymlinkPath(dirname(input.destination), input.destination, "absent");
   if (!basename(input.destination).startsWith("cold-maintenance-") ||
@@ -160,6 +182,15 @@ export async function capturePrivateColdMaintenance(input: {
   const staged: { source: ColdSource; main: Buffer; wal?: Buffer; shm?: Buffer }[] = [];
   let total = 0;
   for (const source of input.sources) {
+    if (!validIdentity(source?.identity) ||
+        (source.sidecars !== undefined && (!onlyKeys(source.sidecars, ["wal", "shm"]) ||
+          Object.values(source.sidecars).some((item) => item !== undefined && !validIdentity(item)))))
+      fail("allowlist_invalid");
+    total += source.identity.bytes + (source.sidecars?.wal?.bytes ?? 0) + (source.sidecars?.shm?.bytes ?? 0);
+    if (total > MAX_BYTES) fail("limit_exceeded");
+  }
+  total = 0;
+  for (const source of input.sources) {
     if (!onlyKeys(source, ["role", "kind", "path", "identity", "sidecars", "probe"]) ||
         (source.sidecars !== undefined && !onlyKeys(source.sidecars, ["wal", "shm"])) ||
         (source.kind !== "sqlite" && source.kind !== "artifact") ||
@@ -168,7 +199,7 @@ export async function capturePrivateColdMaintenance(input: {
           artifactRole.test(source.role) && source.probe === undefined && source.sidecars === undefined) ||
         usedRoles.has(source.role) || !validIdentity(source.identity)) fail("allowlist_invalid");
     usedRoles.add(source.role);
-    await noSymlinkPath(input.sourceRoot, source.path, "file");
+    await selectedPath(input.selectedJobRoot, source.path);
     const main = await exactFile(source.path, source.identity);
     const key = `${source.identity.dev}:${source.identity.ino}`;
     if (usedInodes.has(key)) fail("duplicate_alias");
@@ -184,7 +215,7 @@ export async function capturePrivateColdMaintenance(input: {
         if (exists !== !!expected) fail("sidecar_inventory_changed");
         if (expected) {
           if (!validIdentity(expected)) fail("allowlist_invalid");
-          await noSymlinkPath(input.sourceRoot, sidePath, "file");
+          await selectedPath(input.selectedJobRoot, sidePath);
           const bytes = await exactFile(sidePath, expected);
           const sideKey = `${expected.dev}:${expected.ino}`;
           if (usedInodes.has(sideKey)) fail("duplicate_alias");
@@ -200,8 +231,10 @@ export async function capturePrivateColdMaintenance(input: {
   await mkdir(input.destination, { mode: 0o700 });
   const rawDir = join(input.destination, "raw");
   const payloadDir = join(input.destination, "payload");
+  const workDir = join(input.destination, "working");
   await mkdir(rawDir, { mode: 0o700 });
   await mkdir(payloadDir, { mode: 0o700 });
+  await mkdir(workDir, { mode: 0o700 });
   const files: ColdManifest["files"][number][] = [];
   const rawFiles: ColdManifest["rawFiles"][number][] = [];
   for (const { source, main, wal, shm } of staged) {
@@ -215,7 +248,11 @@ export async function capturePrivateColdMaintenance(input: {
     const storedPath = `payload/${source.role}${source.kind === "sqlite" ? ".sqlite" : ".data"}`;
     const stored = join(input.destination, storedPath);
     if (source.kind === "sqlite") {
-      try { await run("python3", ["-c", sqliteScript, raw, stored, JSON.stringify(source.probe ?? null)],
+      const working = join(workDir, source.role);
+      await durableFile(working, main);
+      if (wal) await durableFile(`${working}-wal`, wal);
+      if (shm) await durableFile(`${working}-shm`, shm);
+      try { await run("python3", ["-c", sqliteScript, working, stored, JSON.stringify(source.probe ?? null)],
         { timeout: 30_000, maxBuffer: 1024 }); }
       catch { fail("sqlite_invalid"); }
       await sqliteCheck(stored, source.probe);
@@ -225,24 +262,25 @@ export async function capturePrivateColdMaintenance(input: {
       const handle = await open(stored, "r");
       try { await handle.sync(); } finally { await handle.close(); }
     }
-    const bytes = await readFile(stored);
+    const bytes = await readBounded(stored, MAX_BYTES);
     if (bytes.length > MAX_BYTES) fail("limit_exceeded");
     files.push({ role: source.role, kind: source.kind, storedPath, bytes: bytes.length,
       sha256: digest(bytes), ...(source.probe ? { probe: source.probe } : {}) });
   }
   // The source may have changed after initial staging; reread every declared byte.
   for (const { source } of staged) {
-    await noSymlinkPath(input.sourceRoot, source.path, "file");
+    await selectedPath(input.selectedJobRoot, source.path);
     await exactFile(source.path, source.identity);
     if (source.kind === "sqlite") for (const suffix of ["wal", "shm"] as const) {
       const expected = source.sidecars?.[suffix];
       if ((await present(`${source.path}-${suffix}`)) !== !!expected) fail("sidecar_inventory_changed");
-      if (expected) { await noSymlinkPath(input.sourceRoot, `${source.path}-${suffix}`, "file");
+      if (expected) { await selectedPath(input.selectedJobRoot, `${source.path}-${suffix}`);
         await exactFile(`${source.path}-${suffix}`, expected); }
     }
   }
   await exactDirectory(input.sourceRoot);
   await observeColdReadOnlySource(input.sourceRoot, input.expectedSource);
+  await rm(workDir, { recursive: true });
   const manifest: ColdManifest = { version: 1, kind: "inert_cold_maintenance",
     selectedJobId: input.selectedJobId, rawFiles, files };
   const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
@@ -250,31 +288,39 @@ export async function capturePrivateColdMaintenance(input: {
   await durableFile(join(input.destination, "maintenance-manifest.json"), manifestBytes);
   await syncDir(rawDir); await syncDir(payloadDir); await syncDir(input.destination);
   const receipt = { kind: "inert_cold_maintenance_receipt", selectedJobId: input.selectedJobId,
-    manifestSha256, routingDisabled: true, resumabilityClaim: false };
+    manifestSha256, currentSelectedJobOnly: true, historicalTreesExcluded: true,
+    routingDisabled: true, resumabilityClaim: false };
   await durableFile(join(input.destination, "maintenance-receipt.json"), `${JSON.stringify(receipt)}\n`);
+  await verifyInventory(input.destination, manifestSha256, false);
   await durableFile(join(input.destination, "MAINTENANCE_COMMITTED"), `${manifestSha256}\n`);
   await syncDir(input.destination); await syncDir(dirname(input.destination));
   return { manifestSha256, receiptPath: join(input.destination, "MAINTENANCE_COMMITTED") };
 }
 
-/** Exact immutable payload verification; raw staging is deliberately excluded from the receipt. */
+/** Exact immutable payload and raw inventory verification. */
 export async function verifyPrivateColdMaintenance(directory: string, expectedSha256: string): Promise<ColdManifest> {
+  return verifyInventory(directory, expectedSha256, true);
+}
+async function verifyInventory(directory: string, expectedSha256: string,
+  committed: boolean): Promise<ColdManifest> {
   if (!validDigest(expectedSha256) || !isAbsolute(directory) || !basename(directory).startsWith("cold-maintenance-"))
     fail("verification_scope_invalid");
   await exactDirectory(dirname(directory));
   await noSymlinkPath(dirname(directory), directory, "directory");
   const top = (await readdir(directory)).sort();
-  if (JSON.stringify(top) !== JSON.stringify(["MAINTENANCE_COMMITTED", "maintenance-manifest.json", "maintenance-receipt.json", "payload", "raw"].sort()))
+  if (JSON.stringify(top) !== JSON.stringify([...(committed ? ["MAINTENANCE_COMMITTED"] : []), "maintenance-manifest.json", "maintenance-receipt.json", "payload", "raw"].sort()))
     fail("unexpected_payload");
-  await noSymlinkPath(directory, join(directory, "MAINTENANCE_COMMITTED"), "file");
-  const marker = await readFile(join(directory, "MAINTENANCE_COMMITTED"), "utf8");
-  if (marker !== `${expectedSha256}\n`) fail("partial_or_tampered");
+  if (committed) {
+    await noSymlinkPath(directory, join(directory, "MAINTENANCE_COMMITTED"), "file");
+    const marker = await readBounded(join(directory, "MAINTENANCE_COMMITTED"), 65);
+    if (marker.toString("utf8") !== `${expectedSha256}\n`) fail("partial_or_tampered");
+  }
   await noSymlinkPath(directory, join(directory, "maintenance-manifest.json"), "file");
-  const manifestBytes = await readFile(join(directory, "maintenance-manifest.json"));
+  const manifestBytes = await readBounded(join(directory, "maintenance-manifest.json"), MAX_METADATA);
   if (digest(manifestBytes) !== expectedSha256) fail("partial_or_tampered");
   await noSymlinkPath(directory, join(directory, "maintenance-receipt.json"), "file");
   let receipt: Record<string, unknown>;
-  try { receipt = JSON.parse(await readFile(join(directory, "maintenance-receipt.json"), "utf8")) as Record<string, unknown>; }
+  try { receipt = JSON.parse((await readBounded(join(directory, "maintenance-receipt.json"), MAX_METADATA)).toString("utf8")) as Record<string, unknown>; }
   catch { fail("receipt_invalid"); }
   let manifest: ColdManifest;
   try { manifest = JSON.parse(manifestBytes.toString("utf8")) as ColdManifest; }
@@ -285,6 +331,7 @@ export async function verifyPrivateColdMaintenance(directory: string, expectedSh
     fail("manifest_invalid");
   if (receipt.kind !== "inert_cold_maintenance_receipt" ||
       receipt.selectedJobId !== manifest.selectedJobId || receipt.manifestSha256 !== expectedSha256 ||
+      receipt.currentSelectedJobOnly !== true || receipt.historicalTreesExcluded !== true ||
       receipt.routingDisabled !== true || receipt.resumabilityClaim !== false) fail("receipt_invalid");
   const roles = new Set<string>();
   const roleKinds = new Map<string, "sqlite" | "artifact">();
@@ -303,7 +350,7 @@ export async function verifyPrivateColdMaintenance(directory: string, expectedSh
     if (total > MAX_BYTES) fail("limit_exceeded");
     const path = join(directory, file.storedPath);
     await noSymlinkPath(directory, path, "file");
-    const bytes = await readFile(path);
+    const bytes = await readBounded(path, file.bytes);
     if (bytes.length !== file.bytes || digest(bytes) !== file.sha256) fail("payload_tampered");
     if (file.kind === "sqlite") await sqliteCheck(path, file.probe);
   }
@@ -324,7 +371,7 @@ export async function verifyPrivateColdMaintenance(directory: string, expectedSh
     if (rawTotal > MAX_BYTES) fail("limit_exceeded");
     const path = join(directory, "raw", file.name);
     await noSymlinkPath(directory, path, "file");
-    const bytes = await readFile(path);
+    const bytes = await readBounded(path, file.bytes);
     if (bytes.length !== file.bytes || digest(bytes) !== file.sha256) fail("payload_tampered");
   }
   if ([...roles].some((role) => !rawNames.has(role))) fail("manifest_invalid");

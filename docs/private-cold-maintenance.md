@@ -27,16 +27,28 @@ not establish or enroll offline authority. No public route, real mount, ioctl,
 systemd or production source operation is part of this patch.
 
 The private capture accepts an explicit finite allowlist with byte hashes and
-device/inode identities. Registry, result, journal, events, selected SQLite
-roles and numbered artifacts are separate roles. DB location or a role name
-does not prove schema or history eligibility: an operator must review each
-schema, dependencies, and artifact digest before selecting a job. Exclude
-credentials, unrelated shared trees and history trees. SQLite main DB and
-present WAL/SHM sidecars are copied to raw writable staging before the Backup
-API opens them. The normalized output is checked for integrity and foreign-key
+device/inode identities. `sourceRoot` is the observed rescue mount;
+`selectedJobRoot` is the reviewed current selected-job subtree within that
+mount. Every selected file must be inside that subtree. Directory segments
+named archive, archives, archived, history, historical, worktree, worktrees,
+project, or projects (including numbered or named suffixes) are excluded from
+selection. Historical completed archive, worktree, and project trees are not
+copied or represented by the receipt; no bulk tree walk occurs. A legitimate
+SQLite filename such as `thread_history_1.sqlite` is unaffected. The receipt
+records current selected-job scope and historical-tree exclusion. These path
+checks and the caller's selected-job declaration do not establish that DB
+content is active or eligible. A trusted operator must review selection,
+schema, dependencies, history eligibility, and artifact digests before capture.
+Registry, result, journal, events, selected SQLite roles and numbered artifacts
+are separate roles. Credentials and unrelated shared trees are excluded.
+Declared aggregate size is checked before reads; opened files and metadata are
+read within fixed limits. SQLite main DB and present WAL/SHM sidecars are
+retained as raw inventory, then copied to a separate writable working area for
+normalization. The normalized output is checked for integrity and foreign-key
 violations. An optional reviewed row witness can check a committed row; a
-synthetic fixture row is not part of the production data API. Raw staging is
-retained on failure, and a create-only commit marker is written last.
+synthetic fixture row is not part of the production data API. The complete
+raw and normalized inventory is verified before the create-only commit marker
+is written last. Raw staging is retained on failure.
 
 Encrypted restore is restricted to disposable TEST roots and requires a reviewed
 SQLite row witness. It verifies the
