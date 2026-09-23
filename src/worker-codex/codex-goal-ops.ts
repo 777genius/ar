@@ -4,6 +4,7 @@ import type { CodexGoalLaunchManifestMetadata } from "./codex-goal-launch-manife
 import { isHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
 import { execFile } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
+import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { mapManagedGoalLayout } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -544,6 +545,14 @@ export async function collectCodexGoalStatus(
 export async function reconcileCodexGoalRuntimeResult(
   input: CodexGoalRuntimeResultReconcileInput,
 ): Promise<CodexGoalRuntimeResultReconcileResult> {
+  return new LocalTerminalCheckpointAdmission(input.config.jobRootDir).withWriter(
+    () => reconcileCodexGoalRuntimeResultAdmitted(input),
+  );
+}
+
+async function reconcileCodexGoalRuntimeResultAdmitted(
+  input: CodexGoalRuntimeResultReconcileInput,
+): Promise<CodexGoalRuntimeResultReconcileResult> {
   const status = input.status ?? await collectCodexGoalStatus({
     jobRootDir: input.config.jobRootDir,
     taskId: input.config.taskId,
@@ -636,7 +645,8 @@ export async function reconcileCodexGoalRuntimeResult(
     reason,
     changedFilesCount: changedFiles.length,
   });
-  const result = await createCodexGoalResultRecorder({ outputPath }).record({
+  const result = await createCodexGoalResultRecorder({ outputPath,
+    terminalCheckpointJobRootDir: input.config.jobRootDir }).record({
     status: runtimeStatus,
     provider: "codex",
     runId: input.config.jobId ?? input.config.taskId,

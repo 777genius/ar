@@ -34,6 +34,7 @@ import {
   optionalCodexGoalProviderSandboxMode,
 } from "./codex-goal-control-modes";
 import { withCodexGoalManifestUpdate, withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
+import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { durableReplaceJsonFile } from "./project-control-operation-file-store";
 
 export const codexGoalJobManifestSchemaVersion = 1;
@@ -224,11 +225,29 @@ export async function createCodexGoalJob(input: {
     registryRootDir,
     jobId: manifest.jobId,
   });
-  return await withCodexGoalRegistryMutation({
+  const existedBeforeAdmission = await pathExists(path);
+  if (existedBeforeAdmission && !input.overwrite) {
+    throw codexGoalJobManifestAlreadyExists(path);
+  }
+  if (existedBeforeAdmission) {
+    const previous: unknown = JSON.parse(await readFile(path, "utf8"));
+    if (!previous || typeof previous !== "object" ||
+        !("jobRootDir" in previous) || previous.jobRootDir !== manifest.jobRootDir) {
+      throw new Error("job_manifest_activity_identity_invalid");
+    }
+  }
+  const publish = () => withCodexGoalRegistryMutation({
     registryRootDir,
     effect: async () => {
-      if (!input.overwrite && await pathExists(path)) {
+      if ((await pathExists(path)) && !existedBeforeAdmission) {
         throw codexGoalJobManifestAlreadyExists(path);
+      }
+      if (existedBeforeAdmission) {
+        const current: unknown = JSON.parse(await readFile(path, "utf8"));
+        if (!current || typeof current !== "object" ||
+            !("jobRootDir" in current) || current.jobRootDir !== manifest.jobRootDir) {
+          throw new Error("job_manifest_activity_identity_invalid");
+        }
       }
       if (!await pathExists(path) && manifest.accessBoundary === AccessBoundary.ProjectScopedControl) {
         await initializeControllerStateOrigin(manifest);
@@ -254,6 +273,11 @@ export async function createCodexGoalJob(input: {
       }
     },
   });
+  // A new manifest has no checkpointable identity yet. Its registry mutex
+  // protects initial publication; preserve the absent-root origin attestation.
+  return existedBeforeAdmission
+    ? new LocalTerminalCheckpointAdmission(manifest.jobRootDir).withWriter(publish)
+    : publish();
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -307,6 +331,11 @@ export async function updateCodexGoalJob(input: {
         createdAt: existing.createdAt,
         updatedAt: (input.now ?? new Date()).toISOString(),
       });
+      // Admission is held for the persisted job root. Moving that identity
+      // would publish a manifest under the wrong checkpoint fence.
+      if (manifest.jobRootDir !== existing.jobRootDir) {
+        throw new Error("job_manifest_activity_identity_invalid");
+      }
       assertCodexGoalStoredAccessBoundaryAllowed(manifest);
       await assertCodexGoalJobManifestAccessConsistency(
         manifest,

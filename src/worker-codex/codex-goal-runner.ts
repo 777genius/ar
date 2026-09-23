@@ -4,9 +4,9 @@ import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
 import { admitHostedTestEgress, hostedTestEgressEvidence } from "./hosted-test-egress-admission";
 import { codexProviderEgressPolicy, type CodexProviderEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { mapManagedGoalLayout, usesManagedJobLayout } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -35,6 +35,7 @@ import type {
   CodexServiceTier,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { LocalFileWorkerControlInboxStore } from "@vioxen/subscription-runtime/store-local-file";
+import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import {
   FileBackendCodexSafeExecutor,
   type FileBackendCodexSafeExecutorOptions,
@@ -56,6 +57,7 @@ import {
 } from "./codex-goal-access-plan";
 import { readLocalGitHeadCommit } from "./codex-goal-git-revision";
 import { createCodexGoalResultRecorder } from "./codex-goal-runtime-result-io";
+import { writeCodexGoalProgress } from "./codex-goal-progress-io";
 import {
   terminalCodexGoalHandoffEvidence,
   terminalCodexGoalHandoffResultDetails,
@@ -181,6 +183,17 @@ export async function runCodexGoal(
   config: CodexGoalRunConfig,
   deps: CodexGoalRunDeps = {},
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+  const mapped = mapManagedGoalLayout({ config }).config;
+  await mkdir(mapped.jobRootDir, { recursive: true, mode: 0o700 });
+  return new LocalTerminalCheckpointAdmission(mapped.jobRootDir).withWriter(
+    () => runCodexGoalAdmitted(mapped, deps),
+  );
+}
+
+async function runCodexGoalAdmitted(
+  config: CodexGoalRunConfig,
+  deps: CodexGoalRunDeps,
+): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   config = mapManagedGoalLayout({ config }).config;
   assertCodexGoalRunConfig(config);
   assertCodexGoalAccessLaunchAllowed(config);
@@ -204,7 +217,9 @@ export async function runCodexGoal(
   const progressPath = codexGoalProgressPath(config);
   const runtimeEventsPath = codexGoalRuntimeEventsPath(config);
   const outputPath = codexGoalOutputPath(config);
-  const resultRecorder = createCodexGoalResultRecorder({ outputPath });
+  const executionGeneration = randomUUID();
+  const resultRecorder = createCodexGoalResultRecorder({ outputPath,
+    terminalCheckpointJobRootDir: config.jobRootDir });
   const progressHeartbeat = createCodexGoalProgressHeartbeat({
     progressPath,
     taskId: config.taskId,
@@ -213,11 +228,13 @@ export async function runCodexGoal(
   const runtimeEvents = createCodexGoalRuntimeEventWriter({
     eventPath: runtimeEventsPath,
     taskId: config.taskId,
+    terminalCheckpointJobRootDir: config.jobRootDir,
   });
   const observability =
     deps.observability ?? codexGoalRuntimeEventObservability(runtimeEvents);
   await runtimeEvents.write("runner_starting", {
     jobId: config.jobId ?? config.taskId,
+    executionGeneration,
     executionEngine: config.executionEngine ?? "app-server-goal",
     accountCount: config.accounts.length,
     ...hostedTestEgressEvidence(config, providerEgressPolicy),
@@ -270,6 +287,7 @@ export async function runCodexGoal(
       providerEgressPolicy,
       ...(appServerProcessFactory ? { appServerProcessFactory } : {}),
       stateRootDir,
+      executionGeneration,
       encryptionKey,
       observability,
       controlInbox,
@@ -326,6 +344,7 @@ export async function runCodexGoal(
     await resultRecorder.record(await codexRuntimeResultInput({
       config,
       result,
+      executionGeneration,
       ...(baseCommit === undefined ? {} : { baseCommit }),
     }));
     await progressHeartbeat.write(progressFromResult(result));
@@ -340,6 +359,7 @@ export async function runCodexGoal(
     await resultRecorder.record(await codexExceptionRuntimeResultInput({
       config,
       error,
+      executionGeneration,
       ...(baseCommit === undefined ? {} : { baseCommit }),
     }));
     await progressHeartbeat.write({
@@ -372,6 +392,7 @@ export async function runCodexGoal(
     }
     await runtimeEvents.write("runner_disposed", {
       jobId: config.jobId ?? config.taskId,
+      executionGeneration,
     });
   }
 }
@@ -381,6 +402,7 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly appServerProcessFactory?: CodexAppServerProcessFactory;
   readonly stateRootDir: string;
+  readonly executionGeneration?: string;
   readonly encryptionKey: Uint8Array;
   readonly observability?: ObservabilityPort;
   readonly controlInbox?: WorkerControlService;
@@ -401,6 +423,8 @@ export function buildCodexGoalExecutorOptions(input: {
       ? { activeAttemptRegistry: input.activeAttemptRegistry }
       : {}),
     stateRootDir: input.stateRootDir,
+    terminalCheckpointJobRootDir: config.jobRootDir,
+    ...(input.executionGeneration === undefined ? {} : { executionGeneration: input.executionGeneration }),
     ...(config.runtimeHomeRootDir === undefined ? {} : { runtimeHomeRootDir: config.runtimeHomeRootDir }),
     accountCapacityStore: migrateLegacyCodexAccountCapacity({
       authRootDir: config.authRootDir,
@@ -732,6 +756,7 @@ function progressStatusFromResult(status: string): CodexGoalProgressStatus {
 async function codexRuntimeResultInput(input: {
   readonly config: CodexGoalRunConfig;
   readonly result: SafeExecutionRunResult<FileBackendCodexWorkerResult>;
+  readonly executionGeneration: string;
   readonly baseCommit?: string;
 }): Promise<RuntimeResultEnvelopeInput> {
   const reportedChangedFiles = changedFilesFromSafeExecutionResult(input.result);
@@ -788,13 +813,15 @@ async function codexRuntimeResultInput(input: {
     }),
     ...(workerReport === undefined ? {} : { workerReport }),
     ...(artifacts.length === 0 ? {} : { artifacts }),
-    ...(details === undefined ? {} : { details }),
+    details: { ...(details ?? {}), executionGeneration: input.executionGeneration,
+      attemptNumber: String(input.result.attempts.at(-1)?.attemptNumber ?? 0) },
   };
 }
 
 async function codexExceptionRuntimeResultInput(input: {
   readonly config: CodexGoalRunConfig;
   readonly error: unknown;
+  readonly executionGeneration: string;
   readonly baseCommit?: string;
 }): Promise<RuntimeResultEnvelopeInput> {
   const failure = codexRunnerExceptionFailure(input.error);
@@ -839,7 +866,7 @@ async function codexExceptionRuntimeResultInput(input: {
     blockers: [failure.reason],
     nextAction: changedFiles.length > 0 ? "preserve_patch" : "recover",
     ...(artifacts.length === 0 ? {} : { artifacts }),
-    ...(details === undefined ? {} : { details }),
+    details: { ...(details ?? {}), executionGeneration: input.executionGeneration },
   };
 }
 
@@ -970,17 +997,4 @@ function workerReportFromSafeExecutionResult(
   if (result.status !== "completed") return undefined;
   if (!("result" in result) || result.result === undefined) return undefined;
   return normalizeWorkerReport(result.result.structuredOutput);
-}
-
-async function writeCodexGoalProgress(
-  path: string,
-  snapshot: CodexGoalProgressSnapshot,
-): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  await rename(tempPath, path);
 }

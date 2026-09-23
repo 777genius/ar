@@ -94,6 +94,20 @@ describe("codex goal job registry", () => {
     }
   });
 
+  it("rejects moving a manifest to a different root under the old job admission", async () => {
+    const root = await mkdtemp(join(tmpdir(), "test-job-root-admission-"));
+    const registryRootDir = join(root, "registry");
+    try {
+      const created = await createCodexGoalJob({ registryRootDir, manifest: jobManifest(root) });
+      const path = codexGoalJobManifestPath({ registryRootDir, jobId: created.jobId });
+      const before = await readFile(path, "utf8");
+      await expect(updateCodexGoalJob({ registryRootDir, jobId: created.jobId,
+        patch: { jobRootDir: join(root, "other-job-root") },
+      })).rejects.toThrow("job_manifest_activity_identity_invalid");
+      expect(await readFile(path, "utf8")).toBe(before);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("keeps raw revision CAS and parsed scope CAS distinct and revalidates before publication", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-jobs-cas-"));
     const registryRootDir = join(root, "registry");

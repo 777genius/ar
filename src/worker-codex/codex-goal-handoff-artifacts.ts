@@ -21,6 +21,7 @@ import {
   type RuntimeResultArtifact,
 } from "@vioxen/subscription-runtime/worker-core";
 import { readGitBlobBatch } from "@vioxen/subscription-runtime/worker-local";
+import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { assertGitPatchBlobsSecretSafe } from "./git-patch-secret-validator";
 import { publishImmutableTextArtifact } from "./local-immutable-text-artifact";
 import {
@@ -201,6 +202,23 @@ export async function captureCodexGoalContinuationWorkspaceFingerprint(input: {
 }
 
 export async function materializeCodexGoalHandoffArtifacts(input: {
+  readonly workerJobId: string;
+  readonly taskId: string;
+  readonly workspacePath: string;
+  readonly jobRootDir: string;
+  readonly expectedBaseCommit?: string;
+  readonly limits?: Partial<HandoffArtifactLimits>;
+  readonly testHooks?: {
+    readonly afterSafetyScan?: (scan: 1 | 2) => Promise<void>;
+    readonly afterPatchSnapshot?: (snapshot: 1 | 2) => Promise<void>;
+  };
+}): Promise<MaterializedCodexGoalHandoffArtifacts | null> {
+  return new LocalTerminalCheckpointAdmission(input.jobRootDir).withWriter(
+    () => materializeCodexGoalHandoffArtifactsAdmitted(input),
+  );
+}
+
+async function materializeCodexGoalHandoffArtifactsAdmitted(input: {
   readonly workerJobId: string;
   readonly taskId: string;
   readonly workspacePath: string;

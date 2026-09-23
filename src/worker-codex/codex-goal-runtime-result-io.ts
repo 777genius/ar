@@ -12,26 +12,36 @@ import {
   type RuntimeResultEnvelope,
   type RuntimeResultWriterPort,
 } from "@vioxen/subscription-runtime/worker-core";
+import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 
 const execFileAsync = promisify(execFile);
 const defaultGitCommandTimeoutMs = 10_000;
 
 export class AtomicJsonRuntimeResultWriter implements RuntimeResultWriterPort {
+  constructor(private readonly terminalCheckpointJobRootDir?: string) {}
+
   async writeResult(input: {
     readonly path: string;
     readonly result: RuntimeResultEnvelope;
   }): Promise<void> {
-    await writeAtomicJson(input.path, input.result);
+    if (this.terminalCheckpointJobRootDir) {
+      await new LocalTerminalCheckpointAdmission(this.terminalCheckpointJobRootDir).withWriter(
+        () => writeAtomicJson(input.path, input.result),
+      );
+    } else {
+      await writeAtomicJson(input.path, input.result);
+    }
   }
 }
 
 export function createCodexGoalResultRecorder(input: {
   readonly outputPath: string;
   readonly clock?: { now(): Date };
+  readonly terminalCheckpointJobRootDir?: string;
 }): StrictResultRecorder {
   return new StrictResultRecorder({
     outputPath: input.outputPath,
-    writer: new AtomicJsonRuntimeResultWriter(),
+    writer: new AtomicJsonRuntimeResultWriter(input.terminalCheckpointJobRootDir),
     ...(input.clock === undefined ? {} : { clock: input.clock }),
   });
 }

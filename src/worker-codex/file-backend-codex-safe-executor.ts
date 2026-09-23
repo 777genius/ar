@@ -72,6 +72,8 @@ export type FileBackendCodexSafeExecutorAccount = {
 export type FileBackendCodexSafeExecutorOptions = {
   readonly executorId?: string;
   readonly stateRootDir: string;
+  readonly terminalCheckpointJobRootDir?: string;
+  readonly executionGeneration?: string;
   readonly runtimeHomeRootDir?: string;
   /**
    * Prefer createOneShotExecutor or createContinuationExecutor. Omission keeps
@@ -278,6 +280,12 @@ export class FileBackendCodexSafeExecutor {
     });
     const localSafeExecutionStores = createLocalFileSafeExecutionStores({
       rootDir: options.stateRootDir,
+      ...(options.terminalCheckpointJobRootDir === undefined ? {} : {
+        terminalCheckpointJobRootDir: options.terminalCheckpointJobRootDir,
+      }),
+      ...(options.executionGeneration === undefined ? {} : {
+        executionGeneration: options.executionGeneration,
+      }),
     });
     this.runner = new SafeExecutionRunner({
       lockStore: options.lockStore ?? localSafeExecutionStores.lockStore,
