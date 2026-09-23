@@ -49,10 +49,13 @@ export async function observeColdReadOnlySource(sourceRoot: string,
     const fields = line.split(" ");
     const separator = fields.indexOf("-");
     if (separator < 6 || fields.length < separator + 4) refuse();
-    return { point: decodeMountField(fields[4]), root: decodeMountField(fields[3]),
-      device: fields[2], options: fields[5].split(","),
-      filesystem: fields[separator + 1], source: decodeMountField(fields[separator + 2]),
-      superOptions: fields[separator + 3].split(",") };
+    const [device, root, point, options] = fields.slice(2, 6);
+    const [filesystem, source, superOptions] = fields.slice(separator + 1, separator + 4);
+    if (device === undefined || root === undefined || point === undefined || options === undefined ||
+        filesystem === undefined || source === undefined || superOptions === undefined) refuse();
+    return { point: decodeMountField(point), root: decodeMountField(root), device,
+      options: options.split(","), filesystem, source: decodeMountField(source),
+      superOptions: superOptions.split(",") };
   });
   // A nested mount could replace one selected file's backing storage.
   if (allMounts.some((mount) => mount.point !== sourceRoot && contains(sourceRoot, mount.point))) refuse();
@@ -70,27 +73,33 @@ export async function observeColdReadOnlySource(sourceRoot: string,
 /** Traverse partition parents and stacked backing devices; sysfsRoot permits synthetic fixtures. */
 export async function checkReadOnlyBlockDevice(device: string,
   sysfsRoot = "/sys/dev/block"): Promise<void> {
-  const visited = new Set<string>();
+  const active = new Set<string>();
+  const verified = new Set<string>();
   async function checkSysfs(device: string): Promise<void> {
-    if (!/^\d+:\d+$/.test(device) || visited.has(device) || visited.size > 32) refuse();
-    visited.add(device);
-    const base = join(sysfsRoot, device);
-    if ((await readFile(`${base}/ro`, "utf8")).trim() !== "1") refuse();
-    let partition = false;
-    try { partition = /^\d+$/.test((await readFile(`${base}/partition`, "utf8")).trim()); }
-    catch (e) { if (!isCode(e, "ENOENT")) throw e; }
-    if (partition) {
-      const parent = dirname(await realpath(base));
-      await checkSysfs((await readFile(join(parent, "dev"), "utf8")).trim());
-    }
-    let slaves: string[];
-    try { slaves = await readdir(`${base}/slaves`); }
-    catch (e) { if (!partition || !isCode(e, "ENOENT")) throw e; slaves = []; }
-    for (const child of slaves) {
-      if (!/^[A-Za-z0-9_.-]+$/.test(child)) refuse();
-      const next = (await readFile(`${base}/slaves/${child}/dev`, "utf8")).trim();
-      await checkSysfs(next);
-    }
+    if (!/^\d+:\d+$/.test(device) || active.has(device)) refuse();
+    if (verified.has(device)) return;
+    if (active.size + verified.size >= 32) refuse();
+    active.add(device);
+    try {
+      const base = join(sysfsRoot, device);
+      if ((await readFile(`${base}/ro`, "utf8")).trim() !== "1") refuse();
+      let partition = false;
+      try { partition = /^\d+$/.test((await readFile(`${base}/partition`, "utf8")).trim()); }
+      catch (e) { if (!isCode(e, "ENOENT")) throw e; }
+      if (partition) {
+        const parent = dirname(await realpath(base));
+        await checkSysfs((await readFile(join(parent, "dev"), "utf8")).trim());
+      }
+      let slaves: string[];
+      try { slaves = await readdir(`${base}/slaves`); }
+      catch (e) { if (!partition || !isCode(e, "ENOENT")) throw e; slaves = []; }
+      for (const child of slaves) {
+        if (!/^[A-Za-z0-9_.-]+$/.test(child)) refuse();
+        const next = (await readFile(`${base}/slaves/${child}/dev`, "utf8")).trim();
+        await checkSysfs(next);
+      }
+      verified.add(device);
+    } finally { active.delete(device); }
   }
   await checkSysfs(device);
 }

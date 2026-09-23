@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { capturePrivateColdMaintenance, verifyPrivateColdMaintenance,
@@ -23,13 +23,21 @@ async function identity(path: string): Promise<ColdFileIdentity> {
   const [bytes, info] = await Promise.all([readFile(path), stat(path)]);
   return { bytes: bytes.length, sha256: sha(bytes), dev: info.dev, ino: info.ino };
 }
+async function withWritableFixtureFile(path: string, action: () => Promise<void>): Promise<void> {
+  const mode = (await stat(path)).mode & 0o777;
+  await chmod(path, mode | 0o200);
+  try { await action(); } finally { await chmod(path, mode); }
+}
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "test-cold-maintenance-"));
   roots.push(root);
   const sourceRoot = join(root, "source");
   const selectedJobRoot = join(sourceRoot, "test-job");
   await mkdir(selectedJobRoot, { recursive: true });
-  const db = join(selectedJobRoot, "state.db");
+  const providerHome = join(selectedJobRoot, "state", "codex-session-cache",
+    `codex-${"a".repeat(32)}`, "codex-home");
+  await mkdir(providerHome, { recursive: true });
+  const db = join(providerHome, "state_5.sqlite");
   const script = `import os,sqlite3,sys
 c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA journal_mode=WAL')
 c.execute('PRAGMA wal_autocheckpoint=0')
@@ -60,9 +68,11 @@ describe("private cold maintenance", () => {
     expect((await verifyPrivateColdMaintenance(f.destination, captured.manifestSha256)).files)
       .toHaveLength(2);
     expect(await Promise.all([f.db, f.wal, f.shm, f.registry].map((path) => readFile(path)))).toEqual(before);
-    await writeFile(join(f.destination, "payload", "registry.data"), "tampered");
-    await expect(verifyPrivateColdMaintenance(f.destination, captured.manifestSha256))
-      .rejects.toThrow("payload_tampered");
+    await withWritableFixtureFile(join(f.destination, "payload", "registry.data"), async () => {
+      await writeFile(join(f.destination, "payload", "registry.data"), "tampered");
+      await expect(verifyPrivateColdMaintenance(f.destination, captured.manifestSha256))
+        .rejects.toThrow("payload_tampered");
+    });
     await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job", sources: [f.source],
       destination: f.destination })).rejects.toThrow("output_exists");
   });
@@ -91,13 +101,17 @@ describe("private cold maintenance", () => {
     const captured = await capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot,
       selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job",
       sources: [f.artifact], destination: f.destination });
-    await truncate(join(f.destination, "payload", "registry.data"), 1024 * 1024 * 1024);
-    await expect(verifyPrivateColdMaintenance(f.destination, captured.manifestSha256))
-      .rejects.toThrow("limit_exceeded");
-    await writeFile(join(f.destination, "payload", "registry.data"), await readFile(f.registry));
-    await truncate(join(f.destination, "raw", "registry"), 1024 * 1024 * 1024);
-    await expect(verifyPrivateColdMaintenance(f.destination, captured.manifestSha256))
-      .rejects.toThrow("limit_exceeded");
+    await withWritableFixtureFile(join(f.destination, "payload", "registry.data"), async () => {
+      await truncate(join(f.destination, "payload", "registry.data"), 1024 * 1024 * 1024);
+      await expect(verifyPrivateColdMaintenance(f.destination, captured.manifestSha256))
+        .rejects.toThrow("limit_exceeded");
+      await writeFile(join(f.destination, "payload", "registry.data"), await readFile(f.registry));
+    });
+    await withWritableFixtureFile(join(f.destination, "raw", "registry"), async () => {
+      await truncate(join(f.destination, "raw", "registry"), 1024 * 1024 * 1024);
+      await expect(verifyPrivateColdMaintenance(f.destination, captured.manifestSha256))
+        .rejects.toThrow("limit_exceeded");
+    });
   });
 
   it("excludes historical and project trees from the selected job", async () => {
@@ -118,7 +132,7 @@ describe("private cold maintenance", () => {
     }
   });
 
-  it("checks a partition parent and partition-backed stacked device without a partition slaves directory", async () => {
+  it("accepts a shared partition parent and rejects a backing-device cycle", async () => {
     const actual = await vi.importActual<typeof import("../cold-maintenance/private-cold-source-observation")>(
       "../cold-maintenance/private-cold-source-observation");
     const root = await mkdtemp(join(tmpdir(), "test-cold-sysfs-"));
@@ -126,20 +140,30 @@ describe("private cold maintenance", () => {
     const devices = join(root, "devices");
     const disk = join(devices, "nvme0n1");
     const partition = join(disk, "nvme0n1p1");
+    const partition2 = join(disk, "nvme0n1p2");
     const stacked = join(devices, "dm-0");
     const block = join(root, "dev", "block");
     await mkdir(partition, { recursive: true });
+    await mkdir(partition2);
     await mkdir(join(stacked, "slaves", "nvme0n1p1"), { recursive: true });
+    await mkdir(join(stacked, "slaves", "nvme0n1p2"));
     await mkdir(join(disk, "slaves"));
     await mkdir(block, { recursive: true });
-    for (const [path, dev] of [[disk, "259:0"], [partition, "259:1"], [stacked, "253:0"]]) {
+    for (const [path, dev] of [[disk, "259:0"], [partition, "259:1"],
+      [partition2, "259:2"], [stacked, "253:0"]] as const) {
       await writeFile(join(path, "ro"), "1\n");
       await writeFile(join(path, "dev"), `${dev}\n`);
       await symlink(path, join(block, dev));
     }
     await writeFile(join(partition, "partition"), "1\n");
+    await writeFile(join(partition2, "partition"), "2\n");
     await writeFile(join(stacked, "slaves", "nvme0n1p1", "dev"), "259:1\n");
+    await writeFile(join(stacked, "slaves", "nvme0n1p2", "dev"), "259:2\n");
     await actual.checkReadOnlyBlockDevice("253:0", block);
+    await mkdir(join(disk, "slaves", "dm-0"));
+    await writeFile(join(disk, "slaves", "dm-0", "dev"), "253:0\n");
+    await expect(actual.checkReadOnlyBlockDevice("253:0", block)).rejects.toThrow();
+    await rm(join(disk, "slaves", "dm-0"), { recursive: true });
     await writeFile(join(disk, "ro"), "0\n");
     await expect(actual.checkReadOnlyBlockDevice("253:0", block)).rejects.toThrow();
   });
@@ -166,6 +190,11 @@ describe("private cold maintenance", () => {
       .rejects.toThrow("duplicate_alias");
     await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job",
       sources: [{ ...f.artifact, path: join(f.sourceRoot, "credential.json") }],
+      destination: f.destination })).rejects.toThrow("path_invalid");
+    const session = join(dirname(f.db), "session.json");
+    await writeFile(session, "synthetic");
+    await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource, selectedJobId: "test-job",
+      sources: [{ ...f.artifact, path: session, identity: await identity(session) }],
       destination: f.destination })).rejects.toThrow("path_invalid");
     await expect(capturePrivateColdMaintenance({ sourceRoot: f.sourceRoot, selectedJobRoot: f.selectedJobRoot, expectedSource,
       selectedJobId: "test-job", sources: [{ ...f.artifact,

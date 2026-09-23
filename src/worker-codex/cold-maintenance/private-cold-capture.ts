@@ -39,12 +39,13 @@ function inside(root: string, path: string): boolean {
 function validDigest(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
-function onlyKeys(value: unknown, allowed: readonly string[]): boolean {
+function onlyKeys(value: unknown, allowed: readonly string[]): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value) &&
     Object.keys(value).every((key) => allowed.includes(key));
 }
-function validIdentity(value: ColdFileIdentity): boolean {
+function validIdentity(value: unknown): value is ColdFileIdentity {
   return onlyKeys(value, ["bytes", "sha256", "dev", "ino"]) &&
+    typeof value.bytes === "number" && typeof value.dev === "number" && typeof value.ino === "number" &&
     Number.isSafeInteger(value.bytes) && value.bytes >= 0 &&
     value.bytes <= MAX_BYTES && validDigest(value.sha256) &&
     Number.isSafeInteger(value.dev) && value.dev >= 0 &&
@@ -73,9 +74,11 @@ async function noSymlinkPath(root: string, path: string, final: "file" | "direct
   let cursor = root;
   const parts = relative(root, path).split(sep);
   for (const [i, part] of parts.entries()) {
-    if (!part || part === "." || part === ".." || forbidden.test(part)) fail("path_invalid");
-    cursor = join(cursor, part);
     const last = i === parts.length - 1;
+    const cacheDirectory = part === "codex-session-cache" && (!last || final === "directory");
+    if (!part || part === "." || part === ".." || (forbidden.test(part) && !cacheDirectory))
+      fail("path_invalid");
+    cursor = join(cursor, part);
     if (last && final === "absent") {
       if (await present(cursor)) fail("output_exists");
       continue;
