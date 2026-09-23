@@ -1,6 +1,6 @@
 import "./hosted-test-egress-default-fixture";
 import "./unmanaged-goal-host-fixture";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -28,6 +28,18 @@ async function fixture() {
 }
 
 describe("terminal checkpoint runner admission with fake executor", () => {
+  it.each(["invalid_config", "egress_denied"])("%s leaves the job root absent", async (reason) => {
+    const f = await fixture();
+    try {
+      await rm(f.config.jobRootDir, { recursive: true });
+      await expect(runCodexGoal(
+        reason === "invalid_config" ? { ...f.config, accounts: [] } : f.config,
+        { admitProviderEgress: async () => { throw new Error("test-egress-denied"); } },
+      )).rejects.toThrow(reason === "invalid_config" ? "codex_goal_accounts_required" : "test-egress-denied");
+      await expect(stat(f.config.jobRootDir)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await f.cleanup(); }
+  });
+
   it("rejects a new launch before constructing its executor while the job is claimed", async () => {
     const f = await fixture();
     const claim = await f.gate.claim("test-checkpoint-before-launch", identity);

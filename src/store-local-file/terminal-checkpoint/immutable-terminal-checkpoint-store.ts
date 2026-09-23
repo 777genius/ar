@@ -15,7 +15,14 @@ import { LocalTerminalCheckpointAdmission, type LocalTerminalCheckpointClaim } f
 
 const execFileAsync = promisify(execFile);
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
-const rolePattern = /^[a-z][a-z0-9_]{0,63}$/;
+function validPayloadRole(role: string, kind: TerminalCheckpointPayloadKind): boolean {
+  if (["registry_manifest", "runtime_result", "runtime_events", "attempt_journal"].includes(role)) {
+    return kind === TerminalCheckpointPayloadKind.File;
+  }
+  const indexed = /^(artifact|sqlite)_(0|[1-9][0-9]*)$/.exec(role);
+  return indexed !== null && Number(indexed[2]) < 32 &&
+    kind === (indexed[1] === "sqlite" ? TerminalCheckpointPayloadKind.Sqlite : TerminalCheckpointPayloadKind.File);
+}
 
 export type TerminalCheckpointSource = {
   readonly role: string;
@@ -48,6 +55,7 @@ export async function sealImmutableTerminalCheckpoint(input: ImmutableTerminalCh
   if (!input.claim.identity.projectId.startsWith("test-") ||
       !isAbsolute(input.destination) || input.sources.length < 4 || input.sources.length > 260 ||
       !Number.isFinite(Date.parse(input.terminalAt)) ||
+      !Number.isFinite(Date.parse(input.retentionUntil)) ||
       Date.parse(input.retentionUntil) <= Date.now()) {
     throw new Error("terminal_checkpoint_seal_input_invalid");
   }
@@ -150,7 +158,8 @@ export async function verifyImmutableTerminalCheckpoint(
   if (!isRecord(value) || value.schemaVersion !== 1 || value.authority !== "test_fixture_fenced" ||
       !Array.isArray(value.files) || value.files.length < 4 || value.files.length > 260 ||
       !isRecord(value.identity) || typeof value.checkpointId !== "string" ||
-      !Number.isSafeInteger(value.fence) || !Number.isFinite(Date.parse(String(value.terminalAt)))) {
+      !Number.isSafeInteger(value.fence) || !Number.isFinite(Date.parse(String(value.terminalAt))) ||
+      typeof value.retentionUntil !== "string" || !Number.isFinite(Date.parse(value.retentionUntil))) {
     throw new Error("terminal_checkpoint_manifest_invalid");
   }
   const manifest = value as TerminalCheckpointSealManifest;
@@ -167,7 +176,7 @@ export async function verifyImmutableTerminalCheckpoint(
   const expected = new Set<string>();
   const roles = new Set<string>();
   for (const file of manifest.files) {
-    if (!isRecord(file) || typeof file.role !== "string" || !rolePattern.test(file.role) ||
+    if (!isRecord(file) || typeof file.role !== "string" || !validPayloadRole(file.role, file.kind) ||
         roles.has(file.role) || ![TerminalCheckpointPayloadKind.File,
           TerminalCheckpointPayloadKind.Sqlite].includes(file.kind) ||
         typeof file.sourceRelativePath !== "string" || !safeRelative(file.sourceRelativePath) ||
@@ -204,7 +213,7 @@ async function prepareSources(sources: readonly TerminalCheckpointSource[]): Pro
   const paths = new Set<string>();
   const prepared: Prepared[] = [];
   for (const source of sources) {
-    if (!rolePattern.test(source.role) || roles.has(source.role) ||
+    if (!validPayloadRole(source.role, source.kind) || roles.has(source.role) ||
         !isAbsolute(source.root) || !isAbsolute(source.path) ||
         ![TerminalCheckpointPayloadKind.File, TerminalCheckpointPayloadKind.Sqlite].includes(source.kind) ||
         source.kind === TerminalCheckpointPayloadKind.Sqlite && !/\.(db|sqlite|sqlite3)$/i.test(source.path)) {

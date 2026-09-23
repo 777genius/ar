@@ -183,17 +183,6 @@ export async function runCodexGoal(
   config: CodexGoalRunConfig,
   deps: CodexGoalRunDeps = {},
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
-  const mapped = mapManagedGoalLayout({ config }).config;
-  await mkdir(mapped.jobRootDir, { recursive: true, mode: 0o700 });
-  return new LocalTerminalCheckpointAdmission(mapped.jobRootDir).withWriter(
-    () => runCodexGoalAdmitted(mapped, deps),
-  );
-}
-
-async function runCodexGoalAdmitted(
-  config: CodexGoalRunConfig,
-  deps: CodexGoalRunDeps,
-): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   config = mapManagedGoalLayout({ config }).config;
   assertCodexGoalRunConfig(config);
   assertCodexGoalAccessLaunchAllowed(config);
@@ -213,6 +202,17 @@ async function runCodexGoalAdmitted(
     ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
     sourceEnv: config.sourceEnv ?? process.env,
   });
+  return new LocalTerminalCheckpointAdmission(config.jobRootDir).withWriter(
+    () => runCodexGoalAdmitted(config, deps, providerEgressPolicy, appServerProcessFactory),
+  );
+}
+
+async function runCodexGoalAdmitted(
+  config: CodexGoalRunConfig,
+  deps: CodexGoalRunDeps,
+  providerEgressPolicy: CodexProviderEgressPolicy,
+  appServerProcessFactory: CodexAppServerProcessFactory | undefined,
+): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   const prompt = await readFile(config.promptPath, "utf8");
   const progressPath = codexGoalProgressPath(config);
   const runtimeEventsPath = codexGoalRuntimeEventsPath(config);

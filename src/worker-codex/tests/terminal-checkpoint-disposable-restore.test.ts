@@ -292,6 +292,47 @@ describe("fenced synthetic checkpoint and encrypted disposable restore", () => {
     } finally { await f.cleanup(); }
   });
 
+  it("rejects an invalid retention deadline before reserving the destination", async () => {
+    const f = await fixture();
+    try {
+      await expect(sealTestTerminalAttemptCheckpoint({ ...f.input, retentionUntil: "invalid" }))
+        .rejects.toThrow("seal_input_invalid");
+      await expect(stat(f.input.destination)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await f.cleanup(); }
+  });
+
+  it.each(["retention", "unknown_role", "wrong_kind"])("rejects a checksum-valid invalid %s manifest", async (mutation) => {
+    const f = await fixture();
+    try {
+      await sealTestTerminalAttemptCheckpoint(f.input);
+      const manifestPath = join(f.input.destination, "checkpoint-manifest.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      if (mutation === "retention") manifest.retentionUntil = "invalid";
+      if (mutation === "wrong_kind") {
+        const file = manifest.files[0];
+        file.kind = "sqlite";
+        file.storedPath = `payload/${file.role}.sqlite`;
+        await writeFile(join(f.input.destination, file.storedPath),
+          await readFile(join(f.input.destination, "payload/registry_manifest.data")));
+        await rm(join(f.input.destination, "payload/registry_manifest.data"));
+      }
+      if (mutation === "unknown_role") {
+        await writeFile(join(f.input.destination, "payload/unexpected.data"), "extra");
+        manifest.files.push({ role: "unexpected", kind: "file", sourceRelativePath: "extra",
+          storedPath: "payload/unexpected.data", sha256: sha("extra"), bytes: 5 });
+      }
+      const bytes = `${JSON.stringify(manifest)}\n`;
+      const digest = sha(bytes);
+      for (const [name, content] of [["checkpoint-manifest.json", bytes],
+        ["SHA256SUMS", `${digest}  checkpoint-manifest.json\n`], ["COMMITTED", `${digest}\n`]]) {
+        const path = join(f.input.destination, name!);
+        await chmod(path, 0o600); await writeFile(path, content!);
+      }
+      await expect(verifyTestTerminalAttemptCheckpoint(f.input.destination, digest))
+        .rejects.toThrow("manifest_invalid");
+    } finally { await f.cleanup(); }
+  });
+
   it("rejects a source database with an unknown schema version", async () => {
     const f = await fixture();
     try {
