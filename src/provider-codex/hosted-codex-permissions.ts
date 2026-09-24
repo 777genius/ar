@@ -61,12 +61,20 @@ export function hostedCodexPermissionProfilesToml(
   executableReadPath?: string,
 ): string {
   const domains = policy.domains.map(domain => `${JSON.stringify(domain)} = "allow"`).join(", ");
+  let nodeExecutableReadPath: string | undefined;
+  try {
+    const resolved = realpathSync(process.execPath);
+    if (trustedCodexInstallationPath(resolved)) nodeExecutableReadPath = resolved;
+  } catch { /* An unresolved executable cannot expand the read boundary. */ }
+  const executableRules = [...new Set([executableReadPath, nodeExecutableReadPath]
+    .filter((path): path is string => path !== undefined))]
+    .map(path => `${JSON.stringify(path)} = "read"`);
   return [
     "# Bound native Codex tools to the admitted workspace and minimal system files.",
     `[permissions.${HostedCodexPermissionProfileId.ReadOnly}.filesystem]`,
     '":root" = "deny"',
     '":minimal" = "read"',
-    ...(executableReadPath ? [`${JSON.stringify(executableReadPath)} = "read"`] : []),
+    ...executableRules,
     "",
     `[permissions.${HostedCodexPermissionProfileId.ReadOnly}.filesystem.\":workspace_roots\"]`,
     '"." = "read"',
@@ -78,7 +86,7 @@ export function hostedCodexPermissionProfilesToml(
     `[permissions.${HostedCodexPermissionProfileId.WorkspaceWrite}.filesystem]`,
     '":root" = "deny"',
     '":minimal" = "read"',
-    ...(executableReadPath ? [`${JSON.stringify(executableReadPath)} = "read"`] : []),
+    ...executableRules,
     "",
     `[permissions.${HostedCodexPermissionProfileId.WorkspaceWrite}.filesystem.\":workspace_roots\"]`,
     '"." = "write"',

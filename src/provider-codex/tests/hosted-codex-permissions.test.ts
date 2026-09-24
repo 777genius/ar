@@ -29,5 +29,9 @@ describe("hosted Codex permission profiles", () => {
     const config = hostedCodexPermissionProfilesToml(codexProviderApiEgressPolicy());
     expect(config).not.toContain('"/" = "read"');
     expect(config).not.toContain('"/srv" = "read"');
+    const scoped = hostedCodexPermissionProfilesToml(
+      codexProviderApiEgressPolicy(), "/opt/codex/lib/node_modules/@openai/codex");
+    expect(scoped).toContain('"/opt/codex/lib/node_modules/@openai/codex" = "read"');
+    expect(scoped).not.toContain('"/opt" = "read"');
   });
 });
