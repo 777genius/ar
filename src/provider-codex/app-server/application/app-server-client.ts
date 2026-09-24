@@ -544,7 +544,7 @@ export class CodexAppServerClient {
       try {
         const hostedPermissions = hostedCodexPermissionProfileId({
           sourceEnv: this.options.sourceEnv,
-          sandboxMode: input.sandboxMode,
+          ...(input.sandboxMode === undefined ? {} : { sandboxMode: input.sandboxMode }),
         });
         response = await this.send(
           "turn/start",
