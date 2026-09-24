@@ -109,7 +109,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     if (!options.codexBinaryPath.trim()) {
       throw new Error("codex_app_server_binary_required");
     }
-    if (options.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job" &&
+    if ((options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job" &&
       options.hostedPermissionProfiles !== true && options.nativeToolSurface !== "disabled") {
       throw new Error("hosted_permission_profiles_required_for_native_tools");
     }

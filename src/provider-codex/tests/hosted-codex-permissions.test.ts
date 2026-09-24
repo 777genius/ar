@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { dirname } from "node:path";
 import { codexJsonHomeConfigToml } from "../codex-session-materializer";
 import { codexProviderApiEgressPolicy } from "../codex-provider-egress-policy";
-import { hostedCodexPermissionProfilesToml } from "../hosted-codex-permissions";
+import { hostedCodexExecutableReadPath, hostedCodexPermissionProfilesToml } from "../hosted-codex-permissions";
 
 describe("hosted Codex permission profiles", () => {
   it("removes the legacy sandbox override and limits both profiles to workspace roots", () => {
@@ -16,12 +15,19 @@ describe("hosted Codex permission profiles", () => {
     expect(config).toContain('[permissions.hosted-project-read.filesystem]');
     expect(config).toContain('[permissions.hosted-project-write.filesystem]');
     expect(config.match(/":root" = "deny"/g)).toHaveLength(2);
-    expect(config.split(`${JSON.stringify(dirname(dirname(process.execPath)))} = "read"`)).toHaveLength(3);
     expect(config).toContain('[permissions.hosted-project-read.filesystem.":workspace_roots"]\n"." = "read"');
     expect(config).toContain('[permissions.hosted-project-write.filesystem.":workspace_roots"]\n"." = "write"');
     expect(config).toContain('".git" = "read"');
     expect(config).toContain('".codex" = "read"');
     expect(config).not.toContain('extends = ":workspace"');
     expect(config).not.toContain('"*" = "allow"');
+  });
+
+  it("refuses to turn a shallow Node install into broad filesystem access", () => {
+    expect(hostedCodexExecutableReadPath({ codexBinaryPath: "/bin/node", sourceEnv: {} }))
+      .toBeUndefined();
+    const config = hostedCodexPermissionProfilesToml(codexProviderApiEgressPolicy());
+    expect(config).not.toContain('"/" = "read"');
+    expect(config).not.toContain('"/srv" = "read"');
   });
 });

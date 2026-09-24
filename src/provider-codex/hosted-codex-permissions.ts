@@ -1,6 +1,7 @@
 import type { CodexSandboxMode } from "./codex-json-execution-engine";
 import type { CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
-import { dirname } from "node:path";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 
 export enum HostedCodexPermissionProfileId {
   ReadOnly = "hosted-project-read",
@@ -17,17 +18,55 @@ export function hostedCodexPermissionProfileId(input: {
   }
 }
 
-export function hostedCodexPermissionProfilesToml(policy: CodexProviderEgressPolicy): string {
+export function hostedCodexExecutableReadPath(input: {
+  readonly codexBinaryPath: string;
+  readonly sourceEnv: Readonly<Record<string, string | undefined>>;
+}): string | undefined {
+  const source = input.sourceEnv.SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_CODEX_SOURCE ??
+    input.codexBinaryPath;
+  const candidates = isAbsolute(source) ? [source] :
+    (input.sourceEnv.PATH ?? process.env.PATH ?? "").split(sep === "\\" ? ";" : ":")
+      .filter(Boolean).map(directory => join(directory, source));
+  for (const candidate of candidates) {
+    let executable: string;
+    try { executable = realpathSync(candidate); }
+    catch { continue; }
+    const packageRoot = dirname(dirname(executable));
+    if (basename(dirname(executable)) === "bin" &&
+        basename(packageRoot) === "codex" &&
+        trustedCodexInstallationPath(packageRoot)) {
+      try {
+        const metadata = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as { name?: string };
+        if (metadata.name === "@openai/codex") return packageRoot;
+      } catch { /* A missing or malformed package cannot expand the read root. */ }
+    }
+    if (trustedCodexInstallationPath(executable)) return executable;
+  }
+  return undefined;
+}
+
+function trustedCodexInstallationPath(path: string): boolean {
+  if (!isAbsolute(path) || path === "/" ||
+      !["/opt/", "/usr/local/", "/usr/lib/"].some(prefix => path.startsWith(prefix))) return false;
+  for (let current = path; current !== "/"; current = dirname(current)) {
+    let info;
+    try { info = statSync(current); } catch { return false; }
+    if (info.uid !== 0 || (info.mode & 0o022) !== 0) return false;
+  }
+  return true;
+}
+
+export function hostedCodexPermissionProfilesToml(
+  policy: CodexProviderEgressPolicy,
+  executableReadPath?: string,
+): string {
   const domains = policy.domains.map(domain => `${JSON.stringify(domain)} = "allow"`).join(", ");
-  // The native Codex sandbox re-execs its own binary; npm installations can live
-  // under a versioned Node prefix outside the platform's :minimal read set.
-  const runtimeRoot = dirname(dirname(process.execPath));
   return [
     "# Bound native Codex tools to the admitted workspace and minimal system files.",
     `[permissions.${HostedCodexPermissionProfileId.ReadOnly}.filesystem]`,
     '":root" = "deny"',
     '":minimal" = "read"',
-    `${JSON.stringify(runtimeRoot)} = "read"`,
+    ...(executableReadPath ? [`${JSON.stringify(executableReadPath)} = "read"`] : []),
     "",
     `[permissions.${HostedCodexPermissionProfileId.ReadOnly}.filesystem.\":workspace_roots\"]`,
     '"." = "read"',
@@ -39,7 +78,7 @@ export function hostedCodexPermissionProfilesToml(policy: CodexProviderEgressPol
     `[permissions.${HostedCodexPermissionProfileId.WorkspaceWrite}.filesystem]`,
     '":root" = "deny"',
     '":minimal" = "read"',
-    `${JSON.stringify(runtimeRoot)} = "read"`,
+    ...(executableReadPath ? [`${JSON.stringify(executableReadPath)} = "read"`] : []),
     "",
     `[permissions.${HostedCodexPermissionProfileId.WorkspaceWrite}.filesystem.\":workspace_roots\"]`,
     '"." = "write"',

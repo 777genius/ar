@@ -374,6 +374,19 @@ describe("Codex provider app-server adapter", () => {
     })).toThrow("hosted_permission_profiles_required_for_native_tools");
   });
 
+  it("rejects inherited hosted marker when sourceEnv is omitted", () => {
+    const prior = process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND;
+    process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND = "hosted-codex-job";
+    try {
+      expect(() => new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+      })).toThrow("hosted_permission_profiles_required_for_native_tools");
+    } finally {
+      if (prior === undefined) delete process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND;
+      else process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND = prior;
+    }
+  });
+
   it("disables native tools while leaving MCP tools available", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-app-mcp-only-test-"));
     const fakeFactory = new FakeAppServerFactory();

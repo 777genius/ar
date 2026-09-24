@@ -22,6 +22,7 @@ import {
   codexProviderApiEgressPolicy,
   codexProviderEgressEnv,
   codexProviderEgressPolicy,
+  hostedCodexExecutableReadPath,
   hostedCodexPermissionProfilesToml,
   CodexProviderEgressProfileId,
   egressBoundCodexProcessFactory,
@@ -220,6 +221,9 @@ function createCodexAgentDriver(input: {
   const hostedGlobalScanGuard =
     sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
   const projectReadBoundary = hostedGlobalScanGuard || options.enforceProjectReadBoundary === true;
+  const executableReadPath = projectReadBoundary
+    ? hostedCodexExecutableReadPath({ codexBinaryPath: options.codexBinaryPath, sourceEnv })
+    : undefined;
   const providerEgressPolicy = codexProviderEgressPolicy(
     (options.providerEgressPolicy ?? codexProviderApiEgressPolicy()).profileId,
   );
@@ -351,8 +355,8 @@ function createCodexAgentDriver(input: {
         : projectReadBoundary
         ? {
             configToml: hostedGlobalScanGuard
-              ? hostedGlobalScanConfigToml(providerEgressPolicy)
-              : projectReadBoundaryConfigToml(providerEgressPolicy),
+              ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath)
+              : projectReadBoundaryConfigToml(providerEgressPolicy, executableReadPath),
           }
         : {}),
     }),
@@ -370,19 +374,25 @@ function createCodexAgentDriver(input: {
   });
 }
 
-function projectReadBoundaryConfigToml(providerEgressPolicy: CodexProviderEgressPolicy): string {
+function projectReadBoundaryConfigToml(
+  providerEgressPolicy: CodexProviderEgressPolicy,
+  executableReadPath?: string,
+): string {
   return codexJsonHomeConfigToml({ providerEgressPolicy, namedPermissions: true }) +
-    "\n" + hostedCodexPermissionProfilesToml(providerEgressPolicy);
+    "\n" + hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath);
 }
 
-function hostedGlobalScanConfigToml(providerEgressPolicy: CodexProviderEgressPolicy): string {
+function hostedGlobalScanConfigToml(
+  providerEgressPolicy: CodexProviderEgressPolicy,
+  executableReadPath?: string,
+): string {
   const hookPath = fileURLToPath(
     new URL("./hosted-global-scan-pre-tool-hook.js", import.meta.url),
   );
   const command = `${shellQuote(process.execPath)} ${shellQuote(hookPath)}`;
   return [
     codexJsonHomeConfigToml({ hooksEnabled: true, providerEgressPolicy, namedPermissions: true }),
-    hostedCodexPermissionProfilesToml(providerEgressPolicy),
+    hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath),
     "[hooks]",
     "[[hooks.PreToolUse]]",
     'matcher = "Bash|exec"',
