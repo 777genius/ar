@@ -34,4 +34,11 @@ describe("hosted Codex permission profiles", () => {
     expect(scoped).toContain('"/opt/codex/lib/node_modules/@openai/codex" = "read"');
     expect(scoped).not.toContain('"/opt" = "read"');
   });
+
+  it("does not grant recursive reads when an executable path names a directory", () => {
+    expect(hostedCodexExecutableReadPath({
+      codexBinaryPath: "/usr/local/bin",
+      sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
+    })).toBeUndefined();
+  });
 });

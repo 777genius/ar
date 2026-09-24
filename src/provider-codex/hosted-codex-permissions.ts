@@ -32,6 +32,10 @@ export function hostedCodexExecutableReadPath(input: {
     let executable: string;
     try { executable = realpathSync(candidate); }
     catch { continue; }
+    try {
+      const info = statSync(executable);
+      if (!info.isFile() || (info.mode & 0o111) === 0) continue;
+    } catch { continue; }
     const packageRoot = dirname(dirname(executable));
     if (basename(dirname(executable)) === "bin" &&
         basename(packageRoot) === "codex" &&
@@ -65,7 +69,9 @@ export function hostedCodexPermissionProfilesToml(
   let nodeExecutableReadPath: string | undefined;
   try {
     const resolved = realpathSync(process.execPath);
-    if (trustedCodexInstallationPath(resolved)) nodeExecutableReadPath = resolved;
+    const info = statSync(resolved);
+    if (info.isFile() && (info.mode & 0o111) !== 0 &&
+        trustedCodexInstallationPath(resolved)) nodeExecutableReadPath = resolved;
   } catch { /* An unresolved executable cannot expand the read boundary. */ }
   const executableRules = [...new Set([executableReadPath, nodeExecutableReadPath]
     .filter((path): path is string => path !== undefined))]
