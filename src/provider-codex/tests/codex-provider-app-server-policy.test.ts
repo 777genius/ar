@@ -327,9 +327,9 @@ describe("Codex provider app-server adapter", () => {
   });
 
   it.each([
-    ["review", undefined, "hosted-project-read"],
-    ["structured-prompt", "allow-edits", "hosted-project-write"],
-  ] as const)("sends hosted %s turns through the named project permission profile", async (kind, editMode, profile) => {
+    { label: "review", task: { kind: "review", prompt: "review only" }, profile: "hosted-project-read" },
+    { label: "edit", task: { kind: "structured-prompt", prompt: "edit files", controls: { editMode: "allow-edits" } }, profile: "hosted-project-write" },
+  ] as const)("sends hosted $label turns through the named project permission profile", async ({ task, profile }) => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-hosted-profile-test-"));
     const fakeFactory = new FakeAppServerFactory();
     const driver = new CodexJsonAgentDriver({
@@ -345,9 +345,7 @@ describe("Codex provider app-server adapter", () => {
     try {
       await driver.runTask({
         session: sessionArtifactFromCodexAuthJson(validAuthJson),
-        task: kind === "review"
-          ? { kind, prompt: "review only" }
-          : { kind, prompt: "edit files", controls: { editMode } },
+        task,
         workspace: { path: workspace },
         runner: new StaticRunner(""),
         redactor: new DefaultRedactor(),
