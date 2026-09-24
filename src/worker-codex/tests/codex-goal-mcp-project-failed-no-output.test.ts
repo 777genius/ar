@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -69,7 +69,7 @@ describe("project failed_no_output lifecycle", () => {
         const prepare = async (
           name: string,
           descriptor?: CodexGoalProjectPreStartAdmission,
-          options: { readonly managedOutput?: boolean; readonly tmuxSession?: string; readonly unborn?: boolean } = {},
+          options: { readonly managedOutput?: boolean; readonly tmuxSession?: string; readonly unborn?: boolean; readonly oddPath?: boolean } = {},
         ) => {
           const jobId = `project-${name}`;
           const workspacePath = join(worktreeRoot, jobId);
@@ -81,6 +81,10 @@ describe("project failed_no_output lifecycle", () => {
           }
           await writeFile(join(workspacePath, "README.md"), "imported input\n");
           await writeFile(join(workspacePath, "binary.dat"), Buffer.from([0, 255, 1, 2]));
+          if (options.oddPath) {
+            await writeFile(join(workspacePath, "space and\nnewline.txt"), "imported odd path\n");
+            await symlink("README.md", join(workspacePath, "linked input"));
+          }
           const jobRootDir = join(root, "worker-jobs", jobId);
           await createStoredJob({
             registryRootDir, root, authRoot: join(root, "auth"), jobId,
@@ -172,6 +176,42 @@ describe("project failed_no_output lifecycle", () => {
         await expect(projectControlRecordFailedNoOutputView(stagedModified.args, deps))
           .rejects.toThrow("failed_no_output_staged_changes_present");
 
+        const stagedGitlink = await prepare("staged-gitlink");
+        const nestedPath = join(stagedGitlink.workspacePath, "nested-repository");
+        await mkdir(nestedPath);
+        await gitInitRepository(nestedPath);
+        await writeFile(join(nestedPath, "nested.txt"), "nested commit\n");
+        await git(nestedPath, ["add", "nested.txt"]);
+        await git(nestedPath, ["commit", "-m", "test: nested commit"]);
+        await git(stagedGitlink.workspacePath, ["add", "nested-repository"]);
+        await git(stagedGitlink.workspacePath, ["config", "diff.ignoreSubmodules", "all"]);
+        expect(await gitStdout(stagedGitlink.workspacePath, ["ls-files", "--stage", "nested-repository"]))
+          .toContain("160000");
+        expect(await captureGitWorkspacePatch({ workspacePath: stagedGitlink.workspacePath }))
+          .toBe(stagedGitlink.patch);
+        await expect(projectControlRecordFailedNoOutputView(stagedGitlink.args, deps))
+          .rejects.toThrow("failed_no_output_staged_changes_present");
+
+        for (const [name, flag] of [["assume-unchanged", "--assume-unchanged"],
+          ["skip-worktree", "--skip-worktree"]] as const) {
+          const hidden = await prepare(name);
+          await git(hidden.workspacePath, ["update-index", flag, "README.md"]);
+          const hiddenReceipt = await captureGitWorkspacePatch({ workspacePath: hidden.workspacePath });
+          await writeFile(hidden.patchPath, hiddenReceipt);
+          await writeFile(join(hidden.workspacePath, "README.md"), "hidden authored bytes\n");
+          expect(await captureGitWorkspacePatch({ workspacePath: hidden.workspacePath }))
+            .toBe(hiddenReceipt);
+          await expect(projectControlRecordFailedNoOutputView({
+            ...hidden.args,
+            preexistingWorkspacePatchSha256: createHash("sha256").update(hiddenReceipt).digest("hex"),
+          }, deps))
+            .rejects.toThrow("failed_no_output_git_index_flags_present");
+        }
+
+        const normalOddPath = await prepare("normal-odd-path", undefined, { oddPath: true });
+        await expect(projectControlRecordFailedNoOutputView(normalOddPath.args, deps))
+          .resolves.toMatchObject({ ok: true, decision: { status: "failed_no_output" } });
+
         const corruptHead = await prepare("corrupt-head");
         await writeFile(join(corruptHead.workspacePath, ".git", "HEAD"), "broken\n");
         await expect(projectControlRecordFailedNoOutputView(corruptHead.args, deps))
@@ -215,6 +255,7 @@ describe("project failed_no_output lifecycle", () => {
         });
         for (const jobId of [
           managedEvent.jobId, stagedDeleted.jobId, stagedModified.jobId,
+          stagedGitlink.jobId, "project-assume-unchanged", "project-skip-worktree",
           corruptHead.jobId, unbornStaged.jobId, "project-tmux-crash",
         ]) {
           expect(rejectedLedger.byJobId.has(jobId)).toBe(false);

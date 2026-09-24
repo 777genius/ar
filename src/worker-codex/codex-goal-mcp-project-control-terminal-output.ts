@@ -628,6 +628,9 @@ async function assertNeverStartedInputPatchEvidence(input: {
   const workspacePatch = await captureGitWorkspacePatch({
     workspacePath: input.workspacePath,
   });
+  // Recheck after capture so an index change during the patch read cannot
+  // silently turn an earlier clean check into closure evidence.
+  await assertNoStagedChanges(input.workspacePath);
   if (createHash("sha256").update(workspacePatch).digest("hex") !==
       input.preexistingWorkspacePatch.sha256) {
     throw new Error("failed_no_output_preexisting_patch_workspace_sha256_mismatch");
@@ -635,13 +638,38 @@ async function assertNeverStartedInputPatchEvidence(input: {
 }
 
 async function assertNoStagedChanges(workspacePath: string): Promise<void> {
-  // A corrupt HEAD can make diff --cached appear clean. Status verifies that
-  // Git can read HEAD and the index, including for an unborn branch.
-  await execFileAsync("git", ["-C", workspacePath, "status", "--porcelain=v1", "--untracked-files=no"], {
+  // Read every index status byte. A configured submodule diff can report a
+  // clean cached diff even when porcelain reports a staged gitlink.
+  const { stdout: status } = await execFileAsync("git", ["-C", workspacePath,
+    "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=none"], {
     timeout: 10_000,
   });
+  for (const entry of nulRecords(status)) {
+    if (entry.length < 4 || entry[2] !== " " || !" MADRCUT".includes(entry[1]!)) {
+      throw new Error("failed_no_output_git_index_uncertain");
+    }
+    if (entry[0] !== " ") throw new Error("failed_no_output_staged_changes_present");
+  }
+  const { stdout: flags } = await execFileAsync("git", ["-C", workspacePath,
+    "ls-files", "-v", "-z"], { timeout: 10_000 });
+  for (const entry of nulRecords(flags)) {
+    if (entry.length < 3 || entry[1] !== " ") {
+      throw new Error("failed_no_output_git_index_uncertain");
+    }
+    if (entry[0] !== "H") throw new Error("failed_no_output_git_index_flags_present");
+  }
+  const { stdout: stages } = await execFileAsync("git", ["-C", workspacePath,
+    "ls-files", "--stage", "-z"], { timeout: 10_000 });
+  for (const entry of nulRecords(stages)) {
+    const match = /^(\d{6}) (?:[0-9a-f]{40}|[0-9a-f]{64}) ([0-3])\t[\s\S]+$/.exec(entry);
+    if (!match) throw new Error("failed_no_output_git_index_uncertain");
+    if (match[1] === "160000") throw new Error("failed_no_output_gitlink_present");
+    if (match[2] !== "0" || !["100644", "100755", "120000"].includes(match[1]!)) {
+      throw new Error("failed_no_output_git_index_uncertain");
+    }
+  }
   try {
-    await execFileAsync("git", ["-C", workspacePath, "diff", "--cached", "--quiet", "--exit-code", "--"], {
+    await execFileAsync("git", ["-C", workspacePath, "diff", "--cached", "--quiet", "--exit-code", "--ignore-submodules=none", "--"], {
       timeout: 10_000,
     });
   } catch (error) {
@@ -650,6 +678,12 @@ async function assertNoStagedChanges(workspacePath: string): Promise<void> {
     }
     throw error;
   }
+}
+
+function nulRecords(output: string): string[] {
+  if (output.length === 0) return [];
+  if (!output.endsWith("\0")) throw new Error("failed_no_output_git_index_uncertain");
+  return output.slice(0, -1).split("\0");
 }
 
 async function assertPathAbsent(path: string): Promise<void> {
