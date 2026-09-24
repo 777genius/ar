@@ -34,6 +34,8 @@ export type FileBackendCodexWorkerOptions = {
   readonly maxSessionAgeMs?: number;
   readonly refreshConflictRetryMaxMs?: number;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  /** Brokered project jobs require native filesystem permissions even without the host marker. */
+  readonly enforceProjectReadBoundary?: boolean;
   readonly executionEngine?: CodexWorkerExecutionEngine;
   /** Already admitted by the trusted host; never taken from job configuration. */
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;

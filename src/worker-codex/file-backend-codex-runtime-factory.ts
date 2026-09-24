@@ -219,6 +219,7 @@ function createCodexAgentDriver(input: {
   const sourceEnv = options.sourceEnv ?? process.env;
   const hostedGlobalScanGuard =
     sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  const projectReadBoundary = hostedGlobalScanGuard || options.enforceProjectReadBoundary === true;
   const providerEgressPolicy = codexProviderEgressPolicy(
     (options.providerEgressPolicy ?? codexProviderApiEgressPolicy()).profileId,
   );
@@ -230,7 +231,7 @@ function createCodexAgentDriver(input: {
   if (providerEgressPolicy.profileId === CodexProviderEgressProfileId.TestManagedQualification) {
     assertReadonlyAdmittedFactory(options.appServerProcessFactory, options.workspacePath);
   }
-  if (hostedGlobalScanGuard && executionEngine !== "app-server" &&
+  if (projectReadBoundary && executionEngine !== "app-server" &&
       executionEngine !== "app-server-goal") {
     throw new Error("hosted_permission_profiles_engine_unsupported");
   }
@@ -244,7 +245,7 @@ function createCodexAgentDriver(input: {
         ...(options.boundedWorkspaceTools.denyProjectInstructions
           ? { denyProjectInstructions: true }
           : {}),
-        ...(hostedGlobalScanGuard ? { hostedEgressPolicy: providerEgressPolicy } : {}),
+        ...(projectReadBoundary ? { hostedEgressPolicy: providerEgressPolicy } : {}),
       })
     : undefined;
   if (executionEngine === "plain-exec") {
@@ -268,14 +269,14 @@ function createCodexAgentDriver(input: {
       : new CodexAppServerExecutionEngine({
           codexBinaryPath: options.codexBinaryPath,
           sourceEnv: appServerEnv,
-          ...(hostedGlobalScanGuard ? { hostedPermissionProfiles: true } : {}),
+          ...(projectReadBoundary ? { hostedPermissionProfiles: true } : {}),
           ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
           ...(options.appServerStartupTimeoutMs
             ? { startupTimeoutMs: options.appServerStartupTimeoutMs }
             : {}),
           processFactory: egressBoundCodexProcessFactory(
             providerEgressPolicy, options.appServerProcessFactory,
-            hostedGlobalScanGuard ? { namedPermissions: true } : undefined,
+            projectReadBoundary ? { namedPermissions: true } : undefined,
           ),
           ...(options.rateLimitsSnapshotHandler
             ? {
@@ -325,7 +326,7 @@ function createCodexAgentDriver(input: {
           runStore: input.managedRunStore,
           ...(
             executionEngine === "app-server-goal" ||
-            hostedGlobalScanGuard ||
+            projectReadBoundary ||
             workspaceToolsProfile ||
             options.rolloutBudget
             ? {}
@@ -347,9 +348,11 @@ function createCodexAgentDriver(input: {
       scrubAuthOnDispose: true,
       ...(workspaceToolsProfile
         ? { configToml: workspaceToolsProfile.configToml }
-        : hostedGlobalScanGuard
+        : projectReadBoundary
         ? {
-            configToml: hostedGlobalScanConfigToml(providerEgressPolicy),
+            configToml: hostedGlobalScanGuard
+              ? hostedGlobalScanConfigToml(providerEgressPolicy)
+              : projectReadBoundaryConfigToml(providerEgressPolicy),
           }
         : {}),
     }),
@@ -365,6 +368,11 @@ function createCodexAgentDriver(input: {
       ? { warmupPrompt: options.warmupPrompt }
       : {}),
   });
+}
+
+function projectReadBoundaryConfigToml(providerEgressPolicy: CodexProviderEgressPolicy): string {
+  return codexJsonHomeConfigToml({ providerEgressPolicy, namedPermissions: true }) +
+    "\n" + hostedCodexPermissionProfilesToml(providerEgressPolicy);
 }
 
 function hostedGlobalScanConfigToml(providerEgressPolicy: CodexProviderEgressPolicy): string {

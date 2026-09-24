@@ -167,4 +167,33 @@ describe("factory admitted policy propagation", () => {
       sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
     })).toThrow("hosted_permission_profiles_engine_unsupported");
   });
+
+  it("enforces native project permissions for a brokered job without a hosted marker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scoped-permissions-"));
+    const fake = new FakeAppServerFactory({ goalStatusesAfterTurns: ["complete"] });
+    const launches: Parameters<typeof fake.create>[0][] = [];
+    const parts = runtime({
+      providerInstanceId: "synthetic-account", stateRootDir: join(root, "state"), workspacePath: root,
+      codexBinaryPath: "/synthetic/codex", encryptionKey: new Uint8Array(32),
+      executionEngine: "app-server-goal", warmupPrompt: false,
+      sourceEnv: { PATH: "/synthetic/bin" }, enforceProjectReadBoundary: true,
+      appServerProcessFactory: input => { launches.push(input); return fake.create(input); },
+    });
+    const driver = parts.agentDriver as CodexJsonAgentDriver;
+    try {
+      await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson), redactor,
+        runner: new StaticRunner(""), task: { kind: "structured-prompt", prompt: "offline" },
+        workspace: { path: root }, abortSignal: new AbortController().signal,
+      });
+      expect(launches.length).toBeGreaterThan(0);
+      const config = await readFile(join(launches[0]!.env!.CODEX_HOME!, "config.toml"), "utf8");
+      expect(config).toContain('default_permissions = "hosted-project-read"');
+      expect(config).toContain('":root" = "deny"');
+      expect(config).not.toContain('sandbox_mode =');
+      expect(config).not.toContain('[sandbox_workspace_write]');
+      expect(fake.requests.filter(r => r.method === "turn/start")[0]?.params)
+        .toMatchObject({ permissions: "hosted-project-read" });
+    } finally { await driver.dispose(); await rm(root, { recursive: true, force: true }); }
+  });
 });

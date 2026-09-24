@@ -473,6 +473,9 @@ export function buildCodexGoalExecutorOptions(input: {
           ? {}
           : { appServerStartupTimeoutMs: config.appServerStartupTimeoutMs }),
         sourceEnv: config.sourceEnv ?? process.env,
+        enforceProjectReadBoundary: config.projectAccessScope !== undefined &&
+          (config.accessBoundary === AccessBoundary.ReadOnly ||
+            config.accessBoundary === AccessBoundary.IsolatedWorkspaceWrite),
         ...(commandPolicy === undefined ? {} : { commandPolicy }),
         ...(config.model ? { model: config.model } : {}),
         ...(config.reasoningEffort
