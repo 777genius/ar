@@ -84,10 +84,10 @@ export function codexProviderEgressConfigToml(
 
 export function codexProviderEgressCliConfigArgs(
   policy: CodexProviderEgressPolicy = codexProviderApiEgressPolicy(),
+  input?: { readonly namedPermissions?: boolean },
 ): readonly string[] {
   return [
-    "--config",
-    "sandbox_workspace_write.network_access=true",
+    ...(input?.namedPermissions ? [] : ["--config", "sandbox_workspace_write.network_access=true"]),
     "--config",
     "features.network_proxy.enabled=true",
     "--config",

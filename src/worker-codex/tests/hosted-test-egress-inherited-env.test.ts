@@ -84,7 +84,9 @@ describe("direct factory hosted environment selection", () => {
         expect(launch.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND).toBe("hosted-codex-job");
         expect(launch.env.PATH?.split(":" )).toContain(explicit ? explicitEnv.PATH : hostedEnv.PATH);
         expect(launch.env.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE).toBe(expectedPolicy.profileId);
-        expect(launch.args.slice(-6)).toEqual(codexProviderEgressCliConfigArgs(expectedPolicy));
+        expect(launch.args.slice(-4)).toEqual(codexProviderEgressCliConfigArgs(expectedPolicy,
+          { namedPermissions: true }));
+        expect(launch.args.join(" ")).not.toContain("sandbox_workspace_write");
         expect(launch.args).toContain("--dangerously-bypass-hook-trust");
         // Only the synthetic materialized home's config is read; no real session is used.
         const config = await readFile(join(launch.env.CODEX_HOME!, "config.toml"), "utf8");

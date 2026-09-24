@@ -23,6 +23,7 @@ function runtime(options: FileBackendCodexWorkerOptions) {
 describe("factory admitted policy propagation", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
   it("uses one snapshot for prewarm, task, child CLI and cached homes across ordinary profiles and reopenings; refuses managed factory substitution", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     const root = await mkdtemp(join(tmpdir(), "egress-factory-"));
     const workspacePath = join(root, "workspace"); await mkdir(workspacePath);
     const homes: string[] = [];
@@ -69,19 +70,26 @@ describe("factory admitted policy propagation", () => {
           for (const launch of launches) {
             expect(launch.env?.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE).toBe(profileId);
             expect(launch.env?.PATH?.split(":")).toContain("/synthetic/bin");
-            expect(launch.args.slice(-6)).toEqual(codexProviderEgressCliConfigArgs(codexProviderEgressPolicy(profileId)));
+            expect(launch.args.slice(-4)).toEqual(codexProviderEgressCliConfigArgs(
+              codexProviderEgressPolicy(profileId), { namedPermissions: true }));
+            expect(launch.args.join(" ")).not.toContain("sandbox_workspace_write");
             const home = launch.env!.CODEX_HOME!;
             const config = await readFile(join(home, "config.toml"), "utf8");
             expect(config.includes("registry.npmjs.org")).toBe(profileId !== CodexProviderEgressProfileId.ProviderApi);
             expect(config.includes("api.github.com")).toBe(false);
             expect(config.includes("raw.githubusercontent.com")).toBe(false);
             expect(config).toContain("[[hooks.PreToolUse]]");
-            expect(config).toContain("network_access = true");
+            expect(config).toContain('default_permissions = "hosted-project-read"');
+            expect(config).toContain('[permissions.hosted-project-write.network]');
+            expect(config).not.toContain("[sandbox_workspace_write]");
           }
           homes.push(launches[0]!.env!.CODEX_HOME!);
           const turns = fake.requests.filter(r => r.method === "turn/start");
           expect(turns.length).toBeGreaterThan(0);
-          for (const turn of turns) expect(turn.params).toMatchObject({ sandboxPolicy: { networkAccess: true } });
+          for (const turn of turns) {
+            expect(turn.params).toMatchObject({ permissions: "hosted-project-write" });
+            expect(turn.params).not.toHaveProperty("sandboxPolicy");
+          }
         } finally { await driver.dispose(); }
       }
       expect(new Set(homes.slice(0, 2)).size).toBe(2);

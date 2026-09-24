@@ -271,6 +271,7 @@ function createCodexAgentDriver(input: {
             : {}),
           processFactory: egressBoundCodexProcessFactory(
             providerEgressPolicy, options.appServerProcessFactory,
+            hostedGlobalScanGuard ? { namedPermissions: true } : undefined,
           ),
           ...(options.rateLimitsSnapshotHandler
             ? {
