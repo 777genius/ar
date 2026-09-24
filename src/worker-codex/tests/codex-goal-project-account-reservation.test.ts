@@ -8,7 +8,10 @@ import {
   InMemoryWorkerAccountLeaseStore,
   type SafeExecutionTaskRecord,
 } from "@vioxen/subscription-runtime/worker-core";
-import type { CodexGoalJobManifest } from "../codex-goal-jobs";
+import {
+  CodexGoalAccountSelectionMode,
+  type CodexGoalJobManifest,
+} from "../codex-goal-jobs";
 import type { CodexGoalLaunchInput } from "../codex-goal-ops";
 import {
   codexProjectContinuationReservationInput,
@@ -30,6 +33,61 @@ afterEach(async () => {
 });
 
 describe("project account reservation", () => {
+  it("keeps explicit first choice until a recorded failure allows continuation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "project-explicit-continuation-"));
+    roots.push(root);
+    const base = fixture(root, "job-1");
+    const scoped = {
+      manifest: {
+        ...base.manifest,
+        accounts: ["account-v", "account-o"],
+        accountSelectionMode: CodexGoalAccountSelectionMode.Explicit,
+      },
+      launch: {
+        ...base.launch,
+        config: {
+          ...base.launch.config,
+          accounts: [{ name: "account-v" }, { name: "account-o" }],
+        },
+      },
+    };
+    const deps = {
+      capacityStore: new InMemoryWorkerAccountCapacityStore(),
+      leaseMode: "shared" as const,
+      now: new Date("2026-07-13T00:00:00.000Z"),
+    };
+    expect((await reserveCodexProjectAccount({ ...scoped, deps })).accountId)
+      .toBe("account-v");
+    const journal = new InMemoryAttemptJournal();
+    await expect(codexProjectContinuationReservationInput({
+      status: {
+        recommendedAction: "continue_after_capacity",
+        resultReason: "account_unavailable",
+      },
+      launch: scoped.launch,
+      journal,
+    })).rejects.toThrow("project_control_continuation_attempt_history_required");
+    await recordUnavailableAttempt(
+      journal,
+      "account-v",
+      scoped.launch.config.workspacePath,
+      "account_unavailable",
+    );
+    const continuation = await codexProjectContinuationReservationInput({
+      status: {
+        recommendedAction: "continue_after_capacity",
+        resultReason: "account_unavailable",
+      },
+      launch: scoped.launch,
+      journal,
+    });
+    expect((await reserveCodexProjectAccount({
+      ...scoped,
+      ...continuation,
+      deps,
+    })).accountId).toBe("account-o");
+  });
+
   it.each(["account_unavailable", "capacity_unavailable"] as const)(
     "selects another shared account after %s",
     async (failureReason) => {

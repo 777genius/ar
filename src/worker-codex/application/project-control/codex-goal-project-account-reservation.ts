@@ -12,7 +12,10 @@ import {
   type WorkerRuntimeDemand,
 } from "@vioxen/subscription-runtime/worker-core";
 import { LocalFileWorkerAccountLeaseStore } from "@vioxen/subscription-runtime/store-local-file";
-import type { CodexGoalJobManifest } from "../../codex-goal-jobs";
+import {
+  CodexGoalAccountSelectionMode,
+  type CodexGoalJobManifest,
+} from "../../codex-goal-jobs";
 import type {
   CodexGoalLaunchInput,
   CodexGoalStatus,
@@ -207,13 +210,14 @@ async function selectSharedCodexProjectAccount(
     reason: string;
     waitUntil?: Date;
   }> = [];
-  const accounts = stableSharedAccountOrder(
-    selectableWorkerAccountIds(
-      projectEligibleAccountIds(input),
-      undefined,
-    ),
-    input.manifest.jobId,
+  const eligible = selectableWorkerAccountIds(
+    projectEligibleAccountIds(input),
+    undefined,
   );
+  const accounts = input.manifest.accountSelectionMode ===
+      CodexGoalAccountSelectionMode.Explicit
+    ? eligible
+    : stableSharedAccountOrder(eligible, input.manifest.jobId);
 
   for (const accountId of accounts) {
     const capacity = capacityStore.read({ accountId, demand, now });

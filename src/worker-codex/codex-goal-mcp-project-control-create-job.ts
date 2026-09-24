@@ -3,6 +3,7 @@ import {
   NetworkAccessMode,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  CodexGoalAccountSelectionMode,
   readCodexGoalJob,
   summarizeCodexGoalJob,
   type CodexGoalJobManifestInput,
@@ -71,6 +72,10 @@ export async function projectControlCreateCodexGoalJobView(
   const createManifest: CodexGoalJobManifestInput = {
     ...requested,
     accounts,
+    accountSelectionMode: requested.accounts.length > 0 &&
+      accounts.some((account) => requested.accounts.includes(account))
+      ? CodexGoalAccountSelectionMode.Explicit
+      : CodexGoalAccountSelectionMode.Automatic,
     accessBoundary,
     projectAccessScope: projectControlChildScope(
       controller.scope,

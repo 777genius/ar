@@ -18,11 +18,13 @@ import {
   type ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  CodexGoalAccountSelectionMode,
   codexGoalJobManifestPath,
   codexGoalJobToArgs,
   codexGoalJobManifestSchemaVersion,
   createCodexGoalJob,
   listCodexGoalJobs,
+  parseCodexGoalJobManifest,
   readCodexGoalJob,
   summarizeCodexGoalJob,
   updateCodexGoalJob,
@@ -38,6 +40,32 @@ import {
   "../../worker-local/project-control-evidence-custody-local-adapter";
 
 describe("codex goal job registry", () => {
+  it("persists account selection provenance and validates legacy absence", async () => {
+    const root = await mkdtemp(join(tmpdir(), "project-account-provenance-"));
+    const registryRootDir = join(root, "registry");
+    try {
+      const created = await createCodexGoalJob({
+        registryRootDir,
+        manifest: {
+          ...jobManifest(root),
+          accountSelectionMode: CodexGoalAccountSelectionMode.Explicit,
+        },
+      });
+      expect((await readCodexGoalJob({
+        registryRootDir,
+        jobId: created.jobId,
+      })).accountSelectionMode).toBe(CodexGoalAccountSelectionMode.Explicit);
+      const { accountSelectionMode: _mode, ...legacy } = created;
+      expect(parseCodexGoalJobManifest(legacy).accountSelectionMode).toBeUndefined();
+      expect(() => parseCodexGoalJobManifest({
+        ...created,
+        accountSelectionMode: "preferred",
+      })).toThrow("codex_goal_job_accountSelectionMode_invalid");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("creates, lists, reads, updates and summarizes versioned job manifests", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-jobs-"));
     const registryRootDir = join(root, "registry");

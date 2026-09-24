@@ -36,10 +36,15 @@ import {
 import { withCodexGoalManifestUpdate, withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
 import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { durableReplaceJsonFile } from "./project-control-operation-file-store";
+import {
+  CodexGoalAccountSelectionMode,
+  optionalCodexGoalAccountSelectionMode,
+} from "./codex-goal-account-selection-mode";
+
+export { CodexGoalAccountSelectionMode } from "./codex-goal-account-selection-mode";
 
 export const codexGoalJobManifestSchemaVersion = 1;
 export const codexGoalObjectiveMaxChars = 4000;
-
 export type CodexGoalProjectPreStartAdmission =
   | {
       readonly schemaVersion: 1;
@@ -72,6 +77,7 @@ export type CodexGoalJobManifest = {
   readonly codexGoalObjective?: string;
   readonly taskId: string;
   readonly accounts: readonly string[];
+  readonly accountSelectionMode?: CodexGoalAccountSelectionMode;
   readonly outputPath?: string;
   readonly progressPath?: string;
   readonly progressHeartbeatMs?: number;
@@ -527,6 +533,7 @@ function parseCodexGoalJobManifestValue(
       : { codexGoalObjective: optionalString(value.codexGoalObjective) as string }),
     taskId: requiredString(value.taskId, "taskId"),
     accounts,
+    ...optionalCodexGoalAccountSelectionMode(value.accountSelectionMode),
     ...(optionalString(value.outputPath) === undefined
       ? {}
       : { outputPath: optionalString(value.outputPath) as string }),
