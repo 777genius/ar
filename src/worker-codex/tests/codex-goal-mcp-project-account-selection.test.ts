@@ -142,6 +142,34 @@ describe("project-control account selection through the broker", () => {
       expect(omitted.accounts).toHaveLength(4);
       expect((await reserve(omitted)).accountId).toBe(omitted.accounts[2]);
 
+      const explicitRepair = await callToolJson(client, "brokered_project_manifest_repair", {
+        registryRootDir, controllerJobId: "job-controller", jobId: "job-2",
+        accounts: ["account-v", "account-o"], confirmRepair: true,
+      });
+      expect(explicitRepair, JSON.stringify(explicitRepair)).toMatchObject({ ok: true });
+      const repairedExplicit = await readCodexGoalJob({ registryRootDir, jobId: "job-2" });
+      expect(repairedExplicit.accounts).toEqual(["account-v", "account-o"]);
+      expect(repairedExplicit.accountSelectionMode).toBe(CodexGoalAccountSelectionMode.Explicit);
+      expect((await reserve(repairedExplicit)).accountId).toBe("account-v");
+
+      const automaticRepair = await callToolJson(client, "brokered_project_manifest_repair", {
+        registryRootDir, controllerJobId: "job-controller", jobId: "job-1",
+        confirmRepair: true,
+      });
+      expect(automaticRepair, JSON.stringify(automaticRepair)).toMatchObject({ ok: true });
+      const repairedAutomatic = await readCodexGoalJob({ registryRootDir, jobId: "job-1" });
+      expect(repairedAutomatic.accounts).toEqual(accountIds);
+      expect(repairedAutomatic.accountSelectionMode).toBe(CodexGoalAccountSelectionMode.Automatic);
+      expect((await reserve(repairedAutomatic)).accountId).toBe("account-p");
+
+      const deniedRepair = await callToolJson(client, "brokered_project_manifest_repair", {
+        registryRootDir, controllerJobId: "job-controller", jobId: "job-2",
+        accounts: ["account-outside-scope"], confirmRepair: true,
+      });
+      expect(deniedRepair).toMatchObject({ ok: false });
+      expect((await readCodexGoalJob({ registryRootDir, jobId: "job-2" })).accounts)
+        .toEqual(["account-v", "account-o"]);
+
       const { accountSelectionMode: _selectionMode, ...legacy } = explicit;
       expect((await reserve(legacy)).accountId).toBe("account-o");
 

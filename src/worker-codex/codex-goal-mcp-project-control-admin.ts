@@ -18,6 +18,7 @@ import {
   type ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  CodexGoalAccountSelectionMode,
   codexGoalJobManifestPath,
   codexGoalJobToArgs,
   readCodexGoalJob,
@@ -741,6 +742,7 @@ export async function projectControlRepairJobManifestView(
       allowedAccountIds: controller.scope.allowedAccountIds ?? [],
     });
     patch.accounts = requestedAccounts;
+    patch.accountSelectionMode = CodexGoalAccountSelectionMode.Explicit;
   } else {
     const repairedAccounts = await projectControlDefaultAccountNames({
       ...(existing.authRootDir ? { authRootDir: existing.authRootDir } : {}),
@@ -750,6 +752,7 @@ export async function projectControlRepairJobManifestView(
     if (projectScopeFieldFingerprint(existing.accounts) !==
       projectScopeFieldFingerprint(repairedAccounts)) {
       patch.accounts = repairedAccounts;
+      patch.accountSelectionMode = CodexGoalAccountSelectionMode.Automatic;
     }
   }
   const repairedAccounts = Array.isArray(patch.accounts)

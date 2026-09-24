@@ -31,6 +31,7 @@ import {
   type CodexGoalJobManifestInput,
 } from "../codex-goal-jobs";
 import { upsertCodexGoalLaunchManifest } from "../codex-goal-launch-manifest";
+import { updateCodexGoalJobUseCase } from "../application/codex-goal-job-use-cases";
 import { loadProjectControlController } from
   "../codex-goal-mcp-project-control-deps";
 import {
@@ -40,6 +41,51 @@ import {
   "../../worker-local/project-control-evidence-custody-local-adapter";
 
 describe("codex goal job registry", () => {
+  it("updates ordinary account provenance and rejects unknown-origin replacement of marked pools", async () => {
+    const root = await mkdtemp(join(tmpdir(), "account-update-provenance-"));
+    const registryRootDir = join(root, "registry");
+    try {
+      const {
+        projectAccessScope: _scope, accessBoundary: _boundary, ...ordinaryJob
+      } = jobManifest(root);
+      const created = await createCodexGoalJob({
+        registryRootDir,
+        manifest: {
+          ...ordinaryJob,
+          accountSelectionMode: CodexGoalAccountSelectionMode.Automatic,
+        },
+      });
+      await expect(updateCodexGoalJob({
+        registryRootDir, jobId: created.jobId,
+        patch: { accounts: ["account-b", "account-a"] },
+      })).rejects.toThrow("codex_goal_job_account_selection_origin_required");
+      expect((await readCodexGoalJob({ registryRootDir, jobId: created.jobId })).accounts)
+        .toEqual(["account-a", "account-b"]);
+      const updated = await updateCodexGoalJobUseCase({
+        registryRootDir, jobId: created.jobId,
+        accounts: ["account-b", "account-a"],
+      });
+      expect(updated).toMatchObject({ ok: true });
+      expect(await readCodexGoalJob({ registryRootDir, jobId: created.jobId }))
+        .toMatchObject({
+          accounts: ["account-b", "account-a"],
+          accountSelectionMode: CodexGoalAccountSelectionMode.Explicit,
+        });
+      const legacy = await createCodexGoalJob({
+        registryRootDir,
+        manifest: { ...ordinaryJob, jobId: "job-legacy", jobRootDir: join(root, "legacy") },
+      });
+      const updatedLegacy = await updateCodexGoalJob({
+        registryRootDir, jobId: legacy.jobId, patch: { accounts: ["account-b"] },
+      });
+      expect(updatedLegacy.accountSelectionMode).toBeUndefined();
+      expect((await readCodexGoalJob({ registryRootDir, jobId: legacy.jobId }))
+        .accountSelectionMode).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("persists account selection provenance and validates legacy absence", async () => {
     const root = await mkdtemp(join(tmpdir(), "project-account-provenance-"));
     const registryRootDir = join(root, "registry");

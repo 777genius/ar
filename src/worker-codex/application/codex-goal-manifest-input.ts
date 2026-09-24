@@ -15,6 +15,7 @@ import {
   parseCodexGoalProjectAccessScope,
 } from "../codex-goal-access-plan";
 import { defaultCodexGoalAuthRoot } from "./codex-goal-account-roots";
+import { CodexGoalAccountSelectionMode } from "../codex-goal-account-selection-mode";
 import {
   CODEX_GOAL_DEFAULT_TIMEOUT_MS,
   goalControlModesFromRecord,
@@ -113,7 +114,10 @@ export function jobManifestPatchFromArgs(args: CodexGoalJobUpdateInput): CodexGo
   putIfDefined(patch, "promptPath", args.promptPath && resolvePath(cwd, args.promptPath));
   putIfDefined(patch, "codexGoalObjective", stringValue(args.codexGoalObjective));
   putIfDefined(patch, "taskId", stringValue(args.taskId));
-  if (args.accounts !== undefined) patch.accounts = accountNames(args.accounts);
+  if (args.accounts !== undefined) {
+    patch.accounts = accountNames(args.accounts);
+    patch.accountSelectionMode = CodexGoalAccountSelectionMode.Explicit;
+  }
   putIfDefined(patch, "outputPath", args.outputPath && resolvePath(cwd, args.outputPath));
   putIfDefined(patch, "progressPath", args.progressPath && resolvePath(cwd, args.progressPath));
   putIfDefined(patch, "progressHeartbeatMs", numberValue(args.progressHeartbeatMs));

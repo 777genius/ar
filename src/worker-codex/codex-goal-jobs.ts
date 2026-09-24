@@ -38,11 +38,10 @@ import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/s
 import { durableReplaceJsonFile } from "./project-control-operation-file-store";
 import {
   CodexGoalAccountSelectionMode,
+  assertAccountReplacementHasKnownOrigin,
   optionalCodexGoalAccountSelectionMode,
 } from "./codex-goal-account-selection-mode";
-
 export { CodexGoalAccountSelectionMode } from "./codex-goal-account-selection-mode";
-
 export const codexGoalJobManifestSchemaVersion = 1;
 export const codexGoalObjectiveMaxChars = 4000;
 export type CodexGoalProjectPreStartAdmission =
@@ -329,6 +328,7 @@ export async function updateCodexGoalJob(input: {
         }
       };
       assertExpectedParsedManifest(existing);
+      assertAccountReplacementHasKnownOrigin({ existing, patch: input.patch });
       const manifest = parseCodexGoalJobManifest({
         ...existing,
         ...input.patch,
