@@ -624,7 +624,7 @@ async function assertNeverStartedInputPatchEvidence(input: {
   if (status.workspaceExists !== true || status.workspaceDirty !== true) {
     throw new Error("failed_no_output_preexisting_patch_workspace_required");
   }
-  await assertNoUnbornStagedChanges(input.workspacePath);
+  await assertNoStagedChanges(input.workspacePath);
   const workspacePatch = await captureGitWorkspacePatch({
     workspacePath: input.workspacePath,
   });
@@ -634,22 +634,19 @@ async function assertNeverStartedInputPatchEvidence(input: {
   }
 }
 
-async function assertNoUnbornStagedChanges(workspacePath: string): Promise<void> {
-  try {
-    await execFileAsync("git", ["-C", workspacePath, "rev-parse", "--verify", "HEAD"], {
-      timeout: 10_000,
-    });
-    return;
-  } catch (error) {
-    if ((error as { code?: unknown }).code !== 128) throw error;
-  }
+async function assertNoStagedChanges(workspacePath: string): Promise<void> {
+  // A corrupt HEAD can make diff --cached appear clean. Status verifies that
+  // Git can read HEAD and the index, including for an unborn branch.
+  await execFileAsync("git", ["-C", workspacePath, "status", "--porcelain=v1", "--untracked-files=no"], {
+    timeout: 10_000,
+  });
   try {
     await execFileAsync("git", ["-C", workspacePath, "diff", "--cached", "--quiet", "--exit-code", "--"], {
       timeout: 10_000,
     });
   } catch (error) {
     if ((error as { code?: unknown }).code === 1) {
-      throw new Error("failed_no_output_unborn_staged_changes_present");
+      throw new Error("failed_no_output_staged_changes_present");
     }
     throw error;
   }

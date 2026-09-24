@@ -35,7 +35,7 @@ import {
 import type { ReviewedWorkerOutputSnapshot } from "../reviewed-worker-output";
 import { localProjectControlEvidenceCustodySupported } from
   "../../worker-local/project-control-evidence-custody-local-adapter";
-import { git, gitInitRepository } from "./codex-goal-mcp-test-support";
+import { git, gitInitRepository, gitStdout } from "./codex-goal-mcp-test-support";
 
 describe("project failed_no_output lifecycle", () => {
   it.runIf(localProjectControlEvidenceCustodySupported)(
@@ -154,6 +154,29 @@ describe("project failed_no_output lifecycle", () => {
         await expect(projectControlRecordFailedNoOutputView(managedEvent.args, deps))
           .rejects.toThrow("failed_no_output_worker_launch_artifacts_present");
 
+        const stagedDeleted = await prepare("staged-deleted");
+        const stagedDeletedPath = join(stagedDeleted.workspacePath, "authored-staged.txt");
+        await writeFile(stagedDeletedPath, "authored bytes absent from the archive\n");
+        await git(stagedDeleted.workspacePath, ["add", "authored-staged.txt"]);
+        await rm(stagedDeletedPath);
+        expect(await gitStdout(stagedDeleted.workspacePath, ["status", "--short"]))
+          .toContain("AD authored-staged.txt");
+        expect(await captureGitWorkspacePatch({ workspacePath: stagedDeleted.workspacePath }))
+          .toBe(stagedDeleted.patch);
+        await expect(projectControlRecordFailedNoOutputView(stagedDeleted.args, deps))
+          .rejects.toThrow("failed_no_output_staged_changes_present");
+
+        const stagedModified = await prepare("staged-modified");
+        await writeFile(join(stagedModified.workspacePath, "README.md"), "staged modification\n");
+        await git(stagedModified.workspacePath, ["add", "README.md"]);
+        await expect(projectControlRecordFailedNoOutputView(stagedModified.args, deps))
+          .rejects.toThrow("failed_no_output_staged_changes_present");
+
+        const corruptHead = await prepare("corrupt-head");
+        await writeFile(join(corruptHead.workspacePath, ".git", "HEAD"), "broken\n");
+        await expect(projectControlRecordFailedNoOutputView(corruptHead.args, deps))
+          .rejects.toThrow();
+
         const unbornExact = await prepare("unborn-exact", undefined, { unborn: true });
         await expect(projectControlRecordFailedNoOutputView(unbornExact.args, deps))
           .resolves.toMatchObject({ ok: true, decision: { status: "failed_no_output" } });
@@ -163,7 +186,7 @@ describe("project failed_no_output lifecycle", () => {
         await writeFile(join(unbornStaged.workspacePath, "new-staged.txt"), "staged after input\n");
         await git(unbornStaged.workspacePath, ["add", "new-staged.txt"]);
         await expect(projectControlRecordFailedNoOutputView(unbornStaged.args, deps))
-          .rejects.toThrow("failed_no_output_unborn_staged_changes_present");
+          .rejects.toThrow("failed_no_output_staged_changes_present");
 
         const previousTmuxPath = process.env.SUBSCRIPTION_RUNTIME_TMUX_PATH;
         try {
@@ -190,7 +213,10 @@ describe("project failed_no_output lifecycle", () => {
         const rejectedLedger = await readCodexGoalConsumedOutputLedgers({
           roots: [ledgerRoot], evidenceRoots: [evidenceRoot],
         });
-        for (const jobId of [managedEvent.jobId, unbornStaged.jobId, "project-tmux-crash"]) {
+        for (const jobId of [
+          managedEvent.jobId, stagedDeleted.jobId, stagedModified.jobId,
+          corruptHead.jobId, unbornStaged.jobId, "project-tmux-crash",
+        ]) {
           expect(rejectedLedger.byJobId.has(jobId)).toBe(false);
         }
 
