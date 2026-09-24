@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { lstat, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 
 import {
   AccessBoundary,
@@ -43,6 +45,7 @@ import {
 
 type JsonObject = Readonly<Record<string, unknown>>;
 const MAX_PREEXISTING_WORKSPACE_PATCH_BYTES = 16 * 1024 * 1024;
+const execFileAsync = promisify(execFile);
 
 export async function projectControlRecordFailedNoOutputView(
   args: ProjectControlMcpArgs,
@@ -420,6 +423,7 @@ async function recordInitialFailedNoOutput(input: {
             launchHasTmuxSession: Boolean(lockedLaunch.tmuxSession),
             jobRootDir: input.loaded.manifest.jobRootDir,
             taskId: input.loaded.manifest.taskId,
+            outputPath: lockedLaunch.config.outputPath,
             workspacePath: workspace.canonicalWorkspacePath,
             preexistingWorkspacePatch: input.preexistingWorkspacePatch,
           });
@@ -504,6 +508,7 @@ async function recordInitialFailedNoOutput(input: {
             launchHasTmuxSession: Boolean(lockedLaunch.tmuxSession),
             jobRootDir: input.loaded.manifest.jobRootDir,
             taskId: input.loaded.manifest.taskId,
+            outputPath: lockedLaunch.config.outputPath,
             workspacePath: workspace.canonicalWorkspacePath,
             preexistingWorkspacePatch: archivedPreexistingWorkspacePatch!,
           });
@@ -581,6 +586,7 @@ async function assertNeverStartedInputPatchEvidence(input: {
   readonly launchHasTmuxSession: boolean;
   readonly jobRootDir: string;
   readonly taskId: string;
+  readonly outputPath?: string | undefined;
   readonly workspacePath: string;
   readonly preexistingWorkspacePatch: { readonly path: string; readonly sha256: string };
 }): Promise<void> {
@@ -605,6 +611,9 @@ async function assertNeverStartedInputPatchEvidence(input: {
     status.progressPath,
     status.logPath,
     status.runtimeEventsPath,
+    ...(input.outputPath
+      ? [join(dirname(input.outputPath), `${input.taskId}.events.jsonl`)]
+      : []),
   ]) {
     if (!path) throw new Error("failed_no_output_worker_launch_artifacts_uncertain");
     await assertPathAbsent(path);
@@ -615,12 +624,34 @@ async function assertNeverStartedInputPatchEvidence(input: {
   if (status.workspaceExists !== true || status.workspaceDirty !== true) {
     throw new Error("failed_no_output_preexisting_patch_workspace_required");
   }
+  await assertNoUnbornStagedChanges(input.workspacePath);
   const workspacePatch = await captureGitWorkspacePatch({
     workspacePath: input.workspacePath,
   });
   if (createHash("sha256").update(workspacePatch).digest("hex") !==
       input.preexistingWorkspacePatch.sha256) {
     throw new Error("failed_no_output_preexisting_patch_workspace_sha256_mismatch");
+  }
+}
+
+async function assertNoUnbornStagedChanges(workspacePath: string): Promise<void> {
+  try {
+    await execFileAsync("git", ["-C", workspacePath, "rev-parse", "--verify", "HEAD"], {
+      timeout: 10_000,
+    });
+    return;
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== 128) throw error;
+  }
+  try {
+    await execFileAsync("git", ["-C", workspacePath, "diff", "--cached", "--quiet", "--exit-code", "--"], {
+      timeout: 10_000,
+    });
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 1) {
+      throw new Error("failed_no_output_unborn_staged_changes_present");
+    }
+    throw error;
   }
 }
 

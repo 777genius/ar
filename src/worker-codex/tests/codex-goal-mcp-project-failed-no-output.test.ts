@@ -12,6 +12,7 @@ import {
   ReviewDecisionStatus,
 } from "@vioxen/subscription-runtime/worker-core";
 import { createCodexGoalJob, type CodexGoalProjectPreStartAdmission } from "../codex-goal-jobs";
+import { inspectCodexGoalTmuxSession } from "../codex-goal-doctor";
 import { captureGitWorkspacePatch } from "../codex-goal-runtime-result-io";
 import {
   codexGoalOutputPath,
@@ -65,15 +66,29 @@ describe("project failed_no_output lifecycle", () => {
             allowedAccountIds: ["account-a"],
           },
         });
-        const prepare = async (name: string, descriptor?: CodexGoalProjectPreStartAdmission) => {
+        const prepare = async (
+          name: string,
+          descriptor?: CodexGoalProjectPreStartAdmission,
+          options: { readonly managedOutput?: boolean; readonly tmuxSession?: string; readonly unborn?: boolean } = {},
+        ) => {
           const jobId = `project-${name}`;
           const workspacePath = join(worktreeRoot, jobId);
-          await createCleanWorkspace(workspacePath);
+          if (options.unborn) {
+            await mkdir(workspacePath, { recursive: true });
+            await gitInitRepository(workspacePath);
+          } else {
+            await createCleanWorkspace(workspacePath);
+          }
           await writeFile(join(workspacePath, "README.md"), "imported input\n");
           await writeFile(join(workspacePath, "binary.dat"), Buffer.from([0, 255, 1, 2]));
+          const jobRootDir = join(root, "worker-jobs", jobId);
           await createStoredJob({
             registryRootDir, root, authRoot: join(root, "auth"), jobId,
             workspacePath, ...(descriptor ? { projectPreStartAdmission: descriptor } : {}),
+            ...(options.managedOutput
+              ? { outputPath: join(jobRootDir, "output", `${jobId}.latest-result.json`) }
+              : {}),
+            ...(options.tmuxSession ? { tmuxSession: options.tmuxSession } : {}),
           });
           const patch = await captureGitWorkspacePatch({ workspacePath });
           const sha256 = createHash("sha256").update(patch).digest("hex");
@@ -126,6 +141,58 @@ describe("project failed_no_output lifecycle", () => {
         });
         await expect(projectControlRecordFailedNoOutputView(exact.args, deps))
           .resolves.toMatchObject({ ok: true, alreadyTerminal: true, idempotentReplay: true });
+
+        const managedClean = await prepare("managed-clean", undefined, { managedOutput: true });
+        await expect(projectControlRecordFailedNoOutputView(managedClean.args, deps))
+          .resolves.toMatchObject({ ok: true, decision: { status: "failed_no_output" } });
+        await expect(projectControlRecordFailedNoOutputView(managedClean.args, deps))
+          .resolves.toMatchObject({ ok: true, alreadyTerminal: true, idempotentReplay: true });
+        const managedEvent = await prepare("managed-event", undefined, { managedOutput: true });
+        const managedEventsPath = join(root, "worker-jobs", managedEvent.jobId, "output", `${managedEvent.jobId}.events.jsonl`);
+        await mkdir(dirname(managedEventsPath), { recursive: true });
+        await writeFile(managedEventsPath, "");
+        await expect(projectControlRecordFailedNoOutputView(managedEvent.args, deps))
+          .rejects.toThrow("failed_no_output_worker_launch_artifacts_present");
+
+        const unbornExact = await prepare("unborn-exact", undefined, { unborn: true });
+        await expect(projectControlRecordFailedNoOutputView(unbornExact.args, deps))
+          .resolves.toMatchObject({ ok: true, decision: { status: "failed_no_output" } });
+        await expect(projectControlRecordFailedNoOutputView(unbornExact.args, deps))
+          .resolves.toMatchObject({ ok: true, alreadyTerminal: true, idempotentReplay: true });
+        const unbornStaged = await prepare("unborn-staged", undefined, { unborn: true });
+        await writeFile(join(unbornStaged.workspacePath, "new-staged.txt"), "staged after input\n");
+        await git(unbornStaged.workspacePath, ["add", "new-staged.txt"]);
+        await expect(projectControlRecordFailedNoOutputView(unbornStaged.args, deps))
+          .rejects.toThrow("failed_no_output_unborn_staged_changes_present");
+
+        const previousTmuxPath = process.env.SUBSCRIPTION_RUNTIME_TMUX_PATH;
+        try {
+          const fakeTmux = join(root, "fake-tmux");
+          process.env.SUBSCRIPTION_RUNTIME_TMUX_PATH = fakeTmux;
+          const tmuxCrash = await prepare("tmux-crash", undefined, { tmuxSession: "project-tmux-crash" });
+          await writeFile(fakeTmux, "#!/bin/sh\nprintf 'server exited unexpectedly\\n' >&2\nexit 1\n", { mode: 0o700 });
+          await expect(inspectCodexGoalTmuxSession("project-tmux-crash"))
+            .resolves.toEqual({ alive: false, warning: "codex_goal_tmux_inspection_uncertain" });
+          await expect(projectControlRecordFailedNoOutputView(tmuxCrash.args, deps))
+            .rejects.toThrow("failed_no_output_worker_launch_artifacts_present");
+          const tmuxAbsent = await prepare("tmux-absent", undefined, { tmuxSession: "project-tmux-absent" });
+          await writeFile(fakeTmux, "#!/bin/sh\nprintf \"can't find session: project-tmux-absent\\n\" >&2\nexit 1\n", { mode: 0o700 });
+          await expect(inspectCodexGoalTmuxSession("project-tmux-absent"))
+            .resolves.toEqual({ alive: false });
+          await expect(projectControlRecordFailedNoOutputView(tmuxAbsent.args, deps))
+            .resolves.toMatchObject({ ok: true, decision: { status: "failed_no_output" } });
+          await expect(projectControlRecordFailedNoOutputView(tmuxAbsent.args, deps))
+            .resolves.toMatchObject({ ok: true, alreadyTerminal: true, idempotentReplay: true });
+        } finally {
+          if (previousTmuxPath === undefined) delete process.env.SUBSCRIPTION_RUNTIME_TMUX_PATH;
+          else process.env.SUBSCRIPTION_RUNTIME_TMUX_PATH = previousTmuxPath;
+        }
+        const rejectedLedger = await readCodexGoalConsumedOutputLedgers({
+          roots: [ledgerRoot], evidenceRoots: [evidenceRoot],
+        });
+        for (const jobId of [managedEvent.jobId, unbornStaged.jobId, "project-tmux-crash"]) {
+          expect(rejectedLedger.byJobId.has(jobId)).toBe(false);
+        }
 
         const mismatch = await prepare("mismatch");
         await writeFile(join(mismatch.workspacePath, "README.md"), "authored after import\n");
@@ -609,6 +676,8 @@ async function createStoredJob(input: {
   readonly authRoot: string;
   readonly jobId: string;
   readonly workspacePath: string;
+  readonly outputPath?: string;
+  readonly tmuxSession?: string;
   readonly accessBoundary?: AccessBoundary;
   readonly projectPreStartAdmission?: CodexGoalProjectPreStartAdmission;
   readonly projectAccessScope?: {
@@ -637,6 +706,8 @@ async function createStoredJob(input: {
       workspacePath: input.workspacePath,
       promptPath: join(jobRootDir, "prompt.md"),
       taskId: input.jobId,
+      ...(input.outputPath ? { outputPath: input.outputPath } : {}),
+      ...(input.tmuxSession ? { tmuxSession: input.tmuxSession } : {}),
       accounts: ["account-a"],
       ...(input.accessBoundary ? { accessBoundary: input.accessBoundary } : {}),
       ...(input.projectAccessScope

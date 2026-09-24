@@ -76,8 +76,19 @@ export async function inspectCodexGoalTmuxSession(
         warning: tmuxUnavailableMessage(error),
       };
     }
-    return { alive: false };
+    if (isTmuxSessionAbsent(error)) return { alive: false };
+    return { alive: false, warning: "codex_goal_tmux_inspection_uncertain" };
   }
+}
+
+function isTmuxSessionAbsent(error: unknown): boolean {
+  if (!isRecord(error) || error.code !== 1 || typeof error.stderr !== "string") {
+    return false;
+  }
+  const stderr = error.stderr.trim();
+  return /^can't find session: [^\r\n]+$/.test(stderr) ||
+    /^no server running on [^\r\n]+$/.test(stderr) ||
+    /^error connecting to [^\r\n]+ \(No such file or directory\)$/.test(stderr);
 }
 
 export function tmuxCodexGoalStartFailedMessage(error: unknown): string {
