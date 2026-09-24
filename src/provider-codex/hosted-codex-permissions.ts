@@ -22,8 +22,9 @@ export function hostedCodexExecutableReadPath(input: {
   readonly codexBinaryPath: string;
   readonly sourceEnv: Readonly<Record<string, string | undefined>>;
 }): string | undefined {
-  const source = input.sourceEnv.SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_CODEX_SOURCE ??
-    input.codexBinaryPath;
+  const source = input.sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job"
+    ? input.sourceEnv.SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_CODEX_SOURCE ?? input.codexBinaryPath
+    : input.codexBinaryPath;
   const candidates = isAbsolute(source) ? [source] :
     (input.sourceEnv.PATH ?? process.env.PATH ?? "").split(sep === "\\" ? ";" : ":")
       .filter(Boolean).map(directory => join(directory, source));
