@@ -1,5 +1,6 @@
 import type { CodexSandboxMode } from "./codex-json-execution-engine";
 import type { CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
+import { dirname } from "node:path";
 
 export enum HostedCodexPermissionProfileId {
   ReadOnly = "hosted-project-read",
@@ -18,11 +19,15 @@ export function hostedCodexPermissionProfileId(input: {
 
 export function hostedCodexPermissionProfilesToml(policy: CodexProviderEgressPolicy): string {
   const domains = policy.domains.map(domain => `${JSON.stringify(domain)} = "allow"`).join(", ");
+  // The native Codex sandbox re-execs its own binary; npm installations can live
+  // under a versioned Node prefix outside the platform's :minimal read set.
+  const runtimeRoot = dirname(dirname(process.execPath));
   return [
     "# Bound native Codex tools to the admitted workspace and minimal system files.",
     `[permissions.${HostedCodexPermissionProfileId.ReadOnly}.filesystem]`,
     '":root" = "deny"',
     '":minimal" = "read"',
+    `${JSON.stringify(runtimeRoot)} = "read"`,
     "",
     `[permissions.${HostedCodexPermissionProfileId.ReadOnly}.filesystem.\":workspace_roots\"]`,
     '"." = "read"',
@@ -34,6 +39,7 @@ export function hostedCodexPermissionProfilesToml(policy: CodexProviderEgressPol
     `[permissions.${HostedCodexPermissionProfileId.WorkspaceWrite}.filesystem]`,
     '":root" = "deny"',
     '":minimal" = "read"',
+    `${JSON.stringify(runtimeRoot)} = "read"`,
     "",
     `[permissions.${HostedCodexPermissionProfileId.WorkspaceWrite}.filesystem.\":workspace_roots\"]`,
     '"." = "write"',

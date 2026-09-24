@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { dirname } from "node:path";
 import { codexJsonHomeConfigToml } from "../codex-session-materializer";
 import { codexProviderApiEgressPolicy } from "../codex-provider-egress-policy";
 import { hostedCodexPermissionProfilesToml } from "../hosted-codex-permissions";
@@ -15,6 +16,7 @@ describe("hosted Codex permission profiles", () => {
     expect(config).toContain('[permissions.hosted-project-read.filesystem]');
     expect(config).toContain('[permissions.hosted-project-write.filesystem]');
     expect(config.match(/":root" = "deny"/g)).toHaveLength(2);
+    expect(config.split(`${JSON.stringify(dirname(dirname(process.execPath)))} = "read"`)).toHaveLength(3);
     expect(config).toContain('[permissions.hosted-project-read.filesystem.":workspace_roots"]\n"." = "read"');
     expect(config).toContain('[permissions.hosted-project-write.filesystem.":workspace_roots"]\n"." = "write"');
     expect(config).toContain('".git" = "read"');
