@@ -36,6 +36,41 @@ export async function projectControlDefaultAccountNames(input: {
   );
 }
 
+export async function projectControlCreateAccountNames(input: {
+  readonly authRootDir?: string;
+  readonly requestedAccounts: readonly string[];
+  readonly allowedAccountIds: readonly string[];
+  readonly jobId: string;
+}): Promise<readonly string[]> {
+  const requested = input.requestedAccounts;
+  if (requested.length > 0) {
+    const allowed = new Set(input.allowedAccountIds);
+    // Preserve invalid requests so project policy can reject them.
+    if (allowed.size > 0 && requested.some((account) => !allowed.has(account))) {
+      return requested;
+    }
+    if (!input.authRootDir) return requested;
+
+    const slots = await listCodexGoalAccountStatuses({
+      authRootDir: input.authRootDir,
+      accounts: requested,
+      recheckDueCapacity: true,
+    });
+    const blockedByCapacity = new Set(
+      slots
+        .filter((slot) => !capacityAllowsProjectSelection(slot))
+        .map((slot) => slot.name),
+    );
+    const eligible = requested.filter((account) => !blockedByCapacity.has(account));
+    if (eligible.length > 0) return eligible;
+  }
+
+  return rotateProjectControlAccountNames(
+    await projectControlDefaultAccountNames(input),
+    input.jobId,
+  );
+}
+
 export async function projectControlRefillAccountNames(input: {
   readonly authRootDir?: string;
   readonly requestedAccounts: readonly string[];

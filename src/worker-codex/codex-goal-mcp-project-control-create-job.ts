@@ -10,8 +10,7 @@ import {
 import { projectAdmissionWorkerRoleArg } from "./application/project-control/codex-goal-project-admission";
 import { projectControlChildManifestInput } from "./application/project-control/codex-goal-project-child-manifest";
 import {
-  projectControlDefaultAccountNames,
-  rotateProjectControlAccountNames,
+  projectControlCreateAccountNames,
 } from "./codex-goal-mcp-project-accounts";
 import {
   type CodexProjectControlBrokerInput,
@@ -63,14 +62,12 @@ export async function projectControlCreateCodexGoalJobView(
   const accessBoundary =
     requested.accessBoundary ?? AccessBoundary.IsolatedWorkspaceWrite;
   const workerRole = projectAdmissionWorkerRoleArg(args.workerRole);
-  const accounts = rotateProjectControlAccountNames(
-    await projectControlDefaultAccountNames({
-      ...(requested.authRootDir ? { authRootDir: requested.authRootDir } : {}),
-      requestedAccounts: requested.accounts,
-      allowedAccountIds: controller.scope.allowedAccountIds ?? [],
-    }),
-    requested.jobId,
-  );
+  const accounts = await projectControlCreateAccountNames({
+    ...(requested.authRootDir ? { authRootDir: requested.authRootDir } : {}),
+    requestedAccounts: requested.accounts,
+    allowedAccountIds: controller.scope.allowedAccountIds ?? [],
+    jobId: requested.jobId,
+  });
   const createManifest: CodexGoalJobManifestInput = {
     ...requested,
     accounts,

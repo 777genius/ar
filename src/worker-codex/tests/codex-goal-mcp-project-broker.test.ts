@@ -130,6 +130,19 @@ describe("codex goal MCP server", () => {
           },
         },
       });
+      await expect(callToolJson(client, "codex_goal_project_create_job", {
+        registryRootDir,
+        controllerJobId: "infinity-context-controller-v1",
+        jobId: "infinity-context-child-outside-scope",
+        jobRootDir: join(root, "worker-jobs", "infinity-context-child-outside-scope"),
+        authRootDir: join(root, "auth"),
+        workspacePath: join(root, "worktrees", "infinity-context-child-outside-scope"),
+        accounts: ["account-outside-scope"],
+        confirmCreate: true,
+      })).resolves.toMatchObject({
+        ok: false,
+        error: "project_control_denied:account_denied",
+      });
       const audit = await readProjectControlAudit(
         controllerJobRoot,
         "infinity-context-controller-v1",
@@ -142,7 +155,7 @@ describe("codex goal MCP server", () => {
     }
   });
 
-  it("defaults project-control child jobs to the ready account pool", async () => {
+  it("keeps an explicit project-control child account despite a ready pool", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-project-accounts-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
     const authRootDir = join(root, "auth");
@@ -207,7 +220,7 @@ describe("codex goal MCP server", () => {
       expect(created).toMatchObject({
         ok: true,
         manifest: {
-          accounts: ["account-a", "account-b"],
+          accounts: ["account-a"],
         },
       });
     } finally {
