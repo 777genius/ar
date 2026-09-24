@@ -469,11 +469,13 @@ async function snapshotCodexSession(input: {
 export function codexJsonHomeConfigToml(input?: {
   readonly hooksEnabled?: boolean;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy | undefined;
+  readonly namedPermissions?: boolean;
 }): string {
   return [
     'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
-    'sandbox_mode = "read-only"',
+    ...(input?.namedPermissions ? [] : ['sandbox_mode = "read-only"']),
+    ...(input?.namedPermissions ? ['default_permissions = "hosted-project-read"'] : []),
     'web_search = "disabled"',
     "disable_response_storage = true",
     'model_verbosity = "low"',
@@ -499,7 +501,8 @@ export function codexJsonHomeConfigToml(input?: {
     'inherit = "all"',
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL"]',
     "",
-    codexProviderEgressConfigToml(input?.providerEgressPolicy),
+    codexProviderEgressConfigToml(input?.providerEgressPolicy,
+      input?.namedPermissions ? { namedPermissions: true } : undefined),
   ].join("\n");
 }
 

@@ -326,6 +326,46 @@ describe("Codex provider app-server adapter", () => {
     }
   });
 
+  it.each([
+    ["review", undefined, "hosted-project-read"],
+    ["structured-prompt", "allow-edits", "hosted-project-write"],
+  ] as const)("sends hosted %s turns through the named project permission profile", async (kind, editMode, profile) => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-hosted-profile-test-"));
+    const fakeFactory = new FakeAppServerFactory();
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
+        processFactory: fakeFactory.create,
+        cleanThreadPrewarm: false,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+    try {
+      await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: kind === "review"
+          ? { kind, prompt: "review only" }
+          : { kind, prompt: "edit files", controls: { editMode } },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+      const thread = fakeFactory.requests.find(request => request.method === "thread/start")?.params;
+      const turn = fakeFactory.requests.find(request => request.method === "turn/start")?.params;
+      expect(thread?.permissions).toBe(profile);
+      expect(thread).not.toHaveProperty("sandbox");
+      expect(thread?.config).not.toHaveProperty("sandbox_mode");
+      expect(turn?.permissions).toBe(profile);
+      expect(turn).not.toHaveProperty("sandboxPolicy");
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("disables native tools while leaving MCP tools available", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-app-mcp-only-test-"));
     const fakeFactory = new FakeAppServerFactory();

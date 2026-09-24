@@ -22,6 +22,7 @@ import {
   codexProviderApiEgressPolicy,
   codexProviderEgressEnv,
   codexProviderEgressPolicy,
+  hostedCodexPermissionProfilesToml,
   CodexProviderEgressProfileId,
   egressBoundCodexProcessFactory,
   type CodexProviderEgressPolicy,
@@ -365,7 +366,8 @@ function hostedGlobalScanConfigToml(providerEgressPolicy: CodexProviderEgressPol
   );
   const command = `${shellQuote(process.execPath)} ${shellQuote(hookPath)}`;
   return [
-    codexJsonHomeConfigToml({ hooksEnabled: true, providerEgressPolicy }),
+    codexJsonHomeConfigToml({ hooksEnabled: true, providerEgressPolicy, namedPermissions: true }),
+    hostedCodexPermissionProfilesToml(providerEgressPolicy),
     "[hooks]",
     "[[hooks.PreToolUse]]",
     'matcher = "Bash|exec"',

@@ -91,6 +91,7 @@ import {
   type CodexAppServerRateLimitsSnapshotHandler,
 } from "./app-server-rate-limits-monitor";
 import { createBoundedAppServerWarningCollector } from "./app-server-warning-collector";
+import { hostedCodexPermissionProfileId } from "../../hosted-codex-permissions";
 
 export {
   CodexAppServerTurnError,
@@ -296,6 +297,10 @@ export class CodexAppServerClient {
         ? {}
         : { systemPrompt: input.systemPrompt }),
     });
+    const hostedPermissions = hostedCodexPermissionProfileId({
+      sourceEnv: this.options.sourceEnv,
+      sandboxMode: threadPolicy.sandboxMode,
+    });
     const toolConfig = codexAppServerToolConfig({
       nativeToolSurface: this.options.nativeToolSurface,
       fastMode: input.serviceTier === "fast",
@@ -312,7 +317,9 @@ export class CodexAppServerClient {
         cwd: input.workspacePath,
         approvalPolicy: appServerApprovalPolicy(this.options.commandApprovalPolicy),
         approvalsReviewer: null,
-        sandbox: threadPolicy.sandboxMode,
+        ...(hostedPermissions
+          ? { permissions: hostedPermissions }
+          : { sandbox: threadPolicy.sandboxMode }),
         config: {
           model_reasoning_effort: input.reasoningEffort,
           model_verbosity: "low",
@@ -323,7 +330,7 @@ export class CodexAppServerClient {
             this.options.commandApprovalPolicy === undefined
               ? "never"
               : "on-request",
-          sandbox_mode: threadPolicy.sandboxMode,
+          ...(hostedPermissions ? {} : { sandbox_mode: threadPolicy.sandboxMode }),
           web_search: "disabled",
           ...toolConfig,
           features: {
@@ -515,6 +522,7 @@ export class CodexAppServerClient {
     readonly reasoningEffort: CodexReasoningEffort;
     readonly serviceTier?: CodexServiceTier;
     readonly workspacePath: string;
+    readonly sandboxMode?: CodexSandboxMode;
     readonly outputSchema?: unknown;
     readonly timeoutMs: number;
     readonly abortSignal: AbortSignal;
@@ -534,12 +542,18 @@ export class CodexAppServerClient {
       });
       let response: CodexAppServerJsonRpcResponse;
       try {
+        const hostedPermissions = hostedCodexPermissionProfileId({
+          sourceEnv: this.options.sourceEnv,
+          sandboxMode: input.sandboxMode,
+        });
         response = await this.send(
           "turn/start",
           appServerTurnStartParams(input, {
             disableTools, disableNativeEnvironments,
             ...(this.options.commandApprovalPolicy === undefined ? {} : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
-            sandboxPolicy: this.sandboxPolicyFor(input),
+            ...(hostedPermissions
+              ? { permissions: hostedPermissions }
+              : { sandboxPolicy: this.sandboxPolicyFor(input) }),
           }),
           input,
         );
