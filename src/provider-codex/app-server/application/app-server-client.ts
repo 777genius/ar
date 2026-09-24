@@ -129,6 +129,7 @@ export class CodexAppServerClient {
     private readonly options: {
       readonly codexBinaryPath: string;
       readonly sourceEnv: Readonly<Record<string, string | undefined>>;
+      readonly hostedPermissionProfiles?: boolean;
       readonly processFactory: CodexAppServerProcessFactory;
       readonly signalChildProcess: CodexAppServerChildProcessSignaler;
       readonly session: CodexMaterializedSession;
@@ -297,10 +298,9 @@ export class CodexAppServerClient {
         ? {}
         : { systemPrompt: input.systemPrompt }),
     });
-    const hostedPermissions = hostedCodexPermissionProfileId({
-      sourceEnv: this.options.sourceEnv,
-      sandboxMode: threadPolicy.sandboxMode,
-    });
+    const hostedPermissions = this.options.hostedPermissionProfiles
+      ? hostedCodexPermissionProfileId({ sandboxMode: threadPolicy.sandboxMode })
+      : null;
     const toolConfig = codexAppServerToolConfig({
       nativeToolSurface: this.options.nativeToolSurface,
       fastMode: input.serviceTier === "fast",
@@ -542,10 +542,11 @@ export class CodexAppServerClient {
       });
       let response: CodexAppServerJsonRpcResponse;
       try {
-        const hostedPermissions = hostedCodexPermissionProfileId({
-          sourceEnv: this.options.sourceEnv,
-          ...(input.sandboxMode === undefined ? {} : { sandboxMode: input.sandboxMode }),
-        });
+        const hostedPermissions = this.options.hostedPermissionProfiles
+          ? hostedCodexPermissionProfileId(
+              input.sandboxMode === undefined ? {} : { sandboxMode: input.sandboxMode },
+            )
+          : null;
         response = await this.send(
           "turn/start",
           appServerTurnStartParams(input, {

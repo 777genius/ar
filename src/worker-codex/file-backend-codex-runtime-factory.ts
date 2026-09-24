@@ -264,6 +264,7 @@ function createCodexAgentDriver(input: {
       : new CodexAppServerExecutionEngine({
           codexBinaryPath: options.codexBinaryPath,
           sourceEnv: appServerEnv,
+          ...(hostedGlobalScanGuard ? { hostedPermissionProfiles: true } : {}),
           ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
           ...(options.appServerStartupTimeoutMs
             ? { startupTimeoutMs: options.appServerStartupTimeoutMs }

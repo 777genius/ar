@@ -12,6 +12,8 @@ import type { CodexExecutionEngine } from "./codex-json-execution-engine";
 export type CodexAppServerExecutionEngineOptions = {
   readonly codexBinaryPath: string;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  /** Set only with a generated CODEX_HOME containing the hosted profiles. */
+  readonly hostedPermissionProfiles?: boolean;
   readonly timeoutMs?: number;
   readonly startupTimeoutMs?: number;
   /**

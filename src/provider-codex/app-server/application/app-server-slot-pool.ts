@@ -72,6 +72,7 @@ export class AppServerSlotPool {
     private readonly options: {
       readonly codexBinaryPath: string;
       readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+      readonly hostedPermissionProfiles?: boolean;
       readonly processFactory: CodexAppServerProcessFactory;
       readonly signalChildProcess: CodexAppServerChildProcessSignaler;
       readonly runStore: ManagedRunStorePort;
@@ -159,6 +160,9 @@ export class AppServerSlotPool {
     const client = new CodexAppServerClient({
       codexBinaryPath: this.options.codexBinaryPath,
       sourceEnv,
+      ...(this.options.hostedPermissionProfiles === undefined ? {} : {
+        hostedPermissionProfiles: this.options.hostedPermissionProfiles,
+      }),
       processFactory: this.options.processFactory,
       signalChildProcess: this.options.signalChildProcess,
       session: input.session,

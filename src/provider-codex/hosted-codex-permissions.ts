@@ -7,10 +7,8 @@ export enum HostedCodexPermissionProfileId {
 }
 
 export function hostedCodexPermissionProfileId(input: {
-  readonly sourceEnv: Readonly<Record<string, string | undefined>>;
   readonly sandboxMode?: CodexSandboxMode;
-}): HostedCodexPermissionProfileId | null {
-  if (input.sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job") return null;
+}): HostedCodexPermissionProfileId {
   switch (input.sandboxMode ?? "read-only") {
     case "read-only": return HostedCodexPermissionProfileId.ReadOnly;
     case "workspace-write": return HostedCodexPermissionProfileId.WorkspaceWrite;

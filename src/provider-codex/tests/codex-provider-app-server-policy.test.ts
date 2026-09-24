@@ -336,6 +336,7 @@ describe("Codex provider app-server adapter", () => {
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: "/bin/codex-test",
         sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
+        hostedPermissionProfiles: true,
         processFactory: fakeFactory.create,
         cleanThreadPrewarm: false,
       }),
@@ -362,6 +363,13 @@ describe("Codex provider app-server adapter", () => {
       await driver.dispose();
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+
+  it("rejects hosted native tools when no generated permission profiles are bound", () => {
+    expect(() => new CodexAppServerExecutionEngine({
+      codexBinaryPath: "/bin/codex-test",
+      sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
+    })).toThrow("hosted_permission_profiles_required_for_native_tools");
   });
 
   it("disables native tools while leaving MCP tools available", async () => {
