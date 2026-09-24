@@ -240,6 +240,7 @@ function createCodexAgentDriver(input: {
         ...(options.boundedWorkspaceTools.denyProjectInstructions
           ? { denyProjectInstructions: true }
           : {}),
+        ...(hostedGlobalScanGuard ? { hostedEgressPolicy: providerEgressPolicy } : {}),
       })
     : undefined;
   if (executionEngine === "plain-exec") {

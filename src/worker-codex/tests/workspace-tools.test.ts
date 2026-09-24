@@ -5,6 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRuntimeTool } from "@vioxen/subscription-runtime/core";
+import { codexProviderApiEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
 import { createWorkspaceToolsMcpServer } from "../workspace-tools-mcp";
 import { BoundedWorkspaceFiles } from "../workspace-tools/bounded-workspace-files";
 import { buildCodexWorkspaceToolsProfile } from "../workspace-tools/codex-workspace-tools-profile";
@@ -219,6 +220,19 @@ describe("bounded Codex workspace tools", () => {
 
     expect(profile.configToml).toContain("project_doc_max_bytes = 0");
     expect(profile.configToml).toContain('"--deny-project-instructions"');
+  });
+
+  it("keeps hosted bounded tools on the named workspace read boundary", () => {
+    const profile = buildCodexWorkspaceToolsProfile({
+      workspaceRoot: "/tmp/disposable-workspace",
+      allowedTools: [AgentRuntimeTool.ReadFile],
+      hostedEgressPolicy: codexProviderApiEgressPolicy(),
+    });
+    expect(profile.configToml).toContain('default_permissions = "hosted-project-read"');
+    expect(profile.configToml).toContain('[permissions.hosted-project-read.filesystem]');
+    expect(profile.configToml).not.toContain('sandbox_mode = "read-only"');
+    expect(profile.configToml).not.toContain("[sandbox_workspace_write]");
+    expect(profile.configToml).toContain("shell_tool = false");
   });
 });
 
