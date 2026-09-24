@@ -155,4 +155,16 @@ describe("factory admitted policy propagation", () => {
       expect(spawn).not.toHaveBeenCalled();
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+
+  it.each(["plain-exec", "packaged-exec"] as const)("rejects hosted %s before legacy sandbox execution", engine => {
+    expect(() => runtime({
+      providerInstanceId: "synthetic-account",
+      stateRootDir: "/synthetic/state",
+      workspacePath: "/synthetic/workspace",
+      codexBinaryPath: "/synthetic/codex",
+      encryptionKey: new Uint8Array(32),
+      executionEngine: engine,
+      sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
+    })).toThrow("hosted_permission_profiles_engine_unsupported");
+  });
 });

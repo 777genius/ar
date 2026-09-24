@@ -230,6 +230,10 @@ function createCodexAgentDriver(input: {
   if (providerEgressPolicy.profileId === CodexProviderEgressProfileId.TestManagedQualification) {
     assertReadonlyAdmittedFactory(options.appServerProcessFactory, options.workspacePath);
   }
+  if (hostedGlobalScanGuard && executionEngine !== "app-server" &&
+      executionEngine !== "app-server-goal") {
+    throw new Error("hosted_permission_profiles_engine_unsupported");
+  }
   const appServerEnv = {
     ...sourceEnv, ...codexProviderEgressEnv(providerEgressPolicy),
   };
