@@ -43,7 +43,6 @@ import {
 } from "./app-server-turn-state";
 import { waitForAppServerTurn } from "./app-server-turn-waiter";
 import {
-  codexAppServerRolloutBudgetConfig,
   type CodexAppServerRolloutBudget,
 } from "../domain/app-server-rollout-budget";
 import { codexAppServerToolConfig } from "../domain/app-server-tool-config";
@@ -92,6 +91,7 @@ import {
 } from "./app-server-rate-limits-monitor";
 import { createBoundedAppServerWarningCollector } from "./app-server-warning-collector";
 import { hostedCodexPermissionProfileId } from "../../hosted-codex-permissions";
+import { appServerThreadConfig } from "./app-server-thread-config";
 
 export {
   CodexAppServerTurnError,
@@ -321,31 +321,17 @@ export class CodexAppServerClient {
         ...(hostedPermissions
           ? { permissions: hostedPermissions }
           : { sandbox: threadPolicy.sandboxMode }),
-        config: {
-          model_reasoning_effort: input.reasoningEffort,
-          model_verbosity: "low",
-          ...(input.serviceTier === undefined
+        config: appServerThreadConfig({
+          reasoningEffort: input.reasoningEffort,
+          ...(input.serviceTier === undefined ? {} : { serviceTier: input.serviceTier }),
+          ...(this.options.commandApprovalPolicy === undefined
             ? {}
-            : { service_tier: input.serviceTier }),
-          approval_policy:
-            this.options.commandApprovalPolicy === undefined
-              ? "never"
-              : "on-request",
-          ...(hostedPermissions ? {} : { sandbox_mode: threadPolicy.sandboxMode }),
-          web_search: "disabled",
-          ...toolConfig,
-          features: {
-            ...(readRecord(toolConfig.features) ?? {}),
-            ...codexAppServerRolloutBudgetConfig(this.options.rolloutBudget),
-          },
-          apps: {
-            _default: {
-              enabled: false,
-              destructive_enabled: false,
-              open_world_enabled: false,
-            },
-          },
-        },
+            : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
+          hostedPermissions,
+          sandboxMode: threadPolicy.sandboxMode,
+          toolConfig,
+          rolloutBudget: this.options.rolloutBudget,
+        }),
         serviceName: "subscription-runtime",
         baseInstructions: this.options.executionProfile.baseInstructions,
         developerInstructions: threadPolicy.developerInstructions,

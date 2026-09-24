@@ -54,6 +54,7 @@ import {
   buildCodexGoalAccessLaunchPlan,
   commandPolicyForHostedCodexGoal,
   codexGoalControlsForAccessBoundary,
+  codexGoalHostedExecutionBoundary,
 } from "./codex-goal-access-plan";
 import { readLocalGitHeadCommit } from "./codex-goal-git-revision";
 import { createCodexGoalResultRecorder } from "./codex-goal-runtime-result-io";
@@ -472,11 +473,7 @@ export function buildCodexGoalExecutorOptions(input: {
         ...(config.appServerStartupTimeoutMs === undefined
           ? {}
           : { appServerStartupTimeoutMs: config.appServerStartupTimeoutMs }),
-        sourceEnv: config.sourceEnv ?? process.env,
-        enforceProjectReadBoundary: config.projectAccessScope !== undefined &&
-          (config.accessBoundary === AccessBoundary.ReadOnly ||
-            config.accessBoundary === AccessBoundary.IsolatedWorkspaceWrite),
-        ...(commandPolicy === undefined ? {} : { commandPolicy }),
+        ...codexGoalHostedExecutionBoundary({ ...config, commandPolicy }),
         ...(config.model ? { model: config.model } : {}),
         ...(config.reasoningEffort
           ? { reasoningEffort: config.reasoningEffort }
