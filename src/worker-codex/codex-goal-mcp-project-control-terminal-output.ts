@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { lstat, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import {
@@ -410,26 +410,42 @@ async function recordInitialFailedNoOutput(input: {
       if (lockedWorkerLiveness.alive) {
         throw new Error("failed_no_output_worker_still_alive");
       }
+      const unadmittedInputPatch = input.preexistingWorkspacePatch !== undefined &&
+        !input.loaded.manifest.projectPreStartAdmission &&
+        !input.controller.scope.preStartAdmission?.required;
       if (input.preexistingWorkspacePatch) {
-        await assertNoAuthoredWorkerOutputEvidence({
-          status: lockedStatus,
-          jobRootDir: input.loaded.manifest.jobRootDir,
-          taskId: input.loaded.manifest.taskId,
-          workspacePath: workspace.canonicalWorkspacePath,
-          preexistingWorkspacePatch: input.preexistingWorkspacePatch,
-        });
+        if (unadmittedInputPatch) {
+          await assertNeverStartedInputPatchEvidence({
+            status: lockedStatus,
+            launchHasTmuxSession: Boolean(lockedLaunch.tmuxSession),
+            jobRootDir: input.loaded.manifest.jobRootDir,
+            taskId: input.loaded.manifest.taskId,
+            workspacePath: workspace.canonicalWorkspacePath,
+            preexistingWorkspacePatch: input.preexistingWorkspacePatch,
+          });
+        } else {
+          await assertNoAuthoredWorkerOutputEvidence({
+            status: lockedStatus,
+            jobRootDir: input.loaded.manifest.jobRootDir,
+            taskId: input.loaded.manifest.taskId,
+            workspacePath: workspace.canonicalWorkspacePath,
+            preexistingWorkspacePatch: input.preexistingWorkspacePatch,
+          });
+        }
         if (lockedStatus.workspaceDirty !== true) {
           throw new Error(
             "failed_no_output_preexisting_patch_workspace_required",
           );
         }
-        await assertProjectPreStartAdmissionLaunchBinding({
-          manifest: input.loaded.manifest,
-          scope: input.controller.scope,
-          workspaceMode: "admitted_input_patch_continuation",
-          expectedInputPatchArtifactSha256:
-            input.preexistingWorkspacePatch.sha256,
-        });
+        if (!unadmittedInputPatch) {
+          await assertProjectPreStartAdmissionLaunchBinding({
+            manifest: input.loaded.manifest,
+            scope: input.controller.scope,
+            workspaceMode: "admitted_input_patch_continuation",
+            expectedInputPatchArtifactSha256:
+              input.preexistingWorkspacePatch.sha256,
+          });
+        }
       } else if (lockedStatus.workspaceDirty !== false) {
         throw new Error("failed_no_output_clean_workspace_required");
       }
@@ -452,6 +468,14 @@ async function recordInitialFailedNoOutput(input: {
       ) {
         throw new Error("failed_no_output_clean_workspace_required");
       }
+      if (unadmittedInputPatch && input.preexistingWorkspacePatch) {
+        await assertEvidencePathReadable(input.preexistingWorkspacePatch.path, {
+          scope: input.controller.scope,
+          registryRootDir: input.controller.registryRootDir,
+          jobId: input.loaded.manifest.jobId,
+          jobRootDir: input.loaded.manifest.jobRootDir,
+        });
+      }
       const archivedPreexistingWorkspacePatch = input.preexistingWorkspacePatch
         ? await archivePreexistingWorkspacePatch({
             source: input.preexistingWorkspacePatch,
@@ -459,13 +483,39 @@ async function recordInitialFailedNoOutput(input: {
           })
         : undefined;
       if (input.preexistingWorkspacePatch) {
-        await assertProjectPreStartAdmissionLaunchBinding({
-          manifest: input.loaded.manifest,
-          scope: input.controller.scope,
-          workspaceMode: "admitted_input_patch_continuation",
-          expectedInputPatchArtifactSha256:
-            input.preexistingWorkspacePatch.sha256,
-        });
+        if (unadmittedInputPatch) {
+          await assertEvidencePathReadable(input.preexistingWorkspacePatch.path, {
+            scope: input.controller.scope,
+            registryRootDir: input.controller.registryRootDir,
+            jobId: input.loaded.manifest.jobId,
+            jobRootDir: input.loaded.manifest.jobRootDir,
+          });
+          const finalStatus = await collectCodexGoalStatus(statusInput(lockedLaunch));
+          const finalLiveness = resolveCodexGoalWorkerLiveness({
+            status: finalStatus,
+            progressStale: finalStatus.progressHeartbeatAgeMs !== undefined &&
+              finalStatus.progressHeartbeatAgeMs > 10 * 60_000,
+          });
+          if (finalLiveness.alive) {
+            throw new Error("failed_no_output_worker_still_alive");
+          }
+          await assertNeverStartedInputPatchEvidence({
+            status: finalStatus,
+            launchHasTmuxSession: Boolean(lockedLaunch.tmuxSession),
+            jobRootDir: input.loaded.manifest.jobRootDir,
+            taskId: input.loaded.manifest.taskId,
+            workspacePath: workspace.canonicalWorkspacePath,
+            preexistingWorkspacePatch: archivedPreexistingWorkspacePatch!,
+          });
+        } else {
+          await assertProjectPreStartAdmissionLaunchBinding({
+            manifest: input.loaded.manifest,
+            scope: input.controller.scope,
+            workspaceMode: "admitted_input_patch_continuation",
+            expectedInputPatchArtifactSha256:
+              input.preexistingWorkspacePatch.sha256,
+          });
+        }
       }
       const accountReservationReleased = await releaseCodexProjectAccount({
         manifest: input.loaded.manifest,
@@ -524,6 +574,64 @@ async function recordInitialFailedNoOutput(input: {
       };
     },
   });
+}
+
+async function assertNeverStartedInputPatchEvidence(input: {
+  readonly status: Awaited<ReturnType<typeof collectCodexGoalStatus>>;
+  readonly launchHasTmuxSession: boolean;
+  readonly jobRootDir: string;
+  readonly taskId: string;
+  readonly workspacePath: string;
+  readonly preexistingWorkspacePatch: { readonly path: string; readonly sha256: string };
+}): Promise<void> {
+  const { status } = input;
+  if (
+    (input.launchHasTmuxSession && status.tmuxAlive !== false) ||
+    (input.launchHasTmuxSession && status.warnings.some((warning) =>
+      warning !== "tmux session is not alive" &&
+      warning !== "project_scoped_control broker-only anchor; use project broker tools, not raw worker start")) ||
+    status.tmuxAlive === true ||
+    status.progressProcessAlive === true ||
+    status.progressPid !== undefined ||
+    status.resultExists !== false ||
+    status.progressExists !== false ||
+    status.logExists !== false ||
+    status.runtimeEventsExists !== false
+  ) {
+    throw new Error("failed_no_output_worker_launch_artifacts_present");
+  }
+  for (const path of [
+    status.resultPath,
+    status.progressPath,
+    status.logPath,
+    status.runtimeEventsPath,
+  ]) {
+    if (!path) throw new Error("failed_no_output_worker_launch_artifacts_uncertain");
+    await assertPathAbsent(path);
+  }
+  for (const suffix of ["pause-request", "maintenance-pause", "review", "stop-event"]) {
+    await assertPathAbsent(join(input.jobRootDir, `${input.taskId}.${suffix}.json`));
+  }
+  if (status.workspaceExists !== true || status.workspaceDirty !== true) {
+    throw new Error("failed_no_output_preexisting_patch_workspace_required");
+  }
+  const workspacePatch = await captureGitWorkspacePatch({
+    workspacePath: input.workspacePath,
+  });
+  if (createHash("sha256").update(workspacePatch).digest("hex") !==
+      input.preexistingWorkspacePatch.sha256) {
+    throw new Error("failed_no_output_preexisting_patch_workspace_sha256_mismatch");
+  }
+}
+
+async function assertPathAbsent(path: string): Promise<void> {
+  try {
+    await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error("failed_no_output_worker_launch_artifacts_present");
 }
 
 async function archivePreexistingWorkspacePatch(input: {

@@ -11,7 +11,13 @@ import {
   NetworkAccessMode,
   ReviewDecisionStatus,
 } from "@vioxen/subscription-runtime/worker-core";
-import { createCodexGoalJob } from "../codex-goal-jobs";
+import { createCodexGoalJob, type CodexGoalProjectPreStartAdmission } from "../codex-goal-jobs";
+import { captureGitWorkspacePatch } from "../codex-goal-runtime-result-io";
+import {
+  codexGoalOutputPath,
+  codexGoalProgressPath,
+  codexGoalRuntimeEventsPath,
+} from "../codex-goal-runner";
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import {
   codexProjectControlBroker,
@@ -31,6 +37,166 @@ import { localProjectControlEvidenceCustodySupported } from
 import { git, gitInitRepository } from "./codex-goal-mcp-test-support";
 
 describe("project failed_no_output lifecycle", () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)(
+    "closes only a never-started exact input patch with immutable evidence",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "subscription-runtime-prestart-close-"));
+      const outside = await mkdtemp(join(tmpdir(), "subscription-runtime-outside-"));
+      const registryRootDir = join(root, "worker-jobs", "registry");
+      const ledgerRoot = join(root, "control", "ledger");
+      const evidenceRoot = join(root, "control", "archives");
+      const worktreeRoot = join(root, "worktrees");
+      const controllerJobId = "project-controller-prestart";
+      const deps = { loadProjectControlController, loadJobLaunch, codexProjectControlBroker };
+      try {
+        await mkdir(join(root, "auth"), { recursive: true });
+        await createCleanWorkspace(join(root, "repo"));
+        await createStoredJob({
+          registryRootDir, root, authRoot: join(root, "auth"),
+          jobId: controllerJobId, workspacePath: join(root, "repo"),
+          accessBoundary: AccessBoundary.ProjectScopedControl,
+          projectAccessScope: {
+            projectId: "project", readRoots: [root],
+            workspaceRoots: [join(root, "repo")], worktreeRoots: [worktreeRoot],
+            registryRoot: registryRootDir,
+            consumedOutputLedgerRoots: [ledgerRoot],
+            consumedOutputEvidenceRoots: [evidenceRoot],
+            jobIdPrefixes: ["project-"], tmuxSessionPrefixes: ["project-"],
+            allowedAccountIds: ["account-a"],
+          },
+        });
+        const prepare = async (name: string, descriptor?: CodexGoalProjectPreStartAdmission) => {
+          const jobId = `project-${name}`;
+          const workspacePath = join(worktreeRoot, jobId);
+          await createCleanWorkspace(workspacePath);
+          await writeFile(join(workspacePath, "README.md"), "imported input\n");
+          await writeFile(join(workspacePath, "binary.dat"), Buffer.from([0, 255, 1, 2]));
+          await createStoredJob({
+            registryRootDir, root, authRoot: join(root, "auth"), jobId,
+            workspacePath, ...(descriptor ? { projectPreStartAdmission: descriptor } : {}),
+          });
+          const patch = await captureGitWorkspacePatch({ workspacePath });
+          const sha256 = createHash("sha256").update(patch).digest("hex");
+          const patchPath = join(root, "worker-jobs", jobId, "imported.patch");
+          await writeFile(patchPath, patch);
+          return {
+            jobId, workspacePath, patch, sha256, patchPath,
+            args: {
+              registryRootDir, controllerJobId, jobId,
+              terminalAttemptId: `terminal-${name}`,
+              failureCategory: "infrastructure", failureCode: "prestart_failure",
+              confirmFailedNoOutput: true, confirmPreexistingWorkspacePatch: true,
+              preexistingWorkspacePatchPath: patchPath,
+              preexistingWorkspacePatchSha256: sha256,
+            },
+          };
+        };
+        const exact = await prepare("exact");
+        expect(exact.patch).toContain("README.md");
+        expect(exact.patch).toContain("binary.dat");
+        await expect(projectControlRecordFailedNoOutputView({
+          ...exact.args, confirmPreexistingWorkspacePatch: false,
+        }, deps)).resolves.toMatchObject({
+          ok: false, reason: "confirm_preexisting_workspace_patch_required",
+        });
+        const recorded = await projectControlRecordFailedNoOutputView(exact.args, deps);
+        expect(recorded).toMatchObject({
+          ok: true,
+          decision: {
+            status: "failed_no_output",
+            output: { authoredChanges: false, workspaceDirty: false },
+            preexistingWorkspacePatch: { sha256: exact.sha256 },
+          },
+        });
+        const decision = recorded.decision as {
+          readonly preexistingWorkspacePatch: { readonly path: string };
+          readonly backup: { readonly statusPath: string; readonly patchPath: string };
+        };
+        await expect(readFile(decision.preexistingWorkspacePatch.path, "utf8"))
+          .resolves.toBe(exact.patch);
+        await expect(readFile(decision.backup.statusPath, "utf8"))
+          .resolves.toContain("README.md");
+        await expect(readFile(decision.backup.patchPath, "utf8"))
+          .resolves.toBe("");
+        const ledger = await readCodexGoalConsumedOutputLedgers({
+          roots: [ledgerRoot], evidenceRoots: [evidenceRoot],
+        });
+        expect(ledger.byJobId.get(exact.jobId)).toMatchObject({
+          valid: true, status: "failed_no_output",
+        });
+        await expect(projectControlRecordFailedNoOutputView(exact.args, deps))
+          .resolves.toMatchObject({ ok: true, alreadyTerminal: true, idempotentReplay: true });
+
+        const mismatch = await prepare("mismatch");
+        await writeFile(join(mismatch.workspacePath, "README.md"), "authored after import\n");
+        await expect(projectControlRecordFailedNoOutputView(mismatch.args, deps))
+          .rejects.toThrow("failed_no_output_preexisting_patch_workspace_sha256_mismatch");
+
+        for (const kind of ["log", "result", "progress", "events"] as const) {
+          const artifact = await prepare(`artifact-${kind}`);
+          const jobRootDir = join(root, "worker-jobs", artifact.jobId);
+          const config = { jobRootDir, taskId: artifact.jobId };
+          const artifactPath = kind === "log"
+            ? join(jobRootDir, `${artifact.jobId}.log`)
+            : kind === "result"
+            ? codexGoalOutputPath(config)
+            : kind === "progress"
+            ? codexGoalProgressPath(config)
+            : codexGoalRuntimeEventsPath(config);
+          await writeFile(artifactPath, "");
+          await expect(projectControlRecordFailedNoOutputView(artifact.args, deps))
+            .rejects.toThrow("failed_no_output_worker_launch_artifacts_present");
+        }
+
+        const marker = await prepare("marker");
+        await writeFile(join(root, "worker-jobs", marker.jobId, `${marker.jobId}.stop-event.json`), "{}");
+        await expect(projectControlRecordFailedNoOutputView(marker.args, deps))
+          .rejects.toThrow("failed_no_output_worker_launch_artifacts_present");
+
+        const escaped = await prepare("escaped");
+        const outsidePatchPath = join(outside, "imported.patch");
+        await writeFile(outsidePatchPath, escaped.patch);
+        await expect(projectControlRecordFailedNoOutputView({
+          ...escaped.args, preexistingWorkspacePatchPath: outsidePatchPath,
+        }, deps)).rejects.toThrow("project_control_failed_no_output_backup_denied");
+
+        const descriptorJobId = "project-descriptor";
+        const descriptor = {
+          schemaVersion: 1 as const, mode: "serial-builtin" as const,
+          contractPath: join(root, "worker-jobs", descriptorJobId, "contract.json"),
+          statePath: join(root, "worker-jobs", descriptorJobId, "state.json"),
+          receiptPath: join(root, "worker-jobs", descriptorJobId, "receipt.json"),
+        };
+        const guarded = await prepare("descriptor", descriptor);
+        await expect(projectControlRecordFailedNoOutputView(guarded.args, deps))
+          .rejects.toThrow();
+
+        const admissionControllerId = "project-controller-admission";
+        await createStoredJob({
+          registryRootDir, root, authRoot: join(root, "auth"),
+          jobId: admissionControllerId, workspacePath: join(root, "repo"),
+          accessBoundary: AccessBoundary.ProjectScopedControl,
+          projectAccessScope: {
+            projectId: "project", readRoots: [root],
+            workspaceRoots: [join(root, "repo")], worktreeRoots: [worktreeRoot],
+            registryRoot: registryRootDir,
+            consumedOutputLedgerRoots: [ledgerRoot],
+            consumedOutputEvidenceRoots: [evidenceRoot],
+            jobIdPrefixes: ["project-"], tmuxSessionPrefixes: ["project-"],
+            allowedAccountIds: ["account-a"],
+            preStartAdmission: { required: true, mode: "serial-builtin" },
+          },
+        });
+        const policyGuarded = await prepare("policy-guarded");
+        await expect(projectControlRecordFailedNoOutputView({
+          ...policyGuarded.args, controllerJobId: admissionControllerId,
+        }, deps)).rejects.toThrow("project_control_pre_start_admission_required");
+      } finally {
+        await rm(root, { recursive: true, force: true });
+        await rm(outside, { recursive: true, force: true });
+      }
+    },
+  );
   it("publishes the project-scoped MCP tool", async () => {
     const server = createCodexGoalMcpServer();
     const client = new Client({ name: "failed-no-output-test", version: "0.0.0" });
@@ -270,7 +436,7 @@ describe("project failed_no_output lifecycle", () => {
           .update(unadmittedPatch)
           .digest("hex"),
         confirmPreexistingWorkspacePatch: true,
-      }, deps)).rejects.toThrow("project_control_pre_start_admission_required");
+      }, deps)).rejects.toThrow("failed_no_output_preexisting_patch_workspace_sha256_mismatch");
 
       await expect(projectControlRecordFailedNoOutputView(args, deps)).resolves
         .toMatchObject({
@@ -342,7 +508,7 @@ describe("project failed_no_output lifecycle", () => {
       await expect(projectControlRecordFailedNoOutputView({
         ...verifierArgs,
         confirmPreexistingWorkspacePatch: true,
-      }, deps)).rejects.toThrow("project_control_pre_start_admission_required");
+      }, deps)).rejects.toThrow("failed_no_output_preexisting_patch_workspace_sha256_mismatch");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -444,6 +610,7 @@ async function createStoredJob(input: {
   readonly jobId: string;
   readonly workspacePath: string;
   readonly accessBoundary?: AccessBoundary;
+  readonly projectPreStartAdmission?: CodexGoalProjectPreStartAdmission;
   readonly projectAccessScope?: {
     readonly projectId: string;
     readonly readRoots: readonly string[];
@@ -455,6 +622,7 @@ async function createStoredJob(input: {
     readonly jobIdPrefixes: readonly string[];
     readonly tmuxSessionPrefixes: readonly string[];
     readonly allowedAccountIds: readonly string[];
+    readonly preStartAdmission?: { readonly required: boolean; readonly mode: "serial-builtin" };
   };
 }): Promise<void> {
   const jobRootDir = join(input.root, "worker-jobs", input.jobId);
@@ -473,6 +641,9 @@ async function createStoredJob(input: {
       ...(input.accessBoundary ? { accessBoundary: input.accessBoundary } : {}),
       ...(input.projectAccessScope
         ? { projectAccessScope: input.projectAccessScope }
+        : {}),
+      ...(input.projectPreStartAdmission
+        ? { projectPreStartAdmission: input.projectPreStartAdmission }
         : {}),
       networkAccess: NetworkAccessMode.Restricted,
     },
