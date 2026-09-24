@@ -17,6 +17,9 @@ describe("hosted Codex permission profiles", () => {
     expect(config.match(/":root" = "deny"/g)).toHaveLength(2);
     expect(config).toContain('[permissions.hosted-project-read.filesystem.":workspace_roots"]\n"." = "read"');
     expect(config).toContain('[permissions.hosted-project-write.filesystem.":workspace_roots"]\n"." = "write"');
+    expect(config).toContain('".git" = "read"');
+    expect(config).toContain('".codex" = "read"');
+    expect(config).not.toContain('extends = ":workspace"');
     expect(config).not.toContain('"*" = "allow"');
   });
 });

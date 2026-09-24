@@ -288,6 +288,7 @@ export class CodexAppServerClient {
     });
     const threadPolicy = codexAppServerThreadRuntimePolicy({
       workspacePath: input.workspacePath,
+      allowExtraWritableRoots: this.options.hostedPermissionProfiles !== true,
       ...(input.sandboxMode === undefined
         ? {}
         : { sandboxMode: input.sandboxMode }),

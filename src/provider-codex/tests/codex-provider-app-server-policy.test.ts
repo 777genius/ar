@@ -335,7 +335,8 @@ describe("Codex provider app-server adapter", () => {
     const driver = new CodexJsonAgentDriver({
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: "/bin/codex-test",
-        sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
+        sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+          SUBSCRIPTION_RUNTIME_CODEX_EXTRA_WRITABLE_ROOTS: "/foreign-project" },
         hostedPermissionProfiles: true,
         processFactory: fakeFactory.create,
         cleanThreadPrewarm: false,
@@ -355,6 +356,7 @@ describe("Codex provider app-server adapter", () => {
       const thread = fakeFactory.requests.find(request => request.method === "thread/start")?.params;
       const turn = fakeFactory.requests.find(request => request.method === "turn/start")?.params;
       expect(thread?.permissions).toBe(profile);
+      expect(thread?.runtimeWorkspaceRoots).toEqual([workspace]);
       expect(thread).not.toHaveProperty("sandbox");
       expect(thread?.config).not.toHaveProperty("sandbox_mode");
       expect(turn?.permissions).toBe(profile);

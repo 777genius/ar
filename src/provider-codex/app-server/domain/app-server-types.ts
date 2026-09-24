@@ -170,6 +170,7 @@ export function mergeDeveloperInstructions(input: {
 export function codexAppServerThreadRuntimePolicy(input: {
   readonly workspacePath: string;
   readonly sandboxMode?: CodexSandboxMode;
+  readonly allowExtraWritableRoots?: boolean;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly baseDeveloperInstructions: string | null;
   readonly systemPrompt?: string | undefined;
@@ -181,7 +182,9 @@ export function codexAppServerThreadRuntimePolicy(input: {
       ...(sandboxMode === "workspace-write"
         ? codexAgentTempWritableRootsFromEnv(input.sourceEnv)
         : []),
-      ...codexExtraWritableRootsFromEnv(input.sourceEnv),
+      ...(input.allowExtraWritableRoots === false
+        ? []
+        : codexExtraWritableRootsFromEnv(input.sourceEnv)),
     ]),
     sandboxMode,
     developerInstructions: mergeDeveloperInstructions({
