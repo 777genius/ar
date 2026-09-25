@@ -299,6 +299,8 @@ describe("codex goal ops", () => {
       `${JSON.stringify({
         "account-a": {
           email: "operator@example.com",
+          plan: "free",
+          unpaid: "19.08.2026",
         },
         "account-g": {
           displayName: "usa18303530342",
@@ -317,6 +319,8 @@ describe("codex goal ops", () => {
       email: "operator@example.com",
       shortName: "a",
       operatorLabel: "operator@example.com - a",
+      plan: "free",
+      unpaid: "19.08.2026",
     });
     expect(accounts[1]).toMatchObject({
       name: "account-g",

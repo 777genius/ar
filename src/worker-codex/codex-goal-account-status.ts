@@ -42,10 +42,7 @@ import {
   type CodexAccountDisplayMetadata,
 } from "./account-display-metadata";
 
-export type CodexGoalAccountStatus =
-  | "ready"
-  | "auth_missing"
-  | "auth_invalid";
+export type CodexGoalAccountStatus = "ready" | "auth_missing" | "auth_invalid";
 
 export type CodexGoalAccountSlotStatus = {
   readonly name: string;
@@ -53,6 +50,8 @@ export type CodexGoalAccountSlotStatus = {
   readonly email?: string;
   readonly shortName?: string;
   readonly operatorLabel?: string;
+  readonly plan?: string;
+  readonly unpaid?: string;
   readonly authJsonPath: string;
   readonly status: CodexGoalAccountStatus;
   readonly availability: ProviderAccountAvailability;
@@ -82,7 +81,9 @@ export type CodexGoalAccountStatusInput = {
   readonly liveCheck?: boolean;
   readonly codexBinaryPath?: string;
   readonly liveCheckTimeoutMs?: number;
-  readonly accountMetadata?: Readonly<Record<string, CodexAccountDisplayMetadata>>;
+  readonly accountMetadata?: Readonly<
+    Record<string, CodexAccountDisplayMetadata>
+  >;
   readonly accountCapacityStore?: WorkerAccountCapacityStore;
   readonly recheckDueCapacity?: boolean;
 };
@@ -131,8 +132,12 @@ export async function listCodexGoalAccountStatuses(
           : {}),
         ...(accountCapacityStore ? { accountCapacityStore } : {}),
         ...(input.liveCheck ? { liveCheck: input.liveCheck } : {}),
-        ...(input.codexBinaryPath ? { codexBinaryPath: input.codexBinaryPath } : {}),
-        ...(input.liveCheckTimeoutMs ? { liveCheckTimeoutMs: input.liveCheckTimeoutMs } : {}),
+        ...(input.codexBinaryPath
+          ? { codexBinaryPath: input.codexBinaryPath }
+          : {}),
+        ...(input.liveCheckTimeoutMs
+          ? { liveCheckTimeoutMs: input.liveCheckTimeoutMs }
+          : {}),
       }),
     ),
   );
@@ -173,8 +178,12 @@ async function inspectCodexGoalAccount(input: {
           name: input.name,
           codexHome: dirname(authJsonPath),
           authJsonPath,
-          ...(input.codexBinaryPath ? { codexBinaryPath: input.codexBinaryPath } : {}),
-          ...(input.liveCheckTimeoutMs ? { timeoutMs: input.liveCheckTimeoutMs } : {}),
+          ...(input.codexBinaryPath
+            ? { codexBinaryPath: input.codexBinaryPath }
+            : {}),
+          ...(input.liveCheckTimeoutMs
+            ? { timeoutMs: input.liveCheckTimeoutMs }
+            : {}),
         })
       : undefined;
     const capacityPersistenceWarning = recordLiveQuotaCapacitySafely({
@@ -185,7 +194,11 @@ async function inspectCodexGoalAccount(input: {
         ? { store: input.accountCapacityStore }
         : {}),
     });
-    if (live?.observation && input.accountCapacityStore && !capacityPersistenceWarning) {
+    if (
+      live?.observation &&
+      input.accountCapacityStore &&
+      !capacityPersistenceWarning
+    ) {
       capacity = readAccountCapacity({
         accountName: input.name,
         store: input.accountCapacityStore,
@@ -200,7 +213,8 @@ async function inspectCodexGoalAccount(input: {
       ? liveDecisionToDiagnosticAvailability(live.observation.decision)
       : undefined;
     const liveLimitResetAt = live?.observation?.decision.limitResetAt;
-    const liveStatus = live && !liveAvailability
+    const liveStatus =
+      live && !liveAvailability
         ? "auth_invalid"
         : liveAvailability === "reconnect_required"
           ? "auth_invalid"
@@ -240,7 +254,10 @@ async function inspectCodexGoalAccount(input: {
           ? { capacityCooldownUntil: capacity.cooldownUntil.toISOString() }
           : {}),
         ...(capacity?.lastLimitSignalAt
-          ? { capacityLastLimitSignalAt: capacity.lastLimitSignalAt.toISOString() }
+          ? {
+              capacityLastLimitSignalAt:
+                capacity.lastLimitSignalAt.toISOString(),
+            }
           : {}),
         liveCheck: "failed",
         liveCheckSafeMessage: live.safeMessage,
@@ -278,7 +295,9 @@ async function inspectCodexGoalAccount(input: {
         ? { capacityCooldownUntil: capacity.cooldownUntil.toISOString() }
         : {}),
       ...(capacity?.lastLimitSignalAt
-        ? { capacityLastLimitSignalAt: capacity.lastLimitSignalAt.toISOString() }
+        ? {
+            capacityLastLimitSignalAt: capacity.lastLimitSignalAt.toISOString(),
+          }
         : {}),
       ...(live ? { liveCheck: "passed" as const } : {}),
       ...(live ? { liveCheckSafeMessage: live.safeMessage } : {}),
@@ -295,7 +314,9 @@ async function inspectCodexGoalAccount(input: {
       authJsonPath,
       status: safeMessage.includes("ENOENT") ? "auth_missing" : "auth_invalid",
       ...codexGoalAccountAvailability({
-        status: safeMessage.includes("ENOENT") ? "auth_missing" : "auth_invalid",
+        status: safeMessage.includes("ENOENT")
+          ? "auth_missing"
+          : "auth_invalid",
         capacity: null,
       }),
       warnings: [],
@@ -413,7 +434,9 @@ async function inspectCodexAccountLiveStatus(input: {
       authReader: new CodexAuthJsonReader(),
       execProbe: new CodexExecProbe({
         runner: new NodeProcessRunner(),
-        ...(input.codexBinaryPath ? { codexBinaryPath: input.codexBinaryPath } : {}),
+        ...(input.codexBinaryPath
+          ? { codexBinaryPath: input.codexBinaryPath }
+          : {}),
       }),
     });
     const observation = await observer.observe({
@@ -422,7 +445,9 @@ async function inspectCodexAccountLiveStatus(input: {
         slotId: input.name,
         authHome: input.codexHome,
         authJsonPath: input.authJsonPath,
-        ...(input.codexBinaryPath ? { codexBinaryPath: input.codexBinaryPath } : {}),
+        ...(input.codexBinaryPath
+          ? { codexBinaryPath: input.codexBinaryPath }
+          : {}),
       },
       now: new Date(),
       ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
@@ -472,7 +497,9 @@ function decodeJwtClaims(token: string): Record<string, unknown> | null {
       normalized.length + ((4 - (normalized.length % 4)) % 4),
       "=",
     );
-    const parsed: unknown = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+    const parsed: unknown = JSON.parse(
+      Buffer.from(padded, "base64").toString("utf8"),
+    );
     return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
@@ -534,7 +561,9 @@ function recordLiveQuotaCapacitySafely(input: {
   }
 }
 
-async function listAccountDirectories(authRootDir: string): Promise<readonly string[]> {
+async function listAccountDirectories(
+  authRootDir: string,
+): Promise<readonly string[]> {
   try {
     const entries = await readdir(authRootDir, { withFileTypes: true });
     return entries
