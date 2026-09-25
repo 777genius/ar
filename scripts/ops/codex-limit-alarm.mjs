@@ -12,6 +12,7 @@ import {
   applyPoolSummary,
   initialAlarmState,
   persistedAlarmState,
+  setAlarmEnabled,
   summarizeQuotaRows,
 } from "./codex-limit-alarm-state.mjs";
 
@@ -195,6 +196,22 @@ async function stopAlarm() {
   };
 }
 
+async function setEnabled(enabled) {
+  const transition = setAlarmEnabled(alarmState, enabled);
+  alarmState = transition.state;
+  await applyAlarmEffect(transition.effect);
+  await persistState(statePath, alarmState);
+  view = {
+    ...view,
+    message: !alarmState.enabled
+      ? "Звук выключен"
+      : alarmState.exhausted && !alarmState.acknowledged
+        ? "Осталось меньше 10%"
+        : "Мониторинг активен",
+    alarmState,
+  };
+}
+
 async function applySnapshot(snapshot, options = {}) {
   const summary = summarizeQuotaRows(
     snapshot.rows,
@@ -213,9 +230,11 @@ async function applySnapshot(snapshot, options = {}) {
         ? "Тест: осталось меньше 10%, звук остановлен"
         : "Тест: осталось меньше 10%"
       : alarmState.exhausted
-        ? alarmState.acknowledged
-          ? "Осталось меньше 10%, звук остановлен"
-          : "Осталось меньше 10%"
+        ? !alarmState.enabled
+          ? "Осталось меньше 10%, звук выключен"
+          : alarmState.acknowledged
+            ? "Осталось меньше 10%, звук остановлен"
+            : "Осталось меньше 10%"
         : "Мониторинг активен",
     rows: snapshot.rows,
     summary,
@@ -294,6 +313,14 @@ async function handleRequest(request, response) {
     }
     if (url.pathname === "/api/alarm/stop") {
       await stopAlarm();
+      return sendJson(response, 200, { ok: true });
+    }
+    if (url.pathname === "/api/alarm/enable") {
+      await setEnabled(true);
+      return sendJson(response, 200, { ok: true });
+    }
+    if (url.pathname === "/api/alarm/disable") {
+      await setEnabled(false);
       return sendJson(response, 200, { ok: true });
     }
   }
@@ -509,6 +536,9 @@ function dashboardHtml(token, currentInstanceId) {
     .status { display: flex; align-items: center; gap: 9px; font-weight: 650; }
     .dot { width: 10px; height: 10px; border-radius: 50%; background: #e1b950; flex: 0 0 auto; }
     .dot.ready { background: #63c98b; } .dot.exhausted, .dot.error { background: #ef6c63; }
+    .badge { font-size: 12px; font-weight: 650; padding: 3px 9px; border-radius: 999px; background: #454944; color: #f4f0df; }
+    .badge.on { background: #2f5b3f; color: #a4eabb; }
+    .badge.off { background: #3b403d; color: #aab0ab; }
     main { max-width: 1320px; margin: 0 auto; padding: 24px; }
     .summary { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); border: 1px solid #3b403d; border-radius: 6px; overflow: hidden; }
     .metric { min-height: 92px; padding: 16px; border-right: 1px solid #3b403d; background: #202321; }
@@ -537,7 +567,7 @@ function dashboardHtml(token, currentInstanceId) {
   </style>
 </head>
 <body>
-  <header><h1>Codex Limit Alarm</h1><div class="status"><span id="dot" class="dot"></span><span id="status">Запуск</span></div></header>
+  <header><h1>Codex Limit Alarm</h1><div class="status"><span id="dot" class="dot"></span><span id="status">Запуск</span><span id="enabledBadge" class="badge">-</span></div></header>
   <main>
     <section class="summary">
       <div class="metric"><div class="label">Текущий аккаунт</div><div id="account" class="value">-</div></div>
@@ -549,6 +579,7 @@ function dashboardHtml(token, currentInstanceId) {
       <button id="check">Проверить сейчас</button>
       <button id="test">Тест звука</button>
       <button id="stop" class="stop">Стоп звук</button>
+      <button id="toggleEnabled">-</button>
       <div id="checked" class="meta">Еще не проверено</div>
     </div>
     <div id="error" class="error-message"></div>
@@ -557,7 +588,7 @@ function dashboardHtml(token, currentInstanceId) {
   <script>
     const token = ${JSON.stringify(token)};
     const instanceId = ${JSON.stringify(currentInstanceId)};
-    const els = Object.fromEntries(["dot","status","account","five","fiveBar","weekly","weeklyBar","next","checked","error","rows","check","test","stop"].map(id => [id, document.getElementById(id)]));
+    const els = Object.fromEntries(["dot","status","enabledBadge","account","five","fiveBar","weekly","weeklyBar","next","checked","error","rows","check","test","stop","toggleEnabled"].map(id => [id, document.getElementById(id)]));
     async function post(path) {
       const response = await fetch(path, { method: "POST", headers: { "X-Control-Token": token } });
       if (response.status === 403) { location.reload(); return; }
@@ -567,6 +598,7 @@ function dashboardHtml(token, currentInstanceId) {
     els.check.onclick = () => void post("/api/check");
     els.test.onclick = () => void post("/api/alarm/test");
     els.stop.onclick = () => void post("/api/alarm/stop");
+    els.toggleEnabled.onclick = () => void post(els.toggleEnabled.dataset.enabled === "1" ? "/api/alarm/disable" : "/api/alarm/enable");
     const percent = value => typeof value === "number" ? Math.round(value * 10) / 10 + "%" : "-";
     const time = value => value ? new Intl.DateTimeFormat("ru-RU", { timeZone: "Europe/Kiev", hour: "2-digit", minute: "2-digit" }).format(new Date(value)) : "-";
     function freeCell(value) {
@@ -594,6 +626,11 @@ function dashboardHtml(token, currentInstanceId) {
       els.error.textContent = data.lastError || "";
       els.stop.disabled = !data.soundActive;
       els.check.disabled = data.phase === "checking";
+      const enabled = data.alarmState?.enabled === true;
+      els.enabledBadge.textContent = enabled ? "Звук включен" : "Звук выключен";
+      els.enabledBadge.className = "badge " + (enabled ? "on" : "off");
+      els.toggleEnabled.textContent = enabled ? "Выключить звук" : "Включить звук";
+      els.toggleEnabled.dataset.enabled = enabled ? "1" : "0";
       els.rows.replaceChildren();
       for (const row of data.rows || []) {
         const tr = document.createElement("tr"); if (row.available) tr.className = "available";

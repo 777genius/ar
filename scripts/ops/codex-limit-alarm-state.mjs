@@ -6,6 +6,7 @@ export const AlarmEffect = Object.freeze({
 
 export function initialAlarmState(persisted = {}) {
   return {
+    enabled: Boolean(persisted.enabled),
     exhausted: Boolean(persisted.exhausted),
     acknowledged: Boolean(persisted.acknowledged),
     sounding: false,
@@ -66,6 +67,7 @@ export function applyPoolSummary(state, summary) {
   if (!summary.exhausted) {
     return {
       state: {
+        enabled: state.enabled,
         exhausted: false,
         acknowledged: false,
         sounding: false,
@@ -74,11 +76,12 @@ export function applyPoolSummary(state, summary) {
     };
   }
 
-  if (state.acknowledged) {
+  if (!state.enabled || state.acknowledged) {
     return {
       state: {
+        enabled: state.enabled,
         exhausted: true,
-        acknowledged: true,
+        acknowledged: state.acknowledged,
         sounding: false,
       },
       effect: state.sounding ? AlarmEffect.Stop : AlarmEffect.None,
@@ -87,6 +90,7 @@ export function applyPoolSummary(state, summary) {
 
   return {
     state: {
+      enabled: true,
       exhausted: true,
       acknowledged: false,
       sounding: true,
@@ -98,6 +102,7 @@ export function applyPoolSummary(state, summary) {
 export function acknowledgeAlarm(state) {
   return {
     state: {
+      enabled: state.enabled,
       exhausted: state.exhausted,
       acknowledged: state.exhausted,
       sounding: false,
@@ -106,8 +111,42 @@ export function acknowledgeAlarm(state) {
   };
 }
 
+export function setAlarmEnabled(state, enabled) {
+  const nextEnabled = Boolean(enabled);
+  if (nextEnabled === state.enabled) {
+    return { state, effect: AlarmEffect.None };
+  }
+  if (!nextEnabled) {
+    return {
+      state: {
+        enabled: false,
+        exhausted: state.exhausted,
+        acknowledged: state.acknowledged,
+        sounding: false,
+      },
+      effect: state.sounding ? AlarmEffect.Stop : AlarmEffect.None,
+    };
+  }
+  if (state.exhausted && !state.acknowledged) {
+    return {
+      state: {
+        enabled: true,
+        exhausted: true,
+        acknowledged: false,
+        sounding: true,
+      },
+      effect: AlarmEffect.Start,
+    };
+  }
+  return {
+    state: { ...state, enabled: true },
+    effect: AlarmEffect.None,
+  };
+}
+
 export function persistedAlarmState(state) {
   return {
+    enabled: state.enabled,
     exhausted: state.exhausted,
     acknowledged: state.acknowledged,
   };

@@ -1255,13 +1255,21 @@ It does not inspect or contact the remote worker pool. The dashboard shows the
 current account's 5h and 7d free capacity, supports an immediate check and has
 `Test sound` and `Stop sound` controls.
 
-The repeating alarm starts when the current account has less than 10% free in a
-known main 5h or 7d quota window. Exactly 10% does not trigger it. Relogin
-requirements and observation outages are shown but do not trigger the sound.
-`Stop sound` acknowledges the current low-quota incident; later checks remain
-silent until every known main window recovers to at least 10%. Recovery rearms
-the alarm for the next low-quota incident. Acknowledgement survives monitor
-restarts.
+**Sound is off by default.** A fresh install only monitors and shows status;
+it never plays sound until you press `Включить звук` (enable) on the dashboard
+once. This choice persists across monitor restarts (`~/Library/Application
+Support/Codex Limit Alarm/state.json`), so you only need to enable it once per
+machine. `Test sound` still works while disabled, for checking the sound
+device independently of arming the alarm.
+
+Once enabled, the repeating alarm starts when the current account has less
+than 10% free in a known main 5h or 7d quota window. Exactly 10% does not
+trigger it. Relogin requirements and observation outages are shown but do not
+trigger the sound. `Stop sound` acknowledges the current low-quota incident;
+later checks remain silent until every known main window recovers to at least
+10%. Recovery rearms the alarm for the next low-quota incident.
+Acknowledgement survives monitor restarts. Pressing `Выключить звук` disarms
+the alarm entirely until re-enabled, silencing any active sound immediately.
 
 The service binds only to `127.0.0.1:47831`. Mutating dashboard actions require
 a per-process control token, and the monitor never exposes auth payloads or

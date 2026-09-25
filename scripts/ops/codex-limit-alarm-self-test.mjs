@@ -6,6 +6,7 @@ import {
   applyPoolSummary,
   initialAlarmState,
   persistedAlarmState,
+  setAlarmEnabled,
   summarizeQuotaRows,
 } from "./codex-limit-alarm-state.mjs";
 
@@ -62,9 +63,27 @@ const lowFiveHour = {
 
 {
   const summary = summarizeQuotaRows([limited, missing]);
-  const transition = applyPoolSummary(initialAlarmState(), summary);
+  const disabledByDefault = applyPoolSummary(initialAlarmState(), summary);
+  assert.equal(
+    initialAlarmState().enabled,
+    false,
+    "alarm must be disabled by default on a fresh install",
+  );
+  assert.equal(disabledByDefault.effect, AlarmEffect.None, "must not sound while disabled");
+  assert.equal(disabledByDefault.state.exhausted, true, "dashboard must still reflect real quota state");
+  assert.equal(disabledByDefault.state.sounding, false);
+
+  const armedWhileExhausted = setAlarmEnabled(disabledByDefault.state, true);
+  assert.equal(
+    armedWhileExhausted.effect,
+    AlarmEffect.Start,
+    "enabling while already exhausted must start sounding immediately",
+  );
+  assert.equal(armedWhileExhausted.state.sounding, true);
+
+  const transition = applyPoolSummary(armedWhileExhausted.state, summary);
   assert.equal(summary.exhausted, true);
-  assert.equal(transition.effect, AlarmEffect.Start);
+  assert.equal(transition.effect, AlarmEffect.None, "already sounding, no new effect");
   assert.equal(transition.state.sounding, true);
 
   const stable = applyPoolSummary(transition.state, summary);
@@ -73,6 +92,7 @@ const lowFiveHour = {
   const acknowledged = acknowledgeAlarm(stable.state);
   assert.equal(acknowledged.effect, AlarmEffect.Stop);
   assert.equal(acknowledged.state.acknowledged, true);
+  assert.equal(acknowledged.state.enabled, true, "acknowledge must not disarm the alarm");
 
   const stillExhausted = applyPoolSummary(acknowledged.state, summary);
   assert.equal(stillExhausted.effect, AlarmEffect.None);
@@ -89,6 +109,14 @@ const lowFiveHour = {
     summarizeQuotaRows([limited, missing]),
   );
   assert.equal(exhaustedAgain.effect, AlarmEffect.Start);
+
+  const disabledWhileSounding = setAlarmEnabled(exhaustedAgain.state, false);
+  assert.equal(disabledWhileSounding.effect, AlarmEffect.Stop, "disabling must silence an active alarm");
+  assert.equal(disabledWhileSounding.state.sounding, false);
+  assert.equal(disabledWhileSounding.state.enabled, false);
+
+  const noopToggle = setAlarmEnabled(disabledWhileSounding.state, false);
+  assert.equal(noopToggle.effect, AlarmEffect.None, "toggling to the same value is a no-op");
 }
 
 {
@@ -118,12 +146,22 @@ const lowFiveHour = {
 }
 
 {
-  const restored = initialAlarmState({ exhausted: true, acknowledged: true });
+  const restored = initialAlarmState({ enabled: true, exhausted: true, acknowledged: true });
   const transition = applyPoolSummary(restored, summarizeQuotaRows([limited]));
   assert.equal(transition.effect, AlarmEffect.None);
   assert.deepEqual(persistedAlarmState(transition.state), {
+    enabled: true,
     exhausted: true,
     acknowledged: true,
+  });
+}
+
+{
+  const freshInstall = initialAlarmState({});
+  assert.deepEqual(persistedAlarmState(freshInstall), {
+    enabled: false,
+    exhausted: false,
+    acknowledged: false,
   });
 }
 
