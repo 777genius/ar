@@ -11,7 +11,13 @@ import {
 import {
   CodexAppServerExecutionEngine,
   CodexJsonAgentDriver,
+  CodexModelBackend,
   codexAuthJsonFromArtifact,
+  codexMimoApiKeyEnvVarDefault,
+  codexMimoTokenPlanEgressPolicy,
+  codexProviderApiEgressPolicy,
+  codexProviderEgressEnv,
+  egressBoundCodexProcessFactory,
   sessionArtifactFromCodexAuthJson,
   sessionArtifactHash,
   type CodexAppServerProcessFactory,
@@ -38,12 +44,14 @@ import {
 
 export type CodexControlledAgentProviderOptions = {
   readonly profile: CodexControlledAgentProfile;
-  readonly sessionArtifact: SessionArtifact;
+  readonly sessionArtifact: SessionArtifact | null;
   readonly workspacePath: string;
   readonly codexBinaryPath: string;
   readonly model?: string;
   readonly reasoningEffort?: CodexReasoningEffort;
   readonly serviceTier?: CodexServiceTier;
+  readonly modelBackend?: CodexModelBackend;
+  readonly mimoApiKeyEnvVarName?: string;
   readonly processFactory?: CodexAppServerProcessFactory;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly redactor?: RedactorPort;
@@ -252,13 +260,29 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
   }
 
   private createDriver(): CodexJsonAgentDriver {
+    const modelBackend =
+      this.options.modelBackend ?? this.options.profile.modelBackend;
+    const mimoApiKeyEnvVarName =
+      this.options.mimoApiKeyEnvVarName ??
+      this.options.profile.mimoApiKeyEnvVarName ??
+      codexMimoApiKeyEnvVarDefault;
+    const providerEgressPolicy =
+      this.options.profile.providerEgressPolicy ??
+      (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+        ? codexMimoTokenPlanEgressPolicy()
+        : codexProviderApiEgressPolicy());
     return new CodexJsonAgentDriver({
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: this.options.codexBinaryPath,
-        ...(this.options.sourceEnv === undefined ? {} : { sourceEnv: this.options.sourceEnv }),
-        ...(this.options.processFactory === undefined
-          ? {}
-          : { processFactory: this.options.processFactory }),
+        modelBackend,
+        sourceEnv: {
+          ...(this.options.sourceEnv ?? {}),
+          ...codexProviderEgressEnv(providerEgressPolicy),
+        },
+        processFactory: egressBoundCodexProcessFactory(
+          providerEgressPolicy,
+          this.options.processFactory,
+        ),
         goalMode: true,
         nativeToolSurface: this.options.profile.appServerNativeToolSurface,
         cleanThreadPrewarm: false,
@@ -269,6 +293,11 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
       sessionMaterializer: new ControlledCodexSessionMaterializer({
         profile: this.options.profile,
       }),
+      modelBackend,
+      mimoApiKeyEnvVarName,
+      ...(this.options.sourceEnv === undefined
+        ? {}
+        : { sourceEnv: this.options.sourceEnv }),
       ...(this.options.model === undefined ? {} : { model: this.options.model }),
       ...(this.options.reasoningEffort === undefined
         ? {}

@@ -83,6 +83,7 @@ import {
   type CodexAppServerRateLimitsSnapshotHandler,
 } from "./app-server/application/app-server-rate-limits-monitor";
 import type { CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
+import { CodexModelBackend } from "./codex-model-backend";
 
 export type {
   CodexAppServerChildProcess,
@@ -100,12 +101,14 @@ export type { CodexAppServerExecutionEngineOptions };
 export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   readonly kind: "app-server-pool" | "app-server-goal";
   readonly capabilities: CodexExecutionEngine["capabilities"];
+  readonly modelBackend: CodexModelBackend;
 
   private readonly executionProfile: ResolvedCodexExecutionProfile;
   private readonly runStore: ManagedRunStorePort;
   private readonly slotPool: AppServerSlotPool;
 
   constructor(private readonly options: CodexAppServerExecutionEngineOptions) {
+    this.modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
     if (!options.codexBinaryPath.trim()) {
       throw new Error("codex_app_server_binary_required");
     }
@@ -182,6 +185,9 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         ? {}
         : { reconnectGraceMs: options.reconnectGraceMs }),
       maxOutputBytes: this.maxOutputBytes(),
+      ...(options.modelBackend === undefined
+        ? {}
+        : { modelBackend: options.modelBackend }),
     });
   }
 

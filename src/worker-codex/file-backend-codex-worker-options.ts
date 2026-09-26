@@ -1,5 +1,5 @@
 import type { AgentRuntimeToolName, ClockPort, ObservabilityPort, RuntimeDeps } from "@vioxen/subscription-runtime/core";
-import type { CodexExecutionProfile, CodexProviderEgressPolicy, CodexAppServerProcessFactory, CodexAppServerRateLimitsSnapshotHandler, CodexReasoningEffort, CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, type CodexExecutionProfile, type CodexProviderEgressPolicy, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
 import type { CommandPolicy } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 import type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
@@ -18,6 +18,10 @@ export type FileBackendCodexWorkerOptions = {
   readonly sessionHomeProfile?: CodexSessionHomeProfile;
   readonly codexBinaryPath: string;
   readonly encryptionKey: Uint8Array | string;
+  /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing Codex jobs are unaffected. */
+  readonly modelBackend?: CodexModelBackend;
+  /** Env var holding the MiMo Token Plan key. Only read when `modelBackend` is `XiaomiMimoTokenPlan`. */
+  readonly mimoApiKeyEnvVarName?: string;
   readonly model?: string;
   readonly reasoningEffort?: CodexReasoningEffort;
   readonly serviceTier?: CodexServiceTier;
@@ -100,6 +104,26 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
     options.executionEngine !== "plain-exec"
   ) {
     throw new Error("file_backend_codex_execution_engine_invalid");
+  }
+  const modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  if (
+    modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+    (options.executionEngine ?? "app-server") !== "app-server-goal"
+  ) {
+    // SR-AP-2 fail-closed: MiMo is only validated through the app-server
+    // goal path. Never let it silently fall back to plain-exec/packaged-exec.
+    throw new Error("file_backend_codex_mimo_requires_app_server_goal_engine");
+  }
+  if (
+    modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan &&
+    options.mimoApiKeyEnvVarName !== undefined
+  ) {
+    throw new Error("file_backend_codex_mimo_env_var_requires_mimo_backend");
+  }
+  if (options.providerEgressPolicy !== undefined && modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+    // MiMo's egress domain is fixed and derived from modelBackend; it is not
+    // a host-configurable input, unlike the ChatGPT/test-qualification profiles.
+    throw new Error("file_backend_codex_mimo_provider_egress_policy_not_configurable");
   }
   const hostedGlobalScanGuard =
     options.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";

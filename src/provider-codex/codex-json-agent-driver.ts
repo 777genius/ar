@@ -1,3 +1,5 @@
+import { join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
 import {
   AgentRuntimeExecutionMode,
   assertProviderTaskSystemPrompt,
@@ -34,10 +36,27 @@ import {
 } from "./codex-json-execution-engine";
 import {
   CodexEphemeralSessionMaterializer,
+  codexJsonHomeConfigToml,
   type CodexSessionMaterializer,
   type CodexSessionPrewarmResult,
   sessionArtifactHash,
 } from "./codex-session-materializer";
+import { cleanupCodexRuntimeTempRoot } from "./codex-cli-temp-cleanup";
+import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
+import {
+  CodexApiKeyCredentialMissingError,
+  codexApiKeyCredentialIdentity,
+  loadCodexApiKeyCredential,
+} from "./codex-api-key-credential";
+import {
+  CodexModelBackend,
+  codexMimoApiKeyEnvVarDefault,
+  codexModelBackendDefaultModel,
+} from "./codex-model-backend";
+import {
+  codexMimoTokenPlanEgressPolicy,
+  codexProviderEgressEnv,
+} from "./codex-provider-egress-policy";
 
 type CodexJsonAgentDriverBaseOptions = {
   readonly model?: string;
@@ -46,6 +65,17 @@ type CodexJsonAgentDriverBaseOptions = {
   readonly warmupPrompt?: string;
   readonly sessionMaterializer?: CodexSessionMaterializer;
   readonly outputSchemas?: Readonly<Record<string, unknown>>;
+  /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing behavior is unchanged. */
+  readonly modelBackend?: CodexModelBackend;
+  /** Env var holding the MiMo Token Plan key. Only read when `modelBackend` is `XiaomiMimoTokenPlan`. */
+  readonly mimoApiKeyEnvVarName?: string;
+  /**
+   * Optional generated CODEX_HOME config for MiMo's no-session path. This is
+   * how bounded MCP-only workspace tool profiles reach the MiMo adapter
+   * without routing API-key material through the ChatGPT session store.
+   */
+  readonly mimoConfigToml?: string;
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
 };
 
 export type CodexJsonAgentDriverOptions = CodexJsonAgentDriverBaseOptions &
@@ -70,20 +100,41 @@ export class CodexJsonAgentDriver implements AgentDriver {
   private readonly serviceTier: CodexServiceTier | undefined;
   private readonly outputSchemas: Readonly<Record<string, unknown>>;
   private readonly sessionMaterializer: CodexSessionMaterializer;
+  readonly modelBackend: CodexModelBackend;
+  private readonly mimoApiKeyEnvVarName: string;
+  private readonly mimoConfigToml: string | undefined;
+  private readonly sourceEnv: Readonly<Record<string, string | undefined>> | undefined;
   private readonly managedRunSessions = new Map<
     string,
     CodexMaterializedSession
   >();
 
   constructor(private readonly options: CodexJsonAgentDriverOptions) {
+    const modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
     this.engine =
       "engine" in options
         ? options.engine
         : new PackagedCodexJsonExecutionEngine({
             codexBinaryPath: options.codexBinaryPath,
+            modelBackend,
+            ...(modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+              ? { providerEgressPolicy: codexMimoTokenPlanEgressPolicy() }
+              : {}),
             ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
             ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
           });
+    if (
+      modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+      this.engine.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan
+    ) {
+      throw new Error("codex_json_mimo_engine_incompatible");
+    }
+    if (
+      this.engine.modelBackend !== undefined &&
+      this.engine.modelBackend !== modelBackend
+    ) {
+      throw new Error("codex_json_model_backend_engine_mismatch");
+    }
     const engineCapabilities = this.engine.capabilities;
     this.capabilities =
       !engineCapabilities.budgetCapabilities &&
@@ -108,12 +159,18 @@ export class CodexJsonAgentDriver implements AgentDriver {
                 }
               : {}),
           };
-    this.model = options.model ?? defaultCodexModel;
+    this.modelBackend = modelBackend;
+    this.model =
+      options.model ?? codexModelBackendDefaultModel(this.modelBackend, defaultCodexModel);
     this.reasoningEffort = options.reasoningEffort ?? "low";
     this.serviceTier = options.serviceTier;
     this.outputSchemas = options.outputSchemas ?? {};
     this.sessionMaterializer =
       options.sessionMaterializer ?? new CodexEphemeralSessionMaterializer();
+    this.mimoApiKeyEnvVarName =
+      options.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault;
+    this.mimoConfigToml = options.mimoConfigToml;
+    this.sourceEnv = options.sourceEnv;
   }
 
   async runTask(input: {
@@ -130,7 +187,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     assertProviderTaskSystemPrompt(input.task.systemPrompt, "task.systemPrompt");
 
     const startedAt = Date.now();
-    if (!input.session) {
+    if (this.modelBackend === CodexModelBackend.OpenAiChatGpt && !input.session) {
       return {
         status: "failed",
         failure: {
@@ -147,9 +204,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
       };
     }
 
-    let materialized: Awaited<
-      ReturnType<CodexSessionMaterializer["materialize"]>
-    > | null = null;
+    let materialized: CodexMaterializedSession | null = null;
     const outputAbortController = new AbortController();
     const outputAbortSignal = AbortSignal.any([
       input.abortSignal,
@@ -157,10 +212,36 @@ export class CodexJsonAgentDriver implements AgentDriver {
     ]);
     let textDeltaRedactor: ReturnType<typeof createCodexTextDeltaRedactor> | undefined;
     try {
-      materialized = await this.sessionMaterializer.materialize({
-        session: input.session,
-        redactor: input.redactor,
-      });
+      if (this.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+        try {
+          materialized = await this.materializeMimoSession({
+            redactor: input.redactor,
+          });
+        } catch (error) {
+          if (error instanceof CodexApiKeyCredentialMissingError) {
+            return {
+              status: "failed",
+              failure: {
+                code: "provider_session_invalid",
+                retryable: false,
+                reconnectRequired: true,
+                safeMessage: `Codex MiMo backend requires ${error.envVarName} to be set.`,
+              },
+              telemetry: {
+                durationMs: Date.now() - startedAt,
+                finishReason: "provider_error",
+              },
+              warnings: [],
+            };
+          }
+          throw error;
+        }
+      } else {
+        materialized = await this.sessionMaterializer.materialize({
+          session: input.session!,
+          redactor: input.redactor,
+        });
+      }
       textDeltaRedactor = input.onTextDelta === undefined
         ? undefined
         : createCodexTextDeltaRedactor({
@@ -233,11 +314,13 @@ export class CodexJsonAgentDriver implements AgentDriver {
           warnings: result.warnings,
         };
       }
-      const snapshot = await snapshotSessionUpdate({
-        materialized,
-        previousSession: input.session,
-        redactor: input.redactor,
-      });
+      const snapshot = input.session
+        ? await snapshotSessionUpdate({
+            materialized,
+            previousSession: input.session,
+            redactor: input.redactor,
+          })
+        : { warnings: [] as const };
 
       return {
         status: "completed",
@@ -275,6 +358,65 @@ export class CodexJsonAgentDriver implements AgentDriver {
     }
   }
 
+  /**
+   * MiMo is a static API-key credential, not a ChatGPT OAuth session: this
+   * bypasses `sessionMaterializer` entirely so a MiMo run never reads or
+   * writes `auth.json` and never touches the session store/refresh path.
+   * The credential is read fresh from the env var on every call — it is
+   * never cached, snapshotted, or persisted (`snapshotSession` is omitted,
+   * so this session is never eligible for a `sessionUpdate`).
+   */
+  private async materializeMimoSession(input: {
+    readonly redactor: RedactorPort;
+  }): Promise<CodexMaterializedSession> {
+    const credential = loadCodexApiKeyCredential({
+      backend: CodexModelBackend.XiaomiMimoTokenPlan,
+      envVarName: this.mimoApiKeyEnvVarName,
+      ...(this.sourceEnv === undefined ? {} : { sourceEnv: this.sourceEnv }),
+      redactor: input.redactor,
+    });
+    const egressPolicy = codexMimoTokenPlanEgressPolicy();
+    const tempRoot = await createCodexRuntimeTempRoot({
+      prefix: "subscription-runtime-codex-mimo-",
+      ...(this.sourceEnv === undefined ? {} : { sourceEnv: this.sourceEnv }),
+    });
+    const home = join(tempRoot, "home");
+    const codexHome = join(tempRoot, "codex-home");
+    await mkdir(home, { recursive: true, mode: 0o700 });
+    await mkdir(codexHome, { recursive: true, mode: 0o700 });
+    await writeFile(
+      join(codexHome, "config.toml"),
+      this.mimoConfigToml ??
+        codexJsonHomeConfigToml({
+          modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+          mimoApiKeyEnvVarName: credential.envVarName,
+          providerEgressPolicy: egressPolicy,
+        }),
+      { mode: 0o600 },
+    );
+    return {
+      home,
+      codexHome,
+      sessionHash: codexApiKeyCredentialIdentity(credential),
+      env: {
+        HOME: home,
+        CODEX_HOME: codexHome,
+        ...codexProviderEgressEnv(egressPolicy),
+        [credential.envVarName]: credential.apiKey,
+      },
+      // No snapshotSession: MiMo never refreshes and never updates its
+      // credential from a completed run.
+      release: once(async () => {
+        try {
+          await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome: codexHome });
+        } catch {
+          // Best-effort: the temp root is process-local and will not be
+          // reused, so a cleanup failure here must not fail the task.
+        }
+      }),
+    };
+  }
+
   private async runLogicalThread(input: {
     readonly engineInput: Parameters<CodexExecutionEngine["run"]>[0];
     readonly logicalThread: ProviderLogicalThreadExecution;
@@ -302,7 +444,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
   }
 
   async resumeManagedRun(input: {
-    readonly session: SessionArtifact;
+    readonly session: SessionArtifact | null;
     readonly runId: string;
     readonly requestId: string;
     readonly answer: string;
@@ -331,10 +473,12 @@ export class CodexJsonAgentDriver implements AgentDriver {
     let materialized = this.managedRunSessions.get(input.runId) ?? null;
     let ownsMaterialized = false;
     if (!materialized) {
-      materialized = await this.sessionMaterializer.materialize({
-        session: input.session,
-        redactor: input.redactor,
-      });
+      materialized = this.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+        ? await this.materializeMimoSession({ redactor: input.redactor })
+        : await this.materializeChatGptSession({
+            session: input.session,
+            redactor: input.redactor,
+          });
       ownsMaterialized = true;
     }
 
@@ -385,11 +529,13 @@ export class CodexJsonAgentDriver implements AgentDriver {
 
       this.managedRunSessions.delete(input.runId);
       ownsMaterialized = true;
-      const snapshot = await snapshotSessionUpdate({
-        materialized,
-        previousSession: input.session,
-        redactor: input.redactor,
-      });
+      const snapshot = input.session
+        ? await snapshotSessionUpdate({
+            materialized,
+            previousSession: input.session,
+            redactor: input.redactor,
+          })
+        : { warnings: [] as const };
       return {
         status: "completed",
         outputText: result.outputText,
@@ -434,15 +580,37 @@ export class CodexJsonAgentDriver implements AgentDriver {
   }
 
   async prewarmSession(input: {
-    readonly session: SessionArtifact;
+    readonly session: SessionArtifact | null;
     readonly redactor: RedactorPort;
     readonly workspacePath?: string;
     readonly runner?: Parameters<AgentDriver["runTask"]>[0]["runner"];
     readonly abortSignal?: AbortSignal;
   }): Promise<CodexSessionPrewarmResult> {
-    const sessionPrewarm = this.sessionMaterializer.prewarm
-      ? await this.sessionMaterializer.prewarm(input)
-      : await this.prewarmMaterializerFallback(input);
+    let mimoMaterialized: CodexMaterializedSession | null = null;
+    let sessionPrewarm: CodexSessionPrewarmResult;
+    if (this.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+      mimoMaterialized = await this.materializeMimoSession({
+        redactor: input.redactor,
+      });
+      sessionPrewarm = {
+        mode: "ephemeral",
+        home: mimoMaterialized.home,
+        codexHome: mimoMaterialized.codexHome,
+        sessionHash: mimoMaterialized.sessionHash ?? "mimo",
+        reusable: false,
+        warmedAt: new Date(),
+      };
+    } else {
+      sessionPrewarm = this.sessionMaterializer.prewarm
+        ? await this.sessionMaterializer.prewarm({
+            session: input.session!,
+            redactor: input.redactor,
+          })
+        : await this.prewarmMaterializerFallback({
+            session: input.session!,
+            redactor: input.redactor,
+          });
+    }
 
     if (
       !sessionPrewarm.reusable ||
@@ -453,7 +621,10 @@ export class CodexJsonAgentDriver implements AgentDriver {
       return sessionPrewarm;
     }
 
-    const materialized = await this.sessionMaterializer.materialize(input);
+    const materialized = mimoMaterialized ?? await this.materializeChatGptSession({
+      session: input.session,
+      redactor: input.redactor,
+    });
     try {
       const enginePrewarm = await this.engine.prewarm({
         session: materialized,
@@ -503,6 +674,19 @@ export class CodexJsonAgentDriver implements AgentDriver {
     }
   }
 
+  private async materializeChatGptSession(input: {
+    readonly session: SessionArtifact | null;
+    readonly redactor: RedactorPort;
+  }): Promise<CodexMaterializedSession> {
+    if (!input.session) {
+      throw new Error("codex_json_agent_driver_missing_session_invariant");
+    }
+    return this.sessionMaterializer.materialize({
+      session: input.session,
+      redactor: input.redactor,
+    });
+  }
+
   async dispose(): Promise<void> {
     const managedSessions = [...this.managedRunSessions.values()];
     this.managedRunSessions.clear();
@@ -539,6 +723,14 @@ export class CodexJsonAgentDriver implements AgentDriver {
       ...(schema === undefined ? {} : { schema }),
     };
   }
+}
+
+function once<T>(fn: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | undefined;
+  return () => {
+    pending ??= fn();
+    return pending;
+  };
 }
 
 async function snapshotSessionUpdate(input: {

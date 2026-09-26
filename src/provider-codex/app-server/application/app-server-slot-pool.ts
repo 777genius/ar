@@ -2,6 +2,7 @@ import type {
   ManagedRunStorePort,
 } from "@vioxen/subscription-runtime/core";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
+import type { CodexModelBackend } from "../../codex-model-backend";
 import type {
   CodexAppServerRolloutBudget,
 } from "../domain/app-server-rollout-budget";
@@ -86,6 +87,8 @@ export class AppServerSlotPool {
       readonly startupTimeoutMs?: number;
       readonly reconnectGraceMs?: number;
       readonly maxOutputBytes: number;
+      /** Fixed for the pool's whole lifetime — every slot in this pool serves one backend. */
+      readonly modelBackend?: CodexModelBackend;
     },
   ) {}
 
@@ -188,6 +191,9 @@ export class AppServerSlotPool {
       reconnectGraceMs: this.options.reconnectGraceMs ?? defaultReconnectGraceMs,
       maxOutputBytes: this.options.maxOutputBytes,
       abortSignal: input.abortSignal,
+      ...(this.options.modelBackend === undefined
+        ? {}
+        : { modelBackend: this.options.modelBackend }),
       ...(this.options.rateLimitsSnapshotHandler === undefined
         ? {}
         : {

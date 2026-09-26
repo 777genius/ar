@@ -1,11 +1,20 @@
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ObservabilityPort } from "@vioxen/subscription-runtime/core";
 import {
-  validateCodexAuthJsonBytes,
-  type ValidatedCodexAuthJson,
+  DefaultRedactor,
+  type ObservabilityPort,
+} from "@vioxen/subscription-runtime/core";
+import {
+  CodexModelBackend,
+  codexApiKeyCredentialIdentity,
+  codexMimoApiKeyEnvVarDefault,
+  loadCodexApiKeyCredential,
 } from "@vioxen/subscription-runtime/provider-codex";
+import {
+  codexAccountIdentityFromAuthJson,
+  hashText,
+  type CodexAccountIdentity,
+} from "./codex-account-identity";
 import {
   LocalFileWorkerAccountCapacityStore,
   LocalFileWorkerControlInboxStore,
@@ -130,13 +139,6 @@ type WorkerAccount = {
   readonly worker: FileBackendCodexWorker;
 };
 
-type CodexAccountIdentity = {
-  readonly label: string;
-  readonly key: string;
-  readonly hash: string;
-  readonly source: string;
-};
-
 const defaultMaxAccountCycles = 5;
 
 export class FileBackendCodexSafeExecutor {
@@ -172,7 +174,7 @@ export class FileBackendCodexSafeExecutor {
       store: baseAccountCapacityStore,
       authJsonPaths: Object.fromEntries(
         options.accounts.flatMap((account, index) =>
-          account.codexAuthJsonPath
+          account.codexAuthJsonPath && !isMimoSafeExecutorAccount(account)
             ? [
                 [
                   safeExecutorAccountLabel(account, index),
@@ -184,7 +186,8 @@ export class FileBackendCodexSafeExecutor {
       ),
       authJsonByAlias: Object.fromEntries(
         options.accounts.flatMap((account, index) =>
-          account.codexAuthJson !== undefined
+          account.codexAuthJson !== undefined &&
+          !isMimoSafeExecutorAccount(account)
             ? [
                 [
                   safeExecutorAccountLabel(account, index),
@@ -223,7 +226,9 @@ export class FileBackendCodexSafeExecutor {
         recheckFailureCooldownMs: 60_000,
         capacityRecheckerFactory: ({ slotIndex }) => {
           const account = options.accounts[slotIndex];
-          if (!account?.codexAuthJsonPath) return undefined;
+          if (!account?.codexAuthJsonPath || isMimoSafeExecutorAccount(account)) {
+            return undefined;
+          }
           return new CodexAccountCapacityRechecker({
             accountId:
               account.worker.capacityAccountId ??
@@ -488,6 +493,7 @@ export class FileBackendCodexSafeExecutor {
 
   private async seedAccounts(): Promise<void> {
     for (const { account, worker } of this.workerAccounts) {
+      if (isMimoSafeExecutorAccount(account)) continue;
       if (account.codexAuthJsonPath) {
         await worker.seedCodexAuthJsonFile(account.codexAuthJsonPath);
       }
@@ -726,9 +732,39 @@ function assertSafeExecutorOptions(
   assertCodexSessionHomeProfile(options.sessionHomeProfile);
   assertMaxAccountCycles(options.maxAccountCycles);
   for (const account of options.accounts) {
-    if (account.codexAuthJson && account.codexAuthJsonPath) {
+    if (
+      !isMimoSafeExecutorAccount(account) &&
+      account.codexAuthJson &&
+      account.codexAuthJsonPath
+    ) {
       throw new Error("file_backend_codex_safe_account_seed_conflict");
     }
+  }
+  assertUniformCodexModelBackend(options.accounts);
+}
+
+/**
+ * SR-AP-2 fail-closed: `BoundedSubscriptionWorkerPool`'s round-robin
+ * `slotSelector` (see {@link FileBackendCodexSafeExecutor.selectRoundRobinSlot})
+ * and its retry-on-failure path pick any available slot purely by index —
+ * they have no notion of `CodexModelBackend`. Account rotation across
+ * retries must never cross a backend boundary (a MiMo slot must never be
+ * replaced by a ChatGPT slot or vice versa). Rather than teach the generic
+ * pool selector about backends, this asserts the invariant once, at
+ * construction: every account in one executor's pool shares one
+ * `modelBackend`, so cross-backend rotation is structurally impossible —
+ * there is only ever one backend's worth of slots to rotate across.
+ */
+function assertUniformCodexModelBackend(
+  accounts: readonly FileBackendCodexSafeExecutorAccount[],
+): void {
+  const backends = new Set(
+    accounts.map(
+      (account) => account.worker.modelBackend ?? CodexModelBackend.OpenAiChatGpt,
+    ),
+  );
+  if (backends.size > 1) {
+    throw new Error("file_backend_codex_safe_mixed_model_backend");
   }
 }
 
@@ -788,6 +824,28 @@ async function codexAccountIdentityFromSafeExecutorAccount(
   account: FileBackendCodexSafeExecutorAccount,
   index: number,
 ): Promise<CodexAccountIdentity | null> {
+  if (isMimoSafeExecutorAccount(account)) {
+    try {
+      const credential = loadCodexApiKeyCredential({
+        backend: CodexModelBackend.XiaomiMimoTokenPlan,
+        envVarName:
+          account.worker.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault,
+        ...(account.worker.sourceEnv === undefined
+          ? {}
+          : { sourceEnv: account.worker.sourceEnv }),
+        redactor: new DefaultRedactor(),
+      });
+      const identity = codexApiKeyCredentialIdentity(credential);
+      return {
+        label: safeExecutorAccountLabel(account, index),
+        key: identity,
+        hash: identity.slice("mimo:".length),
+        source: "mimo_api_key",
+      };
+    } catch {
+      return null;
+    }
+  }
   const authJson = await readSafeExecutorAccountAuthJson(account);
   if (!authJson) return null;
   try {
@@ -798,6 +856,15 @@ async function codexAccountIdentityFromSafeExecutorAccount(
   } catch {
     return null;
   }
+}
+
+function isMimoSafeExecutorAccount(
+  account: FileBackendCodexSafeExecutorAccount,
+): boolean {
+  return (
+    (account.worker.modelBackend ?? CodexModelBackend.OpenAiChatGpt) ===
+    CodexModelBackend.XiaomiMimoTokenPlan
+  );
 }
 
 async function readSafeExecutorAccountAuthJson(
@@ -821,111 +888,3 @@ function safeExecutorAccountLabel(
   );
 }
 
-function codexAccountIdentityFromAuthJson(input: {
-  readonly authJson: string;
-  readonly label: string;
-}): CodexAccountIdentity {
-  const validation = validateCodexAuthJsonBytes({
-    authJsonBytes: input.authJson,
-  });
-  const identity = resolveCodexAccountIdentity(validation.parsed);
-  return {
-    label: input.label,
-    key: identity.key,
-    hash: hashText(identity.key).slice(0, 16),
-    source: identity.source,
-  };
-}
-
-function resolveCodexAccountIdentity(authJson: ValidatedCodexAuthJson): {
-  readonly key: string;
-  readonly source: string;
-} {
-  const directAccountId = firstNonEmptyString(
-    authJson.tokens.account_id,
-    authJson.tokens.chatgpt_account_id,
-    authJson.account_id,
-    authJson.chatgpt_account_id,
-  );
-  if (directAccountId) {
-    return {
-      key: `account:${directAccountId.toLowerCase()}`,
-      source: "auth_json_account_id",
-    };
-  }
-
-  const idTokenClaims = decodeJwtClaims(authJson.tokens.id_token);
-  if (idTokenClaims) {
-    const authNamespace = objectClaim(
-      idTokenClaims["https://api.openai.com/auth"],
-    );
-    const accountId = firstNonEmptyString(
-      idTokenClaims["https://api.openai.com/auth.chatgpt_account_id"],
-      idTokenClaims["chatgpt_account_id"],
-      idTokenClaims["account_id"],
-      authNamespace?.chatgpt_account_id,
-      authNamespace?.account_id,
-      idTokenClaims["sub"],
-    );
-    if (accountId) {
-      return {
-        key: `account:${accountId.toLowerCase()}`,
-        source: "id_token_account_id",
-      };
-    }
-
-    const email = firstNonEmptyString(
-      idTokenClaims["https://api.openai.com/profile.email"],
-      idTokenClaims["email"],
-      authNamespace?.email,
-    );
-    if (email) {
-      return {
-        key: `email:${email.toLowerCase()}`,
-        source: "id_token_email",
-      };
-    }
-  }
-
-  return {
-    key: `refresh:${hashText(authJson.tokens.refresh_token)}`,
-    source: "refresh_token_hash",
-  };
-}
-
-function decodeJwtClaims(
-  token: string | undefined,
-): Record<string, unknown> | null {
-  if (!token) return null;
-  const parts = token.split(".");
-  const payload = parts[1];
-  if (!payload) return null;
-  try {
-    const decoded = Buffer.from(payload, "base64url").toString("utf8");
-    const parsed: unknown = JSON.parse(decoded);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function objectClaim(value: unknown): Record<string, unknown> | null {
-  return isRecord(value) ? value : null;
-}
-
-function firstNonEmptyString(...values: readonly unknown[]): string | null {
-  for (const value of values) {
-    if (typeof value !== "string") continue;
-    const trimmed = value.trim();
-    if (trimmed) return trimmed;
-  }
-  return null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function hashText(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}

@@ -1,4 +1,6 @@
 import type { CodexReasoningEffort, CodexServiceTier } from "../../codex-json-execution-engine";
+import type { CodexModelBackend } from "../../codex-model-backend";
+import { CodexModelBackend as CodexModelBackendValue } from "../../codex-model-backend";
 import type { CodexAppServerCommandApprovalPolicy, CodexAppServerSandboxPolicy } from "../domain/app-server-types";
 import { appServerApprovalPolicy } from "./app-server-approval-policy";
 
@@ -7,6 +9,7 @@ export function appServerTurnStartParams(input: {
   readonly prompt: string;
   readonly model: string;
   readonly serviceTier?: CodexServiceTier;
+  readonly modelBackend?: CodexModelBackend;
   readonly reasoningEffort: CodexReasoningEffort;
   readonly outputSchema?: unknown;
 }, policy: {
@@ -36,7 +39,9 @@ export function appServerTurnStartParams(input: {
     approvalsReviewer: null,
     sandboxPolicy: policy.sandboxPolicy,
     model: input.model,
-    serviceTier: input.serviceTier ?? null,
+    ...(input.modelBackend === CodexModelBackendValue.XiaomiMimoTokenPlan
+      ? {}
+      : { serviceTier: input.serviceTier ?? null }),
     effort: input.reasoningEffort,
     summary: "none",
     personality: null,

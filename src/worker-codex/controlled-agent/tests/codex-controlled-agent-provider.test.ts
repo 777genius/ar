@@ -12,6 +12,7 @@ import {
   type ControlledAgentProviderStartInput,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  CodexModelBackend,
   CodexProviderEgressProfileId, codexProviderEgressPolicy,
   type CodexAppServerChildProcess,
   sessionArtifactFromCodexAuthJson,
@@ -19,6 +20,8 @@ import {
 import {
   buildCodexControlledAgentProfile,
   CodexControlledAgentProvider,
+  withControlledAgentEgress,
+  withControlledAgentModelBackend,
 } from "../index";
 
 const validAuthJson = JSON.stringify({
@@ -162,6 +165,66 @@ describe("CodexControlledAgentProvider", () => {
           startedAt: "2026-07-05T00:00:00.000Z",
           updatedAt: "2026-07-05T00:00:00.000Z",
         },
+      });
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates MiMo modelBackend and egress through the controlled execution path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-controlled-agent-mimo-"));
+    const workspacePath = join(root, "workspace");
+    const stateDir = join(root, "state");
+    const fakeFactory = new MinimalAppServerFactory();
+    const profile = withControlledAgentEgress(
+      withControlledAgentModelBackend(
+        buildCodexControlledAgentProfile({
+          stateDir,
+          mcpCommand: "subscription-runtime-codex-goal-mcp-test",
+          mcpArgs: ["--stdio"],
+          rawShellMode: "disabled-by-provider",
+        }),
+        CodexModelBackend.XiaomiMimoTokenPlan,
+        "MIMO_CONTROLLER_KEY",
+      ),
+      codexProviderEgressPolicy(CodexProviderEgressProfileId.TestManagedQualification),
+    );
+    const provider = new CodexControlledAgentProvider({
+      profile,
+      sessionArtifact: null,
+      workspacePath,
+      codexBinaryPath: "/bin/codex-test",
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      mimoApiKeyEnvVarName: "MIMO_CONTROLLER_KEY",
+      sourceEnv: { MIMO_CONTROLLER_KEY: "tp-controller-key" },
+      processFactory: fakeFactory.create,
+      serviceTier: "fast",
+      maxGoalTurns: 1,
+    });
+    try {
+      provider.start(startInput());
+      await waitForProviderStatus(
+        () => provider.status({ session: startInput().session, run: providerRun() }),
+        ControlledAgentRunStatus.Completed,
+        false,
+      );
+      const threadStart = fakeFactory.requests.find(
+        (request) => request.method === "thread/start",
+      );
+      expect(threadStart?.params).toMatchObject({ modelProvider: "mimo" });
+      expect(threadStart?.params).not.toHaveProperty("serviceTier");
+      const config = threadStart?.params?.config as Record<string, unknown>;
+      expect(config.model_verbosity).toBeUndefined();
+      expect(config.service_tier).toBeUndefined();
+      expect((config.features as Record<string, unknown>).fast_mode).toBeUndefined();
+      expect(fakeFactory.environments[0]).toMatchObject({
+        MIMO_CONTROLLER_KEY: "tp-controller-key",
+        SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE:
+          CodexProviderEgressProfileId.MimoTokenPlan,
+      });
+    } finally {
+      await provider.stop({
+        session: startInput().session,
+        run: providerRun(),
       });
       await rm(root, { recursive: true, force: true });
     }

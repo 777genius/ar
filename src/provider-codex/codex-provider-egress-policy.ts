@@ -5,6 +5,7 @@ export enum CodexProviderEgressProfileId {
   ProviderApi = "codex-provider-api",
   TestNpmQualification = "codex-test-npm-qualification",
   TestManagedQualification = "codex-test-managed-qualification",
+  MimoTokenPlan = "codex-provider-mimo-token-plan",
 }
 export const codexProviderApiEgressProfileId = CodexProviderEgressProfileId.ProviderApi;
 
@@ -34,6 +35,11 @@ export function codexProviderEgressPolicy(
           "api.github.com", "raw.githubusercontent.com",
         ]),
       });
+    case CodexProviderEgressProfileId.MimoTokenPlan:
+      // Host confirmed 2026-09-25 during a manual Stage 0 smoke test with a
+      // real Token Plan key. Never merged with the OpenAI domain: MiMo runs
+      // are a distinct credential and must not silently gain ChatGPT egress.
+      return Object.freeze({ profileId, domains: Object.freeze(["token-plan-sgp.xiaomimimo.com"]) });
     default:
       throw new Error("codex_provider_egress_profile_invalid");
   }
@@ -43,6 +49,10 @@ export function codexProviderApiEgressPolicy(): CodexProviderEgressPolicy {
   return codexProviderEgressPolicy(CodexProviderEgressProfileId.ProviderApi);
 }
 
+export function codexMimoTokenPlanEgressPolicy(): CodexProviderEgressPolicy {
+  return codexProviderEgressPolicy(CodexProviderEgressProfileId.MimoTokenPlan);
+}
+
 /** A marker transports an already admitted policy; it never authorizes a job. */
 export function codexProviderEgressPolicyFromEnv(
   sourceEnv: Readonly<Record<string, string | undefined>> | undefined,
@@ -50,7 +60,8 @@ export function codexProviderEgressPolicyFromEnv(
   const profileId = sourceEnv?.[codexProviderEgressProfileEnvVar]?.trim();
   if (profileId === CodexProviderEgressProfileId.ProviderApi ||
       profileId === CodexProviderEgressProfileId.TestNpmQualification ||
-      profileId === CodexProviderEgressProfileId.TestManagedQualification) {
+      profileId === CodexProviderEgressProfileId.TestManagedQualification ||
+      profileId === CodexProviderEgressProfileId.MimoTokenPlan) {
     return codexProviderEgressPolicy(profileId);
   }
   return null;

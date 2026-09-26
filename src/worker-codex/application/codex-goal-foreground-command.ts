@@ -55,6 +55,7 @@ export function buildCodexGoalForegroundArgv(
   pushOptional(args, "--effort", config.reasoningEffort);
   pushOptional(args, "--service-tier", config.serviceTier);
   pushOptional(args, "--execution-engine", config.executionEngine);
+  pushOptional(args, "--model-backend", config.modelBackend);
   pushOptionalNumber(args, "--timeout-ms", config.taskTimeoutMs);
   pushOptionalNumber(
     args,

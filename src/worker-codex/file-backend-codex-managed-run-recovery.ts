@@ -17,7 +17,10 @@ import type {
   SessionStorePort,
   WorkspaceHandle,
 } from "@vioxen/subscription-runtime/core";
-import { CodexJsonAgentDriver } from "@vioxen/subscription-runtime/provider-codex";
+import {
+  CodexJsonAgentDriver,
+  CodexModelBackend,
+} from "@vioxen/subscription-runtime/provider-codex";
 import { SubscriptionWorkerError } from "@vioxen/subscription-runtime/worker-core";
 import {
   hashArtifact,
@@ -143,12 +146,16 @@ export class FileBackendCodexManagedRunCoordinator {
     const durableRecord = await this.options.managedRunStore.get({
       runId: input.runId,
     });
-    const session = await this.options.sessionStore.read({
-      providerInstanceId: this.options.providerInstanceId,
-      expectedProviderId: "codex",
-      purpose: "run",
-    });
-    if (!session) {
+    const isMimo =
+      agentDriver.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
+    const session = isMimo
+      ? null
+      : await this.options.sessionStore.read({
+          providerInstanceId: this.options.providerInstanceId,
+          expectedProviderId: "codex",
+          purpose: "run",
+        });
+    if (!isMimo && !session) {
       throw new SubscriptionWorkerError(
         "subscription_worker_run_failed",
         "Codex session is missing.",
@@ -161,7 +168,7 @@ export class FileBackendCodexManagedRunCoordinator {
     const workspace: WorkspaceHandle = { path: input.resumeHandle.workspacePath };
     try {
       const result = await agentDriver.resumeManagedRun({
-        session: session.artifact,
+        session: session?.artifact ?? null,
         runId: input.runId,
         requestId: input.requestId,
         answer: input.answer,
@@ -192,7 +199,7 @@ export class FileBackendCodexManagedRunCoordinator {
       });
     } finally {
       await workspace.dispose?.();
-      await this.options.exportAuthJsonFileQuietly("run");
+      if (!isMimo) await this.options.exportAuthJsonFileQuietly("run");
     }
   }
 
@@ -281,10 +288,11 @@ export class FileBackendCodexManagedRunCoordinator {
 
   private async persistResumeSessionUpdate(input: {
     readonly result: ProviderTaskResult;
-    readonly session: SessionEnvelope;
+    readonly session: SessionEnvelope | null;
     readonly runId: string;
   }): Promise<ProviderTaskResult> {
     if (
+      !input.session ||
       input.result.status !== "completed" ||
       !input.result.sessionUpdate ||
       sameArtifactBytes(input.result.sessionUpdate, input.session.artifact)

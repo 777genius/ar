@@ -1,5 +1,13 @@
 import { fileURLToPath } from "node:url";
 import type { AgentRuntimeToolName } from "@vioxen/subscription-runtime/core";
+import {
+  CodexModelBackend,
+  codexMimoApiKeyEnvVarDefault,
+  codexMimoTokenPlanEgressPolicy,
+  codexModelBackendExcludesConfigKey,
+  codexModelBackendModelProvidersConfigToml,
+  codexProviderEgressConfigToml,
+} from "@vioxen/subscription-runtime/provider-codex";
 import { normalizeBoundedWorkspaceTools } from "./bounded-workspace-tool-policy";
 
 const mcpServerName = "agent_runtime_workspace";
@@ -13,11 +21,16 @@ export function buildCodexWorkspaceToolsProfile(input: {
   readonly workspaceRoot: string;
   readonly allowedTools: readonly AgentRuntimeToolName[];
   readonly denyProjectInstructions?: boolean;
+  /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — omitting it keeps today's generated config.toml byte-identical. */
+  readonly modelBackend?: CodexModelBackend;
+  /** Env var holding the MiMo Token Plan key. Only used when `modelBackend` is `XiaomiMimoTokenPlan`. */
+  readonly mimoApiKeyEnvVarName?: string;
 }): CodexWorkspaceToolsProfile {
   const cliPath = fileURLToPath(
     new URL("../workspace-tools-mcp.js", import.meta.url),
   );
   const enabledTools = normalizeBoundedWorkspaceTools(input.allowedTools);
+  const modelBackend = input.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
   const args = [
     cliPath,
     "--workspace-root",
@@ -33,7 +46,9 @@ export function buildCodexWorkspaceToolsProfile(input: {
     'sandbox_mode = "read-only"',
     'web_search = "disabled"',
     "disable_response_storage = true",
-    'model_verbosity = "low"',
+    ...(codexModelBackendExcludesConfigKey(modelBackend, "model_verbosity")
+      ? []
+      : ['model_verbosity = "low"']),
     ...(input.denyProjectInstructions ? ["project_doc_max_bytes = 0"] : []),
     "",
     "[features]",
@@ -72,6 +87,13 @@ export function buildCodexWorkspaceToolsProfile(input: {
     'inherit = "none"',
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     "",
+    ...(modelBackend === CodexModelBackend.OpenAiChatGpt ? [] : [
+      codexModelBackendModelProvidersConfigToml({
+        backend: modelBackend,
+        envKeyName: input.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault,
+      }),
+      codexProviderEgressConfigToml(codexMimoTokenPlanEgressPolicy()),
+    ]),
   ].join("\n");
   return {
     configToml: `${configToml}\n`,
