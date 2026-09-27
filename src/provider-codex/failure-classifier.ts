@@ -170,7 +170,7 @@ export function classifyCodexFailure(error: unknown): ProviderFailure {
 
 function codexFailureMessage(error: unknown): string {
   const process = processFailureLike(error);
-  if (process) return `${process.stdout ?? ""}\n${process.stderr ?? ""}`;
+  if (process) return [process.stdout, process.stderr].filter(Boolean).join("\n");
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -262,6 +262,8 @@ function parseProcessFailureMessage(
 }
 
 function safeTail(value: string): string {
-  const compact = value.replace(/\s+/g, " ").trim();
-  return compact.length > 1000 ? compact.slice(-1000) : compact;
+  // Bound the original bytes before any transform. Normalizing whitespace can
+  // shrink an oversized secret-bearing message or change a multiline secret
+  // before the store's exact-secret redactor sees it.
+  return value.length > 1000 ? "[redacted:oversized-provider-detail]" : value;
 }

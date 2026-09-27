@@ -95,6 +95,7 @@ export function createFileBackendCodexWorkerRuntime(input: {
   });
   const managedRunStore = new LocalFileManagedRunStore(
     join(options.stateRootDir, "managed-runs"),
+    input.redactor,
   );
   const modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
   // MiMo is a static API-key credential with no ChatGPT auth.json/OAuth

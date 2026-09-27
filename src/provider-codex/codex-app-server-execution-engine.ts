@@ -286,7 +286,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     await this.slotPool.dispose();
     await this.options.fallback?.dispose?.();
   }
-
   async prewarm(input: {
     readonly session: CodexMaterializedSession;
     readonly workspacePath: string;
@@ -401,6 +400,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     const result = this.options.goalMode
       ? await slot.goalRunner.runGoal({
           ...common,
+          redactor: input.redactor,
           maxGoalTurns: this.options.maxGoalTurns ?? defaultMaxGoalTurns,
           goalContinuePrompt:
             this.options.goalContinuePrompt ?? defaultGoalContinuePrompt,
@@ -445,6 +445,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ? [appServerOutputSchemaNotNativeWarning()]
       : [];
     const result = await slot.goalRunner.resumeGoal({
+      redactor: input.redactor,
       runId: input.runId,
       requestId: input.requestId,
       answer: input.answer,
@@ -493,7 +494,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       throw new AppServerUsageError(error, result.usage, true);
     }
   }
-
   private maxOutputBytes(): number {
     return this.options.maxOutputBytes ?? defaultMaxOutputBytes;
   }
