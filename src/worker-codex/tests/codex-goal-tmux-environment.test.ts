@@ -29,12 +29,20 @@ describe("Codex goal tmux environment", () => {
       };
       const command = buildCodexGoalNoTmuxCommand(input);
       expect(command).toContain(`MIMO_TOKEN_PLAN_API_KEY=$(cat -- ${keyFile})`);
+      expect(command).toContain(`SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE=${keyFile}`);
       expect(command).not.toContain("synthetic-private-key");
       expect(() => buildCodexGoalNoTmuxCommand({
         ...input,
         config: {
           ...input.config,
           mimoAccounts: [{ name: "mimo-main", envVarName: "MIMO_TOKEN_PLAN_API_KEY_CUSTOM" }],
+        },
+      })).toThrow("codex_goal_mimo_key_file_account_mapping_unsupported");
+      expect(() => buildCodexGoalNoTmuxCommand({
+        ...input,
+        config: {
+          ...input.config,
+          accounts: [{ name: "mimo-main", envVarName: "MIMO_TOKEN_PLAN_API_KEY_CUSTOM" }],
         },
       })).toThrow("codex_goal_mimo_key_file_account_mapping_unsupported");
     } finally {
