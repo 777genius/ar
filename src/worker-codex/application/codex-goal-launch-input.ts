@@ -15,6 +15,8 @@ import {
   parseCodexGoalProjectAccessScope,
 } from "../codex-goal-access-plan";
 import type { CodexGoalInput } from "./codex-goal-use-case-inputs";
+import { optionalCodexGoalModelBackend } from "../codex-goal-model-backend";
+import { optionalCodexGoalMimoAccountSlots } from "../codex-goal-mimo-account-slots";
 import {
   accountNames,
   booleanValue,
@@ -57,7 +59,10 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
   );
   const workspacePath = requiredString(merged.workspacePath, "workspacePath", cwd);
   const promptPath = requiredString(merged.promptPath, "promptPath", cwd);
-  const accounts = codexGoalAccountSlots(accountNames(merged.accounts));
+  const accounts = codexGoalAccountSlots(
+    accountNames(merged.accounts),
+    optionalCodexGoalMimoAccountSlots(merged.mimoAccounts).mimoAccounts,
+  );
   if (!accounts.length) throw new Error("accounts are required");
   const controlModes = goalControlModesFromRecord(merged);
   const accessBoundary = optionalCodexGoalAccessBoundary(merged.accessBoundary);
@@ -91,6 +96,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
       : {}),
     taskId,
     accounts,
+    ...optionalCodexGoalMimoAccountSlots(merged.mimoAccounts),
     outputPath: resolvePath(
       cwd,
       stringValue(merged.outputPath) ??
@@ -108,6 +114,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
       (stringValue(merged.serviceTier) ?? "default") as NonNullable<CodexGoalRunConfig["serviceTier"]>,
     executionEngine:
       (stringValue(merged.executionEngine) ?? "app-server-goal") as NonNullable<CodexGoalRunConfig["executionEngine"]>,
+    ...optionalCodexGoalModelBackend(merged.modelBackend),
     codexBinaryPath: stringValue(merged.codexBinaryPath) ?? "codex",
     ...controlModes,
     ...(accessBoundary === undefined ? {} : { accessBoundary }),

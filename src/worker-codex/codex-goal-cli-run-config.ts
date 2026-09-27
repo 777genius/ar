@@ -12,6 +12,7 @@ import {
   codexGoalAccountSlots,
   type CodexGoalRunConfig,
 } from "./codex-goal-runner";
+import { optionalCodexGoalModelBackend } from "./codex-goal-model-backend";
 import {
   assertCodexGoalProviderSandboxModeAllowed,
   optionalCodexGoalProviderSandboxMode,
@@ -54,6 +55,10 @@ export function runConfigFromFlags(
   const executionEngine = (option(values, env, "--execution-engine", [
     "CODEX_EXECUTION_ENGINE",
   ]) ?? "app-server-goal") as CodexGoalRunConfig["executionEngine"];
+  const modelBackend = optionalCodexGoalModelBackend(
+    option(values, env, "--model-backend", ["CODEX_MODEL_BACKEND"]),
+    "--model-backend",
+  );
   const staleLockMs = parseOptionalPositiveInteger(
     option(values, env, "--stale-lock-ms", []),
     "--stale-lock-ms",
@@ -165,6 +170,7 @@ export function runConfigFromFlags(
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(serviceTier ? { serviceTier } : {}),
     ...(executionEngine ? { executionEngine } : {}),
+    ...modelBackend,
     codexBinaryPath: option(values, env, "--codex-binary", [
       "CODEX_BINARY_PATH",
     ]) ?? "codex",

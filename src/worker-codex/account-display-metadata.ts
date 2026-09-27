@@ -6,6 +6,9 @@ export type CodexAccountDisplayMetadata = {
   readonly email?: string;
   readonly shortName?: string;
   readonly operatorLabel?: string;
+  readonly resetCount?: number;
+  readonly plan?: string;
+  readonly unpaid?: string;
 };
 
 const metadataFileNames = [
@@ -36,6 +39,11 @@ export function codexAccountDisplayMetadataForSlot(
     ...(email ? { email } : {}),
     shortName,
     ...(displayName ? { operatorLabel: `${displayName} - ${shortName}` } : {}),
+    ...(metadata?.resetCount !== undefined
+      ? { resetCount: metadata.resetCount }
+      : {}),
+    ...(metadata?.plan ? { plan: metadata.plan } : {}),
+    ...(metadata?.unpaid ? { unpaid: metadata.unpaid } : {}),
   };
 }
 
@@ -45,7 +53,9 @@ export function codexAccountDisplayRecord(
 ): Readonly<Record<string, string>> {
   const display = codexAccountDisplayMetadataForSlot(slotId, metadata);
   return Object.fromEntries(
-    Object.entries(display).filter(([, value]) => value !== undefined),
+    Object.entries(display)
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => [key, String(value)]),
   );
 }
 
@@ -72,13 +82,16 @@ function parseMetadataRoot(
   const root = isRecord(value.accounts) ? value.accounts : value;
   const entries = Object.entries(root)
     .map(([slotId, raw]) => [slotId, parseMetadataEntry(raw)] as const)
-    .filter((entry): entry is readonly [string, CodexAccountDisplayMetadata] =>
-      entry[1] !== null,
+    .filter(
+      (entry): entry is readonly [string, CodexAccountDisplayMetadata] =>
+        entry[1] !== null,
     );
   return Object.fromEntries(entries);
 }
 
-function parseMetadataEntry(value: unknown): CodexAccountDisplayMetadata | null {
+function parseMetadataEntry(
+  value: unknown,
+): CodexAccountDisplayMetadata | null {
   if (typeof value === "string") {
     const displayName = value.trim();
     return displayName ? { displayName } : null;
@@ -92,12 +105,42 @@ function parseMetadataEntry(value: unknown): CodexAccountDisplayMetadata | null 
   ]);
   const email = firstString([value.email]);
   const shortName = firstString([value.shortName, value.letter]);
-  if (!displayName && !email && !shortName) return null;
+  const resetCount = parseResetCount(value.resetCount);
+  const plan = firstString([value.plan]);
+  const unpaid = parseUnpaidDate(value.unpaid);
+  if (
+    !displayName &&
+    !email &&
+    !shortName &&
+    resetCount === undefined &&
+    !plan &&
+    !unpaid
+  ) {
+    return null;
+  }
   return {
     ...(displayName ? { displayName } : {}),
     ...(email ? { email } : {}),
     ...(shortName ? { shortName } : {}),
+    ...(resetCount !== undefined ? { resetCount } : {}),
+    ...(plan ? { plan } : {}),
+    ...(unpaid ? { unpaid } : {}),
   };
+}
+
+function parseUnpaidDate(value: unknown): string | undefined {
+  const date = firstString([value]);
+  return date && /^\d{2}\.\d{2}\.\d{4}$/.test(date) ? date : undefined;
+}
+
+function parseResetCount(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+    return value;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return Number(value.trim());
+  }
+  return undefined;
 }
 
 function firstString(values: readonly unknown[]): string | undefined {

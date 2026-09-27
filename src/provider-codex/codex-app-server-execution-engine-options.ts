@@ -8,9 +8,16 @@ import type { CodexAppServerRateLimitsSnapshotHandler } from "./app-server/appli
 import type { CodexAppServerProcessFactory } from "./app-server/application/app-server-process-port";
 import type { CodexExecutionProfile } from "./codex-execution-profile";
 import type { CodexExecutionEngine } from "./codex-json-execution-engine";
+import type { CodexModelBackend } from "./codex-model-backend";
 
 export type CodexAppServerExecutionEngineOptions = {
   readonly codexBinaryPath: string;
+  /**
+   * Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing behavior
+   * is unchanged. Fixed for the engine's (and its app-server process pool's)
+   * whole lifetime: one execution engine instance serves exactly one backend.
+   */
+  readonly modelBackend?: CodexModelBackend;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   /** Set only with a generated CODEX_HOME containing the hosted profiles. */
   readonly hostedPermissionProfiles?: boolean;

@@ -12,6 +12,7 @@ import {
   type WorkerRuntimeDemand,
 } from "@vioxen/subscription-runtime/worker-core";
 import { LocalFileWorkerAccountLeaseStore } from "@vioxen/subscription-runtime/store-local-file";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import {
   CodexGoalAccountSelectionMode,
   type CodexGoalJobManifest,
@@ -88,6 +89,7 @@ export async function reserveCodexProjectAccount(input: {
   readonly continuation?: CodexProjectAccountContinuation;
   readonly deps?: CodexProjectAccountReservationDeps;
 }): Promise<CodexProjectAccountReservation> {
+  assertCodexProjectAccountModelBackend(input);
   const maxAccountCycles = reservedAttemptBudget(input);
   const leaseMode = input.deps?.leaseMode ?? codexProjectAccountLeaseMode();
   if (leaseMode === "shared")
@@ -676,6 +678,47 @@ function projectEligibleAccountIds(input: {
     throw new Error("project_control_account_reservation_no_eligible_accounts");
   }
   return eligible;
+}
+
+function assertCodexProjectAccountModelBackend(input: {
+  readonly manifest: CodexGoalJobManifest;
+  readonly launch: CodexGoalLaunchInput;
+}): void {
+  const manifestBackend =
+    input.manifest.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  const launchBackend =
+    input.launch.config.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  if (manifestBackend !== launchBackend) {
+    throw new Error("codex_goal_project_account_mixed_model_backend");
+  }
+
+  const configuredNames = new Set(
+    input.launch.config.accounts.map((account) => account.name),
+  );
+  const mimoNames = new Set(
+    (input.launch.config.mimoAccounts ?? []).map((account) => account.name),
+  );
+  if (
+    launchBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+    [...mimoNames].some((name) => !configuredNames.has(name))
+  ) {
+    throw new Error("codex_goal_project_account_mixed_model_backend");
+  }
+
+  for (const account of input.launch.config.accounts) {
+    const hasMimoCredentialMetadata =
+      account.envVarName !== undefined ||
+      mimoNames.has(account.name) ||
+      account.authJsonPath?.startsWith("mimo-env:") === true;
+    if (
+      launchBackend === CodexModelBackend.XiaomiMimoTokenPlan
+        ? account.authJsonPath !== undefined &&
+          !account.authJsonPath.startsWith("mimo-env:")
+        : hasMimoCredentialMetadata
+    ) {
+      throw new Error("codex_goal_project_account_mixed_model_backend");
+    }
+  }
 }
 
 function stableSharedAccountOrder(

@@ -1183,13 +1183,24 @@ Use `account-labels.json` for operator-facing labels:
 
 ```json
 {
-  "account-a": { "email": "operator@example.com" },
+  "account-a": {
+    "email": "operator@example.com",
+    "resetCount": 2,
+    "plan": "free",
+    "unpaid": "19.08.2026"
+  },
   "account-g": { "displayName": "usa18303530342" }
 }
 ```
 
 Status tools may then show both the stable slot and label, for example
 `operator@example.com - a - limited`.
+The optional `resetCount` field is operator metadata for quota tables. Use a
+non-negative integer when known; omit it when unknown so operator tables print
+`-`.
+The optional `plan` field records the operator-confirmed subscription plan.
+The optional `unpaid` field records the date in `DD.MM.YYYY` format and is
+shown as the last quota-table column; omit it when unknown.
 
 Device auth is preferred for handoff because it gives a short-lived code and
 does not depend on a specific browser callback window.
@@ -1228,6 +1239,48 @@ and account availability. The `5h free` and `7d free` columns include a compact
 progress bar, available rows are bolded and sorted first, and the end of the
 output includes the total `7d free` capacity across the account pool. Accounts
 with `0%` weekly free are kept below accounts with usable weekly capacity.
+
+### Local Codex limit alarm
+
+Install the macOS background monitor once:
+
+```sh
+npm run ops:codex-limit-alarm:install
+open http://127.0.0.1:47831
+```
+
+The LaunchAgent checks the current local Codex Desktop/CLI account from
+`~/.codex/auth.json` every 10 minutes by reusing the quota table JSON contract.
+It does not inspect or contact the remote worker pool. The dashboard shows the
+current account's 5h and 7d free capacity, supports an immediate check and has
+`Test sound` and `Stop sound` controls.
+
+**Sound is off by default.** A fresh install only monitors and shows status;
+it never plays sound until you press `Включить звук` (enable) on the dashboard
+once. This choice persists across monitor restarts (`~/Library/Application
+Support/Codex Limit Alarm/state.json`), so you only need to enable it once per
+machine. `Test sound` still works while disabled, for checking the sound
+device independently of arming the alarm.
+
+Once enabled, the repeating alarm starts when the current account has less
+than 10% free in a known main 5h or 7d quota window. Exactly 10% does not
+trigger it. Relogin requirements and observation outages are shown but do not
+trigger the sound. `Stop sound` acknowledges the current low-quota incident;
+later checks remain silent until every known main window recovers to at least
+10%. Recovery rearms the alarm for the next low-quota incident.
+Acknowledgement survives monitor restarts. Pressing `Выключить звук` disarms
+the alarm entirely until re-enabled, silencing any active sound immediately.
+
+The service binds only to `127.0.0.1:47831`. Mutating dashboard actions require
+a per-process control token, and the monitor never exposes auth payloads or
+tokens. Logs are written to `~/Library/Logs/CodexLimitAlarm.log` and
+`~/Library/Logs/CodexLimitAlarm.error.log`.
+
+Remove it with:
+
+```sh
+npm run ops:codex-limit-alarm:uninstall
+```
 
 Expected statuses:
 

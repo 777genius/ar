@@ -1,7 +1,9 @@
 export * from "./capabilities";
+export * from "./codex-api-key-credential";
 export * from "./codex-auth-json-codec";
 export * from "./codex-cli-domain";
 export * from "./codex-cli-agent-driver";
+export * from "./codex-model-backend";
 export * from "./codex-execution-profile";
 export * from "./codex-provider-egress-policy";
 export * from "./hosted-codex-permissions";
@@ -12,6 +14,7 @@ export * from "./codex-json-execution-engine";
 export * from "./codex-session-materializer";
 export * from "./codex-cli-provider-driver";
 export * from "./codex-cli-session-driver";
+export * from "./codex-mimo-session-driver";
 export * from "./failure-classifier";
 export * from "./manifest";
 

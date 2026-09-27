@@ -8,6 +8,7 @@ import {
   InMemoryWorkerAccountLeaseStore,
   type SafeExecutionTaskRecord,
 } from "@vioxen/subscription-runtime/worker-core";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import {
   CodexGoalAccountSelectionMode,
   type CodexGoalJobManifest,
@@ -775,7 +776,7 @@ function singleAccountFixture(
   };
 }
 
-function fixture(
+export function fixture(
   root: string,
   jobId: string,
   reasoningEffort: "xhigh" | "high" = "xhigh",

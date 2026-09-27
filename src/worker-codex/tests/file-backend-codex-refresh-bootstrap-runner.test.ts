@@ -6,7 +6,7 @@ import {
   type ProcessResult,
   type RunnerPort,
 } from "@vioxen/subscription-runtime/core";
-import { sessionArtifactFromCodexAuthJson } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexCliSessionDriver, sessionArtifactFromCodexAuthJson } from "@vioxen/subscription-runtime/provider-codex";
 import {
   AccessBoundary,
   LaunchPlanStatus,
@@ -76,6 +76,12 @@ describe("FileBackendCodexWorker refresh bootstrap runner", () => {
     });
 
     try {
+      // This test never sets modelBackend, so it defaults to the ChatGPT
+      // (session-required) backend and sessionDriver is always a
+      // CodexCliSessionDriver, never the MiMo no-session driver.
+      if (!(runtimeParts.sessionDriver instanceof CodexCliSessionDriver)) {
+        throw new Error("expected_codex_cli_session_driver");
+      }
       await expect(runtimeParts.sessionDriver.refreshSession({
         session: sessionArtifactFromCodexAuthJson(validAuthJson),
         workspace: { path: refreshTempRoot },

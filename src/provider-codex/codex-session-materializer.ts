@@ -13,12 +13,19 @@ import { cleanupCodexRuntimeTempRoot } from "./codex-cli-temp-cleanup";
 import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 import {
   CodexProviderEgressProfileId,
+  codexMimoTokenPlanEgressPolicy,
+  codexProviderApiEgressPolicy,
   codexProviderEgressPolicy,
   codexProviderEgressConfigToml,
   codexProviderEgressEnv,
   type CodexProviderEgressPolicy,
 } from "./codex-provider-egress-policy";
 import type { CodexMaterializedSession } from "./codex-json-execution-engine";
+import {
+  CodexModelBackend,
+  codexModelBackendExcludesConfigKey,
+  codexModelBackendModelProvidersConfigToml,
+} from "./codex-model-backend";
 
 export type CodexSessionPrewarmResult = {
   readonly mode: "ephemeral" | "worker-cache";
@@ -470,7 +477,17 @@ export function codexJsonHomeConfigToml(input?: {
   readonly hooksEnabled?: boolean;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy | undefined;
   readonly namedPermissions?: boolean;
+  /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — omitting it keeps today's output byte-identical. */
+  readonly modelBackend?: CodexModelBackend;
+  /** Env var holding the MiMo Token Plan key. Only used when `modelBackend` is `XiaomiMimoTokenPlan`. */
+  readonly mimoApiKeyEnvVarName?: string;
 }): string {
+  const modelBackend = input?.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  const providerEgressPolicy =
+    input?.providerEgressPolicy ??
+    (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+      ? codexMimoTokenPlanEgressPolicy()
+      : codexProviderApiEgressPolicy());
   return [
     'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
@@ -478,7 +495,9 @@ export function codexJsonHomeConfigToml(input?: {
     ...(input?.namedPermissions ? ['default_permissions = "hosted-project-read"'] : []),
     'web_search = "disabled"',
     "disable_response_storage = true",
-    'model_verbosity = "low"',
+    ...(codexModelBackendExcludesConfigKey(modelBackend, "model_verbosity")
+      ? []
+      : ['model_verbosity = "low"']),
     "",
     "[features]",
     "apps = false",
@@ -501,7 +520,13 @@ export function codexJsonHomeConfigToml(input?: {
     'inherit = "all"',
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL"]',
     "",
-    codexProviderEgressConfigToml(input?.providerEgressPolicy,
+    ...(modelBackend === CodexModelBackend.OpenAiChatGpt ? [] : [
+      codexModelBackendModelProvidersConfigToml({
+        backend: modelBackend,
+        envKeyName: input?.mimoApiKeyEnvVarName ?? "MIMO_TOKEN_PLAN_API_KEY",
+      }),
+    ]),
+    codexProviderEgressConfigToml(providerEgressPolicy,
       input?.namedPermissions ? { namedPermissions: true } : undefined),
   ].join("\n");
 }

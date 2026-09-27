@@ -1,10 +1,21 @@
 import { z } from "zod";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { codexGoalObjectiveMaxChars } from "./codex-goal-jobs";
 import { CODEX_GOAL_EXECUTION_ENGINE_SCHEMA } from "./codex-goal-mcp-decision-contracts";
 import {
   codexGoalEditModes,
   codexGoalProviderSandboxModes,
 } from "./codex-goal-control-modes";
+
+/**
+ * Defaults to {@link CodexModelBackend.OpenAiChatGpt} when omitted — an
+ * existing caller that never sends this field keeps launching unchanged
+ * ChatGPT goal jobs.
+ */
+export const CODEX_GOAL_MODEL_BACKEND_SCHEMA = z.enum([
+  CodexModelBackend.OpenAiChatGpt,
+  CodexModelBackend.XiaomiMimoTokenPlan,
+]);
 
 export function goalInputSchema(): Record<string, z.ZodTypeAny> {
   return {
@@ -20,6 +31,10 @@ export function goalInputSchema(): Record<string, z.ZodTypeAny> {
     ).optional(),
     taskId: z.string().optional(),
     accounts: z.union([z.string(), z.array(z.string())]).optional(),
+    mimoAccounts: z.array(z.object({
+      name: z.string().min(1),
+      envVarName: z.string().min(1).optional(),
+    })).optional(),
     outputPath: z.string().optional(),
     progressPath: z.string().optional(),
     progressHeartbeatMs: z.number().int().positive().optional(),
@@ -28,6 +43,7 @@ export function goalInputSchema(): Record<string, z.ZodTypeAny> {
     reasoningEffort: z.string().optional(),
     serviceTier: z.string().optional(),
     executionEngine: CODEX_GOAL_EXECUTION_ENGINE_SCHEMA.optional(),
+    modelBackend: CODEX_GOAL_MODEL_BACKEND_SCHEMA.optional(),
     taskTimeoutMs: z.number().int().positive().optional(),
     appServerStartupTimeoutMs: z.number().int().positive().optional(),
     staleLockMs: z.number().int().positive().optional(),

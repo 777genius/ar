@@ -2,7 +2,12 @@ import { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReport
 export { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
 import { admitHostedTestEgress, hostedTestEgressEvidence } from "./hosted-test-egress-admission";
-import { codexProviderEgressPolicy, type CodexProviderEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
+import {
+  CodexModelBackend,
+  codexMimoApiKeyEnvVarDefault,
+  codexProviderEgressPolicy,
+  type CodexProviderEgressPolicy,
+} from "@vioxen/subscription-runtime/provider-codex";
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -22,13 +27,20 @@ import {
   type SafeExecutionRunResult,
   type TaskEffectMode,
   WorkerControlService,
-  isSubscriptionWorkerError,
-  normalizeWorkerReport,
   type RuntimeRecommendedAction,
   type RuntimeResultEnvelopeInput,
   type RuntimeResultStatus,
   type WorkerReport,
 } from "@vioxen/subscription-runtime/worker-core";
+import {
+  codexRunnerExceptionFailure,
+  runtimeActionFromSafeExecutionResult,
+  runtimeBlockersFromSafeExecutionResult,
+  runtimeEvidenceFromSafeExecutionResult,
+  runtimeResultDetails,
+  runtimeStatusFromSafeExecutionResult,
+  workerReportFromSafeExecutionResult,
+} from "./codex-goal-run-result";
 import type {
   CodexAppServerProcessFactory,
   CodexReasoningEffort,
@@ -44,7 +56,10 @@ import {
   ensureCodexAgentTempRoot,
   removeCodexAgentTempRoot,
 } from "../provider-codex/codex-runtime-temp";
-import { migrateLegacyCodexAccountCapacity } from "./application/codex-account-capacity-store";
+import {
+  codexAccountCapacityStore,
+  migrateLegacyCodexAccountCapacity,
+} from "./application/codex-account-capacity-store";
 import type {
   CodexWorkerExecutionEngine,
   FileBackendCodexWorkerResult,
@@ -74,6 +89,7 @@ import {
   uniqueStrings,
 } from "./codex-goal-workspace-changes";
 import { resolveCodexGoalObjective } from "./codex-goal-objective";
+import type { CodexGoalMimoAccountSlot } from "./codex-goal-mimo-account-slots";
 export type {
   CodexGoalRuntimeEvent,
   CodexGoalRuntimeEventLevel,
@@ -85,6 +101,7 @@ const gitMetadataTimeoutMs = 5_000;
 export type CodexGoalAccountSlot = {
   readonly name: string;
   readonly authJsonPath?: string;
+  readonly envVarName?: string;
 };
 
 export type CodexGoalRunConfig = {
@@ -98,6 +115,7 @@ export type CodexGoalRunConfig = {
   readonly promptPath: string;
   readonly taskId: string;
   readonly accounts: readonly CodexGoalAccountSlot[];
+  readonly mimoAccounts?: readonly CodexGoalMimoAccountSlot[];
   readonly outputPath?: string;
   readonly progressPath?: string;
   readonly progressHeartbeatMs?: number;
@@ -107,6 +125,8 @@ export type CodexGoalRunConfig = {
   readonly reasoningEffort?: CodexReasoningEffort;
   readonly serviceTier?: CodexServiceTier;
   readonly executionEngine?: CodexWorkerExecutionEngine;
+  /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — an existing run config with no modelBackend is unaffected. */
+  readonly modelBackend?: CodexModelBackend;
   readonly taskTimeoutMs?: number;
   readonly appServerStartupTimeoutMs?: number;
   readonly staleLockMs?: number;
@@ -410,6 +430,11 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
 }): FileBackendCodexSafeExecutorOptions {
   const { config } = input;
+  const modelBackend = config.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  const isMimo = modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
+  const mimoAccountsByName = new Map(
+    (config.mimoAccounts ?? []).map((account) => [account.name, account]),
+  );
   const accessLaunchPlan = buildCodexGoalAccessLaunchPlan(config);
   const commandPolicy = commandPolicyForHostedCodexGoal({
     accessLaunchPlan,
@@ -427,19 +452,23 @@ export function buildCodexGoalExecutorOptions(input: {
     terminalCheckpointJobRootDir: config.jobRootDir,
     ...(input.executionGeneration === undefined ? {} : { executionGeneration: input.executionGeneration }),
     ...(config.runtimeHomeRootDir === undefined ? {} : { runtimeHomeRootDir: config.runtimeHomeRootDir }),
-    accountCapacityStore: migrateLegacyCodexAccountCapacity({
-      authRootDir: config.authRootDir,
-      stateRootDir: input.stateRootDir,
-      accountIds: config.accounts.map((account) => account.name),
-      authJsonPaths: Object.fromEntries(
-        config.accounts.map((account) => [
-          account.name,
-          account.authJsonPath ??
-            join(config.authRootDir, account.name, "auth.json"),
-        ]),
-      ),
-      ...(input.observability ? { observability: input.observability } : {}),
-    }),
+    accountCapacityStore: isMimo
+      ? codexAccountCapacityStore(config.authRootDir, {
+          ...(input.observability ? { observability: input.observability } : {}),
+        })
+      : migrateLegacyCodexAccountCapacity({
+          authRootDir: config.authRootDir,
+          stateRootDir: input.stateRootDir,
+          accountIds: config.accounts.map((account) => account.name),
+          authJsonPaths: Object.fromEntries(
+            config.accounts.map((account) => [
+              account.name,
+              account.authJsonPath ??
+                join(config.authRootDir, account.name, "auth.json"),
+            ]),
+          ),
+          ...(input.observability ? { observability: input.observability } : {}),
+        }),
     workspacePath: config.workspacePath,
     maxAccountCycles: config.maxAccountCycles ?? 5,
     allowDuplicateAccountIdentities:
@@ -457,15 +486,34 @@ export function buildCodexGoalExecutorOptions(input: {
     ...(config.safeExecutionPolicy === undefined
       ? {}
       : { safeExecutionPolicy: config.safeExecutionPolicy }),
-    accounts: config.accounts.map((account, index) => ({
-      codexAuthJsonPath:
-        account.authJsonPath ?? join(config.authRootDir, account.name, "auth.json"),
+    accounts: config.accounts.map((account) => ({
+      ...(isMimo
+        ? {}
+        : {
+            codexAuthJsonPath:
+              account.authJsonPath ??
+              join(config.authRootDir, account.name, "auth.json"),
+          }),
       worker: {
         providerInstanceId: `${config.taskId}-${account.name}`,
         stateRootDir: input.stateRootDir,
         codexBinaryPath: config.codexBinaryPath ?? "codex",
         encryptionKey: input.encryptionKey,
         executionEngine: config.executionEngine ?? "app-server-goal",
+        // Uniform for every account in this map, from the single
+        // config.modelBackend value — never per-account. This keeps
+        // assertUniformCodexModelBackend's invariant (safe-executor.ts)
+        // trivially satisfied: a job launch can never mix backends across
+        // its own account pool.
+        modelBackend,
+        ...(isMimo
+          ? {
+              mimoApiKeyEnvVarName:
+                account.envVarName ??
+                mimoAccountsByName.get(account.name)?.envVarName ??
+                codexMimoApiKeyEnvVarDefault,
+            }
+          : {}),
         ...(input.providerEgressPolicy ? { providerEgressPolicy: input.providerEgressPolicy } : {}),
         ...(input.appServerProcessFactory ? { appServerProcessFactory: input.appServerProcessFactory } : {}),
         capacityAccountId: account.name,
@@ -537,11 +585,23 @@ export function codexGoalRuntimeEventsPath(
 
 export function codexGoalAccountSlots(
   accounts: readonly string[],
+  mimoAccounts: readonly CodexGoalMimoAccountSlot[] = [],
 ): readonly CodexGoalAccountSlot[] {
+  const mimoByName = new Map(
+    mimoAccounts.map((account) => [account.name, account]),
+  );
   return accounts
     .map((name) => name.trim())
     .filter(Boolean)
-    .map((name) => ({ name }));
+    .map((name) => {
+      const mimoAccount = mimoByName.get(name);
+      return {
+        name,
+        ...(mimoAccount?.envVarName === undefined
+          ? {}
+          : { envVarName: mimoAccount.envVarName }),
+      };
+    });
 }
 
 function assertCodexGoalRunConfig(config: CodexGoalRunConfig): void {
@@ -868,133 +928,4 @@ async function codexExceptionRuntimeResultInput(input: {
     ...(artifacts.length === 0 ? {} : { artifacts }),
     details: { ...(details ?? {}), executionGeneration: input.executionGeneration },
   };
-}
-
-function codexRunnerExceptionFailure(error: unknown): {
-  readonly reason: string;
-  readonly safeMessage: string;
-  readonly evidence: string;
-  readonly errorCode?: string;
-} {
-  for (const item of errorCauseChain(error)) {
-    if (!isSubscriptionWorkerError(item)) continue;
-    if (item.code === "subscription_worker_prewarm_failed") {
-      return {
-        reason: "prewarm_failed",
-        safeMessage: "Codex provider prewarm failed before task execution.",
-        evidence: "provider prewarm failed before any task attempt",
-        errorCode: item.code,
-      };
-    }
-    if (
-      item.code === "subscription_worker_start_failed" ||
-      item.code === "subscription_worker_start_timeout"
-    ) {
-      return {
-        reason: "provider_start_failed",
-        safeMessage: "Codex provider failed to start before task execution.",
-        evidence: "provider start failed before any task attempt",
-        errorCode: item.code,
-      };
-    }
-  }
-  return {
-    reason: "runner_exception",
-    safeMessage: error instanceof Error ? error.message : "Runner failed.",
-    evidence: "runner threw before returning a safe execution result",
-  };
-}
-
-function errorCauseChain(error: unknown): readonly unknown[] {
-  const chain: unknown[] = [];
-  let current: unknown = error;
-  const seen = new Set<unknown>();
-  while (current !== undefined && current !== null && !seen.has(current)) {
-    chain.push(current);
-    seen.add(current);
-    current = typeof current === "object" && "cause" in current
-      ? (current as { readonly cause?: unknown }).cause
-      : undefined;
-  }
-  return chain;
-}
-
-function runtimeResultDetails(input: {
-  readonly failureDetails?: Readonly<Record<string, string>>;
-  readonly baseCommit?: string;
-  readonly handoffDetails: Readonly<Record<string, string>>;
-}): Readonly<Record<string, string>> | undefined {
-  const details = {
-    ...(input.failureDetails ?? {}),
-    ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
-    ...input.handoffDetails,
-  };
-  return Object.keys(details).length === 0 ? undefined : details;
-}
-
-function runtimeStatusFromSafeExecutionResult(input: {
-  readonly resultStatus: SafeExecutionRunResult<FileBackendCodexWorkerResult>["status"];
-  readonly changedFilesCount: number;
-}): RuntimeResultStatus {
-  if (input.resultStatus === "completed") return "done";
-  if (input.resultStatus === "waiting_capacity") return "blocked";
-  if (input.resultStatus === "partial") return "partial";
-  if (input.resultStatus === "aborted" && input.changedFilesCount > 0) {
-    return "partial";
-  }
-  return "failed";
-}
-
-function runtimeActionFromSafeExecutionResult(input: {
-  readonly status: RuntimeResultStatus;
-  readonly resultStatus?: SafeExecutionRunResult<FileBackendCodexWorkerResult>["status"];
-  readonly reason?: string | undefined;
-  readonly changedFilesCount: number;
-}): RuntimeRecommendedAction {
-  if (input.status === "done") return "review_completed";
-  if (input.resultStatus === "waiting_capacity") return "wait";
-  if (
-    input.reason === "quota_limited" ||
-    input.reason === "capacity_unavailable" ||
-    input.reason === "account_unavailable" ||
-    input.reason === "reconnect_required"
-  ) {
-    return "switch_account";
-  }
-  if (input.reason === "goal_slice_exhausted") return "launch_next_slice";
-  if (input.reason === "permission_required") return "ask_user";
-  if (input.changedFilesCount > 0) return "preserve_patch";
-  return input.status === "failed" ? "recover" : "continue";
-}
-
-function runtimeEvidenceFromSafeExecutionResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): readonly string[] {
-  const evidence = [`safe_execution_status:${result.status}`];
-  if (result.task.outputSummary) {
-    evidence.push(`output_summary:${result.task.outputSummary}`);
-  }
-  if (result.attempts.length > 0) {
-    evidence.push(`attempt_count:${result.attempts.length}`);
-  }
-  return evidence;
-}
-
-function runtimeBlockersFromSafeExecutionResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): readonly string[] {
-  if (result.status === "completed") return [];
-  const blockers: string[] = "reason" in result ? [result.reason] : [];
-  if ("safeMessage" in result && result.safeMessage) {
-    blockers.push(result.safeMessage);
-  }
-  return blockers;
-}
-
-function workerReportFromSafeExecutionResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): WorkerReport | undefined {
-  if (result.status !== "completed") return undefined;
-  if (!("result" in result) || result.result === undefined) return undefined;
-  return normalizeWorkerReport(result.result.structuredOutput);
 }

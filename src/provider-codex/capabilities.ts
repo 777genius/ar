@@ -70,6 +70,26 @@ export const codexSessionCapabilities: ProviderCapabilities = {
   setupModes: ["device-auth", "import-local-session"],
 };
 
+/**
+ * MiMo Token Plan is a static API-key credential, not a ChatGPT OAuth
+ * session: it never has a session artifact to store, validate, or refresh.
+ * `sessionRequirement: "none"` routes the runtime kernel through its
+ * `no-session` execution plan (see `compileRuntimeExecutionPlan`), which
+ * never touches `sessionStore`/`leaseStore` and calls
+ * `agentDriver.runTask({ session: null, ... })` directly.
+ */
+export const codexMimoNoSessionCapabilities: ProviderCapabilities = {
+  ...codexSessionCapabilities,
+  displayName: "Codex (MiMo Token Plan)",
+  sessionRequirement: { kind: "none" },
+  sessionArtifactKinds: [],
+  refreshMode: "none",
+  sessionRotationMode: "never-rotates",
+  supportsRefresh: false,
+  refreshMayRotateSession: false,
+  setupModes: ["api-key"],
+};
+
 export const codexAgentCapabilities: AgentCapabilities = {
   agentId: codexAgentId,
   providerId: codexProviderId,

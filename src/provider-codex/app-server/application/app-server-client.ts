@@ -4,6 +4,11 @@ import { appServerTurnStartParams } from "./app-server-turn-start-params";
 import { AppServerTokenUsageTracker } from "./app-server-turn-usage";
 import { pruneCodexChildEnv } from "../../codex-cli-domain";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
+import {
+  CodexModelBackend,
+  codexModelBackendModelProviderName,
+} from "../../codex-model-backend";
+import { excludeCodexModelBackendConfigKeys } from "./app-server-thread-config-backend-filter";
 import type {
   CodexMaterializedSession,
   CodexReasoningEffort,
@@ -145,6 +150,8 @@ export class CodexAppServerClient {
       readonly maxOutputBytes: number;
       readonly abortSignal: AbortSignal;
       readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
+      /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing behavior is unchanged. */
+      readonly modelBackend?: CodexModelBackend;
     },
   ) {
     this.stdoutDecoder = new AppServerJsonRpcLineDecoder(
@@ -308,30 +315,35 @@ export class CodexAppServerClient {
       goalMode: input.goalMode === true,
       trustedHooksEnabled: this.options.bypassHookTrust === true,
     });
+    const modelBackend = this.options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+    const threadModelProvider = codexModelBackendModelProviderName(modelBackend) ?? null;
+    const threadConfig = excludeCodexModelBackendConfigKeys(modelBackend, appServerThreadConfig({
+      reasoningEffort: input.reasoningEffort,
+      ...(input.serviceTier === undefined ? {} : { serviceTier: input.serviceTier }),
+      ...(this.options.commandApprovalPolicy === undefined
+        ? {}
+        : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
+      hostedPermissions,
+      sandboxMode: threadPolicy.sandboxMode,
+      toolConfig,
+      rolloutBudget: this.options.rolloutBudget,
+    }));
     const response = await this.send(
       "thread/start",
       {
         runtimeWorkspaceRoots: threadPolicy.runtimeWorkspaceRoots,
         model: input.model,
-        modelProvider: null,
-        serviceTier: input.serviceTier ?? null,
+        modelProvider: threadModelProvider,
+        ...(modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+          ? {}
+          : { serviceTier: input.serviceTier ?? null }),
         cwd: input.workspacePath,
         approvalPolicy: appServerApprovalPolicy(this.options.commandApprovalPolicy),
         approvalsReviewer: null,
         ...(hostedPermissions
           ? { permissions: hostedPermissions }
           : { sandbox: threadPolicy.sandboxMode }),
-        config: appServerThreadConfig({
-          reasoningEffort: input.reasoningEffort,
-          ...(input.serviceTier === undefined ? {} : { serviceTier: input.serviceTier }),
-          ...(this.options.commandApprovalPolicy === undefined
-            ? {}
-            : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
-          hostedPermissions,
-          sandboxMode: threadPolicy.sandboxMode,
-          toolConfig,
-          rolloutBudget: this.options.rolloutBudget,
-        }),
+        config: threadConfig,
         serviceName: "subscription-runtime",
         baseInstructions: this.options.executionProfile.baseInstructions,
         developerInstructions: threadPolicy.developerInstructions,
@@ -536,7 +548,12 @@ export class CodexAppServerClient {
           : null;
         response = await this.send(
           "turn/start",
-          appServerTurnStartParams(input, {
+          appServerTurnStartParams({
+            ...input,
+            ...(this.options.modelBackend === undefined
+              ? {}
+              : { modelBackend: this.options.modelBackend }),
+          }, {
             disableTools, disableNativeEnvironments,
             ...(this.options.commandApprovalPolicy === undefined ? {} : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
             ...(hostedPermissions
@@ -814,16 +831,7 @@ export class CodexAppServerClient {
       const error = new Error(
         `codex_app_server_turn_aborted:${reason}:${turnId ?? "unknown"}`,
       );
-      if (!turnId) {
-        for (const turn of this.turns.values()) {
-          turn.error = error;
-          this.resolveTurn(turn);
-        }
-        return;
-      }
-      const turn = this.ensureTurn(turnId);
-      turn.error = error;
-      this.resolveTurn(turn);
+      this.failTurnOrAll(turnId, error);
       return;
     }
     if (record.method === "error") {
@@ -838,16 +846,7 @@ export class CodexAppServerClient {
         "codex_app_server_error",
         errorPayload,
       );
-      if (!turnId) {
-        for (const turn of this.turns.values()) {
-          turn.error = error;
-          this.resolveTurn(turn);
-        }
-        return;
-      }
-      const turn = this.ensureTurn(turnId);
-      turn.error = error;
-      this.resolveTurn(turn);
+      this.failTurnOrAll(turnId, error);
     }
   }
 
@@ -898,28 +897,20 @@ export class CodexAppServerClient {
     id: number,
     result: Record<string, unknown>,
   ): void {
-    try {
-      this.child?.stdin.write(encodeJsonRpcMessage({ id, result }));
-    } catch (error) {
-      this.recordTerminalError(
-        new Error(
-          `codex_app_server_unsupported_response_failed:${safeMessage(error)}`,
-        ),
-      );
-    }
+    this.writeServerResponse({ id, result });
   }
 
   private respondServerRequestError(id: number, message: string): void {
+    this.writeServerResponse({ id, error: { code: -32000, message } });
+  }
+
+  private writeServerResponse(payload: {
+    readonly id: number;
+    readonly result?: Record<string, unknown>;
+    readonly error?: { readonly code: number; readonly message: string };
+  }): void {
     try {
-      this.child?.stdin.write(
-        encodeJsonRpcMessage({
-          id,
-          error: {
-            code: -32000,
-            message,
-          },
-        }),
-      );
+      this.child?.stdin.write(encodeJsonRpcMessage(payload));
     } catch (error) {
       this.recordTerminalError(
         new Error(
@@ -953,6 +944,19 @@ export class CodexAppServerClient {
     this.clearReconnectGraceTimer(turn);
     const waiters = turn.waiters.splice(0);
     for (const waiter of waiters) waiter(turn);
+  }
+
+  private failTurnOrAll(turnId: string | null | undefined, error: Error): void {
+    if (!turnId) {
+      for (const turn of this.turns.values()) {
+        turn.error = error;
+        this.resolveTurn(turn);
+      }
+      return;
+    }
+    const turn = this.ensureTurn(turnId);
+    turn.error = error;
+    this.resolveTurn(turn);
   }
 
   private failOutstanding(error: Error): void {
@@ -1101,5 +1105,4 @@ export class CodexAppServerClient {
       this.resolveTurn(turn);
     }
   }
-
 }
