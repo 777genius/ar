@@ -1,7 +1,18 @@
+import { codexMimoApiKeyEnvVarDefault } from "@vioxen/subscription-runtime/provider-codex";
+
 export type CodexGoalMimoAccountSlot = {
   readonly name: string;
   readonly envVarName?: string;
 };
+
+export function resolveCodexGoalMimoEnvVarName(
+  account: { readonly name: string; readonly envVarName?: string },
+  mimoAccountsByName: ReadonlyMap<string, CodexGoalMimoAccountSlot>,
+): string {
+  return account.envVarName ??
+    mimoAccountsByName.get(account.name)?.envVarName ??
+    codexMimoApiKeyEnvVarDefault;
+}
 
 export function optionalCodexGoalMimoAccountSlots(
   value: unknown,

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
 import { AgentRuntimeExecutionMode } from "@vioxen/subscription-runtime/core";
-import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexMimoTokenPlanEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
 import { FileBackendCodexWorker } from "../file-backend-codex-worker";
 import { buildCodexGoalExecutorOptions } from "../codex-goal-runner";
 import { goalLaunchInput } from "../application/codex-goal-launch-input";
@@ -82,6 +82,7 @@ describe("MiMo backend — real launch path (MCP/CLI) through to execution", () 
       stateRootDir: rootDir,
       encryptionKey: new Uint8Array(32).fill(9),
       appServerProcessFactory: processFactory,
+      providerEgressPolicy: codexMimoTokenPlanEgressPolicy(),
       observability: new MemoryWorkerObservability(),
     });
 
@@ -99,6 +100,7 @@ describe("MiMo backend — real launch path (MCP/CLI) through to execution", () 
         "MIMO_TOKEN_PLAN_API_KEY_MCP",
       );
       expect(account.codexAuthJsonPath).toBeUndefined();
+      expect(account.worker.providerEgressPolicy).toBeUndefined();
     }
 
     const workerOptions = executorOptions.accounts[0]!.worker;
