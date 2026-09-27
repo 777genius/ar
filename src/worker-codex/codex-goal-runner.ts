@@ -5,6 +5,7 @@ import { admitHostedTestEgress, hostedTestEgressEvidence } from "./hosted-test-e
 import {
   CodexModelBackend,
   codexMimoApiKeyEnvVarDefault,
+  codexMimoTokenPlanEgressPolicy,
   codexProviderEgressPolicy,
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
@@ -207,14 +208,21 @@ export async function runCodexGoal(
   config = mapManagedGoalLayout({ config }).config;
   assertCodexGoalRunConfig(config);
   assertCodexGoalAccessLaunchAllowed(config);
+  const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const admittedEgress = await (deps.admitProviderEgress ?? admitHostedTestEgress)({
     jobId: config.jobId ?? config.taskId,
     jobRootDir: config.jobRootDir,
     workspacePath: config.workspacePath,
     ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
     sourceEnv: config.sourceEnv ?? process.env,
+    ...(isMimo ? { modelBackend: config.modelBackend } : {}),
   });
-  const providerEgressPolicy = codexProviderEgressPolicy(admittedEgress.profileId);
+  const providerEgressPolicy = isMimo
+    ? codexMimoTokenPlanEgressPolicy()
+    : codexProviderEgressPolicy(admittedEgress.profileId);
+  if (admittedEgress.profileId !== providerEgressPolicy.profileId) {
+    throw new Error("codex_goal_provider_egress_admission_mismatch");
+  }
   const appServerProcessFactory = admitHostedReadonlyInputs({
     jobId: config.jobId ?? config.taskId,
     jobRootDir: config.jobRootDir,
@@ -514,7 +522,7 @@ export function buildCodexGoalExecutorOptions(input: {
                 codexMimoApiKeyEnvVarDefault,
             }
           : {}),
-        ...(input.providerEgressPolicy ? { providerEgressPolicy: input.providerEgressPolicy } : {}),
+        ...(!isMimo && input.providerEgressPolicy ? { providerEgressPolicy: input.providerEgressPolicy } : {}),
         ...(input.appServerProcessFactory ? { appServerProcessFactory: input.appServerProcessFactory } : {}),
         capacityAccountId: account.name,
         taskTimeoutMs: config.taskTimeoutMs ?? 72 * 60 * 60 * 1000,
