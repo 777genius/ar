@@ -291,7 +291,7 @@ function createCodexAgentDriver(input: {
     : undefined;
   const projectConfigToml = projectReadBoundary && !hostedGlobalScanGuard
     ? projectReadBoundaryConfigToml(providerEgressPolicy, executableReadPath,
-        modelBackend, mimoApiKeyEnvVarName)
+        modelBackend, mimoApiKeyEnvVarName, sourceEnv.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE)
     : undefined;
   const mimoConfigToml = workspaceToolsProfile?.configToml ?? projectConfigToml;
   if (executionEngine === "plain-exec") {
@@ -433,10 +433,11 @@ function projectReadBoundaryConfigToml(
   executableReadPath?: string,
   modelBackend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
   mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
+  privateKeyFilePath?: string,
 ): string {
   return codexJsonHomeConfigToml({ providerEgressPolicy, namedPermissions: true,
     modelBackend, mimoApiKeyEnvVarName }) +
-    "\n" + hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath);
+    "\n" + hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath, privateKeyFilePath);
 }
 
 function hostedGlobalScanConfigToml(

@@ -19,6 +19,7 @@ describe("hosted Codex permission profiles", () => {
     expect(config).toContain('[permissions.hosted-project-write.filesystem.":workspace_roots"]\n"." = "write"');
     expect(config).toContain('".git" = "read"');
     expect(config).toContain('".codex" = "read"');
+    expect(config.match(/"\/etc\/subscription-runtime\/secrets" = "deny"/g)).toHaveLength(2);
     expect(config).not.toContain('extends = ":workspace"');
     expect(config).not.toContain('"*" = "allow"');
   });
@@ -33,6 +34,16 @@ describe("hosted Codex permission profiles", () => {
       codexProviderApiEgressPolicy(), "/opt/codex/lib/node_modules/@openai/codex");
     expect(scoped).toContain('"/opt/codex/lib/node_modules/@openai/codex" = "read"');
     expect(scoped).not.toContain('"/opt" = "read"');
+  });
+
+  it("denies a configured MiMo private key file in both profiles", () => {
+    const config = hostedCodexPermissionProfilesToml(
+      codexProviderApiEgressPolicy(), undefined, "/private/mimo/key",
+    );
+    expect(config.match(/"\/private\/mimo\/key" = "deny"/g)).toHaveLength(2);
+    expect(() => hostedCodexPermissionProfilesToml(
+      codexProviderApiEgressPolicy(), undefined, "relative/key",
+    )).toThrow("hosted_permission_private_key_path_invalid");
   });
 
   it("does not grant recursive reads when an executable path names a directory", () => {

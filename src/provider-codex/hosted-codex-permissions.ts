@@ -64,6 +64,7 @@ function trustedCodexInstallationPath(path: string): boolean {
 export function hostedCodexPermissionProfilesToml(
   policy: CodexProviderEgressPolicy,
   executableReadPath?: string,
+  privateKeyFilePath?: string,
 ): string {
   const domains = policy.domains.map(domain => `${JSON.stringify(domain)} = "allow"`).join(", ");
   let nodeExecutableReadPath: string | undefined;
@@ -76,12 +77,19 @@ export function hostedCodexPermissionProfilesToml(
   const executableRules = [...new Set([executableReadPath, nodeExecutableReadPath]
     .filter((path): path is string => path !== undefined))]
     .map(path => `${JSON.stringify(path)} = "read"`);
+  if (privateKeyFilePath && !isAbsolute(privateKeyFilePath)) {
+    throw new Error("hosted_permission_private_key_path_invalid");
+  }
+  const privateRules = [...new Set(["/etc/subscription-runtime/secrets", privateKeyFilePath]
+    .filter((path): path is string => path !== undefined))]
+    .map(path => `${JSON.stringify(path)} = "deny"`);
   return [
     "# Bound native Codex tools to the admitted workspace and minimal system files.",
     `[permissions.${HostedCodexPermissionProfileId.ReadOnly}.filesystem]`,
     '":root" = "deny"',
     '":minimal" = "read"',
     ...executableRules,
+    ...privateRules,
     "",
     `[permissions.${HostedCodexPermissionProfileId.ReadOnly}.filesystem.\":workspace_roots\"]`,
     '"." = "read"',
@@ -94,6 +102,7 @@ export function hostedCodexPermissionProfilesToml(
     '":root" = "deny"',
     '":minimal" = "read"',
     ...executableRules,
+    ...privateRules,
     "",
     `[permissions.${HostedCodexPermissionProfileId.WorkspaceWrite}.filesystem.\":workspace_roots\"]`,
     '"." = "write"',
