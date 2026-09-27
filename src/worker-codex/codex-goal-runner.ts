@@ -5,6 +5,7 @@ import { admitHostedTestEgress, hostedTestEgressEvidence } from "./hosted-test-e
 import {
   CodexModelBackend,
   codexMimoApiKeyEnvVarDefault,
+  codexMimoTokenPlanEgressPolicy,
   codexProviderEgressPolicy,
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
@@ -89,7 +90,7 @@ import {
   uniqueStrings,
 } from "./codex-goal-workspace-changes";
 import { resolveCodexGoalObjective } from "./codex-goal-objective";
-import type { CodexGoalMimoAccountSlot } from "./codex-goal-mimo-account-slots";
+import { resolveCodexGoalMimoEnvVarName, type CodexGoalMimoAccountSlot } from "./codex-goal-mimo-account-slots";
 export type {
   CodexGoalRuntimeEvent,
   CodexGoalRuntimeEventLevel,
@@ -212,14 +213,21 @@ export async function runCodexGoal(
   config = mapManagedGoalLayout({ config }).config;
   assertCodexGoalRunConfig(config);
   assertCodexGoalAccessLaunchAllowed(config);
+  const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const admittedEgress = await (deps.admitProviderEgress ?? admitHostedTestEgress)({
     jobId: config.jobId ?? config.taskId,
     jobRootDir: config.jobRootDir,
     workspacePath: config.workspacePath,
     ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
     sourceEnv: config.sourceEnv ?? process.env,
+    ...(isMimo ? { modelBackend: config.modelBackend } : {}),
   });
-  const providerEgressPolicy = codexProviderEgressPolicy(admittedEgress.profileId);
+  const providerEgressPolicy = isMimo
+    ? codexMimoTokenPlanEgressPolicy()
+    : codexProviderEgressPolicy(admittedEgress.profileId);
+  if (admittedEgress.profileId !== providerEgressPolicy.profileId) {
+    throw new Error("codex_goal_provider_egress_admission_mismatch");
+  }
   const appServerProcessFactory = admitHostedReadonlyInputs({
     jobId: config.jobId ?? config.taskId,
     jobRootDir: config.jobRootDir,
@@ -544,12 +552,10 @@ export function buildCodexGoalExecutorOptions(input: {
         ...(isMimo
           ? {
               mimoApiKeyEnvVarName:
-                account.envVarName ??
-                mimoAccountsByName.get(account.name)?.envVarName ??
-                codexMimoApiKeyEnvVarDefault,
+                resolveCodexGoalMimoEnvVarName(account, mimoAccountsByName),
             }
           : {}),
-        ...(input.providerEgressPolicy ? { providerEgressPolicy: input.providerEgressPolicy } : {}),
+        ...(!isMimo && input.providerEgressPolicy ? { providerEgressPolicy: input.providerEgressPolicy } : {}),
         ...(input.appServerProcessFactory ? { appServerProcessFactory: input.appServerProcessFactory } : {}),
         capacityAccountId: account.name,
         taskTimeoutMs: config.taskTimeoutMs ?? 72 * 60 * 60 * 1000,
