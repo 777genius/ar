@@ -133,6 +133,25 @@ describe("managed run recovery persistence", () => {
       const persisted = await readFile(path, "utf8");
       expect(persisted).not.toContain("SYNTHETIC_EMBEDDED_PROVIDER_SECRET");
       expect(persisted).toContain("[redacted:credential-bearing-text]");
+
+      await store.complete({ runId,
+        outputText: JSON.stringify(JSON.stringify({ apiKey: "SYNTHETIC_DOUBLE_SERIALIZED_KEY" })),
+        now: new Date("2026-09-27T00:02:00Z") });
+      expect(await readFile(path, "utf8")).not.toContain("SYNTHETIC_DOUBLE_SERIALIZED_KEY");
+      const loaded = await store.get({ runId });
+      expect(JSON.parse(JSON.parse(loaded!.outputText!)).apiKey).toBe("[redacted:credential-field]");
+
+      await store.fail({ runId, failure: { code: "unknown_runtime_failure", retryable: true,
+        reconnectRequired: false, safeMessage: "failed",
+        details: { rawCause: 'Result: {\\"apiKey\\":\\"SYNTHETIC_ESCAPED_KEY\\"}' } },
+      now: new Date("2026-09-27T00:03:00Z") });
+      expect(await readFile(path, "utf8")).not.toContain("SYNTHETIC_ESCAPED_KEY");
+
+      await store.fail({ runId, failure: { code: "unknown_runtime_failure", retryable: true,
+        reconnectRequired: false, safeMessage: "failed",
+        details: { rawCause: "application.integrations.subscriptionRuntime.providers.mimo.credentials.providerApiKey=SYNTHETIC_LONG_KEY" } },
+      now: new Date("2026-09-27T00:04:00Z") });
+      expect(await readFile(path, "utf8")).not.toContain("SYNTHETIC_LONG_KEY");
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }

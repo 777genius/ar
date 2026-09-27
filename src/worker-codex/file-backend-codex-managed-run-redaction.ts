@@ -20,9 +20,14 @@ export function discardLegacyAnswerSummary(record: ManagedRunRecord): ManagedRun
 }
 
 export function redactManagedRunValue<T>(value: T, redactor: RedactorPort): T {
+  return redactManagedRunValueAtDepth(value, redactor, 0);
+}
+
+function redactManagedRunValueAtDepth<T>(value: T, redactor: RedactorPort, serializedDepth: number): T {
   if (typeof value === "string") {
+    if (serializedDepth >= 8) return "[redacted:deep-serialized-text]" as T;
     const trimmed = value.trim();
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    if (trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.startsWith('"')) {
       let parsed: unknown;
       try {
         parsed = JSON.parse(trimmed);
@@ -30,8 +35,8 @@ export function redactManagedRunValue<T>(value: T, redactor: RedactorPort): T {
         // A malformed or embedded JSON fragment still passes the assignment
         // guard below; it must not bypass credential-field filtering.
       }
-      if (parsed !== null && typeof parsed === "object") {
-        const serialized = JSON.stringify(redactManagedRunValue(parsed, redactor));
+      if (parsed !== null && (typeof parsed === "object" || typeof parsed === "string")) {
+        const serialized = JSON.stringify(redactManagedRunValueAtDepth(parsed, redactor, serializedDepth + 1));
         redactor.assertNoKnownSecret(serialized, "managed-run-recovery-store");
         return serialized as T;
       }
@@ -45,12 +50,13 @@ export function redactManagedRunValue<T>(value: T, redactor: RedactorPort): T {
   }
   if (value instanceof Date) return value;
   if (Array.isArray(value)) {
-    return value.map((item) => redactManagedRunValue(item, redactor)) as T;
+    return value.map((item) => redactManagedRunValueAtDepth(item, redactor, serializedDepth)) as T;
   }
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [
-      redactManagedRunValue(key, redactor),
-      isCredentialField(key) ? "[redacted:credential-field]" : redactManagedRunValue(item, redactor),
+      redactManagedRunValueAtDepth(key, redactor, serializedDepth),
+      isCredentialField(key) ? "[redacted:credential-field]" :
+        redactManagedRunValueAtDepth(item, redactor, serializedDepth),
     ])) as T;
   }
   return value;
@@ -67,8 +73,8 @@ function containsCredentialAssignment(text: string): boolean {
     }
     const start = index;
     while (index < text.length && isKeyCharacter(text.charCodeAt(index))) index += 1;
-    if (index - start > 80) continue;
     let separator = index;
+    while (text[separator] === "\\") separator += 1;
     if (text[separator] === '"' || text[separator] === "'") separator += 1;
     while (separator < text.length && /\s/u.test(text[separator]!)) separator += 1;
     if ((text[separator] === ":" || text[separator] === "=") &&
