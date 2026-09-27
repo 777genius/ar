@@ -17,6 +17,11 @@ publisher socket path remains Host supplied and is never part of an MCP child
 manifest. A brokered `project_start` reads the Host setting and puts the
 absolute socket path in the trusted child command; a required child launch
 without that setting fails before the child process starts.
+For an existing ProjectScopedControl controller, call
+`brokered_project_manifest_repair` with its own `jobId` and
+`checkpointRequired: true` to preview the change. Confirm using
+`confirmRepair: true` and the preview's `expectedManifestSha256`. This is a
+one-way policy enable; child repair cannot set the marker directly.
 
 The job's private durable root receives immutable
 `turn-checkpoints/identity.json` at admission, before constructing the

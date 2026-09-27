@@ -229,7 +229,7 @@ export function registerCodexGoalProjectControlAdminTools(server: McpServer): vo
     {
       title: "Brokered Project Manifest Repair",
       description:
-        "Safely repair limited project-owned child job manifest fields through a ProjectScopedControl controller.",
+        "Safely repair limited project-owned child job fields, or enable checkpointRequired on the existing ProjectScopedControl controller after preview.",
       inputSchema: {
         ...jobIdInputSchema(),
         controllerJobId: z.string().optional(),
@@ -238,6 +238,8 @@ export function registerCodexGoalProjectControlAdminTools(server: McpServer): vo
         reviewedOutputId: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
         description: z.string().optional(),
         tags: z.union([z.string(), z.array(z.string())]).optional(),
+        checkpointRequired: z.boolean().optional(),
+        expectedManifestSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
         confirmRepair: z.boolean().optional(),
       },
     },
