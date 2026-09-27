@@ -3,8 +3,8 @@ export { buildCodexGoalForegroundArgv } from "./application/codex-goal-foregroun
 import type { CodexGoalLaunchManifestMetadata } from "./codex-goal-launch-manifest";
 import { isHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
 import { execFile } from "node:child_process";
-import { lstatSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
+import { constants, lstatSync } from "node:fs";
+import { mkdir, open, readFile } from "node:fs/promises";
 import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { mapManagedGoalLayout } from "./managed-goal-admission";
 import { dirname, isAbsolute, join } from "node:path";
@@ -353,6 +353,20 @@ export async function prepareCodexGoalLaunchPaths(
   await Promise.all(
     [...dirs].map((dir) => mkdir(dir, { recursive: true, mode: 0o700 })),
   );
+  const log = await open(input.logPath,
+    constants.O_CREAT | constants.O_APPEND | constants.O_WRONLY | constants.O_NOFOLLOW,
+    0o600);
+  try {
+    const info = await log.stat();
+    const currentUid = process.getuid?.();
+    if (!info.isFile() || info.nlink !== 1 ||
+        (currentUid !== undefined && info.uid !== currentUid)) {
+      throw new Error("codex_goal_log_file_invalid");
+    }
+    await log.chmod(0o600);
+  } finally {
+    await log.close();
+  }
 }
 
 export function buildCodexGoalStopTmuxCommand(

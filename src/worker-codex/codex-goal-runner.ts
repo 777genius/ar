@@ -295,6 +295,8 @@ async function runCodexGoalAdmitted(
   await mkdir(stateRootDir, { recursive: true, mode: 0o700 });
   const agentTempRoot = await ensureCodexAgentTempRoot({
     sourceEnv: config.sourceEnv,
+    sandboxTraverse: config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+      config.projectAccessScope !== undefined,
   });
 
   const controlInbox = new WorkerControlService({

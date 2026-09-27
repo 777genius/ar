@@ -50,6 +50,24 @@ describe('createCodexRuntimeTempRoot', () => {
     }
   });
 
+  it('grants traversal without listing job-local scratch for a scoped sandbox', async () => {
+    const jobRoot = await mkdtemp(join(tmpdir(), 'codex-agent-traverse-'));
+    const runtimeTempRoot = join(jobRoot, 'tmp');
+    const agentTempRoot = join(runtimeTempRoot, 'agent');
+    try {
+      await ensureCodexAgentTempRoot({ sourceEnv: {
+        SUBSCRIPTION_RUNTIME_JOB_ROOT: jobRoot,
+        SUBSCRIPTION_RUNTIME_TMPDIR: runtimeTempRoot,
+        TMPDIR: agentTempRoot,
+      }, sandboxTraverse: true });
+      for (const path of [jobRoot, runtimeTempRoot, agentTempRoot]) {
+        expect((await lstat(path)).mode & 0o777).toBe(0o701);
+      }
+    } finally {
+      await rm(jobRoot, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a symlinked runtime temp root', async () => {
     const jobRoot = await mkdtemp(join(tmpdir(), 'codex-agent-temp-job-'));
     const outsideRoot = await mkdtemp(join(tmpdir(), 'codex-agent-temp-outside-'));
