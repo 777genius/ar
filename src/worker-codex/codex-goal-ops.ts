@@ -3,10 +3,11 @@ export { buildCodexGoalForegroundArgv } from "./application/codex-goal-foregroun
 import type { CodexGoalLaunchManifestMetadata } from "./codex-goal-launch-manifest";
 import { isHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
 import { execFile } from "node:child_process";
+import { lstatSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { mapManagedGoalLayout } from "./managed-goal-admission";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import {
   AccessBoundary,
@@ -17,7 +18,7 @@ import {
   type RuntimeResultEnvelope,
   type RuntimeResultStatus,
 } from "@vioxen/subscription-runtime/worker-core";
-import { codexChildPath } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexChildPath } from "@vioxen/subscription-runtime/provider-codex";
 import {
   createCodexGoalResultRecorder,
   GitPatchPreserver,
@@ -218,6 +219,15 @@ export function buildCodexGoalNoTmuxCommand(input: CodexGoalLaunchInput): string
   const envAssignments: string[] = [
     `PATH=${shellQuote(codexChildPath(process.env))}`,
   ];
+  const mimoKeyFile = process.env.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE;
+  if (config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && mimoKeyFile) {
+    if (!isAbsolute(mimoKeyFile)) throw new Error("codex_goal_mimo_key_file_invalid");
+    const file = lstatSync(mimoKeyFile);
+    if (!file.isFile() || file.nlink !== 1 || file.uid !== process.getuid?.() || (file.mode & 0o077) !== 0) {
+      throw new Error("codex_goal_mimo_key_file_invalid");
+    }
+    envAssignments.push(`MIMO_TOKEN_PLAN_API_KEY=$(cat -- ${shellQuote(mimoKeyFile)})`);
+  }
   for (
     const [key, value] of hostedGlobalScanGuardEnvironment(
       config.sourceEnv ?? process.env,
