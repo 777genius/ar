@@ -18,7 +18,7 @@ import {
   type RuntimeResultEnvelope,
   type RuntimeResultStatus,
 } from "@vioxen/subscription-runtime/worker-core";
-import { CodexModelBackend, codexChildPath } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexChildPath, codexMimoApiKeyEnvVarDefault } from "@vioxen/subscription-runtime/provider-codex";
 import {
   createCodexGoalResultRecorder,
   GitPatchPreserver,
@@ -221,12 +221,16 @@ export function buildCodexGoalNoTmuxCommand(input: CodexGoalLaunchInput): string
   ];
   const mimoKeyFile = process.env.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE;
   if (config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && mimoKeyFile) {
+    if (config.mimoAccounts?.some((account) =>
+      account.envVarName && account.envVarName !== codexMimoApiKeyEnvVarDefault)) {
+      throw new Error("codex_goal_mimo_key_file_account_mapping_unsupported");
+    }
     if (!isAbsolute(mimoKeyFile)) throw new Error("codex_goal_mimo_key_file_invalid");
     const file = lstatSync(mimoKeyFile);
     if (!file.isFile() || file.nlink !== 1 || file.uid !== process.getuid?.() || (file.mode & 0o077) !== 0) {
       throw new Error("codex_goal_mimo_key_file_invalid");
     }
-    envAssignments.push(`MIMO_TOKEN_PLAN_API_KEY=$(cat -- ${shellQuote(mimoKeyFile)})`);
+    envAssignments.push(`${codexMimoApiKeyEnvVarDefault}=$(cat -- ${shellQuote(mimoKeyFile)})`);
   }
   for (
     const [key, value] of hostedGlobalScanGuardEnvironment(

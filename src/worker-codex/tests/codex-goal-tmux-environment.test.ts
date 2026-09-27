@@ -17,7 +17,7 @@ describe("Codex goal tmux environment", () => {
     const previous = process.env.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE;
     process.env.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE = keyFile;
     try {
-      const command = buildCodexGoalNoTmuxCommand({
+      const input: CodexGoalLaunchInput = {
         config: {
           jobRootDir: join(root, "job"), authRootDir: join(root, "auth"),
           workspacePath: join(root, "workspace"), promptPath: join(root, "prompt.md"),
@@ -26,9 +26,17 @@ describe("Codex goal tmux environment", () => {
         },
         cwd: root, logPath: join(root, "job.log"),
         cliCommand: ["subscription-runtime-codex-goal"],
-      });
+      };
+      const command = buildCodexGoalNoTmuxCommand(input);
       expect(command).toContain(`MIMO_TOKEN_PLAN_API_KEY=$(cat -- ${keyFile})`);
       expect(command).not.toContain("synthetic-private-key");
+      expect(() => buildCodexGoalNoTmuxCommand({
+        ...input,
+        config: {
+          ...input.config,
+          mimoAccounts: [{ name: "mimo-main", envVarName: "MIMO_TOKEN_PLAN_API_KEY_CUSTOM" }],
+        },
+      })).toThrow("codex_goal_mimo_key_file_account_mapping_unsupported");
     } finally {
       if (previous === undefined) delete process.env.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE;
       else process.env.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE = previous;
