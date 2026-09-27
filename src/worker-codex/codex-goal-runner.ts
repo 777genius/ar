@@ -71,6 +71,7 @@ import {
   codexGoalControlsForAccessBoundary,
 } from "./codex-goal-access-plan";
 import { readLocalGitHeadCommit } from "./codex-goal-git-revision";
+import { createCodexGoalTurnCheckpoint, codexGoalTurnCheckpointSocketPublisher, type CodexGoalTurnCheckpointPublisher } from "./codex-goal-turn-checkpoint";
 import { createCodexGoalResultRecorder } from "./codex-goal-runtime-result-io";
 import { writeCodexGoalProgress } from "./codex-goal-progress-io";
 import {
@@ -124,6 +125,10 @@ export type CodexGoalRunConfig = {
   readonly reasoningEffort?: CodexReasoningEffort;
   readonly serviceTier?: CodexServiceTier;
   readonly executionEngine?: CodexWorkerExecutionEngine;
+  /** Trusted operator Unix socket. Omission leaves all existing jobs unchanged. */
+  readonly checkpointPublisherSocketPath?: string;
+  /** Persisted safety requirement; a missing operator publisher fails admission. */
+  readonly checkpointRequired?: boolean;
   /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — an existing run config with no modelBackend is unaffected. */
   readonly modelBackend?: CodexModelBackend;
   readonly taskTimeoutMs?: number;
@@ -190,6 +195,7 @@ export type CodexGoalRunDeps = {
     options: FileBackendCodexSafeExecutorOptions,
   ) => CodexGoalExecutor;
   readonly observability?: ObservabilityPort;
+  readonly checkpointPublisher?: CodexGoalTurnCheckpointPublisher;
 };
 
 export type CodexGoalExecutor = {
@@ -260,6 +266,7 @@ async function runCodexGoalAdmitted(
     ...hostedTestEgressEvidence(config, providerEgressPolicy),
   });
   const baseCommit = await readLocalGitHeadCommit(config.workspacePath);
+  if (config.checkpointPublisherSocketPath && !baseCommit) throw new Error("checkpoint_initial_base_required");
   const linkedWorktreeHandoff = await codexGoalLinkedWorktreeHandoffPreflight({
     config,
     prompt,
@@ -304,6 +311,8 @@ async function runCodexGoalAdmitted(
       ((options) => new FileBackendCodexSafeExecutor(options))
     )(buildCodexGoalExecutorOptions({
       config,
+      ...(baseCommit ? { initialBaseCommit: baseCommit } : {}),
+      ...(deps.checkpointPublisher ? { checkpointPublisher: deps.checkpointPublisher } : {}),
       providerEgressPolicy,
       ...(appServerProcessFactory ? { appServerProcessFactory } : {}),
       stateRootDir,
@@ -419,6 +428,8 @@ async function runCodexGoalAdmitted(
 
 export function buildCodexGoalExecutorOptions(input: {
   readonly config: CodexGoalRunConfig;
+  readonly initialBaseCommit?: string;
+  readonly checkpointPublisher?: CodexGoalTurnCheckpointPublisher;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly appServerProcessFactory?: CodexAppServerProcessFactory;
   readonly stateRootDir: string;
@@ -429,6 +440,16 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
 }): FileBackendCodexSafeExecutorOptions {
   const { config } = input;
+  const checkpointPublisher = input.checkpointPublisher ?? (config.checkpointPublisherSocketPath
+    ? codexGoalTurnCheckpointSocketPublisher(config.checkpointPublisherSocketPath) : undefined);
+  if (config.checkpointRequired && !checkpointPublisher) throw new Error("checkpoint_publisher_required");
+  if (checkpointPublisher && (!input.initialBaseCommit || (config.executionEngine ?? "app-server-goal") !== "app-server-goal")) {
+    throw new Error("checkpoint_requires_git_app_server_goal");
+  }
+  const completedTurnCheckpoint = checkpointPublisher && input.initialBaseCommit
+    ? createCodexGoalTurnCheckpoint({ jobId: config.jobId ?? config.taskId,
+        taskId: config.taskId, jobRootDir: config.jobRootDir, workspacePath: config.workspacePath,
+        initialBaseCommit: input.initialBaseCommit, publisher: checkpointPublisher }) : undefined;
   const modelBackend = config.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
   const isMimo = modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const mimoAccountsByName = new Map(
@@ -449,6 +470,7 @@ export function buildCodexGoalExecutorOptions(input: {
       : {}),
     stateRootDir: input.stateRootDir,
     terminalCheckpointJobRootDir: config.jobRootDir,
+    ...(completedTurnCheckpoint ? { completedTurnCheckpoint } : {}),
     ...(input.executionGeneration === undefined ? {} : { executionGeneration: input.executionGeneration }),
     ...(config.runtimeHomeRootDir === undefined ? {} : { runtimeHomeRootDir: config.runtimeHomeRootDir }),
     accountCapacityStore: isMimo
@@ -929,4 +951,3 @@ async function codexExceptionRuntimeResultInput(input: {
     details: { ...(details ?? {}), executionGeneration: input.executionGeneration },
   };
 }
-

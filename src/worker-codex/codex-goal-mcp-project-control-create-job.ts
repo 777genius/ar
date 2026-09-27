@@ -52,6 +52,7 @@ export async function projectControlCreateCodexGoalJobView(
   const requested = projectControlChildManifestInput({
     args: args as JobCreateMcpArgs,
     scope: controller.scope,
+    controllerCheckpointRequired: controller.controller.checkpointRequired,
     registryRootDir: controller.registryRootDir,
   });
   if (

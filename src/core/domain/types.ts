@@ -333,6 +333,7 @@ export enum AgentRuntimeFailureCode {
   BudgetExceeded = "budget_exceeded",
   ProviderRuntimeUnavailable = "provider_runtime_unavailable",
   CleanupUnconfirmed = "cleanup_unconfirmed",
+  CheckpointUnprotected = "checkpoint_unprotected",
   UnknownRuntimeFailure = "unknown_runtime_failure",
 }
 

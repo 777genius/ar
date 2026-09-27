@@ -1,4 +1,5 @@
 import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
+import { AppServerTurnCheckpointError } from "./app-server/application/app-server-turn-checkpoint";
 import type { ProviderFailure } from "@vioxen/subscription-runtime/core";
 import { classifyCodexRuntimeFailure } from "./codex-cli-domain";
 import { CodexAppServerTurnError } from "./app-server/application/app-server-client";
@@ -8,6 +9,19 @@ import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog"
 import { isCodexAppServerRateLimitsRejectedError } from "./app-server/application/app-server-rate-limits-monitor";
 
 export function classifyCodexFailure(error: unknown): ProviderFailure {
+  if (error instanceof AppServerTurnCheckpointError) {
+    const reason = error.cause instanceof Error &&
+      ["handoff_base_commit_mismatch", "handoff_head_changed_during_materialization", "checkpoint_head_moved_during_publish"].includes(error.cause.message)
+      ? "head_moved" : "checkpoint_unprotected";
+    return {
+      code: "checkpoint_unprotected",
+      retryable: false,
+      reconnectRequired: false,
+      safeMessage: "Completed Codex turn was not acknowledged offsite; inspect the local checkpoint and publisher before recovery. Do not replay this turn automatically.",
+      causeCategory: "checkpoint_unprotected",
+      details: { checkpointReason: reason },
+    };
+  }
   if (
     error instanceof AppServerUsageError &&
     error.constructor === AppServerUsageError &&

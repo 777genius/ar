@@ -22,6 +22,7 @@ import {
 } from "../domain/app-server-types";
 import { CodexAppServerClient } from "./app-server-client";
 import { AppServerGoalRunner } from "./app-server-goal-runner";
+import type { AppServerCompletedTurnCheckpoint } from "./app-server-turn-checkpoint";
 import { AppServerTurnRunner } from "./app-server-turn-runner";
 import type { CodexAppServerRateLimitsSnapshotHandler } from "./app-server-rate-limits-monitor";
 
@@ -76,6 +77,7 @@ export class AppServerSlotPool {
       readonly processFactory: CodexAppServerProcessFactory;
       readonly signalChildProcess: CodexAppServerChildProcessSignaler;
       readonly runStore: ManagedRunStorePort;
+      readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
       readonly executionProfile: ResolvedCodexExecutionProfile;
       readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
       readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
@@ -225,6 +227,7 @@ export class AppServerSlotPool {
       goalRunner: new AppServerGoalRunner({
         client,
         runStore: this.options.runStore,
+        ...(this.options.completedTurnCheckpoint ? { completedTurnCheckpoint: this.options.completedTurnCheckpoint } : {}),
       }),
       sessionHash: input.sessionHash,
     };

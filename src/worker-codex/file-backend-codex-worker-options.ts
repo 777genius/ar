@@ -1,5 +1,5 @@
 import type { AgentRuntimeToolName, ClockPort, ObservabilityPort, RuntimeDeps } from "@vioxen/subscription-runtime/core";
-import { CodexModelBackend, type CodexExecutionProfile, type CodexProviderEgressPolicy, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, type AppServerCompletedTurnCheckpoint, type CodexExecutionProfile, type CodexProviderEgressPolicy, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
 import type { CommandPolicy } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 import type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
@@ -42,6 +42,7 @@ export type FileBackendCodexWorkerOptions = {
   /** Already admitted by the trusted host; never taken from job configuration. */
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly appServerProcessFactory?: CodexAppServerProcessFactory;
+  readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
   readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
   readonly executionProfile?: CodexExecutionProfile;
   readonly boundedWorkspaceTools?: {
@@ -124,6 +125,9 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
     // MiMo's egress domain is fixed and derived from modelBackend; it is not
     // a host-configurable input, unlike the ChatGPT/test-qualification profiles.
     throw new Error("file_backend_codex_mimo_provider_egress_policy_not_configurable");
+  }
+  if (options.completedTurnCheckpoint && (options.executionEngine ?? "app-server") !== "app-server-goal") {
+    throw new Error("checkpoint_requires_app_server_goal_engine");
   }
   const hostedGlobalScanGuard =
     options.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";

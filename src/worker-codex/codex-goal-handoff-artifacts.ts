@@ -465,7 +465,7 @@ async function gitChangedPaths(
   worktreeIndexEnv: NodeJS.ProcessEnv,
   gitBinaryPath?: string,
 ): Promise<readonly string[]> {
-  const [tracked, untracked] = await Promise.all([
+  const [tracked, untracked, stagedAdditions] = await Promise.all([
     gitNullPaths(workspacePath, [
       "diff",
       "--no-ext-diff",
@@ -481,11 +481,27 @@ async function gitChangedPaths(
       "--exclude-standard",
       "-z",
     ], worktreeIndexEnv, gitBinaryPath),
+    gitLiveIndexAddedPaths(workspacePath, baseCommit, gitBinaryPath),
   ]);
-  if (tracked.length + untracked.length > maxChangedFiles) {
+  const changed = uniqueSorted([...tracked, ...untracked, ...stagedAdditions]
+    .map(assertSafeRelativePath));
+  if (changed.length > maxChangedFiles) {
     throw new Error("handoff_changed_file_limit_exceeded");
   }
-  return uniqueSorted([...tracked, ...untracked].map(assertSafeRelativePath));
+  return changed;
+}
+
+async function gitLiveIndexAddedPaths(
+  workspacePath: string,
+  baseCommit: string,
+  gitBinaryPath?: string,
+): Promise<readonly string[]> {
+  // Forced additions can match .gitignore. The synthetic HEAD index cannot
+  // see them, and --others --exclude-standard deliberately omits them.
+  return gitNullPaths(workspacePath, [
+    "diff", "--cached", "--no-ext-diff", "--name-only", "--no-renames",
+    "--diff-filter=A", "-z", baseCommit, "--",
+  ], undefined, gitBinaryPath);
 }
 
 async function assertSafeChangedFiles(input: {
@@ -727,14 +743,16 @@ async function buildDeterministicPatch(input: {
   readonly worktreeIndexEnv: NodeJS.ProcessEnv;
   readonly gitBinaryPath?: string;
 }): Promise<string> {
-  const untracked = new Set(
-    await gitNullPaths(input.workspacePath, [
+  const addedPaths = new Set([
+    ...await gitNullPaths(input.workspacePath, [
       "ls-files",
       "--others",
       "--exclude-standard",
       "-z",
     ], input.worktreeIndexEnv, input.gitBinaryPath),
-  );
+    ...await gitLiveIndexAddedPaths(input.workspacePath, input.baseCommit,
+      input.gitBinaryPath),
+  ]);
   const trackedPatch = await gitOutput(
     input.workspacePath,
     [
@@ -752,7 +770,7 @@ async function buildDeterministicPatch(input: {
   const parts = trackedPatch ? [ensureTrailingNewline(trackedPatch)] : [];
   let byteLength = Buffer.byteLength(trackedPatch);
   for (const changedPath of input.changedPaths.filter((path) =>
-    untracked.has(path),
+    addedPaths.has(path),
   )) {
     const remaining = input.limits.maxPatchBytes - byteLength;
     if (remaining <= 0) throw new Error("handoff_patch_byte_limit_exceeded");
@@ -774,23 +792,24 @@ async function buildDeterministicPatch(input: {
   return patch;
 }
 
-async function assertExactPatchSecretSafe(input: {
+export async function assertExactPatchSecretSafe(input: {
   readonly workspacePath: string;
   readonly jobRootDir: string;
   readonly baseCommit: string;
   readonly patch: string;
   readonly changedPaths: readonly string[];
-  readonly limits: HandoffArtifactLimits;
+  readonly limits?: Partial<HandoffArtifactLimits>;
 }): Promise<number> {
   try {
+    const limits = handoffArtifactLimits(input.limits);
     return await assertGitPatchBlobsSecretSafe({
       workspacePath: input.workspacePath,
       baseCommit: input.baseCommit,
       patch: input.patch,
       changedPaths: input.changedPaths,
       tempRootDir: input.jobRootDir,
-      maxFileBytes: input.limits.maxFileBytes,
-      maxTotalFileBytes: input.limits.maxTotalFileBytes,
+      maxFileBytes: limits.maxFileBytes,
+      maxTotalFileBytes: limits.maxTotalFileBytes,
     });
   } catch (error) {
     throw handoffPatchValidationError(error);

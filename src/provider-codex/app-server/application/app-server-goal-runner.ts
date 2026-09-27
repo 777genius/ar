@@ -39,12 +39,14 @@ import {
   assertManagedRunCanResume,
   managedRunFailureFromError,
 } from "./app-server-managed-run-mapper";
+import { AppServerTurnCheckpointError, type AppServerCompletedTurnCheckpoint } from "./app-server-turn-checkpoint";
 
 export class AppServerGoalRunner {
   constructor(
     private readonly options: {
       readonly client: CodexAppServerClient;
       readonly runStore: ManagedRunStorePort;
+      readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
     },
   ) {}
 
@@ -309,6 +311,18 @@ export class AppServerGoalRunner {
         untrustedUsageSinceGoal ||= turn.usagePoisoned;
         if (turn.error) throw turn.error;
         outputText = turn.outputText;
+
+        if (this.options.completedTurnCheckpoint) {
+          try {
+            await this.options.completedTurnCheckpoint({
+              runId: input.runId,
+              workspacePath: input.workspacePath,
+              turnNumber,
+            });
+          } catch (error) {
+            throw new AppServerTurnCheckpointError(error);
+          }
+        }
 
         const goal = await this.options.client.getGoal({
           threadId: input.threadId,

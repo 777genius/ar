@@ -6,6 +6,7 @@ import {
 } from "@vioxen/subscription-runtime/core";
 import {
   CodexModelBackend,
+  type AppServerCompletedTurnCheckpoint,
   codexApiKeyCredentialIdentity,
   codexMimoApiKeyEnvVarDefault,
   loadCodexApiKeyCredential,
@@ -82,6 +83,7 @@ export type FileBackendCodexSafeExecutorOptions = {
   readonly executorId?: string;
   readonly stateRootDir: string;
   readonly terminalCheckpointJobRootDir?: string;
+  readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
   readonly executionGeneration?: string;
   readonly runtimeHomeRootDir?: string;
   /**
@@ -274,6 +276,7 @@ export class FileBackendCodexSafeExecutor {
             },
             workerId: account.worker.workerId ?? workerId,
             workspacePath: options.workspacePath,
+            ...(options.completedTurnCheckpoint ? { completedTurnCheckpoint: options.completedTurnCheckpoint } : {}),
             ...(options.outputSchemas === undefined
               ? {}
               : { outputSchemas: options.outputSchemas }),
@@ -887,4 +890,3 @@ function safeExecutorAccountLabel(
     `slot-${index + 1}`
   );
 }
-

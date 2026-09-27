@@ -1,0 +1,160 @@
+import { createHash } from "node:crypto";
+import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
+import { request } from "node:http";
+import { assertExactPatchSecretSafe, captureCodexGoalExactWorkspacePatch, type HandoffArtifactLimits } from "./codex-goal-handoff-artifacts";
+import { assertSafeHandoffId } from "./codex-goal-handoff-artifact-guards";
+import { handoffGitText } from "./codex-goal-handoff-git-snapshot";
+import { publishImmutableTextArtifact } from "./local-immutable-text-artifact";
+
+const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
+
+export type CodexGoalTurnCheckpointManifest = {
+  readonly schemaVersion: 1;
+  readonly kind: "codex-goal-turn-checkpoint";
+  readonly jobId: string;
+  readonly taskId: string;
+  readonly initialBaseCommit: string;
+  readonly turnOrdinal: number;
+  readonly state: "patch" | "clean";
+  readonly changedPaths: readonly string[];
+  readonly patchSha256: string;
+};
+
+export type CodexGoalTurnCheckpointReceipt = {
+  readonly schemaVersion: 1;
+  readonly jobId: string;
+  readonly taskId: string;
+  readonly turnOrdinal: number;
+  readonly manifestSha256: string;
+  readonly patchSha256: string;
+  readonly remoteKey: string;
+};
+
+export type CodexGoalTurnCheckpointPublisher = (input: {
+  readonly manifest: CodexGoalTurnCheckpointManifest;
+  readonly manifestText: string;
+  readonly manifestSha256: string;
+  readonly patch: string;
+  readonly patchPath: string;
+  readonly manifestPath: string;
+}) => Promise<CodexGoalTurnCheckpointReceipt>;
+
+/** One instance per admitted goal job. The publisher belongs to the trusted Host. */
+export function createCodexGoalTurnCheckpoint(input: {
+  readonly jobId: string;
+  readonly taskId: string;
+  readonly jobRootDir: string;
+  readonly workspacePath: string;
+  readonly initialBaseCommit: string;
+  readonly publisher: CodexGoalTurnCheckpointPublisher;
+  readonly limits?: Partial<HandoffArtifactLimits>;
+  readonly testHooks?: Parameters<typeof captureCodexGoalExactWorkspacePatch>[0]["testHooks"];
+}): (turn: { readonly workspacePath: string; readonly runId: string; readonly turnNumber: number }) => Promise<void> {
+  assertSafeHandoffId(input.jobId, "checkpoint_job_id");
+  assertSafeHandoffId(input.taskId, "checkpoint_task_id");
+  if (!/^[0-9a-f]{40,64}$/.test(input.initialBaseCommit)) throw new Error("checkpoint_initial_base_invalid");
+  let ordinal = 0;
+  return async (turn) => {
+    if (turn.workspacePath !== input.workspacePath) throw new Error("checkpoint_workspace_mismatch");
+    // A second callback after failure must not publish a later state as if the
+    // unprotected turn had been acknowledged.
+    const turnOrdinal = ++ordinal;
+    const root = join(input.jobRootDir, "turn-checkpoints");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    const stat = await lstat(root);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) {
+      throw new Error("checkpoint_private_root_invalid");
+    }
+    const privateRoot = await realpath(root);
+    if (privateRoot !== root) throw new Error("checkpoint_root_symlink_invalid");
+    const capture = () => captureCodexGoalExactWorkspacePatch({
+      workspacePath: input.workspacePath,
+      expectedBaseCommit: input.initialBaseCommit,
+      enforceSingleWorkspaceLayer: false,
+      ...(input.limits ? { limits: input.limits } : {}),
+      ...(input.testHooks ? { testHooks: input.testHooks } : {}),
+    });
+    const snapshot = await capture();
+    // A clean capture returns early from the shared serializer. Scan it twice
+    // so a clean tombstone cannot retain a previous dirty patch by accident.
+    if (!snapshot && await capture() !== null) throw new Error("checkpoint_workspace_changed_during_capture");
+    const patch = snapshot?.patch ?? "";
+    if (snapshot) {
+      await assertExactPatchSecretSafe({ workspacePath: input.workspacePath,
+        jobRootDir: privateRoot, baseCommit: input.initialBaseCommit,
+        patch, changedPaths: snapshot.changedPaths,
+        ...(input.limits ? { limits: input.limits } : {}) });
+    }
+    const manifest: CodexGoalTurnCheckpointManifest = {
+      schemaVersion: 1,
+      kind: "codex-goal-turn-checkpoint",
+      jobId: input.jobId,
+      taskId: input.taskId,
+      initialBaseCommit: input.initialBaseCommit,
+      turnOrdinal,
+      state: snapshot ? "patch" : "clean",
+      changedPaths: snapshot?.changedPaths ?? [],
+      patchSha256: sha256(patch),
+    };
+    const manifestText = `${JSON.stringify(manifest)}\n`;
+    const manifestSha256 = sha256(manifestText);
+    const prefix = `${String(turnOrdinal).padStart(6, "0")}`;
+    const patchPath = join(root, `${prefix}.patch`);
+    const manifestPath = join(root, `${prefix}.manifest.json`);
+    for (const [path, content] of [[patchPath, patch], [manifestPath, manifestText]] as const) {
+      await publishImmutableTextArtifact({ path, content,
+        existingPathUnsafeError: "checkpoint_artifact_unsafe",
+        contentMismatchError: "checkpoint_artifact_conflict" });
+    }
+    const receipt = await input.publisher({ manifest, manifestText, manifestSha256, patch, patchPath, manifestPath });
+    if (!receipt || receipt.schemaVersion !== 1 || receipt.jobId !== input.jobId || receipt.taskId !== input.taskId ||
+      receipt.turnOrdinal !== turnOrdinal || receipt.manifestSha256 !== manifestSha256 ||
+      receipt.patchSha256 !== manifest.patchSha256 || typeof receipt.remoteKey !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$/.test(receipt.remoteKey)) {
+      throw new Error("checkpoint_receipt_invalid");
+    }
+    // Detect changes while the offsite publisher was working. Such a turn is
+    // unprotected until a later, explicit recovery captures the new state.
+    const after = await capture();
+    if ((after?.patch ?? "") !== patch || JSON.stringify(after?.changedPaths ?? []) !== JSON.stringify(manifest.changedPaths)) {
+      throw new Error("checkpoint_workspace_changed_during_publish");
+    }
+    if ((await handoffGitText(input.workspacePath, ["rev-parse", "--verify", "HEAD"])) !== input.initialBaseCommit) {
+      throw new Error("checkpoint_head_moved_during_publish");
+    }
+    if ((await readFile(patchPath, "utf8")) !== patch || (await readFile(manifestPath, "utf8")) !== manifestText) {
+      throw new Error("checkpoint_artifact_changed_during_publish");
+    }
+    const safeReceipt: CodexGoalTurnCheckpointReceipt = {
+      schemaVersion: 1, jobId: input.jobId, taskId: input.taskId, turnOrdinal,
+      manifestSha256, patchSha256: manifest.patchSha256, remoteKey: receipt.remoteKey,
+    };
+    await publishImmutableTextArtifact({ path: join(root, `${prefix}.receipt.json`),
+      content: `${JSON.stringify(safeReceipt)}\n`, existingPathUnsafeError: "checkpoint_receipt_unsafe",
+      contentMismatchError: "checkpoint_receipt_conflict" });
+  };
+}
+
+/** Fixed Unix socket protocol; no shell, provider command, or credentials. */
+export function codexGoalTurnCheckpointSocketPublisher(socketPath: string): CodexGoalTurnCheckpointPublisher {
+  if (!isAbsolute(socketPath) || socketPath.includes("\0")) throw new Error("checkpoint_socket_path_invalid");
+  return async (input) => {
+    const body = JSON.stringify({ schemaVersion: 1, manifest: input.manifestText, patch: Buffer.from(input.patch).toString("base64"), manifestSha256: input.manifestSha256, patchSha256: input.manifest.patchSha256 });
+    const response = await new Promise<string>((resolve, reject) => {
+      const req = request({ socketPath, method: "POST", path: "/v1/codex-goal-turn-checkpoints", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) }, timeout: 120_000 }, (res) => {
+        if (res.statusCode !== 200) { res.resume(); reject(new Error("checkpoint_publisher_rejected")); return; }
+        const chunks: Buffer[] = [];
+        let size = 0;
+        res.on("data", (chunk: Buffer) => { size += chunk.length; if (size > 16_384) { req.destroy(new Error("checkpoint_receipt_too_large")); return; } chunks.push(chunk); });
+        res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        res.on("error", reject);
+      });
+      req.on("timeout", () => req.destroy(new Error("checkpoint_publisher_timeout")));
+      req.on("error", reject);
+      req.end(body);
+    });
+    try { return JSON.parse(response) as CodexGoalTurnCheckpointReceipt; }
+    catch { throw new Error("checkpoint_receipt_invalid_json"); }
+  };
+}

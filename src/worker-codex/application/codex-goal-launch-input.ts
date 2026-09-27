@@ -114,6 +114,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
       (stringValue(merged.serviceTier) ?? "default") as NonNullable<CodexGoalRunConfig["serviceTier"]>,
     executionEngine:
       (stringValue(merged.executionEngine) ?? "app-server-goal") as NonNullable<CodexGoalRunConfig["executionEngine"]>,
+    ...(booleanValue(merged.checkpointRequired) ? { checkpointRequired: true } : {}),
     ...optionalCodexGoalModelBackend(merged.modelBackend),
     codexBinaryPath: stringValue(merged.codexBinaryPath) ?? "codex",
     ...controlModes,
