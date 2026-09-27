@@ -14,9 +14,15 @@ not supplied a publisher socket again.
 Project-control child jobs inherit a required marker from their controller,
 even when a refill request omits or sets `checkpointRequired: false`. The
 publisher socket path remains Host supplied and is never part of an MCP child
-manifest.
+manifest. A brokered `project_start` reads the Host setting and puts the
+absolute socket path in the trusted child command; a required child launch
+without that setting fails before the child process starts.
 
 The job's private durable root receives immutable
+`turn-checkpoints/identity.json` at admission, before constructing the
+executor or provider, even when no turn has completed. It pins the job, task,
+and initial Git HEAD. Each turn first records a durable ordinal intent, then
+publishes immutable
 `turn-checkpoints/000001.patch`, `000001.manifest.json`, and, only after
 acknowledgement and a final state check, `000001.receipt.json`. Each subsequent
 completed turn gets the next ordinal. The manifest identifies job, task,
@@ -27,7 +33,11 @@ manifest's `initialBaseCommit` and applying the patch. Restore `clean` by
 checking out that commit without applying an earlier patch. A moved HEAD fails
 closed; local commits are not represented by a patch against the new HEAD.
 On relaunch, admission validates the complete local patch, manifest, and
-receipt history before starting the provider. Ordinals continue from the last
+receipt history and the pinned identity before starting the provider. File
+contents and directory entries are synced before continuation is acknowledged.
+Once the checkpoint root exists, later launches also require the Host publisher
+setting even if a stored manifest omits the marker.
+Ordinals continue from the last
 acknowledged checkpoint. Partial or mismatched history requires manual review;
 the runtime does not replay or overwrite a checkpoint.
 

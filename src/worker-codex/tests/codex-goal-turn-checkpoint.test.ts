@@ -10,6 +10,11 @@ import { assertCodexGoalTurnCheckpointHistory, createCodexGoalTurnCheckpoint, ty
 import { runConfigFromFlags } from "../codex-goal-cli-run-config";
 import { parseFlags } from "../codex-goal-cli-support";
 import { buildCodexGoalExecutorOptions } from "../codex-goal-runner";
+import { runCodexGoal, codexGoalAccountSlots } from "../codex-goal-runner";
+import { bindProjectChildCheckpointPublisher } from "../codex-goal-mcp-project-broker";
+import { buildCodexGoalForegroundArgv } from "../application/codex-goal-foreground-command";
+import "./hosted-test-egress-default-fixture";
+import "./unmanaged-goal-host-fixture";
 
 const exec = promisify(execFile);
 const roots: string[] = [];
@@ -47,6 +52,93 @@ function fakePublisher(receipts: string[]): CodexGoalTurnCheckpointPublisher {
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 describe("Codex goal turn checkpoint", () => {
+  it("binds the Host socket into a brokered child command without manifest authority or raw env", async () => {
+    const f = await fixture();
+    const socket = join(f.root, "publisher.sock");
+    const launch = { config: { jobRootDir: f.jobRootDir, workspacePath: f.workspacePath,
+      authRootDir: join(f.root, "auth"), promptPath: join(f.root, "prompt"), taskId: "task",
+      accounts: codexGoalAccountSlots(["account-a"]), checkpointRequired: true,
+      checkpointPublisherSocketPath: "/untrusted/socket" },
+      cwd: f.root, cliCommand: ["node", "goal.js"], logPath: join(f.root, "log") } as const;
+    const child = bindProjectChildCheckpointPublisher({ launch,
+      controllerCheckpointRequired: true, childCheckpointRequired: true,
+      hostEnv: { SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET: socket,
+        RAW_PROVIDER_SECRET: "must-not-leak" } });
+    const argv = buildCodexGoalForegroundArgv(child);
+    expect(argv).toContain("--require-turn-checkpoint");
+    expect(argv.slice(argv.indexOf("--checkpoint-publisher-socket"), argv.indexOf("--checkpoint-publisher-socket") + 2))
+      .toEqual(["--checkpoint-publisher-socket", socket]);
+    expect(argv.join(" ")).not.toContain("/untrusted/socket");
+    expect(argv.join(" ")).not.toContain("must-not-leak");
+    expect(() => bindProjectChildCheckpointPublisher({ launch,
+      controllerCheckpointRequired: true, childCheckpointRequired: true, hostEnv: {} }))
+      .toThrow("checkpoint_publisher_required");
+  });
+
+  it("pins an empty history before executor construction and rejects a moved HEAD on relaunch", async () => {
+    const f = await fixture();
+    const promptPath = join(f.root, "prompt.md");
+    await writeFile(promptPath, "TEST only\n");
+    const config = { jobId: "job", taskId: "task", jobRootDir: f.jobRootDir,
+      workspacePath: f.workspacePath, authRootDir: join(f.root, "auth"), promptPath,
+      accounts: codexGoalAccountSlots(["account-a"]) };
+    let constructors = 0;
+    const deps = { checkpointPublisher: fakePublisher([]), createExecutor: () => {
+      constructors++;
+      throw new Error("executor_probe");
+    } };
+    await expect(runCodexGoal(config, deps)).rejects.toThrow("executor_probe");
+    expect(constructors).toBe(1);
+    expect(JSON.parse(await readFile(join(f.jobRootDir, "turn-checkpoints/identity.json"), "utf8")))
+      .toMatchObject({ jobId: "job", taskId: "task", initialBaseCommit: f.initialBaseCommit });
+    await expect(runCodexGoal(config, { createExecutor: deps.createExecutor }))
+      .rejects.toThrow("checkpoint_publisher_required");
+    expect(constructors).toBe(1);
+    await writeFile(join(f.workspacePath, "base.txt"), "new base\n");
+    await git(f.workspacePath, "add", "base.txt");
+    await git(f.workspacePath, "commit", "-qm", "moved HEAD");
+    await expect(runCodexGoal(config, deps)).rejects.toThrow("checkpoint_identity_mismatch");
+    expect(constructors).toBe(1);
+  });
+
+  it("keeps an intent when capture fails before the first artifact and blocks ordinal reuse", async () => {
+    const f = await fixture();
+    const input = { ...f, jobId: "job", taskId: "task", publisher: fakePublisher([]) };
+    await writeFile(join(f.workspacePath, "base.txt"), "new base\n");
+    await git(f.workspacePath, "add", "base.txt");
+    await git(f.workspacePath, "commit", "-qm", "moved HEAD");
+    await expect(createCodexGoalTurnCheckpoint(input)({ workspacePath: f.workspacePath,
+      runId: "run", turnNumber: 1 })).rejects.toThrow("handoff_base_commit_mismatch");
+    expect(await readFile(join(f.jobRootDir, "turn-checkpoints/000001.intent"), "utf8"))
+      .toContain('"turnOrdinal":1');
+    await expect(assertCodexGoalTurnCheckpointHistory(input)).rejects.toThrow("checkpoint_history_incomplete");
+  });
+
+  it("fails closed at patch, manifest, and temporary publication boundaries", async () => {
+    for (const remaining of ["intent-and-patch", "before-receipt", "temporary-file"] as const) {
+      const f = await fixture();
+      const input = { ...f, jobId: "job", taskId: "task", publisher: fakePublisher([]) };
+      const root = join(f.jobRootDir, "turn-checkpoints");
+      if (remaining === "before-receipt") {
+        await expect(createCodexGoalTurnCheckpoint({ ...input, publisher: async () => {
+          throw new Error("publisher_interrupted");
+        } })({ workspacePath: f.workspacePath, runId: "run", turnNumber: 1 }))
+          .rejects.toThrow("publisher_interrupted");
+        expect(await readFile(join(root, "000001.manifest.json"), "utf8")).toContain('"turnOrdinal":1');
+      } else if (remaining === "intent-and-patch") {
+        await createCodexGoalTurnCheckpoint(input)({ workspacePath: f.workspacePath, runId: "run", turnNumber: 1 });
+        await rm(join(root, "000001.manifest.json"));
+        await rm(join(root, "000001.receipt.json"));
+      } else {
+        await assertCodexGoalTurnCheckpointHistory(input);
+        await writeFile(join(root, ".000001.patch.interrupted.tmp"), "partial");
+      }
+      await expect(assertCodexGoalTurnCheckpointHistory(input))
+        .rejects.toThrow(remaining === "temporary-file" ? "checkpoint_history_invalid" : "checkpoint_history_incomplete");
+      await expect(createCodexGoalTurnCheckpoint(input)({ workspacePath: f.workspacePath,
+        runId: "relaunch", turnNumber: 1 })).rejects.toThrow();
+    }
+  });
   it("keeps a registered opt-in required when the operator socket is absent", async () => {
     const f = await fixture();
     const config = runConfigFromFlags(parseFlags([

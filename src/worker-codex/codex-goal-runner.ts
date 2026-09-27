@@ -11,7 +11,7 @@ import {
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { mapManagedGoalLayout, usesManagedJobLayout } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -220,6 +220,21 @@ export async function runCodexGoal(
     sourceEnv: config.sourceEnv ?? process.env,
   });
   const providerEgressPolicy = codexProviderEgressPolicy(admittedEgress.profileId);
+  const baseCommit = await readLocalGitHeadCommit(config.workspacePath);
+  const checkpointRootExists = await lstat(join(config.jobRootDir, "turn-checkpoints"))
+    .then(() => true, (error: unknown) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+      throw error;
+    });
+  if ((config.checkpointRequired || checkpointRootExists) &&
+    !config.checkpointPublisherSocketPath && !deps.checkpointPublisher) {
+    throw new Error("checkpoint_publisher_required");
+  }
+  if (config.checkpointPublisherSocketPath || deps.checkpointPublisher) {
+    if (!baseCommit) throw new Error("checkpoint_initial_base_required");
+    await assertCodexGoalTurnCheckpointHistory({ jobId: config.jobId ?? config.taskId,
+      taskId: config.taskId, jobRootDir: config.jobRootDir, initialBaseCommit: baseCommit });
+  }
   const appServerProcessFactory = admitHostedReadonlyInputs({
     jobId: config.jobId ?? config.taskId,
     jobRootDir: config.jobRootDir,
@@ -229,7 +244,7 @@ export async function runCodexGoal(
     sourceEnv: config.sourceEnv ?? process.env,
   });
   return new LocalTerminalCheckpointAdmission(config.jobRootDir).withWriter(
-    () => runCodexGoalAdmitted(config, deps, providerEgressPolicy, appServerProcessFactory),
+    () => runCodexGoalAdmitted(config, deps, providerEgressPolicy, appServerProcessFactory, baseCommit),
   );
 }
 
@@ -238,6 +253,7 @@ async function runCodexGoalAdmitted(
   deps: CodexGoalRunDeps,
   providerEgressPolicy: CodexProviderEgressPolicy,
   appServerProcessFactory: CodexAppServerProcessFactory | undefined,
+  baseCommit: string | undefined,
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   const prompt = await readFile(config.promptPath, "utf8");
   const progressPath = codexGoalProgressPath(config);
@@ -265,12 +281,6 @@ async function runCodexGoalAdmitted(
     accountCount: config.accounts.length,
     ...hostedTestEgressEvidence(config, providerEgressPolicy),
   });
-  const baseCommit = await readLocalGitHeadCommit(config.workspacePath);
-  if (config.checkpointPublisherSocketPath || deps.checkpointPublisher) {
-    if (!baseCommit) throw new Error("checkpoint_initial_base_required");
-    await assertCodexGoalTurnCheckpointHistory({ jobId: config.jobId ?? config.taskId,
-      taskId: config.taskId, jobRootDir: config.jobRootDir, initialBaseCommit: baseCommit });
-  }
   const linkedWorktreeHandoff = await codexGoalLinkedWorktreeHandoffPreflight({
     config,
     prompt,

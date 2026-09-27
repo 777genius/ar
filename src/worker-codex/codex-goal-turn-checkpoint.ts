@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, realpath } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { request } from "node:http";
 import { assertExactPatchSecretSafe, captureCodexGoalExactWorkspacePatch, type HandoffArtifactLimits } from "./codex-goal-handoff-artifacts";
 import { assertSafeHandoffId } from "./codex-goal-handoff-artifact-guards";
@@ -10,7 +10,8 @@ import { publishImmutableTextArtifact } from "./local-immutable-text-artifact";
 
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 const receiptRemoteKey = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$/;
-const checkpointFile = /^(\d{6,})\.(patch|manifest\.json|receipt\.json)$/;
+const checkpointFile = /^(\d{6,})\.(intent|patch|manifest\.json|receipt\.json)$/;
+const identityFile = "identity.json";
 
 export type CodexGoalTurnCheckpointManifest = {
   readonly schemaVersion: 1;
@@ -54,6 +55,12 @@ type CheckpointIdentity = {
 async function privateCheckpointRoot(jobRootDir: string): Promise<string> {
   const root = join(jobRootDir, "turn-checkpoints");
   await mkdir(root, { recursive: true, mode: 0o700 });
+  // Persist the job and checkpoint directory entries before acknowledging
+  // the identity or any intent inside them.
+  for (const directory of [dirname(jobRootDir), jobRootDir]) {
+    const parent = await open(directory, "r");
+    try { await parent.sync(); } finally { await parent.close(); }
+  }
   const stat = await lstat(root);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) {
     throw new Error("checkpoint_private_root_invalid");
@@ -85,9 +92,21 @@ export async function assertCodexGoalTurnCheckpointHistory(input: CheckpointIden
   assertSafeHandoffId(input.taskId, "checkpoint_task_id");
   if (!/^[0-9a-f]{40,64}$/.test(input.initialBaseCommit)) throw new Error("checkpoint_initial_base_invalid");
   const root = await privateCheckpointRoot(input.jobRootDir);
+  const identityPath = join(root, identityFile);
   const names = await readdir(root);
+  const identityText = `${JSON.stringify({ schemaVersion: 1, jobId: input.jobId,
+    taskId: input.taskId, initialBaseCommit: input.initialBaseCommit })}\n`;
+  if (!names.includes(identityFile)) {
+    if (names.length !== 0) throw new Error("checkpoint_identity_missing");
+    await publishImmutableTextArtifact({ path: identityPath, content: identityText,
+      existingPathUnsafeError: "checkpoint_identity_unsafe",
+      contentMismatchError: "checkpoint_identity_mismatch", durable: true });
+  } else if (await readCheckpointFile(identityPath, 4096) !== identityText) {
+    throw new Error("checkpoint_identity_mismatch");
+  }
   const byOrdinal = new Map<number, Set<string>>();
   for (const name of names) {
+    if (name === identityFile) continue;
     const match = checkpointFile.exec(name);
     if (!match) throw new Error("checkpoint_history_invalid");
     const ordinal = Number(match[1]);
@@ -101,8 +120,13 @@ export async function assertCodexGoalTurnCheckpointHistory(input: CheckpointIden
   const maxPatchBytes = input.limits?.maxPatchBytes ?? 16 * 1024 * 1024;
   for (let ordinal = 1; ordinal <= byOrdinal.size; ordinal++) {
     const kinds = byOrdinal.get(ordinal);
-    if (!kinds || kinds.size !== 3) throw new Error("checkpoint_history_incomplete");
+    if (!kinds || kinds.size !== 4) throw new Error("checkpoint_history_incomplete");
     const prefix = String(ordinal).padStart(6, "0");
+    if (await readCheckpointFile(join(root, `${prefix}.intent`), 4096) !==
+      `${JSON.stringify({ schemaVersion: 1, jobId: input.jobId, taskId: input.taskId,
+        initialBaseCommit: input.initialBaseCommit, turnOrdinal: ordinal })}\n`) {
+      throw new Error("checkpoint_history_mismatch");
+    }
     let manifest: CodexGoalTurnCheckpointManifest;
     let receipt: CodexGoalTurnCheckpointReceipt;
     let patch: string;
@@ -160,6 +184,14 @@ export function createCodexGoalTurnCheckpoint(input: {
     const turnOrdinal = ++ordinal;
     const root = await privateCheckpointRoot(input.jobRootDir);
     const privateRoot = root;
+    const prefix = `${String(turnOrdinal).padStart(6, "0")}`;
+    // Persist the ordinal before capture or offsite publication. A crash at
+    // any later boundary leaves an incomplete history and blocks relaunch.
+    await publishImmutableTextArtifact({ path: join(root, `${prefix}.intent`),
+      content: `${JSON.stringify({ schemaVersion: 1, jobId: input.jobId,
+        taskId: input.taskId, initialBaseCommit: input.initialBaseCommit, turnOrdinal })}\n`,
+      existingPathUnsafeError: "checkpoint_intent_unsafe",
+      contentMismatchError: "checkpoint_intent_conflict", durable: true });
     const capture = () => captureCodexGoalExactWorkspacePatch({
       workspacePath: input.workspacePath,
       expectedBaseCommit: input.initialBaseCommit,
@@ -191,13 +223,12 @@ export function createCodexGoalTurnCheckpoint(input: {
     };
     const manifestText = `${JSON.stringify(manifest)}\n`;
     const manifestSha256 = sha256(manifestText);
-    const prefix = `${String(turnOrdinal).padStart(6, "0")}`;
     const patchPath = join(root, `${prefix}.patch`);
     const manifestPath = join(root, `${prefix}.manifest.json`);
     for (const [path, content] of [[patchPath, patch], [manifestPath, manifestText]] as const) {
       await publishImmutableTextArtifact({ path, content,
         existingPathUnsafeError: "checkpoint_artifact_unsafe",
-        contentMismatchError: "checkpoint_artifact_conflict" });
+        contentMismatchError: "checkpoint_artifact_conflict", durable: true });
     }
     const receipt = await input.publisher({ manifest, manifestText, manifestSha256, patch, patchPath, manifestPath });
     if (!receipt || receipt.schemaVersion !== 1 || receipt.jobId !== input.jobId || receipt.taskId !== input.taskId ||
@@ -224,7 +255,7 @@ export function createCodexGoalTurnCheckpoint(input: {
     };
     await publishImmutableTextArtifact({ path: join(root, `${prefix}.receipt.json`),
       content: `${JSON.stringify(safeReceipt)}\n`, existingPathUnsafeError: "checkpoint_receipt_unsafe",
-      contentMismatchError: "checkpoint_receipt_conflict" });
+      contentMismatchError: "checkpoint_receipt_conflict", durable: true });
     } catch (error) {
       failed = true;
       throw error;
