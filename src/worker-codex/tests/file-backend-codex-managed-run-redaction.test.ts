@@ -115,6 +115,43 @@ describe("managed run recovery persistence", () => {
     }
   });
 
+  it("scrubs credential assignments embedded after noncredential labels", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "managed-run-embedded-"));
+    const store = new LocalFileManagedRunStore(rootDir, new DefaultRedactor());
+    const runId = "synthetic-embedded-run";
+    const path = join(rootDir, `${createHash("sha256").update(runId).digest("hex")}.json`);
+    try {
+      await store.complete({ runId,
+        outputText: 'Result: {"apiKey":"SYNTHETIC_EMBEDDED_API_KEY"}',
+        now: new Date("2026-09-27T00:00:00Z") });
+      expect(await readFile(path, "utf8")).not.toContain("SYNTHETIC_EMBEDDED_API_KEY");
+
+      await store.fail({ runId, failure: { code: "unknown_runtime_failure", retryable: true,
+        reconnectRequired: false, safeMessage: "failed",
+        details: { rawCause: "Error: providerSecret=SYNTHETIC_EMBEDDED_PROVIDER_SECRET" } },
+      now: new Date("2026-09-27T00:01:00Z") });
+      const persisted = await readFile(path, "utf8");
+      expect(persisted).not.toContain("SYNTHETIC_EMBEDDED_PROVIDER_SECRET");
+      expect(persisted).toContain("[redacted:credential-bearing-text]");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("scans a long safe token without blocking the managed-run store", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "managed-run-long-safe-"));
+    const store = new LocalFileManagedRunStore(rootDir, new DefaultRedactor());
+    try {
+      const outputText = "x".repeat(128 * 1024);
+      await store.complete({ runId: "synthetic-long-safe-run", outputText,
+        now: new Date("2026-09-27T00:00:00Z") });
+      const loaded = await store.get({ runId: "synthetic-long-safe-run" });
+      expect(loaded?.outputText).toBe(outputText);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  }, 3000);
+
   it("redacts registered secrets throughout the durable recovery packet", async () => {
     // Before the fix, the returned provider result could be redacted while the
     // original prompt, answer preview and provider state still leaked to disk.

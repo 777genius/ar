@@ -37,11 +37,8 @@ export function redactManagedRunValue<T>(value: T, redactor: RedactorPort): T {
       }
     }
     const redacted = redactor.redact(value);
-    const assignment = /["']?([a-z][a-z0-9_.-]*)["']?\s*[:=]\s*(?:["'][^"']*["']|[^\s,;}\]]+)/giu;
-    for (const match of redacted.matchAll(assignment)) {
-      if (isCredentialField(match[1]!)) {
-        return "[redacted:credential-bearing-text]" as T;
-      }
+    if (containsCredentialAssignment(redacted)) {
+      return "[redacted:credential-bearing-text]" as T;
     }
     redactor.assertNoKnownSecret(redacted, "managed-run-recovery-store");
     return redacted as T;
@@ -57,6 +54,36 @@ export function redactManagedRunValue<T>(value: T, redactor: RedactorPort): T {
     ])) as T;
   }
   return value;
+}
+
+function containsCredentialAssignment(text: string): boolean {
+  // Scan keys only. Consuming a value skips nested credential assignments,
+  // while an unanchored greedy regex rescans a long token quadratically.
+  for (let index = 0; index < text.length;) {
+    const first = text.charCodeAt(index);
+    if (!isAsciiLetter(first) && first !== 95) {
+      index += 1;
+      continue;
+    }
+    const start = index;
+    while (index < text.length && isKeyCharacter(text.charCodeAt(index))) index += 1;
+    if (index - start > 80) continue;
+    let separator = index;
+    if (text[separator] === '"' || text[separator] === "'") separator += 1;
+    while (separator < text.length && /\s/u.test(text[separator]!)) separator += 1;
+    if ((text[separator] === ":" || text[separator] === "=") &&
+        isCredentialField(text.slice(start, index))) return true;
+  }
+  return false;
+}
+
+function isAsciiLetter(code: number): boolean {
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function isKeyCharacter(code: number): boolean {
+  return isAsciiLetter(code) || (code >= 48 && code <= 57) ||
+    code === 95 || code === 45 || code === 46;
 }
 
 export function assertManagedRunIdentifiersSafe(record: ManagedRunRecord, redactor: RedactorPort): void {
