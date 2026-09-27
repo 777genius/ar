@@ -90,7 +90,7 @@ import {
   uniqueStrings,
 } from "./codex-goal-workspace-changes";
 import { resolveCodexGoalObjective } from "./codex-goal-objective";
-import type { CodexGoalMimoAccountSlot } from "./codex-goal-mimo-account-slots";
+import { resolveCodexGoalMimoEnvVarName, type CodexGoalMimoAccountSlot } from "./codex-goal-mimo-account-slots";
 export type {
   CodexGoalRuntimeEvent,
   CodexGoalRuntimeEventLevel,
@@ -517,9 +517,7 @@ export function buildCodexGoalExecutorOptions(input: {
         ...(isMimo
           ? {
               mimoApiKeyEnvVarName:
-                account.envVarName ??
-                mimoAccountsByName.get(account.name)?.envVarName ??
-                codexMimoApiKeyEnvVarDefault,
+                resolveCodexGoalMimoEnvVarName(account, mimoAccountsByName),
             }
           : {}),
         ...(!isMimo && input.providerEgressPolicy ? { providerEgressPolicy: input.providerEgressPolicy } : {}),

@@ -19,6 +19,7 @@ import {
   type RuntimeResultStatus,
 } from "@vioxen/subscription-runtime/worker-core";
 import { CodexModelBackend, codexChildPath, codexMimoApiKeyEnvVarDefault } from "@vioxen/subscription-runtime/provider-codex";
+import { resolveCodexGoalMimoEnvVarName } from "./codex-goal-mimo-account-slots";
 import {
   createCodexGoalResultRecorder,
   GitPatchPreserver,
@@ -221,8 +222,10 @@ export function buildCodexGoalNoTmuxCommand(input: CodexGoalLaunchInput): string
   ];
   const mimoKeyFile = process.env.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE;
   if (config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && mimoKeyFile) {
-    if (config.mimoAccounts?.some((account) =>
-      account.envVarName && account.envVarName !== codexMimoApiKeyEnvVarDefault)) {
+    const mimoAccountsByName = new Map((config.mimoAccounts ?? [])
+      .map((account) => [account.name, account] as const));
+    if (config.accounts.some((account) =>
+      resolveCodexGoalMimoEnvVarName(account, mimoAccountsByName) !== codexMimoApiKeyEnvVarDefault)) {
       throw new Error("codex_goal_mimo_key_file_account_mapping_unsupported");
     }
     if (!isAbsolute(mimoKeyFile)) throw new Error("codex_goal_mimo_key_file_invalid");
@@ -231,6 +234,7 @@ export function buildCodexGoalNoTmuxCommand(input: CodexGoalLaunchInput): string
       throw new Error("codex_goal_mimo_key_file_invalid");
     }
     envAssignments.push(`${codexMimoApiKeyEnvVarDefault}=$(cat -- ${shellQuote(mimoKeyFile)})`);
+    envAssignments.push(`SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE=${shellQuote(mimoKeyFile)}`);
   }
   for (
     const [key, value] of hostedGlobalScanGuardEnvironment(
