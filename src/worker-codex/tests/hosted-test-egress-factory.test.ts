@@ -206,7 +206,10 @@ describe("factory admitted policy propagation", () => {
       codexBinaryPath: "/synthetic/codex", encryptionKey: new Uint8Array(32),
       executionEngine: "app-server-goal", modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
       warmupPrompt: false, enforceProjectReadBoundary: true,
-      sourceEnv: { MIMO_TOKEN_PLAN_API_KEY: "synthetic-test-key" },
+      sourceEnv: {
+        MIMO_TOKEN_PLAN_API_KEY: "synthetic-test-key",
+        SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE: join(root, "synthetic-private-key"),
+      },
       appServerProcessFactory: input => {
         configPromise = readFile(join(input.env.CODEX_HOME!, "config.toml"), "utf8");
         return fake.create(input);
@@ -221,6 +224,8 @@ describe("factory admitted policy propagation", () => {
       expect(config).toContain('default_permissions = "hosted-project-read"');
       expect(config).toContain("[model_providers.mimo]");
       expect(config).toContain('env_key = "MIMO_TOKEN_PLAN_API_KEY"');
+      expect((config ?? "").split(`"${join(root, "synthetic-private-key")}" = "deny"`))
+        .toHaveLength(3);
       expect(config).toContain('\":root\" = "deny"');
       expect(config).toContain("token-plan-sgp.xiaomimimo.com");
       expect(config).not.toContain("api.openai.com");
