@@ -152,6 +152,14 @@ describe("managed run recovery persistence", () => {
         details: { rawCause: "application.integrations.subscriptionRuntime.providers.mimo.credentials.providerApiKey=SYNTHETIC_LONG_KEY" } },
       now: new Date("2026-09-27T00:04:00Z") });
       expect(await readFile(path, "utf8")).not.toContain("SYNTHETIC_LONG_KEY");
+
+      await store.fail({ runId, failure: { code: "unknown_runtime_failure", retryable: true,
+        reconnectRequired: false, safeMessage: "failed",
+        details: { rawCause: 'Result: {"api\\u004Bey":"SYNTHETIC_ESCAPED_FIELD_KEY"}' } },
+      now: new Date("2026-09-27T00:05:00Z") });
+      const escapedField = await readFile(path, "utf8");
+      expect(escapedField).not.toContain("SYNTHETIC_ESCAPED_FIELD_KEY");
+      expect(escapedField).toContain("[redacted:escaped-assignment-text]");
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }

@@ -42,6 +42,12 @@ function redactManagedRunValueAtDepth<T>(value: T, redactor: RedactorPort, seria
       }
     }
     const redacted = redactor.redact(value);
+    // An embedded or malformed JSON fragment cannot be parsed here. Escaped
+    // key characters can hide a credential field from the linear key scan,
+    // so discard the whole ambiguous assignment instead of persisting it.
+    if (/\\u[0-9a-f]{4}/iu.test(redacted) && /[:=]/u.test(redacted)) {
+      return "[redacted:escaped-assignment-text]" as T;
+    }
     if (containsCredentialAssignment(redacted)) {
       return "[redacted:credential-bearing-text]" as T;
     }
