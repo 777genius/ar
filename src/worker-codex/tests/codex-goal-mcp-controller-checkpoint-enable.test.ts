@@ -14,6 +14,7 @@ import {
 } from "../codex-goal-jobs";
 import { goalLaunchInput } from "../codex-goal-mcp-launch-input";
 import { bindProjectChildCheckpointPublisher } from "../codex-goal-mcp-project-broker";
+import { withCurrentControllerLaunchPolicy } from "../codex-goal-mcp-project-controller-launch-policy";
 import { callToolJson } from "./codex-goal-mcp-test-support";
 
 async function withSyntheticController(
@@ -63,6 +64,81 @@ async function withSyntheticController(
 }
 
 describe("existing controller checkpoint enable repair", () => {
+  it("serializes policy publication with an old unmarked child launch", async () => {
+    await withSyntheticController(async ({ client, root, registryRootDir, controllerJobId }) => {
+      const childJobId = "test-child-before-checkpoint";
+      const created = await callToolJson(client, "codex_goal_project_create_job", {
+        registryRootDir, controllerJobId, jobId: childJobId,
+        jobRootDir: join(root, "jobs", childJobId),
+        authRootDir: join(root, "auth"),
+        workspacePath: join(root, "worktrees", childJobId),
+        promptPath: join(root, "jobs", childJobId, "prompt.md"),
+        taskId: childJobId, accounts: ["account-a"], confirmCreate: true,
+      });
+      expect(created).toMatchObject({ ok: true });
+      const staleController = await readCodexGoalJob({ registryRootDir, jobId: controllerJobId });
+      const child = await readCodexGoalJob({ registryRootDir, jobId: childJobId });
+      expect(child.checkpointRequired).toBeUndefined();
+      const launch = await goalLaunchInput(codexGoalJobToArgs(child));
+      const scope = staleController.projectAccessScope!;
+      const loadCurrentController = async () => {
+        const controller = await readCodexGoalJob({ registryRootDir, jobId: controllerJobId });
+        return { registryRootDir, controller, scope: controller.projectAccessScope! };
+      };
+      const repairArgs = { registryRootDir, controllerJobId, jobId: controllerJobId,
+        checkpointRequired: true };
+      const preview = await callToolJson(client, "brokered_project_manifest_repair", repairArgs);
+
+      // Pause the child launch effect after binding its command. Publication
+      // cannot overtake an effect that still holds the policy lock.
+      let entered!: () => void;
+      let finish!: () => void;
+      const atLaunch = new Promise<void>((resolve) => { entered = resolve; });
+      const finishLaunch = new Promise<void>((resolve) => { finish = resolve; });
+      const start = withCurrentControllerLaunchPolicy({
+        registryRootDir, controllerJobId, expectedScope: scope, loadCurrentController,
+        effect: async (current) => {
+          const bound = bindProjectChildCheckpointPublisher({
+            launch, controllerCheckpointRequired: current.checkpointRequired === true,
+            childCheckpointRequired: child.checkpointRequired === true, hostEnv: {},
+          });
+          entered();
+          await finishLaunch;
+          return bound;
+        },
+      });
+      await atLaunch;
+      try {
+        const concurrentRepair = await callToolJson(client, "brokered_project_manifest_repair", {
+          ...repairArgs, confirmRepair: true,
+          expectedManifestSha256: preview.expectedManifestSha256,
+        });
+        expect(concurrentRepair).toMatchObject({ ok: false,
+          error: expect.stringContaining("Workspace is already locked") });
+        expect((await readCodexGoalJob({ registryRootDir, jobId: controllerJobId }))
+          .checkpointRequired).toBeUndefined();
+      } finally {
+        finish();
+      }
+      expect((await start).config.checkpointRequired).toBeUndefined();
+
+      const enabled = await callToolJson(client, "brokered_project_manifest_repair", {
+        ...repairArgs, confirmRepair: true,
+        expectedManifestSha256: preview.expectedManifestSha256,
+      });
+      expect(enabled).toMatchObject({ ok: true, manifest: { checkpointRequired: true } });
+      // The child and original controller objects are still unmarked. A start
+      // arriving after publication must use the reloaded controller policy.
+      await expect(withCurrentControllerLaunchPolicy({
+        registryRootDir, controllerJobId, expectedScope: scope, loadCurrentController,
+        effect: async (current) => bindProjectChildCheckpointPublisher({
+          launch, controllerCheckpointRequired: current.checkpointRequired === true,
+          childCheckpointRequired: child.checkpointRequired === true, hostEnv: {},
+        }),
+      })).rejects.toThrow("checkpoint_publisher_required");
+    });
+  });
+
   it("previews without publication, then enables inherited child policy and requires a Host socket", async () => {
     await withSyntheticController(async ({ client, root, registryRootDir, controllerJobId }) => {
       const args = { registryRootDir, controllerJobId, jobId: controllerJobId,
