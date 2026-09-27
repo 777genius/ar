@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import {
-  CodexJsonAgentDriver, CodexProviderEgressProfileId, codexProviderEgressPolicy,
+  CodexJsonAgentDriver, CodexModelBackend, CodexProviderEgressProfileId, codexProviderEgressPolicy,
   codexProviderEgressCliConfigArgs, sessionArtifactFromCodexAuthJson,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { codexAppServerProcessInvocation } from "../../provider-codex/app-server/adapters/node-app-server-process";
@@ -194,6 +194,38 @@ describe("factory admitted policy propagation", () => {
       expect(config).not.toContain('[sandbox_workspace_write]');
       expect(fake.requests.filter(r => r.method === "turn/start")[0]?.params)
         .toMatchObject({ permissions: "hosted-project-read" });
+    } finally { await driver.dispose(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("binds a brokered MiMo goal to the named read profile and fixed MiMo domain", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scoped-mimo-permissions-"));
+    const fake = new FakeAppServerFactory({ goalStatusesAfterTurns: ["complete"] });
+    let configPromise: Promise<string> | undefined;
+    const parts = runtime({
+      providerInstanceId: "synthetic-mimo", stateRootDir: join(root, "state"), workspacePath: root,
+      codexBinaryPath: "/synthetic/codex", encryptionKey: new Uint8Array(32),
+      executionEngine: "app-server-goal", modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      warmupPrompt: false, enforceProjectReadBoundary: true,
+      sourceEnv: { MIMO_TOKEN_PLAN_API_KEY: "synthetic-test-key" },
+      appServerProcessFactory: input => {
+        configPromise = readFile(join(input.env.CODEX_HOME!, "config.toml"), "utf8");
+        return fake.create(input);
+      },
+    });
+    const driver = parts.agentDriver as CodexJsonAgentDriver;
+    try {
+      await driver.runTask({ session: null, redactor, runner: new StaticRunner(""),
+        task: { kind: "structured-prompt", prompt: "offline synthetic MiMo" },
+        workspace: { path: root }, abortSignal: new AbortController().signal });
+      const config = await configPromise;
+      expect(config).toContain('default_permissions = "hosted-project-read"');
+      expect(config).toContain("[model_providers.mimo]");
+      expect(config).toContain('env_key = "MIMO_TOKEN_PLAN_API_KEY"');
+      expect(config).toContain('\":root\" = "deny"');
+      expect(config).toContain("token-plan-sgp.xiaomimimo.com");
+      expect(config).not.toContain("api.openai.com");
+      expect(fake.requests.find(r => r.method === "thread/start")?.params)
+        .toMatchObject({ permissions: "hosted-project-read", modelProvider: "mimo" });
     } finally { await driver.dispose(); await rm(root, { recursive: true, force: true }); }
   });
 });

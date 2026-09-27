@@ -293,6 +293,7 @@ function createCodexAgentDriver(input: {
     ? projectReadBoundaryConfigToml(providerEgressPolicy, executableReadPath,
         modelBackend, mimoApiKeyEnvVarName)
     : undefined;
+  const mimoConfigToml = workspaceToolsProfile?.configToml ?? projectConfigToml;
   if (executionEngine === "plain-exec") {
     return new CodexCliAgentDriver({
       codexBinaryPath: options.codexBinaryPath,
@@ -411,9 +412,8 @@ function createCodexAgentDriver(input: {
     reasoningEffort: options.reasoningEffort ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT,
     modelBackend,
     mimoApiKeyEnvVarName,
-    ...(modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
-        (workspaceToolsProfile || projectConfigToml)
-      ? { mimoConfigToml: workspaceToolsProfile?.configToml ?? projectConfigToml }
+    ...(modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && mimoConfigToml !== undefined
+      ? { mimoConfigToml }
       : {}),
     sourceEnv,
     ...(options.serviceTier === undefined
