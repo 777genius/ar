@@ -476,12 +476,21 @@ async function snapshotCodexSession(input: {
 export function codexJsonHomeConfigToml(input?: {
   readonly hooksEnabled?: boolean;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy | undefined;
+  readonly namedPermissions?: boolean;
   /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — omitting it keeps today's output byte-identical. */
   readonly modelBackend?: CodexModelBackend;
   /** Env var holding the MiMo Token Plan key. Only used when `modelBackend` is `XiaomiMimoTokenPlan`. */
   readonly mimoApiKeyEnvVarName?: string;
 }): string {
   const modelBackend = input?.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  const shellEnvKeys = [
+    "PATH", "HOME", "CI", "CODEX_HOME",
+    ...(input?.namedPermissions ? ["TMPDIR", "TMP", "TEMP"] : []),
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL",
+  ];
   const providerEgressPolicy =
     input?.providerEgressPolicy ??
     (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
@@ -490,7 +499,8 @@ export function codexJsonHomeConfigToml(input?: {
   return [
     'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
-    'sandbox_mode = "read-only"',
+    ...(input?.namedPermissions ? [] : ['sandbox_mode = "read-only"']),
+    ...(input?.namedPermissions ? ['default_permissions = "hosted-project-read"'] : []),
     'web_search = "disabled"',
     "disable_response_storage = true",
     ...(codexModelBackendExcludesConfigKey(modelBackend, "model_verbosity")
@@ -516,7 +526,7 @@ export function codexJsonHomeConfigToml(input?: {
     "",
     "[shell_environment_policy]",
     'inherit = "all"',
-    'include_only = ["PATH", "HOME", "CI", "CODEX_HOME", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL"]',
+    `include_only = [${shellEnvKeys.map((key) => JSON.stringify(key)).join(", ")}]`,
     "",
     ...(modelBackend === CodexModelBackend.OpenAiChatGpt ? [] : [
       codexModelBackendModelProvidersConfigToml({
@@ -524,7 +534,8 @@ export function codexJsonHomeConfigToml(input?: {
         envKeyName: input?.mimoApiKeyEnvVarName ?? "MIMO_TOKEN_PLAN_API_KEY",
       }),
     ]),
-    codexProviderEgressConfigToml(providerEgressPolicy),
+    codexProviderEgressConfigToml(providerEgressPolicy,
+      input?.namedPermissions ? { namedPermissions: true } : undefined),
   ].join("\n");
 }
 

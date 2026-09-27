@@ -1,14 +1,54 @@
 import { describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import {
   buildCodexGoalNoTmuxCommand,
+  prepareCodexGoalLaunchPaths,
   type CodexGoalLaunchInput,
 } from "../codex-goal-ops";
 
 describe("Codex goal tmux environment", () => {
+  it("pre-creates the tmux log with private file permissions", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codex-goal-private-log-"));
+    const input: CodexGoalLaunchInput = {
+      config: {
+        jobRootDir: join(root, "job"), authRootDir: join(root, "auth"),
+        workspacePath: join(root, "workspace"), promptPath: join(root, "prompt.md"),
+        taskId: "private-log", accounts: [{ name: "test-account" }],
+      },
+      cwd: root, logPath: join(root, "job", "worker.log"),
+      cliCommand: ["subscription-runtime-codex-goal"],
+    };
+    try {
+      await prepareCodexGoalLaunchPaths(input);
+      expect(statSync(input.logPath).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it("rejects an existing FIFO log path without blocking launch", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codex-goal-fifo-log-"));
+    const jobRoot = join(root, "job");
+    mkdirSync(jobRoot);
+    const logPath = join(jobRoot, "worker.log");
+    execFileSync("mkfifo", [logPath]);
+    const input: CodexGoalLaunchInput = {
+      config: {
+        jobRootDir: jobRoot, authRootDir: join(root, "auth"),
+        workspacePath: join(root, "workspace"), promptPath: join(root, "prompt.md"),
+        taskId: "fifo-log", accounts: [{ name: "test-account" }],
+      },
+      cwd: root, logPath, cliCommand: ["subscription-runtime-codex-goal"],
+    };
+    try {
+      await expect(prepareCodexGoalLaunchPaths(input)).rejects.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it("loads a MiMo key from a private file inside the worker shell without exposing its value in the launch command", () => {
     const root = mkdtempSync(join(tmpdir(), "mimo-key-launch-"));
     const keyFile = join(root, "key");

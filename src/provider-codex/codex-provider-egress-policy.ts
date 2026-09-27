@@ -81,12 +81,11 @@ export function codexProviderEgressNetworkAccessFromEnv(
 
 export function codexProviderEgressConfigToml(
   policy: CodexProviderEgressPolicy = codexProviderApiEgressPolicy(),
+  input?: { readonly namedPermissions?: boolean },
 ): string {
   return [
     "# Provider egress is selected by trusted host admission.",
-    "[sandbox_workspace_write]",
-    "network_access = true",
-    "",
+    ...(input?.namedPermissions ? [] : ["[sandbox_workspace_write]", "network_access = true", ""]),
     "[features.network_proxy]",
     "enabled = true",
     `domains = { ${tomlDomainRules(policy)} }`,
@@ -96,10 +95,10 @@ export function codexProviderEgressConfigToml(
 
 export function codexProviderEgressCliConfigArgs(
   policy: CodexProviderEgressPolicy = codexProviderApiEgressPolicy(),
+  input?: { readonly namedPermissions?: boolean },
 ): readonly string[] {
   return [
-    "--config",
-    "sandbox_workspace_write.network_access=true",
+    ...(input?.namedPermissions ? [] : ["--config", "sandbox_workspace_write.network_access=true"]),
     "--config",
     "features.network_proxy.enabled=true",
     "--config",

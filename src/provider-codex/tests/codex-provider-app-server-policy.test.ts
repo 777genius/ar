@@ -326,6 +326,67 @@ describe("Codex provider app-server adapter", () => {
     }
   });
 
+  it.each([
+    { label: "review", task: { kind: "review", prompt: "review only" }, profile: "hosted-project-read" },
+    { label: "edit", task: { kind: "structured-prompt", prompt: "edit files", controls: { editMode: "allow-edits" } }, profile: "hosted-project-write" },
+  ] as const)("sends hosted $label turns through the named project permission profile", async ({ task, profile }) => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-hosted-profile-test-"));
+    const fakeFactory = new FakeAppServerFactory();
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+          SUBSCRIPTION_RUNTIME_CODEX_EXTRA_WRITABLE_ROOTS: "/foreign-project" },
+        hostedPermissionProfiles: true,
+        processFactory: fakeFactory.create,
+        cleanThreadPrewarm: false,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+    try {
+      await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task,
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+      const thread = fakeFactory.requests.find(request => request.method === "thread/start")?.params;
+      const turn = fakeFactory.requests.find(request => request.method === "turn/start")?.params;
+      expect(thread?.permissions).toBe(profile);
+      expect(thread?.runtimeWorkspaceRoots).toEqual([workspace]);
+      expect(thread).not.toHaveProperty("sandbox");
+      expect(thread?.config).not.toHaveProperty("sandbox_mode");
+      expect(turn?.permissions).toBe(profile);
+      expect(turn).not.toHaveProperty("sandboxPolicy");
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects hosted native tools when no generated permission profiles are bound", () => {
+    expect(() => new CodexAppServerExecutionEngine({
+      codexBinaryPath: "/bin/codex-test",
+      sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
+    })).toThrow("hosted_permission_profiles_required_for_native_tools");
+  });
+
+  it("rejects inherited hosted marker when sourceEnv is omitted", () => {
+    const prior = process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND;
+    process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND = "hosted-codex-job";
+    try {
+      expect(() => new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+      })).toThrow("hosted_permission_profiles_required_for_native_tools");
+    } finally {
+      if (prior === undefined) delete process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND;
+      else process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND = prior;
+    }
+  });
+
   it("disables native tools while leaving MCP tools available", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-app-mcp-only-test-"));
     const fakeFactory = new FakeAppServerFactory();

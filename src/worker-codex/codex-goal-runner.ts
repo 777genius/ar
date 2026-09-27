@@ -70,6 +70,7 @@ import {
   buildCodexGoalAccessLaunchPlan,
   commandPolicyForHostedCodexGoal,
   codexGoalControlsForAccessBoundary,
+  codexGoalHostedExecutionBoundary,
 } from "./codex-goal-access-plan";
 import { readLocalGitHeadCommit } from "./codex-goal-git-revision";
 import { assertCodexGoalTurnCheckpointHistory, createCodexGoalTurnCheckpoint, codexGoalTurnCheckpointSocketPublisher, type CodexGoalTurnCheckpointPublisher } from "./codex-goal-turn-checkpoint";
@@ -315,6 +316,8 @@ async function runCodexGoalAdmitted(
   await mkdir(stateRootDir, { recursive: true, mode: 0o700 });
   const agentTempRoot = await ensureCodexAgentTempRoot({
     sourceEnv: config.sourceEnv,
+    sandboxTraverse: config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+      config.projectAccessScope !== undefined,
   });
 
   const controlInbox = new WorkerControlService({
@@ -562,8 +565,7 @@ export function buildCodexGoalExecutorOptions(input: {
         ...(config.appServerStartupTimeoutMs === undefined
           ? {}
           : { appServerStartupTimeoutMs: config.appServerStartupTimeoutMs }),
-        sourceEnv: config.sourceEnv ?? process.env,
-        ...(commandPolicy === undefined ? {} : { commandPolicy }),
+        ...codexGoalHostedExecutionBoundary({ ...config, commandPolicy }),
         ...(config.model ? { model: config.model } : {}),
         ...(config.reasoningEffort
           ? { reasoningEffort: config.reasoningEffort }

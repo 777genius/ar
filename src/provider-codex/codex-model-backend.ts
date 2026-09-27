@@ -25,6 +25,20 @@ export const codexMimoConfirmedBaseUrl = "https://token-plan-sgp.xiaomimimo.com/
 
 export const codexMimoApiKeyEnvVarDefault = "MIMO_TOKEN_PLAN_API_KEY";
 
+const reservedMimoCredentialEnvVars = new Set([
+  "PATH", "HOME", "CI", "CODEX_HOME", "TMPDIR", "TMP", "TEMP",
+  "OPENAI_API_KEY", "GH_TOKEN", "GITHUB_TOKEN", "NODE_OPTIONS",
+  "BASH_ENV", "ENV", "LD_PRELOAD", "LD_LIBRARY_PATH",
+]);
+
+export function assertCodexMimoApiKeyEnvVarName(name: string): void {
+  if (!/^[A-Z_][A-Z0-9_]*$/u.test(name) ||
+      reservedMimoCredentialEnvVars.has(name) ||
+      name.startsWith("SUBSCRIPTION_RUNTIME_")) {
+    throw new Error("codex_mimo_env_key_unsafe");
+  }
+}
+
 /**
  * Builds the `[model_providers.mimo]` config.toml fragment for the MiMo
  * backend, or an empty string for the OpenAI/ChatGPT backend (no config
@@ -42,6 +56,7 @@ export function codexModelBackendModelProvidersConfigToml(input: {
   if (input.backend === CodexModelBackend.OpenAiChatGpt) {
     return "";
   }
+  assertCodexMimoApiKeyEnvVarName(input.envKeyName);
   return [
     `[model_providers.${codexMimoModelProviderId}]`,
     'name = "MiMo Token Plan"',

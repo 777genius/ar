@@ -27,6 +27,8 @@ import {
   codexProviderApiEgressPolicy,
   codexProviderEgressEnv,
   codexProviderEgressPolicy,
+  hostedCodexExecutableReadPath,
+  hostedCodexPermissionProfilesToml,
   CodexProviderEgressProfileId,
   egressBoundCodexProcessFactory,
   type CodexProviderEgressPolicy,
@@ -239,6 +241,10 @@ function createCodexAgentDriver(input: {
   const sourceEnv = options.sourceEnv ?? process.env;
   const hostedGlobalScanGuard =
     sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  const projectReadBoundary = hostedGlobalScanGuard || options.enforceProjectReadBoundary === true;
+  const executableReadPath = projectReadBoundary
+    ? hostedCodexExecutableReadPath({ codexBinaryPath: options.codexBinaryPath, sourceEnv })
+    : undefined;
   if (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && hostedGlobalScanGuard) {
     // The MiMo materialized session bypasses the ChatGPT session-pool
     // materializer entirely (see CodexJsonAgentDriver.materializeMimoSession),
@@ -264,6 +270,10 @@ function createCodexAgentDriver(input: {
   if (providerEgressPolicy.profileId === CodexProviderEgressProfileId.TestManagedQualification) {
     assertReadonlyAdmittedFactory(options.appServerProcessFactory, options.workspacePath);
   }
+  if (projectReadBoundary && executionEngine !== "app-server" &&
+      executionEngine !== "app-server-goal") {
+    throw new Error("hosted_permission_profiles_engine_unsupported");
+  }
   const appServerEnv = {
     ...sourceEnv, ...codexProviderEgressEnv(providerEgressPolicy),
   };
@@ -276,8 +286,14 @@ function createCodexAgentDriver(input: {
         ...(options.boundedWorkspaceTools.denyProjectInstructions
           ? { denyProjectInstructions: true }
           : {}),
+        ...(projectReadBoundary ? { hostedEgressPolicy: providerEgressPolicy } : {}),
       })
     : undefined;
+  const projectConfigToml = projectReadBoundary && !hostedGlobalScanGuard
+    ? projectReadBoundaryConfigToml(providerEgressPolicy, executableReadPath,
+        modelBackend, mimoApiKeyEnvVarName, sourceEnv.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE)
+    : undefined;
+  const mimoConfigToml = workspaceToolsProfile?.configToml ?? projectConfigToml;
   if (executionEngine === "plain-exec") {
     return new CodexCliAgentDriver({
       codexBinaryPath: options.codexBinaryPath,
@@ -304,12 +320,14 @@ function createCodexAgentDriver(input: {
           codexBinaryPath: options.codexBinaryPath,
           modelBackend,
           sourceEnv: appServerEnv,
+          ...(projectReadBoundary ? { hostedPermissionProfiles: true } : {}),
           ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
           ...(options.appServerStartupTimeoutMs
             ? { startupTimeoutMs: options.appServerStartupTimeoutMs }
             : {}),
           processFactory: egressBoundCodexProcessFactory(
             providerEgressPolicy, options.appServerProcessFactory,
+            projectReadBoundary ? { namedPermissions: true } : undefined,
           ),
           ...(options.rateLimitsSnapshotHandler
             ? {
@@ -360,7 +378,7 @@ function createCodexAgentDriver(input: {
           runStore: input.managedRunStore,
           ...(
             executionEngine === "app-server-goal" ||
-            hostedGlobalScanGuard ||
+            projectReadBoundary ||
             workspaceToolsProfile ||
             options.rolloutBudget
             ? {}
@@ -382,9 +400,12 @@ function createCodexAgentDriver(input: {
       scrubAuthOnDispose: true,
       ...(workspaceToolsProfile
         ? { configToml: workspaceToolsProfile.configToml }
-        : hostedGlobalScanGuard
+        : projectReadBoundary
         ? {
-            configToml: hostedGlobalScanConfigToml(providerEgressPolicy),
+            configToml: hostedGlobalScanGuard
+              ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath)
+              : projectReadBoundaryConfigToml(providerEgressPolicy, executableReadPath,
+                  modelBackend, mimoApiKeyEnvVarName),
           }
         : {}),
     }),
@@ -392,8 +413,8 @@ function createCodexAgentDriver(input: {
     reasoningEffort: options.reasoningEffort ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT,
     modelBackend,
     mimoApiKeyEnvVarName,
-    ...(workspaceToolsProfile && modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
-      ? { mimoConfigToml: workspaceToolsProfile.configToml }
+    ...(modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && mimoConfigToml !== undefined
+      ? { mimoConfigToml }
       : {}),
     sourceEnv,
     ...(options.serviceTier === undefined
@@ -408,13 +429,29 @@ function createCodexAgentDriver(input: {
   });
 }
 
-function hostedGlobalScanConfigToml(providerEgressPolicy: CodexProviderEgressPolicy): string {
+function projectReadBoundaryConfigToml(
+  providerEgressPolicy: CodexProviderEgressPolicy,
+  executableReadPath?: string,
+  modelBackend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
+  mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
+  privateKeyFilePath?: string,
+): string {
+  return codexJsonHomeConfigToml({ providerEgressPolicy, namedPermissions: true,
+    modelBackend, mimoApiKeyEnvVarName }) +
+    "\n" + hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath, privateKeyFilePath);
+}
+
+function hostedGlobalScanConfigToml(
+  providerEgressPolicy: CodexProviderEgressPolicy,
+  executableReadPath?: string,
+): string {
   const hookPath = fileURLToPath(
     new URL("./hosted-global-scan-pre-tool-hook.js", import.meta.url),
   );
   const command = `${shellQuote(process.execPath)} ${shellQuote(hookPath)}`;
   return [
-    codexJsonHomeConfigToml({ hooksEnabled: true, providerEgressPolicy }),
+    codexJsonHomeConfigToml({ hooksEnabled: true, providerEgressPolicy, namedPermissions: true }),
+    hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath),
     "[hooks]",
     "[[hooks.PreToolUse]]",
     'matcher = "Bash|exec"',

@@ -16,7 +16,8 @@ export function appServerTurnStartParams(input: {
   readonly disableTools: boolean;
   readonly disableNativeEnvironments: boolean;
   readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
-  readonly sandboxPolicy: CodexAppServerSandboxPolicy;
+  readonly sandboxPolicy?: CodexAppServerSandboxPolicy;
+  readonly permissions?: string;
 }): Record<string, unknown> {
   const { disableTools, disableNativeEnvironments } = policy;
   return {
@@ -37,7 +38,9 @@ export function appServerTurnStartParams(input: {
     runtimeWorkspaceRoots: null,
     approvalPolicy: appServerApprovalPolicy(policy.commandApprovalPolicy),
     approvalsReviewer: null,
-    sandboxPolicy: policy.sandboxPolicy,
+    ...(policy.permissions
+      ? { permissions: policy.permissions }
+      : { sandboxPolicy: policy.sandboxPolicy }),
     model: input.model,
     ...(input.modelBackend === CodexModelBackendValue.XiaomiMimoTokenPlan
       ? {}

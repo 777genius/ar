@@ -11,11 +11,13 @@ import { spawnCodexAppServerProcess } from "./node-app-server-process";
 export function egressBoundCodexProcessFactory(
   admitted: CodexProviderEgressPolicy,
   spawn: CodexAppServerProcessFactory = spawnCodexAppServerProcess,
+  options?: { readonly namedPermissions?: boolean },
 ): CodexAppServerProcessFactory {
   const policy = codexProviderEgressPolicy(admitted.profileId);
   return (input) => spawn({
     ...input,
-    args: [...input.args, ...codexProviderEgressCliConfigArgs(policy)],
+    args: [...input.args, ...codexProviderEgressCliConfigArgs(policy,
+      options?.namedPermissions ? { namedPermissions: true } : undefined)],
     env: { ...input.env, ...codexProviderEgressEnv(policy) },
   });
 }

@@ -6,6 +6,7 @@ import {
   loadCodexApiKeyCredential,
 } from "../codex-api-key-credential";
 import { CodexModelBackend } from "../codex-model-backend";
+import { codexJsonHomeConfigToml } from "../codex-session-materializer";
 
 const FAKE_KEY = "tp-fixture-not-a-real-token-plan-key-1111111111";
 
@@ -49,6 +50,21 @@ describe("loadCodexApiKeyCredential", () => {
           redactor,
         }),
       ).toThrow(CodexApiKeyCredentialMissingError);
+    }
+  });
+
+  it("rejects key env names exposed to hosted shell tools", () => {
+    const config = codexJsonHomeConfigToml({ namedPermissions: true });
+    const rawAllowlist = config.match(/include_only = \[([^\]]*)\]/)?.[1];
+    expect(rawAllowlist).toBeDefined();
+    const exposed = JSON.parse(`[${rawAllowlist}]`) as string[];
+    for (const name of [...exposed, "SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE"]) {
+      expect(() => loadCodexApiKeyCredential({
+        backend: CodexModelBackend.XiaomiMimoTokenPlan,
+        envVarName: name,
+        sourceEnv: { [name]: FAKE_KEY },
+        redactor: new DefaultRedactor(),
+      })).toThrow("codex_mimo_env_key_unsafe");
     }
   });
 });

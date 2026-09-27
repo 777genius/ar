@@ -151,6 +151,21 @@ export function commandPolicyForHostedCodexGoal(input: {
   };
 }
 
+export function codexGoalHostedExecutionBoundary(input: {
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  readonly projectAccessScope?: ProjectAccessScope;
+  readonly accessBoundary?: AccessBoundary;
+  readonly commandPolicy?: CommandPolicy | undefined;
+}) {
+  return {
+    sourceEnv: input.sourceEnv ?? process.env,
+    enforceProjectReadBoundary: input.projectAccessScope !== undefined &&
+      (input.accessBoundary === AccessBoundary.ReadOnly ||
+        input.accessBoundary === AccessBoundary.IsolatedWorkspaceWrite),
+    ...(input.commandPolicy === undefined ? {} : { commandPolicy: input.commandPolicy }),
+  };
+}
+
 export function assertCodexGoalAccessLaunchAllowed(
   config: CodexGoalAccessPlanConfig,
 ): LaunchPlan | undefined {

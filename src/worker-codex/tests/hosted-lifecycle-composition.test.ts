@@ -16,7 +16,8 @@ vi.mock('node:child_process',async original=>({...await original<any>(),execFile
  const child=Object.assign(new EventEmitter(),{stdin:new PassThrough(),kill:()=>{h.events.push('kill');return true}});
  queueMicrotask(async()=>{h.role='runtime';const argv=h.argv.slice(1);if(h.fail==='inner-status')h.status.recommendedAction='review';h.inner=await runCodexGoalCli(argv,io);child.emit('exit',h.inner,null)});return child;
 })}));
-vi.mock('node:fs/promises',async original=>({...await original<any>(),mkdir:vi.fn(async()=>{h.events.push('mkdir')})}));
+vi.mock('node:fs/promises',async original=>({...await original<any>(),mkdir:vi.fn(async()=>{h.events.push('mkdir')}),
+ open:vi.fn(async()=>({stat:async()=>({isFile:()=>true,nlink:1,uid:process.getuid?.()}),chmod:async()=>{},close:async()=>{}}))}));
 vi.mock('../hosted-readonly-controller-admission',()=>({admitHostedControllerLaunch:async()=>{h.events.push('admit');if(h.fail==='inner')throw Error('TEST revoked')}}));
 vi.mock('../application/codex-goal-job-launch-loader',()=>({loadJobLaunch:async(args:any)=>{h.events.push('reload:'+args.registryRootDir);return {launch,registryRootDir:args.registryRootDir,manifest:{jobId:'TEST'}}}}));
 vi.mock('../codex-goal-launch-manifest',()=>({upsertCodexGoalLaunchManifest:async()=>{h.events.push('manifest');return {jobId:'TEST'}}}));

@@ -48,7 +48,6 @@ import {
 } from "./app-server-turn-state";
 import { waitForAppServerTurn } from "./app-server-turn-waiter";
 import {
-  codexAppServerRolloutBudgetConfig,
   type CodexAppServerRolloutBudget,
 } from "../domain/app-server-rollout-budget";
 import { codexAppServerToolConfig } from "../domain/app-server-tool-config";
@@ -96,7 +95,8 @@ import {
   type CodexAppServerRateLimitsSnapshotHandler,
 } from "./app-server-rate-limits-monitor";
 import { createBoundedAppServerWarningCollector } from "./app-server-warning-collector";
-
+import { hostedCodexPermissionProfileId } from "../../hosted-codex-permissions";
+import { appServerThreadConfig } from "./app-server-thread-config";
 export {
   CodexAppServerTurnError,
   type AppServerTurnFailureDetails,
@@ -133,6 +133,7 @@ export class CodexAppServerClient {
     private readonly options: {
       readonly codexBinaryPath: string;
       readonly sourceEnv: Readonly<Record<string, string | undefined>>;
+      readonly hostedPermissionProfiles?: boolean;
       readonly processFactory: CodexAppServerProcessFactory;
       readonly signalChildProcess: CodexAppServerChildProcessSignaler;
       readonly session: CodexMaterializedSession;
@@ -293,6 +294,7 @@ export class CodexAppServerClient {
     });
     const threadPolicy = codexAppServerThreadRuntimePolicy({
       workspacePath: input.workspacePath,
+      allowExtraWritableRoots: this.options.hostedPermissionProfiles !== true,
       ...(input.sandboxMode === undefined
         ? {}
         : { sandboxMode: input.sandboxMode }),
@@ -303,6 +305,9 @@ export class CodexAppServerClient {
         ? {}
         : { systemPrompt: input.systemPrompt }),
     });
+    const hostedPermissions = this.options.hostedPermissionProfiles
+      ? hostedCodexPermissionProfileId({ sandboxMode: threadPolicy.sandboxMode })
+      : null;
     const toolConfig = codexAppServerToolConfig({
       nativeToolSurface: this.options.nativeToolSurface,
       fastMode: input.serviceTier === "fast",
@@ -311,31 +316,17 @@ export class CodexAppServerClient {
     });
     const modelBackend = this.options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
     const threadModelProvider = codexModelBackendModelProviderName(modelBackend) ?? null;
-    const threadConfig = excludeCodexModelBackendConfigKeys(modelBackend, {
-      model_reasoning_effort: input.reasoningEffort,
-      model_verbosity: "low",
-      ...(input.serviceTier === undefined
+    const threadConfig = excludeCodexModelBackendConfigKeys(modelBackend, appServerThreadConfig({
+      reasoningEffort: input.reasoningEffort,
+      ...(input.serviceTier === undefined ? {} : { serviceTier: input.serviceTier }),
+      ...(this.options.commandApprovalPolicy === undefined
         ? {}
-        : { service_tier: input.serviceTier }),
-      approval_policy:
-        this.options.commandApprovalPolicy === undefined
-          ? "never"
-          : "on-request",
-      sandbox_mode: threadPolicy.sandboxMode,
-      web_search: "disabled",
-      ...toolConfig,
-      features: {
-        ...(readRecord(toolConfig.features) ?? {}),
-        ...codexAppServerRolloutBudgetConfig(this.options.rolloutBudget),
-      },
-      apps: {
-        _default: {
-          enabled: false,
-          destructive_enabled: false,
-          open_world_enabled: false,
-        },
-      },
-    });
+        : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
+      hostedPermissions,
+      sandboxMode: threadPolicy.sandboxMode,
+      toolConfig,
+      rolloutBudget: this.options.rolloutBudget,
+    }));
     const response = await this.send(
       "thread/start",
       {
@@ -348,7 +339,9 @@ export class CodexAppServerClient {
         cwd: input.workspacePath,
         approvalPolicy: appServerApprovalPolicy(this.options.commandApprovalPolicy),
         approvalsReviewer: null,
-        sandbox: threadPolicy.sandboxMode,
+        ...(hostedPermissions
+          ? { permissions: hostedPermissions }
+          : { sandbox: threadPolicy.sandboxMode }),
         config: threadConfig,
         serviceName: "subscription-runtime",
         baseInstructions: this.options.executionProfile.baseInstructions,
@@ -527,6 +520,7 @@ export class CodexAppServerClient {
     readonly reasoningEffort: CodexReasoningEffort;
     readonly serviceTier?: CodexServiceTier;
     readonly workspacePath: string;
+    readonly sandboxMode?: CodexSandboxMode;
     readonly outputSchema?: unknown;
     readonly timeoutMs: number;
     readonly abortSignal: AbortSignal;
@@ -546,6 +540,11 @@ export class CodexAppServerClient {
       });
       let response: CodexAppServerJsonRpcResponse;
       try {
+        const hostedPermissions = this.options.hostedPermissionProfiles
+          ? hostedCodexPermissionProfileId(
+              input.sandboxMode === undefined ? {} : { sandboxMode: input.sandboxMode },
+            )
+          : null;
         response = await this.send(
           "turn/start",
           appServerTurnStartParams({
@@ -556,7 +555,9 @@ export class CodexAppServerClient {
           }, {
             disableTools, disableNativeEnvironments,
             ...(this.options.commandApprovalPolicy === undefined ? {} : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
-            sandboxPolicy: this.sandboxPolicyFor(input),
+            ...(hostedPermissions
+              ? { permissions: hostedPermissions }
+              : { sandboxPolicy: this.sandboxPolicyFor(input) }),
           }),
           input,
         );
