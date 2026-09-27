@@ -2,6 +2,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { safeMessage as safeAppServerMessage } from "../app-server/domain/app-server-errors";
 import {
   DefaultRedactor,
   providerTaskSystemPromptMaxBytes,
@@ -159,6 +160,16 @@ describe("Codex provider adapter", () => {
     expect(failure.details?.stderrTail).toBe("[redacted:oversized-provider-detail]");
     expect(failure.details?.rawCause).toBe("[redacted:oversized-provider-detail]");
     expect(JSON.stringify(failure)).not.toContain(secret.slice(0, 12));
+  });
+
+  it("bounds raw bytes before whitespace changes or upstream truncation", () => {
+    const secret = "SYNTHETIC_MULTILINE\nCREDENTIAL";
+    const oversized = `${secret}${"\n".repeat(980)}tail`;
+    const failure = classifyCodexFailure({ exitCode: 7, stderr: oversized });
+    expect(failure.details?.stderrTail).toBe("[redacted:oversized-provider-detail]");
+    expect(failure.details?.rawCause).toBe("[redacted:oversized-provider-detail]");
+    expect(JSON.stringify(failure)).not.toContain("CREDENTIAL");
+    expect(safeAppServerMessage(new Error(oversized))).toBe("[redacted:oversized-app-server-error]");
   });
 
   it("classifies Codex app-server goal blocks as retryable backend unavailability", () => {

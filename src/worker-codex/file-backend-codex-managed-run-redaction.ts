@@ -21,7 +21,28 @@ export function discardLegacyAnswerSummary(record: ManagedRunRecord): ManagedRun
 
 export function redactManagedRunValue<T>(value: T, redactor: RedactorPort): T {
   if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        // A malformed or embedded JSON fragment still passes the assignment
+        // guard below; it must not bypass credential-field filtering.
+      }
+      if (parsed !== null && typeof parsed === "object") {
+        const serialized = JSON.stringify(redactManagedRunValue(parsed, redactor));
+        redactor.assertNoKnownSecret(serialized, "managed-run-recovery-store");
+        return serialized as T;
+      }
+    }
     const redacted = redactor.redact(value);
+    const assignment = /["']?([a-z][a-z0-9_.-]*)["']?\s*[:=]\s*(?:["'][^"']*["']|[^\s,;}\]]+)/giu;
+    for (const match of redacted.matchAll(assignment)) {
+      if (isCredentialField(match[1]!)) {
+        return "[redacted:credential-bearing-text]" as T;
+      }
+    }
     redactor.assertNoKnownSecret(redacted, "managed-run-recovery-store");
     return redacted as T;
   }

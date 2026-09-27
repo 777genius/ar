@@ -89,6 +89,32 @@ describe("managed run recovery persistence", () => {
     expect(JSON.stringify(packet)).not.toContain(secret.slice(0, 10));
   });
 
+  it("scrubs unregistered credential fields in serialized output and failure text", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "managed-run-serialized-"));
+    const store = new LocalFileManagedRunStore(rootDir, new DefaultRedactor());
+    const runId = "synthetic-serialized-run";
+    const path = join(rootDir, `${createHash("sha256").update(runId).digest("hex")}.json`);
+    try {
+      await store.complete({ runId, outputText: JSON.stringify({ status: "done",
+        apiKey: "SYNTHETIC_UNREGISTERED_API_KEY", nested: { providerSecret: "SYNTHETIC_PROVIDER_SECRET" } }),
+        now: new Date("2026-09-27T00:00:00Z") });
+      const loaded = await store.get({ runId });
+      expect(JSON.parse(loaded!.outputText!)).toEqual({ status: "done",
+        apiKey: "[redacted:credential-field]", nested: { providerSecret: "[redacted:credential-field]" } });
+      expect(await readFile(path, "utf8")).not.toContain("SYNTHETIC_UNREGISTERED_API_KEY");
+
+      await store.fail({ runId, failure: { code: "unknown_runtime_failure", retryable: true,
+        reconnectRequired: false, safeMessage: "failed",
+        details: { rawCause: "provider_api_key=SYNTHETIC_ASSIGNMENT_SECRET" } },
+      now: new Date("2026-09-27T00:01:00Z") });
+      const persisted = await readFile(path, "utf8");
+      expect(persisted).not.toContain("SYNTHETIC_ASSIGNMENT_SECRET");
+      expect(persisted).toContain("[redacted:credential-bearing-text]");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("redacts registered secrets throughout the durable recovery packet", async () => {
     // Before the fix, the returned provider result could be redacted while the
     // original prompt, answer preview and provider state still leaked to disk.
