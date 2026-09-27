@@ -263,5 +263,7 @@ function parseProcessFailureMessage(
 
 function safeTail(value: string): string {
   const compact = value.replace(/\s+/g, " ").trim();
-  return compact.length > 1000 ? compact.slice(-1000) : compact;
+  // A substring of a registered credential cannot be matched by the store's
+  // whole-secret redactor. Never persist an arbitrary partial process tail.
+  return compact.length > 1000 ? "[redacted:oversized-provider-detail]" : compact;
 }

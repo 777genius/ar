@@ -26,6 +26,7 @@ import {
   hashArtifact,
   sameArtifactBytes,
 } from "./file-backend-codex-auth-artifacts";
+import { redactManagedRunValue } from "./file-backend-codex-managed-run-redaction";
 
 export type WaitingProviderTaskResult = Extract<
   ProviderTaskResult,
@@ -428,24 +429,6 @@ export class FileBackendCodexManagedRunCoordinator {
   }
 }
 
-function redactManagedRunValue<T>(value: T, redactor: RedactorPort): T {
-  if (typeof value === "string") {
-    const redacted = redactor.redact(value);
-    redactor.assertNoKnownSecret(redacted, "managed-run-recovery-store");
-    return redacted as T;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => redactManagedRunValue(item, redactor)) as T;
-  }
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
-      redactManagedRunValue(key, redactor),
-      redactManagedRunValue(item, redactor),
-    ])) as T;
-  }
-  return value;
-}
-
 export function managedRunFailureToWorkerError(
   result: Extract<ProviderTaskResult, { readonly status: "failed" }>,
 ): SubscriptionWorkerError {
@@ -512,11 +495,9 @@ function managedRunAttemptSummary(context: ManagedRunPersistContext): string {
   if (context.kind === "run") {
     return `Blocked during worker attempt ${context.attempt}.`;
   }
-  const answerPreview = context.input.answer.trim().slice(0, 240);
-  return [
-    `Recovered after answering request ${context.input.requestId}.`,
-    answerPreview ? `Answer preview: ${answerPreview}` : "Answer preview: (empty answer)",
-  ].join("\n");
+  // The answer is available to the active resume call. Repeating even a
+  // truncated prefix in durable recovery state can reveal credential bytes.
+  return `Recovered after answering request ${context.input.requestId}.`;
 }
 
 export function buildManagedRunRecoveryPrompt(input: {

@@ -153,6 +153,14 @@ describe("Codex provider adapter", () => {
     });
   });
 
+  it("does not persist a partial credential when an oversized process tail is bounded", () => {
+    const secret = "SYNTHETIC_CREDENTIAL_CROSSING_THE_OLD_TAIL_BOUNDARY";
+    const failure = classifyCodexFailure({ exitCode: 7, stderr: `${secret}${"x".repeat(1100)}` });
+    expect(failure.details?.stderrTail).toBe("[redacted:oversized-provider-detail]");
+    expect(failure.details?.rawCause).toBe("[redacted:oversized-provider-detail]");
+    expect(JSON.stringify(failure)).not.toContain(secret.slice(0, 12));
+  });
+
   it("classifies Codex app-server goal blocks as retryable backend unavailability", () => {
     expect(
       classifyCodexFailure({

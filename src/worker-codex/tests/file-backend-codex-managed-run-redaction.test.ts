@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,10 +8,71 @@ import {
   type SessionStorePort,
 } from "@vioxen/subscription-runtime/core";
 import { describe, expect, it } from "vitest";
-import { FileBackendCodexManagedRunCoordinator } from "../file-backend-codex-managed-run-recovery";
+import { buildManagedRunRecoveryPacket, FileBackendCodexManagedRunCoordinator } from "../file-backend-codex-managed-run-recovery";
 import { LocalFileManagedRunStore } from "../file-backend-codex-managed-run-store";
 
 describe("managed run recovery persistence", () => {
+  it("rejects a credential-bearing identifier before any disk write", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "managed-run-identifier-"));
+    const secret = "SYNTHETIC_IDENTIFIER_CREDENTIAL";
+    const redactor = new DefaultRedactor();
+    redactor.registerSecret(secret, "test-canary");
+    const store = new LocalFileManagedRunStore(rootDir, redactor);
+    try {
+      await expect(store.saveWaitingInput({
+        runId: `run-${secret}`,
+        request: { id: "request-1", kind: "missing_context", audience: "orchestrator", question: "continue" },
+        resumeHandle: { runId: `run-${secret}`, providerId: "codex", workspacePath: "/tmp/synthetic" },
+        now: new Date("2026-09-27T00:00:00Z"),
+      })).rejects.toThrow("managed_run_identifier_not_safe");
+      expect(await readdir(rootDir)).toEqual([]);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sanitizes legacy packets again on reload and completion, including credential fields", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "managed-run-legacy-"));
+    const secret = "SYNTHETIC_LEGACY_CREDENTIAL";
+    const redactor = new DefaultRedactor();
+    redactor.registerSecret(secret, "test-canary");
+    const store = new LocalFileManagedRunStore(rootDir, redactor);
+    const runId = "synthetic-legacy-run";
+    const path = join(rootDir, `${createHash("sha256").update(runId).digest("hex")}.json`);
+    try {
+      await writeFile(path, JSON.stringify({ runId, status: "active", updatedAt: "2026-09-27T00:00:00Z",
+        recoveryPacket: { originalPrompt: `prompt ${secret}`, metadata: { api_key: "partial-credential", note: "safe" } },
+      }));
+      const loaded = await store.get({ runId });
+      expect(loaded?.recoveryPacket?.originalPrompt).not.toContain(secret);
+      expect(loaded?.recoveryPacket?.metadata?.api_key).toBe("[redacted:credential-field]");
+      await store.complete({ runId, outputText: "done", now: new Date("2026-09-27T00:01:00Z") });
+      const persisted = await readFile(path, "utf8");
+      expect(persisted).not.toContain(secret);
+      expect(persisted).not.toContain("partial-credential");
+      expect(persisted).toContain("[redacted:credential-field]");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("never persists a truncated resume-answer prefix", () => {
+    const secret = "SYNTHETIC_ANSWER_SECRET_CROSSING_THE_OLD_240_BYTE_BOUNDARY";
+    const packet = buildManagedRunRecoveryPacket({
+      result: {
+        status: "waiting_for_input", runId: "synthetic-run", outputText: "waiting", warnings: [],
+        request: { id: "request-1", kind: "missing_context", audience: "orchestrator", question: "continue" },
+        resumeHandle: { runId: "synthetic-run", providerId: "codex", workspacePath: "/tmp/synthetic" },
+      },
+      context: { kind: "resume", input: { runId: "synthetic-run", requestId: "request-1",
+        answer: `${"a".repeat(225)}${secret}`, resumeHandle: {
+          runId: "synthetic-run", providerId: "codex", workspacePath: "/tmp/synthetic",
+        } }, previousRecord: null },
+    });
+    expect(packet.attemptSummary).toBe("Recovered after answering request request-1.");
+    expect(JSON.stringify(packet)).not.toContain(secret.slice(0, 10));
+  });
+
   it("redacts registered secrets throughout the durable recovery packet", async () => {
     // Before the fix, the returned provider result could be redacted while the
     // original prompt, answer preview and provider state still leaked to disk.
@@ -18,7 +80,7 @@ describe("managed run recovery persistence", () => {
     const secret = "SYNTHETIC_SECRET_REDACTION_CANARY";
     const redactor = new DefaultRedactor();
     redactor.registerSecret(secret, "test-canary");
-    const managedRunStore = new LocalFileManagedRunStore(rootDir);
+    const managedRunStore = new LocalFileManagedRunStore(rootDir, redactor);
     const coordinator = new FileBackendCodexManagedRunCoordinator({
       providerInstanceId: "test-provider",
       workerId: "test-worker",
