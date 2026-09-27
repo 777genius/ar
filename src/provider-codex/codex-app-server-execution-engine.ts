@@ -401,6 +401,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     const result = this.options.goalMode
       ? await slot.goalRunner.runGoal({
           ...common,
+          redactor: input.redactor,
           maxGoalTurns: this.options.maxGoalTurns ?? defaultMaxGoalTurns,
           goalContinuePrompt:
             this.options.goalContinuePrompt ?? defaultGoalContinuePrompt,
@@ -445,6 +446,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ? [appServerOutputSchemaNotNativeWarning()]
       : [];
     const result = await slot.goalRunner.resumeGoal({
+      redactor: input.redactor,
       runId: input.runId,
       requestId: input.requestId,
       answer: input.answer,

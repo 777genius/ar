@@ -47,6 +47,7 @@ export async function runCodexAppServerLogicalThread(
       ? [appServerOutputSchemaNotNativeWarning()]
       : [];
     const result = await deps.runGoal({
+      redactor: input.redactor,
       ...(input.runId === undefined ? {} : { runId: input.runId }),
       prompt: input.prompt,
       ...(input.goalObjective === undefined
