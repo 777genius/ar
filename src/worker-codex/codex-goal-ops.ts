@@ -354,7 +354,8 @@ export async function prepareCodexGoalLaunchPaths(
     [...dirs].map((dir) => mkdir(dir, { recursive: true, mode: 0o700 })),
   );
   const log = await open(input.logPath,
-    constants.O_CREAT | constants.O_APPEND | constants.O_WRONLY | constants.O_NOFOLLOW,
+    constants.O_CREAT | constants.O_APPEND | constants.O_WRONLY |
+      constants.O_NOFOLLOW | constants.O_NONBLOCK,
     0o600);
   try {
     const info = await log.stat();

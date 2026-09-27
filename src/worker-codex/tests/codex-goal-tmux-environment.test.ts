@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
@@ -24,6 +25,26 @@ describe("Codex goal tmux environment", () => {
     try {
       await prepareCodexGoalLaunchPaths(input);
       expect(statSync(input.logPath).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it("rejects an existing FIFO log path without blocking launch", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codex-goal-fifo-log-"));
+    const jobRoot = join(root, "job");
+    mkdirSync(jobRoot);
+    const logPath = join(jobRoot, "worker.log");
+    execFileSync("mkfifo", [logPath]);
+    const input: CodexGoalLaunchInput = {
+      config: {
+        jobRootDir: jobRoot, authRootDir: join(root, "auth"),
+        workspacePath: join(root, "workspace"), promptPath: join(root, "prompt.md"),
+        taskId: "fifo-log", accounts: [{ name: "test-account" }],
+      },
+      cwd: root, logPath, cliCommand: ["subscription-runtime-codex-goal"],
+    };
+    try {
+      await expect(prepareCodexGoalLaunchPaths(input)).rejects.toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
