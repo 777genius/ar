@@ -286,7 +286,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     await this.slotPool.dispose();
     await this.options.fallback?.dispose?.();
   }
-
   async prewarm(input: {
     readonly session: CodexMaterializedSession;
     readonly workspacePath: string;
@@ -495,7 +494,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       throw new AppServerUsageError(error, result.usage, true);
     }
   }
-
   private maxOutputBytes(): number {
     return this.options.maxOutputBytes ?? defaultMaxOutputBytes;
   }

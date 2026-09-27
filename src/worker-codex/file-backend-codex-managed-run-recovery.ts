@@ -350,17 +350,34 @@ export class FileBackendCodexManagedRunCoordinator {
       result: input.result,
       context: input.context,
     });
+    for (const identifier of [
+      input.result.runId,
+      input.result.request.id,
+      input.result.resumeHandle.runId,
+      input.result.resumeHandle.workspacePath,
+      this.options.workerId,
+      this.options.providerInstanceId,
+    ]) {
+      if (this.options.redactor.redact(identifier) !== identifier) {
+        throw new SubscriptionWorkerError(
+          "subscription_worker_run_failed",
+          "Managed run identifier contains credential material.",
+          { details: { reason: "managed_run_identifier_not_safe" } },
+        );
+      }
+      this.options.redactor.assertNoKnownSecret(identifier, "managed-run-identifier");
+    }
     await this.options.managedRunStore.saveWaitingInput({
       runId: input.result.runId,
-      request: input.result.request,
-      resumeHandle: input.result.resumeHandle,
-      recoveryPacket,
+      request: redactManagedRunValue(input.result.request, this.options.redactor),
+      resumeHandle: redactManagedRunValue(input.result.resumeHandle, this.options.redactor),
+      recoveryPacket: redactManagedRunValue(recoveryPacket, this.options.redactor),
       taskId: input.result.runId,
       assignedWorkerId: this.options.workerId,
       providerInstanceId: this.options.providerInstanceId,
       workspacePath: input.result.resumeHandle.workspacePath,
       ...(input.result.outputText.trim()
-        ? { outputText: input.result.outputText }
+        ? { outputText: redactManagedRunValue(input.result.outputText, this.options.redactor) }
         : {}),
       now: this.options.clock.now(),
     });
@@ -409,6 +426,24 @@ export class FileBackendCodexManagedRunCoordinator {
       );
     }
   }
+}
+
+function redactManagedRunValue<T>(value: T, redactor: RedactorPort): T {
+  if (typeof value === "string") {
+    const redacted = redactor.redact(value);
+    redactor.assertNoKnownSecret(redacted, "managed-run-recovery-store");
+    return redacted as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactManagedRunValue(item, redactor)) as T;
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      redactManagedRunValue(key, redactor),
+      redactManagedRunValue(item, redactor),
+    ])) as T;
+  }
+  return value;
 }
 
 export function managedRunFailureToWorkerError(
