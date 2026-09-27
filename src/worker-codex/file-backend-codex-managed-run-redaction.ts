@@ -1,6 +1,23 @@
 import type { ManagedRunRecord, RedactorPort } from "@vioxen/subscription-runtime/core";
 
-const credentialField = /^(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret|client[_-]?secret|authorization|cookie|credentials?)$/iu;
+const credentialField = /^[a-z0-9]*(?:apikey|tokenplankey|token|secret|secretaccesskey|accesskeyid|privatekey|authorizationheader|authorization|authheader|authjson|auth|bearer|password|credentials?|cookies?|cookiejar)$/u;
+
+function isCredentialField(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/gu, "");
+  return normalized === "token" || normalized === "secret" || normalized === "auth" ||
+    credentialField.test(normalized);
+}
+
+export function discardLegacyAnswerSummary(record: ManagedRunRecord): ManagedRunRecord {
+  if (!record.recoveryPacket?.attemptSummary) return record;
+  return {
+    ...record,
+    recoveryPacket: {
+      ...record.recoveryPacket,
+      attemptSummary: "Recovered after a prior blocker.",
+    },
+  };
+}
 
 export function redactManagedRunValue<T>(value: T, redactor: RedactorPort): T {
   if (typeof value === "string") {
@@ -15,7 +32,7 @@ export function redactManagedRunValue<T>(value: T, redactor: RedactorPort): T {
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [
       redactManagedRunValue(key, redactor),
-      credentialField.test(key) ? "[redacted:credential-field]" : redactManagedRunValue(item, redactor),
+      isCredentialField(key) ? "[redacted:credential-field]" : redactManagedRunValue(item, redactor),
     ])) as T;
   }
   return value;

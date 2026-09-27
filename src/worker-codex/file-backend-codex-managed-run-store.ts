@@ -10,7 +10,7 @@ import type {
   ProviderFailure,
   RedactorPort,
 } from "@vioxen/subscription-runtime/core";
-import { assertManagedRunIdentifiersSafe, redactManagedRunValue } from "./file-backend-codex-managed-run-redaction";
+import { assertManagedRunIdentifiersSafe, discardLegacyAnswerSummary, redactManagedRunValue } from "./file-backend-codex-managed-run-redaction";
 
 export class LocalFileManagedRunStore implements ManagedRunStorePort {
   constructor(private readonly rootDir: string, private readonly redactor: RedactorPort) {}
@@ -25,7 +25,7 @@ export class LocalFileManagedRunStore implements ManagedRunStorePort {
     if (raw === null) return null;
     const record = parseManagedRunRecord(JSON.parse(raw));
     assertManagedRunIdentifiersSafe(record, this.redactor);
-    return redactManagedRunValue(record, this.redactor);
+    return redactManagedRunValue(discardLegacyAnswerSummary(record), this.redactor);
   }
 
   async saveWaitingInput(input: {
@@ -132,7 +132,7 @@ export class LocalFileManagedRunStore implements ManagedRunStorePort {
 
   private async writeRecord(record: ManagedRunRecord): Promise<void> {
     assertManagedRunIdentifiersSafe(record, this.redactor);
-    const safeRecord = redactManagedRunValue(record, this.redactor);
+    const safeRecord = redactManagedRunValue(discardLegacyAnswerSummary(record), this.redactor);
     const path = this.recordPath(record.runId);
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const tempPath = `${path}.${randomUUID()}.tmp`;

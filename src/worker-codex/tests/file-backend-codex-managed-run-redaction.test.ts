@@ -8,7 +8,7 @@ import {
   type SessionStorePort,
 } from "@vioxen/subscription-runtime/core";
 import { describe, expect, it } from "vitest";
-import { buildManagedRunRecoveryPacket, FileBackendCodexManagedRunCoordinator } from "../file-backend-codex-managed-run-recovery";
+import { buildManagedRunRecoveryPacket, buildManagedRunRecoveryPrompt, FileBackendCodexManagedRunCoordinator } from "../file-backend-codex-managed-run-recovery";
 import { LocalFileManagedRunStore } from "../file-backend-codex-managed-run-store";
 
 describe("managed run recovery persistence", () => {
@@ -41,15 +41,31 @@ describe("managed run recovery persistence", () => {
     const path = join(rootDir, `${createHash("sha256").update(runId).digest("hex")}.json`);
     try {
       await writeFile(path, JSON.stringify({ runId, status: "active", updatedAt: "2026-09-27T00:00:00Z",
-        recoveryPacket: { originalPrompt: `prompt ${secret}`, metadata: { api_key: "partial-credential", note: "safe" } },
+        recoveryPacket: {
+          originalPrompt: `prompt ${secret}`,
+          attemptSummary: "Recovered after answering request request-1: SYNTHETIC_PREFIX_OF_UNKNOWN_SECRET",
+          metadata: {
+            api_key: "partial-credential", id_token: "synthetic-id-token",
+            providerSecret: "synthetic-provider-secret", maxTokens: "128", note: "safe",
+          },
+        },
       }));
       const loaded = await store.get({ runId });
       expect(loaded?.recoveryPacket?.originalPrompt).not.toContain(secret);
       expect(loaded?.recoveryPacket?.metadata?.api_key).toBe("[redacted:credential-field]");
+      expect(loaded?.recoveryPacket?.metadata?.id_token).toBe("[redacted:credential-field]");
+      expect(loaded?.recoveryPacket?.metadata?.providerSecret).toBe("[redacted:credential-field]");
+      expect(loaded?.recoveryPacket?.metadata?.maxTokens).toBe("128");
+      expect(loaded?.recoveryPacket?.attemptSummary).toBe("Recovered after a prior blocker.");
+      expect(buildManagedRunRecoveryPrompt({ packet: loaded!.recoveryPacket!, answer: "safe",
+        requestId: "request-1" })).not.toContain("SYNTHETIC_PREFIX_OF_UNKNOWN_SECRET");
       await store.complete({ runId, outputText: "done", now: new Date("2026-09-27T00:01:00Z") });
       const persisted = await readFile(path, "utf8");
       expect(persisted).not.toContain(secret);
       expect(persisted).not.toContain("partial-credential");
+      expect(persisted).not.toContain("synthetic-id-token");
+      expect(persisted).not.toContain("synthetic-provider-secret");
+      expect(persisted).not.toContain("SYNTHETIC_PREFIX_OF_UNKNOWN_SECRET");
       expect(persisted).toContain("[redacted:credential-field]");
     } finally {
       await rm(rootDir, { recursive: true, force: true });
