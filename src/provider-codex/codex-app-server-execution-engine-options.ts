@@ -6,6 +6,7 @@ import type {
 import type { CodexAppServerRolloutBudget } from "./app-server/domain/app-server-rollout-budget";
 import type { CodexAppServerRateLimitsSnapshotHandler } from "./app-server/application/app-server-rate-limits-monitor";
 import type { CodexAppServerProcessFactory } from "./app-server/application/app-server-process-port";
+import type { AppServerCompletedTurnCheckpoint } from "./app-server/application/app-server-turn-checkpoint";
 import type { CodexExecutionProfile } from "./codex-execution-profile";
 import type { CodexExecutionEngine } from "./codex-json-execution-engine";
 import type { CodexModelBackend } from "./codex-model-backend";
@@ -34,6 +35,7 @@ export type CodexAppServerExecutionEngineOptions = {
   readonly cleanThreadPrewarm?: boolean;
   readonly reconnectGraceMs?: number;
   readonly goalMode?: boolean;
+  readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
   readonly maxGoalTurns?: number;
   readonly goalContinuePrompt?: string;
   readonly runStore?: ManagedRunStorePort;

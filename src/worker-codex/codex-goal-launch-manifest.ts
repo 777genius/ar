@@ -80,6 +80,8 @@ export function codexGoalLaunchManifestInputFromLaunch(
     ...(launch.config.executionEngine
       ? { executionEngine: launch.config.executionEngine }
       : {}),
+    ...(launch.config.checkpointRequired || launch.config.checkpointPublisherSocketPath
+      ? { checkpointRequired: true } : {}),
     ...(launch.config.taskTimeoutMs ? { taskTimeoutMs: launch.config.taskTimeoutMs } : {}),
     ...(launch.config.appServerStartupTimeoutMs
       ? { appServerStartupTimeoutMs: launch.config.appServerStartupTimeoutMs }

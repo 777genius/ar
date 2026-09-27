@@ -102,6 +102,7 @@ export type CodexGoalJobManifest = {
   readonly reasoningEffort?: CodexGoalRunConfig["reasoningEffort"];
   readonly serviceTier?: CodexGoalRunConfig["serviceTier"];
   readonly executionEngine?: CodexGoalRunConfig["executionEngine"];
+  readonly checkpointRequired?: boolean;
   /** Defaults to OpenAiChatGpt — an existing manifest with no modelBackend needs no migration. */
   readonly modelBackend?: CodexGoalRunConfig["modelBackend"];
   readonly taskTimeoutMs?: number;
@@ -441,6 +442,7 @@ export function codexGoalJobToArgs(
     reasoningEffort: manifest.reasoningEffort,
     serviceTier: manifest.serviceTier,
     executionEngine: manifest.executionEngine,
+    checkpointRequired: manifest.checkpointRequired,
     modelBackend: manifest.modelBackend,
     taskTimeoutMs: manifest.taskTimeoutMs,
     appServerStartupTimeoutMs: manifest.appServerStartupTimeoutMs,
@@ -598,6 +600,7 @@ function parseCodexGoalJobManifestValue(
             CodexGoalRunConfig["executionEngine"]
           >,
         }),
+    ...(value.checkpointRequired === true ? { checkpointRequired: true } : {}),
     ...optionalCodexGoalModelBackend(value.modelBackend),
     ...optionalPositiveIntegerProperty(value.taskTimeoutMs, "taskTimeoutMs"),
     ...optionalPositiveIntegerProperty(

@@ -68,7 +68,7 @@ export async function failManagedRunForProviderOutput(input: {
 
 export function managedRunFailureFromError(error: unknown): ProviderFailure {
   const classified = classifyCodexFailure(error);
-  if (classified.code === "budget_exceeded") return classified;
+  if (classified.code === "budget_exceeded" || classified.code === "checkpoint_unprotected") return classified;
   const details = classified.details;
   if (isAbortLikeError(error)) {
     return {

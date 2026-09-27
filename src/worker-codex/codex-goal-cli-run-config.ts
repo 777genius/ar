@@ -59,6 +59,9 @@ export function runConfigFromFlags(
     option(values, env, "--model-backend", ["CODEX_MODEL_BACKEND"]),
     "--model-backend",
   );
+  const checkpointPublisherSocketPath = option(values, env, "--checkpoint-publisher-socket", [
+    "SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET",
+  ]);
   const staleLockMs = parseOptionalPositiveInteger(
     option(values, env, "--stale-lock-ms", []),
     "--stale-lock-ms",
@@ -170,6 +173,9 @@ export function runConfigFromFlags(
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(serviceTier ? { serviceTier } : {}),
     ...(executionEngine ? { executionEngine } : {}),
+    ...(checkpointPublisherSocketPath ? { checkpointPublisherSocketPath: resolvePath(cwd, checkpointPublisherSocketPath) } : {}),
+    ...(checkpointPublisherSocketPath || flag(values, "--require-turn-checkpoint")
+      ? { checkpointRequired: true } : {}),
     ...modelBackend,
     codexBinaryPath: option(values, env, "--codex-binary", [
       "CODEX_BINARY_PATH",

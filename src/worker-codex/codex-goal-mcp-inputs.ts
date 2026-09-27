@@ -44,6 +44,7 @@ export type GoalMcpArgs = {
   readonly reasoningEffort?: CodexGoalRunConfig["reasoningEffort"];
   readonly serviceTier?: CodexGoalRunConfig["serviceTier"];
   readonly executionEngine?: CodexGoalRunConfig["executionEngine"];
+  readonly checkpointRequired?: boolean;
   readonly modelBackend?: CodexGoalRunConfig["modelBackend"];
   readonly taskTimeoutMs?: number;
   readonly appServerStartupTimeoutMs?: number;

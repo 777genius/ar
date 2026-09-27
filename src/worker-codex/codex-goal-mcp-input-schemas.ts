@@ -43,6 +43,7 @@ export function goalInputSchema(): Record<string, z.ZodTypeAny> {
     reasoningEffort: z.string().optional(),
     serviceTier: z.string().optional(),
     executionEngine: CODEX_GOAL_EXECUTION_ENGINE_SCHEMA.optional(),
+    checkpointRequired: z.boolean().optional(),
     modelBackend: CODEX_GOAL_MODEL_BACKEND_SCHEMA.optional(),
     taskTimeoutMs: z.number().int().positive().optional(),
     appServerStartupTimeoutMs: z.number().int().positive().optional(),

@@ -80,6 +80,7 @@ export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGo
     reasoningEffort: args.reasoningEffort ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT,
     serviceTier: args.serviceTier ?? "default",
     executionEngine: args.executionEngine ?? "app-server-goal",
+    ...(args.checkpointRequired === true ? { checkpointRequired: true } : {}),
     ...optionalCodexGoalModelBackend(args.modelBackend),
     taskTimeoutMs: args.taskTimeoutMs ?? defaultTimeoutMs,
     ...(args.appServerStartupTimeoutMs

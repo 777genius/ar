@@ -12,7 +12,7 @@ import {
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { mapManagedGoalLayout, usesManagedJobLayout } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -73,6 +73,7 @@ import {
   codexGoalHostedExecutionBoundary,
 } from "./codex-goal-access-plan";
 import { readLocalGitHeadCommit } from "./codex-goal-git-revision";
+import { assertCodexGoalTurnCheckpointHistory, createCodexGoalTurnCheckpoint, codexGoalTurnCheckpointSocketPublisher, type CodexGoalTurnCheckpointPublisher } from "./codex-goal-turn-checkpoint";
 import { createCodexGoalResultRecorder } from "./codex-goal-runtime-result-io";
 import { writeCodexGoalProgress } from "./codex-goal-progress-io";
 import {
@@ -126,6 +127,10 @@ export type CodexGoalRunConfig = {
   readonly reasoningEffort?: CodexReasoningEffort;
   readonly serviceTier?: CodexServiceTier;
   readonly executionEngine?: CodexWorkerExecutionEngine;
+  /** Trusted operator Unix socket. Omission leaves all existing jobs unchanged. */
+  readonly checkpointPublisherSocketPath?: string;
+  /** Persisted safety requirement; a missing operator publisher fails admission. */
+  readonly checkpointRequired?: boolean;
   /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — an existing run config with no modelBackend is unaffected. */
   readonly modelBackend?: CodexModelBackend;
   readonly taskTimeoutMs?: number;
@@ -192,6 +197,7 @@ export type CodexGoalRunDeps = {
     options: FileBackendCodexSafeExecutorOptions,
   ) => CodexGoalExecutor;
   readonly observability?: ObservabilityPort;
+  readonly checkpointPublisher?: CodexGoalTurnCheckpointPublisher;
 };
 
 export type CodexGoalExecutor = {
@@ -231,8 +237,23 @@ export async function runCodexGoal(
     ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
     sourceEnv: config.sourceEnv ?? process.env,
   });
+  const baseCommit = await readLocalGitHeadCommit(config.workspacePath);
+  const checkpointRootExists = await lstat(join(config.jobRootDir, "turn-checkpoints"))
+    .then(() => true, (error: unknown) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+      throw error;
+    });
+  if ((config.checkpointRequired || checkpointRootExists) &&
+    !config.checkpointPublisherSocketPath && !deps.checkpointPublisher) {
+    throw new Error("checkpoint_publisher_required");
+  }
+  if (config.checkpointPublisherSocketPath || deps.checkpointPublisher) {
+    if (!baseCommit) throw new Error("checkpoint_initial_base_required");
+    await assertCodexGoalTurnCheckpointHistory({ jobId: config.jobId ?? config.taskId,
+      taskId: config.taskId, jobRootDir: config.jobRootDir, initialBaseCommit: baseCommit });
+  }
   return new LocalTerminalCheckpointAdmission(config.jobRootDir).withWriter(
-    () => runCodexGoalAdmitted(config, deps, providerEgressPolicy, appServerProcessFactory),
+    () => runCodexGoalAdmitted(config, deps, providerEgressPolicy, appServerProcessFactory, baseCommit),
   );
 }
 
@@ -241,6 +262,7 @@ async function runCodexGoalAdmitted(
   deps: CodexGoalRunDeps,
   providerEgressPolicy: CodexProviderEgressPolicy,
   appServerProcessFactory: CodexAppServerProcessFactory | undefined,
+  baseCommit: string | undefined,
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   const prompt = await readFile(config.promptPath, "utf8");
   const progressPath = codexGoalProgressPath(config);
@@ -268,7 +290,6 @@ async function runCodexGoalAdmitted(
     accountCount: config.accounts.length,
     ...hostedTestEgressEvidence(config, providerEgressPolicy),
   });
-  const baseCommit = await readLocalGitHeadCommit(config.workspacePath);
   const linkedWorktreeHandoff = await codexGoalLinkedWorktreeHandoffPreflight({
     config,
     prompt,
@@ -315,6 +336,8 @@ async function runCodexGoalAdmitted(
       ((options) => new FileBackendCodexSafeExecutor(options))
     )(buildCodexGoalExecutorOptions({
       config,
+      ...(baseCommit ? { initialBaseCommit: baseCommit } : {}),
+      ...(deps.checkpointPublisher ? { checkpointPublisher: deps.checkpointPublisher } : {}),
       providerEgressPolicy,
       ...(appServerProcessFactory ? { appServerProcessFactory } : {}),
       stateRootDir,
@@ -430,6 +453,8 @@ async function runCodexGoalAdmitted(
 
 export function buildCodexGoalExecutorOptions(input: {
   readonly config: CodexGoalRunConfig;
+  readonly initialBaseCommit?: string;
+  readonly checkpointPublisher?: CodexGoalTurnCheckpointPublisher;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly appServerProcessFactory?: CodexAppServerProcessFactory;
   readonly stateRootDir: string;
@@ -440,6 +465,16 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
 }): FileBackendCodexSafeExecutorOptions {
   const { config } = input;
+  const checkpointPublisher = input.checkpointPublisher ?? (config.checkpointPublisherSocketPath
+    ? codexGoalTurnCheckpointSocketPublisher(config.checkpointPublisherSocketPath) : undefined);
+  if (config.checkpointRequired && !checkpointPublisher) throw new Error("checkpoint_publisher_required");
+  if (checkpointPublisher && (!input.initialBaseCommit || (config.executionEngine ?? "app-server-goal") !== "app-server-goal")) {
+    throw new Error("checkpoint_requires_git_app_server_goal");
+  }
+  const completedTurnCheckpoint = checkpointPublisher && input.initialBaseCommit
+    ? createCodexGoalTurnCheckpoint({ jobId: config.jobId ?? config.taskId,
+        taskId: config.taskId, jobRootDir: config.jobRootDir, workspacePath: config.workspacePath,
+        initialBaseCommit: input.initialBaseCommit, publisher: checkpointPublisher }) : undefined;
   const modelBackend = config.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
   const isMimo = modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const mimoAccountsByName = new Map(
@@ -460,6 +495,7 @@ export function buildCodexGoalExecutorOptions(input: {
       : {}),
     stateRootDir: input.stateRootDir,
     terminalCheckpointJobRootDir: config.jobRootDir,
+    ...(completedTurnCheckpoint ? { completedTurnCheckpoint } : {}),
     ...(input.executionGeneration === undefined ? {} : { executionGeneration: input.executionGeneration }),
     ...(config.runtimeHomeRootDir === undefined ? {} : { runtimeHomeRootDir: config.runtimeHomeRootDir }),
     accountCapacityStore: isMimo

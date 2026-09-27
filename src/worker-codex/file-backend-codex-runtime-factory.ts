@@ -371,6 +371,7 @@ function createCodexAgentDriver(input: {
             ? false
             : options.cleanThreadPrewarm ?? true,
           goalMode: executionEngine === "app-server-goal",
+          ...(options.completedTurnCheckpoint ? { completedTurnCheckpoint: options.completedTurnCheckpoint } : {}),
           ...(options.maxGoalTurns === undefined
             ? {}
             : { maxGoalTurns: options.maxGoalTurns }),

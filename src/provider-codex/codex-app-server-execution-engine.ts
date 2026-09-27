@@ -95,6 +95,7 @@ export type {
   CodexAppServerRateLimitsSnapshotHandler,
 };
 export type { CodexAppServerExecutionEngineOptions };
+export type { AppServerCompletedTurnCheckpoint } from "./app-server/application/app-server-turn-checkpoint";
 export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   readonly kind: "app-server-pool" | "app-server-goal";
   readonly capabilities: CodexExecutionEngine["capabilities"];
@@ -158,12 +159,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     this.slotPool = new AppServerSlotPool({
       codexBinaryPath: options.codexBinaryPath,
       ...(options.sourceEnv === undefined ? {} : { sourceEnv: options.sourceEnv }),
-      ...(options.hostedPermissionProfiles === undefined ? {} : {
-        hostedPermissionProfiles: options.hostedPermissionProfiles,
-      }),
+      ...(options.hostedPermissionProfiles === undefined ? {} : { hostedPermissionProfiles: options.hostedPermissionProfiles }),
       processFactory: options.processFactory ?? spawnCodexAppServerProcess,
       signalChildProcess: signalCodexAppServerChildGroup,
       runStore: this.runStore,
+      ...(options.completedTurnCheckpoint ? { completedTurnCheckpoint: options.completedTurnCheckpoint } : {}),
       executionProfile: this.executionProfile,
       ...(options.commandApprovalPolicy === undefined
         ? {}
