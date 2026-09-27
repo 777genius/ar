@@ -483,6 +483,14 @@ export function codexJsonHomeConfigToml(input?: {
   readonly mimoApiKeyEnvVarName?: string;
 }): string {
   const modelBackend = input?.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  const shellEnvKeys = [
+    "PATH", "HOME", "CI", "CODEX_HOME",
+    ...(input?.namedPermissions ? ["TMPDIR", "TMP", "TEMP"] : []),
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL",
+  ];
   const providerEgressPolicy =
     input?.providerEgressPolicy ??
     (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
@@ -518,7 +526,7 @@ export function codexJsonHomeConfigToml(input?: {
     "",
     "[shell_environment_policy]",
     'inherit = "all"',
-    'include_only = ["PATH", "HOME", "CI", "CODEX_HOME", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL"]',
+    `include_only = [${shellEnvKeys.map((key) => JSON.stringify(key)).join(", ")}]`,
     "",
     ...(modelBackend === CodexModelBackend.OpenAiChatGpt ? [] : [
       codexModelBackendModelProvidersConfigToml({

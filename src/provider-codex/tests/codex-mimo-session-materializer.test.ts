@@ -24,4 +24,21 @@ describe("codexJsonHomeConfigToml MiMo backend", () => {
     expect(toml).toContain('"token-plan-sgp.xiaomimimo.com" = "allow"');
     expect(toml).not.toContain('"api.openai.com" = "allow"');
   });
+
+  it("passes only validated job temp variables to hosted native tools", () => {
+    const hosted = codexJsonHomeConfigToml({
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      namedPermissions: true,
+    });
+    const ordinary = codexJsonHomeConfigToml({
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+    });
+    const hostedShellEnv = hosted.match(/include_only = \[([^\]]*)\]/)?.[1] ?? "";
+    const ordinaryShellEnv = ordinary.match(/include_only = \[([^\]]*)\]/)?.[1] ?? "";
+    for (const name of ["TMPDIR", "TMP", "TEMP"]) {
+      expect(hostedShellEnv).toContain(`"${name}"`);
+      expect(ordinaryShellEnv).not.toContain(`"${name}"`);
+    }
+    expect(hostedShellEnv).not.toContain("MIMO_TOKEN_PLAN_API_KEY");
+  });
 });

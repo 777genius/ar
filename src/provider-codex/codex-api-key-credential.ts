@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { RedactorPort } from "@vioxen/subscription-runtime/core";
-import type { CodexModelBackend } from "./codex-model-backend";
+import { CodexModelBackend, assertCodexMimoApiKeyEnvVarName } from "./codex-model-backend";
 
 export type CodexApiKeyCredential = {
   readonly backend: CodexModelBackend;
@@ -31,6 +31,9 @@ export function loadCodexApiKeyCredential(input: {
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly redactor: RedactorPort;
 }): CodexApiKeyCredential {
+  if (input.backend === CodexModelBackend.XiaomiMimoTokenPlan) {
+    assertCodexMimoApiKeyEnvVarName(input.envVarName);
+  }
   const raw = (input.sourceEnv ?? process.env)[input.envVarName];
   const apiKey = raw?.trim();
   if (!apiKey) {
