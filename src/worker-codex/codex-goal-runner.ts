@@ -220,6 +220,14 @@ export async function runCodexGoal(
     sourceEnv: config.sourceEnv ?? process.env,
   });
   const providerEgressPolicy = codexProviderEgressPolicy(admittedEgress.profileId);
+  const appServerProcessFactory = admitHostedReadonlyInputs({
+    jobId: config.jobId ?? config.taskId,
+    jobRootDir: config.jobRootDir,
+    workspacePath: config.workspacePath,
+    providerEgressPolicy,
+    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
+    sourceEnv: config.sourceEnv ?? process.env,
+  });
   const baseCommit = await readLocalGitHeadCommit(config.workspacePath);
   const checkpointRootExists = await lstat(join(config.jobRootDir, "turn-checkpoints"))
     .then(() => true, (error: unknown) => {
@@ -235,14 +243,6 @@ export async function runCodexGoal(
     await assertCodexGoalTurnCheckpointHistory({ jobId: config.jobId ?? config.taskId,
       taskId: config.taskId, jobRootDir: config.jobRootDir, initialBaseCommit: baseCommit });
   }
-  const appServerProcessFactory = admitHostedReadonlyInputs({
-    jobId: config.jobId ?? config.taskId,
-    jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath,
-    providerEgressPolicy,
-    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
-    sourceEnv: config.sourceEnv ?? process.env,
-  });
   return new LocalTerminalCheckpointAdmission(config.jobRootDir).withWriter(
     () => runCodexGoalAdmitted(config, deps, providerEgressPolicy, appServerProcessFactory, baseCommit),
   );
