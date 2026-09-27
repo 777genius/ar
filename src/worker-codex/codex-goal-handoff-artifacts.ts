@@ -368,7 +368,15 @@ async function captureStableHandoffPatch(input: {
         worktreeIndexEnv,
         input.gitBinaryPath,
       );
-      if (changedPaths.length === 0) return null;
+      if (changedPaths.length === 0) {
+        await assertGitHeadUnchanged(workspacePath, baseCommit, input.gitBinaryPath);
+        const confirmed = await gitChangedPaths(workspacePath, baseCommit,
+          limits.maxChangedFiles, worktreeIndexEnv, input.gitBinaryPath);
+        if (confirmed.length !== 0) {
+          throw new Error("handoff_workspace_changed_during_materialization");
+        }
+        return null;
+      }
       await assertSafeChangedFiles({
         workspacePath,
         changedPaths,
@@ -483,7 +491,20 @@ async function gitChangedPaths(
     ], worktreeIndexEnv, gitBinaryPath),
     gitLiveIndexAddedPaths(workspacePath, baseCommit, gitBinaryPath),
   ]);
-  const changed = uniqueSorted([...tracked, ...untracked, ...stagedAdditions]
+  // A forced-ignored addition can remain in the live index after its worktree
+  // file is removed. The patch represents final worktree bytes, not that index.
+  const presentStagedAdditions: string[] = [];
+  for (const stagedPath of stagedAdditions.map(assertSafeRelativePath)) {
+    const absolute = resolve(workspacePath, stagedPath);
+    if (!pathInside(workspacePath, absolute)) throw new Error("handoff_changed_path_escape");
+    try {
+      await lstat(absolute);
+      presentStagedAdditions.push(stagedPath);
+    } catch (error) {
+      if (!isNodeError(error, "ENOENT")) throw error;
+    }
+  }
+  const changed = uniqueSorted([...tracked, ...untracked, ...presentStagedAdditions]
     .map(assertSafeRelativePath));
   if (changed.length > maxChangedFiles) {
     throw new Error("handoff_changed_file_limit_exceeded");

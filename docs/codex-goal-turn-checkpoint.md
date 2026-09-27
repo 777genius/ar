@@ -26,6 +26,10 @@ supersedes an earlier dirty checkpoint. Restore a patch by checking out the
 manifest's `initialBaseCommit` and applying the patch. Restore `clean` by
 checking out that commit without applying an earlier patch. A moved HEAD fails
 closed; local commits are not represented by a patch against the new HEAD.
+On relaunch, admission validates the complete local patch, manifest, and
+receipt history before starting the provider. Ordinals continue from the last
+acknowledged checkpoint. Partial or mismatched history requires manual review;
+the runtime does not replay or overwrite a checkpoint.
 
 The publisher protocol is HTTP over the configured Unix socket, using
 `POST /v1/codex-goal-turn-checkpoints` with JSON:

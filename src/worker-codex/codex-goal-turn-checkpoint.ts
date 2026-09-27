@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readdir, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { request } from "node:http";
 import { assertExactPatchSecretSafe, captureCodexGoalExactWorkspacePatch, type HandoffArtifactLimits } from "./codex-goal-handoff-artifacts";
@@ -8,6 +9,8 @@ import { handoffGitText } from "./codex-goal-handoff-git-snapshot";
 import { publishImmutableTextArtifact } from "./local-immutable-text-artifact";
 
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
+const receiptRemoteKey = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$/;
+const checkpointFile = /^(\d{6,})\.(patch|manifest\.json|receipt\.json)$/;
 
 export type CodexGoalTurnCheckpointManifest = {
   readonly schemaVersion: 1;
@@ -40,6 +43,99 @@ export type CodexGoalTurnCheckpointPublisher = (input: {
   readonly manifestPath: string;
 }) => Promise<CodexGoalTurnCheckpointReceipt>;
 
+type CheckpointIdentity = {
+  readonly jobId: string;
+  readonly taskId: string;
+  readonly jobRootDir: string;
+  readonly initialBaseCommit: string;
+  readonly limits?: Partial<HandoffArtifactLimits>;
+};
+
+async function privateCheckpointRoot(jobRootDir: string): Promise<string> {
+  const root = join(jobRootDir, "turn-checkpoints");
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  const stat = await lstat(root);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) {
+    throw new Error("checkpoint_private_root_invalid");
+  }
+  if (await realpath(root) !== root) throw new Error("checkpoint_root_symlink_invalid");
+  return root;
+}
+
+async function readCheckpointFile(path: string, maxBytes: number): Promise<string> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0 || stat.size > maxBytes) {
+      throw new Error("checkpoint_history_invalid");
+    }
+    const content = await handle.readFile("utf8");
+    if (Buffer.byteLength(content) > maxBytes || (await handle.stat()).size !== stat.size) {
+      throw new Error("checkpoint_history_invalid");
+    }
+    return content;
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Fail closed on any partial or contradictory prior publication. Called before provider execution. */
+export async function assertCodexGoalTurnCheckpointHistory(input: CheckpointIdentity): Promise<number> {
+  assertSafeHandoffId(input.jobId, "checkpoint_job_id");
+  assertSafeHandoffId(input.taskId, "checkpoint_task_id");
+  if (!/^[0-9a-f]{40,64}$/.test(input.initialBaseCommit)) throw new Error("checkpoint_initial_base_invalid");
+  const root = await privateCheckpointRoot(input.jobRootDir);
+  const names = await readdir(root);
+  const byOrdinal = new Map<number, Set<string>>();
+  for (const name of names) {
+    const match = checkpointFile.exec(name);
+    if (!match) throw new Error("checkpoint_history_invalid");
+    const ordinal = Number(match[1]);
+    if (!Number.isSafeInteger(ordinal) || ordinal < 1 || String(ordinal).padStart(6, "0") !== match[1]) {
+      throw new Error("checkpoint_history_invalid");
+    }
+    const kinds = byOrdinal.get(ordinal) ?? new Set<string>();
+    kinds.add(match[2]!);
+    byOrdinal.set(ordinal, kinds);
+  }
+  const maxPatchBytes = input.limits?.maxPatchBytes ?? 16 * 1024 * 1024;
+  for (let ordinal = 1; ordinal <= byOrdinal.size; ordinal++) {
+    const kinds = byOrdinal.get(ordinal);
+    if (!kinds || kinds.size !== 3) throw new Error("checkpoint_history_incomplete");
+    const prefix = String(ordinal).padStart(6, "0");
+    let manifest: CodexGoalTurnCheckpointManifest;
+    let receipt: CodexGoalTurnCheckpointReceipt;
+    let patch: string;
+    let manifestText: string;
+    try {
+      [patch, manifestText] = await Promise.all([
+        readCheckpointFile(join(root, `${prefix}.patch`), maxPatchBytes),
+        readCheckpointFile(join(root, `${prefix}.manifest.json`), 64 * 1024),
+      ]);
+      manifest = JSON.parse(manifestText) as CodexGoalTurnCheckpointManifest;
+      receipt = JSON.parse(await readCheckpointFile(join(root, `${prefix}.receipt.json`), 64 * 1024)) as CodexGoalTurnCheckpointReceipt;
+    } catch {
+      throw new Error("checkpoint_history_invalid");
+    }
+    if (!manifest || manifest.schemaVersion !== 1 || manifest.kind !== "codex-goal-turn-checkpoint" ||
+      manifest.jobId !== input.jobId || manifest.taskId !== input.taskId ||
+      manifest.initialBaseCommit !== input.initialBaseCommit || manifest.turnOrdinal !== ordinal ||
+      (manifest.state !== "patch" && manifest.state !== "clean") ||
+      !Array.isArray(manifest.changedPaths) || !manifest.changedPaths.every((path) => typeof path === "string") ||
+      manifest.patchSha256 !== sha256(patch) ||
+      (manifest.state === "clean" && (patch !== "" || manifest.changedPaths.length !== 0)) ||
+      (manifest.state === "patch" && (patch === "" || manifest.changedPaths.length === 0)) ||
+      !receipt || receipt.schemaVersion !== 1 || receipt.jobId !== input.jobId ||
+      receipt.taskId !== input.taskId || receipt.turnOrdinal !== ordinal ||
+      receipt.manifestSha256 !== sha256(manifestText) ||
+      receipt.patchSha256 !== manifest.patchSha256 ||
+      typeof receipt.remoteKey !== "string" || !receiptRemoteKey.test(receipt.remoteKey)) {
+      throw new Error("checkpoint_history_mismatch");
+    }
+  }
+  return byOrdinal.size;
+}
+
 /** One instance per admitted goal job. The publisher belongs to the trusted Host. */
 export function createCodexGoalTurnCheckpoint(input: {
   readonly jobId: string;
@@ -54,20 +150,16 @@ export function createCodexGoalTurnCheckpoint(input: {
   assertSafeHandoffId(input.jobId, "checkpoint_job_id");
   assertSafeHandoffId(input.taskId, "checkpoint_task_id");
   if (!/^[0-9a-f]{40,64}$/.test(input.initialBaseCommit)) throw new Error("checkpoint_initial_base_invalid");
-  let ordinal = 0;
+  let ordinal: number | undefined;
+  let failed = false;
   return async (turn) => {
     if (turn.workspacePath !== input.workspacePath) throw new Error("checkpoint_workspace_mismatch");
-    // A second callback after failure must not publish a later state as if the
-    // unprotected turn had been acknowledged.
+    if (failed) throw new Error("checkpoint_previous_turn_unprotected");
+    try {
+    ordinal ??= await assertCodexGoalTurnCheckpointHistory(input);
     const turnOrdinal = ++ordinal;
-    const root = join(input.jobRootDir, "turn-checkpoints");
-    await mkdir(root, { recursive: true, mode: 0o700 });
-    const stat = await lstat(root);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) {
-      throw new Error("checkpoint_private_root_invalid");
-    }
-    const privateRoot = await realpath(root);
-    if (privateRoot !== root) throw new Error("checkpoint_root_symlink_invalid");
+    const root = await privateCheckpointRoot(input.jobRootDir);
+    const privateRoot = root;
     const capture = () => captureCodexGoalExactWorkspacePatch({
       workspacePath: input.workspacePath,
       expectedBaseCommit: input.initialBaseCommit,
@@ -111,7 +203,7 @@ export function createCodexGoalTurnCheckpoint(input: {
     if (!receipt || receipt.schemaVersion !== 1 || receipt.jobId !== input.jobId || receipt.taskId !== input.taskId ||
       receipt.turnOrdinal !== turnOrdinal || receipt.manifestSha256 !== manifestSha256 ||
       receipt.patchSha256 !== manifest.patchSha256 || typeof receipt.remoteKey !== "string" ||
-      !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$/.test(receipt.remoteKey)) {
+      !receiptRemoteKey.test(receipt.remoteKey)) {
       throw new Error("checkpoint_receipt_invalid");
     }
     // Detect changes while the offsite publisher was working. Such a turn is
@@ -133,6 +225,10 @@ export function createCodexGoalTurnCheckpoint(input: {
     await publishImmutableTextArtifact({ path: join(root, `${prefix}.receipt.json`),
       content: `${JSON.stringify(safeReceipt)}\n`, existingPathUnsafeError: "checkpoint_receipt_unsafe",
       contentMismatchError: "checkpoint_receipt_conflict" });
+    } catch (error) {
+      failed = true;
+      throw error;
+    }
   };
 }
 

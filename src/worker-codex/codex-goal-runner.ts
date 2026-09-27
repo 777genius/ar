@@ -71,7 +71,7 @@ import {
   codexGoalControlsForAccessBoundary,
 } from "./codex-goal-access-plan";
 import { readLocalGitHeadCommit } from "./codex-goal-git-revision";
-import { createCodexGoalTurnCheckpoint, codexGoalTurnCheckpointSocketPublisher, type CodexGoalTurnCheckpointPublisher } from "./codex-goal-turn-checkpoint";
+import { assertCodexGoalTurnCheckpointHistory, createCodexGoalTurnCheckpoint, codexGoalTurnCheckpointSocketPublisher, type CodexGoalTurnCheckpointPublisher } from "./codex-goal-turn-checkpoint";
 import { createCodexGoalResultRecorder } from "./codex-goal-runtime-result-io";
 import { writeCodexGoalProgress } from "./codex-goal-progress-io";
 import {
@@ -266,7 +266,11 @@ async function runCodexGoalAdmitted(
     ...hostedTestEgressEvidence(config, providerEgressPolicy),
   });
   const baseCommit = await readLocalGitHeadCommit(config.workspacePath);
-  if (config.checkpointPublisherSocketPath && !baseCommit) throw new Error("checkpoint_initial_base_required");
+  if (config.checkpointPublisherSocketPath || deps.checkpointPublisher) {
+    if (!baseCommit) throw new Error("checkpoint_initial_base_required");
+    await assertCodexGoalTurnCheckpointHistory({ jobId: config.jobId ?? config.taskId,
+      taskId: config.taskId, jobRootDir: config.jobRootDir, initialBaseCommit: baseCommit });
+  }
   const linkedWorktreeHandoff = await codexGoalLinkedWorktreeHandoffPreflight({
     config,
     prompt,
