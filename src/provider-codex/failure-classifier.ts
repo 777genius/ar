@@ -170,7 +170,7 @@ export function classifyCodexFailure(error: unknown): ProviderFailure {
 
 function codexFailureMessage(error: unknown): string {
   const process = processFailureLike(error);
-  if (process) return `${process.stdout ?? ""}\n${process.stderr ?? ""}`;
+  if (process) return [process.stdout, process.stderr].filter(Boolean).join("\n");
   return error instanceof Error ? error.message : String(error);
 }
 
