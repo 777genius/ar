@@ -41,6 +41,12 @@ describe("hosted Codex permission profiles", () => {
       codexProviderApiEgressPolicy(), undefined, "/private/mimo/key",
     );
     expect(config.match(/"\/private\/mimo\/key" = "deny"/g)).toHaveLength(2);
+    const nested = hostedCodexPermissionProfilesToml(
+      codexProviderApiEgressPolicy(), undefined,
+      "/etc/subscription-runtime/secrets/review-router/key",
+    );
+    expect(nested).not.toContain('"/etc/subscription-runtime/secrets/review-router/key" = "deny"');
+    expect(nested.match(/"\/etc\/subscription-runtime\/secrets" = "deny"/g)).toHaveLength(2);
     expect(() => hostedCodexPermissionProfilesToml(
       codexProviderApiEgressPolicy(), undefined, "relative/key",
     )).toThrow("hosted_permission_private_key_path_invalid");

@@ -1,7 +1,7 @@
 import type { CodexSandboxMode } from "./codex-json-execution-engine";
 import type { CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 export enum HostedCodexPermissionProfileId {
   ReadOnly = "hosted-project-read",
@@ -80,8 +80,11 @@ export function hostedCodexPermissionProfilesToml(
   if (privateKeyFilePath && !isAbsolute(privateKeyFilePath)) {
     throw new Error("hosted_permission_private_key_path_invalid");
   }
-  const privateRules = [...new Set(["/etc/subscription-runtime/secrets", privateKeyFilePath]
-    .filter((path): path is string => path !== undefined))]
+  const privateRoot = "/etc/subscription-runtime/secrets";
+  const privateFile = privateKeyFilePath ? resolve(privateKeyFilePath) : undefined;
+  const privateRules = [privateRoot, ...(privateFile &&
+    privateFile !== privateRoot && !privateFile.startsWith(`${privateRoot}/`)
+    ? [privateFile] : [])]
     .map(path => `${JSON.stringify(path)} = "deny"`);
   return [
     "# Bound native Codex tools to the admitted workspace and minimal system files.",
