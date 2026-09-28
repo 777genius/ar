@@ -66,3 +66,30 @@ persisted file-byte allowance. It requires the target HEAD to remain at the
 reviewed parent or the exact adopted commit. The operator must check that the
 attested remote branch is still at the commit immediately before invocation;
 remote state may change afterward and is outside the runtime's proof.
+
+## Older accepted integration transport
+
+An older `checks_passed` attempt may lack the reviewed-output ID, file-byte
+allowance, checked tree, and persisted check runs required by the adoption tool.
+Do not add those fields or change its status. Capture the accepted worker output
+through the reviewed-output lifecycle, retaining the original review marker,
+then open a new exact non-merge attempt and adopt the published commit through
+the operation above. The new attempt must have the same project, controller,
+worker, source and target workspace, base/target commits, patch SHA-256, changed
+files, approved files, remote, and branch.
+
+After the new attempt is `pushed` and the worker has one valid `integrated`
+consumed-output ledger record for that attempt and commit, a root admin can call
+`codex_goal_project_link_legacy_integration_transport` with the old/new attempt
+IDs, SHA-256 of each raw `attempt.json`, exact commit SHA, and `confirmLink: true`.
+The tool publishes a version 1 immutable receipt at
+`project-integration/legacy-transport-links/<sha256(oldAttemptId)>.json`.
+Replay with the same evidence is idempotent; changed evidence fails closed.
+The receipt binds a stable ledger identity rather than its absolute path, so
+an exact ledger-root migration does not invalidate the link; the currently
+active consumed ledger is verified again at each quiescence check.
+The old attempt remains `checks_passed`, and this operation does not write a
+ledger record or assert that its empty historical checks were run. The epoch
+quiescence gate recognizes the old attempt only while the exact receipt,
+adopted attempt, and consumed ledger still validate. Normal project admission
+continues to use the actual consumed ledger, independent of this receipt.
