@@ -37,6 +37,15 @@ export type RejectedOutputLedgerReceipt = {
 };
 
 export interface IntegratedOutputLedgerPort {
+  /** Adoption freezes mutable worker evidence before publishing archive files. */
+  prepareAdoption?(input: {
+    readonly attempt: IntegrationAttempt;
+    readonly commitSha: string;
+  }): Promise<IntegratedOutputLedgerPreparation>;
+  readPrepared?(input: {
+    readonly attempt: IntegrationAttempt;
+    readonly commitSha: string;
+  }): Promise<IntegratedOutputLedgerPreparation | undefined>;
   prepare(input: {
     readonly attempt: IntegrationAttempt;
     readonly commitSha: string;

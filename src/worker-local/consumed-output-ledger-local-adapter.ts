@@ -37,6 +37,13 @@ import {
   acquireConsumedOutputLedgerMaintenanceLock,
   releaseConsumedOutputLedgerMaintenanceLock,
 } from "./consumed-output-ledger-maintenance-lock";
+import {
+  LocalAdoptionLedgerPreparation,
+  localGitOutputBytes,
+  safeLedgerName,
+  sha256Bytes,
+} from "./consumed-output-ledger-adoption-local-adapter";
+export { decodeAdoptionCapturedBytes } from "./consumed-output-ledger-adoption-local-adapter";
 
 const execFileAsync = promisify(execFile);
 
@@ -562,10 +569,6 @@ export async function captureLocalTerminalOutputBackup(input: {
   };
 }
 
-function sha256Bytes(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
 export type LocalIntegratedOutputLedgerAdapterOptions = {
   readonly ledgerRoots: readonly string[];
   readonly evidenceRoots: readonly string[];
@@ -576,6 +579,7 @@ export type LocalIntegratedOutputLedgerAdapterOptions = {
 
 export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedgerPort {
   private readonly writer: LocalConsumedOutputLedgerWriter;
+  private readonly adoptionPreparation: LocalAdoptionLedgerPreparation;
 
   constructor(
     private readonly options: LocalIntegratedOutputLedgerAdapterOptions,
@@ -585,6 +589,27 @@ export class LocalIntegratedOutputLedgerAdapter implements IntegratedOutputLedge
       options.custodyRoot,
       options.evidenceRoots,
     );
+    this.adoptionPreparation = new LocalAdoptionLedgerPreparation({
+      readPrepared: (input) => this.readPrepared(input),
+      requiredLedgerRoot: () => this.requiredLedgerRoot(),
+      requiredActiveEvidenceRoot: () => this.requiredActiveEvidenceRoot(),
+      gitOutput: (cwd, args) => this.gitOutput(cwd, args),
+      gitOutputBytes: (cwd, args) => this.gitOutputBytes(cwd, args),
+    });
+  }
+
+  async prepareAdoption(input: {
+    readonly attempt: IntegrationAttempt;
+    readonly commitSha: string;
+  }): Promise<IntegratedOutputLedgerPreparation> {
+    return this.adoptionPreparation.prepareAdoption(input);
+  }
+
+  async readPrepared(input: {
+    readonly attempt: IntegrationAttempt;
+    readonly commitSha: string;
+  }): Promise<IntegratedOutputLedgerPreparation | undefined> {
+    return this.adoptionPreparation.readPrepared(input);
   }
 
   async prepare(input: {
@@ -838,33 +863,6 @@ async function localGitOutput(input: {
   return result.stdout;
 }
 
-async function localGitOutputBytes(input: {
-  readonly cwd: string;
-  readonly args: readonly string[];
-  readonly gitBinaryPath?: string;
-}): Promise<Buffer> {
-  try {
-    const result = await execFileAsync(
-      input.gitBinaryPath ?? "git",
-      [...input.args],
-      {
-        cwd: input.cwd,
-        encoding: "buffer",
-        maxBuffer: MAX_RETAINED_TERMINAL_ARCHIVE_PATCH_BYTES,
-        timeout: 60_000,
-      },
-    );
-    assertRetainedTerminalArchivePatchSize(result.stdout.byteLength);
-    return result.stdout;
-  } catch (error) {
-    if (isNodeErrorCode(error, "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") &&
-        error instanceof Error && error.message.includes("stdout")) {
-      assertRetainedTerminalArchivePatchSize(MAX_RETAINED_TERMINAL_ARCHIVE_PATCH_BYTES + 1);
-    }
-    throw error;
-  }
-}
-
 function sameTerminalDecision(
   existingJson: string,
   decision: TerminalOutputDecision,
@@ -974,10 +972,6 @@ function terminalLedgerPath(
     "items",
     `${safeLedgerName(decision.jobId)}${attemptSuffix}.json`,
   );
-}
-
-function safeLedgerName(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
 function isNodeErrorCode(error: unknown, code: string): boolean {

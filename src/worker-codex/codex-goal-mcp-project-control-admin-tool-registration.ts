@@ -8,6 +8,8 @@ import {
   type ProjectControlMcpArgs,
 } from "./codex-goal-mcp-inputs";
 import { withMcpErrors } from "./codex-goal-mcp-response";
+import { projectControlAdoptPublishedIntegrationCommit,
+  type PublishedAdoptionMcpArgs } from "./codex-goal-mcp-project-control-published-adoption";
 import {
   projectControlAdmissionSnapshot,
   projectControlImportFrozenOutput,
@@ -26,6 +28,21 @@ import {
 } from "./codex-goal-mcp-project-control-tool-schemas";
 
 export function registerCodexGoalProjectControlAdminTools(server: McpServer): void {
+  server.registerTool("codex_goal_project_adopt_published_integration_commit", {
+    title: "Adopt Externally Published Integration Commit",
+    description: "Host admin recovery for an exact reviewed commit object. Remote publication is trusted operator attestation, not runtime verification. Requires local Git object and authenticated gh API evidence.",
+    inputSchema: {
+      ...jobRegistryInputSchema(),
+      controllerJobId: z.string().min(1),
+      attemptId: z.string().min(1),
+      commitSha: z.string().regex(/^[a-f0-9]{40}$/),
+      message: z.string().min(1),
+      permitFile: z.string().min(1),
+      expectedPermitSha256: z.string().regex(/^[a-f0-9]{64}$/),
+      confirmAdoption: z.boolean().optional(),
+    },
+  }, async (args) => withMcpErrors(async () =>
+    projectControlAdoptPublishedIntegrationCommit(args as PublishedAdoptionMcpArgs)));
   server.registerTool("codex_goal_project_relocate_controller_workspace", {
     title: "Relocate Idle Controller Workspace",
     description: "Host admin preview or exact-revision confirmed relocation to an existing clean workspace within unchanged scope.",
