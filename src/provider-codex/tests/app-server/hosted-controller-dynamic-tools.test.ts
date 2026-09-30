@@ -10,6 +10,181 @@ import { handleAppServerServerRequest } from "../../app-server/application/app-s
 import { AppServerDynamicToolHandler } from "../../app-server/application/app-server-dynamic-tool-handler";
 
 describe("Codex 0.155.1 dynamic tool contract", () => {
+  const sendServerRequest = (factory: FakeAppServerFactory, id: string | number,
+    method: string, params: Record<string, unknown>) => {
+    factory.processes[0]!.stdout.emit("data", `${JSON.stringify({ id, method, params })}\n`);
+  };
+  const sendTurnEvent = (factory: FakeAppServerFactory, method: string, params: Record<string, unknown>) => {
+    factory.processes[0]!.stdout.emit("data", `${JSON.stringify({ method, params })}\n`);
+  };
+  async function startFixture(factory: FakeAppServerFactory,
+    dispatch: NonNullable<ConstructorParameters<typeof CodexAppServerClient>[0]["hostedControllerTools"]>["dispatch"],
+    commandApprovalPolicy?: ConstructorParameters<typeof CodexAppServerClient>[0]["commandApprovalPolicy"]) {
+    const workspace = await mkdtemp(join(tmpdir(), "dynamic-tool-ownership-"));
+    const abort = new AbortController();
+    const client = new CodexAppServerClient({
+      codexBinaryPath: "/bin/codex-test", sourceEnv: {}, processFactory: factory.create,
+      signalChildProcess: (child, signal) => { child.kill(signal); },
+      session: { home: workspace, codexHome: workspace, env: {}, release: async () => undefined },
+      workspacePath: workspace, executionProfile: resolveCodexExecutionProfile({
+        kind: "custom", disableTools: false, historyMode: "none",
+      }), nativeToolSurface: "disabled", timeoutMs: 2_000, startupTimeoutMs: 2_000,
+      reconnectGraceMs: 100, maxOutputBytes: 4096, abortSignal: abort.signal,
+      hostedControllerTools: { dispatch },
+      ...(commandApprovalPolicy ? { commandApprovalPolicy } : {}),
+    });
+    await client.start();
+    const threadId = await client.startThread({ workspacePath: workspace, model: "test",
+      reasoningEffort: "low", timeoutMs: 2_000, abortSignal: abort.signal, goalMode: true });
+    const turn = client.startTurn({ threadId, prompt: "test", model: "test", reasoningEffort: "low",
+      workspacePath: workspace, timeoutMs: 10_000, abortSignal: abort.signal, goalMode: true });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return { workspace, abort, client, threadId, turn };
+  }
+  async function stopFixture(fixture: Awaited<ReturnType<typeof startFixture>>) {
+    fixture.abort.abort();
+    await fixture.turn.catch(() => undefined);
+    await fixture.client.stop();
+    await rm(fixture.workspace, { recursive: true, force: true });
+  }
+  const callParams = (threadId: string, turnId: string, callId: string) => ({
+    threadId, turnId, callId, namespace: null, tool: HostedControllerToolName.Observe,
+    arguments: { handle: "opaque" },
+  });
+
+  it("uses one replay identity for notification and response turn IDs", async () => {
+    // Previously turn-1 and response-turn-1 made separate replay keys, so both
+    // request IDs dispatched and both returned hosted_controller_disabled.
+    const factory = new FakeAppServerFactory({ emitTurnEventsWithStartResponse: true,
+      mismatchTurnStartResponseId: true, suppressTurnCompletion: true,
+      emitServerRequestOnTurn: { method: "item/tool/call", params: callParams("thread-1", "turn-1", "shared") },
+    });
+    let dispatches = 0;
+    const fixture = await startFixture(factory, async () => { dispatches += 1; return { status: "disabled" }; });
+    try {
+      sendServerRequest(factory, "response-alias", "item/tool/call",
+        callParams(fixture.threadId, "response-turn-1", "shared"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(dispatches).toBe(1);
+      expect(factory.responses.filter((response) => response.id === 9_002)).toEqual([{ id: 9_002,
+        result: { success: false, contentItems: [{ type: "inputText", text: "hosted_controller_disabled" }] } }]);
+      expect(factory.responses.filter((response) => response.id === "response-alias")).toEqual([{ id: "response-alias",
+        result: { success: false, contentItems: [{ type: "inputText", text: "hosted_controller_unavailable" }] } }]);
+    } finally { await stopFixture(fixture); }
+  });
+
+  it("deduplicates a call received before the turn alias, then cancels its pending dispatch on canonical abort", async () => {
+    // Previously the early notification ID and response ID produced different replay keys,
+    // and canonical turn cancellation left the early dispatch signal live until its deadline.
+    const factory = new FakeAppServerFactory({ emitTurnEventsWithStartResponse: true,
+      mismatchTurnStartResponseId: true, suppressTurnCompletion: true,
+      emitServerRequestOnTurn: { method: "item/tool/call", params: callParams("thread-1", "turn-1", "same-call") },
+    });
+    let dispatches = 0;
+    let signal: AbortSignal | undefined;
+    const fixture = await startFixture(factory, async (_call, currentSignal) => {
+      dispatches += 1;
+      signal = currentSignal;
+      return await new Promise(() => undefined);
+    });
+    try {
+      expect(dispatches).toBe(1);
+      sendServerRequest(factory, "replayed-alias", "item/tool/call",
+        callParams(fixture.threadId, "response-turn-1", "same-call"));
+      expect(dispatches).toBe(1);
+      expect(factory.responses.filter((response) => response.id === "replayed-alias"))
+        .toEqual([{ id: "replayed-alias", result: { success: false,
+          contentItems: [{ type: "inputText", text: "hosted_controller_unavailable" }] } }]);
+      sendTurnEvent(factory, "turn/aborted", { turnId: "response-turn-1", reason: "test" });
+      expect(signal?.aborted).toBe(true);
+      expect(factory.responses.filter((response) => response.id === 9_002)).toHaveLength(0);
+    } finally { await stopFixture(fixture); }
+  });
+
+  it.each(["turn/completed", "error"])("cancels an aliased pending dispatch on %s", async (method) => {
+    // Previously pending dispatches were keyed by the notification ID, so canonical
+    // completion and error left their AbortSignal live until the five-second timeout.
+    const factory = new FakeAppServerFactory({ emitTurnEventsWithStartResponse: true,
+      mismatchTurnStartResponseId: true, suppressTurnCompletion: true,
+      emitServerRequestOnTurn: { method: "item/tool/call", params: callParams("thread-1", "turn-1", "pending") },
+    });
+    let dispatches = 0;
+    let signal: AbortSignal | undefined;
+    const fixture = await startFixture(factory, async (_call, currentSignal) => {
+      dispatches += 1;
+      signal = currentSignal;
+      return await new Promise(() => undefined);
+    });
+    try {
+      sendTurnEvent(factory, method, method === "error"
+        ? { turnId: "response-turn-1", error: { message: "test" } }
+        : { turn: { id: "response-turn-1", status: "completed" } });
+      expect(signal?.aborted).toBe(true);
+      expect(dispatches).toBe(1);
+      expect(factory.responses.filter((response) => response.id === 9_002)).toHaveLength(0);
+    } finally { await stopFixture(fixture); }
+  });
+
+  it.each([71, "request-71"])("owns %s across dynamic, unsupported and approval methods", async (id) => {
+    // Previously an unsupported or approval request reused a pending dynamic ID and
+    // wrote an error or approval plus the eventual dynamic result with the same ID.
+    const factory = new FakeAppServerFactory({ suppressTurnCompletion: true });
+    let dispatches = 0;
+    let release: (() => void) | undefined;
+    let approvals = 0;
+    const fixture = await startFixture(factory, async () => {
+      dispatches += 1;
+      return await new Promise((resolve) => { release = () => resolve({ status: "disabled" }); });
+    }, { reviewCommand: () => { approvals += 1; return { approved: false }; } });
+    try {
+      sendServerRequest(factory, id, "item/tool/call", callParams(fixture.threadId, "turn-1", "owned"));
+      sendServerRequest(factory, id, "client/unsupported", {});
+      sendServerRequest(factory, id, "item/commandExecution/requestApproval", { command: "ignored" });
+      expect(dispatches).toBe(1);
+      expect(approvals).toBe(0);
+      expect(factory.responses.filter((response) => response.id === id)).toHaveLength(0);
+      release?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(factory.responses.filter((response) => response.id === id)).toEqual([{ id,
+        result: { success: false, contentItems: [{ type: "inputText", text: "hosted_controller_disabled" }] } }]);
+      sendServerRequest(factory, id, "item/tool/call", callParams(fixture.threadId, "turn-1", "other"));
+      expect(dispatches).toBe(1);
+      expect(factory.responses.filter((response) => response.id === id)).toHaveLength(1);
+    } finally { await stopFixture(fixture); }
+  });
+
+  it.each([71, "request-71"])("does not dispatch dynamic calls after %s was claimed by another method", async (id) => {
+    // Previously reversing arrival order still let dynamic routing dispatch a duplicate ID.
+    const factory = new FakeAppServerFactory({ suppressTurnCompletion: true });
+    let dispatches = 0;
+    const fixture = await startFixture(factory, async () => { dispatches += 1; return { status: "disabled" }; });
+    try {
+      sendServerRequest(factory, id, "client/unsupported", {});
+      sendServerRequest(factory, id, "item/tool/call", callParams(fixture.threadId, "turn-1", "late"));
+      expect(dispatches).toBe(0);
+      expect(factory.responses.filter((response) => response.id === id)).toHaveLength(1);
+      expect(factory.responses.find((response) => response.id === id)?.error).toBeDefined();
+    } finally { await stopFixture(fixture); }
+  });
+
+  it("keeps a supported approval's response when its ID is reused by a dynamic call", async () => {
+    // Previously the approval wrote a response but left its numeric ID unclaimed,
+    // so the following dynamic call dispatched and wrote a second response.
+    const factory = new FakeAppServerFactory({ suppressTurnCompletion: true });
+    let dispatches = 0;
+    let approvals = 0;
+    const fixture = await startFixture(factory, async () => { dispatches += 1; return { status: "disabled" }; },
+      { reviewCommand: () => { approvals += 1; return { approved: false }; } });
+    try {
+      sendServerRequest(factory, 71, "item/commandExecution/requestApproval", { command: "ignored" });
+      sendServerRequest(factory, 71, "item/tool/call", callParams(fixture.threadId, "turn-1", "late"));
+      expect(approvals).toBe(1);
+      expect(dispatches).toBe(0);
+      expect(factory.responses.filter((response) => response.id === 71)).toEqual([
+        { id: 71, result: { decision: "decline" } },
+      ]);
+    } finally { await stopFixture(fixture); }
+  });
   it("keeps the nonhosted unsupported request response", () => {
     const errors: string[] = [];
     handleAppServerServerRequest({ id: 1, method: "item/tool/call", params: null,
@@ -117,7 +292,7 @@ describe("Codex 0.155.1 dynamic tool contract", () => {
       const handler = new AppServerDynamicToolHandler({
         adapter: { dispatch: async () => await new Promise(() => undefined) },
         isActiveTurn: () => true, isTerminal: () => false,
-        failProtocol: () => { throw new Error("unexpected protocol failure"); },
+        logicalTurnId: (turnId) => turnId,
         respond: (_id, result) => responses.push(result),
       });
       handler.addThread("thread-1");

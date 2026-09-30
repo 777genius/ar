@@ -105,6 +105,7 @@ export type { AppServerTurnResult } from "./app-server-turn-state";
 const maxRetainedTurnStates = appServerTurnCapacity;
 const maxRetainedEarlyTurnIds = 128;
 const maxRetainedTurnAliases = 128;
+const maxRetainedServerRequestIds = 4096;
 
 export class CodexAppServerClient {
   private readonly executionAdmission = new AppServerAdmission();
@@ -113,6 +114,7 @@ export class CodexAppServerClient {
   private child: CodexAppServerChildProcess | null = null;
   private readonly stdoutDecoder: AppServerJsonRpcLineDecoder;
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly serverRequestIds = new Set<string>();
   private readonly tokenUsage = new AppServerTokenUsageTracker((warning) => this.warnings.push(warning));
   private readonly turns = new Map<string, TurnState>();
   private readonly startingTurnThreads = new Set<string>();
@@ -161,8 +163,8 @@ export class CodexAppServerClient {
         return (expected === canonical || early === turnId) &&
           !this.findTurn(turnId)?.completed && !this.findTurn(turnId)?.error;
       },
+      logicalTurnId: (turnId) => this.turnIdAliases.get(turnId) ?? turnId,
       isTerminal: () => this.terminalError !== null,
-      failProtocol: (error) => this.failProtocol(error),
       respond: (id, result) => this.respondServerRequest(id, result),
     });
     this.stdoutDecoder = new AppServerJsonRpcLineDecoder(
@@ -859,6 +861,13 @@ export class CodexAppServerClient {
       this.failProtocol(new Error("codex_app_server_server_request_id_invalid"));
       return;
     }
+    const requestKey = `${typeof id}:${id}`;
+    if (this.serverRequestIds.has(requestKey)) return;
+    if (this.serverRequestIds.size >= maxRetainedServerRequestIds) {
+      this.failProtocol(new Error("codex_app_server_server_request_id_limit_exceeded"));
+      return;
+    }
+    this.serverRequestIds.add(requestKey);
     handleAppServerServerRequest({
       id,
       method,
@@ -1015,6 +1024,7 @@ export class CodexAppServerClient {
       return;
     }
     this.turnIdAliases.set(actualTurnId, expectedTurnId);
+    this.dynamicTools.aliasTurn(actualTurnId, expectedTurnId);
     const actual = this.turns.get(actualTurnId);
     if (!actual) return;
     const expected = this.turns.get(expectedTurnId);
