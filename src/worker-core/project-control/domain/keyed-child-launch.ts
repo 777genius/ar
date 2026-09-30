@@ -71,6 +71,22 @@ interface AcceptedChild {
   readonly dispatchIntent: Readonly<{ generation: number }> | null;
 }
 
+/** Private persistence DTO; never use this in model-facing observations. */
+export interface KeyedChildLedgerSnapshot {
+  readonly schemaVersion: 1;
+  readonly authorityDigest: string;
+  readonly slots: readonly ChildSlotAllocation[];
+  readonly generation: number;
+  readonly accepted: readonly AcceptedChild[];
+}
+export const keyedChildSnapshotMaxBytes = 4 * 1024 * 1024;
+function exactFields(value: unknown, fields: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).sort().join(",") !== fields.split(",").sort().join(",")) {
+    throw new Error("invalid snapshot fields");
+  }
+}
+
 function text(value: string, limit: number): void {
   // JS strings with lone surrogates cannot round-trip through UTF-8 exactly.
   if (typeof value !== "string" || !value.length || value.length > limit ||
@@ -104,10 +120,12 @@ function allocationCopy(a: ChildSlotAllocation): ChildSlotAllocation {
 }
 
 /** Pure immutable successor aggregate. Acceptance and occupancy are one CAS write.
- * No public hydration/mutation path can inject a terminal or remove an intent.
- * Trusted persistence integration must preserve this contract, not cast JSON to it.
+ * Validated private restoration binds the trusted authority and finite slots.
+ * Publication still requires a direct domain successor, never a hydrated edit.
  */
 export class KeyedChildLedger {
+  readonly #successorToken = Object.freeze({});
+  readonly #previousToken: object | undefined;
   readonly #authority: ReviewedChildAuthority;
   readonly #slots: readonly ChildSlotAllocation[];
   readonly #accepted: readonly AcceptedChild[];
@@ -115,7 +133,8 @@ export class KeyedChildLedger {
   readonly authorityDigest: string;
 
   private constructor(a: ReviewedChildAuthority, slots: readonly ChildSlotAllocation[],
-    accepted: readonly AcceptedChild[], generation: number) {
+    accepted: readonly AcceptedChild[], generation: number, previous?: KeyedChildLedger) {
+    this.#previousToken = previous ? previous.#successorToken : undefined;
     this.#authority = a; this.#slots = slots; this.#accepted = accepted;
     this.generation = generation; this.authorityDigest = authorityHash(a);
     Object.freeze(this);
@@ -142,6 +161,78 @@ export class KeyedChildLedger {
   }
   get remainingAllowance(): number { return this.#slots.length - this.#accepted.length; }
   get occupied(): boolean { return this.#accepted.some(c => c.state !== KeyedChildState.Terminal); }
+  snapshot(): KeyedChildLedgerSnapshot {
+    return Object.freeze({ schemaVersion: 1, authorityDigest: this.authorityDigest,
+      slots: this.#slots, generation: this.generation, accepted: this.#accepted });
+  }
+  serialize(): string {
+    const encoded = JSON.stringify(this.snapshot());
+    if (Buffer.byteLength(encoded, "utf8") > keyedChildSnapshotMaxBytes) throw new Error("snapshot too large");
+    return encoded;
+  }
+  /** Only immediate domain-produced successors or byte-identical noops may publish.
+   * Restored snapshots confer no transition/proof authority. */
+  assertSuccessor(next: KeyedChildLedger): void {
+    if (!(next instanceof KeyedChildLedger) ||
+        !(next.serialize() === this.serialize() ||
+          (next.#previousToken === this.#successorToken && next.generation === this.generation + 1))) {
+      throw new Error("invalid ledger successor");
+    }
+  }
+  /** Restore against independently trusted immutable authority and allocations.
+   * Canonical equality also rejects duplicate JSON fields and alternate encodings. */
+  static restore(encoded: string, trusted: KeyedChildLedger): KeyedChildLedger {
+    text(encoded, keyedChildSnapshotMaxBytes);
+    if (Buffer.byteLength(encoded, "utf8") > keyedChildSnapshotMaxBytes) throw new Error("snapshot too large");
+    const value: unknown = JSON.parse(encoded);
+    exactFields(value, "schemaVersion,authorityDigest,slots,generation,accepted");
+    const s = value as KeyedChildLedgerSnapshot;
+    if (s.schemaVersion !== 1 || s.authorityDigest !== trusted.authorityDigest ||
+        JSON.stringify(s.slots) !== JSON.stringify(trusted.#slots) ||
+        !Number.isSafeInteger(s.generation) || s.generation < 0 ||
+        !Array.isArray(s.accepted) || s.accepted.length > trusted.#slots.length) throw new Error("invalid snapshot binding");
+    let validation = KeyedChildLedger.create(trusted.#authority, trusted.#slots), minimum = 0;
+    const children: AcceptedChild[] = [];
+    for (const row of s.accepted) {
+      exactFields(row, "key,task,allocation,keyDigest,requestDigest,promptDigest,state,dispatchIntent");
+      exactFields(row.allocation, "slotId,requestId,operationId,childHandle,startId,unitCorrelation,profile");
+      validation = validation.accept(validation.generation,
+        { key: row.key, task: row.task, profile: row.allocation.profile }, 1);
+      const accepted = validation.#accepted.at(-1)!;
+      if (children.some(c => c.key === row.key) ||
+          JSON.stringify(row.allocation) !== JSON.stringify(accepted.allocation) ||
+          ["keyDigest", "requestDigest", "promptDigest"].some(field =>
+            row[field as "keyDigest"] !== accepted[field as "keyDigest"]) ||
+          !Object.values(KeyedChildState).includes(row.state)) throw new Error("invalid accepted history");
+      const pre = new Map([[KeyedChildState.Claimed, 1], [KeyedChildState.Materializing, 2],
+        [KeyedChildState.Prepared, 3], [KeyedChildState.Terminal, 2],
+        [KeyedChildState.Uncertain, 2], [KeyedChildState.StopRequested, 2]]);
+      const post = new Map([[KeyedChildState.DispatchIntent, 0], [KeyedChildState.Submitted, 1],
+        [KeyedChildState.Running, 2], [KeyedChildState.Uncertain, 1], [KeyedChildState.StopRequested, 1]]);
+      if (row.dispatchIntent !== null) {
+        exactFields(row.dispatchIntent, "generation"); integer(row.dispatchIntent.generation);
+        if (!post.has(row.state) || row.dispatchIntent.generation < minimum + 4 ||
+            (!children.length && row.dispatchIntent.generation !== 4)) throw new Error("invalid dispatch intent");
+        minimum = row.dispatchIntent.generation + post.get(row.state)!;
+      } else {
+        if (!pre.has(row.state)) throw new Error("missing dispatch intent");
+        minimum += pre.get(row.state)!;
+      }
+      children.push(Object.freeze({ ...accepted, state: row.state,
+        dispatchIntent: row.dispatchIntent === null ? null : Object.freeze({ generation: row.dispatchIntent.generation }) }));
+      // Reconstructed history supplies occupancy to the existing accept validator.
+      validation = new KeyedChildLedger(trusted.#authority, trusted.#slots, Object.freeze([...children]), minimum);
+    }
+    if (minimum > s.generation || (!children.length && s.generation !== 0)) throw new Error("invalid snapshot generation");
+    const last = children.at(-1);
+    if (last && ((last.dispatchIntent && [KeyedChildState.DispatchIntent, KeyedChildState.Submitted,
+        KeyedChildState.Running].includes(last.state)) || (children.length === 1 &&
+        [KeyedChildState.Claimed, KeyedChildState.Materializing, KeyedChildState.Prepared].includes(last.state))) &&
+        s.generation !== minimum) throw new Error("impossible snapshot generation");
+    const restored = new KeyedChildLedger(trusted.#authority, trusted.#slots, Object.freeze(children), s.generation);
+    if (restored.serialize() !== encoded) throw new Error("noncanonical snapshot");
+    return restored;
+  }
   #checkGeneration(expected: number): void {
     if (expected !== this.generation) throw new Error("stale generation");
   }
@@ -151,7 +242,7 @@ export class KeyedChildLedger {
   }
   #successor(children: readonly AcceptedChild[]): KeyedChildLedger {
     if (this.generation === Number.MAX_SAFE_INTEGER) throw new Error("generation exhausted");
-    return new KeyedChildLedger(this.#authority, this.#slots, Object.freeze(children), this.generation + 1);
+    return new KeyedChildLedger(this.#authority, this.#slots, Object.freeze(children), this.generation + 1, this);
   }
   accept(expected: number, request: ChildLaunchRequest, now: number): KeyedChildLedger {
     this.#checkGeneration(expected);
