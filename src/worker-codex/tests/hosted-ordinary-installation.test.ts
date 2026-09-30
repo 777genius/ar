@@ -1,3 +1,5 @@
+import { readHostedOrdinaryProcessOrigin } from "../../provider-codex/app-server/adapters/hosted-process-activation";
+import { enrolledTestChild } from "./hosted-child-slot-test-support";
 import { routeHostedGoalLaunch, stopHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import { codexGoalAccountSlots, runCodexGoal } from "../codex-goal-runner";
 import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
@@ -963,4 +965,36 @@ describe("managed inspected installation admission", () => {
       expect(read("readonly-epoch.json").reservations).toHaveLength(1);
     } else { expect(launch).toThrow(); expect(fixture.spawn).not.toHaveBeenCalled(); }
   });
+});
+// Bug: child expiry/ambiguous submission closes siblings, refunds a birth, claims terminal custody, or opens MiMo activation.
+it.each(["ambiguous", "deadline"])("retains one child birth with scoped cleanup: %s", async mode => {
+  const { store, launch } = enrolledTestChild(runtimeDirectory, read("readonly-inventory.json"), put);
+  fixture.onStop = () => {
+    expect(store.read().phase).toBe("ORDINARY");
+    expect(() => withHostedActivationFence(() => {})).not.toThrow();
+  };
+  if (mode === "ambiguous") {
+    expect(() => store.runOrdinaryRuntimeLaunch(launch.command, launch.args, launch.cwd, () => {
+      throw new Error("TEST ambiguous submission");
+    })).toThrow("ambiguous submission");
+  } else {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const pending = runHostedRuntimeForeground(launch.command, launch.args, launch.cwd, {});
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect((fixture.child as { kill: unknown }).kill).toHaveBeenCalledWith("SIGTERM");
+      (fixture.child as EventEmitter).emit("exit", null, "SIGTERM"); expect(await pending).toBe(70);
+    } finally { vi.useRealTimers(); }
+  }
+  const starts = store.read().ordinaryStarts;
+  expect(starts).toHaveLength(1); expect(starts[0]?.state).toBe("reserved");
+  expect(new Set(fixture.stops)).toEqual(new Set([starts[0]!.unit]));
+  expect(() => new HostedInstallationActivationStore().runOrdinaryRuntimeLaunch(launch.command, launch.args, launch.cwd,
+    () => { throw new Error("replacement must not submit"); })).toThrow("child_invocation_consumed");
+  expect(() => read(`ordinary-completed/${starts[0]!.startId}.json`)).toThrow();
+  expect(store.stopOrdinaryRuntime({ jobId: "ordinary-job", jobRootDir: "/jobs/ordinary-job", workspacePath: launch.cwd })).toBe(true);
+  expect(store.read().phase).toBe("ORDINARY");
+  const start = read(`ordinary-starts/${starts[0]!.startId}.json`);
+  fixture.runtimeUnit = start.unit; fixture.group = start.controlGroup;
+  expect(() => withHostedActivationFence(fence => readHostedOrdinaryProcessOrigin(fence))).toThrow("hosted_mimo_activation_closed");
 });

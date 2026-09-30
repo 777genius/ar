@@ -1,3 +1,4 @@
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { AgentRuntimeToolName, ClockPort, ObservabilityPort, RuntimeDeps } from "@vioxen/subscription-runtime/core";
 import { CodexModelBackend, type AppServerCompletedTurnCheckpoint, type CodexExecutionProfile, type CodexProviderEgressPolicy, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
 import type { CommandPolicy } from "@vioxen/subscription-runtime/worker-core";
@@ -9,6 +10,7 @@ import {
 } from "./codex-session-home-profile";
 
 export type FileBackendCodexWorkerOptions = {
+  readonly childBudget?: ChildExecutionBudget;
   readonly workerId?: string;
   readonly providerInstanceId: string;
   readonly stateRootDir: string;

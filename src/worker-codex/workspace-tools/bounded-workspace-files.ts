@@ -1,3 +1,4 @@
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -18,7 +19,7 @@ import {
   resolve,
   sep,
 } from "node:path";
-import { isProjectInstructionPath } from "@vioxen/subscription-runtime/core";
+import { AgentRuntimeTool, type AgentRuntimeToolName, isProjectInstructionPath } from "@vioxen/subscription-runtime/core";
 
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const DEFAULT_MAX_SEARCH_BYTES = 8 * 1024 * 1024;
@@ -33,6 +34,7 @@ export type WorkspaceSearchMatch = {
 };
 
 export type BoundedWorkspaceFilesOptions = {
+  readonly childBudget?: ChildExecutionBudget;
   readonly maxFileBytes?: number;
   readonly maxSearchBytes?: number;
   readonly maxSearchFiles?: number;
@@ -45,13 +47,16 @@ export class BoundedWorkspaceFiles {
 
   private constructor(
     private readonly root: string,
-    private readonly limits: Required<BoundedWorkspaceFilesOptions>,
+    private readonly limits: Required<Omit<BoundedWorkspaceFilesOptions, "childBudget">>,
+    private readonly childBudget?: ChildExecutionBudget,
   ) {}
 
   static async create(
     workspaceRoot: string,
     options: BoundedWorkspaceFilesOptions = {},
   ): Promise<BoundedWorkspaceFiles> {
+    if (options.childBudget && options.denyProjectInstructions !== true) throw new Error("child_workspace_instruction_policy_conflict");
+    options.childBudget?.remainingMs();
     const root = await realpath(workspaceRoot);
     const rootStat = await lstat(root);
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
@@ -79,10 +84,17 @@ export class BoundedWorkspaceFiles {
         "maxSearchResults",
       ),
       denyProjectInstructions: options.denyProjectInstructions ?? false,
-    });
+    }, options.childBudget);
+  }
+
+  private assertTool(tool: AgentRuntimeToolName): void {
+    if (!this.childBudget) return;
+    this.childBudget.remainingMs();
+    if (!this.childBudget.lifetime.allowedTools.includes(tool)) throw new Error("child_workspace_tool_denied");
   }
 
   async readFile(path: string): Promise<string> {
+    this.assertTool(AgentRuntimeTool.ReadFile);
     this.assertReadablePath(path);
     const absolutePath = await this.resolveRegularFile(path, true);
     return this.readUtf8File(absolutePath);
@@ -94,6 +106,7 @@ export class BoundedWorkspaceFiles {
     readonly newText: string;
     readonly replaceAll?: boolean;
   }): Promise<{ readonly replacements: number }> {
+    this.assertTool(AgentRuntimeTool.EditFile);
     if (input.oldText.length === 0) {
       throw new Error("workspace_edit_old_text_must_not_be_empty");
     }
@@ -120,6 +133,7 @@ export class BoundedWorkspaceFiles {
     readonly content: string;
     readonly overwrite?: boolean;
   }): Promise<void> {
+    this.assertTool(AgentRuntimeTool.WriteFile);
     const absolutePath = await this.resolveRegularFile(input.path, false);
     await this.withWriteLock(absolutePath, () =>
       this.atomicWrite(absolutePath, input.content, input.overwrite === true)
@@ -131,6 +145,7 @@ export class BoundedWorkspaceFiles {
     readonly path?: string;
     readonly maxResults?: number;
   }): Promise<readonly WorkspaceSearchMatch[]> {
+    this.assertTool(AgentRuntimeTool.SearchFiles);
     if (input.query.length === 0 || input.query.length > 512) {
       throw new Error("workspace_search_query_length_invalid");
     }
@@ -186,6 +201,7 @@ export class BoundedWorkspaceFiles {
   }
 
   private async readUtf8File(absolutePath: string): Promise<string> {
+    this.childBudget?.remainingMs();
     const handle = await open(
       absolutePath,
       constants.O_RDONLY | noFollowFlag(),
@@ -213,6 +229,7 @@ export class BoundedWorkspaceFiles {
     content: string,
     overwrite: boolean,
   ): Promise<void> {
+    this.childBudget?.remainingMs();
     const encoded = Buffer.from(content, "utf8");
     if (encoded.byteLength > this.limits.maxFileBytes) {
       throw new Error("workspace_file_size_limit_exceeded");
@@ -246,6 +263,7 @@ export class BoundedWorkspaceFiles {
       await handle.close();
     }
     try {
+      this.childBudget?.remainingMs();
       if (overwrite) {
         await rename(temporaryPath, absolutePath);
       } else {

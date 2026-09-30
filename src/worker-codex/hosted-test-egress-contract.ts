@@ -11,7 +11,14 @@ export type HostedTestEgressGrant = {
   readonly workspacePath: string;
   readonly profileId: CodexProviderEgressProfileId.TestNpmQualification
     | CodexProviderEgressProfileId.TestManagedQualification;
-} | HostedMimoGrant;
+} | HostedMimoGrant | HostedMimoSlotGrant;
+
+export type HostedMimoSlotGrant = Omit<HostedMimoGrant, "schemaVersion" | "accountId" | "hostedProfile"> & {
+  readonly schemaVersion: 3;
+  readonly accountId: string;
+  readonly hostedProfile: HostedMimoProfile.Child;
+  readonly slotId: string;
+};
 
 export type HostedMimoGrant = {
   readonly schemaVersion: 2;
@@ -35,11 +42,14 @@ export type HostedTestEgressIdentity = Pick<
 export function parseHostedTestEgressGrant(value: unknown): HostedTestEgressGrant {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
   const record = value as Record<string, unknown>;
-  if (record.schemaVersion === 2) {
+  if (record.schemaVersion === 2 || record.schemaVersion === 3) {
+    const slot = record.schemaVersion === 3;
+    if (slot && (typeof record.slotId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}$/.test(record.slotId) ||
+        record.hostedProfile !== HostedMimoProfile.Child)) invalid();
     if (Object.keys(record).sort().join(",") !==
-        "accountId,executionEngine,globalScanGuard,hostedProfile,jobId,jobRootDir,modelBackend,namedPermissions,nativeToolSurface,profileId,schemaVersion,workspacePath" ||
+        (slot ? "accountId,executionEngine,globalScanGuard,hostedProfile,jobId,jobRootDir,modelBackend,namedPermissions,nativeToolSurface,profileId,schemaVersion,slotId,workspacePath" : "accountId,executionEngine,globalScanGuard,hostedProfile,jobId,jobRootDir,modelBackend,namedPermissions,nativeToolSurface,profileId,schemaVersion,workspacePath") ||
         record.profileId !== CodexProviderEgressProfileId.MimoTokenPlan ||
-        record.accountId !== "account-q" ||
+        (slot ? typeof record.accountId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(record.accountId) : record.accountId !== "account-q") ||
         (record.hostedProfile !== HostedMimoProfile.Controller && record.hostedProfile !== HostedMimoProfile.Child) ||
         record.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan ||
         record.executionEngine !== "app-server-goal" || record.namedPermissions !== true ||
@@ -47,7 +57,7 @@ export function parseHostedTestEgressGrant(value: unknown): HostedTestEgressGran
         typeof record.jobId !== "string" || !record.jobId.trim() || record.jobId.length > 256 ||
         typeof record.jobRootDir !== "string" || !record.jobRootDir ||
         typeof record.workspacePath !== "string" || !record.workspacePath) invalid();
-    return Object.freeze(record as HostedMimoGrant);
+    return Object.freeze({ ...record }) as HostedMimoGrant | HostedMimoSlotGrant;
   }
   if (Object.keys(record).sort().join(",") !==
       "jobId,jobRootDir,profileId,schemaVersion,workspacePath" ||

@@ -1,3 +1,4 @@
+import { sameTools } from "./child-execution-confinement";
 import { assertReadonlyAdmittedFactory } from "./hosted-readonly-admission";
 import { prepareHostScratchCaches } from "./host-scratch-temp";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
@@ -23,6 +24,7 @@ import {
   PackagedCodexJsonExecutionEngine,
   codexJsonHomeConfigToml,
   codexMimoApiKeyEnvVarDefault,
+  codexMimoDefaultModel,
   codexMimoTokenPlanEgressPolicy,
   codexModelBackendDefaultModel,
   codexProviderApiEgressPolicy,
@@ -231,6 +233,16 @@ function createCodexAgentDriver(input: {
   readonly managedRunStore: LocalFileManagedRunStore;
 }): CodexJsonAgentDriver | CodexCliAgentDriver {
   const { options } = input;
+  if (options.childBudget) {
+    const bound = options.childBudget.lifetime;
+    if (options.executionEngine !== "app-server-goal" || options.capacityAccountId !== bound.accountId ||
+        options.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan || options.model !== codexMimoDefaultModel ||
+        options.mimoApiKeyEnvVarName !== codexMimoApiKeyEnvVarDefault ||
+        options.maxGoalTurns !== bound.maxGoalTurns || options.cleanThreadPrewarm !== false ||
+        options.executionProfile !== undefined || options.boundedWorkspaceTools?.denyProjectInstructions !== true ||
+        !sameTools(options.boundedWorkspaceTools?.allowedTools, bound)) throw new Error("child_factory_confinement_conflict");
+    options.childBudget.remainingMs();
+  }
   const executionEngine = options.executionEngine ?? "app-server";
   const modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
   const mimoApiKeyEnvVarName = options.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault;
@@ -277,6 +289,7 @@ function createCodexAgentDriver(input: {
         allowedTools: options.boundedWorkspaceTools.allowedTools,
         modelBackend,
         mimoApiKeyEnvVarName,
+        ...(options.childBudget ? { childLifetime: options.childBudget.lifetime } : {}),
         ...(options.boundedWorkspaceTools.denyProjectInstructions
           ? { denyProjectInstructions: true }
           : {}),
@@ -314,6 +327,7 @@ function createCodexAgentDriver(input: {
     engine: executionEngine === "packaged-exec"
       ? packagedExec
       : new CodexAppServerExecutionEngine({
+          ...(options.childBudget ? { childBudget: options.childBudget } : {}),
           codexBinaryPath: options.codexBinaryPath,
           modelBackend,
           sourceEnv: appServerEnv,

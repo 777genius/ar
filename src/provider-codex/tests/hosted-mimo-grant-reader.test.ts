@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CodexModelBackend } from "../codex-model-backend";
 import { CodexProviderEgressProfileId } from "../codex-provider-egress-policy";
 import { HostedMimoProfile } from "../hosted-mimo-profile";
-import { readProviderHostedMimoGrantAtPath } from "../app-server/adapters/hosted-process-activation";
+import { assertProviderHostedMimoGrant, readProviderHostedMimoGrantAtPath } from "../app-server/adapters/hosted-process-activation";
 
 const syntheticOwner = vi.hoisted(() => ({ root: "", fileUid: 0 }));
 vi.mock("node:fs", async importOriginal => {
@@ -27,6 +27,20 @@ vi.mock("node:fs", async importOriginal => {
 });
 
 describe("independent provider MiMo grant reader", () => {
+  // Bug: the independent provider reader hardcodes historical account-q for a new inventory-approved slot.
+  it("accepts schema 3 account-s without translating schema 2 or accepting a controller slot", () => {
+    const identity = { jobId: "test-child", jobRootDir: "/test/jobs/test-child", workspacePath: "/test/jobs/test-child/workspace" };
+    const grant = { schemaVersion: 3, ...identity, slotId: "finite-slot-1", accountId: "account-s",
+      profileId: CodexProviderEgressProfileId.MimoTokenPlan, hostedProfile: HostedMimoProfile.Child,
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, executionEngine: "app-server-goal",
+      namedPermissions: true, globalScanGuard: true, nativeToolSurface: "disabled" };
+    expect(() => assertProviderHostedMimoGrant(grant, identity)).not.toThrow();
+    expect(() => assertProviderHostedMimoGrant({ ...grant, hostedProfile: HostedMimoProfile.Controller }, identity)).toThrow();
+    const { slotId, ...legacy } = grant;
+    expect(() => assertProviderHostedMimoGrant({ ...legacy, schemaVersion: 2 }, identity)).toThrow();
+    expect(() => assertProviderHostedMimoGrant({ ...grant, credentialPath: "/test/private-key" }, identity)).toThrow();
+  });
+
   it("binds a private file to its retained digest and exact provider profile", async () => {
     // Regression: a rotated grant or changed profile must fail before a child spawn.
     const root = await mkdtemp(join(process.cwd(), ".synthetic-provider-mimo-grant-"));

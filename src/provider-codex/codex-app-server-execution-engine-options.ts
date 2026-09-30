@@ -1,3 +1,4 @@
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { ManagedRunStorePort } from "@vioxen/subscription-runtime/core";
 import type {
   CodexAppServerCommandApprovalPolicy,
@@ -14,6 +15,7 @@ import type { HostedControllerDynamicToolAdapter } from "./app-server/domain/hos
 
 export type CodexAppServerExecutionEngineOptions = {
   readonly codexBinaryPath: string;
+  readonly childBudget?: ChildExecutionBudget;
   /**
    * Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing behavior
    * is unchanged. Fixed for the engine's (and its app-server process pool's)

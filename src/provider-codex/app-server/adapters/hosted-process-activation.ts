@@ -1,3 +1,4 @@
+import { parseImmutableChildSlot } from "@vioxen/subscription-runtime/core";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync,
   readlinkSync, readSync, rmdirSync, writeSync, fsyncSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -14,7 +15,7 @@ import type { CodexAppServerChildProcess } from "../application/app-server-proce
 const root = "/var/lib/subscription-runtime-host-policy";
 const activeFences = new WeakSet<object>();
 // Not a configurable policy root or a public arbitrary filesystem reader.
-const recordName = /^(?:readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
+const recordName = /^(?:readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
 export type HostedActivationFence = Readonly<{ readonly held: true }>;
 
 /** Initial host root is trusted; namespace-local root is not that principal. */
@@ -210,7 +211,7 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence) {
   if (grantBytes) {
     const grant = decodeHostedActivationBytes(grantBytes);
     if (typeof grant !== "object" || grant === null || Array.isArray(grant)) invalid();
-    if ((grant as Wire).schemaVersion === 2) {
+    if ((grant as Wire).schemaVersion === 2 || (grant as Wire).schemaVersion === 3) {
       readProviderHostedMimoGrantAtPath(
         `/run/user/0/subscription-runtime-host-policy/codex-egress/${jobName}`,
         start as { jobId: unknown; jobRootDir: unknown; workspacePath: unknown },
@@ -222,12 +223,23 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence) {
       same(legacy, start, "jobId,jobRootDir,workspacePath"); profileId = CodexProviderEgressProfileId.TestNpmQualification;
     }
   }
-  validateOrdinaryKernel(installation, activation, start);
+  const creator = validateOrdinaryKernel(installation, activation, start);
+  if (creator.childSlotSha256 !== undefined) {
+    const bytes = readHostedActivationBytes(`child-slots/${sha256(str(creator.creatorId))}.json`);
+    if (!bytes || sha256(bytes) !== creator.childSlotSha256 || !grantBytes) invalid();
+    const slot = parseImmutableChildSlot(decodeHostedActivationBytes(bytes));
+    const grant = decodeHostedActivationBytes(grantBytes) as Wire;
+    if (grant.schemaVersion !== 3 || slot.slotId !== grant.slotId || slot.lifetime.accountId !== grant.accountId ||
+        slot.grantSha256 !== start.grantSha256 || slot.artifactSha !== installation.runtimeSha ||
+        slot.jobId !== start.jobId || slot.jobRootDir !== start.jobRootDir || slot.workspacePath !== start.workspacePath ||
+        slot.creatorId !== creator.creatorId || slot.launch.command !== (creator.launch as Wire).command || slot.launch.cwd !== (creator.launch as Wire).cwd || JSON.stringify(slot.launch.args) !== JSON.stringify((creator.launch as Wire).args) ||
+        slot.lifetime.deadlineEpochMs <= Date.now()) invalid();
+  } else if (grantBytes && (decodeHostedActivationBytes(grantBytes) as Wire).schemaVersion === 3) invalid();
   assertHostedProcessDescriptors();
   // PR1 prepares the independent reader; later lifecycle PRs must supply
   // bounded controller/child authority before activation can open.
   if (profileId === CodexProviderEgressProfileId.MimoTokenPlan) throw new Error("hosted_mimo_activation_closed");
-  return { activation, start, reservation, profileId };
+  return { activation, start, reservation, profileId, childBound: creator.childSlotSha256 !== undefined };
 }
 
 /** Same fixed private-file reader as production, with a path seam for synthetic
@@ -243,14 +255,16 @@ export function readProviderHostedMimoGrantAtPath(path: string,
 /** Independent provider-side validation of the exact private MiMo grant. */
 export function assertProviderHostedMimoGrant(value: unknown,
   identity: { readonly jobId: unknown; readonly jobRootDir: unknown; readonly workspacePath: unknown }): void {
+  const version = (value as Wire)?.schemaVersion;
   const grant = wire(value,
-    "schemaVersion,jobId,jobRootDir,workspacePath,profileId,accountId,hostedProfile,modelBackend,executionEngine,namedPermissions,globalScanGuard,nativeToolSurface");
-  if (grant.schemaVersion !== 2 || grant.profileId !== CodexProviderEgressProfileId.MimoTokenPlan ||
-      grant.accountId !== "account-q" ||
+    (version === 3 ? "slotId," : "") + "schemaVersion,jobId,jobRootDir,workspacePath,profileId,accountId,hostedProfile,modelBackend,executionEngine,namedPermissions,globalScanGuard,nativeToolSurface");
+  if ((grant.schemaVersion !== 2 && grant.schemaVersion !== 3) || grant.profileId !== CodexProviderEgressProfileId.MimoTokenPlan ||
+      (version === 2 ? grant.accountId !== "account-q" : typeof grant.accountId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(grant.accountId)) ||
       (grant.hostedProfile !== HostedMimoProfile.Controller && grant.hostedProfile !== HostedMimoProfile.Child) ||
       grant.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan || grant.executionEngine !== "app-server-goal" ||
       grant.namedPermissions !== true || grant.globalScanGuard !== true ||
       grant.nativeToolSurface !== "disabled") invalid();
+  if (version === 3 && (grant.hostedProfile !== HostedMimoProfile.Child || !str(grant.slotId))) invalid();
   same(grant, identity as Wire, "jobId,jobRootDir,workspacePath");
 }
 function validateOrdinaryManagedHistory(activation: Wire, installation: Wire, jobId: string): void {
@@ -281,7 +295,7 @@ function validateOrdinaryManagedHistory(activation: Wire, installation: Wire, jo
   same(birth.identity, current.identity, Object.keys(birth.identity).join(","));
   same(birth.identity, installation, "runtimeSha,runtimeManifestSha256");
 }
-function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wire): void {
+function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wire): Wire {
   const inventory = requiredWire("readonly-inventory.json", "schemaVersion,hostId,supervisorUnit,units,runtimeLaunch,ordinaryCreators,disabledCreators");
   if (inventory.value.schemaVersion !== 2 || inventory.value.hostId !== installation.hostId || sha256(inventory.bytes) !== installation.inventorySha256) invalid();
   const units = rows(inventory.value.units).map(value => {
@@ -305,7 +319,9 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   const owner = units.find(row => row.name === inventory.value.supervisorUnit);
   if (!owner) invalid();
   const creators = rows(inventory.value.ordinaryCreators).map(value => {
-    const row = wire(value, "creatorId,jobId,jobRootDir,workspacePath,launch");
+    const row = wire(value, "creatorId,jobId,jobRootDir,workspacePath,launch" +
+      (value && typeof value === "object" && "childSlotSha256" in value ? ",childSlotSha256" : ""));
+    if (row.childSlotSha256 !== undefined) digestValue(row.childSlotSha256);
     str(row.creatorId); str(row.jobId); canonical(row.jobRootDir); canonical(row.workspacePath);
     const launch = validateLaunch(row.launch);
     const cli = `${installation.runtimeDirectory}/dist/worker-codex/codex-goal-cli.js`;
@@ -315,6 +331,7 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   distinct(creators.map(row => row.creatorId));
   if (creators.length > 128) invalid();
   for (const left of creators) for (const right of creators) {
+    if (left !== right && left.jobId === right.jobId && (left.childSlotSha256 || right.childSlotSha256)) invalid();
     if (left.jobId === right.jobId ? left.jobRootDir !== right.jobRootDir || left.workspacePath !== right.workspacePath :
         left.jobRootDir === right.jobRootDir || left.workspacePath === right.workspacePath) invalid();
   }
@@ -345,6 +362,7 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   const creatorPid = str(start.creatorPidBirth).split(":")[0]!;
   if (pidBirth(creatorPid) !== start.creatorPidBirth ||
       readFileSync(`/proc/${creatorPid}/cgroup`, "utf8").trim() !== `0::${owner.controlGroup}`) invalid();
+  return creator;
 }
 function pidBirth(pid: string): string {
   str(pid, /^[1-9][0-9]{0,9}$/);
@@ -361,7 +379,7 @@ export function invalidateHostedOrdinaryWait(child: CodexAppServerChildProcess):
 export function submitHostedOrdinaryProcess(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
   submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string }) => CodexAppServerChildProcess): CodexAppServerChildProcess {
   return withHostedActivationFence(fence => {
-    const { activation, start, profileId } = readHostedOrdinaryProcessOrigin(fence);
+    const { activation, start, profileId, childBound } = readHostedOrdinaryProcessOrigin(fence);
     const jobRoot = canonical(start.jobRootDir);
     const workspacePath = canonical(start.workspacePath);
     if (!jobRoot.endsWith(`/jobs/${str(start.jobId)}`) ||
@@ -373,6 +391,9 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
     if ((cwd !== start.workspacePath && cwd !== input.env.HOME) || input.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job" ||
         (input.env[codexProviderEgressProfileEnvVar] ?? CodexProviderEgressProfileId.ProviderApi) !== profileId) invalid();
     const starts = rows(activation.ordinaryStarts);
+    if (childBound && starts.some(row => !!row && typeof row === "object" &&
+        "creatorId" in row && row.creatorId === start.creatorId && "unit" in row &&
+        typeof row.unit === "string" && row.unit.startsWith("subscription-runtime-hosted-"))) throw new Error("child_invocation_consumed");
     if (starts.length >= 256) invalid();
     const startId = randomUUID(), unit = `subscription-runtime-hosted-${startId}.service`;
     const generation = positive(activation.generation) + 1; positive(generation);
@@ -403,7 +424,7 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
       });
       return child;
     } catch (error) {
-      publishOrdinaryActivation(fence, { ...next, generation: generation + 1, phase: "CLOSED" });
+      if (!childBound) publishOrdinaryActivation(fence, { ...next, generation: generation + 1, phase: "CLOSED" });
       throw error;
     }
   });

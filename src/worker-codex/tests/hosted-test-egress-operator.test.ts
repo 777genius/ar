@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostedTestEgressGrant } from "../hosted-test-egress-contract";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 const fs = vi.hoisted(() => ({ readFile: vi.fn(), readlink: vi.fn(), lstat: vi.fn(),
-  mkdir: vi.fn(), open: vi.fn(), realpath: vi.fn(), rename: vi.fn(), unlink: vi.fn() }));
+  mkdir: vi.fn(), open: vi.fn(), realpath: vi.fn(), link: vi.fn(), unlink: vi.fn() }));
 vi.mock("node:fs/promises", () => fs);
 import { assertHostedTestEgressOperator, writeHostedTestEgressGrant,
   revokeHostedTestEgressGrant, hostedTestEgressGrantRoot } from "../hosted-test-egress-files";
@@ -30,19 +30,21 @@ describe("host operator namespace and publication adapter (mock files only)", ()
     fs.readlink.mockRejectedValue(new Error("private path"));
     await expect(assertHostedTestEgressOperator()).rejects.toThrow("host_operator_required");
   });
-  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("publishes the finite record through exclusive temporary file, sync and atomic rename: %s", async profileId => {
-    const file = { writeFile: vi.fn(), sync: vi.fn(), close: vi.fn() };
+  it.each([CodexProviderEgressProfileId.TestNpmQualification, CodexProviderEgressProfileId.TestManagedQualification] as const)("publishes the finite record through exclusive temporary file, sync and create-once link: %s", async profileId => {
+    const file = { writeFile: vi.fn(), sync: vi.fn(), close: vi.fn(),
+      stat: vi.fn().mockResolvedValue({ isFile: () => true, uid: 0, nlink: 1, mode: 0o600, size: 1 }), readFile: vi.fn() };
     fs.open.mockResolvedValue(file);
     const grant: HostedTestEgressGrant = { schemaVersion: 1 as const, jobId: "exact", jobRootDir: "/synthetic/job",
       workspacePath: "/synthetic/workspace", profileId };
     await writeHostedTestEgressGrant(grant);
     expect(fs.open.mock.calls[0]).toEqual([expect.stringMatching(new RegExp(`^${hostedTestEgressGrantRoot}/[a-f0-9]{64}\\.json\\..*\\.tmp$`)), "wx", 0o600]);
-    expect(file.writeFile).toHaveBeenCalledWith(JSON.stringify(grant) + "\n");
-    expect(file.sync).toHaveBeenCalledOnce(); expect(file.close).toHaveBeenCalledOnce();
-    expect(file.sync.mock.invocationCallOrder[0]).toBeLessThan(fs.rename.mock.invocationCallOrder[0]!);
-    expect(fs.rename.mock.calls[0]?.[1]).toMatch(/\/[a-f0-9]{64}\.json$/);
+    expect(file.writeFile).toHaveBeenCalledWith(Buffer.from(JSON.stringify(grant) + "\n"));
+    expect(file.sync).toHaveBeenCalledTimes(2); expect(file.close).toHaveBeenCalledTimes(2);
+    expect(file.sync.mock.invocationCallOrder[0]).toBeLessThan(fs.link.mock.invocationCallOrder[0]!);
+    expect(fs.link.mock.calls[0]?.[1]).toMatch(/\/[a-f0-9]{64}\.json$/);
+    file.readFile.mockResolvedValue(JSON.stringify(grant));
     await revokeHostedTestEgressGrant("exact");
-    expect(fs.unlink).toHaveBeenLastCalledWith(fs.rename.mock.calls[0]?.[1]);
+    expect(fs.unlink).toHaveBeenLastCalledWith(fs.link.mock.calls[0]?.[1]);
   });
   it("validates filesystem root custody before creating missing authority parents", async () => {
     fs.lstat.mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false, uid: 0, mode: 0o777 });

@@ -400,7 +400,9 @@ export function parseCodexGoalCliArgs(
     return parseRun(rest, io);
   }
   if (commandName === "continue") {
-    return parseRun(rest, io);
+    const run = parseRun(rest, io);
+    if (run.config.childLifetime) throw new Error("child_continuation_denied");
+    return run;
   }
   if (commandName === "status") {
     return parseStatus(rest, io);

@@ -1,3 +1,5 @@
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
+import { assertChildExecutor } from "./child-execution-confinement";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -80,6 +82,7 @@ export type FileBackendCodexSafeExecutorAccount = {
 };
 
 export type FileBackendCodexSafeExecutorOptions = {
+  readonly childBudget?: ChildExecutionBudget;
   readonly executorId?: string;
   readonly stateRootDir: string;
   readonly terminalCheckpointJobRootDir?: string;
@@ -155,6 +158,7 @@ export class FileBackendCodexSafeExecutor {
   private readonly runner: SafeExecutionRunner;
   private startPromise: Promise<void> | null = null;
   private disposed = false;
+  private childRunEntered = false;
 
   constructor(private readonly options: FileBackendCodexSafeExecutorOptions) {
     assertSafeExecutorOptions(options);
@@ -298,14 +302,14 @@ export class FileBackendCodexSafeExecutor {
     this.runner = new SafeExecutionRunner({
       lockStore: options.lockStore ?? localSafeExecutionStores.lockStore,
       journal: options.journal ?? localSafeExecutionStores.journal,
-      controlInbox:
+      ...(!options.childBudget ? { controlInbox:
         options.controlInbox ??
         new WorkerControlService({
           store: new LocalFileWorkerControlInboxStore({
             rootDir: options.stateRootDir,
           }),
           ...(options.clock ? { clock: options.clock } : {}),
-        }),
+        }) } : {}),
       ...(options.activeAttemptRegistry === undefined
         ? {}
         : { activeAttemptRegistry: options.activeAttemptRegistry }),
@@ -337,6 +341,7 @@ export class FileBackendCodexSafeExecutor {
   }
 
   async prewarm(): Promise<void> {
+    if (this.options.childBudget) throw new Error("child_prewarm_denied");
     await this.start();
     await this.pool.prewarm();
   }
@@ -344,6 +349,11 @@ export class FileBackendCodexSafeExecutor {
   async run(
     input: FileBackendCodexSafeExecutorRunInput,
   ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+    assertChildExecutor(this.options, input);
+    if (this.options.childBudget) {
+      if (this.childRunEntered) throw new Error("child_invocation_consumed");
+      this.childRunEntered = true;
+    }
     if (
       this.options.sessionHomeProfile?.kind ===
         CodexSessionHomeProfileKind.OneShot &&
@@ -732,6 +742,7 @@ function assertSafeExecutorOptions(
   if (options.accounts.length === 0) {
     throw new Error("file_backend_codex_safe_accounts_required");
   }
+  assertChildExecutor(options);
   assertCodexSessionHomeProfile(options.sessionHomeProfile);
   assertMaxAccountCycles(options.maxAccountCycles);
   for (const account of options.accounts) {
