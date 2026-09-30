@@ -1061,8 +1061,9 @@ export class CodexAppServerClient {
   }
 
   private clearStartingTurn(threadId: string): void {
-    this.startingTurnThreads.delete(threadId);
     const earlyTurnId = this.earlyTurnIdsByThread.get(threadId);
+    if (earlyTurnId) this.dynamicTools.cancelTurn(earlyTurnId);
+    this.startingTurnThreads.delete(threadId);
     if (earlyTurnId) this.turns.delete(earlyTurnId);
     this.earlyTurnIdsByThread.delete(threadId);
     this.clearIdleTurnState();

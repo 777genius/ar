@@ -20,7 +20,7 @@ describe("Codex 0.155.1 dynamic tool contract", () => {
   async function startFixture(factory: FakeAppServerFactory,
     dispatch: NonNullable<ConstructorParameters<typeof CodexAppServerClient>[0]["hostedControllerTools"]>["dispatch"],
     commandApprovalPolicy?: ConstructorParameters<typeof CodexAppServerClient>[0]["commandApprovalPolicy"]) {
-    const workspace = await mkdtemp(join(tmpdir(), "dynamic-tool-ownership-"));
+    const workspace = await mkdtemp(join(tmpdir(), "dynamic-tool-ownership-TEST-"));
     const abort = new AbortController();
     const client = new CodexAppServerClient({
       codexBinaryPath: "/bin/codex-test", sourceEnv: {}, processFactory: factory.create,
@@ -50,6 +50,85 @@ describe("Codex 0.155.1 dynamic tool contract", () => {
   const callParams = (threadId: string, turnId: string, callId: string) => ({
     threadId, turnId, callId, namespace: null, tool: HostedControllerToolName.Observe,
     arguments: { handle: "opaque" },
+  });
+
+  it.each(["abort", "error ack"])("cancels an early dynamic dispatch when turn/start ends with %s", async (failure) => {
+    // Previously clearStartingTurn discarded the early identity without cancelling
+    // its dispatch, leaving the adapter signal live after either start failure.
+    const factory = new FakeAppServerFactory({ emitTurnEventsWithStartResponse: true,
+      mismatchTurnStartResponseId: true, suppressTurnCompletion: true,
+      emitServerRequestOnTurn: { method: "item/tool/call", params: callParams("thread-1", "turn-1", "early-call") },
+      onRequest: (request) => {
+        if (request.method !== "turn/start") return;
+        const stdout = factory.processes[0]!.stdout;
+        const emit = stdout.emit.bind(stdout);
+        // Deliver turn/started and the call while withholding only the start ack.
+        vi.spyOn(stdout, "emit").mockImplementationOnce((event, ...args) => {
+          const frames = String(args[0]).trim().split("\n")
+            .filter((line) => (JSON.parse(line) as { id?: number }).id !== request.id);
+          return emit(event, `${frames.join("\n")}\n`);
+        });
+      },
+    });
+    let signal: AbortSignal | undefined;
+    let release: (() => void) | undefined;
+    let aborts = 0;
+    let dispatches = 0;
+    const fixture = await startFixture(factory, async (_call, currentSignal) => {
+      dispatches += 1;
+      signal = currentSignal;
+      currentSignal.addEventListener("abort", () => { aborts += 1; }, { once: true });
+      return await new Promise((resolve) => { release = () => resolve({ status: "disabled" }); });
+    });
+    let settlements = 0;
+    const settled = fixture.turn.then(() => { settlements += 1; }, () => { settlements += 1; });
+    try {
+      expect(dispatches).toBe(1);
+      expect(signal?.aborted).toBe(false);
+      expect(factory.responses.filter((response) => response.id === 9_002)).toHaveLength(0);
+      const startId = factory.requests.find((request) => request.method === "turn/start")!.id;
+      const rejected = expect(fixture.turn).rejects.toMatchObject({
+        failureDetails: { phase: "turn_start_rejected" },
+        message: expect.stringContaining(failure === "abort"
+          ? "codex_app_server_aborted:turn/start" : "codex_app_server_turn_start_failed:synthetic rejection"),
+      });
+      if (failure === "abort") fixture.abort.abort();
+      else factory.processes[0]!.stdout.emit("data", `${JSON.stringify({ id: startId,
+        error: { message: "synthetic rejection" } })}\n`);
+      await rejected;
+      expect(signal?.aborted).toBe(true);
+      expect(aborts).toBe(1);
+      await settled;
+      expect(settlements).toBe(1);
+
+      // A late success ack, both completion identities and adapter settlement
+      // must not revive the dispatch, respond to the cancelled call or stop the client.
+      factory.processes[0]!.stdout.emit("data", `${JSON.stringify({ id: startId,
+        result: { turn: { id: "response-turn-1" } } })}\n`);
+      release?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(factory.responses.filter((response) => response.id === 9_002)).toHaveLength(0);
+      for (const turnId of ["turn-1", "response-turn-1"]) {
+        sendServerRequest(factory, `late-${turnId}`, "item/tool/call",
+          callParams(fixture.threadId, turnId, "early-call"));
+        sendServerRequest(factory, `late-${turnId}`, "item/tool/call",
+          callParams(fixture.threadId, turnId, "early-call"));
+        expect(factory.responses.filter((response) => response.id === `late-${turnId}`))
+          .toEqual([{ id: `late-${turnId}`, result: { success: false,
+            contentItems: [{ type: "inputText", text: "hosted_controller_unavailable" }] } }]);
+        sendTurnEvent(factory, "turn/completed", { turn: { id: turnId, status: "completed" } });
+      }
+      sendServerRequest(factory, 9_002, "item/tool/call", callParams(fixture.threadId, "turn-1", "early-call"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(dispatches).toBe(1);
+      expect(aborts).toBe(1);
+      expect(settlements).toBe(1);
+      expect(factory.responses.filter((response) => response.id === 9_002)).toHaveLength(0);
+      expect(factory.processes[0]!.isExited()).toBe(false);
+      expect(await fixture.client.startThread({ workspacePath: fixture.workspace, model: "test",
+        reasoningEffort: "low", timeoutMs: 2_000, abortSignal: new AbortController().signal,
+        goalMode: true })).toBe("thread-2");
+    } finally { await stopFixture(fixture); }
   });
 
   it("uses one replay identity for notification and response turn IDs", async () => {
