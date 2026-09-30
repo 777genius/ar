@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   RunEventProviderKind,
   projectScopedControllerToolNames,
@@ -14,6 +15,8 @@ import {
   codexProviderEgressConfigToml,
   codexProviderEgressEnv,
   CodexProviderEgressProfileId,
+  codexJsonHomeConfigToml,
+  hostedCodexPermissionProfilesToml,
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 
@@ -94,6 +97,55 @@ export function buildCodexControlledAgentProfile(
     },
   };
 }
+
+/** Closed-phase hosted controller profile. PR2 supplies its brokered dynamic
+ * tools; there is deliberately no project-control MCP subprocess here. */
+export function buildHostedMimoControlledAgentProfile(stateDir: string): CodexControlledAgentProfile {
+  const policy = codexMimoTokenPlanEgressPolicy();
+  const hookPath = fileURLToPath(new URL("../hosted-global-scan-pre-tool-hook.js", import.meta.url));
+  const command = `${shellQuote(process.execPath)} ${shellQuote(hookPath)}`;
+  return {
+    providerKind: RunEventProviderKind.Codex,
+    modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+    mimoApiKeyEnvVarName: codexMimoApiKeyEnvVarDefault,
+    providerEgressPolicy: policy,
+    codexHome: join(stateDir, "codex-home"),
+    enabledTools: [],
+    appServerNativeToolSurface: "disabled",
+    configToml: [
+      codexJsonHomeConfigToml({ modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+        mimoApiKeyEnvVarName: codexMimoApiKeyEnvVarDefault,
+        providerEgressPolicy: policy, namedPermissions: true, hooksEnabled: true }),
+      hostedCodexPermissionProfilesToml(policy),
+      "[hooks]", "[[hooks.PreToolUse]]", 'matcher = "Bash|exec"',
+      "[[hooks.PreToolUse.hooks]]", 'type = "command"',
+      `command = ${JSON.stringify(command)}`, "timeout = 5", "",
+    ].join("\n"),
+    rulesText: codexControllerRulesText(),
+    enforcement: {
+      providerKind: RunEventProviderKind.Codex,
+      canRestrictToolSurface: true,
+      canDisableRawShell: true,
+      canEnforceFilesystemSandbox: true,
+      canIsolateHome: true,
+      canIsolateTemp: true,
+      canRestrictNetwork: true,
+    },
+  };
+}
+
+export function assertHostedMimoControlledAgentProfile(profile: CodexControlledAgentProfile): void {
+  const expected = buildHostedMimoControlledAgentProfile(dirname(profile.codexHome));
+  if (profile.modelBackend !== expected.modelBackend ||
+      profile.mimoApiKeyEnvVarName !== expected.mimoApiKeyEnvVarName ||
+      profile.providerEgressPolicy?.profileId !== expected.providerEgressPolicy?.profileId ||
+      profile.appServerNativeToolSurface !== "disabled" || profile.enabledTools.length !== 0 ||
+      profile.configToml !== expected.configToml) {
+    throw new Error("hosted_mimo_effective_confinement_required");
+  }
+}
+
+function shellQuote(value: string): string { return `'${value.replaceAll("'", `'\\''`)}'`; }
 
 function codexConfigToml(input: {
   readonly mcpServerName: string;

@@ -83,6 +83,14 @@ describe("MiMo backend — app-server-goal-only enforcement", () => {
         }),
       ).toThrow("file_backend_codex_mimo_provider_egress_policy_not_configurable");
     });
+
+    it("keeps hosted MiMo worker activation closed at the options boundary", () => {
+      expect(() => assertWorkerOptions({ ...baseOptions,
+        modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+        executionEngine: "app-server-goal",
+        sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
+      })).toThrow("hosted_mimo_activation_closed");
+    });
   });
 
   describe("createFileBackendCodexWorkerRuntime (defense in depth for direct callers)", () => {
@@ -132,14 +140,19 @@ describe("MiMo backend — app-server-goal-only enforcement", () => {
       expect(runtime.sessionDriver.capabilities.sessionRequirement.kind).toBe("required");
     });
 
-    it("throws an explicit error for MiMo combined with the hosted global-scan guard, instead of silently running a hosted job without that PreToolUse hook", () => {
-      expect(() =>
-        runtimeFor({
-          modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
-          executionEngine: "app-server-goal",
-          sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
-        }),
-      ).toThrow("codex_mimo_backend_hosted_global_scan_guard_unsupported");
+    it("passes MiMo provider and hosted scan hook into the effective driver config", () => {
+      const runtime = runtimeFor({
+        modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+        executionEngine: "app-server-goal",
+        sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
+      });
+      const config = (runtime.agentDriver as unknown as {
+        readonly options: { readonly mimoConfigToml?: string };
+      }).options.mimoConfigToml;
+      expect(config).toContain("[model_providers.mimo]");
+      expect(config).toContain('hooks = true');
+      expect(config).toContain("[[hooks.PreToolUse]]");
+      expect(config).toContain('[permissions.hosted-project-read.filesystem]');
     });
 
     it("leaves the ChatGPT hosted global-scan guard path completely unaffected", () => {

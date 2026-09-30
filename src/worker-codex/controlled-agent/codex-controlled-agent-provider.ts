@@ -38,6 +38,7 @@ import {
   type ControlledAgentProviderStopResult,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  assertHostedMimoControlledAgentProfile,
   codexControlledAgentProviderEgressEnv,
   type CodexControlledAgentProfile,
 } from "./codex-controlled-agent-profile";
@@ -262,6 +263,12 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
   private createDriver(): CodexJsonAgentDriver {
     const modelBackend =
       this.options.modelBackend ?? this.options.profile.modelBackend;
+    const hostedMimo = modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+      (this.options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+    if (hostedMimo) {
+      assertHostedMimoControlledAgentProfile(this.options.profile);
+      throw new Error("hosted_mimo_activation_closed");
+    }
     const mimoApiKeyEnvVarName =
       this.options.mimoApiKeyEnvVarName ??
       this.options.profile.mimoApiKeyEnvVarName ??
@@ -275,6 +282,7 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: this.options.codexBinaryPath,
         modelBackend,
+        ...(hostedMimo ? { hostedPermissionProfiles: true } : {}),
         sourceEnv: {
           ...(this.options.sourceEnv ?? {}),
           ...codexProviderEgressEnv(providerEgressPolicy),
@@ -282,6 +290,7 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
         processFactory: egressBoundCodexProcessFactory(
           providerEgressPolicy,
           this.options.processFactory,
+          hostedMimo ? { namedPermissions: true } : undefined,
         ),
         goalMode: true,
         nativeToolSurface: this.options.profile.appServerNativeToolSurface,
@@ -295,6 +304,9 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
       }),
       modelBackend,
       mimoApiKeyEnvVarName,
+      ...(modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+        ? { mimoConfigToml: this.options.profile.configToml }
+        : {}),
       ...(this.options.sourceEnv === undefined
         ? {}
         : { sourceEnv: this.options.sourceEnv }),

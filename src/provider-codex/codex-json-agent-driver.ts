@@ -48,6 +48,7 @@ import {
   codexApiKeyCredentialIdentity,
   loadCodexApiKeyCredential,
 } from "./codex-api-key-credential";
+import { resolveAuthorizedHostedMimoCredential } from "./hosted-mimo-credential-source";
 import {
   CodexModelBackend,
   codexMimoApiKeyEnvVarDefault,
@@ -369,12 +370,13 @@ export class CodexJsonAgentDriver implements AgentDriver {
   private async materializeMimoSession(input: {
     readonly redactor: RedactorPort;
   }): Promise<CodexMaterializedSession> {
-    const credential = loadCodexApiKeyCredential({
-      backend: CodexModelBackend.XiaomiMimoTokenPlan,
-      envVarName: this.mimoApiKeyEnvVarName,
-      ...(this.sourceEnv === undefined ? {} : { sourceEnv: this.sourceEnv }),
-      redactor: input.redactor,
-    });
+    const hosted = (this.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+    const credential = hosted ? undefined : loadCodexApiKeyCredential({
+          backend: CodexModelBackend.XiaomiMimoTokenPlan,
+          envVarName: this.mimoApiKeyEnvVarName,
+          ...(this.sourceEnv === undefined ? {} : { sourceEnv: this.sourceEnv }),
+          redactor: input.redactor,
+        });
     const egressPolicy = codexMimoTokenPlanEgressPolicy();
     const tempRoot = await createCodexRuntimeTempRoot({
       prefix: "subscription-runtime-codex-mimo-",
@@ -389,21 +391,31 @@ export class CodexJsonAgentDriver implements AgentDriver {
       this.mimoConfigToml ??
         codexJsonHomeConfigToml({
           modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
-          mimoApiKeyEnvVarName: credential.envVarName,
+          mimoApiKeyEnvVarName: this.mimoApiKeyEnvVarName,
           providerEgressPolicy: egressPolicy,
         }),
       { mode: 0o600 },
     );
+    const env: Record<string, string> = {
+      HOME: home,
+      CODEX_HOME: codexHome,
+      ...codexProviderEgressEnv(egressPolicy),
+      ...(credential ? { [credential.envVarName]: credential.apiKey } : {}),
+    };
+    if (hosted) {
+      // AppServerClient spreads session.env for each new child. The accessor
+      // resolves and redacts the current key at that boundary, including a
+      // restart within this one materialized session.
+      Object.defineProperty(env, this.mimoApiKeyEnvVarName, {
+        enumerable: true,
+        get: () => resolveAuthorizedHostedMimoCredential(input.redactor),
+      });
+    }
     return {
       home,
       codexHome,
-      sessionHash: codexApiKeyCredentialIdentity(credential),
-      env: {
-        HOME: home,
-        CODEX_HOME: codexHome,
-        ...codexProviderEgressEnv(egressPolicy),
-        [credential.envVarName]: credential.apiKey,
-      },
+      sessionHash: credential ? codexApiKeyCredentialIdentity(credential) : "mimo:shared-source",
+      env,
       // No snapshotSession: MiMo never refreshes and never updates its
       // credential from a completed run.
       release: once(async () => {

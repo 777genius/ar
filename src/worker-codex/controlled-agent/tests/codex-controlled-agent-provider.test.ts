@@ -221,6 +221,10 @@ describe("CodexControlledAgentProvider", () => {
         SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE:
           CodexProviderEgressProfileId.MimoTokenPlan,
       });
+      const effectiveConfig = await fakeFactory.configs[0];
+      expect(effectiveConfig).toBe(profile.configToml);
+      expect(effectiveConfig).toContain("[model_providers.mimo]");
+      expect(effectiveConfig).not.toContain("tp-controller-key");
     } finally {
       await provider.stop({
         session: startInput().session,
@@ -410,6 +414,7 @@ type FakeAppServerRequest = {
 
 class MinimalAppServerFactory {
   readonly codexHomes: string[] = [];
+  readonly configs: Promise<string>[] = [];
   readonly environments: Readonly<Record<string, string>>[] = [];
   readonly prompts: string[] = [];
   readonly processes: MinimalAppServerProcess[] = [];
@@ -424,6 +429,7 @@ class MinimalAppServerFactory {
   }): CodexAppServerChildProcess => {
     this.environments.push(input.env);
     this.codexHomes.push(input.env.CODEX_HOME ?? "");
+    this.configs.push(readFile(join(input.env.CODEX_HOME ?? "", "config.toml"), "utf8"));
     const process = new MinimalAppServerProcess((request) => {
       this.requests.push(request);
       if (request.method === "turn/start") {

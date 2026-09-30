@@ -132,7 +132,10 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
     throw new Error("checkpoint_requires_app_server_goal_engine");
   }
   const hostedGlobalScanGuard =
-    options.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+    (options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  if (hostedGlobalScanGuard && modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+    throw new Error("hosted_mimo_activation_closed");
+  }
   const hostedExecutionEngine = options.executionEngine ?? "app-server";
   if (
     hostedGlobalScanGuard &&
