@@ -111,14 +111,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       throw new Error("codex_app_server_binary_required");
     }
     assertHostedAppServerEngineOptions(options);
-    if (options.hostedControllerTools &&
-        (options.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan ||
-         options.goalMode !== true ||
-         options.nativeToolSurface !== "disabled" ||
-         options.fallback !== undefined ||
-         options.cleanThreadPrewarm !== false)) {
-      throw new Error("hosted_controller_engine_profile_invalid");
-    }
     assertPositiveInteger(options.timeoutMs, "codex_app_server_timeout_invalid");
     assertPositiveInteger(
       options.startupTimeoutMs,
