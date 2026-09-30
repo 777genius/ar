@@ -153,9 +153,16 @@ export class CodexAppServerClient {
   ) {
     this.dynamicTools = new AppServerDynamicToolHandler({
       ...(options.hostedControllerTools ? { adapter: options.hostedControllerTools } : {}),
-      isActiveTurn: (threadId, turnId) => this.pendingTurnIdsByThread.get(threadId) === turnId &&
-        !this.findTurn(turnId)?.completed && !this.findTurn(turnId)?.error,
+      isActiveTurn: (threadId, turnId) => {
+        const expected = this.pendingTurnIdsByThread.get(threadId);
+        const early = this.startingTurnThreads.has(threadId)
+          ? this.earlyTurnIdsByThread.get(threadId) : undefined;
+        const canonical = this.turnIdAliases.get(turnId) ?? turnId;
+        return (expected === canonical || early === turnId) &&
+          !this.findTurn(turnId)?.completed && !this.findTurn(turnId)?.error;
+      },
       isTerminal: () => this.terminalError !== null,
+      failProtocol: (error) => this.failProtocol(error),
       respond: (id, result) => this.respondServerRequest(id, result),
     });
     this.stdoutDecoder = new AppServerJsonRpcLineDecoder(

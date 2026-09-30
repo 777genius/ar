@@ -47,8 +47,10 @@ export async function readHostedControllerBootstrap(input: Readable): Promise<Re
   return await new Promise((resolve, reject) => {
     let buffered = Buffer.alloc(0);
     let expected = 0;
+    let timer: NodeJS.Timeout;
     const cleanup = () => {
-      input.off("data", onData); input.off("end", fail); input.off("error", fail);
+      clearTimeout(timer);
+      input.off("data", onData); input.off("end", fail); input.off("close", fail); input.off("error", fail);
     };
     const fail = () => { cleanup(); input.destroy(); reject(new Error("hosted_controller_bootstrap_invalid")); };
     const onData = (chunk: Buffer) => {
@@ -73,7 +75,8 @@ export async function readHostedControllerBootstrap(input: Readable): Promise<Re
         resolve(record.env as Record<string, string>);
       } catch { input.destroy(); reject(new Error("hosted_controller_bootstrap_invalid")); }
     };
-    input.on("data", onData); input.once("end", fail); input.once("error", fail);
+    timer = setTimeout(fail, 5_000);
+    input.on("data", onData); input.once("end", fail); input.once("close", fail); input.once("error", fail);
   });
 }
 
@@ -98,13 +101,11 @@ export async function runHostedControllerBootstrap(input: {
   });
   const channel = hostedControllerPipe(child.stdio[4] as Readable, child.stdio[3] as Writable);
   const upstream = hostedControllerPipe(input.upstreamRead, input.upstreamWrite);
-  let channelClosed = false;
   const terminateIfRunning = () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM"); };
-  channel.once("close", () => {
-    channelClosed = true;
-    setTimeout(terminateIfRunning, 250).unref();
-  });
-  upstream.once("close", () => { if (!channelClosed) terminateIfRunning(); });
+  // Pipe closure can precede the child's exit event even when it is exiting cleanly.
+  const scheduleTermination = () => { setTimeout(terminateIfRunning, 250).unref(); };
+  channel.once("close", scheduleTermination);
+  upstream.once("close", scheduleTermination);
   const close = relayHostedControllerPipe(upstream, channel);
   return await waitForController(child, close);
 }

@@ -339,6 +339,11 @@ export class FakeAppServerProcess extends EventEmitter {
                   turn: { id: turnId, status: "inProgress" },
                 },
               }),
+              ...(this.options.emitServerRequestOnTurn ? [JSON.stringify({
+                id: this.options.emitServerRequestOnTurn.id ?? 9_002,
+                method: this.options.emitServerRequestOnTurn.method,
+                params: this.options.emitServerRequestOnTurn.params,
+              })] : []),
               ...outputDeltas.map((delta) => JSON.stringify({
                 method: "item/agentMessage/delta",
                 params: { turnId, delta },

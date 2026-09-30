@@ -1,9 +1,9 @@
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { Duplex, PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { hostedControllerPipe, relayHostedControllerPipe } from "../hosted-controller-framed-dispatcher";
-import { attachHostedControllerSystemdPipe, encodeHostedControllerBootstrap, runHostedControllerBootstrap } from "../hosted-controller-pipe-bootstrap";
+import { attachHostedControllerSystemdPipe, encodeHostedControllerBootstrap, readHostedControllerBootstrap, runHostedControllerBootstrap } from "../hosted-controller-pipe-bootstrap";
 
 function pair(): [Duplex, Duplex] {
   const left = new PassThrough(); const right = new PassThrough();
@@ -66,9 +66,11 @@ describe("framed controller bootstrap handoff", () => {
     await Promise.race([acknowledged, running.then((code) => { throw new Error(`synthetic_controller_exited_before_ack:${code}`); }),
       new Promise((_, reject) => setTimeout(() => reject(new Error(`synthetic_controller_ack_timeout:bootstrap=${bootstrapVerified}`)), 1000))]);
     expect(completed).toBe(false);
+    // The host's upstream can close before Node reports an already exiting child.
+    closeFirst();
     expect(await running).toBe(0);
     expect(acknowledgments).toBe(3);
-    closeFirst(); host.close();
+    host.close();
   });
 
   it("denies the child spawn when private authority is absent", async () => {
@@ -98,6 +100,28 @@ describe("framed controller bootstrap handoff", () => {
     expect(verified).toBe(0);
     expect(bootstrapPipe.destroyed).toBe(true);
     hostPipe.destroy();
+  });
+
+  it("rejects close-only truncation and removes bootstrap listeners", async () => {
+    const input = new PassThrough();
+    const reading = readHostedControllerBootstrap(input);
+    input.write(Buffer.from([0, 0]));
+    input.destroy();
+    await expect(reading).rejects.toThrow("hosted_controller_bootstrap_invalid");
+    for (const event of ["data", "end", "close", "error"]) expect(input.listenerCount(event)).toBe(0);
+  });
+
+  it("bounds bootstrap waiting and removes every listener on deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const input = new PassThrough();
+      const reading = readHostedControllerBootstrap(input);
+      const rejected = expect(reading).rejects.toThrow("hosted_controller_bootstrap_invalid");
+      await vi.advanceTimersByTimeAsync(5_000);
+      await rejected;
+      expect(input.destroyed).toBe(true);
+      for (const event of ["data", "end", "close", "error"]) expect(input.listenerCount(event)).toBe(0);
+    } finally { vi.useRealTimers(); }
   });
 
   it("fences the owned systemd pipe before sending bootstrap data without a private grant", () => {

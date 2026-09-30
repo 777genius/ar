@@ -79,7 +79,7 @@ describe("private framed dispatcher protocol", () => {
     client.close(); server.close();
   });
 
-  it("emits a typed cancel for a pending request and denies its late response", async () => {
+  it("keeps the channel after a cancelled request's late response", async () => {
     const [clientStream, peer] = pair();
     const client = new HostedControllerFramedDispatcher(clientStream);
     const received: Buffer[] = [];
@@ -98,8 +98,34 @@ describe("private framed dispatcher protocol", () => {
     peer.write(frame({ version: 1, kind: HostedControllerFrameKind.Response,
       requestId: first.requestId, status: "disabled" }));
     await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(await client.request(call, new AbortController().signal)).toBe("unavailable");
+    expect(clientStream.destroyed).toBe(false);
+    const next = client.request(call, new AbortController().signal);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const all = Buffer.concat(received);
+    const nextOffset = firstSize + 8 + all.readUInt32BE(firstSize + 4);
+    const nextRequest = JSON.parse(all.subarray(nextOffset + 4, nextOffset + 4 + all.readUInt32BE(nextOffset)).toString()) as { requestId: string };
+    peer.write(frame({ version: 1, kind: HostedControllerFrameKind.Response,
+      requestId: nextRequest.requestId, status: "disabled" }));
+    expect(await next).toBe("disabled");
     client.close(); peer.destroy();
+  });
+
+  it("keeps the channel after a response overtakes its cancellation", async () => {
+    const [clientStream, serverStream] = pair();
+    const requests: string[] = [];
+    serverStream.on("data", (chunk: Buffer) => {
+      const bytes = Buffer.from(chunk);
+      const request = JSON.parse(bytes.subarray(4, 4 + bytes.readUInt32BE(0)).toString()) as { requestId: string };
+      requests.push(request.requestId);
+    });
+    const client = new HostedControllerFramedDispatcher(clientStream);
+    const server = new HostedControllerFramedDispatcher(serverStream, { verifyRetainedOriginAndGrant: () => true });
+    expect(await client.request(call, new AbortController().signal)).toBe("disabled");
+    clientStream.write(frame({ version: 1, kind: HostedControllerFrameKind.Cancel, requestId: requests[0] }));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(serverStream.destroyed).toBe(false);
+    expect(await client.request(call, new AbortController().signal)).toBe("disabled");
+    client.close(); server.close();
   });
 
   it("rejects replayed request IDs after one host authorization", async () => {

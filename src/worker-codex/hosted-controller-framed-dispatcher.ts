@@ -44,6 +44,7 @@ export class HostedControllerFramedDispatcher {
   private buffer = Buffer.alloc(0);
   private readonly pending = new Map<string, { resolve: (status: "disabled" | "unavailable") => void; timer: NodeJS.Timeout }>();
   private readonly seen = new Set<string>();
+  private readonly cancelledOutbound = new Set<string>();
   private readonly active = new Map<string, AbortController>();
   private closed = false;
 
@@ -68,7 +69,11 @@ export class HostedControllerFramedDispatcher {
         clearTimeout(timer);
         signal.removeEventListener("abort", abort);
         this.pending.delete(requestId);
-        if (cancel) this.send({ version: 1, kind: HostedControllerFrameKind.Cancel, requestId });
+        if (cancel) {
+          if (this.cancelledOutbound.size >= 512) this.close();
+          else this.cancelledOutbound.add(requestId);
+          this.send({ version: 1, kind: HostedControllerFrameKind.Cancel, requestId });
+        }
         resolve(status);
       };
       const abort = () => finish("unavailable", true);
@@ -106,7 +111,7 @@ export class HostedControllerFramedDispatcher {
       if (Object.keys(frame).sort().join(",") !== "kind,requestId,status,version" ||
           (frame.status !== "disabled" && frame.status !== "unavailable")) return false;
       const pending = this.pending.get(frame.requestId);
-      if (!pending) return false;
+      if (!pending) return this.cancelledOutbound.has(frame.requestId);
       this.pending.delete(frame.requestId);
       pending.resolve(frame.status);
       return true;
@@ -114,7 +119,7 @@ export class HostedControllerFramedDispatcher {
     if (frame.kind === HostedControllerFrameKind.Cancel) {
       if (Object.keys(frame).sort().join(",") !== "kind,requestId,version") return false;
       const active = this.active.get(frame.requestId);
-      if (!active) return false;
+      if (!active) return this.seen.has(frame.requestId);
       active.abort();
       this.active.delete(frame.requestId);
       return true;
