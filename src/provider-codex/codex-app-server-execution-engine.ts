@@ -105,13 +105,20 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   private readonly executionProfile: ResolvedCodexExecutionProfile;
   private readonly runStore: ManagedRunStorePort;
   private readonly slotPool: AppServerSlotPool;
-
   constructor(private readonly options: CodexAppServerExecutionEngineOptions) {
     this.modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
     if (!options.codexBinaryPath.trim()) {
       throw new Error("codex_app_server_binary_required");
     }
     assertHostedAppServerEngineOptions(options);
+    if (options.hostedControllerTools &&
+        (options.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan ||
+         options.goalMode !== true ||
+         options.nativeToolSurface !== "disabled" ||
+         options.fallback !== undefined ||
+         options.cleanThreadPrewarm !== false)) {
+      throw new Error("hosted_controller_engine_profile_invalid");
+    }
     assertPositiveInteger(options.timeoutMs, "codex_app_server_timeout_invalid");
     assertPositiveInteger(
       options.startupTimeoutMs,
@@ -169,6 +176,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ...(options.nativeToolSurface === undefined
         ? {}
         : { nativeToolSurface: options.nativeToolSurface }),
+      ...(options.hostedControllerTools ? { hostedControllerTools: options.hostedControllerTools } : {}),
       ...(options.rolloutBudget === undefined
         ? {}
         : { rolloutBudget: options.rolloutBudget }),
@@ -192,7 +200,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         : { modelBackend: options.modelBackend }),
     });
   }
-
   async run(input: CodexExecutionInput): Promise<CodexExecutionResult> {
     const schemaPlan = input.outputSchemaPlan ?? prepareCodexOutputSchemaPlan(input.outputSchema);
     try {

@@ -25,6 +25,7 @@ import {
   type CodexReasoningEffort,
   type CodexServiceTier,
   type CodexSessionMaterializer,
+  type HostedControllerDynamicToolAdapter,
   writeCodexJsonHomeSnapshot,
 } from "@vioxen/subscription-runtime/provider-codex";
 import {
@@ -46,6 +47,7 @@ import {
 
 export type CodexControlledAgentProviderOptions = {
   readonly profile: CodexControlledAgentProfile;
+  readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
   readonly sessionArtifact: SessionArtifact | null;
   readonly workspacePath: string;
   readonly codexBinaryPath: string;
@@ -86,7 +88,17 @@ type CodexControllerRunRecord =
 export class CodexControlledAgentProvider implements ControlledAgentProviderPort {
   private readonly runs = new Map<string, CodexControllerRunRecord>();
 
-  constructor(private readonly options: CodexControlledAgentProviderOptions) {}
+  constructor(private readonly options: CodexControlledAgentProviderOptions) {
+    if (options.profile.hostedController === true &&
+        (!options.hostedControllerTools || options.profile.enabledTools.length !== 0 ||
+         options.profile.configToml.includes("[mcp_servers.") ||
+         options.profile.appServerNativeToolSurface !== "disabled")) {
+      throw new Error("hosted_controller_tool_authority_unavailable");
+    }
+    if (options.hostedControllerTools && options.profile.hostedController !== true) {
+      throw new Error("hosted_controller_profile_required");
+    }
+  }
 
   start(input: ControlledAgentProviderStartInput): ControlledAgentProviderStartResult {
     const providerRunId = `${input.session.sessionId}:codex-app-server`;
@@ -114,7 +126,9 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
       session: this.options.sessionArtifact,
       task: {
         kind: "structured-prompt",
-        prompt: controlledAgentPrompt(
+        prompt: this.options.profile.hostedController === true
+          ? hostedControllerPrompt(this.options.controllerObjective)
+          : controlledAgentPrompt(
           input,
           this.options.controllerObjective,
           this.options.controllerRegistryRootDir,
@@ -124,7 +138,9 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
           editMode: "read-only",
         },
         metadata: {
-          codexGoalObjective: controlledAgentGoalObjective(input),
+          codexGoalObjective: this.options.profile.hostedController === true
+            ? "Use only launch, observe, and stop for preallocated child slots. The dispatcher currently reports unavailable; report that state to the operator."
+            : controlledAgentGoalObjective(input),
           codexManagedRunId: providerRunId,
         },
       },
@@ -298,6 +314,9 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
         ),
         goalMode: true,
         nativeToolSurface: effectiveProfile.appServerNativeToolSurface,
+        ...(this.options.hostedControllerTools
+          ? { hostedControllerTools: this.options.hostedControllerTools }
+          : {}),
         cleanThreadPrewarm: false,
         ...(this.options.maxGoalTurns === undefined
           ? {}
@@ -414,6 +433,14 @@ function controlledAgentPrompt(
     "Use only the broker/status MCP tools available in this session.",
     "At the start of each loop and before spawning or integrating workers, call codex_goal_project_controller_consume_guidance for your controller job and apply any returned guidance.",
     "Do not request raw shell, raw git, raw tmux, filesystem grants or auth files.",
+  ].join("\n");
+}
+
+function hostedControllerPrompt(objective?: string): string {
+  return [
+    "Use only the launch, observe, and stop dynamic tools for host-approved child slots.",
+    "The tools currently return disabled or unavailable. Report that state and do not seek another execution path.",
+    ...(objective ? ["Controller objective:", objective] : []),
   ].join("\n");
 }
 

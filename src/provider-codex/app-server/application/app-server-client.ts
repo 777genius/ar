@@ -53,7 +53,6 @@ import {
 import { codexAppServerToolConfig } from "../domain/app-server-tool-config";
 import { isCodexAppServerReconnectProgressMessage } from "../protocol/app-server-event-parser";
 import { readGoal } from "../protocol/app-server-goal-protocol";
-import { readCodexModelCatalogPage } from "../protocol/app-server-model-catalog";
 import {
   encodeJsonRpcMessage,
   type CodexAppServerJsonRpcResponse,
@@ -62,12 +61,6 @@ import {
   AppServerJsonRpcLineDecoder,
   appServerJsonRpcFrameLimit,
 } from "../protocol/app-server-json-rpc-line-decoder";
-import {
-  CodexModelUnavailableError,
-  hasCodexModel,
-  isCodexModelUnavailableMessage,
-  type CodexModelCatalogEntry,
-} from "../domain/model-catalog";
 import {
   agentMessageText,
   nestedString,
@@ -97,6 +90,9 @@ import {
 import { createBoundedAppServerWarningCollector } from "./app-server-warning-collector";
 import { hostedCodexPermissionProfileId } from "../../hosted-codex-permissions";
 import { appServerThreadConfig } from "./app-server-thread-config";
+import { hostedControllerDynamicToolSpecs, type HostedControllerDynamicToolAdapter } from "../domain/hosted-controller-dynamic-tools";
+import { AppServerDynamicToolHandler } from "./app-server-dynamic-tool-handler";
+import { modelUnavailableError } from "./app-server-model-unavailable";
 export {
   CodexAppServerTurnError,
   type AppServerTurnFailureDetails,
@@ -123,6 +119,7 @@ export class CodexAppServerClient {
   private readonly pendingTurnIdsByThread = new Map<string, string>();
   private readonly earlyTurnIdsByThread = new Map<string, string>();
   private readonly turnIdAliases = new Map<string, string>();
+  private readonly dynamicTools: AppServerDynamicToolHandler;
   private readonly warnings = createBoundedAppServerWarningCollector();
   private exited = false;
   private terminalError: Error | null = null;
@@ -141,6 +138,7 @@ export class CodexAppServerClient {
       readonly executionProfile: ResolvedCodexExecutionProfile;
       readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
       readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+      readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
       readonly rolloutBudget?: CodexAppServerRolloutBudget;
       readonly bypassHookTrust?: boolean;
       readonly timeoutMs: number;
@@ -153,6 +151,13 @@ export class CodexAppServerClient {
       readonly modelBackend?: CodexModelBackend;
     },
   ) {
+    this.dynamicTools = new AppServerDynamicToolHandler({
+      ...(options.hostedControllerTools ? { adapter: options.hostedControllerTools } : {}),
+      isActiveTurn: (threadId, turnId) => this.pendingTurnIdsByThread.get(threadId) === turnId &&
+        !this.findTurn(turnId)?.completed && !this.findTurn(turnId)?.error,
+      isTerminal: () => this.terminalError !== null,
+      respond: (id, result) => this.respondServerRequest(id, result),
+    });
     this.stdoutDecoder = new AppServerJsonRpcLineDecoder(
       appServerJsonRpcFrameLimit(options.maxOutputBytes),
     );
@@ -287,6 +292,10 @@ export class CodexAppServerClient {
     readonly abortSignal: AbortSignal;
     readonly goalMode?: boolean;
   }): Promise<string> {
+    if (this.options.hostedControllerTools &&
+        (!input.goalMode || this.options.nativeToolSurface !== "disabled")) {
+      throw new Error("hosted_controller_tool_profile_invalid");
+    }
     const { disableTools, disableNativeEnvironments } = appServerThreadToolPolicy({
       disableTools: this.options.executionProfile.disableTools,
       nativeToolSurface: this.options.nativeToolSurface,
@@ -350,7 +359,9 @@ export class CodexAppServerClient {
         ephemeral: input.goalMode ? false : true,
         sessionStartSource: "startup",
         threadSource: "user",
-        ...(disableTools
+        ...(this.options.hostedControllerTools
+          ? { environments: [], dynamicTools: hostedControllerDynamicToolSpecs, experimentalRawEvents: false }
+          : disableTools
           ? {
               environments: [],
               dynamicTools: [],
@@ -365,7 +376,8 @@ export class CodexAppServerClient {
       input,
     );
     if (response.error) {
-      const modelError = await this.modelUnavailableError({
+      const modelError = await modelUnavailableError({
+        sendPage: (cursor) => this.send("model/list", { cursor, limit: 100, includeHidden: true }, input),
         requestedModel: input.model,
         ...(response.error.message === undefined
           ? {}
@@ -379,6 +391,7 @@ export class CodexAppServerClient {
 
     const threadId = nestedString(response.result, ["thread", "id"]);
     if (!threadId) throw new Error("codex_app_server_thread_id_missing");
+    if (this.options.hostedControllerTools) this.dynamicTools.addThread(threadId);
     return threadId;
   }
 
@@ -401,59 +414,8 @@ export class CodexAppServerClient {
     }
     const threadId = nestedString(response.result, ["thread", "id"]);
     if (!threadId) throw new Error("codex_app_server_thread_id_missing");
+    if (this.options.hostedControllerTools) this.dynamicTools.addThread(threadId);
     return threadId;
-  }
-
-  private async modelUnavailableError(input: {
-    readonly requestedModel: string;
-    readonly providerMessage?: string;
-    readonly timeoutMs: number;
-    readonly abortSignal: AbortSignal;
-  }): Promise<CodexModelUnavailableError | null> {
-    if (!isCodexModelUnavailableMessage(input.providerMessage ?? "")) {
-      return null;
-    }
-    const availableModels = await this.readAvailableModels(input).catch(
-      () => null,
-    );
-    if (
-      availableModels === null ||
-      hasCodexModel(availableModels, input.requestedModel)
-    ) {
-      return null;
-    }
-    return new CodexModelUnavailableError({
-      requestedModel: input.requestedModel,
-      availableModels,
-    });
-  }
-
-  private async readAvailableModels(input: {
-    readonly timeoutMs: number;
-    readonly abortSignal: AbortSignal;
-  }): Promise<readonly CodexModelCatalogEntry[] | null> {
-    const entries: CodexModelCatalogEntry[] = [];
-    const seenCursors = new Set<string>();
-    let cursor: string | null = null;
-
-    for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
-      const response = await this.send(
-        "model/list",
-        { cursor, limit: 100, includeHidden: true },
-        input,
-      );
-      if (response.error) return null;
-      const page = readCodexModelCatalogPage(response.result);
-      if (!page) return null;
-      entries.push(...page.data);
-      if (entries.length > 500) return null;
-      if (page.nextCursor === null)
-        return entries.length === 0 ? null : entries;
-      if (seenCursors.has(page.nextCursor)) return null;
-      seenCursors.add(page.nextCursor);
-      cursor = page.nextCursor;
-    }
-    return null;
   }
 
   async setGoal(input: {
@@ -739,12 +701,16 @@ export class CodexAppServerClient {
     }
 
     const params = readRecord(record.params);
-    if (typeof record.id === "number" && typeof record.method === "string") {
+    if ((typeof record.id === "number" || typeof record.id === "string") && typeof record.method === "string") {
       this.onServerRequest(record.id, record.method, params);
       return;
     }
 
     if (typeof record.method !== "string") return;
+    if (record.method === "serverRequest/resolved") {
+      this.dynamicTools.resolve(params?.threadId, params?.requestId);
+      return;
+    }
     if (record.method === "account/rateLimits/updated") {
       this.rateLimitsMonitor?.notifyRateLimitsUpdated();
       return;
@@ -804,6 +770,7 @@ export class CodexAppServerClient {
     if (record.method === "turn/completed") {
       const turn = readRecord(params?.turn);
       const turnId = stringField(turn, "id");
+      if (turnId) this.dynamicTools.cancelTurn(turnId);
       const state = this.ensureTurn(turnId);
       state.completed = true;
       const status = readRecord(turn?.status);
@@ -823,6 +790,7 @@ export class CodexAppServerClient {
         stringField(params, "turnId") ??
         stringField(params, "turn_id") ??
         stringField(readRecord(params?.turn), "id");
+      if (turnId) this.dynamicTools.cancelTurn(turnId);
       const reason =
         stringField(params, "reason") ??
         stringField(readRecord(params?.status), "reason") ??
@@ -875,14 +843,24 @@ export class CodexAppServerClient {
   }
 
   private onServerRequest(
-    id: number,
+    id: string | number,
     method: string,
     params: Record<string, unknown> | null,
   ): void {
+    if ((typeof id === "string" && (id.length === 0 || id.length > 128)) ||
+        (typeof id === "number" && !Number.isSafeInteger(id))) {
+      this.failProtocol(new Error("codex_app_server_server_request_id_invalid"));
+      return;
+    }
     handleAppServerServerRequest({
       id,
       method,
       params,
+      ...(this.options.hostedControllerTools ? {
+        dynamicToolCall: (requestId: string | number, requestParams: Record<string, unknown> | null) => {
+          void this.dynamicTools.call(requestId, requestParams);
+        },
+      } : {}),
       ...(this.options.commandApprovalPolicy === undefined
         ? {}
         : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
@@ -893,18 +871,18 @@ export class CodexAppServerClient {
   }
 
   private respondServerRequest(
-    id: number,
+    id: string | number,
     result: Record<string, unknown>,
   ): void {
     this.writeServerResponse({ id, result });
   }
 
-  private respondServerRequestError(id: number, message: string): void {
+  private respondServerRequestError(id: string | number, message: string): void {
     this.writeServerResponse({ id, error: { code: -32000, message } });
   }
 
   private writeServerResponse(payload: {
-    readonly id: number;
+    readonly id: string | number;
     readonly result?: Record<string, unknown>;
     readonly error?: { readonly code: number; readonly message: string };
   }): void {
@@ -977,6 +955,7 @@ export class CodexAppServerClient {
 
   private recordTerminalError(error: Error): void {
     this.terminalError = this.terminalError ?? error;
+    this.dynamicTools.close();
     this.stdoutDecoder.clear();
     this.failOutstanding(this.terminalError);
   }
@@ -1002,6 +981,7 @@ export class CodexAppServerClient {
   }
 
   private clearTurnTracking(turnId: string, threadId: string): void {
+    this.dynamicTools.cancelTurn(turnId);
     const turn = this.turns.get(turnId);
     if (turn) this.clearReconnectGraceTimer(turn);
     this.turns.delete(turnId);

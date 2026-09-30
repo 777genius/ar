@@ -87,7 +87,7 @@ export type FakeAppServerRequest = {
 };
 
 export type FakeAppServerResponse = {
-  readonly id: number;
+  readonly id: string | number;
   readonly result?: unknown;
   readonly error?: unknown;
 };
