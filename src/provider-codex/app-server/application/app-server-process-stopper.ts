@@ -11,6 +11,13 @@ export class AppServerProcessCleanupError extends Error {
   }
 }
 
+export class AppServerProcessCleanupUnresolvedError extends AppServerProcessCleanupError {
+  constructor() {
+    super(new Error("codex_app_server_process_ownership_unverified"));
+    this.name = "AppServerProcessCleanupUnresolvedError";
+  }
+}
+
 export async function stopAppServerProcess(input: {
   readonly child: CodexAppServerChildProcess | null;
   readonly exited: boolean;

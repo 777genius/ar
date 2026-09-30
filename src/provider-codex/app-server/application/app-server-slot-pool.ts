@@ -1,6 +1,6 @@
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { EventEmitter } from "node:events";
-import { AppServerProcessCleanupError, stopAppServerProcess } from "./app-server-process-stopper";
+import { AppServerProcessCleanupError, AppServerProcessCleanupUnresolvedError, stopAppServerProcess } from "./app-server-process-stopper";
 import type {
   ManagedRunStorePort,
 } from "@vioxen/subscription-runtime/core";
@@ -324,17 +324,18 @@ export class AppServerSlotPool {
     cleanup.pending = true;
     try {
       // The client caches its stop promise and detaches its child before awaiting.
-      // Retain the owned process independently so a failed stop can be retried.
+      // Retain the cleanup obligation independently so a failed stop can be retried.
       if (cleanup.retryProcessStop) {
-        if (cleanup.exited && cleanup.child) {
-          // Even an observed parent exit cannot erase a failed group signal.
-          this.options.signalChildProcess(cleanup.child, "SIGKILL");
-        } else {
-          await stopAppServerProcess({
-            child: cleanup.child, exited: cleanup.exited,
-            signal: this.options.signalChildProcess,
-          });
+        if (cleanup.exited) {
+          // The retained child/pid cannot prove ownership after exit: an ordinary
+          // POSIX group number may have been reused. Keep the obligation until
+          // scoped ownership/reconciliation proof is available (full PR5).
+          throw new AppServerProcessCleanupUnresolvedError();
         }
+        await stopAppServerProcess({
+          child: cleanup.child, exited: cleanup.exited,
+          signal: this.options.signalChildProcess,
+        });
       } else {
         await cleanup.client.stop();
       }

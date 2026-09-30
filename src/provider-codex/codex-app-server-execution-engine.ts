@@ -44,8 +44,7 @@ import type {
   CodexAppServerCommandApprovalPolicy,
   CodexAppServerNativeToolSurface,
 } from "./app-server/domain/app-server-types";
-import type { CodexAppServerRolloutBudget } from "./app-server/domain/app-server-rollout-budget";
-import { codexAppServerRolloutBudgetConfig } from "./app-server/domain/app-server-rollout-budget";
+import { codexAppServerRolloutBudgetConfig, type CodexAppServerRolloutBudget } from "./app-server/domain/app-server-rollout-budget";
 import {
   defaultGoalContinuePrompt,
   defaultMaxGoalTurns,
@@ -207,7 +206,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       return parsed;
     } catch (error) {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
-      await this.slotPool.disposeSessionSlot(input.session);
+      try {
+        await this.slotPool.disposeSessionSlot(input.session);
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "codex_app_server_run_cleanup_failed");
+      }
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (isCodexAppServerBudgetExceededError(error)) throw error;
       if (isCodexAppServerRateLimitsRejectedError(error)) throw error;

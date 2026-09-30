@@ -454,7 +454,7 @@ describe("AppServerSlotPool", () => {
     expect(f.stops()).toBe(3);
   });
 
-  it("retains a failed final signal after parent exit and retries that signal", async () => {
+  it("retains a failed final signal after parent exit without reusing its identity", async () => {
     const home = await workspace();
     const f = cleanupFixture();
     f.allowStop();
@@ -472,14 +472,20 @@ describe("AppServerSlotPool", () => {
     };
     await expect(f.pool.disposeSessionSlot(f.session(home))).rejects.toThrow();
     expect(child.isExited()).toBe(true);
-    await expect(f.pool.disposeSessionSlot(f.session(home))).rejects.toThrow();
-    expect(finalSignals).toBe(2);
+    await expect(f.pool.disposeSessionSlot(f.session(home))).rejects.toMatchObject({
+      name: "AppServerProcessCleanupUnresolvedError",
+    });
+    expect(finalSignals).toBe(1);
     await expect(f.acquire(home)).rejects.toThrow("cleanup_pending");
+    // Making signalling available again is not positive ownership proof.
     failFinal = false;
-    await f.pool.disposeSessionSlot(f.session(home));
-    expect(finalSignals).toBe(3);
+    await expect(f.pool.disposeSessionSlot(f.session(home))).rejects.toThrow();
+    await expect(f.acquire(home, "replacement")).rejects.toThrow("cleanup_pending");
+    expect(finalSignals).toBe(1);
     expect(f.factory.spawnCount).toBe(1);
-    await f.pool.dispose();
+    await expect(f.pool.dispose()).rejects.toBeInstanceOf(AggregateError);
+    await expect(f.pool.dispose()).rejects.toBeInstanceOf(AggregateError);
+    expect(finalSignals).toBe(1);
   });
 
 });
