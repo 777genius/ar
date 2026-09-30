@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { stopAppServerProcess } from "../app-server/application/app-server-process-stopper";
+import { AppServerProcessCleanupError, stopAppServerProcess } from "../app-server/application/app-server-process-stopper";
 
 function fakeChild() {
   return Object.assign(new EventEmitter(), {
@@ -31,16 +31,21 @@ describe("app-server process stopper", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("escalates and returns by the deadline even without a parent exit event", async () => {
+  it("rejects at the deadline when the independently observed child remains alive", async () => {
     vi.useFakeTimers();
     const child = fakeChild();
     const signal = vi.fn();
     const stopped = stopAppServerProcess({ child, exited: false, signal });
 
+    const outcome = stopped.then(() => null, (error: unknown) => error);
     await vi.advanceTimersByTimeAsync(5_000);
     expect(signal.mock.calls.map((call) => call[1])).toEqual(["SIGTERM", "SIGKILL"]);
     await vi.advanceTimersByTimeAsync(5_000);
-    await stopped;
+    expect(await outcome).not.toBeNull();
+    expect(await outcome).toBeInstanceOf(AppServerProcessCleanupError);
+    expect((await outcome as Error).cause).toEqual(new Error("codex_app_server_stop_timeout"));
+    expect(child.listenerCount("exit")).toBe(0);
+    expect(child.listenerCount("error")).toBe(0);
     expect(signal.mock.calls.map((call) => call[1])).toEqual(["SIGTERM", "SIGKILL", "SIGKILL"]);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -52,4 +57,40 @@ describe("app-server process stopper", () => {
     expect(signal).not.toHaveBeenCalled();
     expect(child.stdin.end).not.toHaveBeenCalled();
   });
+  it.each(["TERM", "escalation", "observation", "final"])("preserves %s failure and removes observations and timers", async (where) => {
+    vi.useFakeTimers();
+    const child = fakeChild();
+    const failure = new Error("fake cleanup failure");
+    let kills = 0;
+    const result = stopAppServerProcess({ child, exited: false, signal: (_, signal) => {
+      if (signal === "SIGTERM") {
+        if (where === "TERM") throw failure;
+        if (where === "observation") child.emit("error", failure);
+        if (where === "final") child.emit("exit", 0, null);
+      } else {
+        kills += 1;
+        if (where === "final" || (where === "escalation" && kills === 1)) throw failure;
+      }
+    } }).catch((error: unknown) => error);
+    if (where === "escalation") await vi.advanceTimersByTimeAsync(5_000);
+    const error = await result;
+    expect(error).toBeInstanceOf(AppServerProcessCleanupError);
+    expect((error as Error).cause).toBe(failure);
+    expect(child.listenerCount("exit")).toBe(0);
+    expect(child.listenerCount("error")).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("preserves observation and final signal failures together", async () => {
+    const child = fakeChild();
+    const observation = new Error("fake observation failure");
+    const signalFailure = new Error("fake signal failure");
+    const error = await stopAppServerProcess({ child, exited: false, signal: (_, signal) => {
+      if (signal === "SIGTERM") child.emit("error", observation);
+      else throw signalFailure;
+    } }).catch((error: unknown) => error);
+    expect((error as Error).cause).toBeInstanceOf(AggregateError);
+    expect(((error as Error).cause as AggregateError).errors).toEqual([observation, signalFailure]);
+  });
+
 });

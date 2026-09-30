@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,9 @@ import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { CodexAppServerExecutionEngine } from "../../codex-app-server-execution-engine";
 import type { CodexAppServerProcessFactory } from "../../app-server/application/app-server-process-port";
 import { FakeAppServerFactory } from "../../app-server/testing/fake-app-server";
+import { AppServerSlotPool } from "../../app-server/application/app-server-slot-pool";
+import { resolveCodexExecutionProfile } from "../../codex-execution-profile";
+import { InMemoryManagedRunStore } from "../../codex-app-server-managed-run-store";
 import { StaticRunner } from "../codex-provider-test-support";
 
 type DelayedInitialize = {
@@ -271,4 +274,212 @@ describe("AppServerSlotPool", () => {
       factory.processes.forEach((process) => process.kill());
     }
   });
+  function cleanupFixture(initializeError?: string, delay = false) {
+    const factory = new FakeAppServerFactory({ ...(initializeError ? { initializeError } : {}) });
+    const delayed = delayedInitialize(factory);
+    let fail = true;
+    let stops = 0;
+    const pool = new AppServerSlotPool({
+      codexBinaryPath: "/fake/codex", sourceEnv: {}, processFactory: delay ? delayed.processFactory : factory.create,
+      signalChildProcess: (child, signal) => {
+        if (signal === "SIGTERM") stops += 1;
+        if (fail) throw new Error("fake owned signal failure");
+        child.kill(signal);
+      },
+      runStore: new InMemoryManagedRunStore(),
+      executionProfile: resolveCodexExecutionProfile(undefined),
+      cleanThreadPrewarm: false, maxOutputBytes: 100_000,
+    });
+    const session = (home: string, sessionHash = "first") => ({
+      home, codexHome: home, env: { CODEX_HOME: home }, sessionHash,
+      release: async () => undefined,
+    });
+    const acquire = (home: string, hash = "first") => pool.ensureSlot({
+      session: session(home, hash), workspacePath: home,
+      abortSignal: new AbortController().signal,
+    });
+    return { pool, factory, session, acquire, release: delayed.release, allowStop: () => { fail = false; }, stops: () => stops };
+  }
+
+  it("retains failed session cleanup, fences reuse and replacement, and retries the same child", async () => {
+    const home = await workspace();
+    const f = cleanupFixture();
+    await f.acquire(home);
+    await expect(f.pool.disposeSessionSlot(f.session(home))).rejects.toThrow();
+    expect(f.factory.processes[0]?.isExited()).toBe(false);
+    await expect(f.acquire(home)).rejects.toThrow();
+    await expect(f.acquire(home, "replacement")).rejects.toThrow();
+    expect(f.factory.spawnCount).toBe(1);
+    f.allowStop();
+    await f.pool.disposeSessionSlot(f.session(home));
+    expect(f.stops()).toBe(2);
+    expect(f.factory.processes[0]?.isExited()).toBe(true);
+    await f.acquire(home, "replacement");
+    expect(f.factory.spawnCount).toBe(2);
+    await f.pool.dispose();
+  });
+
+  it("does not lose the old child when replacement cleanup fails", async () => {
+    const home = await workspace();
+    const f = cleanupFixture();
+    await f.acquire(home);
+    await expect(f.acquire(home, "replacement")).rejects.toThrow();
+    await expect(f.acquire(home, "replacement")).rejects.toThrow();
+    expect(f.factory.spawnCount).toBe(1);
+    expect(f.factory.processes[0]?.isExited()).toBe(false);
+    f.allowStop();
+    await f.pool.dispose();
+    expect(f.factory.processes[0]?.isExited()).toBe(true);
+  });
+
+  it("retains startup cleanup failures and exposes both failures", async () => {
+    const home = await workspace();
+    const f = cleanupFixture("fake initialize failure");
+    const error = await f.acquire(home).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toHaveLength(2);
+    expect(f.factory.processes[0]?.isExited()).toBe(false);
+    await expect(f.acquire(home)).rejects.toThrow();
+    expect(f.factory.spawnCount).toBe(1);
+    f.allowStop();
+    await f.pool.dispose();
+    expect(f.stops()).toBe(2);
+    expect(f.factory.processes[0]?.isExited()).toBe(true);
+  });
+
+  it("aggregates independent global cleanup failures and retries every retained child", async () => {
+    const homes = [await workspace(), await workspace()];
+    const f = cleanupFixture();
+    await Promise.all(homes.map((home) => f.acquire(home)));
+    const error = await f.pool.dispose().catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toHaveLength(2);
+    expect(f.stops()).toBe(2);
+    expect(f.factory.processes.every((child) => !child.isExited())).toBe(true);
+    f.allowStop();
+    await f.pool.dispose();
+    expect(f.stops()).toBe(4);
+    expect(f.factory.processes.every((child) => child.isExited())).toBe(true);
+  });
+
+  it("retains disposed-during-start cleanup failure and retries without publishing a child", async () => {
+    const home = await workspace();
+    const f = cleanupFixture(undefined, true);
+    const startup = f.acquire(home).catch((error: unknown) => error);
+    await waitFor(() => f.factory.spawnCount === 1);
+    await expect(f.pool.disposeSessionSlot(f.session(home))).rejects.toThrow();
+    expect(await startup).toBeInstanceOf(AggregateError);
+    expect(f.factory.processes[0]?.isExited()).toBe(false);
+    await expect(f.acquire(home)).rejects.toThrow("cleanup_pending");
+    expect(f.factory.spawnCount).toBe(1);
+    f.allowStop();
+    await f.pool.dispose();
+    expect(f.factory.processes[0]?.isExited()).toBe(true);
+  });
+
+  it("orders concurrent disposal and acquire behind observable exit without duplicate starts", async () => {
+    const home = await workspace();
+    const f = cleanupFixture();
+    f.allowStop();
+    const original = await f.acquire(home);
+    expect(await f.acquire(home)).toBe(original);
+    const child = f.factory.processes[0]!;
+    const kill = child.kill.bind(child);
+    child.kill = () => true;
+    const disposal = f.pool.disposeSessionSlot(f.session(home));
+    const next = f.acquire(home);
+    await waitFor(() => f.stops() === 1);
+    expect(f.factory.spawnCount).toBe(1);
+    expect(child.isExited()).toBe(false);
+    kill();
+    await disposal;
+    await next;
+    expect(f.factory.spawnCount).toBe(2);
+    expect(child.isExited()).toBe(true);
+    await f.pool.dispose();
+  });
+
+  it("retains a no-exit timeout through repeated disposal and stops the original process", async () => {
+    vi.useFakeTimers();
+    try {
+      const home = await workspace();
+      const f = cleanupFixture();
+      f.allowStop();
+      await f.acquire(home);
+      const child = f.factory.processes[0]!;
+      const kill = child.kill.bind(child);
+      child.kill = () => true;
+      const first = f.pool.disposeSessionSlot(f.session(home)).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await first).toBeInstanceOf(Error);
+      expect(child.isExited()).toBe(false);
+      const second = f.pool.disposeSessionSlot(f.session(home)).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await second).toBeInstanceOf(Error);
+      expect(f.stops()).toBe(2);
+      expect(f.factory.spawnCount).toBe(1);
+      child.kill = kill;
+      await f.pool.disposeSessionSlot(f.session(home));
+      expect(child.isExited()).toBe(true);
+      expect(f.stops()).toBe(3);
+      await f.pool.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("finishes independent owned cleanup before reporting global failure", async () => {
+    const homes = [await workspace(), await workspace()];
+    const f = cleanupFixture();
+    f.allowStop();
+    await Promise.all(homes.map((home) => f.acquire(home)));
+    const failed = f.factory.processes[0]!;
+    const waiting = f.factory.processes[1]!;
+    const killFailed = failed.kill.bind(failed);
+    const killWaiting = waiting.kill.bind(waiting);
+    failed.kill = () => { throw new Error("fake one-child signal failure"); };
+    waiting.kill = () => true;
+    let settled = false;
+    const disposal = f.pool.dispose().catch((error: unknown) => { settled = true; return error; });
+    await waitFor(() => f.stops() === 2);
+    expect(settled).toBe(false);
+    expect(waiting.isExited()).toBe(false);
+    killWaiting();
+    expect(await disposal).toBeInstanceOf(AggregateError);
+    expect(waiting.isExited()).toBe(true);
+    expect(failed.isExited()).toBe(false);
+    failed.kill = killFailed;
+    await f.pool.dispose();
+    expect(failed.isExited()).toBe(true);
+    expect(f.stops()).toBe(3);
+  });
+
+  it("retains a failed final signal after parent exit and retries that signal", async () => {
+    const home = await workspace();
+    const f = cleanupFixture();
+    f.allowStop();
+    await f.acquire(home);
+    const child = f.factory.processes[0]!;
+    const kill = child.kill.bind(child);
+    let finalSignals = 0;
+    let failFinal = true;
+    child.kill = (signal?: NodeJS.Signals) => {
+      if (signal === "SIGKILL") {
+        finalSignals += 1;
+        if (failFinal) throw new Error("fake surviving group signal failure");
+      }
+      return kill();
+    };
+    await expect(f.pool.disposeSessionSlot(f.session(home))).rejects.toThrow();
+    expect(child.isExited()).toBe(true);
+    await expect(f.pool.disposeSessionSlot(f.session(home))).rejects.toThrow();
+    expect(finalSignals).toBe(2);
+    await expect(f.acquire(home)).rejects.toThrow("cleanup_pending");
+    failFinal = false;
+    await f.pool.disposeSessionSlot(f.session(home));
+    expect(finalSignals).toBe(3);
+    expect(f.factory.spawnCount).toBe(1);
+    await f.pool.dispose();
+  });
+
 });
