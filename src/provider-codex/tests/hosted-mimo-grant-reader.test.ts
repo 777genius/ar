@@ -14,8 +14,10 @@ vi.mock("node:fs", async importOriginal => {
     ...fs,
     lstatSync: (path: string) => {
       const stat = fs.lstatSync(path);
-      const ancestor = syntheticOwner.root.startsWith(path.endsWith("/") ? path : `${path}/`);
-      const within = path === syntheticOwner.root || path.startsWith(`${syntheticOwner.root}/`);
+      const ancestor = syntheticOwner.root !== "" &&
+        syntheticOwner.root.startsWith(path.endsWith("/") ? path : `${path}/`);
+      const within = syntheticOwner.root !== "" &&
+        (path === syntheticOwner.root || path.startsWith(`${syntheticOwner.root}/`));
       return ancestor || within
         ? Object.assign(stat, { uid: 0, mode: ancestor ? stat.mode & ~0o022 : stat.mode })
         : stat;
