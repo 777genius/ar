@@ -306,16 +306,24 @@ export function withControlledAgentModelBackend(
     0,
     -(sourceEgressConfig.length + 1),
   );
+  if (profile.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+    const sourceProviderConfig = codexModelBackendModelProvidersConfigToml({
+      backend: profile.modelBackend,
+      envKeyName: profile.mimoApiKeyEnvVarName,
+    });
+    if (!configToml.includes(sourceProviderConfig)) {
+      throw new Error("controlled_agent_generated_model_provider_config_required");
+    }
+    configToml = configToml.replace(sourceProviderConfig, "");
+  }
   if (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
     configToml = configToml.replace(/model_verbosity = "low"\n/g, "");
-    if (!configToml.includes("[model_providers.mimo]")) {
-      configToml += `${configToml.endsWith("\n") ? "" : "\n"}${
-        codexModelBackendModelProvidersConfigToml({
-          backend: modelBackend,
-          envKeyName: mimoApiKeyEnvVarName,
-        })
-      }`;
-    }
+    configToml += `${configToml.endsWith("\n") ? "" : "\n"}${
+      codexModelBackendModelProvidersConfigToml({
+        backend: modelBackend,
+        envKeyName: mimoApiKeyEnvVarName,
+      })
+    }`;
   }
   const providerEgressPolicy =
     modelBackend === CodexModelBackend.XiaomiMimoTokenPlan

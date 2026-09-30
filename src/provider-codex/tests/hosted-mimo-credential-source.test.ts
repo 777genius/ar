@@ -1,14 +1,40 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmod, link, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { readHostedMimoCredentialAtPath } from "../hosted-mimo-credential-source";
 
+const syntheticOwner = vi.hoisted(() => ({ root: "", ancestorUid: 0, fileUid: 0 }));
+vi.mock("node:fs", async importOriginal => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...fs,
+    lstatSync: (path: string) => {
+      const stat = fs.lstatSync(path);
+      const ancestor = syntheticOwner.root.startsWith(path.endsWith("/") ? path : `${path}/`);
+      const within = path === syntheticOwner.root || path.startsWith(`${syntheticOwner.root}/`);
+      return ancestor || within
+        ? Object.assign(stat, { uid: syntheticOwner.ancestorUid,
+          mode: ancestor ? stat.mode & ~0o022 : stat.mode })
+        : stat;
+    },
+    fstatSync: (fd: number) => Object.assign(fs.fstatSync(fd), { uid: syntheticOwner.fileUid }),
+  };
+});
+
 const directories: string[] = [];
-afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+afterEach(async () => {
+  await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true })));
+  syntheticOwner.root = "";
+  syntheticOwner.ancestorUid = 0;
+  syntheticOwner.fileUid = 0;
+});
 
 async function fixture() {
   const directory = await mkdtemp(join(process.cwd(), ".synthetic-mimo-source-"));
+  // Keep real symlink, mode, link, size and rotation behavior; only synthetic
+  // ownership and checkout ancestry metadata are normalized for user CI.
+  syntheticOwner.root = directory;
   directories.push(directory);
   const path = join(directory, "key");
   await writeFile(path, "synthetic-token-a\n", { mode: 0o600 });
@@ -43,8 +69,10 @@ describe("hosted MiMo credential filesystem boundary", () => {
     await writeFile(path, "synthetic-token\n", { mode: 0o600 });
     await chmod(path, 0o644); reject(path);
     await chmod(path, 0o600);
-    expect(() => readHostedMimoCredentialAtPath(path, new DefaultRedactor(), 0, 1))
+    syntheticOwner.fileUid = 1;
+    expect(() => readHostedMimoCredentialAtPath(path, new DefaultRedactor()))
       .toThrow("hosted_mimo_credential_invalid");
+    syntheticOwner.fileUid = 0;
   });
 
   it("rejects writable or symlinked ancestry", async () => {
@@ -54,6 +82,10 @@ describe("hosted MiMo credential filesystem boundary", () => {
     expect(() => readHostedMimoCredentialAtPath(path, new DefaultRedactor()))
       .toThrow("hosted_mimo_credential_invalid");
     await chmod(directory, 0o700);
+    syntheticOwner.ancestorUid = 1;
+    expect(() => readHostedMimoCredentialAtPath(path, new DefaultRedactor()))
+      .toThrow("hosted_mimo_credential_invalid");
+    syntheticOwner.ancestorUid = 0;
     const alias = join(process.cwd(), `.synthetic-mimo-link-${process.pid}`);
     try {
       await symlink(directory, alias);

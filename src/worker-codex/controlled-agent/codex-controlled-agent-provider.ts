@@ -40,6 +40,7 @@ import {
 import {
   assertHostedMimoControlledAgentProfile,
   codexControlledAgentProviderEgressEnv,
+  withControlledAgentModelBackend,
   type CodexControlledAgentProfile,
 } from "./codex-controlled-agent-profile";
 
@@ -273,8 +274,11 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
       this.options.mimoApiKeyEnvVarName ??
       this.options.profile.mimoApiKeyEnvVarName ??
       codexMimoApiKeyEnvVarDefault;
+    const effectiveProfile = withControlledAgentModelBackend(
+      this.options.profile, modelBackend, mimoApiKeyEnvVarName,
+    );
     const providerEgressPolicy =
-      this.options.profile.providerEgressPolicy ??
+      effectiveProfile.providerEgressPolicy ??
       (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
         ? codexMimoTokenPlanEgressPolicy()
         : codexProviderApiEgressPolicy());
@@ -293,19 +297,19 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
           hostedMimo ? { namedPermissions: true } : undefined,
         ),
         goalMode: true,
-        nativeToolSurface: this.options.profile.appServerNativeToolSurface,
+        nativeToolSurface: effectiveProfile.appServerNativeToolSurface,
         cleanThreadPrewarm: false,
         ...(this.options.maxGoalTurns === undefined
           ? {}
           : { maxGoalTurns: this.options.maxGoalTurns }),
       }),
       sessionMaterializer: new ControlledCodexSessionMaterializer({
-        profile: this.options.profile,
+        profile: effectiveProfile,
       }),
       modelBackend,
       mimoApiKeyEnvVarName,
       ...(modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
-        ? { mimoConfigToml: this.options.profile.configToml }
+        ? { mimoConfigToml: effectiveProfile.configToml }
         : {}),
       ...(this.options.sourceEnv === undefined
         ? {}

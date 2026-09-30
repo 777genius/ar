@@ -170,7 +170,9 @@ describe("CodexControlledAgentProvider", () => {
     }
   });
 
-  it("propagates MiMo modelBackend and egress through the controlled execution path", async () => {
+  it.each(["MIMO_CONTROLLER_KEY", "MIMO_OPTION_KEY"])("propagates MiMo backend and credential override %s through the controlled execution path", async optionEnvVarName => {
+    // Regression: a differing option used to inject one variable while the
+    // copied profile config directed Codex to read the other.
     const root = await mkdtemp(join(tmpdir(), "codex-controlled-agent-mimo-"));
     const workspacePath = join(root, "workspace");
     const stateDir = join(root, "state");
@@ -194,8 +196,8 @@ describe("CodexControlledAgentProvider", () => {
       workspacePath,
       codexBinaryPath: "/bin/codex-test",
       modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
-      mimoApiKeyEnvVarName: "MIMO_CONTROLLER_KEY",
-      sourceEnv: { MIMO_CONTROLLER_KEY: "tp-controller-key" },
+      mimoApiKeyEnvVarName: optionEnvVarName,
+      sourceEnv: { [optionEnvVarName]: "tp-controller-key" },
       processFactory: fakeFactory.create,
       serviceTier: "fast",
       maxGoalTurns: 1,
@@ -217,13 +219,23 @@ describe("CodexControlledAgentProvider", () => {
       expect(config.service_tier).toBeUndefined();
       expect((config.features as Record<string, unknown>).fast_mode).toBeUndefined();
       expect(fakeFactory.environments[0]).toMatchObject({
-        MIMO_CONTROLLER_KEY: "tp-controller-key",
+        [optionEnvVarName]: "tp-controller-key",
         SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE:
           CodexProviderEgressProfileId.MimoTokenPlan,
       });
       const effectiveConfig = await fakeFactory.configs[0];
-      expect(effectiveConfig).toBe(profile.configToml);
+      if (optionEnvVarName === "MIMO_CONTROLLER_KEY") {
+        expect(effectiveConfig).toBe(profile.configToml);
+      }
       expect(effectiveConfig).toContain("[model_providers.mimo]");
+      expect(effectiveConfig).toContain(`env_key = "${optionEnvVarName}"`);
+      expect(effectiveConfig).not.toContain(
+        `env_key = "${optionEnvVarName === "MIMO_CONTROLLER_KEY" ? "MIMO_OPTION_KEY" : "MIMO_CONTROLLER_KEY"}"`,
+      );
+      expect(effectiveConfig).toContain("enabled_tools");
+      expect(effectiveConfig).toContain("codex_goal_project_start");
+      expect(effectiveConfig).toContain('sandbox_mode = "read-only"');
+      expect(effectiveConfig).toContain('inherit = "none"');
       expect(effectiveConfig).not.toContain("tp-controller-key");
     } finally {
       await provider.stop({
