@@ -13,6 +13,7 @@ import { DispatchEligibility, KeyedChildLedger, KeyedChildProfile as Profile, Ke
 // fsync; only fixed path/host ownership and kernel namespace metadata are mapped.
 // Production common fence issues and expires real validated capabilities.
 const fixture = vi.hoisted(() => ({ root: "", fail: "", renamed: false, reads: 0,
+  syncMutation: "", changedMetadata: false, mutationInode: 0, mutationBytes: null as Buffer | null,
   foreign: undefined as { dev: number; ino: number } | undefined, repro: "", ancestorChecks: 0, injected: false, handles: new Map<number, string>(), synced: [] as string[] }));
 const prefix = "/var/lib/subscription-runtime-host-policy";
 function local(path: string): string {
@@ -34,7 +35,11 @@ vi.mock("node:fs", async importOriginal => {
       }
       return Object.assign(real.lstatSync(local(path)), { uid: 0 });
     },
-    fstatSync: (fd: number) => Object.assign(real.fstatSync(fd), { uid: 0 }),
+    fstatSync: (fd: number) => {
+      const stat = Object.assign(real.fstatSync(fd), { uid: 0 });
+      if (fixture.changedMetadata && fixture.handles.get(fd)?.endsWith(".json")) stat.ctimeMs += 1;
+      return stat;
+    },
     mkdirSync: (path: string, options: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), options),
     rmdirSync: (path: string) => real.rmdirSync(local(path)),
     openSync: (path: string, flags: number, mode: number) => {
@@ -65,6 +70,18 @@ vi.mock("node:fs", async importOriginal => {
             fixture.synced.some(p => p.endsWith(".next"))) ||
           (fixture.fail === "dir-after" && fixture.renamed && path.endsWith("keyed-child-ledgers"))) {
         throw new Error("TEST fsync failure");
+      }
+      const archived = real.readdirSync(ledgerDir()).some(name => name.includes(".history." + (fixture.mutationBytes ? JSON.parse(fixture.mutationBytes.toString()).generation + 1 : -1)));
+      if (fixture.syncMutation && archived &&
+          ((["file", "metadata"].includes(fixture.syncMutation) && path.endsWith(".json")) ||
+           (fixture.syncMutation === "directory" && path.endsWith("keyed-child-ledgers")))) {
+        const metadataOnly = fixture.syncMutation === "metadata";
+        fixture.syncMutation = ""; fixture.injected = true;
+        const target = join(ledgerDir(), name + ".json");
+        fixture.mutationInode = real.lstatSync(target).ino;
+        if (metadataOnly) fixture.changedMetadata = true;
+        else real.writeFileSync(target, fixture.mutationBytes!);
+        if (real.lstatSync(target).ino !== fixture.mutationInode) throw new Error("TEST mutation replaced inode");
       }
       real.fsyncSync(fd);
     },
@@ -120,7 +137,7 @@ beforeEach(async () => {
   const real = await vi.importActual<typeof import("node:fs")>("node:fs");
   fixture.root = real.mkdtempSync(join(tmpdir(), "TEST-keyed-ledger-"));
   real.mkdirSync(ledgerDir(), { mode: 0o700 });
-  fixture.fail = ""; fixture.foreign = undefined; fixture.repro = ""; fixture.ancestorChecks = 0; fixture.injected = false; fixture.renamed = false; fixture.reads = 0; fixture.synced = []; fixture.handles.clear();
+  fixture.syncMutation = ""; fixture.changedMetadata = false; fixture.mutationBytes = null; fixture.fail = ""; fixture.foreign = undefined; fixture.repro = ""; fixture.ancestorChecks = 0; fixture.injected = false; fixture.renamed = false; fixture.reads = 0; fixture.synced = []; fixture.handles.clear();
   vi.spyOn(process, "getuid").mockReturnValue(0);
 });
 afterEach(() => { vi.restoreAllMocks(); rmSync(fixture.root, { recursive: true, force: true }); });
@@ -404,4 +421,45 @@ it("missing successor history cannot fall back to a canonical pre-intent target"
   rmSync(path(".history.4")); writeFileSync(path(), current.serialize());
   const callback = vi.fn((c: KeyedChildLedger) => c);
   await expect(transact(fresh(), 3, callback)).rejects.toThrow("history_conflict"); expect(callback).not.toHaveBeenCalled();
+});
+
+it.each(["acceptance", "dispatch-intent"].flatMap(transition =>
+  ["file", "directory"].map(interval => ({ transition, interval }))))(
+  "$transition rejects in-place mutation during final $interval fsync and retains intent", async ({ transition, interval }) => {
+    const store = enroll(); let current = initial();
+    if (transition === "dispatch-intent") {
+      current = await accept(store);
+      for (const state of [State.Materializing, State.Prepared]) {
+        current = await transact(store, current.generation, c => c.advance(view(c), state, 20));
+      }
+    }
+    const intended = transition === "acceptance" ? current.accept(0, request(), 10) :
+      current.advance(view(current), State.DispatchIntent, 20);
+    const real = await vi.importActual<typeof import("node:fs")>("node:fs");
+    fixture.mutationBytes = Buffer.from(current.serialize()); fixture.syncMutation = interval;
+    const outcome = transact(store, current.generation, c => {
+      return transition === "acceptance" ? c.accept(0, request(), 10) : c.advance(view(c), State.DispatchIntent, 20);
+    });
+    await expect(outcome).rejects.toThrow("file_changed");
+    expect(fixture.injected).toBe(true);
+    expect(readFileSync(path(), "utf8")).toBe(current.serialize());
+    expect(real.lstatSync(path()).ino).toBe(fixture.mutationInode);
+    expect(readFileSync(path(".hold"), "utf8")).toBe(intended.serialize());
+    expect(readFileSync(path(`.history.${intended.generation}`), "utf8")).toBe(intended.serialize());
+    const callback = vi.fn((c: KeyedChildLedger) => c);
+    await expect(transact(fresh(), current.generation, callback)).rejects.toThrow("pending_publication");
+    expect(callback).not.toHaveBeenCalled();
+    expect(fixture.handles.size).toBe(0);
+  });
+
+it("post-fsync metadata change rejects even exact live bytes and retains acceptance", async () => {
+  const store = enroll(), intended = initial().accept(0, request(), 10);
+  fixture.mutationBytes = Buffer.from(initial().serialize()); fixture.syncMutation = "metadata";
+  await expect(accept(store)).rejects.toThrow("file_changed");
+  expect(fixture.injected).toBe(true);
+  expect(readFileSync(path(), "utf8")).toBe(intended.serialize());
+  expect(readFileSync(path(".hold"), "utf8")).toBe(intended.serialize());
+  const callback = vi.fn((c: KeyedChildLedger) => c);
+  await expect(transact(fresh(), 1, callback)).rejects.toThrow("pending_publication");
+  expect(callback).not.toHaveBeenCalled(); expect(fixture.handles.size).toBe(0);
 });

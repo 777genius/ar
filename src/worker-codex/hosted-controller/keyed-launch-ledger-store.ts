@@ -121,9 +121,20 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
       const opened = fstatSync(fd); privateFile(opened);
       if (!this.#bytes(fd).equals(bytes)) throw new Error("keyed_ledger_file_changed");
       fsyncSync(fd);
-      if (!sameInode(opened, lstatSync(this.#anchored(path, parent)))) throw new Error("keyed_ledger_file_changed");
+      const synced = fstatSync(fd); privateFile(synced);
+      if (!this.#bytes(fd).equals(bytes) || synced.size !== opened.size ||
+          synced.ctimeMs !== opened.ctimeMs || synced.mtimeMs !== opened.mtimeMs ||
+          !sameInode(opened, lstatSync(this.#anchored(path, parent)))) throw new Error("keyed_ledger_file_changed");
       this.#checkParent(); return opened;
     } finally { closeSync(fd); }
+  }
+  #verifyTarget(bytes: Buffer, expected: Stats, parent: number): void {
+    // Read after the LAST durability action, without introducing another fsync
+    // interval. This is interleaving detection, not inode-conditional CAS.
+    if (!this.#read(this.#path, parent)?.equals(bytes) ||
+        !sameInode(expected, lstatSync(this.#anchored(this.#path, parent)))) {
+      throw new Error("keyed_ledger_file_changed");
+    }
   }
   #create(path: string, bytes: Buffer, parent: number): Stats {
     this.#checkParent();
@@ -171,7 +182,8 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
         !this.#read(join(root, prefix + latest), parent)?.equals(bytes))) {
       throw new Error("keyed_ledger_history_conflict");
     }
-    this.#syncFile(this.#path, bytes, parent); fsyncSync(parent); return current;
+    const synced = this.#syncFile(this.#path, bytes, parent); fsyncSync(parent);
+    this.#verifyTarget(bytes, synced, parent); return current;
   }
   /** Explicit first enrollment. Birth survives loss of the mutable file, so a
    * missing/corrupt existing ledger can never become a fresh empty aggregate. */
@@ -184,10 +196,10 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
             file.startsWith(name + ".history.") || file.startsWith(name + ".previous."))) return this.#current(parent);
       const bytes = Buffer.from(this.#seed.serialize());
       this.#create(this.#birth, bytes, parent);
-      this.#create(this.#path, bytes, parent);
+      const created = this.#create(this.#path, bytes, parent);
       // Host preparation owns creation; reconfirm pinned ancestry durability.
       for (const fd of ancestors) fsyncSync(fd);
-      return this.#seed;
+      this.#verifyTarget(bytes, created, parent); return this.#seed;
     });
   }
   async transact(scope: ChildScope, authorityDigest: string, expectedGeneration: number,
@@ -208,7 +220,8 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
       KeyedChildLedger.restore(bytes.toString("utf8"), this.#seed);
       this.#checkParent(); this.#noPending(parent);
       if (next.serialize() === current.serialize()) {
-        this.#syncFile(this.#path, bytes, parent); fsyncSync(parent); return current;
+        const synced = this.#syncFile(this.#path, bytes, parent); fsyncSync(parent);
+        this.#verifyTarget(bytes, synced, parent); return current;
       }
       const oldBytes = Buffer.from(current.serialize());
       const staged = this.#create(this.#next, bytes, parent);
@@ -238,6 +251,7 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
           throw new Error("keyed_ledger_publication_conflict");
         }
         fsyncSync(parent);
+        this.#verifyTarget(bytes, staged, parent);
       } catch (error) {
         // Archive may have moved both guard names before failing. Reinstate a
         // no-clobber obligation; a partial guard also denies every future read.
