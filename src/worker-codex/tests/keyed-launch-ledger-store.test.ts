@@ -74,12 +74,16 @@ vi.mock("node:fs", async importOriginal => {
       const archived = real.readdirSync(ledgerDir()).some(name => name.includes(".history." + (fixture.mutationBytes ? JSON.parse(fixture.mutationBytes.toString()).generation + 1 : -1)));
       if (fixture.syncMutation && archived &&
           ((["file", "metadata"].includes(fixture.syncMutation) && path.endsWith(".json")) ||
-           (fixture.syncMutation === "directory" && path.endsWith("keyed-child-ledgers")))) {
+           (["directory", "directory-metadata"].includes(fixture.syncMutation) && path.endsWith("keyed-child-ledgers")))) {
         const metadataOnly = fixture.syncMutation === "metadata";
+        const directoryMetadata = fixture.syncMutation === "directory-metadata";
         fixture.syncMutation = ""; fixture.injected = true;
         const target = join(ledgerDir(), name + ".json");
         fixture.mutationInode = real.lstatSync(target).ino;
-        if (metadataOnly) fixture.changedMetadata = true;
+        if (directoryMetadata) {
+          const stat = real.lstatSync(target);
+          real.utimesSync(target, stat.atime, new Date(stat.mtimeMs + 5000));
+        } else if (metadataOnly) fixture.changedMetadata = true;
         else real.writeFileSync(target, fixture.mutationBytes!);
         if (real.lstatSync(target).ino !== fixture.mutationInode) throw new Error("TEST mutation replaced inode");
       }
@@ -463,3 +467,37 @@ it("post-fsync metadata change rejects even exact live bytes and retains accepta
   await expect(transact(fresh(), 1, callback)).rejects.toThrow("pending_publication");
   expect(callback).not.toHaveBeenCalled(); expect(fixture.handles.size).toBe(0);
 });
+
+// Acceptance is red when generation 1 is acknowledged after real metadata
+// changes during the final parent fsync, leaving no pending hold.
+// Dispatch intent is independently red when generation 4 is acknowledged in
+// that interval despite the changed metadata and absent pending hold.
+it.each(["acceptance", "dispatch-intent"])(
+  "%s rejects real utimes during final parent fsync and retains the obligation", async transition => {
+    const store = enroll(); let current = initial();
+    if (transition === "dispatch-intent") {
+      current = await accept(store);
+      for (const state of [State.Materializing, State.Prepared]) {
+        current = await transact(store, current.generation, c => c.advance(view(c), state, 20));
+      }
+    }
+    const intended = transition === "acceptance" ? current.accept(0, request(), 10) :
+      current.advance(view(current), State.DispatchIntent, 20);
+    const real = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const before = real.lstatSync(path());
+    fixture.mutationBytes = Buffer.from(current.serialize()); fixture.syncMutation = "directory-metadata";
+    await expect(transact(store, current.generation, c => transition === "acceptance" ?
+      c.accept(0, request(), 10) : c.advance(view(c), State.DispatchIntent, 20))).rejects.toThrow("file_changed");
+    expect(fixture.injected).toBe(true);
+    const after = real.lstatSync(path());
+    expect(after.ino).toBe(fixture.mutationInode);
+    expect(after.mtimeMs).toBeGreaterThan(before.mtimeMs + 4000);
+    expect(readFileSync(path(), "utf8")).toBe(intended.serialize());
+    expect(readFileSync(path(`.previous.${intended.generation}`), "utf8")).toBe(current.serialize());
+    expect(readFileSync(path(`.history.${intended.generation}`), "utf8")).toBe(intended.serialize());
+    expect(readFileSync(path(".hold"), "utf8")).toBe(intended.serialize());
+    expect(fixture.handles.size).toBe(0);
+    const callback = vi.fn((c: KeyedChildLedger) => c);
+    await expect(transact(fresh(), intended.generation, callback)).rejects.toThrow("pending_publication");
+    expect(callback).not.toHaveBeenCalled(); expect(fixture.handles.size).toBe(0);
+  });

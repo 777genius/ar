@@ -131,10 +131,19 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
   #verifyTarget(bytes: Buffer, expected: Stats, parent: number): void {
     // Read after the LAST durability action, without introducing another fsync
     // interval. This is interleaving detection, not inode-conditional CAS.
-    if (!this.#read(this.#path, parent)?.equals(bytes) ||
-        !sameInode(expected, lstatSync(this.#anchored(this.#path, parent)))) {
-      throw new Error("keyed_ledger_file_changed");
-    }
+    this.#checkParent();
+    const fd = openSync(this.#anchored(this.#path, parent), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const actualBytes = this.#bytes(fd);
+      const opened = fstatSync(fd); privateFile(opened);
+      if (!actualBytes.equals(bytes) || !sameInode(expected, opened) ||
+          opened.size !== expected.size || opened.ctimeMs !== expected.ctimeMs ||
+          opened.mtimeMs !== expected.mtimeMs ||
+          !sameInode(opened, lstatSync(this.#anchored(this.#path, parent)))) {
+        throw new Error("keyed_ledger_file_changed");
+      }
+      this.#checkParent();
+    } finally { closeSync(fd); }
   }
   #create(path: string, bytes: Buffer, parent: number): Stats {
     this.#checkParent();
@@ -246,12 +255,15 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
         archiveKeyedLedgerFiles(parent, basename(this.#path), next.generation);
         const name = basename(this.#path).slice(0, -5);
         if (!sameInode(prior, this.#syncFile(join(root, `${name}.previous.${next.generation}`), oldBytes, parent)) ||
-            !sameInode(retained, this.#syncFile(join(root, `${name}.history.${next.generation}`), bytes, parent)) ||
-            !sameInode(staged, this.#syncFile(this.#path, bytes, parent))) {
+            !sameInode(retained, this.#syncFile(join(root, `${name}.history.${next.generation}`), bytes, parent))) {
           throw new Error("keyed_ledger_publication_conflict");
         }
+        // Archival changes inode metadata. Pin the final live-file sync's
+        // snapshot, rather than the pre-publication staging snapshot.
+        const synced = this.#syncFile(this.#path, bytes, parent);
+        if (!sameInode(staged, synced)) throw new Error("keyed_ledger_publication_conflict");
         fsyncSync(parent);
-        this.#verifyTarget(bytes, staged, parent);
+        this.#verifyTarget(bytes, synced, parent);
       } catch (error) {
         // Archive may have moved both guard names before failing. Reinstate a
         // no-clobber obligation; a partial guard also denies every future read.
