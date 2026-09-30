@@ -222,7 +222,8 @@ export class HostedInstallationActivationStore {
     if (candidates.length !== 1) invalid();
     const creator = candidates[0]!;
     const childSlot = readHostedChildSlot(creator);
-    if (childSlot && childSlot.lifetime.deadlineEpochMs <= Date.now()) throw new Error("child_deadline_expired");
+    const childBudget = childSlot ? new ChildExecutionBudget(childSlot.lifetime) : undefined;
+    childBudget?.remainingMs();
     const { installation, activation, birth, originSha256 } = readHostedOrdinaryBirth(creator.jobId);
     assertInspectedInstallation(installation); assertActivationSession(activation, session);
     if (childSlot && activation.ordinaryStarts.some(row => row.creatorId === creator.creatorId)) throw new Error("child_invocation_consumed");
@@ -238,7 +239,7 @@ export class HostedInstallationActivationStore {
     this.publish(fence, { ...activation, generation: row.generation, ordinaryStarts: [...activation.ordinaryStarts, row] });
     createReadonlyPrivateRecord(join(readonlySupervisorRoot, "ordinary-starts", startId + ".json"), encoded(start));
     return Object.freeze({ start, reservation: Object.freeze(row), launch: creator.launch,
-      ...(childSlot ? { childLifetime: childSlot.lifetime } : {}) });
+      ...(childBudget ? { childLifetime: childBudget.lifetime, childBudget } : {}) });
   }
 
   runOrdinaryRuntimeLaunch<T>(command: string, args: readonly string[], cwd: string,
@@ -249,8 +250,12 @@ export class HostedInstallationActivationStore {
         this.ordinaryLaunch = this.reserveOrdinaryRuntime(fence, command, args, cwd);
         try {
           const invocation = new HostedReadonlyHostKernel().ordinaryRuntimeInvocation(this.ordinaryLaunch.reservation, cwd);
-          if (this.ordinaryLaunch.childLifetime) new ChildExecutionBudget(this.ordinaryLaunch.childLifetime).remainingMs();
-          return submit(invocation);
+          this.ordinaryLaunch.childBudget?.remainingMs();
+          const submitted = submit(invocation);
+          // Submission can consume elapsed time or cross a clock rollback.
+          // Failure retains the reserved origin and requests cleanup below.
+          this.ordinaryLaunch.childBudget?.remainingMs();
+          return submitted;
         } catch (error) {
           if (!this.ordinaryLaunch.childLifetime) {
             const activation = this.read();
@@ -265,6 +270,7 @@ export class HostedInstallationActivationStore {
     }
   }
   ordinaryChildLifetime() { return this.ordinaryLaunch?.childLifetime; }
+  ordinaryChildBudget() { return this.ordinaryLaunch?.childBudget; }
 
   recordOrdinaryRuntimeWaitCompletion(): void {
     this.serialized(() => {

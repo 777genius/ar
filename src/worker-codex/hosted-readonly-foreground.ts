@@ -96,8 +96,8 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
       if (failed || signal !== null || code !== 0) close();
       detach(); resolve(failed || signal !== null ? 70 : code ?? 70);
     });
-    const lifetime = store.ordinaryChildLifetime();
-    if (lifetime) stopWatch = watchChildDeadline(new ChildExecutionBudget(lifetime), () => {
+    const budget = store.ordinaryChildBudget();
+    if (budget) stopWatch = watchChildDeadline(budget, () => {
       failed = true; close(); child.kill("SIGTERM");
     });
   });

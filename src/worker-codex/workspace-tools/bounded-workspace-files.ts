@@ -95,7 +95,6 @@ export class BoundedWorkspaceFiles {
 
   async readFile(path: string): Promise<string> {
     this.assertTool(AgentRuntimeTool.ReadFile);
-    this.assertReadablePath(path);
     const absolutePath = await this.resolveRegularFile(path, true);
     return this.readUtf8File(absolutePath);
   }
@@ -158,7 +157,6 @@ export class BoundedWorkspaceFiles {
       throw new Error("workspace_search_result_limit_exceeded");
     }
     const searchRoot = await this.resolveDirectory(input.path ?? ".");
-    this.assertReadablePath(relative(this.root, searchRoot) || ".");
     const matches: WorkspaceSearchMatch[] = [];
     let scannedBytes = 0;
     let scannedFiles = 0;
@@ -313,10 +311,13 @@ export class BoundedWorkspaceFiles {
     if (relativePath.split(sep).some((segment) => segment.toLowerCase() === ".git")) {
       throw new Error("workspace_git_metadata_rejected");
     }
+    // All explicit/implicit reads and mutations share the contained, normalized
+    // target policy, including aliases and instruction files not yet created.
+    this.assertInstructionPathAllowed(relativePath);
     return absolutePath;
   }
 
-  private assertReadablePath(path: string): void {
+  private assertInstructionPathAllowed(path: string): void {
     if (
       this.limits.denyProjectInstructions &&
       isProjectInstructionPath(path)

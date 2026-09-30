@@ -26,6 +26,72 @@ async function fixture(write = false) {
   return { root, workspace, files, budget, expire: () => { wall = 2000; monotonic = 1000; }, close: () => rm(root, { recursive: true, force: true }) };
 }
 describe("child workspace tools", () => {
+  it.each([false, true])("MCP rejects normalized instruction reads and searches (writable=%s)", async writable => {
+    const f = await fixture(writable);
+    const paths = ["AGENTS.md", "nested/Agents.Override.md", "nested/sKiLl.Md", "CLAUDE.md", "GEMINI.md",
+      ".cursorrules", "copilot-instructions.md", ".codex/instructions.md", ".claude/rules/review.md",
+      ".cursor/rules/review.md", ".agents/skills/demo.md"];
+    for (const path of paths) {
+      await mkdir(join(f.workspace, path, ".."), { recursive: true });
+      await writeFile(join(f.workspace, path), "private TEST instruction sentinel");
+    }
+    const lifetime = { ...f.budget.lifetime, deadlineEpochMs: Date.now() + 60_000 };
+    const server = await createWorkspaceToolsMcpServer({ workspaceRoot: f.workspace, allowedTools: lifetime.allowedTools,
+      denyProjectInstructions: true, childLifetime: lifetime });
+    const client = new Client({ name: "pr3-TEST-instructions", version: "1" });
+    try {
+      const [left, right] = InMemoryTransport.createLinkedPair(); await Promise.all([server.connect(left), client.connect(right)]);
+      for (const path of paths) for (const alias of [path, `${path}/.`, `${path}//`, `./${path}`, `nested/../${path}`]) {
+        const result = await client.callTool({ name: AgentRuntimeTool.ReadFile, arguments: { path: alias } });
+        expect(result, alias).toMatchObject({ isError: true,
+          content: [{ type: "text", text: "workspace_project_instruction_rejected" }] });
+      }
+      for (const path of [".codex/.", ".claude/rules/.", ".cursor/rules//", "nested/../.agents/skills/."]) {
+        expect(await client.callTool({ name: AgentRuntimeTool.SearchFiles, arguments: { path, query: "private" } }))
+          .toMatchObject({ isError: true, content: [{ type: "text", text: "workspace_project_instruction_rejected" }] });
+      }
+      expect(await client.callTool({ name: AgentRuntimeTool.SearchFiles, arguments: { path: "nested/..", query: "private" } }))
+        .toMatchObject({ structuredContent: { matches: [] } });
+      expect(await client.callTool({ name: AgentRuntimeTool.ReadFile, arguments: { path: "nested/../allowed.txt/." } }))
+        .toMatchObject({ structuredContent: { content: "initial" } });
+      expect(await client.callTool({ name: AgentRuntimeTool.ReadFile, arguments: { path: "../AGENTS.md/." } }))
+        .toMatchObject({ isError: true, content: [{ type: "text", text: "workspace_path_outside_root" }] });
+    } finally { await client.close(); await server.close(); await f.close(); }
+  });
+
+  it.each([AgentRuntimeTool.EditFile, AgentRuntimeTool.WriteFile])("MCP denies instruction mutation and matching oracles through %s", async tool => {
+    const f = await fixture(true), lifetime = { ...f.budget.lifetime, deadlineEpochMs: Date.now() + 60_000 };
+    const paths = ["AGENTS.md", "nested/Agents.Override.md", "nested/sKiLl.Md", ".codex/instructions.md",
+      ".claude/rules/review.md", ".cursor/rules/review.md", ".agents/skills/demo.md"];
+    for (const path of paths) {
+      await mkdir(join(f.workspace, path, ".."), { recursive: true });
+      await writeFile(join(f.workspace, path), "private project instructions");
+    }
+    const server = await createWorkspaceToolsMcpServer({ workspaceRoot: f.workspace, allowedTools: lifetime.allowedTools,
+      denyProjectInstructions: true, childLifetime: lifetime });
+    const client = new Client({ name: "pr3-TEST-mutations", version: "1" });
+    try {
+      const [left, right] = InMemoryTransport.createLinkedPair(); await Promise.all([server.connect(left), client.connect(right)]);
+      for (const target of paths) for (const path of [target, `${target}/.`, `${target}//`, `./${target}`]) {
+        for (const oldText of ["private project instructions", "absent TEST text"]) {
+          const args = tool === AgentRuntimeTool.EditFile ? { path, oldText, newText: "changed" }
+            : { path, content: "changed", overwrite: true };
+          expect(await client.callTool({ name: tool, arguments: args }), path)
+            .toMatchObject({ isError: true, content: [{ type: "text", text: "workspace_project_instruction_rejected" }] });
+          expect(await readFile(join(f.workspace, target), "utf8")).toBe("private project instructions");
+        }
+      }
+      if (tool === AgentRuntimeTool.WriteFile) {
+        expect(await client.callTool({ name: tool, arguments: { path: "SKILL.md/.", content: "new instruction" } }))
+          .toMatchObject({ isError: true, content: [{ type: "text", text: "workspace_project_instruction_rejected" }] });
+        await expect(stat(join(f.workspace, "SKILL.md"))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      const args = tool === AgentRuntimeTool.EditFile ? { path: "allowed.txt/.", oldText: "initial", newText: "approved" }
+        : { path: "allowed.txt/.", content: "approved", overwrite: true };
+      expect((await client.callTool({ name: tool, arguments: args })).isError).not.toBe(true);
+      expect(await readFile(join(f.workspace, "allowed.txt"), "utf8")).toBe("approved");
+    } finally { await client.close(); await server.close(); await f.close(); }
+  });
   // Bug: an approved tool escapes the workspace through traversal/symlink or loads denied project instructions.
   it("denies traversal, symlinks and project instructions while returning approved files", async () => {
     const f = await fixture();
