@@ -95,3 +95,15 @@ describe("finite canonical private snapshot codec", () => {
     expect(() => KeyedChildLedger.restore(encoded, KeyedChildLedger.create({ ...authority, maxGoalTurns: 4 }, slots))).toThrow();
   });
 });
+
+it("decoded snapshots cannot borrow a prior aggregate's transition provenance", () => {
+  const current = claimed(), successor = current.advance(view(current), State.Materializing, 20);
+  const decoded = KeyedChildLedger.restore(successor.serialize(), current);
+  expect(decoded.serialize()).toBe(successor.serialize());
+  expect(() => current.assertSuccessor(decoded)).toThrow("invalid ledger successor");
+  expect(() => current.assertSuccessor(successor)).not.toThrow();
+  expect(() => current.assertSuccessor(KeyedChildLedger.restore(current.serialize(), current))).not.toThrow();
+  for (const supplied of [current, {}, undefined]) {
+    expect(() => Reflect.construct(KeyedChildLedger, [authority, slots, successor.snapshot().accepted, 2, current, supplied])).toThrow();
+  }
+});

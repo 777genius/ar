@@ -124,6 +124,7 @@ function allocationCopy(a: ChildSlotAllocation): ChildSlotAllocation {
  * Publication still requires a direct domain successor, never a hydrated edit.
  */
 export class KeyedChildLedger {
+  static readonly #construction = Object.freeze({});
   readonly #successorToken = Object.freeze({});
   readonly #previousToken: object | undefined;
   readonly #authority: ReviewedChildAuthority;
@@ -133,7 +134,9 @@ export class KeyedChildLedger {
   readonly authorityDigest: string;
 
   private constructor(a: ReviewedChildAuthority, slots: readonly ChildSlotAllocation[],
-    accepted: readonly AcceptedChild[], generation: number, previous?: KeyedChildLedger) {
+    accepted: readonly AcceptedChild[], generation: number, previous: KeyedChildLedger | undefined,
+    capability: object) {
+    if (capability !== KeyedChildLedger.#construction) throw new Error("invalid ledger construction");
     this.#previousToken = previous ? previous.#successorToken : undefined;
     this.#authority = a; this.#slots = slots; this.#accepted = accepted;
     this.generation = generation; this.authorityDigest = authorityHash(a);
@@ -157,7 +160,7 @@ export class KeyedChildLedger {
       controllerId: a.controllerId, grantDigest: a.grantDigest, reviewedSnapshotDigest: a.reviewedSnapshotDigest,
       accountId: a.accountId, sourceSha: a.sourceSha, artifactSha: a.artifactSha,
       absoluteDeadline: a.absoluteDeadline, maxGoalTurns: a.maxGoalTurns, effectiveOptionDigest: a.effectiveOptionDigest });
-    return new KeyedChildLedger(authority, Object.freeze(copies), Object.freeze([]), 0);
+    return new KeyedChildLedger(authority, Object.freeze(copies), Object.freeze([]), 0, undefined, KeyedChildLedger.#construction);
   }
   get remainingAllowance(): number { return this.#slots.length - this.#accepted.length; }
   get occupied(): boolean { return this.#accepted.some(c => c.state !== KeyedChildState.Terminal); }
@@ -221,7 +224,7 @@ export class KeyedChildLedger {
       children.push(Object.freeze({ ...accepted, state: row.state,
         dispatchIntent: row.dispatchIntent === null ? null : Object.freeze({ generation: row.dispatchIntent.generation }) }));
       // Reconstructed history supplies occupancy to the existing accept validator.
-      validation = new KeyedChildLedger(trusted.#authority, trusted.#slots, Object.freeze([...children]), minimum);
+      validation = new KeyedChildLedger(trusted.#authority, trusted.#slots, Object.freeze([...children]), minimum, undefined, KeyedChildLedger.#construction);
     }
     if (minimum > s.generation || (!children.length && s.generation !== 0)) throw new Error("invalid snapshot generation");
     const last = children.at(-1);
@@ -229,7 +232,7 @@ export class KeyedChildLedger {
         KeyedChildState.Running].includes(last.state)) || (children.length === 1 &&
         [KeyedChildState.Claimed, KeyedChildState.Materializing, KeyedChildState.Prepared].includes(last.state))) &&
         s.generation !== minimum) throw new Error("impossible snapshot generation");
-    const restored = new KeyedChildLedger(trusted.#authority, trusted.#slots, Object.freeze(children), s.generation);
+    const restored = new KeyedChildLedger(trusted.#authority, trusted.#slots, Object.freeze(children), s.generation, undefined, KeyedChildLedger.#construction);
     if (restored.serialize() !== encoded) throw new Error("noncanonical snapshot");
     return restored;
   }
@@ -242,7 +245,7 @@ export class KeyedChildLedger {
   }
   #successor(children: readonly AcceptedChild[]): KeyedChildLedger {
     if (this.generation === Number.MAX_SAFE_INTEGER) throw new Error("generation exhausted");
-    return new KeyedChildLedger(this.#authority, this.#slots, Object.freeze(children), this.generation + 1, this);
+    return new KeyedChildLedger(this.#authority, this.#slots, Object.freeze(children), this.generation + 1, this, KeyedChildLedger.#construction);
   }
   accept(expected: number, request: ChildLaunchRequest, now: number): KeyedChildLedger {
     this.#checkGeneration(expected);

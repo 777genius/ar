@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, renameSync,
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readSync, readdirSync,
   writeFileSync, type Stats } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { assertHostedActivationFence, assertHostedActivationOperator, withHostedActivationFence,
   type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { KeyedChildLedger, keyedChildSnapshotMaxBytes, type ChildScope, type ChildSlotAllocation,
   type ReviewedChildAuthority } from "../../worker-core/project-control/domain/keyed-child-launch";
 import type { KeyedChildLedgerTransactionPort } from "../../worker-core/project-control/ports/keyed-child-launch-ports";
-import { readHostedPrivateBytes } from "../hosted-readonly-inputs";
+import { archiveKeyedLedgerFiles, exchangeKeyedLedgerFiles } from "./keyed-ledger-linux-publication";
 
 const root = "/var/lib/subscription-runtime-host-policy/keyed-child-ledgers";
 const sameInode = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;
@@ -32,6 +32,7 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
   readonly #path: string;
   readonly #birth: string;
   readonly #next: string;
+  readonly #hold: string;
   readonly #parent: Stats;
 
   constructor(authority: ReviewedChildAuthority, slots: readonly ChildSlotAllocation[]) {
@@ -41,7 +42,7 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
     const name = createHash("sha256").update(JSON.stringify(["keyed-child-scope", 1,
       this.#scope.projectId, this.#scope.workstreamId, this.#scope.controllerId])).digest("hex");
     this.#path = join(root, name + ".json"); this.#birth = join(root, name + ".birth");
-    this.#next = join(root, name + ".next");
+    this.#next = join(root, name + ".next"); this.#hold = join(root, name + ".hold");
     assertHostedActivationOperator();
     // Pin the host-provisioned directory without opening any ledger record.
     // Private readers later check ancestry after scope/fence authentication.
@@ -60,73 +61,132 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
     if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o077) ||
         !sameInode(stat, this.#parent)) throw new Error("keyed_ledger_parent_changed");
   }
-  #fenced<T>(fence: HostedActivationFence, action: (parent: number) => T): T {
-    assertHostedActivationFence(fence); assertHostedActivationOperator(); this.#checkParent();
+  #fenced<T>(fence: HostedActivationFence, action: (parent: number, ancestors: readonly number[]) => T): T {
+    assertHostedActivationFence(fence); assertHostedActivationOperator();
+    const ancestry: { path: string; stat: Stats }[] = [];
+    for (let directory = root;; directory = dirname(directory)) {
+      const stat = lstatSync(directory);
+      if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o022)) throw new Error("keyed_ledger_private_parent_required");
+      if (directory !== root) ancestry.push({ path: directory, stat });
+      if (directory === "/") break;
+    }
+    this.#checkParent();
     const parent = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const ancestors: number[] = [];
     try {
       if (!sameInode(fstatSync(parent), this.#parent)) throw new Error("keyed_ledger_parent_changed");
-      const result = action(parent); this.#checkParent(); return result;
-    } finally { closeSync(parent); }
+      // Pin every ancestor before any data write; initialization fsync never
+      // reopens a mutable absolute parent after publication has started.
+      for (const directory of ancestry) {
+        const fd = openSync(directory.path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        ancestors.push(fd);
+        if (!sameInode(fstatSync(fd), directory.stat)) throw new Error("keyed_ledger_parent_changed");
+      }
+      const result = action(parent, ancestors); this.#checkParent(); return result;
+    } finally { for (const fd of ancestors) closeSync(fd); closeSync(parent); }
   }
-  #read(path: string): Buffer | null {
-    this.#checkParent();
-    const bytes = readHostedPrivateBytes(path, keyedChildSnapshotMaxBytes);
-    if (bytes !== null) privateFile(lstatSync(path));
-    this.#checkParent(); return bytes;
+  #anchored(path: string, parent: number): string {
+    // Linux procfs resolves the already verified directory descriptor. No
+    // mutable absolute parent is traversed for any record operation.
+    return `/proc/self/fd/${parent}/${basename(path)}`;
   }
-  #syncFile(path: string, bytes: Buffer): void {
-    const before = lstatSync(path); privateFile(before);
-    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    try {
-      const opened = fstatSync(fd); privateFile(opened);
-      if (!sameInode(before, opened) || !this.#read(path)?.equals(bytes)) throw new Error("keyed_ledger_file_changed");
-      fsyncSync(fd);
-      if (!sameInode(opened, lstatSync(path))) throw new Error("keyed_ledger_file_changed");
-    } finally { closeSync(fd); }
+  #bytes(fd: number): Buffer {
+    const before = fstatSync(fd); privateFile(before);
+    const bytes = Buffer.alloc(before.size + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = readSync(fd, bytes, length, bytes.length - length, length);
+      if (!count) break;
+      length += count;
+    }
+    const after = fstatSync(fd); privateFile(after);
+    if (length !== before.size || after.size !== before.size || after.ctimeMs !== before.ctimeMs ||
+        after.mtimeMs !== before.mtimeMs) throw new Error("keyed_ledger_file_changed");
+    return bytes.subarray(0, length);
   }
-  #create(path: string, bytes: Buffer, parent: number): void {
+  #read(path: string, parent: number): Buffer | null {
     this.#checkParent();
     let fd: number;
-    try { fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (!this.#read(path)?.equals(bytes)) throw new Error("keyed_ledger_publication_conflict");
-      this.#syncFile(path, bytes); fsyncSync(parent); return;
-    }
-    // Never remove a partial publication on failure.
-    try { privateFile(fstatSync(fd)); writeFileSync(fd, bytes); fsyncSync(fd); }
-    finally { closeSync(fd); }
-    if (!this.#read(path)?.equals(bytes)) throw new Error("keyed_ledger_file_changed");
-    fsyncSync(parent); this.#checkParent();
+    try { fd = openSync(this.#anchored(path, parent), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+    try {
+      const bytes = this.#bytes(fd);
+      if (!sameInode(fstatSync(fd), lstatSync(this.#anchored(path, parent)))) throw new Error("keyed_ledger_file_changed");
+      this.#checkParent(); return bytes;
+    } finally { closeSync(fd); }
   }
-  #noPending(): void {
-    if (this.#read(this.#next) !== null) throw new Error("keyed_ledger_pending_publication");
+  #syncFile(path: string, bytes: Buffer, parent: number): Stats {
+    const fd = openSync(this.#anchored(path, parent), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const opened = fstatSync(fd); privateFile(opened);
+      if (!this.#bytes(fd).equals(bytes)) throw new Error("keyed_ledger_file_changed");
+      fsyncSync(fd);
+      if (!sameInode(opened, lstatSync(this.#anchored(path, parent)))) throw new Error("keyed_ledger_file_changed");
+      this.#checkParent(); return opened;
+    } finally { closeSync(fd); }
+  }
+  #create(path: string, bytes: Buffer, parent: number): Stats {
+    this.#checkParent();
+    // O_EXCL refuses every preexisting inode, including exactly matching
+    // retained pending bytes. Only explicit host recovery may resolve those.
+    const fd = openSync(this.#anchored(path, parent), constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      privateFile(fstatSync(fd)); // Validate the opened inode BEFORE task bytes.
+      writeFileSync(fd, bytes); fsyncSync(fd);
+      const opened = fstatSync(fd);
+      if (!this.#bytes(fd).equals(bytes) || !sameInode(opened, lstatSync(this.#anchored(path, parent)))) {
+        throw new Error("keyed_ledger_file_changed");
+      }
+      fsyncSync(parent); this.#checkParent(); return opened;
+    } finally { closeSync(fd); } // Never remove partial publication on failure.
+  }
+  #noPending(parent: number): void {
+    if (this.#read(this.#next, parent) !== null || this.#read(this.#hold, parent) !== null) {
+      throw new Error("keyed_ledger_pending_publication");
+    }
   }
   #current(parent: number): KeyedChildLedger {
-    this.#noPending();
+    this.#noPending(parent);
     const seed = Buffer.from(this.#seed.serialize());
-    if (!this.#read(this.#birth)?.equals(seed)) throw new Error("keyed_ledger_birth_required");
-    const bytes = this.#read(this.#path);
+    if (!this.#read(this.#birth, parent)?.equals(seed)) throw new Error("keyed_ledger_birth_required");
+    const bytes = this.#read(this.#path, parent);
     if (!bytes) throw new Error("keyed_ledger_existing_state_required");
-    const current = KeyedChildLedger.restore(new TextDecoder("utf-8", { fatal: true }).decode(bytes), this.#seed);
-    // An interrupted post-rename directory sync is reconfirmed before return.
-    this.#syncFile(this.#path, bytes); fsyncSync(parent); return current;
+    const current = KeyedChildLedger.restore(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes), this.#seed);
+    if (!bytes.equals(Buffer.from(current.serialize()))) throw new Error("keyed_ledger_noncanonical_bytes");
+    // Archived obligations are immutable high-water evidence. A replaced seed
+    // or older canonical target cannot silently discard accepted history.
+    const prefix = basename(this.#path).slice(0, -5) + ".history.";
+    const priorPrefix = basename(this.#path).slice(0, -5) + ".previous.";
+    let latest = 0;
+    for (const name of readdirSync(`/proc/self/fd/${parent}`)) {
+      const selected = name.startsWith(prefix) ? prefix : name.startsWith(priorPrefix) ? priorPrefix : null;
+      if (!selected) continue;
+      const generation = name.slice(selected.length);
+      if (!/^[1-9][0-9]*$/.test(generation) || !Number.isSafeInteger(Number(generation))) {
+        throw new Error("keyed_ledger_invalid_history");
+      }
+      latest = Math.max(latest, Number(generation));
+    }
+    if (latest && (current.generation !== latest ||
+        !this.#read(join(root, prefix + latest), parent)?.equals(bytes))) {
+      throw new Error("keyed_ledger_history_conflict");
+    }
+    this.#syncFile(this.#path, bytes, parent); fsyncSync(parent); return current;
   }
   /** Explicit first enrollment. Birth survives loss of the mutable file, so a
    * missing/corrupt existing ledger can never become a fresh empty aggregate. */
   initialize(fence: HostedActivationFence): KeyedChildLedger {
-    return this.#fenced(fence, parent => {
-      this.#noPending();
-      if (this.#read(this.#birth) !== null || this.#read(this.#path) !== null) return this.#current(parent);
+    return this.#fenced(fence, (parent, ancestors) => {
+      this.#noPending(parent);
+      const name = basename(this.#path).slice(0, -5);
+      if (this.#read(this.#birth, parent) !== null || this.#read(this.#path, parent) !== null ||
+          readdirSync(`/proc/self/fd/${parent}`).some(file =>
+            file.startsWith(name + ".history.") || file.startsWith(name + ".previous."))) return this.#current(parent);
       const bytes = Buffer.from(this.#seed.serialize());
       this.#create(this.#birth, bytes, parent);
       this.#create(this.#path, bytes, parent);
-      // Host preparation owns directory creation; reconfirm ancestry durability.
-      for (let directory = dirname(root);; directory = dirname(directory)) {
-        const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-        try { fsyncSync(fd); } finally { closeSync(fd); }
-        if (directory === "/") break;
-      }
+      // Host preparation owns creation; reconfirm pinned ancestry durability.
+      for (const fd of ancestors) fsyncSync(fd);
       return this.#seed;
     });
   }
@@ -138,6 +198,7 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
     return withHostedActivationFence(fence => this.#fenced(fence, parent => {
       const current = this.#current(parent);
       if (current.generation !== expectedGeneration) throw new Error("keyed_ledger_stale_generation");
+      const prior = this.#syncFile(this.#path, Buffer.from(current.serialize()), parent);
       const next = successor(current);
       if (next && (typeof next === "object" || typeof next === "function") && "then" in next) {
         throw new Error("keyed_ledger_synchronous_callback_required");
@@ -145,16 +206,44 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
       current.assertSuccessor(next);
       const bytes = Buffer.from(next.serialize());
       KeyedChildLedger.restore(bytes.toString("utf8"), this.#seed);
-      this.#checkParent(); this.#noPending();
+      this.#checkParent(); this.#noPending(parent);
       if (next.serialize() === current.serialize()) {
-        this.#syncFile(this.#path, bytes); fsyncSync(parent); return current;
+        this.#syncFile(this.#path, bytes, parent); fsyncSync(parent); return current;
       }
-      const prior = lstatSync(this.#path);
-      this.#create(this.#next, bytes, parent);
-      // A changed final name is never overwritten, even under the host fence.
-      if (!sameInode(prior, lstatSync(this.#path)) ||
-          !this.#read(this.#path)?.equals(Buffer.from(current.serialize()))) throw new Error("keyed_ledger_file_changed");
-      this.#checkParent(); renameSync(this.#next, this.#path); fsyncSync(parent);
+      const oldBytes = Buffer.from(current.serialize());
+      const staged = this.#create(this.#next, bytes, parent);
+      // Independently durable intent survives substitution of either exchange
+      // operand. Never promote this retained obligation automatically.
+      const retained = this.#create(this.#hold, bytes, parent);
+      if (!sameInode(prior, this.#syncFile(this.#path, oldBytes, parent))) throw new Error("keyed_ledger_file_changed");
+      exchangeKeyedLedgerFiles(parent, basename(this.#path));
+      fsyncSync(parent);
+      // EXCHANGE preserves a foreign destination inode at .next on conflict.
+      // This is detection with retained evidence, NOT an inode-conditional CAS
+      // or protection against a malicious root repeatedly mutating all names.
+      if (!sameInode(staged, this.#syncFile(this.#path, bytes, parent)) ||
+          !sameInode(prior, this.#syncFile(this.#next, oldBytes, parent))) {
+        throw new Error("keyed_ledger_publication_conflict");
+      }
+      this.#syncFile(this.#hold, bytes, parent); this.#checkParent();
+      // Do not unlink a pathname after checking it: a substituted foreign
+      // inode could be deleted. NOREPLACE archives both names without clobber,
+      // and the successor history also prevents later target rollback.
+      try {
+        archiveKeyedLedgerFiles(parent, basename(this.#path), next.generation);
+        const name = basename(this.#path).slice(0, -5);
+        if (!sameInode(prior, this.#syncFile(join(root, `${name}.previous.${next.generation}`), oldBytes, parent)) ||
+            !sameInode(retained, this.#syncFile(join(root, `${name}.history.${next.generation}`), bytes, parent)) ||
+            !sameInode(staged, this.#syncFile(this.#path, bytes, parent))) {
+          throw new Error("keyed_ledger_publication_conflict");
+        }
+        fsyncSync(parent);
+      } catch (error) {
+        // Archive may have moved both guard names before failing. Reinstate a
+        // no-clobber obligation; a partial guard also denies every future read.
+        try { this.#create(this.#hold, bytes, parent); } catch { /* Existing guard or retained history; never overwrite. */ }
+        throw error;
+      }
       this.#checkParent(); return next;
     }));
   }

@@ -13,10 +13,10 @@ import { DispatchEligibility, KeyedChildLedger, KeyedChildProfile as Profile, Ke
 // fsync; only fixed path/host ownership and kernel namespace metadata are mapped.
 // Production common fence issues and expires real validated capabilities.
 const fixture = vi.hoisted(() => ({ root: "", fail: "", renamed: false, reads: 0,
-  handles: new Map<number, string>(), synced: [] as string[] }));
+  foreign: undefined as { dev: number; ino: number } | undefined, repro: "", ancestorChecks: 0, injected: false, handles: new Map<number, string>(), synced: [] as string[] }));
 const prefix = "/var/lib/subscription-runtime-host-policy";
 function local(path: string): string {
-  if (fixture.root && path.startsWith(fixture.root + "/")) return path;
+  if (/^\/proc\/self\/fd\/[0-9]+\//.test(path) || (fixture.root && path.startsWith(fixture.root + "/"))) return path;
   if (["/", "/var", "/var/lib", prefix].includes(path)) return fixture.root;
   if (path.startsWith(prefix + "/")) return join(fixture.root, path.slice(prefix.length + 1));
   throw new Error("unexpected TEST filesystem path");
@@ -28,12 +28,23 @@ vi.mock("node:fs", async importOriginal => {
       path === "/proc/sys/kernel/random/boot_id" ? "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n" :
         path === "/proc/self/uid_map" ? "0 0 4294967295\n" : real.readFileSync(path, options),
     readlinkSync: (path: string) => path.startsWith("/proc/") ? "namespace:TEST" : real.readlinkSync(path),
-    lstatSync: (path: string) => Object.assign(real.lstatSync(local(path)), { uid: 0 }),
+    lstatSync: (path: string) => {
+      if (fixture.repro === "ancestor" && path === "/" && [2, 6].includes(++fixture.ancestorChecks)) {
+        throw Object.assign(new Error("TEST missing ancestor"), { code: "ENOENT" });
+      }
+      return Object.assign(real.lstatSync(local(path)), { uid: 0 });
+    },
     fstatSync: (fd: number) => Object.assign(real.fstatSync(fd), { uid: 0 }),
     mkdirSync: (path: string, options: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), options),
     rmdirSync: (path: string) => real.rmdirSync(local(path)),
     openSync: (path: string, flags: number, mode: number) => {
       fixture.reads++;
+      if (fixture.repro === "parent-create" && path.endsWith(".next") && (flags & real.constants.O_CREAT)) {
+        fixture.repro = ""; fixture.injected = true;
+        real.renameSync(join(fixture.root, "keyed-child-ledgers"), join(fixture.root, "pinned"));
+        real.mkdirSync(join(fixture.root, "foreign"), { mode: 0o700 });
+        real.symlinkSync(join(fixture.root, "foreign"), join(fixture.root, "keyed-child-ledgers"));
+      }
       const fd = real.openSync(local(path), flags, mode); fixture.handles.set(fd, path); return fd;
     },
     closeSync: (fd: number) => { fixture.handles.delete(fd); real.closeSync(fd); },
@@ -59,6 +70,33 @@ vi.mock("node:fs", async importOriginal => {
     },
   };
 });
+// The helper still executes real Linux renameat2 on disposable TEST files.
+// Inject mutation immediately before the trusted syscall helper runs.
+vi.mock("node:child_process", async importOriginal => {
+  const real = await importOriginal<typeof import("node:child_process")>();
+  const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+  return { ...real, execFileSync: (...args: Parameters<typeof real.execFileSync>) => {
+    if (fixture.fail === "rename") throw new Error("TEST rename failure");
+    const from = path(".next"), to = path();
+    if (fixture.repro && !fixture.injected && (!fixture.repro.startsWith("archive-") || (args[1] as string[]).length === 5)) {
+      fixture.injected = true;
+      if (fixture.repro.startsWith("archive-")) {
+        const source = fixture.repro === "archive-source" ? from : fixture.repro === "archive-target" ? path(".history.1") : path(".hold");
+        if (fixture.repro !== "archive-target") fs.renameSync(source, source + ".authored");
+        fs.writeFileSync(source, "TEST foreign inode", { mode: 0o600 });
+        fixture.foreign = fs.lstatSync(source);
+      } else if (fixture.repro === "foreign-target") {
+        fs.renameSync(local(to), local(to) + ".prior");
+        fs.writeFileSync(local(to), "TEST foreign inode", { mode: 0o600 });
+        fixture.foreign = fs.lstatSync(local(to));
+      } else if (["invalid-next", "seed-next"].includes(fixture.repro)) {
+        fs.renameSync(local(from), local(from) + ".authored");
+        fs.writeFileSync(local(from), fixture.repro === "seed-next" ? initial().serialize() : "{", { mode: 0o600 });
+      }
+    }
+    const result = real.execFileSync(...args); fixture.renamed = true; return result;
+  } };
+});
 const scope = { projectId: "TEST-project", workstreamId: "TEST-work", controllerId: "TEST-controller" };
 const authority: ReviewedChildAuthority = { ...scope, grantDigest: "a".repeat(64), reviewedSnapshotDigest: "b".repeat(64),
   accountId: "TEST-reviewed-account", sourceSha: "c".repeat(40), artifactSha: "d".repeat(64),
@@ -82,7 +120,7 @@ beforeEach(async () => {
   const real = await vi.importActual<typeof import("node:fs")>("node:fs");
   fixture.root = real.mkdtempSync(join(tmpdir(), "TEST-keyed-ledger-"));
   real.mkdirSync(ledgerDir(), { mode: 0o700 });
-  fixture.fail = ""; fixture.renamed = false; fixture.reads = 0; fixture.synced = []; fixture.handles.clear();
+  fixture.fail = ""; fixture.foreign = undefined; fixture.repro = ""; fixture.ancestorChecks = 0; fixture.injected = false; fixture.renamed = false; fixture.reads = 0; fixture.synced = []; fixture.handles.clear();
   vi.spyOn(process, "getuid").mockReturnValue(0);
 });
 afterEach(() => { vi.restoreAllMocks(); rmSync(fixture.root, { recursive: true, force: true }); });
@@ -166,18 +204,19 @@ describe("bounded private durable keyed store", () => {
     expect(() => withHostedActivationFence(f => store.initialize(f))).toThrow("pending_publication");
     expect(readFileSync(path(".next"))).toEqual(pending);
   });
-  it("post-rename dirfsync failure retains intent and reconfirms durability on restart", async () => {
+  it("post-exchange dirfsync failure retains intent and requires host investigation", async () => {
     const store = enroll(); let l = await accept(store);
     for (const state of [State.Materializing, State.Prepared]) l = await transact(store, l.generation, c => c.advance(view(c), state, 20));
     fixture.fail = "dir-after"; fixture.renamed = false;
     await expect(transact(store, 3, c => c.advance(view(c), State.DispatchIntent, 20))).rejects.toThrow("fsync failure");
     expect(JSON.parse(readFileSync(path(), "utf8")).generation).toBe(4);
     fixture.fail = ""; fixture.synced = [];
-    const replay = await transact(fresh(), 4, c => c.accept(4, request(), 10));
-    expect(replay.occupied).toBe(true); expect(replay.remainingAllowance).toBe(1);
-    expect(view(replay)).toMatchObject({ dispatchIntent: { generation: 4 }, eligibility: DispatchEligibility.HeldAfterIntent });
-    expect(fixture.synced.at(-1)).toBe(prefix + "/keyed-child-ledgers");
-    await expect(transact(store, 3, c => c)).rejects.toThrow("stale_generation");
+    const committed = KeyedChildLedger.restore(readFileSync(path(), "utf8"), initial());
+    expect(committed.occupied).toBe(true); expect(committed.remainingAllowance).toBe(1);
+    expect(view(committed)).toMatchObject({ dispatchIntent: { generation: 4 }, eligibility: DispatchEligibility.HeldAfterIntent });
+    expect(readFileSync(path(".hold"), "utf8")).toBe(committed.serialize());
+    await expect(transact(fresh(), 4, c => c.accept(4, request(), 10))).rejects.toThrow("pending_publication");
+    await expect(transact(store, 3, c => c)).rejects.toThrow("pending_publication");
   });
   it("an interrupted write retains partial bytes and cannot be replayed as an empty slot", async () => {
     const store = enroll(), before = readFileSync(path()); fixture.fail = "partial-write";
@@ -256,4 +295,113 @@ describe("bounded private durable keyed store", () => {
     renameSync(ledgerDir() + "-old", ledgerDir()); chmodSync(ledgerDir(), 0o750);
     expect(() => fresh()).toThrow();
   });
+});
+
+// Review regressions assert the required behavior, not the vulnerable observation.
+describe("private publication review regressions", () => {
+  const prepared = async (store: KeyedLaunchLedgerStore) => {
+    let ledger = await accept(store);
+    for (const state of [State.Materializing, State.Prepared]) {
+      ledger = await transact(store, ledger.generation, c => c.advance(view(c), state, 20));
+    }
+    return ledger;
+  };
+  it.each(["intent", "key"])("Reflect construction cannot erase permanent %s history", async kind => {
+    const store = enroll();
+    if (kind === "intent") {
+      await prepared(store); await transact(store, 3, c => c.advance(view(c), State.DispatchIntent, 20));
+    } else {
+      await accept(store); await transact(store, 1, c => c.terminalizeBeforeIntent({
+        kind: NoEffectProofKind.IndependentlyEstablished, correlation: view(c), evidenceDigest: "f".repeat(64) }));
+    }
+    const before = readFileSync(path()), generation = kind === "intent" ? 4 : 2;
+    await expect(transact(store, generation, current => {
+      const replacement = initial().accept(0, { ...request(), key: "forged" }, 10);
+      const rows = kind === "key" ? replacement.terminalizeBeforeIntent({
+        kind: NoEffectProofKind.IndependentlyEstablished, correlation: view(replacement), evidenceDigest: "f".repeat(64),
+      }).snapshot().accepted : current.snapshot().accepted.map(row => ({ ...row, state: State.Terminal, dispatchIntent: null }));
+      return Reflect.construct(KeyedChildLedger, [authority, slots, rows, generation + 1, current]);
+    })).rejects.toThrow();
+    expect(readFileSync(path())).toEqual(before);
+    const replay = await transact(fresh(), generation, c => c.accept(generation, request(), 20));
+    expect(replay.remainingAllowance).toBe(1);
+    expect(view(replay).dispatchIntent).toEqual(kind === "intent" ? { generation: 4 } : null);
+  });
+  it.each(["invalid-next", "seed-next", "foreign-target"])("%s at publication rejects and retains an obligation", async attack => {
+    const store = enroll(); await prepared(store); fixture.repro = attack;
+    await expect(transact(store, 3, c => c.advance(view(c), State.DispatchIntent, 20))).rejects.toThrow();
+    expect(fixture.injected).toBe(true); fixture.repro = "";
+    const callback = vi.fn((c: KeyedChildLedger) => c);
+    await expect(transact(fresh(), 3, callback)).rejects.toThrow();
+    expect(callback).not.toHaveBeenCalled();
+    const intent = JSON.parse(readFileSync(path(".hold"), "utf8"));
+    expect(intent.generation).toBe(4); expect(intent.accepted).toHaveLength(1);
+    expect(intent.accepted[0]).toMatchObject({ task: request().task, dispatchIntent: { generation: 4 }, state: State.DispatchIntent });
+    if (attack === "foreign-target") {
+      // The foreign inode must survive; publication must never truncate it.
+      const real = await vi.importActual<typeof import("node:fs")>("node:fs");
+      const retained = [path(), path(".next")].find(p => real.existsSync(p) && real.readFileSync(p, "utf8") === "TEST foreign inode");
+      expect(retained).toBeDefined();
+      expect(real.lstatSync(retained!)).toMatchObject({ dev: fixture.foreign!.dev, ino: fixture.foreign!.ino });
+    }
+  });
+  it("rebound parent cannot receive task bytes at create", async () => {
+    const store = enroll(); fixture.repro = "parent-create";
+    await expect(accept(store)).rejects.toThrow(); expect(fixture.injected).toBe(true);
+    const real = await vi.importActual<typeof import("node:fs")>("node:fs");
+    expect(real.readdirSync(join(fixture.root, "foreign"))).toEqual([]);
+  });
+  it("missing ancestry during pending checks cannot invoke callback or promote intent", async () => {
+    const store = enroll(), current = await prepared(store);
+    const pending = current.advance(view(current), State.DispatchIntent, 20).serialize();
+    writeFileSync(path(".next"), pending, { mode: 0o600 }); const before = readFileSync(path());
+    fixture.repro = "ancestor";
+    const callback = vi.fn((c: KeyedChildLedger) => c.advance(view(c), State.DispatchIntent, 20));
+    await expect(transact(store, 3, callback)).rejects.toThrow();
+    expect(callback).not.toHaveBeenCalled(); expect(readFileSync(path())).toEqual(before);
+    expect(readFileSync(path(".next"), "utf8")).toBe(pending);
+  });
+  it("BOM is rejected before any successor is staged", async () => {
+    const store = enroll(), bytes = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), readFileSync(path())]);
+    writeFileSync(path(), bytes);
+    expect(() => withHostedActivationFence(f => store.initialize(f))).toThrow();
+    const callback = vi.fn((c: KeyedChildLedger) => c.accept(0, request(), 10));
+    await expect(transact(store, 0, callback)).rejects.toThrow(); expect(callback).not.toHaveBeenCalled();
+    expect(readFileSync(path())).toEqual(bytes); expect(() => readFileSync(path(".next"))).toThrow();
+  });
+});
+
+it.each(["archive-source", "archive-hold", "archive-target"])("%s preserves foreign inode and holds ambiguity", async attack => {
+  const store = enroll(); fixture.repro = attack;
+  await expect(accept(store)).rejects.toThrow(); expect(fixture.injected).toBe(true); fixture.repro = "";
+  const real = await vi.importActual<typeof import("node:fs")>("node:fs");
+  const retained = real.readdirSync(ledgerDir()).map(n => join(ledgerDir(), n)).find(p => real.lstatSync(p).ino === fixture.foreign!.ino);
+  expect(retained).toBeDefined(); expect(real.readFileSync(retained!, "utf8")).toBe("TEST foreign inode");
+  const callback = vi.fn((c: KeyedChildLedger) => c);
+  await expect(transact(fresh(), 1, callback)).rejects.toThrow("pending_publication"); expect(callback).not.toHaveBeenCalled();
+});
+it("retained history rejects a later canonical empty target without key reuse", async () => {
+  const store = enroll(); await accept(store); writeFileSync(path(), initial().serialize());
+  const callback = vi.fn((c: KeyedChildLedger) => c.accept(0, request(), 10));
+  await expect(transact(fresh(), 0, callback)).rejects.toThrow("history_conflict"); expect(callback).not.toHaveBeenCalled();
+  expect(JSON.parse(readFileSync(path(".history.1"), "utf8")).accepted[0].task).toBe(request().task);
+});
+
+it("loss of both birth and mutable names cannot reenroll over retained history", async () => {
+  const store = enroll(); await accept(store); const history = readFileSync(path(".history.1"));
+  rmSync(path(".birth")); rmSync(path());
+  expect(() => withHostedActivationFence(f => fresh().initialize(f))).toThrow("birth_required");
+  expect(() => readFileSync(path(".birth"))).toThrow(); expect(() => readFileSync(path())).toThrow();
+  expect(readFileSync(path(".history.1"))).toEqual(history);
+});
+
+it("missing successor history cannot fall back to a canonical pre-intent target", async () => {
+  const store = enroll(); let current = await accept(store);
+  for (const state of [State.Materializing, State.Prepared]) {
+    current = await transact(store, current.generation, c => c.advance(view(c), state, 20));
+  }
+  await transact(store, 3, c => c.advance(view(c), State.DispatchIntent, 20));
+  rmSync(path(".history.4")); writeFileSync(path(), current.serialize());
+  const callback = vi.fn((c: KeyedChildLedger) => c);
+  await expect(transact(fresh(), 3, callback)).rejects.toThrow("history_conflict"); expect(callback).not.toHaveBeenCalled();
 });

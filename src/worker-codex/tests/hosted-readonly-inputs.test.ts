@@ -125,3 +125,13 @@ describe("fixed private policy reader", () => {
     expect(() => readHostedReadonlyPolicy("fixture")).toThrow();
   });
 });
+
+it.each(["ancestor", "read", "stat", "close"])("ENOENT during %s is not final target absence", stage => {
+  const missing = () => { throw Object.assign(new Error("TEST missing ancestry/inode"), { code: "ENOENT" }); };
+  if (stage === "ancestor") fs.lstatSync.mockImplementationOnce(missing);
+  if (stage === "read") fs.readSync.mockImplementationOnce(missing);
+  if (stage === "stat") fs.fstatSync.mockImplementationOnce(missing);
+  if (stage === "close") fs.closeSync.mockImplementationOnce(missing);
+  expect(() => readHostedReadonlyPolicy("fixture")).toThrow("hosted_readonly_policy_invalid");
+  if (stage === "ancestor") expect(fs.openSync).not.toHaveBeenCalled();
+});

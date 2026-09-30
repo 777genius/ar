@@ -100,7 +100,14 @@ export function readHostedPrivateBytes(path: string, maxBytes: number): Buffer |
       if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o022) !== 0 ||
           (directory === parent && (stat.mode & 0o077) !== 0)) invalid();
     }
-    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let fd: number;
+    // Only absence at the final open is absence; ancestry and descriptor errors
+    // must never bypass a pending-publication or policy guard.
+    try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+      throw error;
+    }
     try {
       const before = fstatSync(fd);
       if (!before.isFile() || before.uid !== 0 || before.nlink !== 1 ||
@@ -119,10 +126,7 @@ export function readHostedPrivateBytes(path: string, maxBytes: number): Buffer |
           (after.mode & 0o077) !== 0) invalid();
       return buffer.subarray(0, length);
     } finally { closeSync(fd); }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
-    invalid();
-  }
+  } catch { invalid(); }
 }
 
 function canonicalPath(path: string): boolean {
