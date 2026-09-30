@@ -57,6 +57,22 @@ describe("app-server process stopper", () => {
     expect(signal).not.toHaveBeenCalled();
     expect(child.stdin.end).not.toHaveBeenCalled();
   });
+
+  it("completes live numeric-group escalation without signalling again after observed exit", async () => {
+    vi.useFakeTimers();
+    const child = Object.assign(fakeChild(), { pid: 812346 });
+    const signals: NodeJS.Signals[] = [];
+    const stopped = stopAppServerProcess({ child, exited: false, signal: (_, signal) => {
+      signals.push(signal);
+      if (signal === "SIGKILL") child.emit("exit", 0, null);
+    } });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(stopped).resolves.toBeUndefined();
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(child.listenerCount("exit")).toBe(0);
+    expect(child.listenerCount("error")).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it.each(["TERM", "escalation", "observation", "final"])("preserves %s failure and removes observations and timers", async (where) => {
     vi.useFakeTimers();
     const child = fakeChild();

@@ -206,11 +206,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       return parsed;
     } catch (error) {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
-      try {
-        await this.slotPool.disposeSessionSlot(input.session);
-      } catch (cleanupError) {
-        throw new AggregateError([error, cleanupError], "codex_app_server_run_cleanup_failed");
-      }
+      await this.disposeFailedSession(input.session, error, "codex_app_server_run_cleanup_failed");
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (isCodexAppServerBudgetExceededError(error)) throw error;
       if (isCodexAppServerRateLimitsRejectedError(error)) throw error;
@@ -358,11 +354,15 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       };
     } catch (error) {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
-      await this.slotPool.disposeSessionSlot(input.session);
+      await this.disposeFailedSession(input.session, error, "codex_app_server_prewarm_cleanup_failed");
       throw error;
     }
   }
 
+  private async disposeFailedSession(session: CodexMaterializedSession, error: unknown, message: string): Promise<void> {
+    try { await this.slotPool.disposeSessionSlot(session); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], message); }
+  }
   private async runViaAppServer(input: {
     readonly runId?: string;
     readonly prompt: string;
