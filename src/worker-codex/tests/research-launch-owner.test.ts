@@ -123,6 +123,8 @@ describe("closed installed research launch owner (real TEST files; proc, mounts 
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
   it("captures one guard for every real account slot and blocks a mutated admission before options touch auth", () => {
+    host.physicalPaths = true;
+    writeFileSync(local("/TEST-operator/request.json"), JSON.stringify(request()) + "\n");
     admitted(); const factory = admitResearchProcessFactory(request());
     const config = researchRunConfig(parseResearchOperatorRequest(request()));
     const options = buildCodexGoalExecutorOptions({ config, providerEgressPolicy: policy, appServerProcessFactory: factory,
