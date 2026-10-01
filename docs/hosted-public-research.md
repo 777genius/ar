@@ -154,7 +154,7 @@ The helper consumes that first frame (including fragmented bytes), checks the
 real settled PID/birth/boot/cgroup/InvocationID/fragment/namespaces twice, retains
 the owner, rechecks all fences and then releases held stdin. Native provider/user
 code has not started and cannot forge readiness through protocol/tool output.
-The readiness/ownership deadline is five seconds; unexpected/oversized output,
+The readiness/ownership deadline is fifteen seconds; unexpected/oversized output,
 stream errors, EOF, transport exit and cancellation fail closed. Polling detects
 fences and timeout; a sleep never establishes readiness. The launcher bounds
 bootstrap to ten seconds and the existing 4 MiB frame limit. The direct transport

@@ -90,7 +90,10 @@ export async function runResearchProviderService(jobId: string, unit: string, se
     void terminal.catch(() => {}); // Observed below; never an unhandled early exit.
     void terminal.finally(() => clearTimeout(terminalTimer)).catch(() => {});
     let assertRetainedOwner: (() => void) | undefined;
-    const deadline = performance.now() + 5000;
+    // The full confined service plan took 5.18s in native TEST qualification
+    // before ownership checks. Bound OS setup and ownership together while
+    // retaining all revocation checks and holding bootstrap throughout.
+    const deadline = performance.now() + 15_000;
     const assertTransportPermission = (): void => {
       assertForwardPermission();
       if (performance.now() >= deadline || proxyExited || transportFailed || proxy.stdin.destroyed || proxy.stdout.destroyed || proxy.stdout.readableEnded) researchInvalid();
