@@ -78,13 +78,17 @@ export class AppServerGoalRunner {
         ...input,
         goalMode: true,
       });
-      await this.options.client.setGoal({
+      const activeGoal = await this.options.client.setGoal({
         threadId,
         objective: input.goalObjective ?? input.prompt,
         status: "active",
         timeoutMs: input.timeoutMs,
         abortSignal: input.abortSignal,
       });
+
+      this.options.client.assertExecutionActive(input.abortSignal);
+      if ((this.options.client.executionLifetime || this.options.client.childBudget) && (activeGoal.status !== "active" || activeGoal.threadId !== threadId)) throw new Error("codex_app_server_goal_not_active");
+      this.options.client.executionLifetime?.markReady(threadId);
 
       return await this.continueGoal({
         ...input,
@@ -127,7 +131,7 @@ export class AppServerGoalRunner {
     try {
       const warnings = this.options.client.drainWarnings();
       const runId = normalizeRunId(input.runId);
-      if (this.options.client.childBudget) throw new Error("child_continuation_denied");
+      if ((this.options.client.executionLifetime || this.options.client.childBudget)) throw new Error("child_continuation_denied");
       let outcome = ProviderLogicalThreadOutcome.StartedFresh;
       let threadId: string;
       if (input.previousCheckpoint === undefined) {
@@ -213,7 +217,7 @@ export class AppServerGoalRunner {
     readonly goalContinuePrompt: string;
     readonly skipResumeValidation?: boolean;
   }): Promise<AppServerRunResult> {
-    if (this.options.client.childBudget) throw new Error("child_continuation_denied");
+    if ((this.options.client.executionLifetime || this.options.client.childBudget)) throw new Error("child_continuation_denied");
     const usageLease = this.options.client.acquireExecution();
     try {
       const threadId = input.resumeHandle.threadId;
@@ -304,6 +308,7 @@ export class AppServerGoalRunner {
         turnNumber <= input.maxGoalTurns;
         turnNumber += 1
       ) {
+        this.options.client.assertExecutionActive(input.abortSignal);
         const startedAt = Date.now();
         const turn = await this.options.client
           .startTurn({
@@ -329,6 +334,7 @@ export class AppServerGoalRunner {
         if (turn.error) throw turn.error;
         outputText = turn.outputText;
 
+        this.options.client.assertExecutionActive(input.abortSignal);
         if (this.options.completedTurnCheckpoint) {
           try {
             await this.options.completedTurnCheckpoint({
@@ -366,7 +372,7 @@ export class AppServerGoalRunner {
           missingUsageSinceGoal = false;
           untrustedUsageSinceGoal = false;
         }
-        this.options.client.childBudget?.remainingMs();
+        this.options.client.assertExecutionActive(input.abortSignal);
         if (goal.status === "complete") {
           input.warnings.push(...this.options.client.drainWarnings());
           await this.options.runStore.complete({
@@ -374,7 +380,7 @@ export class AppServerGoalRunner {
             outputText: this.redactForStore(input.redactor, outputText),
             now: new Date(),
           });
-          this.options.client.childBudget?.remainingMs();
+          this.options.client.assertExecutionActive(input.abortSignal);
           return {
             status: "completed",
             outputText,
@@ -383,7 +389,7 @@ export class AppServerGoalRunner {
           };
         }
         if (goal.status === "blocked" || goal.status === "paused") {
-          if (input.allowWaitingForInput === false || this.options.client.childBudget) {
+          if (input.allowWaitingForInput === false || (this.options.client.executionLifetime || this.options.client.childBudget)) {
             throw new Error(
               "codex_logical_thread_goal_waiting_for_input_invalid",
             );

@@ -1,5 +1,5 @@
 import { attachAppServerTextDeltaSink, clearAppServerReconnectTimer, emitAppServerTextDelta } from "./app-server-turn-state";
-import { AppServerChildLifetime } from "./app-server-child-lifetime";
+import { assertAppServerExecutionActive, observeAppServerExecutionLifetime, sendAppServerLifetimeRequest, AppServerExecutionLifetime, AppServerChildLifetime } from "./app-server-child-lifetime";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import { AppServerAdmission, AppServerExecutionLease, appServerTurnCapacity } from "./app-server-admission";
 import { AppServerUsageError } from "../domain/app-server-usage-error";
@@ -77,7 +77,6 @@ import {
   AppServerExecutionMayHaveStartedError,
   AppServerRequestMayHaveReachedProviderError,
 } from "../domain/app-server-execution-safety";
-import { sendAppServerRequest } from "./app-server-request-sender";
 import { codexAppServerProcessArgs } from "./app-server-process-args";
 import { handleAppServerServerRequest } from "./app-server-server-request-handler";
 import { stopAppServerProcess } from "./app-server-process-stopper";
@@ -114,6 +113,7 @@ export class CodexAppServerClient {
   private readonly executionAdmission = new AppServerAdmission();
   private readonly turnAdmission = new AppServerAdmission();
   private nextId = 1;
+  readonly executionLifetime: AppServerExecutionLifetime | undefined;
   private readonly childLifetime: AppServerChildLifetime | undefined;
   private child: CodexAppServerChildProcess | null = null;
   private readonly stdoutDecoder: AppServerJsonRpcLineDecoder;
@@ -158,6 +158,7 @@ export class CodexAppServerClient {
       readonly modelBackend?: CodexModelBackend;
     },
   ) {
+    this.executionLifetime = observeAppServerExecutionLifetime(options.session, error => this.failProtocol(error));
     this.childLifetime = options.childBudget ? new AppServerChildLifetime(options.childBudget, {
       isTerminal: () => this.terminalError !== null,
       activeTurns: () => [...this.pendingTurnIdsByThread],
@@ -214,6 +215,8 @@ export class CodexAppServerClient {
   get childBudget(): ChildExecutionBudget | undefined { return this.options.childBudget; }
 
   async start(): Promise<void> {
+    this.executionLifetime?.assertActive(this.options.abortSignal);
+    this.executionLifetime?.beforeProviderStart();
     this.childLifetime?.beforeProviderStart(this.options.nativeToolSurface, Boolean(this.options.hostedControllerTools));
     throwIfAborted(this.options.abortSignal);
     this.exited = false;
@@ -227,7 +230,7 @@ export class CodexAppServerClient {
     };
     const hostJobId = (this.options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_HOST_JOB_ID;
     if (hostJobId !== undefined) env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID = hostJobId;
-    this.options.childBudget?.remainingMs();
+    this.assertExecutionActive(this.options.abortSignal);
     this.child = this.options.processFactory({
       command: this.options.codexBinaryPath,
       args: codexAppServerProcessArgs(this.options),
@@ -275,6 +278,8 @@ export class CodexAppServerClient {
     if (response.error) {
       throw new Error(`codex_app_server_initialize_failed:${response.error.message ?? "unknown"}`);
     }
+    this.assertExecutionActive(this.options.abortSignal);
+    this.executionLifetime?.markInitialized();
     try {
       await this.rateLimitsMonitor?.prime();
     } catch (error) {
@@ -287,6 +292,7 @@ export class CodexAppServerClient {
   }
 
   async stop(): Promise<void> {
+    this.executionLifetime?.close();
     if (this.stopping) return await this.stopping;
     this.recordTerminalError(new Error("codex_app_server_stopped"));
     const stopping = this.stopChild();
@@ -318,6 +324,7 @@ export class CodexAppServerClient {
     readonly abortSignal: AbortSignal;
     readonly goalMode?: boolean;
   }): Promise<string> {
+    this.assertExecutionActive(input.abortSignal);
     if (this.options.hostedControllerTools &&
         (!input.goalMode || this.options.nativeToolSurface !== "disabled")) {
       throw new Error("hosted_controller_tool_profile_invalid");
@@ -417,7 +424,8 @@ export class CodexAppServerClient {
     }
 
     const threadId = nestedString(response.result, ["thread", "id"]);
-    if (!threadId) throw new Error("codex_app_server_thread_id_missing");
+    this.assertExecutionActive(input.abortSignal);
+    if (!threadId?.trim() || (this.executionLifetime && !/^[A-Za-z0-9_.:-]{1,128}$/.test(threadId))) throw new Error("codex_app_server_thread_id_missing");
     if (this.options.hostedControllerTools) this.dynamicTools.addThread(threadId);
     return threadId;
   }
@@ -440,7 +448,8 @@ export class CodexAppServerClient {
       );
     }
     const threadId = nestedString(response.result, ["thread", "id"]);
-    if (!threadId) throw new Error("codex_app_server_thread_id_missing");
+    this.assertExecutionActive(input.abortSignal);
+    if (!threadId?.trim() || (this.executionLifetime && !/^[A-Za-z0-9_.:-]{1,128}$/.test(threadId))) throw new Error("codex_app_server_thread_id_missing");
     if (this.options.hostedControllerTools) this.dynamicTools.addThread(threadId);
     return threadId;
   }
@@ -620,7 +629,7 @@ export class CodexAppServerClient {
     }
   }
 
-  private send(
+  private async send(
     method: string,
     params: unknown,
     input: {
@@ -629,25 +638,11 @@ export class CodexAppServerClient {
       readonly abortSignal?: AbortSignal;
     } = {},
   ): Promise<CodexAppServerJsonRpcResponse> {
-    if (!this.child) throw new Error("codex_app_server_not_started");
-    throwIfAborted(input.abortSignal);
-    if (this.terminalError) throw this.terminalError;
-    const id = this.nextId;
-    this.nextId += 1;
-
-    return sendAppServerRequest({
-      id,
-      method,
-      params,
-      timeoutMs: this.options.childBudget
-        ? Math.min(input.timeoutMs ?? this.options.timeoutMs, this.options.childBudget.remainingMs())
-        : input.timeoutMs ?? this.options.timeoutMs,
-      ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
-      ...(input.usageLease === undefined ? {} : { usageLease: input.usageLease }),
-      pending: this.pending,
-      write: (message) => this.childLifetime
-        ? this.childLifetime.write(method, () => this.child!.stdin.write(message))
-        : this.child!.stdin.write(message),
+    return await sendAppServerLifetimeRequest(method, params, input, {
+      child: this.child, terminalError: this.terminalError, id: this.nextId++,
+      pending: this.pending, timeoutMs: this.options.timeoutMs,
+      childBudget: this.options.childBudget, childLifetime: this.childLifetime,
+      executionLifetime: this.executionLifetime,
     });
   }
 
@@ -660,7 +655,7 @@ export class CodexAppServerClient {
       readonly onTextDelta?: (text: string) => void;
     },
   ): Promise<TurnState> {
-    const remainingMs = this.options.childBudget?.remainingMs();
+    const remainingMs = this.assertExecutionActive(input.abortSignal);
     const earlyTurnId = this.earlyTurnIdsByThread.get(input.threadId);
     if (earlyTurnId) {
       this.earlyTurnIdsByThread.delete(input.threadId);
@@ -707,6 +702,7 @@ export class CodexAppServerClient {
 
   private onMessage(message: unknown): void {
     if (this.terminalError) return;
+    try { this.assertExecutionActive(); } catch { return; }
     if (this.childLifetime && !this.childLifetime.eventAllowed()) return;
     if (!message || typeof message !== "object") return;
     const record = message as Record<string, unknown>;
@@ -917,6 +913,8 @@ export class CodexAppServerClient {
     readonly error?: { readonly code: number; readonly message: string };
   }): void {
     try {
+      if (this.terminalError) return;
+      this.assertExecutionActive();
       const write = () => this.child?.stdin.write(encodeJsonRpcMessage(payload)) ?? false;
       if (this.childLifetime) this.childLifetime.write("tool/response", write); else write();
     } catch (error) {
@@ -986,6 +984,7 @@ export class CodexAppServerClient {
 
   private recordTerminalError(error: Error): void {
     this.terminalError = this.terminalError ?? error;
+    this.executionLifetime?.close(error);
     this.dynamicTools.close();
     this.stdoutDecoder.clear();
     this.failOutstanding(this.terminalError);
@@ -1002,6 +1001,10 @@ export class CodexAppServerClient {
   /** Scoped process stop request only; this does not prove host custody release. */
   requestChildCleanup(error: unknown): void {
     if (this.childLifetime) this.childLifetime.cleanup(error); else this.failProtocol(error);
+  }
+
+  assertExecutionActive(signal?: AbortSignal): number {
+    return assertAppServerExecutionActive(this.executionLifetime, this.options.childBudget, this.terminalError, signal);
   }
 
   private stopChild(): Promise<void> {

@@ -9,6 +9,7 @@ import { assertHostedMimoGoalConfinement } from "./hosted-mimo-goal-confinement"
 import { admitHostedTestEgress, hostedTestEgressEvidence } from "./hosted-test-egress-admission";
 import {
   CodexModelBackend,
+  AppServerExecutionLifetime,
   codexMimoApiKeyEnvVarDefault,
   codexMimoTokenPlanEgressPolicy,
   codexProviderEgressPolicy,
@@ -466,6 +467,7 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly config: CodexGoalRunConfig;
   readonly initialBaseCommit?: string;
   readonly checkpointPublisher?: CodexGoalTurnCheckpointPublisher;
+  readonly executionLifetime?: AppServerExecutionLifetime;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly appServerProcessFactory?: CodexAppServerProcessFactory;
   readonly stateRootDir: string;
@@ -479,6 +481,9 @@ export function buildCodexGoalExecutorOptions(input: {
   assertVerifiedHostedChildConfig(config);
   assertChildGoalConfig(config);
   const childBudget = config.childLifetime ? new ChildExecutionBudget(config.childLifetime) : undefined;
+  const executionLifetime = input.executionLifetime ?? (childBudget ? new AppServerExecutionLifetime({ childBudget }) : undefined);
+  if (input.executionLifetime && childBudget && input.executionLifetime.childBudget !== childBudget) throw new Error("codex_goal_lifetime_budget_conflict");
+  executionLifetime?.assertActive();
   const checkpointPublisher = input.checkpointPublisher ?? (config.checkpointPublisherSocketPath
     ? codexGoalTurnCheckpointSocketPublisher(config.checkpointPublisherSocketPath) : undefined);
   if (config.checkpointRequired && !checkpointPublisher) throw new Error("checkpoint_publisher_required");
@@ -502,6 +507,7 @@ export function buildCodexGoalExecutorOptions(input: {
   return {
     ...(config.executorId ? { executorId: config.executorId } : {}),
     ...(childBudget ? { childBudget } : {}),
+    ...(executionLifetime ? { executionLifetime } : {}),
     authRootDir: config.authRootDir,
     ...(input.observability ? { observability: input.observability } : {}),
     ...(!childBudget && input.controlInbox ? { controlInbox: input.controlInbox } : {}),
@@ -576,6 +582,7 @@ export function buildCodexGoalExecutorOptions(input: {
         ...(!isMimo && input.providerEgressPolicy ? { providerEgressPolicy: input.providerEgressPolicy } : {}),
         ...(input.appServerProcessFactory ? { appServerProcessFactory: input.appServerProcessFactory } : {}),
         capacityAccountId: account.name,
+        ...(executionLifetime ? { executionLifetime, cleanThreadPrewarm: false } : {}),
         ...(childBudget ? { childBudget, cleanThreadPrewarm: false,
           refreshConflictRetryMaxMs: 0,
           boundedWorkspaceTools: { allowedTools: childBudget.lifetime.allowedTools, denyProjectInstructions: true } } : {}),
