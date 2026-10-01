@@ -43,13 +43,13 @@ function awaitResearchReady(proxy: ReturnType<typeof spawn>, assertPermission: (
 
 /** Invoked only as a direct child of the authenticated runtime MainPID. The
  * provider gets separate PID/user/mount namespaces and no host authority. */
-export async function runResearchProviderService(jobId: string, unit: string): Promise<void> {
+export async function runResearchProviderService(jobId: string, unit: string, selectedCodexHome: string): Promise<void> {
   if (!researchProviderUnitPattern.test(unit)) researchInvalid();
   const { spec, directory } = researchCurrentStart(jobId), request = spec.request;
   const captured = captureResearchRuntime(request, process.ppid);
   const reservation = readResearchProviderReservation(directory, unit);
   assertResearchProviderNotCancelled(directory, unit);
-  const launch = trustedResearchProviderLaunch(spec, unit);
+  const launch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome);
   for (const path of [launch.command, "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
   const assertForwardPermission = (): void => {
     captured.assertCurrent(); assertResearchProviderNotCancelled(directory, unit);

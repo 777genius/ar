@@ -214,7 +214,7 @@ export function admittedResearchCodexProcessFactory(input: {
     const unit = `subscription-runtime-research-provider-${randomUUID()}.service`;
     return input.submit(unit, () => {
       const child = spawnInvocation(launch, { command: process.execPath,
-        args: [input.launcherPath, input.jobId, unit],
+        args: [input.launcherPath, input.jobId, unit, launch.env.CODEX_HOME!],
         stdinBootstrap: encodeHostedAppServerLaunchFrame({ schemaVersion: 1, ...launch, args: [...launch.args] }),
       });
       researchSignals.set(child, signal => input.signal(unit, signal));

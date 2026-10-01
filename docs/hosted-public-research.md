@@ -218,14 +218,21 @@ equal to `jobRoot/tmp/agent`, exactly as the existing CLI. The real runner's
 rules and thread policy includes workspace plus that leaf. Scratch remains bound
 at logical `jobRoot/tmp`; this change does not modify the deployed scratch fix.
 Both fixed service plans bind the same retained job pin at the same logical
-path. That nonrecursive pin does not carry a later scratch child mount. The
-provider plan therefore binds the authenticated direct runtime parent's exact
-`/proc/MainPID/root/jobRoot/tmp` view onto logical `jobRoot/tmp` as well, carrying
-the prepared agent leaf and its existing scratch binding. Parent birth/boot/unit
-permission is rechecked before submission and after readiness. Launcher
-readiness establishes that the fixed setup chain reached the pre-bootstrap boundary;
-actual systemd/unshare mount visibility, traversal and temp I/O remain Root's
-live qualification, not an offline source assertion. Root
+path. That nonrecursive pin does not carry scratch submounts prepared inside the
+runtime namespace. The fixed research helper receives only the selected generated
+`CODEX_HOME` nominal path, corroborates its protected components and identity
+under the captured job pin, and queries the existing Host scratch policy without
+mutating it. The provider plan adds only validated physical source binds for
+`jobRoot/tmp`, `CODEX_HOME/plugins/cache`, and
+`CODEX_HOME/cache/remote_plugin_catalog`. Mount target/UUID/FSROOT and protected
+source custody must match; source and mounted directory device/inode must still
+agree. Absent policy adds no binds; an exact identity-pinned legacy leaf adds
+none for that leaf. Configured unprepared, unknown or replaced paths fail closed.
+There is no `/proc/parent/root` bridge or caller-supplied mount/property list.
+Parent birth/boot/unit permission is rechecked before submission and after
+readiness. Fixed readiness and settled owner recording still precede release of
+bootstrap/auth. Actual systemd/unshare mount visibility, traversal and temp/cache
+I/O remain Root's live qualification, not an offline source assertion. Root
 must use the account's actual model/list for availability. Timeout bounds are
 one second through 24 hours; DEFAULT is NO FAST.
 
@@ -516,6 +523,33 @@ InvocationID/fragment/cgroup and namespace witnesses plus closing/cancel/owner
 files. Failed/uncertain/foreign states must retain the slot and refuse foreign
 signals. Source plans, fake observers and Node fixtures cannot discharge these
 live gates or the existing native fork/resume, discovery/source and capacity gates.
+
+### r10 selected scratch visibility and portable CI fixtures
+
+This correction targets Root's supplied integrated candidate
+`1f7176e1f4dc47cf9bc3b13ee1b34cd0dcea9d76`. Git metadata is hidden; Root retains
+exact-base verification. It supersedes the r9 parent-root temp bridge above and
+preserves r9 cancellation, `/agent`, readiness, ownership and admission controls.
+The read-only selected-bind query reuses scratch #204 policy, UUID, custody and
+legacy identity validation. Existing preparation behavior remains covered by its
+original tests. Ordinary/MiMo helper arguments and protocol are unchanged.
+
+The five CI failures belong to the nearest TEST fixture: four physical auth paths
+walked through writable backing-temp ancestry despite substituted root ownership;
+the forged-marker positive lacked matching async lstat/descriptor owner
+substitution. Exact backing-temp ancestors now map to the fixture's protected
+TEST directory, and async stat ownership matches sync custody. Selected foreign
+owners, symlinks and writable modes still independently reject. No production
+custody rule or real Host config is changed for portability.
+
+Raw verification, base snapshots, reproducer configurations and findings are
+retained in workspace `tmp/root-export-evidence` (ignored, outside temp cleanup).
+The CI backing-fact reproducer is explicitly synthetic; it cannot substitute for
+running the affected suite under a genuine non-root UID. That gate and actual
+configured native temp/cache source, isolation and cancellation qualification
+remain Root-owned. Offline source and stream fixtures prove no Internet or live
+confinement. CMS effects remain an extension of the existing static Host adapter
+and launch composition; the GM reference below and shared standard are unchanged.
 
 ## Consumer Module Standard classification
 

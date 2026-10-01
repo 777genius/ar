@@ -17,6 +17,8 @@ import { FakeAppServerFactory } from "../../provider-codex/app-server/testing/fa
 import { codexAuthJsonForAccount, StaticRunner } from "./file-backend-codex-worker-test-support";
 import { spawnCodexAppServerProcess } from "../../provider-codex/app-server/adapters/node-app-server-process";
 import { ensureCodexAgentTempRoot } from "../../provider-codex/codex-runtime-temp";
+import { hostedTestEgressGrantName, readHostedTestEgressGrantFile } from "../hosted-test-egress-files";
+import { researchCustody } from "../research-launch-files";
 
 beforeEach(setupResearchFixture);
 afterEach(cleanupResearchFixture);
@@ -50,6 +52,8 @@ describe("closed installed research launch owner (real TEST files; proc, mounts 
     factory(invocation());
     expect(host.spawn).toHaveBeenCalledOnce();
     expect(host.spawn.mock.calls[0]![1][0]).toBe("/TEST-artifact/host-integration/research-provider-launch.mjs");
+    expect(host.spawn.mock.calls[0]![1]).toEqual(["/TEST-artifact/host-integration/research-provider-launch.mjs", request().jobId,
+      expect.stringMatching(/^subscription-runtime-research-provider-.*\.service$/), invocation().env.CODEX_HOME]);
     const records = (await import("node:fs")).readdirSync(local(join(current.directory, "providers")));
     expect(records).toHaveLength(1); expect(records[0]).toMatch(/^subscription-runtime-research-provider-.*\.service\.json$/);
   });
@@ -240,4 +244,33 @@ describe("closed installed research launch owner (real TEST files; proc, mounts 
     expect(host.calls.filter(c => c.args[0] === "stop").map(c => c.args[1])).toEqual([current.unit]);
     expect(host.authReads).toBe(0); expect(host.spawn).not.toHaveBeenCalled();
   });
+});
+
+describe("portable TEST custody substitutions", () => {
+  it.each(["none", "directory-owner", "file-owner", "directory-mode", "file-mode", "directory-symlink", "file-symlink"])(
+    "corroborates sync/async protected physical fixtures and preserves %s rejection", async fault => {
+      host.physicalPaths = true;
+      const root = join(host.root, "TEST-async-authority"), path = join(root, hostedTestEgressGrantName(request().jobId));
+      mkdirSync(root, { mode: 0o700 });
+      const grant = { schemaVersion: 1, jobId: request().jobId, jobRootDir: request().jobRootDir,
+        workspacePath: request().workspacePath, profileId: CodexProviderEgressProfileId.TestNpmQualification };
+      writeFileSync(path, JSON.stringify(grant), { mode: 0o600 });
+      researchCustody(request().authRootDir); researchCustody(root);
+      expect(await readHostedTestEgressGrantFile(root, request())).toEqual(grant);
+      const sync = await import("node:fs"), asyncFs = await import("node:fs/promises");
+      expect((await asyncFs.lstat(root)).uid).toBe(sync.lstatSync(root).uid);
+      const handle = await asyncFs.open(path, "r");
+      try { expect((await handle.stat()).uid).toBe(sync.lstatSync(path).uid); } finally { await handle.close(); }
+      if (fault === "none") return;
+      if (fault === "directory-owner") host.foreign.add(root);
+      if (fault === "file-owner") host.foreign.add(path);
+      if (fault === "directory-mode") chmodSync(root, 0o777);
+      if (fault === "file-mode") chmodSync(path, 0o666);
+      if (fault.endsWith("symlink")) {
+        const target = fault === "directory-symlink" ? root : path;
+        renameSync(target, target + "-saved"); symlinkSync(target + "-saved", target);
+      }
+      await expect(readHostedTestEgressGrantFile(root, request())).rejects.toThrow();
+      expect(() => researchCustody(fault.startsWith("file") ? path : root)).toThrow();
+    });
 });

@@ -12,6 +12,9 @@ import { researchProcessIdentity, researchServiceIdentity } from "../research-la
 import { cancelResearchLaunch, signalResearchProvider, statusResearchLaunch } from "../research-launch-lifecycle";
 import { runResearchProviderService } from "../research-provider-service";
 import { signalCodexAppServerChildGroup } from "../../provider-codex/app-server/adapters/node-app-server-process";
+import * as scratch from "../host-scratch-temp";
+import { preparedResearchScratch } from "./fixtures/research-scratch-host";
+import { trustedResearchProviderLaunch, trustedResearchRuntimeLaunch } from "../trusted-custody-systemd-launch";
 
 let previousExitCode: typeof process.exitCode;
 const streams = new Set<PassThrough>();
@@ -22,8 +25,10 @@ function prepareHelper() {
   const start = startResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")));
   host.group = `/system.slice/${start.unit}`; bindResearchRuntime(start.jobId, start.startId);
   const current = researchCurrentStart(start.jobId);
+  const home = join(req.jobRootDir, "home", "TEST-a");
+  fs.mkdirSync(local(home), { recursive: true, mode: 0o700 });
   const helper = admitResearchProcessFactory(req)({ command: req.codexBinaryPath, args: ["app-server"], cwd: req.workspacePath,
-    env: { HOME: join(req.jobRootDir, "home"), CODEX_HOME: join(req.jobRootDir, "home", "TEST-a") } });
+    env: { HOME: join(req.jobRootDir, "home"), CODEX_HOME: home } });
   const unit = fs.readdirSync(local(join(current.directory, "providers")))[0]!.slice(0, -5);
   // Substitute the runtime parent observation, while invoking the real helper
   // and retained-file protocol in this TEST process.
@@ -33,7 +38,7 @@ function prepareHelper() {
   host.spawn.mockClear();
   const held = helper.stdin as PassThrough;
   const forward = vi.spyOn(process.stdin, "pipe").mockImplementation(destination => held.pipe(destination));
-  return { ...current, ...start, provider: unit, helper, forward };
+  return { ...current, ...start, provider: unit, helper, forward, home };
 }
 const readyFrame = "subscription-runtime-research-provider-ready-v1\n";
 const settledNamespaces = { user: "TEST-provider-user", mnt: "TEST-provider-mnt", pid: "TEST-host", net: "TEST-host" };
@@ -59,6 +64,129 @@ function providerProxy(current: ReturnType<typeof prepareHelper>, accept = true,
 const record = (current: ReturnType<typeof prepareHelper>, suffix: string) =>
   JSON.parse(researchRead(join(current.directory, "providers", current.provider + suffix + ".json")).toString());
 
+describe("authenticated prepared scratch visibility (synthetic Host, no OS mounts)", () => {
+  it("carries all three selected physical sources so independent providers see runtime-private data", async () => {
+    const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
+    const plan = trustedResearchProviderLaunch(current.spec, current.provider, current.home, f.host);
+    const runtime = trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes));
+    const pinBinds = runtime.args.filter(arg => arg.startsWith("--property=BindPaths="));
+    const selected = [
+      { source: "/TEST-nvme/runtime-tmp/8794cd8e3d7d92468efc8cef6960bd97fd9e40dd0460e297c3004b12a3ec7a5c", target: join(current.spec.request.jobRootDir, "tmp") },
+      { source: "/TEST-nvme/runtime-caches/37e385e326df74a53659409f92ea51bf571e9b9ee28533aff43ea69d4a5af86c", target: join(current.home, "plugins/cache") },
+      { source: "/TEST-nvme/runtime-caches/a071e67a38dd8556cbcfc146144797299a85af79956fd438f852c7c4364ed5c6", target: join(current.home, "cache/remote_plugin_catalog") },
+    ];
+    expect(plan.args.filter(arg => arg.startsWith("--property=BindPaths="))).toEqual([
+      ...pinBinds, ...selected.map(({ source, target }) => `--property=BindPaths=${source}:${target}:norbind`),
+    ]);
+    // Model the independently observed topology: original nonrecursive pins
+    // contain none of these later private mounts. Only explicit physical binds
+    // can resolve their data. This assertion does not simulate Linux confinement.
+    const data = new Map(f.prepared.map(({ source }, i) => [source, ["TEST-agent-marker", "TEST-plugin-data", "TEST-catalog-data"][i]]));
+    const visible = (args: readonly string[]) => new Map(args.filter(arg => arg.startsWith("--property=BindPaths="))
+      .map(arg => { const [source, target] = arg.slice("--property=BindPaths=".length).split(":"); return [target, data.get(source!)] as const; }));
+    for (const { target } of selected) expect(visible(pinBinds).get(target)).toBeUndefined();
+    expect(selected.map(({ target }) => visible(plan.args).get(target))).toEqual(["TEST-agent-marker", "TEST-plugin-data", "TEST-catalog-data"]);
+    expect(plan.args.some(arg => arg.includes("/proc/"))).toBe(false);
+    expect(plan.args).toContain(`--property=ReadWritePaths=${current.spec.request.jobRootDir} ${current.spec.request.workspacePath}`);
+    expect(plan.args).toContain("--mount-proc"); expect(plan.args.at(-1)).toBe("--research-ready-v1");
+    expect(f.mutations).toEqual([]);
+  });
+  it.each(["absent", "legacy"])("keeps %s policy as a positive launch without extra binds or mutations", async kind => {
+    const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
+    if (kind === "absent") f.nodes.delete(f.configPath);
+    else {
+      const legacyTemps = Object.fromEntries(f.prepared.map(({ target }) => {
+        f.mounts.delete(target); const info = f.nodes.get(target)!;
+        return [target, { device: info.dev, inode: info.ino }];
+      }));
+      f.setPolicy({ schemaVersion: 1, root: f.root, uuid: f.uuid, legacyTemps });
+    }
+    const plan = trustedResearchProviderLaunch(current.spec, current.provider, current.home, f.host);
+    expect(plan.args.filter(arg => arg.startsWith("--property=BindPaths="))).toEqual(
+      trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args.filter(arg => arg.startsWith("--property=BindPaths=")));
+    expect(f.mutations).toEqual([]);
+  });
+  it("selects only this account's caches when another generated home is prepared", async () => {
+    const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
+    const other = join(current.spec.request.jobRootDir, "home", "TEST-b");
+    fs.mkdirSync(local(other), { mode: 0o700 }); f.nodes.set(other, f.directory());
+    await scratch.prepareHostScratchCaches(other, {}, f.host); f.mutations.length = 0;
+    const plan = trustedResearchProviderLaunch(current.spec, current.provider, other, f.host);
+    const binds = plan.args.filter(arg => arg.startsWith("--property=BindPaths="));
+    expect(binds).toHaveLength(5);
+    expect(binds.slice(2).map(arg => arg.split(":")[1])).toEqual([join(current.spec.request.jobRootDir, "tmp"), join(other, "plugins/cache"), join(other, "cache/remote_plugin_catalog")]);
+    expect(binds.some(arg => arg.includes(current.home + "/"))).toBe(false); expect(f.mutations).toEqual([]);
+  });
+  it.each([0, 1, 2])("rejects changed mount/source/legacy facts at exact selected leaf %s before launch", async index => {
+    const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
+    const selected = f.prepared[index]!, mount = f.mounts.get(selected.target)!, originalSource = f.nodes.get(selected.source)!;
+    const resolve = scratch.resolvePreparedHostScratchBinds;
+    vi.spyOn(scratch, "resolvePreparedHostScratchBinds").mockImplementation((job, home) => resolve(job, home, f.host));
+    // Positive control precedes every independent rejection.
+    expect(trustedResearchProviderLaunch(current.spec, current.provider, current.home).args).toContain(`--property=BindPaths=${selected.source}:${selected.target}:norbind`);
+    for (const badMount of [{ ...mount, uuid: "foreign" }, { ...mount, fsroot: "/foreign" }, { ...mount, target: "/foreign" }, undefined]) {
+      f.mounts.set(selected.target, badMount);
+      await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
+    }
+    f.mounts.set(selected.target, mount);
+    const originalTarget = f.nodes.get(selected.target)!;
+    for (const badTarget of [{ ...originalTarget, uid: 999 }, { ...originalTarget, mode: 0o777 }, { ...originalTarget, ino: originalTarget.ino + 1 }, { ...originalTarget, isSymbolicLink: () => true }]) {
+      f.nodes.set(selected.target, badTarget);
+      await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
+    }
+    f.nodes.set(selected.target, originalTarget);
+    for (const badSource of [{ ...originalSource, uid: 999 }, { ...originalSource, mode: 0o777 }, { ...originalSource, ino: originalSource.ino + 1 }, { ...originalSource, isSymbolicLink: () => true }]) {
+      f.nodes.set(selected.source, badSource);
+      await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
+    }
+    f.nodes.set(selected.source, originalSource);
+    f.mounts.delete(selected.target);
+    const node = f.nodes.get(selected.target)!;
+    for (const entry of [true, { device: node.dev, inode: node.ino + 1 }]) {
+      f.setPolicy({ schemaVersion: 1, root: f.root, uuid: f.uuid, legacyTemps: { [selected.target]: entry } });
+      await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
+    }
+    expect(host.spawn).not.toHaveBeenCalled(); expect(current.forward).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(() => record(current, ".submission")).toThrow(); expect(f.mutations).toEqual([]);
+  });
+  it.each(["foreign", "symlink", "parent-symlink", "writable", "parent-owner", "pin-home", "outside", "prefix", "noncanonical", "bag", "missing"])(
+    "rejects %s selected home before launch", async fault => {
+      const current = prepareHelper(); let home = current.home;
+      if (fault === "foreign") host.foreign.add(home);
+      if (fault === "writable") fs.chmodSync(local(home), 0o777);
+      if (fault === "parent-owner") host.foreign.add(join(current.spec.request.jobRootDir, "home"));
+      if (fault === "pin-home") {
+        const other = join(current.spec.request.jobRootDir, "home", "TEST-b"); fs.mkdirSync(local(other), { mode: 0o700 });
+        const retained = [...host.pins]; host.pins.clear();
+        host.pins.set(join(current.directory, "pins/job/home/TEST-a"), other);
+        for (const [pin, target] of retained) host.pins.set(pin, target);
+      }
+      if (fault === "symlink" || fault === "parent-symlink") {
+        const path = fault === "symlink" ? home : join(current.spec.request.jobRootDir, "home");
+        fs.renameSync(local(path), local(path) + "-saved"); fs.symlinkSync(local(path) + "-saved", local(path));
+      }
+      if (fault === "outside") home = "/TEST-auth";
+      if (fault === "prefix") home = join(current.spec.request.jobRootDir, "home-foreign", "TEST-a");
+      if (fault === "noncanonical") home += "/../TEST-a";
+      if (fault === "bag") home = { BindPaths: "/TEST-foreign" } as unknown as string;
+      if (fault === "missing") home += "/missing";
+      await expect(runResearchProviderService(current.jobId, current.provider, home)).rejects.toThrow();
+      expect(host.spawn).not.toHaveBeenCalled(); expect(current.forward).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+      expect(() => record(current, ".submission")).toThrow();
+    });
+  it("keeps prepared scratch auth/bootstrap held until fixed readiness and settled owner", async () => {
+    const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
+    const resolve = scratch.resolvePreparedHostScratchBinds;
+    vi.spyOn(scratch, "resolvePreparedHostScratchBinds").mockImplementation((job, home) => resolve(job, home, f.host));
+    const { proxy, forwarded, submit } = providerProxy(current, true, false); host.spawn.mockImplementation(submit);
+    proxy.stdin.once("data", () => { expect(record(current, ".owner").process.namespaces).toEqual(settledNamespaces); proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+    const running = runResearchProviderService(current.jobId, current.provider, current.home);
+    await Promise.resolve(); expect(forwarded).toHaveLength(0); expect(() => record(current, ".owner")).toThrow();
+    proxy.stdout.write(readyFrame); await running;
+    expect(forwarded.length).toBeGreaterThan(0); expect(current.forward).toHaveBeenCalledOnce(); expect(f.mutations).toEqual([]);
+  });
+});
+
 describe("owned research provider cancellation (real files and streams; systemd/proc substituted)", () => {
   it("consumes fixed readiness and forwards the held frame only after retaining settled ownership", async () => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current);
@@ -69,7 +197,7 @@ describe("owned research provider cancellation (real files and streams; systemd/
       expect(proxy.stdout.readableLength).toBe(0); // Readiness was consumed, never forwarded to the protocol.
       proxy.exitCode = 0; proxy.emit("exit", 0, null);
     });
-    await runResearchProviderService(current.jobId, current.provider);
+    await runResearchProviderService(current.jobId, current.provider, current.home);
     expect(host.spawn).toHaveBeenCalledOnce(); expect(current.forward).toHaveBeenCalledOnce();
     expect(Buffer.concat(forwarded).toString()).toContain('"command":"/usr/bin/TEST-codex"');
     expect(record(current, ".submission").state).toBe("settled");
@@ -78,7 +206,7 @@ describe("owned research provider cancellation (real files and streams; systemd/
     const current = prepareHelper();
     signalCodexAppServerChildGroup(current.helper, "SIGTERM");
     expect(record(current, ".cancel")).toMatchObject({ unit: current.provider, specSha256: researchHash(current.bytes) });
-    await expect(runResearchProviderService(current.jobId, current.provider)).rejects.toThrow("hosted_research_launch_denied");
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow("hosted_research_launch_denied");
     expect(host.spawn).not.toHaveBeenCalled(); expect(current.forward).not.toHaveBeenCalled();
     expect(host.calls.filter(c => ["kill", "stop"].includes(c.args[0]!))).toHaveLength(0);
     expect(host.authReads).toBe(0);
@@ -89,7 +217,7 @@ describe("owned research provider cancellation (real files and streams; systemd/
       realSync(fd);
       if (host.fdPaths.get(fd)?.endsWith(current.provider + ".submission.json")) signalResearchProvider(current.directory, current.provider);
     });
-    await expect(runResearchProviderService(current.jobId, current.provider)).rejects.toThrow();
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
     expect(host.spawn).not.toHaveBeenCalled(); expect(current.forward).not.toHaveBeenCalled();
     expect(record(current, ".submission").state).toBe("settled");
   });
@@ -112,7 +240,7 @@ describe("owned research provider cancellation (real files and streams; systemd/
       signalResearchProvider(current.directory, current.provider);
       const result = submit(); host.stopFailures.add(current.provider); return result;
     });
-    await expect(runResearchProviderService(current.jobId, current.provider)).rejects.toThrow();
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
     expect(current.forward).not.toHaveBeenCalled(); expect(forwarded).toHaveLength(0);
     expect(proxy.stdin.destroyed).toBe(true); expect(proxy.kill).toHaveBeenCalledWith("SIGTERM");
     expect(record(current, ".submission").state).toBe("pending");
@@ -128,7 +256,7 @@ describe("owned research provider cancellation (real files and streams; systemd/
   it("holds uncertainty when a transport has not settled even though no unit is yet observable", async () => {
     const current = prepareHelper(), { proxy, submit } = providerProxy(current, false);
     host.spawn.mockImplementation(() => { signalResearchProvider(current.directory, current.provider); return submit(); });
-    await expect(runResearchProviderService(current.jobId, current.provider)).rejects.toThrow();
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
     expect(proxy.kill).toHaveBeenCalled();
     expect(record(current, ".submission").state).toBe("pending");
     expect(statusResearchLaunch(current.jobId)).toMatchObject({ active: true, providers: [{ unit: current.provider, active: true }] });
@@ -142,7 +270,7 @@ describe("owned research provider cancellation (real files and streams; systemd/
       realSync(fd);
       if (host.fdPaths.get(fd)?.endsWith(current.provider + ".owner.json")) signalResearchProvider(current.directory, current.provider);
     });
-    await expect(runResearchProviderService(current.jobId, current.provider)).rejects.toThrow();
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
     expect(record(current, ".owner").service.unit).toBe(current.provider);
     expect(current.forward).not.toHaveBeenCalled(); expect(forwarded).toHaveLength(0);
   });
@@ -184,7 +312,7 @@ describe("owned research provider cancellation (real files and streams; systemd/
     expect(host.calls.filter(c => ["kill", "stop"].includes(c.args[0]!)).map(c => c.args[0])).toEqual(["kill", "stop"]);
     expect(host.jobs.has(current.provider)).toBe(false);
     signalResearchProvider(current.directory, current.provider); // A late individual fence remains valid.
-    await expect(runResearchProviderService(current.jobId, current.provider)).rejects.toThrow();
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
   });
   it.each(["observer", "description", "drop-ins", "fragment", "invocation"])("closes and fences before uncertain/foreign %s inspection, retains active evidence and never signals that provider", fault => {
     const current = prepareHelper(), { submit } = providerProxy(current, true, false); submit();
@@ -261,7 +389,7 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     host.spawn.mockImplementation(() => { const result = submit(); host.processNamespaces.delete(424242); return result; });
     proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
-    const running = runResearchProviderService(current.jobId, current.provider);
+    const running = runResearchProviderService(current.jobId, current.provider, current.home);
     await Promise.resolve();
     expect(() => record(current, ".owner")).toThrow(); expect(forwarded).toHaveLength(0);
     host.processNamespaces.set(424242, settledNamespaces);
@@ -297,7 +425,7 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
         });
         return result;
       });
-      const rejected = expect(runResearchProviderService(current.jobId, current.provider)).rejects.toThrow("hosted_research_launch_denied");
+      const rejected = expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow("hosted_research_launch_denied");
       if (fault === "timeout") await vi.advanceTimersByTimeAsync(5025);
       await rejected;
       expect(current.forward).not.toHaveBeenCalled(); expect(forwarded).toHaveLength(0); expect(host.authReads).toBe(0);
@@ -312,7 +440,7 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
       sync(fd);
       if (host.fdPaths.get(fd)?.endsWith(current.provider + ".owner.json")) proxy.stderr.emit("error", new Error("TEST stream failed after ready"));
     });
-    await expect(runResearchProviderService(current.jobId, current.provider)).rejects.toThrow();
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
     expect(record(current, ".owner").process.namespaces).toEqual(settledNamespaces);
     expect(current.forward).not.toHaveBeenCalled(); expect(forwarded).toHaveLength(0);
   });

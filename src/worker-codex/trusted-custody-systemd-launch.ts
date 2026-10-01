@@ -1,8 +1,10 @@
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
 import { parseResearchStartSpec, type ResearchStartSpec } from "./research-launch-contract";
 import { researchDescription, researchProviderUnitPattern } from "./research-launch-host";
-import { researchInvalid, researchName } from "./research-launch-files";
+import { assertResearchDirectory, researchDirectoryIdentity, researchInvalid, researchName, researchPath } from "./research-launch-files";
+import { resolvePreparedHostScratchBinds, type ScratchTempHost } from "./host-scratch-temp";
 
 export enum TrustedCustodyLaunchRole { Outer = "outer", Ordinary = "ordinary" }
 
@@ -45,10 +47,23 @@ export function trustedResearchRuntimeLaunch(value: ResearchStartSpec, specSha25
     ...properties.map(p => `--property=${p}`), "--", process.execPath,
     join(spec.runtimeDirectory, "host-integration", "research-runtime-launch.mjs"), request.jobId, spec.startId] };
 }
-export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: string): { command: string; args: string[] } {
+export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: string, selectedCodexHome: string, scratchHost?: ScratchTempHost): { command: string; args: string[] } {
   const spec = parseResearchStartSpec(value), { request } = spec;
   if (!researchProviderUnitPattern.test(unit)) researchInvalid();
   const pins = join("/run/user/subscription-runtime-research-v1", researchName(request.jobId), "starts", spec.startId, "pins");
+  const home = researchPath(selectedCodexHome);
+  if (!home.startsWith(join(request.jobRootDir, "home") + "/")) researchInvalid();
+  assertResearchDirectory(spec.jobDirectory, join(pins, "job"));
+  assertResearchDirectory(spec.jobDirectory);
+  // The selected nominal home is data from the captured runtime, never a mount
+  // bag. Corroborate every component under its retained job, including parents.
+  for (let path = home;; path = dirname(path)) {
+    const info = lstatSync(path);
+    if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o022) || realpathSync(path) !== path) researchInvalid();
+    if (path === request.jobRootDir) break;
+  }
+  assertResearchDirectory(researchDirectoryIdentity(home), join(pins, "job", relative(request.jobRootDir, home)));
+  const scratchBinds = resolvePreparedHostScratchBinds(request.jobRootDir, home, scratchHost);
   const properties = ["Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no",
     `BindsTo=${spec.unit}`, `PartOf=${spec.unit}`, `After=${spec.unit}`, "CPUQuota=200%", "MemoryHigh=2G", "MemoryMax=4G", "TasksMax=512",
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "IOWeight=25", "MemorySwapMax=0", "LimitCORE=0",
@@ -56,11 +71,7 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
     "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP", "NoNewPrivileges=yes", "ProtectSystem=strict",
     `BindPaths=${join(pins, "job")}:${request.jobRootDir}:norbind`,
     `BindPaths=${join(pins, "workspace")}:${request.workspacePath}:norbind`,
-    // Only the authenticated direct helper constructs this plan. The job pin
-    // is nonrecursive: carry the parent's actual tmp view (including its scratch
-    // child bind) explicitly, at the same logical path. Parent birth/boot/unit
-    // are rechecked before submission and after readiness, before any input.
-    `BindPaths=/proc/${process.ppid}/root${join(request.jobRootDir, "tmp")}:${join(request.jobRootDir, "tmp")}:norbind`,
+    ...scratchBinds.map(({ source, target }) => `BindPaths=${researchPath(source)}:${researchPath(target)}:norbind`),
     `ReadWritePaths=${request.jobRootDir} ${request.workspacePath}`,
     "TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M",
     `InaccessiblePaths=-/run/systemd/private -/run/systemd/journal -/dev/log -/run/dbus -/run/user -/var/lib/subscription-runtime-host-policy -/run/user/subscription-runtime-research-v1 -/run/docker.sock -/run/containerd/containerd.sock -/run/podman/podman.sock -/etc/subscription-runtime/secrets -${request.authRootDir}`];

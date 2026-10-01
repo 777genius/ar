@@ -19,6 +19,10 @@ export function local(path: string): string {
   // This portable TEST fixture has no Host scratch policy. Never inspect or
   // activate a real Host binding through executor home preparation.
   if (path === "/etc/subscription-runtime/scratch-temp.json") return join(fixture.root, "absent-scratch-policy");
+  // Physical executor fixtures still model protected Host ancestry. Map only
+  // their exact backing-temp ancestors to our safe TEST directory, never mask
+  // modes or symlinks on selected files/directories (or chmod the real /tmp).
+  if (fixture.physicalPaths && fixture.root.startsWith(path + "/")) return fixture.root;
   for (const [pin, target] of fixture.pins) if (path === pin || path.startsWith(pin + "/")) return local(target + path.slice(pin.length));
   for (const [prefix, name] of [[authority, "authority"], [artifact, "artifact"], [project, "project"], ["/TEST-auth", "auth"], ["/TEST-operator", "operator"], ["/run/systemd/transient", "units"]]) {
     if (path === prefix || path.startsWith(prefix + "/")) return join(fixture.root, name!, path.slice(prefix!.length));
@@ -56,7 +60,7 @@ vi.mock("node:fs", async original => {
     },
     readlinkSync: (path: string) => path.startsWith("/proc/") ? (fixture.processNamespaces.get(Number(path.split("/")[2]))?.[path.split("/").at(-1) as "user"] ??
       (fixture.namespaceRoot && path.startsWith("/proc/self") ? "TEST-namespace" : "TEST-host")) : real.readlinkSync(local(path)),
-    realpathSync: (path: string) => { const target = real.realpathSync(local(path)); return target.startsWith(join(fixture.root, "artifact")) ? "/TEST-artifact" + target.slice(join(fixture.root, "artifact").length) : target; },
+    realpathSync: (path: string) => { const target = real.realpathSync(local(path)); return target.startsWith(join(fixture.root, "artifact")) ? "/TEST-artifact" + target.slice(join(fixture.root, "artifact").length) : target === local(path) ? path : target; },
     readdirSync: (path: string, opts: Parameters<typeof real.readdirSync>[1]) => real.readdirSync(local(path), opts),
     mkdirSync: (path: string, opts: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), opts),
     renameSync: (from: string, to: string) => real.renameSync(local(from), local(to)),
@@ -68,9 +72,13 @@ vi.mock("node:fs/promises", async original => {
   return { ...real, readFile: (path: string, opts: Parameters<typeof real.readFile>[1]) => {
     if (path.endsWith("auth.json")) fixture.authReads++;
     return real.readFile(local(path), opts);
-  }, lstat: (path: string) => real.lstat(local(path)),
+  }, lstat: async (path: string) => Object.assign(await real.lstat(local(path)), { uid: fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0 }),
   readlink: async (path: string) => path.startsWith("/proc/") ? "TEST-host" : real.readlink(local(path)),
-  open: (path: string, flags: string | number) => real.open(local(path), flags),
+  open: async (path: string, flags: string | number) => {
+    const file = await real.open(local(path), flags), stat = file.stat.bind(file);
+    file.stat = (async (...args: Parameters<typeof file.stat>) => Object.assign(await stat(...args), { uid: fixture.foreign.has(path) ? 999 : 0 })) as typeof file.stat;
+    return file;
+  },
   };
 });
 vi.mock("node:child_process", async original => {

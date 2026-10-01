@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
@@ -11,12 +11,30 @@ import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 let root: string;
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), "TEST-research-ready-r9-"));
+  const helper = join(root, "TEST-helper");
+  mkdirSync(join(helper, "host-integration"), { recursive: true }); mkdirSync(join(helper, "dist/worker-codex"), { recursive: true });
+  writeFileSync(join(helper, "package.json"), '{"type":"module"}');
+  writeFileSync(join(helper, "host-integration/research-provider-launch.mjs"), readFileSync("host-integration/research-provider-launch.mjs"));
+  // Only the module invocation is observed; no admission/service/provider runs.
+  writeFileSync(join(helper, "dist/worker-codex/research-provider-service.js"),
+    'export async function runResearchProviderService(...args) { process.stdout.write(JSON.stringify(args)); }');
   for (const name of ["hosted-app-server-launcher", "hosted-app-server-launch-frame", "hosted-process-descriptors"]) {
     const source = readFileSync(join(process.cwd(), "src/provider-codex/app-server/adapters", name + ".ts"), "utf8");
     const translated = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText
       .replace(/from "\.\/(hosted-[a-z-]+)"/g, 'from "./$1.mjs"');
     writeFileSync(join(root, name + ".mjs"), translated);
   }
+});
+describe("actual fixed research helper selected-home transport (TEST service stub)", () => {
+  it("forwards exactly job, unit and selected nominal home", () => {
+    const args = ["TEST-job", "subscription-runtime-research-provider-12345678-1234-1234-1234-123456789abc.service", "/TEST-job/home/TEST-a"];
+    const result = spawnSync(process.execPath, [join(root, "TEST-helper/host-integration/research-provider-launch.mjs"), ...args], { encoding: "utf8" });
+    expect(result.status).toBe(0); expect(result.stderr).toBe(""); expect(JSON.parse(result.stdout)).toEqual(args);
+  });
+  it.each([{ args: [] }, { args: ["TEST-job", "TEST-unit"] }, { args: ["TEST-job", "TEST-unit", "/TEST-home", "--property=Delegate=yes"] }])("rejects wrong fixed arity $args before invoking the service", ({ args }) => {
+    const result = spawnSync(process.execPath, [join(root, "TEST-helper/host-integration/research-provider-launch.mjs"), ...args], { encoding: "utf8" });
+    expect(result.status).toBe(70); expect(result.stdout).toBe(""); expect(result.stderr).toBe("hosted_research_provider_launch_denied\n");
+  });
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const ready = "subscription-runtime-research-provider-ready-v1\n";
