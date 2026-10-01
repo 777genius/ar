@@ -28,7 +28,7 @@ export interface ScopedTerminationOperation {
 }
 export interface ScopedTerminationObservation {
   readonly startId: string; readonly identityUnchanged: boolean; readonly creatorFenced: boolean;
-  readonly queueEmpty: boolean; readonly recursiveEmpty: boolean; readonly digest: string;
+  readonly queueEmpty: boolean; readonly recursiveEmpty: boolean; readonly digest: string; readonly evidence: ScopedCollectedEvidence;
 }
 export interface ScopedTerminationReceipt {
   readonly schemaVersion: 1; readonly outcome: ScopedTerminationOutcome.ReceiptBacked;
@@ -94,8 +94,10 @@ export function parseScopedReceipt(value: unknown): ScopedTerminationReceipt {
   if (v.schemaVersion !== 1 || v.outcome !== ScopedTerminationOutcome.ReceiptBacked ||
       (v.publicationGeneration as number) < operation.operationGeneration || !Array.isArray(v.observations) || v.observations.length !== operation.members.length) throw new Error("scoped_record_invalid");
   const observations = v.observations.map((raw, i) => {
-    const o = fields(raw, "startId,identityUnchanged,creatorFenced,queueEmpty,recursiveEmpty,digest");
+    const o = fields(raw, "startId,identityUnchanged,creatorFenced,queueEmpty,recursiveEmpty,digest,evidence");
     match(o.digest, hash);
+    validateScopedCollectedEvidence(o.evidence as ScopedCollectedEvidence, operation.members[i]!);
+    if (o.digest !== scopedDigest(o.evidence)) throw new Error("scoped_evidence_digest_invalid");
     if (o.startId !== operation.members[i]!.startId || [o.identityUnchanged, o.creatorFenced, o.queueEmpty, o.recursiveEmpty].some(flag => flag !== true)) throw new Error("scoped_record_invalid");
     return Object.freeze({ ...o }) as unknown as ScopedTerminationObservation;
   });
@@ -110,4 +112,91 @@ export function parseScopedSubmitter(value: unknown): ScopedSubmitter {
   match(v.correlationDigest, hash); match(v.pidBirth, birth); match(v.controlGroup, /^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/);
   if ((v.controlGroup as string).split("/").some(p => p === "." || p === "..")) throw new Error("scoped_record_invalid");
   return Object.freeze({ ...v }) as unknown as ScopedSubmitter;
+}
+
+export enum ScopedEnqueueActorRole { Creator = "creator", Wrapper = "wrapper", ManagerSubmitter = "manager_submitter" }
+export enum ScopedActorDischargeMethod { PidfdExit = "pidfd_exit", ScopedAdmissionFence = "scoped_admission_fence" }
+export interface ScopedEnqueueActor { readonly role: ScopedEnqueueActorRole; readonly pidBirth: string; readonly controlGroup: string; readonly parentPidBirth: string | null }
+/** Authenticated producer closes its exact scoped spawn graph before enqueue.
+ * The wrapper record alone is deliberately insufficient. Every manager submitter
+ * and creator must be retained; no PID absence or asserted boolean closes it. */
+export interface ScopedActorChain { readonly schemaVersion: 1; readonly correlationDigest: string; readonly submitterDigest: string; readonly actors: readonly ScopedEnqueueActor[] }
+export interface ScopedActorDischarge { readonly schemaVersion: 2; readonly chainDigest: string; readonly fenceDigest: string; readonly actors: readonly (ScopedEnqueueActor & { readonly method: ScopedActorDischargeMethod })[] }
+export function parseScopedActorChain(value: unknown): ScopedActorChain {
+  const v = fields(value, "schemaVersion,correlationDigest,submitterDigest,actors");
+  if (v.schemaVersion !== 1 || !Array.isArray(v.actors) || v.actors.length < 3 || v.actors.length > 64) throw new Error("scoped_actor_chain_incomplete");
+  match(v.correlationDigest, hash); match(v.submitterDigest, hash);
+  const actors = v.actors.map(raw => {
+    const a = fields(raw, "role,pidBirth,controlGroup,parentPidBirth");
+    if (!Object.values(ScopedEnqueueActorRole).includes(a.role as ScopedEnqueueActorRole)) throw new Error("scoped_actor_chain_invalid");
+    match(a.pidBirth, birth); if (a.parentPidBirth !== null) match(a.parentPidBirth, birth);
+    match(a.controlGroup, /^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/);
+    if ((a.controlGroup as string).split("/").some(p => p === "." || p === "..")) throw new Error("scoped_actor_chain_invalid");
+    return Object.freeze({ ...a }) as unknown as ScopedEnqueueActor;
+  });
+  if (new Set(actors.map(a => a.pidBirth)).size !== actors.length || actors[0]!.role !== ScopedEnqueueActorRole.Creator || actors[0]!.parentPidBirth !== null ||
+      actors[1]!.role !== ScopedEnqueueActorRole.Wrapper || actors[1]!.parentPidBirth !== actors[0]!.pidBirth ||
+      actors.slice(2).some((a, i) => a.role !== ScopedEnqueueActorRole.ManagerSubmitter || !actors.slice(1, i + 2).some(p => p.pidBirth === a.parentPidBirth))) throw new Error("scoped_actor_chain_invalid");
+  return Object.freeze({ schemaVersion: 1, correlationDigest: v.correlationDigest as string, submitterDigest: v.submitterDigest as string, actors: Object.freeze(actors) });
+}
+export function bindScopedActorChain(chain: ScopedActorChain, member: ScopedTerminationMember, submitter: ScopedSubmitter): void {
+  const { invocationId: _i, submitterDigest: _s, ...correlation } = member;
+  if (chain.correlationDigest !== scopedDigest(correlation) || chain.submitterDigest !== member.submitterDigest ||
+      submitter.correlationDigest !== chain.correlationDigest || chain.actors[0]!.pidBirth !== member.creatorPidBirth || chain.actors[0]!.controlGroup !== member.creatorControlGroup ||
+      chain.actors[1]!.pidBirth !== submitter.pidBirth || chain.actors[1]!.controlGroup !== submitter.controlGroup) throw new Error("scoped_actor_chain_binding_invalid");
+}
+export function parseScopedActorDischarge(value: unknown, chain: ScopedActorChain): ScopedActorDischarge {
+  const v = fields(value, "schemaVersion,chainDigest,fenceDigest,actors");
+  if (v.schemaVersion !== 2 || v.chainDigest !== scopedDigest(chain) || !Array.isArray(v.actors) || v.actors.length !== chain.actors.length) throw new Error("scoped_actor_discharge_incomplete");
+  match(v.fenceDigest, hash);
+  const actors = v.actors.map((raw, i) => {
+    const a = fields(raw, "role,pidBirth,controlGroup,parentPidBirth,method"), { method, ...actor } = a;
+    if (method !== (i === 0 ? ScopedActorDischargeMethod.ScopedAdmissionFence : ScopedActorDischargeMethod.PidfdExit) || scopedDigest(actor) !== scopedDigest(chain.actors[i])) throw new Error("scoped_actor_discharge_invalid");
+    return Object.freeze({ ...a }) as unknown as ScopedActorDischarge["actors"][number];
+  });
+  return Object.freeze({ schemaVersion: 2, chainDigest: v.chainDigest as string, fenceDigest: v.fenceDigest as string, actors: Object.freeze(actors) });
+}
+export interface ScopedIdentityEvidence { readonly hostId: string; readonly bootId: string; readonly supervisorBirth: string; readonly supervisorGroup: string; readonly invocationId: string; readonly invocationAnchor: { readonly invocationId: string; readonly device: number; readonly inode: number }; readonly unitGroup: string; readonly creatorBirth: string | null; readonly creatorGroup: string | null }
+export interface ScopedCgroupNode { readonly path: string; readonly device: number; readonly inode: number; readonly events: string; readonly processes: string; readonly children: readonly string[] }
+export interface ScopedCollectedEvidence {
+  readonly schemaVersion: 1; readonly memberDigest: string; readonly chain: ScopedActorChain; readonly discharge: ScopedActorDischarge;
+  readonly identityBefore: ScopedIdentityEvidence; readonly identityAfter: ScopedIdentityEvidence;
+  readonly queueBefore: string; readonly queueAfter: string; readonly cgroups: readonly ScopedCgroupNode[];
+}
+/** Semantic validation is independent of the collector's summary flags. The
+ * adapter also checks exact durable creator records and complete queue grammar. */
+export function validateScopedCollectedEvidence(value: ScopedCollectedEvidence, member: ScopedTerminationMember): void {
+  const e = fields(value, "schemaVersion,memberDigest,chain,discharge,identityBefore,identityAfter,queueBefore,queueAfter,cgroups");
+  if (e.schemaVersion !== 1 || e.memberDigest !== scopedDigest(member)) throw new Error("scoped_evidence_invalid");
+  const chain = parseScopedActorChain(e.chain); parseScopedActorDischarge(e.discharge, chain);
+  const { invocationId: _i, submitterDigest: _s, ...correlation } = member;
+  if (chain.correlationDigest !== scopedDigest(correlation) || chain.submitterDigest !== member.submitterDigest ||
+      chain.actors[0]!.pidBirth !== member.creatorPidBirth || chain.actors[0]!.controlGroup !== member.creatorControlGroup) throw new Error("scoped_evidence_invalid");
+  for (const raw of [e.identityBefore, e.identityAfter]) {
+    const i = fields(raw, "hostId,bootId,supervisorBirth,supervisorGroup,invocationId,invocationAnchor,unitGroup,creatorBirth,creatorGroup"), expected = member.identity;
+    const anchor = fields(i.invocationAnchor, "invocationId,device,inode");
+    if (anchor.invocationId !== member.invocationId || !Number.isSafeInteger(anchor.device) || (anchor.device as number) < 0 || !Number.isSafeInteger(anchor.inode) || (anchor.inode as number) < 1) throw new Error("scoped_invocation_anchor_invalid");
+    if (i.hostId !== expected.hostId || i.bootId !== expected.bootId || i.supervisorBirth !== expected.supervisorId || i.supervisorGroup !== expected.supervisorControlGroup ||
+        i.invocationId !== member.invocationId || i.unitGroup !== member.controlGroup ||
+        !((i.creatorBirth === member.creatorPidBirth && i.creatorGroup === member.creatorControlGroup) || (i.creatorBirth === null && i.creatorGroup === null))) throw new Error("scoped_identity_evidence_invalid");
+  }
+  if (scopedDigest(e.identityBefore) !== scopedDigest(e.identityAfter) || typeof e.queueBefore !== "string" || e.queueBefore.length > 262144 || e.queueBefore !== e.queueAfter ||
+      !Array.isArray(e.cgroups) || !e.cgroups.length || e.cgroups.length > 256) throw new Error("scoped_evidence_invalid");
+  const paths = new Set<string>();
+  for (const raw of e.cgroups) {
+    const node = fields(raw, "path,device,inode,events,processes,children");
+    if (typeof node.path !== "string" || paths.has(node.path) || !(node.path === member.controlGroup || node.path.startsWith(member.controlGroup + "/")) ||
+        node.path.split("/").some(p => p === "." || p === "..") || !Number.isSafeInteger(node.device) || (node.device as number) < 0 || !Number.isSafeInteger(node.inode) || (node.inode as number) < 1 ||
+        node.processes !== "" || typeof node.events !== "string" || !Array.isArray(node.children) || node.children.length > 256 ||
+        node.children.some(c => typeof c !== "string" || !/^[A-Za-z0-9_.@+-]+$/.test(c) || c === "." || c === "..") || new Set(node.children).size !== node.children.length) throw new Error("scoped_cgroup_evidence_invalid");
+    const rows = node.events.trimEnd().split("\n"), entries = new Map(rows.map(r => r.split(" ")) as [string, string][]);
+    if (entries.size !== rows.length || entries.get("populated") !== "0" || rows.some(r => !/^(?:populated|frozen) [01]$/.test(r))) throw new Error("scoped_cgroup_evidence_invalid");
+    paths.add(node.path);
+  }
+  if (!paths.has(member.controlGroup)) throw new Error("scoped_cgroup_evidence_incomplete");
+  for (const n of value.cgroups) {
+    if (n.path !== member.controlGroup && !paths.has(n.path.slice(0, n.path.lastIndexOf("/")))) throw new Error("scoped_cgroup_evidence_incomplete");
+    const expected = value.cgroups.filter(c => c.path.startsWith(n.path + "/") && !c.path.slice(n.path.length + 1).includes("/")).map(c => c.path.slice(n.path.length + 1)).sort();
+    if (scopedDigest([...n.children].sort()) !== scopedDigest(expected)) throw new Error("scoped_cgroup_evidence_incomplete");
+  }
 }

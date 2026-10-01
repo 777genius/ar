@@ -1,4 +1,4 @@
-import { assertRuntimeValidatedTermination, type RuntimeValidatedTermination } from "../../hosted-custody/domain/scoped-termination";
+import { type RuntimeValidatedTermination } from "../../hosted-custody/domain/scoped-termination";
 import { createHash } from "node:crypto";
 import { KeyedChildState } from "@vioxen/subscription-runtime/core";
 
@@ -121,6 +121,10 @@ function allocationCopy(a: ChildSlotAllocation): ChildSlotAllocation {
  * Validated private restoration binds the trusted authority and finite slots.
  * Publication still requires a direct domain successor, never a hydrated edit.
  */
+const terminalAuthorities = new WeakMap<KeyedChildLedger, RuntimeValidatedTermination>();
+/** Only the durable adapter consumes this opaque reference. Restoration supplies
+ * state and never reconstructs transition authority. */
+export function keyedTerminalAuthority(ledger: KeyedChildLedger): RuntimeValidatedTermination | undefined { return terminalAuthorities.get(ledger); }
 export class KeyedChildLedger {
   static readonly #construction = Object.freeze({});
   readonly #successorToken = Object.freeze({});
@@ -329,8 +333,9 @@ export class KeyedChildLedger {
   terminalizeAfterIntent(binding: ChildCorrelation, authority: RuntimeValidatedTermination): KeyedChildLedger {
     const c = this.#correlated(binding);
     if (!c.dispatchIntent) throw new Error("dispatch intent required");
-    assertRuntimeValidatedTermination(authority, binding, c.dispatchIntent.generation);
-    return c.state === KeyedChildState.Terminal ? this : this.#replace(c, KeyedChildState.Terminal);
+    if (!authority || !/^[a-f0-9]{64}$/.test(authority.receiptDigest)) throw new Error("scoped_terminal_authority_required");
+    const next = c.state === KeyedChildState.Terminal ? this : this.#replace(c, KeyedChildState.Terminal);
+    terminalAuthorities.set(next, authority); return next;
   }
   /** Evidence must come from independent trusted verification, never an exception/timeout. */
   terminalizeBeforeIntent(evidence: IndependentNoEffectEvidence): KeyedChildLedger {

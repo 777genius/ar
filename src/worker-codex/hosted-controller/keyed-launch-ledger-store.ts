@@ -1,10 +1,11 @@
+import { assertRuntimeValidatedTermination } from "./scoped-termination-validation";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readSync, readdirSync,
   writeFileSync, type Stats } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { assertHostedActivationFence, assertHostedActivationOperator, withHostedActivationFence,
   type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
-import { KeyedChildLedger, keyedChildSnapshotMaxBytes, type ChildScope, type ChildSlotAllocation,
+import { KeyedChildLedger, KeyedChildState, keyedTerminalAuthority, keyedChildSnapshotMaxBytes, type ChildScope, type ChildSlotAllocation,
   type ReviewedChildAuthority } from "../../worker-core/project-control/domain/keyed-child-launch";
 import type { KeyedChildLedgerTransactionPort } from "../../worker-core/project-control/ports/keyed-child-launch-ports";
 import { archiveKeyedLedgerFiles, exchangeKeyedLedgerFiles } from "./keyed-ledger-linux-publication";
@@ -237,6 +238,15 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
         throw new Error("keyed_ledger_synchronous_callback_required");
       }
       current.assertSuccessor(next);
+      for (const child of next.snapshot().accepted) {
+        if (child.dispatchIntent && child.state === KeyedChildState.Terminal) {
+          const priorChild = current.observe(this.#scope, child.allocation.childHandle);
+          if (priorChild.state === KeyedChildState.Terminal) continue;
+          const authority = keyedTerminalAuthority(next);
+          if (!authority) throw new Error("scoped_terminal_authority_required");
+          assertRuntimeValidatedTermination(authority, priorChild, child.dispatchIntent.generation);
+        }
+      }
       const bytes = Buffer.from(next.serialize());
       KeyedChildLedger.restore(bytes.toString("utf8"), this.#seed);
       this.#checkParent(); this.#noPending(parent);

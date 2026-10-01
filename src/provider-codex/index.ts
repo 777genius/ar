@@ -30,7 +30,7 @@ export type { HostedReadonlyMounts } from "./app-server/adapters/hosted-readonly
 export { assertHostedProcessDescriptors } from "./app-server/adapters/hosted-process-descriptors";
 export { withHostedActivationFence, assertHostedActivationFence, assertHostedActivationOperator,
   readHostedActivationBytes, decodeHostedActivationBytes, requiresHostedProcessAdmission,
-  assertHostedScopedAdmission, retainHostedScopedCorrelation, retainHostedScopedSubmitter } from "./app-server/adapters/hosted-process-activation";
+  assertHostedScopedAdmission, retainHostedScopedCorrelation, retainHostedScopedSubmitter, retainHostedScopedActorChain } from "./app-server/adapters/hosted-process-activation";
 export type { HostedActivationFence } from "./app-server/adapters/hosted-process-activation";
 
 export type { HostedRetainedLifetimeBinding, HostedRetainedLifetimePort } from "./app-server/adapters/hosted-process-activation";

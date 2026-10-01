@@ -1,5 +1,6 @@
+import type { ScopedCgroupNode } from "../worker-core/hosted-custody/domain/scoped-termination";
 import { spawnSync } from "node:child_process";
-import { readFileSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync } from "node:fs";
+import { readFileSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { assertExactUnitGroup, custodyControlGroup, observedBootId, observedProcessBirth, parseUnitShow, scopedCgroupPopulated } from "./hosted-readonly-observations";
 
@@ -103,9 +104,9 @@ export function requestScopedManagerEffect(args: readonly string[], remainingMs:
 }
 /** Missing directories, parse failures and changed directory identities throw.
  * A retained cgroup and every descendant must positively report empty. */
-export function collectScopedRecursiveEmpty(group: string, remainingMs: number): { empty: boolean; digest: string } {
+export function collectScopedRecursiveEmpty(group: string, remainingMs: number): { empty: boolean; digest: string; nodes: readonly ScopedCgroupNode[] } {
   if (!/^\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-(?:ordinary|hosted)-[a-f0-9-]{36}\.service$/.test(group)) invalid();
-  const end = performance.now() + remainingMs, tree: unknown[] = []; let empty = true, count = 0;
+  const end = performance.now() + remainingMs, tree: ScopedCgroupNode[] = []; let empty = true, count = 0;
   const walk = (path: string): void => {
     if (++count > 256 || performance.now() >= end) invalid();
     const before = lstatSync(path);
@@ -118,20 +119,21 @@ export function collectScopedRecursiveEmpty(group: string, remainingMs: number):
       if (procs && !/^(?:[1-9][0-9]*\n)+$/.test(procs)) invalid();
       if (populated || procs !== "") empty = false;
       const names = readdirSync(anchored).sort();
+      const children: string[] = [];
       for (const name of names) {
         if (!/^[A-Za-z0-9_.@+-]+$/.test(name) || name === "." || name === "..") invalid();
         const stat = lstatSync(anchored + "/" + name);
         if (stat.isSymbolicLink()) invalid();
-        if (stat.isDirectory()) walk(path + "/" + name);
+        if (stat.isDirectory()) { children.push(name); walk(path + "/" + name); }
       }
       if (events !== readFileSync(anchored + "/cgroup.events", "utf8") || procs !== readFileSync(anchored + "/cgroup.procs", "utf8") ||
           JSON.stringify(names) !== JSON.stringify(readdirSync(anchored).sort())) invalid();
       const after = lstatSync(path); if (after.dev !== before.dev || after.ino !== before.ino) invalid();
-      tree.push([path, before.dev, before.ino, events, procs, names]);
+      tree.push({ path: path.slice("/sys/fs/cgroup".length), device: before.dev, inode: before.ino, events, processes: procs, children });
     } finally { closeSync(fd); }
   };
   walk("/sys/fs/cgroup" + group);
-  return { empty, digest: createHash("sha256").update(JSON.stringify(tree)).digest("hex") };
+  return { empty, nodes: Object.freeze(tree), digest: createHash("sha256").update(JSON.stringify(tree)).digest("hex") };
 }
 
 // Owned proxy only, never numeric process-group signaling. pidfd pins the exact
@@ -159,4 +161,22 @@ export function fenceScopedSubmitter(pidBirth: string, controlGroup: string, rem
   const result = spawnSync("/usr/bin/python3", ["-I", "-c", scopedPidfdFence, pidBirth.split(":")[0]!, pidBirth, controlGroup, String(remainingMs)], {
     encoding: "utf8", timeout: remainingMs, maxBuffer: 4096, env: {}, stdio: ["ignore", "pipe", "pipe"] });
   if (result.error || result.status !== 0 || result.stdout.trim() !== JSON.stringify({ pidBirth, controlGroup, exitObserved: true })) invalid();
+}
+
+/** systemd's root-owned invocation symlink supplies a bounded filesystem birth
+ * anchor for the short publication section. Absence/unsupported manager layouts
+ * are unresolved; qualification must validate this installed-host contract. */
+export function collectScopedInvocationAnchor(name: string): { invocationId: string; device: number; inode: number } {
+  unit(name);
+  const parent = "/run/systemd/units", before = lstatSync(parent);
+  if (!before.isDirectory() || before.isSymbolicLink() || before.uid !== 0 || (before.mode & 0o022)) invalid();
+  const fd = openSync(parent, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const opened = fstatSync(fd); if (opened.dev !== before.dev || opened.ino !== before.ino) invalid();
+    const path = `/proc/self/fd/${fd}/invocation:${name}`, link = lstatSync(path), invocationId = readlinkSync(path);
+    if (!link.isSymbolicLink() || link.uid !== 0 || link.nlink !== 1 || !/^[a-f0-9]{32}$/.test(invocationId)) invalid();
+    const after = lstatSync(path), directory = lstatSync(parent);
+    if (after.dev !== link.dev || after.ino !== link.ino || after.ctimeMs !== link.ctimeMs || readlinkSync(path) !== invocationId || directory.dev !== before.dev || directory.ino !== before.ino) invalid();
+    return { invocationId, device: link.dev, inode: link.ino };
+  } finally { closeSync(fd); }
 }

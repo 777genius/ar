@@ -1,5 +1,6 @@
+import { scopedOrdinaryAuthority } from "./hosted-controller/scoped-termination-validation";
 import { ScopedTerminationRecords } from "./hosted-controller/scoped-termination-records";
-import { ScopedTerminationKind, scopedOrdinaryAuthority, type RuntimeValidatedOrdinaryTermination } from "../worker-core/hosted-custody/domain/scoped-termination";
+import { ScopedTerminationKind, type RuntimeValidatedOrdinaryTermination } from "../worker-core/hosted-custody/domain/scoped-termination";
 import { readHostedChildSlot } from "./hosted-child-slot-files";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync } from "node:fs";
@@ -57,7 +58,7 @@ export class HostedInstallationActivationStore {
   publish(fence: HostedActivationFence, next: HostedActivation, recovering = false, authority?: RuntimeValidatedOrdinaryTermination): void {
     assertHostedActivationFence(fence);
     const prior = this.readCommitted(fence);
-    assertHostedActivationSuccessor(prior, next, authority);
+    assertHostedActivationSuccessor(prior, next, authority ? scopedOrdinaryAuthority(authority) : undefined);
     const pending = readHostedActivationBytes("host-activation.next");
     if (pending && !recovering) throw new Error("hosted_activation_publication_recovery_required");
     const bytes = Buffer.from(JSON.stringify(parseHostedActivation(next)) + "\n");

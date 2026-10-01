@@ -1,4 +1,4 @@
-import { scopedOrdinaryAuthority, type RuntimeValidatedOrdinaryTermination } from "./scoped-termination";
+import { parseScopedReceipt, type ScopedTerminationReceipt } from "./scoped-termination";
 /** Closed scheduling records, not proof of host authority. Adapters must bind
  * inspected bytes and independent creator/queue/descendant observations under
  * the common host mutex before publishing these transitions. */
@@ -128,12 +128,12 @@ export function parseHostedActivation(value: unknown): HostedActivation {
 /** Structural publication guard only. Positive OS evidence remains mandatory.
  * Each mutation advances exactly once; crash recovery may publish only that
  * retained immediate successor, never reconstruct or discard reservations. */
-export function assertHostedActivationSuccessor(before: HostedActivation, after: HostedActivation, authority?: RuntimeValidatedOrdinaryTermination): void {
+export function assertHostedActivationSuccessor(before: HostedActivation, after: HostedActivation, evidence?: ScopedTerminationReceipt): void {
   const prior = parseHostedActivation(before), next = parseHostedActivation(after);
   if (prior.installationId !== next.installationId || prior.hostId !== next.hostId ||
       next.generation !== prior.generation + 1 ||
       (prior.exclusiveEnrollmentSha256 !== null && prior.exclusiveEnrollmentSha256 !== next.exclusiveEnrollmentSha256)) invalid();
-  const receipt = authority ? scopedOrdinaryAuthority(authority) : null;
+  const receipt = evidence ? parseScopedReceipt(evidence) : null;
   if (receipt && (receipt.operation.identity.installationId !== prior.installationId || receipt.operation.identity.hostId !== prior.hostId ||
       receipt.operation.identity.bootId !== prior.bootId || receipt.operation.identity.supervisorId !== prior.supervisorId)) invalid();
   const authorized = new Map(receipt?.operation.members.map(m => [m.startId, m]) ?? []);

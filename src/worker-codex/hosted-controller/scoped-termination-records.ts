@@ -1,20 +1,26 @@
+import { parseScopedManagerJobs } from "../hosted-readonly-observations";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readSync, writeSync, type Stats } from "node:fs";
 import { dirname } from "node:path";
 import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { parseRetainedScopeIdentity, parseScopedInvocation, parseScopedOperation, parseScopedReceipt,
-  parseScopedStartCorrelation, parseScopedSubmitter, type ScopedSubmitter, type RetainedScopeIdentity, type ScopedTerminationOperation, type ScopedTerminationReceipt, type ScopedStartCorrelation, type ScopedInvocation } from "../../worker-core/hosted-custody/domain/scoped-termination";
+  scopedDigest, validateScopedCollectedEvidence, parseScopedActorChain, parseScopedActorDischarge, bindScopedActorChain, type ScopedActorChain, type ScopedActorDischarge, type ScopedTerminationMember, parseScopedStartCorrelation, parseScopedSubmitter, type ScopedSubmitter, type RetainedScopeIdentity, type ScopedTerminationOperation, type ScopedTerminationReceipt, type ScopedStartCorrelation, type ScopedInvocation } from "../../worker-core/hosted-custody/domain/scoped-termination";
 
 const root = "/var/lib/subscription-runtime-host-policy";
 const max = 4 * 1024 * 1024;
 const same = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;
 export const scopedRecordDigest = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 const encode = (v: unknown) => Buffer.from(JSON.stringify(v) + "\n");
-export interface ScopedTerminatingMarker { readonly schemaVersion: 1; readonly identity: RetainedScopeIdentity;
+export type ScopedFenceIdentity = Pick<RetainedScopeIdentity, "scopeDigest" | "authorityDigest" | "slotId" | "parentStartId" | "dispatchIntentGeneration">;
+export interface ScopedTerminatingMarker { readonly schemaVersion: 1; readonly identity: ScopedFenceIdentity;
   readonly operationGeneration: number; readonly reservationIds: readonly string[] }
 function marker(value: unknown): ScopedTerminatingMarker {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "identity,operationGeneration,reservationIds,schemaVersion") throw new Error("scoped_marker_invalid");
-  const v = value as ScopedTerminatingMarker, identity = parseRetainedScopeIdentity(v.identity);
+  const v = value as ScopedTerminatingMarker, identity = v.identity;
+  if (!identity || Object.keys(identity).sort().join(",") !== "authorityDigest,dispatchIntentGeneration,parentStartId,scopeDigest,slotId" ||
+      !/^[a-f0-9]{64}$/.test(identity.scopeDigest) || !/^[a-f0-9]{64}$/.test(identity.authorityDigest) ||
+      !/^[a-f0-9-]{36}$/.test(identity.parentStartId) || !/^[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}$/.test(identity.slotId) ||
+      !Number.isSafeInteger(identity.dispatchIntentGeneration) || identity.dispatchIntentGeneration < 1) throw new Error("scoped_marker_invalid");
   if (v.schemaVersion !== 1 || !Number.isSafeInteger(v.operationGeneration) || v.operationGeneration < 1 ||
       !Array.isArray(v.reservationIds) || !v.reservationIds.length || v.reservationIds.length > 256 ||
       v.reservationIds.some(id => !/^[a-f0-9-]{36}$/.test(id)) || new Set(v.reservationIds).size !== v.reservationIds.length) throw new Error("scoped_marker_invalid");
@@ -27,7 +33,7 @@ export class ScopedTerminationRecords {
   constructor(private readonly authenticate: () => void) {}
   #access<T>(namespace: string, id: string, action: (path: string, parents: readonly number[], verify: () => void) => T): T {
     this.authenticate(); assertHostedActivationOperator();
-    if (!/^(?:ordinary-correlations|ordinary-invocations|ordinary-submitters|ordinary-submitter-exits|scoped-terminating|scoped-operations|scoped-observations|scoped-receipts|keyed-child-owners|host-activation)$/.test(namespace) || !(namespace === "host-activation" ? id === "record" : namespace === "keyed-child-owners" ? /^[a-f0-9]{64}$/.test(id) : /^[a-f0-9-]{36}$/.test(id))) throw new Error("scoped_record_name_invalid");
+    if (!/^(?:ordinary-correlations|ordinary-invocations|ordinary-submitters|ordinary-submitter-exits|ordinary-actor-chains|scoped-terminating|scoped-operations|scoped-observations|scoped-receipts|keyed-child-owners|host-activation)$/.test(namespace) || !(namespace === "host-activation" ? id === "record" : namespace === "keyed-child-owners" ? /^[a-f0-9]{64}$/.test(id) : /^[a-f0-9-]{36}$/.test(id))) throw new Error("scoped_record_name_invalid");
     const path = namespace === "host-activation" ? root : root + "/" + namespace, pinned: { path: string; stat: Stats; fd: number }[] = [];
     try {
       for (let current = path;; current = dirname(current)) {
@@ -113,13 +119,21 @@ export class ScopedTerminationRecords {
   correlation(id: string): ScopedStartCorrelation | null { return this.#parse("ordinary-correlations", id, parseScopedStartCorrelation); }
   invocation(id: string): ScopedInvocation | null { return this.#parse("ordinary-invocations", id, parseScopedInvocation); }
   submitter(id: string): ScopedSubmitter | null { return this.#parse("ordinary-submitters", id, parseScopedSubmitter); }
-  submitterExited(id: string, digest: string): boolean {
-    const bytes = this.read("ordinary-submitter-exits", id);
-    if (!bytes) return false;
-    if (!bytes.equals(encode({ schemaVersion: 1, submitterDigest: digest, exitObserved: true }))) throw new Error("scoped_submitter_exit_invalid"); return true;
+  actorChain(member: ScopedTerminationMember): ScopedActorChain {
+    const chain = this.#parse("ordinary-actor-chains", member.startId, parseScopedActorChain), submitter = this.submitter(member.startId);
+    if (!chain || !submitter) throw new Error("scoped_actor_chain_required");
+    bindScopedActorChain(chain, member, submitter); return chain;
   }
-  retainSubmitterExit(f: HostedActivationFence, id: string, digest: string): void {
-    this.write(f, "ordinary-submitter-exits", id, encode({ schemaVersion: 1, submitterDigest: digest, exitObserved: true }));
+  discharge(member: ScopedTerminationMember): ScopedActorDischarge | null {
+    const bytes = this.read("ordinary-submitter-exits", member.startId);
+    if (!bytes) return null;
+    const value = parseScopedActorDischarge(decodeHostedActivationBytes(bytes), this.actorChain(member));
+    const marker = this.terminating(member.identity.parentStartId);
+    if (!marker || value.fenceDigest !== scopedDigest(marker) || scopedDigest(marker.identity) !== scopedDigest(scopedFenceIdentity(member.identity))) throw new Error("scoped_creator_fence_invalid");
+    if (!encode(value).equals(bytes)) throw new Error("scoped_discharge_noncanonical"); return value;
+  }
+  retainDischarge(f: HostedActivationFence, member: ScopedTerminationMember, value: ScopedActorDischarge): void {
+    this.write(f, "ordinary-submitter-exits", member.startId, encode(parseScopedActorDischarge(value, this.actorChain(member))));
   }
   terminating(id: string): ScopedTerminatingMarker | null { return this.#parse("scoped-terminating", id, marker); }
   operation(id: string): ScopedTerminationOperation | null { return this.#parse("scoped-operations", id, parseScopedOperation); }
@@ -131,10 +145,22 @@ export class ScopedTerminationRecords {
       operationDigest: scopedRecordDigest(encode(receipt.operation)), observations: receipt.observations }));
   }
   validateObservations(receipt: ScopedTerminationReceipt): void {
+    for (const [i, member] of receipt.operation.members.entries()) {
+      const evidence = receipt.observations[i]!.evidence;
+      validateScopedCollectedEvidence(evidence, member);
+      const chain = this.actorChain(member), discharge = this.discharge(member);
+      if (!discharge || scopedDigest(evidence.chain) !== scopedDigest(chain) || scopedDigest(evidence.discharge) !== scopedDigest(discharge) ||
+          parseScopedManagerJobs(evidence.queueBefore).some(j => j.unit === member.unit) || scopedDigest(evidence) !== receipt.observations[i]!.digest) throw new Error("scoped_creator_evidence_invalid");
+    }
     const bytes = this.read("scoped-observations", receipt.operation.identity.parentStartId);
     if (!bytes?.equals(encode({ schemaVersion: 1, operationDigest: scopedRecordDigest(encode(receipt.operation)), observations: receipt.observations }))) throw new Error("scoped_observation_evidence_invalid");
   }
   retainReceipt(f: HostedActivationFence, v: ScopedTerminationReceipt): string {
     const bytes = encode(parseScopedReceipt(v)); this.write(f, "scoped-receipts", v.operation.identity.parentStartId, bytes); return scopedRecordDigest(bytes);
   }
+}
+
+export function scopedFenceIdentity(identity: RetainedScopeIdentity): ScopedFenceIdentity {
+  const { scopeDigest, authorityDigest, slotId, parentStartId, dispatchIntentGeneration } = identity;
+  return { scopeDigest, authorityDigest, slotId, parentStartId, dispatchIntentGeneration };
 }

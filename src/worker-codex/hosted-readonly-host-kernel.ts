@@ -1,4 +1,6 @@
-import { scopedDigest, type ScopedTerminationMember, type ScopedTerminationObservation, type ScopedSignal } from "../worker-core/hosted-custody/domain/scoped-termination";
+import { ScopedTerminationRecords, scopedFenceIdentity } from "./hosted-controller/scoped-termination-records";
+import { assertHostedActivationOperator } from "@vioxen/subscription-runtime/provider-codex";
+import { scopedDigest, ScopedActorDischargeMethod, parseScopedActorDischarge, type ScopedActorChain, type ScopedActorDischarge, type ScopedCollectedEvidence, type ScopedIdentityEvidence, type ScopedTerminationMember, type ScopedTerminationObservation, type ScopedSignal } from "../worker-core/hosted-custody/domain/scoped-termination";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
@@ -13,7 +15,7 @@ import { TrustedCustodyLaunchRole, trustedCustodySystemdLaunch } from "./trusted
 import { assertExactUnitGroup, assertNoQueuedStart, assertPopulatedZero, assertTerminalUnit,
   custodyControlGroup, observedJobUnits, parseScopedManagerJobs } from "./hosted-readonly-observations";
 import { collectBootId, collectCgroupProcesses, collectCustodyEvents, collectFutureCreatorShow, collectJobs,
-  collectProcessBirth, collectScopedRecursiveEmpty, collectUnitInvocation, fenceScopedSubmitter, withScopedCollectionBudget, requestScopedManagerEffect, collectProcessCgroup, collectSelfCgroup, collectUnitNotFound, collectUnitShow } from "./hosted-readonly-linux-collector";
+  collectProcessBirth, collectScopedInvocationAnchor, collectScopedRecursiveEmpty, collectUnitInvocation, fenceScopedSubmitter, withScopedCollectionBudget, requestScopedManagerEffect, collectProcessCgroup, collectSelfCgroup, collectUnitNotFound, collectUnitShow } from "./hosted-readonly-linux-collector";
 
 export enum HostedReadonlyRuntimeRole { Supervisor = "supervisor", Runtime = "runtime" }
 
@@ -296,30 +298,45 @@ export class HostedReadonlyHostKernel {
     assertOrdinaryReservation(reservation); this.requestUnitStop(reservation.unit);
   }
 
-  assertScopedIdentity(member: ScopedTerminationMember, remainingMs = 1000): void {
-    withScopedCollectionBudget(remainingMs, () => {
-      assertReadonlyHostOperator();
-      const identity = member.identity, supervisor = collectUnitShow(identity.supervisorUnit);
-      if (readFileSync("/etc/machine-id", "utf8").trim() !== identity.hostId || collectBootId() !== identity.bootId ||
-          supervisor.ControlGroup !== identity.supervisorControlGroup || collectProcessBirth(supervisor.MainPID!) !== identity.supervisorId ||
-          collectUnitInvocation(member.unit) !== member.invocationId || collectUnitShow(member.unit).ControlGroup !== member.controlGroup) invalid();
-      const pid = member.creatorPidBirth.split(":")[0]!;
-      try {
-        if (collectProcessBirth(pid) !== member.creatorPidBirth || collectProcessCgroup(pid) !== `0::${member.creatorControlGroup}`) invalid();
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-        if (!member.creatorControlGroup.startsWith("/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/subscription-runtime-ordinary-")) throw e;
-        // Absence contributes no proof. Every correlated group/submitter still
-        // needs independent positive empty/exit observations.
-      }
-    });
+  #scopedIdentity(member: ScopedTerminationMember, fencing = false): ScopedIdentityEvidence {
+    assertReadonlyHostOperator();
+    const identity = member.identity, supervisor = collectUnitShow(identity.supervisorUnit);
+    const evidence: ScopedIdentityEvidence = { hostId: readFileSync("/etc/machine-id", "utf8").trim(), bootId: collectBootId(),
+      supervisorBirth: collectProcessBirth(supervisor.MainPID!), supervisorGroup: collectProcessCgroup(supervisor.MainPID!).replace(/^0::/, ""),
+      invocationId: collectUnitInvocation(member.unit), invocationAnchor: collectScopedInvocationAnchor(member.unit), unitGroup: collectUnitShow(member.unit).ControlGroup!,
+      creatorBirth: null, creatorGroup: null };
+    if (evidence.hostId !== identity.hostId || evidence.bootId !== identity.bootId || evidence.supervisorBirth !== identity.supervisorId ||
+        evidence.supervisorGroup !== identity.supervisorControlGroup || supervisor.ControlGroup !== identity.supervisorControlGroup || evidence.invocationId !== member.invocationId || evidence.invocationAnchor.invocationId !== member.invocationId || evidence.unitGroup !== member.controlGroup) invalid();
+    const pid = member.creatorPidBirth.split(":")[0]!;
+    try {
+      const creatorBirth = collectProcessBirth(pid), creatorGroup = collectProcessCgroup(pid).replace(/^0::/, "");
+      if (creatorBirth !== member.creatorPidBirth || creatorGroup !== member.creatorControlGroup) invalid();
+      return { ...evidence, creatorBirth, creatorGroup };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      // An absent creator is usable ONLY with retained positive discharge of the
+      // complete authenticated chain, including that exact original creator.
+      const records = new ScopedTerminationRecords(assertHostedActivationOperator), marker = records.terminating(member.identity.parentStartId);
+      if (!records.discharge(member) && !(fencing && marker && scopedDigest(marker.identity) === scopedDigest(scopedFenceIdentity(member.identity)) && records.actorChain(member))) throw e;
+      return evidence;
+    }
   }
-  fenceScopedSubmitter(member: ScopedTerminationMember, submitter: import("../worker-core/hosted-custody/domain/scoped-termination").ScopedSubmitter, remainingMs: number): void {
+  assertScopedIdentity(member: ScopedTerminationMember, remainingMs = 1000): void {
+    withScopedCollectionBudget(remainingMs, () => { this.#scopedIdentity(member); });
+  }
+  fenceScopedSubmitter(member: ScopedTerminationMember, chain: ScopedActorChain, remainingMs: number): ScopedActorDischarge {
     return withScopedCollectionBudget(remainingMs, () => {
+      const records = new ScopedTerminationRecords(assertHostedActivationOperator), retained = records.actorChain(member);
+      if (scopedDigest(chain) !== scopedDigest(retained)) invalid();
       const end = performance.now() + remainingMs;
-      this.assertScopedIdentity(member, remainingMs);
-      fenceScopedSubmitter(submitter.pidBirth, submitter.controlGroup, Math.floor(end - performance.now()));
-      this.assertScopedIdentity(member, Math.max(1, Math.floor(end - performance.now())));
+      this.#scopedIdentity(member, true);
+      const marker = records.terminating(member.identity.parentStartId);
+      if (!marker || scopedDigest(marker.identity) !== scopedDigest(scopedFenceIdentity(member.identity))) invalid();
+      // Every enqueue-capable task is pinned independently; wrapper exit alone
+      // cannot discharge a surviving systemd-run or original scoped creator.
+      for (const actor of chain.actors.slice(1).reverse()) fenceScopedSubmitter(actor.pidBirth, actor.controlGroup, Math.floor(end - performance.now()));
+      return parseScopedActorDischarge({ schemaVersion: 2, chainDigest: scopedDigest(chain), fenceDigest: scopedDigest(marker),
+        actors: chain.actors.map((a, i) => ({ ...a, method: i === 0 ? ScopedActorDischargeMethod.ScopedAdmissionFence : ScopedActorDischargeMethod.PidfdExit })) }, chain);
     });
   }
   drainScopedQueue(member: ScopedTerminationMember, remainingMs: number): void {
@@ -344,16 +361,37 @@ export class HostedReadonlyHostKernel {
       requestScopedManagerEffect(["stop", "--no-block", "--", member.unit], Math.floor(end - performance.now()));
     });
   }
-  collectScoped(member: ScopedTerminationMember, remainingMs: number, creatorFenced: boolean): ScopedTerminationObservation {
+  /** Nonblocking checks of retained capabilities and pinned birth identities.
+   * Manager queries and waits remain exclusively in lock-free collection. */
+  validateScopedPublication(member: ScopedTerminationMember, evidence: ScopedCollectedEvidence): void {
+    assertReadonlyHostOperator();
+    const records = new ScopedTerminationRecords(assertHostedActivationOperator), discharge = records.discharge(member);
+    if (!discharge || scopedDigest(discharge) !== scopedDigest(evidence.discharge) || scopedDigest(records.actorChain(member)) !== scopedDigest(evidence.chain) ||
+        readFileSync("/etc/machine-id", "utf8").trim() !== member.identity.hostId || collectBootId() !== member.identity.bootId ||
+        collectProcessBirth(member.identity.supervisorId.split(":")[0]!) !== member.identity.supervisorId ||
+        collectProcessCgroup(member.identity.supervisorId.split(":")[0]!) !== `0::${member.identity.supervisorControlGroup}`) invalid();
+    if (scopedDigest(collectScopedInvocationAnchor(member.unit)) !== scopedDigest(evidence.identityAfter.invocationAnchor)) invalid();
+    for (const node of evidence.cgroups) {
+      const current = lstatSync("/sys/fs/cgroup" + node.path);
+      if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== node.device || current.ino !== node.inode) invalid();
+    }
+    for (const actor of evidence.chain.actors.slice(1)) {
+      try { if (collectProcessBirth(actor.pidBirth.split(":")[0]!) === actor.pidBirth) invalid(); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+    }
+  }
+  collectScoped(member: ScopedTerminationMember, remainingMs: number): ScopedTerminationObservation {
     return withScopedCollectionBudget(remainingMs, () => {
-      const end = performance.now() + remainingMs;
-      this.assertScopedIdentity(member, Math.max(1, Math.floor(end - performance.now())));
-      const queue = parseScopedManagerJobs(collectJobs()), tree = collectScopedRecursiveEmpty(member.controlGroup, Math.floor(end - performance.now()));
-      this.assertScopedIdentity(member, Math.max(1, Math.floor(end - performance.now())));
-      if (JSON.stringify(queue) !== JSON.stringify(parseScopedManagerJobs(collectJobs()))) invalid();
-      return Object.freeze({ startId: member.startId, identityUnchanged: true, creatorFenced,
-        queueEmpty: !queue.some(row => row.unit === member.unit), recursiveEmpty: tree.empty,
-        digest: scopedDigest([member, queue, tree]) });
+      const end = performance.now() + remainingMs, records = new ScopedTerminationRecords(assertHostedActivationOperator);
+      const chain = records.actorChain(member), discharge = records.discharge(member);
+      if (!discharge) throw new Error("scoped_creator_discharge_required");
+      const identityBefore = this.#scopedIdentity(member), queueBefore = collectJobs();
+      const queue = parseScopedManagerJobs(queueBefore), tree = collectScopedRecursiveEmpty(member.controlGroup, Math.floor(end - performance.now()));
+      const identityAfter = this.#scopedIdentity(member), queueAfter = collectJobs(); parseScopedManagerJobs(queueAfter);
+      if (queueBefore !== queueAfter || scopedDigest(identityBefore) !== scopedDigest(identityAfter)) invalid();
+      const evidence = { schemaVersion: 1 as const, memberDigest: scopedDigest(member), chain, discharge, identityBefore, identityAfter, queueBefore, queueAfter, cgroups: tree.nodes };
+      return Object.freeze({ startId: member.startId, identityUnchanged: true, creatorFenced: true,
+        queueEmpty: !queue.some(row => row.unit === member.unit), recursiveEmpty: tree.empty, digest: scopedDigest(evidence), evidence });
     });
   }
 

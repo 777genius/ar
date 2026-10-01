@@ -76,7 +76,7 @@ export function assertPopulatedZero(raw: string): void {
   if (populated !== 1) throw new Error("hosted_custody_descendants_not_terminal");
 }
 
-export enum ScopedManagerJobType { Start = "start", Stop = "stop", Restart = "restart", Reload = "reload", ReloadOrStart = "reload-or-start", TryRestart = "try-restart", VerifyActive = "verify-active" }
+export enum ScopedManagerJobType { Start = "start", Stop = "stop", Restart = "restart", Reload = "reload", ReloadOrStart = "reload-or-start", TryRestart = "try-restart", VerifyActive = "verify-active", Nop = "nop" }
 export enum ScopedManagerJobState { Waiting = "waiting", Running = "running" }
 export interface ScopedManagerJob { readonly id: string; readonly unit: string; readonly type: ScopedManagerJobType; readonly state: ScopedManagerJobState }
 /** Complete strict list, then select exact units. Unknown/malformed rows cannot
@@ -85,7 +85,7 @@ export function parseScopedManagerJobs(raw: string): readonly ScopedManagerJob[]
   const ids = new Set<string>();
   return lines(raw).map(line => {
     const row = line.trim().split(/\s+/), [id, unit, type, state] = row;
-    if (row.length !== 4 || !id || !/^[1-9][0-9]*$/.test(id) || ids.has(id) || !unit || !/^[A-Za-z0-9_@.:-]+\.(?:service|scope|socket|timer|target|mount|slice)$/.test(unit) ||
+    if (row.length !== 4 || !id || !/^[1-9][0-9]*$/.test(id) || ids.has(id) || !unit || unit.length > 255 || !/^(?:[A-Za-z0-9_@.:-]|\\x[0-9a-fA-F]{2})+\.(?:service|scope|socket|timer|target|mount|automount|device|swap|path|slice)$/.test(unit) ||
         !type || !Object.values(ScopedManagerJobType).includes(type as ScopedManagerJobType) ||
         !state || !Object.values(ScopedManagerJobState).includes(state as ScopedManagerJobState)) invalid();
     ids.add(id); return Object.freeze({ id, unit, type: type as ScopedManagerJobType, state: state as ScopedManagerJobState });
