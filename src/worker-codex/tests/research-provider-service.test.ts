@@ -385,6 +385,58 @@ describe("owned research provider cancellation (real files and streams; systemd/
 });
 
 describe("bounded confined-launcher readiness (real streams; settled proc/systemd observations substituted)", () => {
+  it.each(["duplicate-separate-chunks", "ready-then-eof"])("keeps bootstrap held on the exact R3 %s counterexample", async fault => {
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
+    const outputForward = vi.spyOn(proxy.stdout, "pipe");
+    host.spawn.mockImplementation(() => {
+      const result = submit();
+      queueMicrotask(() => {
+        if (fault === "duplicate-separate-chunks") { proxy.stdout.write(readyFrame); proxy.stdout.write(readyFrame); }
+        else proxy.stdout.end(readyFrame);
+      });
+      return result;
+    });
+    // Make an incorrect bootstrap release terminate, so old code fails an
+    // effect assertion instead of merely hanging until the test timeout.
+    proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+    let denied = false;
+    try { await runResearchProviderService(current.jobId, current.provider, current.home); } catch { denied = true; }
+    expect(Buffer.concat(forwarded).length).toBe(0);
+    expect(denied).toBe(true); expect(current.forward).not.toHaveBeenCalled(); expect(outputForward).not.toHaveBeenCalled();
+    expect(host.authReads).toBe(0); expect(proxy.stdin.destroyed).toBe(true);
+    expect(record(current, ".cancel").unit).toBe(current.provider); expect(proxy.kill).toHaveBeenCalledWith("SIGTERM");
+    const controls = host.calls.filter(c => ["kill", "stop"].includes(c.args[0]!));
+    expect(controls.length).toBeGreaterThan(0); expect(controls.every(c => c.args.at(-1) === current.provider)).toBe(true);
+    expect(record(current, ".submission").state).toBe("pending");
+  });
+  it("accepts byte-fragmented readiness and forwards only later native output after owner publication", async () => {
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
+    host.spawn.mockImplementation(submit);
+    const output = new PassThrough(), nativeOutput: Buffer[] = [];
+    streams.add(output); output.on("data", chunk => nativeOutput.push(Buffer.from(chunk)));
+    const pipe = proxy.stdout.pipe.bind(proxy.stdout);
+    const outputForward = vi.spyOn(proxy.stdout, "pipe").mockImplementation(destination => {
+      expect(destination).toBe(process.stdout);
+      expect(record(current, ".owner").process.namespaces).toEqual(settledNamespaces);
+      return pipe(output) as typeof destination;
+    });
+    const native = '{"jsonrpc":"2.0","id":1,"result":{"TEST":true}}\n';
+    proxy.stdin.once("data", () => {
+      expect(record(current, ".owner").service.unit).toBe(current.provider);
+      proxy.stdout.end(native); proxy.exitCode = 0; proxy.emit("exit", 0, null);
+    });
+    const running = runResearchProviderService(current.jobId, current.provider, current.home);
+    for (const byte of Buffer.from(readyFrame)) {
+      expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled();
+      expect(outputForward).not.toHaveBeenCalled(); expect(() => record(current, ".owner")).toThrow();
+      proxy.stdout.write(Buffer.from([byte])); await Promise.resolve();
+    }
+    await running;
+    expect(Buffer.concat(nativeOutput).toString()).toBe(native);
+    expect(Buffer.concat(forwarded).toString()).toContain('"command":"/usr/bin/TEST-codex"');
+    expect(current.forward).toHaveBeenCalledOnce(); expect(outputForward).toHaveBeenCalledOnce();
+    expect(record(current, ".submission").state).toBe("settled");
+  });
   it("ignores early Type=exec MainPID until the confined launcher is ready and keeps later namespace changes fenced", async () => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     host.spawn.mockImplementation(() => { const result = submit(); host.processNamespaces.delete(424242); return result; });
@@ -444,4 +496,42 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
     expect(record(current, ".owner").process.namespaces).toEqual(settledNamespaces);
     expect(current.forward).not.toHaveBeenCalled(); expect(forwarded).toHaveLength(0);
   });
+  it.each(["duplicate-frame", "queued-data", "eof", "queued-eof", "close-event", "stdout-error", "spawn-error", "exit", "signal", "timeout", "cancel", "owner-namespace", "owner-invocation"])(
+    "retains the control failure fence through owner publication on %s", async fault => {
+      const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current);
+      host.spawn.mockImplementation(submit);
+      const outputForward = vi.spyOn(proxy.stdout, "pipe"), sync = fs.fsyncSync;
+      let published = false;
+      vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
+        sync(fd);
+        if (!host.fdPaths.get(fd)?.endsWith(current.provider + ".owner.json")) return;
+        published = true;
+        if (fault === "duplicate-frame") proxy.stdout.write(readyFrame);
+        if (fault === "queued-data") process.nextTick(() => proxy.stdout.write("TEST forbidden native output\n"));
+        if (fault === "eof") proxy.stdout.end();
+        if (fault === "queued-eof") process.nextTick(() => proxy.stdout.end());
+        // A latched observation must also reject when stream flags remain live.
+        if (fault === "close-event") proxy.stdout.emit("close");
+        if (fault === "stdout-error") proxy.stdout.emit("error", new Error("TEST post-ready stdout error"));
+        if (fault === "spawn-error") proxy.emit("error", new Error("TEST post-ready transport error"));
+        if (fault === "exit") { proxy.exitCode = 0; proxy.emit("exit", 0, null); }
+        if (fault === "signal") { proxy.signalCode = "SIGTERM"; proxy.emit("exit", null, "SIGTERM"); }
+        if (fault === "timeout") vi.spyOn(performance, "now").mockReturnValue(Number.MAX_SAFE_INTEGER);
+        if (fault === "cancel") signalResearchProvider(current.directory, current.provider);
+        if (fault === "owner-namespace") host.processNamespaces.set(424242, { ...settledNamespaces, mnt: "TEST-foreign-mnt" });
+        if (fault === "owner-invocation") host.units.get(current.provider)!.invocation = "e".repeat(32);
+      });
+      proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+      let denied = false;
+      try { await runResearchProviderService(current.jobId, current.provider, current.home); } catch { denied = true; }
+      expect(published).toBe(true); expect(denied).toBe(true);
+      expect(record(current, ".owner").process.namespaces).toEqual(settledNamespaces);
+      expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled(); expect(outputForward).not.toHaveBeenCalled();
+      expect(host.authReads).toBe(0); expect(proxy.stdin.destroyed).toBe(true); expect(proxy.kill).toHaveBeenCalledWith("SIGTERM");
+      expect(record(current, ".cancel").unit).toBe(current.provider);
+      const controls = host.calls.filter(c => ["kill", "stop"].includes(c.args[0]!));
+      if (fault.startsWith("owner-")) expect(controls).toHaveLength(0); // Changed ownership cannot grant signal authority.
+      else { expect(controls.length).toBeGreaterThan(0); expect(controls.every(c => c.args.at(-1) === current.provider)).toBe(true); }
+      expect(record(current, ".submission").state).toBe(["exit", "signal"].includes(fault) ? "settled" : "pending");
+    });
 });

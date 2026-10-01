@@ -551,6 +551,55 @@ remain Root-owned. Offline source and stream fixtures prove no Internet or live
 confinement. CMS effects remain an extension of the existing static Host adapter
 and launch composition; the GM reference below and shared standard are unchanged.
 
+### r11 independent readiness handoff correction
+
+This P1 correction targets only Root's exact candidate
+`540035fcb801f3981f331e3cf2ee5cb8b12c3eba`. The writer verified the supplied
+candidate-patch SHA-256 and all sixteen accessible patch postimages; Root owns
+git-object authentication. Production changes are confined to
+`research-provider-service.ts`, with real-stream regressions in its nearest test
+and this documentation. The final540 physical-identity TEST correction,
+production scratch/cancellation/temp behavior and ordinary/MiMo code are preserved.
+
+Exact fixed-launcher readiness now resolves a promise while its control-stream
+guard continues consuming stdout. The guard latches additional bytes, EOF,
+close, errors, exit, timeout and cancellation through settled-owner publication.
+A failure after readiness cannot be cleared by the already resolved promise.
+Matching retains only an offset into the fixed frame, with the existing five
+second deadline and cancellation polling. After publication, one event-loop
+turn permits queued control data/termination to be observed. The helper then
+corroborates the retained owner again, checks the latched guard and detaches it
+at the synchronous transition into native forwarding and bootstrap release.
+The readiness frame never enters the native protocol; later native output and
+normal native EOF remain supported. This closes an EOF/duplicate fail-closed
+contract defect; the evidence does not establish readiness forgery or ownership
+bypass. No new shared boundary is introduced, so CMS classification below and
+its reference remain unchanged.
+
+In a fresh isolated workspace TEST root, both exact R3 inputs—separate
+`write(frame); write(frame)` chunks and `end(frame)`—failed the unchanged
+candidate helper's new effect assertions, each releasing 249 bootstrap bytes.
+With this correction they reject with zero bootstrap bytes, no stdin/stdout
+forwarding or auth-read effects, a durable cancellation fence and only owned
+cleanup. A byte-fragmented positive control consumes readiness, publishes the
+settled owner and forwards the exact later native JSON-RPC output. Additional
+post-publication cases cover queued data/EOF, latched close, errors, exit,
+timeout, cancellation and changed owner namespace/InvocationID; foreign owner
+mutations refuse physical signaling.
+
+Writer-observed verification passed 184 tests in eight focused suites, including
+all 73 nearest helper cases and all 58 owner cases. Root/package no-emit
+typechecks, isolated TEST builds and all six existing boundary/architecture
+checks passed. Raw argv, results, logs, base snapshots, the separate source patch
+and the full English report are retained in workspace
+`tmp/root-export-evidence`. Proc/systemd/ownership observations and provider
+transport are explicitly substituted; Node streams and TEST file bytes are real.
+Root's supplied R3 reproductions and final540 Root/User iliya 58-case results
+remain separately attributed. Actual systemd/unshare/native qualification,
+genuine UID1000 qualification and final exact CI are Root-owned and were not run
+here; they do not block this independent writer patch. No installs, commits,
+pushes, live provider/service/database work or credential access occurred.
+
 ## Consumer Module Standard classification
 
 This feature extends SR’s existing static provider/runtime composition. The new
