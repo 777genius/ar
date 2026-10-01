@@ -12,11 +12,13 @@ import {
 export enum RetainedValidationMode { LiveData = "live_data", ReadOnlyHistoricalData = "read_only_historical_data" }
 export enum RetainedChainState { Incomplete = "incomplete", CompleteData = "complete_data" }
 /** Must come from the target-owning authenticated reader's authoritative inventory,
- * including reservations/resources created during partial or zero preparation.
+ * including reservations/resources and every created payload gate, even before
+ * completed admission/publication during partial or zero preparation.
  * Supplying this DTO does not authenticate that inventory or its producer. */
 export interface RetainedChainExpectation {
   readonly targetDigest: string; readonly attemptDigest: string;
   readonly reservationDigests: readonly string[]; readonly obligationDigests: readonly string[];
+  readonly payloadGateDigests: readonly string[];
 }
 export type RetainedChainValidation =
   | { readonly state: RetainedChainState.Incomplete; readonly missing: readonly string[] }
@@ -81,12 +83,14 @@ export function validateScopedRetainedChain(
   retainedResourceCanonicalJson(values);
   retainedResourceCanonicalJson(expected);
   requireData(expected !== null && typeof expected === "object", "expectation");
-  requireData(Object.keys(expected).sort().join(",") === "attemptDigest,obligationDigests,reservationDigests,targetDigest" &&
+  requireData(Object.keys(expected).sort().join(",") === "attemptDigest,obligationDigests,payloadGateDigests,reservationDigests,targetDigest" &&
     /^[a-f0-9]{64}$/.test(expected.targetDigest) && /^[a-f0-9]{64}$/.test(expected.attemptDigest) &&
     Array.isArray(expected.reservationDigests) && expected.reservationDigests.length <= 256 &&
     Array.isArray(expected.obligationDigests) && expected.obligationDigests.length === 1 &&
-    [...expected.reservationDigests, ...expected.obligationDigests].every(d => typeof d === "string" && /^[a-f0-9]{64}$/.test(d)), "expectation");
+    Array.isArray(expected.payloadGateDigests) && expected.payloadGateDigests.length <= 256 &&
+    [...expected.reservationDigests, ...expected.obligationDigests, ...expected.payloadGateDigests].every(d => typeof d === "string" && /^[a-f0-9]{64}$/.test(d)), "expectation");
   unique(expected.reservationDigests, "inventory_duplicates");
+  unique(expected.payloadGateDigests, "inventory_duplicates");
   const records = values.map(parseScopedRetainedRecord), byDigest = new Map(records.map(r => [digest(r), r]));
   requireData(byDigest.size === records.length, "duplicate_records");
   unique(records.map(r => r.publication.generation), "publication_generation");
@@ -115,7 +119,7 @@ export function validateScopedRetainedChain(
     if (mode === RetainedValidationMode.LiveData) requireData(nowEpochMs >= t.cleanupAttempt.startedAtEpochMs && nowEpochMs < t.cleanupAttempt.endEpochMs, "expired_live_data");
     for (const r of records) {
       const p = r.publication;
-      const workRecord = [Kind.Target, Kind.Reservation, Kind.ResourceObligation, Kind.ResourceBinding, Kind.Correlation, Kind.ActorAdmission, Kind.ServiceAdmission].includes(r.kind);
+      const workRecord = [Kind.Target, Kind.Reservation, Kind.ResourceObligation, Kind.ResourceBinding, Kind.Correlation, Kind.ActorAdmission, Kind.ServiceAdmission, Kind.PayloadGate].includes(r.kind);
       requireData(p.producerId === t.installation.producerId && p.admittedAtEpochMs <= p.durableAtEpochMs &&
         p.durableAtEpochMs <= p.finalValidatedAtEpochMs && p.finalValidatedAtEpochMs < (workRecord ? t.workEndEpochMs : t.cleanupAttempt.endEpochMs) &&
         (workRecord || p.admittedAtEpochMs >= t.cleanupAttempt.startedAtEpochMs), "publication_authority_time");
@@ -123,8 +127,8 @@ export function validateScopedRetainedChain(
       if ("attemptDigest" in r.data) requireData(r.data.attemptDigest === attemptDigest, "renewed_attempt");
       if (r !== targetRecord) after(r, targetRecord);
     }
-    for (const kind of [Kind.Reservation, Kind.ResourceObligation] as const) {
-      const inventory = kind === Kind.Reservation ? expected.reservationDigests : expected.obligationDigests;
+    for (const kind of [Kind.Reservation, Kind.ResourceObligation, Kind.PayloadGate] as const) {
+      const inventory = kind === Kind.Reservation ? expected.reservationDigests : kind === Kind.ResourceObligation ? expected.obligationDigests : expected.payloadGateDigests;
       const present = records.filter(r => r.kind === kind).map(digest);
       requireData(present.every(d => inventory.includes(d)), "foreign_inventory");
       for (const d of inventory) get(d, kind);
@@ -154,11 +158,13 @@ export function validateScopedRetainedChain(
     exactSet(c.reservationDigests, expected.reservationDigests, "closure_reservations");
     exactSet(c.obligationDigests, expected.obligationDigests, "closure_resources");
     exactSet(c.preparations.map(p => p.reservationDigest), expected.reservationDigests, "preparation_completeness");
+    exactSet(c.preparations.flatMap(p => p.payloadGateDigest === null ? [] : [p.payloadGateDigest]), expected.payloadGateDigests, "closure_payload_gates");
     requireData(c.admissionClosedAtEpochMs >= t.cleanupAttempt.startedAtEpochMs && c.admissionClosedAtEpochMs <= closure.publication.admittedAtEpochMs, "closure_time");
     [...reservations, ...obligations].forEach(r => after(closure, r));
     const bindings = new Map<string, RecordOf<Kind.ResourceBinding>>();
     const actors = new Map<string, RecordOf<Kind.ActorAdmission>>();
     const services = new Map<string, RecordOf<Kind.ServiceAdmission>>();
+    const payloadGates = new Map<string, RecordOf<Kind.PayloadGate>>();
     for (const raw of records.filter(r => r.kind === Kind.ResourceBinding)) {
       const b = get(digest(raw), Kind.ResourceBinding), o = get(b.data.obligationDigest, Kind.ResourceObligation);
       requireData(!bindings.has(b.data.obligationDigest), "duplicate_binding");
@@ -179,6 +185,16 @@ export function validateScopedRetainedChain(
         (rank >= 3) === (p.enqueueReleasedAtEpochMs !== null) && (rank >= 4) === (p.serviceAdmissionDigest !== null) &&
         (rank >= 5) === (p.payloadReleasedAtEpochMs !== null), "preparation_references");
       if (rank < 2) requireData(p.correlationDigest === null && p.actorAdmissionDigest === null, "unexpected_admission");
+      if (p.payloadGateDigest !== null) {
+        const gate = get(p.payloadGateDigest, Kind.PayloadGate), g = gate.data;
+        if (!b) throw new Missing(`${Kind.ResourceBinding}:${r.data.obligationDigest}`);
+        after(gate, r); after(gate, b); after(closure, gate);
+        requireData(g.reservationDigest === p.reservationDigest && g.bindingDigest === digest(b) &&
+          g.originalEnqueueGateDigest === r.data.originalGateDigest && g.originalGateDigest !== r.data.originalGateDigest && g.custodyProducerId === t.installation.producerId &&
+          g.createdAtEpochMs >= Math.max(r.publication.finalValidatedAtEpochMs, b.publication.finalValidatedAtEpochMs) &&
+          g.createdAtEpochMs <= gate.publication.admittedAtEpochMs, "payload_gate_binding");
+        payloadGates.set(p.reservationDigest, gate);
+      }
       if (rank < 2) continue;
       const corr = get(p.correlationDigest!, Kind.Correlation), actor = get(p.actorAdmissionDigest!, Kind.ActorAdmission);
       after(corr, r); after(corr, b!); after(actor, corr); after(closure, actor);
@@ -202,6 +218,20 @@ export function validateScopedRetainedChain(
       if (p.serviceAdmissionDigest === null) continue;
       const service = get(p.serviceAdmissionDigest, Kind.ServiceAdmission), s = service.data;
       after(service, actor); after(closure, service);
+      const gate = payloadGates.get(p.reservationDigest);
+      requireData(gate !== undefined, "payload_gate_missing");
+      after(service, gate!);
+      requireData(s.closedPayloadGateDigest === gate!.data.originalGateDigest &&
+        s.payloadCustodyDigest === gate!.data.payloadCustodyDigest &&
+        gate!.publication.finalValidatedAtEpochMs <= s.acceptedAtEpochMs, "payload_gate_admission");
+      requireData(s.kernel.device === b!.data.identity.kernel.device, "cgroup_filesystem");
+      requireData(!same(s.kernel, b!.data.identity.kernel), "cgroup_identity");
+      // Only overlapping observations establish simultaneous service objects.
+      // Collected historical services may have legitimately reused an inode.
+      for (const other of services.values()) if (service.publication.admittedAtEpochMs <= other.publication.finalValidatedAtEpochMs &&
+          other.publication.admittedAtEpochMs <= service.publication.finalValidatedAtEpochMs) {
+        requireData(s.controlGroup === other.data.controlGroup || !same(s.kernel, other.data.kernel), "cgroup_identity");
+      }
       requireData(s.correlationDigest === digest(corr) && s.actorAdmissionDigest === digest(actor) && s.unit === a.unit &&
         s.controlGroup === corr.data.intendedControlGroup && s.invocationAnchor.invocationId === s.invocationId &&
         s.acceptedAtEpochMs >= p.enqueueReleasedAtEpochMs! && s.acceptedAtEpochMs <= service.publication.admittedAtEpochMs &&
@@ -213,6 +243,7 @@ export function validateScopedRetainedChain(
         p.payloadReleasedAtEpochMs < c.admissionClosedAtEpochMs && p.payloadReleasedAtEpochMs < t.workEndEpochMs, "payload_gate_time");
       services.set(p.reservationDigest, service);
     }
+    unique([...payloadGates.values()].map(g => g.data.originalGateDigest), "payload_gate_identity");
     for (const r of reservations) {
       const allocation = t.allocations.find(a => a.allocationDigest === r.data.allocationDigest)!;
       if (allocation.role !== Role.Provider || !actors.has(digest(r))) continue;
@@ -231,9 +262,16 @@ export function validateScopedRetainedChain(
       const r = get(d.reservationDigest, Kind.Reservation), actor = actors.get(d.reservationDigest), service = services.get(d.reservationDigest);
       requireData(d.originalGateDigest === r.data.originalGateDigest && d.closedAtEpochMs >= closure.publication.finalValidatedAtEpochMs &&
         d.closedAtEpochMs <= empty.publication.admittedAtEpochMs, "original_gate_closure");
+      const gate = payloadGates.get(d.reservationDigest), gateClosure = d.payloadGateClosure;
+      requireData((gate !== undefined) === (gateClosure !== null), "payload_gate_closure_missing");
+      if (gate && gateClosure) requireData(gateClosure.payloadGateDigest === digest(gate) &&
+        gateClosure.originalGateDigest === gate.data.originalGateDigest && gateClosure.payloadCustodyDigest === gate.data.payloadCustodyDigest &&
+        gateClosure.closedAtEpochMs >= closure.publication.finalValidatedAtEpochMs &&
+        gateClosure.closedAtEpochMs <= e.queueBefore.observedAtEpochMs &&
+        gateClosure.closedAtEpochMs <= empty.publication.admittedAtEpochMs, "payload_gate_closure");
       if (actor) {
         requireData(d.discharge !== null && d.dischargedAtEpochMs !== null &&
-          d.dischargedAtEpochMs >= Math.max(...e.dispositions.map(d => d.closedAtEpochMs)) &&
+          d.dischargedAtEpochMs >= Math.max(...e.dispositions.flatMap(d => [d.closedAtEpochMs, d.payloadGateClosure?.closedAtEpochMs ?? d.closedAtEpochMs])) &&
           d.dischargedAtEpochMs <= empty.publication.admittedAtEpochMs, "actor_discharge_missing");
         const discharge = d.discharge!;
         requireData(discharge.chainDigest === digest(actor.data.chain) && discharge.actors.length === actor.data.chain.actors.length, "actor_discharge_incomplete");
@@ -255,7 +293,7 @@ export function validateScopedRetainedChain(
         q.jobs.every(j => !relevantUnits.includes(j.unit)), "queue_not_empty");
     };
     checkQueue(e.queueBefore, Math.max(closure.publication.finalValidatedAtEpochMs,
-      ...e.dispositions.map(d => d.dischargedAtEpochMs ?? d.closedAtEpochMs)), empty.publication.admittedAtEpochMs);
+      ...e.dispositions.flatMap(d => [d.dischargedAtEpochMs ?? d.closedAtEpochMs, d.payloadGateClosure?.closedAtEpochMs ?? d.closedAtEpochMs])), empty.publication.admittedAtEpochMs);
     checkQueue(e.queueAfter, e.queueBefore.observedAtEpochMs, empty.publication.admittedAtEpochMs);
     exactSet(e.resources.map(r => r.obligationDigest), expected.obligationDigests, "empty_resource_completeness");
     const retained: RecordOf<Kind.ResourceBinding>[] = [];
@@ -275,7 +313,10 @@ export function validateScopedRetainedChain(
         r.observedAfterAtEpochMs <= e.queueAfter.observedAtEpochMs, "parent_incarnation");
       const paths = r.nodes.map(n => n.path); unique(paths, "recursive_nodes");
       requireData(r.nodes[0]!.path === names.controlGroup && same(r.nodes[0]!.kernel, b.data.identity.kernel), "parent_present");
+      // This traversal records simultaneously present directories, unlike
+      // historical leaf admissions; one kernel object cannot occupy two paths.
       for (const n of r.nodes) {
+        requireData(n.kernel.device === b.data.identity.kernel.device, "cgroup_filesystem");
         requireData(n.events.startsWith("populated 0\n"), "recursive_population"); unique(n.children, "recursive_children");
         const relative = n.path.slice(names.controlGroup.length + 1), leafUnit = relative.split("/")[0];
         requireData(n.path === names.controlGroup || (n.path.startsWith(names.controlGroup + "/") && [...services.values()].some(s => s.data.unit === leafUnit)), "foreign_cgroup");
@@ -285,6 +326,7 @@ export function validateScopedRetainedChain(
         const leaf = [...services.values()].find(s => s.data.controlGroup === n.path);
         if (leaf) requireData(same(n.kernel, leaf.data.kernel), "leaf_incarnation");
       }
+      unique(r.nodes.map(n => `${n.kernel.device}:${n.kernel.inode}`), "cgroup_identity");
     }
     const intent = one(Kind.RetirementIntent), i = intent.data; after(intent, empty);
     requireData(i.emptyProofDigest === digest(empty) && i.closureDigest === digest(closure), "intent_chain");

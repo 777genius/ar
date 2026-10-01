@@ -25,5 +25,6 @@ export {
   parseScopedRetainedRecord, parseScopedRetainedRecordBytes, retainedResourceLocator, retainedResourceNames,
   type RetainedRecordData, type ScopedRetainedRecord, type ScopedRetainedTarget,
   type ScopedRetainedAllocation, type ScopedRetainedCleanupAttempt,
+  type ScopedRetainedPayloadGate, type ScopedRetainedPayloadGateClosure,
 } from "./scoped-retained-resource-contract";
 export * from "./scoped-retained-resource-validation";

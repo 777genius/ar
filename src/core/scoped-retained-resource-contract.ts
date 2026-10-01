@@ -32,7 +32,7 @@ export enum RetainedJobResult { Done = "done" }
 export enum RetainedRecordKind {
   Target = "target", Reservation = "reservation", ResourceObligation = "resource_obligation",
   ResourceBinding = "resource_binding", Correlation = "correlation", ActorAdmission = "actor_admission",
-  ServiceAdmission = "service_admission", Closure = "closure", ResourceUncreated = "resource_uncreated",
+  ServiceAdmission = "service_admission", PayloadGate = "payload_gate", Closure = "closure", ResourceUncreated = "resource_uncreated",
   EmptyProof = "empty_proof", RetirementIntent = "retirement_intent", RetirementFacts = "retirement_facts",
   RetirementPublication = "retirement_publication", FinalReceipt = "final_receipt",
   OrdinaryTerminal = "ordinary_terminal", KeyedTerminal = "keyed_terminal",
@@ -43,7 +43,7 @@ export const RETAINED_RESOURCE_NAMESPACES: Readonly<Record<RetainedRecordKind, s
   [RetainedRecordKind.Target]: "retained-v2-targets", [RetainedRecordKind.Reservation]: "retained-v2-reservations",
   [RetainedRecordKind.ResourceObligation]: "retained-v2-resource-obligations", [RetainedRecordKind.ResourceBinding]: "retained-v2-resource-bindings",
   [RetainedRecordKind.Correlation]: "retained-v2-correlations", [RetainedRecordKind.ActorAdmission]: "retained-v2-actor-admissions",
-  [RetainedRecordKind.ServiceAdmission]: "retained-v2-service-admissions", [RetainedRecordKind.Closure]: "retained-v2-closures",
+  [RetainedRecordKind.ServiceAdmission]: "retained-v2-service-admissions", [RetainedRecordKind.PayloadGate]: "retained-v2-payload-gates", [RetainedRecordKind.Closure]: "retained-v2-closures",
   [RetainedRecordKind.ResourceUncreated]: "retained-v2-uncreated", [RetainedRecordKind.EmptyProof]: "retained-v2-empty-proofs",
   [RetainedRecordKind.RetirementIntent]: "retained-v2-retirement-intents", [RetainedRecordKind.RetirementFacts]: "retained-v2-retirement-facts",
   [RetainedRecordKind.RetirementPublication]: "retained-v2-retirement-publications", [RetainedRecordKind.FinalReceipt]: "retained-v2-final-receipts",
@@ -114,7 +114,7 @@ const keyed = object({ authorityDigest: digest, slotId: id, childAllocationId: i
 const allocation = object({
   allocationId: id, startId: uuid, allocationDigest: digest, permissionDigest: digest, installationAssociationDigest: digest,
   role: enumeration(RetainedMemberRole), purpose: id, grantDigest: nullable(digest), installedGrantDigest: nullable(digest),
-  unit: serviceUnit, qualificationId: nullable(id), leafProfileDigest: digest, effectiveFilterPolicyDigest: digest, requiredFilterDigests: list(digest, 64, 1),
+  unit: serviceUnit, qualificationId: nullable(digest), leafProfileDigest: digest, effectiveFilterPolicyDigest: digest, requiredFilterDigests: list(digest, 64, 1),
 });
 const target = object({
   scopeDigest: digest, kind: enumeration(RetainedTargetKind), topology: enumeration(RetainedTopology), installation,
@@ -146,6 +146,11 @@ const actorAdmission = object({ correlationDigest: digest, originalGateDigest: d
   pidfdSemantics: literal(RetainedPidfdSemantics.WholeThreadGroupExit), holdDigest: digest, pidfdCustodyDigest: digest,
   tasks: list(object({ actorPidBirth: birth, taskBirths: list(birth, 64, 1) }), 64, 2), finalHeldRereadAtEpochMs: integer(),
 });
+// Original created native gate/custody observation, including preparation that
+// stops before actor/service admission. References are DATA, never native authority.
+const payloadGate = object({ reservationDigest: digest, bindingDigest: digest, originalEnqueueGateDigest: digest,
+  custodyProducerId: id, originalGateDigest: digest, payloadCustodyDigest: digest, createdAtEpochMs: integer(),
+});
 const serviceAdmission = object({ correlationDigest: digest, actorAdmissionDigest: digest, acceptedAtEpochMs: integer(),
   unit: serviceUnit, invocationId: invocation, invocationAnchor: object({ invocationId: invocation, kernel: kernelIdentity }),
   mainPidBirth: birth, controlGroup: group, kernel: kernelIdentity,
@@ -154,7 +159,7 @@ const serviceAdmission = object({ correlationDigest: digest, actorAdmissionDiges
   effectiveFilterAttachments: list(digest, 64, 1),
 });
 const preparation = object({ reservationDigest: digest, state: enumeration(RetainedPreparation),
-  correlationDigest: nullable(digest), actorAdmissionDigest: nullable(digest), serviceAdmissionDigest: nullable(digest),
+  correlationDigest: nullable(digest), actorAdmissionDigest: nullable(digest), serviceAdmissionDigest: nullable(digest), payloadGateDigest: nullable(digest),
   enqueueReleasedAtEpochMs: nullable(integer()), payloadReleasedAtEpochMs: nullable(integer()),
 });
 const closure = object({ attemptDigest: digest, closureGeneration: integer(), admissionClosedAtEpochMs: integer(),
@@ -186,7 +191,10 @@ const discharge = object({ schemaVersion: literal(2), chainDigest: digest, fence
   actors: list(object({ role: enumeration(ScopedEnqueueActorRole), pidBirth: birth, controlGroup: group,
     parentPidBirth: nullable(birth), method: enumeration(ScopedActorDischargeMethod) }), 64, 2),
 });
-const disposition = object({ reservationDigest: digest, originalGateDigest: digest, closedAtEpochMs: integer(),
+const payloadGateClosure = object({ payloadGateDigest: digest, originalGateDigest: digest,
+  payloadCustodyDigest: digest, closedAtEpochMs: integer(),
+});
+const disposition = object({ payloadGateClosure: nullable(payloadGateClosure), reservationDigest: digest, originalGateDigest: digest, closedAtEpochMs: integer(),
   discharge: nullable(discharge), dischargedAtEpochMs: nullable(integer()),
   serviceObservation: nullable(enumeration(RetainedServiceObservation)), serviceAdmissionDigest: nullable(digest),
 });
@@ -222,7 +230,7 @@ const schemas = {
   [RetainedRecordKind.Target]: target, [RetainedRecordKind.Reservation]: reservation,
   [RetainedRecordKind.ResourceObligation]: obligation, [RetainedRecordKind.ResourceBinding]: binding,
   [RetainedRecordKind.Correlation]: correlation, [RetainedRecordKind.ActorAdmission]: actorAdmission,
-  [RetainedRecordKind.ServiceAdmission]: serviceAdmission, [RetainedRecordKind.Closure]: closure,
+  [RetainedRecordKind.ServiceAdmission]: serviceAdmission, [RetainedRecordKind.PayloadGate]: payloadGate, [RetainedRecordKind.Closure]: closure,
   [RetainedRecordKind.ResourceUncreated]: uncreated, [RetainedRecordKind.EmptyProof]: emptyProof,
   [RetainedRecordKind.RetirementIntent]: retirementIntent, [RetainedRecordKind.RetirementFacts]: retirementFacts,
   [RetainedRecordKind.RetirementPublication]: retirementPublication, [RetainedRecordKind.FinalReceipt]: finalReceipt,
@@ -236,6 +244,8 @@ export type ScopedRetainedRecord<K extends RetainedRecordKind = RetainedRecordKi
 export type ScopedRetainedTarget = RetainedRecordData[RetainedRecordKind.Target];
 export type ScopedRetainedAllocation = ScopedRetainedTarget["allocations"][number];
 export type ScopedRetainedCleanupAttempt = ScopedRetainedTarget["cleanupAttempt"];
+export type ScopedRetainedPayloadGate = RetainedRecordData[RetainedRecordKind.PayloadGate];
+export type ScopedRetainedPayloadGateClosure = NonNullable<RetainedRecordData[RetainedRecordKind.EmptyProof]["dispositions"][number]["payloadGateClosure"]>;
 
 export function parseScopedRetainedRecord(value: unknown): ScopedRetainedRecord {
   // Clone via plain canonical JSON so the parser never retains caller-owned objects.
