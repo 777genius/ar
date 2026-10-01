@@ -207,8 +207,9 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence) {
   let profileId = CodexProviderEgressProfileId.ProviderApi;
   if (grantBytes) {
     const grant = wire(decodeHostedActivationBytes(grantBytes), "schemaVersion,jobId,jobRootDir,workspacePath,profileId");
-    if (grant.schemaVersion !== 1 || grant.profileId !== CodexProviderEgressProfileId.TestNpmQualification) invalid();
-    same(grant, start, "jobId,jobRootDir,workspacePath"); profileId = CodexProviderEgressProfileId.TestNpmQualification;
+    if (grant.schemaVersion !== 1 || (grant.profileId !== CodexProviderEgressProfileId.TestNpmQualification &&
+        grant.profileId !== CodexProviderEgressProfileId.PublicResearchV1)) invalid();
+    same(grant, start, "jobId,jobRootDir,workspacePath"); profileId = grant.profileId;
   }
   validateOrdinaryKernel(installation, activation, start);
   assertHostedProcessDescriptors();
@@ -393,7 +394,7 @@ function syncActivationDirectory(path: string): void {
 export function requiresHostedProcessAdmission(env: Readonly<Record<string, string | undefined>>): boolean {
   if (process.platform !== "linux") return false;
   if (env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job" ||
-      /\/subscription-runtime-(?:ordinary|outer|hosted)-/.test(readFileSync("/proc/self/cgroup", "utf8"))) return true;
+      /\/subscription-runtime-(?:ordinary|outer|hosted|research)-/.test(readFileSync("/proc/self/cgroup", "utf8"))) return true;
   try { lstatSync(root); return true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }

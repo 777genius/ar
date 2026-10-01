@@ -10,6 +10,8 @@ import type { AppServerCompletedTurnCheckpoint } from "./app-server/application/
 import type { CodexExecutionProfile } from "./codex-execution-profile";
 import type { CodexExecutionEngine } from "./codex-json-execution-engine";
 import type { CodexModelBackend } from "./codex-model-backend";
+import type { CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
+import type { PublicResearchSourceReader } from "./app-server/application/public-research-source-port";
 
 export type CodexAppServerExecutionEngineOptions = {
   readonly codexBinaryPath: string;
@@ -20,6 +22,9 @@ export type CodexAppServerExecutionEngineOptions = {
    */
   readonly modelBackend?: CodexModelBackend;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  /** Captured trusted Host policy; environment markers never enable native web tools. */
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy;
+  readonly publicSourceReader?: PublicResearchSourceReader;
   /** Set only with a generated CODEX_HOME containing the hosted profiles. */
   readonly hostedPermissionProfiles?: boolean;
   readonly timeoutMs?: number;

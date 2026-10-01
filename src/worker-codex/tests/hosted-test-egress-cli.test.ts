@@ -24,6 +24,7 @@ describe("trusted operator CLI (mock grant adapter only)", () => {
   it.each([
     ["grant", CodexProviderEgressProfileId.TestNpmQualification],
     ["grant-managed", CodexProviderEgressProfileId.TestManagedQualification],
+    ["grant-research", CodexProviderEgressProfileId.PublicResearchV1],
   ] as const)("selects only the fixed profile for %s", async (operation, profileId) => {
     await run([operation, "job", "/synthetic/root", "/synthetic/workspace"]);
     expect(files.writeHostedTestEgressGrant).toHaveBeenCalledExactlyOnceWith({
@@ -41,7 +42,7 @@ describe("trusted operator CLI (mock grant adapter only)", () => {
   });
   const malformed = [[], ["unknown"], ["revoke"], ["revoke", ""], ["revoke", " "],
     ["revoke", "job", ""], ["revoke", "job", "", "extra"], ["revoke", "job", "extra"]];
-  for (const operation of ["grant", "grant-managed"]) {
+  for (const operation of ["grant", "grant-managed", "grant-research"]) {
     malformed.push([operation], [operation, "job", "/root"], [operation, "job", "/root", "/workspace", "" ]);
     for (let index = 1; index <= 3; index++) {
       for (const empty of ["", " "]) {

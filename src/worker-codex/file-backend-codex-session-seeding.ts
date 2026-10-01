@@ -27,6 +27,7 @@ export class FileBackendCodexSessionSeeder {
 
   constructor(
     private readonly options: {
+      readonly assertProviderAdmission?: () => void;
       readonly providerInstanceId: string;
       readonly sessionStore: NonNullable<RuntimeDeps["sessionStore"]>;
       readonly observability: ObservabilityPort;
@@ -39,6 +40,7 @@ export class FileBackendCodexSessionSeeder {
   ) {}
 
   async seedAuthJsonFile(authJsonPath: string): Promise<void> {
+    this.options.assertProviderAdmission?.();
     this.authJsonPath = authJsonPath;
     let authJson: string;
     try {
@@ -53,6 +55,7 @@ export class FileBackendCodexSessionSeeder {
   }
 
   async seedAuthJson(authJson: string): Promise<boolean> {
+    this.options.assertProviderAdmission?.();
     let artifact: SessionArtifact;
     try {
       artifact = sessionArtifactFromCodexAuthJson(authJson);
@@ -99,6 +102,7 @@ export class FileBackendCodexSessionSeeder {
   }
 
   async exportAuthJsonFileQuietly(context: "prewarm" | "run"): Promise<void> {
+    this.options.assertProviderAdmission?.();
     if (!this.authJsonPath) return;
     try {
       const session = await this.options.sessionStore.read({
@@ -128,6 +132,7 @@ export class FileBackendCodexSessionSeeder {
   }
 
   async importAuthJsonFileIfChanged(context: "prewarm" | "run"): Promise<void> {
+    this.options.assertProviderAdmission?.();
     if (!this.authJsonPath) return;
     let authJson: string;
     try {
@@ -159,6 +164,7 @@ export class FileBackendCodexSessionSeeder {
   }
 
   authJsonFileChanged(): boolean {
+    this.options.assertProviderAdmission?.();
     if (!this.authJsonPath) return false;
     const sourceMtimeMs = safeStatMtimeMs(this.authJsonPath);
     if (

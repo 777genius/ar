@@ -18,6 +18,7 @@ import {
   codexProviderEgressPolicy,
   codexProviderEgressConfigToml,
   codexProviderEgressEnv,
+  codexProviderWebSearchMode,
   type CodexProviderEgressPolicy,
 } from "./codex-provider-egress-policy";
 import type { CodexMaterializedSession } from "./codex-json-execution-engine";
@@ -506,7 +507,7 @@ export function codexJsonHomeConfigToml(input?: {
     'approval_policy = "never"',
     ...(input?.namedPermissions ? [] : ['sandbox_mode = "read-only"']),
     ...(input?.namedPermissions ? ['default_permissions = "hosted-project-read"'] : []),
-    'web_search = "disabled"',
+    `web_search = ${JSON.stringify(codexProviderWebSearchMode(providerEgressPolicy, modelBackend))}`,
     "disable_response_storage = true",
     ...(codexModelBackendExcludesConfigKey(modelBackend, "model_verbosity")
       ? []

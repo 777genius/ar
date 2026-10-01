@@ -6,9 +6,7 @@ import { pruneCodexChildEnv } from "../../codex-cli-domain";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
 import {
   CodexModelBackend,
-  codexModelBackendModelProviderName,
 } from "../../codex-model-backend";
-import { excludeCodexModelBackendConfigKeys } from "./app-server-thread-config-backend-filter";
 import type {
   CodexMaterializedSession,
   CodexReasoningEffort,
@@ -50,7 +48,6 @@ import { waitForAppServerTurn } from "./app-server-turn-waiter";
 import {
   type CodexAppServerRolloutBudget,
 } from "../domain/app-server-rollout-budget";
-import { codexAppServerToolConfig } from "../domain/app-server-tool-config";
 import { isCodexAppServerReconnectProgressMessage } from "../protocol/app-server-event-parser";
 import { readGoal } from "../protocol/app-server-goal-protocol";
 import { readCodexModelCatalogPage } from "../protocol/app-server-model-catalog";
@@ -96,7 +93,10 @@ import {
 } from "./app-server-rate-limits-monitor";
 import { createBoundedAppServerWarningCollector } from "./app-server-warning-collector";
 import { hostedCodexPermissionProfileId } from "../../hosted-codex-permissions";
-import { appServerThreadConfig } from "./app-server-thread-config";
+import { appServerThreadStartParams } from "./app-server-thread-start-params";
+import { PublicResearchToolSession } from "./public-research-source-tool";
+import type { PublicResearchSourceReader } from "./public-research-source-port";
+import { codexProviderWebSearchMode, CodexWebSearchMode, CodexProviderEgressProfileId, type CodexProviderEgressPolicy } from "../../codex-provider-egress-policy";
 export {
   CodexAppServerTurnError,
   type AppServerTurnFailureDetails,
@@ -111,6 +111,7 @@ const maxRetainedEarlyTurnIds = 128;
 const maxRetainedTurnAliases = 128;
 
 export class CodexAppServerClient {
+  private readonly publicResearchTools = new PublicResearchToolSession();
   private readonly executionAdmission = new AppServerAdmission();
   private readonly turnAdmission = new AppServerAdmission();
   private nextId = 1;
@@ -133,6 +134,8 @@ export class CodexAppServerClient {
     private readonly options: {
       readonly codexBinaryPath: string;
       readonly sourceEnv: Readonly<Record<string, string | undefined>>;
+      readonly providerEgressPolicy?: CodexProviderEgressPolicy;
+      readonly publicSourceReader?: PublicResearchSourceReader;
       readonly hostedPermissionProfiles?: boolean;
       readonly processFactory: CodexAppServerProcessFactory;
       readonly signalChildProcess: CodexAppServerChildProcessSignaler;
@@ -271,8 +274,41 @@ export class CodexAppServerClient {
     this.warnings.push(warning);
   }
 
+  releasePublicResearchThread(threadId: string): void {
+    this.publicResearchTools.closeThread(threadId);
+  }
+
   acquireExecution(): AppServerExecutionLease {
-    return new AppServerExecutionLease(this.executionAdmission.acquire(), (id) => this.tokenUsage.pin(id));
+    return new AppServerExecutionLease(this.executionAdmission.acquire(), (id) => {
+      const release = this.tokenUsage.pin(id);
+      return () => { this.publicResearchTools.closeThread(id); release(); };
+    });
+  }
+
+  /** Reopen only after the goal runner has validated its retained runtime scope.
+   * Codex 0.159.2 has no dynamicTools parameter on resume or fork. Those tools
+   * must be inherited from the rollout; a target canary must prove that behavior. */
+  async resumePublicResearchThread(input: Parameters<typeof appServerThreadStartParams>[0] & {
+    readonly threadId: string; readonly timeoutMs: number; readonly abortSignal: AbortSignal;
+  }): Promise<void> {
+    if (this.options.providerEgressPolicy?.profileId !== CodexProviderEgressProfileId.PublicResearchV1) return;
+    const plan = appServerThreadStartParams({ ...input, goalMode: true }, this.options);
+    const response = await this.send("thread/resume", { threadId: input.threadId,
+      ...this.retainedThreadParams(plan.params) }, input);
+    if (response.error || nestedString(response.result, ["thread", "id"]) !== input.threadId) {
+      throw new Error("codex_app_server_research_resume_failed");
+    }
+    if (plan.researchToolsEnabled) this.publicResearchTools.admit(input.threadId);
+  }
+
+  private retainedThreadParams(params: ReturnType<typeof appServerThreadStartParams>["params"]) {
+    // Exact supported resume/fork schema subset; never claim to re-register
+    // dynamic tools through fields the target does not support.
+    return { config: params.config, cwd: params.cwd, model: params.model,
+      modelProvider: params.modelProvider, serviceTier: "serviceTier" in params ? params.serviceTier : null,
+      runtimeWorkspaceRoots: params.runtimeWorkspaceRoots, approvalPolicy: params.approvalPolicy,
+      ...("permissions" in params ? { permissions: params.permissions } : { sandbox: params.sandbox }),
+      baseInstructions: params.baseInstructions, developerInstructions: params.developerInstructions };
   }
 
   async startThread(input: {
@@ -287,83 +323,8 @@ export class CodexAppServerClient {
     readonly abortSignal: AbortSignal;
     readonly goalMode?: boolean;
   }): Promise<string> {
-    const { disableTools, disableNativeEnvironments } = appServerThreadToolPolicy({
-      disableTools: this.options.executionProfile.disableTools,
-      nativeToolSurface: this.options.nativeToolSurface,
-      goalMode: input.goalMode,
-    });
-    const threadPolicy = codexAppServerThreadRuntimePolicy({
-      workspacePath: input.workspacePath,
-      allowExtraWritableRoots: this.options.hostedPermissionProfiles !== true,
-      ...(input.sandboxMode === undefined
-        ? {}
-        : { sandboxMode: input.sandboxMode }),
-      sourceEnv: this.options.sourceEnv,
-      baseDeveloperInstructions:
-        this.options.executionProfile.developerInstructions,
-      ...(input.systemPrompt === undefined
-        ? {}
-        : { systemPrompt: input.systemPrompt }),
-    });
-    const hostedPermissions = this.options.hostedPermissionProfiles
-      ? hostedCodexPermissionProfileId({ sandboxMode: threadPolicy.sandboxMode })
-      : null;
-    const toolConfig = codexAppServerToolConfig({
-      nativeToolSurface: this.options.nativeToolSurface,
-      fastMode: input.serviceTier === "fast",
-      goalMode: input.goalMode === true,
-      trustedHooksEnabled: this.options.bypassHookTrust === true,
-    });
-    const modelBackend = this.options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
-    const threadModelProvider = codexModelBackendModelProviderName(modelBackend) ?? null;
-    const threadConfig = excludeCodexModelBackendConfigKeys(modelBackend, appServerThreadConfig({
-      reasoningEffort: input.reasoningEffort,
-      ...(input.serviceTier === undefined ? {} : { serviceTier: input.serviceTier }),
-      ...(this.options.commandApprovalPolicy === undefined
-        ? {}
-        : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
-      hostedPermissions,
-      sandboxMode: threadPolicy.sandboxMode,
-      toolConfig,
-      rolloutBudget: this.options.rolloutBudget,
-    }));
-    const response = await this.send(
-      "thread/start",
-      {
-        runtimeWorkspaceRoots: threadPolicy.runtimeWorkspaceRoots,
-        model: input.model,
-        modelProvider: threadModelProvider,
-        ...(modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
-          ? {}
-          : { serviceTier: input.serviceTier ?? null }),
-        cwd: input.workspacePath,
-        approvalPolicy: appServerApprovalPolicy(this.options.commandApprovalPolicy),
-        approvalsReviewer: null,
-        ...(hostedPermissions
-          ? { permissions: hostedPermissions }
-          : { sandbox: threadPolicy.sandboxMode }),
-        config: threadConfig,
-        serviceName: "subscription-runtime",
-        baseInstructions: this.options.executionProfile.baseInstructions,
-        developerInstructions: threadPolicy.developerInstructions,
-        personality: null,
-        ephemeral: input.goalMode ? false : true,
-        sessionStartSource: "startup",
-        threadSource: "user",
-        ...(disableTools
-          ? {
-              environments: [],
-              dynamicTools: [],
-              experimentalRawEvents: false,
-            }
-          : disableNativeEnvironments
-            ? {
-                environments: [],
-              }
-            : {}),
-      },
-      input,
-    );
+    const plan = appServerThreadStartParams(input, this.options);
+    const response = await this.send("thread/start", plan.params, input);
     if (response.error) {
       const modelError = await this.modelUnavailableError({
         requestedModel: input.model,
@@ -379,28 +340,29 @@ export class CodexAppServerClient {
 
     const threadId = nestedString(response.result, ["thread", "id"]);
     if (!threadId) throw new Error("codex_app_server_thread_id_missing");
+    if (plan.researchToolsEnabled) this.publicResearchTools.admit(threadId);
     return threadId;
   }
 
-  async forkThread(input: {
+  async forkThread(input: Parameters<typeof appServerThreadStartParams>[0] & {
     readonly usageLease?: AppServerExecutionLease;
     readonly threadId: string;
     readonly timeoutMs: number;
     readonly abortSignal: AbortSignal;
   }): Promise<string> {
     throwIfAborted(input.abortSignal);
-    const response = await this.send(
-      "thread/fork",
-      { threadId: input.threadId },
-      input,
-    );
-    if (response.error) {
-      throw new CodexAppServerThreadForkError(
-        response.error.message ?? "unknown",
-      );
-    }
+    const plan = appServerThreadStartParams(input, this.options);
+    const response = await this.send("thread/fork", { threadId: input.threadId,
+      // Preserve ordinary behavior. Captured research/closed tool policy is
+      // explicitly overlaid whenever the runtime has selected a finite profile.
+      ...(this.options.providerEgressPolicy?.profileId === CodexProviderEgressProfileId.PublicResearchV1
+        ? { ...this.retainedThreadParams(plan.params), deferGoalContinuation: true }
+        : this.options.providerEgressPolicy ? { config: { web_search: plan.params.config.web_search } } : {}),
+    }, input);
+    if (response.error) throw new CodexAppServerThreadForkError(response.error.message ?? "unknown");
     const threadId = nestedString(response.result, ["thread", "id"]);
     if (!threadId) throw new Error("codex_app_server_thread_id_missing");
+    if (plan.researchToolsEnabled) this.publicResearchTools.admit(threadId);
     return threadId;
   }
 
@@ -532,6 +494,7 @@ export class CodexAppServerClient {
     const usage = this.tokenUsage.activate(input.threadId);
     try {
       this.startingTurnThreads.add(input.threadId);
+      this.publicResearchTools.beginTurn(input.threadId, input.abortSignal);
       const startedAt = Date.now();
       const { disableTools, disableNativeEnvironments } = appServerThreadToolPolicy({
         disableTools: this.options.executionProfile.disableTools,
@@ -559,7 +522,10 @@ export class CodexAppServerClient {
               ? { permissions: hostedPermissions }
               : { sandboxPolicy: this.sandboxPolicyFor(input) }),
           }),
-          input,
+          { ...input, observeResponse: response => {
+            const id = nestedString(response.result, ["turn", "id"]);
+            if (!response.error && id) this.publicResearchTools.bindTurn(input.threadId, id);
+          } },
         );
       } catch (error) {
         this.clearStartingTurn(input.threadId);
@@ -626,6 +592,7 @@ export class CodexAppServerClient {
       if (usage.usage) throw new AppServerUsageError(error, usage.usage, true);
       throw error;
     } finally {
+      this.publicResearchTools.endTurn(input.threadId);
       this.tokenUsage.deactivate(input.threadId);
       release();
     }
@@ -636,6 +603,7 @@ export class CodexAppServerClient {
     params: unknown,
     input: {
       readonly usageLease?: AppServerExecutionLease;
+      readonly observeResponse?: (response: CodexAppServerJsonRpcResponse) => void;
       readonly timeoutMs?: number;
       readonly abortSignal?: AbortSignal;
     } = {},
@@ -654,6 +622,7 @@ export class CodexAppServerClient {
       ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
       ...(input.usageLease === undefined ? {} : { usageLease: input.usageLease }),
       pending: this.pending,
+      ...(input.observeResponse ? { observeResponse: input.observeResponse } : {}),
       write: (message) => this.child!.stdin.write(message),
     });
   }
@@ -745,6 +714,11 @@ export class CodexAppServerClient {
     }
 
     if (typeof record.method !== "string") return;
+    if (record.method === "thread/closed" || record.method === "thread/archived") {
+      const threadId = stringField(params, "threadId");
+      if (threadId) this.publicResearchTools.closeThread(threadId);
+      return;
+    }
     if (record.method === "account/rateLimits/updated") {
       this.rateLimitsMonitor?.notifyRateLimitsUpdated();
       return;
@@ -804,6 +778,7 @@ export class CodexAppServerClient {
     if (record.method === "turn/completed") {
       const turn = readRecord(params?.turn);
       const turnId = stringField(turn, "id");
+      if (turnId) this.publicResearchTools.endTurnId(this.turnIdAliases.get(turnId) ?? turnId);
       const state = this.ensureTurn(turnId);
       state.completed = true;
       const status = readRecord(turn?.status);
@@ -883,6 +858,9 @@ export class CodexAppServerClient {
       id,
       method,
       params,
+      ...(this.options.publicSourceReader ? { publicSourceTools: {
+        reader: this.options.publicSourceReader, session: this.publicResearchTools,
+      } } : {}),
       ...(this.options.commandApprovalPolicy === undefined
         ? {}
         : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
@@ -947,18 +925,22 @@ export class CodexAppServerClient {
 
   private failTurnOrAll(turnId: string | null | undefined, error: Error): void {
     if (!turnId) {
+      for (const thread of this.startingTurnThreads) this.publicResearchTools.endTurn(thread);
+      for (const thread of this.pendingTurnIdsByThread.keys()) this.publicResearchTools.endTurn(thread);
       for (const turn of this.turns.values()) {
         turn.error = error;
         this.resolveTurn(turn);
       }
       return;
     }
+    this.publicResearchTools.endTurnId(this.turnIdAliases.get(turnId) ?? turnId);
     const turn = this.ensureTurn(turnId);
     turn.error = error;
     this.resolveTurn(turn);
   }
 
   private failOutstanding(error: Error): void {
+    this.publicResearchTools.stop();
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(error);
@@ -1002,6 +984,7 @@ export class CodexAppServerClient {
   }
 
   private clearTurnTracking(turnId: string, threadId: string): void {
+    this.publicResearchTools.endTurn(threadId);
     const turn = this.turns.get(turnId);
     if (turn) this.clearReconnectGraceTimer(turn);
     this.turns.delete(turnId);
@@ -1064,6 +1047,7 @@ export class CodexAppServerClient {
   }
 
   private clearStartingTurn(threadId: string): void {
+    this.publicResearchTools.endTurn(threadId);
     this.startingTurnThreads.delete(threadId);
     const earlyTurnId = this.earlyTurnIdsByThread.get(threadId);
     if (earlyTurnId) this.turns.delete(earlyTurnId);

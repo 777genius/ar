@@ -19,6 +19,7 @@ const hostedLauncherPath = fileURLToPath(
   new URL("./hosted-app-server-launcher.js", import.meta.url),
 );
 const hostedSystemdUnits = new WeakMap<CodexAppServerChildProcess, string>();
+const researchSignals = new WeakMap<CodexAppServerChildProcess, (signal: NodeJS.Signals) => void>();
 // A synchronous host-fence callback may submit one exact service, only while
 // that callback is active. Launch arguments cannot supply or retain this ticket.
 const hostedSubmissions = new WeakSet<object>();
@@ -201,11 +202,34 @@ export type {
   CodexAppServerProcessFactory,
 };
 
+/** Worker-owned research admission supplies the immutable installed launcher and
+ * synchronous authority recheck. No environment marker selects this route. */
+export function admittedResearchCodexProcessFactory(input: {
+  readonly jobId: string;
+  readonly launcherPath: string;
+  readonly submit: (unit: string, effect: () => CodexAppServerChildProcess) => CodexAppServerChildProcess;
+  readonly signal: (unit: string, signal: NodeJS.Signals) => void;
+}): CodexAppServerProcessFactory {
+  return launch => {
+    const unit = `subscription-runtime-research-provider-${randomUUID()}.service`;
+    return input.submit(unit, () => {
+      const child = spawnInvocation(launch, { command: process.execPath,
+        args: [input.launcherPath, input.jobId, unit],
+        stdinBootstrap: encodeHostedAppServerLaunchFrame({ schemaVersion: 1, ...launch, args: [...launch.args] }),
+      });
+      researchSignals.set(child, signal => input.signal(unit, signal));
+      return child;
+    });
+  };
+}
+
 export function signalCodexAppServerChildGroup(
   child: CodexAppServerChildProcess,
   signal: NodeJS.Signals,
 ): void {
   invalidateHostedOrdinaryWait(child);
+  const researchSignal = researchSignals.get(child);
+  if (researchSignal) { researchSignal(signal); return; }
   try {
     const systemdUnit = hostedSystemdUnits.get(child);
     if (systemdUnit !== undefined) {

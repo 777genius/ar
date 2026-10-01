@@ -3,6 +3,8 @@ import type {
 } from "@vioxen/subscription-runtime/core";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
 import type { CodexModelBackend } from "../../codex-model-backend";
+import type { CodexProviderEgressPolicy } from "../../codex-provider-egress-policy";
+import type { PublicResearchSourceReader } from "./public-research-source-port";
 import type {
   CodexAppServerRolloutBudget,
 } from "../domain/app-server-rollout-budget";
@@ -74,6 +76,8 @@ export class AppServerSlotPool {
     private readonly options: {
       readonly codexBinaryPath: string;
       readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+      readonly providerEgressPolicy?: CodexProviderEgressPolicy;
+      readonly publicSourceReader?: PublicResearchSourceReader;
       readonly hostedPermissionProfiles?: boolean;
       readonly processFactory: CodexAppServerProcessFactory;
       readonly signalChildProcess: CodexAppServerChildProcessSignaler;
@@ -165,6 +169,8 @@ export class AppServerSlotPool {
     const client = new CodexAppServerClient({
       codexBinaryPath: this.options.codexBinaryPath,
       sourceEnv,
+      ...(this.options.providerEgressPolicy ? { providerEgressPolicy: this.options.providerEgressPolicy } : {}),
+      ...(this.options.publicSourceReader ? { publicSourceReader: this.options.publicSourceReader } : {}),
       ...(this.options.hostedPermissionProfiles === undefined ? {} : {
         hostedPermissionProfiles: this.options.hostedPermissionProfiles,
       }),

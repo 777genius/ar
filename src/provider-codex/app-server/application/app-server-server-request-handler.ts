@@ -6,16 +6,24 @@ import type {
 } from "../domain/app-server-types";
 import { safeMessage } from "../domain/app-server-errors";
 import { tryHandleAppServerApprovalRequest } from "./app-server-approval-request-handler";
+import { handlePublicResearchSourceTool, type PublicResearchToolSession } from "./public-research-source-tool";
+import type { PublicResearchSourceReader } from "./public-research-source-port";
 
 export function handleAppServerServerRequest(input: {
   readonly id: number;
   readonly method: string;
   readonly params: Record<string, unknown> | null;
+  readonly publicSourceTools?: { readonly reader: PublicResearchSourceReader; readonly session: PublicResearchToolSession };
   readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
   readonly warn: (warning: AppServerWarning) => void;
   readonly respond: (id: number, result: Record<string, unknown>) => void;
   readonly respondError: (id: number, message: string) => void;
 }): void {
+  if (input.method === "item/tool/call" && input.publicSourceTools) {
+    handlePublicResearchSourceTool({ params: input.params, ...input.publicSourceTools,
+      respond: result => input.respond(input.id, result) });
+    return;
+  }
   if (tryHandleAppServerApprovalRequest({
     id: input.id,
     method: input.method,

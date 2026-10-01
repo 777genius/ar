@@ -1,5 +1,5 @@
 import type { AgentRuntimeToolName, ClockPort, ObservabilityPort, RuntimeDeps } from "@vioxen/subscription-runtime/core";
-import { CodexModelBackend, type AppServerCompletedTurnCheckpoint, type CodexExecutionProfile, type CodexProviderEgressPolicy, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, type AppServerCompletedTurnCheckpoint, type CodexExecutionProfile, type CodexProviderEgressPolicy, type PublicResearchSourceReader, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
 import type { CommandPolicy } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 import type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
@@ -44,6 +44,10 @@ export type FileBackendCodexWorkerOptions = {
   /** Already admitted by the trusted host; never taken from job configuration. */
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly appServerProcessFactory?: CodexAppServerProcessFactory;
+  /** Captured installed launch owner recheck, never serialized job data. */
+  readonly assertProviderAdmission?: () => void;
+  /** One bounded reader shared by all account drivers of this job executor. */
+  readonly publicSourceReader?: PublicResearchSourceReader;
   readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
   readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
   readonly executionProfile?: CodexExecutionProfile;

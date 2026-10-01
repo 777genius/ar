@@ -142,6 +142,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     });
 
     this.sessionSeeder = new FileBackendCodexSessionSeeder({
+      ...(options.assertProviderAdmission ? { assertProviderAdmission: options.assertProviderAdmission } : {}),
       providerInstanceId: options.providerInstanceId,
       sessionStore: this.sessionStore,
       observability: this.observability,

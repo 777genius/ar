@@ -2,12 +2,15 @@ import { prepareHostScratchTemp } from "./host-scratch-temp";
 import { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 export { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
+import { researchProviderAdmissionGuard } from "./research-launch-admission";
 import { admitHostedTestEgress, hostedTestEgressEvidence } from "./hosted-test-egress-admission";
 import {
   CodexModelBackend,
   codexMimoApiKeyEnvVarDefault,
   codexMimoTokenPlanEgressPolicy,
   codexProviderEgressPolicy,
+  CodexProviderEgressProfileId,
+  createPublicResearchSourceReader,
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { execFile } from "node:child_process";
@@ -469,6 +472,10 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
 }): FileBackendCodexSafeExecutorOptions {
   const { config } = input;
+  const assertProviderAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
+  assertProviderAdmission?.();
+  const publicSourceReader = input.providerEgressPolicy?.profileId === CodexProviderEgressProfileId.PublicResearchV1
+    ? createPublicResearchSourceReader(input.providerEgressPolicy) : undefined;
   const checkpointPublisher = input.checkpointPublisher ?? (config.checkpointPublisherSocketPath
     ? codexGoalTurnCheckpointSocketPublisher(config.checkpointPublisherSocketPath) : undefined);
   if (config.checkpointRequired && !checkpointPublisher) throw new Error("checkpoint_publisher_required");
@@ -490,6 +497,7 @@ export function buildCodexGoalExecutorOptions(input: {
     sourceEnv: config.sourceEnv,
   });
   return {
+    ...(assertProviderAdmission ? { assertProviderAdmission } : {}),
     ...(config.executorId ? { executorId: config.executorId } : {}),
     authRootDir: config.authRootDir,
     ...(input.observability ? { observability: input.observability } : {}),
@@ -507,6 +515,7 @@ export function buildCodexGoalExecutorOptions(input: {
           ...(input.observability ? { observability: input.observability } : {}),
         })
       : migrateLegacyCodexAccountCapacity({
+          ...(assertProviderAdmission ? { assertProviderAdmission } : {}),
           authRootDir: config.authRootDir,
           stateRootDir: input.stateRootDir,
           accountIds: config.accounts.map((account) => account.name),
@@ -545,6 +554,7 @@ export function buildCodexGoalExecutorOptions(input: {
               join(config.authRootDir, account.name, "auth.json"),
           }),
       worker: {
+        ...(assertProviderAdmission ? { assertProviderAdmission } : {}),
         providerInstanceId: `${config.taskId}-${account.name}`,
         stateRootDir: input.stateRootDir,
         codexBinaryPath: config.codexBinaryPath ?? "codex",
@@ -564,6 +574,7 @@ export function buildCodexGoalExecutorOptions(input: {
           : {}),
         ...(!isMimo && input.providerEgressPolicy ? { providerEgressPolicy: input.providerEgressPolicy } : {}),
         ...(input.appServerProcessFactory ? { appServerProcessFactory: input.appServerProcessFactory } : {}),
+        ...(publicSourceReader ? { publicSourceReader } : {}),
         capacityAccountId: account.name,
         taskTimeoutMs: config.taskTimeoutMs ?? 72 * 60 * 60 * 1000,
         ...(config.appServerStartupTimeoutMs === undefined

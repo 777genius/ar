@@ -1,3 +1,5 @@
+import { CodexModelBackend } from "./codex-model-backend";
+
 export const codexProviderEgressProfileEnvVar =
   "SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE";
 
@@ -6,13 +8,49 @@ export enum CodexProviderEgressProfileId {
   TestNpmQualification = "codex-test-npm-qualification",
   TestManagedQualification = "codex-test-managed-qualification",
   MimoTokenPlan = "codex-provider-mimo-token-plan",
+  PublicResearchV1 = "codex-public-research-v1",
 }
 export const codexProviderApiEgressProfileId = CodexProviderEgressProfileId.ProviderApi;
 
 export type CodexProviderEgressPolicy = {
   readonly profileId: CodexProviderEgressProfileId;
   readonly domains: readonly string[];
+  /** HTTPS GET broker destinations; never raw shell network authority. */
+  readonly publicSourceDomains?: readonly string[];
 };
+
+export enum CodexSourcePurpose {
+  ProviderApi = "provider-api",
+  PublicResearch = "public-research",
+}
+
+export enum CodexWebSearchMode {
+  Disabled = "disabled",
+  Live = "live",
+}
+
+// Compatibility is pinned by the v1 profile identity. Changing this set or its
+// read-only semantics requires another explicit profile and Host grant.
+const publicResearchDomains = Object.freeze([
+  "postgresql.org", "www.postgresql.org", "docs.rs", "crates.io",
+  "static.crates.io", "pglite.dev", "orm.drizzle.team", "v2.tauri.app",
+  "nodejs.org",
+]);
+
+export function codexProviderSourcePurpose(policy: CodexProviderEgressPolicy): CodexSourcePurpose {
+  return policy.profileId === CodexProviderEgressProfileId.PublicResearchV1
+    ? CodexSourcePurpose.PublicResearch : CodexSourcePurpose.ProviderApi;
+}
+
+/** Only a captured trusted policy can select native discovery, never an env marker. */
+export function codexProviderWebSearchMode(
+  policy: CodexProviderEgressPolicy | undefined,
+  backend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
+): CodexWebSearchMode {
+  return backend === CodexModelBackend.OpenAiChatGpt &&
+    policy?.profileId === CodexProviderEgressProfileId.PublicResearchV1
+    ? CodexWebSearchMode.Live : CodexWebSearchMode.Disabled;
+}
 
 export function codexProviderEgressPolicy(
   profileId: CodexProviderEgressProfileId,
@@ -20,6 +58,14 @@ export function codexProviderEgressPolicy(
   switch (profileId) {
     case CodexProviderEgressProfileId.ProviderApi:
       return Object.freeze({ profileId, domains: Object.freeze(["api.openai.com"]) });
+    case CodexProviderEgressProfileId.PublicResearchV1:
+      return Object.freeze({
+        profileId,
+        // Public source access is brokered so HTTPS, GET, DNS, credentials and
+        // redirects can be enforced. Domain-only shell proxy rules cannot do it.
+        domains: Object.freeze(["api.openai.com"]),
+        publicSourceDomains: publicResearchDomains,
+      });
     case CodexProviderEgressProfileId.TestNpmQualification:
       return Object.freeze({
         profileId,
@@ -61,6 +107,7 @@ export function codexProviderEgressPolicyFromEnv(
   if (profileId === CodexProviderEgressProfileId.ProviderApi ||
       profileId === CodexProviderEgressProfileId.TestNpmQualification ||
       profileId === CodexProviderEgressProfileId.TestManagedQualification ||
+      profileId === CodexProviderEgressProfileId.PublicResearchV1 ||
       profileId === CodexProviderEgressProfileId.MimoTokenPlan) {
     return codexProviderEgressPolicy(profileId);
   }

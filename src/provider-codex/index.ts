@@ -6,6 +6,8 @@ export * from "./codex-cli-agent-driver";
 export * from "./codex-model-backend";
 export * from "./codex-execution-profile";
 export * from "./codex-provider-egress-policy";
+export { createPublicResearchSourceReader } from "./app-server/adapters/public-research-source-reader";
+export type { PublicResearchSourceReader } from "./app-server/application/public-research-source-port";
 export * from "./hosted-codex-permissions";
 export * from "./codex-json-agent-driver";
 export * from "./codex-app-server-execution-engine";
@@ -19,6 +21,7 @@ export * from "./failure-classifier";
 export * from "./manifest";
 
 export { egressBoundCodexProcessFactory } from "./app-server/adapters/egress-bound-process";
+export { admittedResearchCodexProcessFactory } from "./app-server/adapters/node-app-server-process";
 
 export { AppServerAdmissionError, isAppServerAdmissionError } from "./app-server/application/app-server-admission";
 export { admittedReadonlyCodexProcessFactory } from "./app-server/adapters/node-app-server-process";

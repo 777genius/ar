@@ -12,6 +12,7 @@ export function sendAppServerRequest(input: {
   readonly abortSignal?: AbortSignal;
   readonly pending: Map<number, PendingRequest>;
   readonly write: (message: string) => void;
+  readonly observeResponse?: (response: CodexAppServerJsonRpcResponse) => void;
 }): Promise<CodexAppServerJsonRpcResponse> {
   return new Promise((resolve, reject) => {
     let requestMayHaveReachedProvider = false;
@@ -36,6 +37,7 @@ export function sendAppServerRequest(input: {
       ...(input.usageLease === undefined ? {} : { usageLease: input.usageLease }),
       resolve: (value) => {
         input.abortSignal?.removeEventListener("abort", abort);
+        input.observeResponse?.(value);
         resolve(value);
       },
       reject: (error) => {

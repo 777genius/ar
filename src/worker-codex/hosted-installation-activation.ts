@@ -705,7 +705,12 @@ export function admitHostedOrdinaryIdentity(identity: { readonly jobId: string; 
     const origin = readHostedOrdinaryRuntime(fence);
     if (origin.birth.jobId !== identity.jobId || origin.birth.jobRootDir !== identity.jobRootDir ||
         origin.birth.workspacePath !== identity.workspacePath) invalid();
-    return origin.start.grantSha256 === null ? CodexProviderEgressProfileId.ProviderApi : CodexProviderEgressProfileId.TestNpmQualification;
+    if (origin.start.grantSha256 === null) return CodexProviderEgressProfileId.ProviderApi;
+    const bytes = readHostedPrivateBytes(join(hostedTestEgressGrantRoot, digest(Buffer.from(identity.jobId)) + ".json"), 4096);
+    if (!bytes || digest(bytes) !== origin.start.grantSha256) invalid();
+    const grant = parseHostedTestEgressGrant(decodeHostedActivationBytes(bytes));
+    assertHostedTestEgressIdentity(grant, identity);
+    return grant.profileId;
   });
 }
 

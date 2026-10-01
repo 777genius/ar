@@ -32,6 +32,7 @@ import {
   hostedCodexPermissionProfilesToml,
   CodexProviderEgressProfileId,
   egressBoundCodexProcessFactory,
+  createPublicResearchSourceReader,
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { createLocalFileBackendRuntimeAdapters } from "@vioxen/subscription-runtime/store-local-file";
@@ -316,12 +317,16 @@ function createCodexAgentDriver(input: {
     ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
   });
   return new CodexJsonAgentDriver({
+    ...(options.assertProviderAdmission ? { assertProviderAdmission: options.assertProviderAdmission } : {}),
     engine: executionEngine === "packaged-exec"
       ? packagedExec
       : new CodexAppServerExecutionEngine({
           codexBinaryPath: options.codexBinaryPath,
           modelBackend,
           sourceEnv: appServerEnv,
+          providerEgressPolicy,
+          ...(providerEgressPolicy.profileId === CodexProviderEgressProfileId.PublicResearchV1
+            ? { publicSourceReader: options.publicSourceReader ?? createPublicResearchSourceReader(providerEgressPolicy) } : {}),
           ...(projectReadBoundary ? { hostedPermissionProfiles: true } : {}),
           ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
           ...(options.appServerStartupTimeoutMs

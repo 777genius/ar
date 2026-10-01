@@ -36,6 +36,7 @@ export function codexAccountCapacityRootDir(authRootDir: string): string {
 export function codexAccountCapacityStore(
   authRootDir: string,
   options: {
+    readonly assertProviderAdmission?: () => void;
     readonly authJsonPaths?: Readonly<Record<string, string>>;
     readonly authJsonByAlias?: Readonly<Record<string, string>>;
     readonly observability?: ObservabilityPort;
@@ -48,6 +49,7 @@ export function codexAccountCapacityStore(
       : {}),
   });
   return new CodexAccountCapacityAliasStore({
+    ...(options.assertProviderAdmission ? { assertProviderAdmission: options.assertProviderAdmission } : {}),
     authRootDir,
     store,
     ...(options.authJsonPaths
@@ -60,6 +62,7 @@ export function codexAccountCapacityStore(
 }
 
 export function migrateLegacyCodexAccountCapacity(input: {
+  readonly assertProviderAdmission?: () => void;
   readonly authRootDir: string;
   readonly stateRootDir: string;
   readonly accountIds: readonly string[];
@@ -68,6 +71,7 @@ export function migrateLegacyCodexAccountCapacity(input: {
   readonly now?: Date;
 }): WorkerAccountCapacityStore {
   const shared = codexAccountCapacityStore(input.authRootDir, {
+    ...(input.assertProviderAdmission ? { assertProviderAdmission: input.assertProviderAdmission } : {}),
     ...(input.authJsonPaths ? { authJsonPaths: input.authJsonPaths } : {}),
     ...(input.observability ? { observability: input.observability } : {}),
   });

@@ -625,11 +625,37 @@ describe("real default provider primitive under ordinary activation", () => {
   it.each(["app-server", "app-server-goal", "packaged-exec", "plain-exec"] as const)("no-grant egress preserves ordinary engine eligibility: %s", async executionEngine => {
     const { input } = runtime();
     const identity = { jobId: creator().jobId, jobRootDir: creator().jobRootDir, workspacePath: creator().workspacePath,
-      sourceEnv: input.env, executionEngine };
+      sourceEnv: { ...input.env, SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: CodexProviderEgressProfileId.PublicResearchV1 }, executionEngine };
     const policy = await admitHostedTestEgress(identity);
     expect(policy.profileId).toBe("codex-provider-api");
+    expect(() => spawnCodexAppServerProcess({ ...input, env: identity.sourceEnv })).toThrow();
     expect(admitHostedReadonlyInputs({ ...identity, providerEgressPolicy: policy })).toBeUndefined();
     expect(fixture.spawn).not.toHaveBeenCalled();
+  });
+  it("admits a production research grant through the real ordinary reader and default primitive", async () => {
+    const store = new HostedInstallationActivationStore(); store.install();
+    const grantPath = "grants/" + hash("ordinary-job") + ".json";
+    put(grantPath, { schemaVersion: 1, jobId: creator().jobId, jobRootDir: creator().jobRootDir,
+      workspacePath: creator().workspacePath, profileId: CodexProviderEgressProfileId.PublicResearchV1 });
+    store.enrollOrdinary("ordinary-creator"); store.resumeOrdinary();
+    const launch = creator().launch;
+    const { start } = store.serialized(fence => store.reserveOrdinaryRuntime(fence, launch.command, launch.args, launch.cwd));
+    fixture.runtimeUnit = start.unit; fixture.group = start.controlGroup;
+    const env = { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+      SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "forged" };
+    const identity = { jobId: creator().jobId, jobRootDir: creator().jobRootDir, workspacePath: creator().workspacePath, sourceEnv: env };
+    const policy = await admitHostedTestEgress(identity);
+    expect(policy.profileId).toBe("codex-public-research-v1");
+    expect(admitHostedReadonlyInputs({ ...identity, providerEgressPolicy: policy })).toBeUndefined();
+    const input = { command: "/TEST/codex", args: ["app-server"], cwd: creator().workspacePath,
+      env: { ...env, SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: policy.profileId } };
+    spawnCodexAppServerProcess(input);
+    expect(fixture.spawn).toHaveBeenCalledTimes(1);
+    expect(start.grantSha256).toBe(hash(readFileSync(join(fixture.root, grantPath))));
+    put(grantPath, { ...read(grantPath), workspacePath: "/another-project" });
+    expect(() => spawnCodexAppServerProcess(input)).toThrow();
+    await expect(admitHostedTestEgress(identity)).rejects.toThrow();
+    expect(fixture.spawn).toHaveBeenCalledTimes(1);
   });
   it.each([false, true])("official controller composition preserves the genuine default factory; npm=%s", async npm => {
     const { store, input } = runtime(npm);
@@ -863,7 +889,7 @@ describe("actual ordinary outer dispatcher and fixed bootstrap", () => {
   });
 });
 
-it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default factory revalidate on quota account switch: %s", async mode => {
+it.each(["api", "npm", "npm-grant-deleted", "research", "research-grant-deleted", "research-grant-mutated"])("real ordinary runner and default factory revalidate on quota account switch: %s", async mode => {
   const config = { jobId: "ordinary-job", taskId: "ordinary-job", jobRootDir: join(fixture.root, "jobs/ordinary-job"),
     workspacePath: join(fixture.root, "jobs/ordinary-job/workspace"), promptPath: join(fixture.root, "prompt"),
     authRootDir: join(fixture.root, "unused-synthetic-auth"), accounts: codexGoalAccountSlots(["fake-a", "fake-b"]),
@@ -873,13 +899,18 @@ it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default f
     launch: { ...creator().launch, cwd: config.workspacePath } };
   put("readonly-inventory.json", { ...read("readonly-inventory.json"), ordinaryCreators: [bound] });
   const grant = `grants/${hash(config.jobId)}.json`;
+  const selectedProfile = mode.startsWith("research") ? CodexProviderEgressProfileId.PublicResearchV1 : mode === "api" ? CodexProviderEgressProfileId.ProviderApi : CodexProviderEgressProfileId.TestNpmQualification;
   if (mode !== "api") put(grant, { schemaVersion: 1, jobId: config.jobId, jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath, profileId: "codex-test-npm-qualification" });
+    workspacePath: config.workspacePath, profileId: selectedProfile });
   const store = new HostedInstallationActivationStore(); store.install(); store.enrollOrdinary(bound.creatorId); store.resumeOrdinary();
   const prepared = store.serialized(fence => store.reserveOrdinaryRuntime(fence, bound.launch.command, bound.launch.args, bound.launch.cwd));
   fixture.runtimeUnit = prepared.start.unit; fixture.group = prepared.start.controlGroup;
   const fakes = [new FakeAppServerFactory({ emitTopLevelErrorOnTurn: "You've hit your usage limit",
-    onRequest: request => { if (request.method === "turn/start" && mode === "npm-grant-deleted") rmSync(join(fixture.root, grant)); } }), new FakeAppServerFactory()];
+    onRequest: request => { if (request.method === "turn/start" && mode.endsWith("grant-deleted")) rmSync(join(fixture.root, grant));
+      if (request.method === "turn/start" && mode.endsWith("grant-mutated")) {
+        // Same valid semantic grant, different bytes: fallback must still refuse.
+        writeFileSync(join(fixture.root, grant), readFileSync(join(fixture.root, grant), "utf8") + "\n", { mode: 0o600 });
+      } } }), new FakeAppServerFactory()];
   const frames: { env: Record<string, string> }[] = [];
   fixture.spawn.mockImplementation((command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
     expect(command).toBe(process.execPath);
@@ -911,11 +942,12 @@ it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default f
       worker: { ...account.worker, clock, warmupPrompt: false, runner: new StaticRunner({ exitCode: 0, stdout: "", stderr: "" }) },
     })),
   }) });
-  expect(fixture.spawn).toHaveBeenCalledTimes(mode === "npm-grant-deleted" ? 1 : 2);
+  expect(fixture.spawn).toHaveBeenCalledTimes(mode.includes("-grant-") ? 1 : 2);
   expect(result.attempts[0]?.failureReason, result.attempts[0]?.failureMessage).toBe("quota_limited");
   expect(frames.every(frame => frame.env.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE ===
-    (mode === "api" ? "codex-provider-api" : "codex-test-npm-qualification"))).toBe(true);
-  if (mode === "npm-grant-deleted") expect(result.status).not.toBe("completed");
+    selectedProfile)).toBe(true);
+  if (mode.startsWith("research")) for (const fake of fakes.filter(f => f.spawnCount)) expect(fake.requests.find(row => row.method === "thread/start")?.params).toMatchObject({ config: { web_search: "live" }, dynamicTools: [{ name: "public_source_read" }] });
+  if (mode.includes("-grant-")) expect(result.status).not.toBe("completed");
   else { expect(result.status).toBe("completed"); expect(new Set(frames.map(frame => frame.env.CODEX_HOME)).size).toBe(2); }
 });
 
