@@ -1,5 +1,5 @@
 import { ScopedTerminationRecords, scopedFenceIdentity } from "../hosted-controller/scoped-termination-records";
-import { withHostedActivationFence, retainHostedScopedActorChain, retainHostedScopedSubmitter } from "@vioxen/subscription-runtime/provider-codex";
+import { withHostedActivationFence, retainHostedScopedActorChain, retainHostedScopedSubmitter, observeHostedScopedActorChildren } from "@vioxen/subscription-runtime/provider-codex";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -9,9 +9,9 @@ import { tmpdir } from "node:os";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { HostedReadonlyHostKernel } from "../hosted-readonly-host-kernel";
 import { collectScopedRecursiveEmpty, fenceScopedSubmitter } from "../hosted-readonly-linux-collector";
-import { parseScopedActorChain, parseScopedActorDischarge, ScopedActorDischargeMethod, scopedDigest, ScopedEnqueueActorRole, ScopedSignal, ScopedTerminationKind, ScopedTerminationOutcome, type ScopedActorChain, type ScopedTerminationMember } from "../../worker-core/hosted-custody/domain/scoped-termination";
+import { parseScopedStartCorrelation, parseScopedSubmitter, parseScopedActorChain, parseScopedActorDischarge, ScopedActorDischargeMethod, scopedDigest, ScopedEnqueueActorRole, ScopedSignal, ScopedTerminationKind, ScopedTerminationOutcome, type ScopedActorChain, type ScopedTerminationMember } from "../../worker-core/hosted-custody/domain/scoped-termination";
 const graph = vi.hoisted(() => ({ root: "", files: new Map<string, string>(), invocation: "a".repeat(32), creatorBirth: "456",
-  queue: "", cancelWorks: true, effects: [] as string[][], pidfdCalls: [] as string[], collectorError: false, signalHook: null as (() => void) | null, proxyExit: false, actorExits: new Set<string>(), realPids: new Set<string>(), taskReads: new Map<string, number>(), taskMutation: null as ((path: string, count: number) => string[] | undefined) | null, fsyncHook: null as ((path:string)=>void) | null }));
+  queue: "", cancelWorks: true, effects: [] as string[][], pidfdCalls: [] as string[], procReads: [] as string[], collectorError: false, signalHook: null as (() => void) | null, proxyExit: false, actorExits: new Set<string>(), realPids: new Set<string>(), taskReads: new Map<string, number>(), taskMutation: null as ((path: string, count: number) => string[] | undefined) | null, fsyncHook: null as ((path:string)=>void) | null }));
 const policy = "/var/lib/subscription-runtime-host-policy";
 const local = (path: string) => ["/var", "/var/lib"].includes(path) ? graph.root : path === policy || path.startsWith(policy + "/") ? graph.root + "/policy" + path.slice(policy.length) :
   path.startsWith("/run/systemd/units") ? graph.root + "/units" + path.slice("/run/systemd/units".length) :
@@ -29,12 +29,14 @@ vi.mock("node:fs", async original => {
   return { ...fs,
     fsyncSync: (fd:number) => { fs.fsyncSync(fd); graph.fsyncHook?.(fs.readlinkSync(`/proc/self/fd/${fd}`)); },
     opendirSync: (path: string) => {
+      if (/^\/proc\/\d+\//.test(path)) graph.procReads.push(path);
       const pid = /^\/proc\/(\d+)\/task$/.exec(path)?.[1];
       if (!pid || graph.realPids.has(pid)) return fs.opendirSync(path);
       const ids = taskNames(path); let offset = 0;
       return { readSync: () => offset < ids.length ? {name:ids[offset++]} : null, closeSync: () => {} };
     },
     readFileSync: (path: string | number, options: unknown) => {
+      if (typeof path === "string" && /^\/proc\/\d+\//.test(path)) graph.procReads.push(path);
       if (typeof path === "string" && graph.files.has(path)) return graph.files.get(path)!;
       if (typeof path === "string" && path.startsWith("/proc/") && !path.startsWith("/proc/self/fd/") && !graph.realPids.has(path.split("/")[2]!)) throw Object.assign(new Error("TEST absent task"), { code: "ENOENT" });
       return fs.readFileSync(typeof path === "string" ? local(path) : path, options as never);
@@ -86,7 +88,7 @@ function population(suffix: string, populated: boolean): void {
 }
 beforeEach(() => {
   graph.root = mkdtempSync(join(tmpdir(), "TEST-scoped-linux-")); graph.files.clear(); graph.invocation = "a".repeat(32); graph.queue = "";
-  graph.cancelWorks = true; graph.effects = []; graph.pidfdCalls = []; graph.collectorError = false; graph.signalHook = null; graph.proxyExit = false; graph.actorExits.clear(); graph.realPids.clear(); graph.taskReads.clear(); graph.taskMutation = null; graph.fsyncHook = null;
+  graph.cancelWorks = true; graph.effects = []; graph.pidfdCalls = []; graph.procReads = []; graph.collectorError = false; graph.signalHook = null; graph.proxyExit = false; graph.actorExits.clear(); graph.realPids.clear(); graph.taskReads.clear(); graph.taskMutation = null; graph.fsyncHook = null;
   mkdirSync(join(graph.root, "policy"), { mode: 0o700 }); mkdirSync(cgroup("/nested/leaf"), { recursive: true });
   mkdirSync(join(graph.root, "units")); symlinkSync(graph.invocation, join(graph.root, "units", "invocation:" + unit));
   population("", false); population("/nested", false); population("/nested/leaf", false);
@@ -210,9 +212,10 @@ it("R2 authenticated producer refuses an omitted live enqueue descendant", () =>
 });
 
 
-// Red on d420: the concrete producer accepts the chain with only the leader's
-// child. The owned worker thread's child is independently visible in real procfs.
-it("R2-A real procfs rejects an omitted worker-thread child and retains the complete graph", async () => {
+// Real procfs membership and scoped-record admission are separate prerequisites.
+// Namespace-relative root, traversal, v1 or hybrid views need not be admissible
+// records. None of these known refusals proves the historical CI cgroup bytes.
+it("R2-A real procfs observes all thread children; admitted records reject omission and retain the complete graph", async () => {
   const wrapper = spawn(process.execPath, ["-e", `
     const {spawn} = require('node:child_process');
     const {Worker} = require('node:worker_threads');
@@ -239,34 +242,132 @@ it("R2-A real procfs rejects an omitted worker-thread child and retains the comp
     });
     const pids = [process.pid, wrapper.pid!, message.main, message.threaded];
     pids.forEach(pid => graph.realPids.add(String(pid)));
+    // PID namespaces may reuse one of beforeEach's synthetic TEST actor IDs.
+    // Never let those canned files shadow an owned process's real identity.
+    for (const path of graph.files.keys()) if (graph.realPids.has(/^\/proc\/(\d+)\//.exec(path)?.[1] ?? "")) graph.files.delete(path);
     const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
-    const birth = (pid:number) => `${pid}:${actualFs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1)!.split(/\s+/)[19]}`;
+    const policySnapshot = () => actualFs.readdirSync(join(graph.root, "policy"), { recursive: true }).sort().map(name => {
+      const path = join(graph.root, "policy", String(name));
+      return [name, actualFs.statSync(path).isFile() ? actualFs.readFileSync(path, "utf8") : null];
+    });
+    const stat = (pid:number, path = `/proc/${pid}/stat`) => {
+      const raw = actualFs.readFileSync(path, "utf8"), values = raw.slice(raw.lastIndexOf(") ") + 2).trim().split(/\s+/);
+      expect(raw.startsWith(`${pid} (`)).toBe(true);
+      expect(values[19]).toMatch(/^[1-9][0-9]{0,19}$/);
+      return { birth: `${pid}:${values[19]}`, parent: values[1]! };
+    };
+    const identities = new Map(pids.map(pid => [pid, stat(pid)]));
     const observedGroup = actualFs.readFileSync(`/proc/${wrapper.pid}/cgroup`, "utf8");
     pids.forEach(pid => expect(actualFs.readFileSync(`/proc/${pid}/cgroup`, "utf8")).toBe(observedGroup));
-    const controlGroup = observedGroup.trim().replace(/^0::/, "");
-    const creator = { role: ScopedEnqueueActorRole.Creator, pidBirth: birth(process.pid), controlGroup, parentPidBirth: null };
-    const proxy = { role: ScopedEnqueueActorRole.Wrapper, pidBirth: birth(wrapper.pid!), controlGroup, parentPidBirth: creator.pidBirth };
-    const main = { role: ScopedEnqueueActorRole.ManagerSubmitter, pidBirth: birth(message.main), controlGroup, parentPidBirth: proxy.pidBirth };
-    const threaded = { ...main, pidBirth: birth(message.threaded) };
-    const { invocationId:_i, submitterDigest:_s, ...c } = member;
-    const correlation = { ...c, creatorPidBirth: creator.pidBirth, creatorControlGroup: creator.controlGroup };
-    const submitter = { schemaVersion:1, correlationDigest:scopedDigest(correlation), pidBirth:proxy.pidBirth, controlGroup:proxy.controlGroup };
-    put(`ordinary-submitters/${id}.json`, submitter);
-    const chain: ScopedActorChain = { schemaVersion:1, correlationDigest:scopedDigest(correlation), submitterDigest:createHash("sha256").update(JSON.stringify(submitter)+"\n").digest("hex"), actors:[creator,proxy,main] };
-    rmSync(join(graph.root, `policy/scoped-terminating/${id}.json`)); rmSync(join(graph.root, `policy/ordinary-actor-chains/${id}.json`));
-    expect(actualFs.readFileSync(`/proc/${wrapper.pid}/task/${wrapper.pid}/children`, "utf8").trim().split(/\s+/)).toContain(String(message.main));
-    expect(actualFs.readFileSync(`/proc/${wrapper.pid}/task/${wrapper.pid}/children`, "utf8").trim().split(/\s+/)).not.toContain(String(message.threaded));
-    expect(actualFs.readdirSync(`/proc/${wrapper.pid}/task`).some(tid => actualFs.readFileSync(`/proc/${wrapper.pid}/task/${tid}/children`, "utf8").trim().split(/\s+/).includes(String(message.threaded)))).toBe(true);
-    withHostedActivationFence(f => expect(() => retainHostedScopedActorChain(f, correlation, chain)).toThrow("scoped_actor_chain_incomplete"));
-    const complete = { ...chain, actors:[...chain.actors, threaded] };
-    for (const pid of pids.slice(1)) for (const tid of actualFs.readdirSync(`/proc/${pid}/task`)) {
-      const status = actualFs.readFileSync(`/proc/${pid}/task/${tid}/status`, "utf8");
-      expect(status.match(/^Tgid:\s+([0-9]+)$/m)?.[1]).toBe(String(pid));
-      expect(status.match(/^Pid:\s+([0-9]+)$/m)?.[1]).toBe(tid);
-      expect(readFileSync(`/proc/${pid}/task/${tid}/cgroup`, "utf8"), `task cgroup ${pid}/${tid}`).toBe(observedGroup);
+    const diagnostic = JSON.stringify({ actualCgroup: observedGroup.slice(0, 4096), actualIdentities: [...identities] });
+    const expectedChildren = [String(message.main), String(message.threaded)].sort();
+    for (const [pid, parent] of [[wrapper.pid!, process.pid], [message.main, wrapper.pid!], [message.threaded, wrapper.pid!]]) {
+      expect(identities.get(pid!)!.parent, diagnostic).toBe(String(parent));
     }
-    withHostedActivationFence(f => retainHostedScopedActorChain(f, correlation, complete));
-    expect(JSON.parse(readFileSync(join(graph.root, `policy/ordinary-actor-chains/${id}.json`), "utf8"))).toEqual(complete);
+    const actualTasks = new Map(pids.slice(1).map(pid => {
+      const tids = actualFs.readdirSync(`/proc/${pid}/task`).sort();
+      const tasks = tids.map(tid => {
+        const path = `/proc/${pid}/task/${tid}`, status = actualFs.readFileSync(path + "/status", "utf8");
+        expect(status.match(/^Tgid:\s+([0-9]+)$/m)?.[1], diagnostic).toBe(String(pid));
+        expect(status.match(/^Pid:\s+([0-9]+)$/m)?.[1], diagnostic).toBe(tid);
+        expect(actualFs.readFileSync(path + "/cgroup", "utf8"), diagnostic).toBe(observedGroup);
+        const rawChildren = actualFs.readFileSync(path + "/children", "utf8").trim();
+        return { ...stat(Number(tid), path + "/stat"), children: rawChildren ? rawChildren.split(/\s+/).sort() : [] };
+      });
+      expect(actualFs.readdirSync(`/proc/${pid}/task`).sort(), diagnostic).toEqual(tids);
+      expect(tasks.find(task => task.birth === identities.get(pid)!.birth), diagnostic).toBeDefined();
+      expect(tasks.every(task => task.parent === identities.get(pid)!.parent), diagnostic).toBe(true);
+      return [pid, tasks] as const;
+    }));
+    const wrapperTasks = actualTasks.get(wrapper.pid!)!;
+    expect(wrapperTasks.find(task => task.birth === identities.get(wrapper.pid!)!.birth)!.children, diagnostic).toEqual([String(message.main)]);
+    expect(wrapperTasks.filter(task => task.birth !== identities.get(wrapper.pid!)!.birth).flatMap(task => task.children), diagnostic).toEqual([String(message.threaded)]);
+    expect(wrapperTasks.flatMap(task => task.children).sort(), diagnostic).toEqual(expectedChildren);
+
+    // This production helper reports facts only; it mints no record or receipt.
+    // A single v2 row (including '/' or '..') fits its observation contract.
+    // v1/multirow bytes must explicitly refuse that helper, while the direct
+    // real stat/status/task/children observations above still prove membership.
+    const actualControlGroup = observedGroup.trim().replace(/^0::/, "");
+    const beforeObservation = policySnapshot();
+    for (const pid of pids.slice(1)) {
+      const actor = { role: pid === wrapper.pid ? ScopedEnqueueActorRole.Wrapper : ScopedEnqueueActorRole.ManagerSubmitter,
+        pidBirth: identities.get(pid)!.birth, controlGroup: actualControlGroup, parentPidBirth: identities.get(pid === wrapper.pid ? process.pid : wrapper.pid!)!.birth };
+      const observe = () => observeHostedScopedActorChildren(actor, performance.now() + 1000);
+      if (/^0::\/[^\r\n]*$/.test(observedGroup.trim())) {
+        expect(observe(), diagnostic).toEqual({ tasks: actualTasks.get(pid), children: pid === wrapper.pid ? expectedChildren : [] });
+      } else {
+        expect(observe, diagnostic).toThrow(/^scoped_actor_tasks_ambiguous$/);
+      }
+    }
+    expect(policySnapshot(), diagnostic).toEqual(beforeObservation);
+    expect(graph.effects, diagnostic).toEqual([]); expect(graph.pidfdCalls, diagnostic).toEqual([]);
+
+    rmSync(join(graph.root, `policy/scoped-terminating/${id}.json`)); rmSync(join(graph.root, `policy/ordinary-actor-chains/${id}.json`));
+    const fsyncs: string[] = []; graph.fsyncHook = path => fsyncs.push(path);
+    const verifyRecords = (recordGroup: string, label: string, mustBeAdmitted?: boolean) => {
+      const actors = pids.map((pid, i) => ({ role: i === 0 ? ScopedEnqueueActorRole.Creator : i === 1 ? ScopedEnqueueActorRole.Wrapper : ScopedEnqueueActorRole.ManagerSubmitter,
+        pidBirth: identities.get(pid)!.birth, controlGroup: recordGroup, parentPidBirth: i === 0 ? null : identities.get(pids[i === 1 ? 0 : 1]!)!.birth }));
+      const { invocationId:_i, submitterDigest:_s, ...c } = member;
+      const correlation = { ...c, creatorPidBirth: actors[0]!.pidBirth, creatorControlGroup: recordGroup };
+      const submitter = { schemaVersion:1, correlationDigest:scopedDigest(correlation), pidBirth:actors[1]!.pidBirth, controlGroup:recordGroup };
+      put(`ordinary-submitters/${id}.json`, submitter);
+      rmSync(join(graph.root, `policy/ordinary-actor-chains/${id}.json`), { force: true });
+      const chain: ScopedActorChain = { schemaVersion:1, correlationDigest:scopedDigest(correlation), submitterDigest:createHash("sha256").update(JSON.stringify(submitter)+"\n").digest("hex"), actors:actors.slice(0,3) };
+      const complete: ScopedActorChain = { ...chain, actors };
+      // Only this direct parser is caught, and only its exact record-invalid
+      // refusal is admitted below. Other failures remain red with public facts.
+      let parserFailure: Error | null = null;
+      try { parseScopedStartCorrelation(correlation); }
+      catch (error) {
+        expect(error, diagnostic).toBeInstanceOf(Error);
+        expect(error, diagnostic).toHaveProperty("message", "scoped_record_invalid");
+        parserFailure = error as Error;
+      }
+      const context = `${label}: recordGroup=${JSON.stringify(recordGroup.slice(0, 4096))}; ${diagnostic}; parser=${parserFailure?.stack?.slice(0, 2048) ?? "admitted"}`;
+      if (mustBeAdmitted !== undefined) expect(parserFailure === null, context).toBe(mustBeAdmitted);
+      const before = policySnapshot(), reads = [...graph.procReads], syncCount = fsyncs.length;
+      if (parserFailure) {
+        expect(() => parseScopedSubmitter(submitter), context).toThrow(/^scoped_record_invalid$/);
+        for (const input of [chain, complete]) {
+          withHostedActivationFence(f => expect(() => retainHostedScopedActorChain(f, correlation, input), context).toThrow(/^scoped_record_invalid$/));
+          expect(policySnapshot(), context).toEqual(before);
+          expect(graph.procReads, context).toEqual(reads);
+          expect(fsyncs.length, context).toBe(syncCount);
+        }
+      } else {
+        expect(parseScopedSubmitter(submitter), context).toEqual(submitter);
+        expect(parseScopedActorChain(complete), context).toEqual(complete);
+        withHostedActivationFence(f => expect(() => retainHostedScopedActorChain(f, correlation, chain), context).toThrow(/^scoped_actor_chain_incomplete$/));
+        expect(policySnapshot(), context).toEqual(before);
+        expect(fsyncs.length, context).toBe(syncCount);
+        expect(graph.procReads.length, context).toBeGreaterThan(reads.length);
+        withHostedActivationFence(f => expect(() => retainHostedScopedActorChain(f, correlation, complete), context).not.toThrow());
+        expect(new ScopedTerminationRecords(() => {}).actorChain({ ...correlation, invocationId: member.invocationId, submitterDigest: chain.submitterDigest }), context).toEqual(complete);
+        expect(actualFs.existsSync(join(graph.root, `policy/ordinary-actor-chains/${id}.next.json`)), context).toBe(false);
+        expect(fsyncs.length, context).toBeGreaterThan(syncCount);
+      }
+      expect(graph.effects, context).toEqual([]); expect(graph.pidfdCalls, context).toEqual([]);
+    };
+    verifyRecords(actualControlGroup, "actual kernel record prerequisite");
+    // Controlled inadmissible record inputs, never claims about the CI kernel.
+    // They must close the gate before any proc graph collection or publication.
+    for (const recordGroup of ["/", "/../TEST-cgroup", "2:cpu:/TEST-v1", "/TEST-v2\n2:cpu:/TEST-v1"]) verifyRecords(recordGroup, "controlled record refusal", false);
+
+    // Always verify publication positively with an explicitly admitted TEST
+    // cgroup observation fixture. Only these cgroup read responses are virtual;
+    // every PID, birth, parent, task set, status and child still comes from procfs.
+    // This alias is neither the actual kernel cgroup nor execution authority.
+    const fixtureGroup = "/TEST/actor-observation-fixture";
+    for (const pid of pids) {
+      graph.files.set(`/proc/${pid}/cgroup`, `0::${fixtureGroup}\n`);
+      for (const tid of actualFs.readdirSync(`/proc/${pid}/task`)) graph.files.set(`/proc/${pid}/task/${tid}/cgroup`, `0::${fixtureGroup}\n`);
+    }
+    verifyRecords(fixtureGroup, "admitted TEST cgroup observation fixture", true);
+    pids.forEach(pid => {
+      expect(stat(pid), diagnostic).toEqual(identities.get(pid));
+      expect(actualFs.readFileSync(`/proc/${pid}/cgroup`, "utf8"), diagnostic).toBe(observedGroup);
+    });
   } finally {
     wrapper.stdin.end("join\n"); await exit;
   }
