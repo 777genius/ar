@@ -1,5 +1,5 @@
 import { ScopedTerminationRecords, scopedFenceIdentity } from "./hosted-controller/scoped-termination-records";
-import { assertHostedActivationOperator } from "@vioxen/subscription-runtime/provider-codex";
+import { assertHostedActivationOperator, observeHostedScopedActorChildren } from "@vioxen/subscription-runtime/provider-codex";
 import { scopedDigest, ScopedActorDischargeMethod, parseScopedActorDischarge, type ScopedActorChain, type ScopedActorDischarge, type ScopedCollectedEvidence, type ScopedIdentityEvidence, type ScopedTerminationMember, type ScopedTerminationObservation, type ScopedSignal } from "../worker-core/hosted-custody/domain/scoped-termination";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -326,12 +326,36 @@ export class HostedReadonlyHostKernel {
   }
   fenceScopedSubmitter(member: ScopedTerminationMember, chain: ScopedActorChain, remainingMs: number): ScopedActorDischarge {
     return withScopedCollectionBudget(remainingMs, () => {
+      const end = performance.now() + remainingMs;
       const records = new ScopedTerminationRecords(assertHostedActivationOperator), retained = records.actorChain(member);
       if (scopedDigest(chain) !== scopedDigest(retained)) invalid();
-      const end = performance.now() + remainingMs;
       this.#scopedIdentity(member, true);
       const marker = records.terminating(member.identity.parentStartId);
       if (!marker || scopedDigest(marker.identity) !== scopedDigest(scopedFenceIdentity(member.identity))) invalid();
+      // Reobserve every live admitted submitter, including all nonleader tasks.
+      // Absence supplies no discharge: the pidfd collector below still owes an
+      // independent positive exit for every retained noncreator.
+      const observeMembership = () => {
+        const live = chain.actors.slice(1).filter(actor => {
+          try { if (collectProcessBirth(actor.pidBirth.split(":")[0]!) !== actor.pidBirth) invalid(); return true; }
+          catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; return false; }
+        });
+        return live.map(actor => {
+          const snapshot = observeHostedScopedActorChildren(actor, end);
+          const expected = live.filter(a => a.parentPidBirth === actor.pidBirth).map(a => a.pidBirth.split(":")[0]!).sort();
+          if (JSON.stringify(snapshot.children) !== JSON.stringify(expected)) invalid();
+          const parent = chain.actors.find(a => a.pidBirth === actor.parentPidBirth)!;
+          let parentLive = false;
+          try { parentLive = collectProcessBirth(parent.pidBirth.split(":")[0]!) === parent.pidBirth; }
+          catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+          // An exited original parent permits reparenting; never substitute that
+          // parent's birth or skip observing the actual surviving actor.
+          if (parentLive && snapshot.tasks.some(t => t.parent !== parent.pidBirth.split(":")[0])) invalid();
+          return { birth: actor.pidBirth, snapshot };
+        });
+      };
+      const membership = observeMembership();
+      if (scopedDigest(membership) !== scopedDigest(observeMembership())) invalid();
       // Every enqueue-capable task is pinned independently; wrapper exit alone
       // cannot discharge a surviving systemd-run or original scoped creator.
       for (const actor of chain.actors.slice(1).reverse()) fenceScopedSubmitter(actor.pidBirth, actor.controlGroup, Math.floor(end - performance.now()));

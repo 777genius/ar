@@ -33,7 +33,7 @@ export class ScopedTerminationRecords {
   constructor(private readonly authenticate: () => void) {}
   #access<T>(namespace: string, id: string, action: (path: string, parents: readonly number[], verify: () => void) => T): T {
     this.authenticate(); assertHostedActivationOperator();
-    if (!/^(?:ordinary-correlations|ordinary-invocations|ordinary-submitters|ordinary-submitter-exits|ordinary-actor-chains|scoped-terminating|scoped-operations|scoped-observations|scoped-receipts|keyed-child-owners|host-activation)$/.test(namespace) || !(namespace === "host-activation" ? id === "record" : namespace === "keyed-child-owners" ? /^[a-f0-9]{64}$/.test(id) : /^[a-f0-9-]{36}$/.test(id))) throw new Error("scoped_record_name_invalid");
+    if (!/^(?:ordinary-correlations|ordinary-invocations|ordinary-submitters|ordinary-submitter-exits|ordinary-actor-chains|scoped-terminating|scoped-operations|scoped-observations|scoped-receipts|keyed-child-owners|host-activation)$/.test(namespace) || !(namespace === "host-activation" ? id === "record" : namespace === "keyed-child-owners" ? /^[a-f0-9]{64}$/.test(id) : (namespace === "ordinary-actor-chains" ? /^[a-f0-9-]{36}(?:\.next)?$/.test(id) : /^[a-f0-9-]{36}$/.test(id)))) throw new Error("scoped_record_name_invalid");
     const path = namespace === "host-activation" ? root : root + "/" + namespace, pinned: { path: string; stat: Stats; fd: number }[] = [];
     try {
       for (let current = path;; current = dirname(current)) {
@@ -120,6 +120,7 @@ export class ScopedTerminationRecords {
   invocation(id: string): ScopedInvocation | null { return this.#parse("ordinary-invocations", id, parseScopedInvocation); }
   submitter(id: string): ScopedSubmitter | null { return this.#parse("ordinary-submitters", id, parseScopedSubmitter); }
   actorChain(member: ScopedTerminationMember): ScopedActorChain {
+    if (this.read("ordinary-actor-chains", member.startId + ".next")) throw new Error("scoped_actor_chain_publication_pending");
     const chain = this.#parse("ordinary-actor-chains", member.startId, parseScopedActorChain), submitter = this.submitter(member.startId);
     if (!chain || !submitter) throw new Error("scoped_actor_chain_required");
     bindScopedActorChain(chain, member, submitter); return chain;

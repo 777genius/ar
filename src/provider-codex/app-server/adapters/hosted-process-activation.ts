@@ -1,8 +1,8 @@
-import { parseScopedActorChain, bindScopedActorChain, type ScopedActorChain, parseScopedSubmitter, parseScopedStartCorrelation, parseScopedInvocation, scopedDigest, ScopedTerminationKind,
+import { parseScopedActorChain, bindScopedActorChain, type ScopedActorChain, type ScopedEnqueueActor, parseScopedSubmitter, parseScopedStartCorrelation, parseScopedInvocation, scopedDigest, ScopedTerminationKind,
   type ScopedStartCorrelation } from "@vioxen/subscription-runtime/core";
 import { parseImmutableChildSlot } from "@vioxen/subscription-runtime/core";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync,
-  readlinkSync, readSync, rmdirSync, writeSync, fsyncSync, renameSync } from "node:fs";
+  readlinkSync, readSync, opendirSync, rmdirSync, writeSync, fsyncSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -486,6 +486,21 @@ export interface HostedRetainedLifetimeBinding {
 export interface HostedRetainedLifetimePort {
   readAuthenticatedLifetime(parentStartId: string): HostedRetainedLifetimeBinding;
 }
+/** Subsequent guest integration must implement this using its retained,
+ * authenticated channel, not a caller boolean or a procfs observation. Before
+ * publish, hold every thread of the creator's scoped submission path and every
+ * wrapper/manager descendant against fork/clone/exec/enqueue. Supply the exact
+ * role-labelled, parent-ordered graph (direct manager or wrapper-backed).
+ * Keep that hold across observation, durable publication and its final reread.
+ * Release only after publish returns normally and the original lifetime permits
+ * work; a throw, deadline, disconnect or actor/task change keeps the graph held
+ * for cleanup. Holds may not be dropped/recreated to renew the original budget.
+ * This declaration provides no barrier implementation or execution authority. */
+export interface HostedScopedActorBarrierPort {
+  retainBeforeRelease(binding: HostedRetainedLifetimeBinding,
+    publish: (heldGraph: ScopedActorChain) => void): void;
+}
+
 /** Pin only an invocation observed while the originally owned submitter is live.
  * A missing/partial record retains the reservation; no later PID lookup repairs it. */
 export function retainHostedScopedSubmitter(fence: HostedActivationFence, correlation: ScopedStartCorrelation,
@@ -511,7 +526,7 @@ export function retainHostedScopedSubmitter(fence: HostedActivationFence, correl
   const invocation = parseScopedInvocation({ schemaVersion: 1, correlationDigest: scopedDigest(c), invocationId: observed.InvocationID });
   createActivationRecord(`ordinary-invocations/${c.startId}.json`, Buffer.from(JSON.stringify(invocation) + "\n"));
 }
-function createActivationRecord(name: string, bytes: Buffer): void {
+function createActivationRecord(name: string, bytes: Buffer, verifyEvidence: () => void = () => {}, finalName?: string): void {
   assertHostedActivationOperator();
   if (!recordName.test(name) || bytes.length > 4 * 1024 * 1024) invalid();
   const path = join(root, name), parents: { path: string; fd: number; dev: number; ino: number }[] = [];
@@ -525,13 +540,13 @@ function createActivationRecord(name: string, bytes: Buffer): void {
       if (directory === "/") break;
     }
     const verify = () => { for (const p of parents) { const stat = lstatSync(p.path); if (stat.dev !== p.dev || stat.ino !== p.ino || !stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o022)) invalid(); } };
-    verify();
-    const anchored = `/proc/self/fd/${parents[0]!.fd}/${basename(path)}`;
+    verify(); verifyEvidence();
+    let anchored = `/proc/self/fd/${parents[0]!.fd}/${basename(path)}`;
     const fd = openSync(anchored, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try {
       let offset = 0;
       while (offset < bytes.length) { const count = writeSync(fd, bytes, offset, bytes.length - offset); if (count <= 0) invalid(); offset += count; }
-      const before = fstatSync(fd);
+      let before = fstatSync(fd);
       const check = () => {
         const stat = fstatSync(fd), named = lstatSync(anchored), actual = Buffer.alloc(bytes.length + 1);
         let length = 0; while (length < actual.length) { const n = readSync(fd, actual, length, actual.length - length, length); if (!n) break; length += n; }
@@ -540,7 +555,19 @@ function createActivationRecord(name: string, bytes: Buffer): void {
             named.dev !== stat.dev || named.ino !== stat.ino || length !== bytes.length || !actual.subarray(0, length).equals(bytes)) invalid();
         verify();
       };
-      check(); fsyncSync(fd); for (const parent of parents) fsyncSync(parent.fd); check();
+      check(); verifyEvidence(); fsyncSync(fd); for (const parent of parents) fsyncSync(parent.fd); check(); verifyEvidence();
+      if (finalName !== undefined) {
+        if (!recordName.test(finalName) || dirname(join(root, finalName)) !== dirname(path)) invalid();
+        const final = `/proc/self/fd/${parents[0]!.fd}/${basename(finalName)}`;
+        try { lstatSync(final); throw new Error("scoped_actor_chain_conflict"); }
+        catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+        // Caller must hold the graph across this atomic name publication and
+        // final ancestry fsync. Enumeration cannot close that execution race.
+        verifyEvidence(); verify(); renameSync(anchored, final); anchored = final;
+        before = fstatSync(fd);
+        for (const parent of parents) fsyncSync(parent.fd);
+        check();
+      }
     } finally { closeSync(fd); }
   } finally { for (const p of parents.reverse()) closeSync(p.fd); }
 }
@@ -575,25 +602,69 @@ export function retainHostedScopedActorChain(fence: HostedActivationFence, corre
   const submitter = parseScopedSubmitter(decodeHostedActivationBytes(bytes));
   bindScopedActorChain(chain, { ...c, invocationId: "0".repeat(32), submitterDigest: sha256(bytes) }, submitter);
   assertHostedScopedAdmission(fence, c.identity.parentStartId);
-  const children = new Map<string, string>();
-  for (const actor of chain.actors) {
+  const end = performance.now() + 1000;
+  const observe = () => chain.actors.map(actor => {
     const pid = actor.pidBirth.split(":")[0]!;
     if (pidBirth(pid) !== actor.pidBirth || readFileSync(`/proc/${pid}/cgroup`, "utf8").trim() !== `0::${actor.controlGroup}`) invalid();
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8"), ppid = stat.slice(stat.lastIndexOf(") ") + 2).split(/\s+/)[1];
-    if (actor.parentPidBirth && ppid !== actor.parentPidBirth.split(":")[0]) invalid();
-    if (actor.parentPidBirth) {
-      const raw = readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8");
-      if (raw.length > 4096 || (raw.trim() && !/^(?:[1-9][0-9]{0,9}\s*)+$/.test(raw))) invalid();
-      const actual = raw.trim() ? raw.trim().split(/\s+/).sort() : [];
-      const expected = chain.actors.filter(a => a.parentPidBirth === actor.pidBirth).map(a => a.pidBirth.split(":")[0]!).sort();
-      if (new Set(actual).size !== actual.length || JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error("scoped_actor_chain_incomplete");
-      children.set(pid, raw);
-    }
-  }
-  for (const actor of chain.actors) {
-    const pid = actor.pidBirth.split(":")[0]!;
-    if (pidBirth(pid) !== actor.pidBirth || readFileSync(`/proc/${pid}/cgroup`, "utf8").trim() !== `0::${actor.controlGroup}` ||
-        (children.has(pid) && children.get(pid) !== readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8"))) invalid();
-  }
-  createActivationRecord(`ordinary-actor-chains/${c.startId}.json`, Buffer.from(JSON.stringify(chain) + "\n"));
+    const stat = scopedTaskStat(pid, readFileSync(`/proc/${pid}/stat`, "utf8"));
+    if (actor.parentPidBirth && stat.parent !== actor.parentPidBirth.split(":")[0]) invalid();
+    // Creator siblings belong to separately retained scopes. Only the admitted
+    // submitter subtree is enumerated; no proc-wide discovery or foreign effect.
+    const tasks = actor.parentPidBirth ? observeHostedScopedActorChildren(actor, end) : null;
+    const expected = chain.actors.filter(a => a.parentPidBirth === actor.pidBirth).map(a => a.pidBirth.split(":")[0]!).sort();
+    if (tasks && tasks.tasks.some(t => t.parent !== stat.parent)) invalid();
+    if (tasks && JSON.stringify(tasks.children) !== JSON.stringify(expected)) throw new Error("scoped_actor_chain_incomplete");
+    return { birth: actor.pidBirth, parent: stat.parent, tasks };
+  });
+  const before = observe();
+  const verifyMembership = () => {
+    if (performance.now() >= end || scopedDigest(before) !== scopedDigest(observe())) throw new Error("scoped_actor_membership_changed");
+  };
+  verifyMembership();
+  const pending = `ordinary-actor-chains/${c.startId}.next.json`, final = `ordinary-actor-chains/${c.startId}.json`;
+  // A failed last-fsync observation leaves an obligation, never a readable
+  // authenticated final chain. Only a held guest graph may cross this rename.
+  if (readHostedActivationBytes(final) || readHostedActivationBytes(pending)) throw new Error("scoped_actor_chain_publication_pending");
+  createActivationRecord(pending, Buffer.from(JSON.stringify(chain) + "\n"), verifyMembership, final);
+}
+
+/** Bounded facts for one already admitted process, shared by producer and
+ * cleanup kernel. Enumeration cannot replace the guest's held execution barrier.
+ * The caller supplies the original monotonic end, never a renewed allowance. */
+export function observeHostedScopedActorChildren(actor: ScopedEnqueueActor, end: number): {
+  readonly children: readonly string[]; readonly tasks: readonly { readonly birth: string; readonly parent: string; readonly children: readonly string[] }[];
+} {
+  const pid = actor.pidBirth.split(":")[0]!;
+  if (!/^[1-9][0-9]{0,9}:[1-9][0-9]{0,19}$/.test(actor.pidBirth) || !Number.isFinite(end)) invalid();
+  const check = () => { if (performance.now() >= end) throw new Error("scoped_actor_observation_budget"); };
+  const taskIds = () => {
+    check(); const directory = opendirSync(`/proc/${pid}/task`), ids: string[] = [];
+    try { for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
+      check(); if (ids.length >= 256 || !/^[1-9][0-9]{0,9}$/.test(entry.name)) throw new Error("scoped_actor_tasks_ambiguous"); ids.push(entry.name);
+    } } finally { directory.closeSync(); }
+    if (!ids.includes(pid) || new Set(ids).size !== ids.length) throw new Error("scoped_actor_tasks_ambiguous");
+    return ids.sort();
+  };
+  const ids = taskIds();
+  const observe = () => ids.map(tid => {
+    check(); const path = `/proc/${pid}/task/${tid}`;
+    const stat = scopedTaskStat(tid, readFileSync(path + "/stat", "utf8"));
+    const status = readFileSync(path + "/status", "utf8"), raw = readFileSync(path + "/children", "utf8");
+    if (status.length > 65536 || status.match(/^Tgid:\s+([0-9]+)$/m)?.[1] !== pid || status.match(/^Pid:\s+([0-9]+)$/m)?.[1] !== tid ||
+        readFileSync(path + "/cgroup", "utf8").trim() !== `0::${actor.controlGroup}` || raw.length > 4096 || (raw.trim() && !/^(?:[1-9][0-9]{0,9}\s*)+$/.test(raw))) throw new Error("scoped_actor_tasks_ambiguous");
+    const children = raw.trim() ? raw.trim().split(/\s+/).sort() : [];
+    if (children.length > 64 || new Set(children).size !== children.length) throw new Error("scoped_actor_tasks_ambiguous");
+    return { ...stat, children };
+  });
+  const tasks = observe(), children = tasks.flatMap(t => t.children).sort();
+  // A child appearing under two different tasks is ambiguous, not a union proof.
+  if (children.length > 64 || new Set(children).size !== children.length || JSON.stringify(ids) !== JSON.stringify(taskIds()) ||
+      scopedDigest(tasks) !== scopedDigest(observe()) || pidBirth(pid) !== actor.pidBirth ||
+      readFileSync(`/proc/${pid}/cgroup`, "utf8").trim() !== `0::${actor.controlGroup}` || JSON.stringify(ids) !== JSON.stringify(taskIds())) throw new Error("scoped_actor_membership_changed");
+  check(); return { children, tasks };
+}
+function scopedTaskStat(tid: string, raw: string): { birth: string; parent: string } {
+  const close = raw.lastIndexOf(") "), values = raw.slice(close + 2).trim().split(/\s+/);
+  if (raw.length > 4096 || !raw.startsWith(tid + " (") || close < 0 || !/^[1-9][0-9]{0,19}$/.test(values[19] ?? "") || !/^(?:0|[1-9][0-9]{0,9})$/.test(values[1] ?? "")) invalid();
+  return { birth: `${tid}:${values[19]}`, parent: values[1]! };
 }

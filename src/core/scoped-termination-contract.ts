@@ -118,13 +118,14 @@ export enum ScopedEnqueueActorRole { Creator = "creator", Wrapper = "wrapper", M
 export enum ScopedActorDischargeMethod { PidfdExit = "pidfd_exit", ScopedAdmissionFence = "scoped_admission_fence" }
 export interface ScopedEnqueueActor { readonly role: ScopedEnqueueActorRole; readonly pidBirth: string; readonly controlGroup: string; readonly parentPidBirth: string | null }
 /** Authenticated producer closes its exact scoped spawn graph before enqueue.
- * The wrapper record alone is deliberately insufficient. Every manager submitter
- * and creator must be retained; no PID absence or asserted boolean closes it. */
+ * The first noncreator is the actual retained submitter: either a direct manager
+ * child or a wrapper with manager descendants. Roles discriminate those two
+ * topologies; every actual noncreator requires its own positive discharge. */
 export interface ScopedActorChain { readonly schemaVersion: 1; readonly correlationDigest: string; readonly submitterDigest: string; readonly actors: readonly ScopedEnqueueActor[] }
 export interface ScopedActorDischarge { readonly schemaVersion: 2; readonly chainDigest: string; readonly fenceDigest: string; readonly actors: readonly (ScopedEnqueueActor & { readonly method: ScopedActorDischargeMethod })[] }
 export function parseScopedActorChain(value: unknown): ScopedActorChain {
   const v = fields(value, "schemaVersion,correlationDigest,submitterDigest,actors");
-  if (v.schemaVersion !== 1 || !Array.isArray(v.actors) || v.actors.length < 3 || v.actors.length > 64) throw new Error("scoped_actor_chain_incomplete");
+  if (v.schemaVersion !== 1 || !Array.isArray(v.actors) || v.actors.length < 2 || v.actors.length > 64) throw new Error("scoped_actor_chain_incomplete");
   match(v.correlationDigest, hash); match(v.submitterDigest, hash);
   const actors = v.actors.map(raw => {
     const a = fields(raw, "role,pidBirth,controlGroup,parentPidBirth");
@@ -134,16 +135,19 @@ export function parseScopedActorChain(value: unknown): ScopedActorChain {
     if ((a.controlGroup as string).split("/").some(p => p === "." || p === "..")) throw new Error("scoped_actor_chain_invalid");
     return Object.freeze({ ...a }) as unknown as ScopedEnqueueActor;
   });
-  if (new Set(actors.map(a => a.pidBirth)).size !== actors.length || actors[0]!.role !== ScopedEnqueueActorRole.Creator || actors[0]!.parentPidBirth !== null ||
-      actors[1]!.role !== ScopedEnqueueActorRole.Wrapper || actors[1]!.parentPidBirth !== actors[0]!.pidBirth ||
+  if (new Set(actors.map(a => a.pidBirth.split(":")[0])).size !== actors.length || actors[0]!.role !== ScopedEnqueueActorRole.Creator || actors[0]!.parentPidBirth !== null ||
+      (actors[1]!.role !== ScopedEnqueueActorRole.Wrapper && actors[1]!.role !== ScopedEnqueueActorRole.ManagerSubmitter) ||
+      (actors[1]!.role === ScopedEnqueueActorRole.Wrapper && actors.length < 3) || actors[1]!.parentPidBirth !== actors[0]!.pidBirth ||
       actors.slice(2).some((a, i) => a.role !== ScopedEnqueueActorRole.ManagerSubmitter || !actors.slice(1, i + 2).some(p => p.pidBirth === a.parentPidBirth))) throw new Error("scoped_actor_chain_invalid");
   return Object.freeze({ schemaVersion: 1, correlationDigest: v.correlationDigest as string, submitterDigest: v.submitterDigest as string, actors: Object.freeze(actors) });
 }
 export function bindScopedActorChain(chain: ScopedActorChain, member: ScopedTerminationMember, submitter: ScopedSubmitter): void {
   const { invocationId: _i, submitterDigest: _s, ...correlation } = member;
+  const actualSubmitter = chain.actors.find(a => a.pidBirth === submitter.pidBirth);
   if (chain.correlationDigest !== scopedDigest(correlation) || chain.submitterDigest !== member.submitterDigest ||
       submitter.correlationDigest !== chain.correlationDigest || chain.actors[0]!.pidBirth !== member.creatorPidBirth || chain.actors[0]!.controlGroup !== member.creatorControlGroup ||
-      chain.actors[1]!.pidBirth !== submitter.pidBirth || chain.actors[1]!.controlGroup !== submitter.controlGroup) throw new Error("scoped_actor_chain_binding_invalid");
+      actualSubmitter?.parentPidBirth !== member.creatorPidBirth || actualSubmitter.controlGroup !== submitter.controlGroup ||
+      ![ScopedEnqueueActorRole.Wrapper, ScopedEnqueueActorRole.ManagerSubmitter].includes(actualSubmitter.role)) throw new Error("scoped_actor_chain_binding_invalid");
 }
 export function parseScopedActorDischarge(value: unknown, chain: ScopedActorChain): ScopedActorDischarge {
   const v = fields(value, "schemaVersion,chainDigest,fenceDigest,actors");
