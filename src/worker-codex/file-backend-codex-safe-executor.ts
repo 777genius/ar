@@ -363,6 +363,7 @@ export class FileBackendCodexSafeExecutor {
   async run(
     input: FileBackendCodexSafeExecutorRunInput,
   ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+    assertChildExecutor(this.options, input);
     const lifetime = this.options.executionLifetime;
     lifetime?.assertActive(input.abortSignal);
     lifetime?.arm();
@@ -379,7 +380,6 @@ export class FileBackendCodexSafeExecutor {
   }
 
   private async runForeground(input: FileBackendCodexSafeExecutorRunInput): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
-    assertChildExecutor(this.options, input);
     if (this.options.childBudget || this.options.executionLifetime) {
       if (this.childRunEntered) throw new Error("child_invocation_consumed");
       this.childRunEntered = true;

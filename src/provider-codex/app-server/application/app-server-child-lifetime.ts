@@ -234,7 +234,9 @@ export async function sendAppServerLifetimeRequest(method: string, params: unkno
         : port.child!.stdin.write(message);
     },
   });
-  assertActive();
+  // Ordinary requests linearize at response delivery. Bounded executions also
+  // fence the continuation against their original lifetime.
+  if (port.executionLifetime || port.childBudget) assertActive();
   return response;
 }
 

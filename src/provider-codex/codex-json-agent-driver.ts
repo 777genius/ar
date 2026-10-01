@@ -1,6 +1,6 @@
 import { CodexAppServerExecutionEngine, type AppServerExecutionLifetime } from "./codex-app-server-execution-engine";
 import { join } from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import {
   AgentRuntimeExecutionMode,
   assertProviderTaskSystemPrompt,
@@ -421,11 +421,24 @@ export class CodexJsonAgentDriver implements AgentDriver {
       prefix: "subscription-runtime-codex-mimo-",
       ...(this.sourceEnv === undefined ? {} : { sourceEnv: this.sourceEnv }),
     });
+    const home = join(tempRoot, "home");
+    const codexHome = join(tempRoot, "codex-home");
+    const localSession: CodexMaterializedSession = {
+      home, codexHome, env: {},
+      release: once(async () => {
+        if (this.executionLifetime) {
+          // Bounded custody ends only after removal succeeds. The ordinary
+          // helper may tolerate cleanup failures after scrubbing credentials.
+          await rm(tempRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+        } else {
+          try { await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome: codexHome }); }
+          catch { /* Ordinary MiMo cleanup remains best-effort. */ }
+        }
+      }),
+    };
     // Until transferred, this continuation owns its unused temporary root.
     try {
       this.executionLifetime?.assertActive();
-      const home = join(tempRoot, "home");
-      const codexHome = join(tempRoot, "codex-home");
       await mkdir(home, { recursive: true, mode: 0o700 });
       this.executionLifetime?.assertActive();
       await mkdir(codexHome, { recursive: true, mode: 0o700 });
@@ -462,23 +475,15 @@ export class CodexJsonAgentDriver implements AgentDriver {
         });
       }
       return {
-        home,
-        codexHome,
+        ...localSession,
         sessionHash: credential ? codexApiKeyCredentialIdentity(credential) : "mimo:shared-source",
         env,
         // No snapshotSession: MiMo never refreshes and never updates its
         // credential from a completed run.
-        release: once(async () => {
-          try {
-            await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome: codexHome });
-          } catch {
-            // Best-effort: the temp root is process-local and will not be
-            // reused, so a cleanup failure here must not fail the task.
-          }
-        }),
       };
     } catch (error) {
-      await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome: join(tempRoot, "codex-home") });
+      if (this.executionLifetime) await this.releaseUnusedSession(localSession);
+      else await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome: codexHome });
       throw error;
     }
   }
@@ -862,7 +867,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
 function once<T>(fn: () => Promise<T>): () => Promise<T> {
   let pending: Promise<T> | undefined;
   return () => {
-    pending ??= fn();
+    pending ??= fn().catch(error => { pending = undefined; throw error; });
     return pending;
   };
 }

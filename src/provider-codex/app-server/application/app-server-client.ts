@@ -655,7 +655,7 @@ export class CodexAppServerClient {
       readonly onTextDelta?: (text: string) => void;
     },
   ): Promise<TurnState> {
-    const remainingMs = this.assertExecutionActive(input.abortSignal);
+    const remainingMs = this.executionLifetime || this.options.childBudget ? this.assertExecutionActive(input.abortSignal) : undefined;
     const earlyTurnId = this.earlyTurnIdsByThread.get(input.threadId);
     if (earlyTurnId) {
       this.earlyTurnIdsByThread.delete(input.threadId);
