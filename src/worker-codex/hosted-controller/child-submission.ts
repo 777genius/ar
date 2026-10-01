@@ -13,6 +13,7 @@ import { assertRetainedKeyedAuthority, RetainedKeyedAuthority } from "./retained
 import { SlotMaterialization } from "./slot-materialization";
 
 const permissions = new WeakSet<object>();
+type PinnedDirectory = { readonly path: string; readonly dev: number; readonly ino: number };
 /** Only a fresh successful intent publication creates this ephemeral object.
  * It is consumed before reservation, including on exceptions. Never serialized. */
 export interface FreshKeyedSubmission { readonly binding: ChildCorrelation; readonly retained: RetainedKeyedAuthority }
@@ -58,14 +59,15 @@ function submitOrdinary(fence: HostedActivationFence, permission: FreshKeyedSubm
 }
 function assertKeyedActivationQualified(): void { throw new Error("hosted_mimo_activation_closed"); }
 
-/** Async controller then workspace coordination precedes the common sync host
- * fence. On a crash, lock directories persist: no PID takeover or recovery. */
+/** Short controller/workspace coordination precedes the common sync host fence.
+ * Preparation has separate per-slot ownership, never holds the control queue.
+ * On a crash, lock directories persist: no PID takeover or recovery. */
 export class KeyedChildDispatchAdapter implements KeyedChildApplicationPort {
   readonly scope: ChildScope;
   readonly authorityDigest: string;
   readonly deadlineEpochMs: number;
   readonly maxGoalTurns: number;
-  readonly #parents: readonly { path: string; dev: number; ino: number }[];
+  readonly #parents: readonly PinnedDirectory[];
   #tail: Promise<void> = Promise.resolve();
   readonly #coordination = new AsyncLocalStorage<object>();
   readonly #leases = new WeakSet<object>();
@@ -119,8 +121,35 @@ export class KeyedChildDispatchAdapter implements KeyedChildApplicationPort {
   transact(scope: ChildScope, authorityDigest: string, generation: number, successor: (l: KeyedChildLedger) => KeyedChildLedger): Promise<KeyedChildLedger> {
     this.#assertCoordination(); this.authenticate(); return this.ledger.transact(scope, authorityDigest, generation, successor);
   }
-  materialize(binding: ChildCorrelation, task: string): Promise<void> {
-    return this.coordinate(async () => { this.authenticate(); await this.materialization.materialize(binding, task); });
+  async materialize(binding: ChildCorrelation, task: string): Promise<void> {
+    let ownership: PinnedDirectory & { readonly parent: PinnedDirectory } | undefined;
+    try {
+      await this.coordinate(async () => {
+        const latest = this.read().observe(this.scope, binding.childHandle);
+        if (latest.state !== State.Materializing || latest.generation !== binding.generation ||
+            (["authorityDigest", "keyDigest", "requestDigest", "promptDigest", "slotId", "requestId",
+              "operationId", "childHandle", "startId", "unitCorrelation", "profile"] as const)
+              .some(field => latest[field] !== binding[field])) throw new Error("keyed_materialization_ineligible");
+        // Coordination validates every pinned parent before acquiring ownership.
+        // This distinct lock excludes other preparation owners without excluding control.
+        const parent = this.#parents.find(p => p.path === this.retained.slot(binding.slotId).jobRootDir)!;
+        const path = join(parent.path, ".keyed-materialization.lock");
+        await mkdir(path, { mode: 0o700 });
+        const lock = lstatSync(path); ownership = { path, dev: lock.dev, ino: lock.ino, parent };
+      });
+      this.authenticate();
+      await this.materialization.materialize(binding, task);
+    } finally {
+      if (ownership) {
+        const parent = lstatSync(ownership.parent.path), lock = lstatSync(ownership.path);
+        if (!parent.isDirectory() || parent.uid !== 0 || (parent.mode & 0o022) ||
+            parent.dev !== ownership.parent.dev || parent.ino !== ownership.parent.ino ||
+            !lock.isDirectory() || lock.dev !== ownership.dev || lock.ino !== ownership.ino) {
+          throw new Error("keyed_materialization_ownership_changed");
+        }
+        await rmdir(ownership.path);
+      }
+    }
   }
   dispatchPrepared(binding: ChildCorrelation): KeyedDispatchAcknowledgment {
     this.#assertCoordination(); this.authenticate();

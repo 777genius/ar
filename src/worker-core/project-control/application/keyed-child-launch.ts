@@ -71,8 +71,8 @@ export class KeyedChildLaunchApplication {
         current.generation, l => l.stop(binding));
       return next.observe(this.port.scope, handle);
     });
-    const timer = this.#deadlines.get(stopped.childHandle);
-    if (timer) { clearTimeout(timer); this.#deadlines.delete(stopped.childHandle); }
+    // Unresolved, throwing and absent stop ports cannot cancel the original
+    // deadline. Only an authoritative terminal observation permits cancellation.
     if (stopped.state !== State.Terminal) {
       try { await this.port.stopPort?.request(stopped, reason); } catch { /* Unresolved, retained. */ }
     }
@@ -80,28 +80,30 @@ export class KeyedChildLaunchApplication {
   }
   /** Owner shutdown/testing can join work; no foreground wait holds coordination. */
   async drain(): Promise<void> { await Promise.all(this.#owned.values()); }
-  async #advance(handle: string, from: State, to: State): Promise<ChildObservation | null> {
+  async #advance(binding: ChildCorrelation, from: State, to: State): Promise<ChildObservation | null> {
     return this.port.coordinate(async () => {
       this.port.authenticate();
-      const current = this.port.read(), binding = current.observe(this.port.scope, handle);
-      if (binding.state !== from) return null;
+      const current = this.port.read(), latest = current.observe(this.port.scope, binding.childHandle);
+      if (latest.state !== from || latest.generation !== binding.generation) return null;
+      // Advance with the retained binding, so the domain checks full identity
+      // as well as generation after work outside coordination.
       const next = await this.port.transact(this.port.scope, this.port.authorityDigest,
         current.generation, l => l.advance(binding, to, Date.now()));
-      return next.observe(this.port.scope, handle);
+      return next.observe(this.port.scope, binding.childHandle);
     });
   }
   async #prepare(binding: ChildObservation, task: string): Promise<void> {
-    const preparing = await this.#advance(binding.childHandle, State.Claimed, State.Materializing);
+    const preparing = await this.#advance(binding, State.Claimed, State.Materializing);
     if (!preparing) return;
     await this.port.materialize(preparing, task);
-    const prepared = await this.#advance(binding.childHandle, State.Materializing, State.Prepared);
+    const prepared = await this.#advance(preparing, State.Materializing, State.Prepared);
     if (!prepared) return;
     const ack = await this.port.coordinate(async () => {
       this.port.authenticate();
       const latest = this.port.read().observe(this.port.scope, binding.childHandle);
-      if (latest.state !== State.Prepared) return null;
+      if (latest.state !== State.Prepared || latest.generation !== prepared.generation) return null;
       // Adapter owns fresh intent + reservation/start + OS call in ONE sync fence.
-      return this.port.dispatchPrepared(latest);
+      return this.port.dispatchPrepared(prepared);
     });
     if (ack?.completion) {
       try { await ack.completion; } finally { await this.#hold(binding); }
@@ -113,7 +115,8 @@ export class KeyedChildLaunchApplication {
         this.port.authenticate();
         const current = this.port.read(), latest = current.observe(this.port.scope, binding.childHandle);
         // Late completion cannot regress stop or terminal state. No stale CAS.
-        if (latest.state === State.StopRequested || latest.state === State.Terminal) return;
+        if (latest.state === State.Terminal) { this.#view(latest); return; }
+        if (latest.state === State.StopRequested) return;
         await this.port.transact(this.port.scope, this.port.authorityDigest,
           current.generation, l => l.markUncertain(latest));
       });
@@ -121,6 +124,10 @@ export class KeyedChildLaunchApplication {
     } catch { /* Corrupt/pending storage remains authoritative; never reconstruct/release. */ }
   }
   #view(o: ChildObservation): KeyedLaunchView {
+    if (o.state === State.Terminal) {
+      const timer = this.#deadlines.get(o.childHandle);
+      if (timer) { clearTimeout(timer); this.#deadlines.delete(o.childHandle); }
+    }
     return Object.freeze({ operationHandle: o.operationId, childHandle: o.childHandle,
       state: o.state, occupied: o.state !== State.Terminal, stopRequested: o.state === State.StopRequested,
       deadlineEpochMs: this.port.deadlineEpochMs, maxGoalTurns: this.port.maxGoalTurns,

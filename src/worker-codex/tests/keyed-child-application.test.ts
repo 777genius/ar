@@ -2,11 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, renameSync, symlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChildContinuationMode, AgentRuntimeTool, parseImmutableChildSlot } from "@vioxen/subscription-runtime/core";
 import { CodexProviderEgressProfileId, HostedControllerToolName, withHostedActivationFence, type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { KeyedChildLedger, KeyedChildProfile as Profile, KeyedChildState as State, NoEffectProofKind, type ReviewedChildAuthority } from "../../worker-core/project-control/domain/keyed-child-launch";
-import { KeyedChildLaunchApplication, ScopedStopResult } from "../../worker-core/project-control/application/keyed-child-launch";
+import { KeyedChildLaunchApplication, ScopedStopReason, ScopedStopResult } from "../../worker-core/project-control/application/keyed-child-launch";
 import { KeyedLaunchLedgerStore } from "../hosted-controller/keyed-launch-ledger-store";
 import { RetainedKeyedAuthority } from "../hosted-controller/retained-authority";
 import { SlotMaterialization } from "../hosted-controller/slot-materialization";
@@ -21,7 +22,8 @@ import { resolveCodexExecutionProfile } from "../../provider-codex/codex-executi
 import { AppServerDynamicToolHandler } from "../../provider-codex/app-server/application/app-server-dynamic-tool-handler";
 
 const facts = vi.hoisted(() => ({ root: "", fail: "", effect: null as (() => void) | null,
-  gate: null as Promise<void> | null, fdPaths: new Map<number, string>(), reads: [] as string[] }));
+  gate: null as Promise<void> | null, checkoutGate: null as Promise<void> | null,
+  checkoutEntered: null as (() => void) | null, fdPaths: new Map<number, string>(), reads: [] as string[] }));
 const policy = "/var/lib/subscription-runtime-host-policy";
 const local = (path: string) => ["/var", "/var/lib", policy].includes(path) ? facts.root :
   path.startsWith(policy + "/") ? join(facts.root, path.slice(policy.length + 1)) : path;
@@ -67,6 +69,7 @@ vi.mock("node:child_process", async original => {
       try {
         if (facts.gate) await facts.gate;
         if (args.includes("clone")) { const workspace = args.at(-1)!; fs.mkdirSync(join(workspace, ".git"), { recursive: true }); }
+        if (args.includes("checkout")) { facts.checkoutEntered?.(); if (facts.checkoutGate) await facts.checkoutGate; }
         if (args.includes("checkout")) fs.writeFileSync(join(args[1]!, ".git", "HEAD"), args.at(-1)! + "\n");
         facts.effect?.();
         if (facts.fail === "checkout") throw new Error("TEST partial checkout");
@@ -93,11 +96,11 @@ const request = { key: "TEST-key", profile: Profile.ReadOnly, task: "Exact TEST 
 let stop!: () => void;
 let joinWork: (() => Promise<void>) | undefined;
 beforeEach(() => {
-  facts.root = mkdtempSync(join(tmpdir(), "pr4-TEST-application-")); facts.fail = ""; facts.gate = null; facts.effect = null; facts.reads = [];
+  facts.root = mkdtempSync(join(tmpdir(), "pr4-TEST-application-")); facts.fail = ""; facts.gate = null; facts.effect = null; facts.checkoutGate = null; facts.checkoutEntered = null; facts.reads = [];
   vi.spyOn(process, "getuid").mockReturnValue(0);
 });
 afterEach(async () => { stop?.(); await joinWork?.(); vi.useRealTimers(); vi.restoreAllMocks(); rmSync(facts.root, { recursive: true, force: true }); });
-function fixture(production = false, deadline = Date.now() + 60000) {
+function fixture(production = false, deadline = Date.now() + 60000, stopMode: "unresolved" | "throw" | "absent" = "unresolved") {
   for (const name of ["keyed-child-ledgers", "child-slots", "grants", "prompts", "source", "jobs"]) mkdirSync(join(facts.root, name), { mode: 0o700 });
   const slots = [1, 2].map(n => {
     const slotId = `TEST-slot-${n}`, creatorId = `TEST-creator-${n}`, jobId = `TEST-child-${n}`, jobRootDir = join(facts.root, "jobs", jobId);
@@ -149,10 +152,17 @@ function fixture(production = false, deadline = Date.now() + 60000) {
     return { completion: wait.promise };
   } };
   const materialization = new SlotMaterialization(retained, join(facts.root, "source"));
-  const adapter = new KeyedChildDispatchAdapter(retained, store, materialization, host, { request: async binding => { stops.push(binding.startId); return ScopedStopResult.Unresolved; } });
+  const stopRequests: { startId: string; reason: ScopedStopReason; at: number }[] = [];
+  const adapter = new KeyedChildDispatchAdapter(retained, store, materialization, host, stopMode === "absent" ? undefined : {
+    request: async (binding, reason) => {
+      stops.push(binding.startId); stopRequests.push({ startId: binding.startId, reason, at: Date.now() });
+      if (stopMode === "throw") throw new Error("TEST unresolved stop failure");
+      return ScopedStopResult.Unresolved;
+    },
+  });
   const app = new KeyedChildLaunchApplication(adapter), tools = new HostedControllerKeyedToolAdapter(retained, app);
   stop = wait.resolve; joinWork = () => app.drain();
-  return { slots, authority, allocations, store, retained, adapter, app, tools, wait, calls, stops, materialization,
+  return { slots, authority, allocations, store, retained, adapter, app, tools, wait, calls, stops, stopRequests, materialization,
     ledger: () => withHostedActivationFence(f => store.readHeld(f, authority, retained.seed.authorityDigest)),
     originChanged: () => { changedOrigin = true; }, grantChanged: () => { changedGrant = true; } };
 }
@@ -161,6 +171,98 @@ async function submitted(f: ReturnType<typeof fixture>) {
 }
 
 describe("PR4 keyed application with private TEST persistence and controlled host", () => {
+  it.each(["explicit", "deadline"])("PR4-R1: %s stop and observe settle while actual checkout is gated; no later dispatch", async mode => {
+    if (mode === "deadline") vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const f = fixture(false, Date.now() + (mode === "deadline" ? 5000 : 60000));
+    const checkout = deferred(), entered = deferred();
+    facts.checkoutGate = checkout.promise; facts.checkoutEntered = entered.resolve;
+    const view = await f.app.launch(request, new AbortController().signal);
+    try {
+      await entered.promise; // The checkout execFile itself entered, after clone and ledger transitions.
+      const preparing = f.ledger().observe(f.authority, view.childHandle);
+      expect(preparing.state).toBe(State.Materializing);
+      let stopSettled = false, observeSettled = false;
+      const control = mode === "explicit" ? f.app.stop(view.childHandle).then(() => { stopSettled = true; }) : undefined;
+      if (mode === "deadline") await vi.advanceTimersByTimeAsync(f.authority.absoluteDeadline - Date.now());
+      const observation = f.app.observe(view.childHandle).then(() => { observeSettled = true; });
+      // Keep checkout gated for the review's 150 ms snapshot interval, then
+      // allow bounded private TEST filesystem coordination on slower hosts.
+      await delay(150);
+      await Promise.race([Promise.all([control, observation]), delay(1000)]);
+      const snapshot = { stopSettled: mode === "explicit" ? stopSettled : f.stops.length === 1,
+        observeSettled, stopRequests: f.stops.length };
+      checkout.resolve(); await control; await observation; await f.app.drain();
+      expect(snapshot).toEqual({ stopSettled: true, observeSettled: true, stopRequests: 1 });
+      const latest = f.ledger().observe(f.authority, view.childHandle);
+      expect(latest.state).toBe(State.StopRequested); expect(latest.generation).toBeGreaterThan(preparing.generation);
+      expect(latest.dispatchIntent).toBeNull(); expect(f.calls).toHaveLength(0); expect(f.ledger().occupied).toBe(true);
+      await expect(f.adapter.materialize(preparing, request.task)).rejects.toThrow();
+    } finally { checkout.resolve(); }
+  });
+  it("PR4-R1: a separate preparation owner excludes concurrent materialization while control remains available", async () => {
+    const f = fixture(), checkout = deferred(), entered = deferred();
+    facts.checkoutGate = checkout.promise; facts.checkoutEntered = entered.resolve;
+    const view = await f.app.launch(request, new AbortController().signal);
+    try {
+      await entered.promise;
+      const binding = f.ledger().observe(f.authority, view.childHandle);
+      await expect(f.adapter.materialize({ ...binding, generation: binding.generation - 1 }, request.task)).rejects.toThrow("keyed_materialization_ineligible");
+      await expect(f.adapter.materialize({ ...binding, startId: "TEST-foreign-start" }, request.task)).rejects.toThrow("keyed_materialization_ineligible");
+      const competing = f.adapter.materialize(binding, request.task);
+      const stopped = f.app.stop(view.childHandle);
+      // The competitor must reject while the first owner still holds checkout.
+      const result = await Promise.race([competing.then(() => "accepted", () => "excluded"), delay(150).then(() => "blocked")]);
+      checkout.resolve(); await competing.catch(() => {}); await stopped; await f.app.drain();
+      expect(result).toBe("excluded"); expect(f.calls).toHaveLength(0);
+      expect((await f.app.observe(view.childHandle)).state).toBe(State.StopRequested);
+    } finally { checkout.resolve(); }
+  });
+  it.each(["unresolved", "throw", "absent"] as const)("PR4-R2: %s explicit stop preserves the original deadline while foreground completion is pending", async stopMode => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const deadline = Date.now() + 5000, f = fixture(false, deadline, stopMode);
+    let foregroundSettled = false; void f.wait.promise.then(() => { foregroundSettled = true; });
+    const view = await f.app.launch(request, new AbortController().signal); await submitted(f);
+    const stopCalls = vi.spyOn(f.app, "stop"); // Call-through observes the absent-port deadline action too.
+    await vi.advanceTimersByTimeAsync(1000);
+    const stopped = await f.app.stop(view.operationHandle);
+    expect(stopped.state).toBe(State.StopRequested); expect(stopped.occupied).toBe(true);
+    await f.app.launch(request, new AbortController().signal); // Replay must not renew the timer.
+    await vi.advanceTimersByTimeAsync(deadline - Date.now() - 1); await delay(150);
+    expect(stopCalls.mock.calls.filter(([, reason]) => reason === ScopedStopReason.Deadline)).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1); await delay(500);
+    const deadlineCalls = stopCalls.mock.calls.filter(([, reason]) => reason === ScopedStopReason.Deadline);
+    const requests = [...f.stopRequests], pendingAtDeadline = !foregroundSettled;
+    const atDeadline = await f.app.observe(view.childHandle);
+    f.wait.resolve(); await f.app.drain();
+    expect(pendingAtDeadline).toBe(true); expect(deadlineCalls).toEqual([[view.childHandle, ScopedStopReason.Deadline]]);
+    expect(requests.map(r => r.reason)).toEqual(stopMode === "absent" ? [] : [ScopedStopReason.Requested, ScopedStopReason.Deadline]);
+    if (stopMode !== "absent") expect(requests[1]).toEqual({ startId: f.allocations[0]!.startId, reason: ScopedStopReason.Deadline, at: deadline });
+    expect(atDeadline).toMatchObject({ state: State.StopRequested, occupied: true, deadlineEpochMs: deadline });
+    expect(f.calls).toHaveLength(1);
+  });
+  it.each(["observe", "stop"] as const)("authoritative terminal reconciliation through %s cancels the original timer", async reconciliation => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const deadline = Date.now() + 5000, f = fixture(false, deadline);
+    const checkout = deferred(), entered = deferred();
+    facts.checkoutGate = checkout.promise; facts.checkoutEntered = entered.resolve;
+    const view = await f.app.launch(request, new AbortController().signal);
+    try {
+      await entered.promise; await f.app.stop(view.childHandle);
+      // Fresh TEST boundary supplies pre-intent no-effect evidence. The
+      // ledger's real successor/publication validation remains authoritative.
+      await f.adapter.coordinate(async () => {
+        const current = f.adapter.read();
+        await f.adapter.transact(f.authority, f.retained.seed.authorityDigest, current.generation,
+          l => l.terminalizeBeforeIntent({ kind: NoEffectProofKind.IndependentlyEstablished,
+            correlation: l.observe(f.authority, view.childHandle), evidenceDigest: "a".repeat(64) }));
+      });
+      const terminal = await f.app[reconciliation](view.childHandle);
+      expect(terminal).toMatchObject({ state: State.Terminal, occupied: false, deadlineEpochMs: deadline });
+      const stopCalls = vi.spyOn(f.app, "stop");
+      await vi.advanceTimersByTimeAsync(deadline - Date.now()); await delay(500);
+      expect(stopCalls).not.toHaveBeenCalled(); expect(f.stops).toHaveLength(1); expect(f.calls).toHaveLength(0);
+    } finally { checkout.resolve(); await f.app.drain(); }
+  });
   it("concurrent identical keys claim once, acknowledge before prep/wait, and submit once", async () => {
     const f = fixture(), prep = deferred(); facts.gate = prep.promise;
     const views = await Promise.all(Array.from({ length: 8 }, () => f.app.launch(request, new AbortController().signal)));
