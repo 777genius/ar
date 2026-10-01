@@ -1,26 +1,30 @@
+import { ScopedTerminationKind, parseRetainedScopeIdentity, stableChildDigest } from "../../worker-core/hosted-custody/domain/scoped-termination";
+import { HostedKeyedScopedStopAdapter } from "./scoped-termination-adapter";
+import { ScopedTerminationRecords } from "./scoped-termination-records";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { mkdir, rmdir } from "node:fs/promises";
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
-import { assertHostedActivationFence, withHostedActivationFence, type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
-import { HostedInstallationActivationStore } from "../hosted-installation-activation";
-import { HostedReadonlyHostKernel } from "../hosted-readonly-host-kernel";
-import { KeyedChildState as State, type ChildCorrelation, type ChildScope, type KeyedChildLedger } from "../../worker-core/project-control/domain/keyed-child-launch";
-import { type KeyedChildApplicationPort, type KeyedDispatchAcknowledgment, type KeyedScopedStopPort } from "../../worker-core/project-control/application/keyed-child-launch";
+import { assertHostedActivationFence, withHostedActivationFence, assertHostedScopedAdmission, retainHostedScopedSubmitter, readHostedActivationBytes, type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { HostedInstallationActivationStore, readHostedInstallationActivation } from "../hosted-installation-activation";
+import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "../hosted-readonly-host-kernel";
+import { KeyedChildState as State, type ChildCorrelation, type ChildObservation, type ChildScope, type KeyedChildLedger } from "../../worker-core/project-control/domain/keyed-child-launch";
+import { KeyedAuthorizationMode as Mode, type KeyedChildApplicationPort, type KeyedDispatchAcknowledgment, type KeyedScopedStopPort } from "../../worker-core/project-control/application/keyed-child-launch";
 import { KeyedLaunchLedgerStore } from "./keyed-launch-ledger-store";
-import { assertRetainedKeyedAuthority, RetainedKeyedAuthority } from "./retained-authority";
+import { RetainedKeyedAuthority } from "./retained-authority";
 import { SlotMaterialization } from "./slot-materialization";
 
 const permissions = new WeakSet<object>();
 type PinnedDirectory = { readonly path: string; readonly dev: number; readonly ino: number };
 /** Only a fresh successful intent publication creates this ephemeral object.
  * It is consumed before reservation, including on exceptions. Never serialized. */
-export interface FreshKeyedSubmission { readonly binding: ChildCorrelation; readonly retained: RetainedKeyedAuthority }
+export interface FreshKeyedSubmission { readonly binding: ChildObservation; readonly retained: RetainedKeyedAuthority }
 export function consumeFreshKeyedSubmission(fence: HostedActivationFence, permission: FreshKeyedSubmission): void {
   assertHostedActivationFence(fence);
   if (!permissions.delete(permission)) throw new Error("keyed_submission_permission_required");
   permission.retained.assertCurrent();
+  assertHostedScopedAdmission(fence, permission.binding.startId);
 }
 export interface KeyedHostSubmissionPort {
   submitFresh(fence: HostedActivationFence, permission: FreshKeyedSubmission): { readonly completion: Promise<void> };
@@ -41,10 +45,19 @@ export class OrdinaryKeyedChildHost implements KeyedHostSubmissionPort {
 function submitOrdinary(fence: HostedActivationFence, permission: FreshKeyedSubmission): { completion: Promise<void> } {
   assertHostedActivationFence(fence);
   const slot = permission.retained.slot(permission.binding.slotId), store = new HostedInstallationActivationStore();
+  const { installation, activation } = readHostedInstallationActivation(), binding = permission.binding;
+  if (!binding.dispatchIntent) throw new Error("scoped_dispatch_intent_required");
+  const inventory = readHostedReadonlyHostInventory(), supervisor = inventory.units.find(u => u.name === inventory.supervisorUnit)!;
+  const identity = parseRetainedScopeIdentity({ scopeDigest: stableChildDigest(binding, binding.dispatchIntent.generation),
+    installationId: installation.installationId, hostId: activation.hostId, bootId: activation.bootId, supervisorId: activation.supervisorId, supervisorUnit: supervisor.name, supervisorControlGroup: supervisor.controlGroup,
+    accountId: slot.lifetime.accountId, grantDigest: slot.grantSha256, inventoryDigest: installation.inventorySha256,
+    sourceSha: slot.sourceSha, artifactSha: slot.artifactSha, deadlineEpochMs: slot.lifetime.deadlineEpochMs,
+    authorityDigest: binding.authorityDigest, slotId: binding.slotId, parentStartId: binding.startId, dispatchIntentGeneration: binding.dispatchIntent.generation });
   const launch = store.reserveOrdinaryRuntime(fence, slot.launch.command, slot.launch.args, slot.launch.cwd,
-    { startId: permission.binding.startId, unit: permission.binding.unitCorrelation });
+    { startId: permission.binding.startId, unit: permission.binding.unitCorrelation, identity });
   const invocation = new HostedReadonlyHostKernel().ordinaryRuntimeInvocation(launch.reservation, slot.launch.cwd);
   permission.retained.budget(slot.slotId).remainingMs();
+  assertHostedScopedAdmission(fence, permission.binding.startId);
   const child = spawn(invocation.command, [...invocation.args], { cwd: slot.launch.cwd,
     env: {}, stdio: ["pipe", "ignore", "ignore"] });
   // No credentials are read/serialized here. Private provider custody resolves
@@ -54,6 +67,10 @@ function submitOrdinary(fence: HostedActivationFence, permission: FreshKeyedSubm
     child.once("error", () => reject(new Error("keyed_submission_uncertain")));
     child.once("exit", () => resolve());
   });
+  const records = new ScopedTerminationRecords(() => permission.retained.assertCleanup());
+  const companion = records.correlation(binding.startId);
+  if (!companion || companion.kind !== ScopedTerminationKind.Runtime) throw new Error("scoped_runtime_companion_required");
+  retainHostedScopedSubmitter(fence, companion, child);
   child.stdin.end(Buffer.from(JSON.stringify({ schemaVersion: 1, env: {} })));
   return { completion };
 }
@@ -71,28 +88,38 @@ export class KeyedChildDispatchAdapter implements KeyedChildApplicationPort {
   #tail: Promise<void> = Promise.resolve();
   readonly #coordination = new AsyncLocalStorage<object>();
   readonly #leases = new WeakSet<object>();
+  readonly stopPort: KeyedScopedStopPort;
   readonly #foreground = new Map<string, Promise<void>>();
   constructor(private readonly retained: RetainedKeyedAuthority, private readonly ledger: KeyedLaunchLedgerStore,
-    private readonly materialization: SlotMaterialization, private readonly host: KeyedHostSubmissionPort,
-    readonly stopPort?: KeyedScopedStopPort) {
-    assertRetainedKeyedAuthority(retained);
+    private readonly materialization: SlotMaterialization | null, private readonly host: KeyedHostSubmissionPort | null,
+    stopPort?: KeyedScopedStopPort) {
+    retained.assertCleanup();
+    withHostedActivationFence(f => retained.retainCleanup(f));
     this.scope = Object.freeze({ projectId: retained.authority.projectId, workstreamId: retained.authority.workstreamId,
       controllerId: retained.authority.controllerId });
     this.authorityDigest = retained.seed.authorityDigest;
     this.deadlineEpochMs = retained.authority.absoluteDeadline; this.maxGoalTurns = retained.authority.maxGoalTurns;
     this.#parents = ["/var/lib/subscription-runtime-host-policy/keyed-child-ledgers",
       ...retained.slots.map(s => s.jobRootDir)].map(path => ({ path, ...lstatSync(path) }));
+    this.stopPort = stopPort ?? new HostedKeyedScopedStopAdapter(retained, this);
   }
-  authenticate(): void { this.retained.assertCurrent(); }
-  beforeFreshClaim(slotId: string): void { this.retained.budget(slotId).remainingMs(); }
-  async coordinate<T>(action: () => Promise<T>): Promise<T> {
+  static cleanup(retained: RetainedKeyedAuthority, ledger: KeyedLaunchLedgerStore): KeyedChildDispatchAdapter {
+    return new KeyedChildDispatchAdapter(retained, ledger, null, null);
+  }
+  authenticate(mode = Mode.Work): void { mode === Mode.Cleanup ? this.retained.assertCleanup() : this.retained.assertCurrent(); }
+  beforeFreshClaim(slotId: string): void {
+    this.retained.budget(slotId).remainingMs();
+    const allocation = this.retained.seed.snapshot().slots.find(s => s.slotId === slotId);
+    if (!allocation || readHostedActivationBytes(`scoped-terminating/${allocation.startId}.json`)) throw new Error("scoped_termination_fenced");
+  }
+  async coordinate<T>(action: () => Promise<T>, mode = Mode.Work): Promise<T> {
     const previous = this.#tail; let release!: () => void;
     this.#tail = new Promise<void>(resolve => { release = resolve; });
     await previous;
     const held: { path: string; dev: number; ino: number }[] = [];
     const lease = Object.freeze({});
     try {
-      this.authenticate();
+      this.authenticate(mode);
       for (const [i, parent] of this.#parents.entries()) {
         const current = lstatSync(parent.path);
         if (!current.isDirectory() || current.uid !== 0 || (current.mode & 0o022) ||
@@ -114,14 +141,15 @@ export class KeyedChildDispatchAdapter implements KeyedChildApplicationPort {
       } finally { release(); }
     }
   }
-  read(): KeyedChildLedger {
-    this.#assertCoordination(); this.authenticate();
+  read(mode = Mode.Work): KeyedChildLedger {
+    this.#assertCoordination(); this.authenticate(mode);
     return withHostedActivationFence(f => this.ledger.readHeld(f, this.scope, this.authorityDigest));
   }
-  transact(scope: ChildScope, authorityDigest: string, generation: number, successor: (l: KeyedChildLedger) => KeyedChildLedger): Promise<KeyedChildLedger> {
-    this.#assertCoordination(); this.authenticate(); return this.ledger.transact(scope, authorityDigest, generation, successor);
+  transact(scope: ChildScope, authorityDigest: string, generation: number, successor: (l: KeyedChildLedger) => KeyedChildLedger, mode = Mode.Work): Promise<KeyedChildLedger> {
+    this.#assertCoordination(); this.authenticate(mode); return this.ledger.transact(scope, authorityDigest, generation, successor);
   }
   async materialize(binding: ChildCorrelation, task: string): Promise<void> {
+    if (!this.materialization) throw new Error("keyed_live_admission_required");
     let ownership: PinnedDirectory & { readonly parent: PinnedDirectory } | undefined;
     try {
       await this.coordinate(async () => {
@@ -153,8 +181,10 @@ export class KeyedChildDispatchAdapter implements KeyedChildApplicationPort {
   }
   dispatchPrepared(binding: ChildCorrelation): KeyedDispatchAcknowledgment {
     this.#assertCoordination(); this.authenticate();
+    if (!this.host || !this.materialization) throw new Error("keyed_live_admission_required");
+    const host = this.host, materialization = this.materialization;
     return withHostedActivationFence(fence => {
-      this.authenticate(); this.materialization.verify(binding);
+      this.authenticate(); assertHostedScopedAdmission(fence, binding.startId); materialization.verify(binding);
       const current = this.ledger.readHeld(fence, this.scope, this.authorityDigest);
       const latest = current.observe(this.scope, binding.childHandle);
       // Stored intent/absence NEVER mints fresh permission; changed generation fails.
@@ -164,7 +194,7 @@ export class KeyedChildDispatchAdapter implements KeyedChildApplicationPort {
       const permission = Object.freeze({ binding: intent.observe(this.scope, binding.childHandle), retained: this.retained });
       permissions.add(permission);
       try {
-        const submitted = this.host.submitFresh(fence, permission);
+        const submitted = host.submitFresh(fence, permission);
         // Retain ownership even if acknowledgment publication fails afterwards.
         const observed = submitted.completion.catch(() => {});
         this.#foreground.set(binding.startId, observed);

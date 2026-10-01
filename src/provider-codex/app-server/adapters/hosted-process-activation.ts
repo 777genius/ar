@@ -1,3 +1,5 @@
+import { parseScopedStartCorrelation, parseScopedInvocation, scopedDigest, ScopedTerminationKind,
+  type ScopedStartCorrelation } from "@vioxen/subscription-runtime/core";
 import { parseImmutableChildSlot } from "@vioxen/subscription-runtime/core";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync,
   readlinkSync, readSync, rmdirSync, writeSync, fsyncSync, renameSync } from "node:fs";
@@ -8,14 +10,14 @@ import { assertHostedProcessDescriptors } from "./hosted-process-descriptors";
 import { CodexProviderEgressProfileId, codexProviderEgressProfileEnvVar } from "../../codex-provider-egress-policy";
 import { CodexModelBackend } from "../../codex-model-backend";
 import { HostedMimoProfile } from "../../hosted-mimo-profile";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { CodexAppServerChildProcess } from "../application/app-server-process-port";
 
 
 const root = "/var/lib/subscription-runtime-host-policy";
 const activeFences = new WeakSet<object>();
 // Not a configurable policy root or a public arbitrary filesystem reader.
-const recordName = /^(?:readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
+const recordName = /^(?:readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed|correlations|invocations|submitters|submitter-exits)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|scoped-(?:terminating|operations|observations|receipts)\/[a-f0-9-]{36}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
 export type HostedActivationFence = Readonly<{ readonly held: true }>;
 
 /** Initial host root is trusted; namespace-local root is not that principal. */
@@ -172,6 +174,7 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence) {
     return row;
   });
   distinct(starts.map(row => row.startId)); distinct(starts.map(row => row.unit));
+  if (readHostedActivationBytes(`scoped-terminating/${match[1]}.json`)) throw new Error("scoped_termination_fenced");
   const reservation = starts.find(row => row.startId === match[1]);
   if (!reservation || reservation.state !== "reserved") invalid();
   const start = requiredWire(`ordinary-starts/${match[1]}.json`, startKeys).value;
@@ -379,7 +382,7 @@ export function invalidateHostedOrdinaryWait(child: CodexAppServerChildProcess):
 export function submitHostedOrdinaryProcess(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
   submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string }) => CodexAppServerChildProcess): CodexAppServerChildProcess {
   return withHostedActivationFence(fence => {
-    const { activation, start, profileId, childBound } = readHostedOrdinaryProcessOrigin(fence);
+    const { activation, start, reservation: parentReservation, profileId, childBound } = readHostedOrdinaryProcessOrigin(fence);
     const jobRoot = canonical(start.jobRootDir);
     const workspacePath = canonical(start.workspacePath);
     if (!jobRoot.endsWith(`/jobs/${str(start.jobId)}`) ||
@@ -401,10 +404,28 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
     const bytes = Buffer.from(JSON.stringify({ ...start, unit, controlGroup: unitGroup(unit), activationGeneration: generation,
       creatorPidBirth: pidBirth(String(process.pid)) }) + "\n");
     const next = { ...activation, generation, ordinaryStarts: [...starts, reservation] };
+    const parentId = str(parentReservation.startId);
+    const parentBytes = childBound ? readHostedActivationBytes(`ordinary-starts/${parentId}.json`) : null;
+    const correlationBytes = childBound ? readHostedActivationBytes(`ordinary-correlations/${parentId}.json`) : null;
+    let companion: ScopedStartCorrelation | undefined;
+    if (childBound) {
+      if (!parentBytes || !correlationBytes) invalid();
+      const parent = parseScopedStartCorrelation(decodeHostedActivationBytes(correlationBytes));
+      if (!Buffer.from(JSON.stringify(parent) + "\n").equals(correlationBytes) || parent.kind !== ScopedTerminationKind.Runtime || parent.startId !== parentId || parent.startDigest !== sha256(parentBytes) ||
+          parent.identity.accountId.length < 1 || parent.identity.deadlineEpochMs <= Date.now() ||
+          parent.identity.parentStartId !== parentId || parent.identity.grantDigest !== start.grantSha256) invalid();
+      companion = parseScopedStartCorrelation({ ...parent, kind: ScopedTerminationKind.Provider,
+        startId, startDigest: sha256(bytes), reservationGeneration: generation, unit, controlGroup: unitGroup(unit),
+        creatorPidBirth: pidBirth(String(process.pid)), creatorControlGroup: str(start.controlGroup) });
+    }
+    assertHostedScopedAdmission(fence, parentId);
     publishOrdinaryActivation(fence, next);
     try {
       createActivationRecord(`ordinary-starts/${startId}.json`, bytes);
+      if (companion) createActivationRecord(`ordinary-correlations/${startId}.json`, Buffer.from(JSON.stringify(companion) + "\n"));
+      assertHostedScopedAdmission(fence, parentId);
       const child = submit(unit, { jobId: str(start.jobId), workspacePath });
+      if (companion) retainHostedScopedSubmitter(fence, companion, child);
       child.on("error", () => invalidateHostedOrdinaryWait(child));
       child.stdin.on?.("error", () => invalidateHostedOrdinaryWait(child));
       child.on("exit", (code, signal) => {
@@ -429,15 +450,94 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
     }
   });
 }
+/** Same synchronous fence checked by every producer immediately before enqueue. */
+export function assertHostedScopedAdmission(fence: HostedActivationFence, parentStartId: string): void {
+  assertHostedActivationFence(fence);
+  str(parentStartId, new RegExp(`^${uuid}$`));
+  if (readHostedActivationBytes(`scoped-terminating/${parentStartId}.json`)) throw new Error("scoped_termination_fenced");
+}
+export function retainHostedScopedCorrelation(fence: HostedActivationFence, correlation: ScopedStartCorrelation): void {
+  assertHostedActivationFence(fence);
+  const c = parseScopedStartCorrelation(correlation);
+  assertHostedScopedAdmission(fence, c.identity.parentStartId);
+  createActivationRecord(`ordinary-correlations/${c.startId}.json`, Buffer.from(JSON.stringify(c) + "\n"));
+}
+/** Guest consumes this retained data at actual execution; it conveys no fresh
+ * admission, deadline renewal, or authority to initialize provider work. */
+export interface HostedRetainedLifetimeBinding {
+  readonly correlation: ScopedStartCorrelation;
+  readonly absoluteDeadlineEpochMs: number;
+  readonly cleanupBudgetMs: number;
+  readonly dispatcherPidBirth: string;
+  readonly authenticatedChannelDigest: string;
+}
+/** Implemented by the guest's retained channel/FD authority. This port's data
+ * never reconstructs FreshKeyedSubmission or grants execution by itself. */
+export interface HostedRetainedLifetimePort {
+  readAuthenticatedLifetime(parentStartId: string): HostedRetainedLifetimeBinding;
+}
+/** Pin only an invocation observed while the originally owned submitter is live.
+ * A missing/partial record retains the reservation; no later PID lookup repairs it. */
+export function retainHostedScopedSubmitter(fence: HostedActivationFence, correlation: ScopedStartCorrelation,
+  child: Pick<CodexAppServerChildProcess, "pid" | "on">): void {
+  assertHostedActivationFence(fence);
+  const c = parseScopedStartCorrelation(correlation);
+  if (!child.pid) invalid();
+  const submitter = { schemaVersion: 1, correlationDigest: scopedDigest(c),
+    pidBirth: pidBirth(String(child.pid)), controlGroup: readFileSync(`/proc/${child.pid}/cgroup`, "utf8").trim().replace(/^0::/, "") };
+  if (!/^0::\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(readFileSync(`/proc/${child.pid}/cgroup`, "utf8").trim())) invalid();
+  const bytes = Buffer.from(JSON.stringify(submitter) + "\n");
+  createActivationRecord(`ordinary-submitters/${c.startId}.json`, bytes);
+  child.on("exit", () => {
+    try { withHostedActivationFence(() => {
+      if (!readHostedActivationBytes(`ordinary-submitters/${c.startId}.json`)?.equals(bytes)) invalid();
+      createActivationRecord(`ordinary-submitter-exits/${c.startId}.json`, Buffer.from(JSON.stringify({ schemaVersion: 1,
+        submitterDigest: sha256(bytes), exitObserved: true }) + "\n"));
+    }); } catch { /* Not proof: partial custody remains held. */ }
+  });
+  // Manager observation failure is retained, not an excuse to adopt a later unit.
+  const result = spawnSync("/usr/bin/systemctl", ["show", "--property=Id,InvocationID,ControlGroup", "--", c.unit], {
+    encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: ["ignore", "pipe", "pipe"] });
+  if (result.error || result.status !== 0) invalid();
+  const observed: Record<string, string> = {};
+  for (const line of result.stdout.trimEnd().split("\n")) { const at = line.indexOf("="); if (at < 1 || line.slice(0, at) in observed) invalid(); observed[line.slice(0, at)] = line.slice(at + 1); }
+  if (Object.keys(observed).sort().join(",") !== "ControlGroup,Id,InvocationID" || observed.Id !== c.unit || observed.ControlGroup !== c.controlGroup ||
+      pidBirth(String(child.pid)) !== submitter.pidBirth) invalid();
+  const invocation = parseScopedInvocation({ schemaVersion: 1, correlationDigest: scopedDigest(c), invocationId: observed.InvocationID });
+  createActivationRecord(`ordinary-invocations/${c.startId}.json`, Buffer.from(JSON.stringify(invocation) + "\n"));
+}
 function createActivationRecord(name: string, bytes: Buffer): void {
-  if (!recordName.test(name) || readHostedActivationBytes(name) !== null || bytes.length > 4 * 1024 * 1024) invalid();
-  const path = join(root, name), fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  assertHostedActivationOperator();
+  if (!recordName.test(name) || bytes.length > 4 * 1024 * 1024) invalid();
+  const path = join(root, name), parents: { path: string; fd: number; dev: number; ino: number }[] = [];
   try {
-    let offset = 0;
-    while (offset < bytes.length) { const count = writeSync(fd, bytes, offset, bytes.length - offset); if (count <= 0) invalid(); offset += count; }
-    fsyncSync(fd);
-  } finally { closeSync(fd); }
-  syncActivationDirectory(dirname(path));
+    for (let directory = dirname(path);; directory = dirname(directory)) {
+      const stat = lstatSync(directory);
+      if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & (directory === dirname(path) ? 0o077 : 0o022))) invalid();
+      const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      parents.push({ path: directory, fd, dev: stat.dev, ino: stat.ino });
+      const opened = fstatSync(fd); if (opened.dev !== stat.dev || opened.ino !== stat.ino) invalid();
+      if (directory === "/") break;
+    }
+    const verify = () => { for (const p of parents) { const stat = lstatSync(p.path); if (stat.dev !== p.dev || stat.ino !== p.ino || !stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o022)) invalid(); } };
+    verify();
+    const anchored = `/proc/self/fd/${parents[0]!.fd}/${basename(path)}`;
+    const fd = openSync(anchored, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      let offset = 0;
+      while (offset < bytes.length) { const count = writeSync(fd, bytes, offset, bytes.length - offset); if (count <= 0) invalid(); offset += count; }
+      const before = fstatSync(fd);
+      const check = () => {
+        const stat = fstatSync(fd), named = lstatSync(anchored), actual = Buffer.alloc(bytes.length + 1);
+        let length = 0; while (length < actual.length) { const n = readSync(fd, actual, length, actual.length - length, length); if (!n) break; length += n; }
+        if (!stat.isFile() || stat.uid !== 0 || stat.nlink !== 1 || (stat.mode & 0o7777) !== 0o600 || stat.size !== bytes.length ||
+            stat.dev !== before.dev || stat.ino !== before.ino || stat.ctimeMs !== before.ctimeMs || stat.mtimeMs !== before.mtimeMs ||
+            named.dev !== stat.dev || named.ino !== stat.ino || length !== bytes.length || !actual.subarray(0, length).equals(bytes)) invalid();
+        verify();
+      };
+      check(); fsyncSync(fd); for (const parent of parents) fsyncSync(parent.fd); check();
+    } finally { closeSync(fd); }
+  } finally { for (const p of parents.reverse()) closeSync(p.fd); }
 }
 function publishOrdinaryActivation(fence: HostedActivationFence, next: Wire): void {
   assertHostedActivationFence(fence);

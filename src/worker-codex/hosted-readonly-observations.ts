@@ -75,3 +75,28 @@ export function assertPopulatedZero(raw: string): void {
   }
   if (populated !== 1) throw new Error("hosted_custody_descendants_not_terminal");
 }
+
+export enum ScopedManagerJobType { Start = "start", Stop = "stop", Restart = "restart", Reload = "reload", ReloadOrStart = "reload-or-start", TryRestart = "try-restart", VerifyActive = "verify-active" }
+export enum ScopedManagerJobState { Waiting = "waiting", Running = "running" }
+export interface ScopedManagerJob { readonly id: string; readonly unit: string; readonly type: ScopedManagerJobType; readonly state: ScopedManagerJobState }
+/** Complete strict list, then select exact units. Unknown/malformed rows cannot
+ * disappear through prefix filtering and become a false empty queue. */
+export function parseScopedManagerJobs(raw: string): readonly ScopedManagerJob[] {
+  const ids = new Set<string>();
+  return lines(raw).map(line => {
+    const row = line.trim().split(/\s+/), [id, unit, type, state] = row;
+    if (row.length !== 4 || !id || !/^[1-9][0-9]*$/.test(id) || ids.has(id) || !unit || !/^[A-Za-z0-9_@.:-]+\.(?:service|scope|socket|timer|target|mount|slice)$/.test(unit) ||
+        !type || !Object.values(ScopedManagerJobType).includes(type as ScopedManagerJobType) ||
+        !state || !Object.values(ScopedManagerJobState).includes(state as ScopedManagerJobState)) invalid();
+    ids.add(id); return Object.freeze({ id, unit, type: type as ScopedManagerJobType, state: state as ScopedManagerJobState });
+  });
+}
+export function scopedCgroupPopulated(raw: string): boolean {
+  const fields = new Map<string, string>();
+  for (const line of raw.trimEnd().split("\n")) {
+    const row = line.split(" ");
+    if (row.length !== 2 || !["populated", "frozen"].includes(row[0]!) || !/^[01]$/.test(row[1]!) || fields.has(row[0]!)) invalid();
+    fields.set(row[0]!, row[1]!);
+  }
+  if (!fields.has("populated")) invalid(); return fields.get("populated") === "1";
+}

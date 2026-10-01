@@ -1,3 +1,4 @@
+import { scopedOrdinaryAuthority, type RuntimeValidatedOrdinaryTermination } from "./scoped-termination";
 /** Closed scheduling records, not proof of host authority. Adapters must bind
  * inspected bytes and independent creator/queue/descendant observations under
  * the common host mutex before publishing these transitions. */
@@ -127,11 +128,15 @@ export function parseHostedActivation(value: unknown): HostedActivation {
 /** Structural publication guard only. Positive OS evidence remains mandatory.
  * Each mutation advances exactly once; crash recovery may publish only that
  * retained immediate successor, never reconstruct or discard reservations. */
-export function assertHostedActivationSuccessor(before: HostedActivation, after: HostedActivation): void {
+export function assertHostedActivationSuccessor(before: HostedActivation, after: HostedActivation, authority?: RuntimeValidatedOrdinaryTermination): void {
   const prior = parseHostedActivation(before), next = parseHostedActivation(after);
   if (prior.installationId !== next.installationId || prior.hostId !== next.hostId ||
       next.generation !== prior.generation + 1 ||
       (prior.exclusiveEnrollmentSha256 !== null && prior.exclusiveEnrollmentSha256 !== next.exclusiveEnrollmentSha256)) invalid();
+  const receipt = authority ? scopedOrdinaryAuthority(authority) : null;
+  if (receipt && (receipt.operation.identity.installationId !== prior.installationId || receipt.operation.identity.hostId !== prior.hostId ||
+      receipt.operation.identity.bootId !== prior.bootId || receipt.operation.identity.supervisorId !== prior.supervisorId)) invalid();
+  const authorized = new Map(receipt?.operation.members.map(m => [m.startId, m]) ?? []);
   const phaseChanged = prior.phase !== next.phase;
   const edges: Record<HostedActivationPhase, readonly HostedActivationPhase[]> = {
     CLOSED: [HostedActivationPhase.Ordinary, HostedActivationPhase.EnteringExclusive],
@@ -155,7 +160,9 @@ export function assertHostedActivationSuccessor(before: HostedActivation, after:
     if (!current || Object.keys(row).some(key => key !== "state" &&
         row[key as keyof typeof row] !== current[key as keyof typeof row]) ||
         (row.state === HostedCustodyReservationState.Terminal && current.state !== row.state) ||
-        (row.state !== current.state && next.phase === HostedActivationPhase.Ordinary)) invalid();
+        (row.state !== current.state && next.phase === HostedActivationPhase.Ordinary &&
+          (!authorized.has(row.startId) || current.state !== HostedCustodyReservationState.Terminal ||
+            authorized.get(row.startId)!.unit !== row.unit || authorized.get(row.startId)!.reservationGeneration !== row.generation))) invalid();
   });
   if (next.ordinaryStarts.length > prior.ordinaryStarts.length) {
     const added = next.ordinaryStarts[next.ordinaryStarts.length - 1]!;

@@ -1,3 +1,4 @@
+import { scopedDigest, type ScopedTerminationMember, type ScopedTerminationObservation, type ScopedSignal } from "../worker-core/hosted-custody/domain/scoped-termination";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
@@ -10,9 +11,9 @@ import { HostedReadonlyEpochStore, readonlyEpochPath } from "./hosted-readonly-e
 import { readonlySupervisorRoot } from "./hosted-readonly-custody";
 import { TrustedCustodyLaunchRole, trustedCustodySystemdLaunch } from "./trusted-custody-systemd-launch";
 import { assertExactUnitGroup, assertNoQueuedStart, assertPopulatedZero, assertTerminalUnit,
-  custodyControlGroup, observedJobUnits } from "./hosted-readonly-observations";
+  custodyControlGroup, observedJobUnits, parseScopedManagerJobs } from "./hosted-readonly-observations";
 import { collectBootId, collectCgroupProcesses, collectCustodyEvents, collectFutureCreatorShow, collectJobs,
-  collectProcessBirth, collectProcessCgroup, collectSelfCgroup, collectUnitNotFound, collectUnitShow } from "./hosted-readonly-linux-collector";
+  collectProcessBirth, collectScopedRecursiveEmpty, collectUnitInvocation, fenceScopedSubmitter, withScopedCollectionBudget, requestScopedManagerEffect, collectProcessCgroup, collectSelfCgroup, collectUnitNotFound, collectUnitShow } from "./hosted-readonly-linux-collector";
 
 export enum HostedReadonlyRuntimeRole { Supervisor = "supervisor", Runtime = "runtime" }
 
@@ -293,6 +294,67 @@ export class HostedReadonlyHostKernel {
   }
   stopOrdinary(reservation: HostedOrdinaryReservation): void {
     assertOrdinaryReservation(reservation); this.requestUnitStop(reservation.unit);
+  }
+
+  assertScopedIdentity(member: ScopedTerminationMember, remainingMs = 1000): void {
+    withScopedCollectionBudget(remainingMs, () => {
+      assertReadonlyHostOperator();
+      const identity = member.identity, supervisor = collectUnitShow(identity.supervisorUnit);
+      if (readFileSync("/etc/machine-id", "utf8").trim() !== identity.hostId || collectBootId() !== identity.bootId ||
+          supervisor.ControlGroup !== identity.supervisorControlGroup || collectProcessBirth(supervisor.MainPID!) !== identity.supervisorId ||
+          collectUnitInvocation(member.unit) !== member.invocationId || collectUnitShow(member.unit).ControlGroup !== member.controlGroup) invalid();
+      const pid = member.creatorPidBirth.split(":")[0]!;
+      try {
+        if (collectProcessBirth(pid) !== member.creatorPidBirth || collectProcessCgroup(pid) !== `0::${member.creatorControlGroup}`) invalid();
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+        if (!member.creatorControlGroup.startsWith("/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/subscription-runtime-ordinary-")) throw e;
+        // Absence contributes no proof. Every correlated group/submitter still
+        // needs independent positive empty/exit observations.
+      }
+    });
+  }
+  fenceScopedSubmitter(member: ScopedTerminationMember, submitter: import("../worker-core/hosted-custody/domain/scoped-termination").ScopedSubmitter, remainingMs: number): void {
+    return withScopedCollectionBudget(remainingMs, () => {
+      const end = performance.now() + remainingMs;
+      this.assertScopedIdentity(member, remainingMs);
+      fenceScopedSubmitter(submitter.pidBirth, submitter.controlGroup, Math.floor(end - performance.now()));
+      this.assertScopedIdentity(member, Math.max(1, Math.floor(end - performance.now())));
+    });
+  }
+  drainScopedQueue(member: ScopedTerminationMember, remainingMs: number): void {
+    return withScopedCollectionBudget(remainingMs, () => {
+      const end = performance.now() + remainingMs;
+      for (const job of parseScopedManagerJobs(collectJobs()).filter(job => job.unit === member.unit)) {
+        this.assertScopedIdentity(member, Math.max(1, Math.floor(end - performance.now())));
+        const fresh = parseScopedManagerJobs(collectJobs()).find(row => row.id === job.id);
+        if (!fresh || fresh.unit !== job.unit || fresh.type !== job.type) invalid();
+        const left = Math.floor(end - performance.now()); if (left < 1) invalid();
+        requestScopedManagerEffect(["cancel", job.id], left);
+      }
+      if (parseScopedManagerJobs(collectJobs()).some(job => job.unit === member.unit)) invalid();
+    });
+  }
+  signalScoped(member: ScopedTerminationMember, signal: ScopedSignal, remainingMs: number): void {
+    return withScopedCollectionBudget(remainingMs, () => {
+      const end = performance.now() + remainingMs;
+      this.assertScopedIdentity(member, Math.max(1, Math.floor(end - performance.now())));
+      requestScopedManagerEffect(["kill", `--signal=${signal}`, "--kill-whom=all", "--", member.unit], Math.floor(end - performance.now()));
+      this.assertScopedIdentity(member, Math.max(1, Math.floor(end - performance.now())));
+      requestScopedManagerEffect(["stop", "--no-block", "--", member.unit], Math.floor(end - performance.now()));
+    });
+  }
+  collectScoped(member: ScopedTerminationMember, remainingMs: number, creatorFenced: boolean): ScopedTerminationObservation {
+    return withScopedCollectionBudget(remainingMs, () => {
+      const end = performance.now() + remainingMs;
+      this.assertScopedIdentity(member, Math.max(1, Math.floor(end - performance.now())));
+      const queue = parseScopedManagerJobs(collectJobs()), tree = collectScopedRecursiveEmpty(member.controlGroup, Math.floor(end - performance.now()));
+      this.assertScopedIdentity(member, Math.max(1, Math.floor(end - performance.now())));
+      if (JSON.stringify(queue) !== JSON.stringify(parseScopedManagerJobs(collectJobs()))) invalid();
+      return Object.freeze({ startId: member.startId, identityUnchanged: true, creatorFenced,
+        queueEmpty: !queue.some(row => row.unit === member.unit), recursiveEmpty: tree.empty,
+        digest: scopedDigest([member, queue, tree]) });
+    });
   }
 
   assertRuntimeLaunch(epoch: HostedCustodyEpoch, command: string, args: readonly string[], cwd: string): void {

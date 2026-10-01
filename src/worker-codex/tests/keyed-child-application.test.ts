@@ -1,11 +1,16 @@
+import { HostedKeyedScopedStopAdapter, type ScopedTerminationKernelPort } from "../hosted-controller/scoped-termination-adapter";
+import { ScopedTerminationKind, ScopedSignal, stableChildDigest, scopedDigest,
+  type ScopedTerminationMember, type RuntimeValidatedTermination, type RuntimeValidatedOrdinaryTermination } from "../../worker-core/hosted-custody/domain/scoped-termination";
+import { HostedInstallationActivationStore } from "../hosted-installation-activation";
+import { KeyedAuthorizationMode as Mode, type KeyedScopedStopPort } from "../../worker-core/project-control/ports/keyed-child-application-ports";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, renameSync, symlinkSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, renameSync, symlinkSync, readdirSync, chmodSync, linkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChildContinuationMode, AgentRuntimeTool, parseImmutableChildSlot } from "@vioxen/subscription-runtime/core";
-import { CodexProviderEgressProfileId, HostedControllerToolName, withHostedActivationFence, type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexProviderEgressProfileId, HostedControllerToolName, assertHostedScopedAdmission, retainHostedScopedCorrelation, withHostedActivationFence, type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { KeyedChildLedger, KeyedChildProfile as Profile, KeyedChildState as State, NoEffectProofKind, type ReviewedChildAuthority } from "../../worker-core/project-control/domain/keyed-child-launch";
 import { KeyedChildLaunchApplication, ScopedStopReason, ScopedStopResult } from "../../worker-core/project-control/application/keyed-child-launch";
 import { KeyedLaunchLedgerStore } from "../hosted-controller/keyed-launch-ledger-store";
@@ -22,6 +27,7 @@ import { resolveCodexExecutionProfile } from "../../provider-codex/codex-executi
 import { AppServerDynamicToolHandler } from "../../provider-codex/app-server/application/app-server-dynamic-tool-handler";
 
 const facts = vi.hoisted(() => ({ root: "", fail: "", effect: null as (() => void) | null,
+  syncFault: "", mutateOnSync: null as (() => void) | null,
   gate: null as Promise<void> | null, checkoutGate: null as Promise<void> | null,
   checkoutEntered: null as (() => void) | null, fdPaths: new Map<number, string>(), reads: [] as string[] }));
 const policy = "/var/lib/subscription-runtime-host-policy";
@@ -43,14 +49,24 @@ vi.mock("node:fs", async original => {
       path === "/proc/self/uid_map" ? "0 0 4294967295\n" : path === "/proc/sys/kernel/random/boot_id" ? "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n" : fs.readFileSync(typeof path === "string" ? local(path) : path, options),
     openSync: (path: string, flags: number, mode: number) => {
       facts.reads.push(path);
-      const fd = fs.openSync(local(path), flags, mode); facts.fdPaths.set(fd, path); return fd;
+      const fd = fs.openSync(local(path), flags, mode);
+      const anchored = /^\/proc\/self\/fd\/(\d+)\/(.*)$/.exec(path);
+      facts.fdPaths.set(fd, anchored ? facts.fdPaths.get(Number(anchored[1])) + "/" + anchored[2] : path); return fd;
     },
     closeSync: (fd: number) => { facts.fdPaths.delete(fd); fs.closeSync(fd); },
     mkdirSync: (path: string, options: Parameters<typeof fs.mkdirSync>[1]) => fs.mkdirSync(local(path), options),
     rmdirSync: (path: string) => fs.rmdirSync(local(path)),
+    renameSync: (from: string, to: string) => fs.renameSync(local(from), local(to)),
     fsyncSync: (fd: number) => {
       if (facts.fail === "claim-fsync" && facts.fdPaths.get(fd)?.endsWith(".next")) throw new Error("TEST failed claim fsync");
+      const path = facts.fdPaths.get(fd) ?? "";
+      if ((facts.syncFault === "marker" && path.includes("/scoped-terminating/")) ||
+          (facts.syncFault === "receipt-file" && path.includes("/scoped-receipts/") && path.endsWith(".json")) ||
+          (facts.syncFault === "receipt-parent" && path.endsWith("/scoped-receipts")) ||
+          (facts.syncFault === "activation" && path.endsWith("host-activation.next")) ||
+          (facts.syncFault === "keyed" && path.includes("/keyed-child-ledgers/") && path.endsWith(".next"))) throw new Error("TEST publication interrupted");
       fs.fsyncSync(fd);
+      if (path.endsWith("/scoped-receipts") && facts.mutateOnSync) { const mutate = facts.mutateOnSync; facts.mutateOnSync = null; mutate(); }
     },
   };
 });
@@ -84,8 +100,6 @@ vi.mock("node:child_process", async original => {
 });
 vi.mock("../hosted-readonly-host-kernel", async original => ({ ...await original<typeof import("../hosted-readonly-host-kernel")>(),
   readHostedReadonlyHostInventory: () => JSON.parse(readFileSync(join(facts.root, "inventory.json"), "utf8")) }));
-vi.mock("../hosted-installation-activation", async original => ({ ...await original<typeof import("../hosted-installation-activation")>(),
-  readHostedInstallationActivation: () => ({ installation: { runtimeSha: "d".repeat(40) }, activation: { phase: "ORDINARY" } }) }));
 vi.mock("../hosted-readonly-custody", async original => ({ ...await original<typeof import("../hosted-readonly-custody")>(),
   readonlySupervisorRoot: "/var/lib/subscription-runtime-host-policy" }));
 vi.mock("../hosted-test-egress-files", async original => ({ ...await original<typeof import("../hosted-test-egress-files")>(),
@@ -96,26 +110,26 @@ const request = { key: "TEST-key", profile: Profile.ReadOnly, task: "Exact TEST 
 let stop!: () => void;
 let joinWork: (() => Promise<void>) | undefined;
 beforeEach(() => {
-  facts.root = mkdtempSync(join(tmpdir(), "pr4-TEST-application-")); facts.fail = ""; facts.gate = null; facts.effect = null; facts.checkoutGate = null; facts.checkoutEntered = null; facts.reads = [];
+  facts.root = mkdtempSync(join(tmpdir(), "pr4-TEST-application-")); facts.fail = ""; facts.gate = null; facts.effect = null; facts.checkoutGate = null; facts.checkoutEntered = null; facts.reads = []; facts.syncFault = ""; facts.mutateOnSync = null;
   vi.spyOn(process, "getuid").mockReturnValue(0);
 });
 afterEach(async () => { stop?.(); await joinWork?.(); vi.useRealTimers(); vi.restoreAllMocks(); rmSync(facts.root, { recursive: true, force: true }); });
-function fixture(production = false, deadline = Date.now() + 60000, stopMode: "unresolved" | "throw" | "absent" = "unresolved") {
-  for (const name of ["keyed-child-ledgers", "child-slots", "grants", "prompts", "source", "jobs"]) mkdirSync(join(facts.root, name), { mode: 0o700 });
+function fixture(production = false, deadline = Date.now() + 60000, stopMode: "unresolved" | "throw" | "absent" | "proof" = "unresolved") {
+  for (const name of ["keyed-child-ledgers", "child-slots", "grants", "prompts", "source", "jobs", "scoped-terminating", "keyed-child-owners"]) mkdirSync(join(facts.root, name), { mode: 0o700 });
   const slots = [1, 2].map(n => {
     const slotId = `TEST-slot-${n}`, creatorId = `TEST-creator-${n}`, jobId = `TEST-child-${n}`, jobRootDir = join(facts.root, "jobs", jobId);
     mkdirSync(jobRootDir, { mode: 0o700 });
     const workspacePath = jobRootDir + "/workspace", promptPath = join(facts.root, "prompts", jobId + ".md");
-    const lifetime = { schemaVersion: 1, accountId: "account-s", deadlineEpochMs: deadline, maxGoalTurns: 2, maxAttempts: 1,
+    const lifetime = { schemaVersion: 1, accountId: "TEST-inventory-product", deadlineEpochMs: deadline, maxGoalTurns: 2, maxAttempts: 1,
       maxAccountCycles: 1, continuationMode: ChildContinuationMode.Disabled, allowedTools: [AgentRuntimeTool.ReadFile],
       denyProjectInstructions: true, accessBoundary: "read_only" };
-    const grant = { schemaVersion: 3, slotId, jobId, jobRootDir, workspacePath, accountId: "account-s", hostedProfile: "child",
+    const grant = { schemaVersion: 3, slotId, jobId, jobRootDir, workspacePath, accountId: "TEST-inventory-product", hostedProfile: "child",
       profileId: CodexProviderEgressProfileId.MimoTokenPlan, modelBackend: "xiaomi-mimo-token-plan", executionEngine: "app-server-goal", namedPermissions: true, globalScanGuard: true, nativeToolSurface: "disabled" };
     const grantBytes = JSON.stringify(grant) + "\n";
     writeFileSync(join(facts.root, "grants", digest(jobId) + ".json"), grantBytes, { mode: 0o600 });
     const launch = { command: process.execPath, cwd: workspacePath, args: ["/TEST/cli.js", "run", "--prompt", promptPath, "--workspace", workspacePath,
       "--job-root", jobRootDir, "--job-id", jobId, "--task-id", jobId, "--auth-root", jobRootDir + "/capacity", "--codex-binary", "/TEST/pinned-codex",
-      "--accounts", "account-s", "--max-account-cycles", "1", "--max-attempts", "1", "--continuation-mode", "disabled", "--max-goal-turns", "2",
+      "--accounts", lifetime.accountId, "--max-account-cycles", "1", "--max-attempts", "1", "--continuation-mode", "disabled", "--max-goal-turns", "2",
       "--child-lifetime-json", JSON.stringify(lifetime), "--execution-engine", "app-server-goal", "--model-backend", "xiaomi-mimo-token-plan",
       "--model", "mimo-v2.6-pro", "--access-boundary", "read_only", "--edit-mode", "read-only",
       "--project-access-scope-json", JSON.stringify({ projectId: jobId, readRoots: [workspacePath] })] };
@@ -135,10 +149,15 @@ function fixture(production = false, deadline = Date.now() + 60000, stopMode: "u
     readPrivateGrant: () => Buffer.from(changedGrant ? grant + "changed" : grant),
   });
   const authority: ReviewedChildAuthority = { projectId: "TEST-project", workstreamId: "TEST-work", controllerId: "TEST-controller",
-    grantDigest: digest(grant), reviewedSnapshotDigest: digest(slots), accountId: "account-s", sourceSha: "c".repeat(40), artifactSha: "d".repeat(40),
+    grantDigest: digest(grant), reviewedSnapshotDigest: digest(slots), accountId: "TEST-inventory-product", sourceSha: "c".repeat(40), artifactSha: "d".repeat(40),
     absoluteDeadline: deadline, maxGoalTurns: 2, effectiveOptionDigest: digest(slots.map(s => s.lifetime)) };
   const allocations = slots.map(slot => { const startId = randomUUID(); return { slotId: slot.slotId, requestId: randomUUID(), operationId: randomUUID(),
     childHandle: randomUUID(), startId, unitCorrelation: `subscription-runtime-ordinary-${startId}.service`, profile: Profile.ReadOnly }; });
+  writeFileSync(join(facts.root, "host-installation.json"), JSON.stringify({ schemaVersion: 1, installationId: "TEST-installation", hostId: "TEST-host",
+    runtimeDirectory: "/TEST/runtime", runtimeSha: "d".repeat(40), runtimeManifestSha256: "1".repeat(64), inventorySha256: "f".repeat(64) }) + "\n", { mode: 0o600 });
+  writeFileSync(join(facts.root, "host-activation.json"), JSON.stringify({ schemaVersion: 1, installationId: "TEST-installation", hostId: "TEST-host",
+    bootId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", supervisorId: "10:100", generation: 1, phase: "ORDINARY", ordinaryOriginsSha256: "2".repeat(64),
+    exclusiveEnrollmentSha256: null, ordinaryStarts: [] }) + "\n", { mode: 0o600 });
   const retained = new RetainedKeyedAuthority(origin, authority, allocations), store = new KeyedLaunchLedgerStore(authority, allocations);
   withHostedActivationFence(f => store.initialize(f));
   const wait = deferred(), calls: FreshKeyedSubmission[] = [], stops: string[] = [];
@@ -152,10 +171,12 @@ function fixture(production = false, deadline = Date.now() + 60000, stopMode: "u
     return { completion: wait.promise };
   } };
   const materialization = new SlotMaterialization(retained, join(facts.root, "source"));
+  let concreteProof: KeyedScopedStopPort | undefined;
   const stopRequests: { startId: string; reason: ScopedStopReason; at: number }[] = [];
   const adapter = new KeyedChildDispatchAdapter(retained, store, materialization, host, stopMode === "absent" ? undefined : {
     request: async (binding, reason) => {
       stops.push(binding.startId); stopRequests.push({ startId: binding.startId, reason, at: Date.now() });
+      if (stopMode === "proof" && concreteProof) return concreteProof.request(binding, reason);
       if (stopMode === "throw") throw new Error("TEST unresolved stop failure");
       return ScopedStopResult.Unresolved;
     },
@@ -164,10 +185,11 @@ function fixture(production = false, deadline = Date.now() + 60000, stopMode: "u
   stop = wait.resolve; joinWork = () => app.drain();
   return { slots, authority, allocations, store, retained, adapter, app, tools, wait, calls, stops, stopRequests, materialization,
     ledger: () => withHostedActivationFence(f => store.readHeld(f, authority, retained.seed.authorityDigest)),
+    bindProof: (port: KeyedScopedStopPort) => { concreteProof = port; },
     originChanged: () => { changedOrigin = true; }, grantChanged: () => { changedGrant = true; } };
 }
 async function submitted(f: ReturnType<typeof fixture>) {
-  await vi.waitFor(() => expect(f.calls.length).toBe(1));
+  await vi.waitFor(() => expect(f.calls.length).toBe(1), { timeout: 5000 });
 }
 
 describe("PR4 keyed application with private TEST persistence and controlled host", () => {
@@ -470,5 +492,241 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
     expect(JSON.stringify(replies[1])).toContain("termination_unresolved");
     await invoke(3, HostedControllerToolName.Observe, { handle: "foreign" }); expect(replies[2]!.success).toBe(false);
     handler.close(); client.close(); server.close(); f.wait.resolve(); await f.app.drain(); expect(f.calls).toHaveLength(1);
+  });
+});
+
+/** Real application/retained authority/private stores and producer. The manager
+ * graph belongs to the fixture: effects NEVER imply queue/creator/group death. */
+async function scopedFixture() {
+  const f = fixture(false, Date.now() + 60000, "proof");
+  const view = await f.app.launch(request, new AbortController().signal); await submitted(f);
+  const target = f.ledger().observe(f.authority, view.childHandle);
+  for (const name of ["ordinary-starts", "ordinary-correlations", "ordinary-invocations", "ordinary-submitters", "ordinary-submitter-exits", "scoped-operations", "scoped-observations", "scoped-receipts"]) mkdirSync(join(facts.root, name), { mode: 0o700 });
+  const put = (name: string, value: unknown) => writeFileSync(join(facts.root, name), JSON.stringify(value) + "\n", { mode: 0o600 });
+  const read = (name: string) => JSON.parse(readFileSync(join(facts.root, name), "utf8"));
+  const slot = f.slots[0]!, identity = { scopeDigest: stableChildDigest(target, target.dispatchIntent!.generation),
+    installationId: "TEST-installation", hostId: "TEST-host", bootId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", supervisorId: "10:100", supervisorUnit: "TEST-supervisor.service", supervisorControlGroup: "/TEST/supervisor",
+    accountId: slot.lifetime.accountId, grantDigest: slot.grantSha256, inventoryDigest: "f".repeat(64), sourceSha: slot.sourceSha,
+    artifactSha: slot.artifactSha, deadlineEpochMs: slot.lifetime.deadlineEpochMs, authorityDigest: target.authorityDigest,
+    slotId: slot.slotId, parentStartId: target.startId, dispatchIntentGeneration: target.dispatchIntent!.generation };
+  const rows = [{ startId: target.startId, unit: target.unitCorrelation }, { startId: randomUUID(), unit: "" }].map((r, i) => ({
+    ...r, unit: i ? `subscription-runtime-hosted-${r.startId}.service` : r.unit,
+    creatorId: slot.creatorId, originSha256: "e".repeat(64), generation: i + 2, state: "reserved" }));
+  const unrelated = { startId: randomUUID(), unit: "TEST-unrelated.service", creatorId: "TEST-unrelated", originSha256: "9".repeat(64), generation: 4, state: "reserved" };
+  put("host-installation.json", { schemaVersion: 1, installationId: identity.installationId, hostId: identity.hostId,
+    runtimeDirectory: "/TEST/runtime", runtimeSha: slot.artifactSha, runtimeManifestSha256: "1".repeat(64), inventorySha256: identity.inventoryDigest });
+  put("host-activation.json", { schemaVersion: 1, installationId: identity.installationId, hostId: identity.hostId,
+    bootId: identity.bootId, supervisorId: identity.supervisorId, generation: 4, phase: "ORDINARY",
+    ordinaryOriginsSha256: "2".repeat(64), exclusiveEnrollmentSha256: null, ordinaryStarts: [...rows, unrelated] });
+  const states = new Map<string, { enqueue: boolean; queued: boolean; populated: boolean; identity: boolean; malformed: boolean }>();
+  const effects: { kind: string; startId: string }[] = [], members: ScopedTerminationMember[] = [];
+  let parentDigest = "";
+  rows.forEach((row, i) => {
+    const start = { schemaVersion: 1, installationId: identity.installationId, jobId: slot.jobId, jobRootDir: slot.jobRootDir,
+      workspacePath: slot.workspacePath, activationGeneration: row.generation, bootId: identity.bootId, supervisorId: identity.supervisorId,
+      originSha256: row.originSha256, unit: row.unit, controlGroup: `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${row.unit}`,
+      creatorId: row.creatorId, creatorPidBirth: i ? "20:200" : "10:100", grantSha256: slot.grantSha256 };
+    put(`ordinary-starts/${row.startId}.json`, start);
+    const startDigest = digest(JSON.stringify(start) + "\n"); if (!i) parentDigest = startDigest;
+    const c = { schemaVersion: 1 as const, kind: i ? ScopedTerminationKind.Provider : ScopedTerminationKind.Runtime, identity,
+      startId: row.startId, startDigest, parentStartDigest: parentDigest, reservationGeneration: row.generation, unit: row.unit,
+      controlGroup: start.controlGroup, creatorPidBirth: start.creatorPidBirth, creatorControlGroup: i ? members[0]!.controlGroup : "/TEST/supervisor" };
+    put(`ordinary-correlations/${row.startId}.json`, c);
+    const invocationId = String(i + 1).repeat(32); put(`ordinary-invocations/${row.startId}.json`, { schemaVersion: 1, correlationDigest: scopedDigest(c), invocationId });
+    const submitter = { schemaVersion: 1, correlationDigest: scopedDigest(c), pidBirth: i ? "40:400" : "30:300", controlGroup: "/TEST/submitters" };
+    put(`ordinary-submitters/${row.startId}.json`, submitter);
+    members.push({ ...c, invocationId, submitterDigest: digest(JSON.stringify(submitter) + "\n") });
+    states.set(row.startId, { enqueue: false, queued: false, populated: false, identity: true, malformed: false });
+  });
+  let collectHook: (() => void) | undefined;
+  const kernel: ScopedTerminationKernelPort = {
+    assertScopedIdentity(m) { if (!states.get(m.startId)!.identity) throw new Error("TEST replacement identity"); },
+    fenceScopedSubmitter(m) { effects.push({ kind: "fence", startId: m.startId }); this.assertScopedIdentity(m);
+      if (states.get(m.startId)!.enqueue) throw new Error("TEST creator can still enqueue"); },
+    drainScopedQueue(m) { effects.push({ kind: "drain", startId: m.startId }); this.assertScopedIdentity(m);
+      if (states.get(m.startId)!.queued) throw new Error("TEST queue survives cancel ack"); },
+    signalScoped(m, signal) { this.assertScopedIdentity(m); effects.push({ kind: signal, startId: m.startId }); },
+    collectScoped(m, _budget, creatorFenced) {
+      this.assertScopedIdentity(m); const state = states.get(m.startId)!;
+      if (state.malformed) throw new Error("TEST malformed collector");
+      const result = { startId: m.startId, identityUnchanged: state.identity, creatorFenced: creatorFenced && !state.enqueue,
+        queueEmpty: !state.queued, recursiveEmpty: !state.populated, digest: scopedDigest([m.startId, state]) };
+      collectHook?.(); return result;
+    },
+  };
+  const proof = new HostedKeyedScopedStopAdapter(f.retained, f.adapter, kernel);
+  f.bindProof(proof);
+  return { ...f, proof, target, rows, members, unrelated, states, effects, read, put,
+    collectHook: (hook: (() => void) | undefined) => { collectHook = hook; },
+    receipt: () => join(facts.root, "scoped-receipts", target.startId + ".json") };
+}
+
+describe("PR5 scoped proof at the real application and private publication boundaries", () => {
+  it("releases only after all independent creator/queue/recursive scopes and ordered durable publications", async () => {
+    const f = await scopedFixture(), provider = f.states.get(f.rows[1]!.startId)!;
+    provider.populated = true;
+    expect((await f.app.stop(f.target.childHandle)).occupied).toBe(true);
+    expect(() => readFileSync(f.receipt())).toThrow();
+    expect(f.read("host-activation.json").ordinaryStarts.every((r: { state: string }) => r.state === "reserved")).toBe(true);
+    expect(f.effects.filter(e => e.kind === ScopedSignal.Kill).map(e => e.startId)).toEqual([f.rows[1]!.startId]);
+    provider.populated = false; // Independent population changes, unrelated to the stop return.
+    const terminal = await f.app.stop(f.target.childHandle);
+    expect(terminal.state).toBe(State.Terminal); expect(terminal.occupied).toBe(false);
+    const activation = f.read("host-activation.json"); expect(activation.phase).toBe("ORDINARY");
+    expect(activation.ordinaryStarts.slice(0, 2).map((r: { state: string }) => r.state)).toEqual(["terminal", "terminal"]);
+    expect(activation.ordinaryStarts[2]).toEqual(f.unrelated);
+    expect(f.effects.some(e => e.startId === f.unrelated.startId)).toBe(false);
+    const restored = new KeyedLaunchLedgerStore(f.authority, f.allocations);
+    const ledger = withHostedActivationFence(token => restored.readHeld(token, f.authority, f.retained.seed.authorityDigest));
+    expect(ledger.observe(f.authority, f.target.childHandle).dispatchIntent).toEqual(f.target.dispatchIntent);
+    expect(ledger.remainingAllowance).toBe(1); expect(ledger.occupied).toBe(false);
+    const second = await f.app.launch({ ...request, key: "second" }, new AbortController().signal);
+    expect(second.occupied).toBe(true);
+    expect(await f.proof.request(f.target, ScopedStopReason.Requested)).toMatchObject({ outcome: ScopedStopResult.ReceiptBacked });
+    expect(f.ledger().occupied).toBe(true); expect(f.ledger().remainingAllowance).toBe(0);
+    expect(f.ledger().observe(f.authority, second.childHandle).state).not.toBe(State.Terminal);
+    await expect(f.app.launch(request, new AbortController().signal)).resolves.toMatchObject({ state: State.Terminal });
+    expect(f.calls.filter(c => c.binding.startId === f.target.startId)).toHaveLength(1);
+  });
+  it("natural completion triggers independent collection and cannot release a surviving provider", async () => {
+    const f = await scopedFixture(), provider = f.states.get(f.rows[1]!.startId)!;
+    provider.populated = true; f.wait.resolve(); await f.app.drain();
+    expect(f.stopRequests.some(r => r.reason === ScopedStopReason.Completion)).toBe(true);
+    expect(f.ledger().occupied).toBe(true); expect(() => readFileSync(f.receipt())).toThrow();
+    provider.populated = false;
+    expect(await f.app.reconcile(f.target.childHandle)).toMatchObject({ state: State.Terminal, occupied: false });
+    expect(f.calls).toHaveLength(1);
+  });
+  it.each(["enqueue", "queued", "malformed", "identity"] as const)("%s keeps obligations held; later exact reconciliation uses the same IDs", async kind => {
+    const f = await scopedFixture(), provider = f.states.get(f.rows[1]!.startId)!;
+    provider[kind] = kind !== "identity";
+    const result = await f.proof.request(f.target, ScopedStopReason.Requested);
+    expect(result).toMatchObject({ outcome: ScopedStopResult.Unresolved }); expect(f.ledger().occupied).toBe(true);
+    expect(() => readFileSync(f.receipt())).toThrow();
+    if (kind === "identity") expect(f.effects.filter(e => e.startId === f.rows[1]!.startId && e.kind.startsWith("SIG"))).toEqual([]);
+    provider[kind] = kind === "identity";
+    expect(await f.proof.request(f.target, ScopedStopReason.Requested)).toMatchObject({ outcome: ScopedStopResult.ReceiptBacked });
+    expect(f.ledger().observe(f.authority, f.target.childHandle).startId).toBe(f.target.startId); expect(f.calls).toHaveLength(1);
+  });
+  it.each(["companion", "invocation", "account", "parent"])("%s failure is held, with a durable marker even for incomplete reservations", async kind => {
+    const f = await scopedFixture(), id = f.rows[1]!.startId;
+    if (kind === "companion") rmSync(join(facts.root, `ordinary-correlations/${id}.json`));
+    if (kind === "invocation") rmSync(join(facts.root, `ordinary-invocations/${id}.json`));
+    if (kind === "account" || kind === "parent") {
+      const c = f.read(`ordinary-correlations/${id}.json`);
+      if (kind === "account") c.identity.accountId = "account-s"; else c.parentStartDigest = "0".repeat(64);
+      f.put(`ordinary-correlations/${id}.json`, c);
+    }
+    expect((await f.app.stop(f.target.childHandle)).occupied).toBe(true);
+    expect(f.read(`scoped-terminating/${f.target.startId}.json`).reservationIds).toEqual(f.rows.map(r => r.startId));
+    withHostedActivationFence(token => {
+      expect(() => assertHostedScopedAdmission(token, f.target.startId)).toThrow("termination_fenced");
+      const { invocationId: _invocation, submitterDigest: _submitter, ...companion } = f.members[1]!;
+      expect(() => retainHostedScopedCorrelation(token, companion)).toThrow("termination_fenced");
+    });
+    expect(f.read("host-activation.json").ordinaryStarts).toHaveLength(3);
+    expect(f.effects).toEqual([]); expect(() => readFileSync(f.receipt())).toThrow();
+  });
+  it("cleanup survives deleted/revoked grant, changed inventory, dispatcher death and original deadline without authorizing fresh work", async () => {
+    const f = await scopedFixture();
+    f.grantChanged(); f.originChanged();
+    rmSync(join(facts.root, "grants", digest(f.slots[0]!.jobId) + ".json"));
+    rmSync(join(facts.root, "inventory.json"));
+    vi.spyOn(Date, "now").mockReturnValue(f.authority.absoluteDeadline + 1);
+    expect((await f.app.stop(f.target.childHandle)).occupied).toBe(false);
+    await expect(f.app.launch({ ...request, key: "fresh" }, new AbortController().signal)).rejects.toThrow();
+    const cleanupOwner = RetainedKeyedAuthority.restoreCleanup(f.authority, f.retained.seed.authorityDigest);
+    expect(() => cleanupOwner.assertCurrent()).toThrow("live_admission_required");
+    const freshStore = new KeyedLaunchLedgerStore(cleanupOwner.authority, cleanupOwner.seed.snapshot().slots);
+    const cleanupAdapter = KeyedChildDispatchAdapter.cleanup(cleanupOwner, freshStore);
+    await expect(cleanupAdapter.coordinate(async () => cleanupAdapter.read(Mode.Cleanup), Mode.Cleanup)).resolves.toBeInstanceOf(KeyedChildLedger);
+    const restored = withHostedActivationFence(token => freshStore.readHeld(token, f.authority, f.retained.seed.authorityDigest));
+    expect(restored.remainingAllowance).toBe(1); expect(f.calls).toHaveLength(1);
+  });
+  it("off-scope correlation and forged DTO authority cannot read target records, signal or terminalize", async () => {
+    const f = await scopedFixture(); facts.reads = [];
+    expect(await f.proof.request({ ...f.target, startId: randomUUID() }, ScopedStopReason.Requested)).toMatchObject({ outcome: ScopedStopResult.Unresolved });
+    expect(facts.reads.some(p => /ordinary-correlations|scoped-receipts|scoped-operations|scoped-terminating/.test(p))).toBe(false);
+    expect(f.effects).toEqual([]);
+    const forged = { receiptDigest: "a".repeat(64) } as RuntimeValidatedTermination;
+    expect(() => f.ledger().terminalizeAfterIntent(f.target, forged)).toThrow("terminal_authority_required");
+    withHostedActivationFence(token => {
+      facts.reads = [];
+      expect(() => new HostedInstallationActivationStore().publishScopedTerminal(token, {} as RuntimeValidatedOrdinaryTermination)).toThrow("ordinary_authority_required");
+      expect(facts.reads).toEqual([]);
+    });
+    expect(f.ledger().occupied).toBe(true);
+  });
+  it.each(["marker", "receipt-file", "receipt-parent", "activation", "keyed"])("%s interruption retains occupancy, and only exact validated replay finishes safe steps", async fault => {
+    const f = await scopedFixture(); facts.syncFault = fault;
+    expect(await f.proof.request(f.target, ScopedStopReason.Requested)).toMatchObject({ outcome: ScopedStopResult.Unresolved });
+    facts.syncFault = "";
+    if (fault === "keyed") expect(() => f.ledger()).toThrow("pending_publication"); else expect(f.ledger().occupied).toBe(true);
+    expect(f.calls).toHaveLength(1);
+    if (fault === "activation" || fault === "keyed") {
+      // Existing .next/.hold conflicts REQUIRE explicit recovery. No auto cleanup.
+      expect(await f.proof.request(f.target, ScopedStopReason.Requested)).toMatchObject({ outcome: ScopedStopResult.Unresolved });
+      if (fault === "keyed") expect(() => f.ledger()).toThrow("pending_publication"); else expect(f.ledger().occupied).toBe(true);
+    } else {
+      expect(await f.proof.request(f.target, ScopedStopReason.Requested)).toMatchObject({ outcome: ScopedStopResult.ReceiptBacked });
+      expect(f.ledger().occupied).toBe(false);
+    }
+  });
+  it.each(["symlink", "mode", "hardlink", "digest-forgery"])("%s receipt cannot authorize ordinary or keyed publication", async attack => {
+    const f = await scopedFixture(); facts.syncFault = "receipt-parent";
+    expect(await f.proof.request(f.target, ScopedStopReason.Requested)).toMatchObject({ outcome: ScopedStopResult.Unresolved });
+    facts.syncFault = "";
+    if (attack === "symlink") { renameSync(f.receipt(), f.receipt() + ".old"); symlinkSync(f.receipt() + ".old", f.receipt()); }
+    if (attack === "mode") chmodSync(f.receipt(), 0o640);
+    if (attack === "hardlink") linkSync(f.receipt(), f.receipt() + ".link");
+    if (attack === "digest-forgery") { const dto = JSON.parse(readFileSync(f.receipt(), "utf8")); dto.observations[0].digest = "f".repeat(64); f.put(`scoped-receipts/${f.target.startId}.json`, dto); }
+    expect(await f.proof.request(f.target, ScopedStopReason.Requested)).toMatchObject({ outcome: ScopedStopResult.Unresolved });
+    expect(f.ledger().occupied).toBe(true);
+    expect(f.read("host-activation.json").ordinaryStarts.map((r: { state: string }) => r.state)).toEqual(["reserved", "reserved", "reserved"]);
+  });
+  it("tampering during last receipt parent fsync cannot publish ordinary or keyed Terminal", async () => {
+    const f = await scopedFixture(); facts.mutateOnSync = () => writeFileSync(f.receipt(), "TEST tampered receipt");
+    expect(await f.proof.request(f.target, ScopedStopReason.Requested)).toMatchObject({ outcome: ScopedStopResult.Unresolved });
+    expect(f.ledger().occupied).toBe(true);
+    expect(f.read("host-activation.json").ordinaryStarts.map((r: { state: string }) => r.state)).toEqual(["reserved", "reserved", "reserved"]);
+    expect(await f.proof.request(f.target, ScopedStopReason.Requested)).toMatchObject({ outcome: ScopedStopResult.Unresolved });
+  });
+  it("cleanup observation exhaustion retains ownership and the unchanged work deadline", async () => {
+    const f = await scopedFixture(); let clock = 1000;
+    const monotonic = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    f.collectHook(() => { clock += 11_000; });
+    const result = await f.proof.request(f.target, ScopedStopReason.Deadline);
+    expect(result).toMatchObject({ outcome: ScopedStopResult.Unresolved, cause: "budget" });
+    expect(f.ledger().occupied).toBe(true); expect(() => readFileSync(f.receipt())).toThrow();
+    expect(f.authority.absoluteDeadline).toBe(f.slots[0]!.lifetime.deadlineEpochMs);
+    monotonic.mockRestore(); f.collectHook(undefined);
+    expect(await f.proof.request(f.target, ScopedStopReason.Deadline)).toMatchObject({ outcome: ScopedStopResult.ReceiptBacked });
+  });
+  it("an identity changed between collection and publication is refused without a replacement signal", async () => {
+    const f = await scopedFixture(); let n = 0;
+    f.collectHook(() => { if (++n === 4) f.states.get(f.rows[1]!.startId)!.identity = false; });
+    expect(await f.proof.request(f.target, ScopedStopReason.Requested)).toMatchObject({ outcome: ScopedStopResult.Unresolved });
+    expect(() => readFileSync(f.receipt())).toThrow(); expect(f.ledger().occupied).toBe(true);
+  });
+  it("post-ordinary crash replay survives sibling ledger/activation generations without restoring allowance or submitting", async () => {
+    const f = await scopedFixture(); facts.syncFault = "keyed";
+    expect(await f.proof.request(f.target, ScopedStopReason.Completion)).toMatchObject({ outcome: ScopedStopResult.Unresolved });
+    facts.syncFault = "";
+    // Explicit fixture recovery resolves a known failed staging write by removing
+    // ONLY the exact retained .next from this owned TEST store. Production never does.
+    for (const name of readdirSync(join(facts.root, "keyed-child-ledgers"))) if (name.endsWith(".next")) rmSync(join(facts.root, "keyed-child-ledgers", name));
+    const priorActivation = f.read("host-activation.json"); f.put("host-activation.json", { ...priorActivation, generation: priorActivation.generation + 1 });
+    await f.adapter.coordinate(async () => {
+      const current = f.adapter.read(Mode.Cleanup);
+      await f.adapter.transact(f.authority, f.retained.seed.authorityDigest, current.generation,
+        l => l.stop(l.observe(f.authority, f.target.childHandle)), Mode.Cleanup);
+    }, Mode.Cleanup);
+    const freshPort = new HostedKeyedScopedStopAdapter(f.retained, f.adapter, {
+      assertScopedIdentity: () => { throw new Error("TEST replay must use durable proof"); }, fenceScopedSubmitter: () => { throw new Error(); },
+      drainScopedQueue: () => { throw new Error(); }, signalScoped: () => { throw new Error(); }, collectScoped: () => { throw new Error(); } });
+    expect(await freshPort.request(f.target, ScopedStopReason.Requested)).toMatchObject({ outcome: ScopedStopResult.ReceiptBacked });
+    const ledger = f.ledger(); expect(ledger.occupied).toBe(false); expect(ledger.remainingAllowance).toBe(1);
+    expect(ledger.observe(f.authority, f.target.childHandle).dispatchIntent).toEqual(f.target.dispatchIntent);
+    expect(f.read("host-activation.json").ordinaryStarts[2]).toEqual(f.unrelated); expect(f.calls).toHaveLength(1);
   });
 });
