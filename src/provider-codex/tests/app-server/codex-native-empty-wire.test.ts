@@ -108,7 +108,7 @@ stream_max_retries = 0
   const deadline = setTimeout(() => abort.abort(), 30_000);
   try {
     await client.start();
-    const common = { workspacePath: workspace, model: "mimo-v2.6-pro", reasoningEffort: "low" as const,
+    const common = { workspacePath: workspace, model: "mimo-v2.6-pro", reasoningEffort: "high" as const,
       sandboxMode: "read-only" as const, timeoutMs: 10_000, abortSignal: abort.signal, goalMode: true };
     const threadId = await client.startThread(common);
     const goalInput = { threadId, timeoutMs: 10_000, abortSignal: abort.signal };
@@ -140,6 +140,9 @@ stream_max_retries = 0
     }
     expect(start.params.config.features).toMatchObject({ goals: false, default_mode_request_user_input: false });
     expect(start.params.config.tools.experimental_request_user_input).toEqual({ enabled: false });
+    for (const row of httpRows) {
+      expect(row.body.reasoning).toMatchObject({ effort: "high" });
+    }
   } finally {
     clearTimeout(deadline);
     await client.stop();
