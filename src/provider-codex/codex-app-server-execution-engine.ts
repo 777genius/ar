@@ -281,7 +281,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     } catch (error) {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       if (!isManagedRunResumeValidationError(error)) {
-        await this.slotPool.disposeSessionSlot(input.session);
+        await this.disposeFailedSession(input.session, error, "codex_app_server_resume_cleanup_failed");
       }
       throw error;
     }

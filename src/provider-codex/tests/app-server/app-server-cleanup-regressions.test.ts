@@ -162,7 +162,7 @@ it.each(["abort", "budget", "quota", "model"] as const)("keeps %s errors and blo
   } finally { await f.remove(); }
 });
 
-it.each(["run", "prewarm"] as const)("preserves initialization, initial cleanup and retry cleanup failures through real engine %s", async path => {
+it.each(["run", "prewarm", "resume"] as const)("preserves initialization, initial cleanup and retry cleanup failures through real engine %s", async path => {
   vi.useFakeTimers();
   const f = await fixture("synthetic initialization failure");
   const observation = new Error("synthetic initial cleanup failure");
@@ -171,9 +171,22 @@ it.each(["run", "prewarm"] as const)("preserves initialization, initial cleanup 
     if (signal === "SIGTERM" && ++termCount === 1) f.factory.processes[0]!.emit("error", observation);
   });
   const fallback = new RecordingJsonEngine("must not run");
-  const engine = new CodexAppServerExecutionEngine({ ...f.options, fallback });
+  const runStore = new InMemoryManagedRunStore();
+  const resumeHandle = { runId: "cleanup-TEST-run", providerId: "codex", agentId: "codex-json",
+    workspacePath: f.home, threadId: "cleanup-TEST-thread" };
+  const request = { id: "cleanup-TEST-request", kind: "decision_required" as const,
+    audience: "user" as const, question: "Continue synthetic TEST run?" };
+  if (path === "resume") await runStore.saveWaitingInput({
+    runId: resumeHandle.runId, resumeHandle, request, now: new Date(),
+  });
+  const engine = new CodexAppServerExecutionEngine({ ...f.options, fallback, runStore,
+    ...(path === "resume" ? { goalMode: true } : {}) });
+  const invoke = (input: typeof f.input) => path === "resume"
+    ? engine.resume({ ...input, runId: resumeHandle.runId, requestId: request.id,
+        answer: "continue TEST", resumeHandle })
+    : engine[path](input);
   try {
-    const result = engine[path](f.input).catch((error: unknown) => error);
+    const result = invoke(f.input).catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(10_000);
     const error = await result;
     expect(error).toBeInstanceOf(AggregateError);
@@ -187,7 +200,7 @@ it.each(["run", "prewarm"] as const)("preserves initialization, initial cleanup 
     expect(termCount).toBe(2);
     // Neither the caller nor a subsequent run can renew provider effects.
     const requests = f.factory.requests.length;
-    const again = engine[path]({ ...f.input, session: { ...f.input.session, sessionHash: "replacement" } })
+    const again = invoke({ ...f.input, session: { ...f.input.session, sessionHash: "replacement" } })
       .catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(await again).toBeInstanceOf(AggregateError);
