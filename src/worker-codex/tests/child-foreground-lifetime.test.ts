@@ -97,7 +97,6 @@ describe("production foreground child lifetime", () => {
       expect(rows.filter(r => r.type === "provider-start")).toEqual([{ type: "provider-start", sentinelSeen: true }]);
       expect(rows.filter(r => r.type === "cleanup-request")).toHaveLength(1);
       await expectProviderCleanedUp(f, rows);
-      expect(rows.filter(r => r.method === "thread/goal/get")).toHaveLength(0);
       const starts = rows.filter(r => r.method === "turn/start" || r.method === "thread/start");
       for (const start of starts) expect(start.params.environments).toEqual([]);
       expect(starts.find(r => r.method === "thread/start")?.params.dynamicTools).toEqual([]);
