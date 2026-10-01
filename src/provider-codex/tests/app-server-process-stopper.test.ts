@@ -12,7 +12,7 @@ function fakeChild() {
 }
 
 describe("app-server process stopper", () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
   it("cleans up descendants when TERM exits only the parent without waiting", async () => {
     vi.useFakeTimers();
@@ -58,16 +58,23 @@ describe("app-server process stopper", () => {
     expect(child.stdin.end).not.toHaveBeenCalled();
   });
 
-  it("completes live numeric-group escalation without signalling again after observed exit", async () => {
+  it.each([true, false])("observes numeric-group emptiness after owned escalation (empty=%s) without signalling again", async empty => {
     vi.useFakeTimers();
     const child = Object.assign(fakeChild(), { pid: 812346 });
+    vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      expect([pid, signal]).toEqual([-812346, 0]);
+      if (!empty) return true;
+      throw Object.assign(new Error("TEST group absent"), { code: "ESRCH" });
+    });
     const signals: NodeJS.Signals[] = [];
     const stopped = stopAppServerProcess({ child, exited: false, signal: (_, signal) => {
       signals.push(signal);
       if (signal === "SIGKILL") child.emit("exit", 0, null);
     } });
+    const outcome = stopped.catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(5_000);
-    await expect(stopped).resolves.toBeUndefined();
+    if (empty) expect(await outcome).toBeUndefined();
+    else expect(await outcome).toMatchObject({ name: "AppServerProcessCleanupUnresolvedError" });
     expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
     expect(child.listenerCount("exit")).toBe(0);
     expect(child.listenerCount("error")).toBe(0);

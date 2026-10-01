@@ -326,10 +326,9 @@ export class AppServerSlotPool {
       // The client caches its stop promise and detaches its child before awaiting.
       // Retain the cleanup obligation independently so a failed stop can be retried.
       if (cleanup.retryProcessStop) {
-        if (cleanup.exited) {
-          // The retained child/pid cannot prove ownership after exit: an ordinary
-          // POSIX group number may have been reused. Keep the obligation until
-          // scoped ownership/reconciliation proof is available (full PR5).
+        // After exit the stopper may only observe group absence, never signal
+        // the retained numeric identity. A live/unknown group remains pending.
+        if (cleanup.exited && !cleanup.child?.pid) {
           throw new AppServerProcessCleanupUnresolvedError();
         }
         await stopAppServerProcess({

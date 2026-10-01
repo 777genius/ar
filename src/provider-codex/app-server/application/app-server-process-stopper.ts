@@ -25,22 +25,31 @@ export async function stopAppServerProcess(input: {
 }): Promise<void> {
   const child = input.child;
   if (!child) return;
+  // Read-only POSIX observation, separate from the signaler (which can swallow
+  // errors or target a hosted unit). ESRCH proves local group absence only;
+  // it is never a hosted cgroup/custody receipt or permission to signal again.
+  const groupIsEmpty = (): boolean => {
+    if (process.platform === "win32" || !Number.isSafeInteger(child.pid) || !child.pid || child.pid <= 0) return false;
+    try { process.kill(-child.pid, 0); }
+    catch (error) {
+      return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
+    }
+    return false;
+  };
   if (input.exited) {
-    if (child.pid) throw new AppServerProcessCleanupUnresolvedError();
+    if (child.pid && !groupIsEmpty()) throw new AppServerProcessCleanupUnresolvedError();
     return;
   }
   const emitter = child as unknown as EventEmitter;
   let exited = false;
-  let killedWhileOwned = false;
   const signal = (kind: NodeJS.Signals) => {
     // A numeric group can be reused after the original exits, including during
     // an awaited stop. Check at each effect, while exit observation is attached.
     if (child.pid && exited) {
-      if (kind === "SIGKILL" && killedWhileOwned) return;
+      if (groupIsEmpty()) return;
       throw new AppServerProcessCleanupUnresolvedError();
     }
     input.signal(child, kind);
-    if (kind === "SIGKILL") killedWhileOwned = true;
   };
   let onExit: () => void;
   let onError: (error: Error) => void;

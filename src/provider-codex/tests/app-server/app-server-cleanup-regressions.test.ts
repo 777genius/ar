@@ -32,18 +32,104 @@ async function fixture(initializeError?: string, runtimeOptions: FakeAppServerFa
     runner: new StaticRunner(""), redactor: new DefaultRedactor(), model: "gpt-test",
     reasoningEffort: "low" as const, prompt: "synthetic cleanup regression" };
   let birth = "owned-original";
+  let groupEmpty = false;
+  let probeError: string | undefined;
+  const probes: number[] = [];
   const signals: { pid: number; signal: Parameters<typeof process.kill>[1]; birth: string }[] = [];
   let onSignal = (_signal: Parameters<typeof process.kill>[1]) => {};
   vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+    if (signal === 0) {
+      probes.push(pid);
+      if (probeError) throw Object.assign(new Error("TEST probe failure"), { code: probeError });
+      if (groupEmpty) throw Object.assign(new Error("TEST group absent"), { code: "ESRCH" });
+      return true;
+    }
     signals.push({ pid, signal, birth });
     onSignal(signal);
     return true;
   });
-  return { home, factory, options, input, signals,
+  return { home, factory, options, input, signals, probes,
+    emptyGroup: () => { groupEmpty = true; },
+    occupyGroup: () => { groupEmpty = false; },
+    failProbe: (code: string) => { probeError = code; },
     changeBirth: () => { birth = "unrelated-replacement"; },
     onSignal: (handler: typeof onSignal) => { onSignal = handler; },
     remove: () => rm(home, { recursive: true, force: true }) };
 }
+
+it.each(["TERM", "stdin", "before-stop"] as const)("completes ordinary %s exit with an empty group, cached stop and replacement", async edge => {
+  const f = await fixture();
+  const pool = new AppServerSlotPool({ ...f.options, signalChildProcess: signalCodexAppServerChildGroup,
+    runStore: new InMemoryManagedRunStore(), executionProfile: resolveCodexExecutionProfile(undefined),
+    maxOutputBytes: 100_000 });
+  const exitOriginal = () => { f.emptyGroup(); f.factory.processes.at(-1)!.emit("exit", 0, null); };
+  f.onSignal(signal => { if (signal === "SIGTERM") queueMicrotask(exitOriginal); });
+  try {
+    const slot = await pool.ensureSlot(f.input);
+    if (edge === "stdin") f.factory.processes[0]!.stdin.end = exitOriginal;
+    if (edge === "before-stop") exitOriginal();
+    await expect(slot.client.stop()).resolves.toBeUndefined();
+    await expect(slot.client.stop()).resolves.toBeUndefined();
+    await expect(pool.disposeSessionSlot(f.input.session)).resolves.toBeUndefined();
+    expect(f.probes).toContain(-812345);
+    expect(f.signals.map(s => s.signal)).toEqual(edge === "TERM" ? ["SIGTERM"] : []);
+    f.occupyGroup();
+    await expect(pool.ensureSlot({ ...f.input, session: { ...f.input.session, sessionHash: "replacement" } }))
+      .resolves.toMatchObject({ sessionHash: "replacement" });
+    expect(f.factory.spawnCount).toBe(2);
+    await expect(pool.dispose()).resolves.toBeUndefined();
+    expect(f.signals.map(s => s.signal)).not.toContain("SIGKILL");
+  } finally { await f.remove(); }
+});
+
+it.each(["live", "EPERM", "EIO"])("retains %s group observations after graceful exit without foreign signals", async observation => {
+  const f = await fixture();
+  const pool = new AppServerSlotPool({ ...f.options, signalChildProcess: signalCodexAppServerChildGroup,
+    runStore: new InMemoryManagedRunStore(), executionProfile: resolveCodexExecutionProfile(undefined),
+    maxOutputBytes: 100_000 });
+  try {
+    const slot = await pool.ensureSlot(f.input);
+    f.onSignal(signal => {
+      if (signal === "SIGTERM") {
+        f.factory.processes[0]!.emit("exit", 0, null);
+        f.changeBirth();
+        if (observation !== "live") f.failProbe(observation);
+      }
+    });
+    await expect(slot.client.stop()).rejects.toMatchObject({ name: "AppServerProcessCleanupUnresolvedError" });
+    await expect(pool.disposeSessionSlot(f.input.session)).rejects.toMatchObject({ name: "AppServerProcessCleanupUnresolvedError" });
+    await expect(pool.disposeSessionSlot(f.input.session)).rejects.toMatchObject({ name: "AppServerProcessCleanupUnresolvedError" });
+    await expect(pool.ensureSlot({ ...f.input, session: { ...f.input.session, sessionHash: "replacement" } }))
+      .rejects.toThrow("cleanup_pending");
+    expect(f.factory.spawnCount).toBe(1);
+    expect(f.probes).toContain(-812345);
+    await expect(pool.dispose()).rejects.toBeInstanceOf(AggregateError);
+    expect(f.signals.filter(s => s.birth === "unrelated-replacement")).toEqual([]);
+  } finally { await f.remove(); }
+});
+
+it("reconciles a retained local cleanup only after original exit and independent group emptiness", async () => {
+  const f = await fixture();
+  const pool = new AppServerSlotPool({ ...f.options, signalChildProcess: signalCodexAppServerChildGroup,
+    runStore: new InMemoryManagedRunStore(), executionProfile: resolveCodexExecutionProfile(undefined),
+    maxOutputBytes: 100_000 });
+  try {
+    await pool.ensureSlot(f.input);
+    f.onSignal(signal => {
+      if (signal === "SIGTERM") {
+        f.factory.processes[0]!.emit("error", new Error("TEST observation failure"));
+        f.factory.processes[0]!.emit("exit", 0, null);
+      }
+    });
+    await expect(pool.disposeSessionSlot(f.input.session)).rejects.toBeInstanceOf(AppServerProcessCleanupError);
+    await expect(pool.ensureSlot(f.input)).rejects.toThrow("cleanup_pending");
+    f.emptyGroup();
+    await expect(pool.disposeSessionSlot(f.input.session)).resolves.toBeUndefined();
+    expect(f.signals.map(s => s.signal)).toEqual(["SIGTERM"]);
+    expect(f.probes).toContain(-812345);
+    await expect(pool.dispose()).resolves.toBeUndefined();
+  } finally { await f.remove(); }
+});
 
 it("never signals a reused ordinary group on post-exit retry and retains its obligation", async () => {
   const f = await fixture();
