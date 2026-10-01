@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { researchCurrentStart, readResearchStartBinding, researchJobAuthority } from "./research-launch-admission";
 import { parseResearchStartSpec } from "./research-launch-contract";
 import { assertResearchInitialRoot, assertResearchServiceOwner, researchCommand, researchDescription,
-  researchProcessIdentity, researchServiceIdentity, researchProviderUnitPattern } from "./research-launch-host";
+  researchControlGroup, researchProcessIdentity, researchServiceIdentity, researchProviderUnitPattern } from "./research-launch-host";
 import { researchHash, researchInvalid, researchJson, researchRead, researchRecord, researchPublish } from "./research-launch-files";
 
 function inactiveResearchUnit(unit: string, description?: string): boolean {
@@ -73,10 +73,27 @@ function researchProviderServiceActive(directory: string, unit: string): boolean
   if (inactiveResearchUnit(unit, reservation.description)) return false;
   const service = researchServiceIdentity(unit, true);
   if (service.description !== reservation.description) researchInvalid();
+  const process = service.mainPid > 0 ? researchProcessIdentity(service.mainPid) : undefined;
+  if (process) assertResearchServiceOwner(process, service, reservation.description);
   try {
     const owner = researchRecord(researchJson(researchRead(join(directory, "providers", unit + ".owner.json"))), "schemaVersion,process,service");
-    if (owner.schemaVersion !== 1 || JSON.stringify(owner.service) !== JSON.stringify(service) ||
-        JSON.stringify(owner.process) !== JSON.stringify(researchProcessIdentity(service.mainPid))) researchInvalid();
+    if (owner.schemaVersion !== 1) researchInvalid();
+    if (process) {
+      if (JSON.stringify(owner.service) !== JSON.stringify(service) || JSON.stringify(owner.process) !== JSON.stringify(process)) researchInvalid();
+    } else {
+      // A legitimately stopping service can lose MainPID/cgroup/InvocationID.
+      // Keep its retained owner; only corroborated unchanged metadata permits stop.
+      const retained = researchRecord(owner.service, "unit,mainPid,controlGroup,invocationId,description,fragmentSha256");
+      const retainedProcess = researchRecord(owner.process, "pid,birthTicks,bootId,machineId,controlGroup,namespaces");
+      researchRecord(retainedProcess.namespaces, "user,mnt,pid,net");
+      const host = researchProcessIdentity();
+      if (retained.unit !== unit || retained.description !== service.description || retained.fragmentSha256 !== service.fragmentSha256 ||
+          !Number.isSafeInteger(retained.mainPid) || (retained.mainPid as number) < 1 || retainedProcess.pid !== retained.mainPid ||
+          retained.controlGroup !== researchControlGroup(unit) || retainedProcess.controlGroup !== retained.controlGroup ||
+          retainedProcess.bootId !== host.bootId || retainedProcess.machineId !== host.machineId ||
+          (service.invocationId !== "" && retained.invocationId !== service.invocationId) ||
+          (service.controlGroup !== "" && retained.controlGroup !== service.controlGroup)) researchInvalid();
+    }
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   return true;
 }
@@ -107,17 +124,20 @@ export function terminalResearchStart(jobId: string) {
 }
 export function signalResearchProvider(directory: string, unit: string, signal: NodeJS.Signals = "SIGTERM"): void {
   assertResearchInitialRoot();
-  const reservation = readResearchProviderReservation(directory, unit);
+  fenceResearchProvider(directory, unit);
+  // Logical revocation needs only authenticated private authority. Live/foreign
+  // uncertainty can refuse physical signaling, but cannot prevent this fence.
   const active = researchProviderServiceActive(directory, unit);
-  // Authenticate the reservation AND any observed service before writing
-  // authority. Even not-yet-submitted helpers must see a durable fence.
-  researchPublish(join(directory, "providers", unit + ".cancel.json"), { schemaVersion: 1, unit, specSha256: reservation.specSha256 });
   if (!active) return;
   // Reservation-owned submission can be canceled before the helper publishes
   // MainPID. The exact unpredictable unit+description were persisted first.
   try { researchCommand("/usr/bin/systemctl", ["kill", `--signal=${signal}`, "--kill-whom=all", unit]); }
   catch { /* Pending services may have no MainPID. The stop request still matters. */ }
   researchCommand("/usr/bin/systemctl", ["stop", "--no-block", unit]);
+}
+function fenceResearchProvider(directory: string, unit: string): void {
+  const reservation = readResearchProviderReservation(directory, unit);
+  researchPublish(join(directory, "providers", unit + ".cancel.json"), { schemaVersion: 1, unit, specSha256: reservation.specSha256 });
 }
 export function statusResearchLaunch(jobId: string): { jobId: string; startId: string; unit: string; artifactSha256: string; grantSha256: string; active: boolean; providers: readonly { unit: string; active: boolean }[] } {
   assertResearchInitialRoot(true);
@@ -134,16 +154,28 @@ export function statusResearchLaunch(jobId: string): { jobId: string; startId: s
 }
 export function cancelResearchLaunch(jobId: string): { jobId: string; startId: string; unit: string; terminal: true } {
   assertResearchInitialRoot(true);
-  const current = validateRuntimeLifecycle(jobId);
-  for (const unit of researchProviderUnits(current.directory)) researchProviderLifecycle(current.directory, unit);
+  try { researchRead(join(researchJobAuthority(jobId), "active.json")); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const terminal = terminalResearchStart(jobId); // Late/repeated cancel still proves actual terminal units/jobs.
+    return { jobId, startId: terminal.spec.startId, unit: terminal.spec.unit, terminal: true };
+  }
+  const current = researchCurrentStart(jobId);
   researchPublish(join(current.directory, "closing.json"), { schemaVersion: 1, specSha256: researchHash(current.bytes) });
+  for (const unit of researchProviderUnits(current.directory)) fenceResearchProvider(current.directory, unit);
+  const runtime = validateRuntimeLifecycle(jobId);
   // Stop the creator and its submitting helpers first, then reconcile its finite
   // reserved provider units. No helper can publish a later submission after this.
-  if (current.active) researchCommand("/usr/bin/systemctl", ["stop", current.spec.unit]);
+  if (runtime.active) researchCommand("/usr/bin/systemctl", ["stop", current.spec.unit]);
   if (!inactiveResearchUnit(current.spec.unit)) researchInvalid();
   // Re-enumerate after the creator is stopped: a last reservation may have
   // raced closing, but none can be created after its control group is terminal.
-  for (const unit of researchProviderUnits(current.directory)) signalResearchProvider(current.directory, unit);
+  let uncertain = false;
+  for (const unit of researchProviderUnits(current.directory)) {
+    try { signalResearchProvider(current.directory, unit); }
+    catch { uncertain = true; } // Reconcile other owned units, retain everything on any doubt.
+  }
+  if (uncertain) researchInvalid();
   for (const unit of researchProviderUnits(current.directory)) if (researchProviderLifecycle(current.directory, unit)) researchInvalid();
   researchPublish(join(researchJobAuthority(jobId), "last-terminal.json"), {
     schemaVersion: 1, startId: current.spec.startId, specSha256: researchHash(current.bytes),

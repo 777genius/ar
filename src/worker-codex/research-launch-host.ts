@@ -57,7 +57,12 @@ export function researchServiceIdentity(unit: string, allowPending = false): Res
   const output = researchCommand("/usr/bin/systemctl", ["show", unit, "--no-pager",
     "--property=Id,MainPID,ControlGroup,InvocationID,Description,ActiveState,SubState,Transient,FragmentPath,DropInPaths,KillMode"]);
   const values = Object.fromEntries(output.trim().split("\n").map(line => { const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1)]; }));
-  const pending = allowPending && ["activating", "deactivating"].includes(values.ActiveState ?? "");
+  // An inactive transient can already have an accepted start queued. Name alone
+  // grants nothing: all fragment/cgroup/custody metadata below still must match.
+  const queuedStart = allowPending && ["inactive", "failed"].includes(values.ActiveState ?? "") &&
+    researchCommand("/usr/bin/systemctl", ["list-jobs", "--no-legend", "--no-pager"]).trim().split("\n")
+      .some(line => { const fields = line.trim().split(/\s+/); return fields[1] === unit && fields[2] === "start"; });
+  const pending = allowPending && (["activating", "deactivating"].includes(values.ActiveState ?? "") || queuedStart);
   if (values.Id !== unit || (!pending && (values.ActiveState !== "active" || values.SubState !== "running")) ||
       values.Transient !== "yes" || values.KillMode !== "control-group" || values.DropInPaths !== "" ||
       values.FragmentPath !== `/run/systemd/transient/${unit}` ||

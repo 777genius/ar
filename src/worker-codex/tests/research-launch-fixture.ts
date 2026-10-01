@@ -8,12 +8,17 @@ import { PassThrough } from "node:stream";
 const fixture = vi.hoisted(() => ({ root: "", group: "/user.slice/TEST-session.scope", birth: "12345", boot: "a".repeat(8) + "-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
   uidMap: "0 0 4294967295", namespaceRoot: false, global: false, projectParent: false, physicalPaths: false, foreign: new Set<string>(),
   fdPaths: new Map<number, string>(), pins: new Map<string, string>(), calls: [] as { command: string; args: string[] }[],
-  units: new Map<string, { description: string; pid: number; invocation: string; active: boolean; pending?: boolean }>(),
+  units: new Map<string, { description: string; pid: number; invocation: string; active: boolean; pending?: boolean;
+    state?: "inactive" | "failed" | "activating" | "deactivating"; dropIns?: string }>(),
   processGroups: new Map<number, string>(), killFailures: new Set<string>(), stopFailures: new Set<string>(),
+  processNamespaces: new Map<number, Record<"user" | "mnt" | "pid" | "net", string>>(), showFailures: new Set<string>(),
   jobs: new Set<string>(), spawn: vi.fn(), authReads: 0 }));
 export const host = fixture;
 export function local(path: string): string {
   const authority = "/run/user/subscription-runtime-research-v1", artifact = "/TEST-artifact", project = "/TEST-project";
+  // This portable TEST fixture has no Host scratch policy. Never inspect or
+  // activate a real Host binding through executor home preparation.
+  if (path === "/etc/subscription-runtime/scratch-temp.json") return join(fixture.root, "absent-scratch-policy");
   for (const [pin, target] of fixture.pins) if (path === pin || path.startsWith(pin + "/")) return local(target + path.slice(pin.length));
   for (const [prefix, name] of [[authority, "authority"], [artifact, "artifact"], [project, "project"], ["/TEST-auth", "auth"], ["/TEST-operator", "operator"], ["/run/systemd/transient", "units"]]) {
     if (path === prefix || path.startsWith(prefix + "/")) return join(fixture.root, name!, path.slice(prefix!.length));
@@ -49,7 +54,8 @@ vi.mock("node:fs", async original => {
       if (path === "/etc/machine-id") return "b".repeat(32);
       return real.readFileSync(typeof path === "string" ? local(path) : path, opts);
     },
-    readlinkSync: (path: string) => path.startsWith("/proc/") ? (fixture.namespaceRoot && path.startsWith("/proc/self") ? "TEST-namespace" : "TEST-host") : real.readlinkSync(local(path)),
+    readlinkSync: (path: string) => path.startsWith("/proc/") ? (fixture.processNamespaces.get(Number(path.split("/")[2]))?.[path.split("/").at(-1) as "user"] ??
+      (fixture.namespaceRoot && path.startsWith("/proc/self") ? "TEST-namespace" : "TEST-host")) : real.readlinkSync(local(path)),
     realpathSync: (path: string) => { const target = real.realpathSync(local(path)); return target.startsWith(join(fixture.root, "artifact")) ? "/TEST-artifact" + target.slice(join(fixture.root, "artifact").length) : target; },
     readdirSync: (path: string, opts: Parameters<typeof real.readdirSync>[1]) => real.readdirSync(local(path), opts),
     mkdirSync: (path: string, opts: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), opts),
@@ -81,12 +87,15 @@ vi.mock("node:child_process", async original => {
     }
     if (command !== "/usr/bin/systemctl") throw new Error("unexpected TEST process effect");
     const unit = args[1]!, service = fixture.units.get(unit);
-    if (args[0] === "show") return { status: 0, stdout: service?.active ? `Id=${unit}\nMainPID=${service.pending ? 0 : service.pid}\nControlGroup=${service.pending ? "" : "/system.slice/" + unit}\nInvocationID=${service.pending ? "" : service.invocation}\nDescription=${service.description}\nActiveState=${service.pending ? "activating" : "active"}\nSubState=${service.pending ? "start" : "running"}\nTransient=yes\nFragmentPath=/run/systemd/transient/${unit}\nDropInPaths=\nKillMode=control-group\n` : `Id=${unit}\nLoadState=not-found\nMainPID=0\nActiveState=inactive\n` };
+    if (args[0] === "show") {
+      if (fixture.showFailures.has(unit)) return { status: 1, stdout: "" };
+      return { status: 0, stdout: service && (service.active || service.state) ? `Id=${unit}\nLoadState=loaded\nMainPID=${service.pending ? 0 : service.pid}\nControlGroup=${service.pending ? "" : "/system.slice/" + unit}\nInvocationID=${service.pending ? "" : service.invocation}\nDescription=${service.description}\nActiveState=${service.state ?? (service.pending ? "activating" : "active")}\nSubState=${service.pending ? "start" : "running"}\nTransient=yes\nFragmentPath=/run/systemd/transient/${unit}\nDropInPaths=${service.dropIns ?? ""}\nKillMode=control-group\n` : `Id=${unit}\nLoadState=not-found\nMainPID=0\nActiveState=inactive\n` };
+    }
     if (args[0] === "stop") {
       const selected = args.at(-1)!;
       if (fixture.stopFailures.has(selected)) return { status: 1, stdout: "" };
       const stopped = fixture.units.get(selected);
-      if (stopped) stopped.active = false;
+      if (stopped) { stopped.active = false; delete stopped.state; }
       fixture.jobs.delete(selected);
       return { status: 0, stdout: "" };
     }
@@ -105,7 +114,7 @@ export function setupResearchFixture(): void {
   fixture.root = mkdtempSync(join(tmpdir(), "TEST-research-launch-r7-"));
   fixture.group = "/user.slice/TEST-session.scope"; fixture.birth = "12345"; fixture.uidMap = "0 0 4294967295";
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-  fixture.namespaceRoot = false; fixture.global = false; fixture.projectParent = false; fixture.physicalPaths = false; fixture.foreign.clear(); fixture.fdPaths.clear(); fixture.pins.clear(); fixture.calls = []; fixture.units.clear(); fixture.processGroups.clear(); fixture.killFailures.clear(); fixture.stopFailures.clear(); fixture.jobs.clear(); fixture.spawn.mockReset(); fixture.authReads = 0;
+  fixture.namespaceRoot = false; fixture.global = false; fixture.projectParent = false; fixture.physicalPaths = false; fixture.foreign.clear(); fixture.fdPaths.clear(); fixture.pins.clear(); fixture.calls = []; fixture.units.clear(); fixture.processGroups.clear(); fixture.processNamespaces.clear(); fixture.showFailures.clear(); fixture.killFailures.clear(); fixture.stopFailures.clear(); fixture.jobs.clear(); fixture.spawn.mockReset(); fixture.authReads = 0;
   vi.spyOn(process, "getuid").mockReturnValue(0); vi.spyOn(process, "geteuid").mockReturnValue(0);
   for (const dir of ["global", "artifact/dist", "artifact/host-integration", "artifact/node_modules", "artifact/packages/dependency", "project/jobs/TEST-research-r7/workspace", "auth/TEST-a", "auth/TEST-b", "operator", "units"]) mkdirSync(join(fixture.root, dir), { recursive: true, mode: 0o700 });
   writeFileSync(join(fixture.root, "executable"), "TEST executable bytes", { mode: 0o755 });

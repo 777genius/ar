@@ -72,11 +72,14 @@ function parseResearchDirectory(value: unknown, path: string): ResearchDirectory
   return Object.freeze({ path, device: dir.device as number, inode: dir.inode as number });
 }
 export function researchRunConfig(request: ResearchOperatorRequest): CodexGoalRunConfig {
+  // Match the CLI's fixed temp contract; scratch remains logically jobRoot/tmp.
+  const runtimeTempRoot = join(request.jobRootDir, "tmp"), agentTempRoot = join(runtimeTempRoot, "agent");
   return { ...request, accounts: request.accounts.map(name => ({ name })),
     executionEngine: "app-server-goal", modelBackend: CodexModelBackend.OpenAiChatGpt,
     stateRootDir: join(request.jobRootDir, "state"), runtimeHomeRootDir: join(request.jobRootDir, "home"),
     accessBoundary: AccessBoundary.IsolatedWorkspaceWrite, networkAccess: NetworkAccessMode.Restricted,
     prewarmOnStart: true, sourceEnv: { PATH: "/usr/bin:/bin", HOME: join(request.jobRootDir, "home"),
-      TMPDIR: join(request.jobRootDir, "tmp"), TMP: join(request.jobRootDir, "tmp"), TEMP: join(request.jobRootDir, "tmp"),
+      SUBSCRIPTION_RUNTIME_JOB_ROOT: request.jobRootDir, SUBSCRIPTION_RUNTIME_TMPDIR: runtimeTempRoot,
+      TMPDIR: agentTempRoot, TMP: agentTempRoot, TEMP: agentTempRoot,
       SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } };
 }

@@ -16,6 +16,7 @@ import { researchRunConfig, parseResearchOperatorRequest } from "../research-lau
 import { FakeAppServerFactory } from "../../provider-codex/app-server/testing/fake-app-server";
 import { codexAuthJsonForAccount, StaticRunner } from "./file-backend-codex-worker-test-support";
 import { spawnCodexAppServerProcess } from "../../provider-codex/app-server/adapters/node-app-server-process";
+import { ensureCodexAgentTempRoot } from "../../provider-codex/codex-runtime-temp";
 
 beforeEach(setupResearchFixture);
 afterEach(cleanupResearchFixture);
@@ -153,6 +154,9 @@ describe("closed installed research launch owner (real TEST files; proc, mounts 
       return fake;
     });
     const config = { ...researchRunConfig(parseResearchOperatorRequest(operatorRequest)), prewarmOnStart: false, requireGitWorkspace: false };
+    // This fixture enters the executor directly; reproduce the real runner's
+    // fixed temp preparation now that research supplies the complete contract.
+    await ensureCodexAgentTempRoot({ sourceEnv: config.sourceEnv });
     expect(config.serviceTier).toBe(serviceTier);
     const options = buildCodexGoalExecutorOptions({ config, providerEgressPolicy: policy, appServerProcessFactory: factory,
       stateRootDir: join(request().jobRootDir, "state"), encryptionKey: new Uint8Array(32) });

@@ -7,6 +7,40 @@ import { captureResearchRuntime, researchCurrentStart } from "./research-launch-
 import { researchInvalid, researchPublish } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
 
+/** The first bytes belong solely to the fixed confined launcher, before it has
+ * bootstrap input or a native provider. Never forward readiness into JSON-RPC. */
+function awaitResearchReady(proxy: ReturnType<typeof spawn>, assertPermission: () => void, deadline: number): Promise<void> {
+  const stream = proxy.stdout;
+  if (!stream) researchInvalid();
+  const expected = Buffer.from("subscription-runtime-research-provider-ready-v1\n");
+  return new Promise((resolve, reject) => {
+    let buffered = Buffer.alloc(0);
+    const cleanup = (): void => {
+      clearInterval(timer);
+      stream.off("data", onData); stream.off("end", denied); stream.off("close", denied); stream.off("error", denied);
+      proxy.off("exit", denied); proxy.off("error", denied);
+    };
+    const denied = (): void => { cleanup(); reject(new Error("hosted_research_launch_denied")); };
+    const check = (): boolean => {
+      try { assertPermission(); if (performance.now() >= deadline || proxy.exitCode !== null || proxy.signalCode !== null) researchInvalid(); }
+      catch { denied(); return false; }
+      return true;
+    };
+    const onData = (chunk: Buffer): void => {
+      if (!check()) return;
+      // A fixed prefix bounds both partial frames and newline-free streams.
+      if (buffered.length + chunk.length > expected.length) { denied(); return; }
+      buffered = Buffer.concat([buffered, chunk]);
+      if (!expected.subarray(0, buffered.length).equals(buffered)) { denied(); return; }
+      if (buffered.length === expected.length) { stream.pause(); cleanup(); resolve(); }
+    };
+    const timer = setInterval(check, 25); // Fence/timeout polling, never proof of readiness.
+    stream.on("data", onData); stream.once("end", denied); stream.once("close", denied); stream.once("error", denied);
+    proxy.once("exit", denied); proxy.once("error", denied);
+    check();
+  });
+}
+
 /** Invoked only as a direct child of the authenticated runtime MainPID. The
  * provider gets separate PID/user/mount namespaces and no host authority. */
 export async function runResearchProviderService(jobId: string, unit: string): Promise<void> {
@@ -33,31 +67,53 @@ export async function runResearchProviderService(jobId: string, unit: string): P
     child = proxy;
     // Hold the provider bootstrap frame until the actual service PID/birth/boot is
     // retained. No app-server/auth bootstrap runs before that ownership record.
+    let terminalTimer: ReturnType<typeof setTimeout> | undefined, transportFailed = false, inputReleased = false;
     const terminal = new Promise<void>((resolve, reject) => {
-      proxy.once("error", reject);
-      proxy.once("exit", (code, signal) => { proxyExited = true; process.exitCode = signal ? 70 : code ?? 70; resolve(); });
+      const failed = (): void => { transportFailed = true; reject(new Error("hosted_research_launch_denied")); };
+      proxy.once("error", failed);
+      proxy.once("exit", (code, signal) => { proxyExited = true; clearTimeout(terminalTimer); process.exitCode = signal ? 70 : code ?? 70; resolve(); });
+      // systemd has its own maximum; bound this direct stream transport as well.
+      terminalTimer = setTimeout(failed, request.taskTimeoutMs + 30_000);
+      proxy.stdout.once("error", failed); proxy.stderr.once("error", failed);
+      proxy.stdin.on("error", error => {
+        if (!inputReleased || (error as NodeJS.ErrnoException).code !== "EPIPE") failed();
+      });
     });
-    proxy.stdout.pipe(process.stdout); proxy.stderr.pipe(process.stderr);
+    proxy.stderr.pipe(process.stderr);
     void terminal.catch(() => {}); // Observed below; never an unhandled early exit.
+    void terminal.finally(() => clearTimeout(terminalTimer)).catch(() => {});
     let retained = false;
     const deadline = performance.now() + 5000;
-    for (let attempt = 0; attempt < 100 && performance.now() < deadline && proxy.exitCode === null; attempt++) {
+    const assertTransportPermission = (): void => {
       assertForwardPermission();
-      try {
-        const service = researchServiceIdentity(unit), identity = researchProcessIdentity(service.mainPid);
-        if (service.description !== reservation.description || identity.controlGroup !== service.controlGroup) researchInvalid();
-        researchPublish(join(directory, "providers", unit + ".owner.json"), { schemaVersion: 1, process: identity, service }, true);
-        retained = true; break;
-      } catch (error) {
-        if (attempt === 99) throw error;
-        await new Promise(resolve => setTimeout(resolve, 25));
+      if (performance.now() >= deadline || proxyExited || transportFailed || proxy.stdin.destroyed || proxy.stdout.destroyed || proxy.stdout.readableEnded) researchInvalid();
+    };
+    try {
+      await awaitResearchReady(proxy, assertTransportPermission, deadline);
+      for (let attempt = 0; attempt < 100 && performance.now() < deadline && proxy.exitCode === null; attempt++) {
+        assertTransportPermission();
+        try {
+          const service = researchServiceIdentity(unit), identity = researchProcessIdentity(service.mainPid);
+          if (service.description !== reservation.description || identity.controlGroup !== service.controlGroup) researchInvalid();
+          // Corroborate settled ownership after readiness, including namespaces.
+          // Type=exec's first MainPID observation before unshare is insufficient.
+          if (JSON.stringify(researchServiceIdentity(unit)) !== JSON.stringify(service) ||
+              JSON.stringify(researchProcessIdentity(service.mainPid)) !== JSON.stringify(identity)) researchInvalid();
+          assertTransportPermission();
+          researchPublish(join(directory, "providers", unit + ".owner.json"), { schemaVersion: 1, process: identity, service }, true);
+          retained = true; break;
+        } catch (error) {
+          if (attempt === 99) throw error;
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
       }
-    }
-    if (!retained) researchInvalid();
-    assertForwardPermission(); // An accepted start is not permission to send auth.
-    process.stdin.pipe(proxy.stdin);
-    proxy.stdin.on("error", error => { if ((error as NodeJS.ErrnoException).code !== "EPIPE") proxy.kill("SIGTERM"); });
-    await terminal;
+      if (!retained) researchInvalid();
+      assertTransportPermission(); // An accepted start is not permission to send auth.
+      proxy.stdout.pipe(process.stdout);
+      inputReleased = true;
+      process.stdin.pipe(proxy.stdin);
+      await terminal;
+    } finally { clearTimeout(terminalTimer); }
   } catch (error) {
     if (child?.stdin) { process.stdin.unpipe(child.stdin); child.stdin.destroy(); }
     try { signalResearchProvider(directory, unit); } catch { /* Retained ownership is reconciled by operator cancel. */ }

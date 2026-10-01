@@ -56,6 +56,11 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
     "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP", "NoNewPrivileges=yes", "ProtectSystem=strict",
     `BindPaths=${join(pins, "job")}:${request.jobRootDir}:norbind`,
     `BindPaths=${join(pins, "workspace")}:${request.workspacePath}:norbind`,
+    // Only the authenticated direct helper constructs this plan. The job pin
+    // is nonrecursive: carry the parent's actual tmp view (including its scratch
+    // child bind) explicitly, at the same logical path. Parent birth/boot/unit
+    // are rechecked before submission and after readiness, before any input.
+    `BindPaths=/proc/${process.ppid}/root${join(request.jobRootDir, "tmp")}:${join(request.jobRootDir, "tmp")}:norbind`,
     `ReadWritePaths=${request.jobRootDir} ${request.workspacePath}`,
     "TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M",
     `InaccessiblePaths=-/run/systemd/private -/run/systemd/journal -/dev/log -/run/dbus -/run/user -/var/lib/subscription-runtime-host-policy -/run/user/subscription-runtime-research-v1 -/run/docker.sock -/run/containerd/containerd.sock -/run/podman/podman.sock -/etc/subscription-runtime/secrets -${request.authRootDir}`];
@@ -63,5 +68,5 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
     `--description=subscription-runtime-research-provider:${spec.startId}:${unit}`, "--service-type=exec", "--expand-environment=no", "--working-directory=/",
     ...properties.map(p => `--property=${p}`), "--", "/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
     "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "/usr/bin/tini", "--", process.execPath,
-    join(spec.runtimeDirectory, "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js")] };
+    join(spec.runtimeDirectory, "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js"), "--research-ready-v1"] };
 }

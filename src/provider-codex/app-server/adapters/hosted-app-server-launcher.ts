@@ -8,6 +8,9 @@ import {
 const maximumFrameBytes = 4 * 1024 * 1024;
 let buffered = Buffer.alloc(0);
 let launched = false;
+// Closed installed-launcher mode; ordinary/MiMo launches pass no argument.
+const researchReady = process.argv.length === 3 && process.argv[2] === "--research-ready-v1";
+let bootstrapDeadline: ReturnType<typeof setTimeout> | undefined;
 
 function fail(message: string): never {
   process.stderr.write(`${message}\n`);
@@ -23,6 +26,7 @@ function onInput(chunk: Buffer): void {
   const separator = buffered.indexOf(0x0a);
   if (separator < 0) return;
   launched = true;
+  if (bootstrapDeadline) clearTimeout(bootstrapDeadline);
   process.stdin.off("data", onInput);
 
   let frame: HostedAppServerLaunchFrame;
@@ -61,6 +65,17 @@ function onInput(chunk: Buffer): void {
   process.stdin.pipe(child.stdin);
 }
 
+if (process.argv.length !== 2 && !researchReady) fail("hosted_app_server_launch_mode_invalid");
+if (researchReady) {
+  // Runs only after the fixed unshare/setpriv/Tini chain has entered confinement.
+  // Native provider/user code does not exist yet and cannot emit this frame.
+  try { assertHostedProcessDescriptors(); }
+  catch { fail("hosted_app_server_descriptor_boundary_invalid"); }
+  bootstrapDeadline = setTimeout(() => fail("hosted_app_server_research_bootstrap_timeout"), 10_000);
+  process.stdout.on("error", () => fail("hosted_app_server_research_ready_failed"));
+  process.stdout.write("subscription-runtime-research-provider-ready-v1\n");
+  process.stdin.on("error", () => fail("hosted_app_server_research_input_failed"));
+}
 process.stdin.on("data", onInput);
 process.stdin.on("end", () => {
   if (!launched) fail("hosted_app_server_launch_frame_missing");

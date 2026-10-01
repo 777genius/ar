@@ -145,8 +145,22 @@ is removed. The admitted factory also fixes the native Codex executable and
 confines daemon cwd/CODEX_HOME to the captured workspace or job home.
 
 Provider reservations persist before submission. The private helper must be a
-direct child of the bound runtime MainPID. It retains the actual provider service
-PID/birth/boot/cgroup/InvocationID/fragment before forwarding any bootstrap frame.
+direct child of the bound runtime MainPID. Type=exec's first MainPID observation
+can precede unshare's user/mount transition and is not readiness. Only the fixed
+confined launcher receives `--research-ready-v1`; after unshare/setpriv/Tini and
+the descriptor check it emits exactly
+`subscription-runtime-research-provider-ready-v1\n` before reading bootstrap.
+The helper consumes that first frame (including fragmented bytes), checks the
+real settled PID/birth/boot/cgroup/InvocationID/fragment/namespaces twice, retains
+the owner, rechecks all fences and then releases held stdin. Native provider/user
+code has not started and cannot forge readiness through protocol/tool output.
+The readiness/ownership deadline is five seconds; unexpected/oversized output,
+stream errors, EOF, transport exit and cancellation fail closed. Polling detects
+fences and timeout; a sleep never establishes readiness. The launcher bounds
+bootstrap to ten seconds and the existing 4 MiB frame limit. The direct transport
+also has the requested task timeout plus 30 seconds; uncertain service ownership
+is retained for operator reconciliation. Ordinary/MiMo pass no readiness argument
+and retain their existing protocol. No generic readiness RPC or public API is added.
 Providers use the existing unshare/setpriv/Tini confinement pattern: separate
 user/PID/mount namespaces, dropped capabilities, NoNewPrivileges, strict system
 mounts, pinned writable job/workspace, bounded private /tmp and /var/tmp, and
@@ -196,7 +210,22 @@ operator directory, for example `/root/TEST-research-r7/request.json` (directory
 The request has exactly these fields; no environment, payload, service options,
 provider backend, grant path or arbitrary tool profile is accepted. This route
 runs the existing app-server-goal executor with isolated workspace writes,
-restricted network, prewarm and state/home/tmp under the exact job root. Root
+restricted network, prewarm and state/home/tmp under the exact job root. The owner
+derives `SUBSCRIPTION_RUNTIME_JOB_ROOT=jobRoot` and
+`SUBSCRIPTION_RUNTIME_TMPDIR=jobRoot/tmp`, with `TMPDIR`, `TMP`, and `TEMP` all
+equal to `jobRoot/tmp/agent`, exactly as the existing CLI. The real runner's
+`ensureCodexAgentTempRoot` creates the leaf using its existing creation/traverse
+rules and thread policy includes workspace plus that leaf. Scratch remains bound
+at logical `jobRoot/tmp`; this change does not modify the deployed scratch fix.
+Both fixed service plans bind the same retained job pin at the same logical
+path. That nonrecursive pin does not carry a later scratch child mount. The
+provider plan therefore binds the authenticated direct runtime parent's exact
+`/proc/MainPID/root/jobRoot/tmp` view onto logical `jobRoot/tmp` as well, carrying
+the prepared agent leaf and its existing scratch binding. Parent birth/boot/unit
+permission is rechecked before submission and after readiness. Launcher
+readiness establishes that the fixed setup chain reached the pre-bootstrap boundary;
+actual systemd/unshare mount visibility, traversal and temp I/O remain Root's
+live qualification, not an offline source assertion. Root
 must use the account's actual model/list for availability. Timeout bounds are
 one second through 24 hours; DEFAULT is NO FAST.
 
@@ -220,9 +249,11 @@ node /canonical/installed/runtime/host-integration/codex-research-egress.mjs can
 ```
 
 Revocation blocks later auth/session/spawn/fallback; cancellation authenticates
-the retained start even after revocation. It publishes a closing record, stops
-that exact creator service first, then reconciles only its reserved provider
-units. PID birth/InvocationID/fragment changes refuse cancellation. A pending
+the retained private start even after revocation. It publishes closing and all
+authenticated individual fences before inspecting any live creator/provider.
+It then stops the corroborated creator service first and reconciles only its
+reserved provider units. PID birth/InvocationID/fragment or namespace changes
+refuse physical signaling while preserving logical revocation. A pending
 submission before binding is owned by its protected unpredictable unit and
 exact description; provider input is still held. Terminal checks include queued
 systemd jobs. The active slot is retired only after every owned unit is terminal;
@@ -238,13 +269,23 @@ job state/home with a new owned start after terminal reconciliation; it never
 reuses an old PID binding. Root must prove managed resume/inherited registration.
 
 Individual provider cancellation authenticates the retained reservation/spec
-and any observed service before publishing a root-private fence, even while the
-unit is not found. The helper checks it before submission and before forwarding
-its held bootstrap frame. A failed kill still attempts stop. Pending transport
+and publishes its root-private fence before any uncertain or foreign service
+inspection, even while the unit is not found. This revokes logical permission;
+it grants no authority to signal a foreign live unit. An inactive unit with a
+queued start can receive stop only when transient fragment custody, exact private
+unpredictable reservation/description and fixed unit metadata corroborate it.
+An owned deactivating unit with MainPID zero may lose its PID/cgroup/InvocationID;
+unchanged retained description/fragment and any still-present identity fields
+must corroborate it. Name alone never suffices. The helper checks cancellation
+before submission, while awaiting readiness, and before releasing bootstrap.
+A failed kill still attempts stop. Pending transport
 facts keep ownership uncertain while the creator can have a submitting helper;
 creator-first cancellation and retained unit/job checks reconcile raced accepted
 starts. Revoking future submission/bootstrap permission does not undo an already
-accepted service request. Uncertainty retains the active slot and all ownership.
+accepted service request. Uncertainty retains the active slot and all ownership;
+other corroborated providers can still be reconciled. Repeated or late cancel
+rechecks the retained terminal units/jobs instead of returning success from a
+missing slot or stale acknowledgment.
 
 The old `grant-research JOB ROOT WORKSPACE`/`revoke JOB` operations still use the
 existing `/run/user/0` ordinary-origin grant mechanism. They cannot authorize this
@@ -286,9 +327,9 @@ surfaces and inherited registration remain a release gate.
 
 ## Exact disposable TEST qualification owned by root
 
-1. Integrate the complete final candidate against base
-   `00051adaf52b7cf243ec029140dd2808295c1110`; preserve the Host fix and thirteen
-   later main fixes. Compare the full changed-path inventory with the final diff,
+1. Apply only the three r9 review corrections to integrated source
+   `f98230176bd7bd50f95b4fa67bda9b19e5a8970c`; preserve deployed scratch fix #204
+   and every existing research/ordinary/MiMo guard. Compare the changed-path inventory with the final diff,
    including the source reader, port, tool, thread-start helper, tests, operator
    entrypoint and this document. Build the exact integrated artifact. Never use
    old installation receipts or deployment-doc assertions as a source witness.
@@ -407,6 +448,74 @@ checks passed. Account exports were built only in this disposable workspace.
 Proc/systemd/custody observations and provider transport remain substituted;
 the initial-root artifact timing/custody/confinement/cancel, real native tool
 inheritance, live discovery/source and capacity gates above remain Root-owned.
+
+### r9 independent-review corrections and offline evidence
+
+The r9 writer changes only cancellation ordering/pending corroboration, the fixed
+research agent-temp contract/worker tmp view, and confined-launcher readiness.
+The existing static CMS classification below still applies; no new composition
+owner, package export, deployment mechanism or scheduler is introduced.
+The supplied integrated base is `f98230176bd7bd50f95b4fa67bda9b19e5a8970c`.
+Git metadata is intentionally hidden; Root verifies the canonical base/diff.
+Hash comparison with the initial source proves scratch implementation #204,
+large-file hashing, public-source reader, ordinary/MiMo implementations and all
+unowned source files were left unchanged. No manifests or lockfiles were edited.
+
+The precise cancellation tests begin with an inactive loaded transient plus a
+queued start, a deactivating/MainPID-zero service, and a previously retained owner
+whose service becomes deactivating/MainPID-zero. Real private files must already
+contain cancellation before the first substituted observer runs. Whole-job
+uncertain/foreign description, fragment, InvocationID, drop-in or failed observer
+cases must independently retain closing/cancel files outside the expected
+rejection, retain active/owner/spec evidence, and perform no foreign signaling.
+These cases fail if live validation precedes logical fences or zero MainPID
+requires reading vanished proc ownership. Failed kill/stop, late/repeated cancel,
+queued-after-stop and accepted-submission races retain their controls.
+
+The temp tests run actual CLI config, ensure/create/traverse and thread-policy
+helpers against isolated files. They fail on missing markers, missing `/agent`
+or workspace-only writable roots. Fixed launch-plan assertions require both job
+pins and an explicit tmp bind from the authenticated runtime parent view; no
+Host mount is executed. The readiness tests use real streams and explicitly
+substituted pre-transition/settled proc/systemd identities. They fail if the early
+Type=exec identity is retained or input is released before fixed readiness and
+owner publication; later namespace mutation still refuses physical signaling.
+Actual launcher source is transpiled into disposable Node fixtures with real
+pipes/descriptor checks. Ready/ordinary protocol, malformed/oversized input,
+bootstrap timeout, EOF and pre-bootstrap SIGTERM are exercised without starting
+any provider. Stream errors, unexpected native output, transport exit, timeout
+and cancellation cannot release held bootstrap in the helper fixtures.
+
+An isolated resolver ran eleven precise new regressions against preserved
+pre-patch modules: all eleven failed. The final current-source cases pass.
+This is regression evidence, not live isolation or Internet evidence.
+The disposable r9 artifacts are under
+`/srv/worker-state/jobs/subscription-runtime/research-network-v1/jobs/sr-research-network-writer-20261001-r9/tmp/agent/r9-artifacts`.
+The offline broader suite substitutes only an absent Host scratch configuration
+(`lstatSync` returns ENOENT for `/etc/subscription-runtime/scratch-temp.json`, with
+Node builtin ESM exports synchronized). Scratch algorithm tests still use their
+explicit real implementation/host fixtures. Git-mutating runner fixture cases
+are excluded. The first default broader attempt encountered ambient Host scratch
+policy interference and was interrupted; it is not a passing integrated gate.
+Root runs those excluded cases and the actual scratch-enabled integrated gates.
+Final r9 verification passed 27 focused suites: 614 tests, zero failures, and
+only five explicitly excluded git-mutating runner cases. The strengthened helper
+suite also passed all 38 cases independently. Root/package TypeScript no-emit
+checks, all six boundary/architecture checks and syntax checks of the three MJS
+entrypoints plus both changed launcher/helper TS modules passed. The unchanged
+large-file suite verified actual 286,754,152 and 334,715,184 byte fixtures against
+independent streamed digests while enforcing 64 KiB hash buffers and existing
+byte/time/custody limits. No dependency installs, real providers, Host services,
+Host mounts, real credentials or deployments were used for these passing gates.
+
+Root must additionally exercise the actual systemd/unshare transition with no
+bootstrap/auth release before settled ownership, confirm runtime/worker tmp and
+agent inode/mount visibility and real traversal/I/O, and repeat cancellation from
+the precise queued/deactivating initial states. Retain actual MainPID/birth/boot,
+InvocationID/fragment/cgroup and namespace witnesses plus closing/cancel/owner
+files. Failed/uncertain/foreign states must retain the slot and refuse foreign
+signals. Source plans, fake observers and Node fixtures cannot discharge these
+live gates or the existing native fork/resume, discovery/source and capacity gates.
 
 ## Consumer Module Standard classification
 
