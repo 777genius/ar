@@ -24,7 +24,7 @@ export {
   retainedResourceCanonicalJson, retainedResourceDigest, retainedResourceBytes,
   parseScopedRetainedRecord, parseScopedRetainedRecordBytes, retainedResourceLocator, retainedResourceNames,
   type RetainedRecordData, type ScopedRetainedRecord, type ScopedRetainedTarget,
-  type ScopedRetainedAllocation, type ScopedRetainedCleanupAttempt,
+  type ScopedRetainedAllocation, type ScopedRetainedOriginalCleanupAuthority, type ScopedRetainedCleanupAttempt,
   type ScopedRetainedPayloadGate, type ScopedRetainedPayloadGateClosure,
 } from "./scoped-retained-resource-contract";
 export * from "./scoped-retained-resource-validation";

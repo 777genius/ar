@@ -8,7 +8,7 @@ import { parseScopedActorChain, ScopedActorDischargeMethod, ScopedEnqueueActorRo
 export enum RetainedTargetKind { KeyedChild = "keyed_child", OrdinaryAllocation = "ordinary_allocation" }
 export enum RetainedTopology { RuntimeWithProviders = "runtime_with_providers", SingleOwnedService = "single_owned_service" }
 export enum RetainedMemberRole {
-  Runtime = "runtime", Provider = "provider", Qualification = "qualification", QRoot = "qroot",
+  Runtime = "runtime", Provider = "provider", Controller = "controller", Qualification = "qualification", QRoot = "qroot",
   FixtureHelper = "fixture_helper", FaultHelper = "fault_helper",
 }
 export enum RetainedPreparation {
@@ -108,23 +108,27 @@ const group: Parser<string> = v => {
 const component: Parser<string> = v => { const s = text(/^[A-Za-z0-9_.@+-]{1,240}$/)(v); return s === "." || s === ".." ? retainedResourceInvalid("component") : s; };
 const kernelIdentity = object({ device: integer(0), inode: integer() });
 const publication = object({ producerId: id, generation: integer(), admittedAtEpochMs: integer(), durableAtEpochMs: integer(), finalValidatedAtEpochMs: integer() });
-const cleanupAttempt = object({ attemptId: uuid, startedAtEpochMs: integer(), endEpochMs: integer(), totalAllowanceMs: integer(), N: integer(), joinDigest: digest });
+// Original, pre-effect limits contain no forecast of an actual cleanup start.
+const originalCleanupAuthority = object({ attemptId: uuid, deadlineEpochMs: integer(), totalAllowanceMs: integer(), N: integer(), joinDigest: digest });
+const cleanupAttempt = object({ originalAuthorityDigest: digest, attemptId: uuid, startedAtEpochMs: integer(), endEpochMs: integer(), joinDigest: digest });
 const installation = object({ installationId: id, bootId: id, hostId: id, namespaceDigest: digest, managerDigest: digest, producerId: id });
 const keyed = object({ authorityDigest: digest, slotId: id, childAllocationId: id, parentRuntimeAllocationId: id, parentRuntimeStartDigest: digest, dispatchIntentDigest: digest, dispatchIntentGeneration: integer() });
 const allocation = object({
   allocationId: id, startId: uuid, allocationDigest: digest, permissionDigest: digest, installationAssociationDigest: digest,
   role: enumeration(RetainedMemberRole), purpose: id, grantDigest: nullable(digest), installedGrantDigest: nullable(digest),
-  unit: serviceUnit, qualificationId: nullable(digest), leafProfileDigest: digest, effectiveFilterPolicyDigest: digest, requiredFilterDigests: list(digest, 64, 1),
+  // The original guest qualification association is independent of a helper's
+  // own-role identifier used in qualification/qroot unit names.
+  unit: serviceUnit, qualificationLocator: digest, qualificationId: nullable(digest), leafProfileDigest: digest, effectiveFilterPolicyDigest: digest, requiredFilterDigests: list(digest, 64, 1),
 });
 const target = object({
   scopeDigest: digest, kind: enumeration(RetainedTargetKind), topology: enumeration(RetainedTopology), installation,
-  workEndEpochMs: integer(), cleanupAttempt, keyed: nullable(keyed), ordinaryAllocationId: nullable(id),
+  qualificationLocator: digest, workEndEpochMs: integer(), originalCleanupAuthority, keyed: nullable(keyed), ordinaryAllocationId: nullable(id),
   allocations: list(allocation, 256, 1),
 });
 const obligation = object({ resourceDigest: digest, sliceUnit: text(/^subscription-runtime-hosted-[a-f0-9]{64}\.slice$/),
   targetUnit: text(/^subscription-runtime-retain-[a-f0-9]{64}\.target$/), creationGateDigest: digest,
   lifecycle: enumeration({ Declared: RetainedResourceLifecycle.Declared, CreationStarted: RetainedResourceLifecycle.CreationStarted, Retained: RetainedResourceLifecycle.Retained }),
-  attemptDigest: digest, installationAssociationDigest: digest,
+  originalAuthorityDigest: digest, installationAssociationDigest: digest,
   manifest: object({ nonExecuting: literal(true), requiresSlice: literal(true), afterSlice: literal(true), cpuWeight: literal(100), denyReuseRestartRecreation: literal(true) }),
 });
 const reservation = object({ reservationId: uuid, reservationGeneration: integer(), startId: uuid, startDigest: digest,
@@ -162,7 +166,10 @@ const preparation = object({ reservationDigest: digest, state: enumeration(Retai
   correlationDigest: nullable(digest), actorAdmissionDigest: nullable(digest), serviceAdmissionDigest: nullable(digest), payloadGateDigest: nullable(digest),
   enqueueReleasedAtEpochMs: nullable(integer()), payloadReleasedAtEpochMs: nullable(integer()),
 });
-const closure = object({ attemptDigest: digest, closureGeneration: integer(), admissionClosedAtEpochMs: integer(),
+// The create-only Closure is the authoritative first cleanup publication. Its
+// attempt is consumed once under the producer's shared interlock; subsequent
+// requests must join these exact bytes. This schema does not implement JOIN.
+const closure = object({ cleanupAttempt, attemptDigest: digest, closureGeneration: integer(), admissionClosedAtEpochMs: integer(),
   admissionDenialDigest: digest, reservationDigests: list(digest), obligationDigests: list(digest, 256, 1), preparations: list(preparation),
 });
 const uncreated = object({ obligationDigest: digest, closureDigest: digest, creationGateDigest: digest, closedAtEpochMs: integer(), noCreationAccepted: literal(true) });
@@ -243,7 +250,8 @@ export type ScopedRetainedRecord<K extends RetainedRecordKind = RetainedRecordKi
 }[K];
 export type ScopedRetainedTarget = RetainedRecordData[RetainedRecordKind.Target];
 export type ScopedRetainedAllocation = ScopedRetainedTarget["allocations"][number];
-export type ScopedRetainedCleanupAttempt = ScopedRetainedTarget["cleanupAttempt"];
+export type ScopedRetainedOriginalCleanupAuthority = ScopedRetainedTarget["originalCleanupAuthority"];
+export type ScopedRetainedCleanupAttempt = RetainedRecordData[RetainedRecordKind.Closure]["cleanupAttempt"];
 export type ScopedRetainedPayloadGate = RetainedRecordData[RetainedRecordKind.PayloadGate];
 export type ScopedRetainedPayloadGateClosure = NonNullable<RetainedRecordData[RetainedRecordKind.EmptyProof]["dispositions"][number]["payloadGateClosure"]>;
 

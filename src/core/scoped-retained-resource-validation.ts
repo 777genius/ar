@@ -16,7 +16,10 @@ export enum RetainedChainState { Incomplete = "incomplete", CompleteData = "comp
  * completed admission/publication during partial or zero preparation.
  * Supplying this DTO does not authenticate that inventory or its producer. */
 export interface RetainedChainExpectation {
-  readonly targetDigest: string; readonly attemptDigest: string;
+  readonly targetDigest: string; readonly originalAuthorityDigest: string;
+  /** Null before the authoritative first Closure exists. Its absence can only
+   * yield Incomplete; after consumption, readers must pin the exact digest. */
+  readonly attemptDigest: string | null;
   readonly reservationDigests: readonly string[]; readonly obligationDigests: readonly string[];
   readonly payloadGateDigests: readonly string[];
 }
@@ -35,9 +38,7 @@ class Missing extends Error { constructor(readonly reference: string) { super(re
 type RecordOf<K extends Kind> = ScopedRetainedRecord<K>;
 
 function validateTarget(t: ScopedRetainedTarget): void {
-  const attempt = t.cleanupAttempt;
-  requireData(t.workEndEpochMs <= attempt.endEpochMs && attempt.startedAtEpochMs < attempt.endEpochMs &&
-    attempt.endEpochMs - attempt.startedAtEpochMs <= attempt.totalAllowanceMs, "original_bounds");
+  requireData(t.workEndEpochMs <= t.originalCleanupAuthority.deadlineEpochMs, "original_bounds");
   unique(t.allocations.map(a => a.allocationId), "allocation_identity");
   unique(t.allocations.map(a => a.allocationDigest), "allocation_identity");
   unique(t.allocations.map(a => a.startId), "allocation_identity");
@@ -57,12 +58,16 @@ function validateTarget(t: ScopedRetainedTarget): void {
   }
   for (const a of t.allocations) {
     requireData(a.installationAssociationDigest === digest(t.installation), "allocation_installation");
+    requireData(a.qualificationLocator === t.qualificationLocator, "allocation_qualification");
     unique(a.requiredFilterDigests, "required_leaf_filters");
     requireData(a.grantDigest === a.installedGrantDigest &&
       (a.grantDigest !== null || ![Role.Runtime, Role.Provider].includes(a.role)), "installed_grant");
     switch (a.role) {
       case Role.Runtime: requireData(a.unit === `subscription-runtime-ordinary-${a.startId}.service` && a.qualificationId === null, "runtime_unit"); break;
       case Role.Provider: requireData(a.unit === `subscription-runtime-hosted-${a.startId}.service` && a.qualificationId === null, "provider_unit"); break;
+      // Controller is a genuine ordinary allocation in the ordinary-start unit
+      // namespace. Sharing that grammar does not make it a Runtime or parent.
+      case Role.Controller: requireData(a.unit === `subscription-runtime-ordinary-${a.startId}.service` && a.qualificationId === null, "controller_unit"); break;
       case Role.Qualification: requireData(a.qualificationId !== null && a.unit === `subscription-runtime-qualification-${a.qualificationId}.service`, "qualification_unit"); break;
       case Role.QRoot: requireData(a.qualificationId !== null && a.unit === `subscription-runtime-qroot-${a.qualificationId}.service`, "qroot_unit"); break;
       case Role.FixtureHelper: case Role.FaultHelper: requireData(a.qualificationId === null, "helper_unit"); break;
@@ -83,8 +88,10 @@ export function validateScopedRetainedChain(
   retainedResourceCanonicalJson(values);
   retainedResourceCanonicalJson(expected);
   requireData(expected !== null && typeof expected === "object", "expectation");
-  requireData(Object.keys(expected).sort().join(",") === "attemptDigest,obligationDigests,payloadGateDigests,reservationDigests,targetDigest" &&
-    /^[a-f0-9]{64}$/.test(expected.targetDigest) && /^[a-f0-9]{64}$/.test(expected.attemptDigest) &&
+  requireData(Object.keys(expected).sort().join(",") === "attemptDigest,obligationDigests,originalAuthorityDigest,payloadGateDigests,reservationDigests,targetDigest" &&
+    typeof expected.targetDigest === "string" && /^[a-f0-9]{64}$/.test(expected.targetDigest) &&
+    typeof expected.originalAuthorityDigest === "string" && /^[a-f0-9]{64}$/.test(expected.originalAuthorityDigest) &&
+    (expected.attemptDigest === null || (typeof expected.attemptDigest === "string" && /^[a-f0-9]{64}$/.test(expected.attemptDigest))) &&
     Array.isArray(expected.reservationDigests) && expected.reservationDigests.length <= 256 &&
     Array.isArray(expected.obligationDigests) && expected.obligationDigests.length === 1 &&
     Array.isArray(expected.payloadGateDigests) && expected.payloadGateDigests.length <= 256 &&
@@ -113,18 +120,32 @@ export function validateScopedRetainedChain(
       next.publication.admittedAtEpochMs >= previous.publication.finalValidatedAtEpochMs, "publication_order");
   };
   try {
-    const targetRecord = one(Kind.Target), t = targetRecord.data, attemptDigest = digest(t.cleanupAttempt);
-    requireData(digest(t) === expected.targetDigest && attemptDigest === expected.attemptDigest, "original_attempt");
+    const targetRecord = one(Kind.Target), t = targetRecord.data, authority = t.originalCleanupAuthority;
+    const originalAuthorityDigest = digest(authority);
+    requireData(digest(t) === expected.targetDigest && originalAuthorityDigest === expected.originalAuthorityDigest, "original_authority");
     validateTarget(t);
-    if (mode === RetainedValidationMode.LiveData) requireData(nowEpochMs >= t.cleanupAttempt.startedAtEpochMs && nowEpochMs < t.cleanupAttempt.endEpochMs, "expired_live_data");
+    const closures = records.filter((r): r is RecordOf<Kind.Closure> => r.kind === Kind.Closure);
+    requireData(closures.length <= 1, "duplicate_stage");
+    const attempt = closures[0]?.data.cleanupAttempt;
+    const attemptDigest = attempt ? digest(attempt) : null;
+    if (attempt) {
+      requireData(attempt.originalAuthorityDigest === originalAuthorityDigest && attempt.attemptId === authority.attemptId &&
+        attempt.joinDigest === authority.joinDigest && attempt.startedAtEpochMs < authority.deadlineEpochMs &&
+        attempt.endEpochMs === attempt.startedAtEpochMs + Math.min(authority.totalAllowanceMs, authority.deadlineEpochMs - attempt.startedAtEpochMs), "attempt_bounds");
+      requireData(attemptDigest === expected.attemptDigest, "original_attempt");
+    }
+    if (mode === RetainedValidationMode.LiveData) requireData(nowEpochMs < (attempt?.endEpochMs ?? authority.deadlineEpochMs) &&
+      (!attempt || nowEpochMs >= attempt.startedAtEpochMs), "expired_live_data");
     for (const r of records) {
       const p = r.publication;
       const workRecord = [Kind.Target, Kind.Reservation, Kind.ResourceObligation, Kind.ResourceBinding, Kind.Correlation, Kind.ActorAdmission, Kind.ServiceAdmission, Kind.PayloadGate].includes(r.kind);
       requireData(p.producerId === t.installation.producerId && p.admittedAtEpochMs <= p.durableAtEpochMs &&
-        p.durableAtEpochMs <= p.finalValidatedAtEpochMs && p.finalValidatedAtEpochMs < (workRecord ? t.workEndEpochMs : t.cleanupAttempt.endEpochMs) &&
-        (workRecord || p.admittedAtEpochMs >= t.cleanupAttempt.startedAtEpochMs), "publication_authority_time");
+        p.durableAtEpochMs <= p.finalValidatedAtEpochMs &&
+        (workRecord ? p.finalValidatedAtEpochMs < t.workEndEpochMs && (!attempt || p.finalValidatedAtEpochMs <= attempt.startedAtEpochMs) :
+          !attempt || (p.finalValidatedAtEpochMs < attempt.endEpochMs && p.admittedAtEpochMs >= attempt.startedAtEpochMs)), "publication_authority_time");
       requireData(p.finalValidatedAtEpochMs <= nowEpochMs, "future_publication");
-      if ("attemptDigest" in r.data) requireData(r.data.attemptDigest === attemptDigest, "renewed_attempt");
+      if ("originalAuthorityDigest" in r.data) requireData(r.data.originalAuthorityDigest === originalAuthorityDigest, "original_authority");
+      if (attempt && "attemptDigest" in r.data) requireData(r.data.attemptDigest === attemptDigest, "renewed_attempt");
       if (r !== targetRecord) after(r, targetRecord);
     }
     for (const kind of [Kind.Reservation, Kind.ResourceObligation, Kind.PayloadGate] as const) {
@@ -159,7 +180,7 @@ export function validateScopedRetainedChain(
     exactSet(c.obligationDigests, expected.obligationDigests, "closure_resources");
     exactSet(c.preparations.map(p => p.reservationDigest), expected.reservationDigests, "preparation_completeness");
     exactSet(c.preparations.flatMap(p => p.payloadGateDigest === null ? [] : [p.payloadGateDigest]), expected.payloadGateDigests, "closure_payload_gates");
-    requireData(c.admissionClosedAtEpochMs >= t.cleanupAttempt.startedAtEpochMs && c.admissionClosedAtEpochMs <= closure.publication.admittedAtEpochMs, "closure_time");
+    requireData(c.admissionClosedAtEpochMs === attempt!.startedAtEpochMs && c.admissionClosedAtEpochMs <= closure.publication.admittedAtEpochMs, "closure_time");
     [...reservations, ...obligations].forEach(r => after(closure, r));
     const bindings = new Map<string, RecordOf<Kind.ResourceBinding>>();
     const actors = new Map<string, RecordOf<Kind.ActorAdmission>>();

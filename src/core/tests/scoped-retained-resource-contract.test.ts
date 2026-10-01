@@ -23,7 +23,7 @@ const U = (digit: string): string => `${digit.repeat(8)}-${digit.repeat(4)}-${di
 const I = (digit: string): string => digit.repeat(32);
 interface FixtureOptions {
   role?: Role; keyed?: boolean; runtimeProviders?: boolean; twoProviders?: boolean; preparation?: Preparation; payloadGateCreated?: boolean;
-  neverCreated?: boolean; noReservations?: boolean; edit?: Edit;
+  neverCreated?: boolean; noReservations?: boolean; actualStart?: number; allowance?: number; edit?: Edit;
 }
 
 /** Explicit TEST-only normalized data. No files, actors, manager/kernel calls or
@@ -32,10 +32,25 @@ interface FixtureOptions {
 function fixture(options: FixtureOptions = {}) {
   const records: ScopedRetainedRecord[] = [];
   let targetDigest = "", generation = 0;
+  // Early completion compresses only cleanup-stage observations. Preparation
+  // has the same bytes and never knows which first-cleanup start will occur.
+  const cleanupTime = (at: number): number => options.actualStart === undefined ? at : options.actualStart + Math.floor((at - 5000) / 10);
   const add = <K extends Kind>(kind: K, data: RetainedRecordData[K], at: number): ScopedRetainedRecord<K> => {
     const record = { schemaVersion: 2, kind, targetDigest, data: JSON.parse(JSON.stringify(data)), publication: {
       producerId: "TEST-producer", generation: ++generation, admittedAtEpochMs: at, durableAtEpochMs: at + 1, finalValidatedAtEpochMs: at + 2,
     } } as Mutable<ScopedRetainedRecord>;
+    if (options.actualStart !== undefined && ![Kind.Target, Kind.Reservation, Kind.ResourceObligation, Kind.ResourceBinding,
+      Kind.Correlation, Kind.ActorAdmission, Kind.ServiceAdmission, Kind.PayloadGate].includes(kind)) {
+      const shift = (value: unknown): void => {
+        if (!value || typeof value !== "object") return;
+        for (const [key, entry] of Object.entries(value)) {
+          if (key.endsWith("AtEpochMs") && typeof entry === "number" && entry >= 5000 && key !== "startedAtEpochMs")
+            (value as Record<string, unknown>)[key] = cleanupTime(entry);
+          else shift(entry);
+        }
+      };
+      shift(record);
+    }
     options.edit?.(record);
     if (record.kind === Kind.Target) targetDigest = digest(record.data);
     record.targetDigest = targetDigest;
@@ -47,9 +62,9 @@ function fixture(options: FixtureOptions = {}) {
     allocationId: `TEST-P-${digit}`, startId: U(digit), allocationDigest: H(digit), permissionDigest: H("d"),
     installationAssociationDigest: H("e"), role, purpose: "TEST-qualification", grantDigest: [Role.Runtime, Role.Provider].includes(role) ? H("f") : null,
     installedGrantDigest: [Role.Runtime, Role.Provider].includes(role) ? H("f") : null,
-    unit: role === Role.Runtime ? `subscription-runtime-ordinary-${U(digit)}.service` : role === Role.Provider ? `subscription-runtime-hosted-${U(digit)}.service` :
+    unit: [Role.Runtime, Role.Controller].includes(role) ? `subscription-runtime-ordinary-${U(digit)}.service` : role === Role.Provider ? `subscription-runtime-hosted-${U(digit)}.service` :
       role === Role.Qualification ? `subscription-runtime-qualification-${H("a")}.service` : role === Role.QRoot ? `subscription-runtime-qroot-${H("a")}.service` : "TEST-finite-helper.service",
-    qualificationId: [Role.Qualification, Role.QRoot].includes(role) ? H("a") : null,
+    qualificationLocator: H("c"), qualificationId: [Role.Qualification, Role.QRoot].includes(role) ? H("a") : null,
     leafProfileDigest: H("a"), effectiveFilterPolicyDigest: H("b"), requiredFilterDigests: [H("f")],
   });
   const allocationRows = [row(role, "1"), ...(options.runtimeProviders ? [row(Role.Provider, "2"), ...(options.twoProviders ? [row(Role.Provider, "3")] : [])] : [])];
@@ -59,14 +74,19 @@ function fixture(options: FixtureOptions = {}) {
     scopeDigest: H("c"), kind: options.keyed ? TargetKind.KeyedChild : TargetKind.OrdinaryAllocation,
     topology: [Role.Runtime, Role.Provider].includes(role) ? Topology.RuntimeWithProviders : Topology.SingleOwnedService,
     installation,
-    workEndEpochMs: 10000, cleanupAttempt: { attemptId: U("f"), startedAtEpochMs: 5000, endEpochMs: 20000, totalAllowanceMs: 15000, N: 7, joinDigest: H("e") },
+    qualificationLocator: H("c"), workEndEpochMs: 10000,
+    originalCleanupAuthority: { attemptId: U("f"), deadlineEpochMs: 20000, totalAllowanceMs: options.allowance ?? 15000, N: 7, joinDigest: H("e") },
     keyed: options.keyed ? { authorityDigest: H("f"), slotId: "TEST-slot", childAllocationId: allocationRows[0]!.allocationId,
       parentRuntimeAllocationId: "TEST-parent-P", parentRuntimeStartDigest: H("d"), dispatchIntentDigest: H("c"), dispatchIntentGeneration: 1 } : null,
     ordinaryAllocationId: options.keyed ? null : allocationRows[0]!.allocationId, allocations: allocationRows,
   }, 100);
-  const t = targetRecord.data, attemptDigest = digest(t.cleanupAttempt), locator = retainedResourceLocator(t), names = retainedResourceNames(locator);
+  const t = targetRecord.data, originalAuthorityDigest = digest(t.originalCleanupAuthority);
+  const actualStart = options.actualStart ?? 5000;
+  const cleanupAttempt = { originalAuthorityDigest, attemptId: t.originalCleanupAuthority.attemptId, startedAtEpochMs: actualStart,
+    endEpochMs: Math.min(t.originalCleanupAuthority.deadlineEpochMs, actualStart + t.originalCleanupAuthority.totalAllowanceMs), joinDigest: t.originalCleanupAuthority.joinDigest };
+  const locator = retainedResourceLocator(t), names = retainedResourceNames(locator);
   const obligation = add(Kind.ResourceObligation, { resourceDigest: locator, sliceUnit: names.sliceUnit, targetUnit: names.targetUnit,
-    creationGateDigest: H("a"), lifecycle: Lifecycle.Declared, attemptDigest, installationAssociationDigest: digest(t.installation),
+    creationGateDigest: H("a"), lifecycle: Lifecycle.Declared, originalAuthorityDigest, installationAssociationDigest: digest(t.installation),
     manifest: { nonExecuting: true, requiresSlice: true, afterSlice: true, cpuWeight: 100, denyReuseRestartRecreation: true },
   }, 200);
   const reservations = options.noReservations ? [] : t.allocations.map((a, index) => add(Kind.Reservation, {
@@ -116,9 +136,10 @@ function fixture(options: FixtureOptions = {}) {
       serviceAdmissionDigest: service ? digest(service) : null, payloadGateDigest: gate ? digest(gate) : null, enqueueReleasedAtEpochMs: rank >= 3 ? base + 150 : null,
       payloadReleasedAtEpochMs: rank >= 5 ? base + 350 : null } };
   });
-  const closure = add(Kind.Closure, { attemptDigest, closureGeneration: 1, admissionClosedAtEpochMs: 5500, admissionDenialDigest: H("a"),
+  const closure = add(Kind.Closure, { cleanupAttempt, attemptDigest: digest(cleanupAttempt), closureGeneration: 1, admissionClosedAtEpochMs: 5000, admissionDenialDigest: H("a"),
     reservationDigests: reservations.map(digest), obligationDigests: [digest(obligation)], preparations: admissions.map(a => a.preparation),
   }, 6000);
+  const attemptDigest = digest(closure.data.cleanupAttempt);
   const uncreated = binding ? null : add(Kind.ResourceUncreated, { obligationDigest: digest(obligation), closureDigest: digest(closure), creationGateDigest: obligation.data.creationGateDigest,
     closedAtEpochMs: 6200, noCreationAccepted: true,
   }, 6250);
@@ -160,7 +181,7 @@ function fixture(options: FixtureOptions = {}) {
   if (options.keyed) add(Kind.KeyedTerminal, { attemptDigest, finalReceiptDigest: digest(final), keyedBindingDigest: digest(t.keyed), dispatchIntentDigest: t.keyed!.dispatchIntentDigest,
     ordinaryTerminalDigests: terminals.map(digest),
   }, 13000);
-  const expected: RetainedChainExpectation = { targetDigest, attemptDigest, reservationDigests: reservations.map(digest), obligationDigests: [digest(obligation)], payloadGateDigests: admissions.flatMap(a => a.gate ? [digest(a.gate)] : []) };
+  const expected: RetainedChainExpectation = { targetDigest, originalAuthorityDigest, attemptDigest, reservationDigests: reservations.map(digest), obligationDigests: [digest(obligation)], payloadGateDigests: admissions.flatMap(a => a.gate ? [digest(a.gate)] : []) };
   return { records, expected };
 }
 const read = (f: ReturnType<typeof fixture>, mode = Mode.ReadOnlyHistoricalData, now = 99000) => validateScopedRetainedChain(f.records, f.expected, mode, now);
@@ -172,7 +193,7 @@ describe("retained v2 bounded source/data contracts", () => {
     expect(read(f)).toMatchObject({ state: RetainedChainState.CompleteData, targetDigest: f.expected.targetDigest });
     expect(read(f, Mode.LiveData, 15000).state).toBe(RetainedChainState.CompleteData);
   });
-  it.each([Role.Qualification, Role.QRoot, Role.FixtureHelper, Role.FaultHelper])("accepts genuine ordinary %s names and actual null installed grants", role => {
+  it.each([Role.Controller, Role.Qualification, Role.QRoot, Role.FixtureHelper, Role.FaultHelper])("accepts genuine ordinary %s names and actual null installed grants", role => {
     expect(read(fixture({ role })).state).toBe(RetainedChainState.CompleteData);
   });
   it("accepts genuine keyed runtime/provider composition and genuine parent associations", () => {
@@ -470,18 +491,130 @@ describe("retained v2 bounded source/data contracts", () => {
     fails(r => { if (r.kind === Kind.ServiceAdmission) r.publication.finalValidatedAtEpochMs = 10000; }, "publication_authority_time");
     fails(r => { if (r.kind === Kind.RetirementFacts) r.data.effects[1]!.completedAtEpochMs = 20000; }, "retirement_effect_order");
   });
-  it("does not renew original cleanup attempt, allowance, deadline, N or join binding", () => {
+  it("pins original deadline, allowance, N, attempt identifier and join binding without renewal", () => {
     const f = fixture();
-    const original = f.expected.attemptDigest;
-    for (const field of ["endEpochMs", "totalAllowanceMs", "N"] as const) {
-      const changed = fixture({ edit: r => { if (r.kind === Kind.Target) r.data.cleanupAttempt[field]++; } });
-      changed.expected = { ...changed.expected, attemptDigest: original };
-      expect(() => read(changed)).toThrow("original_attempt");
+    for (const field of ["deadlineEpochMs", "totalAllowanceMs", "N"] as const) {
+      const changed = fixture({ edit: r => { if (r.kind === Kind.Target) r.data.originalCleanupAuthority[field]++; } });
+      changed.expected = { ...changed.expected, originalAuthorityDigest: f.expected.originalAuthorityDigest };
+      expect(() => read(changed)).toThrow("original_authority");
+    }
+    for (const field of ["attemptId", "joinDigest", "originalAuthorityDigest"] as const) {
+      fails(r => { if (r.kind === Kind.Closure) r.data.cleanupAttempt[field] = field === "attemptId" ? U("e") : H("f"); }, "attempt_bounds");
     }
     fails(r => { if (r.kind === Kind.FinalReceipt) r.data.attemptDigest = H("f"); }, "renewed_attempt");
-    const joined = read(f, Mode.LiveData, 16000);
-    expect(joined).toEqual(read(f, Mode.LiveData, 16001));
-    expect(f.records[0]!.data).toMatchObject({ cleanupAttempt: { N: 7, totalAllowanceMs: 15000, endEpochMs: 20000 } });
+    expect(read(f, Mode.LiveData, 16000)).toEqual(read(f, Mode.LiveData, 16001));
+    expect(f.records[0]!.data).toMatchObject({ originalCleanupAuthority: { N: 7, totalAllowanceMs: 15000, deadlineEpochMs: 20000 } });
+  });
+  it.each([3000, 4000])("completes immediately from actual early start %s while work authority ends later", actualStart => {
+    const f = fixture({ actualStart, allowance: 1000, keyed: true, runtimeProviders: true, twoProviders: true });
+    const target = f.records.find((r): r is ScopedRetainedRecord<Kind.Target> => r.kind === Kind.Target)!;
+    const closure = f.records.find((r): r is ScopedRetainedRecord<Kind.Closure> => r.kind === Kind.Closure)!;
+    expect(target.data.workEndEpochMs).toBeGreaterThan(closure.data.cleanupAttempt.endEpochMs);
+    expect(closure.data.cleanupAttempt).toMatchObject({ startedAtEpochMs: actualStart, endEpochMs: actualStart + 1000 });
+    expect(closure.data.admissionClosedAtEpochMs).toBe(actualStart);
+    expect(read(f, Mode.LiveData, actualStart + 900).state).toBe(RetainedChainState.CompleteData);
+    expect(read(f).state).toBe(RetainedChainState.CompleteData);
+  });
+  it("prepublishes with actual start unknown and preserves every byte, digest, reference and resource name at two early starts", () => {
+    const preparation = fixture({ allowance: 1000, keyed: true, runtimeProviders: true, twoProviders: true });
+    const prefix = preparation.records.slice(0, preparation.records.findIndex(r => r.kind === Kind.Closure));
+    const priorBytes = prefix.map(retainedResourceBytes), priorDigests = prefix.map(digest);
+    const target = prefix[0] as ScopedRetainedRecord<Kind.Target>;
+    expect(target.data).not.toHaveProperty("cleanupAttempt");
+    expect(target.data.originalCleanupAuthority).not.toHaveProperty("startedAtEpochMs");
+    prefix.forEach(r => expect(parseScopedRetainedRecordBytes(retainedResourceBytes(r))).toEqual(r));
+    expect(validateScopedRetainedChain(prefix, { ...preparation.expected, attemptDigest: null }, Mode.LiveData, 2900))
+      .toEqual({ state: RetainedChainState.Incomplete, missing: [Kind.Closure] });
+    const originalNames = retainedResourceNames(retainedResourceLocator(target.data));
+    for (const actualStart of [3000, 4000]) {
+      const complete = fixture({ actualStart, allowance: 1000, keyed: true, runtimeProviders: true, twoProviders: true });
+      const published = complete.records.slice(0, prefix.length);
+      expect(published.map(retainedResourceBytes)).toEqual(priorBytes);
+      expect(published.map(digest)).toEqual(priorDigests);
+      expect(complete.expected.targetDigest).toBe(preparation.expected.targetDigest);
+      expect(complete.expected.originalAuthorityDigest).toBe(preparation.expected.originalAuthorityDigest);
+      expect(retainedResourceNames(retainedResourceLocator((published[0] as ScopedRetainedRecord<Kind.Target>).data))).toEqual(originalNames);
+      expect(read(complete, Mode.LiveData, actualStart + 900).state).toBe(RetainedChainState.CompleteData);
+    }
+    expect(prefix.map(retainedResourceBytes)).toEqual(priorBytes);
+  });
+  it("caps the actual first attempt at the original deadline without extending or shortening its allowance", () => {
+    const capped = fixture({ actualStart: 19200, allowance: 1000 });
+    expect((capped.records.find(r => r.kind === Kind.Closure) as ScopedRetainedRecord<Kind.Closure>).data.cleanupAttempt.endEpochMs).toBe(20000);
+    expect(read(capped, Mode.LiveData, 19950).state).toBe(RetainedChainState.CompleteData);
+    const f = fixture({ actualStart: 19500, allowance: 1000 });
+    const closure = f.records.find((r): r is ScopedRetainedRecord<Kind.Closure> => r.kind === Kind.Closure)!;
+    expect(closure.data.cleanupAttempt.endEpochMs).toBe(20000);
+    // Full retirement outlasts this attempt: deadline capping cannot mint time.
+    expect(() => read(f)).toThrow("publication_authority_time");
+    for (const change of [-1, 1]) {
+      fails(r => { if (r.kind === Kind.Closure) r.data.cleanupAttempt.endEpochMs += change; }, "attempt_bounds");
+    }
+    fails(r => { if (r.kind === Kind.Closure) r.data.cleanupAttempt.startedAtEpochMs = 20000; }, "attempt_bounds");
+    fails(r => { if (r.kind === Kind.Closure) r.data.admissionClosedAtEpochMs++; }, "closure_time");
+    fails(r => { if (r.kind === Kind.Target) r.data.workEndEpochMs = 20001; }, "original_bounds");
+    fails(r => { if (r.kind === Kind.ResourceObligation) r.data.originalAuthorityDigest = H("f"); }, "original_authority");
+  });
+  it("rejects duplicate or forked first closures and a later plausible attempt against the once-pinned digest", () => {
+    const f = fixture({ actualStart: 3000, allowance: 1000 });
+    const closure = f.records.find((r): r is ScopedRetainedRecord<Kind.Closure> => r.kind === Kind.Closure)!;
+    expect(() => validateScopedRetainedChain([...f.records, closure], f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("duplicate_records");
+    const fork = structuredClone(closure) as Mutable<typeof closure>;
+    fork.publication.generation = 100;
+    fork.data.cleanupAttempt.startedAtEpochMs++;
+    fork.data.cleanupAttempt.endEpochMs++;
+    fork.data.attemptDigest = digest(fork.data.cleanupAttempt);
+    expect(() => validateScopedRetainedChain([...f.records, fork], f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("duplicate_stage");
+    const later = fixture({ actualStart: 4000, allowance: 1000 });
+    expect(() => validateScopedRetainedChain(later.records, f.expected, Mode.ReadOnlyHistoricalData, 99000)).toThrow("original_attempt");
+    expect(() => validateScopedRetainedChain(f.records, { ...f.expected, attemptDigest: null }, Mode.ReadOnlyHistoricalData, 99000)).toThrow("original_attempt");
+  });
+  it("rejects every publication at effective early expiry, keeps missing successors incomplete after disposal", () => {
+    const options = { actualStart: 3000, allowance: 1000, keyed: true, runtimeProviders: true, twoProviders: true };
+    const f = fixture(options);
+    expect(() => read(f, Mode.LiveData, 4000)).toThrow("expired_live_data");
+    expect(read(f, Mode.ReadOnlyHistoricalData, 99000).state).toBe(RetainedChainState.CompleteData);
+    for (const kind of [Kind.Closure, Kind.ResourceUncreated, Kind.EmptyProof, Kind.RetirementIntent, Kind.RetirementFacts,
+      Kind.RetirementPublication, Kind.FinalReceipt, Kind.OrdinaryTerminal, Kind.KeyedTerminal]) {
+      fails(r => { if (r.kind === kind) { r.publication.durableAtEpochMs = 4000; r.publication.finalValidatedAtEpochMs = 4000; } },
+        "publication_authority_time", { ...options, ...(kind === Kind.ResourceUncreated ? { neverCreated: true, preparation: Preparation.Reserved } : {}) });
+    }
+    for (const kind of [Kind.RetirementPublication, Kind.FinalReceipt, Kind.OrdinaryTerminal, Kind.KeyedTerminal]) {
+      const missing = { ...f, records: f.records.filter(r => r.kind !== kind) };
+      expect(read(missing).state).toBe(RetainedChainState.Incomplete);
+    }
+    fails(r => { if (r.kind === Kind.ResourceBinding) { r.publication.admittedAtEpochMs = 3001; r.publication.durableAtEpochMs = 3002; r.publication.finalValidatedAtEpochMs = 3003; } },
+      "publication_authority_time", options);
+    fails(r => { if (r.kind === Kind.RetirementFacts) r.data.effects[1]!.completedAtEpochMs = 4000; }, "retirement_effect_order", options);
+  });
+  it("keeps Controller structurally distinct with exact ordinary-start grammar and no fabricated Runtime or parent", () => {
+    const f = fixture({ role: Role.Controller });
+    const target = f.records[0] as ScopedRetainedRecord<Kind.Target>;
+    expect(target.data.allocations).toHaveLength(1);
+    expect(target.data.allocations[0]).toMatchObject({ role: Role.Controller, unit: `subscription-runtime-ordinary-${U("1")}.service`,
+      grantDigest: null, installedGrantDigest: null, qualificationId: null, qualificationLocator: H("c") });
+    expect(read(f).state).toBe(RetainedChainState.CompleteData);
+    fails(r => { if (r.kind === Kind.Target) r.data.allocations[0]!.unit = `subscription-runtime-controller-${U("1")}.service`; }, "controller_unit", { role: Role.Controller });
+    fails(r => { if (r.kind === Kind.Target) r.data.allocations[0]!.unit = `subscription-runtime-ordinary-${U("2")}.service`; }, "controller_unit", { role: Role.Controller });
+    fails(r => { if (r.kind === Kind.Target) r.data.topology = Topology.RuntimeWithProviders; }, "runtime_composition", { role: Role.Controller });
+    fails(r => { if (r.kind === Kind.Target) r.data.allocations[0]!.role = Role.Runtime; }, "single_owned_service", { role: Role.Controller });
+    fails(r => { if (r.kind === Kind.Reservation) r.data.parentRuntime = { allocationId: "TEST-parent", startDigest: H("d") }; }, "fabricated_parent_runtime", { role: Role.Controller });
+  });
+  it("requires each allocation's original qualification locator independently of the helper's exact own-role id", () => {
+    const f = fixture({ role: Role.Qualification });
+    const target = f.records[0] as ScopedRetainedRecord<Kind.Target>;
+    expect(target.data.qualificationLocator).toBe(H("c"));
+    expect(target.data.allocations[0]).toMatchObject({ qualificationLocator: H("c"), qualificationId: H("a"), unit: `subscription-runtime-qualification-${H("a")}.service` });
+    expect(read(f).state).toBe(RetainedChainState.CompleteData);
+    fails(r => { if (r.kind === Kind.Target) r.data.allocations[0]!.qualificationLocator = H("a"); }, "allocation_qualification", { role: Role.Qualification });
+    fails(r => { if (r.kind === Kind.Target) r.data.qualificationLocator = H("f"); }, "allocation_qualification", { runtimeProviders: true });
+    for (const qualificationLocator of [null, "TEST-q", "c".repeat(63), "c".repeat(65), "C".repeat(64), "g".repeat(64)]) {
+      const bad = structuredClone(target) as unknown as { data: Record<string, unknown>; targetDigest: string };
+      bad.data.qualificationLocator = qualificationLocator; bad.targetDigest = digest(bad.data);
+      expect(() => parseScopedRetainedRecord(bad)).toThrow("text");
+    }
+    fails(r => { if (r.kind === Kind.Target) r.data.allocations[0]!.qualificationId = H("c"); }, "qualification_unit", { role: Role.Qualification });
+    fails(r => { if (r.kind === Kind.Target) r.data.allocations[0]!.qualificationId = H("c"); }, "runtime_unit", { runtimeProviders: true });
   });
   it("leaves v1 valid behavior unchanged and never promotes failed v1 evidence into v2", () => {
     const identity = { scopeDigest: H("a"), installationId: "TEST-i", hostId: "TEST-h", bootId: "TEST-b", supervisorId: "48:100", supervisorUnit: "TEST-root.service",
