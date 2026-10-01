@@ -1,4 +1,5 @@
 import { assertReadonlyAdmittedFactory } from "./hosted-readonly-admission";
+import { prepareHostScratchCaches } from "./host-scratch-temp";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -397,6 +398,9 @@ function createCodexAgentDriver(input: {
       preserveOnDispose: codexSessionHomePreservedOnDispose(
         options.sessionHomeProfile,
       ),
+      ...(codexSessionHomePreservedOnDispose(options.sessionHomeProfile)
+        ? { prepareHome: (codexHome: string) => prepareHostScratchCaches(codexHome, sourceEnv) }
+        : {}),
       scrubAuthOnDispose: true,
       ...(workspaceToolsProfile
         ? { configToml: workspaceToolsProfile.configToml }
