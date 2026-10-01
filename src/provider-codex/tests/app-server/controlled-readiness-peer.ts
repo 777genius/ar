@@ -55,4 +55,3 @@ export class ControlledPeer extends EventEmitter {
     this.reply(await this.next("thread/goal/get"), this.goal("complete"));
   }
 }
-
