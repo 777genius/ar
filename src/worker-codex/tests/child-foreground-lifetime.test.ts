@@ -16,19 +16,34 @@ async function fixture(mode = "unfinished", deadlineMs = 10000) {
   const job = join(root, "jobs", "test-child"), workspace = join(job, "workspace");
   await mkdir(workspace, { recursive: true });
   const prompt = join(root, "private-prompt.md"), transport = join(root, "fake-app-server.mjs"), log = join(root, "transport.jsonl");
+  const resource = join(root, "TEST-provider-heartbeat");
   await writeFile(prompt, "Leave this goal unfinished. Return a short progress message.\n");
   const lifetime = { schemaVersion: 1, accountId: "account-s", deadlineEpochMs: Date.now() + deadlineMs,
     maxGoalTurns: 2, maxAccountCycles: 1, maxAttempts: 1, continuationMode: ChildContinuationMode.Disabled,
     denyProjectInstructions: true, accessBoundary: AccessBoundary.ReadOnly,
     allowedTools: [AgentRuntimeTool.ReadFile, AgentRuntimeTool.SearchFiles] };
   await writeFile(transport, `#!${process.execPath}
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
 const log = ${JSON.stringify(log)}, mode = ${JSON.stringify(mode)};
 const record = value => appendFileSync(log, JSON.stringify(value) + '\\n');
+// A signal listener alone does not keep Node alive after stdin EOF. Model an
+// independent, bounded provider obligation so expiry must actually stop it.
+const resource = ${JSON.stringify(resource)};
+let heartbeat, watchdog;
+if (mode === 'delayed') {
+ const beat = () => writeFileSync(resource, JSON.stringify({ pid: process.pid, at: Date.now() }));
+ beat(); heartbeat = setInterval(beat, 100);
+ watchdog = setTimeout(() => { record({ type: 'TEST-resource-watchdog' }); process.exit(70); }, 10000);
+ process.on('exit', code => record({ type: 'provider-exit', pid: process.pid, code }));
+ record({ type: 'TEST-resource-live', pid: process.pid });
+}
 record({ type: 'provider-start', sentinelSeen: createHash("sha256").update(process.env.MIMO_TOKEN_PLAN_API_KEY ?? "").digest("hex") === ${JSON.stringify(createHash("sha256").update(sentinel).digest("hex"))} });
-process.on('SIGTERM', () => { record({ type: 'cleanup-request' }); process.exit(0); });
+process.on('SIGTERM', () => {
+ record({ type: 'cleanup-request', ...(mode === 'delayed' ? { pid: process.pid, resourceActive: heartbeat !== undefined } : {}) });
+ clearInterval(heartbeat); clearTimeout(watchdog); rmSync(resource, { force: true }); process.exit(0);
+});
 const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
 let turns = 0;
 createInterface({ input: process.stdin }).on('line', line => {
@@ -42,7 +57,9 @@ createInterface({ input: process.stdin }).on('line', line => {
  if (r.method === 'turn/start') {
   const id = 'turn-' + ++turns;
   if (mode === 'retryable') return send({ id: r.id, error: { code: -32000, message: 'usage limit reached' } });
-  const finish = () => { reply({ turn: { id } });
+  const finish = () => {
+   if (mode === 'delayed') record({ type: 'turn-start-ack', at: Date.now() });
+   reply({ turn: { id } });
    if (mode === 'delayed') return;
    send({ method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: id, delta: 'Still unfinished.' } });
    send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id, status: 'completed' } } }); };
@@ -61,7 +78,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   const output: string[] = [];
   const io = { cwd: () => root, env: () => ({ SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START: "1", PATH: process.env.PATH, MIMO_TOKEN_PLAN_API_KEY: sentinel }),
     writeStdout: (s: string) => output.push(s), writeStderr: (s: string) => output.push(s) };
-  return { root, argv, io, output, lifetime, log,
+  return { root, argv, io, output, lifetime, log, resource,
     rows: async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line)),
     close: () => rm(root, { recursive: true, force: true }) };
 }
@@ -112,8 +129,25 @@ describe("production foreground child lifetime", () => {
     try {
       const status = await runCodexGoalCli(f.argv, f.io); expect(status, f.output.join("")).toBe(1);
       const rows = await f.rows();
+      expect(JSON.parse(f.output.at(-1)!).attempts).toHaveLength(1);
+      expect(rows.filter(r => r.type === "provider-start")).toHaveLength(1);
+      expect(rows.filter(r => r.method === "thread/start")).toHaveLength(1);
       expect(rows.filter(r => r.method === "turn/start")).toHaveLength(1);
-      expect(rows.filter(r => r.type === "cleanup-request")).toHaveLength(1);
+      const acknowledgments = rows.filter(r => r.type === "turn-start-ack");
+      expect(acknowledgments).toHaveLength(1);
+      expect(acknowledgments[0].at).toBeLessThan(f.lifetime.deadlineEpochMs);
+      const resources = rows.filter(r => r.type === "TEST-resource-live");
+      expect(resources).toHaveLength(1);
+      expect(rows.filter(r => r.type === "cleanup-request")).toEqual([
+        { type: "cleanup-request", pid: resources[0].pid, resourceActive: true },
+      ]);
+      expect(rows.filter(r => r.type === "provider-exit")).toEqual([
+        { type: "provider-exit", pid: resources[0].pid, code: 0 },
+      ]);
+      expect(rows.filter(r => r.type === "TEST-resource-watchdog")).toEqual([]);
+      await expect(readFile(f.resource)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(() => process.kill(process.platform === "win32" ? resources[0].pid : -resources[0].pid, 0))
+        .toThrow(expect.objectContaining({ code: "ESRCH" }));
       expect(rows.filter(r => r.method === "thread/goal/get")).toHaveLength(0);
     } finally { await f.close(); }
   });
