@@ -14,9 +14,12 @@ import { HostedControllerToolName } from "../../app-server/domain/hosted-control
 
 // Official installed CLI, synthetic loopback Responses only. No credentials,
 // inherited HOME/configuration, real jobs, guest qualification or live MiMo E2E.
-const officialPackage = "/opt/subscription-runtime/tools/codex-0.159.2-nested/node_modules/@openai/codex";
+// Opt-in installed qualification: normal CI does not provide this host package.
+// Explicit missing paths and wrong versions fail before any request.
+const officialPackage = process.env.SUBSCRIPTION_RUNTIME_CODEX_01592_PACKAGE;
 
-it("closes the actual 0.159.2 HTTP inventory through the production client while retaining external ACTIVE GoalAPI", async () => {
+it.skipIf(officialPackage === undefined)("closes the actual 0.159.2 HTTP inventory through the production client while retaining external ACTIVE GoalAPI", async () => {
+  assert(officialPackage, "explicit official Codex qualification package is required");
   expect(JSON.parse(await readFile(join(officialPackage, "package.json"), "utf8")).version).toBe("0.159.2");
   const root = await mkdtemp(join(tmpdir(), "NEWTEST-native-empty-wire-"));
   const home = join(root, "TEST-home"), codexHome = join(root, "TEST-codex-home"), workspace = join(root, "TEST-workspace");
