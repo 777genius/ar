@@ -78,6 +78,9 @@ export function researchRunConfig(request: ResearchOperatorRequest): CodexGoalRu
     executionEngine: "app-server-goal", modelBackend: CodexModelBackend.OpenAiChatGpt,
     stateRootDir: join(request.jobRootDir, "state"), runtimeHomeRootDir: join(request.jobRootDir, "home"),
     accessBoundary: AccessBoundary.IsolatedWorkspaceWrite, networkAccess: NetworkAccessMode.Restricted,
+    // Derive only the admitted workspace; job state, homes and Host authority
+    // stay outside the project scope. Agent temp uses the fixed temp contract.
+    projectAccessScope: { projectId: request.jobId, isolatedWorkspaceRoot: request.workspacePath, authRoot: request.authRootDir },
     prewarmOnStart: true, sourceEnv: { PATH: "/usr/bin:/bin", HOME: join(request.jobRootDir, "home"),
       SUBSCRIPTION_RUNTIME_JOB_ROOT: request.jobRootDir, SUBSCRIPTION_RUNTIME_TMPDIR: runtimeTempRoot,
       TMPDIR: agentTempRoot, TMP: agentTempRoot, TEMP: agentTempRoot,

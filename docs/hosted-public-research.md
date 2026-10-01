@@ -210,7 +210,15 @@ operator directory, for example `/root/TEST-research-r7/request.json` (directory
 The request has exactly these fields; no environment, payload, service options,
 provider backend, grant path or arbitrary tool profile is accepted. This route
 runs the existing app-server-goal executor with isolated workspace writes,
-restricted network, prewarm and state/home/tmp under the exact job root. The owner
+restricted network, prewarm and state/home/tmp under the exact job root.
+The mandatory project scope is derived from the validated request: the selected
+workspace is its only project root and the account auth root is explicitly
+excluded. The request accepts no scope or environment bag. Job state, account
+homes, private authority and sibling projects are outside that scope; fixed
+agent temp is admitted through the existing native temp permission mechanism.
+This configuration passes the unchanged access-launch validator; its source
+regression reproduces the old missing-project-scope rejection. Native filesystem
+and source retrieval behavior remain separate Host qualification evidence. The owner
 derives `SUBSCRIPTION_RUNTIME_JOB_ROOT=jobRoot` and
 `SUBSCRIPTION_RUNTIME_TMPDIR=jobRoot/tmp`, with `TMPDIR`, `TMP`, and `TEMP` all
 equal to `jobRoot/tmp/agent`, exactly as the existing CLI. The real runner's
