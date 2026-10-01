@@ -17,8 +17,16 @@ export function codexAppServerToolConfig(input: {
       skill_mcp_dependency_install: false,
       ...(nativeToolsDisabled ? { shell_tool: false, unified_exec: false } : {}),
       ...(input.fastMode ? { fast_mode: true } : {}),
-      ...(input.goalMode ? { goals: true } : {}),
+      // External GoalAPI works on persistent threads without exposing native
+      // goal or request-input tools to the model.
+      ...(nativeToolsDisabled
+        ? { goals: false, default_mode_request_user_input: false }
+        : input.goalMode
+          ? { goals: true }
+          : {}),
     },
-    ...(nativeToolsDisabled ? { tools: { view_image: false } } : {}),
+    ...(nativeToolsDisabled
+      ? { tools: { view_image: false, experimental_request_user_input: { enabled: false } } }
+      : {}),
   };
 }
