@@ -11,7 +11,7 @@ import type { CodexAppServerChildProcess } from "../../app-server/application/ap
 import { StaticRunner } from "../codex-provider-test-support";
 
 type Request = { id: number; method: string };
-async function fixture(kind: "ordinary" | "child" | "controller") {
+async function fixture(kind: "ordinary" | "child" | "controller", goalMode = kind !== "ordinary") {
   const root = await mkdtemp(join(tmpdir(), "TEST-completion-pipe-"));
   let child: ChildProcess | undefined;
   const requests: Request[] = [];
@@ -24,7 +24,7 @@ async function fixture(kind: "ordinary" | "child" | "controller") {
     maxGoalTurns: 2, binding: { allocationId: "TEST-allocation", incarnationId: "TEST-incarnation" }, onReadiness: () => {} }) : undefined;
   const engine = new CodexAppServerExecutionEngine({ codexBinaryPath: "/TEST/completion-peer", sourceEnv: {},
     ...(childBudget ? { childBudget } : {}), ...(executionLifetime ? { executionLifetime } : {}),
-    goalMode: kind !== "ordinary", maxGoalTurns: 2, nativeToolSurface: "disabled", cleanThreadPrewarm: false,
+    goalMode, maxGoalTurns: 2, nativeToolSurface: "disabled", cleanThreadPrewarm: false,
     processFactory: () => {
       child = fork(fileURLToPath(new URL("./completion-pipe-peer.mjs", import.meta.url)), [], {
         env: { TEST_ROOT: root }, detached: true, stdio: ["pipe", "pipe", "pipe", "ipc"] });
@@ -45,10 +45,10 @@ async function fixture(kind: "ordinary" | "child" | "controller") {
   void run.catch(() => {});
   reply(await next("initialize"), {});
   reply(await next("thread/start"), { thread: { id: "TEST-thread" } });
-  if (kind !== "ordinary") reply(await next("thread/goal/set"), {
+  if (goalMode) reply(await next("thread/goal/set"), {
     goal: { threadId: "TEST-thread", objective: "TEST objective", status: "active" } });
   const turn = await next("turn/start");
-  return { run, abort, requests, child: child!, complete: (completed = true) => burst([
+  return { run, abort, requests, next, reply, child: child!, complete: (completed = true) => burst([
     { id: turn.id, result: { turn: { id: "TEST-turn" } } },
     { method: "item/agentMessage/delta", params: { threadId: "TEST-thread", turnId: "TEST-turn", delta: "TEST complete" } },
     ...(completed ? [{ method: "turn/completed", params: { threadId: "TEST-thread", turn: { id: "TEST-turn", status: "completed" } } }] : []),
@@ -94,5 +94,49 @@ it("bounded completed wire burst cannot bypass expiry before its continuation", 
     f.complete();
     await expect(f.run).rejects.toThrow(/deadline_expired/);
     expect(f.requests.some(r => r.method === "thread/goal/get")).toBe(false);
+  } finally { await f.clean(); }
+});
+
+// A delivered terminal GoalAPI response completes an ordinary goal before a
+// later stdout listener cancels it. ACTIVE still needs its next work fence.
+it.each(["complete", "active"] as const)("ordinary final GoalAPI %s response followed by abort preserves its terminal meaning", async status => {
+  const f = await fixture("ordinary", true);
+  try {
+    f.complete();
+    const goal = await f.next("thread/goal/get");
+    f.child.stdout!.on("data", () => f.abort.abort(new Error("TEST abort after GoalAPI delivery")));
+    f.reply(goal, { goal: { threadId: "TEST-thread", objective: "TEST objective", status } });
+    if (status === "complete") expect((await f.run).outputText).toBe("TEST complete");
+    else await expect(f.run).rejects.toThrow(/aborted/);
+    expect(f.abort.signal.aborted).toBe(true);
+    expect(f.requests.map(r => r.method)).toEqual([
+      "initialize", "thread/start", "thread/goal/set", "turn/start", "thread/goal/get",
+    ]);
+  } finally { await f.clean(); }
+});
+
+it.each(["child", "controller"] as const)("%s final COMPLETE GoalAPI delivery still loses to late abort", async kind => {
+  const f = await fixture(kind);
+  try {
+    f.complete();
+    const goal = await f.next("thread/goal/get");
+    f.child.stdout!.on("data", () => f.abort.abort(new Error("TEST abort after bounded GoalAPI delivery")));
+    f.reply(goal, { goal: { threadId: "TEST-thread", objective: "TEST objective", status: "complete" } });
+    await expect(f.run).rejects.toThrow();
+    expect(f.abort.signal.aborted).toBe(true);
+    expect(f.requests.filter(r => r.method === "turn/start")).toHaveLength(1);
+  } finally { await f.clean(); }
+});
+
+it.each(["child", "controller"] as const)("%s final COMPLETE GoalAPI delivery still loses to expiry", async kind => {
+  const f = await fixture(kind);
+  try {
+    f.complete();
+    const goal = await f.next("thread/goal/get");
+    const wall = Date.now();
+    f.child.stdout!.on("data", () => vi.spyOn(Date, "now").mockReturnValue(wall + 10_000));
+    f.reply(goal, { goal: { threadId: "TEST-thread", objective: "TEST objective", status: "complete" } });
+    await expect(f.run).rejects.toThrow(/deadline_expired/);
+    expect(f.requests.filter(r => r.method === "turn/start")).toHaveLength(1);
   } finally { await f.clean(); }
 });

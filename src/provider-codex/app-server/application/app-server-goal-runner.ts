@@ -372,7 +372,10 @@ export class AppServerGoalRunner {
           missingUsageSinceGoal = false;
           untrustedUsageSinceGoal = false;
         }
-        this.options.client.assertExecutionActive(input.abortSignal);
+        // Ordinary goals linearize at the delivered terminal GoalAPI response.
+        // Bounded goals must also pass their original continuation fence.
+        const bounded = this.options.client.executionLifetime || this.options.client.childBudget;
+        if (bounded || goal.status !== "complete") this.options.client.assertExecutionActive(input.abortSignal);
         if (goal.status === "complete") {
           input.warnings.push(...this.options.client.drainWarnings());
           await this.options.runStore.complete({
@@ -380,7 +383,7 @@ export class AppServerGoalRunner {
             outputText: this.redactForStore(input.redactor, outputText),
             now: new Date(),
           });
-          this.options.client.assertExecutionActive(input.abortSignal);
+          if (bounded) this.options.client.assertExecutionActive(input.abortSignal);
           return {
             status: "completed",
             outputText,

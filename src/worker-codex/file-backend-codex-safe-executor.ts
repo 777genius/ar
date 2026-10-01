@@ -373,10 +373,11 @@ export class FileBackendCodexSafeExecutor {
           (input.safeExecutionPolicy?.continuationMode !== undefined && input.safeExecutionPolicy.continuationMode !== "disabled")) {
         throw new Error("codex_bounded_executor_continuation_denied");
       }
-      input = { ...input, abortSignal: AbortSignal.any([...(input.abortSignal ? [input.abortSignal] : []), lifetime.signal]) };
     }
-    const pending = this.runForeground(input);
-    return lifetime ? await lifetime.wait(pending, input.abortSignal) : await pending;
+    // The lifetime fences provider work inside the pool/driver. Its closure
+    // also requests cleanup; it must not cancel the runner's terminal journal
+    // writes or race away the structured attempt result during that cleanup.
+    return await this.runForeground(input);
   }
 
   private async runForeground(input: FileBackendCodexSafeExecutorRunInput): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
