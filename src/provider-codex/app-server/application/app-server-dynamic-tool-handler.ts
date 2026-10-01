@@ -1,4 +1,4 @@
-import { parseHostedControllerToolCall, type HostedControllerDynamicToolAdapter } from "../domain/hosted-controller-dynamic-tools";
+import { parseHostedControllerToolResult, parseHostedControllerToolCall, type HostedControllerToolResult, type HostedControllerDynamicToolAdapter } from "../domain/hosted-controller-dynamic-tools";
 
 /** Experimental Codex CLI 0.155.1 item/tool/call handler. It retains logical
  * call IDs for the whole process lifetime; saturation denies new calls. */
@@ -64,6 +64,7 @@ export class AppServerDynamicToolHandler {
     const replay = this.callIds.has(callKey);
     if (validIds && !replay && this.callIds.size < 512) this.callIds.add(callKey);
     let status = "unavailable";
+    let projection: HostedControllerToolResult | null = null;
     if (replay || !validIds || params?.namespace !== null || !call ||
       Object.keys(params).sort().join(",") !== "arguments,callId,namespace,threadId,tool,turnId") return this.respondUnavailable(id);
     if (!this.options.adapter || !this.threads.has(threadId) ||
@@ -79,14 +80,16 @@ export class AppServerDynamicToolHandler {
         const aborted = new Promise<never>((_, reject) => controller.signal.addEventListener("abort",
           () => reject(new Error("hosted_controller_call_cancelled")), { once: true }));
         const result = await Promise.race([this.options.adapter.dispatch(call, controller.signal), aborted]);
-        status = !localTimeout && result.status === "disabled" ? "disabled" : "unavailable";
+        projection = !localTimeout ? parseHostedControllerToolResult(result) : null;
+        status = projection?.status === "disabled" ? "disabled" : "unavailable";
       } catch { status = "unavailable"; }
       finally { clearTimeout(timer); this.pending.delete(key); }
       if (pending.cancelled || (controller.signal.aborted && !localTimeout) || this.options.isTerminal() ||
           !this.options.isActiveTurn(threadId, logicalTurnId)) return;
     }
-    this.options.respond(id, { success: false,
-      contentItems: [{ type: "inputText", text: `hosted_controller_${status}` }] });
+    const accepted = projection && projection.status !== "disabled" && projection.status !== "unavailable";
+    this.options.respond(id, { success: !!accepted && projection?.status !== "rejected",
+      contentItems: [{ type: "inputText", text: accepted ? JSON.stringify(projection) : `hosted_controller_${status}` }] });
   }
 
   private respondUnavailable(id: string | number): void {

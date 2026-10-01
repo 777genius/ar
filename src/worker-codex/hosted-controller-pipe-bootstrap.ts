@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { type Readable, type Writable } from "node:stream";
 import { HostedControllerFramedDispatcher, hostedControllerPipe, relayHostedControllerPipe } from "./hosted-controller-framed-dispatcher";
-import { bindHostedControllerOriginAndGrant, type HostedControllerRetainedOrigin } from "./hosted-controller-origin-binding";
+import { HostedControllerOriginCapability, bindHostedControllerOriginAndGrant, type HostedControllerRetainedOrigin } from "./hosted-controller-origin-binding";
+
+import { HostedControllerKeyedToolAdapter } from "./hosted-controller/tool-adapter";
 
 const bootstrapLimit = 4 * 1024 * 1024;
 
@@ -23,14 +25,16 @@ export function attachHostedControllerSystemdPipe(input: {
   readonly env: Readonly<Record<string, string>>;
   readonly readRetainedOrigin: () => HostedControllerRetainedOrigin;
   readonly readPrivateGrant: (origin: HostedControllerRetainedOrigin) => Buffer;
+  readonly keyedTools?: HostedControllerKeyedToolAdapter;
 }): HostedControllerFramedDispatcher {
   let dispatcher: HostedControllerFramedDispatcher | undefined;
   try {
     if (!input.child.stdin || !input.child.stdout) throw new Error("hosted_controller_pipe_unavailable");
     const verifyRetainedOriginAndGrant = bindHostedControllerOriginAndGrant(input);
     if (!verifyRetainedOriginAndGrant()) throw new Error("hosted_controller_pipe_authority_unavailable");
+    input.keyedTools?.assertBoundTo(HostedControllerOriginCapability.retain(input));
     const active = new HostedControllerFramedDispatcher(
-      hostedControllerPipe(input.child.stdout, input.child.stdin), { verifyRetainedOriginAndGrant });
+      hostedControllerPipe(input.child.stdout, input.child.stdin), { verifyRetainedOriginAndGrant, ...(input.keyedTools ? { retainedTools: input.keyedTools } : {}) });
     dispatcher = active;
     input.child.once("error", () => active.close());
     input.child.once("exit", () => active.close());

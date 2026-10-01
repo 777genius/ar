@@ -112,3 +112,26 @@ export function registerChildForegroundDeadlineTests({ fixture, runtimeDirectory
     expect(() => withHostedActivationFence(fence => readHostedOrdinaryProcessOrigin(fence))).toThrow("hosted_mimo_activation_closed");
   });
 }
+
+/** PR4 correlation seam on the actual PR3 immutable slot/ordinary store. */
+export function registerKeyedCorrelationTests(input: Parameters<typeof registerChildForegroundDeadlineTests>[0]): void {
+  it("PR4 persists predetermined reservation and start in the existing sync fence and refuses replay", () => {
+    const { store, launch } = enrolledTestChild(input.runtimeDirectory, input.read("readonly-inventory.json"), input.put);
+    const startId = "cccccccc-cccc-cccc-cccc-cccccccccccc", unit = `subscription-runtime-ordinary-${startId}.service`;
+    withHostedActivationFence(fence => {
+      const prepared = store.reserveOrdinaryRuntime(fence, launch.command, launch.args, launch.cwd, { startId, unit });
+      expect(prepared.reservation.startId).toBe(startId); expect(prepared.start.unit).toBe(unit);
+      expect(store.read().ordinaryStarts[0]!.startId).toBe(startId);
+      expect(input.read(`ordinary-starts/${startId}.json`).unit).toBe(unit);
+      expect(() => withHostedActivationFence(() => {})).toThrow(); // Same uninterrupted fence.
+      expect(() => store.reserveOrdinaryRuntime(fence, launch.command, launch.args, launch.cwd, { startId, unit })).toThrow();
+    });
+    expect(input.fixture.spawn).not.toHaveBeenCalled(); expect(store.read().ordinaryStarts).toHaveLength(1);
+  });
+  it("PR4 rejects changed unit correlation before publishing an ordinary reservation", () => {
+    const { store, launch } = enrolledTestChild(input.runtimeDirectory, input.read("readonly-inventory.json"), input.put);
+    withHostedActivationFence(fence => expect(() => store.reserveOrdinaryRuntime(fence, launch.command, launch.args, launch.cwd,
+      { startId: "cccccccc-cccc-cccc-cccc-cccccccccccc", unit: "foreign.service" })).toThrow());
+    expect(store.read().ordinaryStarts).toHaveLength(0); expect(input.fixture.spawn).not.toHaveBeenCalled();
+  });
+}

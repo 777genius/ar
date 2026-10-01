@@ -1,6 +1,8 @@
 import { Duplex, type Readable, type Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
-import { HostedControllerToolName, parseHostedControllerToolCall, type HostedControllerDynamicToolAdapter, type HostedControllerDynamicToolCall } from "@vioxen/subscription-runtime/provider-codex";
+import { HostedControllerToolName, parseHostedControllerToolCall, type HostedControllerDynamicToolAdapter, type HostedControllerDynamicToolCall, type HostedControllerToolResult, parseHostedControllerToolResult } from "@vioxen/subscription-runtime/provider-codex";
+
+import { assertHostedControllerKeyedToolAdapter, HostedControllerKeyedToolAdapter } from "./hosted-controller/tool-adapter";
 
 export const hostedControllerFrameLimit = 16 * 1024;
 /** Adapts systemd-run --pipe's separate stdout and stdin to one framed stream. */
@@ -36,13 +38,16 @@ type RequestFrame = { readonly version: 1; readonly kind: HostedControllerFrameK
 type ResponseFrame = { readonly version: 1; readonly kind: HostedControllerFrameKind.Response;
   readonly requestId: string; readonly status: "disabled" | "unavailable" };
 type CancelFrame = { readonly version: 1; readonly kind: HostedControllerFrameKind.Cancel; readonly requestId: string };
-type Frame = RequestFrame | ResponseFrame | CancelFrame;
+type ResultFrame = { readonly version: 1; readonly kind: HostedControllerFrameKind.Response;
+  readonly requestId: string; readonly result: HostedControllerToolResult };
+type Reply = "disabled" | "unavailable" | HostedControllerToolResult;
+type Frame = RequestFrame | ResponseFrame | ResultFrame | CancelFrame;
 
 /** Stdio-only full-duplex protocol. The host must recheck the retained process
  * origin and private grant for every call; neither is accepted on wire. */
 export class HostedControllerFramedDispatcher {
   private buffer = Buffer.alloc(0);
-  private readonly pending = new Map<string, { resolve: (status: "disabled" | "unavailable") => void; timer: NodeJS.Timeout }>();
+  private readonly pending = new Map<string, { resolve: (status: Reply) => void; timer: NodeJS.Timeout }>();
   private readonly seen = new Set<string>();
   private readonly cancelledOutbound = new Set<string>();
   private readonly active = new Map<string, AbortController>();
@@ -50,6 +55,7 @@ export class HostedControllerFramedDispatcher {
 
   constructor(private readonly stream: Duplex, private readonly options: {
     readonly verifyRetainedOriginAndGrant?: () => boolean;
+    readonly retainedTools?: HostedControllerKeyedToolAdapter;
   } = {}) {
     stream.on("data", (chunk: Buffer) => this.receive(Buffer.from(chunk)));
     stream.once("end", () => this.close());
@@ -57,13 +63,13 @@ export class HostedControllerFramedDispatcher {
     stream.once("error", () => this.close());
   }
 
-  async request(call: HostedControllerDynamicToolCall, signal: AbortSignal, timeoutMs = 5_000): Promise<"disabled" | "unavailable"> {
+  async request(call: HostedControllerDynamicToolCall, signal: AbortSignal, timeoutMs = 5_000): Promise<Reply> {
     if (this.closed || signal.aborted || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 5_000 || this.pending.size >= 16) return "unavailable";
     const requestId = randomUUID();
     const deadlineMs = Date.now() + timeoutMs;
     return await new Promise((resolve) => {
       let settled = false;
-      const finish = (status: "disabled" | "unavailable", cancel = false) => {
+      const finish = (status: Reply, cancel = false) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -108,12 +114,14 @@ export class HostedControllerFramedDispatcher {
     const frame = raw as Record<string, unknown>;
     if (frame.version !== 1 || typeof frame.requestId !== "string" || !/^[a-f0-9-]{36}$/.test(frame.requestId)) return false;
     if (frame.kind === HostedControllerFrameKind.Response) {
-      if (Object.keys(frame).sort().join(",") !== "kind,requestId,status,version" ||
-          (frame.status !== "disabled" && frame.status !== "unavailable")) return false;
+      const typed = Object.keys(frame).sort().join(",") === "kind,requestId,result,version"
+        ? parseHostedControllerToolResult(frame.result) : null;
+      if (!typed && (Object.keys(frame).sort().join(",") !== "kind,requestId,status,version" ||
+          (frame.status !== "disabled" && frame.status !== "unavailable"))) return false;
       const pending = this.pending.get(frame.requestId);
       if (!pending) return this.cancelledOutbound.has(frame.requestId);
       this.pending.delete(frame.requestId);
-      pending.resolve(frame.status);
+      pending.resolve(typed ?? frame.status as "disabled" | "unavailable");
       return true;
     }
     if (frame.kind === HostedControllerFrameKind.Cancel) {
@@ -137,13 +145,17 @@ export class HostedControllerFramedDispatcher {
     const delay = Math.max(1, (frame.deadlineMs as number) - Date.now());
     const timer = setTimeout(() => controller.abort(), delay);
     void (async () => {
-      let status: "disabled" | "unavailable" = "unavailable";
+      let status: Reply = "unavailable";
       try {
-        if (this.options.verifyRetainedOriginAndGrant?.() === true) status = "disabled";
+        if (this.options.retainedTools) {
+          assertHostedControllerKeyedToolAdapter(this.options.retainedTools);
+          status = await this.options.retainedTools.dispatch(parseHostedControllerToolCall(frame.tool, frame.arguments)!, controller.signal);
+        } else if (this.options.verifyRetainedOriginAndGrant?.() === true) status = "disabled";
       } catch { /* Fail closed without exposing host detail. */ }
       finally { clearTimeout(timer); this.active.delete(frame.requestId as string); }
       if (!this.closed && !controller.signal.aborted) this.send({ version: 1,
-        kind: HostedControllerFrameKind.Response, requestId: frame.requestId as string, status });
+        kind: HostedControllerFrameKind.Response, requestId: frame.requestId as string,
+        ...(typeof status === "string" ? { status } : { result: status }) });
     })();
     return true;
   }
@@ -172,5 +184,8 @@ export class HostedControllerFramedDispatcher {
 /** The bootstrap owns this object and the private pipe. It carries no identity
  * parameter that a model request or inherited environment can substitute. */
 export function hostedControllerAdapterFromFramedDispatcher(channel: HostedControllerFramedDispatcher): HostedControllerDynamicToolAdapter {
-  return { dispatch: async (call, signal) => ({ status: await channel.request(call, signal) }) };
+  return { dispatch: async (call, signal) => {
+    const result = await channel.request(call, signal);
+    return typeof result === "string" ? { status: result } : result;
+  } };
 }
