@@ -67,7 +67,14 @@ export async function runResearchProviderService(jobId: string, unit: string, se
   catch (error) {
     // Root-private observation only, never authority. Retain a finite phase;
     // raw stderr/errors can contain credentials and must remain private.
+    // Fixed internal frame labels only, never arbitrary stack/error text.
+    const checks = ["assertResearchInitialRoot", "assertResearchSharedHost", "researchCustody", "researchRead",
+      "researchCurrentStart", "researchServiceIdentity", "researchCommand", "researchProcessIdentity",
+      "assertResearchServiceOwner", "assertResearchStartAuthority", "assertAuthorityCurrent", "captureResearchRuntime"] as const;
+    const check = error instanceof Error ? error.stack?.split("\n").flatMap(line =>
+      checks.filter(name => line.trimStart().startsWith(`at ${name} (`)))[0] : undefined;
     try { researchPublish(join(directory, "provider-failure.json"), { schemaVersion: 1, unit, phase,
+      ...(check ? { check } : {}),
       ...(error instanceof Error && (error.cause === "file-deadline" || error.cause === "artifact-deadline") ? { observation: error.cause } : {}),
     }); }
     catch { /* Original denial remains authoritative when observation fails. */ }

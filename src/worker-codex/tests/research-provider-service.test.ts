@@ -81,7 +81,7 @@ describe("private finite launch diagnostics", () => {
     researchPublish(bindingPath, binding);
     await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
     expect(JSON.parse(researchRead(join(current.directory, "provider-failure.json")).toString())).toEqual({
-      schemaVersion: 1, unit: current.provider, phase: "runtime-capture",
+      schemaVersion: 1, unit: current.provider, phase: "runtime-capture", check: "captureResearchRuntime",
     });
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
