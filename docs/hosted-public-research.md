@@ -679,3 +679,15 @@ the helper and service, with150s outer startup. The fixed10s post-ready handoff,
 byte-walk bounds, confinement and other profiles remain unchanged. This is
 measured budget alignment, not qualification of a native source turn. Monitor setup duration and mount pressure;
 never remove confinement to obtain a faster launch.
+
+Root's next no-effect start failed while rechecking a previously terminal unit:
+the two-second `systemctl show` cap returned `host-command-timeout`, before a new
+active slot or provider submission. This research-only control read now has a
+five-second cap; other commands retain fifteen seconds. A failed observation
+still denies admission and never establishes inactivity. Binding publication
+and captured authority checks reread active/spec, closing, grant, custody and
+pinned directory facts after blocking process/service observations, including
+the exact retained binding when present. They do not repeat artifact walks or
+promise atomicity against a later operator change. Synthetic TEST regressions
+revoke or change authority inside the mocked final service query. Native source,
+confinement and cancellation qualification remains required before activation.

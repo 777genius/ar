@@ -60,15 +60,24 @@ export function assertResearchStartMaterial(spec: ResearchStartSpec): void {
   assertResearchMaterialBytes(spec);
   assertResearchStartAuthority(spec);
 }
+/** Blocking Host observations can overlap a separate operator's revoke/cancel.
+ * Recheck only mutable documents and pinned identities at the effect boundary. */
+function assertResearchCurrentAuthority(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer): void {
+  const fresh = researchCurrentStart(jobId);
+  if (existsSync(join(initial.directory, "closing.json")) || fresh.directory !== initial.directory || !fresh.bytes.equals(initial.bytes) ||
+      (bindingBytes !== undefined && !researchRead(join(initial.directory, "binding.json")).equals(bindingBytes))) researchInvalid();
+  assertResearchStartAuthority(initial.spec);
+}
 /** Capture real MainPID/birth/boot/InvocationID only from the new individually
  * owned service. The explicit initial-root operator staged its closed spec. */
 export function bindResearchRuntime(jobId: string, startId: string): ResearchStartSpec {
   assertResearchInitialRoot(); assertResearchSharedHost();
-  const { directory, spec, bytes } = researchCurrentStart(jobId);
+  const initial = researchCurrentStart(jobId), { directory, spec, bytes } = initial;
   if (spec.startId !== startId || existsSync(join(directory, "closing.json"))) researchInvalid();
   assertResearchStartMaterial(spec);
   const identity = researchProcessIdentity(), service = researchServiceIdentity(spec.unit);
   assertResearchServiceOwner(identity, service, researchDescription(jobId, researchHash(bytes)));
+  assertResearchCurrentAuthority(jobId, initial);
   researchPublish(join(directory, "binding.json"), {
     schemaVersion: 1, specSha256: researchHash(bytes), process: identity, service,
   } satisfies ResearchStartBinding, true);
@@ -84,14 +93,12 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
   if (spec.request.jobRootDir !== identity.jobRootDir || spec.request.workspacePath !== identity.workspacePath ||
       binding.specSha256 !== researchHash(initial.bytes) || binding.process.pid !== ownerPid || binding.service.unit !== spec.unit) researchInvalid();
   const assertAuthorityCurrent = (): void => {
-    const fresh = researchCurrentStart(identity.jobId);
-    if (existsSync(join(initial.directory, "closing.json")) || fresh.directory !== initial.directory || !fresh.bytes.equals(initial.bytes) ||
-        !researchRead(join(initial.directory, "binding.json")).equals(bindingBytes)) researchInvalid();
-    assertResearchStartAuthority(spec);
+    assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
     const current = researchProcessIdentity(ownerPid), service = researchServiceIdentity(spec.unit);
     assertResearchServiceOwner(current, service, researchDescription(identity.jobId, researchHash(initial.bytes)));
     if (JSON.stringify(current) !== JSON.stringify(binding.process) || JSON.stringify(service) !== JSON.stringify(binding.service) ||
         researchProcessIdentity().controlGroup !== current.controlGroup) researchInvalid();
+    assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
   };
   // Full effect guards retain their existing meaning. Recheck mutable authority
   // after a slow byte walk as well, immediately before the caller's effect.

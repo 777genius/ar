@@ -1,6 +1,6 @@
 import { host, local, request, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, linkSync, mkdirSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { grantResearchLaunch, startResearchLaunch, revokeResearchLaunch } from "../research-launch-owner";
 import { bindResearchRuntime, captureResearchRuntime, admitResearchProcessFactory, admitResearchRuntime, researchCurrentStart, researchProviderAdmissionGuard } from "../research-launch-admission";
@@ -34,6 +34,51 @@ function admitted() {
 }
 const invocation = () => ({ command: request().codexBinaryPath, args: ["app-server"], cwd: request().workspacePath,
   env: { HOME: join(request().jobRootDir, "home"), CODEX_HOME: join(request().jobRootDir, "home", "TEST-a"), SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } });
+
+describe("authority changes during blocking Host observations", () => {
+  it.each(["none", "grant", "closing", "active"])("rechecks %s before publishing a binding after systemctl returns", async fault => {
+    const started = start(); host.group = `/system.slice/${started.unit}`;
+    const current = researchCurrentStart(started.jobId);
+    const processes = await import("node:child_process"), sync = processes.spawnSync;
+    let observed = 0;
+    vi.spyOn(processes, "spawnSync").mockImplementation(((command: string, args: string[], options: never) => {
+      const response = sync(command, args, options);
+      if (command === "/usr/bin/systemctl" && args[0] === "show" && args[1] === started.unit) {
+        observed++;
+        if (fault === "grant") revokeResearchLaunch(started.jobId);
+        if (fault === "closing") researchPublish(join(current.directory, "closing.json"), { schemaVersion: 1 });
+        if (fault === "active") unlinkSync(local(join("/run/user/subscription-runtime-research-v1", researchHash(started.jobId), "active.json")));
+      }
+      return response;
+    }) as typeof processes.spawnSync);
+    if (fault === "none") expect(bindResearchRuntime(started.jobId, started.startId).startId).toBe(started.startId);
+    else expect(() => bindResearchRuntime(started.jobId, started.startId)).toThrow();
+    expect(observed).toBe(1);
+    expect(existsSync(local(join(current.directory, "binding.json")))).toBe(fault === "none");
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  it.each(["none", "grant", "closing", "binding"])("rechecks captured %s after the final systemctl observation", async fault => {
+    const current = admitted(), captured = captureResearchRuntime(request());
+    const processes = await import("node:child_process"), sync = processes.spawnSync;
+    let observed = 0;
+    vi.spyOn(processes, "spawnSync").mockImplementation(((command: string, args: string[], options: never) => {
+      const response = sync(command, args, options);
+      if (command === "/usr/bin/systemctl" && args[0] === "show" && args[1] === current.unit) {
+        observed++;
+        if (fault === "grant") revokeResearchLaunch(current.jobId);
+        if (fault === "closing") researchPublish(join(current.directory, "closing.json"), { schemaVersion: 1 });
+        if (fault === "binding") researchPublish(join(current.directory, "binding.json"), {
+          ...JSON.parse(researchRead(join(current.directory, "binding.json")).toString()), specSha256: "e".repeat(64),
+        });
+      }
+      return response;
+    }) as typeof processes.spawnSync);
+    if (fault === "none") expect(() => captured.assertAuthorityCurrent()).not.toThrow();
+    else expect(() => captured.assertAuthorityCurrent()).toThrow();
+    expect(observed).toBe(1);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+});
 
 describe("closed installed research launch owner (real TEST files; proc, mounts and systemd substituted)", () => {
   it("launches an individually owned pinned service and admits its actual retained origin before provider effects", async () => {
