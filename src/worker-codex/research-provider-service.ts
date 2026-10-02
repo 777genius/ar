@@ -13,7 +13,7 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   const stream = proxy.stdout;
   if (!stream) researchInvalid();
   const expected = Buffer.from("subscription-runtime-research-provider-ready-v1\n");
-  let received = 0, failed = false;
+  let received = 0, failed = false, readyDeadline = deadline;
   let observation: ResearchDenialObservation | undefined;
   let resolveReady!: () => void, rejectReady!: (error: Error) => void;
   const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
@@ -25,17 +25,22 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   };
   const check = (): boolean => {
     if (failed) return false;
-    try { assertPermission(); if (performance.now() >= deadline || proxy.exitCode !== null || proxy.signalCode !== null) researchInvalid(); }
+    try { assertPermission(); if (performance.now() >= readyDeadline || proxy.exitCode !== null || proxy.signalCode !== null) researchInvalid(); }
     catch (error) { denied(error); return false; }
     return true;
   };
   const onData = (chunk: Buffer): void => {
+    const observedAt = performance.now();
     if (!check()) return;
     // Match a bounded prefix without accumulating stream data. Every byte
     // after the exact frame is forbidden while bootstrap is still held.
     if (received + chunk.length > expected.length || !expected.subarray(received, received + chunk.length).equals(chunk)) { denied(); return; }
     received += chunk.length;
-    if (received === expected.length) resolveReady();
+    if (received === expected.length) {
+      // The fixed launcher allows ten seconds to receive bootstrap after ready.
+      readyDeadline = Math.min(deadline, observedAt + 10_000);
+      resolveReady();
+    }
   };
   const timer = setInterval(check, 25); // Fence/timeout polling, never proof of readiness.
   stream.on("data", onData); stream.once("end", denied); stream.once("close", denied); stream.once("error", denied);
@@ -84,7 +89,7 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
   phase("executable-custody");
   for (const path of [launch.command, "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
   const assertForwardPermission = (): void => {
-    captured.assertCurrent(); assertResearchProviderNotCancelled(directory, unit);
+    captured.assertAuthorityCurrent(); assertResearchProviderNotCancelled(directory, unit);
   };
   phase("submission-custody");
   assertForwardPermission();
@@ -95,7 +100,10 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
   publishSubmission(ResearchProviderSubmissionState.Pending, true);
   let child: ReturnType<typeof spawn> | undefined, proxyExited = false;
   try {
-    assertForwardPermission(); // Cancellation can race the pending publication.
+    // Material is checked at the actual launch boundary, never by readiness
+    // polling. Cancellation can race both the pending publication and the walk.
+    captured.assertCurrent();
+    assertForwardPermission();
     phase("systemd-submission");
     const proxy = spawn(launch.command, launch.args, { env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdio: ["pipe", "pipe", "pipe"] });
     child = proxy;
@@ -151,8 +159,14 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
         }
       }
       if (!assertRetainedOwner) researchInvalid();
-      // Leave stdout flowing under the control guard so queued data and EOF
-      // can be observed, including termination queued behind the ready frame.
+      // Exactly one full material walk during handoff. It must finish within
+      // both budgets; a file/artifact deadline remains a denial, never admission.
+      captured.assertCurrent();
+      const currentLaunch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome);
+      if (currentLaunch.command !== launch.command || JSON.stringify(currentLaunch.args) !== JSON.stringify(launch.args)) researchInvalid();
+      // Keep the control guard attached through the walk and then yield once:
+      // EOF/duplicates queued during synchronous Host I/O must latch before the
+      // final synchronous authority/owner/transport check and stdin release.
       await new Promise<void>(resolve => setImmediate(resolve));
       assertRetainedOwner();
       readiness.assertCurrent(); // An accepted start is not permission to send auth.

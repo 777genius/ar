@@ -33,13 +33,11 @@ export function readResearchStartBinding(directory: string): ResearchStartBindin
   researchRecord(r.service, "unit,mainPid,controlGroup,invocationId,description,fragmentSha256");
   return r as ResearchStartBinding;
 }
-export function assertResearchStartMaterial(spec: ResearchStartSpec): void {
+/** Mutable authority and pinned identities remain current even while the
+ * confined launcher is inert. This never traverses executable/artifact bytes. */
+function assertResearchStartAuthority(spec: ResearchStartSpec): void {
   assertResearchInitialRoot(); assertResearchSharedHost();
   researchCustody(spec.request.authRootDir);
-  if (spec.runtimeDirectory !== installedResearchRuntimeDirectory() ||
-      researchArtifactDigest(spec.runtimeDirectory) !== spec.artifactSha256 ||
-      researchExecutableDigest(process.execPath) !== spec.nodeSha256 ||
-      researchExecutableDigest(spec.request.codexBinaryPath) !== spec.codexSha256) researchInvalid();
   const grantBytes = researchRead(join(researchJobAuthority(spec.request.jobId), "grant.json"));
   const grant = parseResearchGrant(researchJson(grantBytes));
   if (researchHash(grantBytes) !== spec.grantSha256 || grant.jobId !== spec.request.jobId ||
@@ -50,6 +48,16 @@ export function assertResearchStartMaterial(spec: ResearchStartSpec): void {
   const pins = join(researchJobAuthority(spec.request.jobId), "starts", spec.startId, "pins");
   assertResearchDirectory(spec.jobDirectory, join(pins, "job"));
   assertResearchDirectory(spec.workspaceDirectory, join(pins, "workspace"));
+}
+function assertResearchMaterialBytes(spec: ResearchStartSpec): void {
+  if (spec.runtimeDirectory !== installedResearchRuntimeDirectory() ||
+      researchArtifactDigest(spec.runtimeDirectory) !== spec.artifactSha256 ||
+      researchExecutableDigest(process.execPath) !== spec.nodeSha256 ||
+      researchExecutableDigest(spec.request.codexBinaryPath) !== spec.codexSha256) researchInvalid();
+}
+export function assertResearchStartMaterial(spec: ResearchStartSpec): void {
+  assertResearchStartAuthority(spec);
+  assertResearchMaterialBytes(spec);
 }
 /** Capture real MainPID/birth/boot/InvocationID only from the new individually
  * owned service. The explicit initial-root operator staged its closed spec. */
@@ -67,24 +75,32 @@ export function bindResearchRuntime(jobId: string, startId: string): ResearchSta
 }
 export function captureResearchRuntime(identity: HostedTestEgressIdentity, ownerPid = process.pid): {
   readonly spec: ResearchStartSpec; readonly directory: string; readonly assertCurrent: () => void;
+  readonly assertAuthorityCurrent: () => void;
 } {
   assertResearchInitialRoot(); assertResearchSharedHost();
   const initial = researchCurrentStart(identity.jobId), bindingBytes = researchRead(join(initial.directory, "binding.json"));
   const binding = readResearchStartBinding(initial.directory), { spec } = initial;
   if (spec.request.jobRootDir !== identity.jobRootDir || spec.request.workspacePath !== identity.workspacePath ||
       binding.specSha256 !== researchHash(initial.bytes) || binding.process.pid !== ownerPid || binding.service.unit !== spec.unit) researchInvalid();
-  const assertCurrent = (): void => {
+  const assertAuthorityCurrent = (): void => {
     const fresh = researchCurrentStart(identity.jobId);
     if (existsSync(join(initial.directory, "closing.json")) || fresh.directory !== initial.directory || !fresh.bytes.equals(initial.bytes) ||
         !researchRead(join(initial.directory, "binding.json")).equals(bindingBytes)) researchInvalid();
-    assertResearchStartMaterial(spec);
+    assertResearchStartAuthority(spec);
     const current = researchProcessIdentity(ownerPid), service = researchServiceIdentity(spec.unit);
     assertResearchServiceOwner(current, service, researchDescription(identity.jobId, researchHash(initial.bytes)));
     if (JSON.stringify(current) !== JSON.stringify(binding.process) || JSON.stringify(service) !== JSON.stringify(binding.service) ||
         researchProcessIdentity().controlGroup !== current.controlGroup) researchInvalid();
   };
+  // Full effect guards retain their existing meaning. Recheck mutable authority
+  // after a slow byte walk as well, immediately before the caller's effect.
+  const assertCurrent = (): void => {
+    assertAuthorityCurrent();
+    assertResearchMaterialBytes(spec);
+    assertAuthorityCurrent();
+  };
   assertCurrent();
-  return Object.freeze({ spec, directory: initial.directory, assertCurrent });
+  return Object.freeze({ spec, directory: initial.directory, assertCurrent, assertAuthorityCurrent });
 }
 
 export function researchProviderAdmissionGuard(factory: CodexAppServerProcessFactory | undefined): (() => void) | undefined {

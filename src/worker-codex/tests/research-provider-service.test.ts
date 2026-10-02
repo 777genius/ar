@@ -5,7 +5,7 @@ import * as processes from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
-import { grantResearchLaunch, startResearchLaunch } from "../research-launch-owner";
+import { grantResearchLaunch, startResearchLaunch, revokeResearchLaunch } from "../research-launch-owner";
 import { admitResearchProcessFactory, bindResearchRuntime, researchCurrentStart } from "../research-launch-admission";
 import { researchHash, researchPublish, researchRead } from "../research-launch-files";
 import { researchProcessIdentity, researchServiceIdentity } from "../research-launch-host";
@@ -404,6 +404,167 @@ describe("owned research provider cancellation (real files and streams; systemd/
     expect(() => statusResearchLaunch(current.jobId)).toThrow(); // Observation cannot authenticate a terminal unit while its start is queued.
     host.jobs.clear();
     expect(cancelResearchLaunch(current.jobId)).toMatchObject({ terminal: true });
+  });
+});
+
+/** Model a three-second artifact traversal on slow Host I/O, still inside its
+ * unchanged four-second bound. All retained bytes/digests remain real; only the
+ * Host clock and directory-observation latency are substituted. */
+function slowBoundedMaterial() {
+  vi.useFakeTimers();
+  const origin = Date.now(); let materialTime = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => Date.now() - origin + materialTime);
+  const readDirectory = fs.readdirSync;
+  vi.spyOn(fs, "readdirSync").mockImplementation(((path: string, options: never) => {
+    if (path === "/TEST-artifact/dist") materialTime += 3_000;
+    return readDirectory(path, options);
+  }) as typeof fs.readdirSync);
+  return Object.assign(() => performance.now(), { advance: (elapsed: number) => { materialTime += elapsed; } });
+}
+
+describe("slow bounded material at research effect boundaries", () => {
+  it("holds bootstrap through 65.931s setup despite three-second verification, then meets the 10s handoff", async () => {
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
+    const now = slowBoundedMaterial(); host.spawn.mockImplementation(submit);
+    let readyAt = 0, releasedAt = 0;
+    proxy.stdin.once("data", () => { releasedAt = now(); proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+    const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => true, () => false);
+    await vi.advanceTimersByTimeAsync(65_931);
+    expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled();
+    readyAt = now();
+    for (const part of [readyFrame.slice(0, 7), readyFrame.slice(7, 28), readyFrame.slice(28)]) proxy.stdout.write(part);
+    await vi.advanceTimersByTimeAsync(0);
+    const success = await outcome;
+    console.info(`TEST substituted Host: success=${success}, ready-to-bootstrap=${releasedAt ? releasedAt - readyAt : "held"}ms; artifact walk=3000ms (bound=4000ms)`);
+    expect(success).toBe(true);
+    expect(releasedAt - readyAt).toBeLessThan(10_000);
+    expect(forwarded.length).toBeGreaterThan(0); expect(current.forward).toHaveBeenCalledOnce();
+    expect(record(current, ".owner").process.namespaces).toEqual(settledNamespaces);
+    expect(record(current, ".submission").state).toBe("settled");
+  });
+  it("performs bounded material verification once during the fixed 10s ready-to-bootstrap window", async () => {
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
+    const now = slowBoundedMaterial(); host.spawn.mockImplementation(submit);
+    let readyAt = 0, releasedAt = 0;
+    proxy.stdin.once("data", () => { releasedAt = now(); proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+    const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => true, () => false);
+    readyAt = now(); proxy.stdout.write(readyFrame);
+    await vi.advanceTimersByTimeAsync(0);
+    const success = await outcome;
+    console.info(`TEST substituted Host: success=${success}, ready-to-bootstrap=${releasedAt ? releasedAt - readyAt : "held"}ms; artifact walk=3000ms (bound=4000ms)`);
+    expect(success).toBe(true);
+    expect(releasedAt - readyAt).toBeLessThan(10_000);
+    expect(forwarded.length).toBeGreaterThan(0);
+  });
+  it("keeps bootstrap held when valid material plus slow ownership exceed the fixed 10s handoff", async () => {
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
+    const now = slowBoundedMaterial(), sync = fs.fsyncSync; host.spawn.mockImplementation(submit);
+    vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
+      sync(fd); if (host.fdPaths.get(fd)?.endsWith(current.provider + ".owner.json")) now.advance(9_500);
+    });
+    proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+    const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => false, () => true);
+    const readyAt = now(); proxy.stdout.write(readyFrame); await vi.advanceTimersByTimeAsync(0);
+    expect(await outcome).toBe(true); expect(now() - readyAt).toBeGreaterThan(10_000);
+    expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled();
+    expect(record(current, ".submission").state).toBe("pending");
+  });
+  it.each(["cancel", "revoke", "grant", "binding", "spec", "artifact", "executable", "job-pin", "runtime-owner"])(
+    "rejects retained %s mutation during inert waiting before any bootstrap", async fault => {
+      const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
+      host.spawn.mockImplementation(submit);
+      const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => false, () => true);
+      expect(forwarded).toHaveLength(0);
+      if (fault === "cancel") signalResearchProvider(current.directory, current.provider);
+      if (fault === "revoke") revokeResearchLaunch(current.jobId);
+      if (fault === "grant") { const path = join(current.directory, "..", "..", "grant.json"); researchPublish(path, { ...JSON.parse(researchRead(path).toString()), grantId: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee" }); }
+      if (fault === "binding") researchPublish(join(current.directory, "binding.json"), { ...JSON.parse(researchRead(join(current.directory, "binding.json")).toString()), specSha256: "e".repeat(64) });
+      if (fault === "spec") researchPublish(join(current.directory, "spec.json"), { ...current.spec, artifactSha256: "e".repeat(64) });
+      if (fault === "artifact") fs.writeFileSync(local("/TEST-artifact/dist/main.js"), "TEST mutated while inert");
+      if (fault === "executable") fs.writeFileSync(join(host.root, "executable"), "TEST changed executable while inert");
+      if (fault === "job-pin") host.pins.set(join(current.directory, "pins/job"), current.spec.request.workspacePath);
+      if (fault === "runtime-owner") host.units.get(current.unit)!.invocation = "e".repeat(32);
+      await new Promise(resolve => setTimeout(resolve, 35));
+      expect(forwarded).toHaveLength(0); proxy.stdout.write(readyFrame);
+      expect(await outcome).toBe(true); expect(current.forward).not.toHaveBeenCalled();
+      expect(forwarded).toHaveLength(0); expect(host.authReads).toBe(0);
+      expect(record(current, ".submission").state).toBe("pending");
+      expect(proxy.kill).toHaveBeenCalledWith("SIGTERM");
+    });
+  it.each(["source-inode", "source-owner", "mount-identity", "removed-policy"])(
+    "rechecks retained prepared scratch %s at bootstrap after inert waiting", async fault => {
+      const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
+      const resolve = scratch.resolvePreparedHostScratchBinds;
+      vi.spyOn(scratch, "resolvePreparedHostScratchBinds").mockImplementation((job, home) => resolve(job, home, f.host));
+      const { proxy, forwarded, submit } = providerProxy(current, true, false); host.spawn.mockImplementation(submit);
+      const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => false, () => true);
+      proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+      const selected = f.prepared[0]!, source = f.nodes.get(selected.source)!;
+      if (fault === "source-inode") f.nodes.set(selected.source, { ...source, ino: source.ino + 1 });
+      if (fault === "source-owner") f.nodes.set(selected.source, { ...source, uid: 999 });
+      if (fault === "mount-identity") f.mounts.set(selected.target, { ...f.mounts.get(selected.target)!, uuid: "TEST-foreign" });
+      if (fault === "removed-policy") f.nodes.delete(f.configPath);
+      expect(forwarded).toHaveLength(0); proxy.stdout.write(readyFrame);
+      expect(await outcome).toBe(true); expect(current.forward).not.toHaveBeenCalled();
+      expect(forwarded).toHaveLength(0); expect(host.authReads).toBe(0);
+      expect(record(current, ".submission").state).toBe("pending"); expect(f.mutations).toEqual([]);
+    });
+  it.each(["artifact-deadline", "file-deadline"])("preserves %s as denial during final material verification", async observation => {
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current); host.spawn.mockImplementation(submit);
+    const originalNow = performance.now.bind(performance); let elapsed = 0, ownerPublished = false;
+    vi.spyOn(performance, "now").mockImplementation(() => originalNow() + elapsed);
+    const sync = fs.fsyncSync;
+    vi.spyOn(fs, "fsyncSync").mockImplementation(fd => { sync(fd); if (host.fdPaths.get(fd)?.endsWith(current.provider + ".owner.json")) ownerPublished = true; });
+    const readDirectory = fs.readdirSync, stat = fs.lstatSync;
+    vi.spyOn(fs, "readdirSync").mockImplementation(((path: string, options: never) => {
+      if (ownerPublished && observation === "artifact-deadline" && path === "/TEST-artifact/dist") elapsed += 4_001;
+      return readDirectory(path, options);
+    }) as typeof fs.readdirSync);
+    vi.spyOn(fs, "lstatSync").mockImplementation(((path: string) => {
+      if (ownerPublished && observation === "file-deadline" && path === process.execPath) elapsed += 4_001;
+      return stat(path);
+    }) as typeof fs.lstatSync);
+    const error = await runResearchProviderService(current.jobId, current.provider, current.home).then(() => undefined, error => error as Error);
+    expect(error?.cause).toBe(observation);
+    expect(JSON.parse(researchRead(join(current.directory, "provider-failure.json")).toString())).toMatchObject({ phase: "ready-and-owner", observation });
+    expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(record(current, ".submission").state).toBe("pending");
+  });
+  it.each(["grant", "binding", "cancel"])("rechecks %s changed inside final synchronous material I/O", async fault => {
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current); host.spawn.mockImplementation(submit);
+    const sync = fs.fsyncSync, readDirectory = fs.readdirSync; let ownerPublished = false, changed = false;
+    vi.spyOn(fs, "fsyncSync").mockImplementation(fd => { sync(fd); if (host.fdPaths.get(fd)?.endsWith(current.provider + ".owner.json")) ownerPublished = true; });
+    vi.spyOn(fs, "readdirSync").mockImplementation(((path: string, options: never) => {
+      if (ownerPublished && !changed && path === "/TEST-artifact/dist") {
+        changed = true;
+        if (fault === "grant") revokeResearchLaunch(current.jobId);
+        if (fault === "binding") researchPublish(join(current.directory, "binding.json"), { ...JSON.parse(researchRead(join(current.directory, "binding.json")).toString()), specSha256: "e".repeat(64) });
+        if (fault === "cancel") signalResearchProvider(current.directory, current.provider);
+      }
+      return readDirectory(path, options);
+    }) as typeof fs.readdirSync);
+    proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+    const denied = await runResearchProviderService(current.jobId, current.provider, current.home).then(() => false, () => true);
+    expect(changed).toBe(true); expect(denied).toBe(true); expect(forwarded).toHaveLength(0);
+    expect(current.forward).not.toHaveBeenCalled(); expect(record(current, ".submission").state).toBe("pending");
+  });
+  it.each(["queued-duplicate", "queued-eof"])("observes %s queued during final material verification", async fault => {
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current);
+    host.spawn.mockImplementation(submit);
+    const sync = fs.fsyncSync, readDirectory = fs.readdirSync;
+    let ownerPublished = false, queued = false;
+    vi.spyOn(fs, "fsyncSync").mockImplementation(fd => { sync(fd); if (host.fdPaths.get(fd)?.endsWith(current.provider + ".owner.json")) ownerPublished = true; });
+    vi.spyOn(fs, "readdirSync").mockImplementation(((path: string, options: never) => {
+      if (ownerPublished && !queued && path === "/TEST-artifact/dist") {
+        queued = true; process.nextTick(() => fault === "queued-eof" ? proxy.stdout.end() : proxy.stdout.write(readyFrame));
+      }
+      return readDirectory(path, options);
+    }) as typeof fs.readdirSync);
+    proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+    const denied = await runResearchProviderService(current.jobId, current.provider, current.home).then(() => false, () => true);
+    expect(queued).toBe(true); expect(denied).toBe(true);
+    expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled();
+    expect(record(current, ".submission").state).toBe("pending");
   });
 });
 

@@ -74,6 +74,22 @@ changes cannot exhaust admission for later research turns.
 
 ## Supported shared Host launch owner
 
+### Native Linux sandbox prerequisite
+
+Install the distribution's `bubblewrap` and qualify its nested user namespace
+before native Codex research admission. On Ubuntu 24.04 with AppArmor userns
+restrictions, use the distribution's named `bwrap-userns-restrict` profile;
+retain the global restriction. See the [official prerequisites](https://learn.chatgpt.com/docs/sandboxing).
+Do not substitute disabling sandboxing or globally allowing user namespaces.
+
+On the selected qualification Host, bubblewrap `0.9.0-1ubuntu0.3` and the named
+profile from `apparmor-profiles` `4.0.1really4.0.1-0ubuntu0.24.04.8` were installed.
+The full selected NEW TEST confinement chain completed nested `bwrap/true`
+without account/model/auth, with readiness at65.931s and total66.727s.
+This qualifies the OS prerequisite, not native source retrieval. Each deployment
+still needs its actual native profile/source/cancellation receipt. Load or
+replace only the owned named profile; avoid blanket profile reloads or restarts.
+
 The supplied installed-source packet's nine source bodies matched their supplied
 SHA-256 values. They show legacy protected project-start -> broker ->
 `admitHostedControllerLaunch` -> tmux -> `run --no-tmux`. The supplied NEW TEST
@@ -154,6 +170,27 @@ The helper consumes that first frame (including fragmented bytes), checks the
 real settled PID/birth/boot/cgroup/InvocationID/fragment/namespaces twice, retains
 the owner, rechecks all fences and then releases held stdin. Native provider/user
 code has not started and cannot forge readiness through protocol/tool output.
+While this fixed launcher is inert, the 25 ms fence checks and every readiness
+chunk re-read current active/spec/binding bytes, the closing fence and exact
+grant, validate root/shared-Host/auth-root custody and canonical job/workspace
+identities plus their private pins, and corroborate runtime process/service
+identity and provider cancellation. They do not traverse the artifact or hash
+native executable material. Prompt selection and its pinned reader are unchanged.
+The existing full guards for account/session access and provider reservation
+retain full byte verification. The helper also performs full artifact/Node/Codex
+verification immediately before systemd submission and once during bootstrap
+handoff, with mutable authority rechecked after the walk. It revalidates the
+selected home and prepared scratch bindings against the submitted closed plan.
+The control monitor stays attached during that final material walk. An event-loop
+yield after verification observes queued duplicate frames and EOF; then retained
+provider ownership, current authority/cancellation and transport state are checked
+before the synchronous switch to stdout/stdin forwarding. The 90-second setup
+budget remains unchanged. Once the complete ready frame is observed, a separate
+10-second handoff bound matches the fixed launcher's bootstrap deadline. Each
+material walk still enforces its original byte/file/time limits; timeout is denial,
+including a retained finite file/artifact deadline observation, never admission.
+These private helper changes introduce no composition or provider SPI. Genuine
+shared-Host/native-provider qualification remains a separate root-run gate.
 Pre-submission and transport denials retain a root-private `provider-failure.json`
 with only a closed phase identifier and reserved unit. This observation carries
 no authority and never records raw errors, stderr, paths or credential contents.
