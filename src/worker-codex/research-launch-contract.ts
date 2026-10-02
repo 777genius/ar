@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { researchId, researchInvalid, researchPath, researchRecord, type ResearchDirectoryIdentity } from "./research-launch-files";
 import type { ResearchProcessIdentity, ResearchServiceIdentity } from "./research-launch-host";
 
+// Host-owned bounds: measured confined setup reached 98.7s with 4,359 mounts.
+export const researchProviderSetupTimeoutMs = 120_000;
+
 export type ResearchOperatorRequest = Readonly<{
   schemaVersion: 1; jobId: string; taskId: string; jobRootDir: string; workspacePath: string;
   promptPath: string; authRootDir: string; accounts: readonly string[]; codexBinaryPath: string;
@@ -81,7 +84,8 @@ export function researchRunConfig(request: ResearchOperatorRequest): CodexGoalRu
     // Derive only the admitted workspace; job state, homes and Host authority
     // stay outside the project scope. Agent temp uses the fixed temp contract.
     projectAccessScope: { projectId: request.jobId, isolatedWorkspaceRoot: request.workspacePath, authRoot: request.authRootDir },
-    prewarmOnStart: true, sourceEnv: { PATH: "/usr/bin:/bin", HOME: join(request.jobRootDir, "home"),
+    prewarmOnStart: true, appServerStartupTimeoutMs: researchProviderSetupTimeoutMs + 30_000,
+    sourceEnv: { PATH: "/usr/bin:/bin", HOME: join(request.jobRootDir, "home"),
       SUBSCRIPTION_RUNTIME_JOB_ROOT: request.jobRootDir, SUBSCRIPTION_RUNTIME_TMPDIR: runtimeTempRoot,
       TMPDIR: agentTempRoot, TMP: agentTempRoot, TEMP: agentTempRoot,
       SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } };

@@ -6,6 +6,7 @@ import { assertResearchProviderNotCancelled, readResearchProviderReservation, Re
 import { captureResearchRuntime, researchCurrentStart } from "./research-launch-admission";
 import { researchInvalid, researchPublish, type ResearchDenialObservation } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
+import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
 
 const denialChecks = ["assertResearchInitialRoot", "assertResearchSharedHost", "researchCustody", "researchRead",
   "researchCurrentStart", "researchServiceIdentity", "researchCommand", "researchProcessIdentity",
@@ -145,10 +146,10 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
     void terminal.catch(() => {}); // Observed below; never an unhandled early exit.
     void terminal.finally(() => clearTimeout(terminalTimer)).catch(() => {});
     let assertRetainedOwner: (() => void) | undefined;
-    // Native TEST setup took 44.3s on a shared Host with 3,929 mounts.
+    // Selected no-account TEST setup took 98.7s with 4,359 Host mounts.
     // Bound OS setup and ownership together within the outer app-server
     // startup budget; retain all fences and hold bootstrap throughout.
-    const deadline = performance.now() + 90_000;
+    const deadline = performance.now() + researchProviderSetupTimeoutMs;
     const assertTransportPermission = (): void => {
       assertForwardPermission();
       if (performance.now() >= deadline || proxyExited || transportFailed || proxy.stdin.destroyed || proxy.stdout.destroyed || proxy.stdout.readableEnded) researchInvalid();

@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative } from "node:path";
 import { lstatSync, realpathSync } from "node:fs";
-import { parseResearchStartSpec, type ResearchStartSpec } from "./research-launch-contract";
+import { parseResearchStartSpec, researchProviderSetupTimeoutMs, type ResearchStartSpec } from "./research-launch-contract";
 import { researchDescription, researchProviderUnitPattern } from "./research-launch-host";
 import { assertResearchDirectory, researchDirectoryIdentity, researchInvalid, researchName, researchPath } from "./research-launch-files";
 import { resolvePreparedHostScratchBinds, type ScratchTempHost } from "./host-scratch-temp";
@@ -66,6 +66,7 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
   const scratchBinds = resolvePreparedHostScratchBinds(request.jobRootDir, home, scratchHost);
   const properties = ["Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no",
     `BindsTo=${spec.unit}`, `PartOf=${spec.unit}`, `After=${spec.unit}`, "CPUQuota=200%", "MemoryHigh=2G", "MemoryMax=4G", "TasksMax=512",
+    `TimeoutStartSec=${researchProviderSetupTimeoutMs / 1000}s`,
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "IOWeight=25", "MemorySwapMax=0", "LimitCORE=0",
     "ProtectControlGroups=yes", "PrivateDevices=yes", "ProtectKernelModules=yes", "RestrictSUIDSGID=yes", "AmbientCapabilities=",
     "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP", "NoNewPrivileges=yes", "ProtectSystem=strict",

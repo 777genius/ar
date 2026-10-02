@@ -91,6 +91,7 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
   it("carries all three selected physical sources so independent providers see runtime-private data", async () => {
     const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
     const plan = trustedResearchProviderLaunch(current.spec, current.provider, current.home, f.host);
+    expect(plan.args).toContain("--property=TimeoutStartSec=120s");
     const runtime = trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes));
     const pinBinds = runtime.args.filter(arg => arg.startsWith("--property=BindPaths="));
     const selected = [
@@ -423,13 +424,13 @@ function slowBoundedMaterial() {
 }
 
 describe("slow bounded material at research effect boundaries", () => {
-  it("holds bootstrap through 65.931s setup despite three-second verification, then meets the 10s handoff", async () => {
+  it.each([65_931, 98_727])("holds bootstrap through %i ms setup despite three-second verification, then meets the 10s handoff", async setupMs => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     const now = slowBoundedMaterial(); host.spawn.mockImplementation(submit);
     let readyAt = 0, releasedAt = 0;
     proxy.stdin.once("data", () => { releasedAt = now(); proxy.exitCode = 0; proxy.emit("exit", 0, null); });
     const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => true, () => false);
-    await vi.advanceTimersByTimeAsync(65_931);
+    await vi.advanceTimersByTimeAsync(setupMs);
     expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled();
     readyAt = now();
     for (const part of [readyFrame.slice(0, 7), readyFrame.slice(7, 28), readyFrame.slice(28)]) proxy.stdout.write(part);
@@ -682,7 +683,7 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
         return result;
       });
       const rejected = expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow("hosted_research_launch_denied");
-      if (fault === "timeout") await vi.advanceTimersByTimeAsync(90_025);
+      if (fault === "timeout") await vi.advanceTimersByTimeAsync(120_025);
       await rejected;
       expect(current.forward).not.toHaveBeenCalled(); expect(forwarded).toHaveLength(0); expect(host.authReads).toBe(0);
       expect(() => record(current, ".owner")).toThrow(); expect(record(current, ".cancel").unit).toBe(current.provider);
