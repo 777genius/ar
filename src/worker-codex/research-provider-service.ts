@@ -52,15 +52,35 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
  * provider gets separate PID/user/mount namespaces and no host authority. */
 export async function runResearchProviderService(jobId: string, unit: string, selectedCodexHome: string): Promise<void> {
   if (!researchProviderUnitPattern.test(unit)) researchInvalid();
+  const { directory } = researchCurrentStart(jobId);
+  let phase: ResearchProviderLaunchPhase = "runtime-capture";
+  try { await runAdmittedResearchProvider(jobId, unit, selectedCodexHome, next => { phase = next; }); }
+  catch (error) {
+    // Root-private observation only, never authority. Retain a finite phase;
+    // raw stderr/errors can contain credentials and must remain private.
+    try { researchPublish(join(directory, "provider-failure.json"), { schemaVersion: 1, unit, phase }); }
+    catch { /* Original denial remains authoritative when observation fails. */ }
+    throw error;
+  }
+}
+
+type ResearchProviderLaunchPhase = "runtime-capture" | "reservation" | "service-plan" | "executable-custody" |
+  "submission-custody" | "systemd-submission" | "ready-and-owner" | "native-forwarding";
+async function runAdmittedResearchProvider(jobId: string, unit: string, selectedCodexHome: string,
+  phase: (next: ResearchProviderLaunchPhase) => void): Promise<void> {
   const { spec, directory } = researchCurrentStart(jobId), request = spec.request;
   const captured = captureResearchRuntime(request, process.ppid);
+  phase("reservation");
   const reservation = readResearchProviderReservation(directory, unit);
   assertResearchProviderNotCancelled(directory, unit);
+  phase("service-plan");
   const launch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome);
+  phase("executable-custody");
   for (const path of [launch.command, "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
   const assertForwardPermission = (): void => {
     captured.assertCurrent(); assertResearchProviderNotCancelled(directory, unit);
   };
+  phase("submission-custody");
   assertForwardPermission();
   const submissionPath = join(directory, "providers", unit + ".submission.json");
   const publishSubmission = (state: ResearchProviderSubmissionState, exclusive = false): void =>
@@ -70,6 +90,7 @@ export async function runResearchProviderService(jobId: string, unit: string, se
   let child: ReturnType<typeof spawn> | undefined, proxyExited = false;
   try {
     assertForwardPermission(); // Cancellation can race the pending publication.
+    phase("systemd-submission");
     const proxy = spawn(launch.command, launch.args, { env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdio: ["pipe", "pipe", "pipe"] });
     child = proxy;
     // Hold the provider bootstrap frame until the actual service PID/birth/boot is
@@ -98,6 +119,7 @@ export async function runResearchProviderService(jobId: string, unit: string, se
       assertForwardPermission();
       if (performance.now() >= deadline || proxyExited || transportFailed || proxy.stdin.destroyed || proxy.stdout.destroyed || proxy.stdout.readableEnded) researchInvalid();
     };
+    phase("ready-and-owner");
     const readiness = monitorResearchReady(proxy, assertTransportPermission, deadline);
     try {
       await readiness.ready;
@@ -129,6 +151,7 @@ export async function runResearchProviderService(jobId: string, unit: string, se
       assertRetainedOwner();
       readiness.assertCurrent(); // An accepted start is not permission to send auth.
       readiness.stop(); // No async gap between control consumption and forwarding.
+      phase("native-forwarding");
       proxy.stdout.pipe(process.stdout);
       inputReleased = true;
       process.stdin.pipe(proxy.stdin);

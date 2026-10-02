@@ -64,6 +64,29 @@ function providerProxy(current: ReturnType<typeof prepareHelper>, accept = true,
 const record = (current: ReturnType<typeof prepareHelper>, suffix: string) =>
   JSON.parse(researchRead(join(current.directory, "providers", current.provider + suffix + ".json")).toString());
 
+describe("private finite launch diagnostics", () => {
+  it("identifies pre-submission plan denial without persisting paths or the selected home", async () => {
+    const current = prepareHelper(), secretHome = "/TEST-never-log-this-home";
+    await expect(runResearchProviderService(current.jobId, current.provider, secretHome)).rejects.toThrow();
+    const bytes = researchRead(join(current.directory, "provider-failure.json")).toString();
+    expect(JSON.parse(bytes)).toEqual({ schemaVersion: 1, unit: current.provider, phase: "service-plan" });
+    expect(bytes).not.toContain(secretHome);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(() => record(current, ".submission")).toThrow();
+  });
+  it("keeps a changed runtime binding denied and records only the capture phase", async () => {
+    const current = prepareHelper();
+    const bindingPath = join(current.directory, "binding.json");
+    const binding = JSON.parse(researchRead(bindingPath).toString()); binding.process.pid++;
+    researchPublish(bindingPath, binding);
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
+    expect(JSON.parse(researchRead(join(current.directory, "provider-failure.json")).toString())).toEqual({
+      schemaVersion: 1, unit: current.provider, phase: "runtime-capture",
+    });
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+});
+
 describe("authenticated prepared scratch visibility (synthetic Host, no OS mounts)", () => {
   it("carries all three selected physical sources so independent providers see runtime-private data", async () => {
     const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);

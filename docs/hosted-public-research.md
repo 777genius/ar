@@ -154,6 +154,10 @@ The helper consumes that first frame (including fragmented bytes), checks the
 real settled PID/birth/boot/cgroup/InvocationID/fragment/namespaces twice, retains
 the owner, rechecks all fences and then releases held stdin. Native provider/user
 code has not started and cannot forge readiness through protocol/tool output.
+Pre-submission and transport denials retain a root-private `provider-failure.json`
+with only a closed phase identifier and reserved unit. This observation carries
+no authority and never records raw errors, stderr, paths or credential contents.
+
 The readiness/ownership deadline is fifteen seconds; unexpected/oversized output,
 stream errors, EOF, transport exit and cancellation fail closed. Polling detects
 fences and timeout; a sleep never establishes readiness. The launcher bounds
