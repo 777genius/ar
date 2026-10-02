@@ -9,7 +9,8 @@ export function researchCommand(command: string, args: readonly string[]): strin
   researchCustody(command);
   const result = spawnSync(command, [...args], { encoding: "utf8", timeout: args[0] === "show" ? 2_000 : 15_000, maxBuffer: 1024 * 1024,
     env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdio: ["ignore", "pipe", "pipe"] });
-  if (result.error || result.status !== 0) researchInvalid();
+  if (result.error || result.status !== 0) researchInvalid((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
+    ? "host-command-timeout" : "host-command-failed");
   return result.stdout;
 }
 export function assertResearchInitialRoot(operator = false): void {

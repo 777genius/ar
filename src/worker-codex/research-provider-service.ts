@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { assertResearchProviderNotCancelled, readResearchProviderReservation, ResearchProviderSubmissionState,
   signalResearchProvider } from "./research-launch-lifecycle";
 import { captureResearchRuntime, researchCurrentStart } from "./research-launch-admission";
-import { researchInvalid, researchPublish, type ResearchDenialObservation } from "./research-launch-files";
+import { isResearchDenialObservation, researchInvalid, researchPublish, type ResearchDenialObservation } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
 import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
 
@@ -34,7 +34,7 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   // Rejection alone has no effect once ready has resolved. Keep the failure
   // latched until the synchronous transition to native protocol forwarding.
   const denied = (error?: unknown): void => {
-    if (error instanceof Error && (error.cause === "file-deadline" || error.cause === "artifact-deadline")) observation = error.cause;
+    if (error instanceof Error && isResearchDenialObservation(error.cause)) observation = error.cause;
     failed = true;
     refusal ??= new Error("hosted_research_launch_denied", { cause: observation });
     const check = denialCheck(error);
@@ -89,7 +89,7 @@ export async function runResearchProviderService(jobId: string, unit: string, se
     const check = denialCheck(error);
     try { researchPublish(join(directory, "provider-failure.json"), { schemaVersion: 1, unit, phase,
       ...(check ? { check } : {}),
-      ...(error instanceof Error && (error.cause === "file-deadline" || error.cause === "artifact-deadline") ? { observation: error.cause } : {}),
+      ...(error instanceof Error && isResearchDenialObservation(error.cause) ? { observation: error.cause } : {}),
     }); }
     catch { /* Original denial remains authoritative when observation fails. */ }
     throw error;

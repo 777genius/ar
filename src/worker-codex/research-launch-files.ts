@@ -8,7 +8,10 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 // authority. It is separate from /run/user/0's TEST/global policy directories.
 export const researchAuthorityRoot = "/run/user/subscription-runtime-research-v1";
 export const researchHash = (bytes: string | Buffer): string => createHash("sha256").update(bytes).digest("hex");
-export type ResearchDenialObservation = "artifact-deadline" | "file-deadline";
+export type ResearchDenialObservation = "artifact-deadline" | "file-deadline" | "host-command-timeout" | "host-command-failed";
+export function isResearchDenialObservation(value: unknown): value is ResearchDenialObservation {
+  return value === "artifact-deadline" || value === "file-deadline" || value === "host-command-timeout" || value === "host-command-failed";
+}
 export function researchInvalid(observation?: ResearchDenialObservation): never {
   throw new Error("hosted_research_launch_denied", { cause: observation });
 }

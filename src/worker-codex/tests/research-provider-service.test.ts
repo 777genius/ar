@@ -424,6 +424,25 @@ function slowBoundedMaterial() {
 }
 
 describe("slow bounded material at research effect boundaries", () => {
+  it.each(["timeout", "nonzero"])("retains a closed Host command %s observation before bootstrap", async fault => {
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
+    const original = processes.spawnSync;
+    host.spawn.mockImplementation(submit);
+    const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => undefined, error => error as Error);
+    vi.spyOn(processes, "spawnSync").mockImplementation(((command: string, args: string[], options: never) => {
+      if (command === "/usr/bin/systemctl" && args[0] === "show") return fault === "timeout"
+        ? { status: null, error: Object.assign(new Error("TEST private transport detail"), { code: "ETIMEDOUT" }), stdout: "", stderr: "TEST private detail" }
+        : { status: 1, stdout: "", stderr: "TEST private detail" };
+      return original(command, args, options);
+    }) as typeof processes.spawnSync);
+    proxy.stdout.write(readyFrame);
+    const observation = fault === "timeout" ? "host-command-timeout" : "host-command-failed";
+    expect((await outcome)?.cause).toBe(observation);
+    const diagnostic = researchRead(join(current.directory, "provider-failure.json")).toString();
+    expect(JSON.parse(diagnostic)).toMatchObject({ observation, check: "researchCommand" });
+    expect(diagnostic).not.toContain("private");
+    expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
   it.each([65_931, 98_727])("holds bootstrap through %i ms setup despite three-second verification, then meets the 10s handoff", async setupMs => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     const now = slowBoundedMaterial(); host.spawn.mockImplementation(submit);
