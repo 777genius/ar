@@ -158,7 +158,7 @@ Pre-submission and transport denials retain a root-private `provider-failure.jso
 with only a closed phase identifier and reserved unit. This observation carries
 no authority and never records raw errors, stderr, paths or credential contents.
 
-The readiness/ownership deadline is fifteen seconds; unexpected/oversized output,
+The readiness/ownership deadline is ninety seconds; unexpected/oversized output,
 stream errors, EOF, transport exit and cancellation fail closed. Polling detects
 fences and timeout; a sleep never establishes readiness. The launcher bounds
 bootstrap to ten seconds and the existing 4 MiB frame limit. The direct transport
@@ -630,3 +630,9 @@ Those are supplied reference facts; upstream bytes were not fetched in this
 provider-only sandbox. This is neither Assembly adoption nor migration and
 imposes no GM dependency. Accepted ADR bytes are unchanged. Existing module
 boundaries/import checks remain the authority; there is no universal manager.
+
+Shared-Host TEST qualification observed 44.3 seconds of fixed namespace setup
+with 3,929 root mount records. This is one bounded observation, not a latency SLO
+or proof of the underlying kernel cause. The 90-second budget remains below the
+outer app-server startup default. Monitor setup duration and mount pressure;
+never remove confinement to obtain a faster launch.

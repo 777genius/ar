@@ -408,16 +408,16 @@ describe("owned research provider cancellation (real files and streams; systemd/
 });
 
 describe("bounded confined-launcher readiness (real streams; settled proc/systemd observations substituted)", () => {
-  it("admits settled readiness after six seconds without releasing bootstrap while waiting", async () => {
+  it("admits settled readiness after forty-six seconds without releasing bootstrap while waiting", async () => {
     vi.useFakeTimers();
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     host.spawn.mockImplementation(submit);
     proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
-    // Capture rejection immediately so the old five-second deadline fails the
+    // Capture rejection immediately so the old fifteen-second deadline fails the
     // outcome assertion, rather than producing an unhandled rejection.
     const outcome = runResearchProviderService(current.jobId, current.provider, current.home)
       .then(() => true, () => false);
-    await vi.advanceTimersByTimeAsync(6025);
+    await vi.advanceTimersByTimeAsync(46_025);
     expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled();
     expect(() => record(current, ".owner")).toThrow();
     proxy.stdout.write(readyFrame);
@@ -519,7 +519,7 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
         return result;
       });
       const rejected = expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow("hosted_research_launch_denied");
-      if (fault === "timeout") await vi.advanceTimersByTimeAsync(15_025);
+      if (fault === "timeout") await vi.advanceTimersByTimeAsync(90_025);
       await rejected;
       expect(current.forward).not.toHaveBeenCalled(); expect(forwarded).toHaveLength(0); expect(host.authReads).toBe(0);
       expect(() => record(current, ".owner")).toThrow(); expect(record(current, ".cancel").unit).toBe(current.provider);
