@@ -8,7 +8,10 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 // authority. It is separate from /run/user/0's TEST/global policy directories.
 export const researchAuthorityRoot = "/run/user/subscription-runtime-research-v1";
 export const researchHash = (bytes: string | Buffer): string => createHash("sha256").update(bytes).digest("hex");
-export function researchInvalid(): never { throw new Error("hosted_research_launch_denied"); }
+export type ResearchDenialObservation = "artifact-deadline" | "file-deadline";
+export function researchInvalid(observation?: ResearchDenialObservation): never {
+  throw new Error("hosted_research_launch_denied", { cause: observation });
+}
 export function researchName(jobId: string): string { return researchHash(jobId); }
 export function researchPath(value: unknown): string {
   if (typeof value !== "string" || !isAbsolute(value) || resolve(value) !== value ||
@@ -107,7 +110,7 @@ export function researchFileDigest(path: string, options: {
   maxBytes: number; deadline: number; cache: ResearchFileHashCache; cacheEntries: number;
   executable?: boolean; expected?: Stats;
 }): string {
-  const checkTime = (): void => { if (performance.now() > options.deadline) researchInvalid(); };
+  const checkTime = (): void => { if (performance.now() > options.deadline) researchInvalid("file-deadline"); };
   if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 0 || !Number.isFinite(options.deadline) ||
       !Number.isSafeInteger(options.cacheEntries) || options.cacheEntries < 1) researchInvalid();
   checkTime(); researchCustody(path);
@@ -154,7 +157,8 @@ export function researchArtifactDigest(runtimeDirectory: string): string {
   const visit = (path: string): void => {
     if (visited.has(path)) return;
     visited.add(path);
-    if (++entries > 50000 || performance.now() - startedAt > 4000) researchInvalid();
+    if (++entries > 50000) researchInvalid();
+    if (performance.now() - startedAt > 4000) researchInvalid("artifact-deadline");
     const stat = lstatSync(path), name = relative(runtimeDirectory, path);
     if (stat.uid !== 0 || (!stat.isSymbolicLink() && (stat.mode & 0o022))) researchInvalid();
     if (stat.isSymbolicLink()) {
@@ -174,7 +178,7 @@ export function researchArtifactDigest(runtimeDirectory: string): string {
     } else researchInvalid();
   };
   for (const name of ["dist", "host-integration", "node_modules", "package.json"]) visit(join(runtimeDirectory, name));
-  if (performance.now() - startedAt > 4000) researchInvalid();
+  if (performance.now() - startedAt > 4000) researchInvalid("artifact-deadline");
   return researchHash(JSON.stringify(rows));
 }
 const artifactFileHashes: ResearchFileHashCache = new Map();

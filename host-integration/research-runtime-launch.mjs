@@ -26,6 +26,7 @@ try {
     'Refusing to hide nonempty legacy scratch directory', 'Scratch bind target busy',
     'Unknown mount at scratch target', 'Prepared scratch source identity changed'];
   const code = known.indexOf(error?.message);
-  process.stderr.write(`hosted_research_runtime_launch_denied:${phase}:${code < 0 ? 'unclassified' : code}\n`);
+  const witness = ["artifact-deadline", "file-deadline"].includes(error?.cause) ? error.cause : "none";
+  process.stderr.write(`hosted_research_runtime_launch_denied:${phase}:${code < 0 ? 'unclassified' : code}:${witness}\n`);
   process.exitCode = 70;
 }
