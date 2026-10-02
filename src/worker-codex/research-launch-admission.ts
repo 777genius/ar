@@ -58,6 +58,7 @@ function assertResearchMaterialBytes(spec: ResearchStartSpec): void {
 export function assertResearchStartMaterial(spec: ResearchStartSpec): void {
   assertResearchStartAuthority(spec);
   assertResearchMaterialBytes(spec);
+  assertResearchStartAuthority(spec);
 }
 /** Capture real MainPID/birth/boot/InvocationID only from the new individually
  * owned service. The explicit initial-root operator staged its closed spec. */

@@ -737,3 +737,68 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
       expect(record(current, ".submission").state).toBe(["exit", "signal"].includes(fault) ? "settled" : "pending");
     });
 });
+
+describe("independent review: selected plan changes across the added handoff yield", () => {
+  it.each(["unchanged", "source-inode", "removed-policy"])("checks queued %s before bootstrap", async fault => {
+    const current = prepareHelper();
+    const f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
+    const resolve = scratch.resolvePreparedHostScratchBinds;
+    let planReads = 0, changed = false;
+    vi.spyOn(scratch, "resolvePreparedHostScratchBinds").mockImplementation((job, home) => {
+      const result = resolve(job, home, f.host);
+      if (++planReads === 2) process.nextTick(() => {
+        if (fault === "source-inode") {
+          const selected = f.prepared[0]!;
+          const source = f.nodes.get(selected.source)!;
+          f.nodes.set(selected.source, { ...source, ino: source.ino + 1 });
+          changed = true;
+        }
+        if (fault === "removed-policy") { f.nodes.delete(f.configPath); changed = true; }
+      });
+      return result;
+    });
+    const { proxy, forwarded, submit } = providerProxy(current);
+    host.spawn.mockImplementation(submit);
+    proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+    let denied = false;
+    try { await runResearchProviderService(current.jobId, current.provider, current.home); } catch { denied = true; }
+    let planNowMatches = false;
+    try {
+      planNowMatches = JSON.stringify(trustedResearchProviderLaunch(current.spec, current.provider, current.home).args) ===
+        JSON.stringify(host.spawn.mock.calls[0]![1]);
+    } catch { /* Changed selected source is now explicitly refused by the existing validator. */ }
+    console.info(JSON.stringify({ fault, changed, denied, planNowMatches, bootstrapBytes: Buffer.concat(forwarded).length, forwardCalls: current.forward.mock.calls.length, submission: record(current, ".submission").state }));
+    if (fault === "unchanged") {
+      expect(denied).toBe(false); expect(forwarded.length).toBeGreaterThan(0);
+    } else {
+      expect(changed).toBe(true); expect(planNowMatches).toBe(false);
+      expect(denied).toBe(true); expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled();
+    }
+  });
+});
+
+
+describe("independent review: runtime binding authority after material I/O", () => {
+  it.each(["unchanged", "revoke-during-walk"])("checks %s before publishing binding", fault => {
+    const req = request();
+    grantResearchLaunch(req.jobId, req.jobRootDir, req.workspacePath);
+    const start = startResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")));
+    host.group = "/system.slice/" + start.unit;
+    const current = researchCurrentStart(start.jobId);
+    const original = fs.readdirSync;
+    let changed = false;
+    vi.spyOn(fs, "readdirSync").mockImplementation(((path: string, options: never) => {
+      if (fault === "revoke-during-walk" && !changed && path === "/TEST-artifact/dist") {
+        changed = true; revokeResearchLaunch(start.jobId);
+      }
+      return original(path, options);
+    }) as typeof fs.readdirSync);
+    let denied = false;
+    try { bindResearchRuntime(start.jobId, start.startId); } catch { denied = true; }
+    const bindingExists = fs.existsSync(join(current.directory, "binding.json"));
+    const grantExists = fs.existsSync(join(current.directory, "..", "..", "grant.json"));
+    console.info(JSON.stringify({ fault, changed, denied, bindingExists, grantExists }));
+    if (fault === "unchanged") { expect(denied).toBe(false); expect(bindingExists).toBe(true); }
+    else { expect(changed).toBe(true); expect(grantExists).toBe(false); expect(denied).toBe(true); expect(bindingExists).toBe(false); }
+  });
+});

@@ -175,6 +175,8 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
       // EOF/duplicates queued during synchronous Host I/O must latch before the
       // final synchronous authority/owner/transport check and stdin release.
       await new Promise<void>(resolve => setImmediate(resolve));
+      const settledLaunch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome);
+      if (settledLaunch.command !== launch.command || JSON.stringify(settledLaunch.args) !== JSON.stringify(launch.args)) researchInvalid();
       assertRetainedOwner();
       readiness.assertCurrent(); // An accepted start is not permission to send auth.
       readiness.stop(); // No async gap between control consumption and forwarding.
