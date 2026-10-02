@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { assertResearchProviderNotCancelled, readResearchProviderReservation, ResearchProviderSubmissionState,
   signalResearchProvider } from "./research-launch-lifecycle";
 import { captureResearchRuntime, researchCurrentStart } from "./research-launch-admission";
-import { researchInvalid, researchPublish } from "./research-launch-files";
+import { researchInvalid, researchPublish, type ResearchDenialObservation } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
 
 /** The first bytes belong solely to the fixed confined launcher, before it has
@@ -14,15 +14,19 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   if (!stream) researchInvalid();
   const expected = Buffer.from("subscription-runtime-research-provider-ready-v1\n");
   let received = 0, failed = false;
+  let observation: ResearchDenialObservation | undefined;
   let resolveReady!: () => void, rejectReady!: (error: Error) => void;
   const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   // Rejection alone has no effect once ready has resolved. Keep the failure
   // latched until the synchronous transition to native protocol forwarding.
-  const denied = (): void => { failed = true; rejectReady(new Error("hosted_research_launch_denied")); };
+  const denied = (error?: unknown): void => {
+    if (error instanceof Error && (error.cause === "file-deadline" || error.cause === "artifact-deadline")) observation = error.cause;
+    failed = true; rejectReady(new Error("hosted_research_launch_denied", { cause: observation }));
+  };
   const check = (): boolean => {
     if (failed) return false;
     try { assertPermission(); if (performance.now() >= deadline || proxy.exitCode !== null || proxy.signalCode !== null) researchInvalid(); }
-    catch { denied(); return false; }
+    catch (error) { denied(error); return false; }
     return true;
   };
   const onData = (chunk: Buffer): void => {
@@ -39,7 +43,7 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   check();
   return {
     ready,
-    assertCurrent: (): void => { if (!check()) researchInvalid(); },
+    assertCurrent: (): void => { if (!check()) researchInvalid(observation); },
     stop: (): void => {
       clearInterval(timer);
       stream.off("data", onData); stream.off("end", denied); stream.off("close", denied); stream.off("error", denied);
@@ -58,7 +62,9 @@ export async function runResearchProviderService(jobId: string, unit: string, se
   catch (error) {
     // Root-private observation only, never authority. Retain a finite phase;
     // raw stderr/errors can contain credentials and must remain private.
-    try { researchPublish(join(directory, "provider-failure.json"), { schemaVersion: 1, unit, phase }); }
+    try { researchPublish(join(directory, "provider-failure.json"), { schemaVersion: 1, unit, phase,
+      ...(error instanceof Error && (error.cause === "file-deadline" || error.cause === "artifact-deadline") ? { observation: error.cause } : {}),
+    }); }
     catch { /* Original denial remains authoritative when observation fails. */ }
     throw error;
   }
