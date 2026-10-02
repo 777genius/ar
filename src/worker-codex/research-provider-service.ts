@@ -7,6 +7,18 @@ import { captureResearchRuntime, researchCurrentStart } from "./research-launch-
 import { researchInvalid, researchPublish, type ResearchDenialObservation } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
 
+const denialChecks = ["assertResearchInitialRoot", "assertResearchSharedHost", "researchCustody", "researchRead",
+  "researchCurrentStart", "researchServiceIdentity", "researchCommand", "researchProcessIdentity",
+  "assertResearchServiceOwner", "assertResearchStartAuthority", "assertAuthorityCurrent", "captureResearchRuntime",
+  "assertTransportPermission"] as const;
+type DenialCheck = typeof denialChecks[number];
+const observedChecks = new WeakMap<Error, DenialCheck>();
+function denialCheck(error: unknown): DenialCheck | undefined {
+  if (!(error instanceof Error)) return undefined;
+  return observedChecks.get(error) ?? error.stack?.split("\n").flatMap(line =>
+    denialChecks.filter(name => line.trimStart().startsWith(`at ${name} (`)))[0];
+}
+
 /** The first bytes belong solely to the fixed confined launcher, before it has
  * bootstrap input or a native provider. Never forward readiness into JSON-RPC. */
 function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission: () => void, deadline: number) {
@@ -14,6 +26,7 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   if (!stream) researchInvalid();
   const expected = Buffer.from("subscription-runtime-research-provider-ready-v1\n");
   let received = 0, failed = false, readyDeadline = deadline;
+  let refusal: Error | undefined;
   let observation: ResearchDenialObservation | undefined;
   let resolveReady!: () => void, rejectReady!: (error: Error) => void;
   const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
@@ -21,7 +34,11 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   // latched until the synchronous transition to native protocol forwarding.
   const denied = (error?: unknown): void => {
     if (error instanceof Error && (error.cause === "file-deadline" || error.cause === "artifact-deadline")) observation = error.cause;
-    failed = true; rejectReady(new Error("hosted_research_launch_denied", { cause: observation }));
+    failed = true;
+    refusal ??= new Error("hosted_research_launch_denied", { cause: observation });
+    const check = denialCheck(error);
+    if (check) observedChecks.set(refusal, check);
+    rejectReady(refusal);
   };
   const check = (): boolean => {
     if (failed) return false;
@@ -48,7 +65,7 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   check();
   return {
     ready,
-    assertCurrent: (): void => { if (!check()) researchInvalid(observation); },
+    assertCurrent: (): void => { if (!check()) { if (refusal) throw refusal; researchInvalid(observation); } },
     stop: (): void => {
       clearInterval(timer);
       stream.off("data", onData); stream.off("end", denied); stream.off("close", denied); stream.off("error", denied);
@@ -68,11 +85,7 @@ export async function runResearchProviderService(jobId: string, unit: string, se
     // Root-private observation only, never authority. Retain a finite phase;
     // raw stderr/errors can contain credentials and must remain private.
     // Fixed internal frame labels only, never arbitrary stack/error text.
-    const checks = ["assertResearchInitialRoot", "assertResearchSharedHost", "researchCustody", "researchRead",
-      "researchCurrentStart", "researchServiceIdentity", "researchCommand", "researchProcessIdentity",
-      "assertResearchServiceOwner", "assertResearchStartAuthority", "assertAuthorityCurrent", "captureResearchRuntime"] as const;
-    const check = error instanceof Error ? error.stack?.split("\n").flatMap(line =>
-      checks.filter(name => line.trimStart().startsWith(`at ${name} (`)))[0] : undefined;
+    const check = denialCheck(error);
     try { researchPublish(join(directory, "provider-failure.json"), { schemaVersion: 1, unit, phase,
       ...(check ? { check } : {}),
       ...(error instanceof Error && (error.cause === "file-deadline" || error.cause === "artifact-deadline") ? { observation: error.cause } : {}),

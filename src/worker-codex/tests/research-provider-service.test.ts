@@ -488,6 +488,8 @@ describe("slow bounded material at research effect boundaries", () => {
       expect(forwarded).toHaveLength(0); proxy.stdout.write(readyFrame);
       expect(await outcome).toBe(true); expect(current.forward).not.toHaveBeenCalled();
       expect(forwarded).toHaveLength(0); expect(host.authReads).toBe(0);
+      if (fault === "runtime-owner") expect(JSON.parse(researchRead(join(current.directory, "provider-failure.json")).toString()))
+        .toMatchObject({ phase: "ready-and-owner", check: "assertAuthorityCurrent" });
       expect(record(current, ".submission").state).toBe("pending");
       expect(proxy.kill).toHaveBeenCalledWith("SIGTERM");
     });
