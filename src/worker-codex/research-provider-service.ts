@@ -16,7 +16,7 @@ const observedChecks = new WeakMap<Error, DenialCheck>();
 function denialCheck(error: unknown): DenialCheck | undefined {
   if (!(error instanceof Error)) return undefined;
   return observedChecks.get(error) ?? error.stack?.split("\n").flatMap(line =>
-    denialChecks.filter(name => line.trimStart().startsWith(`at ${name} (`)))[0];
+    denialChecks.filter(name => [`at ${name} (`, `at Object.${name} (`].some(prefix => line.trimStart().startsWith(prefix))))[0];
 }
 
 /** The first bytes belong solely to the fixed confined launcher, before it has
