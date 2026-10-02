@@ -184,9 +184,9 @@ selected home and prepared scratch bindings against the submitted closed plan.
 The control monitor stays attached during that final material walk. An event-loop
 yield after verification observes queued duplicate frames and EOF; then retained
 provider ownership, current authority/cancellation and transport state are checked
-before the synchronous switch to stdout/stdin forwarding. The explicit 120-second setup
+before the synchronous switch to stdout/stdin forwarding. The explicit 180-second setup
 budget matches the provider service TimeoutStartSec; the research-only outer
-app-server startup is 150 seconds to cover pre-submission verification and handoff. Once the complete ready frame is observed, a separate
+app-server startup is 210 seconds to cover pre-submission verification and handoff. Once the complete ready frame is observed, a separate
 10-second handoff bound matches the fixed launcher's bootstrap deadline. Each
 material walk still enforces its original byte/file/time limits; timeout is denial,
 including a retained finite file/artifact deadline observation, never admission.
@@ -196,7 +196,7 @@ Pre-submission and transport denials retain a root-private `provider-failure.jso
 with only a closed phase identifier and reserved unit. This observation carries
 no authority and never records raw errors, stderr, paths or credential contents.
 
-The readiness/ownership deadline is 120 seconds; unexpected/oversized output,
+The readiness/ownership deadline is 180 seconds; unexpected/oversized output,
 stream errors, EOF, transport exit and cancellation fail closed. Polling detects
 fences and timeout; a sleep never establishes readiness. The launcher bounds
 bootstrap to ten seconds and the existing 4 MiB frame limit. The direct transport
@@ -674,8 +674,14 @@ with 3,929 root mount records. This is one bounded observation, not a latency SL
 or proof of the underlying kernel cause. A later fully selected no-account TEST chain reached readiness in98.726s and
 completed nested bwrap/true in99.310s with4,359 root mounts, exit0 and empty
 stderr. Native provider setup had separately hit the systemd default90s before
-any bootstrap. Therefore this research-only path now declares120s setup in both
-the helper and service, with150s outer startup. The fixed10s post-ready handoff,
+any bootstrap. The later native source start `b902` spent 119.223955 seconds
+between the systemd request and `Started`, then exited after 124.350811 seconds
+with a `ready-and-owner` / `assertTransportPermission` denial before native
+bootstrap. OS setup alone almost consumed the old 120-second cap. This
+research-only path now declares 180 seconds for setup in the helper and service,
+with 210 seconds for outer startup. These observations do not establish p99
+latency or successful native source retrieval; actual qualification is required.
+The fixed 10-second post-ready handoff,
 byte-walk bounds, confinement and other profiles remain unchanged. This is
 measured budget alignment, not qualification of a native source turn. Monitor setup duration and mount pressure;
 never remove confinement to obtain a faster launch.

@@ -146,7 +146,7 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
     void terminal.catch(() => {}); // Observed below; never an unhandled early exit.
     void terminal.finally(() => clearTimeout(terminalTimer)).catch(() => {});
     let assertRetainedOwner: (() => void) | undefined;
-    // Selected no-account TEST setup took 98.7s with 4,359 Host mounts.
+    // Selected TEST chains observed 98.7s; native systemd setup alone took 119.2s.
     // Bound OS setup and ownership together within the outer app-server
     // startup budget; retain all fences and hold bootstrap throughout.
     const deadline = performance.now() + researchProviderSetupTimeoutMs;

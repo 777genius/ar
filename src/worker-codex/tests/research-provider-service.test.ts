@@ -91,7 +91,7 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
   it("carries all three selected physical sources so independent providers see runtime-private data", async () => {
     const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
     const plan = trustedResearchProviderLaunch(current.spec, current.provider, current.home, f.host);
-    expect(plan.args).toContain("--property=TimeoutStartSec=120s");
+    expect(plan.args).toContain("--property=TimeoutStartSec=180s");
     const runtime = trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes));
     const pinBinds = runtime.args.filter(arg => arg.startsWith("--property=BindPaths="));
     const selected = [
@@ -443,7 +443,7 @@ describe("slow bounded material at research effect boundaries", () => {
     expect(diagnostic).not.toContain("private");
     expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
-  it.each([65_931, 98_727])("holds bootstrap through %i ms setup despite three-second verification, then meets the 10s handoff", async setupMs => {
+  it.each([65_931, 98_727, 130_000])("holds bootstrap through %i ms setup despite three-second verification, then meets the 10s handoff", async setupMs => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     const now = slowBoundedMaterial(); host.spawn.mockImplementation(submit);
     let readyAt = 0, releasedAt = 0;
@@ -702,7 +702,7 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
         return result;
       });
       const rejected = expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow("hosted_research_launch_denied");
-      if (fault === "timeout") await vi.advanceTimersByTimeAsync(120_025);
+      if (fault === "timeout") await vi.advanceTimersByTimeAsync(180_025);
       await rejected;
       expect(current.forward).not.toHaveBeenCalled(); expect(forwarded).toHaveLength(0); expect(host.authReads).toBe(0);
       expect(() => record(current, ".owner")).toThrow(); expect(record(current, ".cancel").unit).toBe(current.provider);
