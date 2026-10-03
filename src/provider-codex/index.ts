@@ -7,6 +7,8 @@ export * from "./codex-model-backend";
 export * from "./codex-execution-profile";
 export * from "./codex-provider-egress-policy";
 export * from "./hosted-codex-permissions";
+export { hostedMimoCredentialSourceReady } from "./hosted-mimo-credential-source";
+export * from "./hosted-mimo-profile";
 export * from "./codex-json-agent-driver";
 export * from "./codex-app-server-execution-engine";
 export * from "./app-server/domain/model-catalog";

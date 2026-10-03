@@ -247,14 +247,6 @@ function createCodexAgentDriver(input: {
   const executableReadPath = projectReadBoundary
     ? hostedCodexExecutableReadPath({ codexBinaryPath: options.codexBinaryPath, sourceEnv })
     : undefined;
-  if (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && hostedGlobalScanGuard) {
-    // The MiMo materialized session bypasses the ChatGPT session-pool
-    // materializer entirely (see CodexJsonAgentDriver.materializeMimoSession),
-    // so it cannot carry the hosted global-scan PreToolUse hook. Fail
-    // explicitly instead of silently running a hosted job without that
-    // security control.
-    throw new Error("codex_mimo_backend_hosted_global_scan_guard_unsupported");
-  }
   // MiMo's egress domain is fixed by modelBackend, not by the host-trusted
   // `providerEgressPolicy` input (`assertWorkerOptions` rejects the two
   // being combined). Every other backend keeps today's exact behavior.
@@ -295,7 +287,10 @@ function createCodexAgentDriver(input: {
     ? projectReadBoundaryConfigToml(providerEgressPolicy, executableReadPath,
         modelBackend, mimoApiKeyEnvVarName, sourceEnv.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE)
     : undefined;
-  const mimoConfigToml = workspaceToolsProfile?.configToml ?? projectConfigToml;
+  const mimoConfigToml = workspaceToolsProfile?.configToml ??
+    (hostedGlobalScanGuard
+      ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath, modelBackend, mimoApiKeyEnvVarName)
+      : projectConfigToml);
   if (executionEngine === "plain-exec") {
     return new CodexCliAgentDriver({
       codexBinaryPath: options.codexBinaryPath,
@@ -354,6 +349,8 @@ function createCodexAgentDriver(input: {
                 },
                 nativeToolSurface: "disabled" as const,
               }
+            : modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && hostedGlobalScanGuard
+            ? { nativeToolSurface: "disabled" as const }
             : options.executionProfile
             ? { executionProfile: options.executionProfile }
             : {}),
@@ -449,13 +446,16 @@ function projectReadBoundaryConfigToml(
 function hostedGlobalScanConfigToml(
   providerEgressPolicy: CodexProviderEgressPolicy,
   executableReadPath?: string,
+  modelBackend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
+  mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
 ): string {
   const hookPath = fileURLToPath(
     new URL("./hosted-global-scan-pre-tool-hook.js", import.meta.url),
   );
   const command = `${shellQuote(process.execPath)} ${shellQuote(hookPath)}`;
   return [
-    codexJsonHomeConfigToml({ hooksEnabled: true, providerEgressPolicy, namedPermissions: true }),
+    codexJsonHomeConfigToml({ hooksEnabled: true, providerEgressPolicy, namedPermissions: true,
+      modelBackend, mimoApiKeyEnvVarName }),
     hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath),
     "[hooks]",
     "[[hooks.PreToolUse]]",

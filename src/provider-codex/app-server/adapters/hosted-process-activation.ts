@@ -5,6 +5,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { assertHostedProcessDescriptors } from "./hosted-process-descriptors";
 import { CodexProviderEgressProfileId, codexProviderEgressProfileEnvVar } from "../../codex-provider-egress-policy";
+import { CodexModelBackend } from "../../codex-model-backend";
+import { HostedMimoProfile } from "../../hosted-mimo-profile";
 import { dirname, join } from "node:path";
 import type { CodexAppServerChildProcess } from "../application/app-server-process-port";
 
@@ -206,13 +208,50 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence) {
   if ((grantBytes ? sha256(grantBytes) : null) !== start.grantSha256) invalid();
   let profileId = CodexProviderEgressProfileId.ProviderApi;
   if (grantBytes) {
-    const grant = wire(decodeHostedActivationBytes(grantBytes), "schemaVersion,jobId,jobRootDir,workspacePath,profileId");
-    if (grant.schemaVersion !== 1 || grant.profileId !== CodexProviderEgressProfileId.TestNpmQualification) invalid();
-    same(grant, start, "jobId,jobRootDir,workspacePath"); profileId = CodexProviderEgressProfileId.TestNpmQualification;
+    const grant = decodeHostedActivationBytes(grantBytes);
+    if (typeof grant !== "object" || grant === null || Array.isArray(grant)) invalid();
+    if ((grant as Wire).schemaVersion === 2) {
+      readProviderHostedMimoGrantAtPath(
+        `/run/user/0/subscription-runtime-host-policy/codex-egress/${jobName}`,
+        start as { jobId: unknown; jobRootDir: unknown; workspacePath: unknown },
+        str(start.grantSha256, /^[a-f0-9]{64}$/));
+      profileId = CodexProviderEgressProfileId.MimoTokenPlan;
+    } else {
+      const legacy = wire(grant, "schemaVersion,jobId,jobRootDir,workspacePath,profileId");
+      if (legacy.schemaVersion !== 1 || legacy.profileId !== CodexProviderEgressProfileId.TestNpmQualification) invalid();
+      same(legacy, start, "jobId,jobRootDir,workspacePath"); profileId = CodexProviderEgressProfileId.TestNpmQualification;
+    }
   }
   validateOrdinaryKernel(installation, activation, start);
   assertHostedProcessDescriptors();
+  // PR1 prepares the independent reader; later lifecycle PRs must supply
+  // bounded controller/child authority before activation can open.
+  if (profileId === CodexProviderEgressProfileId.MimoTokenPlan) throw new Error("hosted_mimo_activation_closed");
   return { activation, start, reservation, profileId };
+}
+
+/** Same fixed private-file reader as production, with a path seam for synthetic
+ * fixtures. The digest binds the file to the retained ordinary start. */
+export function readProviderHostedMimoGrantAtPath(path: string,
+  identity: { readonly jobId: unknown; readonly jobRootDir: unknown; readonly workspacePath: unknown },
+  expectedSha256: string): void {
+  const bytes = readActivationPath(path);
+  if (!bytes || sha256(bytes) !== expectedSha256) invalid();
+  assertProviderHostedMimoGrant(decodeHostedActivationBytes(bytes), identity);
+}
+
+/** Independent provider-side validation of the exact private MiMo grant. */
+export function assertProviderHostedMimoGrant(value: unknown,
+  identity: { readonly jobId: unknown; readonly jobRootDir: unknown; readonly workspacePath: unknown }): void {
+  const grant = wire(value,
+    "schemaVersion,jobId,jobRootDir,workspacePath,profileId,accountId,hostedProfile,modelBackend,executionEngine,namedPermissions,globalScanGuard,nativeToolSurface");
+  if (grant.schemaVersion !== 2 || grant.profileId !== CodexProviderEgressProfileId.MimoTokenPlan ||
+      grant.accountId !== "account-q" ||
+      (grant.hostedProfile !== HostedMimoProfile.Controller && grant.hostedProfile !== HostedMimoProfile.Child) ||
+      grant.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan || grant.executionEngine !== "app-server-goal" ||
+      grant.namedPermissions !== true || grant.globalScanGuard !== true ||
+      grant.nativeToolSurface !== "disabled") invalid();
+  same(grant, identity as Wire, "jobId,jobRootDir,workspacePath");
 }
 function validateOrdinaryManagedHistory(activation: Wire, installation: Wire, jobId: string): void {
   const enrollment = readHostedActivationBytes("readonly-enrollment.json"), epochBytes = readHostedActivationBytes("readonly-epoch.json");

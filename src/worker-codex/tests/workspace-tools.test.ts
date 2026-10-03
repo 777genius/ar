@@ -69,6 +69,11 @@ describe("bounded Codex workspace tools", () => {
       "workspace_git_metadata_rejected",
     );
     await expect(files.searchFiles({ query: "upper-secret" })).resolves.toEqual([]);
+    // Regression: a scoped MiMo search must not traverse an external path or
+    // follow an in-workspace symlink to a global filesystem canary.
+    await expect(files.searchFiles({ query: "outside", path: ".." }))
+      .rejects.toThrow("workspace_path_outside_root");
+    await expect(files.searchFiles({ query: "outside" })).resolves.toEqual([]);
     await expect(files.readFile("escape.txt")).rejects.toThrow(
       "workspace_symlink_rejected",
     );

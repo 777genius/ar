@@ -9,9 +9,25 @@ import {
   codexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 
-import { buildCodexControlledAgentProfile, withControlledAgentEgress } from "../index";
+import { assertHostedMimoControlledAgentProfile, buildCodexControlledAgentProfile, buildHostedMimoControlledAgentProfile, withControlledAgentEgress } from "../index";
 
 describe("buildCodexControlledAgentProfile", () => {
+  it("generates a closed hosted MiMo profile without the project-control subprocess", () => {
+    // Regression: inherited project-control MCP or native tools would widen
+    // a future controller before its dispatcher channel is qualified.
+    const profile = buildHostedMimoControlledAgentProfile("/synthetic/controller");
+    expect(profile.enabledTools).toEqual([]);
+    expect(profile.appServerNativeToolSurface).toBe("disabled");
+    expect(profile.configToml).toContain("[model_providers.mimo]");
+    expect(profile.configToml).toContain('default_permissions = "hosted-project-read"');
+    expect(profile.configToml).toContain("[[hooks.PreToolUse]]");
+    expect(profile.configToml).not.toContain("[mcp_servers.");
+    expect(profile.configToml).not.toContain("mimo-token-plan-api-key");
+    expect(() => assertHostedMimoControlledAgentProfile(profile)).not.toThrow();
+    expect(() => assertHostedMimoControlledAgentProfile({ ...profile,
+      configToml: profile.configToml + '\n[mcp_servers.unauthorized]\n' }))
+      .toThrow("hosted_mimo_effective_confinement_required");
+  });
   it("generates a Codex profile with only broker/status MCP tools enabled", () => {
     const profile = buildCodexControlledAgentProfile({
       stateDir: "/tmp/controller-state",

@@ -38,7 +38,9 @@ import {
   type ControlledAgentProviderStopResult,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  assertHostedMimoControlledAgentProfile,
   codexControlledAgentProviderEgressEnv,
+  withControlledAgentModelBackend,
   type CodexControlledAgentProfile,
 } from "./codex-controlled-agent-profile";
 
@@ -262,12 +264,21 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
   private createDriver(): CodexJsonAgentDriver {
     const modelBackend =
       this.options.modelBackend ?? this.options.profile.modelBackend;
+    const hostedMimo = modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+      (this.options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+    if (hostedMimo) {
+      assertHostedMimoControlledAgentProfile(this.options.profile);
+      throw new Error("hosted_mimo_activation_closed");
+    }
     const mimoApiKeyEnvVarName =
       this.options.mimoApiKeyEnvVarName ??
       this.options.profile.mimoApiKeyEnvVarName ??
       codexMimoApiKeyEnvVarDefault;
+    const effectiveProfile = withControlledAgentModelBackend(
+      this.options.profile, modelBackend, mimoApiKeyEnvVarName,
+    );
     const providerEgressPolicy =
-      this.options.profile.providerEgressPolicy ??
+      effectiveProfile.providerEgressPolicy ??
       (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
         ? codexMimoTokenPlanEgressPolicy()
         : codexProviderApiEgressPolicy());
@@ -275,6 +286,7 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: this.options.codexBinaryPath,
         modelBackend,
+        ...(hostedMimo ? { hostedPermissionProfiles: true } : {}),
         sourceEnv: {
           ...(this.options.sourceEnv ?? {}),
           ...codexProviderEgressEnv(providerEgressPolicy),
@@ -282,19 +294,23 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
         processFactory: egressBoundCodexProcessFactory(
           providerEgressPolicy,
           this.options.processFactory,
+          hostedMimo ? { namedPermissions: true } : undefined,
         ),
         goalMode: true,
-        nativeToolSurface: this.options.profile.appServerNativeToolSurface,
+        nativeToolSurface: effectiveProfile.appServerNativeToolSurface,
         cleanThreadPrewarm: false,
         ...(this.options.maxGoalTurns === undefined
           ? {}
           : { maxGoalTurns: this.options.maxGoalTurns }),
       }),
       sessionMaterializer: new ControlledCodexSessionMaterializer({
-        profile: this.options.profile,
+        profile: effectiveProfile,
       }),
       modelBackend,
       mimoApiKeyEnvVarName,
+      ...(modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+        ? { mimoConfigToml: effectiveProfile.configToml }
+        : {}),
       ...(this.options.sourceEnv === undefined
         ? {}
         : { sourceEnv: this.options.sourceEnv }),

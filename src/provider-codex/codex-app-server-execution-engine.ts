@@ -1,4 +1,5 @@
 import { isAppServerAdmissionError } from "./app-server/application/app-server-admission";
+import { assertHostedAppServerEngineOptions } from "./codex-app-server-hosted-admission";
 import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
 import type {
   ManagedRunResumeHandle,
@@ -110,10 +111,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     if (!options.codexBinaryPath.trim()) {
       throw new Error("codex_app_server_binary_required");
     }
-    if ((options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job" &&
-      options.hostedPermissionProfiles !== true && options.nativeToolSurface !== "disabled") {
-      throw new Error("hosted_permission_profiles_required_for_native_tools");
-    }
+    assertHostedAppServerEngineOptions(options);
     assertPositiveInteger(options.timeoutMs, "codex_app_server_timeout_invalid");
     assertPositiveInteger(
       options.startupTimeoutMs,
