@@ -141,6 +141,8 @@ export type CodexWorkerCacheSessionMaterializerOptions = {
    * durable state when this is used for logical-thread continuation.
    */
   readonly preserveOnDispose?: boolean;
+  /** Prepare host-owned storage before the initial auth/config snapshot, under the slot lease. */
+  readonly prepareHome?: (codexHome: string) => Promise<void>;
   /**
    * Remove the materialized auth.json before preserving the remaining cache.
    * A restarted worker can restore it from the encrypted session store while
@@ -256,6 +258,7 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
     if (!entry.initialized) {
       await mkdir(entry.home, { recursive: true, mode: 0o700 });
       await mkdir(entry.codexHome, { recursive: true, mode: 0o700 });
+      await this.options.prepareHome?.(entry.codexHome);
       await writeCodexJsonHomeSnapshot({
         codexHome: entry.codexHome,
         authJson,
@@ -331,6 +334,7 @@ export type CodexWorkerCacheSessionPoolMaterializerOptions = {
   readonly configToml?: string;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly preserveOnDispose?: boolean;
+  readonly prepareHome?: (codexHome: string) => Promise<void>;
   readonly scrubAuthOnDispose?: boolean;
 };
 
@@ -361,6 +365,7 @@ export class CodexWorkerCacheSessionPoolMaterializer implements CodexSessionMate
         ...(options.preserveOnDispose !== undefined
           ? { preserveOnDispose: options.preserveOnDispose }
           : {}),
+        ...(options.prepareHome ? { prepareHome: options.prepareHome } : {}),
         ...(options.scrubAuthOnDispose !== undefined
           ? { scrubAuthOnDispose: options.scrubAuthOnDispose }
           : {}),
