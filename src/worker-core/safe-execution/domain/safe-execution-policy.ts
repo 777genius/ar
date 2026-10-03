@@ -28,6 +28,7 @@ export const attemptFailureReasons = [
   "runtime_interrupted",
   "goal_slice_exhausted",
   "budget_exceeded",
+  "checkpoint_unprotected",
   "model_unavailable",
   "user_abort",
   "unknown_error",
@@ -182,6 +183,7 @@ export function shouldContinueSafeExecutionAfterFailure(input: {
       };
     case "permission_required":
     case "budget_exceeded":
+    case "checkpoint_unprotected":
     case "user_abort":
       return { allowed: false };
   }
@@ -196,7 +198,8 @@ export function safeExecutionFinalStatusForFailure(
     reason === "permission_required" ||
     reason === "model_unavailable" ||
     reason === "provider_output_invalid" ||
-    reason === "budget_exceeded"
+    reason === "budget_exceeded" ||
+    reason === "checkpoint_unprotected"
   ) {
     return "failed";
   }
@@ -525,8 +528,9 @@ function classifyWorkerFailureCode(
         ...optionalFailureDetails(details),
       };
     case "budget_exceeded":
+    case "checkpoint_unprotected":
       return {
-        reason: "budget_exceeded",
+        reason: code,
         safeMessage,
         retryable: false,
       };

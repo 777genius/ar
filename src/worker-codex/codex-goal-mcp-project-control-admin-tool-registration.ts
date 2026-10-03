@@ -8,6 +8,11 @@ import {
   type ProjectControlMcpArgs,
 } from "./codex-goal-mcp-inputs";
 import { withMcpErrors } from "./codex-goal-mcp-response";
+import { projectControlAdoptPublishedIntegrationCommit,
+  type PublishedAdoptionMcpArgs } from "./codex-goal-mcp-project-control-published-adoption";
+import { projectControlLinkLegacyIntegrationTransport,
+  type LegacyTransportLinkMcpArgs } from
+  "./codex-goal-mcp-project-control-legacy-transport-link";
 import {
   projectControlAdmissionSnapshot,
   projectControlImportFrozenOutput,
@@ -26,6 +31,36 @@ import {
 } from "./codex-goal-mcp-project-control-tool-schemas";
 
 export function registerCodexGoalProjectControlAdminTools(server: McpServer): void {
+  server.registerTool("codex_goal_project_link_legacy_integration_transport", {
+    title: "Link Legacy Integration Transport",
+    description: "Root admin append-only receipt linking an unchanged legacy checks_passed attempt to an exact adopted pushed attempt and consumed-output ledger record.",
+    inputSchema: {
+      ...jobRegistryInputSchema(),
+      controllerJobId: z.string().min(1),
+      oldAttemptId: z.string().min(1),
+      expectedOldAttemptSha256: z.string().regex(/^[a-f0-9]{64}$/),
+      adoptedAttemptId: z.string().min(1),
+      expectedAdoptedAttemptSha256: z.string().regex(/^[a-f0-9]{64}$/),
+      commitSha: z.string().regex(/^[a-f0-9]{40}$/),
+      confirmLink: z.boolean().optional(),
+    },
+  }, async (args) => withMcpErrors(async () =>
+    projectControlLinkLegacyIntegrationTransport(args as LegacyTransportLinkMcpArgs)));
+  server.registerTool("codex_goal_project_adopt_published_integration_commit", {
+    title: "Adopt Externally Published Integration Commit",
+    description: "Host admin recovery for an exact reviewed commit object. Remote publication is trusted operator attestation, not runtime verification. Requires local Git object and authenticated gh API evidence.",
+    inputSchema: {
+      ...jobRegistryInputSchema(),
+      controllerJobId: z.string().min(1),
+      attemptId: z.string().min(1),
+      commitSha: z.string().regex(/^[a-f0-9]{40}$/),
+      message: z.string().min(1),
+      permitFile: z.string().min(1),
+      expectedPermitSha256: z.string().regex(/^[a-f0-9]{64}$/),
+      confirmAdoption: z.boolean().optional(),
+    },
+  }, async (args) => withMcpErrors(async () =>
+    projectControlAdoptPublishedIntegrationCommit(args as PublishedAdoptionMcpArgs)));
   server.registerTool("codex_goal_project_relocate_controller_workspace", {
     title: "Relocate Idle Controller Workspace",
     description: "Host admin preview or exact-revision confirmed relocation to an existing clean workspace within unchanged scope.",
@@ -229,7 +264,7 @@ export function registerCodexGoalProjectControlAdminTools(server: McpServer): vo
     {
       title: "Brokered Project Manifest Repair",
       description:
-        "Safely repair limited project-owned child job manifest fields through a ProjectScopedControl controller.",
+        "Safely repair limited project-owned child job fields, or enable checkpointRequired on the existing ProjectScopedControl controller after preview.",
       inputSchema: {
         ...jobIdInputSchema(),
         controllerJobId: z.string().optional(),
@@ -238,6 +273,8 @@ export function registerCodexGoalProjectControlAdminTools(server: McpServer): vo
         reviewedOutputId: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
         description: z.string().optional(),
         tags: z.union([z.string(), z.array(z.string())]).optional(),
+        checkpointRequired: z.boolean().optional(),
+        expectedManifestSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
         confirmRepair: z.boolean().optional(),
       },
     },

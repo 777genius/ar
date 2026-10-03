@@ -2,6 +2,7 @@ import type {
   ManagedRunStorePort,
 } from "@vioxen/subscription-runtime/core";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
+import type { CodexModelBackend } from "../../codex-model-backend";
 import type {
   CodexAppServerRolloutBudget,
 } from "../domain/app-server-rollout-budget";
@@ -21,6 +22,7 @@ import {
 } from "../domain/app-server-types";
 import { CodexAppServerClient } from "./app-server-client";
 import { AppServerGoalRunner } from "./app-server-goal-runner";
+import type { AppServerCompletedTurnCheckpoint } from "./app-server-turn-checkpoint";
 import { AppServerTurnRunner } from "./app-server-turn-runner";
 import type { CodexAppServerRateLimitsSnapshotHandler } from "./app-server-rate-limits-monitor";
 
@@ -72,9 +74,11 @@ export class AppServerSlotPool {
     private readonly options: {
       readonly codexBinaryPath: string;
       readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+      readonly hostedPermissionProfiles?: boolean;
       readonly processFactory: CodexAppServerProcessFactory;
       readonly signalChildProcess: CodexAppServerChildProcessSignaler;
       readonly runStore: ManagedRunStorePort;
+      readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
       readonly executionProfile: ResolvedCodexExecutionProfile;
       readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
       readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
@@ -86,6 +90,8 @@ export class AppServerSlotPool {
       readonly startupTimeoutMs?: number;
       readonly reconnectGraceMs?: number;
       readonly maxOutputBytes: number;
+      /** Fixed for the pool's whole lifetime — every slot in this pool serves one backend. */
+      readonly modelBackend?: CodexModelBackend;
     },
   ) {}
 
@@ -159,6 +165,9 @@ export class AppServerSlotPool {
     const client = new CodexAppServerClient({
       codexBinaryPath: this.options.codexBinaryPath,
       sourceEnv,
+      ...(this.options.hostedPermissionProfiles === undefined ? {} : {
+        hostedPermissionProfiles: this.options.hostedPermissionProfiles,
+      }),
       processFactory: this.options.processFactory,
       signalChildProcess: this.options.signalChildProcess,
       session: input.session,
@@ -188,6 +197,9 @@ export class AppServerSlotPool {
       reconnectGraceMs: this.options.reconnectGraceMs ?? defaultReconnectGraceMs,
       maxOutputBytes: this.options.maxOutputBytes,
       abortSignal: input.abortSignal,
+      ...(this.options.modelBackend === undefined
+        ? {}
+        : { modelBackend: this.options.modelBackend }),
       ...(this.options.rateLimitsSnapshotHandler === undefined
         ? {}
         : {
@@ -219,6 +231,7 @@ export class AppServerSlotPool {
       goalRunner: new AppServerGoalRunner({
         client,
         runStore: this.options.runStore,
+        ...(this.options.completedTurnCheckpoint ? { completedTurnCheckpoint: this.options.completedTurnCheckpoint } : {}),
       }),
       sessionHash: input.sessionHash,
     };

@@ -21,6 +21,8 @@ import {
 import { LocalProjectControlEvidenceCustody } from
   "../worker-local/project-control-evidence-custody-local-adapter";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
+import type { CodexGoalMimoAccountSlot } from "./codex-goal-mimo-account-slots";
+import { optionalCodexGoalMimoAccountSlots } from "./codex-goal-mimo-account-slots";
 import type { CodexGoalOutputFormat } from "./codex-goal-ops";
 import {
   assertCodexGoalStoredAccessBoundaryAllowed,
@@ -42,6 +44,20 @@ import {
   optionalCodexGoalAccountSelectionMode,
 } from "./codex-goal-account-selection-mode";
 export { CodexGoalAccountSelectionMode } from "./codex-goal-account-selection-mode";
+import { optionalCodexGoalModelBackend } from "./codex-goal-model-backend";
+import {
+  assertJobId,
+  isRecord,
+  optionalBooleanProperty,
+  optionalPositiveIntegerProperty,
+  optionalString,
+  optionalWorkerReportMode,
+  readStringArray,
+  requiredIsoDate,
+  requiredString,
+  resolvePath,
+  uniqueManifestStrings,
+} from "./codex-goal-job-manifest-parse-primitives";
 export const codexGoalJobManifestSchemaVersion = 1;
 export const codexGoalObjectiveMaxChars = 4000;
 export type CodexGoalProjectPreStartAdmission =
@@ -76,6 +92,7 @@ export type CodexGoalJobManifest = {
   readonly codexGoalObjective?: string;
   readonly taskId: string;
   readonly accounts: readonly string[];
+  readonly mimoAccounts?: readonly CodexGoalMimoAccountSlot[];
   readonly accountSelectionMode?: CodexGoalAccountSelectionMode;
   readonly outputPath?: string;
   readonly progressPath?: string;
@@ -85,6 +102,9 @@ export type CodexGoalJobManifest = {
   readonly reasoningEffort?: CodexGoalRunConfig["reasoningEffort"];
   readonly serviceTier?: CodexGoalRunConfig["serviceTier"];
   readonly executionEngine?: CodexGoalRunConfig["executionEngine"];
+  readonly checkpointRequired?: boolean;
+  /** Defaults to OpenAiChatGpt — an existing manifest with no modelBackend needs no migration. */
+  readonly modelBackend?: CodexGoalRunConfig["modelBackend"];
   readonly taskTimeoutMs?: number;
   readonly appServerStartupTimeoutMs?: number;
   readonly staleLockMs?: number;
@@ -411,6 +431,9 @@ export function codexGoalJobToArgs(
     codexGoalObjective: manifest.codexGoalObjective,
     taskId: manifest.taskId,
     accounts: manifest.accounts,
+    ...(manifest.mimoAccounts === undefined
+      ? {}
+      : { mimoAccounts: manifest.mimoAccounts }),
     outputPath: manifest.outputPath,
     progressPath: manifest.progressPath,
     progressHeartbeatMs: manifest.progressHeartbeatMs,
@@ -419,6 +442,8 @@ export function codexGoalJobToArgs(
     reasoningEffort: manifest.reasoningEffort,
     serviceTier: manifest.serviceTier,
     executionEngine: manifest.executionEngine,
+    checkpointRequired: manifest.checkpointRequired,
+    modelBackend: manifest.modelBackend,
     taskTimeoutMs: manifest.taskTimeoutMs,
     appServerStartupTimeoutMs: manifest.appServerStartupTimeoutMs,
     staleLockMs: manifest.staleLockMs,
@@ -487,6 +512,9 @@ function parseCodexGoalJobManifestValue(
   assertJobId(jobId);
   const accounts = readStringArray(value.accounts, "accounts");
   if (accounts.length === 0) throw new Error("codex_goal_job_accounts_required");
+  const mimoAccounts = value.mimoAccounts === undefined
+    ? undefined
+    : optionalCodexGoalMimoAccountSlots(value.mimoAccounts).mimoAccounts;
   const editMode = optionalCodexGoalEditMode(
     optionalString(value.editMode) ?? optionalString(value.permissionMode),
     optionalString(value.editMode) === undefined &&
@@ -533,6 +561,7 @@ function parseCodexGoalJobManifestValue(
       : { codexGoalObjective: optionalString(value.codexGoalObjective) as string }),
     taskId: requiredString(value.taskId, "taskId"),
     accounts,
+    ...(mimoAccounts === undefined ? {} : { mimoAccounts }),
     ...optionalCodexGoalAccountSelectionMode(value.accountSelectionMode),
     ...(optionalString(value.outputPath) === undefined
       ? {}
@@ -571,6 +600,8 @@ function parseCodexGoalJobManifestValue(
             CodexGoalRunConfig["executionEngine"]
           >,
         }),
+    ...(value.checkpointRequired === true ? { checkpointRequired: true } : {}),
+    ...optionalCodexGoalModelBackend(value.modelBackend),
     ...optionalPositiveIntegerProperty(value.taskTimeoutMs, "taskTimeoutMs"),
     ...optionalPositiveIntegerProperty(
       value.appServerStartupTimeoutMs,
@@ -914,87 +945,4 @@ async function existingCanonicalNonSymlinkRoot(
   } catch {
     return undefined;
   }
-}
-
-function uniqueManifestStrings(values: readonly string[]): readonly string[] {
-  return [...new Set(values.filter((value) => value.trim().length > 0))];
-}
-
-function assertJobId(value: string): void {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(value)) {
-    throw new Error("codex_goal_job_id_invalid");
-  }
-}
-
-function requiredString(value: unknown, field: string): string {
-  const text = optionalString(value);
-  if (!text) throw new Error(`codex_goal_job_${field}_required`);
-  return text;
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function requiredIsoDate(value: unknown, field: string): string {
-  const text = requiredString(value, field);
-  if (!Number.isFinite(Date.parse(text))) {
-    throw new Error(`codex_goal_job_${field}_invalid`);
-  }
-  return text;
-}
-
-function readStringArray(value: unknown, field: string): readonly string[] {
-  if (!Array.isArray(value)) throw new Error(`codex_goal_job_${field}_invalid`);
-  return value.map((item) => requiredString(item, field));
-}
-
-function optionalPositiveIntegerProperty(
-  value: unknown,
-  key:
-    | "taskTimeoutMs"
-    | "appServerStartupTimeoutMs"
-    | "staleLockMs"
-    | "maxAccountCycles"
-    | "progressHeartbeatMs",
-): Partial<Pick<CodexGoalJobManifest, typeof key>> {
-  if (value === undefined) return {};
-  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-    throw new Error(`codex_goal_job_${key}_invalid`);
-  }
-  return { [key]: value } as Partial<Pick<CodexGoalJobManifest, typeof key>>;
-}
-
-function optionalBooleanProperty(
-  value: unknown,
-  key:
-    | "allowDuplicateAccountIdentities"
-    | "allowDangerFullAccess"
-    | "requireGitWorkspace"
-    | "prewarmOnStart",
-): Partial<Pick<CodexGoalJobManifest, typeof key>> {
-  if (value === undefined) return {};
-  if (typeof value !== "boolean") {
-    throw new Error(`codex_goal_job_${key}_invalid`);
-  }
-  return { [key]: value } as Partial<Pick<CodexGoalJobManifest, typeof key>>;
-}
-
-function optionalWorkerReportMode(
-  value: unknown,
-): CodexGoalRunConfig["workerReportMode"] | undefined {
-  if (value === undefined) return undefined;
-  if (value === "runtime-only" || value === "structured-output") return value;
-  throw new Error("codex_goal_job_workerReportMode_invalid");
-}
-
-function resolvePath(cwd: string, value: string): string {
-  const expanded = value.startsWith("~/")
-    ? join(homedir(), value.slice(2))
-    : value;
-  return isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

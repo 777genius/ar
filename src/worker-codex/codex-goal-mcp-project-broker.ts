@@ -154,6 +154,28 @@ export type CodexProjectControlBrokerInput = {
     | undefined;
 };
 
+/** Bind a trusted Host setting to the child command without persisting it in a manifest. */
+export function bindProjectChildCheckpointPublisher(input: {
+  readonly launch: CodexGoalLaunchInput;
+  readonly controllerCheckpointRequired: boolean;
+  readonly childCheckpointRequired: boolean;
+  readonly hostEnv: Readonly<Record<string, string | undefined>>;
+}): CodexGoalLaunchInput {
+  const socketPath = input.hostEnv.SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET?.trim();
+  if (socketPath && (!isAbsolute(socketPath) || socketPath.includes("\0"))) {
+    throw new Error("checkpoint_socket_path_invalid");
+  }
+  const { checkpointPublisherSocketPath: _untrustedSocket, ...childConfig } = input.launch.config;
+  const checkpointRequired = input.childCheckpointRequired || input.controllerCheckpointRequired ||
+    childConfig.checkpointRequired === true || Boolean(socketPath);
+  if (checkpointRequired && !socketPath) throw new Error("checkpoint_publisher_required");
+  return { ...input.launch, config: {
+    ...childConfig,
+    ...(checkpointRequired ? { checkpointRequired: true } : {}),
+    ...(socketPath ? { checkpointPublisherSocketPath: socketPath } : {}),
+  } };
+}
+
 export function createCodexProjectControlBroker(
   input: CodexProjectControlBrokerInput,
 ): ProjectControlBroker {
@@ -326,7 +348,13 @@ function codexProjectControlPorts(
         if (!input.startLaunch) {
           throw new Error("project_control_start_launch_required");
         }
-        const startLaunch = input.startLaunch;
+        // Child env is filtered, so carry the Host socket through argv.
+        const startLaunch = bindProjectChildCheckpointPublisher({
+          launch: input.startLaunch,
+          controllerCheckpointRequired: input.controller.checkpointRequired === true,
+          childCheckpointRequired: input.startManifest?.checkpointRequired === true,
+          hostEnv: process.env,
+        });
         if (!input.startWorkspaceLease) {
           throw new Error("project_control_start_workspace_lease_required");
         }

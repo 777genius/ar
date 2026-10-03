@@ -42,9 +42,7 @@ import type {
   CodexAppServerCommandApprovalPolicy,
   CodexAppServerNativeToolSurface,
 } from "./app-server/domain/app-server-types";
-import type {
-  CodexAppServerRolloutBudget,
-} from "./app-server/domain/app-server-rollout-budget";
+import type { CodexAppServerRolloutBudget } from "./app-server/domain/app-server-rollout-budget";
 import { codexAppServerRolloutBudgetConfig } from "./app-server/domain/app-server-rollout-budget";
 import {
   defaultGoalContinuePrompt,
@@ -83,7 +81,7 @@ import {
   type CodexAppServerRateLimitsSnapshotHandler,
 } from "./app-server/application/app-server-rate-limits-monitor";
 import type { CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
-
+import { CodexModelBackend } from "./codex-model-backend";
 export type {
   CodexAppServerChildProcess,
   CodexAppServerProcessFactory,
@@ -97,17 +95,24 @@ export type {
   CodexAppServerRateLimitsSnapshotHandler,
 };
 export type { CodexAppServerExecutionEngineOptions };
+export type { AppServerCompletedTurnCheckpoint } from "./app-server/application/app-server-turn-checkpoint";
 export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   readonly kind: "app-server-pool" | "app-server-goal";
   readonly capabilities: CodexExecutionEngine["capabilities"];
+  readonly modelBackend: CodexModelBackend;
 
   private readonly executionProfile: ResolvedCodexExecutionProfile;
   private readonly runStore: ManagedRunStorePort;
   private readonly slotPool: AppServerSlotPool;
 
   constructor(private readonly options: CodexAppServerExecutionEngineOptions) {
+    this.modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
     if (!options.codexBinaryPath.trim()) {
       throw new Error("codex_app_server_binary_required");
+    }
+    if ((options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job" &&
+      options.hostedPermissionProfiles !== true && options.nativeToolSurface !== "disabled") {
+      throw new Error("hosted_permission_profiles_required_for_native_tools");
     }
     assertPositiveInteger(options.timeoutMs, "codex_app_server_timeout_invalid");
     assertPositiveInteger(
@@ -154,9 +159,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     this.slotPool = new AppServerSlotPool({
       codexBinaryPath: options.codexBinaryPath,
       ...(options.sourceEnv === undefined ? {} : { sourceEnv: options.sourceEnv }),
+      ...(options.hostedPermissionProfiles === undefined ? {} : { hostedPermissionProfiles: options.hostedPermissionProfiles }),
       processFactory: options.processFactory ?? spawnCodexAppServerProcess,
       signalChildProcess: signalCodexAppServerChildGroup,
       runStore: this.runStore,
+      ...(options.completedTurnCheckpoint ? { completedTurnCheckpoint: options.completedTurnCheckpoint } : {}),
       executionProfile: this.executionProfile,
       ...(options.commandApprovalPolicy === undefined
         ? {}
@@ -182,6 +189,9 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         ? {}
         : { reconnectGraceMs: options.reconnectGraceMs }),
       maxOutputBytes: this.maxOutputBytes(),
+      ...(options.modelBackend === undefined
+        ? {}
+        : { modelBackend: options.modelBackend }),
     });
   }
 
@@ -276,7 +286,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     await this.slotPool.dispose();
     await this.options.fallback?.dispose?.();
   }
-
   async prewarm(input: {
     readonly session: CodexMaterializedSession;
     readonly workspacePath: string;
@@ -391,6 +400,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     const result = this.options.goalMode
       ? await slot.goalRunner.runGoal({
           ...common,
+          redactor: input.redactor,
           maxGoalTurns: this.options.maxGoalTurns ?? defaultMaxGoalTurns,
           goalContinuePrompt:
             this.options.goalContinuePrompt ?? defaultGoalContinuePrompt,
@@ -435,6 +445,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ? [appServerOutputSchemaNotNativeWarning()]
       : [];
     const result = await slot.goalRunner.resumeGoal({
+      redactor: input.redactor,
       runId: input.runId,
       requestId: input.requestId,
       answer: input.answer,
@@ -483,7 +494,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       throw new AppServerUsageError(error, result.usage, true);
     }
   }
-
   private maxOutputBytes(): number {
     return this.options.maxOutputBytes ?? defaultMaxOutputBytes;
   }

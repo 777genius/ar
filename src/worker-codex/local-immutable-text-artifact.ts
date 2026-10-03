@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   link,
   lstat,
+  open,
   readFile,
   unlink,
   writeFile,
@@ -13,6 +14,7 @@ export async function publishImmutableTextArtifact(input: {
   readonly content: string;
   readonly existingPathUnsafeError: string;
   readonly contentMismatchError: string;
+  readonly durable?: boolean;
 }): Promise<{ readonly created: boolean }> {
   const parent = await lstat(dirname(input.path));
   if (parent.isSymbolicLink() || !parent.isDirectory()) {
@@ -27,11 +29,16 @@ export async function publishImmutableTextArtifact(input: {
     mode: 0o600,
     flag: "wx",
   });
+  if (input.durable) {
+    const file = await open(tempPath, "r");
+    try { await file.sync(); } finally { await file.close(); }
+  }
   let created = false;
   try {
     try {
       await link(tempPath, input.path);
       created = true;
+      if (input.durable) await syncDirectory(dirname(input.path));
     } catch (error) {
       if (!isNodeError(error, "EEXIST")) throw error;
     }
@@ -47,7 +54,13 @@ export async function publishImmutableTextArtifact(input: {
     await unlink(tempPath).catch((error: unknown) => {
       if (!isNodeError(error, "ENOENT")) throw error;
     });
+    if (input.durable) await syncDirectory(dirname(input.path));
   }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const directory = await open(path, "r");
+  try { await directory.sync(); } finally { await directory.close(); }
 }
 
 function isNodeError(error: unknown, code: string): boolean {

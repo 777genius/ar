@@ -585,6 +585,8 @@ async function debtFromConsumedJobSummary(input: {
   });
   if (!consumed) return undefined;
   if (consumed.retentionEvidenceMissing) return undefined;
+  // A no-output record cannot replace a fresh process and workspace read.
+  if (consumed.status === "failed_no_output") return undefined;
   await rememberKnownWorkspacePath(
     input.knownWorkspacePaths,
     input.summary.workspacePath,
@@ -639,11 +641,16 @@ async function debtFromOverviewItem(input: {
   const resolvedWorkspacePath = workspacePath
     ? await optionalRealPathForAdmission(workspacePath)
     : undefined;
-  const stoppedTerminalConsumption = stoppedWorkspaceTerminalConsumption({
+  const stoppedTerminalConsumption = await stoppedWorkspaceTerminalConsumption({
     ledger: input.consumedOutput,
     jobId,
     workerAlive,
     workerExplicitlyStopped: item.workerAlive === false,
+    workspaceDirty: item.workspaceDirty === true
+      ? true
+      : item.workspaceDirty === false
+      ? false
+      : undefined,
     workspacePath,
     resolvedWorkspacePath,
   });

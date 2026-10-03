@@ -4,6 +4,7 @@ import {
   type ProjectControlBroker,
 } from "@vioxen/subscription-runtime/worker-core";
 import { assertLocalControllerMaintenanceFenceOpen, withCurrentControllerScopeActivity } from "./application/project-control/codex-goal-current-controller-activity";
+import { withCurrentControllerLaunchPolicy } from "./codex-goal-mcp-project-controller-launch-policy";
 import { readCodexGoalJob, type CodexGoalJobManifest } from "./codex-goal-jobs";
 import {
   buildCodexGoalNoTmuxCommand,
@@ -227,7 +228,12 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
     );
   }
   const locks = projectControlWorkspaceLocks(controller.registryRootDir);
-  return await withValidatedProjectWorkspaceLock({
+  return await withCurrentControllerLaunchPolicy({
+    registryRootDir: controller.registryRootDir,
+    controllerJobId: controller.controller.jobId,
+    expectedScope: controller.scope,
+    loadCurrentController: async () => await deps.loadProjectControlController(args),
+    effect: async (currentController) => await withValidatedProjectWorkspaceLock({
     locks,
     scope: controller.scope,
     requestedWorkspacePath: loaded.manifest.workspacePath,
@@ -388,7 +394,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
           decision: lockedContinuationDecision,
           createBroker: deps.codexProjectControlBroker,
           registryRootDir: controller.registryRootDir,
-          controller: controller.controller,
+          controller: currentController,
           scope: controller.scope,
           manifest: loaded.manifest,
           launch: canonicalLaunch,
@@ -537,7 +543,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
       try {
         const broker = deps.codexProjectControlBroker({
           registryRootDir: controller.registryRootDir,
-          controller: controller.controller,
+          controller: currentController,
           scope: terminalRecoveryScope,
           startLaunch: reservedLaunch,
           startManifest: loaded.manifest,
@@ -620,6 +626,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
         result: result as unknown as JsonObject,
       };
     },
+    }),
   });
 }
 export async function projectControlCreateWorktreeView(args: ProjectControlMcpArgs, deps: CodexGoalMcpProjectControlActionsDeps): Promise<JsonObject> {

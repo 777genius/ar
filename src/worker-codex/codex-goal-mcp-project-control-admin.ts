@@ -1,8 +1,9 @@
 import { durableConfirmFilePublication } from "./project-control-operation-file-store";
+import { enableProjectControllerCheckpoint } from "./codex-goal-mcp-project-control-checkpoint-admin";
 import { createHash } from "node:crypto";
 import { assertProjectControlCanonicalScopeRepair } from "./codex-goal-project-scope-recovery";
 import { applyConfirmedControllerScopeRecovery, type ScopeRecoveryFaultPoint } from "./codex-goal-project-custody-recovery";
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   AccessBoundary,
@@ -712,13 +713,10 @@ export async function projectControlRepairJobManifestView(
   const controller = await deps.loadProjectControlController(args);
   const jobId = requiredRawString(args.jobId, "jobId");
   if (jobId === controller.controller.jobId) {
-    return {
-      ok: false,
-      error: "project_control_controller_manifest_repair_unsupported",
-      requiredTool: "codex_goal_project_update_controller_scope",
-      safeMessage:
-        "Controller manifests use codex_goal_project_update_controller_scope for scoped repairs.",
-    };
+    return await enableProjectControllerCheckpoint(args, controller, deps);
+  }
+  if (args.checkpointRequired !== undefined) {
+    throw new Error("project_control_repair_child_checkpoint_policy_denied");
   }
 
   const existing = await readCodexGoalJob({

@@ -1,4 +1,9 @@
-import { codexProviderEgressPolicy, egressBoundCodexProcessFactory } from "@vioxen/subscription-runtime/provider-codex";
+import {
+  CodexModelBackend,
+  codexMimoTokenPlanEgressPolicy,
+  codexProviderEgressPolicy,
+  egressBoundCodexProcessFactory,
+} from "@vioxen/subscription-runtime/provider-codex";
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
 import { admitHostedTestEgress } from "./hosted-test-egress-admission";
 import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
@@ -14,7 +19,9 @@ export async function admitHostedControllerLaunch(launch: CodexGoalLaunchInput) 
     ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
     sourceEnv: config.sourceEnv ?? process.env,
   };
-  const policy = codexProviderEgressPolicy((await admitHostedTestEgress(identity)).profileId);
+  const policy = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+    ? codexMimoTokenPlanEgressPolicy()
+    : codexProviderEgressPolicy((await admitHostedTestEgress(identity)).profileId);
   const factory = admitHostedReadonlyInputs({ ...identity, providerEgressPolicy: policy });
   return { policy, processFactory: egressBoundCodexProcessFactory(policy, factory) };
 }

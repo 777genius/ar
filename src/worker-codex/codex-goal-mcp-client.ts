@@ -80,6 +80,7 @@ const requiredCodexGoalMcpTools = [
   "codex_goal_project_relocate_controller_workspace",
   "codex_goal_project_migrate_consumed_output_ledger_epoch",
   "codex_goal_project_reconcile_stale_integrations",
+  "codex_goal_project_link_legacy_integration_transport",
   "brokered_project_manifest_repair",
   "codex_goal_project_repair_legacy_output_debt",
   "codex_goal_project_retire_legacy_job_summary",

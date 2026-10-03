@@ -5,6 +5,8 @@ import { admitHostedOrdinaryIdentity, isHostedOrdinaryRuntime } from "./hosted-i
 import {
   codexProviderApiEgressPolicy,
   codexProviderEgressPolicy,
+  codexMimoTokenPlanEgressPolicy,
+  CodexModelBackend,
   type CodexProviderEgressPolicy,
   CodexProviderEgressProfileId,
   requiresHostedProcessAdmission,
@@ -20,17 +22,23 @@ import type { HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 export async function admitHostedTestEgress(
   input: HostedTestEgressIdentity & {
     readonly executionEngine?: CodexWorkerExecutionEngine;
+    readonly modelBackend?: CodexModelBackend;
     readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   },
 ): Promise<CodexProviderEgressPolicy> {
+  const mimo = input.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   // Namespace/local non-root callers never read host-private authority or gain
   // TEST egress from a marker. Actual ordinary-runtime membership still denies
   // a wrong principal before entering its selected route.
   if (process.platform !== "linux" || process.getuid?.() !== 0) {
-    if (isHostedOrdinaryRuntime()) admitHostedOrdinaryIdentity(input);
-    return codexProviderApiEgressPolicy();
+    if (isHostedOrdinaryRuntime()) {
+      if (mimo) throw new Error("hosted_mimo_egress_admission_unsupported");
+      admitHostedOrdinaryIdentity(input);
+    }
+    return mimo ? codexMimoTokenPlanEgressPolicy() : codexProviderApiEgressPolicy();
   }
   const hosted = requiresHostedProcessAdmission(input.sourceEnv ?? process.env);
+  if (mimo && hosted) throw new Error("hosted_mimo_egress_admission_unsupported");
   if (hosted && isHostedOrdinaryRuntime()) {
     const profile = admitHostedOrdinaryIdentity(input);
     if (profile === CodexProviderEgressProfileId.TestNpmQualification &&
@@ -45,6 +53,10 @@ export async function admitHostedTestEgress(
     throw new Error("hosted_test_egress_admission_invalid");
   }
   assertReadonlyEnrollmentProfile(input.jobId, grant?.profileId === CodexProviderEgressProfileId.TestManagedQualification);
+  if (mimo) {
+    if (grant) throw new Error("hosted_mimo_egress_admission_unsupported");
+    return codexMimoTokenPlanEgressPolicy();
+  }
   if (hosted) {
     new HostedReadonlySupervisorHost().assertManagedAdmission(input, grant?.profileId ?? CodexProviderEgressProfileId.ProviderApi);
   }

@@ -13,12 +13,19 @@ import { cleanupCodexRuntimeTempRoot } from "./codex-cli-temp-cleanup";
 import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 import {
   CodexProviderEgressProfileId,
+  codexMimoTokenPlanEgressPolicy,
+  codexProviderApiEgressPolicy,
   codexProviderEgressPolicy,
   codexProviderEgressConfigToml,
   codexProviderEgressEnv,
   type CodexProviderEgressPolicy,
 } from "./codex-provider-egress-policy";
 import type { CodexMaterializedSession } from "./codex-json-execution-engine";
+import {
+  CodexModelBackend,
+  codexModelBackendExcludesConfigKey,
+  codexModelBackendModelProvidersConfigToml,
+} from "./codex-model-backend";
 
 export type CodexSessionPrewarmResult = {
   readonly mode: "ephemeral" | "worker-cache";
@@ -134,6 +141,8 @@ export type CodexWorkerCacheSessionMaterializerOptions = {
    * durable state when this is used for logical-thread continuation.
    */
   readonly preserveOnDispose?: boolean;
+  /** Prepare host-owned storage before the initial auth/config snapshot, under the slot lease. */
+  readonly prepareHome?: (codexHome: string) => Promise<void>;
   /**
    * Remove the materialized auth.json before preserving the remaining cache.
    * A restarted worker can restore it from the encrypted session store while
@@ -249,6 +258,7 @@ export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterial
     if (!entry.initialized) {
       await mkdir(entry.home, { recursive: true, mode: 0o700 });
       await mkdir(entry.codexHome, { recursive: true, mode: 0o700 });
+      await this.options.prepareHome?.(entry.codexHome);
       await writeCodexJsonHomeSnapshot({
         codexHome: entry.codexHome,
         authJson,
@@ -324,6 +334,7 @@ export type CodexWorkerCacheSessionPoolMaterializerOptions = {
   readonly configToml?: string;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly preserveOnDispose?: boolean;
+  readonly prepareHome?: (codexHome: string) => Promise<void>;
   readonly scrubAuthOnDispose?: boolean;
 };
 
@@ -354,6 +365,7 @@ export class CodexWorkerCacheSessionPoolMaterializer implements CodexSessionMate
         ...(options.preserveOnDispose !== undefined
           ? { preserveOnDispose: options.preserveOnDispose }
           : {}),
+        ...(options.prepareHome ? { prepareHome: options.prepareHome } : {}),
         ...(options.scrubAuthOnDispose !== undefined
           ? { scrubAuthOnDispose: options.scrubAuthOnDispose }
           : {}),
@@ -469,14 +481,36 @@ async function snapshotCodexSession(input: {
 export function codexJsonHomeConfigToml(input?: {
   readonly hooksEnabled?: boolean;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy | undefined;
+  readonly namedPermissions?: boolean;
+  /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — omitting it keeps today's output byte-identical. */
+  readonly modelBackend?: CodexModelBackend;
+  /** Env var holding the MiMo Token Plan key. Only used when `modelBackend` is `XiaomiMimoTokenPlan`. */
+  readonly mimoApiKeyEnvVarName?: string;
 }): string {
+  const modelBackend = input?.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  const shellEnvKeys = [
+    "PATH", "HOME", "CI", "CODEX_HOME",
+    ...(input?.namedPermissions ? ["TMPDIR", "TMP", "TEMP"] : []),
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL",
+    "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL",
+  ];
+  const providerEgressPolicy =
+    input?.providerEgressPolicy ??
+    (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+      ? codexMimoTokenPlanEgressPolicy()
+      : codexProviderApiEgressPolicy());
   return [
     'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
-    'sandbox_mode = "read-only"',
+    ...(input?.namedPermissions ? [] : ['sandbox_mode = "read-only"']),
+    ...(input?.namedPermissions ? ['default_permissions = "hosted-project-read"'] : []),
     'web_search = "disabled"',
     "disable_response_storage = true",
-    'model_verbosity = "low"',
+    ...(codexModelBackendExcludesConfigKey(modelBackend, "model_verbosity")
+      ? []
+      : ['model_verbosity = "low"']),
     "",
     "[features]",
     "apps = false",
@@ -497,9 +531,16 @@ export function codexJsonHomeConfigToml(input?: {
     "",
     "[shell_environment_policy]",
     'inherit = "all"',
-    'include_only = ["PATH", "HOME", "CI", "CODEX_HOME", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_WRAPPER", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_FIND_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_RG_REAL", "SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_GREP_REAL"]',
+    `include_only = [${shellEnvKeys.map((key) => JSON.stringify(key)).join(", ")}]`,
     "",
-    codexProviderEgressConfigToml(input?.providerEgressPolicy),
+    ...(modelBackend === CodexModelBackend.OpenAiChatGpt ? [] : [
+      codexModelBackendModelProvidersConfigToml({
+        backend: modelBackend,
+        envKeyName: input?.mimoApiKeyEnvVarName ?? "MIMO_TOKEN_PLAN_API_KEY",
+      }),
+    ]),
+    codexProviderEgressConfigToml(providerEgressPolicy,
+      input?.namedPermissions ? { namedPermissions: true } : undefined),
   ].join("\n");
 }
 

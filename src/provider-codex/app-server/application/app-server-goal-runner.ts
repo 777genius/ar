@@ -4,6 +4,7 @@ import type {
   ManagedRunInputRequest,
   ManagedRunResumeHandle,
   ManagedRunStorePort,
+  RedactorPort,
 } from "@vioxen/subscription-runtime/core";
 import {
   ProviderLogicalThreadOutcome,
@@ -39,16 +40,19 @@ import {
   assertManagedRunCanResume,
   managedRunFailureFromError,
 } from "./app-server-managed-run-mapper";
+import { AppServerTurnCheckpointError, type AppServerCompletedTurnCheckpoint } from "./app-server-turn-checkpoint";
 
 export class AppServerGoalRunner {
   constructor(
     private readonly options: {
       readonly client: CodexAppServerClient;
       readonly runStore: ManagedRunStorePort;
+      readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
     },
   ) {}
 
   async runGoal(input: {
+    readonly redactor: RedactorPort;
     readonly runId?: string;
     readonly prompt: string;
     readonly goalObjective?: string;
@@ -94,6 +98,7 @@ export class AppServerGoalRunner {
   }
 
   async runLogicalThreadGoal(input: {
+    readonly redactor: RedactorPort;
     readonly runId?: string;
     readonly prompt: string;
     readonly goalObjective?: string;
@@ -189,6 +194,7 @@ export class AppServerGoalRunner {
   }
 
   async resumeGoal(input: {
+    readonly redactor: RedactorPort;
     readonly runId: string;
     readonly requestId: string;
     readonly answer: string;
@@ -222,7 +228,7 @@ export class AppServerGoalRunner {
       await this.options.runStore.resume({
         runId: input.runId,
         requestId: input.requestId,
-        answer: input.answer,
+        answer: this.redactForStore(input.redactor, input.answer),
         now: new Date(),
       });
 
@@ -235,9 +241,18 @@ export class AppServerGoalRunner {
           warnings: this.options.client.drainWarnings(),
         });
       } catch (error) {
+        const failure = managedRunFailureFromError(error);
         await this.options.runStore.fail({
           runId: input.runId,
-          failure: managedRunFailureFromError(error),
+          failure: {
+            ...failure,
+            safeMessage: this.redactForStore(input.redactor, failure.safeMessage),
+            ...(failure.details === undefined ? {} : {
+              details: Object.fromEntries(Object.entries(failure.details).map(
+                ([key, value]) => [key, this.redactForStore(input.redactor, value)],
+              )),
+            }),
+          },
           now: new Date(),
         });
         throw error;
@@ -248,6 +263,7 @@ export class AppServerGoalRunner {
   }
 
   private async continueGoal(input: {
+    readonly redactor: RedactorPort;
     readonly runId: string;
     readonly threadId: string;
     readonly firstPrompt: string;
@@ -310,6 +326,18 @@ export class AppServerGoalRunner {
         if (turn.error) throw turn.error;
         outputText = turn.outputText;
 
+        if (this.options.completedTurnCheckpoint) {
+          try {
+            await this.options.completedTurnCheckpoint({
+              runId: input.runId,
+              workspacePath: input.workspacePath,
+              turnNumber,
+            });
+          } catch (error) {
+            throw new AppServerTurnCheckpointError(error);
+          }
+        }
+
         const goal = await this.options.client.getGoal({
           threadId: input.threadId,
           timeoutMs: controlRequestTimeoutMs(input.timeoutMs),
@@ -339,7 +367,7 @@ export class AppServerGoalRunner {
           input.warnings.push(...this.options.client.drainWarnings());
           await this.options.runStore.complete({
             runId: input.runId,
-            outputText,
+            outputText: this.redactForStore(input.redactor, outputText),
             now: new Date(),
           });
           return {
@@ -356,6 +384,7 @@ export class AppServerGoalRunner {
             );
           }
           return await this.waitForGoalInput({
+            redactor: input.redactor,
             runId: input.runId,
             threadId: input.threadId,
             goal,
@@ -388,6 +417,7 @@ export class AppServerGoalRunner {
   }
 
   private async waitForGoalInput(input: {
+    readonly redactor: RedactorPort;
     readonly runId: string;
     readonly threadId: string;
     readonly goal: CodexThreadGoal;
@@ -422,9 +452,28 @@ export class AppServerGoalRunner {
     };
     await this.options.runStore.saveWaitingInput({
       runId: input.runId,
-      request,
-      resumeHandle,
-      ...(input.outputText.trim() ? { outputText: input.outputText } : {}),
+      request: {
+        ...request,
+        question: this.redactForStore(input.redactor, request.question),
+        ...(request.contextSummary === undefined ? {} : {
+          contextSummary: this.redactForStore(input.redactor, request.contextSummary),
+        }),
+        ...(request.suggestedAnswers === undefined ? {} : {
+          suggestedAnswers: request.suggestedAnswers.map((answer) =>
+            this.redactForStore(input.redactor, answer)),
+        }),
+      },
+      resumeHandle: {
+        ...resumeHandle,
+        ...(resumeHandle.providerState === undefined ? {} : {
+          providerState: Object.fromEntries(Object.entries(resumeHandle.providerState).map(
+            ([key, value]) => [key, this.redactForStore(input.redactor, value)],
+          )),
+        }),
+      },
+      ...(input.outputText.trim() ? {
+        outputText: this.redactForStore(input.redactor, input.outputText),
+      } : {}),
       now: new Date(),
     });
     return {
@@ -436,5 +485,11 @@ export class AppServerGoalRunner {
       ...usageField(input.usage),
       warnings: input.warnings,
     };
+  }
+
+  private redactForStore(redactor: RedactorPort, value: string): string {
+    const redacted = redactor.redact(value);
+    redactor.assertNoKnownSecret(redacted, "codex_managed_run_store");
+    return redacted;
   }
 }
