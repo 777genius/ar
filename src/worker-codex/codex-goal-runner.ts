@@ -16,9 +16,8 @@ import {
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { execFile } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdir, readFile } from "node:fs/promises";
 import { mapManagedGoalLayout, usesManagedJobLayout } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -97,6 +96,8 @@ import {
   uniqueStrings,
 } from "./codex-goal-workspace-changes";
 import { resolveCodexGoalObjective } from "./codex-goal-objective";
+import { readOrCreateCodexGoalEncryptionKey } from "./codex-goal-encryption-key";
+export { readOrCreateCodexGoalEncryptionKey } from "./codex-goal-encryption-key";
 import { resolveCodexGoalMimoEnvVarName, type CodexGoalMimoAccountSlot } from "./codex-goal-mimo-account-slots";
 export type {
   CodexGoalRuntimeEvent,
@@ -615,25 +616,6 @@ export function buildCodexGoalExecutorOptions(input: {
       ...(config.safeExecutionPolicy ?? {}),
     },
   };
-}
-
-export async function readOrCreateCodexGoalEncryptionKey(
-  keyPath: string,
-): Promise<Uint8Array> {
-  if (existsSync(keyPath)) {
-    const value = (await readFile(keyPath, "utf8")).trim();
-    if (!/^[a-fA-F0-9]{64}$/.test(value)) {
-      throw new Error("codex_goal_encryption_key_invalid");
-    }
-    return Buffer.from(value, "hex");
-  }
-  await mkdir(dirname(keyPath), { recursive: true, mode: 0o700 });
-  const key = randomBytes(32);
-  await writeFile(keyPath, `${key.toString("hex")}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  return key;
 }
 
 export function codexGoalProgressPath(config: Pick<CodexGoalRunConfig, "jobRootDir" | "taskId" | "progressPath">): string {
