@@ -34,6 +34,7 @@ import {
   verifySocialProposedAdmissionAnchorEvidence,
 } from "./codex-goal-ledger-epoch-proposed-admission";
 import { duplicateWorkspaceIdentityJobIds } from "./codex-goal-project-workspace-history";
+import { retainedTerminalReadOnlyReviewer } from "./codex-goal-project-retained-read-only-reviewer";
 import { limitCodexProjectSummariesForInspection } from "./codex-goal-project-admission-summary-limit";
 import {
   withoutAdmittedInputPatchDebt,
@@ -670,6 +671,14 @@ async function debtFromOverviewItem(input: {
       stoppedTerminalConsumption,
       item.activeWriterRisk,
     );
+  const retainedReadOnlyReview = await retainedTerminalReadOnlyReviewer({
+    item,
+    summary: input.summariesByJobId.get(jobId),
+    ledger: input.consumedOutput,
+    registryRootDir: input.registryRootDir,
+    readJob: input.readJob,
+    resolvedWorkspacePath,
+  });
   const malformedDirtyWriterObservation =
     item.workspaceDirty === true &&
     (typeof item.workerAlive !== "boolean" ||
@@ -694,7 +703,7 @@ async function debtFromOverviewItem(input: {
   if (
     malformedDirtyWriterObservation ||
     terminalConsumptionWorkspaceMismatch ||
-    (!terminalConsumptionCoversStoppedConflict && (
+    (!terminalConsumptionCoversStoppedConflict && !retainedReadOnlyReview && (
       (workerAlive && (input.blockAnyLiveWriter || sameRequestedWorkspace)) ||
       hasBlockingActiveWriterRisk(item.activeWriterRisk, workerAlive) ||
       item.workspaceConflict === true ||
@@ -746,12 +755,12 @@ async function debtFromOverviewItem(input: {
     return debt;
   }
   if (workerAlive) return debt;
+  if (retainedReadOnlyReview) return debt;
   const markerTypes = safeStringArray(item.lifecycleMarkerTypes);
   const recommendedAction = stringValue(item.recommendedAction);
   if (
-    markerTypes.includes("review") &&
-    recommendedAction === "review_completed" &&
-    safeStringArray(item.tags).includes("worker-role-reviewer") &&
+    (safeStringArray(item.tags).includes("worker-role-reviewer") ||
+      input.summariesByJobId.get(jobId)?.tags.includes("worker-role-reviewer")) &&
     workspacePath &&
     workspaceConsumedByAnotherJob({
       ledger: input.consumedOutput,
@@ -760,7 +769,18 @@ async function debtFromOverviewItem(input: {
       ...(resolvedWorkspacePath ? { resolvedWorkspacePath } : {}),
     })
   ) {
-    return withoutInactiveDirtyWorkspaceConflict(debt, item);
+    // Shared retention is not proof that this reviewer stopped or was read-only.
+    // Only the validated retainedReadOnlyReview above can grant that exception;
+    // neither legacy dirty-risk normalization nor later-job reuse may clear it.
+    debt.push({
+      reason: ProjectDebtReason.InactiveDirtyWorkspace,
+      subject,
+      severity: "blocking",
+      evidence: [
+        `${jobId} lacks validated stopped terminal read-only reviewer evidence`,
+      ],
+    });
+    return debt;
   }
   // A refill may intentionally reuse an inactive job's physical worktree. Only
   // a registered newer job on that same worktree can consume the older entry.
