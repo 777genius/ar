@@ -417,7 +417,7 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
     const f = fixture(), inbound = new PassThrough(), outbound = new PassThrough();
     const channel = new HostedControllerFramedDispatcher(hostedControllerPipe(inbound, outbound));
     const hostChannel = new HostedControllerFramedDispatcher(hostedControllerPipe(outbound, inbound), { retainedTools: f.tools });
-    const factory = new FakeAppServerFactory({ suppressTurnCompletion: true }), abort = new AbortController();
+    const factory = new FakeAppServerFactory({ suppressTurnCompletion: true, emitTurnEventsWithStartResponse: true }), abort = new AbortController();
     const client = new CodexAppServerClient({ codexBinaryPath: "/TEST/pinned-codex", sourceEnv: {}, processFactory: factory.create,
       signalChildProcess: (child, signal) => { child.kill(signal); },
       session: { home: facts.root, codexHome: facts.root, env: {}, release: async () => undefined },

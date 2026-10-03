@@ -233,6 +233,11 @@ function createCodexAgentDriver(input: {
   readonly managedRunStore: LocalFileManagedRunStore;
 }): CodexJsonAgentDriver | CodexCliAgentDriver {
   const { options } = input;
+  if (options.executionLifetime && (options.executionEngine !== "app-server-goal" ||
+      options.cleanThreadPrewarm !== false || options.maxGoalTurns !== options.executionLifetime.maxGoalTurns)) {
+    throw new Error("codex_bounded_factory_profile_conflict");
+  }
+  options.executionLifetime?.assertActive();
   if (options.childBudget) {
     const bound = options.childBudget.lifetime;
     if (options.executionEngine !== "app-server-goal" || options.capacityAccountId !== bound.accountId ||
@@ -324,10 +329,12 @@ function createCodexAgentDriver(input: {
     ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
   });
   return new CodexJsonAgentDriver({
+    ...(options.executionLifetime ? { executionLifetime: options.executionLifetime } : {}),
     engine: executionEngine === "packaged-exec"
       ? packagedExec
       : new CodexAppServerExecutionEngine({
           ...(options.childBudget ? { childBudget: options.childBudget } : {}),
+          ...(options.executionLifetime ? { executionLifetime: options.executionLifetime } : {}),
           codexBinaryPath: options.codexBinaryPath,
           modelBackend,
           sourceEnv: appServerEnv,
