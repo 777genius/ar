@@ -170,6 +170,13 @@ export class FileBackendClaudeCapacityState {
   ): void {
     try {
       const validation = validateClaudeSessionArtifact(session);
+      if (validation.session.authMode !== "oauth") {
+        // Ambient-home mode is a single local machine, not a pooled OAuth
+        // account: no capacity/quota group applies.
+        this.quotaGroup = null;
+        this.capacityAccountId = null;
+        return;
+      }
       this.quotaGroup = `claude-oauth:${hashText(
         validation.session.oauthToken,
       ).slice(0, 16)}`;
@@ -305,6 +312,10 @@ export class FileBackendClaudeCapacityState {
     try {
       validation = validateClaudeSessionArtifact(session);
     } catch {
+      return null;
+    }
+    if (validation.session.authMode !== "oauth") {
+      // Ambient-home sessions have no pooled capacityAccountId to persist.
       return null;
     }
     const storedCapacityAccountId = normalizeCapacityAccountId(

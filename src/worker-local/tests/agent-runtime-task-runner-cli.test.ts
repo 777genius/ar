@@ -19,6 +19,7 @@ import {
 } from "../agent-runtime-task-runner-cli";
 import {
   fakeAgentRuntimeTaskCliIo as fakeIo,
+  fakeAgentRuntimeTaskWorkerFactory as fakeFactory,
   validCodexAuthJson,
   writeFakeCodexBinary,
 } from "./agent-runtime-task-runner-cli-test-support";
@@ -951,34 +952,5 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     });
   });
 
-});
 
-function fakeFactory(calls: {
-  factory?: AgentRuntimeTaskWorkerFactoryInput;
-  seed?: string;
-  job?: AgentRuntimeTaskWorkerJob;
-}): AgentRuntimeTaskWorkerFactory {
-  return (input) => {
-    calls.factory = input;
-    const worker: AgentRuntimeTaskWorker = {
-      async start() {},
-      async seedClaudeOAuth(seed) {
-        calls.seed = seed.oauthToken;
-      },
-      async seedCodexAuthJsonFile(path) {
-        calls.seed = path;
-      },
-      async run(job) {
-        calls.job = job;
-        return {
-          outputText: `worker:${job.prompt}`,
-          structuredOutput: { ok: true },
-          telemetry: { finishReason: "completed" },
-          warnings: [],
-        };
-      },
-      async dispose() {},
-    };
-    return worker;
-  };
-}
+});
