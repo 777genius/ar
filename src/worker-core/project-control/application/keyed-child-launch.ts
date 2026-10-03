@@ -37,8 +37,10 @@ export class KeyedChildLaunchApplication {
     });
     // Scheduling happens only after the claim's final durability check.
     if (accepted.fresh) {
+      // Retain the accepted delay so a wall clock rollback cannot renew it.
+      const monotonicDeadline = performance.now() + Math.max(0, this.port.deadlineEpochMs - Date.now());
       const expire = () => {
-        const remaining = this.port.deadlineEpochMs - Date.now();
+        const remaining = Math.min(this.port.deadlineEpochMs - Date.now(), monotonicDeadline - performance.now());
         if (remaining > 0) {
           const timer = setTimeout(expire, Math.min(2147483647, remaining)); timer.unref();
           this.#deadlines.set(accepted.view.childHandle, timer); return;
