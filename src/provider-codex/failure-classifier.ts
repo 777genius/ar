@@ -1,3 +1,4 @@
+import { ChildLifetimeError } from "@vioxen/subscription-runtime/core";
 import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
 import { AppServerTurnCheckpointError } from "./app-server/application/app-server-turn-checkpoint";
 import type { ProviderFailure } from "@vioxen/subscription-runtime/core";
@@ -9,6 +10,15 @@ import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog"
 import { isCodexAppServerRateLimitsRejectedError } from "./app-server/application/app-server-rate-limits-monitor";
 
 export function classifyCodexFailure(error: unknown): ProviderFailure {
+  const seen = new Set<Error>();
+  for (let cause = error; cause instanceof Error && !seen.has(cause); cause = cause.cause) {
+    if (cause instanceof ChildLifetimeError) return {
+      code: "budget_exceeded", retryable: false, reconnectRequired: false,
+      safeMessage: "Child lifetime authority is exhausted; scoped cleanup was requested.",
+      causeCategory: cause.reason, details: { childLifetimeReason: cause.reason },
+    };
+    seen.add(cause);
+  }
   if (error instanceof AppServerTurnCheckpointError) {
     const reason = error.cause instanceof Error &&
       ["handoff_base_commit_mismatch", "handoff_head_changed_during_materialization", "checkpoint_head_moved_during_publish"].includes(error.cause.message)

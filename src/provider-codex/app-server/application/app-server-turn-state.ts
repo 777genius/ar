@@ -66,3 +66,22 @@ export function createTurnState(): TurnState {
     reconnectGraceTimer: null,
   };
 }
+
+export function emitAppServerTextDelta(turn: TurnState, text: string, resolve: () => void): void {
+  if (!turn.onTextDelta || turn.error) return;
+  try { turn.onTextDelta(text); }
+  catch (error) {
+    turn.error = new Error("codex_app_server_text_delta_sink_failed", { cause: error });
+    resolve();
+  }
+}
+
+export function clearAppServerReconnectTimer(turn: TurnState): void {
+  if (!turn.reconnectGraceTimer) return;
+  clearTimeout(turn.reconnectGraceTimer);
+  turn.reconnectGraceTimer = null;
+}
+export function attachAppServerTextDeltaSink(turn: TurnState, sink: ((text: string) => void) | undefined, resolve: () => void): void {
+  turn.onTextDelta = sink ?? null;
+  if (turn.outputText) emitAppServerTextDelta(turn, turn.outputText, resolve);
+}

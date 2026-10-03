@@ -1,3 +1,4 @@
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type {
   ManagedRunStorePort,
 } from "@vioxen/subscription-runtime/core";
@@ -74,6 +75,7 @@ export class AppServerSlotPool {
   constructor(
     private readonly options: {
       readonly codexBinaryPath: string;
+      readonly childBudget?: ChildExecutionBudget;
       readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
       readonly hostedPermissionProfiles?: boolean;
       readonly processFactory: CodexAppServerProcessFactory;
@@ -165,6 +167,7 @@ export class AppServerSlotPool {
       ...input.session.env,
     };
     const client = new CodexAppServerClient({
+      ...(this.options.childBudget ? { childBudget: this.options.childBudget } : {}),
       codexBinaryPath: this.options.codexBinaryPath,
       sourceEnv,
       ...(this.options.hostedPermissionProfiles === undefined ? {} : {

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { ChildExecutionBudget, parseChildLifetimeJson, type ChildLifetime } from "@vioxen/subscription-runtime/core";
 import { realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -14,6 +15,7 @@ import { subscriptionRuntimePackageVersion } from
   "./subscription-runtime-package-version";
 
 export type WorkspaceToolsMcpServerOptions = {
+  readonly childLifetime?: ChildLifetime;
   readonly workspaceRoot: string;
   readonly allowedTools: readonly AgentRuntimeToolName[];
   readonly denyProjectInstructions?: boolean;
@@ -22,9 +24,19 @@ export type WorkspaceToolsMcpServerOptions = {
 export async function createWorkspaceToolsMcpServer(
   options: WorkspaceToolsMcpServerOptions,
 ): Promise<McpServer> {
+  if (options.childLifetime && (options.denyProjectInstructions !== true ||
+      [...normalizeBoundedWorkspaceTools(options.allowedTools)].sort().join(",") !== [...options.childLifetime.allowedTools].sort().join(","))) throw new Error("child_workspace_tool_confinement_conflict");
+  const childBudget = options.childLifetime ? new ChildExecutionBudget(options.childLifetime) : undefined;
+  const guardedResult = (action: () => Promise<Readonly<Record<string, unknown>>>) => mcpResult(async () => {
+    childBudget?.remainingMs();
+    const result = await action();
+    childBudget?.remainingMs();
+    return result;
+  });
   const allowedTools = new Set(normalizeBoundedWorkspaceTools(options.allowedTools));
   const workspace = await BoundedWorkspaceFiles.create(options.workspaceRoot, {
     denyProjectInstructions: options.denyProjectInstructions ?? false,
+    ...(childBudget ? { childBudget } : {}),
   });
   const server = new McpServer({
     name: "agent-runtime-workspace-tools",
@@ -39,7 +51,7 @@ export async function createWorkspaceToolsMcpServer(
         description: "Read one UTF-8 text file inside the bounded workspace.",
         inputSchema: { path: z.string().min(1) },
       },
-      (args) => mcpResult(async () => ({
+      (args) => guardedResult(async () => ({
         path: args.path,
         content: await workspace.readFile(args.path),
       })),
@@ -59,7 +71,7 @@ export async function createWorkspaceToolsMcpServer(
           maxResults: z.number().int().positive().max(100).optional(),
         },
       },
-      (args) => mcpResult(async () => ({
+      (args) => guardedResult(async () => ({
         matches: await workspace.searchFiles({
           query: args.query,
           ...(args.path === undefined ? {} : { path: args.path }),
@@ -85,7 +97,7 @@ export async function createWorkspaceToolsMcpServer(
           replaceAll: z.boolean().optional(),
         },
       },
-      (args) => mcpResult(async () => ({
+      (args) => guardedResult(async () => ({
         path: args.path,
         ...(await workspace.editFile({
           path: args.path,
@@ -112,7 +124,7 @@ export async function createWorkspaceToolsMcpServer(
           overwrite: z.boolean().optional(),
         },
       },
-      (args) => mcpResult(async () => {
+      (args) => guardedResult(async () => {
         await workspace.writeFile({
           path: args.path,
           content: args.content,
@@ -157,6 +169,7 @@ function parseCliArgs(argv: readonly string[]): WorkspaceToolsMcpServerOptions {
   let workspaceRoot: string | undefined;
   let allowedTools: readonly AgentRuntimeToolName[] | undefined;
   let denyProjectInstructions = false;
+  let childLifetime: ChildLifetime | undefined;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     const value = argv[index + 1];
@@ -168,6 +181,8 @@ function parseCliArgs(argv: readonly string[]): WorkspaceToolsMcpServerOptions {
         ? []
         : value.split(",") as AgentRuntimeToolName[];
       index += 1;
+    } else if (arg === "--child-lifetime-json" && value) {
+      childLifetime = parseChildLifetimeJson(value); index += 1;
     } else if (arg === "--deny-project-instructions") {
       denyProjectInstructions = true;
     } else {
@@ -176,7 +191,7 @@ function parseCliArgs(argv: readonly string[]): WorkspaceToolsMcpServerOptions {
   }
   if (!workspaceRoot) throw new Error("workspace_tools_cli_root_required");
   if (!allowedTools) throw new Error("workspace_tools_cli_allow_required");
-  return { workspaceRoot, allowedTools, denyProjectInstructions };
+  return { workspaceRoot, allowedTools, denyProjectInstructions, ...(childLifetime ? { childLifetime } : {}) };
 }
 
 if (await isMainModule()) {

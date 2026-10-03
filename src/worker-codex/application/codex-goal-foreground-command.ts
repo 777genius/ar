@@ -22,6 +22,7 @@ export function buildCodexGoalForegroundArgv(
   lifecycle?: HostedGoalLifecycleRequest,
 ): string[] {
   const config = input.config;
+  if (config.childLifetime && lifecycle && lifecycle.operation !== HostedGoalLifecycleOperation.Start) throw new Error("child_continuation_denied");
   assertCodexGoalAccessLaunchAllowed(config);
   const args = [
     ...input.cliCommand,
@@ -67,6 +68,10 @@ export function buildCodexGoalForegroundArgv(
   pushOptionalNumber(args, "--progress-heartbeat-ms", config.progressHeartbeatMs);
   pushOptionalNumber(args, "--stale-lock-ms", config.staleLockMs);
   pushOptionalNumber(args, "--max-account-cycles", config.maxAccountCycles);
+  pushOptionalNumber(args, "--max-goal-turns", config.maxGoalTurns);
+  pushOptionalNumber(args, "--max-attempts", config.safeExecutionPolicy?.maxAttempts);
+  pushOptional(args, "--continuation-mode", config.safeExecutionPolicy?.continuationMode);
+  if (config.childLifetime) args.push("--child-lifetime-json", JSON.stringify(config.childLifetime));
   pushOptional(args, "--edit-mode", config.editMode);
   pushOptional(args, "--provider-sandbox-mode", config.providerSandboxMode);
   pushOptional(args, "--access-boundary", config.accessBoundary);

@@ -1,3 +1,4 @@
+import { registerChildForegroundDeadlineTests } from "./hosted-child-foreground-deadline-test-support";
 import { routeHostedGoalLaunch, stopHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import { codexGoalAccountSlots, runCodexGoal } from "../codex-goal-runner";
 import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
@@ -964,3 +965,4 @@ describe("managed inspected installation admission", () => {
     } else { expect(launch).toThrow(); expect(fixture.spawn).not.toHaveBeenCalled(); }
   });
 });
+registerChildForegroundDeadlineTests({ fixture, runtimeDirectory, read, put });

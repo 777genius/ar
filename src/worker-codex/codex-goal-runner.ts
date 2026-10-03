@@ -1,4 +1,7 @@
 import { prepareHostScratchTemp } from "./host-scratch-temp";
+import { assertVerifiedHostedChildConfig } from "./hosted-child-slot-files";
+import { ChildExecutionBudget, type ChildLifetime } from "@vioxen/subscription-runtime/core";
+import { assertChildGoalConfig } from "./child-execution-confinement";
 import { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 export { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
@@ -109,6 +112,8 @@ export type CodexGoalAccountSlot = {
 };
 
 export type CodexGoalRunConfig = {
+  readonly childLifetime?: ChildLifetime;
+  readonly maxGoalTurns?: number;
   readonly jobId?: string;
   readonly jobRootDir: string;
   readonly stateRootDir?: string;
@@ -359,7 +364,7 @@ async function runCodexGoalAdmitted(
   }
 
   try {
-    interruptMonitor.start({
+    if (!config.childLifetime) interruptMonitor.start({
       jobId: config.jobId ?? config.taskId,
       taskId: config.taskId,
       workspaceId: config.workspacePath,
@@ -471,6 +476,9 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
 }): FileBackendCodexSafeExecutorOptions {
   const { config } = input;
+  assertVerifiedHostedChildConfig(config);
+  assertChildGoalConfig(config);
+  const childBudget = config.childLifetime ? new ChildExecutionBudget(config.childLifetime) : undefined;
   const checkpointPublisher = input.checkpointPublisher ?? (config.checkpointPublisherSocketPath
     ? codexGoalTurnCheckpointSocketPublisher(config.checkpointPublisherSocketPath) : undefined);
   if (config.checkpointRequired && !checkpointPublisher) throw new Error("checkpoint_publisher_required");
@@ -493,9 +501,10 @@ export function buildCodexGoalExecutorOptions(input: {
   });
   return {
     ...(config.executorId ? { executorId: config.executorId } : {}),
+    ...(childBudget ? { childBudget } : {}),
     authRootDir: config.authRootDir,
     ...(input.observability ? { observability: input.observability } : {}),
-    ...(input.controlInbox ? { controlInbox: input.controlInbox } : {}),
+    ...(!childBudget && input.controlInbox ? { controlInbox: input.controlInbox } : {}),
     ...(input.activeAttemptRegistry
       ? { activeAttemptRegistry: input.activeAttemptRegistry }
       : {}),
@@ -567,6 +576,10 @@ export function buildCodexGoalExecutorOptions(input: {
         ...(!isMimo && input.providerEgressPolicy ? { providerEgressPolicy: input.providerEgressPolicy } : {}),
         ...(input.appServerProcessFactory ? { appServerProcessFactory: input.appServerProcessFactory } : {}),
         capacityAccountId: account.name,
+        ...(childBudget ? { childBudget, cleanThreadPrewarm: false,
+          refreshConflictRetryMaxMs: 0,
+          boundedWorkspaceTools: { allowedTools: childBudget.lifetime.allowedTools, denyProjectInstructions: true } } : {}),
+        ...(config.maxGoalTurns === undefined ? {} : { maxGoalTurns: config.maxGoalTurns }),
         taskTimeoutMs: config.taskTimeoutMs ?? 72 * 60 * 60 * 1000,
         ...(config.appServerStartupTimeoutMs === undefined
           ? {}

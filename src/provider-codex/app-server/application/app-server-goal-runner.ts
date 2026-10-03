@@ -1,3 +1,4 @@
+import { ChildLifetimeError, ChildLifetimeFailure } from "@vioxen/subscription-runtime/core";
 import { AppServerUsageError, usageFromError } from "../domain/app-server-usage-error";
 import type {
   AgentUsage,
@@ -126,6 +127,7 @@ export class AppServerGoalRunner {
     try {
       const warnings = this.options.client.drainWarnings();
       const runId = normalizeRunId(input.runId);
+      if (this.options.client.childBudget) throw new Error("child_continuation_denied");
       let outcome = ProviderLogicalThreadOutcome.StartedFresh;
       let threadId: string;
       if (input.previousCheckpoint === undefined) {
@@ -211,6 +213,7 @@ export class AppServerGoalRunner {
     readonly goalContinuePrompt: string;
     readonly skipResumeValidation?: boolean;
   }): Promise<AppServerRunResult> {
+    if (this.options.client.childBudget) throw new Error("child_continuation_denied");
     const usageLease = this.options.client.acquireExecution();
     try {
       const threadId = input.resumeHandle.threadId;
@@ -363,6 +366,7 @@ export class AppServerGoalRunner {
           missingUsageSinceGoal = false;
           untrustedUsageSinceGoal = false;
         }
+        this.options.client.childBudget?.remainingMs();
         if (goal.status === "complete") {
           input.warnings.push(...this.options.client.drainWarnings());
           await this.options.runStore.complete({
@@ -370,6 +374,7 @@ export class AppServerGoalRunner {
             outputText: this.redactForStore(input.redactor, outputText),
             now: new Date(),
           });
+          this.options.client.childBudget?.remainingMs();
           return {
             status: "completed",
             outputText,
@@ -378,7 +383,7 @@ export class AppServerGoalRunner {
           };
         }
         if (goal.status === "blocked" || goal.status === "paused") {
-          if (input.allowWaitingForInput === false) {
+          if (input.allowWaitingForInput === false || this.options.client.childBudget) {
             throw new Error(
               "codex_logical_thread_goal_waiting_for_input_invalid",
             );
@@ -404,6 +409,11 @@ export class AppServerGoalRunner {
 
     } catch (error) {
       throw new AppServerUsageError(error, turnUsage, executionMayHaveStarted);
+    }
+    if (this.options.client.childBudget) {
+      const error = new ChildLifetimeError(ChildLifetimeFailure.Turns);
+      this.options.client.requestChildCleanup(error);
+      this.options.client.childBudget.exhaust();
     }
     throw new AppServerUsageError(
       goalMaxTurnsExceededError({

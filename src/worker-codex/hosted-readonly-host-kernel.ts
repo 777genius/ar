@@ -27,6 +27,7 @@ export type HostedReadonlyHostInventory = {
 };
 export type HostedOrdinaryCreator = {
   readonly creatorId: string; readonly jobId: string; readonly jobRootDir: string; readonly workspacePath: string;
+  readonly childSlotSha256?: string;
   readonly launch: { readonly command: string; readonly args: readonly string[]; readonly cwd: string };
 };
 const unitPattern = /^[A-Za-z0-9_@.-]+\.(service|scope)$/;
@@ -61,10 +62,12 @@ export function readHostedReadonlyHostInventory(): HostedReadonlyHostInventory {
     if (!Array.isArray(value.ordinaryCreators) || value.ordinaryCreators.length > 128 ||
         !Array.isArray(value.disabledCreators) || value.disabledCreators.length > 128) invalid();
     ordinaryCreators = value.ordinaryCreators.map(entry => {
-      const row = object(entry, "creatorId,jobId,jobRootDir,launch,workspacePath");
+      const hasSlot = !!entry && typeof entry === "object" && "childSlotSha256" in entry;
+      const row = object(entry, hasSlot ? "childSlotSha256,creatorId,jobId,jobRootDir,launch,workspacePath" : "creatorId,jobId,jobRootDir,launch,workspacePath");
+      if (hasSlot && (typeof row.childSlotSha256 !== "string" || !/^[a-f0-9]{64}$/.test(row.childSlotSha256))) invalid();
       if (!identity(row.creatorId) || !identity(row.jobId) || !path(row.jobRootDir) || !path(row.workspacePath)) invalid();
       return Object.freeze({ creatorId: row.creatorId, jobId: row.jobId, jobRootDir: row.jobRootDir,
-        workspacePath: row.workspacePath, launch: parseLaunch(row.launch) });
+        workspacePath: row.workspacePath, ...(hasSlot ? { childSlotSha256: row.childSlotSha256 as string } : {}), launch: parseLaunch(row.launch) });
     });
     disabledCreators = value.disabledCreators.map(name => {
       if (typeof name !== "string" || name.length > 200 || !/^[A-Za-z0-9_@.-]+\.(service|socket|timer)$/.test(name) ||
@@ -76,6 +79,7 @@ export function readHostedReadonlyHostInventory(): HostedReadonlyHostInventory {
     // Multiple finite launch tuples may describe one job, but never conflicting
     // root/workspace provenance or two identities sharing a mutable job scope.
     for (const left of ordinaryCreators) for (const right of ordinaryCreators) {
+      if (left !== right && left.jobId === right.jobId && (left.childSlotSha256 || right.childSlotSha256)) invalid();
       if (left.jobId === right.jobId ? left.jobRootDir !== right.jobRootDir || left.workspacePath !== right.workspacePath :
           left.jobRootDir === right.jobRootDir || left.workspacePath === right.workspacePath) invalid();
     }

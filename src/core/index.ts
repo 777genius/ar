@@ -9,3 +9,5 @@ export * from "./domain/task-validation";
 export * from "./domain/state-machines";
 export * from "./domain/types";
 export * from "./ports";
+export * from "./child-lifetime/domain/child-lifetime";
+export * from "./child-lifetime/domain/child-slot";

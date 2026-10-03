@@ -1,3 +1,6 @@
+import { attachAppServerTextDeltaSink, clearAppServerReconnectTimer, emitAppServerTextDelta } from "./app-server-turn-state";
+import { AppServerChildLifetime } from "./app-server-child-lifetime";
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import { AppServerAdmission, AppServerExecutionLease, appServerTurnCapacity } from "./app-server-admission";
 import { AppServerUsageError } from "../domain/app-server-usage-error";
 import { appServerTurnStartParams } from "./app-server-turn-start-params";
@@ -111,6 +114,7 @@ export class CodexAppServerClient {
   private readonly executionAdmission = new AppServerAdmission();
   private readonly turnAdmission = new AppServerAdmission();
   private nextId = 1;
+  private readonly childLifetime: AppServerChildLifetime | undefined;
   private child: CodexAppServerChildProcess | null = null;
   private readonly stdoutDecoder: AppServerJsonRpcLineDecoder;
   private readonly pending = new Map<number, PendingRequest>();
@@ -131,6 +135,7 @@ export class CodexAppServerClient {
   constructor(
     private readonly options: {
       readonly codexBinaryPath: string;
+      readonly childBudget?: ChildExecutionBudget;
       readonly sourceEnv: Readonly<Record<string, string | undefined>>;
       readonly hostedPermissionProfiles?: boolean;
       readonly processFactory: CodexAppServerProcessFactory;
@@ -153,6 +158,13 @@ export class CodexAppServerClient {
       readonly modelBackend?: CodexModelBackend;
     },
   ) {
+    this.childLifetime = options.childBudget ? new AppServerChildLifetime(options.childBudget, {
+      isTerminal: () => this.terminalError !== null,
+      activeTurns: () => [...this.pendingTurnIdsByThread],
+      recordTerminal: error => this.recordTerminalError(error),
+      interrupt: (threadId, turnId) => { this.child?.stdin.write(encodeJsonRpcMessage({ id: this.nextId++, method: "turn/interrupt", params: { threadId, turnId } })); },
+      stop: () => this.stopChild(),
+    }) : undefined;
     this.dynamicTools = new AppServerDynamicToolHandler({
       ...(options.hostedControllerTools ? { adapter: options.hostedControllerTools } : {}),
       isActiveTurn: (threadId, turnId) => {
@@ -199,7 +211,10 @@ export class CodexAppServerClient {
       : null;
   }
 
+  get childBudget(): ChildExecutionBudget | undefined { return this.options.childBudget; }
+
   async start(): Promise<void> {
+    this.childLifetime?.beforeProviderStart(this.options.nativeToolSurface, Boolean(this.options.hostedControllerTools));
     throwIfAborted(this.options.abortSignal);
     this.exited = false;
     this.terminalError = null;
@@ -212,6 +227,7 @@ export class CodexAppServerClient {
     };
     const hostJobId = (this.options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_HOST_JOB_ID;
     if (hostJobId !== undefined) env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID = hostJobId;
+    this.options.childBudget?.remainingMs();
     this.child = this.options.processFactory({
       command: this.options.codexBinaryPath,
       args: codexAppServerProcessArgs(this.options),
@@ -237,6 +253,7 @@ export class CodexAppServerClient {
       this.recordTerminalError(error);
     });
 
+    this.childLifetime?.armDeadline();
     const response = await this.send(
       "initialize",
       {
@@ -379,6 +396,7 @@ export class CodexAppServerClient {
           : disableNativeEnvironments
             ? {
                 environments: [],
+                ...(this.options.childBudget ? { dynamicTools: [], experimentalRawEvents: false } : {}),
               }
             : {}),
       },
@@ -528,7 +546,7 @@ export class CodexAppServerClient {
             ...(this.options.commandApprovalPolicy === undefined ? {} : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
             ...(hostedPermissions
               ? { permissions: hostedPermissions }
-              : { sandboxPolicy: this.sandboxPolicyFor(input) }),
+              : { sandboxPolicy: codexAppServerSandboxPolicy({ ...input, sourceEnv: this.options.sourceEnv }) }),
           }),
           input,
         );
@@ -621,21 +639,15 @@ export class CodexAppServerClient {
       id,
       method,
       params,
-      timeoutMs: input.timeoutMs ?? this.options.timeoutMs,
+      timeoutMs: this.options.childBudget
+        ? Math.min(input.timeoutMs ?? this.options.timeoutMs, this.options.childBudget.remainingMs())
+        : input.timeoutMs ?? this.options.timeoutMs,
       ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
       ...(input.usageLease === undefined ? {} : { usageLease: input.usageLease }),
       pending: this.pending,
-      write: (message) => this.child!.stdin.write(message),
-    });
-  }
-
-  private sandboxPolicyFor(input: {
-    readonly sandboxMode?: CodexSandboxMode;
-    readonly workspacePath: string;
-  }): CodexAppServerSandboxPolicy {
-    return codexAppServerSandboxPolicy({
-      ...input,
-      sourceEnv: this.options.sourceEnv,
+      write: (message) => this.childLifetime
+        ? this.childLifetime.write(method, () => this.child!.stdin.write(message))
+        : this.child!.stdin.write(message),
     });
   }
 
@@ -648,13 +660,14 @@ export class CodexAppServerClient {
       readonly onTextDelta?: (text: string) => void;
     },
   ): Promise<TurnState> {
+    const remainingMs = this.options.childBudget?.remainingMs();
     const earlyTurnId = this.earlyTurnIdsByThread.get(input.threadId);
     if (earlyTurnId) {
       this.earlyTurnIdsByThread.delete(input.threadId);
       this.aliasTurnId(earlyTurnId, turnId);
     }
     const existing = this.turns.get(turnId);
-    if (existing) this.attachTextDeltaSink(existing, input.onTextDelta);
+    if (existing) attachAppServerTextDeltaSink(existing, input.onTextDelta, () => this.resolveTurn(existing));
     if (existing?.completed || existing?.error) {
       this.clearTurnTracking(turnId, input.threadId);
       return Promise.resolve(existing);
@@ -667,7 +680,7 @@ export class CodexAppServerClient {
     }
 
     const turn = existing ?? createTurnState();
-    if (!existing) this.attachTextDeltaSink(turn, input.onTextDelta);
+    if (!existing) attachAppServerTextDeltaSink(turn, input.onTextDelta, () => this.resolveTurn(turn));
     if (turn.completed || turn.error) {
       this.clearTurnTracking(turnId, input.threadId);
       return Promise.resolve(turn);
@@ -675,7 +688,7 @@ export class CodexAppServerClient {
     return waitForAppServerTurn({
       turn,
       turnId,
-      timeoutMs: input.timeoutMs,
+      timeoutMs: remainingMs === undefined ? input.timeoutMs : Math.min(input.timeoutMs, remainingMs),
       abortSignal: input.abortSignal,
       register: () => {
         this.turns.set(turnId, turn);
@@ -694,6 +707,7 @@ export class CodexAppServerClient {
 
   private onMessage(message: unknown): void {
     if (this.terminalError) return;
+    if (this.childLifetime && !this.childLifetime.eventAllowed()) return;
     if (!message || typeof message !== "object") return;
     const record = message as Record<string, unknown>;
     if (
@@ -731,7 +745,7 @@ export class CodexAppServerClient {
     if (record.method === "item/agentMessage/delta") {
       const turnId = stringField(params, "turnId");
       const turn = this.ensureTurn(turnId);
-      this.clearReconnectGraceTimer(turn);
+      clearAppServerReconnectTimer(turn);
       const delta = stringField(params, "delta") ?? "";
       if (appendTurnOutput({
         turn, text: delta, maxOutputBytes: this.options.maxOutputBytes,
@@ -767,7 +781,7 @@ export class CodexAppServerClient {
         const text = agentMessageText(item);
         if (text) {
           const turn = this.ensureTurn(turnId);
-          this.clearReconnectGraceTimer(turn);
+          clearAppServerReconnectTimer(turn);
           replaceTurnOutput({
             turn, text, maxOutputBytes: this.options.maxOutputBytes,
             reject: () => this.resolveTurn(turn),
@@ -841,7 +855,7 @@ export class CodexAppServerClient {
     turn: TurnState,
     message: string,
   ): void {
-    this.clearReconnectGraceTimer(turn);
+    clearAppServerReconnectTimer(turn);
     turn.reconnectGraceTimer = setTimeout(() => {
       if (turn.completed || turn.error) return;
       turn.error = new Error(
@@ -877,9 +891,9 @@ export class CodexAppServerClient {
           void this.dynamicTools.call(requestId, requestParams);
         },
       } : {}),
-      ...(this.options.commandApprovalPolicy === undefined
-        ? {}
-        : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
+      ...(this.options.childBudget
+        ? { commandApprovalPolicy: { reviewCommand: () => ({ approved: false, reason: "child_native_tools_denied" }) } }
+        : this.options.commandApprovalPolicy === undefined ? {} : { commandApprovalPolicy: this.options.commandApprovalPolicy }),
       warn: (warning) => this.warnings.push(warning),
       respond: (requestId, result) => this.respondServerRequest(requestId, result),
       respondError: (requestId, message) => this.respondServerRequestError(requestId, message),
@@ -903,7 +917,8 @@ export class CodexAppServerClient {
     readonly error?: { readonly code: number; readonly message: string };
   }): void {
     try {
-      this.child?.stdin.write(encodeJsonRpcMessage(payload));
+      const write = () => this.child?.stdin.write(encodeJsonRpcMessage(payload)) ?? false;
+      if (this.childLifetime) this.childLifetime.write("tool/response", write); else write();
     } catch (error) {
       this.recordTerminalError(
         new Error(
@@ -934,7 +949,7 @@ export class CodexAppServerClient {
   }
 
   private resolveTurn(turn: TurnState): void {
-    this.clearReconnectGraceTimer(turn);
+    clearAppServerReconnectTimer(turn);
     const waiters = turn.waiters.splice(0);
     for (const waiter of waiters) waiter(turn);
   }
@@ -984,7 +999,13 @@ export class CodexAppServerClient {
     void this.stopChild().catch(() => undefined);
   }
 
+  /** Scoped process stop request only; this does not prove host custody release. */
+  requestChildCleanup(error: unknown): void {
+    if (this.childLifetime) this.childLifetime.cleanup(error); else this.failProtocol(error);
+  }
+
   private stopChild(): Promise<void> {
+    this.childLifetime?.disposeTimer();
     if (this.stopping) return this.stopping;
     const child = this.child;
     this.child = null;
@@ -999,7 +1020,7 @@ export class CodexAppServerClient {
   private clearTurnTracking(turnId: string, threadId: string): void {
     this.dynamicTools.cancelTurn(turnId);
     const turn = this.turns.get(turnId);
-    if (turn) this.clearReconnectGraceTimer(turn);
+    if (turn) clearAppServerReconnectTimer(turn);
     this.turns.delete(turnId);
     this.pendingTurnIdsByThread.delete(threadId);
     this.earlyTurnIdsByThread.delete(threadId);
@@ -1071,35 +1092,13 @@ export class CodexAppServerClient {
 
   private clearIdleTurnState(): void {
     if (this.hasActiveTurnWork()) return;
-    for (const turn of this.turns.values()) this.clearReconnectGraceTimer(turn);
+    for (const turn of this.turns.values()) clearAppServerReconnectTimer(turn);
     this.turns.clear();
     this.earlyTurnIdsByThread.clear();
     this.turnIdAliases.clear();
   }
 
-  private clearReconnectGraceTimer(turn: TurnState): void {
-    if (!turn.reconnectGraceTimer) return;
-    clearTimeout(turn.reconnectGraceTimer);
-    turn.reconnectGraceTimer = null;
-  }
-
-  private attachTextDeltaSink(
-    turn: TurnState,
-    sink: ((text: string) => void) | undefined,
-  ): void {
-    turn.onTextDelta = sink ?? null;
-    if (turn.outputText) this.emitTextDelta(turn, turn.outputText);
-  }
-
   private emitTextDelta(turn: TurnState, text: string): void {
-    if (!turn.onTextDelta || turn.error) return;
-    try {
-      turn.onTextDelta(text);
-    } catch (error) {
-      turn.error = new Error("codex_app_server_text_delta_sink_failed", {
-        cause: error,
-      });
-      this.resolveTurn(turn);
-    }
+    emitAppServerTextDelta(turn, text, () => this.resolveTurn(turn));
   }
 }
