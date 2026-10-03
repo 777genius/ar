@@ -22,6 +22,8 @@ import {
 
 export type CodexControlledAgentProfileInput = {
   readonly stateDir: string;
+  /** Reserved hosted profile: excludes the project-control MCP subprocess. */
+  readonly hostedController?: boolean;
   readonly mcpServerName?: string;
   readonly mcpCommand?: string;
   readonly mcpArgs?: readonly string[];
@@ -34,6 +36,7 @@ export type CodexControlledAgentProfileInput = {
 };
 
 export type CodexControlledAgentProfile = {
+  readonly hostedController?: boolean;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly modelBackend: CodexModelBackend;
   readonly mimoApiKeyEnvVarName: string;
@@ -50,18 +53,22 @@ export function buildCodexControlledAgentProfile(
   input: CodexControlledAgentProfileInput,
 ): CodexControlledAgentProfile {
   const mcpServerName = input.mcpServerName ?? "subscription_runtime_project_control";
-  const enabledTools = projectScopedControllerToolNames();
+  const enabledTools = input.hostedController ? [] : projectScopedControllerToolNames();
   const mcpCommand = input.mcpCommand ?? "subscription-runtime-codex-goal-mcp";
   const mcpArgs = input.mcpArgs ?? [];
   const codexHome = join(input.stateDir, "codex-home");
   const rawShellMode = input.rawShellMode ?? "disabled-by-provider";
   const modelBackend = input.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  if (input.hostedController && (modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan || rawShellMode !== "disabled-by-provider")) {
+    throw new Error("hosted_controller_profile_invalid");
+  }
   const mimoApiKeyEnvVarName =
     input.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault;
   const providerEgressPolicy = modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
     ? codexMimoTokenPlanEgressPolicy()
     : undefined;
   return {
+    ...(input.hostedController ? { hostedController: true } : {}),
     providerKind: RunEventProviderKind.Codex,
     modelBackend,
     mimoApiKeyEnvVarName,
@@ -78,6 +85,7 @@ export function buildCodexControlledAgentProfile(
       mcpCommand,
       mcpArgs,
       enabledTools,
+      hostedController: input.hostedController === true,
       modelBackend,
       mimoApiKeyEnvVarName,
       ...(providerEgressPolicy === undefined
@@ -148,6 +156,7 @@ export function assertHostedMimoControlledAgentProfile(profile: CodexControlledA
 function shellQuote(value: string): string { return `'${value.replaceAll("'", `'\\''`)}'`; }
 
 function codexConfigToml(input: {
+  readonly hostedController: boolean;
   readonly mcpServerName: string;
   readonly mcpCommand: string;
   readonly mcpArgs: readonly string[];
@@ -185,13 +194,15 @@ function codexConfigToml(input: {
     'trace_exporter = "none"',
     "log_user_prompt = false",
     "",
-    `[mcp_servers.${quoteTomlKey(input.mcpServerName)}]`,
-    `command = ${tomlString(input.mcpCommand)}`,
-    `args = ${tomlStringArray(input.mcpArgs)}`,
-    `enabled_tools = ${tomlStringArray(input.enabledTools)}`,
-    'default_tools_approval_mode = "approve"',
-    ...(input.mcpCwd ? [`cwd = ${tomlString(input.mcpCwd)}`] : []),
-    "",
+    ...(input.hostedController ? [] : [
+      `[mcp_servers.${quoteTomlKey(input.mcpServerName)}]`,
+      `command = ${tomlString(input.mcpCommand)}`,
+      `args = ${tomlStringArray(input.mcpArgs)}`,
+      `enabled_tools = ${tomlStringArray(input.enabledTools)}`,
+      'default_tools_approval_mode = "approve"',
+      ...(input.mcpCwd ? [`cwd = ${tomlString(input.mcpCwd)}`] : []),
+      "",
+    ]),
     "[shell_environment_policy]",
     'inherit = "none"',
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',

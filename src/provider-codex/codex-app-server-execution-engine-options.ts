@@ -10,6 +10,7 @@ import type { AppServerCompletedTurnCheckpoint } from "./app-server/application/
 import type { CodexExecutionProfile } from "./codex-execution-profile";
 import type { CodexExecutionEngine } from "./codex-json-execution-engine";
 import type { CodexModelBackend } from "./codex-model-backend";
+import type { HostedControllerDynamicToolAdapter } from "./app-server/domain/hosted-controller-dynamic-tools";
 
 export type CodexAppServerExecutionEngineOptions = {
   readonly codexBinaryPath: string;
@@ -41,6 +42,7 @@ export type CodexAppServerExecutionEngineOptions = {
   readonly runStore?: ManagedRunStorePort;
   readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
   readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+  readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
   readonly rolloutBudget?: CodexAppServerRolloutBudget;
   readonly bypassHookTrust?: boolean;
   readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;

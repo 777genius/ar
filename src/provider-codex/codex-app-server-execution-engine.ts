@@ -105,7 +105,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   private readonly executionProfile: ResolvedCodexExecutionProfile;
   private readonly runStore: ManagedRunStorePort;
   private readonly slotPool: AppServerSlotPool;
-
   constructor(private readonly options: CodexAppServerExecutionEngineOptions) {
     this.modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
     if (!options.codexBinaryPath.trim()) {
@@ -169,6 +168,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ...(options.nativeToolSurface === undefined
         ? {}
         : { nativeToolSurface: options.nativeToolSurface }),
+      ...(options.hostedControllerTools ? { hostedControllerTools: options.hostedControllerTools } : {}),
       ...(options.rolloutBudget === undefined
         ? {}
         : { rolloutBudget: options.rolloutBudget }),
@@ -192,7 +192,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         : { modelBackend: options.modelBackend }),
     });
   }
-
   async run(input: CodexExecutionInput): Promise<CodexExecutionResult> {
     const schemaPlan = input.outputSchemaPlan ?? prepareCodexOutputSchemaPlan(input.outputSchema);
     try {

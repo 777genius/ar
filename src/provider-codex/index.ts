@@ -11,6 +11,8 @@ export { hostedMimoCredentialSourceReady } from "./hosted-mimo-credential-source
 export * from "./hosted-mimo-profile";
 export * from "./codex-json-agent-driver";
 export * from "./codex-app-server-execution-engine";
+export { HostedControllerToolName, hostedControllerDynamicToolSpecs, parseHostedControllerToolCall } from "./app-server/domain/hosted-controller-dynamic-tools";
+export type { HostedControllerDynamicToolAdapter, HostedControllerDynamicToolCall } from "./app-server/domain/hosted-controller-dynamic-tools";
 export * from "./app-server/domain/model-catalog";
 export * from "./codex-json-execution-engine";
 export * from "./codex-session-materializer";

@@ -25,6 +25,7 @@ import { AppServerGoalRunner } from "./app-server-goal-runner";
 import type { AppServerCompletedTurnCheckpoint } from "./app-server-turn-checkpoint";
 import { AppServerTurnRunner } from "./app-server-turn-runner";
 import type { CodexAppServerRateLimitsSnapshotHandler } from "./app-server-rate-limits-monitor";
+import type { HostedControllerDynamicToolAdapter } from "../domain/hosted-controller-dynamic-tools";
 
 export type AppServerSlot = {
   readonly key: string;
@@ -82,6 +83,7 @@ export class AppServerSlotPool {
       readonly executionProfile: ResolvedCodexExecutionProfile;
       readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
       readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+      readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
       readonly rolloutBudget?: CodexAppServerRolloutBudget;
       readonly bypassHookTrust?: boolean;
       readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
@@ -179,6 +181,9 @@ export class AppServerSlotPool {
       ...(this.options.nativeToolSurface === undefined
         ? {}
         : { nativeToolSurface: this.options.nativeToolSurface }),
+      ...(this.options.hostedControllerTools === undefined
+        ? {}
+        : { hostedControllerTools: this.options.hostedControllerTools }),
       ...(this.options.rolloutBudget === undefined
         ? {}
         : { rolloutBudget: this.options.rolloutBudget }),
