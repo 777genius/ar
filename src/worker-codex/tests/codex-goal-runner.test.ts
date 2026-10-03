@@ -560,7 +560,7 @@ describe("codex goal runner", () => {
     }
   });
 
-  it("fails closed for Codex access-boundary jobs without explicit restricted network", async () => {
+  it("fails closed for an explicitly disabled network even though Internet is the default", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-goal-access-"));
     const promptPath = join(root, "prompt.md");
     const config: CodexGoalRunConfig = {
@@ -569,6 +569,7 @@ describe("codex goal runner", () => {
       workspacePath: join(root, "workspace"),
       promptPath,
       taskId: "task-access-network",
+      networkAccess: NetworkAccessMode.Disabled,
       accounts: codexGoalAccountSlots(["account-a"]),
       accessBoundary: AccessBoundary.IsolatedWorkspaceWrite,
       projectAccessScope: {
@@ -593,7 +594,7 @@ describe("codex goal runner", () => {
     }
   });
 
-  it("lets the provider sandbox own command execution inside an isolated workspace", () => {
+  it("retains command validation alongside the provider filesystem sandbox", () => {
     const root = "/tmp/subscription-runtime-goal-access";
     const options = buildCodexGoalExecutorOptions({
       stateRootDir: join(root, "state"),
@@ -622,11 +623,11 @@ describe("codex goal runner", () => {
 
     expect(options).toMatchObject({ runtimeHomeRootDir: join(root, "home"), stateRootDir: join(root, "state") });
     expect(options.accounts[0]?.worker.commandPolicy).toMatchObject({
-      validateCommands: false,
+      validateCommands: true,
     });
   });
 
-  it("enables the global-scan-only policy for hosted jobs without an access plan", () => {
+  it("retains Git and service command denials for hosted jobs without an access plan", () => {
     const root = "/tmp/subscription-runtime-hosted-scan-policy";
     const options = buildCodexGoalExecutorOptions({
       stateRootDir: join(root, "state"),
@@ -644,13 +645,13 @@ describe("codex goal runner", () => {
       },
     });
 
-    expect(options.accounts[0]?.worker.commandPolicy).toEqual({
+    expect(options.accounts[0]?.worker.commandPolicy).toMatchObject({
       validateCommands: true,
-      deniedExecutableNames: [],
-      deniedGitSubcommands: [],
+      deniedExecutableNames: expect.arrayContaining(["systemctl", "sudo"]),
+      deniedGitSubcommands: expect.arrayContaining(["commit", "push", "reset"]),
       deniedPathPrefixes: [],
-      deniedInlineCodeExecutables: [],
-      deniedScriptExecutables: [],
+      deniedInlineCodeExecutables: ["python", "python3", "node"],
+      deniedScriptExecutables: ["sh", "bash", "zsh"],
     });
   });
 

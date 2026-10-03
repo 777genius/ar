@@ -22,13 +22,17 @@ import { researchCustody } from "../research-launch-files";
 
 beforeEach(setupResearchFixture);
 afterEach(cleanupResearchFixture);
-const policy = codexProviderEgressPolicy(CodexProviderEgressProfileId.PublicResearchV1);
-function start() {
+const policy = codexProviderEgressPolicy(CodexProviderEgressProfileId.FullInternetV1);
+function start(profileId = CodexProviderEgressProfileId.FullInternetV1) {
   const r = request(); grantResearchLaunch(r.jobId, r.jobRootDir, r.workspacePath);
+  if (profileId !== CodexProviderEgressProfileId.FullInternetV1) {
+    const path = join("/run/user/subscription-runtime-research-v1", researchHash(r.jobId), "grant.json");
+    researchPublish(path, { ...JSON.parse(researchRead(path).toString()), profileId });
+  }
   return startResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")));
 }
-function admitted() {
-  const result = start(); host.group = `/system.slice/${result.unit}`;
+function admitted(profileId = CodexProviderEgressProfileId.FullInternetV1) {
+  const result = start(profileId); host.group = `/system.slice/${result.unit}`;
   bindResearchRuntime(result.jobId, result.startId);
   return { ...result, ...researchCurrentStart(result.jobId) };
 }
@@ -81,6 +85,16 @@ describe("authority changes during blocking Host observations", () => {
 });
 
 describe("closed installed research launch owner (real TEST files; proc, mounts and systemd substituted)", () => {
+  it("retains the finite identity and bytes of an existing v1 grant through admission", async () => {
+    admitted(CodexProviderEgressProfileId.PublicResearchV1);
+    const path = join("/run/user/subscription-runtime-research-v1", researchHash(request().jobId), "grant.json");
+    const before = researchRead(path);
+    const legacy = await admitHostedTestEgress({ ...request(), sourceEnv: {} });
+    expect(legacy).toEqual(codexProviderEgressPolicy(CodexProviderEgressProfileId.PublicResearchV1));
+    expect(captureResearchRuntime(request()).profileId).toBe(CodexProviderEgressProfileId.PublicResearchV1);
+    expect(researchRead(path)).toEqual(before);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
   it("launches an individually owned pinned service and admits its actual retained origin before provider effects", async () => {
     const current = admitted();
     const submitted = host.calls.find(c => c.command === "/usr/bin/systemd-run")!;

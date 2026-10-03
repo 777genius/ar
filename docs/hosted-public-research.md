@@ -33,6 +33,24 @@ hosted E2E, real native discovery, deployed isolation or service admission.
 Primary performs isolated hosted E2E after review. No provider/service launch,
 deployment, real auth access or Git mutation is part of writer validation.
 
+The continuation on `b88772a0de6dd5f03fbd7979587964740febe7d6` completes
+the controller network type and capability checks, and admits the Internet
+profile on both supported native `app-server` engines. Legacy packaged/plain
+execution remains refused for hosted permission profiles. Restricted grants
+retain their existing engine eligibility. Controller and bounded MCP profiles
+still disable native tools and native web discovery.
+
+Internet permission is separate from command admission: hosted command reviews
+retain Git push/commit/history and service/privilege denials. Quoted public URLs
+with ordinary query separators remain valid commands. These reviews are not a
+general shell security boundary; native filesystem confinement and the existing
+global scan guard remain required. Portable tests substitute only absent Host
+scratch configuration to avoid reading or activating real Host mounts. They
+exercise actual TLS bodies, an anonymous local curl transfer, materialized
+permission configs and private grant files; provider protocol and Host kernel /
+service facts remain synthetic. Primary must qualify installed native shell
+Internet, live web discovery, filesystem isolation and cancellation separately.
+
 The historical v1 implementation and qualification evidence follows. Its finite
 nine-host/API-only statements apply only to persisted v1 grants and are superseded
 for the hosted default by the owner contract above.

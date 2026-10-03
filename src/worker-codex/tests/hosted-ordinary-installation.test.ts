@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { codexProviderEgressPolicy, CodexProviderEgressProfileId, withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { assertDefaultInternetEngine, assertHostedNetworkLaunch } from "./hosted-network-launch-assertions";
 import { HostedCustodyReservationState, parseHostedActivation, type HostedOrdinaryReservation } from "@vioxen/subscription-runtime/worker-core";
 import { HostedReadonlyEpochStore } from "../hosted-readonly-epoch-store";
 import { HostedReadonlySupervisorHost } from "../hosted-readonly-supervisor-host";
@@ -33,6 +34,7 @@ const fixture = vi.hoisted(() => ({ root: "", boot: "aaaaaaaa-aaaa-aaaa-aaaa-aaa
 const root = "/var/lib/subscription-runtime-host-policy";
 const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages";
 function local(path: string): string {
+  if (path === "/etc/subscription-runtime/scratch-temp.json") return join(fixture.root, "absent-scratch-policy");
   if (["/", "/var", "/var/lib", root, "/run", "/run/user", "/run/user/0", "/run/user/0/subscription-runtime-host-policy", "/etc", "/etc/systemd", "/etc/systemd/system"].includes(path)) return fixture.root;
   const grants = "/run/user/0/subscription-runtime-host-policy/codex-egress";
   if (path === grants || path.startsWith(grants + "/")) return join(fixture.root, "grants", path.slice(grants.length));
@@ -619,17 +621,14 @@ describe("real default provider primitive under ordinary activation", () => {
     fixture.runtimeUnit = start.unit; fixture.group = start.controlGroup;
     const input = { command: "/TEST/codex", args: ["app-server"], cwd: creator().workspacePath, env: {
       SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job", SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE:
-        npm ? "codex-test-npm-qualification" : "codex-provider-api", TEST_BOOTSTRAP_VALUE: "fixture-only" } };
+        npm ? "codex-test-npm-qualification" : "codex-full-internet-v1", TEST_BOOTSTRAP_VALUE: "fixture-only" } };
     return { store, input };
   }
-  it.each(["app-server", "app-server-goal", "packaged-exec", "plain-exec"] as const)("no-grant egress preserves ordinary engine eligibility: %s", async executionEngine => {
+  it.each(["app-server", "app-server-goal", "packaged-exec", "plain-exec"] as const)("no-grant Internet preserves supported native engines and refuses legacy sandboxes: %s", async executionEngine => {
     const { input } = runtime();
     const identity = { jobId: creator().jobId, jobRootDir: creator().jobRootDir, workspacePath: creator().workspacePath,
       sourceEnv: { ...input.env, SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: CodexProviderEgressProfileId.PublicResearchV1 }, executionEngine };
-    const policy = await admitHostedTestEgress(identity);
-    expect(policy.profileId).toBe("codex-provider-api");
-    expect(() => spawnCodexAppServerProcess({ ...input, env: identity.sourceEnv })).toThrow();
-    expect(admitHostedReadonlyInputs({ ...identity, providerEgressPolicy: policy })).toBeUndefined();
+    await assertDefaultInternetEngine(identity, input);
     expect(fixture.spawn).not.toHaveBeenCalled();
   });
   it("admits a production research grant through the real ordinary reader and default primitive", async () => {
@@ -889,7 +888,7 @@ describe("actual ordinary outer dispatcher and fixed bootstrap", () => {
   });
 });
 
-it.each(["api", "npm", "npm-grant-deleted", "research", "research-grant-deleted", "research-grant-mutated"])("real ordinary runner and default factory revalidate on quota account switch: %s", async mode => {
+it.each(["internet", "npm", "npm-grant-deleted", "research", "research-grant-deleted", "research-grant-mutated"])("real ordinary runner and default factory revalidate on quota account switch: %s", async mode => {
   const config = { jobId: "ordinary-job", taskId: "ordinary-job", jobRootDir: join(fixture.root, "jobs/ordinary-job"),
     workspacePath: join(fixture.root, "jobs/ordinary-job/workspace"), promptPath: join(fixture.root, "prompt"),
     authRootDir: join(fixture.root, "unused-synthetic-auth"), accounts: codexGoalAccountSlots(["fake-a", "fake-b"]),
@@ -899,8 +898,8 @@ it.each(["api", "npm", "npm-grant-deleted", "research", "research-grant-deleted"
     launch: { ...creator().launch, cwd: config.workspacePath } };
   put("readonly-inventory.json", { ...read("readonly-inventory.json"), ordinaryCreators: [bound] });
   const grant = `grants/${hash(config.jobId)}.json`;
-  const selectedProfile = mode.startsWith("research") ? CodexProviderEgressProfileId.PublicResearchV1 : mode === "api" ? CodexProviderEgressProfileId.ProviderApi : CodexProviderEgressProfileId.TestNpmQualification;
-  if (mode !== "api") put(grant, { schemaVersion: 1, jobId: config.jobId, jobRootDir: config.jobRootDir,
+  const selectedProfile = mode.startsWith("research") ? CodexProviderEgressProfileId.PublicResearchV1 : mode === "internet" ? CodexProviderEgressProfileId.FullInternetV1 : CodexProviderEgressProfileId.TestNpmQualification;
+  if (mode !== "internet") put(grant, { schemaVersion: 1, jobId: config.jobId, jobRootDir: config.jobRootDir,
     workspacePath: config.workspacePath, profileId: selectedProfile });
   const store = new HostedInstallationActivationStore(); store.install(); store.enrollOrdinary(bound.creatorId); store.resumeOrdinary();
   const prepared = store.serialized(fence => store.reserveOrdinaryRuntime(fence, bound.launch.command, bound.launch.args, bound.launch.cwd));
@@ -911,7 +910,7 @@ it.each(["api", "npm", "npm-grant-deleted", "research", "research-grant-deleted"
         // Same valid semantic grant, different bytes: fallback must still refuse.
         writeFileSync(join(fixture.root, grant), readFileSync(join(fixture.root, grant), "utf8") + "\n", { mode: 0o600 });
       } } }), new FakeAppServerFactory()];
-  const frames: { env: Record<string, string> }[] = [];
+  const frames: { env: Record<string, string>; args: string[] }[] = [];
   fixture.spawn.mockImplementation((command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
     expect(command).toBe(process.execPath);
     expect(args.slice(0, 2)).toEqual(["/opt/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
@@ -946,7 +945,7 @@ it.each(["api", "npm", "npm-grant-deleted", "research", "research-grant-deleted"
   expect(result.attempts[0]?.failureReason, result.attempts[0]?.failureMessage).toBe("quota_limited");
   expect(frames.every(frame => frame.env.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE ===
     selectedProfile)).toBe(true);
-  if (mode.startsWith("research")) for (const fake of fakes.filter(f => f.spawnCount)) expect(fake.requests.find(row => row.method === "thread/start")?.params).toMatchObject({ config: { web_search: "live" }, dynamicTools: [{ name: "public_source_read" }] });
+  assertHostedNetworkLaunch(frames, selectedProfile, fakes);
   if (mode.includes("-grant-")) expect(result.status).not.toBe("completed");
   else { expect(result.status).toBe("completed"); expect(new Set(frames.map(frame => frame.env.CODEX_HOME)).size).toBe(2); }
 });

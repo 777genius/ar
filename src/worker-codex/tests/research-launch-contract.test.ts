@@ -41,7 +41,7 @@ describe("closed research launch configuration (source checks, no native launch)
     expect(plan?.status).toBe(LaunchPlanStatus.Ready);
     expect(plan?.boundary).toBe(AccessBoundary.IsolatedWorkspaceWrite);
     if (plan?.status !== LaunchPlanStatus.Ready) throw new Error("expected TEST launch plan");
-    expect(plan.networkPolicy.mode).toBe(NetworkAccessMode.Restricted);
+    expect(plan.networkPolicy.mode).toBe(NetworkAccessMode.Unrestricted);
     expect(plan.environmentPolicy.exposeAuthRoot).toBe(false);
     expect(codexGoalControlsForAccessBoundary(config)).toEqual({ editMode: "allow-edits", providerSandboxMode: "workspace-write" });
     // Removing only the derived scope reproduces immutable036's admission failure.
@@ -101,8 +101,7 @@ describe("closed research launch configuration (source checks, no native launch)
     expect(options.requireGitWorkspace).toBe(true);
     for (const account of options.accounts) {
       expect(account.worker.enforceProjectReadBoundary).toBe(true);
-      // Preserve the existing sandbox-owned command execution choice.
-      expect(account.worker.commandPolicy?.validateCommands).toBe(false);
+      expect(account.worker.commandPolicy?.validateCommands).toBe(true);
       expect(account.worker.model).toBe("gpt-6.1-sol");
       expect(account.worker.reasoningEffort).toBe("xhigh");
       expect(account.worker.serviceTier).toBe("default");

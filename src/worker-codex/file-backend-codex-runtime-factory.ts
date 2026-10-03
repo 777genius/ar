@@ -267,9 +267,15 @@ function createCodexAgentDriver(input: {
       );
   if (modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan &&
       providerEgressPolicy.profileId !== CodexProviderEgressProfileId.ProviderApi &&
+      providerEgressPolicy.profileId !== CodexProviderEgressProfileId.FullInternetV1 &&
       (process.platform !== "linux" || !hostedGlobalScanGuard ||
        executionEngine !== "app-server-goal" || options.boundedWorkspaceTools)) {
     throw new Error("hosted_test_egress_engine_unsupported");
+  }
+  if (providerEgressPolicy.profileId === CodexProviderEgressProfileId.FullInternetV1 &&
+      (process.platform !== "linux" || !hostedGlobalScanGuard ||
+       (executionEngine !== "app-server" && executionEngine !== "app-server-goal"))) {
+    throw new Error("hosted_permission_profiles_engine_unsupported");
   }
   if (providerEgressPolicy.profileId === CodexProviderEgressProfileId.TestManagedQualification) {
     assertReadonlyAdmittedFactory(options.appServerProcessFactory, options.workspacePath);

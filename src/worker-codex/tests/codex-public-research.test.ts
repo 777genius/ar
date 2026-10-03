@@ -1,13 +1,14 @@
+import "./absent-host-scratch-fixture";
 import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:https";
 import { createServer as createTcpServer, type Socket } from "node:net";
 import { handlePublicResearchSourceTool, PublicResearchToolSession } from "../../provider-codex/app-server/application/public-research-source-tool";
 import { buildCodexGoalExecutorOptions } from "../codex-goal-runner";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentRuntimeExecutionMode, DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import { AgentRuntimeExecutionMode, AgentRuntimeTool, DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { CodexModelBackend } from "../../provider-codex/codex-model-backend";
 import { CodexProviderEgressProfileId, codexProviderEgressPolicy, codexProviderEgressEnv } from "../../provider-codex/codex-provider-egress-policy";
 import { createPublicResearchSourceReader } from "../../provider-codex/app-server/adapters/public-research-source-reader";
@@ -21,6 +22,10 @@ import { egressBoundCodexProcessFactory } from "../../provider-codex/app-server/
 import { appServerThreadStartParams } from "../../provider-codex/app-server/application/app-server-thread-start-params";
 import { resolveCodexExecutionProfile } from "../../provider-codex/codex-execution-profile";
 import { createFileBackendCodexWorkerRuntime } from "../../provider-codex/../worker-codex/file-backend-codex-runtime-factory";
+import { AccessBoundary } from "../../worker-core/access-control";
+import { CommandPolicyRunner } from "../command-policy-runner";
+import { codexAppServerCommandApprovalPolicy } from "../file-backend-codex-command-policy";
+import { NodeProcessRunner } from "../../worker-local/node-process-runner";
 
 // Only DNS and socket routing are replaced. Production URL checks, DNS address
 // checks, HTTPS request/response handling, TLS verification, bytes and framing
@@ -168,7 +173,7 @@ describe("admitted public research source capability", () => {
       else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previous;
     }
   });
-  it("passes the research surface and completes a real TLS read through a substitute provider", async () => {
+  it.each([policy, codexProviderEgressPolicy(CodexProviderEgressProfileId.FullInternetV1)])("passes $profileId and completes a real TLS read through a substitute provider", async policy => {
     const fake = sourceFactory();
     const parts = createFileBackendCodexWorkerRuntime({ options: { providerInstanceId: "TEST-research", stateRootDir: join(root, "factory-state"),
       workspacePath: root, codexBinaryPath: "/TEST/codex", encryptionKey: new Uint8Array(32), executionEngine: "app-server-goal",
@@ -189,6 +194,9 @@ describe("admitted public research source capability", () => {
       expect(config.match(/":root" = "deny"/g)).toHaveLength(2);
       expect(config).toContain('".git" = "read"'); expect(config).toContain('".codex" = "read"');
       expect(config).not.toContain('"docs.rs" = "allow"');
+      const internet = policy.profileId === CodexProviderEgressProfileId.FullInternetV1;
+      expect(config).toContain(`enabled = ${!internet}\ndomains = {`);
+      expect(config.includes('domains = { "api.openai.com" = "allow" }')).toBe(!internet);
     } finally { await driver.dispose(); }
   });
   it("forged task tags and a recognized research environment marker never enable source tools", async () => {
@@ -273,7 +281,7 @@ describe("admitted public research source capability", () => {
     expect(codexJsonHomeConfigToml({ providerEgressPolicy: policy, modelBackend: CodexModelBackend.XiaomiMimoTokenPlan })).toContain('web_search = "disabled"');
   });
   // Old reader opened an unbounded number of sockets, including across accounts.
-  it("refuses a shared-job burst before DNS/socket work across account slots", async () => {
+  it.each([policy, codexProviderEgressPolicy(CodexProviderEgressProfileId.FullInternetV1)])("refuses a shared-job $profileId burst before DNS/socket work across account slots", async policy => {
     const opts = buildCodexGoalExecutorOptions({ config: { jobRootDir: root, taskId: "TEST-burst",
       authRootDir: join(root, "TEST-auth"), workspacePath: root, promptPath: join(root, "prompt"),
       accounts: [{ name: "TEST-a" }, { name: "TEST-b" }] }, providerEgressPolicy: policy,
@@ -293,7 +301,7 @@ describe("admitted public research source capability", () => {
     expect((await a.read("https://docs.rs/")).status).toBe(200);
   });
   // Old per-call body cap allowed unlimited cumulative results and JSON escaping.
-  it("bounds aggregate delivered result bytes and serialized expansion", async () => {
+  it.each([policy, codexProviderEgressPolicy(CodexProviderEgressProfileId.FullInternetV1)])("bounds $profileId aggregate delivered result bytes and serialized expansion", async policy => {
     const bounded = createPublicResearchSourceReader(policy);
     for (let count = 0; count < 6; count++) await bounded.read("https://docs.rs/nearcap");
     const before = { dns: tls.dnsCalls, sockets: tls.calls };
@@ -443,6 +451,50 @@ describe("admitted public research source capability", () => {
 describe("full Internet anonymous reader", () => {
   const internet = codexProviderEgressPolicy(CodexProviderEgressProfileId.FullInternetV1);
   const fresh = () => createPublicResearchSourceReader(internet);
+  it("retains a closed native surface for a bounded MCP worker on the Internet profile", async () => {
+    const fake = sourceFactory();
+    const parts = createFileBackendCodexWorkerRuntime({ options: { providerInstanceId: "TEST-bounded-internet",
+      stateRootDir: join(root, "bounded-state"), workspacePath: root, codexBinaryPath: "/TEST/codex",
+      encryptionKey: new Uint8Array(32), executionEngine: "app-server-goal", warmupPrompt: false,
+      sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" }, providerEgressPolicy: internet,
+      boundedWorkspaceTools: { allowedTools: [AgentRuntimeTool.ReadFile] }, appServerProcessFactory: fake.create },
+      workerId: "TEST-bounded-internet", observability: { emit: () => {}, count: () => {}, timing: () => {} },
+      clock: { now: () => new Date(), monotonicMs: () => performance.now() }, redactor: new DefaultRedactor() });
+    const driver = parts.agentDriver as CodexJsonAgentDriver;
+    try {
+      await driver.runTask(task());
+      expect(fake.requests.find(request => request.method === "thread/start")?.params).toMatchObject({
+        environments: [], config: { web_search: "disabled", features: { shell_tool: false, unified_exec: false } },
+      });
+      expect(readResult(fake)?.success).toBe(false);
+      expect(tls.dnsCalls).toBe(0); expect(tls.calls).toBe(0); expect(tls.requests).toHaveLength(0);
+      expect(await readFile(join(fake.codexHomes[0]!, "config.toml"), "utf8")).toContain('enabled_tools = ["read_file"]');
+    } finally { await driver.dispose(); }
+  });
+  it("permits real shell HTTPS with query strings while retaining Git and service denials", async () => {
+    const options = buildCodexGoalExecutorOptions({ config: { jobRootDir: root, taskId: "TEST-shell-network",
+      authRootDir: join(root, "TEST-auth"), workspacePath: root, promptPath: join(root, "prompt"), accounts: [{ name: "TEST-account" }],
+      accessBoundary: AccessBoundary.IsolatedWorkspaceWrite,
+      projectAccessScope: { projectId: "TEST-shell-network", isolatedWorkspaceRoot: root } },
+      providerEgressPolicy: internet, stateRootDir: join(root, "TEST-shell-state"), encryptionKey: new Uint8Array(32) });
+    const policy = options.accounts[0]!.worker.commandPolicy!;
+    const approval = codexAppServerCommandApprovalPolicy(policy, { emit: () => {}, count: () => {}, timing: () => {} }, {});
+    expect(approval.reviewCommand({ source: "command_execution", commandText: "curl 'https://docs.rs/?q=ordinary&lang=en'" }).approved).toBe(true);
+    const runner = new CommandPolicyRunner(new NodeProcessRunner(), policy);
+    const input = { cwd: root, env: { HOME: root, PATH: "/usr/bin:/bin" }, timeoutMs: 2000, abortSignal: new AbortController().signal };
+    const result = await runner.run({ ...input, command: "/usr/bin/curl", args: ["-q", "--silent", "--show-error", "--fail",
+      "--proxy", "", "--noproxy", "*", "--cacert", join(root, "server.crt"), "--resolve", `docs.rs:${tls.port}:127.0.0.1`,
+      `https://docs.rs:${tls.port}/?q=ordinary&lang=en`] });
+    expect(result).toMatchObject({ exitCode: 0, stdout: "TEST public source fixture" });
+    expect(tls.requests).toEqual([{ host: `docs.rs:${tls.port}`, url: "/?q=ordinary&lang=en", method: "GET" }]);
+    // Harmless real executables ensure even a regression never runs Git or a service.
+    for (const name of ["git", "systemctl"]) await symlink("/usr/bin/false", join(root, name));
+    for (const args of [["push"], ["commit"], ["reset", "--hard"], ["-C", root, "merge", "main"]]) {
+      await expect(runner.run({ ...input, command: join(root, "git"), args })).rejects.toThrow("command_policy_denied:denied_git_subcommand");
+    }
+    await expect(runner.run({ ...input, command: join(root, "systemctl"), args: ["restart", "TEST.service"] }))
+      .rejects.toThrow("command_policy_denied:denied_executable");
+  });
   it.each(["public.example.test", "api.github.com", "raw.githubusercontent.com"])("reads public %s with an ordinary query", async host => {
     await expect(fresh().read(`https://${host}/?q=ordinary&lang=en`)).resolves.toMatchObject({ status: 200, body: "TEST public source fixture" });
     expect(tls.requests).toEqual([{ host: host + ":" + tls.port, url: "/?q=ordinary&lang=en", method: "GET" }]);

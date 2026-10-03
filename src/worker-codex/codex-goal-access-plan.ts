@@ -120,31 +120,31 @@ export function commandPolicyForHostedCodexGoal(input: {
 }): CommandPolicy | undefined {
   if (
     input.accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
-    input.accessLaunchPlan.boundary === AccessBoundary.IsolatedWorkspaceWrite
+    input.accessLaunchPlan.commandPolicy.validateCommands
   ) {
     return {
       ...input.accessLaunchPlan.commandPolicy,
-      validateCommands: false,
+      deniedExecutableNames: [...new Set([...input.accessLaunchPlan.commandPolicy.deniedExecutableNames, ...hostedDeniedExecutables])],
+      deniedGitSubcommands: [...new Set([...input.accessLaunchPlan.commandPolicy.deniedGitSubcommands, ...hostedDeniedGitSubcommands])],
     };
-  }
-  if (
-    input.accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
-    input.accessLaunchPlan.commandPolicy.validateCommands
-  ) {
-    return input.accessLaunchPlan.commandPolicy;
   }
   if (input.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job") {
     return undefined;
   }
   return {
     validateCommands: true,
-    deniedExecutableNames: [],
-    deniedGitSubcommands: [],
+    deniedExecutableNames: hostedDeniedExecutables,
+    deniedGitSubcommands: hostedDeniedGitSubcommands,
     deniedPathPrefixes: [],
-    deniedInlineCodeExecutables: [],
-    deniedScriptExecutables: [],
+    deniedInlineCodeExecutables: ["python", "python3", "node"],
+    deniedScriptExecutables: ["sh", "bash", "zsh"],
   };
 }
+
+// Command admission remains independent of Internet permission. The native
+// filesystem profile is still the authority for .git, .codex and private roots.
+const hostedDeniedExecutables = ["sudo", "su", "docker", "docker-compose", "podman", "tmux", "systemctl", "service"];
+const hostedDeniedGitSubcommands = ["push", "commit", "merge", "rebase", "reset", "clean", "update-ref", "gc", "repack"];
 
 export function codexGoalHostedExecutionBoundary(input: {
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;

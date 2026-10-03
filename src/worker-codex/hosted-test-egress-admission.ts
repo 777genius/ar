@@ -48,10 +48,13 @@ export async function admitHostedTestEgress(
   if (hosted && isHostedOrdinaryRuntime()) {
     const profile = admitHostedOrdinaryIdentity(input);
     if ((profile === CodexProviderEgressProfileId.TestNpmQualification ||
-         profile === CodexProviderEgressProfileId.PublicResearchV1 ||
-          profile === CodexProviderEgressProfileId.FullInternetV1) &&
+         profile === CodexProviderEgressProfileId.PublicResearchV1) &&
         ((input.executionEngine ?? "app-server-goal") !== "app-server-goal" ||
           input.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job")) throw new Error("hosted_test_egress_engine_unsupported");
+    if (profile === CodexProviderEgressProfileId.FullInternetV1 &&
+        !["app-server", "app-server-goal"].includes(input.executionEngine ?? "app-server-goal")) {
+      throw new Error("hosted_permission_profiles_engine_unsupported");
+    }
     return codexProviderEgressPolicy(profile);
   }
   let grant;

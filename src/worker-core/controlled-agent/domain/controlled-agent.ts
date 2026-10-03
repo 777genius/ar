@@ -189,7 +189,7 @@ export type ControlledAgentLaunchPlanInput = {
   readonly boundary: AccessBoundary;
   readonly projectAccessScope?: ProjectAccessScope;
   readonly provider: ControlledAgentProviderEnforcementCapabilities;
-  readonly networkAccess?: NetworkAccessMode.Disabled | NetworkAccessMode.Restricted;
+  readonly networkAccess?: NetworkAccessMode;
   readonly now?: Date;
 };
 

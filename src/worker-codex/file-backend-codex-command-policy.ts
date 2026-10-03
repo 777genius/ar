@@ -59,9 +59,30 @@ function commandApprovalVector(input: {
   }
   const commandText = input.commandText?.trim();
   if (!commandText) return null;
-  if (/[`$<>|;&\n\r]/.test(commandText)) {
-    return ["sh", "-lc", commandText];
+  // Preserve literal quoted URLs (including ordinary '&' query separators).
+  // Expansion and compound shell commands remain subject to interpreter denial.
+  const parts: string[] = [];
+  let token = "", quote: "'" | '"' | undefined, started = false;
+  for (let index = 0; index < commandText.length; index++) {
+    const char = commandText[index]!;
+    if (quote !== "'" && (char === "$" || char === "`")) return ["sh", "-lc", commandText];
+    if (char === "\\" && quote !== "'") {
+      const next = commandText[++index];
+      if (next === undefined || next === "\n" || next === "\r") return null;
+      token += next; started = true; continue;
+    }
+    if (quote) {
+      if (char === quote) quote = undefined;
+      else token += char;
+    } else if (char === "'" || char === '"') {
+      quote = char; started = true;
+    } else if (/[<>|;&\n\r]/.test(char)) {
+      return ["sh", "-lc", commandText];
+    } else if (/\s/.test(char)) {
+      if (started) { parts.push(token); token = ""; started = false; }
+    } else { token += char; started = true; }
   }
-  const parts = commandText.split(/\s+/).filter(Boolean);
+  if (quote) return null;
+  if (started) parts.push(token);
   return parts.length > 0 ? parts : null;
 }
