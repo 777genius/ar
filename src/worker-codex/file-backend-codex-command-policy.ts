@@ -129,12 +129,32 @@ function shellCommandTextPayload(value: string): string | null | undefined {
   }
   if (
     encodedPayload.startsWith('"') &&
-    encodedPayload.endsWith('"') &&
-    !encodedPayload.slice(1, -1).includes('"')
+    encodedPayload.endsWith('"')
   ) {
-    return encodedPayload.slice(1, -1);
+    return literalDoubleQuotedShellPayload(encodedPayload.slice(1, -1));
   }
   return /\s|['"]/.test(encodedPayload) ? null : encodedPayload;
+}
+
+function literalDoubleQuotedShellPayload(value: string): string | null {
+  // Apostrophes are data inside outer double quotes: they cannot protect
+  // expansion before the inner shell starts. Decode only this literal layer,
+  // then let commandTextApprovalVector review the resulting inner body.
+  let payload = "";
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index]!;
+    if (char === "$" || char === "`" || char === '"') return null;
+    if (char === "\\") {
+      const next = value[++index];
+      if (next === undefined || next === "\n" || next === "\r") return null;
+      // In double quotes, other backslashes survive into the inner body.
+      if (!['$', '`', '"', '\\'].includes(next)) payload += "\\";
+      payload += next;
+    } else {
+      payload += char;
+    }
+  }
+  return payload;
 }
 
 function isGitExecutable(value: string): boolean {
