@@ -1,3 +1,4 @@
+import type { CodexGoalProcessSnapshot } from "../codex-goal-process-snapshot";
 import { describe, expect, it, vi } from "vitest";
 import {
   RunProcessAliveReason,
@@ -139,28 +140,40 @@ describe("codex goal ops - worker liveness", () => {
     });
   });
 
-  it("stops only trusted no-tmux direct worker pids", () => {
+  it("stops only trusted no-tmux direct worker pids", async () => {
     const kill = vi.spyOn(process, "kill").mockImplementation((() => true) as typeof process.kill);
+    const command = "node subscription-runtime-codex-goal run --no-tmux";
+    const startedAt = "2026-10-03T00:00:00.000Z";
+    const inspectProcess = vi.fn<(pid: number) => Promise<CodexGoalProcessSnapshot>>()
+      .mockResolvedValueOnce({
+        alive: true,
+        supervisorCommand: command,
+        supervisorStartedAt: startedAt,
+      })
+      .mockResolvedValueOnce({ alive: false });
     try {
-      expect(stopCodexGoalDirectProcess({
+      expect(await stopCodexGoalDirectProcess({
         progressPid: 123,
         progressProcessAlive: true,
-        progressCommand: "node subscription-runtime-codex-goal run --no-tmux",
-      })).toEqual({
+        progressCommand: command,
+        progressProcessStartedAt: startedAt,
+      }, inspectProcess)).toEqual({
         preview: "kill -TERM 123",
         status: "terminated",
         pid: 123,
       });
       expect(kill).toHaveBeenCalledWith(123, "SIGTERM");
+      expect(kill).toHaveBeenCalledTimes(1);
+      expect(inspectProcess.mock.calls).toEqual([[123], [123]]);
     } finally {
       kill.mockRestore();
     }
   });
 
-  it("refuses untrusted no-tmux direct worker pids without signaling them", () => {
+  it("refuses untrusted no-tmux direct worker pids without signaling them", async () => {
     const kill = vi.spyOn(process, "kill").mockImplementation((() => true) as typeof process.kill);
     try {
-      expect(stopCodexGoalDirectProcess({
+      expect(await stopCodexGoalDirectProcess({
         progressPid: 123,
         progressProcessAlive: true,
         progressCommand: "[kworker/R-slub_]",
@@ -169,7 +182,7 @@ describe("codex goal ops - worker liveness", () => {
         status: "untrusted_process",
         pid: 123,
       });
-      expect(stopCodexGoalDirectProcess({
+      expect(await stopCodexGoalDirectProcess({
         progressPid: 124,
         progressProcessAlive: true,
         progressCommand: "bash unrelated-script.sh",

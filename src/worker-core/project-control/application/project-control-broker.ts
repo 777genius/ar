@@ -35,6 +35,7 @@ export type ProjectControlOperationResult = {
   readonly status: "applied" | "noop";
   readonly safeMessage?: string;
   readonly resourceId?: string;
+  readonly evidence?: Readonly<Record<string, string>>;
 };
 
 export type ProjectControlCreateJobInput = ProjectJobAccessRequest & {

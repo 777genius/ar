@@ -380,6 +380,7 @@ describe("Codex goal handoff artifact materialization", () => {
       taskId: "task-terminal",
       workspacePath: fixture.workspacePath,
       jobRootDir: fixture.jobRootDir,
+      durableHandoffRootDir: join(fixture.root, "durable"),
       expectedBaseCommit: fixture.baseCommit,
     });
 

@@ -47,6 +47,7 @@ export function buildCodexGoalForegroundArgv(
   pushOptional(args, "--description", input.registryMetadata?.description);
   pushOptional(args, "--tags", input.registryMetadata?.tags?.join(","));
   pushOptional(args, "--state-root", config.stateRootDir);
+  pushOptional(args, "--durable-handoff-root", config.durableHandoffRootDir);
   pushOptional(args, "--job-id", config.jobId);
   pushOptional(args, "--codex-goal-objective", config.codexGoalObjective);
   pushOptional(args, "--output", config.outputPath);

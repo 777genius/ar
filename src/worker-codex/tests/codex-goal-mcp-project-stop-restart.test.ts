@@ -82,10 +82,12 @@ describe("project-controlled stopped worker restart", () => {
         controllerJobId: "infinity-context-controller",
         jobId: "infinity-context-child",
         confirmStop: true,
+        forceStop: true,
       });
       expect(stopped).toMatchObject({
         ok: true,
         mode: "project_control_stop",
+        preservationDegraded: true,
         result: { status: "noop" },
       });
 

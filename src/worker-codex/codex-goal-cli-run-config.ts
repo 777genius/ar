@@ -144,6 +144,12 @@ export function runConfigFromFlags(
           ]) as string,
         }),
     jobRootDir: resolvedJobRootDir,
+    durableHandoffRootDir: resolvePath(
+      cwd,
+      option(values, env, "--durable-handoff-root", [
+        "SUBSCRIPTION_RUNTIME_DURABLE_HANDOFF_ROOT",
+      ]) ?? join(resolvedJobRootDir, "durable-handoffs"),
+    ),
     authRootDir,
     workspacePath: resolvePath(
       cwd,
