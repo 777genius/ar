@@ -1,3 +1,5 @@
+import { hostedControllerDynamicToolSpecs, type HostedControllerDynamicToolAdapter } from "../domain/hosted-controller-dynamic-tools";
+import type { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import { codexProviderHasPublicSources } from "../../codex-provider-egress-policy";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
 import type { CodexReasoningEffort, CodexSandboxMode, CodexServiceTier } from "../../codex-json-execution-engine";
@@ -33,7 +35,12 @@ export function appServerThreadStartParams(input: {
   readonly modelBackend?: CodexModelBackend;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly publicSourceReader?: PublicResearchSourceReader;
+  readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
+  readonly childBudget?: ChildExecutionBudget;
 }) {
+  if (options.hostedControllerTools && (!input.goalMode || options.nativeToolSurface !== "disabled")) {
+    throw new Error("hosted_controller_tool_profile_invalid");
+  }
   const { disableTools, disableNativeEnvironments } = appServerThreadToolPolicy({
     disableTools: options.executionProfile.disableTools,
     nativeToolSurface: options.nativeToolSurface,
@@ -101,7 +108,9 @@ export function appServerThreadStartParams(input: {
       ...(researchToolsEnabled ? { dynamicTools: [publicResearchSourceTool] } : {}),
       sessionStartSource: "startup",
       threadSource: "user",
-      ...(disableTools
+      ...(options.hostedControllerTools
+        ? { environments: [], dynamicTools: hostedControllerDynamicToolSpecs, experimentalRawEvents: false }
+        : disableTools
         ? {
             environments: [],
             dynamicTools: [],
@@ -110,6 +119,7 @@ export function appServerThreadStartParams(input: {
         : disableNativeEnvironments
           ? {
               environments: [],
+              ...(options.childBudget ? { dynamicTools: [], experimentalRawEvents: false } : {}),
             }
           : {}),
     } };

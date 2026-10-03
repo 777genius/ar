@@ -1,6 +1,8 @@
+import type { ScopedCgroupNode } from "../worker-core/hosted-custody/domain/scoped-termination";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { assertExactUnitGroup, custodyControlGroup, observedBootId, observedProcessBirth, parseUnitShow } from "./hosted-readonly-observations";
+import { readFileSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { assertExactUnitGroup, custodyControlGroup, observedBootId, observedProcessBirth, parseUnitShow, scopedCgroupPopulated } from "./hosted-readonly-observations";
 
 // Private fixed-host observations. Callers own all fencing and custody decisions.
 // No command, environment, root, or cgroup path is supplied by a caller.
@@ -8,9 +10,20 @@ function invalid(): never { throw new Error("hosted_custody_kernel_evidence_inva
 function unit(name: string): void {
   if (name.length > 200 || !/^[A-Za-z0-9_@.-]+\.(service|scope)$/.test(name)) invalid();
 }
+let scopedCollectionEnd: number | undefined;
+export function withScopedCollectionBudget<T>(remainingMs: number, action: () => T): T {
+  if (!Number.isSafeInteger(remainingMs) || remainingMs < 1) invalid();
+  const previous = scopedCollectionEnd; scopedCollectionEnd = Math.min(previous ?? Infinity, performance.now() + remainingMs);
+  try { const result = action(); if (performance.now() >= scopedCollectionEnd) invalid(); return result; }
+  finally { scopedCollectionEnd = previous; }
+}
+function collectionTimeout(): number {
+  const ms = Math.min(5000, Math.floor((scopedCollectionEnd ?? performance.now() + 5000) - performance.now()));
+  if (ms < 1) invalid(); return ms;
+}
 function systemctl(args: readonly string[], allowNotFound = false): string {
   const result = spawnSync("/usr/bin/systemctl", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-    timeout: 5000, maxBuffer: 256 * 1024, env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", SYSTEMD_COLORS: "0" } });
+    timeout: scopedCollectionEnd === undefined ? 5000 : collectionTimeout(), maxBuffer: 256 * 1024, env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", SYSTEMD_COLORS: "0" } });
   if (result.error || (result.status !== 0 && !(allowNotFound && result.status === 4 && result.stdout.trim() === "LoadState=not-found"))) invalid();
   return result.stdout;
 }
@@ -75,4 +88,95 @@ export function collectExactUnit(name: string): Record<string, string> {
   const show = collectUnitShow(name);
   assertExactUnitGroup(name, show, custodyControlGroup(name));
   return show;
+}
+
+/** Exact manager effects. The owner revalidates invocation/session immediately
+ * before this call. A stop/cancel acknowledgment supplies no terminal evidence. */
+export function requestScopedManagerEffect(args: readonly string[], remainingMs: number): void {
+  if (!Number.isSafeInteger(remainingMs) || remainingMs < 1) invalid();
+  const cancel = args.length === 2 && args[0] === "cancel" && /^[1-9][0-9]*$/.test(args[1]!);
+  const stop = args.length === 4 && args[0] === "stop" && args[1] === "--no-block" && args[2] === "--";
+  const signal = args.length === 5 && args[0] === "kill" && ["--signal=SIGTERM", "--signal=SIGKILL"].includes(args[1]!) && args[2] === "--kill-whom=all" && args[3] === "--";
+  if (!cancel && !stop && !signal) invalid(); if (!cancel) unit(args.at(-1)!);
+  const result = spawnSync("/usr/bin/systemctl", args, { encoding: "utf8", timeout: Math.min(5000, remainingMs), maxBuffer: 4096,
+    env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: ["ignore", "pipe", "pipe"] });
+  if (result.error || result.status !== 0) invalid();
+}
+/** Missing directories, parse failures and changed directory identities throw.
+ * A retained cgroup and every descendant must positively report empty. */
+export function collectScopedRecursiveEmpty(group: string, remainingMs: number): { empty: boolean; digest: string; nodes: readonly ScopedCgroupNode[] } {
+  if (!/^\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-(?:ordinary|hosted)-[a-f0-9-]{36}\.service$/.test(group)) invalid();
+  const end = performance.now() + remainingMs, tree: ScopedCgroupNode[] = []; let empty = true, count = 0;
+  const walk = (path: string): void => {
+    if (++count > 256 || performance.now() >= end) invalid();
+    const before = lstatSync(path);
+    if (!before.isDirectory() || before.isSymbolicLink() || before.uid !== 0) invalid();
+    const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const opened = fstatSync(fd); if (opened.dev !== before.dev || opened.ino !== before.ino) invalid();
+      const anchored = `/proc/self/fd/${fd}`, events = readFileSync(anchored + "/cgroup.events", "utf8"), procs = readFileSync(anchored + "/cgroup.procs", "utf8");
+      const populated = scopedCgroupPopulated(events);
+      if (procs && !/^(?:[1-9][0-9]*\n)+$/.test(procs)) invalid();
+      if (populated || procs !== "") empty = false;
+      const names = readdirSync(anchored).sort();
+      const children: string[] = [];
+      for (const name of names) {
+        if (!/^[A-Za-z0-9_.@+-]+$/.test(name) || name === "." || name === "..") invalid();
+        const stat = lstatSync(anchored + "/" + name);
+        if (stat.isSymbolicLink()) invalid();
+        if (stat.isDirectory()) { children.push(name); walk(path + "/" + name); }
+      }
+      if (events !== readFileSync(anchored + "/cgroup.events", "utf8") || procs !== readFileSync(anchored + "/cgroup.procs", "utf8") ||
+          JSON.stringify(names) !== JSON.stringify(readdirSync(anchored).sort())) invalid();
+      const after = lstatSync(path); if (after.dev !== before.dev || after.ino !== before.ino) invalid();
+      tree.push({ path: path.slice("/sys/fs/cgroup".length), device: before.dev, inode: before.ino, events, processes: procs, children });
+    } finally { closeSync(fd); }
+  };
+  walk("/sys/fs/cgroup" + group);
+  return { empty, nodes: Object.freeze(tree), digest: createHash("sha256").update(JSON.stringify(tree)).digest("hex") };
+}
+
+// Owned proxy only, never numeric process-group signaling. pidfd pins the exact
+// task; birth/group are revalidated after open and before every signal. A missing
+// PID or timeout raises; only POLLIN on this retained fd observes its exit.
+const scopedPidfdFence = `import os,sys,signal,select,time,json
+pid=int(sys.argv[1]); birth=sys.argv[2]; group=sys.argv[3]; budget=int(sys.argv[4]); end=time.monotonic()+budget/1000
+fd=os.pidfd_open(pid,0)
+def check():
+ s=open('/proc/'+str(pid)+'/stat').read(); actual=str(pid)+':'+s[s.rindex(') ')+2:].split()[19]
+ if actual!=birth or open('/proc/'+str(pid)+'/cgroup').read().strip()!='0::'+group: raise RuntimeError('identity')
+p=select.poll(); p.register(fd,select.POLLIN)
+check(); signal.pidfd_send_signal(fd,signal.SIGTERM)
+left=lambda: max(0,int((end-time.monotonic())*1000))
+if not p.poll(min(100,left())):
+ check(); signal.pidfd_send_signal(fd,signal.SIGKILL)
+ if not p.poll(left()): raise RuntimeError('unresolved')
+print(json.dumps({'pidBirth':birth,'controlGroup':group,'exitObserved':True},separators=(',',':')))
+os.close(fd)
+`;
+export function fenceScopedSubmitter(pidBirth: string, controlGroup: string, remainingMs: number): void {
+  if (!/^[1-9][0-9]{0,9}:[1-9][0-9]{0,19}$/.test(pidBirth) ||
+      !/^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(controlGroup) ||
+      controlGroup.split("/").some(p => p === "." || p === "..") || !Number.isSafeInteger(remainingMs) || remainingMs < 1) invalid();
+  const result = spawnSync("/usr/bin/python3", ["-I", "-c", scopedPidfdFence, pidBirth.split(":")[0]!, pidBirth, controlGroup, String(remainingMs)], {
+    encoding: "utf8", timeout: remainingMs, maxBuffer: 4096, env: {}, stdio: ["ignore", "pipe", "pipe"] });
+  if (result.error || result.status !== 0 || result.stdout.trim() !== JSON.stringify({ pidBirth, controlGroup, exitObserved: true })) invalid();
+}
+
+/** systemd's root-owned invocation symlink supplies a bounded filesystem birth
+ * anchor for the short publication section. Absence/unsupported manager layouts
+ * are unresolved; qualification must validate this installed-host contract. */
+export function collectScopedInvocationAnchor(name: string): { invocationId: string; device: number; inode: number } {
+  unit(name);
+  const parent = "/run/systemd/units", before = lstatSync(parent);
+  if (!before.isDirectory() || before.isSymbolicLink() || before.uid !== 0 || (before.mode & 0o022)) invalid();
+  const fd = openSync(parent, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const opened = fstatSync(fd); if (opened.dev !== before.dev || opened.ino !== before.ino) invalid();
+    const path = `/proc/self/fd/${fd}/invocation:${name}`, link = lstatSync(path), invocationId = readlinkSync(path);
+    if (!link.isSymbolicLink() || link.uid !== 0 || link.nlink !== 1 || !/^[a-f0-9]{32}$/.test(invocationId)) invalid();
+    const after = lstatSync(path), directory = lstatSync(parent);
+    if (after.dev !== link.dev || after.ino !== link.ino || after.ctimeMs !== link.ctimeMs || readlinkSync(path) !== invocationId || directory.dev !== before.dev || directory.ino !== before.ino) invalid();
+    return { invocationId, device: link.dev, inode: link.ino };
+  } finally { closeSync(fd); }
 }

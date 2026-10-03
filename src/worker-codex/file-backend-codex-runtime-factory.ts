@@ -1,4 +1,5 @@
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
+import { sameTools } from "./child-execution-confinement";
 import { assertReadonlyAdmittedFactory } from "./hosted-readonly-admission";
 import { prepareHostScratchCaches } from "./host-scratch-temp";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
@@ -24,6 +25,7 @@ import {
   PackagedCodexJsonExecutionEngine,
   codexJsonHomeConfigToml,
   codexMimoApiKeyEnvVarDefault,
+  codexMimoDefaultModel,
   codexMimoTokenPlanEgressPolicy,
   codexModelBackendDefaultModel,
   codexProviderApiEgressPolicy,
@@ -233,6 +235,21 @@ function createCodexAgentDriver(input: {
   readonly managedRunStore: LocalFileManagedRunStore;
 }): CodexJsonAgentDriver | CodexCliAgentDriver {
   const { options } = input;
+  if (options.executionLifetime && (options.executionEngine !== "app-server-goal" ||
+      options.cleanThreadPrewarm !== false || options.maxGoalTurns !== options.executionLifetime.maxGoalTurns)) {
+    throw new Error("codex_bounded_factory_profile_conflict");
+  }
+  options.executionLifetime?.assertActive();
+  if (options.childBudget) {
+    const bound = options.childBudget.lifetime;
+    if (options.executionEngine !== "app-server-goal" || options.capacityAccountId !== bound.accountId ||
+        options.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan || options.model !== codexMimoDefaultModel ||
+        options.mimoApiKeyEnvVarName !== codexMimoApiKeyEnvVarDefault ||
+        options.maxGoalTurns !== bound.maxGoalTurns || options.cleanThreadPrewarm !== false ||
+        options.executionProfile !== undefined || options.boundedWorkspaceTools?.denyProjectInstructions !== true ||
+        !sameTools(options.boundedWorkspaceTools?.allowedTools, bound)) throw new Error("child_factory_confinement_conflict");
+    options.childBudget.remainingMs();
+  }
   const executionEngine = options.executionEngine ?? "app-server";
   const modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
   const mimoApiKeyEnvVarName = options.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault;
@@ -249,14 +266,6 @@ function createCodexAgentDriver(input: {
   const executableReadPath = projectReadBoundary
     ? hostedCodexExecutableReadPath({ codexBinaryPath: options.codexBinaryPath, sourceEnv })
     : undefined;
-  if (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && hostedGlobalScanGuard) {
-    // The MiMo materialized session bypasses the ChatGPT session-pool
-    // materializer entirely (see CodexJsonAgentDriver.materializeMimoSession),
-    // so it cannot carry the hosted global-scan PreToolUse hook. Fail
-    // explicitly instead of silently running a hosted job without that
-    // security control.
-    throw new Error("codex_mimo_backend_hosted_global_scan_guard_unsupported");
-  }
   // MiMo's egress domain is fixed by modelBackend, not by the host-trusted
   // `providerEgressPolicy` input (`assertWorkerOptions` rejects the two
   // being combined). Every other backend keeps today's exact behavior.
@@ -293,6 +302,7 @@ function createCodexAgentDriver(input: {
         allowedTools: options.boundedWorkspaceTools.allowedTools,
         modelBackend,
         mimoApiKeyEnvVarName,
+        ...(options.childBudget ? { childLifetime: options.childBudget.lifetime } : {}),
         ...(options.boundedWorkspaceTools.denyProjectInstructions
           ? { denyProjectInstructions: true }
           : {}),
@@ -303,7 +313,10 @@ function createCodexAgentDriver(input: {
     ? projectReadBoundaryConfigToml(providerEgressPolicy, executableReadPath,
         modelBackend, mimoApiKeyEnvVarName, sourceEnv.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE)
     : undefined;
-  const mimoConfigToml = workspaceToolsProfile?.configToml ?? projectConfigToml;
+  const mimoConfigToml = workspaceToolsProfile?.configToml ??
+    (hostedGlobalScanGuard
+      ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath, modelBackend, mimoApiKeyEnvVarName)
+      : projectConfigToml);
   if (executionEngine === "plain-exec") {
     return new CodexCliAgentDriver({
       codexBinaryPath: options.codexBinaryPath,
@@ -325,9 +338,12 @@ function createCodexAgentDriver(input: {
   });
   return new CodexJsonAgentDriver({
     ...(options.assertProviderAdmission ? { assertProviderAdmission: options.assertProviderAdmission } : {}),
+    ...(options.executionLifetime ? { executionLifetime: options.executionLifetime } : {}),
     engine: executionEngine === "packaged-exec"
       ? packagedExec
       : new CodexAppServerExecutionEngine({
+          ...(options.childBudget ? { childBudget: options.childBudget } : {}),
+          ...(options.executionLifetime ? { executionLifetime: options.executionLifetime } : {}),
           codexBinaryPath: options.codexBinaryPath,
           modelBackend,
           sourceEnv: appServerEnv,
@@ -366,6 +382,8 @@ function createCodexAgentDriver(input: {
                 },
                 nativeToolSurface: "disabled" as const,
               }
+            : modelBackend === CodexModelBackend.XiaomiMimoTokenPlan && hostedGlobalScanGuard
+            ? { nativeToolSurface: "disabled" as const }
             : options.executionProfile
             ? { executionProfile: options.executionProfile }
             : {}),
@@ -461,13 +479,16 @@ function projectReadBoundaryConfigToml(
 function hostedGlobalScanConfigToml(
   providerEgressPolicy: CodexProviderEgressPolicy,
   executableReadPath?: string,
+  modelBackend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
+  mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
 ): string {
   const hookPath = fileURLToPath(
     new URL("./hosted-global-scan-pre-tool-hook.js", import.meta.url),
   );
   const command = `${shellQuote(process.execPath)} ${shellQuote(hookPath)}`;
   return [
-    codexJsonHomeConfigToml({ hooksEnabled: true, providerEgressPolicy, namedPermissions: true }),
+    codexJsonHomeConfigToml({ hooksEnabled: true, providerEgressPolicy, namedPermissions: true,
+      modelBackend, mimoApiKeyEnvVarName }),
     hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath),
     "[hooks]",
     "[[hooks.PreToolUse]]",

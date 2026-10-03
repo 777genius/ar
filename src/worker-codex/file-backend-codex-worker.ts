@@ -306,7 +306,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
         }
 
         if (
-          shouldRetryRefreshConflict(result) &&
+          !this.options.childBudget && shouldRetryRefreshConflict(result) &&
           !abortSignal.aborted &&
           this.clock.monotonicMs() - startedAt < retryMaxMs
         ) {

@@ -1,3 +1,4 @@
+import { parseChildLifetime, type ChildLifetime } from "@vioxen/subscription-runtime/core";
 import type { ProviderTaskControls } from "@vioxen/subscription-runtime/core";
 import {
   AccessBoundary,
@@ -21,6 +22,7 @@ export type CodexGoalAccessConfig = {
 };
 
 export type CodexGoalAccessPlanConfig = CodexGoalAccessConfig & {
+  readonly childLifetime?: ChildLifetime | undefined;
   readonly editMode?: ProviderTaskControls["editMode"];
   readonly providerSandboxMode?: ProviderTaskControls["providerSandboxMode"];
 };
@@ -101,12 +103,13 @@ export function buildCodexGoalAccessLaunchPlan(
   }
   const networkBlocker = codexGoalNetworkAccessBlocker(config);
   if (networkBlocker) return networkBlocker;
+  if (config.childLifetime && parseChildLifetime(config.childLifetime).accessBoundary !== config.accessBoundary) throw new Error("child_access_boundary_conflict");
   return buildLaunchPlan({
     boundary: config.accessBoundary,
     ...(config.projectAccessScope === undefined
       ? {}
       : { scope: config.projectAccessScope }),
-    adapter: codexGoalLaunchAdapterCapabilities,
+    adapter: config.childLifetime ? { ...codexGoalLaunchAdapterCapabilities, canDisableRawShell: true } : codexGoalLaunchAdapterCapabilities,
     ...(config.allowDangerFullAccess === undefined
       ? {}
       : { allowDangerFullAccess: config.allowDangerFullAccess }),

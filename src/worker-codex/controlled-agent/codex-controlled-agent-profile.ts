@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   RunEventProviderKind,
   projectScopedControllerToolNames,
@@ -14,11 +15,15 @@ import {
   codexProviderEgressConfigToml,
   codexProviderEgressEnv,
   CodexProviderEgressProfileId,
+  codexJsonHomeConfigToml,
+  hostedCodexPermissionProfilesToml,
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 
 export type CodexControlledAgentProfileInput = {
   readonly stateDir: string;
+  /** Reserved hosted profile: excludes the project-control MCP subprocess. */
+  readonly hostedController?: boolean;
   readonly mcpServerName?: string;
   readonly mcpCommand?: string;
   readonly mcpArgs?: readonly string[];
@@ -31,6 +36,7 @@ export type CodexControlledAgentProfileInput = {
 };
 
 export type CodexControlledAgentProfile = {
+  readonly hostedController?: boolean;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly modelBackend: CodexModelBackend;
   readonly mimoApiKeyEnvVarName: string;
@@ -47,18 +53,22 @@ export function buildCodexControlledAgentProfile(
   input: CodexControlledAgentProfileInput,
 ): CodexControlledAgentProfile {
   const mcpServerName = input.mcpServerName ?? "subscription_runtime_project_control";
-  const enabledTools = projectScopedControllerToolNames();
+  const enabledTools = input.hostedController ? [] : projectScopedControllerToolNames();
   const mcpCommand = input.mcpCommand ?? "subscription-runtime-codex-goal-mcp";
   const mcpArgs = input.mcpArgs ?? [];
   const codexHome = join(input.stateDir, "codex-home");
   const rawShellMode = input.rawShellMode ?? "disabled-by-provider";
   const modelBackend = input.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  if (input.hostedController && (modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan || rawShellMode !== "disabled-by-provider")) {
+    throw new Error("hosted_controller_profile_invalid");
+  }
   const mimoApiKeyEnvVarName =
     input.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault;
   const providerEgressPolicy = modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
     ? codexMimoTokenPlanEgressPolicy()
     : undefined;
   return {
+    ...(input.hostedController ? { hostedController: true } : {}),
     providerKind: RunEventProviderKind.Codex,
     modelBackend,
     mimoApiKeyEnvVarName,
@@ -75,6 +85,7 @@ export function buildCodexControlledAgentProfile(
       mcpCommand,
       mcpArgs,
       enabledTools,
+      hostedController: input.hostedController === true,
       modelBackend,
       mimoApiKeyEnvVarName,
       ...(providerEgressPolicy === undefined
@@ -95,7 +106,57 @@ export function buildCodexControlledAgentProfile(
   };
 }
 
+/** Closed-phase hosted controller profile. PR2 supplies its brokered dynamic
+ * tools; there is deliberately no project-control MCP subprocess here. */
+export function buildHostedMimoControlledAgentProfile(stateDir: string): CodexControlledAgentProfile {
+  const policy = codexMimoTokenPlanEgressPolicy();
+  const hookPath = fileURLToPath(new URL("../hosted-global-scan-pre-tool-hook.js", import.meta.url));
+  const command = `${shellQuote(process.execPath)} ${shellQuote(hookPath)}`;
+  return {
+    providerKind: RunEventProviderKind.Codex,
+    modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+    mimoApiKeyEnvVarName: codexMimoApiKeyEnvVarDefault,
+    providerEgressPolicy: policy,
+    codexHome: join(stateDir, "codex-home"),
+    enabledTools: [],
+    appServerNativeToolSurface: "disabled",
+    configToml: [
+      codexJsonHomeConfigToml({ modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+        mimoApiKeyEnvVarName: codexMimoApiKeyEnvVarDefault,
+        providerEgressPolicy: policy, namedPermissions: true, hooksEnabled: true }),
+      hostedCodexPermissionProfilesToml(policy),
+      "[hooks]", "[[hooks.PreToolUse]]", 'matcher = "Bash|exec"',
+      "[[hooks.PreToolUse.hooks]]", 'type = "command"',
+      `command = ${JSON.stringify(command)}`, "timeout = 5", "",
+    ].join("\n"),
+    rulesText: codexControllerRulesText(),
+    enforcement: {
+      providerKind: RunEventProviderKind.Codex,
+      canRestrictToolSurface: true,
+      canDisableRawShell: true,
+      canEnforceFilesystemSandbox: true,
+      canIsolateHome: true,
+      canIsolateTemp: true,
+      canRestrictNetwork: true,
+    },
+  };
+}
+
+export function assertHostedMimoControlledAgentProfile(profile: CodexControlledAgentProfile): void {
+  const expected = buildHostedMimoControlledAgentProfile(dirname(profile.codexHome));
+  if (profile.modelBackend !== expected.modelBackend ||
+      profile.mimoApiKeyEnvVarName !== expected.mimoApiKeyEnvVarName ||
+      profile.providerEgressPolicy?.profileId !== expected.providerEgressPolicy?.profileId ||
+      profile.appServerNativeToolSurface !== "disabled" || profile.enabledTools.length !== 0 ||
+      profile.configToml !== expected.configToml) {
+    throw new Error("hosted_mimo_effective_confinement_required");
+  }
+}
+
+function shellQuote(value: string): string { return `'${value.replaceAll("'", `'\\''`)}'`; }
+
 function codexConfigToml(input: {
+  readonly hostedController: boolean;
   readonly mcpServerName: string;
   readonly mcpCommand: string;
   readonly mcpArgs: readonly string[];
@@ -133,13 +194,15 @@ function codexConfigToml(input: {
     'trace_exporter = "none"',
     "log_user_prompt = false",
     "",
-    `[mcp_servers.${quoteTomlKey(input.mcpServerName)}]`,
-    `command = ${tomlString(input.mcpCommand)}`,
-    `args = ${tomlStringArray(input.mcpArgs)}`,
-    `enabled_tools = ${tomlStringArray(input.enabledTools)}`,
-    'default_tools_approval_mode = "approve"',
-    ...(input.mcpCwd ? [`cwd = ${tomlString(input.mcpCwd)}`] : []),
-    "",
+    ...(input.hostedController ? [] : [
+      `[mcp_servers.${quoteTomlKey(input.mcpServerName)}]`,
+      `command = ${tomlString(input.mcpCommand)}`,
+      `args = ${tomlStringArray(input.mcpArgs)}`,
+      `enabled_tools = ${tomlStringArray(input.enabledTools)}`,
+      'default_tools_approval_mode = "approve"',
+      ...(input.mcpCwd ? [`cwd = ${tomlString(input.mcpCwd)}`] : []),
+      "",
+    ]),
     "[shell_environment_policy]",
     'inherit = "none"',
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
@@ -254,16 +317,24 @@ export function withControlledAgentModelBackend(
     0,
     -(sourceEgressConfig.length + 1),
   );
+  if (profile.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+    const sourceProviderConfig = codexModelBackendModelProvidersConfigToml({
+      backend: profile.modelBackend,
+      envKeyName: profile.mimoApiKeyEnvVarName,
+    });
+    if (!configToml.includes(sourceProviderConfig)) {
+      throw new Error("controlled_agent_generated_model_provider_config_required");
+    }
+    configToml = configToml.replace(sourceProviderConfig, "");
+  }
   if (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
     configToml = configToml.replace(/model_verbosity = "low"\n/g, "");
-    if (!configToml.includes("[model_providers.mimo]")) {
-      configToml += `${configToml.endsWith("\n") ? "" : "\n"}${
-        codexModelBackendModelProvidersConfigToml({
-          backend: modelBackend,
-          envKeyName: mimoApiKeyEnvVarName,
-        })
-      }`;
-    }
+    configToml += `${configToml.endsWith("\n") ? "" : "\n"}${
+      codexModelBackendModelProvidersConfigToml({
+        backend: modelBackend,
+        envKeyName: mimoApiKeyEnvVarName,
+      })
+    }`;
   }
   const providerEgressPolicy =
     modelBackend === CodexModelBackend.XiaomiMimoTokenPlan

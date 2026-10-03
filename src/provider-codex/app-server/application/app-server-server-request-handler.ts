@@ -10,18 +10,27 @@ import { handlePublicResearchSourceTool, type PublicResearchToolSession } from "
 import type { PublicResearchSourceReader } from "./public-research-source-port";
 
 export function handleAppServerServerRequest(input: {
-  readonly id: number;
+  readonly id: string | number;
   readonly method: string;
   readonly params: Record<string, unknown> | null;
   readonly publicSourceTools?: { readonly reader: PublicResearchSourceReader; readonly session: PublicResearchToolSession };
+  readonly dynamicToolCall?: (id: string | number, params: Record<string, unknown> | null) => void;
   readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
   readonly warn: (warning: AppServerWarning) => void;
-  readonly respond: (id: number, result: Record<string, unknown>) => void;
-  readonly respondError: (id: number, message: string) => void;
+  readonly respond: (id: string | number, result: Record<string, unknown>) => void;
+  readonly respondError: (id: string | number, message: string) => void;
 }): void {
+  if (input.method === "item/tool/call" && input.dynamicToolCall) {
+    input.dynamicToolCall(input.id, input.params);
+    return;
+  }
   if (input.method === "item/tool/call" && input.publicSourceTools) {
     handlePublicResearchSourceTool({ params: input.params, ...input.publicSourceTools,
       respond: result => input.respond(input.id, result) });
+    return;
+  }
+  if (typeof input.id !== "number") {
+    input.respondError(input.id, "unsupported_server_request_id");
     return;
   }
   if (tryHandleAppServerApprovalRequest({

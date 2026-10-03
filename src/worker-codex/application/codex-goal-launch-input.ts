@@ -1,3 +1,4 @@
+import { childConfigFromRecord, assertChildGoalConfig } from "../child-execution-confinement";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "../codex-worker-defaults";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -86,6 +87,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     "maxAccountCycles",
   ) ?? 5;
   const config: CodexGoalRunConfig = {
+    ...childConfigFromRecord(merged),
     ...(jobId === undefined ? {} : { jobId }),
     jobRootDir,
     authRootDir,
@@ -141,6 +143,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
   const finalConfig = stateRootDir
     ? { ...config, stateRootDir: resolvePath(cwd, stateRootDir) }
     : config;
+  assertChildGoalConfig(finalConfig);
   return {
     config: finalConfig,
     ...(stringValue(merged.tmuxSession)

@@ -2,7 +2,7 @@ import { chmod, link, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile }
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, CodexProviderEgressProfileId, HostedMimoProfile } from "@vioxen/subscription-runtime/provider-codex";
 import { parseHostedTestEgressGrant, assertHostedTestEgressIdentity } from "../hosted-test-egress-contract";
 import {
   assertHostedTestEgressOperator, canonicalHostedTestIdentity,
@@ -85,6 +85,22 @@ describe.each(["inherited", "symlinked"] as const)("trusted hosted TEST egress c
       await writeFile(filename(), JSON.stringify({ ...research, [field]: research[field] + "-other" }), { mode: 0o600 });
       await expect(readHostedTestEgressGrantFile(authority, identity, uid)).rejects.toThrow("grant_invalid");
     }
+  });
+  it("reads an exact MiMo grant from private custody and rejects changed effective confinement", async () => {
+    // Regression: the worker reader accepting a widened grant would admit it.
+    const mimoGrant = {
+      schemaVersion: 2 as const, ...identity,
+      profileId: CodexProviderEgressProfileId.MimoTokenPlan,
+      accountId: "account-q" as const, hostedProfile: HostedMimoProfile.Controller,
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      executionEngine: "app-server-goal" as const,
+      namedPermissions: true as const, globalScanGuard: true as const,
+      nativeToolSurface: "disabled" as const,
+    };
+    await writeFile(filename(), JSON.stringify(mimoGrant), { mode: 0o600 });
+    expect(await readHostedTestEgressGrantFile(authority, identity, uid)).toEqual(mimoGrant);
+    await writeFile(filename(), JSON.stringify({ ...mimoGrant, globalScanGuard: false }), { mode: 0o600 });
+    await expect(readHostedTestEgressGrantFile(authority, identity, uid)).rejects.toThrow("grant_invalid");
   });
   it("refuses a writable fixture ancestor before reading a valid grant", async () => {
     await writeFile(filename(), JSON.stringify(grant()), { mode: 0o600 });

@@ -53,7 +53,7 @@ function put(name: string, value: unknown): Buffer {
 }
 function read(name: string) { return JSON.parse(readFileSync(join(fixture.root, name), "utf8")); }
 function seed() {
-  for (const dir of ["ordinary-origins", "ordinary-starts", "codex-readonly-custody", "codex-readonly-revoked"]) {
+  for (const dir of ["ordinary-origins", "ordinary-starts", "scoped-terminating", "codex-readonly-custody", "codex-readonly-revoked"]) {
     mkdirSync(join(fixture.root, dir), { mode: 0o700 });
   }
   put("host-installation.json", { schemaVersion: 1, installationId: "install-1", hostId: "host-1",

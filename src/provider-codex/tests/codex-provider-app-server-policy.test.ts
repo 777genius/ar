@@ -27,6 +27,7 @@ import {
   CodexWorkerCacheSessionMaterializer,
   CodexWorkerCacheSessionPoolMaterializer,
   CodexAppServerExecutionEngine,
+  CodexModelBackend,
   CodexJsonAgentDriver,
   PackagedCodexJsonExecutionEngine,
   buildCodexJsonExecArgs,
@@ -372,6 +373,19 @@ describe("Codex provider app-server adapter", () => {
       codexBinaryPath: "/bin/codex-test",
       sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
     })).toThrow("hosted_permission_profiles_required_for_native_tools");
+  });
+
+  it("rejects effective hosted MiMo options without both named permissions and native tool suppression", () => {
+    // Regression: a valid grant must not make a wider engine configuration usable.
+    const options = { codexBinaryPath: "/bin/codex-test",
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } };
+    expect(() => new CodexAppServerExecutionEngine({ ...options,
+      hostedPermissionProfiles: true })).toThrow("hosted_mimo_effective_confinement_required");
+    expect(() => new CodexAppServerExecutionEngine({ ...options,
+      nativeToolSurface: "disabled" })).toThrow("hosted_mimo_effective_confinement_required");
+    expect(() => new CodexAppServerExecutionEngine({ ...options,
+      hostedPermissionProfiles: true, nativeToolSurface: "disabled" })).not.toThrow();
   });
 
   it("rejects inherited hosted marker when sourceEnv is omitted", () => {

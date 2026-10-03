@@ -9,8 +9,12 @@ export * from "./codex-provider-egress-policy";
 export { createPublicResearchSourceReader } from "./app-server/adapters/public-research-source-reader";
 export type { PublicResearchSourceReader } from "./app-server/application/public-research-source-port";
 export * from "./hosted-codex-permissions";
+export { hostedMimoCredentialSourceReady } from "./hosted-mimo-credential-source";
+export * from "./hosted-mimo-profile";
 export * from "./codex-json-agent-driver";
 export * from "./codex-app-server-execution-engine";
+export { HostedControllerToolName, HostedControllerResultStatus, HostedControllerError, parseHostedControllerToolResult, hostedControllerDynamicToolSpecs, parseHostedControllerToolCall } from "./app-server/domain/hosted-controller-dynamic-tools";
+export type { HostedControllerDynamicToolAdapter, HostedControllerDynamicToolCall, HostedControllerToolResult } from "./app-server/domain/hosted-controller-dynamic-tools";
 export * from "./app-server/domain/model-catalog";
 export * from "./codex-json-execution-engine";
 export * from "./codex-session-materializer";
@@ -28,5 +32,8 @@ export { admittedReadonlyCodexProcessFactory } from "./app-server/adapters/node-
 export type { HostedReadonlyMounts } from "./app-server/adapters/hosted-readonly-mounts";
 export { assertHostedProcessDescriptors } from "./app-server/adapters/hosted-process-descriptors";
 export { withHostedActivationFence, assertHostedActivationFence, assertHostedActivationOperator,
-  readHostedActivationBytes, decodeHostedActivationBytes, requiresHostedProcessAdmission } from "./app-server/adapters/hosted-process-activation";
+  readHostedActivationBytes, decodeHostedActivationBytes, requiresHostedProcessAdmission,
+  assertHostedScopedAdmission, retainHostedScopedCorrelation, retainHostedScopedSubmitter, retainHostedScopedActorChain, observeHostedScopedActorChildren } from "./app-server/adapters/hosted-process-activation";
 export type { HostedActivationFence } from "./app-server/adapters/hosted-process-activation";
+
+export type { HostedRetainedLifetimeBinding, HostedRetainedLifetimePort, HostedScopedActorBarrierPort } from "./app-server/adapters/hosted-process-activation";

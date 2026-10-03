@@ -87,6 +87,8 @@ export function codexGoalLaunchManifestInputFromLaunch(
       ? { appServerStartupTimeoutMs: launch.config.appServerStartupTimeoutMs }
       : {}),
     ...(launch.config.staleLockMs ? { staleLockMs: launch.config.staleLockMs } : {}),
+    ...(launch.config.childLifetime ? { childLifetime: launch.config.childLifetime,
+      maxGoalTurns: launch.config.maxGoalTurns!, safeExecutionPolicy: launch.config.safeExecutionPolicy! } : {}),
     ...(launch.config.maxAccountCycles
       ? { maxAccountCycles: launch.config.maxAccountCycles }
       : {}),

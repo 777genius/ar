@@ -1,11 +1,14 @@
+import { scopedOrdinaryAuthority } from "./hosted-controller/scoped-termination-validation";
+import { ScopedTerminationRecords } from "./hosted-controller/scoped-termination-records";
+import { ScopedTerminationKind, type RuntimeValidatedOrdinaryTermination } from "../worker-core/hosted-custody/domain/scoped-termination";
+import { readHostedChildSlot } from "./hosted-child-slot-files";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { HostedActivationPhase, assertHostedActivationSuccessor, parseHostedActivation, parseHostedInstallation,
-  parseHostedOrdinaryBirth, parseHostedOrdinaryOrigins, parseHostedOrdinaryStart, parseHostedCustodyEpoch, HostedCustodyPhase, HostedCustodyReservationState,
-  HostedOriginKind, type HostedActivation, type HostedInstallation, type HostedOrdinaryBirth, type HostedOrdinaryOrigins, type HostedCustodyEpoch, type HostedOrdinaryReservation } from "@vioxen/subscription-runtime/worker-core";
+import { HostedActivationPhase, assertHostedActivationSuccessor, parseHostedActivation, parseHostedInstallation, parseHostedOrdinaryBirth, parseHostedOrdinaryOrigins, parseHostedOrdinaryStart, parseHostedCustodyEpoch, HostedCustodyPhase, HostedCustodyReservationState, HostedOriginKind, type HostedActivation, type HostedInstallation, type HostedOrdinaryBirth, type HostedOrdinaryOrigins, type HostedCustodyEpoch, type HostedOrdinaryReservation } from "@vioxen/subscription-runtime/worker-core";
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes,
-  withHostedActivationFence, CodexProviderEgressProfileId, type HostedActivationFence,
+  withHostedActivationFence, assertHostedActivationOperator, assertHostedScopedAdmission, retainHostedScopedCorrelation, CodexProviderEgressProfileId, type HostedActivationFence,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { fileURLToPath } from "node:url";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory, ordinaryCompletionBytes, ordinaryCompletionPath } from "./hosted-readonly-host-kernel";
@@ -52,10 +55,10 @@ export class HostedInstallationActivationStore {
     });
   }
 
-  publish(fence: HostedActivationFence, next: HostedActivation, recovering = false): void {
+  publish(fence: HostedActivationFence, next: HostedActivation, recovering = false, authority?: RuntimeValidatedOrdinaryTermination): void {
     assertHostedActivationFence(fence);
     const prior = this.readCommitted(fence);
-    assertHostedActivationSuccessor(prior, next);
+    assertHostedActivationSuccessor(prior, next, authority ? scopedOrdinaryAuthority(authority) : undefined);
     const pending = readHostedActivationBytes("host-activation.next");
     if (pending && !recovering) throw new Error("hosted_activation_publication_recovery_required");
     const bytes = Buffer.from(JSON.stringify(parseHostedActivation(next)) + "\n");
@@ -63,9 +66,39 @@ export class HostedInstallationActivationStore {
     if (pending && !pending.equals(bytes)) throw new Error("hosted_activation_publication_recovery_required");
     const nextPath = join(readonlySupervisorRoot, "host-activation.next");
     createReadonlyPrivateRecord(nextPath, bytes);
+    const staged = authority ? lstatSync(nextPath) : null;
     renameSync(nextPath, join(readonlySupervisorRoot, "host-activation.json"));
+    const published = authority ? lstatSync(join(readonlySupervisorRoot, "host-activation.json")) : null;
     const parent = openSync(readonlySupervisorRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try { fsyncSync(parent); } finally { closeSync(parent); }
+    if (authority) {
+      const current = lstatSync(join(readonlySupervisorRoot, "host-activation.json"));
+      if (!staged || !published || current.dev !== staged.dev || current.ino !== staged.ino || current.dev !== published.dev || current.ino !== published.ino ||
+          !current.isFile() || current.uid !== 0 || current.nlink !== 1 || (current.mode & 0o7777) !== 0o600 ||
+          current.ctimeMs !== published.ctimeMs || current.mtimeMs !== published.mtimeMs || !readHostedActivationBytes("host-activation.json")?.equals(bytes)) invalid();
+    }
+  }
+
+  /** Receipt validation is a host-owned closure, never a DTO/caller path. It
+   * rereads private receipt, identity and the complete correlation under fence. */
+  publishScopedTerminal(fence: HostedActivationFence, authority: RuntimeValidatedOrdinaryTermination): HostedActivation {
+    assertHostedActivationFence(fence);
+    const receipt = scopedOrdinaryAuthority(authority), prior = this.read();
+    const members = new Map(receipt.operation.members.map(m => [m.startId, m]));
+    for (const member of members.values()) {
+      const row = prior.ordinaryStarts.find(r => r.startId === member.startId);
+      if (!row || row.unit !== member.unit || row.generation !== member.reservationGeneration) invalid();
+    }
+    const next = { ...prior, generation: prior.generation + 1, ordinaryStarts: prior.ordinaryStarts.map(row =>
+      members.has(row.startId) ? { ...row, state: HostedCustodyReservationState.Terminal } : row) };
+    if (next.ordinaryStarts.every((row, i) => row.state === prior.ordinaryStarts[i]!.state)) {
+      new ScopedTerminationRecords(assertHostedActivationOperator).synchronizeActivation(fence, encoded(prior)); return prior;
+    }
+    this.publish(fence, next, false, authority);
+    const current = this.read();
+    if (JSON.stringify(current) !== JSON.stringify(next)) invalid();
+    new ScopedTerminationRecords(assertHostedActivationOperator).synchronizeActivation(fence, encoded(current));
+    return current;
   }
 
   /** Root installation migration derives its identity from the independently
@@ -156,6 +189,7 @@ export class HostedInstallationActivationStore {
       kernel.verifyExclusiveInventory(); kernel.verifyDescriptorBoundary();
       const creator = readHostedReadonlyHostInventory().ordinaryCreators.find(row => row.creatorId === creatorId);
       if (!creator) invalid();
+      readHostedChildSlot(creator);
       const birth = parseHostedOrdinaryBirth({ schemaVersion: 1, installationId: installation.installationId,
         jobId: creator.jobId, jobRootDir: creator.jobRootDir, workspacePath: creator.workspacePath, origin: HostedOriginKind.Ordinary });
       assertNoManagedOrigin(birth);
@@ -188,7 +222,16 @@ export class HostedInstallationActivationStore {
       if (activation.phase !== HostedActivationPhase.Closed || activation.hostId !== session.hostId ||
           activation.bootId !== session.bootId || activation.supervisorId !== session.supervisorId ||
           activation.ordinaryStarts.some(row => row.state !== HostedCustodyReservationState.Terminal)) invalid();
-      readOrdinaryCatalog(installation, activation.ordinaryOriginsSha256);
+      const catalog = readOrdinaryCatalog(installation, activation.ordinaryOriginsSha256);
+      const slotIds = new Set<string>();
+      for (const creator of readHostedReadonlyHostInventory().ordinaryCreators) {
+        const slot = readHostedChildSlot(creator);
+        if (slot) {
+          new ChildExecutionBudget(slot.lifetime).remainingMs();
+          if (slotIds.has(slot.slotId)) invalid(); slotIds.add(slot.slotId);
+        }
+        if (!catalog.origins.some(row => row.jobId === creator.jobId && row.jobRootDir === creator.jobRootDir && row.workspacePath === creator.workspacePath)) invalid();
+      }
       const epochBytes = readHostedActivationBytes("readonly-epoch.json");
       if (epochBytes) {
         const epoch = parseHostedCustodyEpoch(decodeHostedActivationBytes(epochBytes));
@@ -204,18 +247,26 @@ export class HostedInstallationActivationStore {
   /** Root dispatcher preparation. The caller must keep this same fence through
    * synchronous OS submission. Reservation precedes birth publication, so a
    * crash at either write remains held and cannot become an untracked creator. */
-  reserveOrdinaryRuntime(fence: HostedActivationFence, command: string, args: readonly string[], cwd: string) {
+  reserveOrdinaryRuntime(fence: HostedActivationFence, command: string, args: readonly string[], cwd: string, correlation?: Readonly<{ startId: string; unit: string; identity?: import("../worker-core/hosted-custody/domain/scoped-termination").RetainedScopeIdentity }>) {
     assertHostedActivationFence(fence);
+    if (correlation) assertHostedScopedAdmission(fence, correlation.startId);
     const kernel = new HostedReadonlyHostKernel(), session = kernel.operatorSession();
     const candidates = readHostedReadonlyHostInventory().ordinaryCreators.filter(row =>
       row.launch.command === command && row.launch.cwd === cwd && JSON.stringify(row.launch.args) === JSON.stringify(args));
     if (candidates.length !== 1) invalid();
     const creator = candidates[0]!;
+    const childSlot = readHostedChildSlot(creator);
+    if (correlation && !childSlot) invalid();
+    const childBudget = childSlot ? new ChildExecutionBudget(childSlot.lifetime) : undefined;
+    childBudget?.remainingMs();
     const { installation, activation, birth, originSha256 } = readHostedOrdinaryBirth(creator.jobId);
     assertInspectedInstallation(installation); assertActivationSession(activation, session);
+    if (childSlot && activation.ordinaryStarts.some(row => row.creatorId === creator.creatorId)) throw new Error("child_invocation_consumed");
     if (birth.jobRootDir !== creator.jobRootDir || birth.workspacePath !== creator.workspacePath) invalid();
     const grantSha256 = assertNoManagedOrigin(birth); kernel.verifyDescriptorBoundary();
-    const creatorPidBirth = kernel.ordinaryCreatorBirth(), startId = randomUUID();
+    const creatorPidBirth = kernel.ordinaryCreatorBirth(), startId = correlation?.startId ?? randomUUID();
+    if (!/^[a-f0-9-]{36}$/.test(startId) || (correlation && correlation.unit !== `subscription-runtime-ordinary-${startId}.service`) ||
+        activation.ordinaryStarts.some(row => row.startId === startId || row.unit === correlation?.unit)) invalid();
     const row = { startId, unit: `subscription-runtime-ordinary-${startId}.service`, creatorId: creator.creatorId,
       originSha256, generation: activation.generation + 1, state: HostedCustodyReservationState.Reserved };
     const start = parseHostedOrdinaryStart({ schemaVersion: 1, installationId: installation.installationId,
@@ -224,23 +275,53 @@ export class HostedInstallationActivationStore {
       originSha256, unit: row.unit, controlGroup: ordinaryUnitGroup(row), creatorId: row.creatorId, creatorPidBirth, grantSha256 });
     this.publish(fence, { ...activation, generation: row.generation, ordinaryStarts: [...activation.ordinaryStarts, row] });
     createReadonlyPrivateRecord(join(readonlySupervisorRoot, "ordinary-starts", startId + ".json"), encoded(start));
-    return Object.freeze({ start, reservation: Object.freeze(row), launch: creator.launch });
+    if (correlation?.identity) {
+      const identity = correlation.identity;
+      if (identity.parentStartId !== startId || identity.installationId !== installation.installationId ||
+          identity.hostId !== activation.hostId || identity.bootId !== activation.bootId || identity.supervisorId !== activation.supervisorId ||
+          identity.inventoryDigest !== installation.inventorySha256 || identity.grantDigest !== grantSha256 ||
+          !childSlot || identity.accountId !== childSlot.lifetime.accountId || identity.deadlineEpochMs !== childSlot.lifetime.deadlineEpochMs ||
+          identity.sourceSha !== childSlot.sourceSha || identity.artifactSha !== childSlot.artifactSha) invalid();
+      const inventory = readHostedReadonlyHostInventory(), owner = inventory.units.find(u => u.name === inventory.supervisorUnit)!;
+      if (identity.supervisorUnit !== owner.name || identity.supervisorControlGroup !== owner.controlGroup) invalid();
+      retainHostedScopedCorrelation(fence, { schemaVersion: 1, kind: ScopedTerminationKind.Runtime, identity,
+        startId, startDigest: digest(encoded(start)), parentStartDigest: digest(encoded(start)), reservationGeneration: row.generation,
+        unit: row.unit, controlGroup: start.controlGroup, creatorPidBirth, creatorControlGroup: owner.controlGroup });
+    }
+    return Object.freeze({ start, reservation: Object.freeze(row), launch: creator.launch,
+      ...(childBudget ? { childLifetime: childBudget.lifetime, childBudget } : {}) });
   }
 
   runOrdinaryRuntimeLaunch<T>(command: string, args: readonly string[], cwd: string,
     submit: (launch: { command: string; args: readonly string[] }) => T): T {
     if (this.ordinaryLaunch) invalid();
-    return this.serialized(fence => {
-      this.ordinaryLaunch = this.reserveOrdinaryRuntime(fence, command, args, cwd);
-      try {
-        return submit(new HostedReadonlyHostKernel().ordinaryRuntimeInvocation(this.ordinaryLaunch.reservation, cwd));
-      } catch (error) {
-        const activation = this.read();
-        this.publish(fence, { ...activation, generation: activation.generation + 1, phase: HostedActivationPhase.Closed });
-        throw error;
-      }
-    });
+    try {
+      return this.serialized(fence => {
+        this.ordinaryLaunch = this.reserveOrdinaryRuntime(fence, command, args, cwd);
+        try {
+          const invocation = new HostedReadonlyHostKernel().ordinaryRuntimeInvocation(this.ordinaryLaunch.reservation, cwd);
+          this.ordinaryLaunch.childBudget?.remainingMs();
+          const submitted = submit(invocation);
+          // Submission can consume elapsed time or cross a clock rollback.
+          // Failure retains the reserved origin and requests cleanup below.
+          this.ordinaryLaunch.childBudget?.remainingMs();
+          return submitted;
+        } catch (error) {
+          if (!this.ordinaryLaunch.childLifetime) {
+            const activation = this.read();
+            this.publish(fence, { ...activation, generation: activation.generation + 1, phase: HostedActivationPhase.Closed });
+          }
+          throw error;
+        }
+      });
+    } catch (error) {
+      if (this.ordinaryChildLifetime()) { try { this.requestOrdinaryChildCleanup(); } catch { /* Retain uncertain ownership. */ } }
+      throw error;
+    }
   }
+  ordinaryChildLifetime() { return this.ordinaryLaunch?.childLifetime; }
+  ordinaryChildBudget() { return this.ordinaryLaunch?.childBudget; }
+
   recordOrdinaryRuntimeWaitCompletion(): void {
     this.serialized(() => {
       const launch = this.ordinaryLaunch;
@@ -255,9 +336,33 @@ export class HostedInstallationActivationStore {
       createReadonlyPrivateRecord(ordinaryCompletionPath(row.startId), ordinaryCompletionBytes(row.startId, digest(bytes)));
     });
   }
-  /** A failed/cancelled dispatcher closes scheduling before unlocked stops.
-   * Normal completion only records the creator proof; it does not resume or
-   * terminalize sibling units, and it does not pause unrelated ordinary jobs. */
+  /** Child cleanup is scoped and retains reservations. A stop request is never
+   * a terminal receipt and must not close every creator in the installation. */
+  requestOrdinaryChildCleanup(): boolean {
+    const launch = this.ordinaryLaunch;
+    if (!launch) invalid();
+    const retained = this.serialized(() => {
+      const creator = readHostedReadonlyHostInventory().ordinaryCreators.find(row => row.creatorId === launch.reservation.creatorId);
+      if (!creator?.childSlotSha256) return undefined;
+      const activation = this.read(), kernel = new HostedReadonlyHostKernel();
+      assertActivationSession(activation, kernel.operatorSession());
+      const row = activation.ordinaryStarts.find(row => row.startId === launch.reservation.startId);
+      if (!row || row.generation !== launch.reservation.generation || row.originSha256 !== launch.reservation.originSha256) invalid();
+      const owned = activation.ordinaryStarts.filter(candidate => candidate.creatorId === row.creatorId && candidate.originSha256 === row.originSha256);
+      for (const candidate of owned) {
+        const start = parseHostedOrdinaryStart(decodeHostedActivationBytes(required(`ordinary-starts/${candidate.startId}.json`)));
+        if (start.installationId !== launch.start.installationId || start.jobId !== launch.start.jobId ||
+            start.bootId !== launch.start.bootId || start.supervisorId !== launch.start.supervisorId ||
+            start.creatorId !== row.creatorId || start.originSha256 !== row.originSha256 ||
+            start.unit !== candidate.unit || start.activationGeneration !== candidate.generation) invalid();
+      }
+      return owned;
+    });
+    if (!retained) return false;
+    this.requestStops(retained, undefined, new HostedReadonlyHostKernel());
+    return true;
+  }
+
   closeOrdinaryRuntimeLaunch(): void {
     const launch = this.ordinaryLaunch;
     if (!launch) invalid();
@@ -302,7 +407,8 @@ export class HostedInstallationActivationStore {
         if (row.state !== HostedCustodyReservationState.Terminal &&
             (start.bootId !== activation.bootId || start.supervisorId !== activation.supervisorId)) invalid();
       }
-      if (selected.some(row => row.state !== HostedCustodyReservationState.Terminal)) {
+      const childBound = readHostedReadonlyHostInventory().ordinaryCreators.some(creator => creator.jobId === birth.jobId && creator.childSlotSha256);
+      if (!childBound && selected.some(row => row.state !== HostedCustodyReservationState.Terminal)) {
         this.publish(fence, { ...activation, generation: activation.generation + 1, phase: HostedActivationPhase.Closed });
       }
       return selected;
@@ -620,7 +726,7 @@ function readRetainedOrdinaryRuntime(fence: HostedActivationFence) {
   const kernel = new HostedReadonlyHostKernel();
   assertActivationSession(activation, kernel.ordinaryRuntimeSession(start));
   kernel.verifyDescriptorBoundary();
-  return Object.freeze({ ...origin, start, reservation: row, launch: creator.launch });
+  return Object.freeze({ ...origin, start, creator, reservation: row, launch: creator.launch });
 }
 function parseHostedCustodyEnrollment(bytes: Buffer): string {
   const birth = parseHostedCustodyEpoch(decodeHostedActivationBytes(bytes));
@@ -706,7 +812,8 @@ export function admitHostedOrdinaryIdentity(identity: { readonly jobId: string; 
     if (origin.birth.jobId !== identity.jobId || origin.birth.jobRootDir !== identity.jobRootDir ||
         origin.birth.workspacePath !== identity.workspacePath) invalid();
     if (origin.start.grantSha256 === null) return CodexProviderEgressProfileId.FullInternetV1;
-    const bytes = readHostedPrivateBytes(join(hostedTestEgressGrantRoot, digest(Buffer.from(identity.jobId)) + ".json"), 4096);
+    const name = digest(Buffer.from(identity.jobId)) + ".json";
+    const bytes = readHostedPrivateBytes(join(hostedTestEgressGrantRoot, name), 4096);
     if (!bytes || digest(bytes) !== origin.start.grantSha256) invalid();
     const grant = parseHostedTestEgressGrant(decodeHostedActivationBytes(bytes));
     assertHostedTestEgressIdentity(grant, identity);

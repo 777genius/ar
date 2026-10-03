@@ -1,5 +1,6 @@
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { AgentRuntimeToolName, ClockPort, ObservabilityPort, RuntimeDeps } from "@vioxen/subscription-runtime/core";
-import { CodexModelBackend, type AppServerCompletedTurnCheckpoint, type CodexExecutionProfile, type CodexProviderEgressPolicy, type PublicResearchSourceReader, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, type AppServerCompletedTurnCheckpoint, type AppServerExecutionLifetime, type PublicResearchSourceReader, type CodexExecutionProfile, type CodexProviderEgressPolicy, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
 import type { CommandPolicy } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 import type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
@@ -9,6 +10,8 @@ import {
 } from "./codex-session-home-profile";
 
 export type FileBackendCodexWorkerOptions = {
+  readonly childBudget?: ChildExecutionBudget;
+  readonly executionLifetime?: AppServerExecutionLifetime;
   readonly workerId?: string;
   readonly providerInstanceId: string;
   readonly stateRootDir: string;
@@ -136,7 +139,10 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
     throw new Error("checkpoint_requires_app_server_goal_engine");
   }
   const hostedGlobalScanGuard =
-    options.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+    (options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  if (hostedGlobalScanGuard && modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+    throw new Error("hosted_mimo_activation_closed");
+  }
   const hostedExecutionEngine = options.executionEngine ?? "app-server";
   if (
     hostedGlobalScanGuard &&

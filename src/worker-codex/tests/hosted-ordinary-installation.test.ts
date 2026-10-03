@@ -1,3 +1,4 @@
+import { registerKeyedCorrelationTests, registerChildForegroundDeadlineTests } from "./hosted-child-foreground-deadline-test-support";
 import { routeHostedGoalLaunch, stopHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import { codexGoalAccountSlots, runCodexGoal } from "../codex-goal-runner";
 import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
@@ -122,7 +123,7 @@ beforeEach(() => {
     stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(() => true) });
   fixture.child = child; fixture.spawn.mockReturnValue(child);
   fixture.creatorBirth = "789"; fixture.creatorGroup = "/system.slice/trusted.service"; fixture.runtimeUnit = "";
-  for (const dir of ["stages", "grants", "policies", "reviews", "managed-W", "ordinary-origins", "ordinary-starts", "ordinary-completed", "codex-readonly-custody", "codex-readonly-revoked"]) mkdirSync(join(fixture.root, dir), { mode: 0o700 });
+  for (const dir of ["stages", "grants", "policies", "reviews", "managed-W", "ordinary-origins", "ordinary-starts", "ordinary-completed", "scoped-terminating", "codex-readonly-custody", "codex-readonly-revoked"]) mkdirSync(join(fixture.root, dir), { mode: 0o700 });
   mkdirSync(join(fixture.root, "managed-W/input"), { mode: 0o700 });
   writeFileSync(join(fixture.root, "fragment"), "reviewed", { mode: 0o600 });
   put("readonly-inventory.json", { schemaVersion: 2, hostId: "a".repeat(32), supervisorUnit: "trusted.service",
@@ -995,3 +996,6 @@ describe("managed inspected installation admission", () => {
     } else { expect(launch).toThrow(); expect(fixture.spawn).not.toHaveBeenCalled(); }
   });
 });
+registerChildForegroundDeadlineTests({ fixture, runtimeDirectory, read, put });
+
+registerKeyedCorrelationTests({ fixture, runtimeDirectory, read, put });

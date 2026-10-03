@@ -1,3 +1,4 @@
+import { childConfigFromRecord } from "../child-execution-confinement";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "../codex-worker-defaults";
 import { join } from "node:path";
 import {
@@ -58,6 +59,7 @@ export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGo
   );
   const networkAccess = optionalCodexGoalNetworkAccess(args.networkAccess);
   return {
+    ...childConfigFromRecord(args as unknown as JsonObject),
     jobId,
     ...(stringValue(args.description) ? { description: stringValue(args.description) as string } : {}),
     ...(tagValues(args.tags).length ? { tags: tagValues(args.tags) } : {}),

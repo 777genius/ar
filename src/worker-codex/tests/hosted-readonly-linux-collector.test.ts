@@ -73,3 +73,9 @@ describe("fixed Linux collector with synthetic syscalls", () => {
     expect(() => collectUnitInvocation(unit)).toThrow("evidence_invalid");
   });
 });
+
+import { parseScopedManagerJobs } from "../hosted-readonly-observations";
+it("R7 accepts legal unrelated manager units and jobs before exact selection", () => {
+  const jobs = parseScopedManagerJobs("1 dev-loop0.device start running\n2 dev-disk-by\\x2duuid.swap stop waiting\n3 a.automount nop waiting\n");
+  expect(jobs.map(j => j.unit)).toEqual(["dev-loop0.device", "dev-disk-by\\x2duuid.swap", "a.automount"]);
+});
