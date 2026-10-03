@@ -285,11 +285,20 @@ function quotaWindowFromNestedRecord(input: {
 }): QuotaWindow {
   const limitId = stringValue(input.parent.limitId) ?? input.fallbackLimitId;
   const limitName = stringValue(input.parent.limitName);
-  const reachedType = stringValue(input.nested.rateLimitReachedType) ??
-    stringValue(input.parent.rateLimitReachedType);
+  const nestedReachedType = stringValue(input.nested.rateLimitReachedType);
+  const parentReachedType = stringValue(input.parent.rateLimitReachedType);
+  const reachedType = nestedReachedType === "rate_limit_reached" &&
+    parentReachedType !== undefined && parentReachedType !== "rate_limit_reached"
+    ? parentReachedType : nestedReachedType ?? parentReachedType;
+  const spendValues = [input.parent, input.nested]
+    .filter(value => "spendControlReached" in value)
+    .map(value => value.spendControlReached);
+  const spendControlReached = spendValues.includes(true) ? true :
+    spendValues.length > 0 && spendValues.every(value => value === false) ? false : undefined;
   return quotaWindowFromRecord(
     {
       ...input.nested,
+      spendControlReached,
       ...(input.parent.credits !== undefined ? { credits: input.parent.credits } : {}),
       ...(limitId ? { limitId } : {}),
       ...(limitName ? { limitName } : {}),
@@ -321,12 +330,15 @@ function quotaWindowFromRecord(
   const limitId = stringValue(record.limitId) ?? fallbackLimitId;
   const limitName = stringValue(record.limitName);
   // Included usage can be exhausted while the provider still permits Codex
-  // through credits. Explicit provider denials and other buckets remain closed.
+  // through credits. Spend controls, hard denials and other buckets remain closed.
   const usableCodexCredits = limitId === "codex" && credits?.hasCredits === true &&
     (credits.unlimited === true || (credits.unlimited === false &&
       modernBalance !== undefined && modernBalance > 0));
+  const paidIncludedLimit = reachedType === "rate_limit_reached" &&
+    usableCodexCredits && record.spendControlReached === false;
   const state =
-    reachedType || (usedPercent !== undefined && usedPercent >= 100 && !usableCodexCredits)
+    record.spendControlReached === true || (reachedType && !paidIncludedLimit) ||
+    (usedPercent !== undefined && usedPercent >= 100 && !usableCodexCredits)
       ? QuotaLimitState.Limited
       : QuotaLimitState.Clear;
 
@@ -411,6 +423,11 @@ function dedupeWindows(windows: readonly QuotaWindow[]): readonly QuotaWindow[] 
   const byKey = new Map<string, QuotaWindow>();
   for (const window of windows) {
     const key = `${window.limitId ?? "unknown"}:${window.kind}`;
+    const previous = byKey.get(key);
+    const previousHard = previous?.reachedType && previous.reachedType !== "rate_limit_reached";
+    const currentHard = window.reachedType && window.reachedType !== "rate_limit_reached";
+    if (previous?.state === QuotaLimitState.Limited &&
+      (window.state !== QuotaLimitState.Limited || (previousHard && !currentHard))) continue;
     byKey.set(key, window);
   }
   return [...byKey.values()];
