@@ -302,14 +302,14 @@ function parseProjectPreStartAdmissionScope(
     return {
       required: booleanValue(value.required, `${fieldName}.required`),
       mode: "serial-builtin",
-      ...parseAuthorityMode(value.authorityMode, fieldName),
+      ...parseAuthorityMode(value.authorityMode, fieldName, value.required),
     };
   }
   if (value.mode !== "serial") throw new Error(`${fieldName}.mode_invalid`);
   return {
     required: booleanValue(value.required, `${fieldName}.required`),
     mode: "serial",
-    ...parseAuthorityMode(value.authorityMode, fieldName),
+    ...parseAuthorityMode(value.authorityMode, fieldName, value.required),
     validatorBundle: parseProjectPreStartAdmissionValidators(
       value.validatorBundle,
       `${fieldName}.validatorBundle`,
@@ -317,11 +317,14 @@ function parseProjectPreStartAdmissionScope(
   };
 }
 
-function parseAuthorityMode(value: unknown, fieldName: string):
+function parseAuthorityMode(value: unknown, fieldName: string, required: unknown):
   { readonly authorityMode?: ProjectAuthorityMode } {
   if (value === undefined) return {};
   if (value !== ProjectAuthorityMode.HostedWebCoreV1) {
     throw new Error(`${fieldName}.authorityMode_invalid`);
+  }
+  if (required !== true) {
+    throw new Error(`${fieldName}.authorityMode_requires_required`);
   }
   return { authorityMode: ProjectAuthorityMode.HostedWebCoreV1 };
 }

@@ -35,6 +35,12 @@ export async function authorizeProjectPreStartAdmissionLaunch(input: {
   readonly authorityStore?: ProjectAuthorityTupleStorePort;
 }): Promise<ProjectPreStartAdmissionLaunchAuthorization | undefined> {
   const descriptor = input.manifest.projectPreStartAdmission;
+  // Unchecked legacy scopes must not bypass Hosted authority via optional admission.
+  if (input.scope.preStartAdmission?.authorityMode ===
+      ProjectAuthorityMode.HostedWebCoreV1 &&
+      (input.scope.preStartAdmission.required !== true || !descriptor || !input.authorityStore)) {
+    throw new Error("project_authority_explicit_pre_start_configuration_required");
+  }
   if (!descriptor) {
     if (input.scope.preStartAdmission?.required) {
       throw new Error("project_control_pre_start_admission_required");
