@@ -125,6 +125,14 @@ export async function withProjectContinuationAccounts(input: {
   const statusesByName = new Map(
     statuses.map((status) => [status.name, status]),
   );
+  const quarantined = input.requestedAccounts.filter(
+    (accountId) => statusesByName.get(accountId)?.quarantined,
+  );
+  if (quarantined.length > 0) {
+    throw new Error(
+      `project_control_continuation_account_quarantined:${quarantined.join(",")}`,
+    );
+  }
   const unavailable = input.requestedAccounts.filter(
     (accountId) => statusesByName.get(accountId)?.status !== "ready",
   );

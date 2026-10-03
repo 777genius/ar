@@ -188,6 +188,41 @@ describe("project-control account selection", () => {
     }
   });
 
+  it("excludes quarantined accounts from default and refill selection", async () => {
+    const root = await mkdtemp(join(tmpdir(), "project-quarantine-selection-"));
+    const authRootDir = join(root, "auth");
+    try {
+      await Promise.all([
+        writeFakeAuth(authRootDir, "account-a"),
+        writeFakeAuth(authRootDir, "account-b"),
+      ]);
+      await writeFile(
+        join(authRootDir, "account-labels.json"),
+        `${JSON.stringify({
+          accounts: { "account-b": { email: "operator@example.com" } },
+          "account-b": { quarantined: true },
+        })}\n`,
+      );
+
+      await expect(
+        projectControlDefaultAccountNames({
+          authRootDir,
+          requestedAccounts: ["account-a", "account-b"],
+          allowedAccountIds: ["account-a", "account-b"],
+        }),
+      ).resolves.toEqual(["account-a"]);
+      await expect(
+        projectControlRefillAccountNames({
+          authRootDir,
+          requestedAccounts: ["account-a", "account-b"],
+          allowedAccountIds: ["account-a", "account-b"],
+        }),
+      ).resolves.toEqual(["account-a"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("excludes durable quota-blocked accounts from the discovered default pool", async () => {
     const root = await mkdtemp(join(tmpdir(), "project-default-capacity-"));
     const authRootDir = join(root, "auth");

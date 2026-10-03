@@ -23,6 +23,36 @@ async function authRootWithLabels(labels: unknown): Promise<string> {
 }
 
 describe("Codex account display metadata", () => {
+  it("overlays only flat quarantine fields onto nested operator metadata", async () => {
+    const root = await authRootWithLabels({
+      accounts: {
+        "account-a": { email: "operator@example.com", resetCount: 0, plan: "plus", unpaid: "19.08.2026" },
+        "account-b": { displayName: "Nested", quarantined: true, quarantineReason: "nested hold" },
+      },
+      "account-a": {
+        quarantined: true,
+        quarantineReason: " flat hold ",
+        quarantinedAt: "2026-09-01T12:00:00.000Z",
+        plan: "free",
+        resetCount: 99,
+      },
+      "account-b": { quarantined: false, displayName: "Flat" },
+      "account-c": { quarantined: true },
+      "account-d": { plan: "free" },
+    });
+
+    expect(await readCodexAccountDisplayMetadata(root)).toEqual({
+      "account-a": {
+        displayName: "operator@example.com", email: "operator@example.com",
+        resetCount: 0, plan: "plus", unpaid: "19.08.2026",
+        quarantined: true, quarantineReason: "flat hold",
+        quarantinedAt: "2026-09-01T12:00:00.000Z",
+      },
+      "account-b": { displayName: "Nested", quarantined: true, quarantineReason: "nested hold" },
+      "account-c": { quarantined: true },
+    });
+  });
+
   it("parses operator plan, unpaid date and reset count", async () => {
     const root = await authRootWithLabels({
       "account-a": { email: "operator@example.com", plan: "free", unpaid: "19.08.2026", resetCount: 2 },

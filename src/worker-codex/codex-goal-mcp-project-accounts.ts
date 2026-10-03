@@ -110,8 +110,10 @@ export async function projectControlRefillAccountNames(input: {
 function capacityAllowsProjectSelection(input: {
   readonly schedulerEligible: boolean;
   readonly capacityAvailability?: string;
+  readonly quarantined?: boolean;
 }): boolean {
-  return input.capacityAvailability === undefined || input.schedulerEligible;
+  return !input.quarantined &&
+    (input.capacityAvailability === undefined || input.schedulerEligible);
 }
 
 export function rotateProjectControlAccountNames(
