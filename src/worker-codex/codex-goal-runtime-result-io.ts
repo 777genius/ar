@@ -85,13 +85,14 @@ export async function captureGitWorkspacePatch(input: {
     gitBinaryPath,
     workspacePath: input.workspacePath,
   });
+  // Evidence must retain raw bytes, regardless of configured diff drivers.
   const trackedPatch = await gitDiff({
     retention: true,
     gitBinaryPath,
     workspacePath: input.workspacePath,
     args: hasHead
-      ? ["diff", "--binary", "--no-renames", "HEAD", "--"]
-      : ["diff", "--binary", "--"],
+      ? ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD", "--"]
+      : ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--"],
   });
   const patches: string[] = [];
   let bytes = 0;
@@ -107,7 +108,7 @@ export async function captureGitWorkspacePatch(input: {
     append(await gitDiff({
       retention: true,
       gitBinaryPath, workspacePath: input.workspacePath,
-      args: ["diff", "--binary", "--no-index", "--", "/dev/null", path],
+      args: ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-index", "--", "/dev/null", path],
       allowDifferenceExitCode: true,
     }));
   }

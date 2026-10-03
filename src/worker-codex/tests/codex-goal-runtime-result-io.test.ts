@@ -111,6 +111,46 @@ describe("codex goal runtime result IO", () => {
     }
   });
 
+  it.each(["command", "textconv"] as const)(
+    "round-trips raw tracked and untracked binary bytes with a hiding diff %s",
+    async (driverKind) => {
+      const root = await mkdtemp(join(tmpdir(), "subscription-runtime-TEST-diff-driver-"));
+      const workspacePath = join(root, "workspace");
+      const outputPath = join(root, "preserved.patch");
+      const trackedBytes = Buffer.from([0, 255, 3, 4, 5]);
+      const untrackedBytes = Buffer.from([0, 254, 6, 7, 8]);
+      try {
+        await mkdir(workspacePath);
+        await execFileAsync("git", ["init"], { cwd: workspacePath });
+        await execFileAsync("git", ["config", "user.email", "runtime-test@example.com"], { cwd: workspacePath });
+        await execFileAsync("git", ["config", "user.name", "Runtime Test"], { cwd: workspacePath });
+        await writeFile(join(workspacePath, "tracked.dat"), Buffer.from([0, 1, 2]));
+        await execFileAsync("git", ["add", "tracked.dat"], { cwd: workspacePath });
+        await execFileAsync("git", ["commit", "-m", "test: initialize TEST diff fixture"], { cwd: workspacePath });
+        const driverPath = join(root, "hide-diff");
+        await writeFile(driverPath, driverKind === "command"
+          ? "#!/bin/sh\nexit 0\n"
+          : "#!/bin/sh\nprintf 'hidden\\n'\n", { mode: 0o700 });
+        await writeFile(join(workspacePath, ".git", "info", "attributes"), "*.dat diff=hide\n");
+        await execFileAsync("git", ["config", "diff.hide." + driverKind, driverPath], { cwd: workspacePath });
+        await writeFile(join(workspacePath, "tracked.dat"), trackedBytes);
+        await writeFile(join(workspacePath, "untracked.dat"), untrackedBytes);
+
+        await expect(captureGitWorkspaceChangedFiles({ workspacePath }))
+          .resolves.toEqual(["tracked.dat", "untracked.dat"]);
+        await new GitPatchPreserver().preserve({ workspacePath, outputPath });
+        await execFileAsync("git", ["reset", "--hard", "HEAD"], { cwd: workspacePath });
+        await rm(join(workspacePath, "untracked.dat"));
+        await execFileAsync("git", ["apply", "--check", outputPath], { cwd: workspacePath });
+        await execFileAsync("git", ["apply", outputPath], { cwd: workspacePath });
+        await expect(readFile(join(workspacePath, "tracked.dat"))).resolves.toEqual(trackedBytes);
+        await expect(readFile(join(workspacePath, "untracked.dat"))).resolves.toEqual(untrackedBytes);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("reports net patch paths when a staged input file is moved in the worktree", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-patch-paths-"));
     try {

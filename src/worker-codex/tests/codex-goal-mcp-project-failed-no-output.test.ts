@@ -69,7 +69,7 @@ describe("project failed_no_output lifecycle", () => {
         const prepare = async (
           name: string,
           descriptor?: CodexGoalProjectPreStartAdmission,
-          options: { readonly managedOutput?: boolean; readonly tmuxSession?: string; readonly unborn?: boolean; readonly oddPath?: boolean } = {},
+          options: { readonly managedOutput?: boolean; readonly tmuxSession?: string; readonly unborn?: boolean; readonly oddPath?: boolean; readonly diffDriver?: boolean } = {},
         ) => {
           const jobId = `project-${name}`;
           const workspacePath = join(worktreeRoot, jobId);
@@ -78,6 +78,11 @@ describe("project failed_no_output lifecycle", () => {
             await gitInitRepository(workspacePath);
           } else {
             await createCleanWorkspace(workspacePath);
+          }
+          if (options.diffDriver) {
+            await writeFile(join(workspacePath, "runtime-authored.dat"), Buffer.from([0, 1, 2]));
+            await git(workspacePath, ["add", "runtime-authored.dat"]);
+            await git(workspacePath, ["commit", "-m", "test: initialize TEST driver baseline"]);
           }
           await writeFile(join(workspacePath, "README.md"), "imported input\n");
           await writeFile(join(workspacePath, "binary.dat"), Buffer.from([0, 255, 1, 2]));
@@ -145,6 +150,41 @@ describe("project failed_no_output lifecycle", () => {
         });
         await expect(projectControlRecordFailedNoOutputView(exact.args, deps))
           .resolves.toMatchObject({ ok: true, alreadyTerminal: true, idempotentReplay: true });
+
+        const hiddenDiffJobIds: string[] = [];
+        for (const driverKind of ["command", "textconv"] as const) {
+          for (const authored of [false, true]) {
+            const fixture = await prepare("diff-" + driverKind + (authored ? "-authored" : "-unchanged"), undefined, { diffDriver: true });
+            const driverPath = join(root, "hide-" + driverKind);
+            await writeFile(driverPath, driverKind === "command"
+              ? "#!/bin/sh\nexit 0\n"
+              : "#!/bin/sh\nprintf 'hidden\\n'\n", { mode: 0o700 });
+            await writeFile(join(fixture.workspacePath, ".git", "info", "attributes"),
+              "runtime-authored.dat diff=hide\n");
+            await git(fixture.workspacePath, ["config", "diff.hide." + driverKind, driverPath]);
+            if (authored) {
+              hiddenDiffJobIds.push(fixture.jobId);
+              await writeFile(join(fixture.workspacePath, "runtime-authored.dat"), Buffer.from([0, 255, 3, 4]));
+              expect(await gitStdout(fixture.workspacePath, ["status", "--porcelain=v1"]))
+                .toContain(" M runtime-authored.dat");
+              await expect(projectControlRecordFailedNoOutputView(fixture.args, deps))
+                .rejects.toThrow("failed_no_output_preexisting_patch_workspace_sha256_mismatch");
+            } else {
+              const unchanged = await projectControlRecordFailedNoOutputView(fixture.args, deps);
+              expect(unchanged).toMatchObject({ ok: true, decision: { status: "failed_no_output" } });
+              const unchangedDecision = unchanged.decision as {
+                readonly preexistingWorkspacePatch: { readonly path: string };
+              };
+              await expect(readFile(unchangedDecision.preexistingWorkspacePatch.path, "utf8"))
+                .resolves.toBe(fixture.patch);
+              const unchangedLedger = await readCodexGoalConsumedOutputLedgers({
+                roots: [ledgerRoot], evidenceRoots: [evidenceRoot],
+              });
+              expect(unchangedLedger.byJobId.get(fixture.jobId))
+                .toMatchObject({ valid: true, status: "failed_no_output" });
+            }
+          }
+        }
 
         const managedClean = await prepare("managed-clean", undefined, { managedOutput: true });
         await expect(projectControlRecordFailedNoOutputView(managedClean.args, deps))
@@ -254,7 +294,7 @@ describe("project failed_no_output lifecycle", () => {
           roots: [ledgerRoot], evidenceRoots: [evidenceRoot],
         });
         for (const jobId of [
-          managedEvent.jobId, stagedDeleted.jobId, stagedModified.jobId,
+          ...hiddenDiffJobIds, managedEvent.jobId, stagedDeleted.jobId, stagedModified.jobId,
           stagedGitlink.jobId, "project-assume-unchanged", "project-skip-worktree",
           corruptHead.jobId, unbornStaged.jobId, "project-tmux-crash",
         ]) {
