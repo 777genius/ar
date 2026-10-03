@@ -114,7 +114,9 @@ function isShellExecutable(value: string): boolean {
 }
 
 function shellCommandTextPayload(value: string): string | null | undefined {
-  const match = value.match(/^(?:\S*\/)?(?:bash|sh|zsh)\s+(?:-lc|-c)\s+(.+)$/);
+  // Unwrap only a literal executable/path: shell syntax in a greedy path
+  // prefix can execute another command before the apparent read wrapper.
+  const match = value.match(/^(?:[A-Za-z0-9_.\/-]*\/)?(?:bash|sh|zsh)[ \t]+(?:-lc|-c)[ \t]+(.+)$/);
   if (!match) return undefined;
   const encodedPayload = match[1]?.trim() ?? "";
   if (!encodedPayload) return null;
