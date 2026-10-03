@@ -285,6 +285,49 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
       expect(stopCalls).not.toHaveBeenCalled(); expect(f.stops).toHaveLength(1); expect(f.calls).toHaveLength(0);
     } finally { checkout.resolve(); await f.app.drain(); }
   });
+  it.each([-60000, 60000])("wall clock shift %i cannot postpone an accepted pending child's deadline", async shift => {
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    const acceptedAt = Date.now(), deadline = acceptedAt + 1000, f = fixture(false, deadline);
+    let foregroundSettled = false; void f.wait.promise.then(() => { foregroundSettled = true; });
+    const view = await f.app.launch(request, new AbortController().signal);
+    // Wait for real private TEST persistence without advancing either fake clock.
+    for (let n = 0; n < 100 && f.calls.length === 0; n++) await delay(10);
+    expect(f.calls).toHaveLength(1);
+    expect((await f.app.observe(view.childHandle)).state).toBe(State.Submitted);
+    vi.setSystemTime(acceptedAt + shift);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(f.stopRequests).toHaveLength(0); expect(foregroundSettled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await f.adapter.coordinate(async () => {}); // Join the timer's queued durable stop.
+    expect(f.stopRequests).toEqual([{ startId: f.allocations[0]!.startId,
+      reason: ScopedStopReason.Deadline, at: deadline + shift }]);
+    expect(foregroundSettled).toBe(false);
+    expect(await f.app.observe(view.childHandle)).toMatchObject({ state: State.StopRequested,
+      occupied: true, deadlineEpochMs: deadline });
+    f.wait.resolve(); await f.app.drain();
+    expect(foregroundSettled).toBe(true);
+    expect((await f.app.observe(view.childHandle)).state).toBe(State.StopRequested);
+    const requestsAfterCompletion = f.stopRequests.length;
+    await vi.advanceTimersByTimeAsync(60000); await f.adapter.coordinate(async () => {});
+    expect(f.stopRequests).toHaveLength(requestsAfterCompletion); expect(f.calls).toHaveLength(1);
+  });
+  it("foreground completion before the deadline retains occupancy and the original timer", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    const deadline = Date.now() + 1000, f = fixture(false, deadline);
+    const view = await f.app.launch(request, new AbortController().signal);
+    f.wait.resolve(); await f.app.drain();
+    expect(f.calls).toHaveLength(1);
+    expect(await f.app.observe(view.childHandle)).toMatchObject({ state: State.Uncertain, occupied: true });
+    expect(f.stopRequests).toEqual([{ startId: f.allocations[0]!.startId,
+      reason: ScopedStopReason.Completion, at: deadline - 1000 }]);
+    await vi.advanceTimersByTimeAsync(1000); await f.adapter.coordinate(async () => {});
+    expect(f.stopRequests).toEqual([{ startId: f.allocations[0]!.startId,
+      reason: ScopedStopReason.Completion, at: deadline - 1000 },
+      { startId: f.allocations[0]!.startId, reason: ScopedStopReason.Deadline, at: deadline }]);
+    expect((await f.app.observe(view.childHandle)).state).toBe(State.StopRequested);
+    await vi.advanceTimersByTimeAsync(60000); await f.adapter.coordinate(async () => {});
+    expect(f.stopRequests).toHaveLength(2);
+  });
   it("concurrent identical keys claim once, acknowledge before prep/wait, and submit once", async () => {
     const f = fixture(), prep = deferred(); facts.gate = prep.promise;
     const views = await Promise.all(Array.from({ length: 8 }, () => f.app.launch(request, new AbortController().signal)));

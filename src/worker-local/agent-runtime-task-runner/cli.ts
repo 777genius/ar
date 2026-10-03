@@ -84,6 +84,8 @@ type ParsedArgs = {
   readonly encryptionKeyEnv: string;
   readonly ephemeral: boolean;
   readonly claudeTokenEnv: string;
+  readonly claudeAmbientHome?: string;
+  readonly claudeAmbientConfigDir?: string;
   readonly claudeBackend: ClaudeAgentRuntimeBackend;
   readonly codexAuthJsonPath?: string;
   readonly codexAuthJsonEnv: string;
@@ -143,6 +145,24 @@ export async function runSubscriptionAgentRuntimeTaskCli(
     const claudeOAuthToken = env[args.claudeTokenEnv];
     const codexAuthJsonPath =
       args.codexAuthJsonPath ?? env[args.codexAuthJsonEnv];
+    if (args.claudeAmbientHome !== undefined) {
+      if (claudeOAuthToken) {
+        throw new Error(
+          "--claude-ambient-home cannot be combined with a Claude OAuth token; pick one auth source",
+        );
+      }
+      // Defense in depth: no hosted/sandboxed Claude execution context exists
+      // in this codebase yet (unlike Codex's SUBSCRIPTION_RUNTIME_SANDBOX_KIND
+      // job marker), but ambient-home must never run inside one if it ever
+      // does. Any sandbox-kind marker means this process is not a developer's
+      // own local machine, so refuse rather than leak the operator's ambient
+      // credentials into a shared/hosted execution context.
+      if (env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== undefined) {
+        throw new Error(
+          "--claude-ambient-home is not permitted in a hosted/sandboxed execution context",
+        );
+      }
+    }
     const commonRunnerInput = {
       provider: args.provider,
       stateRootDir,
@@ -163,14 +183,24 @@ export async function runSubscriptionAgentRuntimeTaskCli(
       ? createLocalAgentRuntimeTaskRunner({
           ...commonRunnerInput,
           provider: AgentRuntimeTaskProvider.Claude,
-          ...(claudeOAuthToken
+          ...(args.claudeAmbientHome !== undefined
             ? {
                 authSource: {
-                  kind: AuthSourceKind.ClaudeOAuthToken,
-                  oauthToken: claudeOAuthToken,
+                  kind: AuthSourceKind.ClaudeAmbientHome,
+                  homeDir: args.claudeAmbientHome,
+                  ...(args.claudeAmbientConfigDir
+                    ? { configDir: args.claudeAmbientConfigDir }
+                    : {}),
                 },
               }
-            : {}),
+            : claudeOAuthToken
+              ? {
+                  authSource: {
+                    kind: AuthSourceKind.ClaudeOAuthToken,
+                    oauthToken: claudeOAuthToken,
+                  },
+                }
+              : {}),
           claudeBackend: args.claudeBackend,
           ...(args.claudePath ? { claudePath: args.claudePath } : {}),
           ...(args.claudeBackend === ClaudeAgentRuntimeBackend.Background &&
@@ -264,6 +294,8 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   let encryptionKeyEnv = "SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY";
   let ephemeral = false;
   let claudeTokenEnv = "CLAUDE_CODE_OAUTH_TOKEN";
+  let claudeAmbientHome: string | undefined;
+  let claudeAmbientConfigDir: string | undefined;
   let claudeBackend = ClaudeAgentRuntimeBackend.AgentSdk;
   let codexAuthJsonPath: string | undefined;
   let codexAuthJsonEnv = "CODEX_AUTH_JSON_PATH";
@@ -325,6 +357,16 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     }
     if (arg === "--claude-token-env") {
       claudeTokenEnv = requiredValue(argv, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--claude-ambient-home") {
+      claudeAmbientHome = requiredValue(argv, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--claude-ambient-config-dir") {
+      claudeAmbientConfigDir = requiredValue(argv, index, arg);
       index += 1;
       continue;
     }
@@ -403,6 +445,12 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       "--reasoning-effort and --service-tier are supported only for --provider codex",
     );
   }
+  if (claudeAmbientConfigDir !== undefined && claudeAmbientHome === undefined) {
+    throw new Error("--claude-ambient-config-dir requires --claude-ambient-home");
+  }
+  if (claudeAmbientHome !== undefined && provider !== AgentRuntimeTaskProvider.Claude) {
+    throw new Error("--claude-ambient-home is supported only for --provider claude");
+  }
   return {
     provider,
     ...(inputPath ? { inputPath } : {}),
@@ -412,6 +460,8 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     encryptionKeyEnv,
     ephemeral,
     claudeTokenEnv,
+    ...(claudeAmbientHome ? { claudeAmbientHome } : {}),
+    ...(claudeAmbientConfigDir ? { claudeAmbientConfigDir } : {}),
     claudeBackend,
     ...(codexAuthJsonPath ? { codexAuthJsonPath } : {}),
     codexAuthJsonEnv,
@@ -509,6 +559,7 @@ function usage(): string {
     "       [--provider-instance id] [--model model] [--timeout-ms ms]",
     "       [--reasoning-effort high] [--service-tier default] (Codex only)",
     "       [--claude-backend agent-sdk|claude-background]",
+    "       [--claude-ambient-home dir [--claude-ambient-config-dir dir]] (local-only, opt-in)",
   ].join("\n");
 }
 

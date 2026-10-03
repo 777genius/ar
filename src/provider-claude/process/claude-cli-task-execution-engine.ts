@@ -11,7 +11,7 @@ import type {
   ClaudeTaskExecutionEngine,
   ClaudeTaskExecutionResult,
 } from "../task/engine-contract";
-import { claudeCliChildEnv } from "./claude-cli-env";
+import { claudeCliEnvForSession } from "./claude-cli-env";
 
 export type ClaudeCliTaskExecutionEngineOptions = {
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
@@ -34,7 +34,6 @@ export class ClaudeCliTaskExecutionEngine implements ClaudeTaskExecutionEngine {
   constructor(private readonly options: ClaudeCliTaskExecutionEngineOptions = {}) {}
 
   async run(input: ClaudeTaskEngineInput): Promise<ClaudeTaskExecutionResult> {
-    if (!input.session.configDir) throw new Error("claude_config_dir_required");
     assertClaudeReadOnlyToolPolicy(input.editMode, input.allowedTools);
 
     const warnings = unsupportedWarnings(input);
@@ -42,10 +41,9 @@ export class ClaudeCliTaskExecutionEngine implements ClaudeTaskExecutionEngine {
       command: this.options.claudePath ?? "claude",
       args: this.args(input),
       cwd: input.workspacePath,
-      env: claudeCliChildEnv({
+      env: claudeCliEnvForSession({
+        session: input.session,
         baseEnv: this.options.baseEnv ?? process.env,
-        configDir: input.session.configDir,
-        oauthToken: input.session.oauthToken,
       }),
       timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
       abortSignal: input.abortSignal,

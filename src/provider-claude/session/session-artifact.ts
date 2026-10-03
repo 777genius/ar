@@ -6,7 +6,7 @@ import type {
 import { claudeProviderId, claudeSessionFormatVersion } from "../capabilities";
 import { classifyClaudeFailure } from "../protocol/failure-classifier";
 
-export type ClaudeOAuthSession = {
+export type ClaudeOAuthTokenSession = {
   readonly authMode: "oauth";
   readonly oauthToken: string;
   readonly configDir?: string;
@@ -14,6 +14,21 @@ export type ClaudeOAuthSession = {
   readonly expiresAt?: string;
   readonly metadata?: Readonly<Record<string, string>>;
 };
+
+/**
+ * Local-only, explicit opt-in mode: invokes the installed Claude CLI against
+ * an already-authenticated ambient HOME/CLAUDE_CONFIG_DIR instead of a
+ * subscription-runtime-managed OAuth session. Carries no token or other
+ * credential bytes — subscription-runtime never reads, copies or mutates
+ * whatever auth/session state the Claude CLI keeps under homeDir/configDir.
+ */
+export type ClaudeAmbientHomeSession = {
+  readonly authMode: "ambient-home";
+  readonly homeDir: string;
+  readonly configDir?: string;
+};
+
+export type ClaudeOAuthSession = ClaudeOAuthTokenSession | ClaudeAmbientHomeSession;
 
 export type ClaudeSessionValidation = {
   readonly session: ClaudeOAuthSession;
@@ -27,7 +42,7 @@ export function sessionArtifactFromClaudeOAuth(input: {
   readonly expiresAt?: string;
   readonly metadata?: Readonly<Record<string, string>>;
 }): SessionArtifact {
-  const payload: ClaudeOAuthSession = {
+  const payload: ClaudeOAuthTokenSession = {
     authMode: "oauth",
     oauthToken: input.oauthToken,
     ...(input.configDir === undefined ? {} : { configDir: input.configDir }),
@@ -37,6 +52,22 @@ export function sessionArtifactFromClaudeOAuth(input: {
     ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
     ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
   };
+  return claudeSessionArtifact(payload);
+}
+
+export function sessionArtifactFromClaudeAmbientHome(input: {
+  readonly homeDir: string;
+  readonly configDir?: string;
+}): SessionArtifact {
+  const payload: ClaudeAmbientHomeSession = {
+    authMode: "ambient-home",
+    homeDir: input.homeDir,
+    ...(input.configDir === undefined ? {} : { configDir: input.configDir }),
+  };
+  return claudeSessionArtifact(payload);
+}
+
+function claudeSessionArtifact(payload: ClaudeOAuthSession): SessionArtifact {
   return {
     kind: "json-file",
     providerId: claudeProviderId,
@@ -74,10 +105,10 @@ export function validateClaudeSessionArtifact(
   } catch {
     throw new Error("claude_session_json_invalid");
   }
-  const session = parseClaudeOAuthSession(parsed);
+  const session = parseClaudeSession(parsed);
   return {
     session,
-    warnings: freshnessWarnings(session),
+    warnings: session.authMode === "oauth" ? freshnessWarnings(session) : [],
   };
 }
 
@@ -94,8 +125,17 @@ export function invalidClaudeSessionFailure(error: unknown): ProviderFailure {
     : classified;
 }
 
-function parseClaudeOAuthSession(value: unknown): ClaudeOAuthSession {
+function parseClaudeSession(value: unknown): ClaudeOAuthSession {
   if (!isObject(value)) throw new Error("claude_session_shape_invalid");
+  if (value.authMode === "ambient-home") {
+    return parseClaudeAmbientHomeSession(value);
+  }
+  return parseClaudeOAuthTokenSession(value);
+}
+
+function parseClaudeOAuthTokenSession(
+  value: Record<string, unknown>,
+): ClaudeOAuthTokenSession {
   if (value.authMode !== "oauth") {
     throw new Error("claude_session_auth_mode_invalid");
   }
@@ -108,11 +148,21 @@ function parseClaudeOAuthSession(value: unknown): ClaudeOAuthSession {
   if (value.metadata !== undefined && !isStringRecord(value.metadata)) {
     throw new Error("claude_session_metadata_invalid");
   }
-  return value as ClaudeOAuthSession;
+  return value as ClaudeOAuthTokenSession;
+}
+
+function parseClaudeAmbientHomeSession(
+  value: Record<string, unknown>,
+): ClaudeAmbientHomeSession {
+  if (typeof value.homeDir !== "string" || value.homeDir.length === 0) {
+    throw new Error("claude_ambient_home_dir_missing");
+  }
+  assertOptionalString(value.configDir, "claude_config_dir_invalid");
+  return value as ClaudeAmbientHomeSession;
 }
 
 function freshnessWarnings(
-  session: ClaudeOAuthSession,
+  session: ClaudeOAuthTokenSession,
 ): readonly RuntimeWarning[] {
   if (!session.expiresAt) return [];
   const expiresAtMs = Date.parse(session.expiresAt);
