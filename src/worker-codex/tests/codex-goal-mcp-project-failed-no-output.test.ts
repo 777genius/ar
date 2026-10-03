@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   AccessBoundary,
   NetworkAccessMode,
+  ProjectDebtReason,
   ReviewDecisionStatus,
 } from "@vioxen/subscription-runtime/worker-core";
 import { createCodexGoalJob } from "../codex-goal-jobs";
@@ -330,6 +331,8 @@ describe("project failed_no_output lifecycle", () => {
           ok: false,
           reason: "confirm_failed_no_output_required",
         });
+      const historicalPath = join(ledgerRoot, "items", `${workerJobId}.json`);
+      const historicalBytes = await readFile(historicalPath);
       const recorded = await projectControlRecordFailedNoOutputView({
         ...args,
         confirmFailedNoOutput: true,
@@ -353,6 +356,12 @@ describe("project failed_no_output lifecycle", () => {
         status: "failed_no_output",
         valid: true,
       });
+      expect(await readFile(historicalPath)).toEqual(historicalBytes);
+      expect(ledger.debt.filter((item) =>
+        item.reason === ProjectDebtReason.IncompleteConsumedOutputRecord
+      )).toEqual([expect.objectContaining({
+        subject: join(ledgerRoot, "items", `${dirtyWorkerJobId}.json`),
+      })]);
       await expect(projectControlRecordFailedNoOutputView({
         ...args,
         confirmFailedNoOutput: true,
