@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   GitPatchPreserver,
+  assertGitWorkspaceRawPatchIdentitySupported,
   captureGitWorkspaceChangedFiles,
   createCodexGoalResultRecorder,
 } from "../codex-goal-runtime-result-io";
@@ -13,6 +14,50 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe("codex goal runtime result IO", () => {
+  it("denies byte conversions without executing filters and accepts disabled conversions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-TEST-conversions-"));
+    const workspacePath = join(root, "workspace");
+    const marker = join(root, "filter-executed");
+    try {
+      await mkdir(workspacePath);
+      await execFileAsync("git", ["init"], { cwd: workspacePath });
+      // Unusual path bytes must be passed through Git's NUL stdin protocol.
+      await writeFile(join(workspacePath, "space and\nnewline.txt"), "raw\n");
+      const attributesPath = join(workspacePath, ".git", "info", "attributes");
+      await execFileAsync("git", ["config", "filter.hide.clean", `touch '${marker}'`], { cwd: workspacePath });
+      await execFileAsync("git", ["config", "filter.hide.process", `touch '${marker}'`], { cwd: workspacePath });
+      for (const attribute of ["filter=hide", "text", "text=auto", "eol=crlf",
+        "working-tree-encoding=UTF-16", "ident", "crlf=input"]) {
+        await writeFile(attributesPath, `*.txt ${attribute}\n`);
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(workspacePath))
+          .rejects.toThrow("failed_no_output_git_conversion_unsupported");
+      }
+      await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+      await writeFile(attributesPath, "*.txt -filter -text -eol -working-tree-encoding -ident -crlf\n");
+      for (const autocrlf of ["true", "input"]) {
+        await execFileAsync("git", ["config", "core.autocrlf", autocrlf], { cwd: workspacePath });
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(workspacePath))
+          .rejects.toThrow("failed_no_output_git_conversion_unsupported");
+      }
+      await execFileAsync("git", ["config", "core.autocrlf", "false"], { cwd: workspacePath });
+      // core.eol alone does not convert bytes when text conversion is disabled.
+      await execFileAsync("git", ["config", "core.eol", "crlf"], { cwd: workspacePath });
+      await expect(assertGitWorkspaceRawPatchIdentitySupported(workspacePath)).resolves.toBeUndefined();
+      await writeFile(attributesPath, "");
+      await expect(assertGitWorkspaceRawPatchIdentitySupported(workspacePath)).resolves.toBeUndefined();
+      for (const name of ["unset", "unspecified"]) {
+        await writeFile(attributesPath, `*.txt filter=${name}\n`);
+        await execFileAsync("git", ["config", `filter.${name}.clean`, `touch '${marker}'`], { cwd: workspacePath });
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(workspacePath))
+          .rejects.toThrow("failed_no_output_git_conversion_unsupported");
+        await execFileAsync("git", ["config", "--unset", `filter.${name}.clean`], { cwd: workspacePath });
+      }
+      await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("writes latest-result atomically through the local writer adapter", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-result-"));
     const outputPath = join(root, "latest-result.json");

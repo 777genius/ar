@@ -23,7 +23,10 @@ import {
   collectCodexGoalStatus,
   resolveCodexGoalWorkerLiveness,
 } from "./codex-goal-ops";
-import { captureGitWorkspacePatch } from "./codex-goal-runtime-result-io";
+import {
+  assertGitWorkspaceRawPatchIdentitySupported,
+  captureGitWorkspacePatch,
+} from "./codex-goal-runtime-result-io";
 import { readCodexGoalLifecycleMarkers } from "./application/codex-goal-lifecycle-markers";
 import { releaseCodexProjectAccount } from "./application/project-control/codex-goal-project-account-reservation";
 import { readRuntimeResultBrief } from "./application/codex-goal-runtime-result";
@@ -140,6 +143,7 @@ export async function projectControlRecordFailedNoOutputView(
       alreadyTerminal: true,
     };
   }
+  await assertGitWorkspaceRawPatchIdentitySupported(loaded.manifest.workspacePath);
   const status = await collectCodexGoalStatus(statusInput(loaded.launch));
   const progressStale =
     status.progressHeartbeatAgeMs !== undefined &&
@@ -242,6 +246,7 @@ export async function projectControlRecordFailedNoOutputView(
           workspacePath: workspace.canonicalWorkspacePath,
         },
       };
+      await assertGitWorkspaceRawPatchIdentitySupported(workspace.canonicalWorkspacePath);
       const lockedStatus = await collectCodexGoalStatus(
         statusInput(lockedLaunch),
       );
@@ -277,6 +282,7 @@ export async function projectControlRecordFailedNoOutputView(
             archivePath: dirname(lockedSourceRecord.backup!.statusPath),
           })
         : undefined;
+      await assertGitWorkspaceRawPatchIdentitySupported(workspace.canonicalWorkspacePath);
       const accountReservationReleased = await releaseCodexProjectAccount({
         manifest: loaded.manifest,
         launch: lockedLaunch,
@@ -335,6 +341,7 @@ async function recordInitialFailedNoOutput(input: {
     readonly sha256: string;
   };
 }): Promise<JsonObject> {
+  await assertGitWorkspaceRawPatchIdentitySupported(input.loaded.manifest.workspacePath);
   const status = await collectCodexGoalStatus(statusInput(input.loaded.launch));
   const progressStale =
     status.progressHeartbeatAgeMs !== undefined &&
@@ -400,6 +407,7 @@ async function recordInitialFailedNoOutput(input: {
           workspacePath: workspace.canonicalWorkspacePath,
         },
       };
+      await assertGitWorkspaceRawPatchIdentitySupported(workspace.canonicalWorkspacePath);
       const lockedStatus = await collectCodexGoalStatus(
         statusInput(lockedLaunch),
       );
@@ -494,6 +502,7 @@ async function recordInitialFailedNoOutput(input: {
             jobId: input.loaded.manifest.jobId,
             jobRootDir: input.loaded.manifest.jobRootDir,
           });
+          await assertGitWorkspaceRawPatchIdentitySupported(workspace.canonicalWorkspacePath);
           const finalStatus = await collectCodexGoalStatus(statusInput(lockedLaunch));
           const finalLiveness = resolveCodexGoalWorkerLiveness({
             status: finalStatus,
@@ -522,6 +531,7 @@ async function recordInitialFailedNoOutput(input: {
           });
         }
       }
+      await assertGitWorkspaceRawPatchIdentitySupported(workspace.canonicalWorkspacePath);
       const accountReservationReleased = await releaseCodexProjectAccount({
         manifest: input.loaded.manifest,
         launch: lockedLaunch,
@@ -625,12 +635,14 @@ async function assertNeverStartedInputPatchEvidence(input: {
     throw new Error("failed_no_output_preexisting_patch_workspace_required");
   }
   await assertNoStagedChanges(input.workspacePath);
+  await assertGitWorkspaceRawPatchIdentitySupported(input.workspacePath);
   const workspacePatch = await captureGitWorkspacePatch({
     workspacePath: input.workspacePath,
   });
   // Recheck after capture so an index change during the patch read cannot
   // silently turn an earlier clean check into closure evidence.
   await assertNoStagedChanges(input.workspacePath);
+  await assertGitWorkspaceRawPatchIdentitySupported(input.workspacePath);
   if (createHash("sha256").update(workspacePatch).digest("hex") !==
       input.preexistingWorkspacePatch.sha256) {
     throw new Error("failed_no_output_preexisting_patch_workspace_sha256_mismatch");
@@ -749,9 +761,11 @@ async function assertNoAuthoredWorkerOutputEvidence(input: {
     if (!lifecycleMarkers.some((marker) => marker.type === "stop_event")) {
       throw new Error("failed_no_output_worker_launch_artifacts_present");
     }
+    await assertGitWorkspaceRawPatchIdentitySupported(input.workspacePath);
     const workspacePatch = await captureGitWorkspacePatch({
       workspacePath: input.workspacePath,
     });
+    await assertGitWorkspaceRawPatchIdentitySupported(input.workspacePath);
     const workspacePatchSha256 = createHash("sha256")
       .update(workspacePatch)
       .digest("hex");

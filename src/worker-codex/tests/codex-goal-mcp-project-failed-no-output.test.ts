@@ -22,9 +22,11 @@ import {
 import { createCodexGoalMcpServer } from "../codex-goal-mcp";
 import {
   codexProjectControlBroker,
+  codexProjectAdmissionDeps,
   loadJobLaunch,
   loadProjectControlController,
 } from "../codex-goal-mcp-project-control-deps";
+import { buildCodexProjectAdmissionSnapshot } from "../application/project-control/codex-goal-project-admission";
 import {
   projectControlRecordFailedNoOutputView,
 } from "../codex-goal-mcp-project-control-terminal-output";
@@ -185,6 +187,61 @@ describe("project failed_no_output lifecycle", () => {
             }
           }
         }
+
+        const normalized = await prepare("clean-filter", undefined, { diffDriver: true });
+        await writeFile(join(normalized.workspacePath, ".git", "info", "attributes"),
+          "runtime-authored.dat filter=hide\n");
+        await git(normalized.workspacePath, ["config", "filter.hide.clean", "printf '\\000\\001\\002'"]);
+        await writeFile(join(normalized.workspacePath, "runtime-authored.dat"), Buffer.from([0, 255, 3, 4]));
+        // Real Git normalizes the authored bytes back to the committed blob.
+        expect(await captureGitWorkspacePatch({ workspacePath: normalized.workspacePath }))
+          .toBe(normalized.patch);
+        const controller = await loadProjectControlController(normalized.args);
+        const aggregate = () => buildCodexProjectAdmissionSnapshot({
+          registryRootDir, controllerJobId,
+          scope: { ...controller.scope, jobIdPrefixes: [normalized.jobId] },
+          deps: codexProjectAdmissionDeps,
+        });
+        const beforeNormalizationClosure = await aggregate();
+        expect(beforeNormalizationClosure.counts?.inactiveDirtyWorkspaces).toBe(1);
+        const closureError: unknown = await projectControlRecordFailedNoOutputView(normalized.args, deps)
+          .then(() => undefined, (error: unknown) => error);
+        expect((await aggregate()).counts?.inactiveDirtyWorkspaces)
+          .toBe(beforeNormalizationClosure.counts?.inactiveDirtyWorkspaces);
+        expect(closureError).toBeInstanceOf(Error);
+        expect((closureError as Error).message).toBe("failed_no_output_git_conversion_unsupported");
+        await expect(readFile(join(normalized.workspacePath, "runtime-authored.dat")))
+          .resolves.toEqual(Buffer.from([0, 255, 3, 4]));
+        hiddenDiffJobIds.push(normalized.jobId);
+        // A driver can itself be named after check-attr's unset sentinel.
+        await writeFile(join(normalized.workspacePath, ".git", "info", "attributes"),
+          "runtime-authored.dat filter=unset\n");
+        await git(normalized.workspacePath, ["config", "filter.unset.clean", "printf '\\000\\001\\002'"]);
+        expect(await captureGitWorkspacePatch({ workspacePath: normalized.workspacePath }))
+          .toBe(normalized.patch);
+        await expect(projectControlRecordFailedNoOutputView(normalized.args, deps))
+          .rejects.toThrow("failed_no_output_git_conversion_unsupported");
+
+        const eolNormalized = await prepare("eol-normalized");
+        await git(eolNormalized.workspacePath, ["config", "core.autocrlf", "input"]);
+        await writeFile(join(eolNormalized.workspacePath, "README.md"), "imported input\r\n");
+        expect(await captureGitWorkspacePatch({ workspacePath: eolNormalized.workspacePath }))
+          .toBe(eolNormalized.patch);
+        await expect(projectControlRecordFailedNoOutputView(eolNormalized.args, deps))
+          .rejects.toThrow("failed_no_output_git_conversion_unsupported");
+        hiddenDiffJobIds.push(eolNormalized.jobId);
+
+        // Eligibility must not run either arbitrary clean or process commands.
+        const noExecution = await prepare("filter-not-executed", undefined, { diffDriver: true });
+        const filterMarker = join(root, "unexpected-filter-execution");
+        await writeFile(join(noExecution.workspacePath, ".git", "info", "attributes"),
+          "runtime-authored.dat filter=hide\n");
+        await git(noExecution.workspacePath, ["config", "filter.hide.clean", `touch '${filterMarker}'`]);
+        await git(noExecution.workspacePath, ["config", "filter.hide.process", `touch '${filterMarker}'`]);
+        await expect(projectControlRecordFailedNoOutputView(noExecution.args, deps))
+          .rejects.toThrow("failed_no_output_git_conversion_unsupported");
+        await expect(readFile(filterMarker)).rejects.toMatchObject({ code: "ENOENT" });
+        hiddenDiffJobIds.push(noExecution.jobId);
 
         const managedClean = await prepare("managed-clean", undefined, { managedOutput: true });
         await expect(projectControlRecordFailedNoOutputView(managedClean.args, deps))
