@@ -86,6 +86,7 @@ export async function readConsumedOutputLedgers(input: {
     severity: "blocking",
     evidence: failure.evidence,
   }));
+  const incompleteRecords: ConsumedOutputRecord[] = [];
   const retentionEvidenceMissingRecords: ConsumedOutputRecord[] = [];
   for (const entry of loaded.entries) {
     let record: ConsumedOutputRecord | null;
@@ -122,12 +123,7 @@ export async function readConsumedOutputLedgers(input: {
     if (record.retentionEvidenceMissing) {
       retentionEvidenceMissingRecords.push(record);
     } else if (!record.valid) {
-      debt.push({
-        reason: ProjectDebtReason.IncompleteConsumedOutputRecord,
-        subject: entry.ledgerPath,
-        severity: "blocking",
-        evidence: record.evidence,
-      });
+      incompleteRecords.push(record);
     }
     setLatestRecord(byJobId, record.jobId, record);
     if (
@@ -144,6 +140,17 @@ export async function readConsumedOutputLedgers(input: {
     ) {
       setLatestRecord(byWorkspace, record.resolvedWorkspace, record);
     }
+  }
+  for (const record of incompleteRecords) {
+    if (hasMatchingFailedNoOutputCorrection(record, byJobId.get(record.jobId))) {
+      continue;
+    }
+    debt.push({
+      reason: ProjectDebtReason.IncompleteConsumedOutputRecord,
+      subject: record.ledgerPath,
+      severity: "blocking",
+      evidence: record.evidence,
+    });
   }
   for (const record of retentionEvidenceMissingRecords) {
     const latest = byJobId.get(record.jobId);
@@ -163,6 +170,39 @@ export async function readConsumedOutputLedgers(input: {
     });
   }
   return { byJobId, byWorkspace, debt };
+}
+
+function hasMatchingFailedNoOutputCorrection(
+  record: ConsumedOutputRecord,
+  latest: ConsumedOutputRecord | undefined,
+): boolean {
+  // Immutable history remains on disk. Only a later valid correction of this
+  // job's same clean backup retires its reclassifiable no-output debt.
+  if (
+    record.reclassifiableAsFailedNoOutput !== true ||
+    record.hasAuthoredOutput ||
+    !record.backup ||
+    !latest?.valid ||
+    latest.status !== NO_OUTPUT_STATUS ||
+    latest.jobId !== record.jobId ||
+    !latest.backup ||
+    !record.closedAt ||
+    !latest.closedAt ||
+    !(Date.parse(latest.closedAt) > Date.parse(record.closedAt))
+  ) {
+    return false;
+  }
+  const originalBackup = record.backup;
+  const correctedBackup = latest.backup;
+  return ([
+    "workspace", "statusPath", "patchPath", "numstatPath", "untrackedArchivePath",
+  ] as const).every((key) => {
+    const originalPath = originalBackup[key];
+    const correctedPath = correctedBackup[key];
+    return originalPath === undefined || correctedPath === undefined
+      ? originalPath === correctedPath
+      : resolve(originalPath) === resolve(correctedPath);
+  });
 }
 
 function hasTerminalOutputIntent(value: unknown): boolean {

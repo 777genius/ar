@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   AccessBoundary,
   NetworkAccessMode,
+  ProjectDebtReason,
   ReviewDecisionStatus,
 } from "@vioxen/subscription-runtime/worker-core";
 import { createCodexGoalJob, type CodexGoalProjectPreStartAdmission } from "../codex-goal-jobs";
@@ -38,6 +39,11 @@ import type { ReviewedWorkerOutputSnapshot } from "../reviewed-worker-output";
 import { localProjectControlEvidenceCustodySupported } from
   "../../worker-local/project-control-evidence-custody-local-adapter";
 import { callToolJson, git, gitInitRepository, gitStdout } from "./codex-goal-mcp-test-support";
+import {
+  createCleanWorkspace,
+  writeBaselineFailedNoOutput,
+  writeMislabeledNoOutput,
+} from "./codex-goal-failed-no-output-fixture";
 
 describe("project failed_no_output lifecycle", () => {
   it.runIf(localProjectControlEvidenceCustodySupported)(
@@ -519,7 +525,7 @@ describe("project failed_no_output lifecycle", () => {
   });
 
   it.runIf(localProjectControlEvidenceCustodySupported)(
-    "corrects empty rejected output append-only and rejects dirty workspaces",
+    "closes failed jobs sharing archived output, corrects empty rejected output append-only and rejects dirty workspaces",
     async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-failed-no-output-"));
     const registryRootDir = join(root, "worker-jobs", "registry");
@@ -630,6 +636,48 @@ describe("project failed_no_output lifecycle", () => {
         terminalAttemptId: "terminalize-project-worker-fresh-v1",
         failureCode: "stale_source_before_task",
       };
+      const archivedJobId = "project-worker-archived-v1";
+      await createStoredJob({
+        registryRootDir,
+        root,
+        authRoot,
+        jobId: archivedJobId,
+        workspacePath: join(worktreeRoot, freshWorkerJobId),
+      });
+      await writeMislabeledNoOutput({
+        root,
+        ledgerRoot,
+        jobId: archivedJobId,
+        archiveRoot: evidenceRoot,
+      });
+      const archivedLedgerPath = join(ledgerRoot, "items", `${archivedJobId}.json`);
+      const archivedRecord = JSON.parse(await readFile(archivedLedgerPath, "utf8"));
+      archivedRecord.backup.workspace = join(worktreeRoot, freshWorkerJobId);
+      archivedRecord.note = "Completed output archived after review rejection.";
+      await writeFile(archivedRecord.backup.statusPath, " M README.md\n");
+      await writeFile(archivedRecord.backup.patchPath,
+        "diff --git a/README.md b/README.md\n" +
+        "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-base\n+rejected output\n");
+      await writeFile(archivedRecord.backup.numstatPath, "1\t1\tREADME.md\n");
+      await writeFile(archivedLedgerPath, `${JSON.stringify(archivedRecord, null, 2)}\n`);
+      const archivedPaths = [
+        archivedLedgerPath,
+        archivedRecord.backup.statusPath,
+        archivedRecord.backup.patchPath,
+        archivedRecord.backup.numstatPath,
+      ];
+      const archivedBytes = await Promise.all(archivedPaths.map((path) => readFile(path)));
+      const beforeLedger = await readCodexGoalConsumedOutputLedgers({
+        roots: [ledgerRoot],
+        evidenceRoots: [evidenceRoot],
+      });
+      expect(beforeLedger.byJobId.has(freshWorkerJobId)).toBe(false);
+      expect(beforeLedger.byJobId.get(archivedJobId)).toMatchObject({
+        jobId: archivedJobId,
+        status: "rejected",
+        valid: true,
+        workspace: join(worktreeRoot, freshWorkerJobId),
+      });
       await expect(projectControlRecordFailedNoOutputView(freshArgs, deps)).resolves
         .toMatchObject({
           ok: false,
@@ -659,6 +707,17 @@ describe("project failed_no_output lifecycle", () => {
           },
           output: { authoredChanges: false, workspaceDirty: false },
         },
+      });
+      expect(await Promise.all(archivedPaths.map((path) => readFile(path))))
+        .toEqual(archivedBytes);
+      const afterLedger = await readCodexGoalConsumedOutputLedgers({
+        roots: [ledgerRoot],
+        evidenceRoots: [evidenceRoot],
+      });
+      expect(afterLedger.byJobId.get(freshWorkerJobId)).toMatchObject({
+        jobId: freshWorkerJobId,
+        status: "failed_no_output",
+        valid: true,
       });
       const freshDecision = freshRecorded.decision as {
         readonly archivePath: string;
@@ -745,6 +804,8 @@ describe("project failed_no_output lifecycle", () => {
           ok: false,
           reason: "confirm_failed_no_output_required",
         });
+      const historicalPath = join(ledgerRoot, "items", `${workerJobId}.json`);
+      const historicalBytes = await readFile(historicalPath);
       const recorded = await projectControlRecordFailedNoOutputView({
         ...args,
         confirmFailedNoOutput: true,
@@ -768,6 +829,12 @@ describe("project failed_no_output lifecycle", () => {
         status: "failed_no_output",
         valid: true,
       });
+      expect(await readFile(historicalPath)).toEqual(historicalBytes);
+      expect(ledger.debt.filter((item) =>
+        item.reason === ProjectDebtReason.IncompleteConsumedOutputRecord
+      )).toEqual([expect.objectContaining({
+        subject: join(ledgerRoot, "items", `${dirtyWorkerJobId}.json`),
+      })]);
       await expect(projectControlRecordFailedNoOutputView({
         ...args,
         confirmFailedNoOutput: true,
@@ -846,65 +913,6 @@ function rejectedContinuationSnapshot(input: {
   };
 }
 
-async function createCleanWorkspace(path: string): Promise<void> {
-  await mkdir(path, { recursive: true });
-  await gitInitRepository(path);
-  await writeFile(join(path, "README.md"), "base\n");
-  await git(path, ["add", "README.md"]);
-  await git(path, ["commit", "-m", "test: base"]);
-}
-
-async function writeBaselineFailedNoOutput(input: {
-  readonly root: string;
-  readonly ledgerRoot: string;
-  readonly jobId: string;
-}): Promise<{ readonly path: string; readonly sha256: string }> {
-  const evidenceRoot = join(
-    input.root,
-    "worker-jobs",
-    "archives",
-    `${input.jobId}-failed-test`,
-  );
-  const workspace = join(input.root, "worktrees", input.jobId);
-  await mkdir(join(input.ledgerRoot, "items"), { recursive: true });
-  await mkdir(evidenceRoot, { recursive: true });
-  const statusPath = join(evidenceRoot, "git-status.txt");
-  const patchPath = join(evidenceRoot, "verifier-output.patch");
-  const baselinePath = join(
-    input.root,
-    "worker-jobs",
-    input.jobId,
-    "producer-output.patch",
-  );
-  const baseline = "diff --git a/README.md b/README.md\n";
-  const baselineSha256 = createHash("sha256").update(baseline).digest("hex");
-  await mkdir(dirname(baselinePath), { recursive: true });
-  await writeFile(statusPath, " M README.md\n");
-  await writeFile(patchPath, "");
-  await writeFile(baselinePath, baseline);
-  await writeFile(
-    join(input.ledgerRoot, "items", `${input.jobId}.json`),
-    `${JSON.stringify({
-      schemaVersion: 1,
-      jobId: input.jobId,
-      status: "failed_no_output",
-      closedAt: "2026-07-13T20:00:00.000Z",
-      failure: { category: "infrastructure", code: "terminal_result_missing" },
-      output: { authoredChanges: false, workspaceDirty: false },
-      preexistingWorkspacePatch: {
-        path: baselinePath,
-        sha256: baselineSha256,
-      },
-      note: "Verifier failed after the producer patch was applied.",
-      backup: { workspace, statusPath, patchPath },
-    }, null, 2)}\n`,
-  );
-  return {
-    path: baselinePath,
-    sha256: baselineSha256,
-  };
-}
-
 async function createStoredJob(input: {
   readonly registryRootDir: string;
   readonly root: string;
@@ -954,36 +962,4 @@ async function createStoredJob(input: {
       networkAccess: NetworkAccessMode.Restricted,
     },
   });
-}
-
-async function writeMislabeledNoOutput(input: {
-  readonly root: string;
-  readonly ledgerRoot: string;
-  readonly jobId: string;
-  readonly archiveRoot?: string;
-}): Promise<void> {
-  const evidenceRoot = join(
-    input.archiveRoot ?? join(input.root, "worker-jobs", "archives"),
-    `${input.jobId}-rejected-test`,
-  );
-  const workspace = join(input.root, "worktrees", input.jobId);
-  await mkdir(join(input.ledgerRoot, "items"), { recursive: true });
-  await mkdir(evidenceRoot, { recursive: true });
-  const statusPath = join(evidenceRoot, "git-status.txt");
-  const patchPath = join(evidenceRoot, "worker-output.patch");
-  const numstatPath = join(evidenceRoot, "tracked.numstat");
-  await writeFile(statusPath, "");
-  await writeFile(patchPath, "");
-  await writeFile(numstatPath, "");
-  await writeFile(
-    join(input.ledgerRoot, "items", `${input.jobId}.json`),
-    `${JSON.stringify({
-      schemaVersion: 1,
-      jobId: input.jobId,
-      status: "rejected",
-      closedAt: "2026-07-13T20:00:00.000Z",
-      note: "Incorrectly classified infrastructure failure.",
-      backup: { workspace, statusPath, patchPath, numstatPath },
-    }, null, 2)}\n`,
-  );
 }
