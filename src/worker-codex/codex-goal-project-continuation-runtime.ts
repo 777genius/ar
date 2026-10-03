@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   type ProjectAccessScope,
   type ProjectControlBroker,
@@ -174,6 +175,7 @@ export async function observeProjectPreStartContinuation(input: {
 export async function loadProjectPreStartObservation(
   manifest: CodexGoalJobManifest,
   reviewedOutputId?: string,
+  registryRootDir?: string,
 ): Promise<{
   readonly manifest: CodexGoalJobManifest;
   readonly launch: CodexGoalLaunchInput;
@@ -181,7 +183,13 @@ export async function loadProjectPreStartObservation(
   readonly decision: ProjectPreStartContinuationDecision | undefined;
   readonly workerAlive: boolean;
 }> {
-  const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
+  const launch = await goalLaunchInput({
+    ...codexGoalJobToArgs(manifest),
+    durableHandoffRootDir: manifest.durableHandoffRootDir ??
+      (registryRootDir
+        ? join(registryRootDir, "durable-handoffs")
+        : join(manifest.jobRootDir, "durable-handoffs")),
+  });
   return {
     manifest,
     launch,

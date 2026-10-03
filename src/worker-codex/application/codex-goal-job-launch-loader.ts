@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 import {
   codexGoalJobToArgs,
   readCodexGoalJob,
@@ -28,6 +30,10 @@ export async function loadJobLaunch(
   return {
     registryRootDir,
     manifest,
-    launch: await goalLaunchInput(codexGoalJobToArgs(manifest)),
+    launch: await goalLaunchInput({
+      ...codexGoalJobToArgs(manifest),
+      durableHandoffRootDir: manifest.durableHandoffRootDir ??
+        join(registryRootDir, "durable-handoffs"),
+    }),
   };
 }

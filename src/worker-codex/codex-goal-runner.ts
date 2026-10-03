@@ -86,6 +86,7 @@ import { assertCodexGoalTurnCheckpointHistory, createCodexGoalTurnCheckpoint, co
 import { createCodexGoalResultRecorder } from "./codex-goal-runtime-result-io";
 import { writeCodexGoalProgress } from "./codex-goal-progress-io";
 import {
+  assertDirtyTerminalHandoffAvailable,
   terminalCodexGoalHandoffEvidence,
   terminalCodexGoalHandoffResultDetails,
   tryMaterializeTerminalCodexGoalHandoff,
@@ -122,6 +123,7 @@ export type CodexGoalRunConfig = {
   readonly maxGoalTurns?: number;
   readonly jobId?: string;
   readonly jobRootDir: string;
+  readonly durableHandoffRootDir?: string;
   readonly stateRootDir?: string;
   readonly runtimeHomeRootDir?: string;
   readonly encryptionKeyPath?: string;
@@ -305,6 +307,7 @@ async function runCodexGoalAdmitted(
     executionGeneration,
     executionEngine: config.executionEngine ?? "app-server-goal",
     accountCount: config.accounts.length,
+    ...(baseCommit ? { baseCommit } : {}),
     ...hostedTestEgressEvidence(config, providerEgressPolicy),
   });
   const linkedWorktreeHandoff = await codexGoalLinkedWorktreeHandoffPreflight({
@@ -895,7 +898,7 @@ async function codexRuntimeResultInput(input: {
     resultStatus: input.result.status,
     changedFilesCount: changedFiles.length,
   });
-  const handoff = changedFiles.length === 0
+  const handoff = workspace.changedFiles.length === 0
     ? null
     : await tryMaterializeTerminalCodexGoalHandoff({
         ...input.config,
@@ -904,6 +907,7 @@ async function codexRuntimeResultInput(input: {
           : { expectedBaseCommit: input.baseCommit }),
       });
   const artifacts = handoff?.artifacts ?? [];
+  assertDirtyTerminalHandoffAvailable(workspace.changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
   const details = runtimeResultDetails({
     ...("failureDetails" in input.result && input.result.failureDetails
@@ -960,6 +964,7 @@ async function codexExceptionRuntimeResultInput(input: {
           : { expectedBaseCommit: input.baseCommit }),
       });
   const artifacts = handoff?.artifacts ?? [];
+  assertDirtyTerminalHandoffAvailable(changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
   const details = runtimeResultDetails({
     failureDetails: {

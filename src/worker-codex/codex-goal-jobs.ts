@@ -86,6 +86,7 @@ export type CodexGoalJobManifest = {
   readonly description?: string;
   readonly tags?: readonly string[];
   readonly jobRootDir: string;
+  readonly durableHandoffRootDir?: string;
   readonly authRootDir?: string;
   readonly stateRootDir?: string;
   readonly workspacePath: string;
@@ -240,6 +241,8 @@ export async function createCodexGoalJob(input: {
   const now = (input.now ?? new Date()).toISOString();
   const manifest = parseCodexGoalJobManifest({
     ...input.manifest,
+    durableHandoffRootDir: input.manifest.durableHandoffRootDir ??
+      join(registryRootDir, "durable-handoffs"),
     schemaVersion: codexGoalJobManifestSchemaVersion,
     createdAt: input.manifest.createdAt ?? now,
     updatedAt: input.manifest.updatedAt ?? now,
@@ -428,6 +431,7 @@ export function codexGoalJobToArgs(
   return {
     jobId: manifest.jobId,
     jobRootDir: manifest.jobRootDir,
+    durableHandoffRootDir: manifest.durableHandoffRootDir,
     authRootDir: manifest.authRootDir,
     stateRootDir: manifest.stateRootDir,
     workspacePath: manifest.workspacePath,
@@ -553,6 +557,13 @@ function parseCodexGoalJobManifestValue(
       : { description: optionalString(value.description) as string }),
     ...(value.tags === undefined ? {} : { tags: readStringArray(value.tags, "tags") }),
     jobRootDir: requiredString(value.jobRootDir, "jobRootDir"),
+    ...(optionalString(value.durableHandoffRootDir) === undefined
+      ? {}
+      : {
+          durableHandoffRootDir: optionalString(
+            value.durableHandoffRootDir,
+          ) as string,
+        }),
     ...(optionalString(value.authRootDir) === undefined
       ? {}
       : { authRootDir: optionalString(value.authRootDir) as string }),

@@ -18,10 +18,7 @@ import {
 } from "../codex-goal-ops";
 import { codexGoalProgressPath } from "../codex-goal-runner";
 import { buildCodexGoalBrief } from "./codex-goal-brief";
-import {
-  isSafeStartAction,
-  nextActionForStatus,
-} from "./codex-goal-decision";
+import { isSafeStartAction, nextActionForStatus } from "./codex-goal-decision";
 import {
   type CodexGoalJobIdInput,
   type CodexGoalJobLifecycleInput,
@@ -43,9 +40,16 @@ import {
   projectControlGenericScopeDenial,
   projectControlGenericToolDenial,
 } from "../project-control-scope-guard";
+import { stopDirectCodexGoalRun } from "./codex-goal-direct-run-stop-use-case";
 import {
-  stopDirectCodexGoalRun,
-} from "./codex-goal-direct-run-stop-use-case";
+  tryMaterializeTerminalCodexGoalHandoff,
+  type TerminalCodexGoalHandoffMaterialization,
+} from "../codex-goal-terminal-handoff-materialization";
+import {
+  DurableHandoffPostStopError,
+  DurableHandoffStopError,
+  preserveTerminalHandoffBeforeStop,
+} from "../codex-goal-preserve-before-stop";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -56,7 +60,11 @@ type LoadedCodexGoalJobLaunch = {
 };
 
 export type CodexGoalMcpJobLifecycleDeps = {
-  readonly loadJobLaunch: (args: CodexGoalJobIdInput) => Promise<LoadedCodexGoalJobLaunch>;
+  readonly loadJobLaunch: (
+    args: CodexGoalJobIdInput,
+  ) => Promise<LoadedCodexGoalJobLaunch>;
+  readonly stopTmux?: typeof stopCodexGoalTmux;
+  readonly materializeHandoff?: typeof tryMaterializeTerminalCodexGoalHandoff;
 };
 
 export async function continueStoredJobLifecycle(
@@ -68,16 +76,18 @@ export async function continueStoredJobLifecycle(
   deps: CodexGoalMcpJobLifecycleDeps,
 ): Promise<JsonObject> {
   const loaded = await deps.loadJobLaunch(args);
-  const projectControlDenial = projectControlGenericToolDenial({
-    accessBoundary: loaded.manifest.accessBoundary,
-    projectAccessScope: loaded.manifest.projectAccessScope,
-    jobId: loaded.manifest.jobId,
-  }) ?? await projectControlGenericScopeDenial({
-    registryRootDir: loaded.registryRootDir,
-    jobId: loaded.manifest.jobId,
-    workspacePath: loaded.launch.config.workspacePath,
-    requiredTool: "codex_goal_project_start",
-  });
+  const projectControlDenial =
+    projectControlGenericToolDenial({
+      accessBoundary: loaded.manifest.accessBoundary,
+      projectAccessScope: loaded.manifest.projectAccessScope,
+      jobId: loaded.manifest.jobId,
+    }) ??
+    (await projectControlGenericScopeDenial({
+      registryRootDir: loaded.registryRootDir,
+      jobId: loaded.manifest.jobId,
+      workspacePath: loaded.launch.config.workspacePath,
+      requiredTool: "codex_goal_project_start",
+    }));
   if (projectControlDenial) return projectControlDenial;
   const { tmuxSession: _tmuxSession, ...foregroundStatus } = statusInput(loaded.launch);
   const status = await collectCodexGoalStatus(isHostedGoalLaunch(loaded.launch) ? foregroundStatus : statusInput(loaded.launch));
@@ -97,10 +107,7 @@ export async function continueStoredJobLifecycle(
       workerAliveReason: workerLiveness.aliveReason,
     };
   }
-  if (
-    !isSafeStartAction(status.recommendedAction) &&
-    !args.forceStart
-  ) {
+  if (!isSafeStartAction(status.recommendedAction) && !args.forceStart) {
     return {
       ok: false,
       reason: "status_requires_review",
@@ -182,10 +189,7 @@ function shouldReconcileResultBeforeStart(
     status.progressStatus === "maintenance_paused" &&
     status.resultExists !== true &&
     !status.workspaceDirty &&
-    (
-      status.logExists !== true ||
-      (status.logByteLength ?? 0) === 0
-    )
+    (status.logExists !== true || (status.logByteLength ?? 0) === 0)
   ) {
     return false;
   }
@@ -201,17 +205,19 @@ export async function reconcileStoredJobRuntimeResultLifecycle(
   deps: CodexGoalMcpJobLifecycleDeps,
 ): Promise<JsonObject> {
   const loaded = await deps.loadJobLaunch(args);
-  const projectControlDenial = projectControlGenericToolDenial({
-    accessBoundary: loaded.manifest.accessBoundary,
-    projectAccessScope: loaded.manifest.projectAccessScope,
-    jobId: loaded.manifest.jobId,
-    requiredTool: "codex_goal_project_mark_reviewed",
-  }) ?? await projectControlGenericScopeDenial({
-    registryRootDir: loaded.registryRootDir,
-    jobId: loaded.manifest.jobId,
-    workspacePath: loaded.launch.config.workspacePath,
-    requiredTool: "codex_goal_project_mark_reviewed",
-  });
+  const projectControlDenial =
+    projectControlGenericToolDenial({
+      accessBoundary: loaded.manifest.accessBoundary,
+      projectAccessScope: loaded.manifest.projectAccessScope,
+      jobId: loaded.manifest.jobId,
+      requiredTool: "codex_goal_project_mark_reviewed",
+    }) ??
+    (await projectControlGenericScopeDenial({
+      registryRootDir: loaded.registryRootDir,
+      jobId: loaded.manifest.jobId,
+      workspacePath: loaded.launch.config.workspacePath,
+      requiredTool: "codex_goal_project_mark_reviewed",
+    }));
   if (projectControlDenial) return projectControlDenial;
   const status = await collectCodexGoalStatus(statusInput(loaded.launch));
   const accounts = await listCodexGoalAccountStatuses({
@@ -227,7 +233,12 @@ export async function reconcileStoredJobRuntimeResultLifecycle(
     staleAfterMs: numberValue(args.staleAfterMs) ?? 10 * 60_000,
     tailLines: numberValue(args.tailLines) ?? 20,
   });
-  if (brief.workerAlive && !brief.silentStale && !brief.heartbeatOnlyNoOutput && !args.forceWrite) {
+  if (
+    brief.workerAlive &&
+    !brief.silentStale &&
+    !brief.heartbeatOnlyNoOutput &&
+    !args.forceWrite
+  ) {
     return {
       ok: false,
       reason: "worker_alive",
@@ -249,8 +260,8 @@ export async function reconcileStoredJobRuntimeResultLifecycle(
     ...(brief.silentStale
       ? { reason: "silent_stale_worker" }
       : brief.heartbeatOnlyNoOutput
-      ? { reason: "heartbeat_only_no_output" }
-      : {}),
+        ? { reason: "heartbeat_only_no_output" }
+        : {}),
   });
   return {
     ok: true,
@@ -268,17 +279,19 @@ export async function stopStoredJobLifecycle(
   deps: CodexGoalMcpJobLifecycleDeps,
 ): Promise<JsonObject> {
   const loaded = await deps.loadJobLaunch(args);
-  const projectControlDenial = projectControlGenericToolDenial({
-    accessBoundary: loaded.manifest.accessBoundary,
-    projectAccessScope: loaded.manifest.projectAccessScope,
-    jobId: loaded.manifest.jobId,
-    requiredTool: "codex_goal_project_stop",
-  }) ?? await projectControlGenericScopeDenial({
-    registryRootDir: loaded.registryRootDir,
-    jobId: loaded.manifest.jobId,
-    workspacePath: loaded.launch.config.workspacePath,
-    requiredTool: "codex_goal_project_stop",
-  });
+  const projectControlDenial =
+    projectControlGenericToolDenial({
+      accessBoundary: loaded.manifest.accessBoundary,
+      projectAccessScope: loaded.manifest.projectAccessScope,
+      jobId: loaded.manifest.jobId,
+      requiredTool: "codex_goal_project_stop",
+    }) ??
+    (await projectControlGenericScopeDenial({
+      registryRootDir: loaded.registryRootDir,
+      jobId: loaded.manifest.jobId,
+      workspacePath: loaded.launch.config.workspacePath,
+      requiredTool: "codex_goal_project_stop",
+    }));
   if (projectControlDenial) return projectControlDenial;
   const status = await collectCodexGoalStatus(statusInput(loaded.launch));
   const accounts = await listCodexGoalAccountStatuses({
@@ -346,12 +359,47 @@ export async function stopStoredJobLifecycle(
       brief,
     };
   }
-  const command = await stopCodexGoalTmux(loaded.launch.tmuxSession);
+  const preserved = await preserveBeforeStop(
+    loaded.launch,
+    deps,
+    () => (deps.stopTmux ?? stopCodexGoalTmux)(loaded.launch.tmuxSession!),
+    { forceAfterMaterializationFailure: Boolean(args.forceStop) },
+  );
+  if ("error" in preserved) {
+    return preserved.phase === "stop"
+      ? stopFailureAfterHandoffResult(
+          loaded,
+          status,
+          brief,
+          preserved.error,
+          preserved.handoff,
+        )
+      : preserved.phase === "post_stop_materialize"
+        ? terminalPreservationFailureAfterStopResult(
+            loaded,
+            status,
+            brief,
+            preserved.error,
+            preserved.preStopHandoff,
+          )
+        : preserved.phase === "forced_stop"
+          ? forcedStopFailureAfterPreservationFailureResult(
+              loaded,
+              status,
+              brief,
+              preserved.error,
+              preserved.preservationError,
+            )
+          : preservationFailureResult(loaded, status, brief, preserved.error);
+  }
+  const { handoff, preservationError, stopResult: command } = preserved;
   await writeCodexGoalStoppedProgress({
-    progressPath: loaded.launch.config.progressPath ?? codexGoalProgressPath({
-      jobRootDir: loaded.launch.config.jobRootDir,
-      taskId: loaded.launch.config.taskId,
-    }),
+    progressPath:
+      loaded.launch.config.progressPath ??
+      codexGoalProgressPath({
+        jobRootDir: loaded.launch.config.jobRootDir,
+        taskId: loaded.launch.config.taskId,
+      }),
     taskId: loaded.launch.config.taskId,
     status: "stopped",
   });
@@ -363,22 +411,33 @@ export async function stopStoredJobLifecycle(
     tmuxSession: loaded.launch.tmuxSession,
     stopCommand: command.preview,
     forceStop: Boolean(args.forceStop),
+    ...(handoff
+      ? {
+          handoffPacketPath: handoff.packetPath,
+          handoffManifestSha256: handoff.manifestSha256,
+        }
+      : {}),
+    ...(preservationError
+      ? { handoffPreservationError: preservationError }
+      : {}),
     statusBefore: status,
     statusAfter,
     brief,
   });
-  const resultReconciliation = await reconcileCodexGoalRuntimeResult({
-    config: loaded.launch.config,
-    status: statusAfter,
-    reason: brief.silentStale
-      ? "silent_stale_worker"
-      : brief.heartbeatOnlyNoOutput
-      ? "heartbeat_only_no_output"
-      : "manual_force_stop",
-    preservePatch: true,
-    silentStale: brief.silentStale,
-    heartbeatOnlyNoOutput: brief.heartbeatOnlyNoOutput,
-  });
+  const resultReconciliation = preservationError
+    ? { status: "skipped", reason: "durable_handoff_preservation_failed" }
+    : await reconcileCodexGoalRuntimeResult({
+        config: loaded.launch.config,
+        status: statusAfter,
+        reason: brief.silentStale
+          ? "silent_stale_worker"
+          : brief.heartbeatOnlyNoOutput
+            ? "heartbeat_only_no_output"
+            : "manual_force_stop",
+        preservePatch: true,
+        silentStale: brief.silentStale,
+        heartbeatOnlyNoOutput: brief.heartbeatOnlyNoOutput,
+      });
   return {
     ok: true,
     mode: "stop",
@@ -391,8 +450,21 @@ export async function stopStoredJobLifecycle(
     statusAfter,
     brief,
     resultReconciliation,
-    safeMessage:
-      "Stopped the tmux worker session. Review workspace/log/result before continuing or recovery.",
+    ...(handoff
+      ? {
+          handoffPacketPath: handoff.packetPath,
+          handoffManifestSha256: handoff.manifestSha256,
+        }
+      : {}),
+    ...(preservationError
+      ? {
+          handoffPreservationError: preservationError,
+          preservationDegraded: true,
+        }
+      : {}),
+    safeMessage: preservationError
+      ? "Force-stopped the worker after durable handoff preservation failed. Recovery may require the original workspace; review the stop event before cleanup."
+      : "Stopped the tmux worker session. Review workspace/log/result before continuing or recovery.",
   };
 }
 
@@ -401,17 +473,19 @@ export async function maintenancePauseStoredJobLifecycle(
   deps: CodexGoalMcpJobLifecycleDeps,
 ): Promise<JsonObject> {
   const loaded = await deps.loadJobLaunch(args);
-  const projectControlDenial = projectControlGenericToolDenial({
-    accessBoundary: loaded.manifest.accessBoundary,
-    projectAccessScope: loaded.manifest.projectAccessScope,
-    jobId: loaded.manifest.jobId,
-    requiredTool: "codex_goal_project_stop",
-  }) ?? await projectControlGenericScopeDenial({
-    registryRootDir: loaded.registryRootDir,
-    jobId: loaded.manifest.jobId,
-    workspacePath: loaded.launch.config.workspacePath,
-    requiredTool: "codex_goal_project_stop",
-  });
+  const projectControlDenial =
+    projectControlGenericToolDenial({
+      accessBoundary: loaded.manifest.accessBoundary,
+      projectAccessScope: loaded.manifest.projectAccessScope,
+      jobId: loaded.manifest.jobId,
+      requiredTool: "codex_goal_project_stop",
+    }) ??
+    (await projectControlGenericScopeDenial({
+      registryRootDir: loaded.registryRootDir,
+      jobId: loaded.manifest.jobId,
+      workspacePath: loaded.launch.config.workspacePath,
+      requiredTool: "codex_goal_project_stop",
+    }));
   if (projectControlDenial) return projectControlDenial;
   const status = await collectCodexGoalStatus(statusInput(loaded.launch));
   const accounts = await listCodexGoalAccountStatuses({
@@ -446,9 +520,10 @@ export async function maintenancePauseStoredJobLifecycle(
   if (!status.tmuxAlive) {
     return {
       ok: false,
-      reason: status.progressStatus === "maintenance_paused"
-        ? "already_maintenance_paused"
-        : "worker_not_running",
+      reason:
+        status.progressStatus === "maintenance_paused"
+          ? "already_maintenance_paused"
+          : "worker_not_running",
       jobId: loaded.manifest.jobId,
       tmuxSession: loaded.launch.tmuxSession,
       stopCommand: stopCommand.preview,
@@ -481,13 +556,48 @@ export async function maintenancePauseStoredJobLifecycle(
       brief,
     };
   }
-  const command = await stopCodexGoalTmux(loaded.launch.tmuxSession);
+  const preserved = await preserveBeforeStop(
+    loaded.launch,
+    deps,
+    () => (deps.stopTmux ?? stopCodexGoalTmux)(loaded.launch.tmuxSession!),
+    { forceAfterMaterializationFailure: Boolean(args.forcePause) },
+  );
+  if ("error" in preserved) {
+    return preserved.phase === "stop"
+      ? stopFailureAfterHandoffResult(
+          loaded,
+          status,
+          brief,
+          preserved.error,
+          preserved.handoff,
+        )
+      : preserved.phase === "post_stop_materialize"
+        ? terminalPreservationFailureAfterStopResult(
+            loaded,
+            status,
+            brief,
+            preserved.error,
+            preserved.preStopHandoff,
+          )
+        : preserved.phase === "forced_stop"
+          ? forcedStopFailureAfterPreservationFailureResult(
+              loaded,
+              status,
+              brief,
+              preserved.error,
+              preserved.preservationError,
+            )
+          : preservationFailureResult(loaded, status, brief, preserved.error);
+  }
+  const { handoff, preservationError, stopResult: command } = preserved;
   const pauseReason = stringValue(args.reason) ?? "planned_maintenance";
   await writeCodexGoalStoppedProgress({
-    progressPath: loaded.launch.config.progressPath ?? codexGoalProgressPath({
-      jobRootDir: loaded.launch.config.jobRootDir,
-      taskId: loaded.launch.config.taskId,
-    }),
+    progressPath:
+      loaded.launch.config.progressPath ??
+      codexGoalProgressPath({
+        jobRootDir: loaded.launch.config.jobRootDir,
+        taskId: loaded.launch.config.taskId,
+      }),
     taskId: loaded.launch.config.taskId,
     status: "maintenance_paused",
     reason: pauseReason,
@@ -501,6 +611,15 @@ export async function maintenancePauseStoredJobLifecycle(
     stopCommand: command.preview,
     reason: pauseReason,
     forcePause: Boolean(args.forcePause),
+    ...(handoff
+      ? {
+          handoffPacketPath: handoff.packetPath,
+          handoffManifestSha256: handoff.manifestSha256,
+        }
+      : {}),
+    ...(preservationError
+      ? { handoffPreservationError: preservationError }
+      : {}),
     statusBefore: status,
     statusAfter,
     brief,
@@ -516,7 +635,209 @@ export async function maintenancePauseStoredJobLifecycle(
     statusBefore: status,
     statusAfter,
     brief,
+    ...(handoff
+      ? {
+          handoffPacketPath: handoff.packetPath,
+          handoffManifestSha256: handoff.manifestSha256,
+        }
+      : {}),
+    ...(preservationError
+      ? {
+          handoffPreservationError: preservationError,
+          preservationDegraded: true,
+        }
+      : {}),
+    safeMessage: preservationError
+      ? "Force-paused the worker after durable handoff preservation failed. Keep the original workspace intact and review the pause event before continuing."
+      : "Worker paused for planned maintenance. No failure result was reconciled; codex_goal_continue can resume after maintenance.",
+  };
+}
+
+type VerifiedStopHandoff = TerminalCodexGoalHandoffMaterialization & {
+  readonly packetPath: string;
+  readonly manifestSha256: string;
+};
+
+async function preserveBeforeStop(
+  launch: CodexGoalLaunchInput,
+  deps: CodexGoalMcpJobLifecycleDeps,
+  stop: () => Promise<Awaited<ReturnType<typeof stopCodexGoalTmux>>>,
+  options: { readonly forceAfterMaterializationFailure: boolean },
+): Promise<
+  | {
+      readonly handoff?: VerifiedStopHandoff;
+      readonly preservationError?: string;
+      readonly stopResult: Awaited<ReturnType<typeof stopCodexGoalTmux>>;
+    }
+  | {
+      readonly phase: "materialize";
+      readonly error: string;
+    }
+  | {
+      readonly phase: "stop";
+      readonly error: string;
+      readonly handoff: VerifiedStopHandoff;
+    }
+  | {
+      readonly phase: "post_stop_materialize";
+      readonly error: string;
+      readonly preStopHandoff: VerifiedStopHandoff;
+    }
+  | {
+      readonly phase: "forced_stop";
+      readonly error: string;
+      readonly preservationError: string;
+    }
+> {
+  try {
+    const result = await preserveTerminalHandoffBeforeStop({
+      materialize: () =>
+        (deps.materializeHandoff ?? tryMaterializeTerminalCodexGoalHandoff)(
+          launch.config,
+        ),
+      stop,
+    });
+    return { handoff: result.handoff, stopResult: result.stopResult };
+  } catch (error) {
+    if (error instanceof DurableHandoffStopError) {
+      return {
+        phase: "stop",
+        error: error.message,
+        handoff: error.handoff as VerifiedStopHandoff,
+      };
+    }
+    if (error instanceof DurableHandoffPostStopError) {
+      if (options.forceAfterMaterializationFailure) {
+        return {
+          handoff: error.preStopHandoff as VerifiedStopHandoff,
+          stopResult: error.stopResult as Awaited<
+            ReturnType<typeof stopCodexGoalTmux>
+          >,
+          preservationError: error.message,
+        };
+      }
+      return {
+        phase: "post_stop_materialize",
+        error: error.message,
+        preStopHandoff: error.preStopHandoff as VerifiedStopHandoff,
+      };
+    }
+    const preservationError =
+      error instanceof Error ? error.message : "unknown";
+    if (options.forceAfterMaterializationFailure) {
+      try {
+        const stopResult = await stop();
+        try {
+          const terminalHandoff = await (
+            deps.materializeHandoff ?? tryMaterializeTerminalCodexGoalHandoff
+          )(launch.config);
+          if (terminalHandoff.packetPath && terminalHandoff.manifestSha256) {
+            return {
+              handoff: terminalHandoff as VerifiedStopHandoff,
+              stopResult,
+              preservationError,
+            };
+          }
+        } catch {
+          // A force override may release custody only with explicit degraded
+          // evidence when terminal recapture is still impossible after stop.
+        }
+        return { stopResult, preservationError };
+      } catch (stopError) {
+        return {
+          phase: "forced_stop",
+          error: stopError instanceof Error ? stopError.message : "unknown",
+          preservationError,
+        };
+      }
+    }
+    return {
+      phase: "materialize",
+      error: preservationError,
+    };
+  }
+}
+
+function terminalPreservationFailureAfterStopResult(
+  loaded: LoadedCodexGoalJobLaunch,
+  status: unknown,
+  brief: unknown,
+  error: string,
+  preStopHandoff: VerifiedStopHandoff,
+): JsonObject {
+  return {
+    ok: false,
+    reason: "terminal_handoff_materialization_failed_after_worker_stop",
+    error,
+    jobId: loaded.manifest.jobId,
+    taskId: loaded.launch.config.taskId,
+    preStopHandoffPacketPath: preStopHandoff.packetPath,
+    preStopHandoffManifestSha256: preStopHandoff.manifestSha256,
+    status,
+    brief,
     safeMessage:
-      "Worker paused for planned maintenance. No failure result was reconciled; codex_goal_continue can resume after maintenance.",
+      "The worker stopped, but terminal handoff recapture failed. The pre-stop packet is preserved; keep workspace custody and retry terminal materialization before release.",
+  };
+}
+
+function forcedStopFailureAfterPreservationFailureResult(
+  loaded: LoadedCodexGoalJobLaunch,
+  status: unknown,
+  brief: unknown,
+  error: string,
+  preservationError: string,
+): JsonObject {
+  return {
+    ok: false,
+    reason: "worker_stop_failed_after_handoff_materialization_failure",
+    error,
+    handoffPreservationError: preservationError,
+    jobId: loaded.manifest.jobId,
+    taskId: loaded.launch.config.taskId,
+    status,
+    brief,
+    safeMessage:
+      "Durable handoff preservation failed and the forced stop also failed. Re-check worker liveness before retrying.",
+  };
+}
+
+function stopFailureAfterHandoffResult(
+  loaded: LoadedCodexGoalJobLaunch,
+  status: unknown,
+  brief: unknown,
+  error: string,
+  handoff: VerifiedStopHandoff,
+): JsonObject {
+  return {
+    ok: false,
+    reason: "worker_stop_failed_after_durable_handoff",
+    error,
+    jobId: loaded.manifest.jobId,
+    taskId: loaded.launch.config.taskId,
+    handoffPacketPath: handoff.packetPath,
+    handoffManifestSha256: handoff.manifestSha256,
+    status,
+    brief,
+    safeMessage:
+      "Durable handoff was preserved, but stopping the worker failed. Re-check worker liveness before retrying.",
+  };
+}
+
+function preservationFailureResult(
+  loaded: LoadedCodexGoalJobLaunch,
+  status: unknown,
+  brief: unknown,
+  error: string,
+): JsonObject {
+  return {
+    ok: false,
+    reason: "durable_handoff_materialization_failed",
+    error,
+    jobId: loaded.manifest.jobId,
+    taskId: loaded.launch.config.taskId,
+    status,
+    brief,
+    safeMessage:
+      "Worker remains alive because durable handoff preservation failed.",
   };
 }

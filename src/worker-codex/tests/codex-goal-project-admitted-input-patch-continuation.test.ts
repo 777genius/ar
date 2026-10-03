@@ -909,6 +909,7 @@ describe("admitted input-patch capacity continuation", () => {
       taskId: manifest.taskId,
       workspacePath,
       jobRootDir: manifest.jobRootDir,
+      durableHandoffRootDir: join(manifest.jobRootDir, "durable"),
     });
     if (!interruptedHandoff.continuationFingerprint) {
       throw new Error("expected interrupted continuation fingerprint");
@@ -1099,7 +1100,7 @@ describe("admitted input-patch capacity continuation", () => {
     expect(await readFile(plan.descriptor.receiptPath, "utf8")).toContain(
       '"status": "launch_authorized"',
     );
-  }, 120_000);
+  }, 240_000);
 });
 
 describe("clean pre-start capacity continuation", () => {

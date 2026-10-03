@@ -52,6 +52,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     : {};
   const merged = mergeDefined(fileConfig, args);
   const jobRootDir = requiredString(merged.jobRootDir, "jobRootDir", cwd);
+  const durableHandoffRootDir = stringValue(merged.durableHandoffRootDir);
   const taskId = requiredRawString(merged.taskId, "taskId");
   const jobId = stringValue(merged.jobId);
   const authRootDir = resolvePath(
@@ -90,6 +91,14 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     ...childConfigFromRecord(merged),
     ...(jobId === undefined ? {} : { jobId }),
     jobRootDir,
+    ...(durableHandoffRootDir === undefined
+      ? {}
+      : {
+          durableHandoffRootDir: resolvePath(
+            cwd,
+            durableHandoffRootDir,
+          ),
+        }),
     authRootDir,
     workspacePath,
     promptPath,

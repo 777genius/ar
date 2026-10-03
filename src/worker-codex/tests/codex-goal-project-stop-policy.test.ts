@@ -91,6 +91,16 @@ describe("project worker stop policy", () => {
         mkdir(childJobRoot, { recursive: true }),
       ]);
       await execFileAsync("git", ["init"], { cwd: childWorkspace });
+      await execFileAsync("git", [
+        "-c",
+        "user.name=Subscription Runtime Test",
+        "-c",
+        "user.email=test@subscription-runtime.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "test base",
+      ], { cwd: childWorkspace });
       await execFileAsync("tmux", [
         "new-session",
         "-d",
@@ -199,22 +209,82 @@ describe("project worker stop policy", () => {
         readFile(join(childJobRoot, "project-child.progress.json"), "utf8"),
       ).resolves.toContain('"status":"running"');
 
-      const capacityRecoveryBroker = codexProjectControlBroker({
-        registryRootDir,
-        controller: controller.controller,
-        scope: controller.scope,
-        stopLaunch: child.launch,
-        startAdmissionWorkspaceMode:
-          "clean_capacity_continuation",
-      });
+      await writeFile(
+        join(childJobRoot, "project-child.progress.json"),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          taskId: "project-child",
+          status: "running",
+          updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(),
+        })}\n`,
+      );
+      await writeFile(join(childWorkspace, "safe-output.txt"), "preserve me\n");
+      await execFileAsync("tmux", ["kill-session", "-t", tmuxSession]);
       await expect(
-        capacityRecoveryBroker.stopWorker({
+        broker.stopWorker({
           jobId: "project-child",
           registryRoot: registryRootDir,
           workspacePath: child.launch.config.workspacePath,
           tmuxSession,
         }),
-      ).resolves.toMatchObject({ status: "applied" });
+      ).resolves.toMatchObject({
+        status: "noop",
+        evidence: {
+          handoffPacketPath: expect.stringContaining(".packet"),
+          handoffManifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      });
+      await writeFile(join(childWorkspace, ".env"), "unsafe=secret\n");
+      const forcedGoneBroker = codexProjectControlBroker({
+        registryRootDir,
+        controller: controller.controller,
+        scope: controller.scope,
+        stopLaunch: child.launch,
+        forceStopAfterMaterializationFailure: true,
+      });
+      await expect(forcedGoneBroker.stopWorker({
+        jobId: "project-child",
+        registryRoot: registryRootDir,
+        workspacePath: child.launch.config.workspacePath,
+        tmuxSession,
+      })).resolves.toMatchObject({
+        status: "noop",
+        evidence: {
+          handoffPreservationError: expect.stringContaining(
+            "handoff_sensitive_path_rejected",
+          ),
+          preservationDegraded: "true",
+        },
+      });
+      await rm(join(childWorkspace, ".env"));
+      await execFileAsync("tmux", [
+        "new-session", "-d", "-s", tmuxSession, "-c", childWorkspace,
+        "sleep 300",
+      ]);
+      await writeFile(join(childWorkspace, ".env"), "unsafe=secret\n");
+      const degradedStop = await callToolJson(client, "codex_goal_project_stop", {
+        registryRootDir,
+        controllerJobId: "project-controller",
+        jobId: "project-child",
+        confirmStop: true,
+        forceStop: true,
+      });
+      expect(degradedStop).toMatchObject({
+        ok: true,
+        mode: "project_control_stop",
+        preservationDegraded: true,
+        handoffPreservationError: expect.stringContaining(
+          "handoff_sensitive_path_rejected",
+        ),
+      });
+      const stopEvent = JSON.parse(
+        await readFile(String(degradedStop.stopEventPath), "utf8"),
+      );
+      expect(stopEvent).toMatchObject({
+        forceStop: true,
+        handoffPreservationError: degradedStop.handoffPreservationError,
+      });
+      expect(stopEvent).not.toHaveProperty("handoffPacketPath");
       await expect(
         execFileAsync("tmux", ["has-session", "-t", tmuxSession]),
       ).rejects.toBeDefined();

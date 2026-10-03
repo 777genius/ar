@@ -280,6 +280,9 @@ export async function writeCodexGoalStopEvent(input: {
   readonly tmuxSession?: string;
   readonly stopCommand: string;
   readonly forceStop: boolean;
+  readonly handoffPacketPath?: string;
+  readonly handoffManifestSha256?: string;
+  readonly handoffPreservationError?: string;
   readonly statusBefore: unknown;
   readonly statusAfter: unknown;
   readonly brief: CodexGoalLifecycleBrief;
@@ -296,6 +299,15 @@ export async function writeCodexGoalStopEvent(input: {
       ...(input.tmuxSession === undefined ? {} : { tmuxSession: input.tmuxSession }),
       stopCommand: input.stopCommand,
       forceStop: input.forceStop,
+      ...(input.handoffPacketPath
+        ? { handoffPacketPath: input.handoffPacketPath }
+        : {}),
+      ...(input.handoffManifestSha256
+        ? { handoffManifestSha256: input.handoffManifestSha256 }
+        : {}),
+      ...(input.handoffPreservationError
+        ? { handoffPreservationError: input.handoffPreservationError }
+        : {}),
       reason: input.brief.silentStale
         ? "silent_stale_worker"
         : input.brief.heartbeatOnlyNoOutput
@@ -327,6 +339,9 @@ export async function writeCodexGoalMaintenancePauseEvent(input: {
   readonly stopCommand: string;
   readonly reason: string;
   readonly forcePause: boolean;
+  readonly handoffPacketPath?: string;
+  readonly handoffManifestSha256?: string;
+  readonly handoffPreservationError?: string;
   readonly statusBefore: unknown;
   readonly statusAfter: unknown;
   readonly brief: CodexGoalLifecycleBrief;
@@ -343,6 +358,15 @@ export async function writeCodexGoalMaintenancePauseEvent(input: {
       tmuxSession: input.tmuxSession,
       stopCommand: input.stopCommand,
       forcePause: input.forcePause,
+      ...(input.handoffPacketPath
+        ? { handoffPacketPath: input.handoffPacketPath }
+        : {}),
+      ...(input.handoffManifestSha256
+        ? { handoffManifestSha256: input.handoffManifestSha256 }
+        : {}),
+      ...(input.handoffPreservationError
+        ? { handoffPreservationError: input.handoffPreservationError }
+        : {}),
       reason: input.reason,
       brief: {
         lastProgressAt: input.brief.lastProgressAt,
