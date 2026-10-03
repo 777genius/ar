@@ -37,7 +37,7 @@ import type {
   ClaudeTaskExecutionEngine,
   ClaudeTaskExecutionResult,
 } from "../task/engine-contract";
-import { claudeCliChildEnv } from "./claude-cli-env";
+import { claudeCliEnvForSession } from "./claude-cli-env";
 import { resultFromSdkMessage } from "./claude-agent-sdk-result";
 import { createClaudeAgentSdkSafeDiagnostics } from "./claude-agent-sdk-safe-diagnostics";
 
@@ -82,7 +82,9 @@ export class ClaudeAgentSdkTaskExecutionEngine
   ) {}
 
   async run(input: ClaudeTaskEngineInput): Promise<ClaudeTaskExecutionResult> {
-    if (!input.session.configDir) throw new Error("claude_config_dir_required");
+    if (input.session.authMode === "oauth" && !input.session.configDir) {
+      throw new Error("claude_config_dir_required");
+    }
     assertBoundedClaudeGoal(input);
     const { query } = asAgentSdkModule(
       await (this.options.sdkLoader ?? loadAgentSdk)(),
@@ -170,10 +172,9 @@ export class ClaudeAgentSdkTaskExecutionEngine
             : {}),
         },
         ...(goalProtocol ? { mcpServers: goalProtocol.mcpServers } : {}),
-        env: claudeCliChildEnv({
+        env: claudeCliEnvForSession({
+          session: input.session,
           baseEnv: this.options.baseEnv ?? process.env,
-          configDir: input.session.configDir,
-          oauthToken: input.session.oauthToken,
         }),
         ...permissionOptions(input),
         ...(input.runtimeThread?.resumeSessionId === undefined

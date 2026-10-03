@@ -16,6 +16,7 @@ export enum AgentRuntimeTaskProvider {
 
 export enum AuthSourceKind {
   ClaudeOAuthToken = "claude-oauth-token",
+  ClaudeAmbientHome = "claude-ambient-home",
   CodexAuthJsonFile = "codex-auth-json-file",
   PreseededSession = "preseeded-session",
 }
@@ -84,6 +85,11 @@ export type ClaudeAgentRuntimeAuthSource =
   | {
       readonly kind: AuthSourceKind.ClaudeOAuthToken;
       readonly oauthToken: string;
+    }
+  | {
+      readonly kind: AuthSourceKind.ClaudeAmbientHome;
+      readonly homeDir: string;
+      readonly configDir?: string;
     }
   | {
       readonly kind: AuthSourceKind.PreseededSession;

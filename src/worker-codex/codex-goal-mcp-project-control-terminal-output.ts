@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { lstat, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 
 import {
   AccessBoundary,
@@ -21,7 +23,10 @@ import {
   collectCodexGoalStatus,
   resolveCodexGoalWorkerLiveness,
 } from "./codex-goal-ops";
-import { captureGitWorkspacePatch } from "./codex-goal-runtime-result-io";
+import {
+  assertGitWorkspaceRawPatchIdentitySupported,
+  captureGitWorkspacePatch,
+} from "./codex-goal-runtime-result-io";
 import { readCodexGoalLifecycleMarkers } from "./application/codex-goal-lifecycle-markers";
 import { releaseCodexProjectAccount } from "./application/project-control/codex-goal-project-account-reservation";
 import { readRuntimeResultBrief } from "./application/codex-goal-runtime-result";
@@ -43,6 +48,7 @@ import {
 
 type JsonObject = Readonly<Record<string, unknown>>;
 const MAX_PREEXISTING_WORKSPACE_PATCH_BYTES = 16 * 1024 * 1024;
+const execFileAsync = promisify(execFile);
 
 export async function projectControlRecordFailedNoOutputView(
   args: ProjectControlMcpArgs,
@@ -137,6 +143,7 @@ export async function projectControlRecordFailedNoOutputView(
       alreadyTerminal: true,
     };
   }
+  await assertGitWorkspaceRawPatchIdentitySupported(loaded.manifest.workspacePath);
   const status = await collectCodexGoalStatus(statusInput(loaded.launch));
   const progressStale =
     status.progressHeartbeatAgeMs !== undefined &&
@@ -239,6 +246,7 @@ export async function projectControlRecordFailedNoOutputView(
           workspacePath: workspace.canonicalWorkspacePath,
         },
       };
+      await assertGitWorkspaceRawPatchIdentitySupported(workspace.canonicalWorkspacePath);
       const lockedStatus = await collectCodexGoalStatus(
         statusInput(lockedLaunch),
       );
@@ -274,6 +282,7 @@ export async function projectControlRecordFailedNoOutputView(
             archivePath: dirname(lockedSourceRecord.backup!.statusPath),
           })
         : undefined;
+      await assertGitWorkspaceRawPatchIdentitySupported(workspace.canonicalWorkspacePath);
       const accountReservationReleased = await releaseCodexProjectAccount({
         manifest: loaded.manifest,
         launch: lockedLaunch,
@@ -332,6 +341,7 @@ async function recordInitialFailedNoOutput(input: {
     readonly sha256: string;
   };
 }): Promise<JsonObject> {
+  await assertGitWorkspaceRawPatchIdentitySupported(input.loaded.manifest.workspacePath);
   const status = await collectCodexGoalStatus(statusInput(input.loaded.launch));
   const progressStale =
     status.progressHeartbeatAgeMs !== undefined &&
@@ -397,6 +407,7 @@ async function recordInitialFailedNoOutput(input: {
           workspacePath: workspace.canonicalWorkspacePath,
         },
       };
+      await assertGitWorkspaceRawPatchIdentitySupported(workspace.canonicalWorkspacePath);
       const lockedStatus = await collectCodexGoalStatus(
         statusInput(lockedLaunch),
       );
@@ -410,26 +421,43 @@ async function recordInitialFailedNoOutput(input: {
       if (lockedWorkerLiveness.alive) {
         throw new Error("failed_no_output_worker_still_alive");
       }
+      const unadmittedInputPatch = input.preexistingWorkspacePatch !== undefined &&
+        !input.loaded.manifest.projectPreStartAdmission &&
+        !input.controller.scope.preStartAdmission?.required;
       if (input.preexistingWorkspacePatch) {
-        await assertNoAuthoredWorkerOutputEvidence({
-          status: lockedStatus,
-          jobRootDir: input.loaded.manifest.jobRootDir,
-          taskId: input.loaded.manifest.taskId,
-          workspacePath: workspace.canonicalWorkspacePath,
-          preexistingWorkspacePatch: input.preexistingWorkspacePatch,
-        });
+        if (unadmittedInputPatch) {
+          await assertNeverStartedInputPatchEvidence({
+            status: lockedStatus,
+            launchHasTmuxSession: Boolean(lockedLaunch.tmuxSession),
+            jobRootDir: input.loaded.manifest.jobRootDir,
+            taskId: input.loaded.manifest.taskId,
+            outputPath: lockedLaunch.config.outputPath,
+            workspacePath: workspace.canonicalWorkspacePath,
+            preexistingWorkspacePatch: input.preexistingWorkspacePatch,
+          });
+        } else {
+          await assertNoAuthoredWorkerOutputEvidence({
+            status: lockedStatus,
+            jobRootDir: input.loaded.manifest.jobRootDir,
+            taskId: input.loaded.manifest.taskId,
+            workspacePath: workspace.canonicalWorkspacePath,
+            preexistingWorkspacePatch: input.preexistingWorkspacePatch,
+          });
+        }
         if (lockedStatus.workspaceDirty !== true) {
           throw new Error(
             "failed_no_output_preexisting_patch_workspace_required",
           );
         }
-        await assertProjectPreStartAdmissionLaunchBinding({
-          manifest: input.loaded.manifest,
-          scope: input.controller.scope,
-          workspaceMode: "admitted_input_patch_continuation",
-          expectedInputPatchArtifactSha256:
-            input.preexistingWorkspacePatch.sha256,
-        });
+        if (!unadmittedInputPatch) {
+          await assertProjectPreStartAdmissionLaunchBinding({
+            manifest: input.loaded.manifest,
+            scope: input.controller.scope,
+            workspaceMode: "admitted_input_patch_continuation",
+            expectedInputPatchArtifactSha256:
+              input.preexistingWorkspacePatch.sha256,
+          });
+        }
       } else if (lockedStatus.workspaceDirty !== false) {
         throw new Error("failed_no_output_clean_workspace_required");
       }
@@ -452,6 +480,14 @@ async function recordInitialFailedNoOutput(input: {
       ) {
         throw new Error("failed_no_output_clean_workspace_required");
       }
+      if (unadmittedInputPatch && input.preexistingWorkspacePatch) {
+        await assertEvidencePathReadable(input.preexistingWorkspacePatch.path, {
+          scope: input.controller.scope,
+          registryRootDir: input.controller.registryRootDir,
+          jobId: input.loaded.manifest.jobId,
+          jobRootDir: input.loaded.manifest.jobRootDir,
+        });
+      }
       const archivedPreexistingWorkspacePatch = input.preexistingWorkspacePatch
         ? await archivePreexistingWorkspacePatch({
             source: input.preexistingWorkspacePatch,
@@ -459,14 +495,43 @@ async function recordInitialFailedNoOutput(input: {
           })
         : undefined;
       if (input.preexistingWorkspacePatch) {
-        await assertProjectPreStartAdmissionLaunchBinding({
-          manifest: input.loaded.manifest,
-          scope: input.controller.scope,
-          workspaceMode: "admitted_input_patch_continuation",
-          expectedInputPatchArtifactSha256:
-            input.preexistingWorkspacePatch.sha256,
-        });
+        if (unadmittedInputPatch) {
+          await assertEvidencePathReadable(input.preexistingWorkspacePatch.path, {
+            scope: input.controller.scope,
+            registryRootDir: input.controller.registryRootDir,
+            jobId: input.loaded.manifest.jobId,
+            jobRootDir: input.loaded.manifest.jobRootDir,
+          });
+          await assertGitWorkspaceRawPatchIdentitySupported(workspace.canonicalWorkspacePath);
+          const finalStatus = await collectCodexGoalStatus(statusInput(lockedLaunch));
+          const finalLiveness = resolveCodexGoalWorkerLiveness({
+            status: finalStatus,
+            progressStale: finalStatus.progressHeartbeatAgeMs !== undefined &&
+              finalStatus.progressHeartbeatAgeMs > 10 * 60_000,
+          });
+          if (finalLiveness.alive) {
+            throw new Error("failed_no_output_worker_still_alive");
+          }
+          await assertNeverStartedInputPatchEvidence({
+            status: finalStatus,
+            launchHasTmuxSession: Boolean(lockedLaunch.tmuxSession),
+            jobRootDir: input.loaded.manifest.jobRootDir,
+            taskId: input.loaded.manifest.taskId,
+            outputPath: lockedLaunch.config.outputPath,
+            workspacePath: workspace.canonicalWorkspacePath,
+            preexistingWorkspacePatch: archivedPreexistingWorkspacePatch!,
+          });
+        } else {
+          await assertProjectPreStartAdmissionLaunchBinding({
+            manifest: input.loaded.manifest,
+            scope: input.controller.scope,
+            workspaceMode: "admitted_input_patch_continuation",
+            expectedInputPatchArtifactSha256:
+              input.preexistingWorkspacePatch.sha256,
+          });
+        }
       }
+      await assertGitWorkspaceRawPatchIdentitySupported(workspace.canonicalWorkspacePath);
       const accountReservationReleased = await releaseCodexProjectAccount({
         manifest: input.loaded.manifest,
         launch: lockedLaunch,
@@ -526,6 +591,115 @@ async function recordInitialFailedNoOutput(input: {
   });
 }
 
+async function assertNeverStartedInputPatchEvidence(input: {
+  readonly status: Awaited<ReturnType<typeof collectCodexGoalStatus>>;
+  readonly launchHasTmuxSession: boolean;
+  readonly jobRootDir: string;
+  readonly taskId: string;
+  readonly outputPath?: string | undefined;
+  readonly workspacePath: string;
+  readonly preexistingWorkspacePatch: { readonly path: string; readonly sha256: string };
+}): Promise<void> {
+  const { status } = input;
+  if (
+    (input.launchHasTmuxSession && status.tmuxAlive !== false) ||
+    (input.launchHasTmuxSession && status.warnings.some((warning) =>
+      warning !== "tmux session is not alive" &&
+      warning !== "project_scoped_control broker-only anchor; use project broker tools, not raw worker start")) ||
+    status.tmuxAlive === true ||
+    status.progressProcessAlive === true ||
+    status.progressPid !== undefined ||
+    status.resultExists !== false ||
+    status.progressExists !== false ||
+    status.logExists !== false ||
+    status.runtimeEventsExists !== false
+  ) {
+    throw new Error("failed_no_output_worker_launch_artifacts_present");
+  }
+  for (const path of [
+    status.resultPath,
+    status.progressPath,
+    status.logPath,
+    status.runtimeEventsPath,
+    ...(input.outputPath
+      ? [join(dirname(input.outputPath), `${input.taskId}.events.jsonl`)]
+      : []),
+  ]) {
+    if (!path) throw new Error("failed_no_output_worker_launch_artifacts_uncertain");
+    await assertPathAbsent(path);
+  }
+  for (const suffix of ["pause-request", "maintenance-pause", "review", "stop-event"]) {
+    await assertPathAbsent(join(input.jobRootDir, `${input.taskId}.${suffix}.json`));
+  }
+  if (status.workspaceExists !== true || status.workspaceDirty !== true) {
+    throw new Error("failed_no_output_preexisting_patch_workspace_required");
+  }
+  await assertNoStagedChanges(input.workspacePath);
+  await assertGitWorkspaceRawPatchIdentitySupported(input.workspacePath);
+  const workspacePatch = await captureGitWorkspacePatch({
+    workspacePath: input.workspacePath,
+  });
+  // Recheck after capture so an index change during the patch read cannot
+  // silently turn an earlier clean check into closure evidence.
+  await assertNoStagedChanges(input.workspacePath);
+  await assertGitWorkspaceRawPatchIdentitySupported(input.workspacePath);
+  if (createHash("sha256").update(workspacePatch).digest("hex") !==
+      input.preexistingWorkspacePatch.sha256) {
+    throw new Error("failed_no_output_preexisting_patch_workspace_sha256_mismatch");
+  }
+}
+
+async function assertNoStagedChanges(workspacePath: string): Promise<void> {
+  // Read every index status byte. A configured submodule diff can report a
+  // clean cached diff even when porcelain reports a staged gitlink.
+  const { stdout: status } = await execFileAsync("git", ["-C", workspacePath,
+    "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=none"], {
+    timeout: 10_000,
+  });
+  for (const entry of nulRecords(status)) {
+    if (entry.length < 4 || entry[2] !== " " || !" MADRCUT".includes(entry[1]!)) {
+      throw new Error("failed_no_output_git_index_uncertain");
+    }
+    if (entry[0] !== " ") throw new Error("failed_no_output_staged_changes_present");
+  }
+  const { stdout: stages } = await execFileAsync("git", ["-C", workspacePath,
+    "ls-files", "--stage", "-z"], { timeout: 10_000 });
+  for (const entry of nulRecords(stages)) {
+    const match = /^(\d{6}) (?:[0-9a-f]{40}|[0-9a-f]{64}) ([0-3])\t[\s\S]+$/.exec(entry);
+    if (!match) throw new Error("failed_no_output_git_index_uncertain");
+    if (match[1] === "160000") throw new Error("failed_no_output_gitlink_present");
+    if (match[2] !== "0" || !["100644", "100755", "120000"].includes(match[1]!)) {
+      throw new Error("failed_no_output_git_index_uncertain");
+    }
+  }
+  try {
+    await execFileAsync("git", ["-C", workspacePath, "diff", "--cached", "--quiet", "--exit-code", "--ignore-submodules=none", "--"], {
+      timeout: 10_000,
+    });
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 1) {
+      throw new Error("failed_no_output_staged_changes_present");
+    }
+    throw error;
+  }
+}
+
+function nulRecords(output: string): string[] {
+  if (output.length === 0) return [];
+  if (!output.endsWith("\0")) throw new Error("failed_no_output_git_index_uncertain");
+  return output.slice(0, -1).split("\0");
+}
+
+async function assertPathAbsent(path: string): Promise<void> {
+  try {
+    await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error("failed_no_output_worker_launch_artifacts_present");
+}
+
 async function archivePreexistingWorkspacePatch(input: {
   readonly source: { readonly path: string; readonly sha256: string };
   readonly archivePath: string;
@@ -579,9 +753,11 @@ async function assertNoAuthoredWorkerOutputEvidence(input: {
     if (!lifecycleMarkers.some((marker) => marker.type === "stop_event")) {
       throw new Error("failed_no_output_worker_launch_artifacts_present");
     }
+    await assertGitWorkspaceRawPatchIdentitySupported(input.workspacePath);
     const workspacePatch = await captureGitWorkspacePatch({
       workspacePath: input.workspacePath,
     });
+    await assertGitWorkspaceRawPatchIdentitySupported(input.workspacePath);
     const workspacePatchSha256 = createHash("sha256")
       .update(workspacePatch)
       .digest("hex");

@@ -1,3 +1,4 @@
+import { assertClaudeAmbientHomeLocalContext } from "../../provider-claude/process/claude-cli-env";
 import {
   AgentRuntimeTaskProvider,
   AuthSourceKind,
@@ -7,11 +8,15 @@ import {
 export type LocalAgentRuntimeTaskRunnerAuthSource = AgentRuntimeAuthSource;
 
 export function authSourceForProvider(input: {
+  readonly env: Readonly<Record<string, string | undefined>>;
   readonly provider: AgentRuntimeTaskProvider;
   readonly authSource: LocalAgentRuntimeTaskRunnerAuthSource | undefined;
 }): LocalAgentRuntimeTaskRunnerAuthSource | undefined {
   if (input.authSource === undefined) return undefined;
   assertAuthSourceMatchesProvider(input.provider, input.authSource);
+  if (input.authSource.kind === AuthSourceKind.ClaudeAmbientHome) {
+    assertClaudeAmbientHomeLocalContext(input.env);
+  }
   return input.authSource;
 }
 
@@ -22,7 +27,8 @@ function assertAuthSourceMatchesProvider(
   if (authSource.kind === AuthSourceKind.PreseededSession) return;
   if (
     provider === AgentRuntimeTaskProvider.Claude &&
-    authSource.kind === AuthSourceKind.ClaudeOAuthToken
+    (authSource.kind === AuthSourceKind.ClaudeOAuthToken ||
+      authSource.kind === AuthSourceKind.ClaudeAmbientHome)
   ) return;
   if (
     provider === AgentRuntimeTaskProvider.Codex &&

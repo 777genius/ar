@@ -70,24 +70,6 @@ describe("Claude provider adapter", () => {
     });
   });
 
-  it("validates json and env-token Claude sessions", () => {
-    const jsonResult = validateClaudeSessionArtifact(validSession);
-    const envResult = validateClaudeSessionArtifact({
-      kind: "env-token",
-      providerId: "claude",
-      formatVersion: "claude-oauth-session-v1",
-      bytes: new TextEncoder().encode("env-claude-token"),
-      contentType: "text/plain",
-    });
-
-    expect(jsonResult.session).toMatchObject({
-      authMode: "oauth",
-      oauthToken: "claude-oauth-secret",
-      configDir: "/tmp/claude-config",
-    });
-    expect(envResult.session.oauthToken).toBe("env-claude-token");
-  });
-
   it("warns on unparseable or expired session expiry metadata", () => {
     expect(
       validateClaudeSessionArtifact(

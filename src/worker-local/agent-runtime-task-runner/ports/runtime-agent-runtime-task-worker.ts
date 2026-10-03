@@ -24,6 +24,10 @@ export type ProviderName = AgentRuntimeTaskProvider;
 export type AgentRuntimeTaskWorker = {
   start(): Promise<void>;
   seedClaudeOAuth?(input: { readonly oauthToken: string }): Promise<void>;
+  seedClaudeAmbientHome?(input: {
+    readonly homeDir: string;
+    readonly configDir?: string;
+  }): Promise<void>;
   seedCodexAuthJsonFile?(authJsonPath: string): Promise<void>;
   run(
     job: AgentRuntimeTaskWorkerJob,

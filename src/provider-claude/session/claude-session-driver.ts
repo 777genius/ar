@@ -16,6 +16,7 @@ import {
 import {
   invalidClaudeSessionFailure,
   validateClaudeSessionArtifact,
+  type ClaudeOAuthSession,
 } from "./session-artifact";
 import { classifyClaudeFailure } from "../protocol/failure-classifier";
 
@@ -33,7 +34,7 @@ export class ClaudeSessionDriver implements ProviderSessionDriver {
   }): Promise<SessionValidationResult> {
     try {
       const validation = validateClaudeSessionArtifact(input.session);
-      registerClaudeSecrets(input.redactor, validation.session.oauthToken);
+      registerClaudeSecrets(input.redactor, validation.session);
       return {
         status: "valid",
         warnings: validation.warnings,
@@ -80,9 +81,10 @@ export class ClaudeSessionDriver implements ProviderSessionDriver {
 
 export function registerClaudeSecrets(
   redactor: RedactorPort,
-  oauthToken: string,
+  session: ClaudeOAuthSession,
 ): void {
-  redactor.registerSecret(oauthToken, "claude-oauth-token");
+  if (session.authMode !== "oauth") return;
+  redactor.registerSecret(session.oauthToken, "claude-oauth-token");
 }
 
 function refreshUnsupportedWarning(
