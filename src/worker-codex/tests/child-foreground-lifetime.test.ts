@@ -1,73 +1,41 @@
-import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, writeFile, readFile, rm, readdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { AgentRuntimeTool } from "@vioxen/subscription-runtime/core";
+import "./absent-host-readonly-authority-fixture";
+import "./absent-host-scratch-fixture";
+import { AgentRuntimeTool, ChildContinuationMode } from "@vioxen/subscription-runtime/core";
 import { AccessBoundary } from "@vioxen/subscription-runtime/worker-core";
-import { ChildContinuationMode } from "@vioxen/subscription-runtime/core";
 import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
 import { buildCodexGoalExecutorOptions } from "../codex-goal-runner";
 import { runCodexGoalCli, parseCodexGoalCliArgs } from "../codex-goal-cli";
+import { mkdtemp, mkdir, writeFile, readFile, rm, readdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createChildForegroundTestProcess } from "./child-foreground-process-test-support";
+
+const processFixture = vi.hoisted(() => ({ spawn: vi.fn() }));
+vi.mock("node:child_process", async original => ({
+  ...await original<typeof import("node:child_process")>(), spawn: processFixture.spawn,
+}));
+afterEach(() => { vi.restoreAllMocks(); processFixture.spawn.mockReset(); });
 
 const sentinel = "synthetic-pr3-provider-only-key-418273";
-async function fixture(mode = "unfinished", deadlineMs = 10000) {
+async function fixture(mode: Parameters<typeof createChildForegroundTestProcess>[0]["mode"] = "unfinished", deadlineMs = 10000) {
   const root = await mkdtemp(join(tmpdir(), "pr3-TEST-private-registry-"));
   const job = join(root, "jobs", "test-child"), workspace = join(job, "workspace");
   await mkdir(workspace, { recursive: true });
-  const prompt = join(root, "private-prompt.md"), transport = join(root, "fake-app-server.mjs"), log = join(root, "transport.jsonl");
+  const prompt = join(root, "private-prompt.md"), transport = join(root, "fake-app-server.ts"), log = join(root, "transport.jsonl");
   const resource = join(root, "TEST-provider-heartbeat");
   await writeFile(prompt, "Leave this goal unfinished. Return a short progress message.\n");
   const lifetime = { schemaVersion: 1, accountId: "account-s", deadlineEpochMs: Date.now() + deadlineMs,
     maxGoalTurns: 2, maxAccountCycles: 1, maxAttempts: 1, continuationMode: ChildContinuationMode.Disabled,
     denyProjectInstructions: true, accessBoundary: AccessBoundary.ReadOnly,
     allowedTools: [AgentRuntimeTool.ReadFile, AgentRuntimeTool.SearchFiles] };
-  await writeFile(transport, `#!${process.execPath}
-import { appendFileSync, writeFileSync, rmSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { createInterface } from 'node:readline';
-const log = ${JSON.stringify(log)}, mode = ${JSON.stringify(mode)};
-const record = value => appendFileSync(log, JSON.stringify(value) + '\\n');
-// A signal listener alone does not keep Node alive after stdin EOF. Model an
-// independent, bounded provider obligation so every stop must actually clean it.
-const resource = ${JSON.stringify(resource)};
-let heartbeat, watchdog;
-{
- const beat = () => writeFileSync(resource, JSON.stringify({ pid: process.pid, at: Date.now() }));
- beat(); heartbeat = setInterval(beat, 100);
- watchdog = setTimeout(() => { record({ type: 'TEST-resource-watchdog' }); process.exit(70); }, 10000);
- process.on('exit', code => record({ type: 'provider-exit', pid: process.pid, code }));
- record({ type: 'TEST-resource-live', pid: process.pid });
-}
-record({ type: 'provider-start', sentinelSeen: createHash("sha256").update(process.env.MIMO_TOKEN_PLAN_API_KEY ?? "").digest("hex") === ${JSON.stringify(createHash("sha256").update(sentinel).digest("hex"))} });
-process.on('SIGTERM', () => {
- record({ type: 'cleanup-request', pid: process.pid, resourceActive: heartbeat !== undefined });
- clearInterval(heartbeat); clearTimeout(watchdog); rmSync(resource, { force: true }); process.exit(0);
-});
-const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
-let turns = 0;
-createInterface({ input: process.stdin }).on('line', line => {
- const r = JSON.parse(line); if (!r.method) return;
- record({ method: r.method, ...(r.method === 'turn/start' || r.method === 'thread/start' ? { params: r.params } : {}) });
- const reply = result => send({ id: r.id, result });
- if (r.method === 'initialize') return reply({ userAgent: 'synthetic-test' });
- if (r.method === 'thread/start') return reply({ thread: { id: 'thread-1' } });
- if (r.method === 'thread/goal/set') return reply({ goal: { threadId: 'thread-1', objective: 'unfinished', status: 'active' } });
- if (r.method === 'thread/goal/get') return reply({ goal: { threadId: 'thread-1', objective: 'unfinished', status: 'active' } });
- if (r.method === 'turn/start') {
-  const id = 'turn-' + ++turns;
-  if (mode === 'retryable') return send({ id: r.id, error: { code: -32000, message: 'usage limit reached' } });
-  const finish = () => {
-   if (mode === 'delayed') record({ type: 'turn-start-ack', at: Date.now() });
-   reply({ turn: { id } });
-   if (mode === 'delayed') return;
-   send({ method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: id, delta: 'Still unfinished.' } });
-   send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id, status: 'completed' } } }); };
-  if (mode === 'delayed') setTimeout(finish, 350); else finish(); return;
- }
- if (r.id !== undefined) reply({});
-});
-`, { mode: 0o700 });
+  const fake = createChildForegroundTestProcess({ mode, log, resource, sentinel });
+  processFixture.spawn.mockImplementation((command: string, args: string[], options: { env: Record<string, string> }) => {
+    expect(command).toBe(transport);
+    expect(args[0]).toBe("app-server");
+    fake.start(options.env);
+    return fake.child;
+  });
   const argv = ["run", "--no-tmux", "--registry-root", join(root, "private-registry"), "--job-root", job, "--auth-root", join(job, "capacity"),
     "--workspace", workspace, "--prompt", prompt, "--task-id", "test-child", "--job-id", "test-child",
     "--accounts", "account-s", "--model-backend", "xiaomi-mimo-token-plan", "--model", "mimo-v2.6-pro",
@@ -78,7 +46,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   const output: string[] = [];
   const io = { cwd: () => root, env: () => ({ SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_BROKERED_START: "1", PATH: process.env.PATH, MIMO_TOKEN_PLAN_API_KEY: sentinel }),
     writeStdout: (s: string) => output.push(s), writeStderr: (s: string) => output.push(s) };
-  return { root, argv, io, output, lifetime, log, resource,
+  return { root, argv, io, output, lifetime, log, resource, fake,
     rows: async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line)),
     close: () => rm(root, { recursive: true, force: true }) };
 }
@@ -198,8 +166,8 @@ async function expectProviderCleanedUp(f: Awaited<ReturnType<typeof fixture>>, r
   ]);
   expect(rows.filter(r => r.type === "TEST-resource-watchdog")).toEqual([]);
   await expect(readFile(f.resource)).rejects.toMatchObject({ code: "ENOENT" });
-  expect(() => process.kill(process.platform === "win32" ? resources[0].pid : -resources[0].pid, 0))
-    .toThrow(expect.objectContaining({ code: "ESRCH" }));
+  expect(f.fake.child.isExited()).toBe(true);
+  expect(f.fake.cleanupSignals).toEqual(["SIGTERM"]);
 }
 async function allFiles(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });

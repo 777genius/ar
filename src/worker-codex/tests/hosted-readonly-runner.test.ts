@@ -1,3 +1,4 @@
+import "./absent-host-scratch-fixture";
 import "./unmanaged-goal-host-fixture";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";

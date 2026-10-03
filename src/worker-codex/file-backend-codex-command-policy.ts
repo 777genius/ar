@@ -53,15 +53,30 @@ function commandApprovalVector(input: {
   readonly commandText?: string;
 }): readonly string[] | null {
   if (input.command !== undefined) {
+    if (input.command.length === 3 && isShellExecutable(input.command[0] ?? "") &&
+        (input.command[1] === "-c" || input.command[1] === "-lc")) {
+      return commandTextApprovalVector(input.command[2] ?? "");
+    }
     return input.command.length > 0 && input.command.every((part) => part.trim())
       ? input.command
       : null;
   }
-  const commandText = input.commandText?.trim();
+  return commandTextApprovalVector(input.commandText ?? "");
+}
+
+function commandTextApprovalVector(value: string, depth = 0): readonly string[] | null {
+  const commandText = value.trim();
   if (!commandText) return null;
+  const shellPayload = shellCommandTextPayload(commandText);
+  if (shellPayload !== undefined) {
+    return shellPayload === null || depth >= 8
+      ? ["sh", "-lc", commandText]
+      : commandTextApprovalVector(shellPayload, depth + 1);
+  }
   // Preserve literal quoted URLs (including ordinary '&' query separators).
   // Expansion and compound shell commands remain subject to interpreter denial.
   const parts: string[] = [];
+  let encoded = false;
   let token = "", quote: "'" | '"' | undefined, started = false;
   for (let index = 0; index < commandText.length; index++) {
     const char = commandText[index]!;
@@ -69,14 +84,16 @@ function commandApprovalVector(input: {
     if (char === "\\" && quote !== "'") {
       const next = commandText[++index];
       if (next === undefined || next === "\n" || next === "\r") return null;
-      token += next; started = true; continue;
+      // Double-quoted backslashes only escape these shell characters.
+      if (quote === '"' && !['$', '`', '"', '\\'].includes(next)) token += "\\";
+      token += next; encoded = true; started = true; continue;
     }
     if (quote) {
       if (char === quote) quote = undefined;
       else token += char;
     } else if (char === "'" || char === '"') {
-      quote = char; started = true;
-    } else if (/[<>|;&\n\r]/.test(char)) {
+      quote = char; encoded = true; started = true;
+    } else if (/[<>|;&*?\[\]{}()\n\r]/.test(char)) {
       return ["sh", "-lc", commandText];
     } else if (/\s/.test(char)) {
       if (started) { parts.push(token); token = ""; started = false; }
@@ -84,5 +101,40 @@ function commandApprovalVector(input: {
   }
   if (quote) return null;
   if (started) parts.push(token);
+  // Keep the existing conservative Git syntax boundary. Shell quotes and
+  // escapes in Git text still require an interpreter review; direct argv
+  // remains literal. Ordinary quoted network operands need no expansion.
+  if (encoded && isGitExecutable(parts[0] ?? "")) return ["sh", "-lc", commandText];
   return parts.length > 0 ? parts : null;
+}
+
+function isShellExecutable(value: string): boolean {
+  const executable = value.replaceAll("\\", "/").split("/").filter(Boolean).at(-1);
+  return executable === "bash" || executable === "sh" || executable === "zsh";
+}
+
+function shellCommandTextPayload(value: string): string | null | undefined {
+  const match = value.match(/^(?:\S*\/)?(?:bash|sh|zsh)\s+(?:-lc|-c)\s+(.+)$/);
+  if (!match) return undefined;
+  const encodedPayload = match[1]?.trim() ?? "";
+  if (!encodedPayload) return null;
+  if (
+    encodedPayload.startsWith("'") &&
+    encodedPayload.endsWith("'") &&
+    !encodedPayload.slice(1, -1).includes("'")
+  ) {
+    return encodedPayload.slice(1, -1);
+  }
+  if (
+    encodedPayload.startsWith('"') &&
+    encodedPayload.endsWith('"') &&
+    !encodedPayload.slice(1, -1).includes('"')
+  ) {
+    return encodedPayload.slice(1, -1);
+  }
+  return /\s|['"]/.test(encodedPayload) ? null : encodedPayload;
+}
+
+function isGitExecutable(value: string): boolean {
+  return value.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) === "git";
 }

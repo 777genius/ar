@@ -1,3 +1,4 @@
+import { registerManagedInstallationAdmissionTests } from "./hosted-managed-installation-admission-test-support";
 import { registerKeyedCorrelationTests, registerChildForegroundDeadlineTests } from "./hosted-child-foreground-deadline-test-support";
 import { routeHostedGoalLaunch, stopHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import { codexGoalAccountSlots, runCodexGoal } from "../codex-goal-runner";
@@ -951,51 +952,7 @@ it.each(["internet", "npm", "npm-grant-deleted", "research", "research-grant-del
   else { expect(result.status).toBe("completed"); expect(new Set(frames.map(frame => frame.env.CODEX_HOME)).size).toBe(2); }
 });
 
-// C1-R1: the genuine migrated installation binds both submission boundaries.
-describe("managed inspected installation admission", () => {
-  function migrated() {
-    seedManaged(); put("readonly-epoch.json", { ...read("readonly-epoch.json"), phase: "closed" });
-    const store = new HostedInstallationActivationStore(); store.installManaged(); store.enterExclusive();
-    store.withExclusivePreparation(fence => new HostedReadonlySupervisorHost().recoverWithHeldFence(fence, read("readonly-epoch.json").identity));
-    store.finishExclusive();
-  }
-  function drift(fault: string) {
-    if (fault === "inventory") {
-      const inventory = read("readonly-inventory.json"); inventory.runtimeLaunch.args.push("--UNREVIEWED-TEST-ARG");
-      put("readonly-inventory.json", inventory);
-    }
-    if (fault === "directory") put("host-installation.json", { ...read("host-installation.json"), runtimeDirectory: "/TEST/foreign" });
-    if (fault === "digest") put("host-installation.json", { ...read("host-installation.json"), inventorySha256: "f".repeat(64) });
-    if (fault === "stage") put(stageName, { ...read(stageName), runtimeSha: "f".repeat(40) });
-  }
-  it.each(["exact", "inventory", "directory", "digest", "stage"])("outer submission binds %s before callback", fault => {
-    migrated(); drift(fault);
-    const command = read("readonly-inventory.json").runtimeLaunch, submit = vi.fn(() => 17);
-    const run = () => new HostedReadonlySupervisorHost().runRuntimeLaunch(command.command, command.args, command.cwd, submit);
-    if (fault === "exact") { expect(run()).toBe(17); expect(submit).toHaveBeenCalledOnce(); }
-    else { expect(run).toThrow(); expect(submit).not.toHaveBeenCalled(); }
-    expect(fixture.spawn).not.toHaveBeenCalled();
-  });
-  it.each(["exact", "inventory", "directory", "digest", "stage"])("retained provider factory binds %s before spawn", fault => {
-    migrated(); const command = read("readonly-inventory.json").runtimeLaunch;
-    new HostedReadonlySupervisorHost().runRuntimeLaunch(command.command, command.args, command.cwd, () => 17);
-    const epoch = read("readonly-epoch.json"); fixture.runtimeUnit = epoch.outerRuntime.unit;
-    fixture.group = `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${fixture.runtimeUnit}`;
-    mkdirSync(join(fixture.root, "codex-readonly-services"), { mode: 0o700 });
-    mkdirSync(join(fixture.root, "codex-readonly-services", hash("managed-job") + ".json"), { mode: 0o700 });
-    const factory = admitHostedReadonlyInputs({ ...epoch.identity, sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
-      providerEgressPolicy: codexProviderEgressPolicy(CodexProviderEgressProfileId.TestManagedQualification) })!;
-    drift(fault);
-    const launch = () => factory({ command: "/TEST/codex", args: ["app-server"], cwd: "/managed/W", env: {
-      SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job", SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "codex-test-managed-qualification" } });
-    if (fault === "exact") {
-      launch(); expect(fixture.spawn).toHaveBeenCalledOnce();
-      const request = JSON.parse(fixture.spawn.mock.calls[0]![1][2]);
-      expect(request.readonlyPaths).toContain("/managed/W/input");
-      expect(read("readonly-epoch.json").reservations).toHaveLength(1);
-    } else { expect(launch).toThrow(); expect(fixture.spawn).not.toHaveBeenCalled(); }
-  });
-});
+registerManagedInstallationAdmissionTests({ fixture, stageName, seedManaged, read, put });
 registerChildForegroundDeadlineTests({ fixture, runtimeDirectory, read, put });
 
 registerKeyedCorrelationTests({ fixture, runtimeDirectory, read, put });

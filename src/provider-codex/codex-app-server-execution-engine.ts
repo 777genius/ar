@@ -82,7 +82,7 @@ import {
   isCodexAppServerRateLimitsRejectedError,
   type CodexAppServerRateLimitsSnapshotHandler,
 } from "./app-server/application/app-server-rate-limits-monitor";
-import type { CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
+import { resolveAppServerEngineLifetime, type CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
 import { CodexModelBackend } from "./codex-model-backend";
 import { codexProviderEgressPolicy } from "./codex-provider-egress-policy";
 export type {
@@ -112,10 +112,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     this.options = { ...options, ...(options.providerEgressPolicy ? {
       providerEgressPolicy: codexProviderEgressPolicy(options.providerEgressPolicy.profileId),
     } : {}) };
-    this.executionLifetime = options.executionLifetime ?? (options.childBudget ? new AppServerExecutionLifetime({ childBudget: options.childBudget }) : undefined);
-    if (options.executionLifetime && (options.executionLifetime.childBudget !== options.childBudget ||
-        options.goalMode !== true || options.nativeToolSurface !== "disabled" || options.cleanThreadPrewarm !== false || options.fallback !== undefined ||
-        options.maxGoalTurns !== options.executionLifetime.maxGoalTurns)) throw new Error("codex_app_server_bounded_profile_conflict");
+    this.executionLifetime = resolveAppServerEngineLifetime(options);
     this.modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
     if (!options.codexBinaryPath.trim()) {
       throw new Error("codex_app_server_binary_required");

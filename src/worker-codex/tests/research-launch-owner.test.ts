@@ -270,7 +270,12 @@ describe("closed installed research launch owner (real TEST files; proc, mounts 
   });
   it("forged markers select no research authority; actual service membership cannot take the plain child path", async () => {
     expect(admitResearchRuntime(request())).toBeUndefined();
-    expect((await admitHostedTestEgress({ ...request(), sourceEnv: { SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: policy.profileId } })).profileId).toBe(CodexProviderEgressProfileId.ProviderApi);
+    // No global policy ancestry exists in this private initial-root fixture.
+    // A forged marker cannot qualify that absence for the management channel.
+    await expect(admitHostedTestEgress({ ...request(), sourceEnv: {
+      SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: policy.profileId,
+    } })).rejects.toThrow("hosted_readonly_policy_invalid");
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
     admitted();
     // The default factory has no captured research ticket and remains closed.
     expect(() => spawnCodexAppServerProcess({ ...invocation(), env: {} })).toThrow();

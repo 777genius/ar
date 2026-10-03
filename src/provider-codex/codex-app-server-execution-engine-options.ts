@@ -1,4 +1,4 @@
-import type { AppServerExecutionLifetime } from "./app-server/application/app-server-child-lifetime";
+import { AppServerExecutionLifetime } from "./app-server/application/app-server-child-lifetime";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { ManagedRunStorePort } from "@vioxen/subscription-runtime/core";
 import type {
@@ -56,3 +56,12 @@ export type CodexAppServerExecutionEngineOptions = {
   readonly bypassHookTrust?: boolean;
   readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
 };
+
+/** Resolve and validate the original bounded execution fence before admission. */
+export function resolveAppServerEngineLifetime(options: CodexAppServerExecutionEngineOptions): AppServerExecutionLifetime | undefined {
+  const lifetime = options.executionLifetime ?? (options.childBudget ? new AppServerExecutionLifetime({ childBudget: options.childBudget }) : undefined);
+  if (options.executionLifetime && (options.executionLifetime.childBudget !== options.childBudget ||
+        options.goalMode !== true || options.nativeToolSurface !== "disabled" || options.cleanThreadPrewarm !== false || options.fallback !== undefined ||
+        options.maxGoalTurns !== options.executionLifetime.maxGoalTurns)) throw new Error("codex_app_server_bounded_profile_conflict");
+  return lifetime;
+}
