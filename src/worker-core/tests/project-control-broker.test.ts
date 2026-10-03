@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   AccessBoundary,
@@ -7,6 +8,8 @@ import {
   ProjectAdmissionDecisionReason,
   ProjectAdmissionDecisionStatus,
   ProjectAdmissionWorkerRole,
+  ProjectAuthorityCasStatus,
+  ProjectAuthorityMode,
   ProjectControlBroker,
   ProjectControlAdmissionDeniedError,
   ProjectControlDeniedError,
@@ -48,6 +51,68 @@ describe("ProjectControlBroker", () => {
       ProjectControlAuditEventType.DecisionRecorded,
     ]);
     expect(audits.every((event) => event.decision.allowed)).toBe(true);
+  });
+  it("routes authority adoption through the scoped port after policy authorization", async () => {
+    const calls: string[] = [];
+    const audits: ProjectControlBrokerEvent[] = [];
+    const compareAndSet = vi.fn().mockResolvedValue(
+      ProjectAuthorityCasStatus.Applied,
+    );
+    const broker = new ProjectControlBroker({
+      boundary: AccessBoundary.ProjectScopedControl,
+      scope: {
+        ...scope(),
+        preStartAdmission: {
+          required: true,
+          mode: "serial-builtin",
+          authorityMode: ProjectAuthorityMode.HostedWebCoreV1,
+        },
+      },
+    }, {
+      ...ports(calls, audits),
+      authority: { initialize: vi.fn(), compareAndSet },
+    });
+    const tuple = {
+      packetRevision: "hosted-web-core-v1-r1",
+      baseSha: "a".repeat(40),
+      phaseStartSha: "b".repeat(40),
+      inputPatchHash: "c".repeat(64),
+    };
+    const reviewReceipt = JSON.stringify({ schemaVersion: 1, ...tuple });
+
+    await expect(broker.adoptAuthorityTuple({
+      ...tuple,
+      reviewReceipt,
+      reviewReceiptSha256: createHash("sha256")
+        .update(reviewReceipt)
+        .digest("hex"),
+    })).resolves.toEqual({ status: ProjectAuthorityCasStatus.Applied });
+    expect(compareAndSet).toHaveBeenCalledOnce();
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.type).toBe(
+      ProjectControlAuditEventType.DecisionRecorded,
+    );
+  });
+
+  it("rejects authority adoption when Hosted Web authority mode is absent", async () => {
+    const compareAndSet = vi.fn();
+    const broker = new ProjectControlBroker({
+      boundary: AccessBoundary.ProjectScopedControl,
+      scope: scope(),
+    }, {
+      ...ports([], []),
+      authority: { initialize: vi.fn(), compareAndSet },
+    });
+
+    await expect(broker.adoptAuthorityTuple({
+      packetRevision: "hosted-web-core-v1-r1",
+      baseSha: "a".repeat(40),
+      phaseStartSha: "b".repeat(40),
+      inputPatchHash: "c".repeat(64),
+      reviewReceipt: "{}",
+      reviewReceiptSha256: createHash("sha256").update("{}").digest("hex"),
+    })).rejects.toThrow("project_authority_explicit_mode_required");
+    expect(compareAndSet).not.toHaveBeenCalled();
   });
 
   it("fails closed before side effects when admission is not configured", async () => {
@@ -450,6 +515,14 @@ function ports(
     resourceId,
   });
   return {
+    authority: {
+      async initialize() {
+        throw new Error("project_authority_not_configured_for_test");
+      },
+      async compareAndSet() {
+        throw new Error("project_authority_not_configured_for_test");
+      },
+    },
     audit: {
       record(event) {
         audits.push(event);

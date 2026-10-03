@@ -144,6 +144,13 @@ export type JobUpdateMcpArgs = JobIdMcpArgs & Partial<JobCreateMcpArgs>;
 export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
   readonly controllerJobId?: string;
   readonly path?: string;
+  readonly packetRevision?: string;
+  readonly baseSha?: string;
+  readonly phaseStartSha?: string;
+  readonly inputPatchHash?: string;
+  readonly reviewReceipt?: string;
+  readonly reviewReceiptSha256?: string;
+  readonly confirmAuthorityAdoption?: boolean;
   readonly sourceWorkspacePath?: string;
   readonly baseBranch?: string;
   readonly sourceRef?: string;

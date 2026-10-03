@@ -989,7 +989,12 @@ describe("admitted input-patch capacity continuation", () => {
     execFileSync("git", ["reset", "--", "src/example.ts"], {
       cwd: workspacePath,
     });
-    await expect(assertRuntimeWorkspaceBinding()).resolves.toBeUndefined();
+    await expect(assertRuntimeWorkspaceBinding()).resolves.toEqual({
+      baseSha: contract.baseSha,
+      inputPatchHash: contract.inputPatchHash,
+      packetRevision: contract.packetRevision,
+      phaseStartSha: null,
+    });
 
     await writeFile(join(workspacePath, "outside-owned.ts"), "index only\n");
     execFileSync("git", ["add", "outside-owned.ts"], { cwd: workspacePath });

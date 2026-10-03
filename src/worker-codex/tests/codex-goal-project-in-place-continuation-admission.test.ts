@@ -322,6 +322,14 @@ function continuationBrokerPorts(
     resourceId,
   });
   return {
+    authority: {
+      async initialize() {
+        throw new Error("project_authority_not_configured_for_test");
+      },
+      async compareAndSet() {
+        throw new Error("project_authority_not_configured_for_test");
+      },
+    },
     admission,
     registry: {
       createJob: async (input) => applied(input.jobId),

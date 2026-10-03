@@ -21,6 +21,7 @@ describe("describeProjectControlSurface", () => {
       "recover_operations",
       "mark_reviewed",
       "record_failed_no_output",
+      "adopt_authority_tuple",
       "open_integration_attempt",
       "apply_worker_output",
       "run_required_checks",
