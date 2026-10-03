@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { CommandPolicyRunner } from "../index";
@@ -10,6 +13,65 @@ import {
 } from "./file-backend-codex-worker-test-support";
 
 describe("CommandPolicyRunner", () => {
+  it.each([
+    "git p* origin main",
+    "git p?sh origin main",
+    "git p[uv]sh origin main",
+    "git p{u..u}sh origin main",
+    "git {push,} origin main",
+    "(git push origin main)",
+  ])("denies expansion or grouping that records a push: %s", async (payload) => {
+    const cwd = await mkdtemp(join(tmpdir(), "command-policy-expansion-"));
+    try {
+      // Only this fixture file can match the glob. The function records argv;
+      // no Git executable, provider, remote or inherited environment is used.
+      await writeFile(join(cwd, "push"), "");
+      const recorded = await promisify(execFile)("/bin/bash", [
+        "--noprofile", "--norc", "-c",
+        `git() { printf '%s\\n' "$@"; }; ${payload}`,
+      ], { cwd, env: {}, timeout: 1_000 });
+      expect(recorded.stdout).toBe("push\norigin\nmain\n");
+
+      const observability = new MemoryWorkerObservability();
+      const policy = codexAppServerCommandApprovalPolicy(
+        isolatedWorkspaceCommandPolicy(), observability, {},
+      );
+      const inputs = [
+        ...["bash", "sh", "/usr/bin/zsh"].flatMap((shell) =>
+          ["-c", "-lc"].map((option) => ({
+            source: "command_execution" as const, command: [shell, option, payload],
+          }))
+        ),
+        { source: "thread_shell_command" as const, commandText: payload },
+        { source: "thread_shell_command" as const, commandText: `bash -c '${payload}'` },
+        { source: "thread_shell_command" as const, commandText: `sh -lc "${payload}"` },
+      ];
+      expect(inputs.map((input) => policy.reviewCommand(input))).toEqual(
+        inputs.map(() => ({
+          approved: false, reason: "script_interpreter_denied",
+        })),
+      );
+      expect(observability.events).toHaveLength(inputs.length);
+      expect(observability.events.every((event) =>
+        event.name === "command_policy.denied" &&
+        event.metadata?.reason === "script_interpreter_denied"
+      )).toBe(true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["p*", "p?sh", "p[uv]sh", "p{u..u}sh", "{push,}", "(push)"])(
+    "preserves literal expansion characters in a direct vector: %s", (operation) => {
+      const policy = codexAppServerCommandApprovalPolicy(
+        isolatedWorkspaceCommandPolicy(), new MemoryWorkerObservability(), {},
+      );
+      expect(policy.reviewCommand({
+        source: "command_execution", command: ["git", operation, "origin", "main"],
+      })).toEqual({ approved: true, reason: "command_policy_allowed" });
+    },
+  );
+
   it.each([
     "git 'push' origin main",
     'git "push" origin main',
