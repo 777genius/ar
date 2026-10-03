@@ -49,6 +49,7 @@ export async function codexAccountStatusPayload(input: {
   const readySlots = slots.filter((slot) => slot.status === "ready");
   const missingSlots = slots.filter((slot) => slot.status === "auth_missing");
   const invalidSlots = slots.filter((slot) => slot.status === "auth_invalid");
+  const quarantinedSlots = slots.filter((slot) => slot.quarantined);
   const capacityBlockedSlots = slots.filter((slot) =>
     slot.capacityAvailability && slot.capacityAvailability !== "available"
   );
@@ -68,6 +69,7 @@ export async function codexAccountStatusPayload(input: {
       ready: readySlots.length,
       missing: missingSlots.length,
       invalid: invalidSlots.length,
+      quarantined: quarantinedSlots.length,
       deduped: dedupedSlots.length,
       availableDeduped: availableDedupedSlots.length,
       capacityBlocked: capacityBlockedSlots.length,
@@ -80,6 +82,7 @@ export async function codexAccountStatusPayload(input: {
     availableDedupedAccountNames: availableDedupedSlots.map((slot) => slot.name),
     dedupedAccountLabels: dedupedSlots.map(accountOperatorLabel),
     availableDedupedAccountLabels: availableDedupedSlots.map(accountOperatorLabel),
+    quarantinedAccountNames: quarantinedSlots.map((slot) => slot.name),
     dedupeRecommendation: duplicates.length
       ? "Use dedupedAccountNames for worker pools. It keeps the newest ready slot per identity group."
       : "No duplicate identity groups detected.",

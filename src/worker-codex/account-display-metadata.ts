@@ -6,6 +6,9 @@ export type CodexAccountDisplayMetadata = {
   readonly email?: string;
   readonly shortName?: string;
   readonly operatorLabel?: string;
+  readonly quarantined?: boolean;
+  readonly quarantineReason?: string;
+  readonly quarantinedAt?: string;
   readonly resetCount?: number;
   readonly plan?: string;
   readonly unpaid?: string;
@@ -39,6 +42,13 @@ export function codexAccountDisplayMetadataForSlot(
     ...(email ? { email } : {}),
     shortName,
     ...(displayName ? { operatorLabel: `${displayName} - ${shortName}` } : {}),
+    ...(metadata?.quarantined ? { quarantined: true } : {}),
+    ...(metadata?.quarantineReason
+      ? { quarantineReason: metadata.quarantineReason }
+      : {}),
+    ...(metadata?.quarantinedAt
+      ? { quarantinedAt: metadata.quarantinedAt }
+      : {}),
     ...(metadata?.resetCount !== undefined
       ? { resetCount: metadata.resetCount }
       : {}),
@@ -54,7 +64,7 @@ export function codexAccountDisplayRecord(
   const display = codexAccountDisplayMetadataForSlot(slotId, metadata);
   return Object.fromEntries(
     Object.entries(display)
-      .filter(([, value]) => value !== undefined)
+      .filter(([, value]) => typeof value === "string" || typeof value === "number")
       .map(([key, value]) => [key, String(value)]),
   );
 }
@@ -86,7 +96,16 @@ function parseMetadataRoot(
       (entry): entry is readonly [string, CodexAccountDisplayMetadata] =>
         entry[1] !== null,
     );
-  return Object.fromEntries(entries);
+  const metadata = new Map(entries);
+  if (isRecord(value.accounts)) {
+    for (const [slotId, raw] of Object.entries(value)) {
+      if (slotId === "accounts") continue;
+      const quarantine = parseQuarantineMetadata(raw);
+      if (!quarantine) continue;
+      metadata.set(slotId, { ...(metadata.get(slotId) ?? {}), ...quarantine });
+    }
+  }
+  return Object.fromEntries(metadata);
 }
 
 function parseMetadataEntry(
@@ -105,6 +124,7 @@ function parseMetadataEntry(
   ]);
   const email = firstString([value.email]);
   const shortName = firstString([value.shortName, value.letter]);
+  const quarantine = parseQuarantineMetadata(value);
   const resetCount = parseResetCount(value.resetCount);
   const plan = firstString([value.plan]);
   const unpaid = parseUnpaidDate(value.unpaid);
@@ -114,7 +134,8 @@ function parseMetadataEntry(
     !shortName &&
     resetCount === undefined &&
     !plan &&
-    !unpaid
+    !unpaid &&
+    !quarantine
   ) {
     return null;
   }
@@ -122,9 +143,23 @@ function parseMetadataEntry(
     ...(displayName ? { displayName } : {}),
     ...(email ? { email } : {}),
     ...(shortName ? { shortName } : {}),
+    ...(quarantine ?? {}),
     ...(resetCount !== undefined ? { resetCount } : {}),
     ...(plan ? { plan } : {}),
     ...(unpaid ? { unpaid } : {}),
+  };
+}
+
+function parseQuarantineMetadata(
+  value: unknown,
+): Pick<CodexAccountDisplayMetadata, "quarantined" | "quarantineReason" | "quarantinedAt"> | null {
+  if (!isRecord(value) || value.quarantined !== true) return null;
+  const quarantineReason = firstString([value.quarantineReason]);
+  const quarantinedAt = firstString([value.quarantinedAt]);
+  return {
+    quarantined: true,
+    ...(quarantineReason ? { quarantineReason } : {}),
+    ...(quarantinedAt ? { quarantinedAt } : {}),
   };
 }
 
