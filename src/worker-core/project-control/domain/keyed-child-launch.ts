@@ -1,11 +1,8 @@
 import { createHash } from "node:crypto";
+import { KeyedChildState } from "@vioxen/subscription-runtime/core";
 
 export enum KeyedChildProfile { IsolatedWrite = "isolated_write", ReadOnly = "read_only" }
-export enum KeyedChildState {
-  Claimed = "claimed", Materializing = "materializing", Prepared = "prepared",
-  DispatchIntent = "dispatch_intent", Submitted = "submitted", Running = "running",
-  StopRequested = "stop_requested", Terminal = "terminal", Uncertain = "uncertain",
-}
+export { KeyedChildState } from "@vioxen/subscription-runtime/core";
 export enum DispatchEligibility {
   EligibleBeforeIntent = "eligible_before_intent", HeldAfterIntent = "held_after_intent",
   Ineligible = "ineligible",
@@ -144,8 +141,10 @@ export class KeyedChildLedger {
   }
   static create(a: ReviewedChildAuthority, slots: readonly ChildSlotAllocation[]): KeyedChildLedger {
     encodeChildKey(a, "validation"); text(a.accountId, 128);
-    for (const d of [a.grantDigest, a.reviewedSnapshotDigest, a.artifactSha, a.effectiveOptionDigest]) digest(d);
+    for (const d of [a.grantDigest, a.reviewedSnapshotDigest, a.effectiveOptionDigest]) digest(d);
     if (!/^[a-f0-9]{40}$/.test(a.sourceSha)) throw new Error("invalid source SHA");
+    // PR3 retains a Git artifact SHA; preceding callers may use a SHA-256 artifact digest.
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(a.artifactSha)) throw new Error("invalid artifact SHA");
     integer(a.absoluteDeadline); integer(a.maxGoalTurns);
     if (slots.length < 1 || slots.length > 128) throw new Error("invalid finite allowance");
     const copies = slots.map(allocationCopy);

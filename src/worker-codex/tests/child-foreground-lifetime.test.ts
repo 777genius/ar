@@ -29,10 +29,10 @@ import { createInterface } from 'node:readline';
 const log = ${JSON.stringify(log)}, mode = ${JSON.stringify(mode)};
 const record = value => appendFileSync(log, JSON.stringify(value) + '\\n');
 // A signal listener alone does not keep Node alive after stdin EOF. Model an
-// independent, bounded provider obligation so expiry must actually stop it.
+// independent, bounded provider obligation so every stop must actually clean it.
 const resource = ${JSON.stringify(resource)};
 let heartbeat, watchdog;
-if (mode === 'delayed') {
+{
  const beat = () => writeFileSync(resource, JSON.stringify({ pid: process.pid, at: Date.now() }));
  beat(); heartbeat = setInterval(beat, 100);
  watchdog = setTimeout(() => { record({ type: 'TEST-resource-watchdog' }); process.exit(70); }, 10000);
@@ -41,7 +41,7 @@ if (mode === 'delayed') {
 }
 record({ type: 'provider-start', sentinelSeen: createHash("sha256").update(process.env.MIMO_TOKEN_PLAN_API_KEY ?? "").digest("hex") === ${JSON.stringify(createHash("sha256").update(sentinel).digest("hex"))} });
 process.on('SIGTERM', () => {
- record({ type: 'cleanup-request', ...(mode === 'delayed' ? { pid: process.pid, resourceActive: heartbeat !== undefined } : {}) });
+ record({ type: 'cleanup-request', pid: process.pid, resourceActive: heartbeat !== undefined });
  clearInterval(heartbeat); clearTimeout(watchdog); rmSync(resource, { force: true }); process.exit(0);
 });
 const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
@@ -96,6 +96,7 @@ describe("production foreground child lifetime", () => {
       expect(rows.filter(r => r.method === "thread/start")).toHaveLength(1);
       expect(rows.filter(r => r.type === "provider-start")).toEqual([{ type: "provider-start", sentinelSeen: true }]);
       expect(rows.filter(r => r.type === "cleanup-request")).toHaveLength(1);
+      await expectProviderCleanedUp(f, rows);
       const starts = rows.filter(r => r.method === "turn/start" || r.method === "thread/start");
       for (const start of starts) expect(start.params.environments).toEqual([]);
       expect(starts.find(r => r.method === "thread/start")?.params.dynamicTools).toEqual([]);
@@ -115,6 +116,8 @@ describe("production foreground child lifetime", () => {
       expect(rows.filter(r => r.type === "provider-start")).toHaveLength(1);
       expect(rows.filter(r => r.method === "thread/start")).toHaveLength(1);
       expect(rows.filter(r => r.method === "turn/start")).toHaveLength(1);
+      await expectProviderCleanedUp(f, rows);
+      expect(rows.filter(r => r.method === "thread/goal/get")).toHaveLength(0);
     } finally { await f.close(); }
   });
   // Bug: a grant already expired during parsing still starts a provider.
@@ -136,18 +139,7 @@ describe("production foreground child lifetime", () => {
       const acknowledgments = rows.filter(r => r.type === "turn-start-ack");
       expect(acknowledgments).toHaveLength(1);
       expect(acknowledgments[0].at).toBeLessThan(f.lifetime.deadlineEpochMs);
-      const resources = rows.filter(r => r.type === "TEST-resource-live");
-      expect(resources).toHaveLength(1);
-      expect(rows.filter(r => r.type === "cleanup-request")).toEqual([
-        { type: "cleanup-request", pid: resources[0].pid, resourceActive: true },
-      ]);
-      expect(rows.filter(r => r.type === "provider-exit")).toEqual([
-        { type: "provider-exit", pid: resources[0].pid, code: 0 },
-      ]);
-      expect(rows.filter(r => r.type === "TEST-resource-watchdog")).toEqual([]);
-      await expect(readFile(f.resource)).rejects.toMatchObject({ code: "ENOENT" });
-      expect(() => process.kill(process.platform === "win32" ? resources[0].pid : -resources[0].pid, 0))
-        .toThrow(expect.objectContaining({ code: "ESRCH" }));
+      await expectProviderCleanedUp(f, rows);
       expect(rows.filter(r => r.method === "thread/goal/get")).toHaveLength(0);
     } finally { await f.close(); }
   });
@@ -195,6 +187,20 @@ describe("production foreground child lifetime", () => {
     } finally { await f.close(); }
   });
 });
+async function expectProviderCleanedUp(f: Awaited<ReturnType<typeof fixture>>, rows: Awaited<ReturnType<typeof f.rows>>) {
+  const resources = rows.filter(r => r.type === "TEST-resource-live");
+  expect(resources).toHaveLength(1);
+  expect(rows.filter(r => r.type === "cleanup-request")).toEqual([
+    { type: "cleanup-request", pid: resources[0].pid, resourceActive: true },
+  ]);
+  expect(rows.filter(r => r.type === "provider-exit")).toEqual([
+    { type: "provider-exit", pid: resources[0].pid, code: 0 },
+  ]);
+  expect(rows.filter(r => r.type === "TEST-resource-watchdog")).toEqual([]);
+  await expect(readFile(f.resource)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(() => process.kill(process.platform === "win32" ? resources[0].pid : -resources[0].pid, 0))
+    .toThrow(expect.objectContaining({ code: "ESRCH" }));
+}
 async function allFiles(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
   return (await Promise.all(entries.map(entry => entry.isDirectory() ? allFiles(join(root, entry.name)) : [join(root, entry.name)]))).flat();

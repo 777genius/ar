@@ -214,7 +214,7 @@ export class HostedInstallationActivationStore {
   /** Root dispatcher preparation. The caller must keep this same fence through
    * synchronous OS submission. Reservation precedes birth publication, so a
    * crash at either write remains held and cannot become an untracked creator. */
-  reserveOrdinaryRuntime(fence: HostedActivationFence, command: string, args: readonly string[], cwd: string) {
+  reserveOrdinaryRuntime(fence: HostedActivationFence, command: string, args: readonly string[], cwd: string, correlation?: Readonly<{ startId: string; unit: string }>) {
     assertHostedActivationFence(fence);
     const kernel = new HostedReadonlyHostKernel(), session = kernel.operatorSession();
     const candidates = readHostedReadonlyHostInventory().ordinaryCreators.filter(row =>
@@ -222,6 +222,7 @@ export class HostedInstallationActivationStore {
     if (candidates.length !== 1) invalid();
     const creator = candidates[0]!;
     const childSlot = readHostedChildSlot(creator);
+    if (correlation && !childSlot) invalid();
     const childBudget = childSlot ? new ChildExecutionBudget(childSlot.lifetime) : undefined;
     childBudget?.remainingMs();
     const { installation, activation, birth, originSha256 } = readHostedOrdinaryBirth(creator.jobId);
@@ -229,7 +230,9 @@ export class HostedInstallationActivationStore {
     if (childSlot && activation.ordinaryStarts.some(row => row.creatorId === creator.creatorId)) throw new Error("child_invocation_consumed");
     if (birth.jobRootDir !== creator.jobRootDir || birth.workspacePath !== creator.workspacePath) invalid();
     const grantSha256 = assertNoManagedOrigin(birth); kernel.verifyDescriptorBoundary();
-    const creatorPidBirth = kernel.ordinaryCreatorBirth(), startId = randomUUID();
+    const creatorPidBirth = kernel.ordinaryCreatorBirth(), startId = correlation?.startId ?? randomUUID();
+    if (!/^[a-f0-9-]{36}$/.test(startId) || (correlation && correlation.unit !== `subscription-runtime-ordinary-${startId}.service`) ||
+        activation.ordinaryStarts.some(row => row.startId === startId || row.unit === correlation?.unit)) invalid();
     const row = { startId, unit: `subscription-runtime-ordinary-${startId}.service`, creatorId: creator.creatorId,
       originSha256, generation: activation.generation + 1, state: HostedCustodyReservationState.Reserved };
     const start = parseHostedOrdinaryStart({ schemaVersion: 1, installationId: installation.installationId,

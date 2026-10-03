@@ -213,10 +213,22 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
   }
   async transact(scope: ChildScope, authorityDigest: string, expectedGeneration: number,
     successor: (current: KeyedChildLedger) => KeyedChildLedger): Promise<KeyedChildLedger> {
+    this.#authenticate(scope, authorityDigest);
+    if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) throw new Error("keyed_ledger_invalid_generation");
+    return withHostedActivationFence(fence =>
+      this.transactHeld(fence, scope, authorityDigest, expectedGeneration, successor));
+  }
+  /** Private same-fence composition: no Promise, acquisition or replay permit. */
+  readHeld(fence: HostedActivationFence, scope: ChildScope, authorityDigest: string): KeyedChildLedger {
+    this.#authenticate(scope, authorityDigest);
+    return this.#fenced(fence, parent => this.#current(parent));
+  }
+  transactHeld(fence: HostedActivationFence, scope: ChildScope, authorityDigest: string,
+    expectedGeneration: number, successor: (current: KeyedChildLedger) => KeyedChildLedger): KeyedChildLedger {
     // Authorization precedes even common-fence or target reads.
     this.#authenticate(scope, authorityDigest);
     if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) throw new Error("keyed_ledger_invalid_generation");
-    return withHostedActivationFence(fence => this.#fenced(fence, parent => {
+    return this.#fenced(fence, parent => {
       const current = this.#current(parent);
       if (current.generation !== expectedGeneration) throw new Error("keyed_ledger_stale_generation");
       const prior = this.#syncFile(this.#path, Buffer.from(current.serialize()), parent);
@@ -271,6 +283,6 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
         throw error;
       }
       this.#checkParent(); return next;
-    }));
+    });
   }
 }

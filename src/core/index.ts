@@ -11,3 +11,5 @@ export * from "./domain/types";
 export * from "./ports";
 export * from "./child-lifetime/domain/child-lifetime";
 export * from "./child-lifetime/domain/child-slot";
+
+export * from "./child-lifetime/domain/keyed-child-observation";

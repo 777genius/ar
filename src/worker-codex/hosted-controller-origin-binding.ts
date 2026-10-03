@@ -1,3 +1,4 @@
+import { assertHostedActivationOperator } from "@vioxen/subscription-runtime/provider-codex";
 import { createHash, timingSafeEqual } from "node:crypto";
 
 /** These readers are supplied by the root dispatcher, under its retained host
@@ -39,4 +40,42 @@ function digestGrant(bytes: Buffer): Buffer {
     throw new Error("hosted_controller_private_grant_invalid");
   }
   return createHash("sha256").update(bytes).digest();
+}
+
+const retainedCapabilities = new WeakSet<object>();
+/** Retained capability has a runtime brand; a wire boolean cannot construct it. */
+export class HostedControllerOriginCapability {
+  static readonly #token = Object.freeze({});
+  readonly #verify: () => boolean;
+  private constructor(token: object, readonly origin: HostedControllerRetainedOrigin,
+    readonly grantDigest: string, verify: () => boolean) {
+    if (token !== HostedControllerOriginCapability.#token) throw new Error("hosted_controller_authority_invalid");
+    this.#verify = verify; retainedCapabilities.add(this); Object.freeze(this);
+  }
+  static retain(input: Parameters<typeof bindHostedControllerOriginAndGrant>[0]): HostedControllerOriginCapability {
+    assertHostedActivationOperator();
+    const origin = readOrigin(input.readRetainedOrigin);
+    const grant = digestGrant(input.readPrivateGrant(origin));
+    const grantDigest = grant.toString("hex");
+    const verify = () => {
+      try {
+        const current = readOrigin(input.readRetainedOrigin);
+        return current.installationId === origin.installationId && current.startId === origin.startId &&
+          current.jobId === origin.jobId && current.originSha256 === origin.originSha256 &&
+          timingSafeEqual(grant, digestGrant(input.readPrivateGrant(current)));
+      } catch { return false; }
+    };
+    if (!verify()) throw new Error("hosted_controller_authority_invalid");
+    return new HostedControllerOriginCapability(this.#token, origin, grantDigest, verify);
+  }
+  assertCurrent(): void {
+    if (!(this instanceof HostedControllerOriginCapability) || !this.#verify()) {
+      throw new Error("hosted_controller_authority_invalid");
+    }
+  }
+}
+
+export function assertHostedControllerOriginCapability(value: HostedControllerOriginCapability): void {
+  if (!retainedCapabilities.has(value)) throw new Error("hosted_controller_capability_required");
+  value.assertCurrent();
 }
