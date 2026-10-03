@@ -241,9 +241,9 @@ selected home and prepared scratch bindings against the submitted closed plan.
 The control monitor stays attached during that final material walk. An event-loop
 yield after verification observes queued duplicate frames and EOF; then retained
 provider ownership, current authority/cancellation and transport state are checked
-before the synchronous switch to stdout/stdin forwarding. The explicit 180-second setup
+before the synchronous switch to stdout/stdin forwarding. The explicit 300-second setup
 budget matches the provider service TimeoutStartSec; the research-only outer
-app-server startup is 210 seconds to cover pre-submission verification and handoff. Once the complete ready frame is observed, a separate
+app-server startup is 330 seconds to cover pre-submission verification and handoff. Once the complete ready frame is observed, a separate
 10-second handoff bound matches the fixed launcher's bootstrap deadline. Each
 material walk still enforces its original byte/file/time limits; timeout is denial,
 including a retained finite file/artifact deadline observation, never admission.

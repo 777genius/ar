@@ -186,7 +186,7 @@ describe("closed installed research launch owner (real TEST files; proc, mounts 
     writeFileSync(local("/TEST-operator/request.json"), JSON.stringify(request()) + "\n");
     admitted(); const factory = admitResearchProcessFactory(request());
     const config = researchRunConfig(parseResearchOperatorRequest(request()));
-    expect(config.appServerStartupTimeoutMs).toBe(210_000);
+    expect(config.appServerStartupTimeoutMs).toBe(330_000);
     const options = buildCodexGoalExecutorOptions({ config, providerEgressPolicy: policy, appServerProcessFactory: factory,
       stateRootDir: join(host.root, "state"), encryptionKey: new Uint8Array(32) });
     expect(options.accounts).toHaveLength(2);
