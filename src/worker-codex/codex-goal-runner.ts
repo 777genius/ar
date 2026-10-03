@@ -1,3 +1,4 @@
+import { prepareHostScratchTemp } from "./host-scratch-temp";
 import { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 export { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
@@ -255,7 +256,10 @@ export async function runCodexGoal(
       taskId: config.taskId, jobRootDir: config.jobRootDir, initialBaseCommit: baseCommit });
   }
   return new LocalTerminalCheckpointAdmission(config.jobRootDir).withWriter(
-    () => runCodexGoalAdmitted(config, deps, providerEgressPolicy, appServerProcessFactory, baseCommit),
+    async () => {
+      await prepareHostScratchTemp(config.jobRootDir, config.sourceEnv ?? process.env);
+      return runCodexGoalAdmitted(config, deps, providerEgressPolicy, appServerProcessFactory, baseCommit);
+    },
   );
 }
 
