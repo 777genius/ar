@@ -36,20 +36,10 @@ describe("hosted Codex permission profiles", () => {
     expect(scoped).not.toContain('"/opt" = "read"');
   });
 
-  it("denies a configured MiMo private key file in both profiles", () => {
-    const config = hostedCodexPermissionProfilesToml(
-      codexProviderApiEgressPolicy(), undefined, "/private/mimo/key",
-    );
-    expect(config.match(/"\/private\/mimo\/key" = "deny"/g)).toHaveLength(2);
-    const nested = hostedCodexPermissionProfilesToml(
-      codexProviderApiEgressPolicy(), undefined,
-      "/etc/subscription-runtime/secrets/review-router/key",
-    );
-    expect(nested).not.toContain('"/etc/subscription-runtime/secrets/review-router/key" = "deny"');
-    expect(nested.match(/"\/etc\/subscription-runtime\/secrets" = "deny"/g)).toHaveLength(2);
-    expect(() => hostedCodexPermissionProfilesToml(
-      codexProviderApiEgressPolicy(), undefined, "relative/key",
-    )).toThrow("hosted_permission_private_key_path_invalid");
+  it("denies the secret tree without serializing the canonical MiMo key locator", () => {
+    const config = hostedCodexPermissionProfilesToml(codexProviderApiEgressPolicy());
+    expect(config.match(/"\/etc\/subscription-runtime\/secrets" = "deny"/g)).toHaveLength(2);
+    expect(config).not.toContain("mimo-token-plan-api-key");
   });
 
   it("does not grant recursive reads when an executable path names a directory", () => {

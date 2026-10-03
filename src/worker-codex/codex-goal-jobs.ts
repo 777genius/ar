@@ -1,3 +1,4 @@
+import { childConfigFromRecord } from "./child-execution-confinement";
 import { createHash } from "node:crypto";
 import { initializeControllerStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import {
@@ -109,6 +110,9 @@ export type CodexGoalJobManifest = {
   readonly appServerStartupTimeoutMs?: number;
   readonly staleLockMs?: number;
   readonly maxAccountCycles?: number;
+  readonly childLifetime?: CodexGoalRunConfig["childLifetime"];
+  readonly maxGoalTurns?: number;
+  readonly safeExecutionPolicy?: CodexGoalRunConfig["safeExecutionPolicy"];
   readonly editMode?: CodexGoalRunConfig["editMode"];
   readonly providerSandboxMode?: CodexGoalRunConfig["providerSandboxMode"];
   readonly accessBoundary?: AccessBoundary;
@@ -448,6 +452,7 @@ export function codexGoalJobToArgs(
     appServerStartupTimeoutMs: manifest.appServerStartupTimeoutMs,
     staleLockMs: manifest.staleLockMs,
     maxAccountCycles: manifest.maxAccountCycles,
+    ...childConfigFromRecord(manifest as unknown as Readonly<Record<string, unknown>>),
     editMode: manifest.editMode,
     providerSandboxMode: manifest.providerSandboxMode,
     accessBoundary: manifest.accessBoundary,
@@ -609,6 +614,7 @@ function parseCodexGoalJobManifestValue(
     ),
     ...optionalPositiveIntegerProperty(value.staleLockMs, "staleLockMs"),
     ...optionalPositiveIntegerProperty(value.maxAccountCycles, "maxAccountCycles"),
+    ...childConfigFromRecord(value),
     ...(editMode === undefined ? {} : { editMode }),
     ...(providerSandboxMode === undefined ? {} : { providerSandboxMode }),
     ...(accessBoundary === undefined ? {} : { accessBoundary }),

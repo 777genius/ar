@@ -1,3 +1,4 @@
+import { AppServerUsageError } from "../domain/app-server-usage-error";
 import type { ManagedRunStorePort } from "@vioxen/subscription-runtime/core";
 import type { CodexExecutionResult } from "../../codex-json-execution-engine";
 import {
@@ -32,4 +33,9 @@ export async function parseCodexAppServerStructuredOutput(input: {
     });
     throw error;
   }
+}
+
+export async function parseAppServerOutputWithUsage(input: Parameters<typeof parseCodexAppServerStructuredOutput>[0]): Promise<CodexExecutionResult> {
+  try { return await parseCodexAppServerStructuredOutput(input); }
+  catch (error) { throw new AppServerUsageError(error, input.result.usage, true); }
 }

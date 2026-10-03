@@ -32,15 +32,29 @@ export async function admitHostedTestEgress(
   // a wrong principal before entering its selected route.
   if (process.platform !== "linux" || process.getuid?.() !== 0) {
     if (isHostedOrdinaryRuntime()) {
-      if (mimo) throw new Error("hosted_mimo_egress_admission_unsupported");
-      admitHostedOrdinaryIdentity(input);
+      const profile = admitHostedOrdinaryIdentity(input);
+      if (mimo || profile === CodexProviderEgressProfileId.MimoTokenPlan) {
+        if (!mimo || profile !== CodexProviderEgressProfileId.MimoTokenPlan ||
+            input.executionEngine !== "app-server-goal" ||
+            input.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job") {
+          throw new Error("hosted_mimo_admission_invalid");
+        }
+        throw new Error("hosted_mimo_activation_closed");
+      }
     }
     return mimo ? codexMimoTokenPlanEgressPolicy() : codexProviderApiEgressPolicy();
   }
   const hosted = requiresHostedProcessAdmission(input.sourceEnv ?? process.env);
-  if (mimo && hosted) throw new Error("hosted_mimo_egress_admission_unsupported");
   if (hosted && isHostedOrdinaryRuntime()) {
     const profile = admitHostedOrdinaryIdentity(input);
+    if (mimo || profile === CodexProviderEgressProfileId.MimoTokenPlan) {
+      if (!mimo || profile !== CodexProviderEgressProfileId.MimoTokenPlan ||
+          input.executionEngine !== "app-server-goal" ||
+          input.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job") {
+        throw new Error("hosted_mimo_admission_invalid");
+      }
+      throw new Error("hosted_mimo_activation_closed");
+    }
     if (profile === CodexProviderEgressProfileId.TestNpmQualification &&
         ((input.executionEngine ?? "app-server-goal") !== "app-server-goal" ||
           input.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job")) throw new Error("hosted_test_egress_engine_unsupported");
@@ -54,9 +68,17 @@ export async function admitHostedTestEgress(
   }
   assertReadonlyEnrollmentProfile(input.jobId, grant?.profileId === CodexProviderEgressProfileId.TestManagedQualification);
   if (mimo) {
-    if (grant) throw new Error("hosted_mimo_egress_admission_unsupported");
+    if (hosted || grant) {
+      if (grant?.profileId !== CodexProviderEgressProfileId.MimoTokenPlan ||
+          input.executionEngine !== "app-server-goal" ||
+          input.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job") {
+        throw new Error("hosted_mimo_admission_invalid");
+      }
+      throw new Error("hosted_mimo_activation_closed");
+    }
     return codexMimoTokenPlanEgressPolicy();
   }
+  if (grant?.profileId === CodexProviderEgressProfileId.MimoTokenPlan) throw new Error("hosted_mimo_admission_invalid");
   if (hosted) {
     new HostedReadonlySupervisorHost().assertManagedAdmission(input, grant?.profileId ?? CodexProviderEgressProfileId.ProviderApi);
   }

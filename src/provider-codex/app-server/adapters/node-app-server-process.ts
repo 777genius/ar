@@ -10,6 +10,7 @@ import type {
 import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait } from "./hosted-process-activation";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
 import { hostedReadonlyMountProperties, type HostedReadonlyMounts } from "./hosted-readonly-mounts";
+import { codexProviderEgressProfileEnvVar, CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
 
 const hostedSandboxKind = "hosted-codex-job";
 const managedLauncherNodePath = process.execPath;
@@ -139,6 +140,10 @@ export function spawnCodexAppServerProcess(input: {
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
 }, admittedMounts?: HostedReadonlyMounts, reservedSystemdUnit?: string, submission?: object): CodexAppServerChildProcess {
+  if (requiresHostedProcessAdmission(input.env) &&
+      input.env[codexProviderEgressProfileEnvVar] === CodexProviderEgressProfileId.MimoTokenPlan) {
+    throw new Error("hosted_mimo_activation_closed");
+  }
   if (submission && !hostedSubmissions.has(submission)) throw new Error("hosted_custody_synchronous_fence_required");
   if (!submission && requiresHostedProcessAdmission(input.env)) {
     if (admittedMounts || reservedSystemdUnit) throw new Error("hosted_custody_synchronous_fence_required");

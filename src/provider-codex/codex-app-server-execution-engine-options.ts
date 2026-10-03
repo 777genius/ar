@@ -1,3 +1,5 @@
+import type { AppServerExecutionLifetime } from "./app-server/application/app-server-child-lifetime";
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { ManagedRunStorePort } from "@vioxen/subscription-runtime/core";
 import type {
   CodexAppServerCommandApprovalPolicy,
@@ -10,9 +12,12 @@ import type { AppServerCompletedTurnCheckpoint } from "./app-server/application/
 import type { CodexExecutionProfile } from "./codex-execution-profile";
 import type { CodexExecutionEngine } from "./codex-json-execution-engine";
 import type { CodexModelBackend } from "./codex-model-backend";
+import type { HostedControllerDynamicToolAdapter } from "./app-server/domain/hosted-controller-dynamic-tools";
 
 export type CodexAppServerExecutionEngineOptions = {
   readonly codexBinaryPath: string;
+  readonly childBudget?: ChildExecutionBudget;
+  readonly executionLifetime?: AppServerExecutionLifetime;
   /**
    * Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing behavior
    * is unchanged. Fixed for the engine's (and its app-server process pool's)
@@ -41,6 +46,7 @@ export type CodexAppServerExecutionEngineOptions = {
   readonly runStore?: ManagedRunStorePort;
   readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
   readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+  readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
   readonly rolloutBudget?: CodexAppServerRolloutBudget;
   readonly bypassHookTrust?: boolean;
   readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;

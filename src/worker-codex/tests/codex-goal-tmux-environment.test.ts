@@ -71,6 +71,9 @@ describe("Codex goal tmux environment", () => {
       expect(command).toContain(`MIMO_TOKEN_PLAN_API_KEY=$(cat -- ${keyFile})`);
       expect(command).toContain(`SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE=${keyFile}`);
       expect(command).not.toContain("synthetic-private-key");
+      expect(() => buildCodexGoalNoTmuxCommand({ ...input,
+        config: { ...input.config, sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } },
+      })).toThrow("hosted_mimo_activation_closed");
       expect(() => buildCodexGoalNoTmuxCommand({
         ...input,
         config: {

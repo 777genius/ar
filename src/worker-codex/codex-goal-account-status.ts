@@ -24,6 +24,7 @@ import {
   CodexModelBackend,
   codexApiKeyCredentialIdentity,
   codexMimoApiKeyEnvVarDefault,
+  hostedMimoCredentialSourceReady,
   readCodexAuthJsonFreshness,
   validateCodexAuthJsonBytes,
 } from "@vioxen/subscription-runtime/provider-codex";
@@ -433,9 +434,10 @@ function inspectCodexGoalMimoAccount(
   sourceEnv: Readonly<Record<string, string | undefined>>,
 ): CodexGoalAccountSlotStatus {
   const envVarName = slot.envVarName ?? codexMimoApiKeyEnvVarDefault;
-  const authJsonPath = `mimo-env:${envVarName}`;
-  const apiKey = sourceEnv[envVarName]?.trim();
-  if (!apiKey) {
+  const hosted = sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  const authJsonPath = hosted ? "mimo-shared-source" : `mimo-env:${envVarName}`;
+  const apiKey = hosted ? undefined : sourceEnv[envVarName]?.trim();
+  if (hosted ? !hostedMimoCredentialSourceReady() : !apiKey) {
     return {
       name: slot.name,
       modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
@@ -450,11 +452,11 @@ function inspectCodexGoalMimoAccount(
   }
   // Only used to derive a non-reversible identity hash below — never
   // returned, logged, or persisted anywhere in this module.
-  const identity = codexApiKeyCredentialIdentity({
+  const identity = apiKey ? codexApiKeyCredentialIdentity({
     backend: CodexModelBackend.XiaomiMimoTokenPlan,
     envVarName,
     apiKey,
-  });
+  }) : undefined;
   return {
     name: slot.name,
     modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
@@ -466,10 +468,12 @@ function inspectCodexGoalMimoAccount(
     capacityAvailability: "unknown",
     capacityReason: "quota_endpoint_unavailable",
     identitySource: "mimo_api_key",
-    identityHashPrefix: identity,
+    ...(hosted ? { identityHashPrefix: "mimo:shared-source" }
+      : identity ? { identityHashPrefix: identity } : {}),
     warnings: [],
-    safeMessage:
-      "MiMo Token Plan credential is present; quota and rate-limit state are unknown because no read-only quota endpoint is available",
+    safeMessage: hosted
+      ? "MiMo Token Plan credential source is ready; quota and rate-limit state are unknown"
+      : "MiMo Token Plan credential is present; quota and rate-limit state are unknown because no read-only quota endpoint is available",
   };
 }
 

@@ -9,3 +9,22 @@ export * from "./domain/task-validation";
 export * from "./domain/state-machines";
 export * from "./domain/types";
 export * from "./ports";
+export * from "./child-lifetime/domain/child-lifetime";
+export * from "./child-lifetime/domain/child-slot";
+
+export * from "./child-lifetime/domain/keyed-child-observation";
+
+export * from "./scoped-termination-contract";
+export {
+  RetainedTargetKind, RetainedTopology, RetainedMemberRole, RetainedPreparation,
+  RetainedServiceObservation, RetainedResourceLifecycle, RetainedResourceDisposition,
+  RetainedRetirementStep, RetainedManagerLoad, RetainedManagerActive, RetainedManagerSubstate,
+  RetainedKernelRemoval, RetainedTaskHold, RetainedPidfdSemantics, RetainedJobResult, RetainedRecordKind,
+  RETAINED_RESOURCE_LIMITS, RETAINED_RESOURCE_NAMESPACES,
+  retainedResourceCanonicalJson, retainedResourceDigest, retainedResourceBytes,
+  parseScopedRetainedRecord, parseScopedRetainedRecordBytes, retainedResourceLocator, retainedResourceNames,
+  type RetainedRecordData, type ScopedRetainedRecord, type ScopedRetainedTarget,
+  type ScopedRetainedAllocation, type ScopedRetainedOriginalCleanupAuthority, type ScopedRetainedCleanupAttempt,
+  type ScopedRetainedPayloadGate, type ScopedRetainedPayloadGateClosure,
+} from "./scoped-retained-resource-contract";
+export * from "./scoped-retained-resource-validation";

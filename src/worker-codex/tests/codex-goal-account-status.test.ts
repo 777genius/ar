@@ -200,7 +200,7 @@ exit 1
     }
   });
 
-  it("clears a stale canonical cooldown after an available live check", async () => {
+  it("clears a stale canonical quota metadata cooldown after an available live check", async () => {
     const root = await mkdtemp(
       join(tmpdir(), "codex-goal-account-status-clear-"),
     );
@@ -237,6 +237,7 @@ exit 1
         capacity: {
           availability: "quota_exhausted",
           reason: "quota_limited",
+          details: { capacitySource: "codex_app_server_live_quota" },
           cooldownUntil: new Date(Date.now() + 24 * 60 * 60 * 1000),
         },
       });
