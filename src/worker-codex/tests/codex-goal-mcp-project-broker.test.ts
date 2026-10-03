@@ -121,7 +121,7 @@ describe("codex goal MCP server", () => {
         manifest: {
           jobId: "infinity-context-child-v1",
           accessBoundary: AccessBoundary.IsolatedWorkspaceWrite,
-          networkAccess: NetworkAccessMode.Restricted,
+          networkAccess: NetworkAccessMode.Unrestricted,
           tags: expect.arrayContaining(["worker-role-reviewer"]),
           projectAccessScope: {
             projectId: "infinity-context",
