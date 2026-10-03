@@ -34,10 +34,12 @@ export type CodexGoalProjectCreateWorktreeInput = {
 export function noopOperationResult(
   resourceId: string,
   safeMessage: string,
+  evidence?: Readonly<Record<string, string>>,
 ): ProjectControlOperationResult {
   return {
     status: "noop",
     resourceId,
     safeMessage,
+    ...(evidence ? { evidence } : {}),
   };
 }

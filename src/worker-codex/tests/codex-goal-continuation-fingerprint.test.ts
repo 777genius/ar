@@ -20,7 +20,7 @@ afterEach(async () => {
   ));
 });
 
-it("records hash-only continuation evidence after a raw-secret capacity pause", async () => {
+it("fails closed when a capacity pause cannot preserve raw-secret output", async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-goal-continuation-fingerprint-"));
   roots.push(root);
   const workspacePath = join(root, "workspace");
@@ -50,7 +50,7 @@ it("records hash-only continuation evidence after a raw-secret capacity pause", 
   });
   const secret = ["sk-", "z".repeat(24)].join("");
 
-  await runCodexGoal(config, {
+  await expect(runCodexGoal(config, {
     createExecutor: () => ({
       async run() {
         await writeFile(join(workspacePath, "provider-output.txt"), secret);
@@ -63,22 +63,8 @@ it("records hash-only continuation evidence after a raw-secret capacity pause", 
       },
       async dispose() {},
     }),
-  });
-  const resultText = await readFile(config.outputPath!, "utf8");
-  const result = JSON.parse(resultText) as Record<string, unknown>;
-  expect(result).toMatchObject({
-    status: "partial",
-    reason: "account_unavailable",
-    changedFiles: ["provider-output.txt"],
-    details: {
-      handoffArtifactError: "handoff_raw_secret_rejected",
-      continuationWorkspaceFingerprintSchema: "workspace-diff-sha256-v1",
-      continuationWorkspaceFingerprintSha256:
-        expect.stringMatching(/^[a-f0-9]{64}$/),
-    },
-  });
-  expect(result.evidence).toContain(
-    "continuation_workspace_fingerprint_captured",
+  })).rejects.toThrow(
+    "dirty_terminal_handoff_unavailable:handoff_raw_secret_rejected",
   );
-  expect(resultText).not.toContain(secret);
+  await expect(readFile(config.outputPath!, "utf8")).rejects.toThrow();
 });

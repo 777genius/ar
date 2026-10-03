@@ -1,10 +1,14 @@
 import type { RuntimeResultArtifact } from "@vioxen/subscription-runtime/worker-core";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import type { CodexGoalContinuationWorkspaceFingerprint } from "./codex-goal-continuation-workspace-fingerprint";
 import {
   captureCodexGoalContinuationWorkspaceFingerprint,
-  materializeCodexGoalHandoffArtifacts,
 } from "./codex-goal-handoff-artifacts";
+import { materializeDurableCodexGoalHandoffPacket } from
+  "./codex-goal-durable-handoff-packet";
+import { readLocalGitHeadCommit } from "./codex-goal-git-revision";
 import { sanitizeNodeDependencyEnvironment } from "./dependency-environment-safety";
 
 export type TerminalCodexGoalHandoffMaterialization = {
@@ -12,14 +16,64 @@ export type TerminalCodexGoalHandoffMaterialization = {
   readonly changedPaths?: readonly string[];
   readonly errorCode?: string;
   readonly continuationFingerprint?: CodexGoalContinuationWorkspaceFingerprint;
+  readonly packetPath?: string;
+  readonly manifestSha256?: string;
+  readonly baseCommit?: string;
+  readonly indexSha256?: string;
+  readonly worktreeSha256?: string;
+  readonly headRelativeSha256?: string;
+  readonly untrackedArchiveSha256?: string;
 };
+
+export function assertDirtyTerminalHandoffAvailable(
+  changedFiles: readonly string[],
+  handoff: TerminalCodexGoalHandoffMaterialization | null,
+  artifacts: readonly { readonly path?: string }[],
+): void {
+  if (changedFiles.length === 0) return;
+  if (!handoff?.packetPath || !handoff.manifestSha256 || artifacts.length === 0) {
+    throw new Error(
+      `dirty_terminal_handoff_unavailable:${handoff?.errorCode ?? "unknown"}`,
+    );
+  }
+}
+
+export async function materializeReconciledTerminalCodexGoalHandoff(input: {
+  readonly config: Parameters<typeof tryMaterializeTerminalCodexGoalHandoff>[0];
+  readonly changedFiles: readonly string[];
+}): Promise<{
+  readonly handoff: TerminalCodexGoalHandoffMaterialization | null;
+  readonly artifacts: readonly RuntimeResultArtifact[];
+  readonly changedPaths: readonly string[];
+  readonly baseCommit: string | undefined;
+}> {
+  const currentHeadCommit = await readLocalGitHeadCommit(input.config.workspacePath);
+  const handoff = input.changedFiles.length === 0
+    ? null
+    : await tryMaterializeTerminalCodexGoalHandoff({
+        ...input.config,
+        ...(currentHeadCommit === undefined
+          ? {}
+          : { expectedHeadCommit: currentHeadCommit }),
+      });
+  const artifacts = handoff?.artifacts ?? [];
+  assertDirtyTerminalHandoffAvailable(input.changedFiles, handoff, artifacts);
+  return {
+    handoff,
+    artifacts,
+    changedPaths: handoff?.changedPaths ?? input.changedFiles,
+    baseCommit: handoff?.baseCommit ?? currentHeadCommit,
+  };
+}
 
 export async function tryMaterializeTerminalCodexGoalHandoff(input: {
   readonly jobId?: string;
   readonly jobRootDir: string;
+  readonly durableHandoffRootDir?: string;
   readonly taskId: string;
   readonly workspacePath: string;
   readonly expectedBaseCommit?: string;
+  readonly expectedHeadCommit?: string;
 }): Promise<TerminalCodexGoalHandoffMaterialization> {
   try {
     // Dependency bootstrap may create worktree-local links to a shared cache.
@@ -30,14 +84,22 @@ export async function tryMaterializeTerminalCodexGoalHandoff(input: {
     await sanitizeNodeDependencyEnvironment({
       workspacePath: input.workspacePath,
     });
-    const materialized = await materializeCodexGoalHandoffArtifacts({
+    const expectedBaseCommit = input.expectedBaseCommit ??
+      await recordedRunStartBaseCommit(input.jobRootDir, input.taskId);
+    const materialized = await materializeDurableCodexGoalHandoffPacket({
       workerJobId: input.jobId ?? input.taskId,
       taskId: input.taskId,
       workspacePath: input.workspacePath,
-      jobRootDir: input.jobRootDir,
-      ...(input.expectedBaseCommit === undefined
+      durableRootDir: resolveDurableHandoffRoot(
+        input.durableHandoffRootDir,
+        input.jobRootDir,
+      ),
+      ...(expectedBaseCommit === undefined
         ? {}
-        : { expectedBaseCommit: input.expectedBaseCommit }),
+        : { expectedBaseCommit }),
+      ...(input.expectedHeadCommit === undefined
+        ? {}
+        : { expectedHeadCommit: input.expectedHeadCommit }),
     });
     return materialized === null
       ? {
@@ -47,6 +109,15 @@ export async function tryMaterializeTerminalCodexGoalHandoff(input: {
       : {
           artifacts: materialized.artifacts,
           changedPaths: materialized.changedPaths,
+          packetPath: materialized.packetPath,
+          manifestSha256: materialized.manifestSha256,
+          baseCommit: materialized.manifest.git.base,
+          indexSha256: materialized.manifest.layers.index.sha256,
+          worktreeSha256: materialized.manifest.layers.worktree.sha256,
+          ...(materialized.manifest.layers.headRelative
+            ? { headRelativeSha256: materialized.manifest.layers.headRelative.sha256 }
+            : {}),
+          untrackedArchiveSha256: materialized.manifest.untracked.archive.sha256,
         };
   } catch (error) {
     const errorCode = safeHandoffMaterializationErrorCode(error);
@@ -65,6 +136,33 @@ export async function tryMaterializeTerminalCodexGoalHandoff(input: {
     };
   }
 }
+
+async function recordedRunStartBaseCommit(
+  jobRootDir: string,
+  taskId: string,
+): Promise<string | undefined> {
+  try {
+    const lines = (await readFile(
+      join(jobRootDir, `${taskId}.events.jsonl`),
+      "utf8",
+    )).split(/\r?\n/);
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line) as {
+        readonly event?: unknown;
+        readonly attributes?: { readonly baseCommit?: unknown };
+      };
+      if (event.event === "runner_starting" &&
+        typeof event.attributes?.baseCommit === "string" &&
+        event.attributes.baseCommit.trim()) {
+        return event.attributes.baseCommit.trim();
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return undefined;
+}
 export function terminalCodexGoalHandoffResultDetails(
   handoff: TerminalCodexGoalHandoffMaterialization | null,
 ): Readonly<Record<string, string>> {
@@ -78,7 +176,30 @@ export function terminalCodexGoalHandoffResultDetails(
             handoff.continuationFingerprint.sha256,
         }
       : {}),
+    ...(handoff?.packetPath ? { handoffPacketPath: handoff.packetPath } : {}),
+    ...(handoff?.manifestSha256
+      ? { handoffManifestSha256: handoff.manifestSha256 }
+      : {}),
+    ...(handoff?.indexSha256 ? { handoffIndexSha256: handoff.indexSha256 } : {}),
+    ...(handoff?.worktreeSha256
+      ? { handoffWorktreeSha256: handoff.worktreeSha256 }
+      : {}),
+    ...(handoff?.headRelativeSha256
+      ? { handoffHeadRelativeSha256: handoff.headRelativeSha256 }
+      : {}),
+    ...(handoff?.untrackedArchiveSha256
+      ? { handoffUntrackedArchiveSha256: handoff.untrackedArchiveSha256 }
+      : {}),
   };
+}
+
+function resolveDurableHandoffRoot(
+  value: string | undefined,
+  jobRootDir: string,
+): string {
+  if (value === undefined) return join(jobRootDir, "durable-handoffs");
+  if (!value.trim()) throw new Error("handoff_durable_root_required");
+  return value;
 }
 
 export function terminalCodexGoalHandoffEvidence(

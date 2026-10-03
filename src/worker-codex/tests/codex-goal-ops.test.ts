@@ -9,6 +9,7 @@ import {
   AccessBoundary,
   NetworkAccessMode,
   RunProcessSupervisorKind,
+  RunProcessAliveReason,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
   codexGoalAccountSlots,
@@ -23,7 +24,9 @@ import {
   CodexGoalRuntimeResultReconciler,
   listCodexGoalAccountStatuses,
   reconcileCodexGoalRuntimeResult,
+  resolveCodexGoalWorkerLiveness,
   startCodexGoalTmux,
+  summarizeCodexGoalProcessTree,
   type CodexGoalLaunchInput,
 } from "../codex-goal-ops";
 import {
@@ -44,7 +47,7 @@ describe("codex goal ops", () => {
     const tmux = buildCodexGoalTmuxCommand(launch);
 
     expect(noTmux).toContain("subscription-runtime-codex-goal run --no-tmux");
-    expect(noTmux).toContain("--accounts account-a");
+    expect(noTmux).toContain("--accounts account-a"); expect(noTmux).toContain("--durable-handoff-root");
     expect(noTmux).toContain(
       "--codex-goal-objective 'Short objective with docs links.'",
     );
@@ -548,7 +551,7 @@ describe("codex goal ops", () => {
     expect(brief.nextBestReason).toBe("worker completed");
   });
 
-  it("reconciles a missing runtime result into a strict partial result with a patch", async () => {
+  it("reconciles a missing runtime result only after a durable packet is verified", async () => {
     const fixture = await createGoalFixture();
     await execFileAsync("git", ["config", "user.email", "test@example.com"], {
       cwd: fixture.config.workspacePath,
@@ -589,15 +592,14 @@ describe("codex goal ops", () => {
       nextAction: "preserve_patch",
       reason: "missing_runtime_result",
     });
+    const details = result.details as Record<string, unknown>;
+    expect(details.handoffPacketPath).toEqual(expect.stringContaining("task-1."));
+    expect(details.handoffManifestSha256).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
     expect(result.evidence).toEqual(expect.arrayContaining([
       "supervisor_reconciled_result",
       "latest_result_missing",
-      `patch_preserved:${join(fixture.config.jobRootDir, "task-1.preserved.patch")}`,
     ]));
-    expect(await readFile(join(fixture.config.jobRootDir, "task-1.preserved.patch"), "utf8"))
-      .toContain("after");
-    expect(await readFile(join(fixture.config.jobRootDir, "task-1.preserved.patch"), "utf8"))
-      .toContain("new file");
+    expect(result).toHaveProperty("artifacts");
   });
 
   it("reconciles a dead worker with a missing runtime result into strict failure", async () => {
@@ -992,6 +994,135 @@ describe("codex goal ops", () => {
     expect(JSON.stringify(brief)).not.toContain("raw-secret");
   });
 
+  it("summarizes child process CPU as active worker progress", () => {
+    expect(summarizeCodexGoalProcessTree(100, [
+      { pid: 100, ppid: 1, cpu: 0, command: "node subscription-runtime-codex-goal" },
+      { pid: 101, ppid: 100, cpu: 0, command: "sh -c npm test" },
+      { pid: 102, ppid: 101, cpu: 84.2, command: "npm test -- --runInBand" },
+    ])).toMatchObject({
+      alive: true,
+      cpuActive: true,
+      command: "npm test -- --runInBand",
+    });
+  });
+
+  it("detects an idle Codex app-server child process", () => {
+    expect(summarizeCodexGoalProcessTree(100, [
+      { pid: 100, ppid: 1, cpu: 0, command: "node subscription-runtime-codex-goal" },
+      { pid: 101, ppid: 100, cpu: 0, command: "codex app-server --listen stdio://" },
+    ])).toMatchObject({
+      alive: true,
+      cpuActive: false,
+      appServerAlive: true,
+      appServerPid: 101,
+    });
+  });
+
+  it("does not summarize defunct process rows as live worker progress", () => {
+    expect(summarizeCodexGoalProcessTree(100, [
+      {
+        pid: 100,
+        ppid: 1,
+        stat: "Z",
+        cpu: 52.1,
+        command: "[ps] <defunct>",
+      },
+    ])).toEqual({});
+  });
+
+  it("treats fresh running progress as observable liveness without tmux", () => {
+    expect(resolveCodexGoalWorkerLiveness({
+      status: {
+        progressExists: true,
+        progressStatus: "running",
+        progressHeartbeatAgeMs: 1_000,
+      },
+      progressStale: false,
+    })).toMatchObject({
+      alive: true,
+      supervisorKind: RunProcessSupervisorKind.External,
+      processAlive: false,
+      freshProgressAlive: true,
+      aliveReason: RunProcessAliveReason.FreshProgress,
+    });
+  });
+
+  it("does not treat fresh progress as liveness after tmux and pid are gone", () => {
+    expect(resolveCodexGoalWorkerLiveness({
+      status: {
+        tmuxAlive: false,
+        progressExists: true,
+        progressStatus: "running",
+        progressHeartbeatAgeMs: 1_000,
+        progressProcessAlive: false,
+      },
+      progressStale: false,
+    })).toMatchObject({
+      alive: false,
+      supervisorKind: RunProcessSupervisorKind.None,
+      processAlive: false,
+      freshProgressAlive: false,
+      aliveReason: RunProcessAliveReason.Unknown,
+    });
+  });
+
+  it("does not treat maintenance-paused progress as a live worker", () => {
+    expect(resolveCodexGoalWorkerLiveness({
+      status: {
+        progressExists: true,
+        progressStatus: "maintenance_paused",
+        progressHeartbeatAgeMs: 1_000,
+        progressProcessAlive: true,
+      },
+      progressStale: false,
+    })).toMatchObject({
+      alive: false,
+      supervisorKind: RunProcessSupervisorKind.None,
+      processAlive: false,
+      freshProgressAlive: false,
+      aliveReason: RunProcessAliveReason.TerminalResult,
+    });
+  });
+
+  it("does not treat partial progress as a live worker", () => {
+    expect(resolveCodexGoalWorkerLiveness({
+      status: {
+        progressExists: true,
+        progressStatus: "partial",
+        progressHeartbeatAgeMs: 1_000,
+        progressProcessAlive: true,
+        progressCommand: "node subscription-runtime-codex-goal run",
+      },
+      progressStale: false,
+    })).toMatchObject({
+      alive: false,
+      supervisorKind: RunProcessSupervisorKind.None,
+      processAlive: false,
+      freshProgressAlive: false,
+      aliveReason: RunProcessAliveReason.TerminalResult,
+    });
+  });
+
+  it("does not trust bracketed kernel worker commands as progress pid liveness", () => {
+    expect(resolveCodexGoalWorkerLiveness({
+      status: {
+        tmuxAlive: false,
+        progressExists: true,
+        progressStatus: "running",
+        progressHeartbeatAgeMs: 1_000,
+        progressProcessAlive: true,
+        progressCommand: "[kworker/R-slub_]",
+      },
+      progressStale: false,
+    })).toMatchObject({
+      alive: false,
+      supervisorKind: RunProcessSupervisorKind.None,
+      processAlive: false,
+      freshProgressAlive: false,
+      aliveReason: RunProcessAliveReason.Unknown,
+    });
+  });
+
   it("keeps a live dirty worker in wait state instead of manual review", async () => {
     const fixture = await createGoalFixture();
     const launch = launchInput(fixture.config, fixture.root);
@@ -1292,6 +1423,7 @@ async function createGoalFixture(): Promise<{
     root,
     config: {
       jobRootDir,
+      durableHandoffRootDir: join(root, "durable"),
       authRootDir,
       workspacePath,
       promptPath,

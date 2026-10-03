@@ -6,4 +6,3 @@ vi.mock("../hosted-test-egress-admission", async () => {
   const actual = await vi.importActual<typeof import("../hosted-test-egress-admission")>("../hosted-test-egress-admission");
   return { ...actual, admitHostedTestEgress: async () => codexProviderApiEgressPolicy() };
 });
-

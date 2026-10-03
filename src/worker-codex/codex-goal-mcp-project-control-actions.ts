@@ -147,6 +147,7 @@ export async function projectControlStartStoredJobView(args: ProjectControlMcpAr
   const loaded = await loadProjectPreStartObservation(
     manifest,
     reviewedOutputId,
+    controller.registryRootDir,
   );
   const { status, decision: continuationDecision } = loaded;
   if (
