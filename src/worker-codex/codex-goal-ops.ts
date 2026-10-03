@@ -216,6 +216,10 @@ export class CodexGoalRuntimeResultReconciler
 
 export function buildCodexGoalNoTmuxCommand(input: CodexGoalLaunchInput): string {
   const config = input.config;
+  if (config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+      (config.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job") {
+    throw new Error("hosted_mimo_activation_closed");
+  }
   const args = buildCodexGoalForegroundArgv(input);
   const envAssignments: string[] = [
     `PATH=${shellQuote(codexChildPath(process.env))}`,

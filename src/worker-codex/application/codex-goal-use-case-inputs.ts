@@ -35,6 +35,9 @@ export type CodexGoalInput = {
   readonly appServerStartupTimeoutMs?: number;
   readonly staleLockMs?: number;
   readonly maxAccountCycles?: number;
+  readonly childLifetime?: CodexGoalRunConfig["childLifetime"];
+  readonly maxGoalTurns?: number;
+  readonly safeExecutionPolicy?: CodexGoalRunConfig["safeExecutionPolicy"];
   readonly editMode?: CodexGoalRunConfig["editMode"];
   readonly providerSandboxMode?: CodexGoalRunConfig["providerSandboxMode"];
   readonly accessBoundary?: CodexGoalRunConfig["accessBoundary"];

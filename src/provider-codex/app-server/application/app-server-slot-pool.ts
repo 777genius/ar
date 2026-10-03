@@ -1,3 +1,6 @@
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
+import type { EventEmitter } from "node:events";
+import { AppServerProcessCleanupError, AppServerProcessCleanupUnresolvedError, stopAppServerProcess } from "./app-server-process-stopper";
 import type {
   ManagedRunStorePort,
 } from "@vioxen/subscription-runtime/core";
@@ -8,6 +11,7 @@ import type {
 } from "../domain/app-server-rollout-budget";
 import type { CodexMaterializedSession } from "../../codex-json-execution-engine";
 import type {
+  CodexAppServerChildProcess,
   CodexAppServerChildProcessSignaler,
   CodexAppServerProcessFactory,
 } from "./app-server-process-port";
@@ -25,6 +29,7 @@ import { AppServerGoalRunner } from "./app-server-goal-runner";
 import type { AppServerCompletedTurnCheckpoint } from "./app-server-turn-checkpoint";
 import { AppServerTurnRunner } from "./app-server-turn-runner";
 import type { CodexAppServerRateLimitsSnapshotHandler } from "./app-server-rate-limits-monitor";
+import type { HostedControllerDynamicToolAdapter } from "../domain/hosted-controller-dynamic-tools";
 
 export type AppServerSlot = {
   readonly key: string;
@@ -32,6 +37,15 @@ export type AppServerSlot = {
   readonly turnRunner: AppServerTurnRunner;
   readonly goalRunner: AppServerGoalRunner;
   sessionHash: string | null;
+};
+
+type SlotCleanup = {
+  client: CodexAppServerClient;
+  child: CodexAppServerChildProcess | null;
+  exited: boolean;
+  pending: boolean;
+  retryProcessStop: boolean;
+  onExit: () => void;
 };
 
 type SlotLifecycle = {
@@ -68,11 +82,13 @@ export class AppServerSlotPool {
     string,
     Map<string | null, SlotStartupFlight>
   >();
+  private readonly cleanup = new Map<string, SlotCleanup>();
   private disposed = false;
 
   constructor(
     private readonly options: {
       readonly codexBinaryPath: string;
+      readonly childBudget?: ChildExecutionBudget;
       readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
       readonly hostedPermissionProfiles?: boolean;
       readonly processFactory: CodexAppServerProcessFactory;
@@ -82,6 +98,7 @@ export class AppServerSlotPool {
       readonly executionProfile: ResolvedCodexExecutionProfile;
       readonly commandApprovalPolicy?: CodexAppServerCommandApprovalPolicy;
       readonly nativeToolSurface?: CodexAppServerNativeToolSurface;
+      readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
       readonly rolloutBudget?: CodexAppServerRolloutBudget;
       readonly bypassHookTrust?: boolean;
       readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
@@ -151,24 +168,41 @@ export class AppServerSlotPool {
     ) {
       throw new Error("codex_app_server_slot_startup_disposed");
     }
+    if (this.cleanup.get(input.key)?.pending) {
+      throw new Error("codex_app_server_slot_cleanup_pending");
+    }
     const existing = this.slots.get(input.key);
     if (existing && existing.sessionHash === input.sessionHash) return existing;
     if (existing) {
-      this.slots.delete(input.key);
-      await existing.client.stop();
+      await this.stopSlot(input.key);
+      if (this.disposed || input.abortSignal.aborted ||
+          this.lifecycleFor(input.key).generation !== input.generation) {
+        throw new Error("codex_app_server_slot_startup_disposed");
+      }
     }
 
     const sourceEnv = {
       ...(this.options.sourceEnv ?? process.env),
       ...input.session.env,
     };
+    const cleanup: SlotCleanup = {
+      client: undefined as never, child: null, exited: false,
+      pending: false, retryProcessStop: false,
+      onExit: () => { cleanup.exited = true; },
+    };
     const client = new CodexAppServerClient({
+      ...(this.options.childBudget ? { childBudget: this.options.childBudget } : {}),
       codexBinaryPath: this.options.codexBinaryPath,
       sourceEnv,
       ...(this.options.hostedPermissionProfiles === undefined ? {} : {
         hostedPermissionProfiles: this.options.hostedPermissionProfiles,
       }),
-      processFactory: this.options.processFactory,
+      processFactory: (request) => {
+        const child = this.options.processFactory(request);
+        cleanup.child = child;
+        child.on("exit", cleanup.onExit);
+        return child;
+      },
       signalChildProcess: this.options.signalChildProcess,
       session: input.session,
       workspacePath: input.workspacePath,
@@ -179,6 +213,9 @@ export class AppServerSlotPool {
       ...(this.options.nativeToolSurface === undefined
         ? {}
         : { nativeToolSurface: this.options.nativeToolSurface }),
+      ...(this.options.hostedControllerTools === undefined
+        ? {}
+        : { hostedControllerTools: this.options.hostedControllerTools }),
       ...(this.options.rolloutBudget === undefined
         ? {}
         : { rolloutBudget: this.options.rolloutBudget }),
@@ -207,10 +244,12 @@ export class AppServerSlotPool {
               this.options.rateLimitsSnapshotHandler,
           }),
     });
+    cleanup.client = client;
+    this.cleanup.set(input.key, cleanup);
     try {
       await client.start();
     } catch (error) {
-      await client.stop().catch(() => undefined);
+      await this.cleanupStartupFailure(input.key, error);
       throw error;
     }
     if (
@@ -218,8 +257,9 @@ export class AppServerSlotPool {
       input.abortSignal.aborted ||
       this.lifecycleFor(input.key).generation !== input.generation
     ) {
-      await client.stop().catch(() => undefined);
-      throw new Error("codex_app_server_slot_startup_disposed");
+      const error = new Error("codex_app_server_slot_startup_disposed");
+      await this.cleanupStartupFailure(input.key, error);
+      throw error;
     }
     const slot = {
       key: input.key,
@@ -244,34 +284,70 @@ export class AppServerSlotPool {
     const lifecycle = this.lifecycleFor(key);
     lifecycle.generation += 1;
     this.abortStartupFlights(key);
-    await this.enqueue(lifecycle, async () => {
-      const slot = this.slots.get(key);
-      if (!slot) return;
-      this.slots.delete(key);
-      await slot.client.stop();
-    });
-    this.releaseLifecycleIfIdle(key, lifecycle);
+    try {
+      await this.enqueue(lifecycle, async () => await this.stopSlot(key));
+    } finally {
+      this.releaseLifecycleIfIdle(key, lifecycle);
+    }
   }
 
   async dispose(): Promise<void> {
     this.disposed = true;
     const keys = new Set([
-      ...this.slots.keys(),
-      ...this.lifecycles.keys(),
-      ...this.startupFlights.keys(),
+      ...this.cleanup.keys(), ...this.lifecycles.keys(), ...this.startupFlights.keys(),
     ]);
-    await Promise.all([...keys].map(async (key) => {
+    const results = await Promise.allSettled([...keys].map(async (key) => {
       const lifecycle = this.lifecycleFor(key);
       lifecycle.generation += 1;
       this.abortStartupFlights(key);
-      await this.enqueue(lifecycle, async () => {
-        const slot = this.slots.get(key);
-        if (!slot) return;
-        this.slots.delete(key);
-        await slot.client.stop();
-      });
-      this.releaseLifecycleIfIdle(key, lifecycle);
+      try {
+        await this.enqueue(lifecycle, async () => await this.stopSlot(key));
+      } finally {
+        this.releaseLifecycleIfIdle(key, lifecycle);
+      }
     }));
+    const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length) throw new AggregateError(failures, "codex_app_server_slot_cleanup_failed");
+  }
+
+  private async cleanupStartupFailure(key: string, startupError: unknown): Promise<void> {
+    try {
+      await this.stopSlot(key);
+    } catch (cleanupError) {
+      throw new AggregateError([startupError, cleanupError], "codex_app_server_startup_cleanup_failed");
+    }
+  }
+
+  private async stopSlot(key: string): Promise<void> {
+    const cleanup = this.cleanup.get(key);
+    if (!cleanup) return;
+    cleanup.pending = true;
+    try {
+      // The client caches its stop promise and detaches its child before awaiting.
+      // Retain the cleanup obligation independently so a failed stop can be retried.
+      if (cleanup.retryProcessStop) {
+        // After exit the stopper may only observe group absence, never signal
+        // the retained numeric identity. A live/unknown group remains pending.
+        if (cleanup.exited && !cleanup.child?.pid) {
+          throw new AppServerProcessCleanupUnresolvedError();
+        }
+        await stopAppServerProcess({
+          child: cleanup.child, exited: cleanup.exited,
+          signal: this.options.signalChildProcess,
+        });
+      } else {
+        await cleanup.client.stop();
+      }
+    } catch (error) {
+      if (error instanceof AppServerProcessCleanupError) cleanup.retryProcessStop = true;
+      if (cleanup.retryProcessStop && !(error instanceof AppServerProcessCleanupError)) {
+        throw new AppServerProcessCleanupError(error);
+      }
+      throw error;
+    }
+    (cleanup.child as unknown as EventEmitter | null)?.removeListener("exit", cleanup.onExit);
+    this.cleanup.delete(key);
+    this.slots.delete(key);
   }
 
   private lifecycleFor(key: string): SlotLifecycle {
@@ -329,6 +405,7 @@ export class AppServerSlotPool {
 
   private releaseLifecycleIfIdle(key: string, lifecycle: SlotLifecycle): void {
     if (
+      !this.cleanup.has(key) &&
       !this.slots.has(key) &&
       !this.startupFlights.has(key) &&
       lifecycle.pendingOperations === 0
@@ -361,7 +438,7 @@ export class AppServerSlotPool {
         flight.abortController.abort();
         void flight.promise.then(
           () => reject(new AppServerSlotAcquireAbortedError()),
-          () => reject(new AppServerSlotAcquireAbortedError()),
+          (error: unknown) => reject(error instanceof AggregateError ? error : new AppServerSlotAcquireAbortedError()),
         );
       };
       flight.subscribers += 1;

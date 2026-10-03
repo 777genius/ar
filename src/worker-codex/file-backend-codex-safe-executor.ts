@@ -1,3 +1,5 @@
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
+import { assertChildExecutor } from "./child-execution-confinement";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -7,6 +9,7 @@ import {
 import {
   CodexModelBackend,
   type AppServerCompletedTurnCheckpoint,
+  AppServerExecutionLifetime,
   codexApiKeyCredentialIdentity,
   codexMimoApiKeyEnvVarDefault,
   loadCodexApiKeyCredential,
@@ -80,6 +83,8 @@ export type FileBackendCodexSafeExecutorAccount = {
 };
 
 export type FileBackendCodexSafeExecutorOptions = {
+  readonly childBudget?: ChildExecutionBudget;
+  readonly executionLifetime?: AppServerExecutionLifetime;
   readonly executorId?: string;
   readonly stateRootDir: string;
   readonly terminalCheckpointJobRootDir?: string;
@@ -155,9 +160,22 @@ export class FileBackendCodexSafeExecutor {
   private readonly runner: SafeExecutionRunner;
   private startPromise: Promise<void> | null = null;
   private disposed = false;
+  private childRunEntered = false;
 
   constructor(private readonly options: FileBackendCodexSafeExecutorOptions) {
+    if (options.childBudget && !options.executionLifetime) {
+      const executionLifetime = new AppServerExecutionLifetime({ childBudget: options.childBudget });
+      options = { ...options, executionLifetime, accounts: options.accounts.map(account => ({ ...account,
+        worker: { ...account.worker, executionLifetime } })) };
+      this.options = options;
+    }
     assertSafeExecutorOptions(options);
+    if (options.executionLifetime && (options.accounts.length !== 1 || options.maxAccountCycles !== 1 ||
+        options.prewarmOnStart !== false || options.controlInbox !== undefined ||
+        options.safeExecutionPolicy?.maxAttempts !== 1 || options.safeExecutionPolicy.continuationMode !== "disabled" ||
+        options.accounts[0]!.worker.executionLifetime !== options.executionLifetime)) {
+      throw new Error("codex_bounded_executor_profile_conflict");
+    }
     this.executorId =
       options.executorId ??
       `file-backend-codex-safe:${hashText(options.workspacePath).slice(0, 12)}`;
@@ -298,14 +316,14 @@ export class FileBackendCodexSafeExecutor {
     this.runner = new SafeExecutionRunner({
       lockStore: options.lockStore ?? localSafeExecutionStores.lockStore,
       journal: options.journal ?? localSafeExecutionStores.journal,
-      controlInbox:
+      ...(!options.childBudget && !options.executionLifetime ? { controlInbox:
         options.controlInbox ??
         new WorkerControlService({
           store: new LocalFileWorkerControlInboxStore({
             rootDir: options.stateRootDir,
           }),
           ...(options.clock ? { clock: options.clock } : {}),
-        }),
+        }) } : {}),
       ...(options.activeAttemptRegistry === undefined
         ? {}
         : { activeAttemptRegistry: options.activeAttemptRegistry }),
@@ -337,6 +355,7 @@ export class FileBackendCodexSafeExecutor {
   }
 
   async prewarm(): Promise<void> {
+    if (this.options.childBudget || this.options.executionLifetime) throw new Error("child_prewarm_denied");
     await this.start();
     await this.pool.prewarm();
   }
@@ -344,6 +363,28 @@ export class FileBackendCodexSafeExecutor {
   async run(
     input: FileBackendCodexSafeExecutorRunInput,
   ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+    assertChildExecutor(this.options, input);
+    const lifetime = this.options.executionLifetime;
+    lifetime?.assertActive(input.abortSignal);
+    lifetime?.arm();
+    if (lifetime) {
+      if (input.logicalThread || input.recoveryPacket || (input.maxAccountCycles !== undefined && input.maxAccountCycles !== 1) ||
+          (input.safeExecutionPolicy?.maxAttempts !== undefined && input.safeExecutionPolicy.maxAttempts !== 1) ||
+          (input.safeExecutionPolicy?.continuationMode !== undefined && input.safeExecutionPolicy.continuationMode !== "disabled")) {
+        throw new Error("codex_bounded_executor_continuation_denied");
+      }
+    }
+    // The lifetime fences provider work inside the pool/driver. Its closure
+    // also requests cleanup; it must not cancel the runner's terminal journal
+    // writes or race away the structured attempt result during that cleanup.
+    return await this.runForeground(input);
+  }
+
+  private async runForeground(input: FileBackendCodexSafeExecutorRunInput): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+    if (this.options.childBudget || this.options.executionLifetime) {
+      if (this.childRunEntered) throw new Error("child_invocation_consumed");
+      this.childRunEntered = true;
+    }
     if (
       this.options.sessionHomeProfile?.kind ===
         CodexSessionHomeProfileKind.OneShot &&
@@ -385,7 +426,9 @@ export class FileBackendCodexSafeExecutor {
       provider: "codex",
       pool: {
         run: async (runJob, runOptions) => {
+          this.options.executionLifetime?.assertActive(runJob.abortSignal);
           await this.start();
+          this.options.executionLifetime?.assertActive(runJob.abortSignal);
           return this.pool.run(runJob, runOptions);
         },
       },
@@ -480,9 +523,10 @@ export class FileBackendCodexSafeExecutor {
   }
 
   async dispose(): Promise<void> {
+    this.options.executionLifetime?.close();
     if (this.disposed) return;
-    this.disposed = true;
     await this.pool.dispose();
+    this.disposed = true;
   }
 
   private async startOnce(): Promise<void> {
@@ -732,6 +776,7 @@ function assertSafeExecutorOptions(
   if (options.accounts.length === 0) {
     throw new Error("file_backend_codex_safe_accounts_required");
   }
+  assertChildExecutor(options);
   assertCodexSessionHomeProfile(options.sessionHomeProfile);
   assertMaxAccountCycles(options.maxAccountCycles);
   for (const account of options.accounts) {

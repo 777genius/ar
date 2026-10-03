@@ -338,3 +338,181 @@ describe("paid-credit provider rejection and balance authority regressions", () 
     expect(decide(quota).schedulerEligible).toBe(false);
   });
 });
+
+describe("paid credits with classified included limits and spend controls", () => {
+  const observedAccountWRead = {
+    "ordinaryUsageAllowed": false,
+    "rateLimits": {
+      "limitId": "codex",
+      "limitName": null,
+      "normalModelSlug": null,
+      "primary": {
+        "usedPercent": 100,
+        "windowDurationMins": 10080,
+        "resetsAt": 1791580409
+      },
+      "secondary": null,
+      "credits": {
+        "hasCredits": true,
+        "unlimited": false,
+        "balance": "37338.9693840000"
+      },
+      "individualLimit": null,
+      "spendControlReached": false,
+      "planType": "pro",
+      "rateLimitReachedType": "rate_limit_reached"
+    },
+    "rateLimitsByLimitId": {
+      "codex": {
+        "limitId": "codex",
+        "limitName": null,
+        "normalModelSlug": null,
+        "primary": {
+          "usedPercent": 100,
+          "windowDurationMins": 10080,
+          "resetsAt": 1791580409
+        },
+        "secondary": null,
+        "credits": {
+          "hasCredits": true,
+          "unlimited": false,
+          "balance": "37338.9693840000"
+        },
+        "individualLimit": null,
+        "spendControlReached": false,
+        "planType": "pro",
+        "rateLimitReachedType": "rate_limit_reached"
+      }
+    },
+    "rateLimitResetCredits": {
+      "availableCount": 1,
+      "credits": [
+        {
+          "id": "[field_omitted]",
+          "resetType": "codexRateLimits",
+          "status": "available",
+          "grantedAt": 1790709080,
+          "expiresAt": 1793301080,
+          "title": "Full reset",
+          "description": "Thanks for using Codex! You've been granted one free rate limit reset."
+        }
+      ]
+    },
+    "accountId": "[field_omitted]",
+    "rateLimitUpsell": null
+  };
+  const credits = { hasCredits: true, unlimited: false, balance: "37338.9693840000" };
+  const bucket = (overrides: Record<string, unknown> = {}) => ({
+    limitId: "codex", credits, spendControlReached: false,
+    rateLimitReachedType: "rate_limit_reached",
+    primary: { usedPercent: 100, windowDurationMins: 10080 }, ...overrides,
+  });
+  const snapshot = (value: Record<string, unknown>) =>
+    quotaSnapshotFromRateLimits({ now, result: { rateLimits: value } });
+  const decide = (quota: ReturnType<typeof quotaSnapshotFromRateLimits>) =>
+    new ObservationPolicy().decide({
+      auth: { status: AuthSessionStatus.Authenticated, checkedAt: now }, quota,
+    });
+
+  it("permits the observed account-w included-limit snapshot through verified paid credits", () => {
+    const quota = quotaSnapshotFromRateLimits({ now, result: observedAccountWRead });
+    expect(quota.windows).toHaveLength(1);
+    expect(quota.windows[0]).toMatchObject({
+      state: QuotaLimitState.Clear, usedPercent: 100, creditsRemaining: 37338.969384,
+      reachedType: "rate_limit_reached", kind: QuotaWindowKind.SevenDay,
+    });
+    expect(decide(quota)).toMatchObject({ availability: "available", schedulerEligible: true });
+  });
+
+  it("blocks explicit spend control below included usage limits", () => {
+    const quota = snapshot(bucket({
+      spendControlReached: true, rateLimitReachedType: null,
+      primary: { usedPercent: 3, windowDurationMins: 10080 },
+    }));
+    expect(quota.windows[0]?.state).toBe(QuotaLimitState.Limited);
+    expect(decide(quota).schedulerEligible).toBe(false);
+  });
+
+  it.each([
+    "workspace_owner_credits_depleted", "workspace_member_credits_depleted",
+    "workspace_owner_usage_limit_reached", "workspace_member_usage_limit_reached",
+    "future_provider_denial",
+  ])("preserves parent hard or unknown reason %s over a nested generic limit", reason => {
+    const quota = snapshot(bucket({
+      rateLimitReachedType: reason,
+      primary: { usedPercent: 100, windowDurationMins: 10080, rateLimitReachedType: "rate_limit_reached" },
+    }));
+    expect(quota.windows[0]).toMatchObject({ state: QuotaLimitState.Limited, reachedType: reason });
+    expect(decide(quota)).toMatchObject({ schedulerEligible: false, reason });
+  });
+
+  it.each([
+    { parent: true, nested: false }, { parent: false, nested: true },
+    { parent: false, nested: null }, { parent: null, nested: false },
+    { parent: false, nested: "false" }, { parent: "false", nested: false },
+    { parent: false, nested: 0 }, { parent: 0, nested: false },
+    { parent: undefined, nested: undefined },
+  ])("does not grant credits for conflicting or unavailable spend control %j", ({ parent, nested }) => {
+    const quota = snapshot(bucket({
+      spendControlReached: parent,
+      primary: { usedPercent: 100, windowDurationMins: 10080, spendControlReached: nested },
+    }));
+    expect(quota.windows[0]?.state).toBe(QuotaLimitState.Limited);
+    expect(decide(quota).schedulerEligible).toBe(false);
+  });
+
+  it("accepts matching explicit false spend controls", () => {
+    expect(decide(snapshot(bucket({
+      primary: { usedPercent: 100, windowDurationMins: 10080, spendControlReached: false },
+    }))).schedulerEligible).toBe(true);
+  });
+
+  it.each([null, "false", 0])("keeps malformed parent spend control %j blocked", spendControlReached => {
+    expect(decide(snapshot(bucket({ spendControlReached }))).schedulerEligible).toBe(false);
+  });
+
+  it("keeps an absent parent spend control blocked", () => {
+    const value: Record<string, unknown> = bucket();
+    delete value.spendControlReached;
+    expect(decide(snapshot(value)).schedulerEligible).toBe(false);
+  });
+
+  it.each([
+    undefined, { hasCredits: false, unlimited: false, balance: "42" },
+    { hasCredits: true, unlimited: false, balance: "0" },
+    { hasCredits: true, unlimited: false, balance: "NaN" },
+    { hasCredits: true, unlimited: false, remaining: 42 },
+    { resetCreditsAvailable: 1 },
+  ])("requires verified modern paid credit metadata %j for the generic exception", creditState => {
+    expect(decide(snapshot(bucket({ credits: creditState }))).schedulerEligible).toBe(false);
+  });
+
+  it("does not apply the paid generic exception to another bucket", () => {
+    expect(decide(snapshot(bucket({ limitId: "another_model" }))).schedulerEligible).toBe(false);
+  });
+
+  it.each([true, false])("retains hard denial across contradictory same-bucket views (hard map=%s)", hardMap => {
+    const hard = bucket({ rateLimitReachedType: "workspace_owner_usage_limit_reached" });
+    const clear = bucket();
+    const quota = quotaSnapshotFromRateLimits({ now, result: {
+      rateLimitsByLimitId: { codex: hardMap ? hard : clear },
+      rateLimits: hardMap ? clear : hard,
+    } });
+    expect(quota.windows).toHaveLength(1);
+    expect(quota.windows[0]).toMatchObject({
+      state: QuotaLimitState.Limited, reachedType: "workspace_owner_usage_limit_reached",
+    });
+    expect(decide(quota)).toMatchObject({
+      schedulerEligible: false, reason: "workspace_owner_usage_limit_reached",
+    });
+  });
+
+  it("does not convert a real quota-read 429 into an available credit snapshot", async () => {
+    const reader = new CodexAppServerQuotaReader({ clientFactory: fakeFactory({
+      "account/read": { account: { email: "operator@example.com" } },
+      "account/rateLimits/read": new Error("HTTP 429 rate_limit_reached"),
+    }) });
+    await expect(reader.readAuthAndQuota({ account, now }))
+      .rejects.toThrow("codex_app_server_quota_read_failed:HTTP 429 rate_limit_reached");
+  });
+});

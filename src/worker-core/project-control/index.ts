@@ -14,3 +14,5 @@ export * from "./domain/project-control-recovery";
 export * from "./ports/project-control-recovery-store";
 export * from "./ports/consumed-output-ledger-mutation-lock-port";
 export * from "./domain/retained-terminal-archive-policy";
+
+export * from "./application/keyed-child-launch";

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { enrollHostedChildSlot } from "./hosted-child-slot-files";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { HostedCustodyPhase } from "@vioxen/subscription-runtime/worker-core";
@@ -15,13 +16,19 @@ import { createReadonlyPrivateRecord, inspectReadonlyInputs, readonlyCustodyRoot
 const [operation, operand, ...extra] = process.argv.slice(2);
 async function runReadonlyOperator(): Promise<void> {
   assertReadonlyHostOperator();
-  if (["install-host", "install-managed-host", "enroll-ordinary", "resume-ordinary", "enter-exclusive", "leave-exclusive", "finish-exclusive", "finish-closed"].includes(operation ?? "")) {
-    if (extra.length || (operation === "enroll-ordinary" ? !operand : operand !== undefined)) throw new Error();
+  if (["enroll-child-slot", "install-host", "install-managed-host", "enroll-ordinary", "resume-ordinary", "enter-exclusive", "leave-exclusive", "finish-exclusive", "finish-closed"].includes(operation ?? "")) {
+    if (extra.length || (["enroll-ordinary", "enroll-child-slot"].includes(operation!) ? !operand : operand !== undefined)) throw new Error();
     for (const root of ["/var/lib/subscription-runtime-host-policy", "/var/lib/subscription-runtime-host-policy/ordinary-origins",
       "/var/lib/subscription-runtime-host-policy/ordinary-starts", "/var/lib/subscription-runtime-host-policy/ordinary-completed", readonlyCustodyRoot, readonlyRevokedRoot, hostedReadonlyPolicyRoot]) {
       await assertHostedTestEgressDirectory(root, true);
     }
     const store = new HostedInstallationActivationStore();
+    if (operation === "enroll-child-slot") {
+      const bytes = readHostedPrivateBytes(operand!, 32768);
+      if (!bytes) throw new Error("child_slot_input_invalid");
+      const slot = store.serialized(fence => enrollHostedChildSlot(fence, bytes));
+      process.stdout.write(JSON.stringify({ operation, slotId: slot.slotId }) + "\n"); return;
+    }
     if (operation === "enter-exclusive" || operation === "leave-exclusive") {
       if (operation === "enter-exclusive") store.enterExclusive(); else store.leaveExclusive();
       process.stdout.write(JSON.stringify({ operation, phase: store.read().phase, reconciliationRequired: true }) + "\n");

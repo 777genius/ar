@@ -1,0 +1,12 @@
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { createInterface } from 'node:readline';
+const heartbeat = join(process.env.TEST_ROOT, 'live-resource.json');
+const tick = () => writeFileSync(heartbeat, JSON.stringify({ pid: process.pid, at: Date.now() }));
+tick(); const timer = setInterval(tick, 15);
+const cleanup = () => { clearInterval(timer); rmSync(heartbeat, { force: true }); process.exit(0); };
+process.on('SIGTERM', cleanup); process.on('SIGINT', cleanup);
+process.on('message', message => { if (message.burst) process.stdout.write(message.burst.map(m => JSON.stringify(m) + '\n').join('')); });
+const lines = createInterface({ input: process.stdin });
+lines.on('line', line => { process.send?.({ request: JSON.parse(line) }); });
+lines.on('close', cleanup);

@@ -1,19 +1,23 @@
 import { prepareHostScratchTemp } from "./host-scratch-temp";
+import { assertVerifiedHostedChildConfig } from "./hosted-child-slot-files";
+import { ChildExecutionBudget, type ChildLifetime } from "@vioxen/subscription-runtime/core";
+import { assertChildGoalConfig } from "./child-execution-confinement";
 import { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 export { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
+import { assertHostedMimoGoalConfinement } from "./hosted-mimo-goal-confinement";
 import { admitHostedTestEgress, hostedTestEgressEvidence } from "./hosted-test-egress-admission";
 import {
   CodexModelBackend,
+  AppServerExecutionLifetime,
   codexMimoApiKeyEnvVarDefault,
   codexMimoTokenPlanEgressPolicy,
   codexProviderEgressPolicy,
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { execFile } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdir, readFile } from "node:fs/promises";
 import { mapManagedGoalLayout, usesManagedJobLayout } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -92,6 +96,8 @@ import {
   uniqueStrings,
 } from "./codex-goal-workspace-changes";
 import { resolveCodexGoalObjective } from "./codex-goal-objective";
+import { readOrCreateCodexGoalEncryptionKey } from "./codex-goal-encryption-key";
+export { readOrCreateCodexGoalEncryptionKey } from "./codex-goal-encryption-key";
 import { resolveCodexGoalMimoEnvVarName, type CodexGoalMimoAccountSlot } from "./codex-goal-mimo-account-slots";
 export type {
   CodexGoalRuntimeEvent,
@@ -108,6 +114,8 @@ export type CodexGoalAccountSlot = {
 };
 
 export type CodexGoalRunConfig = {
+  readonly childLifetime?: ChildLifetime;
+  readonly maxGoalTurns?: number;
   readonly jobId?: string;
   readonly jobRootDir: string;
   readonly stateRootDir?: string;
@@ -214,6 +222,7 @@ export async function runCodexGoal(
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   config = mapManagedGoalLayout({ config }).config;
   assertCodexGoalRunConfig(config);
+  assertHostedMimoGoalConfinement(config);
   assertCodexGoalAccessLaunchAllowed(config);
   const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const admittedEgress = await (deps.admitProviderEgress ?? admitHostedTestEgress)({
@@ -357,7 +366,7 @@ async function runCodexGoalAdmitted(
   }
 
   try {
-    interruptMonitor.start({
+    if (!config.childLifetime) interruptMonitor.start({
       jobId: config.jobId ?? config.taskId,
       taskId: config.taskId,
       workspaceId: config.workspacePath,
@@ -459,6 +468,7 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly config: CodexGoalRunConfig;
   readonly initialBaseCommit?: string;
   readonly checkpointPublisher?: CodexGoalTurnCheckpointPublisher;
+  readonly executionLifetime?: AppServerExecutionLifetime;
   readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly appServerProcessFactory?: CodexAppServerProcessFactory;
   readonly stateRootDir: string;
@@ -469,6 +479,12 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
 }): FileBackendCodexSafeExecutorOptions {
   const { config } = input;
+  assertVerifiedHostedChildConfig(config);
+  assertChildGoalConfig(config);
+  const childBudget = config.childLifetime ? new ChildExecutionBudget(config.childLifetime) : undefined;
+  const executionLifetime = input.executionLifetime ?? (childBudget ? new AppServerExecutionLifetime({ childBudget }) : undefined);
+  if (input.executionLifetime && childBudget && input.executionLifetime.childBudget !== childBudget) throw new Error("codex_goal_lifetime_budget_conflict");
+  executionLifetime?.assertActive();
   const checkpointPublisher = input.checkpointPublisher ?? (config.checkpointPublisherSocketPath
     ? codexGoalTurnCheckpointSocketPublisher(config.checkpointPublisherSocketPath) : undefined);
   if (config.checkpointRequired && !checkpointPublisher) throw new Error("checkpoint_publisher_required");
@@ -491,9 +507,11 @@ export function buildCodexGoalExecutorOptions(input: {
   });
   return {
     ...(config.executorId ? { executorId: config.executorId } : {}),
+    ...(childBudget ? { childBudget } : {}),
+    ...(executionLifetime ? { executionLifetime } : {}),
     authRootDir: config.authRootDir,
     ...(input.observability ? { observability: input.observability } : {}),
-    ...(input.controlInbox ? { controlInbox: input.controlInbox } : {}),
+    ...(!childBudget && input.controlInbox ? { controlInbox: input.controlInbox } : {}),
     ...(input.activeAttemptRegistry
       ? { activeAttemptRegistry: input.activeAttemptRegistry }
       : {}),
@@ -565,6 +583,11 @@ export function buildCodexGoalExecutorOptions(input: {
         ...(!isMimo && input.providerEgressPolicy ? { providerEgressPolicy: input.providerEgressPolicy } : {}),
         ...(input.appServerProcessFactory ? { appServerProcessFactory: input.appServerProcessFactory } : {}),
         capacityAccountId: account.name,
+        ...(executionLifetime ? { executionLifetime, cleanThreadPrewarm: false } : {}),
+        ...(childBudget ? { childBudget, cleanThreadPrewarm: false,
+          refreshConflictRetryMaxMs: 0,
+          boundedWorkspaceTools: { allowedTools: childBudget.lifetime.allowedTools, denyProjectInstructions: true } } : {}),
+        ...(config.maxGoalTurns === undefined ? {} : { maxGoalTurns: config.maxGoalTurns }),
         taskTimeoutMs: config.taskTimeoutMs ?? 72 * 60 * 60 * 1000,
         ...(config.appServerStartupTimeoutMs === undefined
           ? {}
@@ -593,25 +616,6 @@ export function buildCodexGoalExecutorOptions(input: {
       ...(config.safeExecutionPolicy ?? {}),
     },
   };
-}
-
-export async function readOrCreateCodexGoalEncryptionKey(
-  keyPath: string,
-): Promise<Uint8Array> {
-  if (existsSync(keyPath)) {
-    const value = (await readFile(keyPath, "utf8")).trim();
-    if (!/^[a-fA-F0-9]{64}$/.test(value)) {
-      throw new Error("codex_goal_encryption_key_invalid");
-    }
-    return Buffer.from(value, "hex");
-  }
-  await mkdir(dirname(keyPath), { recursive: true, mode: 0o700 });
-  const key = randomBytes(32);
-  await writeFile(keyPath, `${key.toString("hex")}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  return key;
 }
 
 export function codexGoalProgressPath(config: Pick<CodexGoalRunConfig, "jobRootDir" | "taskId" | "progressPath">): string {

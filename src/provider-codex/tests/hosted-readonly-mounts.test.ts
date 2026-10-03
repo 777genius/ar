@@ -105,6 +105,15 @@ describe("bounded hosted readonly mount adapter", () => {
     expect(() => admittedReadonlyCodexProcessFactory({ jobId, workspacePath, readonlyPaths })(invocation)).toThrow("synchronous_fence_required");
     expect(spawn).not.toHaveBeenCalled();
   });
+  it("keeps the hosted MiMo provider process gate closed before any child submission", () => {
+    // Regression: a fabricated egress marker must not become provider authority.
+    spawn.mockClear();
+    expect(() => spawnCodexAppServerProcess({ ...invocation,
+      env: { ...invocation.env,
+        SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "codex-provider-mimo-token-plan" },
+    })).toThrow("hosted_mimo_activation_closed");
+    expect(spawn).not.toHaveBeenCalled();
+  });
   it("permits one synchronous submission and rejects replay or delayed submission outside the fence", () => {
     spawn.mockClear();
     const child = { stdin: { write: vi.fn() } };

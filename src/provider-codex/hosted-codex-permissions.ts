@@ -77,10 +77,10 @@ export function hostedCodexPermissionProfilesToml(
   const executableRules = [...new Set([executableReadPath, nodeExecutableReadPath]
     .filter((path): path is string => path !== undefined))]
     .map(path => `${JSON.stringify(path)} = "read"`);
+  const privateRoot = "/etc/subscription-runtime/secrets";
   if (privateKeyFilePath && !isAbsolute(privateKeyFilePath)) {
     throw new Error("hosted_permission_private_key_path_invalid");
   }
-  const privateRoot = "/etc/subscription-runtime/secrets";
   const privateFile = privateKeyFilePath ? resolve(privateKeyFilePath) : undefined;
   const privateRules = [privateRoot, ...(privateFile &&
     privateFile !== privateRoot && !privateFile.startsWith(`${privateRoot}/`)
