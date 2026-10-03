@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Fixed closed initial-root operator service bootstrap. No environment admission.
+import { normalizeResearchLaunchFailure } from '../dist/worker-codex/research-launch-diagnostics.js';
 let phase = "imports";
 try {
   if (process.argv.length !== 4) throw new Error();
@@ -21,12 +22,7 @@ try {
   process.exitCode = result.status === 'completed' ? 0 : 1;
 } catch (error) {
   // Finite observations only. Never expose arbitrary errors, paths or stderr.
-  const known = ['hosted_research_launch_denied', 'checkpoint_publisher_required',
-    'terminal_checkpoint_mutex_busy_owner_unproven', 'terminal_checkpoint_job_fenced',
-    'Refusing to hide nonempty legacy scratch directory', 'Scratch bind target busy',
-    'Unknown mount at scratch target', 'Prepared scratch source identity changed'];
-  const code = known.indexOf(error?.message);
-  const witness = ["artifact-deadline", "file-deadline", "host-command-timeout", "host-command-failed"].includes(error?.cause) ? error.cause : "none";
-  process.stderr.write(`hosted_research_runtime_launch_denied:${phase}:${code < 0 ? 'unclassified' : code}:${witness}\n`);
+  const { legacyCode, cause, diagnostic } = normalizeResearchLaunchFailure(error);
+  process.stderr.write(`hosted_research_runtime_launch_denied:${phase}:${legacyCode}:${cause}:${diagnostic}\n`);
   process.exitCode = 70;
 }
