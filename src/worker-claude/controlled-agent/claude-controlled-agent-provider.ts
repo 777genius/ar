@@ -199,6 +199,9 @@ function claudeSessionWithConfigDir(
   configDir: string,
 ): SessionArtifact {
   const validation = validateClaudeSessionArtifact(artifact);
+  if (validation.session.authMode !== "oauth") {
+    throw new Error("claude_controlled_agent_requires_oauth_session");
+  }
   return sessionArtifactFromClaudeOAuth({
     oauthToken: validation.session.oauthToken,
     configDir,

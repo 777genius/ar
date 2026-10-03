@@ -19,8 +19,6 @@ import {
   ClaudeRuntimeTaskExecutionEngine,
   ClaudeSessionDriver,
   ClaudeTaskAgentDriver,
-  sessionArtifactFromClaudeOAuth,
-  validateClaudeSessionArtifact,
   type ClaudeTaskExecutionEngine,
   type ClaudeRuntimeTaskExecutionEngineOptions,
 } from "@vioxen/subscription-runtime/provider-claude";
@@ -62,12 +60,11 @@ import {
 } from "./thread-handoff";
 import {
   FileBackendClaudeCapacityState,
-  claudeCapacityAccountIdMetadataKey,
   hashText,
   isSevereCapacity,
-  normalizeCapacityAccountId,
   type ClaudeWorkerCapacityPolicy,
 } from "./file-backend-claude-capacity";
+import { ClaudeWorkerSessionSelection } from "./claude-worker-session-selection";
 import { workerFailureDetails } from "./worker-failure-details";
 
 export type { ClaudeWorkerCapacityPolicy } from "./file-backend-claude-capacity";
@@ -167,6 +164,7 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
   private readonly transcriptBundleStore: ClaudeTranscriptBundleStore;
   private readonly runArtifacts: FileClaudeRunArtifactStore;
   private readonly runArtifactHeartbeatMs: number;
+  private readonly sessionSelection: ClaudeWorkerSessionSelection;
   private readonly capacityTracker: FileBackendClaudeCapacityState;
 
   constructor(private readonly options: FileBackendClaudeWorkerOptions) {
@@ -246,10 +244,14 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
       clock: this.clock,
     });
 
+    this.sessionSelection = new ClaudeWorkerSessionSelection(
+      options, () => this.sessionStore, this.capacityTracker, this.configDir, this.clock,
+    );
+
     this.agentDriver = new ClaudeTaskAgentDriver({
-      engine:
-        options.engine ??
-        this.defaultClaudeTaskEngine(options),
+      engine: this.sessionSelection.withSessionAuthorization(
+        options.engine ?? this.defaultClaudeTaskEngine(options),
+      ),
       ...(options.appendSystemPrompt
         ? { appendSystemPrompt: options.appendSystemPrompt }
         : {}),
@@ -343,58 +345,19 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
     this.workerState = "started";
   }
 
-  async seedClaudeOAuth(input: {
-    readonly oauthToken: string;
-    readonly configDir?: string;
-    readonly capacityAccountId?: string;
-    readonly refreshedAt?: string;
-    readonly expiresAt?: string;
-    readonly metadata?: Readonly<Record<string, string>>;
-  }): Promise<void> {
-    const capacityAccountId =
-      normalizeCapacityAccountId(input.capacityAccountId) ??
-      normalizeCapacityAccountId(this.options.capacityAccountId);
-    const existing = await this.sessionStore.read({
-      providerInstanceId: this.options.providerInstanceId,
-      expectedProviderId: "claude",
-      purpose: "health-check",
-    });
-    if (existing) {
-      const capacityArtifact = await this.capacityTracker.persistStoredCapacityAccountId(
-        existing,
-        capacityAccountId,
-      );
-      this.capacityTracker.rememberQuotaGroup(capacityArtifact, capacityAccountId);
-      return;
-    }
+  seedClaudeOAuth(input: Parameters<ClaudeWorkerSessionSelection["seedClaudeOAuth"]>[0]): Promise<void> {
+    return this.sessionSelection.seedClaudeOAuth(input);
+  }
 
-    const metadata = {
-      ...(input.metadata ?? {}),
-      ...(capacityAccountId
-        ? { [claudeCapacityAccountIdMetadataKey]: capacityAccountId }
-        : {}),
-    };
-    const artifact = sessionArtifactFromClaudeOAuth({
-      oauthToken: input.oauthToken,
-      configDir: input.configDir ?? this.configDir,
-      refreshedAt: input.refreshedAt ?? this.clock.now().toISOString(),
-      ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
-      ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
-    });
-    await this.sessionStore.write({
-      providerInstanceId: this.options.providerInstanceId,
-      expectedGeneration: 0,
-      nextArtifact: artifact,
-      idempotencyKey: `seed:${hashText(input.oauthToken)}`,
-      leaseId: "seed-local-file-backend",
-    });
-    this.capacityTracker.rememberQuotaGroup(artifact);
+  seedClaudeAmbientHome(input: Parameters<ClaudeWorkerSessionSelection["seedClaudeAmbientHome"]>[0]): Promise<void> {
+    return this.sessionSelection.seedClaudeAmbientHome(input);
   }
 
   async prewarm(): Promise<SubscriptionWorkerPrewarmResult> {
     this.assertStarted();
     this.workerState = "prewarming";
     try {
+      await this.sessionSelection.assertStoredAmbientAuthorized();
       const health = await this.runtime.healthCheck({
         providerInstanceId: this.options.providerInstanceId,
       });
@@ -411,7 +374,7 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
           },
         );
       }
-      await this.assertStoredSessionHasConfigDir();
+      await this.sessionSelection.assertStoredSessionHasConfigDir();
       if (this.options.warmupPrompt) {
         const warmup = await this.run({
           runId: `prewarm-${randomUUID()}`,
@@ -468,6 +431,7 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
     } = {},
   ): Promise<FileBackendClaudeWorkerResult> {
     this.assertStarted();
+    await this.sessionSelection.assertStoredAmbientAuthorized();
     assertProviderTaskSystemPrompt(job.systemPrompt, "job.systemPrompt");
     const runId = job.runId ?? `local-${randomUUID()}`;
     const abort = combineAbortSignals(job.abortSignal, input.abortSignal);
@@ -855,27 +819,6 @@ export class FileBackendClaudeWorker implements CapacityAwareSubscriptionWorker<
       "Claude logical thread handoff requires a stable workspacePath when a custom workspace is injected.",
       { details: { threadId } },
     );
-  }
-
-  private async assertStoredSessionHasConfigDir(): Promise<void> {
-    const session = await this.sessionStore.read({
-      providerInstanceId: this.options.providerInstanceId,
-      expectedProviderId: "claude",
-      purpose: "health-check",
-    });
-    if (!session) {
-      throw new SubscriptionWorkerError(
-        "subscription_worker_prewarm_failed",
-        "Claude session is missing.",
-      );
-    }
-    const validation = validateClaudeSessionArtifact(session.artifact);
-    if (!validation.session.configDir) {
-      throw new SubscriptionWorkerError(
-        "subscription_worker_prewarm_failed",
-        "Claude session is missing a config dir.",
-      );
-    }
   }
 
   private assertStarted(): void {

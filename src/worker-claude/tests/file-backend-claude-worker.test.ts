@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmod,
   readdir,
   mkdir,
   mkdtemp,
@@ -497,10 +498,15 @@ describe("FileBackendClaudeWorker", () => {
       expect(worker.capacity().details?.accountId).toBe(
         "claude-account-main",
       );
-      expect(
-        validateClaudeSessionArtifact(store.current.artifact).session.metadata
-          ?.capacityAccountId,
-      ).toBe("claude-account-main");
+      const seededSession = validateClaudeSessionArtifact(
+        store.current.artifact,
+      ).session;
+      if (seededSession.authMode !== "oauth") {
+        throw new Error("expected an oauth session artifact");
+      }
+      expect(seededSession.metadata?.capacityAccountId).toBe(
+        "claude-account-main",
+      );
     } finally {
       await worker.dispose();
       await rm(rootDir, { recursive: true, force: true });
