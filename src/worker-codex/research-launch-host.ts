@@ -7,7 +7,11 @@ export const researchProviderUnitPattern = /^subscription-runtime-research-provi
 export const researchControlGroup = (unit: string): string => `/system.slice/${unit}`;
 export function researchCommand(command: string, args: readonly string[]): string {
   researchCustody(command);
-  const result = spawnSync(command, [...args], { encoding: "utf8", timeout: args[0] === "show" ? 5_000 : 15_000, maxBuffer: 1024 * 1024,
+  // Type=exec submission waits for startup; manager reads can queue behind it.
+  // Allow finite Host contention only for these control-plane commands.
+  const timeout = command === "/usr/bin/systemctl" && (args[0] === "show" || args[0] === "list-jobs") ? 30_000
+    : /^\/usr\/bin\/systemd-run$/.test(command) ? 60_000 : 15_000;
+  const result = spawnSync(command, [...args], { encoding: "utf8", timeout, maxBuffer: 1024 * 1024,
     env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdio: ["ignore", "pipe", "pipe"] });
   if (result.error || result.status !== 0) researchInvalid((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
     ? "host-command-timeout" : "host-command-failed");
