@@ -1,6 +1,5 @@
 import type {
   ProviderTask,
-  ProviderTaskControls,
   ProviderTaskResult,
   ProviderLogicalThreadExecution,
   RedactorPort,
@@ -56,7 +55,7 @@ export function prepareClaudeTaskEngineInput(
   input: ClaudeTaskEnginePreparationInput,
 ): PreparedClaudeTaskEngineInput {
   const validation = validateClaudeSessionArtifact(input.session);
-  registerClaudeSecrets(input.redactor, validation.session.oauthToken);
+  registerClaudeSecrets(input.redactor, validation.session);
   const runtimeThread = input.logicalThread === undefined
     ? runtimeThreadFromMetadata(input.task.metadata)
     : {
