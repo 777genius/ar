@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,6 +6,37 @@ import { codexAccountCapacityStore } from "../application/codex-account-capacity
 import { listCodexGoalAccountStatuses } from "../codex-goal-account-status";
 
 describe("Codex goal account status", () => {
+  it("keeps a flat-quarantined authenticated slot ineligible without launching a probe", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-goal-quarantine-probe-"));
+    try {
+      const authRootDir = join(root, "auth");
+      await writeTestAuth(authRootDir, "account-a", "synthetic-account");
+      await writeFile(join(authRootDir, "account-labels.json"), JSON.stringify({
+        accounts: { "account-a": { email: "operator@example.com", plan: "plus", unpaid: "19.08.2026" } },
+        "account-a": { quarantined: true, quarantineReason: "operator hold" },
+      }));
+      const recorder = join(root, "probe-recorder.sh");
+      await writeFile(recorder, `#!/bin/sh\nprintf '%s\\n' "$@" >> '${join(root, "probe-argv")}'\nexit 1\n`);
+      await chmod(recorder, 0o700);
+
+      const accounts = await listCodexGoalAccountStatuses({
+        authRootDir, accounts: ["account-a"], liveCheck: true,
+        codexBinaryPath: recorder, liveCheckTimeoutMs: 1_000,
+      });
+
+      expect(accounts).toHaveLength(1);
+      expect(await readdir(root)).not.toContain("probe-argv");
+      expect(accounts[0]).toMatchObject({
+        status: "quarantined", quarantined: true, schedulerEligible: false,
+        availability: "unknown", recommendedAction: "inspect",
+        plan: "plus", unpaid: "19.08.2026",
+      });
+      expect(accounts[0]?.liveCheck).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("auto-discovers only canonical account-prefixed slot directories", async () => {
     const root = await mkdtemp(join(tmpdir(), "codex-goal-account-discovery-"));
     try {

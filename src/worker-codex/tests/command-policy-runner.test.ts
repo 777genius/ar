@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { CommandPolicyRunner } from "../index";
 import { codexAppServerCommandApprovalPolicy } from "../file-backend-codex-command-policy";
@@ -8,6 +10,51 @@ import {
 } from "./file-backend-codex-worker-test-support";
 
 describe("CommandPolicyRunner", () => {
+  it.each([
+    "git 'push' origin main",
+    'git "push" origin main',
+    "git pu\\sh origin main",
+    "g\\it push origin main",
+  ])("denies unsupported shell syntax that executes a push: %s", async (payload) => {
+    // A shell function records argv; no Git executable or remote is invoked.
+    const recorded = await promisify(execFile)("/bin/bash", [
+      "--noprofile", "--norc", "-c",
+      `git() { printf '%s\\n' "$@"; }; ${payload}`,
+    ], { env: {}, timeout: 1_000 });
+    expect(recorded.stdout).toBe("push\norigin\nmain\n");
+
+    const observability = new MemoryWorkerObservability();
+    const policy = codexAppServerCommandApprovalPolicy(
+      isolatedWorkspaceCommandPolicy(), observability, {},
+    );
+    for (const input of [
+      { source: "command_execution" as const, command: ["bash", "-c", payload] },
+      { source: "thread_shell_command" as const, commandText: payload },
+      { source: "thread_shell_command" as const, commandText: `bash -c '${payload}'` },
+    ]) {
+      expect(policy.reviewCommand(input)).toEqual({
+        approved: false, reason: "script_interpreter_denied",
+      });
+    }
+    expect(observability.events).toHaveLength(3);
+    expect(observability.events.every((event) =>
+      event.name === "command_policy.denied" &&
+      event.metadata?.reason === "script_interpreter_denied"
+    )).toBe(true);
+  });
+
+  it.each([
+    "bash -c 'git status --short'",
+    'sh -lc "git status --short"',
+    "/usr/bin/zsh -c 'git status --short'",
+  ])("preserves plain read-only shell wrapper text: %s", (commandText) => {
+    const policy = codexAppServerCommandApprovalPolicy(
+      isolatedWorkspaceCommandPolicy(), new MemoryWorkerObservability(), {},
+    );
+    expect(policy.reviewCommand({ source: "thread_shell_command", commandText }))
+      .toEqual({ approved: true, reason: "command_policy_allowed" });
+  });
+
   it("exposes wrapper runner id in capabilities for runtime policy negotiation", () => {
     const inner = new StaticRunner({ exitCode: 0, stdout: "", stderr: "" });
     const runner = new CommandPolicyRunner(inner, isolatedWorkspaceCommandPolicy());

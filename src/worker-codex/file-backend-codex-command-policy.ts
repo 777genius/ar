@@ -76,7 +76,8 @@ function commandTextApprovalVector(commandTextInput: string): readonly string[] 
       ? ["sh", "-lc", commandText]
       : commandTextApprovalVector(shellPayload);
   }
-  if (/[`$<>|;&\n\r]/.test(commandText)) {
+  // Whitespace splitting cannot interpret shell quoting or escapes safely.
+  if (/['"\\`$<>|;&\n\r]/.test(commandText)) {
     return ["sh", "-lc", commandText];
   }
   const parts = commandText.split(/\s+/).filter(Boolean);

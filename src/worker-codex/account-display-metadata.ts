@@ -96,7 +96,16 @@ function parseMetadataRoot(
       (entry): entry is readonly [string, CodexAccountDisplayMetadata] =>
         entry[1] !== null,
     );
-  return Object.fromEntries(entries);
+  const metadata = new Map(entries);
+  if (isRecord(value.accounts)) {
+    for (const [slotId, raw] of Object.entries(value)) {
+      if (slotId === "accounts") continue;
+      const quarantine = parseQuarantineMetadata(raw);
+      if (!quarantine) continue;
+      metadata.set(slotId, { ...(metadata.get(slotId) ?? {}), ...quarantine });
+    }
+  }
+  return Object.fromEntries(metadata);
 }
 
 function parseMetadataEntry(
