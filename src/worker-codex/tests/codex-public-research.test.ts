@@ -35,7 +35,7 @@ vi.mock("node:dns/promises", async original => ({ ...await original<typeof impor
       if (tls.dnsWait) return new Promise<string[]>((_resolve, reject) => this.pending.push(reject));
       return Promise.resolve(tls.addresses.filter(row => row.family === family).map(row => row.address));
     }
-    resolve4() { return this.resolve(4); }
+    resolve4(hostname: string) { return hostname === "private.example.test" ? Promise.resolve(["127.0.0.1"]) : this.resolve(4); }
     resolve6() { return this.resolve(6); }
     cancel() { tls.dnsCanceled++; for (const reject of this.pending) reject(Object.assign(new Error("TEST canceled DNS"), { code: "ECANCELLED" })); }
   } }));
@@ -61,14 +61,22 @@ beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), "TEST-public-research-"));
   execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
     "-keyout", join(root, "server.key"), "-out", join(root, "server.crt"), "-subj", "/CN=docs.rs",
-    "-addext", "subjectAltName=" + policy.publicSourceDomains!.map(host => "DNS:" + host).join(",")],
+    "-addext", "subjectAltName=" + [...policy.publicSourceDomains!, "*.example.test", "api.github.com", "raw.githubusercontent.com"].map(host => "DNS:" + host).join(",")],
     { cwd: root, stdio: "ignore" });
   tls.ca = await readFile(join(root, "server.crt"), "utf8");
   server = createServer({ cert: tls.ca, key: await readFile(join(root, "server.key"), "utf8") }, (req, res) => {
     tls.requests.push({ host: req.headers.host!, url: req.url!, method: req.method!,
       ...(req.headers.authorization ? { auth: req.headers.authorization } : {}),
       ...(req.headers.cookie ? { cookie: req.headers.cookie } : {}) });
-    if (req.url === "/redirect") { res.writeHead(302, { Location: "https://nodejs.org/" }); res.end(); }
+    if (req.url === "/redirect-public") { res.writeHead(302, { Location: "https://public.example.test/final?q=two", "Set-Cookie": "TEST-cookie=discard" }); res.end(); }
+    else if (req.url === "/redirect-private") { res.writeHead(302, { Location: "https://private.example.test/" }); res.end(); }
+    else if (req.url === "/redirect-credential") { res.writeHead(302, { Location: "https://TEST-user:TEST-password@public.example.test/" }); res.end(); }
+    else if (req.url === "/redirect-http") { res.writeHead(302, { Location: "http://public.example.test/" }); res.end(); }
+    else if (req.url === "/redirect-loop") { res.writeHead(302, { Location: "/redirect-loop" }); res.end(); }
+    else if (req.url === "/redirect-relative") { res.writeHead(307, { Location: "/final?q=one" }); res.end(); }
+    else if (req.url === "/redirect-badtls") { res.writeHead(302, { Location: "https://untrusted.invalid/" }); res.end(); }
+    else if (req.url === "/redirect-slow") { res.writeHead(302, { Location: "https://public.example.test/slow" }); res.end(); }
+    else if (req.url === "/redirect") { res.writeHead(302, { Location: "https://nodejs.org/" }); res.end(); }
     else if (req.url === "/oversize") { res.writeHead(200, { "Content-Type": "text/plain" }); res.end("x".repeat(512 * 1024 + 1)); }
     else if (req.url === "/slow") {
       tls.activeBodies++;
@@ -429,4 +437,41 @@ describe("admitted public research source capability", () => {
     } finally { await engine.dispose(); }
   });
 
+});
+
+
+describe("full Internet anonymous reader", () => {
+  const internet = codexProviderEgressPolicy(CodexProviderEgressProfileId.FullInternetV1);
+  const fresh = () => createPublicResearchSourceReader(internet);
+  it.each(["public.example.test", "api.github.com", "raw.githubusercontent.com"])("reads public %s with an ordinary query", async host => {
+    await expect(fresh().read(`https://${host}/?q=ordinary&lang=en`)).resolves.toMatchObject({ status: 200, body: "TEST public source fixture" });
+    expect(tls.requests).toEqual([{ host: host + ":" + tls.port, url: "/?q=ordinary&lang=en", method: "GET" }]);
+  });
+  it("follows cross-domain and relative public redirects without forwarding cookies", async () => {
+    await expect(fresh().read("https://docs.rs/redirect-public")).resolves.toMatchObject({ url: "https://public.example.test/final?q=two" });
+    expect(tls.requests).toHaveLength(2);
+    expect(tls.requests.every(request => !request.auth && !request.cookie)).toBe(true);
+    await expect(fresh().read("https://docs.rs/redirect-relative")).resolves.toMatchObject({ url: "https://docs.rs/final?q=one" });
+  });
+  it.each(["redirect-private", "redirect-credential", "redirect-http", "redirect-badtls"])("checks address, URL and TLS again at %s", async route => {
+    await expect(fresh().read(`https://docs.rs/${route}`)).rejects.toThrow(/public_research_(address_denied|url_denied|transport_failed)/);
+    expect(tls.requests).toHaveLength(1);
+  });
+  it("caps a redirect loop at four requests", async () => {
+    await expect(fresh().read("https://docs.rs/redirect-loop")).rejects.toThrow("public_research_redirect_denied");
+    expect(tls.requests).toHaveLength(4);
+  });
+  it.each(["https://public.example.test/?access_token=TEST", "https://TEST:TEST@public.example.test/", "https://127.0.0.1/"])("refuses credentials/private literals before DNS: %s", async url => {
+    await expect(fresh().read(url)).rejects.toThrow("public_research_url_denied");
+    expect(tls.calls).toBe(0);
+  });
+  it("cancels a redirected streaming body and preserves the response size bound", async () => {
+    const controller = new AbortController();
+    const pending = fresh().read("https://docs.rs/redirect-slow", controller.signal);
+    await vi.waitFor(() => expect(tls.activeBodies).toBe(1));
+    controller.abort();
+    await expect(pending).rejects.toThrow("public_research_aborted");
+    await vi.waitFor(() => expect(tls.activeBodies).toBe(0));
+    await expect(fresh().read("https://public.example.test/oversize")).rejects.toThrow("public_research_source_too_large");
+  });
 });

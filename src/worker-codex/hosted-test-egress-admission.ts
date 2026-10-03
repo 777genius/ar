@@ -39,7 +39,7 @@ export async function admitHostedTestEgress(
   if (process.platform !== "linux" || process.getuid?.() !== 0) {
     if (isHostedOrdinaryRuntime()) {
       if (mimo) throw new Error("hosted_mimo_egress_admission_unsupported");
-      admitHostedOrdinaryIdentity(input);
+      return codexProviderEgressPolicy(admitHostedOrdinaryIdentity(input));
     }
     return mimo ? codexMimoTokenPlanEgressPolicy() : codexProviderApiEgressPolicy();
   }
@@ -48,7 +48,8 @@ export async function admitHostedTestEgress(
   if (hosted && isHostedOrdinaryRuntime()) {
     const profile = admitHostedOrdinaryIdentity(input);
     if ((profile === CodexProviderEgressProfileId.TestNpmQualification ||
-         profile === CodexProviderEgressProfileId.PublicResearchV1) &&
+         profile === CodexProviderEgressProfileId.PublicResearchV1 ||
+          profile === CodexProviderEgressProfileId.FullInternetV1) &&
         ((input.executionEngine ?? "app-server-goal") !== "app-server-goal" ||
           input.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job")) throw new Error("hosted_test_egress_engine_unsupported");
     return codexProviderEgressPolicy(profile);

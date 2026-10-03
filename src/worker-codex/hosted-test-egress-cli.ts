@@ -5,11 +5,13 @@ import { writeHostedTestEgressGrant, revokeHostedTestEgressGrant } from "./hoste
 const operands = process.argv.slice(2);
 const [operation, jobId, jobRootDir, workspacePath] = operands;
 try {
-  if ((operation === "grant" || operation === "grant-managed" || operation === "grant-research") &&
+  if ((operation === "grant-internet" || operation === "grant" || operation === "grant-managed" || operation === "grant-research") &&
       operands.length === 4 && jobId?.trim() && jobRootDir?.trim() && workspacePath?.trim()) {
     await writeHostedTestEgressGrant({
       schemaVersion: 1, jobId, jobRootDir, workspacePath,
-      profileId: operation === "grant-research"
+      profileId: operation === "grant-internet"
+        ? CodexProviderEgressProfileId.FullInternetV1
+        : operation === "grant-research"
         ? CodexProviderEgressProfileId.PublicResearchV1
         : operation === "grant-managed"
         ? CodexProviderEgressProfileId.TestManagedQualification
@@ -18,7 +20,7 @@ try {
   } else if (operation === "revoke" && operands.length === 2 && jobId?.trim()) {
     await revokeHostedTestEgressGrant(jobId);
   } else {
-    throw new Error("usage: hosted-test-egress-cli grant JOB ROOT WORKSPACE | grant-managed JOB ROOT WORKSPACE | grant-research JOB ROOT WORKSPACE | revoke JOB");
+    throw new Error("usage: hosted-test-egress-cli grant-internet JOB ROOT WORKSPACE | grant JOB ROOT WORKSPACE | grant-managed JOB ROOT WORKSPACE | grant-research JOB ROOT WORKSPACE | revoke JOB");
   }
   process.stdout.write(JSON.stringify({ operation, jobId, success: true }) + "\n");
 } catch {

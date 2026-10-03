@@ -74,7 +74,7 @@ export async function startProjectControllerControlledRun(input: {
     boundary: AccessBoundary.ProjectScopedControl,
     projectAccessScope: input.scope,
     provider: input.profile.enforcement,
-    networkAccess: NetworkAccessMode.Restricted,
+    networkAccess: NetworkAccessMode.Unrestricted,
   }, {
     provider: input.providerInput.provider,
     stateStore: input.state.store,

@@ -22,7 +22,7 @@ export function grantResearchLaunch(jobId: string, jobRootDir: string, workspace
   if (existsSync(join(job, "active.json"))) researchInvalid();
   // A unique grant identity makes revoke/regrant different even for the same tuple.
   researchPublish(join(job, "grant.json"), { schemaVersion: 1, jobId, jobRootDir, workspacePath,
-    profileId: CodexProviderEgressProfileId.PublicResearchV1, grantId: randomUUID(), jobDirectory, workspaceDirectory });
+    profileId: CodexProviderEgressProfileId.FullInternetV1, grantId: randomUUID(), jobDirectory, workspaceDirectory });
 }
 export function revokeResearchLaunch(jobId: string): void {
   assertResearchInitialRoot(true);

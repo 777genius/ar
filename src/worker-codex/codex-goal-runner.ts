@@ -1,3 +1,4 @@
+import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { prepareHostScratchTemp } from "./host-scratch-temp";
 import { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
 export { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReportSystemPrompt } from "./codex-goal-report-schema";
@@ -149,7 +150,7 @@ export type CodexGoalRunConfig = {
   readonly accessBoundary?: AccessBoundary;
   readonly projectAccessScope?: ProjectAccessScope;
   readonly allowDangerFullAccess?: boolean;
-  readonly networkAccess?: NetworkAccessMode.Disabled | NetworkAccessMode.Restricted;
+  readonly networkAccess?: NetworkAccessMode;
   readonly goalSummary?: string;
   readonly codexGoalObjective?: string;
   readonly effectMode?: TaskEffectMode;
@@ -474,7 +475,7 @@ export function buildCodexGoalExecutorOptions(input: {
   const { config } = input;
   const assertProviderAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
   assertProviderAdmission?.();
-  const publicSourceReader = input.providerEgressPolicy?.profileId === CodexProviderEgressProfileId.PublicResearchV1
+  const publicSourceReader = input.providerEgressPolicy && codexProviderHasPublicSources(input.providerEgressPolicy)
     ? createPublicResearchSourceReader(input.providerEgressPolicy) : undefined;
   const checkpointPublisher = input.checkpointPublisher ?? (config.checkpointPublisherSocketPath
     ? codexGoalTurnCheckpointSocketPublisher(config.checkpointPublisherSocketPath) : undefined);

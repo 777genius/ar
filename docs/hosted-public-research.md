@@ -1,3 +1,42 @@
+# Hosted Internet policy (owner contract, 2026-10-03)
+
+Hosted workers default to `codex-full-internet-v1`: native shell networking is
+fully enabled with the finite domain proxy disabled, and OpenAI native web
+search is live when native tools are enabled. Filesystem permissions still deny
+root and credential paths, admit only the workspace and assigned temp roots,
+and keep `.git` and `.codex` read-only. MiMo retains its separate provider policy
+and disabled native web surface. Bounded MCP-only tool surfaces remain closed.
+
+The anonymous `public_source_read` reader accepts any public HTTPS domain,
+including GitHub, ordinary query strings and up to three redirects. Every hop
+validates its URL, rejects credentials and credential query parameters, resolves
+and checks every returned address, pins those addresses into the socket, and
+verifies the destination TLS identity. It never forwards caller headers, cookies,
+proxy credentials or ambient proxy settings. The same 15-second deadline,
+cancellation, two concurrent requests, 512 KiB body and 4 MiB aggregate result
+budgets span redirects and account slots.
+
+Policy transition is explicit and small: the new profile has its own enum value
+and cache identity. Existing `codex-provider-api`, TEST qualification and
+`codex-public-research-v1` grants retain their original finite policies; they
+never acquire Internet authority by reinterpretation. Ordinary jobs without an
+explicit restricted grant use the hosted Internet default. New owned research
+grants select the Internet profile; existing research grants continue selecting
+their recorded profile. To replace a restricted grant, use the existing verified
+revoke/cancel procedure and explicitly issue `grant-internet` (ordinary) or
+`grant-owned-research` (owned research) before a new start. No automatic grant
+rewrite, authority migration or additional filesystem roots are introduced.
+
+Writer validation uses only this new TEST clone, synthetic files and real local
+TLS/streaming fixtures with DNS/socket routing substituted. It does not establish
+hosted E2E, real native discovery, deployed isolation or service admission.
+Primary performs isolated hosted E2E after review. No provider/service launch,
+deployment, real auth access or Git mutation is part of writer validation.
+
+The historical v1 implementation and qualification evidence follows. Its finite
+nine-host/API-only statements apply only to persisted v1 grants and are superseded
+for the hosted default by the owner contract above.
+
 # Hosted public research (v1): implementation and qualification
 
 `codex-public-research-v1` selects native live web discovery and the

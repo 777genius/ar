@@ -31,22 +31,28 @@ export function isPublicResearchAddress(address: string): boolean {
   }
 }
 
-/** Uses the finite policy owner, never caller domain arrays or ambient proxy/auth env.
+/** Uses the admitted profile, never caller domain arrays or ambient proxy/auth env.
  * This single reader belongs to the job executor and is shared by its accounts. */
 export function createPublicResearchSourceReader(admitted: CodexProviderEgressPolicy): PublicResearchSourceReader {
-  if (admitted.profileId !== CodexProviderEgressProfileId.PublicResearchV1) {
+  const fullInternet = admitted.profileId === CodexProviderEgressProfileId.FullInternetV1;
+  if (!fullInternet && admitted.profileId !== CodexProviderEgressProfileId.PublicResearchV1) {
     throw new Error("public_research_profile_required");
   }
-  const hosts = codexProviderEgressPolicy(admitted.profileId).publicSourceDomains!;
-  let outstanding = 0, reservedBytes = 0, deliveredBytes = 0;
-  return Object.freeze({ read: async (value: string, signal?: AbortSignal) => {
-    let url: URL;
+  const hosts = codexProviderEgressPolicy(admitted.profileId).publicSourceDomains;
+  const checkedUrl = (value: string): URL => {
     try {
       if (value.length > 4096 || /[\u0000-\u0020\u007f]/u.test(value)) throw new Error();
-      url = new URL(value);
-      if (url.protocol !== "https:" || url.port || url.username || url.password ||
-          url.search || url.hash || !hosts.includes(url.hostname)) throw new Error();
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.port || url.username || url.password || url.hash ||
+          !url.hostname || (!fullInternet && (url.search || !hosts?.includes(url.hostname))) ||
+          (isIP(url.hostname.replace(/^\[|\]$/g, "")) && !isPublicResearchAddress(url.hostname.replace(/^\[|\]$/g, ""))) ||
+          [...url.searchParams.keys()].some(key => /^(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|api[_-]?key|authorization|auth|password|secret|cookie|credentials|proxy[_-]?authorization)$/i.test(key))) throw new Error();
+      return url;
     } catch { throw new Error("public_research_url_denied"); }
+  };
+  let outstanding = 0, reservedBytes = 0, deliveredBytes = 0;
+  return Object.freeze({ read: async (value: string, signal?: AbortSignal) => {
+    let url = checkedUrl(value);
     if (signal?.aborted) throw new Error("public_research_aborted");
     // Reserve before DNS or sockets, with no waiter queue and no burst allocation.
     if (outstanding >= publicResearchSourceLimits.concurrentRequests) throw new Error("public_research_capacity");
@@ -60,9 +66,15 @@ export function createPublicResearchSourceReader(admitted: CodexProviderEgressPo
     signal?.addEventListener("abort", abort, { once: true });
     const deadline = setTimeout(() => controller.abort(new Error("public_research_deadline")), timeoutMs);
     try {
-      const addresses = await resolvePublicAddresses(url.hostname, controller.signal);
-      if (controller.signal.aborted) throw new Error("public_research_aborted");
-      const source = await retrieve(url, addresses, controller.signal);
+      let source: PublicResearchSource;
+      for (let hop = 0; ; hop++) {
+        const addresses = await resolvePublicAddresses(url.hostname, controller.signal);
+        if (controller.signal.aborted) throw new Error("public_research_aborted");
+        const response = await retrieve(url, addresses, controller.signal, fullInternet);
+        if (!(response instanceof URL)) { source = response; break; }
+        if (hop >= publicResearchSourceLimits.redirects) throw new Error("public_research_redirect_denied");
+        url = checkedUrl(response.href);
+      }
       if (controller.signal.aborted) throw new Error("public_research_aborted");
       // The source JSON is itself the tool's inputText string. Account for its
       // second JSON escaping plus conservative framing, not just body bytes.
@@ -78,6 +90,11 @@ export function createPublicResearchSourceReader(admitted: CodexProviderEgressPo
 }
 
 async function resolvePublicAddresses(hostname: string, signal: AbortSignal) {
+  const literal = hostname.replace(/^\[|\]$/g, "");
+  if (isIP(literal)) {
+    if (!isPublicResearchAddress(literal)) throw new Error("public_research_address_denied");
+    return [{ address: literal, family: isIP(literal) }];
+  }
   // A private resolver per admitted read supports genuine DNS cancellation;
   // cancel() never disrupts another job or account's DNS work.
   const resolver = new Resolver({ timeout: timeoutMs, tries: 1 });
@@ -100,7 +117,7 @@ async function resolvePublicAddresses(hostname: string, signal: AbortSignal) {
   } finally { signal.removeEventListener("abort", abort); }
 }
 
-function retrieve(url: URL, addresses: readonly { address: string; family: number }[], signal: AbortSignal): Promise<PublicResearchSource> {
+function retrieve(url: URL, addresses: readonly { address: string; family: number }[], signal: AbortSignal, allowRedirects: boolean): Promise<PublicResearchSource | URL> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const chunks: Buffer[] = []; let size = 0;
@@ -126,7 +143,13 @@ function retrieve(url: URL, addresses: readonly { address: string; family: numbe
     }, response => {
       const status = response.statusCode ?? 0;
       const refuse = (code: string) => { fail(code); response.destroy(); req.destroy(); };
-      if (status >= 300 && status < 400) { refuse("public_research_redirect_denied"); return; }
+      if (status >= 300 && status < 400) {
+        if (!allowRedirects || ![301, 302, 303, 307, 308].includes(status) || !response.headers.location) { refuse("public_research_redirect_denied"); return; }
+        let next: URL;
+        try { next = new URL(response.headers.location, url); }
+        catch { refuse("public_research_url_denied"); return; }
+        settled = true; response.destroy(); req.destroy(); resolve(next); return;
+      }
       if (status !== 200) { refuse("public_research_http_failed"); return; }
       if (Number(response.headers["content-length"] ?? 0) > maxBytes) { refuse("public_research_source_too_large"); return; }
       response.on("data", (chunk: Buffer) => {

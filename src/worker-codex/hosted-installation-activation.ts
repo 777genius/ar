@@ -705,7 +705,7 @@ export function admitHostedOrdinaryIdentity(identity: { readonly jobId: string; 
     const origin = readHostedOrdinaryRuntime(fence);
     if (origin.birth.jobId !== identity.jobId || origin.birth.jobRootDir !== identity.jobRootDir ||
         origin.birth.workspacePath !== identity.workspacePath) invalid();
-    if (origin.start.grantSha256 === null) return CodexProviderEgressProfileId.ProviderApi;
+    if (origin.start.grantSha256 === null) return CodexProviderEgressProfileId.FullInternetV1;
     const bytes = readHostedPrivateBytes(join(hostedTestEgressGrantRoot, digest(Buffer.from(identity.jobId)) + ".json"), 4096);
     if (!bytes || digest(bytes) !== origin.start.grantSha256) invalid();
     const grant = parseHostedTestEgressGrant(decodeHostedActivationBytes(bytes));

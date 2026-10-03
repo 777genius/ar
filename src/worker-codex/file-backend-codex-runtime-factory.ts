@@ -1,3 +1,4 @@
+import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { assertReadonlyAdmittedFactory } from "./hosted-readonly-admission";
 import { prepareHostScratchCaches } from "./host-scratch-temp";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
@@ -325,7 +326,7 @@ function createCodexAgentDriver(input: {
           modelBackend,
           sourceEnv: appServerEnv,
           providerEgressPolicy,
-          ...(providerEgressPolicy.profileId === CodexProviderEgressProfileId.PublicResearchV1
+          ...(codexProviderHasPublicSources(providerEgressPolicy)
             ? { publicSourceReader: options.publicSourceReader ?? createPublicResearchSourceReader(providerEgressPolicy) } : {}),
           ...(projectReadBoundary ? { hostedPermissionProfiles: true } : {}),
           ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),

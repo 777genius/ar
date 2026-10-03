@@ -45,7 +45,8 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
     const profile = admitHostedOrdinaryIdentity(input);
     if (managed || input.providerEgressPolicy.profileId !== profile ||
         ((profile === CodexProviderEgressProfileId.TestNpmQualification ||
-          profile === CodexProviderEgressProfileId.PublicResearchV1) &&
+          profile === CodexProviderEgressProfileId.PublicResearchV1 ||
+          profile === CodexProviderEgressProfileId.FullInternetV1) &&
           ((input.executionEngine ?? "app-server-goal") !== "app-server-goal" ||
             input.sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job"))) throw new Error("hosted_readonly_engine_unsupported");
     return undefined; // Genuine default factory performs its own fresh fenced admission.

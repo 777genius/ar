@@ -33,16 +33,16 @@ export function parseResearchOperatorRequest(value: unknown): ResearchOperatorRe
     model: r.model, reasoningEffort: r.reasoningEffort as CodexReasoningEffort, serviceTier: r.serviceTier as CodexServiceTier, taskTimeoutMs: r.taskTimeoutMs as number });
 }
 export type ResearchGrant = Readonly<{
-  schemaVersion: 1; profileId: CodexProviderEgressProfileId.PublicResearchV1;
+  schemaVersion: 1; profileId: CodexProviderEgressProfileId.PublicResearchV1 | CodexProviderEgressProfileId.FullInternetV1;
   jobId: string; jobRootDir: string; workspacePath: string; grantId: string;
   jobDirectory: ResearchDirectoryIdentity; workspaceDirectory: ResearchDirectoryIdentity;
 }>;
 export function parseResearchGrant(value: unknown): ResearchGrant {
   const r = researchRecord(value, "schemaVersion,profileId,jobId,jobRootDir,workspacePath,grantId,jobDirectory,workspaceDirectory");
-  if (r.schemaVersion !== 1 || r.profileId !== CodexProviderEgressProfileId.PublicResearchV1 ||
+  if (r.schemaVersion !== 1 || (r.profileId !== CodexProviderEgressProfileId.PublicResearchV1 && r.profileId !== CodexProviderEgressProfileId.FullInternetV1) ||
       typeof r.grantId !== "string" || !/^[a-f0-9-]{36}$/.test(r.grantId)) researchInvalid();
   const jobRootDir = researchPath(r.jobRootDir), workspacePath = researchPath(r.workspacePath);
-  return Object.freeze({ schemaVersion: 1, profileId: CodexProviderEgressProfileId.PublicResearchV1,
+  return Object.freeze({ schemaVersion: 1, profileId: r.profileId,
     jobId: researchId(r.jobId), jobRootDir, workspacePath, grantId: r.grantId,
     jobDirectory: parseResearchDirectory(r.jobDirectory, jobRootDir), workspaceDirectory: parseResearchDirectory(r.workspaceDirectory, workspacePath) });
 }
@@ -81,7 +81,7 @@ export function researchRunConfig(request: ResearchOperatorRequest): CodexGoalRu
   return { ...request, accounts: request.accounts.map(name => ({ name })),
     executionEngine: "app-server-goal", modelBackend: CodexModelBackend.OpenAiChatGpt,
     stateRootDir: join(request.jobRootDir, "state"), runtimeHomeRootDir: join(request.jobRootDir, "home"),
-    accessBoundary: AccessBoundary.IsolatedWorkspaceWrite, networkAccess: NetworkAccessMode.Restricted,
+    accessBoundary: AccessBoundary.IsolatedWorkspaceWrite, networkAccess: NetworkAccessMode.Unrestricted,
     // Derive only the admitted workspace; job state, homes and Host authority
     // stay outside the project scope. Agent temp uses the fixed temp contract.
     projectAccessScope: { projectId: request.jobId, isolatedWorkspaceRoot: request.workspacePath, authRoot: request.authRootDir },

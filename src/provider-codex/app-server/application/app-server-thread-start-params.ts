@@ -1,3 +1,4 @@
+import { codexProviderHasPublicSources } from "../../codex-provider-egress-policy";
 import type { ResolvedCodexExecutionProfile } from "../../codex-execution-profile";
 import type { CodexReasoningEffort, CodexSandboxMode, CodexServiceTier } from "../../codex-json-execution-engine";
 import { CodexModelBackend, codexModelBackendModelProviderName } from "../../codex-model-backend";
@@ -76,7 +77,7 @@ export function appServerThreadStartParams(input: {
     toolConfig,
     rolloutBudget: options.rolloutBudget,
   }));
-  const researchToolsEnabled = options.providerEgressPolicy?.profileId === CodexProviderEgressProfileId.PublicResearchV1 &&
+  const researchToolsEnabled = codexProviderHasPublicSources(options.providerEgressPolicy) &&
     modelBackend === CodexModelBackend.OpenAiChatGpt && !!options.publicSourceReader && !disableTools && !disableNativeEnvironments;
   return { researchToolsEnabled, params: {
       runtimeWorkspaceRoots: threadPolicy.runtimeWorkspaceRoots,

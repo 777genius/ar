@@ -17,7 +17,7 @@ export type CodexGoalAccessConfig = {
   readonly accessBoundary?: AccessBoundary;
   readonly projectAccessScope?: ProjectAccessScope;
   readonly allowDangerFullAccess?: boolean;
-  readonly networkAccess?: NetworkAccessMode.Disabled | NetworkAccessMode.Restricted;
+  readonly networkAccess?: NetworkAccessMode;
 };
 
 export type CodexGoalAccessPlanConfig = CodexGoalAccessConfig & {
@@ -45,9 +45,6 @@ export function optionalCodexGoalNetworkAccess(
 ): CodexGoalAccessConfig["networkAccess"] | undefined {
   if (value === undefined) return undefined;
   const parsed = parseNetworkAccessMode(value, fieldName);
-  if (parsed === NetworkAccessMode.Unrestricted) {
-    throw new Error(`${fieldName}_unrestricted_requires_danger_full_access`);
-  }
   return parsed;
 }
 
@@ -113,9 +110,7 @@ export function buildCodexGoalAccessLaunchPlan(
     ...(config.allowDangerFullAccess === undefined
       ? {}
       : { allowDangerFullAccess: config.allowDangerFullAccess }),
-    ...(config.networkAccess === undefined
-      ? {}
-      : { networkAccess: config.networkAccess }),
+    networkAccess: config.networkAccess ?? NetworkAccessMode.Unrestricted,
   });
 }
 
@@ -376,6 +371,8 @@ function codexGoalNetworkAccessBlocker(
   if (
     config.accessBoundary === undefined ||
     config.accessBoundary === AccessBoundary.DangerFullAccess ||
+    config.networkAccess === undefined ||
+    config.networkAccess === NetworkAccessMode.Unrestricted ||
     config.networkAccess === NetworkAccessMode.Restricted
   ) {
     return null;
@@ -385,7 +382,7 @@ function codexGoalNetworkAccessBlocker(
     boundary: config.accessBoundary,
     reason: AccessDecisionReason.CannotEnforceAccessBoundary,
     evidence: [
-      'Codex goal adapter cannot enforce network_access=disabled; set networkAccess="restricted" until OS/container egress isolation exists',
+      'Codex goal adapter cannot enforce network_access=disabled; use the default full Internet policy or an explicitly restricted profile',
     ],
   };
 }

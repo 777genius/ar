@@ -9,13 +9,14 @@ export enum CodexProviderEgressProfileId {
   TestManagedQualification = "codex-test-managed-qualification",
   MimoTokenPlan = "codex-provider-mimo-token-plan",
   PublicResearchV1 = "codex-public-research-v1",
+  FullInternetV1 = "codex-full-internet-v1",
 }
 export const codexProviderApiEgressProfileId = CodexProviderEgressProfileId.ProviderApi;
 
 export type CodexProviderEgressPolicy = {
   readonly profileId: CodexProviderEgressProfileId;
   readonly domains: readonly string[];
-  /** HTTPS GET broker destinations; never raw shell network authority. */
+  /** Optional finite anonymous-reader destinations for legacy restricted profiles. */
   readonly publicSourceDomains?: readonly string[];
 };
 
@@ -37,8 +38,17 @@ const publicResearchDomains = Object.freeze([
   "nodejs.org",
 ]);
 
+export function codexProviderHasPublicSources(policy: CodexProviderEgressPolicy | undefined): boolean {
+  return policy?.profileId === CodexProviderEgressProfileId.PublicResearchV1 ||
+    policy?.profileId === CodexProviderEgressProfileId.FullInternetV1;
+}
+
+export function codexHostedDefaultEgressPolicy(): CodexProviderEgressPolicy {
+  return codexProviderEgressPolicy(CodexProviderEgressProfileId.FullInternetV1);
+}
+
 export function codexProviderSourcePurpose(policy: CodexProviderEgressPolicy): CodexSourcePurpose {
-  return policy.profileId === CodexProviderEgressProfileId.PublicResearchV1
+  return codexProviderHasPublicSources(policy)
     ? CodexSourcePurpose.PublicResearch : CodexSourcePurpose.ProviderApi;
 }
 
@@ -48,7 +58,7 @@ export function codexProviderWebSearchMode(
   backend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
 ): CodexWebSearchMode {
   return backend === CodexModelBackend.OpenAiChatGpt &&
-    policy?.profileId === CodexProviderEgressProfileId.PublicResearchV1
+    codexProviderHasPublicSources(policy)
     ? CodexWebSearchMode.Live : CodexWebSearchMode.Disabled;
 }
 
@@ -56,6 +66,8 @@ export function codexProviderEgressPolicy(
   profileId: CodexProviderEgressProfileId,
 ): CodexProviderEgressPolicy {
   switch (profileId) {
+    case CodexProviderEgressProfileId.FullInternetV1:
+      return Object.freeze({ profileId, domains: Object.freeze([]) });
     case CodexProviderEgressProfileId.ProviderApi:
       return Object.freeze({ profileId, domains: Object.freeze(["api.openai.com"]) });
     case CodexProviderEgressProfileId.PublicResearchV1:
@@ -108,6 +120,7 @@ export function codexProviderEgressPolicyFromEnv(
       profileId === CodexProviderEgressProfileId.TestNpmQualification ||
       profileId === CodexProviderEgressProfileId.TestManagedQualification ||
       profileId === CodexProviderEgressProfileId.PublicResearchV1 ||
+      profileId === CodexProviderEgressProfileId.FullInternetV1 ||
       profileId === CodexProviderEgressProfileId.MimoTokenPlan) {
     return codexProviderEgressPolicy(profileId);
   }
@@ -134,7 +147,7 @@ export function codexProviderEgressConfigToml(
     "# Provider egress is selected by trusted host admission.",
     ...(input?.namedPermissions ? [] : ["[sandbox_workspace_write]", "network_access = true", ""]),
     "[features.network_proxy]",
-    "enabled = true",
+    `enabled = ${policy.profileId !== CodexProviderEgressProfileId.FullInternetV1}`,
     `domains = { ${tomlDomainRules(policy)} }`,
     "",
   ].join("\n");
@@ -147,7 +160,7 @@ export function codexProviderEgressCliConfigArgs(
   return [
     ...(input?.namedPermissions ? [] : ["--config", "sandbox_workspace_write.network_access=true"]),
     "--config",
-    "features.network_proxy.enabled=true",
+    `features.network_proxy.enabled=${policy.profileId !== CodexProviderEgressProfileId.FullInternetV1}`,
     "--config",
     `features.network_proxy.domains={ ${tomlDomainRules(policy)} }`,
   ];

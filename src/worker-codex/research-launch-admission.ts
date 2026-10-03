@@ -84,7 +84,7 @@ export function bindResearchRuntime(jobId: string, startId: string): ResearchSta
   return spec;
 }
 export function captureResearchRuntime(identity: HostedTestEgressIdentity, ownerPid = process.pid): {
-  readonly spec: ResearchStartSpec; readonly directory: string; readonly assertCurrent: () => void;
+  readonly spec: ResearchStartSpec; readonly directory: string; readonly profileId: CodexProviderEgressProfileId; readonly assertCurrent: () => void;
   readonly assertAuthorityCurrent: () => void;
 } {
   assertResearchInitialRoot(); assertResearchSharedHost();
@@ -107,8 +107,9 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
     assertResearchMaterialBytes(spec);
     assertAuthorityCurrent();
   };
+  const profileId = parseResearchGrant(researchJson(researchRead(join(researchJobAuthority(identity.jobId), "grant.json")))).profileId;
   assertCurrent();
-  return Object.freeze({ spec, directory: initial.directory, assertCurrent, assertAuthorityCurrent });
+  return Object.freeze({ spec, directory: initial.directory, profileId, assertCurrent, assertAuthorityCurrent });
 }
 
 export function researchProviderAdmissionGuard(factory: CodexAppServerProcessFactory | undefined): (() => void) | undefined {
@@ -116,8 +117,7 @@ export function researchProviderAdmissionGuard(factory: CodexAppServerProcessFac
 }
 export function admitResearchRuntime(identity: HostedTestEgressIdentity): CodexProviderEgressProfileId | undefined {
   if (!researchUnitFromCurrentProcess()) return undefined;
-  captureResearchRuntime(identity);
-  return CodexProviderEgressProfileId.PublicResearchV1;
+  return captureResearchRuntime(identity).profileId;
 }
 export function admitResearchProcessFactory(identity: HostedTestEgressIdentity): CodexAppServerProcessFactory {
   const captured = captureResearchRuntime(identity);

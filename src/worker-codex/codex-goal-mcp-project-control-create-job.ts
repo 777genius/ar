@@ -83,7 +83,7 @@ export async function projectControlCreateCodexGoalJobView(
       requested.workspacePath,
     ),
     allowDangerFullAccess: false,
-    networkAccess: requested.networkAccess ?? NetworkAccessMode.Restricted,
+    networkAccess: requested.networkAccess ?? NetworkAccessMode.Unrestricted,
     ...(workerRole
       ? {
           tags: uniqueProjectControlStrings([

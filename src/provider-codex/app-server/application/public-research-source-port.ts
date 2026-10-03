@@ -25,5 +25,5 @@ export type PublicResearchSourceReader = {
 /** Fixed per-job bounds shared by every account slot, never selected by tool input. */
 export const publicResearchSourceLimits = Object.freeze({
   concurrentRequests: 2, bodyBytes: 512 * 1024, resultBytesPerCall: 1024 * 1024,
-  totalResultBytes: 4 * 1024 * 1024, timeoutMs: 15_000,
+  totalResultBytes: 4 * 1024 * 1024, timeoutMs: 15_000, redirects: 3,
 });

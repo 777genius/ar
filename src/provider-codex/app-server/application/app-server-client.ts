@@ -1,3 +1,4 @@
+import { codexProviderHasPublicSources } from "../../codex-provider-egress-policy";
 import { AppServerAdmission, AppServerExecutionLease, appServerTurnCapacity } from "./app-server-admission";
 import { AppServerUsageError } from "../domain/app-server-usage-error";
 import { appServerTurnStartParams } from "./app-server-turn-start-params";
@@ -291,7 +292,7 @@ export class CodexAppServerClient {
   async resumePublicResearchThread(input: Parameters<typeof appServerThreadStartParams>[0] & {
     readonly threadId: string; readonly timeoutMs: number; readonly abortSignal: AbortSignal;
   }): Promise<void> {
-    if (this.options.providerEgressPolicy?.profileId !== CodexProviderEgressProfileId.PublicResearchV1) return;
+    if (!codexProviderHasPublicSources(this.options.providerEgressPolicy)) return;
     const plan = appServerThreadStartParams({ ...input, goalMode: true }, this.options);
     const response = await this.send("thread/resume", { threadId: input.threadId,
       ...this.retainedThreadParams(plan.params) }, input);
@@ -355,7 +356,7 @@ export class CodexAppServerClient {
     const response = await this.send("thread/fork", { threadId: input.threadId,
       // Preserve ordinary behavior. Captured research/closed tool policy is
       // explicitly overlaid whenever the runtime has selected a finite profile.
-      ...(this.options.providerEgressPolicy?.profileId === CodexProviderEgressProfileId.PublicResearchV1
+      ...(codexProviderHasPublicSources(this.options.providerEgressPolicy)
         ? { ...this.retainedThreadParams(plan.params), deferGoalContinuation: true }
         : this.options.providerEgressPolicy ? { config: { web_search: plan.params.config.web_search } } : {}),
     }, input);
