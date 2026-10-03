@@ -58,6 +58,35 @@ describe("codex goal runtime result IO", () => {
     }
   });
 
+  it.each(["--assume-unchanged", "--skip-worktree"] as const)(
+    "rejects clean-looking raw accounting with %s without changing the index",
+    async (flag) => {
+      const root = await mkdtemp(join(tmpdir(), "subscription-runtime-TEST-index-flags-"));
+      const path = "space and\nnewline.txt";
+      try {
+        await execFileAsync("git", ["init"], { cwd: root });
+        await writeFile(join(root, path), "value=1\n");
+        await execFileAsync("git", ["add", "--", path], { cwd: root });
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(root)).resolves.toBeUndefined();
+        await execFileAsync("git", ["update-index", flag, "--", path], { cwd: root });
+        const indexBefore = await readFile(join(root, ".git", "index"));
+        // Even matching bytes with these flags cannot establish raw identity.
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(root))
+          .rejects.toThrow("failed_no_output_git_index_flags_present");
+        await writeFile(join(root, path), "value=999\n");
+        const { stdout } = await execFileAsync("git", ["diff", "--", path], { cwd: root });
+        expect(stdout).toBe("");
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(root))
+          .rejects.toThrow("failed_no_output_git_index_flags_present");
+        expect(await readFile(join(root, ".git", "index"))).toEqual(indexBefore);
+        expect(await readFile(join(root, path), "utf8")).toBe("value=999\n");
+        await execFileAsync("git", ["update-index", flag === "--assume-unchanged"
+          ? "--no-assume-unchanged" : "--no-skip-worktree", "--", path], { cwd: root });
+        await expect(assertGitWorkspaceRawPatchIdentitySupported(root)).resolves.toBeUndefined();
+      } finally { await rm(root, { recursive: true, force: true }); }
+    },
+  );
+
   it("writes latest-result atomically through the local writer adapter", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-result-"));
     const outputPath = join(root, "latest-result.json");

@@ -149,6 +149,19 @@ export async function assertGitWorkspaceRawPatchIdentitySupported(
   workspacePath: string,
 ): Promise<void> {
   const options = { timeout: defaultGitCommandTimeoutMs, maxBuffer: 16 * 1024 * 1024 };
+  // assume-unchanged and skip-worktree can hide raw source edits from both
+  // status and diff, including the clean failed_no_output closure path.
+  const { stdout: flags } = await execFileAsync("git", ["-C", workspacePath,
+    "ls-files", "-v", "-z"], options);
+  if (flags && !flags.endsWith("\0")) {
+    throw new Error("failed_no_output_git_index_uncertain");
+  }
+  for (const entry of flags ? flags.slice(0, -1).split("\0") : []) {
+    if (entry.length < 3 || entry[1] !== " ") {
+      throw new Error("failed_no_output_git_index_uncertain");
+    }
+    if (entry[0] !== "H") throw new Error("failed_no_output_git_index_flags_present");
+  }
   let autocrlf: string;
   try {
     ({ stdout: autocrlf } = await execFileAsync("git", ["-C", workspacePath,

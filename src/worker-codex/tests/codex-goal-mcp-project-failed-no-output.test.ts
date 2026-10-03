@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -37,7 +37,7 @@ import {
 import type { ReviewedWorkerOutputSnapshot } from "../reviewed-worker-output";
 import { localProjectControlEvidenceCustodySupported } from
   "../../worker-local/project-control-evidence-custody-local-adapter";
-import { git, gitInitRepository, gitStdout } from "./codex-goal-mcp-test-support";
+import { callToolJson, git, gitInitRepository, gitStdout } from "./codex-goal-mcp-test-support";
 
 describe("project failed_no_output lifecycle", () => {
   it.runIf(localProjectControlEvidenceCustodySupported)(
@@ -428,6 +428,77 @@ describe("project failed_no_output lifecycle", () => {
       }
     },
   );
+  it.each([
+    ["--assume-unchanged", false], ["--skip-worktree", false],
+    ["--assume-unchanged", true], ["--skip-worktree", true],
+  ] as const)("holds clean-looking closure with %s (prior rejection: %s)", async (flag, rejected) => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-TEST-hidden-source-"));
+    const registryRootDir = join(root, "worker-jobs", "registry");
+    const ledgerRoot = join(root, "control", "ledger");
+    const evidenceRoot = join(root, "control", "archives");
+    const workspacePath = join(root, "worktrees", "project-worker");
+    const controllerWorkspace = join(root, "repo");
+    const deps = { loadProjectControlController, loadJobLaunch, codexProjectControlBroker };
+    try {
+      await createCleanWorkspace(workspacePath);
+      await createCleanWorkspace(controllerWorkspace);
+      await mkdir(join(root, "auth"));
+      await createStoredJob({
+        registryRootDir, root, authRoot: join(root, "auth"), jobId: "project-controller",
+        workspacePath: controllerWorkspace, accessBoundary: AccessBoundary.ProjectScopedControl,
+        projectAccessScope: {
+          projectId: "project", readRoots: [root], workspaceRoots: [controllerWorkspace],
+          worktreeRoots: [join(root, "worktrees")], registryRoot: registryRootDir,
+          consumedOutputLedgerRoots: [ledgerRoot], consumedOutputEvidenceRoots: [evidenceRoot],
+          jobIdPrefixes: ["project-"], tmuxSessionPrefixes: ["project-"], allowedAccountIds: ["account-a"],
+        },
+      });
+      await createStoredJob({ registryRootDir, root, authRoot: join(root, "auth"),
+        jobId: "project-worker", workspacePath });
+      if (rejected) await writeMislabeledNoOutput({ root, ledgerRoot,
+        jobId: "project-worker", archiveRoot: evidenceRoot });
+      const ledgerPath = join(ledgerRoot, "items", "project-worker.json");
+      const priorLedger = rejected ? await readFile(ledgerPath, "utf8") : undefined;
+      const sourcePatch = join(evidenceRoot, "project-worker-rejected-test", "worker-output.patch");
+      await mkdir(join(evidenceRoot, "items"), { recursive: true });
+      const archivesBefore = await readdir(evidenceRoot, { recursive: true });
+      await writeFile(join(workspacePath, "README.md"), "value=1\n");
+      await git(workspacePath, ["add", "README.md"]);
+      await git(workspacePath, ["commit", "-m", "test: initialize TEST raw source"]);
+      await git(workspacePath, ["update-index", flag, "README.md"]);
+      await writeFile(join(workspacePath, "README.md"), "value=999\n");
+      expect(await gitStdout(workspacePath, ["status", "--porcelain"])).toBe("");
+      expect(await captureGitWorkspacePatch({ workspacePath })).toBe("");
+      const indexBefore = await readFile(join(workspacePath, ".git", "index"));
+      const args = { registryRootDir, controllerJobId: "project-controller", jobId: "project-worker",
+        terminalAttemptId: "terminal-hidden", failureCategory: "infrastructure",
+        failureCode: "prestart_failure", confirmFailedNoOutput: true };
+      const server = createCodexGoalMcpServer();
+      const client = new Client({ name: "TEST-hidden-source", version: "0.0.0" });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      try {
+        await expect(callToolJson(client, "codex_goal_project_record_failed_no_output", args))
+          .resolves.toMatchObject({ ok: false, error: "failed_no_output_git_index_flags_present" });
+      } finally { await client.close(); await server.close(); }
+      expect(await readFile(join(workspacePath, "README.md"), "utf8")).toBe("value=999\n");
+      expect(await readFile(join(workspacePath, ".git", "index"))).toEqual(indexBefore);
+      expect(await readdir(evidenceRoot, { recursive: true }).catch(() => []))
+        .toEqual(archivesBefore);
+      if (rejected) {
+        expect(await readFile(ledgerPath, "utf8")).toBe(priorLedger);
+        expect(await readFile(sourcePatch, "utf8")).toBe("");
+      } else await expect(readFile(ledgerPath)).rejects.toMatchObject({ code: "ENOENT" });
+      // Clearing only the flag exposes authored output; closure must still reject.
+      await git(workspacePath, ["update-index", flag === "--assume-unchanged"
+        ? "--no-assume-unchanged" : "--no-skip-worktree", "README.md"]);
+      await expect(projectControlRecordFailedNoOutputView(args, deps))
+        .rejects.toThrow("failed_no_output_clean_workspace_required");
+      await writeFile(join(workspacePath, "README.md"), "value=1\n");
+      await expect(projectControlRecordFailedNoOutputView(args, deps))
+        .resolves.toMatchObject({ ok: true });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it("publishes the project-scoped MCP tool", async () => {
     const server = createCodexGoalMcpServer();
     const client = new Client({ name: "failed-no-output-test", version: "0.0.0" });

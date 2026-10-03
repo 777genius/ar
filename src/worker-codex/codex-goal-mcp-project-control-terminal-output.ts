@@ -662,14 +662,6 @@ async function assertNoStagedChanges(workspacePath: string): Promise<void> {
     }
     if (entry[0] !== " ") throw new Error("failed_no_output_staged_changes_present");
   }
-  const { stdout: flags } = await execFileAsync("git", ["-C", workspacePath,
-    "ls-files", "-v", "-z"], { timeout: 10_000 });
-  for (const entry of nulRecords(flags)) {
-    if (entry.length < 3 || entry[1] !== " ") {
-      throw new Error("failed_no_output_git_index_uncertain");
-    }
-    if (entry[0] !== "H") throw new Error("failed_no_output_git_index_flags_present");
-  }
   const { stdout: stages } = await execFileAsync("git", ["-C", workspacePath,
     "ls-files", "--stage", "-z"], { timeout: 10_000 });
   for (const entry of nulRecords(stages)) {
