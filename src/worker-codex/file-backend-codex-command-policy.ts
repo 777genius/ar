@@ -70,6 +70,11 @@ function commandApprovalVector(input: {
 function commandTextApprovalVector(commandTextInput: string): readonly string[] | null {
   const commandText = commandTextInput.trim();
   if (!commandText) return null;
+  // Shell expansion and grouping can change the executable or its arguments.
+  // Reject before unwrapping even quoted payloads; splitting is not a shell parser.
+  if (/[*?\[\]{}()]/.test(commandText)) {
+    return ["sh", "-lc", commandText];
+  }
   const shellPayload = shellCommandTextPayload(commandText);
   if (shellPayload !== undefined) {
     return shellPayload === null
