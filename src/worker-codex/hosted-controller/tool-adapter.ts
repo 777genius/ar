@@ -24,12 +24,12 @@ export class HostedControllerKeyedToolAdapter implements HostedControllerDynamic
   async dispatch(input: HostedControllerDynamicToolCall, signal: AbortSignal): Promise<HostedControllerToolResult> {
     try {
       assertHostedControllerKeyedToolAdapter(this);
-      this.retained.assertCurrent();
+      this.retained.assertCleanup();
       const call = parseHostedControllerToolCall(input.tool, input.arguments);
       if (!call) return { status: Status.Rejected, error: ErrorCode.Denied };
       const args = call.arguments;
       switch (call.tool) {
-        case Tool.Launch: return { status: Status.Accepted, view: await this.application.launch({ key: args.key!, task: args.task!,
+        case Tool.Launch: this.retained.assertCurrent(); return { status: Status.Accepted, view: await this.application.launch({ key: args.key!, task: args.task!,
           profile: args.profile === "read-only" ? KeyedChildProfile.ReadOnly : KeyedChildProfile.IsolatedWrite }, signal) };
         case Tool.Observe: return { status: Status.Observed, view: await this.application.observe(args.handle!) };
         case Tool.Stop: return { status: Status.StopRequested, view: await this.application.stop(args.handle!) };

@@ -3,7 +3,7 @@ import { KeyedChildState as State, type ChildCorrelation, type ChildLaunchReques
 
 import { KeyedLaunchReason, type KeyedLaunchView } from "@vioxen/subscription-runtime/core";
 export { KeyedLaunchReason, type KeyedLaunchView } from "@vioxen/subscription-runtime/core";
-import { ScopedStopReason, type KeyedChildApplicationPort } from "../ports/keyed-child-application-ports";
+import { KeyedAuthorizationMode as Mode, ScopedStopReason, type KeyedChildApplicationPort } from "../ports/keyed-child-application-ports";
 export * from "../ports/keyed-child-application-ports";
 
 /** Response cancellation is independent of this owner's accepted work. An
@@ -55,28 +55,37 @@ export class KeyedChildLaunchApplication {
     return this.#view(accepted.view);
   }
   async observe(handle: string): Promise<KeyedLaunchView> {
-    this.port.authenticate();
+    this.port.authenticate(Mode.Cleanup);
     return this.port.coordinate(async () => {
-      this.port.authenticate();
-      return this.#view(this.port.read().observe(this.port.scope, handle));
-    });
+      this.port.authenticate(Mode.Cleanup);
+      return this.#view(this.port.read(Mode.Cleanup).observe(this.port.scope, handle));
+    }, Mode.Cleanup);
   }
   async stop(handle: string, reason = ScopedStopReason.Requested): Promise<KeyedLaunchView> {
-    this.port.authenticate();
+    this.port.authenticate(Mode.Cleanup);
     const stopped = await this.port.coordinate(async () => {
-      this.port.authenticate();
-      const current = this.port.read();
-      const binding = current.observe(this.port.scope, handle); // Authorization before target effects.
+      this.port.authenticate(Mode.Cleanup);
+      const current = this.port.read(Mode.Cleanup);
+      const binding = current.observe(this.port.scope, handle);
       const next = await this.port.transact(this.port.scope, this.port.authorityDigest,
-        current.generation, l => l.stop(binding));
+        current.generation, l => l.stop(binding), Mode.Cleanup);
       return next.observe(this.port.scope, handle);
-    });
-    // Unresolved, throwing and absent stop ports cannot cancel the original
-    // deadline. Only an authoritative terminal observation permits cancellation.
+    }, Mode.Cleanup);
     if (stopped.state !== State.Terminal) {
       try { await this.port.stopPort?.request(stopped, reason); } catch { /* Unresolved, retained. */ }
     }
-    return this.#view(stopped);
+    // The fresh durable ledger, never the port's DTO/result, owns occupancy.
+    return this.observe(handle);
+  }
+  /** Completion is an observation that triggers the same proof port. It does
+   * not directly change terminal state or invent a model stop request. */
+  async reconcile(handle: string, reason = ScopedStopReason.Completion): Promise<KeyedLaunchView> {
+    this.port.authenticate(Mode.Cleanup);
+    const binding = await this.port.coordinate(async () => this.port.read(Mode.Cleanup).observe(this.port.scope, handle), Mode.Cleanup);
+    if (binding.state !== State.Terminal) {
+      try { await this.port.stopPort?.request(binding, reason); } catch { /* Held. */ }
+    }
+    return this.observe(handle);
   }
   /** Owner shutdown/testing can join work; no foreground wait holds coordination. */
   async drain(): Promise<void> { await Promise.all(this.#owned.values()); }
@@ -106,20 +115,23 @@ export class KeyedChildLaunchApplication {
       return this.port.dispatchPrepared(prepared);
     });
     if (ack?.completion) {
-      try { await ack.completion; } finally { await this.#hold(binding); }
+      try { await ack.completion; } finally {
+        await this.#hold(binding);
+        await this.reconcile(binding.childHandle, ScopedStopReason.Completion).catch(() => {});
+      }
     }
   }
   async #hold(binding: ChildCorrelation): Promise<void> {
     try {
       await this.port.coordinate(async () => {
-        this.port.authenticate();
-        const current = this.port.read(), latest = current.observe(this.port.scope, binding.childHandle);
+        this.port.authenticate(Mode.Cleanup);
+        const current = this.port.read(Mode.Cleanup), latest = current.observe(this.port.scope, binding.childHandle);
         // Late completion cannot regress stop or terminal state. No stale CAS.
         if (latest.state === State.Terminal) { this.#view(latest); return; }
         if (latest.state === State.StopRequested) return;
         await this.port.transact(this.port.scope, this.port.authorityDigest,
-          current.generation, l => l.markUncertain(latest));
-      });
+          current.generation, l => l.markUncertain(latest), Mode.Cleanup);
+      }, Mode.Cleanup);
       if (Date.now() >= this.port.deadlineEpochMs) await this.stop(binding.childHandle, ScopedStopReason.Deadline);
     } catch { /* Corrupt/pending storage remains authoritative; never reconstruct/release. */ }
   }

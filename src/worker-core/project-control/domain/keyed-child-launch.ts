@@ -1,3 +1,4 @@
+import { type RuntimeValidatedTermination } from "../../hosted-custody/domain/scoped-termination";
 import { createHash } from "node:crypto";
 import { KeyedChildState } from "@vioxen/subscription-runtime/core";
 
@@ -120,6 +121,10 @@ function allocationCopy(a: ChildSlotAllocation): ChildSlotAllocation {
  * Validated private restoration binds the trusted authority and finite slots.
  * Publication still requires a direct domain successor, never a hydrated edit.
  */
+const terminalAuthorities = new WeakMap<KeyedChildLedger, RuntimeValidatedTermination>();
+/** Only the durable adapter consumes this opaque reference. Restoration supplies
+ * state and never reconstructs transition authority. */
+export function keyedTerminalAuthority(ledger: KeyedChildLedger): RuntimeValidatedTermination | undefined { return terminalAuthorities.get(ledger); }
 export class KeyedChildLedger {
   static readonly #construction = Object.freeze({});
   readonly #successorToken = Object.freeze({});
@@ -210,7 +215,7 @@ export class KeyedChildLedger {
         [KeyedChildState.Prepared, 3], [KeyedChildState.Terminal, 2],
         [KeyedChildState.Uncertain, 2], [KeyedChildState.StopRequested, 2]]);
       const post = new Map([[KeyedChildState.DispatchIntent, 0], [KeyedChildState.Submitted, 1],
-        [KeyedChildState.Running, 2], [KeyedChildState.Uncertain, 1], [KeyedChildState.StopRequested, 1]]);
+        [KeyedChildState.Running, 2], [KeyedChildState.Uncertain, 1], [KeyedChildState.StopRequested, 1], [KeyedChildState.Terminal, 1]]);
       if (row.dispatchIntent !== null) {
         exactFields(row.dispatchIntent, "generation"); integer(row.dispatchIntent.generation);
         if (!post.has(row.state) || row.dispatchIntent.generation < minimum + 4 ||
@@ -322,6 +327,15 @@ export class KeyedChildLedger {
     const c = this.#correlated(binding);
     return c.state === KeyedChildState.Terminal || c.state === KeyedChildState.StopRequested
       ? this : this.#replace(c, KeyedChildState.StopRequested);
+  }
+  /** Receipt authority is opaque, runtime validated and bound to stable identity.
+   * The adapter revalidates durable ordinary successors under the fresh CAS. */
+  terminalizeAfterIntent(binding: ChildCorrelation, authority: RuntimeValidatedTermination): KeyedChildLedger {
+    const c = this.#correlated(binding);
+    if (!c.dispatchIntent) throw new Error("dispatch intent required");
+    if (!authority || !/^[a-f0-9]{64}$/.test(authority.receiptDigest)) throw new Error("scoped_terminal_authority_required");
+    const next = c.state === KeyedChildState.Terminal ? this : this.#replace(c, KeyedChildState.Terminal);
+    terminalAuthorities.set(next, authority); return next;
   }
   /** Evidence must come from independent trusted verification, never an exception/timeout. */
   terminalizeBeforeIntent(evidence: IndependentNoEffectEvidence): KeyedChildLedger {

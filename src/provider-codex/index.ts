@@ -29,5 +29,8 @@ export { admittedReadonlyCodexProcessFactory } from "./app-server/adapters/node-
 export type { HostedReadonlyMounts } from "./app-server/adapters/hosted-readonly-mounts";
 export { assertHostedProcessDescriptors } from "./app-server/adapters/hosted-process-descriptors";
 export { withHostedActivationFence, assertHostedActivationFence, assertHostedActivationOperator,
-  readHostedActivationBytes, decodeHostedActivationBytes, requiresHostedProcessAdmission } from "./app-server/adapters/hosted-process-activation";
+  readHostedActivationBytes, decodeHostedActivationBytes, requiresHostedProcessAdmission,
+  assertHostedScopedAdmission, retainHostedScopedCorrelation, retainHostedScopedSubmitter, retainHostedScopedActorChain, observeHostedScopedActorChildren } from "./app-server/adapters/hosted-process-activation";
 export type { HostedActivationFence } from "./app-server/adapters/hosted-process-activation";
+
+export type { HostedRetainedLifetimeBinding, HostedRetainedLifetimePort, HostedScopedActorBarrierPort } from "./app-server/adapters/hosted-process-activation";

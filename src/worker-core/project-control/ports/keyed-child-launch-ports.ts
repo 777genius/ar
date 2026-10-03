@@ -1,3 +1,5 @@
+import type { RuntimeValidatedTermination } from "../../hosted-custody/domain/scoped-termination";
+import type { KeyedAuthorizationMode } from "./keyed-child-application-ports";
 import type { ChildCorrelation, ChildObservation, ChildScope, IndependentNoEffectEvidence,
   KeyedChildLedger } from "../domain/keyed-child-launch";
 
@@ -9,7 +11,7 @@ import type { ChildCorrelation, ChildObservation, ChildScope, IndependentNoEffec
  */
 export interface KeyedChildLedgerTransactionPort {
   transact(scope: ChildScope, authorityDigest: string, expectedGeneration: number,
-    successor: (current: KeyedChildLedger) => KeyedChildLedger): Promise<KeyedChildLedger>;
+    successor: (current: KeyedChildLedger) => KeyedChildLedger, mode?: KeyedAuthorizationMode): Promise<KeyedChildLedger>;
 }
 /** Host-only correlated reconciliation. Reading intent never authorizes submission.
  * Actual at-most-once submission is the future adapter/usecase's responsibility.
@@ -22,7 +24,7 @@ export interface KeyedChildNoEffectProofPort {
   establishNoEffects(scope: ChildScope, binding: ChildCorrelation): Promise<IndependentNoEffectEvidence | null>;
 }
 export enum ScopedTerminationProofKind { ReceiptBacked = "receipt_backed_scoped_termination" }
-/** Reserved for PR5: no collector, fake default, or production terminalizer here.
+/** Durable receipt references are transport data, never terminal capabilities.
  * The receipt must prove fenced creators, drained queued starts, and empty runtime
  * AND correlated provider cgroups. Provider exit, lease expiry and timeout do not.
  */
@@ -35,8 +37,8 @@ export interface ScopedChildTerminationProof {
   readonly runtimeProofDigest: string;
   readonly providerProofDigest: string;
 }
-export interface FutureKeyedChildTerminationProofPort {
-  proveTermination(scope: ChildScope, binding: ChildCorrelation): Promise<ScopedChildTerminationProof | null>;
+export interface KeyedChildTerminationReceiptValidationPort {
+  validate(scope: ChildScope, binding: ChildCorrelation, receiptDigest: string): RuntimeValidatedTermination;
 }
 /** Future usecase boundary: validate prepared correlation, CAS/fsync fresh intent,
  * then submit its exact preallocated start once. Existing intent only reconciles.
