@@ -45,6 +45,11 @@ export const projectScopedControllerToolGrants: readonly ControlledAgentToolGran
     "write",
   ),
   grant(
+    ControlledAgentToolName.ProjectAdoptAuthorityTuple,
+    ControlledAgentToolGroup.AuthorityAdoption,
+    "write",
+  ),
+  grant(
     ControlledAgentToolName.ProjectPrepareVerifier,
     ControlledAgentToolGroup.WorkerLifecycle,
     "write",

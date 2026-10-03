@@ -27,6 +27,8 @@ import {
   projectControlStartStoredJobView,
   projectControlStopStoredJobView,
 } from "./codex-goal-mcp-project-control-actions";
+import { projectControlAdoptAuthorityTupleView } from
+  "./codex-goal-mcp-project-authority";
 import { projectControlMarkReviewedView } from "./codex-goal-mcp-project-control-review";
 import {
   projectControlRecordFailedNoOutputView,
@@ -276,6 +278,15 @@ export async function projectControlPushBranch(args: ProjectControlMcpArgs) {
 
 export async function projectControlStopStoredJob(args: ProjectControlMcpArgs) {
   return mcpJson(await projectControlStopStoredJobView(args, projectControlActionDeps()));
+}
+
+export async function projectControlAdoptAuthorityTuple(
+  args: ProjectControlMcpArgs,
+) {
+  return mcpJson(await projectControlAdoptAuthorityTupleView(
+    args,
+    projectControlActionDeps(),
+  ));
 }
 
 export async function projectControlMarkReviewed(args: ProjectControlMcpArgs) {

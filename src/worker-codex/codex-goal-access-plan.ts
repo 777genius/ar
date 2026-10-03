@@ -5,6 +5,7 @@ import {
   AccessDecisionReason,
   LaunchPlanStatus,
   NetworkAccessMode,
+  ProjectAuthorityMode,
   buildLaunchPlan,
   parseAccessBoundary,
   parseNetworkAccessMode,
@@ -287,7 +288,7 @@ function parseProjectPreStartAdmissionScope(
 ): NonNullable<ProjectAccessScope["preStartAdmission"]> {
   if (!isRecord(value)) throw new Error(`${fieldName}_invalid`);
   if (value.mode === "serial-builtin") {
-    const allowedFields = new Set(["required", "mode"]);
+    const allowedFields = new Set(["required", "mode", "authorityMode"]);
     for (const field of Object.keys(value)) {
       if (!allowedFields.has(field)) {
         throw new Error(`${fieldName}.unexpected_field:${field}`);
@@ -296,17 +297,31 @@ function parseProjectPreStartAdmissionScope(
     return {
       required: booleanValue(value.required, `${fieldName}.required`),
       mode: "serial-builtin",
+      ...parseAuthorityMode(value.authorityMode, fieldName, value.required),
     };
   }
   if (value.mode !== "serial") throw new Error(`${fieldName}.mode_invalid`);
   return {
     required: booleanValue(value.required, `${fieldName}.required`),
     mode: "serial",
+    ...parseAuthorityMode(value.authorityMode, fieldName, value.required),
     validatorBundle: parseProjectPreStartAdmissionValidators(
       value.validatorBundle,
       `${fieldName}.validatorBundle`,
     ),
   };
+}
+
+function parseAuthorityMode(value: unknown, fieldName: string, required: unknown):
+  { readonly authorityMode?: ProjectAuthorityMode } {
+  if (value === undefined) return {};
+  if (value !== ProjectAuthorityMode.HostedWebCoreV1) {
+    throw new Error(`${fieldName}.authorityMode_invalid`);
+  }
+  if (required !== true) {
+    throw new Error(`${fieldName}.authorityMode_requires_required`);
+  }
+  return { authorityMode: ProjectAuthorityMode.HostedWebCoreV1 };
 }
 
 function parseProjectPreStartAdmissionValidators(

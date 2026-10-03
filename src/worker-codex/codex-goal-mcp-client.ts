@@ -95,6 +95,7 @@ const requiredCodexGoalMcpTools = [
   "codex_goal_project_create_worktree",
   "codex_goal_project_integrate_commit",
   "codex_goal_project_push_branch",
+  "codex_goal_project_adopt_authority_tuple",
   "codex_goal_project_open_integration_attempt",
   "codex_goal_project_apply_worker_output",
   "codex_goal_project_run_required_checks",

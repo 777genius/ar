@@ -53,6 +53,8 @@ import {
   localReviewedWorkerOutputDeps,
   reviewedWorkerOutputRoot,
 } from "./reviewed-worker-output";
+import { LocalProjectAuthorityTupleStore } from
+  "../worker-local/project-authority-tuple-local-adapter";
 import type { ProjectControlWorkspaceLease } from "./codex-goal-project-workspace-lock";
 import {
   noopOperationResult,
@@ -203,13 +205,17 @@ export function createCodexProjectControlBroker(
             "",
         }
       : undefined);
+  const authorityStore = new LocalProjectAuthorityTupleStore({
+    rootDir: join(input.registryRootDir, ".project-authority"),
+    projectId: input.scope.projectId,
+  });
   return new ProjectControlBroker(
     {
       boundary: AccessBoundary.ProjectScopedControl,
       scope: input.scope,
     },
     {
-      ...codexProjectControlPorts(input),
+      ...codexProjectControlPorts(input, authorityStore),
       admission: codexProjectAdmissionGate({
         registryRootDir: input.registryRootDir,
         scope: input.scope,
@@ -250,8 +256,11 @@ export function createCodexProjectControlBroker(
 
 function codexProjectControlPorts(
   input: CodexProjectControlBrokerInput,
+  authorityStore: LocalProjectAuthorityTupleStore,
 ): ProjectControlBrokerPorts {
   return {
+    authority: authorityStore,
+
     audit: {
       async record(event) {
         await appendProjectControlAuditEvent(input.controller, event);
@@ -446,6 +455,7 @@ function codexProjectControlPorts(
                   {
                     manifest: input.startManifest,
                     scope: input.scope,
+                    authorityStore,
                     ...(input.startAdmissionWorkspaceMode
                       ? { workspaceMode: input.startAdmissionWorkspaceMode }
                       : {}),

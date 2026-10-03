@@ -67,6 +67,9 @@ export function projectControlChildScope(
     ...(parent.allowedAccountIds
       ? { allowedAccountIds: parent.allowedAccountIds }
       : {}),
+    ...(parent.preStartAdmission
+      ? { preStartAdmission: parent.preStartAdmission }
+      : {}),
   };
 }
 
@@ -337,7 +340,8 @@ function projectControlPreStartAdmissionEquivalent(input: {
     input.existing.mode === "serial-builtin" &&
     input.proposed.mode === "serial-builtin" &&
     input.existing.required === input.proposed.required &&
-    input.existing.mode === input.proposed.mode
+    input.existing.mode === input.proposed.mode &&
+    input.existing.authorityMode === input.proposed.authorityMode
   );
 }
 

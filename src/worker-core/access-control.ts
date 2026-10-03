@@ -126,6 +126,10 @@ export enum RawShellAccessMode {
   Unrestricted = "unrestricted",
 }
 
+export enum ProjectAuthorityMode {
+  HostedWebCoreV1 = "hosted_web_core_v1",
+}
+
 export type ProjectAccessScope = {
   readonly projectId: string;
   readonly projectSlug?: string;
@@ -154,6 +158,7 @@ export type ProjectAccessScope = {
     | {
         readonly required: boolean;
         readonly mode: "serial";
+        readonly authorityMode?: ProjectAuthorityMode;
         readonly validatorBundle: readonly {
           readonly path: string;
           readonly sha256: string;
@@ -162,6 +167,7 @@ export type ProjectAccessScope = {
     | {
         readonly required: boolean;
         readonly mode: "serial-builtin";
+        readonly authorityMode?: ProjectAuthorityMode;
       };
 };
 
