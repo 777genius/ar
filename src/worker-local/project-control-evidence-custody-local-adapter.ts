@@ -19,12 +19,9 @@ export class LocalProjectControlEvidenceCustody implements
     ProjectControlEvidenceCustodyPort {
   constructor(private readonly crashHook?: PublicationCrashHook) {}
 
-  async materializeApprovedProjectControlCustody(input: {
-    readonly approvedAnchor: string;
-    readonly ledgerRoots: readonly string[];
-    readonly evidenceRoots: readonly string[];
-    readonly deniedRoots: readonly string[];
-  }): Promise<ProjectControlCustodyBootstrapCertification> {
+  async materializeApprovedProjectControlCustody(
+    input: Parameters<ProjectControlEvidenceCustodyPort["materializeApprovedProjectControlCustody"]>[0],
+  ): Promise<ProjectControlCustodyBootstrapCertification> {
     assertLocalProjectControlEvidenceCustodySupported();
     return await materializeApprovedProjectControlCustody(input, this.crashHook);
   }
@@ -716,6 +713,9 @@ export type PublicationCrashHook = (
     | "after_ancestor_creation_before_parent_fsync"
     | "before_ancestor_parent_fsync"
     | "after_ancestor_parent_fsync"
+    | "after_custody_staging_creation_before_checkpoint"
+    | "after_custody_staging_checkpoint_before_publication"
+    | "before_custody_directory_publication"
     | "after_custody_directory_creation_before_parent_fsync"
     | "before_custody_manifest_publication_revalidation"
     | "after_publish_before_directory_fsync"

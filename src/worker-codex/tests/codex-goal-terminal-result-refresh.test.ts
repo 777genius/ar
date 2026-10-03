@@ -11,7 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { reconcileCodexGoalRuntimeResult } from "../codex-goal-ops";
+import { refreshCompletedCodexGoalResultArtifacts } from "../codex-goal-terminal-result-refresh";
 import { ensureTerminalCodexGoalHandoffArtifacts } from "../application/ensure-codex-goal-handoff-artifacts";
 
 const execFileAsync = promisify(execFile);
@@ -22,6 +24,27 @@ describe("completed Codex goal result refresh", () => {
     await Promise.all(cleanup.splice(0).map((path) =>
       rm(path, { recursive: true, force: true })
     ));
+  });
+
+  it("fences the exported refresh before artifact or result publication", async () => {
+    const root = await mkdtemp(join(tmpdir(), "test-terminal-refresh-fence-"));
+    cleanup.push(root);
+    const gate = new LocalTerminalCheckpointAdmission(root);
+    const claim = await gate.claim("test-refresh-fence", {
+      projectId: "test-project", workstreamId: "test-workstream", jobId: "test-job",
+      taskId: "test-task", executionGeneration: "test-generation", attemptNumber: 1,
+      ownershipEpoch: 1, runtimeSha: "a".repeat(40), registryRevisionSha256: "b".repeat(64),
+    });
+    try {
+      await expect(refreshCompletedCodexGoalResultArtifacts({
+        config: { jobRootDir: root, jobId: "test-job", taskId: "test-task",
+          workspacePath: join(root, "workspace") },
+        outputPath: join(root, "test-task.latest-result.json"),
+        existingResult: { status: "done", artifacts: [], evidence: [], blockers: [],
+          nextAction: "review_completed" } as never,
+        changedFiles: [], preservePatch: false,
+      })).rejects.toThrow("terminal_checkpoint_job_fenced");
+    } finally { await gate.release(claim, false); }
   });
 
   it("refreshes artifacts without downgrading a completed strict result", async () => {

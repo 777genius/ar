@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import {
-  CodexJsonAgentDriver, CodexProviderEgressProfileId, codexProviderEgressPolicy,
+  CodexJsonAgentDriver, CodexModelBackend, CodexProviderEgressProfileId, codexProviderEgressPolicy,
   codexProviderEgressCliConfigArgs, sessionArtifactFromCodexAuthJson,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { codexAppServerProcessInvocation } from "../../provider-codex/app-server/adapters/node-app-server-process";
@@ -23,6 +23,7 @@ function runtime(options: FileBackendCodexWorkerOptions) {
 describe("factory admitted policy propagation", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
   it("uses one snapshot for prewarm, task, child CLI and cached homes across ordinary profiles and reopenings; refuses managed factory substitution", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     const root = await mkdtemp(join(tmpdir(), "egress-factory-"));
     const workspacePath = join(root, "workspace"); await mkdir(workspacePath);
     const homes: string[] = [];
@@ -69,19 +70,26 @@ describe("factory admitted policy propagation", () => {
           for (const launch of launches) {
             expect(launch.env?.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE).toBe(profileId);
             expect(launch.env?.PATH?.split(":")).toContain("/synthetic/bin");
-            expect(launch.args.slice(-6)).toEqual(codexProviderEgressCliConfigArgs(codexProviderEgressPolicy(profileId)));
+            expect(launch.args.slice(-4)).toEqual(codexProviderEgressCliConfigArgs(
+              codexProviderEgressPolicy(profileId), { namedPermissions: true }));
+            expect(launch.args.join(" ")).not.toContain("sandbox_workspace_write");
             const home = launch.env!.CODEX_HOME!;
             const config = await readFile(join(home, "config.toml"), "utf8");
             expect(config.includes("registry.npmjs.org")).toBe(profileId !== CodexProviderEgressProfileId.ProviderApi);
             expect(config.includes("api.github.com")).toBe(false);
             expect(config.includes("raw.githubusercontent.com")).toBe(false);
             expect(config).toContain("[[hooks.PreToolUse]]");
-            expect(config).toContain("network_access = true");
+            expect(config).toContain('default_permissions = "hosted-project-read"');
+            expect(config).toContain('[permissions.hosted-project-write.network]');
+            expect(config).not.toContain("[sandbox_workspace_write]");
           }
           homes.push(launches[0]!.env!.CODEX_HOME!);
           const turns = fake.requests.filter(r => r.method === "turn/start");
           expect(turns.length).toBeGreaterThan(0);
-          for (const turn of turns) expect(turn.params).toMatchObject({ sandboxPolicy: { networkAccess: true } });
+          for (const turn of turns) {
+            expect(turn.params).toMatchObject({ permissions: "hosted-project-write" });
+            expect(turn.params).not.toHaveProperty("sandboxPolicy");
+          }
         } finally { await driver.dispose(); }
       }
       expect(new Set(homes.slice(0, 2)).size).toBe(2);
@@ -110,10 +118,11 @@ describe("factory admitted policy propagation", () => {
         expect(launch.env?.PATH?.split(":" )).toContain("/synthetic/inherited/bin");
         expect(launch.env?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND).toBe("hosted-codex-job");
         const invocation = codexAppServerProcessInvocation({ command: "/synthetic", args: launch.args,
-          cwd: root, env: launch.env!, platform: "linux", ioLimitPaths: ["/synthetic"],
+          cwd: root, env: launch.env!, platform: "linux",
           hostedLauncher: "/synthetic/launcher.js", nodePath: "/synthetic/node" });
-        expect(invocation.command).toBe("/usr/bin/systemd-run");
-        expect(invocation.args).toContain("--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user -/var/lib/subscription-runtime-host-policy");
+        expect(invocation.command).toBe(process.execPath);
+        expect(invocation.args[1]).toBe("provider");
+        expect(JSON.parse(invocation.args[2]!).operation).toBe("provider");
         expect(launch.env?.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE).toBe(CodexProviderEgressProfileId.ProviderApi);
         expect(launch.args.join(" ")).not.toContain("registry.npmjs.org");
         expect(await readFile(join(launch.env!.CODEX_HOME!, "config.toml"), "utf8")).not.toContain("registry.npmjs.org");
@@ -145,5 +154,83 @@ describe("factory admitted policy propagation", () => {
       })).toThrow("hosted_test_egress_engine_unsupported");
       expect(spawn).not.toHaveBeenCalled();
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["plain-exec", "packaged-exec"] as const)("rejects hosted %s before legacy sandbox execution", engine => {
+    expect(() => runtime({
+      providerInstanceId: "synthetic-account",
+      stateRootDir: "/synthetic/state",
+      workspacePath: "/synthetic/workspace",
+      codexBinaryPath: "/synthetic/codex",
+      encryptionKey: new Uint8Array(32),
+      executionEngine: engine,
+      sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
+    })).toThrow("hosted_permission_profiles_engine_unsupported");
+  });
+
+  it("enforces native project permissions for a brokered job without a hosted marker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scoped-permissions-"));
+    const fake = new FakeAppServerFactory({ goalStatusesAfterTurns: ["complete"] });
+    const launches: Parameters<typeof fake.create>[0][] = [];
+    const parts = runtime({
+      providerInstanceId: "synthetic-account", stateRootDir: join(root, "state"), workspacePath: root,
+      codexBinaryPath: "/synthetic/codex", encryptionKey: new Uint8Array(32),
+      executionEngine: "app-server-goal", warmupPrompt: false,
+      sourceEnv: { PATH: "/synthetic/bin" }, enforceProjectReadBoundary: true,
+      appServerProcessFactory: input => { launches.push(input); return fake.create(input); },
+    });
+    const driver = parts.agentDriver as CodexJsonAgentDriver;
+    try {
+      await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson), redactor,
+        runner: new StaticRunner(""), task: { kind: "structured-prompt", prompt: "offline" },
+        workspace: { path: root }, abortSignal: new AbortController().signal,
+      });
+      expect(launches.length).toBeGreaterThan(0);
+      const config = await readFile(join(launches[0]!.env!.CODEX_HOME!, "config.toml"), "utf8");
+      expect(config).toContain('default_permissions = "hosted-project-read"');
+      expect(config).toContain('":root" = "deny"');
+      expect(config).not.toContain('sandbox_mode =');
+      expect(config).not.toContain('[sandbox_workspace_write]');
+      expect(fake.requests.filter(r => r.method === "turn/start")[0]?.params)
+        .toMatchObject({ permissions: "hosted-project-read" });
+    } finally { await driver.dispose(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("binds a brokered MiMo goal to the named read profile and fixed MiMo domain", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scoped-mimo-permissions-"));
+    const fake = new FakeAppServerFactory({ goalStatusesAfterTurns: ["complete"] });
+    let configPromise: Promise<string> | undefined;
+    const parts = runtime({
+      providerInstanceId: "synthetic-mimo", stateRootDir: join(root, "state"), workspacePath: root,
+      codexBinaryPath: "/synthetic/codex", encryptionKey: new Uint8Array(32),
+      executionEngine: "app-server-goal", modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      warmupPrompt: false, enforceProjectReadBoundary: true,
+      sourceEnv: {
+        MIMO_TOKEN_PLAN_API_KEY: "synthetic-test-key",
+        SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE: join(root, "synthetic-private-key"),
+      },
+      appServerProcessFactory: input => {
+        configPromise = readFile(join(input.env.CODEX_HOME!, "config.toml"), "utf8");
+        return fake.create(input);
+      },
+    });
+    const driver = parts.agentDriver as CodexJsonAgentDriver;
+    try {
+      await driver.runTask({ session: null, redactor, runner: new StaticRunner(""),
+        task: { kind: "structured-prompt", prompt: "offline synthetic MiMo" },
+        workspace: { path: root }, abortSignal: new AbortController().signal });
+      const config = await configPromise;
+      expect(config).toContain('default_permissions = "hosted-project-read"');
+      expect(config).toContain("[model_providers.mimo]");
+      expect(config).toContain('env_key = "MIMO_TOKEN_PLAN_API_KEY"');
+      expect((config ?? "").split(`"${join(root, "synthetic-private-key")}" = "deny"`))
+        .toHaveLength(3);
+      expect(config).toContain('\":root\" = "deny"');
+      expect(config).toContain("token-plan-sgp.xiaomimimo.com");
+      expect(config).not.toContain("api.openai.com");
+      expect(fake.requests.find(r => r.method === "thread/start")?.params)
+        .toMatchObject({ permissions: "hosted-project-read", modelProvider: "mimo" });
+    } finally { await driver.dispose(); await rm(root, { recursive: true, force: true }); }
   });
 });

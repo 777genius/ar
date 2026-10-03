@@ -21,6 +21,10 @@ import {
   type ProviderAccountAvailability,
 } from "@vioxen/subscription-runtime/account-diagnostics";
 import {
+  CodexModelBackend,
+  codexApiKeyCredentialIdentity,
+  codexMimoApiKeyEnvVarDefault,
+  hostedMimoCredentialSourceReady,
   readCodexAuthJsonFreshness,
   validateCodexAuthJsonBytes,
 } from "@vioxen/subscription-runtime/provider-codex";
@@ -41,19 +45,42 @@ import {
   readCodexAccountDisplayMetadata,
   type CodexAccountDisplayMetadata,
 } from "./account-display-metadata";
+import type { CodexGoalMimoAccountSlot } from "./codex-goal-mimo-account-slots";
+
+export type { CodexGoalMimoAccountSlot } from "./codex-goal-mimo-account-slots";
 
 export type CodexGoalAccountStatus =
   | "ready"
   | "auth_missing"
-  | "auth_invalid";
+  | "auth_invalid"
+  | "quota_unknown";
 
 export type CodexGoalAccountSlotStatus = {
   readonly name: string;
+  /**
+   * Defaults to {@link CodexModelBackend.OpenAiChatGpt} for every slot produced
+   * by the `authRootDir` auth.json scan — this field only reads
+   * `XiaomiMimoTokenPlan` for slots produced by the MiMo branch below. Callers
+   * doing account-rotation MUST use this field (never `identityHashPrefix`'s
+   * `"mimo:"` prefix, which is an implementation detail) to keep rotation
+   * inside a single backend.
+   */
+  readonly modelBackend?: CodexModelBackend;
   readonly displayName?: string;
   readonly email?: string;
   readonly shortName?: string;
   readonly operatorLabel?: string;
+  readonly plan?: string;
+  readonly unpaid?: string;
+  /**
+   * For a MiMo slot this is never a real filesystem path — MiMo has no
+   * `auth.json`. It is set to `mimo-env:<envVarName>` so any code that still
+   * (incorrectly) tries to `readFile` it fails loudly instead of silently
+   * reading an empty path.
+   */
   readonly authJsonPath: string;
+  /** MiMo credential env var. Never present for ChatGPT auth.json slots. */
+  readonly envVarName?: string;
   readonly status: CodexGoalAccountStatus;
   readonly availability: ProviderAccountAvailability;
   readonly schedulerEligible: boolean;
@@ -75,6 +102,14 @@ export type CodexGoalAccountSlotStatus = {
   readonly safeMessage: string;
 };
 
+/**
+ * A MiMo Token Plan account slot: a static API-key credential read from an
+ * env var, never an `auth.json` directory. `name` is a stable slot label
+ * (e.g. `"mimo-a"`); `envVarName` defaults to
+ * {@link codexMimoApiKeyEnvVarDefault} so a single-account setup needs no
+ * configuration, but a multi-account MiMo pool assigns each slot its own env
+ * var name.
+ */
 export type CodexGoalAccountStatusInput = {
   readonly authRootDir: string;
   readonly accounts?: readonly string[];
@@ -82,14 +117,31 @@ export type CodexGoalAccountStatusInput = {
   readonly liveCheck?: boolean;
   readonly codexBinaryPath?: string;
   readonly liveCheckTimeoutMs?: number;
-  readonly accountMetadata?: Readonly<Record<string, CodexAccountDisplayMetadata>>;
+  readonly accountMetadata?: Readonly<
+    Record<string, CodexAccountDisplayMetadata>
+  >;
   readonly accountCapacityStore?: WorkerAccountCapacityStore;
   readonly recheckDueCapacity?: boolean;
+  /**
+   * Defaults to {@link CodexModelBackend.OpenAiChatGpt} — omitting it keeps
+   * today's `authRootDir` auth.json discovery byte-for-byte unchanged. When
+   * set to `XiaomiMimoTokenPlan`, `authRootDir`/`accounts`/`liveCheck`/
+   * `accountCapacityStore`/`recheckDueCapacity` are ignored entirely and
+   * slots are built from `mimoAccounts` instead: MiMo is a static API-key
+   * credential, never an OAuth session, so there is nothing to discover on
+   * disk, no live app-server quota probe, and no refresh.
+   */
+  readonly modelBackend?: CodexModelBackend;
+  readonly mimoAccounts?: readonly CodexGoalMimoAccountSlot[];
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
 };
 
 export async function listCodexGoalAccountStatuses(
   input: CodexGoalAccountStatusInput,
 ): Promise<readonly CodexGoalAccountSlotStatus[]> {
+  if ((input.modelBackend ?? CodexModelBackend.OpenAiChatGpt) === CodexModelBackend.XiaomiMimoTokenPlan) {
+    return listCodexGoalMimoAccountStatuses(input.mimoAccounts ?? [], input.sourceEnv);
+  }
   const accountNames = input.accounts?.length
     ? input.accounts
     : await listAccountDirectories(input.authRootDir);
@@ -131,8 +183,12 @@ export async function listCodexGoalAccountStatuses(
           : {}),
         ...(accountCapacityStore ? { accountCapacityStore } : {}),
         ...(input.liveCheck ? { liveCheck: input.liveCheck } : {}),
-        ...(input.codexBinaryPath ? { codexBinaryPath: input.codexBinaryPath } : {}),
-        ...(input.liveCheckTimeoutMs ? { liveCheckTimeoutMs: input.liveCheckTimeoutMs } : {}),
+        ...(input.codexBinaryPath
+          ? { codexBinaryPath: input.codexBinaryPath }
+          : {}),
+        ...(input.liveCheckTimeoutMs
+          ? { liveCheckTimeoutMs: input.liveCheckTimeoutMs }
+          : {}),
       }),
     ),
   );
@@ -173,8 +229,12 @@ async function inspectCodexGoalAccount(input: {
           name: input.name,
           codexHome: dirname(authJsonPath),
           authJsonPath,
-          ...(input.codexBinaryPath ? { codexBinaryPath: input.codexBinaryPath } : {}),
-          ...(input.liveCheckTimeoutMs ? { timeoutMs: input.liveCheckTimeoutMs } : {}),
+          ...(input.codexBinaryPath
+            ? { codexBinaryPath: input.codexBinaryPath }
+            : {}),
+          ...(input.liveCheckTimeoutMs
+            ? { timeoutMs: input.liveCheckTimeoutMs }
+            : {}),
         })
       : undefined;
     const capacityPersistenceWarning = recordLiveQuotaCapacitySafely({
@@ -185,7 +245,11 @@ async function inspectCodexGoalAccount(input: {
         ? { store: input.accountCapacityStore }
         : {}),
     });
-    if (live?.observation && input.accountCapacityStore && !capacityPersistenceWarning) {
+    if (
+      live?.observation &&
+      input.accountCapacityStore &&
+      !capacityPersistenceWarning
+    ) {
       capacity = readAccountCapacity({
         accountName: input.name,
         store: input.accountCapacityStore,
@@ -200,7 +264,8 @@ async function inspectCodexGoalAccount(input: {
       ? liveDecisionToDiagnosticAvailability(live.observation.decision)
       : undefined;
     const liveLimitResetAt = live?.observation?.decision.limitResetAt;
-    const liveStatus = live && !liveAvailability
+    const liveStatus =
+      live && !liveAvailability
         ? "auth_invalid"
         : liveAvailability === "reconnect_required"
           ? "auth_invalid"
@@ -218,6 +283,7 @@ async function inspectCodexGoalAccount(input: {
       });
       return {
         name: input.name,
+        modelBackend: CodexModelBackend.OpenAiChatGpt,
         ...display,
         authJsonPath,
         status: liveStatus,
@@ -240,7 +306,10 @@ async function inspectCodexGoalAccount(input: {
           ? { capacityCooldownUntil: capacity.cooldownUntil.toISOString() }
           : {}),
         ...(capacity?.lastLimitSignalAt
-          ? { capacityLastLimitSignalAt: capacity.lastLimitSignalAt.toISOString() }
+          ? {
+              capacityLastLimitSignalAt:
+                capacity.lastLimitSignalAt.toISOString(),
+            }
           : {}),
         liveCheck: "failed",
         liveCheckSafeMessage: live.safeMessage,
@@ -256,6 +325,7 @@ async function inspectCodexGoalAccount(input: {
     });
     return {
       name: input.name,
+      modelBackend: CodexModelBackend.OpenAiChatGpt,
       ...display,
       authJsonPath,
       status: "ready",
@@ -278,7 +348,9 @@ async function inspectCodexGoalAccount(input: {
         ? { capacityCooldownUntil: capacity.cooldownUntil.toISOString() }
         : {}),
       ...(capacity?.lastLimitSignalAt
-        ? { capacityLastLimitSignalAt: capacity.lastLimitSignalAt.toISOString() }
+        ? {
+            capacityLastLimitSignalAt: capacity.lastLimitSignalAt.toISOString(),
+          }
         : {}),
       ...(live ? { liveCheck: "passed" as const } : {}),
       ...(live ? { liveCheckSafeMessage: live.safeMessage } : {}),
@@ -291,11 +363,14 @@ async function inspectCodexGoalAccount(input: {
     const safeMessage = error instanceof Error ? error.message : "auth_invalid";
     return {
       name: input.name,
+      modelBackend: CodexModelBackend.OpenAiChatGpt,
       ...display,
       authJsonPath,
       status: safeMessage.includes("ENOENT") ? "auth_missing" : "auth_invalid",
       ...codexGoalAccountAvailability({
-        status: safeMessage.includes("ENOENT") ? "auth_missing" : "auth_invalid",
+        status: safeMessage.includes("ENOENT")
+          ? "auth_missing"
+          : "auth_invalid",
         capacity: null,
       }),
       warnings: [],
@@ -304,6 +379,69 @@ async function inspectCodexGoalAccount(input: {
         : safeMessage,
     };
   }
+}
+
+/**
+ * MiMo Token Plan slots are never discovered from disk: there is no
+ * `auth.json`, no OAuth session, and no refresh. A non-empty env var proves
+ * only that a credential is configured. MiMo has no documented read-only
+ * quota/rate-limit endpoint in this runtime, so the credential is reported as
+ * `quota_unknown`, never as silently available.
+ */
+function listCodexGoalMimoAccountStatuses(
+  slots: readonly CodexGoalMimoAccountSlot[],
+  sourceEnv: Readonly<Record<string, string | undefined>> | undefined,
+): readonly CodexGoalAccountSlotStatus[] {
+  const env = sourceEnv ?? process.env;
+  return slots.map((slot) => inspectCodexGoalMimoAccount(slot, env));
+}
+
+function inspectCodexGoalMimoAccount(
+  slot: CodexGoalMimoAccountSlot,
+  sourceEnv: Readonly<Record<string, string | undefined>>,
+): CodexGoalAccountSlotStatus {
+  const envVarName = slot.envVarName ?? codexMimoApiKeyEnvVarDefault;
+  const hosted = sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  const authJsonPath = hosted ? "mimo-shared-source" : `mimo-env:${envVarName}`;
+  const apiKey = hosted ? undefined : sourceEnv[envVarName]?.trim();
+  if (hosted ? !hostedMimoCredentialSourceReady() : !apiKey) {
+    return {
+      name: slot.name,
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      shortName: slot.name,
+      authJsonPath,
+      envVarName,
+      status: "auth_missing",
+      ...codexGoalAccountAvailability({ status: "auth_missing", capacity: null }),
+      warnings: [],
+      safeMessage: `MiMo Token Plan credential env var ${envVarName} is not set`,
+    };
+  }
+  // Only used to derive a non-reversible identity hash below — never
+  // returned, logged, or persisted anywhere in this module.
+  const identity = apiKey ? codexApiKeyCredentialIdentity({
+    backend: CodexModelBackend.XiaomiMimoTokenPlan,
+    envVarName,
+    apiKey,
+  }) : undefined;
+  return {
+    name: slot.name,
+    modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+    shortName: slot.name,
+    authJsonPath,
+    envVarName,
+    status: "quota_unknown",
+    ...codexGoalAccountAvailability({ status: "quota_unknown", capacity: null }),
+    capacityAvailability: "unknown",
+    capacityReason: "quota_endpoint_unavailable",
+    identitySource: "mimo_api_key",
+    ...(hosted ? { identityHashPrefix: "mimo:shared-source" }
+      : identity ? { identityHashPrefix: identity } : {}),
+    warnings: [],
+    safeMessage: hosted
+      ? "MiMo Token Plan credential source is ready; quota and rate-limit state are unknown"
+      : "MiMo Token Plan credential is present; quota and rate-limit state are unknown because no read-only quota endpoint is available",
+  };
 }
 
 function codexGoalAccountAvailability(input: {
@@ -317,8 +455,16 @@ function codexGoalAccountAvailability(input: {
   readonly recommendedAction: ProviderAccountAction;
   readonly limitResetAt?: string;
 } {
-  if (input.status !== "ready") {
+  if (input.status === "auth_missing" || input.status === "auth_invalid") {
     const availability = "reconnect_required";
+    return {
+      availability,
+      schedulerEligible: isSchedulerEligible(availability),
+      recommendedAction: recommendedActionForAvailability(availability),
+    };
+  }
+  if (input.status === "quota_unknown") {
+    const availability = "unknown";
     return {
       availability,
       schedulerEligible: isSchedulerEligible(availability),
@@ -413,7 +559,9 @@ async function inspectCodexAccountLiveStatus(input: {
       authReader: new CodexAuthJsonReader(),
       execProbe: new CodexExecProbe({
         runner: new NodeProcessRunner(),
-        ...(input.codexBinaryPath ? { codexBinaryPath: input.codexBinaryPath } : {}),
+        ...(input.codexBinaryPath
+          ? { codexBinaryPath: input.codexBinaryPath }
+          : {}),
       }),
     });
     const observation = await observer.observe({
@@ -422,7 +570,9 @@ async function inspectCodexAccountLiveStatus(input: {
         slotId: input.name,
         authHome: input.codexHome,
         authJsonPath: input.authJsonPath,
-        ...(input.codexBinaryPath ? { codexBinaryPath: input.codexBinaryPath } : {}),
+        ...(input.codexBinaryPath
+          ? { codexBinaryPath: input.codexBinaryPath }
+          : {}),
       },
       now: new Date(),
       ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
@@ -472,7 +622,9 @@ function decodeJwtClaims(token: string): Record<string, unknown> | null {
       normalized.length + ((4 - (normalized.length % 4)) % 4),
       "=",
     );
-    const parsed: unknown = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+    const parsed: unknown = JSON.parse(
+      Buffer.from(padded, "base64").toString("utf8"),
+    );
     return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
@@ -534,7 +686,9 @@ function recordLiveQuotaCapacitySafely(input: {
   }
 }
 
-async function listAccountDirectories(authRootDir: string): Promise<readonly string[]> {
+async function listAccountDirectories(
+  authRootDir: string,
+): Promise<readonly string[]> {
   try {
     const entries = await readdir(authRootDir, { withFileTypes: true });
     return entries

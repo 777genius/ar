@@ -1,4 +1,6 @@
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import { link, mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import type {
@@ -75,9 +77,22 @@ export async function writeCodexGoalReviewMarker(input: {
 }): Promise<string> {
   await mkdir(input.jobRootDir, { recursive: true, mode: 0o700 });
   const reviewPath = join(input.jobRootDir, `${input.taskId}.review.json`);
-  await writeFile(
-    reviewPath,
-    `${JSON.stringify({
+  const existing = await readExistingReviewMarker(reviewPath);
+  const previousOutput = existing
+    ? parseLifecycleMarker(existing.content).reviewedOutput
+    : undefined;
+  if (
+    input.reviewedOutput &&
+    isRecord(previousOutput) &&
+    previousOutput.reviewedOutputId === input.reviewedOutput.reviewedOutputId
+  ) {
+    return await ensureImmutableReviewVersion({
+      path: reviewedOutputVersionPath(reviewPath, input.reviewedOutput.reviewedOutputId),
+      content: existing!.content,
+      reviewedOutputId: input.reviewedOutput.reviewedOutputId,
+    });
+  }
+  const content = `${JSON.stringify({
       schemaVersion: 1,
       jobId: input.jobId,
       taskId: input.taskId,
@@ -101,10 +116,161 @@ export async function writeCodexGoalReviewMarker(input: {
             },
           }
         : {}),
-    }, null, 2)}\n`,
-    { encoding: "utf8", mode: 0o600 },
-  );
-  return reviewPath;
+    }, null, 2)}\n`;
+  let preserved: ExistingReviewMarker | undefined;
+  if (existing) {
+    const digest = createHash("sha256").update(existing.content).digest("hex");
+    const beforeimagePath = join(
+      input.jobRootDir,
+      `${input.taskId}.review.${digest}.json`,
+    );
+    try {
+      await link(reviewPath, beforeimagePath);
+    } catch (error) {
+      if (!isNodeError(error, "EEXIST")) throw error;
+    }
+    const beforeimage = await readExistingReviewMarker(beforeimagePath);
+    if (!beforeimage || beforeimage.content !== existing.content) {
+      throw new Error("codex_goal_review_marker_beforeimage_conflict");
+    }
+    const current = await readExistingReviewMarker(reviewPath);
+    if (!current || !sameReviewMarkerExceptCtime(current, existing)) {
+      throw new Error("codex_goal_review_marker_changed_during_write");
+    }
+    preserved = current;
+  }
+  const versionPath = input.reviewedOutput
+    ? reviewedOutputVersionPath(reviewPath, input.reviewedOutput.reviewedOutputId)
+    : `${reviewPath}.${createHash("sha256").update(content).digest("hex")}.json`;
+  await ensureImmutableReviewVersion({
+    path: versionPath,
+    content,
+    ...(input.reviewedOutput
+      ? { reviewedOutputId: input.reviewedOutput.reviewedOutputId }
+      : {}),
+  });
+  const tempPath = `${reviewPath}.${randomUUID()}.tmp`;
+  try {
+    await link(versionPath, tempPath);
+    if (existing) {
+      const current = await readExistingReviewMarker(reviewPath);
+      if (!current || !preserved || !sameReviewMarker(current, preserved)) {
+        throw new Error("codex_goal_review_marker_changed_during_write");
+      }
+      await rename(tempPath, reviewPath);
+    } else {
+      await link(tempPath, reviewPath);
+    }
+  } finally {
+    await unlink(tempPath).catch((error: unknown) => {
+      if (!isNodeError(error, "ENOENT")) throw error;
+    });
+  }
+  return input.reviewedOutput ? versionPath : reviewPath;
+}
+
+function reviewedOutputVersionPath(reviewPath: string, reviewedOutputId: string): string {
+  if (!/^[a-f0-9]{64}$/.test(reviewedOutputId)) {
+    throw new Error("codex_goal_review_marker_output_id_invalid");
+  }
+  return `${reviewPath}.output-${reviewedOutputId}.json`;
+}
+
+async function ensureImmutableReviewVersion(input: {
+  readonly path: string;
+  readonly content: string;
+  readonly reviewedOutputId?: string;
+}): Promise<string> {
+  const tempPath = `${input.path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tempPath, input.content, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    try {
+      await link(tempPath, input.path);
+    } catch (error) {
+      if (!isNodeError(error, "EEXIST")) throw error;
+    }
+    const version = await readExistingReviewMarker(input.path);
+    if (!version || (
+      input.reviewedOutputId
+        ? JSON.stringify(parseLifecycleMarker(version.content).reviewedOutput) !==
+          JSON.stringify(parseLifecycleMarker(input.content).reviewedOutput)
+        : version.content !== input.content
+    )) {
+      throw new Error("codex_goal_review_marker_version_conflict");
+    }
+  } finally {
+    await unlink(tempPath).catch((error: unknown) => {
+      if (!isNodeError(error, "ENOENT")) throw error;
+    });
+  }
+  return input.path;
+}
+
+type ExistingReviewMarker = {
+  readonly content: string;
+  readonly dev: number;
+  readonly ino: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+};
+
+async function readExistingReviewMarker(
+  path: string,
+): Promise<ExistingReviewMarker | undefined> {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return undefined;
+    if (isNodeError(error, "ELOOP")) {
+      throw new Error("codex_goal_review_marker_unsafe");
+    }
+    throw error;
+  }
+  try {
+    const metadata = await handle.stat();
+    if (
+      !metadata.isFile() ||
+      (typeof process.getuid === "function" && metadata.uid !== process.getuid()) ||
+      (metadata.mode & 0o077) !== 0
+    ) {
+      throw new Error("codex_goal_review_marker_unsafe");
+    }
+    return {
+      content: await handle.readFile("utf8"),
+      dev: metadata.dev,
+      ino: metadata.ino,
+      mtimeMs: metadata.mtimeMs,
+      ctimeMs: metadata.ctimeMs,
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+function sameReviewMarker(
+  left: ExistingReviewMarker,
+  right: ExistingReviewMarker,
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino &&
+    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs &&
+    left.content === right.content;
+}
+
+function sameReviewMarkerExceptCtime(
+  left: ExistingReviewMarker,
+  right: ExistingReviewMarker,
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino &&
+    left.mtimeMs === right.mtimeMs && left.content === right.content;
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
 }
 
 export async function writeCodexGoalStopEvent(input: {

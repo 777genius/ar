@@ -1,18 +1,23 @@
+import { parseScopedActorChain, bindScopedActorChain, type ScopedActorChain, type ScopedEnqueueActor, parseScopedSubmitter, parseScopedStartCorrelation, parseScopedInvocation, scopedDigest, ScopedTerminationKind,
+  type ScopedStartCorrelation } from "@vioxen/subscription-runtime/core";
+import { parseImmutableChildSlot } from "@vioxen/subscription-runtime/core";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync,
-  readlinkSync, readSync, rmdirSync, writeSync, fsyncSync, renameSync } from "node:fs";
+  readlinkSync, readSync, opendirSync, rmdirSync, writeSync, fsyncSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { assertHostedProcessDescriptors } from "./hosted-process-descriptors";
 import { CodexProviderEgressProfileId, codexProviderEgressProfileEnvVar } from "../../codex-provider-egress-policy";
-import { dirname, join } from "node:path";
+import { CodexModelBackend } from "../../codex-model-backend";
+import { HostedMimoProfile } from "../../hosted-mimo-profile";
+import { basename, dirname, join } from "node:path";
 import type { CodexAppServerChildProcess } from "../application/app-server-process-port";
 
 
 const root = "/var/lib/subscription-runtime-host-policy";
 const activeFences = new WeakSet<object>();
 // Not a configurable policy root or a public arbitrary filesystem reader.
-const recordName = /^(?:readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
+const recordName = /^(?:readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed|correlations|invocations|submitters|submitter-exits|actor-chains)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|scoped-(?:terminating|operations|observations|receipts)\/[a-f0-9-]{36}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
 export type HostedActivationFence = Readonly<{ readonly held: true }>;
 
 /** Initial host root is trusted; namespace-local root is not that principal. */
@@ -169,6 +174,7 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence) {
     return row;
   });
   distinct(starts.map(row => row.startId)); distinct(starts.map(row => row.unit));
+  if (readHostedActivationBytes(`scoped-terminating/${match[1]}.json`)) throw new Error("scoped_termination_fenced");
   const reservation = starts.find(row => row.startId === match[1]);
   if (!reservation || reservation.state !== "reserved") invalid();
   const start = requiredWire(`ordinary-starts/${match[1]}.json`, startKeys).value;
@@ -206,13 +212,63 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence) {
   if ((grantBytes ? sha256(grantBytes) : null) !== start.grantSha256) invalid();
   let profileId = CodexProviderEgressProfileId.ProviderApi;
   if (grantBytes) {
-    const grant = wire(decodeHostedActivationBytes(grantBytes), "schemaVersion,jobId,jobRootDir,workspacePath,profileId");
-    if (grant.schemaVersion !== 1 || grant.profileId !== CodexProviderEgressProfileId.TestNpmQualification) invalid();
-    same(grant, start, "jobId,jobRootDir,workspacePath"); profileId = CodexProviderEgressProfileId.TestNpmQualification;
+    const grant = decodeHostedActivationBytes(grantBytes);
+    if (typeof grant !== "object" || grant === null || Array.isArray(grant)) invalid();
+    if ((grant as Wire).schemaVersion === 2 || (grant as Wire).schemaVersion === 3) {
+      readProviderHostedMimoGrantAtPath(
+        `/run/user/0/subscription-runtime-host-policy/codex-egress/${jobName}`,
+        start as { jobId: unknown; jobRootDir: unknown; workspacePath: unknown },
+        str(start.grantSha256, /^[a-f0-9]{64}$/));
+      profileId = CodexProviderEgressProfileId.MimoTokenPlan;
+    } else {
+      const legacy = wire(grant, "schemaVersion,jobId,jobRootDir,workspacePath,profileId");
+      if (legacy.schemaVersion !== 1 || legacy.profileId !== CodexProviderEgressProfileId.TestNpmQualification) invalid();
+      same(legacy, start, "jobId,jobRootDir,workspacePath"); profileId = CodexProviderEgressProfileId.TestNpmQualification;
+    }
   }
-  validateOrdinaryKernel(installation, activation, start);
+  const creator = validateOrdinaryKernel(installation, activation, start);
+  if (creator.childSlotSha256 !== undefined) {
+    const bytes = readHostedActivationBytes(`child-slots/${sha256(str(creator.creatorId))}.json`);
+    if (!bytes || sha256(bytes) !== creator.childSlotSha256 || !grantBytes) invalid();
+    const slot = parseImmutableChildSlot(decodeHostedActivationBytes(bytes));
+    const grant = decodeHostedActivationBytes(grantBytes) as Wire;
+    if (grant.schemaVersion !== 3 || slot.slotId !== grant.slotId || slot.lifetime.accountId !== grant.accountId ||
+        slot.grantSha256 !== start.grantSha256 || slot.artifactSha !== installation.runtimeSha ||
+        slot.jobId !== start.jobId || slot.jobRootDir !== start.jobRootDir || slot.workspacePath !== start.workspacePath ||
+        slot.creatorId !== creator.creatorId || slot.launch.command !== (creator.launch as Wire).command || slot.launch.cwd !== (creator.launch as Wire).cwd || JSON.stringify(slot.launch.args) !== JSON.stringify((creator.launch as Wire).args) ||
+        slot.lifetime.deadlineEpochMs <= Date.now()) invalid();
+  } else if (grantBytes && (decodeHostedActivationBytes(grantBytes) as Wire).schemaVersion === 3) invalid();
   assertHostedProcessDescriptors();
-  return { activation, start, reservation, profileId };
+  // PR1 prepares the independent reader; later lifecycle PRs must supply
+  // bounded controller/child authority before activation can open.
+  if (profileId === CodexProviderEgressProfileId.MimoTokenPlan) throw new Error("hosted_mimo_activation_closed");
+  return { activation, start, reservation, profileId, childBound: creator.childSlotSha256 !== undefined };
+}
+
+/** Same fixed private-file reader as production, with a path seam for synthetic
+ * fixtures. The digest binds the file to the retained ordinary start. */
+export function readProviderHostedMimoGrantAtPath(path: string,
+  identity: { readonly jobId: unknown; readonly jobRootDir: unknown; readonly workspacePath: unknown },
+  expectedSha256: string): void {
+  const bytes = readActivationPath(path);
+  if (!bytes || sha256(bytes) !== expectedSha256) invalid();
+  assertProviderHostedMimoGrant(decodeHostedActivationBytes(bytes), identity);
+}
+
+/** Independent provider-side validation of the exact private MiMo grant. */
+export function assertProviderHostedMimoGrant(value: unknown,
+  identity: { readonly jobId: unknown; readonly jobRootDir: unknown; readonly workspacePath: unknown }): void {
+  const version = (value as Wire)?.schemaVersion;
+  const grant = wire(value,
+    (version === 3 ? "slotId," : "") + "schemaVersion,jobId,jobRootDir,workspacePath,profileId,accountId,hostedProfile,modelBackend,executionEngine,namedPermissions,globalScanGuard,nativeToolSurface");
+  if ((grant.schemaVersion !== 2 && grant.schemaVersion !== 3) || grant.profileId !== CodexProviderEgressProfileId.MimoTokenPlan ||
+      (version === 2 ? grant.accountId !== "account-q" : typeof grant.accountId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(grant.accountId)) ||
+      (grant.hostedProfile !== HostedMimoProfile.Controller && grant.hostedProfile !== HostedMimoProfile.Child) ||
+      grant.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan || grant.executionEngine !== "app-server-goal" ||
+      grant.namedPermissions !== true || grant.globalScanGuard !== true ||
+      grant.nativeToolSurface !== "disabled") invalid();
+  if (version === 3 && (grant.hostedProfile !== HostedMimoProfile.Child || !str(grant.slotId))) invalid();
+  same(grant, identity as Wire, "jobId,jobRootDir,workspacePath");
 }
 function validateOrdinaryManagedHistory(activation: Wire, installation: Wire, jobId: string): void {
   const enrollment = readHostedActivationBytes("readonly-enrollment.json"), epochBytes = readHostedActivationBytes("readonly-epoch.json");
@@ -242,7 +298,7 @@ function validateOrdinaryManagedHistory(activation: Wire, installation: Wire, jo
   same(birth.identity, current.identity, Object.keys(birth.identity).join(","));
   same(birth.identity, installation, "runtimeSha,runtimeManifestSha256");
 }
-function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wire): void {
+function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wire): Wire {
   const inventory = requiredWire("readonly-inventory.json", "schemaVersion,hostId,supervisorUnit,units,runtimeLaunch,ordinaryCreators,disabledCreators");
   if (inventory.value.schemaVersion !== 2 || inventory.value.hostId !== installation.hostId || sha256(inventory.bytes) !== installation.inventorySha256) invalid();
   const units = rows(inventory.value.units).map(value => {
@@ -266,7 +322,9 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   const owner = units.find(row => row.name === inventory.value.supervisorUnit);
   if (!owner) invalid();
   const creators = rows(inventory.value.ordinaryCreators).map(value => {
-    const row = wire(value, "creatorId,jobId,jobRootDir,workspacePath,launch");
+    const row = wire(value, "creatorId,jobId,jobRootDir,workspacePath,launch" +
+      (value && typeof value === "object" && "childSlotSha256" in value ? ",childSlotSha256" : ""));
+    if (row.childSlotSha256 !== undefined) digestValue(row.childSlotSha256);
     str(row.creatorId); str(row.jobId); canonical(row.jobRootDir); canonical(row.workspacePath);
     const launch = validateLaunch(row.launch);
     const cli = `${installation.runtimeDirectory}/dist/worker-codex/codex-goal-cli.js`;
@@ -276,6 +334,7 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   distinct(creators.map(row => row.creatorId));
   if (creators.length > 128) invalid();
   for (const left of creators) for (const right of creators) {
+    if (left !== right && left.jobId === right.jobId && (left.childSlotSha256 || right.childSlotSha256)) invalid();
     if (left.jobId === right.jobId ? left.jobRootDir !== right.jobRootDir || left.workspacePath !== right.workspacePath :
         left.jobRootDir === right.jobRootDir || left.workspacePath === right.workspacePath) invalid();
   }
@@ -306,6 +365,7 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   const creatorPid = str(start.creatorPidBirth).split(":")[0]!;
   if (pidBirth(creatorPid) !== start.creatorPidBirth ||
       readFileSync(`/proc/${creatorPid}/cgroup`, "utf8").trim() !== `0::${owner.controlGroup}`) invalid();
+  return creator;
 }
 function pidBirth(pid: string): string {
   str(pid, /^[1-9][0-9]{0,9}$/);
@@ -320,9 +380,13 @@ export function invalidateHostedOrdinaryWait(child: CodexAppServerChildProcess):
 /** Production default primitive calls this with its private synchronous spawn.
  * It never receives worker factory injection, mount options or a managed ticket. */
 export function submitHostedOrdinaryProcess(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
-  submit: (unit: string) => CodexAppServerChildProcess): CodexAppServerChildProcess {
+  submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string }) => CodexAppServerChildProcess): CodexAppServerChildProcess {
   return withHostedActivationFence(fence => {
-    const { activation, start, profileId } = readHostedOrdinaryProcessOrigin(fence);
+    const { activation, start, reservation: parentReservation, profileId, childBound } = readHostedOrdinaryProcessOrigin(fence);
+    const jobRoot = canonical(start.jobRootDir);
+    const workspacePath = canonical(start.workspacePath);
+    if (!jobRoot.endsWith(`/jobs/${str(start.jobId)}`) ||
+        workspacePath !== `${jobRoot}/workspace`) invalid();
     // The real app-server client starts in its materialized account HOME;
     // workspace belongs to the thread, not the provider process. Neither cwd
     // nor HOME supplies origin authority: that was read from the actual cgroup.
@@ -330,6 +394,9 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
     if ((cwd !== start.workspacePath && cwd !== input.env.HOME) || input.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job" ||
         (input.env[codexProviderEgressProfileEnvVar] ?? CodexProviderEgressProfileId.ProviderApi) !== profileId) invalid();
     const starts = rows(activation.ordinaryStarts);
+    if (childBound && starts.some(row => !!row && typeof row === "object" &&
+        "creatorId" in row && row.creatorId === start.creatorId && "unit" in row &&
+        typeof row.unit === "string" && row.unit.startsWith("subscription-runtime-hosted-"))) throw new Error("child_invocation_consumed");
     if (starts.length >= 256) invalid();
     const startId = randomUUID(), unit = `subscription-runtime-hosted-${startId}.service`;
     const generation = positive(activation.generation) + 1; positive(generation);
@@ -337,10 +404,38 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
     const bytes = Buffer.from(JSON.stringify({ ...start, unit, controlGroup: unitGroup(unit), activationGeneration: generation,
       creatorPidBirth: pidBirth(String(process.pid)) }) + "\n");
     const next = { ...activation, generation, ordinaryStarts: [...starts, reservation] };
+    const parentId = str(parentReservation.startId);
+    const parentBytes = childBound ? readHostedActivationBytes(`ordinary-starts/${parentId}.json`) : null;
+    const correlationBytes = childBound ? readHostedActivationBytes(`ordinary-correlations/${parentId}.json`) : null;
+    let companion: ScopedStartCorrelation | undefined;
+    if (childBound) {
+      if (!parentBytes || !correlationBytes) invalid();
+      const parent = parseScopedStartCorrelation(decodeHostedActivationBytes(correlationBytes));
+      if (!Buffer.from(JSON.stringify(parent) + "\n").equals(correlationBytes) || parent.kind !== ScopedTerminationKind.Runtime || parent.startId !== parentId || parent.startDigest !== sha256(parentBytes) ||
+          parent.identity.deadlineEpochMs <= Date.now() ||
+          parent.identity.parentStartId !== parentId || parent.identity.grantDigest !== start.grantSha256) invalid();
+      const slotBytes = readHostedActivationBytes(`child-slots/${sha256(str(start.creatorId))}.json`);
+      if (!slotBytes) invalid();
+      const slot = parseImmutableChildSlot(decodeHostedActivationBytes(slotBytes)), identity = parent.identity;
+      if (identity.accountId !== slot.lifetime.accountId || identity.slotId !== slot.slotId || identity.sourceSha !== slot.sourceSha || identity.artifactSha !== slot.artifactSha ||
+          identity.deadlineEpochMs !== slot.lifetime.deadlineEpochMs || identity.grantDigest !== slot.grantSha256 ||
+          identity.installationId !== activation.installationId || identity.hostId !== activation.hostId || identity.inventoryDigest !== wire(decodeHostedActivationBytes(readHostedActivationBytes("host-installation.json")!), installationKeys).inventorySha256 ||
+          identity.bootId !== activation.bootId || identity.supervisorId !== activation.supervisorId ||
+          slot.creatorId !== start.creatorId || slot.jobId !== start.jobId || slot.jobRootDir !== start.jobRootDir || slot.workspacePath !== start.workspacePath ||
+          parent.unit !== start.unit || parent.controlGroup !== start.controlGroup || parent.creatorPidBirth !== start.creatorPidBirth ||
+          parent.creatorControlGroup !== identity.supervisorControlGroup) invalid();
+      companion = parseScopedStartCorrelation({ ...parent, kind: ScopedTerminationKind.Provider,
+        startId, startDigest: sha256(bytes), reservationGeneration: generation, unit, controlGroup: unitGroup(unit),
+        creatorPidBirth: pidBirth(String(process.pid)), creatorControlGroup: str(start.controlGroup) });
+    }
+    assertHostedScopedAdmission(fence, parentId);
     publishOrdinaryActivation(fence, next);
     try {
       createActivationRecord(`ordinary-starts/${startId}.json`, bytes);
-      const child = submit(unit);
+      if (companion) createActivationRecord(`ordinary-correlations/${startId}.json`, Buffer.from(JSON.stringify(companion) + "\n"));
+      assertHostedScopedAdmission(fence, parentId);
+      const child = submit(unit, { jobId: str(start.jobId), workspacePath });
+      if (companion) retainHostedScopedSubmitter(fence, companion, child);
       child.on("error", () => invalidateHostedOrdinaryWait(child));
       child.stdin.on?.("error", () => invalidateHostedOrdinaryWait(child));
       child.on("exit", (code, signal) => {
@@ -360,20 +455,121 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
       });
       return child;
     } catch (error) {
-      publishOrdinaryActivation(fence, { ...next, generation: generation + 1, phase: "CLOSED" });
+      if (!childBound) publishOrdinaryActivation(fence, { ...next, generation: generation + 1, phase: "CLOSED" });
       throw error;
     }
   });
 }
-function createActivationRecord(name: string, bytes: Buffer): void {
-  if (!recordName.test(name) || readHostedActivationBytes(name) !== null || bytes.length > 4 * 1024 * 1024) invalid();
-  const path = join(root, name), fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+/** Same synchronous fence checked by every producer immediately before enqueue. */
+export function assertHostedScopedAdmission(fence: HostedActivationFence, parentStartId: string): void {
+  assertHostedActivationFence(fence);
+  str(parentStartId, new RegExp(`^${uuid}$`));
+  if (readHostedActivationBytes(`scoped-terminating/${parentStartId}.json`)) throw new Error("scoped_termination_fenced");
+}
+export function retainHostedScopedCorrelation(fence: HostedActivationFence, correlation: ScopedStartCorrelation): void {
+  assertHostedActivationFence(fence);
+  const c = parseScopedStartCorrelation(correlation);
+  assertHostedScopedAdmission(fence, c.identity.parentStartId);
+  createActivationRecord(`ordinary-correlations/${c.startId}.json`, Buffer.from(JSON.stringify(c) + "\n"));
+}
+/** Guest consumes this retained data at actual execution; it conveys no fresh
+ * admission, deadline renewal, or authority to initialize provider work. */
+export interface HostedRetainedLifetimeBinding {
+  readonly correlation: ScopedStartCorrelation;
+  readonly absoluteDeadlineEpochMs: number;
+  readonly cleanupBudgetMs: number;
+  readonly dispatcherPidBirth: string;
+  readonly authenticatedChannelDigest: string;
+}
+/** Implemented by the guest's retained channel/FD authority. This port's data
+ * never reconstructs FreshKeyedSubmission or grants execution by itself. */
+export interface HostedRetainedLifetimePort {
+  readAuthenticatedLifetime(parentStartId: string): HostedRetainedLifetimeBinding;
+}
+/** Subsequent guest integration must implement this using its retained,
+ * authenticated channel, not a caller boolean or a procfs observation. Before
+ * publish, hold every thread of the creator's scoped submission path and every
+ * wrapper/manager descendant against fork/clone/exec/enqueue. Supply the exact
+ * role-labelled, parent-ordered graph (direct manager or wrapper-backed).
+ * Keep that hold across observation, durable publication and its final reread.
+ * Release only after publish returns normally and the original lifetime permits
+ * work; a throw, deadline, disconnect or actor/task change keeps the graph held
+ * for cleanup. Holds may not be dropped/recreated to renew the original budget.
+ * This declaration provides no barrier implementation or execution authority. */
+export interface HostedScopedActorBarrierPort {
+  retainBeforeRelease(binding: HostedRetainedLifetimeBinding,
+    publish: (heldGraph: ScopedActorChain) => void): void;
+}
+
+/** Pin only an invocation observed while the originally owned submitter is live.
+ * A missing/partial record retains the reservation; no later PID lookup repairs it. */
+export function retainHostedScopedSubmitter(fence: HostedActivationFence, correlation: ScopedStartCorrelation,
+  child: Pick<CodexAppServerChildProcess, "pid" | "on">): void {
+  assertHostedActivationFence(fence);
+  const c = parseScopedStartCorrelation(correlation);
+  if (!child.pid) invalid();
+  const submitter = { schemaVersion: 1, correlationDigest: scopedDigest(c),
+    pidBirth: pidBirth(String(child.pid)), controlGroup: readFileSync(`/proc/${child.pid}/cgroup`, "utf8").trim().replace(/^0::/, "") };
+  if (!/^0::\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(readFileSync(`/proc/${child.pid}/cgroup`, "utf8").trim())) invalid();
+  const bytes = Buffer.from(JSON.stringify(submitter) + "\n");
+  createActivationRecord(`ordinary-submitters/${c.startId}.json`, bytes);
+  // Wrapper exit is an observation only. The separately owned launcher must
+  // close the entire authenticated actor chain through the narrow producer seam.
+  // Manager observation failure is retained, not an excuse to adopt a later unit.
+  const result = spawnSync("/usr/bin/systemctl", ["show", "--property=Id,InvocationID,ControlGroup", "--", c.unit], {
+    encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, stdio: ["ignore", "pipe", "pipe"] });
+  if (result.error || result.status !== 0) invalid();
+  const observed: Record<string, string> = {};
+  for (const line of result.stdout.trimEnd().split("\n")) { const at = line.indexOf("="); if (at < 1 || line.slice(0, at) in observed) invalid(); observed[line.slice(0, at)] = line.slice(at + 1); }
+  if (Object.keys(observed).sort().join(",") !== "ControlGroup,Id,InvocationID" || observed.Id !== c.unit || observed.ControlGroup !== c.controlGroup ||
+      pidBirth(String(child.pid)) !== submitter.pidBirth) invalid();
+  const invocation = parseScopedInvocation({ schemaVersion: 1, correlationDigest: scopedDigest(c), invocationId: observed.InvocationID });
+  createActivationRecord(`ordinary-invocations/${c.startId}.json`, Buffer.from(JSON.stringify(invocation) + "\n"));
+}
+function createActivationRecord(name: string, bytes: Buffer, verifyEvidence: () => void = () => {}, finalName?: string): void {
+  assertHostedActivationOperator();
+  if (!recordName.test(name) || bytes.length > 4 * 1024 * 1024) invalid();
+  const path = join(root, name), parents: { path: string; fd: number; dev: number; ino: number }[] = [];
   try {
-    let offset = 0;
-    while (offset < bytes.length) { const count = writeSync(fd, bytes, offset, bytes.length - offset); if (count <= 0) invalid(); offset += count; }
-    fsyncSync(fd);
-  } finally { closeSync(fd); }
-  syncActivationDirectory(dirname(path));
+    for (let directory = dirname(path);; directory = dirname(directory)) {
+      const stat = lstatSync(directory);
+      if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & (directory === dirname(path) ? 0o077 : 0o022))) invalid();
+      const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      parents.push({ path: directory, fd, dev: stat.dev, ino: stat.ino });
+      const opened = fstatSync(fd); if (opened.dev !== stat.dev || opened.ino !== stat.ino) invalid();
+      if (directory === "/") break;
+    }
+    const verify = () => { for (const p of parents) { const stat = lstatSync(p.path); if (stat.dev !== p.dev || stat.ino !== p.ino || !stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o022)) invalid(); } };
+    verify(); verifyEvidence();
+    let anchored = `/proc/self/fd/${parents[0]!.fd}/${basename(path)}`;
+    const fd = openSync(anchored, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      let offset = 0;
+      while (offset < bytes.length) { const count = writeSync(fd, bytes, offset, bytes.length - offset); if (count <= 0) invalid(); offset += count; }
+      let before = fstatSync(fd);
+      const check = () => {
+        const stat = fstatSync(fd), named = lstatSync(anchored), actual = Buffer.alloc(bytes.length + 1);
+        let length = 0; while (length < actual.length) { const n = readSync(fd, actual, length, actual.length - length, length); if (!n) break; length += n; }
+        if (!stat.isFile() || stat.uid !== 0 || stat.nlink !== 1 || (stat.mode & 0o7777) !== 0o600 || stat.size !== bytes.length ||
+            stat.dev !== before.dev || stat.ino !== before.ino || stat.ctimeMs !== before.ctimeMs || stat.mtimeMs !== before.mtimeMs ||
+            named.dev !== stat.dev || named.ino !== stat.ino || length !== bytes.length || !actual.subarray(0, length).equals(bytes)) invalid();
+        verify();
+      };
+      check(); verifyEvidence(); fsyncSync(fd); for (const parent of parents) fsyncSync(parent.fd); check(); verifyEvidence();
+      if (finalName !== undefined) {
+        if (!recordName.test(finalName) || dirname(join(root, finalName)) !== dirname(path)) invalid();
+        const final = `/proc/self/fd/${parents[0]!.fd}/${basename(finalName)}`;
+        try { lstatSync(final); throw new Error("scoped_actor_chain_conflict"); }
+        catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+        // Caller must hold the graph across this atomic name publication and
+        // final ancestry fsync. Enumeration cannot close that execution race.
+        verifyEvidence(); verify(); renameSync(anchored, final); anchored = final;
+        before = fstatSync(fd);
+        for (const parent of parents) fsyncSync(parent.fd);
+        check();
+      }
+    } finally { closeSync(fd); }
+  } finally { for (const p of parents.reverse()) closeSync(p.fd); }
 }
 function publishOrdinaryActivation(fence: HostedActivationFence, next: Wire): void {
   assertHostedActivationFence(fence);
@@ -392,4 +588,83 @@ export function requiresHostedProcessAdmission(env: Readonly<Record<string, stri
       /\/subscription-runtime-(?:ordinary|outer|hosted)-/.test(readFileSync("/proc/self/cgroup", "utf8"))) return true;
   try { lstatSync(root); return true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+}
+
+/** Guest-owned launcher calls this after observing its full enqueue graph, before
+ * releasing any actor to enqueue. All births/groups/parent edges are independently
+ * re-read here. No complete=true or caller proof boolean is accepted. This does
+ * not implement launcher observation, channel enforcement or manager execution. */
+export function retainHostedScopedActorChain(fence: HostedActivationFence, correlation: ScopedStartCorrelation, input: ScopedActorChain): void {
+  assertHostedActivationFence(fence); assertHostedActivationOperator();
+  const c = parseScopedStartCorrelation(correlation), chain = parseScopedActorChain(input);
+  const bytes = readHostedActivationBytes(`ordinary-submitters/${c.startId}.json`);
+  if (!bytes) invalid();
+  const submitter = parseScopedSubmitter(decodeHostedActivationBytes(bytes));
+  bindScopedActorChain(chain, { ...c, invocationId: "0".repeat(32), submitterDigest: sha256(bytes) }, submitter);
+  assertHostedScopedAdmission(fence, c.identity.parentStartId);
+  const end = performance.now() + 1000;
+  const observe = () => chain.actors.map(actor => {
+    const pid = actor.pidBirth.split(":")[0]!;
+    if (pidBirth(pid) !== actor.pidBirth || readFileSync(`/proc/${pid}/cgroup`, "utf8").trim() !== `0::${actor.controlGroup}`) invalid();
+    const stat = scopedTaskStat(pid, readFileSync(`/proc/${pid}/stat`, "utf8"));
+    if (actor.parentPidBirth && stat.parent !== actor.parentPidBirth.split(":")[0]) invalid();
+    // Creator siblings belong to separately retained scopes. Only the admitted
+    // submitter subtree is enumerated; no proc-wide discovery or foreign effect.
+    const tasks = actor.parentPidBirth ? observeHostedScopedActorChildren(actor, end) : null;
+    const expected = chain.actors.filter(a => a.parentPidBirth === actor.pidBirth).map(a => a.pidBirth.split(":")[0]!).sort();
+    if (tasks && tasks.tasks.some(t => t.parent !== stat.parent)) invalid();
+    if (tasks && JSON.stringify(tasks.children) !== JSON.stringify(expected)) throw new Error("scoped_actor_chain_incomplete");
+    return { birth: actor.pidBirth, parent: stat.parent, tasks };
+  });
+  const before = observe();
+  const verifyMembership = () => {
+    if (performance.now() >= end || scopedDigest(before) !== scopedDigest(observe())) throw new Error("scoped_actor_membership_changed");
+  };
+  verifyMembership();
+  const pending = `ordinary-actor-chains/${c.startId}.next.json`, final = `ordinary-actor-chains/${c.startId}.json`;
+  // A failed last-fsync observation leaves an obligation, never a readable
+  // authenticated final chain. Only a held guest graph may cross this rename.
+  if (readHostedActivationBytes(final) || readHostedActivationBytes(pending)) throw new Error("scoped_actor_chain_publication_pending");
+  createActivationRecord(pending, Buffer.from(JSON.stringify(chain) + "\n"), verifyMembership, final);
+}
+
+/** Bounded facts for one already admitted process, shared by producer and
+ * cleanup kernel. Enumeration cannot replace the guest's held execution barrier.
+ * The caller supplies the original monotonic end, never a renewed allowance. */
+export function observeHostedScopedActorChildren(actor: ScopedEnqueueActor, end: number): {
+  readonly children: readonly string[]; readonly tasks: readonly { readonly birth: string; readonly parent: string; readonly children: readonly string[] }[];
+} {
+  const pid = actor.pidBirth.split(":")[0]!;
+  if (!/^[1-9][0-9]{0,9}:[1-9][0-9]{0,19}$/.test(actor.pidBirth) || !Number.isFinite(end)) invalid();
+  const check = () => { if (performance.now() >= end) throw new Error("scoped_actor_observation_budget"); };
+  const taskIds = () => {
+    check(); const directory = opendirSync(`/proc/${pid}/task`), ids: string[] = [];
+    try { for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
+      check(); if (ids.length >= 256 || !/^[1-9][0-9]{0,9}$/.test(entry.name)) throw new Error("scoped_actor_tasks_ambiguous"); ids.push(entry.name);
+    } } finally { directory.closeSync(); }
+    if (!ids.includes(pid) || new Set(ids).size !== ids.length) throw new Error("scoped_actor_tasks_ambiguous");
+    return ids.sort();
+  };
+  const ids = taskIds();
+  const observe = () => ids.map(tid => {
+    check(); const path = `/proc/${pid}/task/${tid}`;
+    const stat = scopedTaskStat(tid, readFileSync(path + "/stat", "utf8"));
+    const status = readFileSync(path + "/status", "utf8"), raw = readFileSync(path + "/children", "utf8");
+    if (status.length > 65536 || status.match(/^Tgid:\s+([0-9]+)$/m)?.[1] !== pid || status.match(/^Pid:\s+([0-9]+)$/m)?.[1] !== tid ||
+        readFileSync(path + "/cgroup", "utf8").trim() !== `0::${actor.controlGroup}` || raw.length > 4096 || (raw.trim() && !/^(?:[1-9][0-9]{0,9}\s*)+$/.test(raw))) throw new Error("scoped_actor_tasks_ambiguous");
+    const children = raw.trim() ? raw.trim().split(/\s+/).sort() : [];
+    if (children.length > 64 || new Set(children).size !== children.length) throw new Error("scoped_actor_tasks_ambiguous");
+    return { ...stat, children };
+  });
+  const tasks = observe(), children = tasks.flatMap(t => t.children).sort();
+  // A child appearing under two different tasks is ambiguous, not a union proof.
+  if (children.length > 64 || new Set(children).size !== children.length || JSON.stringify(ids) !== JSON.stringify(taskIds()) ||
+      scopedDigest(tasks) !== scopedDigest(observe()) || pidBirth(pid) !== actor.pidBirth ||
+      readFileSync(`/proc/${pid}/cgroup`, "utf8").trim() !== `0::${actor.controlGroup}` || JSON.stringify(ids) !== JSON.stringify(taskIds())) throw new Error("scoped_actor_membership_changed");
+  check(); return { children, tasks };
+}
+function scopedTaskStat(tid: string, raw: string): { birth: string; parent: string } {
+  const close = raw.lastIndexOf(") "), values = raw.slice(close + 2).trim().split(/\s+/);
+  if (raw.length > 4096 || !raw.startsWith(tid + " (") || close < 0 || !/^[1-9][0-9]{0,19}$/.test(values[19] ?? "") || !/^(?:0|[1-9][0-9]{0,9})$/.test(values[1] ?? "")) invalid();
+  return { birth: `${tid}:${values[19]}`, parent: values[1]! };
 }

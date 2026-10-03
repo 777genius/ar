@@ -1,3 +1,18 @@
+import type {
+  ProjectControlRecoveryDirectoryIdentity,
+  ProjectControlRecoveryPendingDirectory,
+} from "../domain/project-control-recovery";
+
+/** All callbacks complete only after their journal checkpoint is durable. */
+export interface ProjectControlCustodyMaterializationRecovery {
+  readonly operationId: string;
+  readonly identities: readonly ProjectControlRecoveryDirectoryIdentity[];
+  readonly pendingDirectory?: ProjectControlRecoveryPendingDirectory;
+  revalidate(): Promise<void>;
+  prepare(directory: ProjectControlRecoveryPendingDirectory): Promise<void>;
+  applied(directory: ProjectControlRecoveryDirectoryIdentity): Promise<void>;
+}
+
 export type ImmutableEvidenceFile = {
   readonly canonicalPath: string;
   readonly sha256: string;
@@ -49,6 +64,7 @@ export interface ProjectControlEvidenceCustodyPort {
     readonly ledgerRoots: readonly string[];
     readonly evidenceRoots: readonly string[];
     readonly deniedRoots: readonly string[];
+    readonly recovery?: ProjectControlCustodyMaterializationRecovery;
   }): Promise<ProjectControlCustodyBootstrapCertification>;
   canonicalDirectory(path: string, allowMissing?: boolean): Promise<string>;
   readImmutableFile(path: string, maxBytes: number): Promise<ImmutableEvidenceFile>;

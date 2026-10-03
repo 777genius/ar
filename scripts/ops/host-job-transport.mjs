@@ -4,7 +4,6 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { hostLock } from './host-job-lock.mjs';
 
-const endpoint = '/usr/local/lib/subscription-runtime/host-jobs/endpoint.mjs';
 const hosts = new Map();
 export function sshOutput(code, output) {
   if (code === 0 || (code !== 255 && output.trim().startsWith('{'))) return output;
@@ -32,7 +31,9 @@ function command(args, stdin = '') {
 }
 export function hostTransport({ host, machineId, socketDir, run = command }) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.@-]*$/.test(host) || !/^[a-f0-9]{32}$/.test(machineId)) throw new Error('invalid host identity');
-  const key = `${host}:${machineId}`;
+  if (host.includes('@')) throw new Error('restricted transport requires a host alias without a user');
+  const destination = `sr-transport@${host}`;
+  const key = `${destination}:${machineId}:restricted`;
   if (hosts.has(key)) return hosts.get(key);
   const socket = join(socketDir, createHash('sha256').update(key).digest('hex').slice(0, 24));
   let ready;
@@ -43,8 +44,8 @@ export function hostTransport({ host, machineId, socketDir, run = command }) {
   async function connect() {
     await mkdir(socketDir, { recursive: true, mode: 0o700 });
     // Explicit master creation. A failed check never falls back to standalone SSH.
-    try { await run([...base, '-O', 'check', host]); }
-    catch { await run([...base, '-M', '-N', '-f', '-oControlPersist=600', host]); }
+    try { await run([...base, '-O', 'check', destination]); }
+    catch { await run([...base, '-M', '-N', '-f', '-oControlPersist=600', destination]); }
   }
   function drain() {
     for (let i = 0; i < queue.length && active < 4;) {
@@ -67,7 +68,7 @@ export function hostTransport({ host, machineId, socketDir, run = command }) {
         await generation;
         // ProxyCommand=false prevents OpenSSH opening a fresh connection if the
         // multiplex socket vanishes between check and command dispatch.
-        const args = [...base, '-oControlMaster=no', '-oProxyCommand=false', host, '/usr/bin/node', endpoint];
+        const args = [...base, '-T', '-oControlMaster=no', '-oProxyCommand=false', destination];
         let output;
         try { output = await run(args, JSON.stringify(request)); }
         catch {

@@ -1,15 +1,17 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HostedReadonlyHostKernel, completionBytes, completionPath } from "../hosted-readonly-host-kernel";
+import type { HostedOrdinaryStart } from "@vioxen/subscription-runtime/worker-core";
 
 // OS observations are synthetic. The production kernel parser and decision code
 // run unchanged; no host inventory, systemd manager or credentials are accessed.
-const os = vi.hoisted(() => ({ files: new Map<string, string>(), records: new Map<string, Buffer>(),
+const os = vi.hoisted(() => ({ files: new Map<string, string>(), fileErrors: new Map<string, string>(), records: new Map<string, Buffer>(),
   groups: new Map<string, string[]>(), units: "", jobs: "", show: new Map<string, string>(),
   descriptors: vi.fn(), operator: vi.fn(), systemctl: vi.fn() }));
 vi.mock("node:fs", async original => ({
   ...await original<typeof import("node:fs")>(),
   readFileSync: (path: string) => {
+    if (os.fileErrors.has(path)) throw Object.assign(new Error("synthetic permission failure"), { code: os.fileErrors.get(path) });
     if (!os.files.has(path)) throw Object.assign(new Error("synthetic absent file"), { code: "ENOENT" });
     return os.files.get(path)!;
   },
@@ -45,7 +47,7 @@ function show(name: string, group: string, pid: string) {
   return `Id=${name}\nFragmentPath=/etc/systemd/system/${name}\nControlGroup=${group}\nMainPID=${pid}\nDropInPaths=\n`;
 }
 beforeEach(() => {
-  vi.resetAllMocks(); os.files.clear(); os.records.clear(); os.groups.clear(); os.show.clear();
+  vi.resetAllMocks(); os.files.clear(); os.fileErrors.clear(); os.records.clear(); os.groups.clear(); os.show.clear();
   os.units = "init.scope loaded active running init\ntrusted.service loaded active running trusted\n"; os.jobs = ""; publish(inventory());
   os.files.set("/etc/machine-id", hostId); os.files.set("/proc/sys/kernel/random/boot_id", bootId);
   os.files.set("/proc/self/cgroup", "0::/system.slice/trusted.service\n");
@@ -74,6 +76,38 @@ describe("host kernel from explicit synthetic OS facts", () => {
     const kernel = new HostedReadonlyHostKernel();
     expect(kernel.session()).toEqual({ hostId, bootId, supervisorId: "123:456" });
     expect(() => kernel.verifyExclusiveInventory()).not.toThrow();
+  });
+  it("rejects changed boot, malformed process birth, and mismatched exact supervisor unit", () => {
+    os.files.set("/proc/sys/kernel/random/boot_id", "not-a-boot");
+    expect(() => new HostedReadonlyHostKernel().session()).toThrow("evidence_invalid");
+    os.files.set("/proc/sys/kernel/random/boot_id", bootId);
+    os.files.set("/proc/123/stat", "123 (supervisor) 0");
+    expect(() => new HostedReadonlyHostKernel().session()).toThrow("evidence_invalid");
+    os.files.set("/proc/123/stat", "123 (supervisor) " + [...Array(19).fill("0"), "456"].join(" "));
+    os.show.set("trusted.service", show("foreign.service", "/system.slice/trusted.service", "123"));
+    expect(() => new HostedReadonlyHostKernel().session()).toThrow("evidence_invalid");
+  });
+  it("binds an ordinary runtime to actual creator birth, boot and exact unit membership", () => {
+    const unit = `subscription-runtime-ordinary-${startId}.service`;
+    const controlGroup = `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${unit}`;
+    const start: HostedOrdinaryStart = { schemaVersion: 1, installationId: "synthetic-installation",
+      activationGeneration: 1, jobId: "synthetic-job", jobRootDir: "/synthetic/job", workspacePath: "/synthetic/W",
+      bootId, supervisorId: "123:456", originSha256: "a".repeat(64), unit, controlGroup,
+      creatorId: "synthetic-creator", creatorPidBirth: "789:321", grantSha256: null };
+    os.show.set(unit, show(unit, controlGroup, "456"));
+    os.files.set("/proc/self/cgroup", `0::${controlGroup}\n`);
+    os.files.set("/proc/789/stat", "789 (creator) " + [...Array(19).fill("0"), "321"].join(" "));
+    os.files.set("/proc/789/cgroup", "0::/system.slice/trusted.service\n");
+    const action = () => new HostedReadonlyHostKernel().ordinaryRuntimeSession(start);
+    expect(action()).toEqual({ hostId, bootId, supervisorId: "123:456" });
+    os.files.set("/proc/789/stat", "789 (reused) " + [...Array(19).fill("0"), "999"].join(" "));
+    expect(action).toThrow("evidence_invalid");
+    os.files.set("/proc/789/stat", "789 (creator) " + [...Array(19).fill("0"), "321"].join(" "));
+    os.show.set(unit, show(unit, "/system.slice/foreign.service", "456"));
+    expect(action).toThrow("evidence_invalid");
+    os.show.set(unit, show(unit, controlGroup, "456"));
+    os.files.set("/proc/sys/kernel/random/boot_id", "33333333-3333-4333-8333-333333333333");
+    expect(action).toThrow("evidence_invalid");
   });
   it.each(["unknown-unit", "unlisted-process", "init-sibling", "queued-start", "changed-fragment", "unreviewed-dropin", "wrong-caller", "wrong-host", "manager-error"])
   ("rejects %s before exclusive readiness", fault => {
@@ -111,6 +145,14 @@ describe("host kernel from explicit synthetic OS facts", () => {
     expect(() => kernel.confirmTerminalDescendants(reservation)).toThrow("not_terminal");
     os.files.set(events, "populated 0\nfrozen 0\n");
     expect(() => kernel.confirmTerminalDescendants(reservation)).not.toThrow();
+    os.files.set(events, "populated 0\npopulated 0\n");
+    expect(() => kernel.confirmTerminalDescendants(reservation)).toThrow("not_terminal");
+    os.files.set(events, "populated 00\n");
+    expect(() => kernel.confirmTerminalDescendants(reservation)).toThrow("not_terminal");
+    os.files.set(events, "populated 0\n populated 1\n");
+    expect(() => kernel.confirmTerminalDescendants(reservation)).toThrow("not_terminal");
+    os.files.set(events, "populated 0\nmalformed event row\n");
+    expect(() => kernel.confirmTerminalDescendants(reservation)).toThrow("not_terminal");
   });
   it("rejects foreign completion identity and retained main PID", () => {
     os.records.set(completionPath(reservation), Buffer.from("{}"));
@@ -124,15 +166,49 @@ describe("host kernel from explicit synthetic OS facts", () => {
     os.jobs = `8 ${reservation.unit} start waiting\n`;
     expect(() => kernel.drainQueuedStart(reservation)).toThrow();
   });
+  it("rejects ambiguous unit and job observations before terminal evidence", () => {
+    const kernel = new HostedReadonlyHostKernel();
+    os.show.set(reservation.unit, os.show.get(reservation.unit)! + `Id=${reservation.unit}\n`);
+    expect(() => kernel.confirmTerminalDescendants(reservation)).toThrow("evidence_invalid");
+    os.show.set(reservation.unit, show(reservation.unit, "", "0"));
+    os.jobs = `bad-id ${reservation.unit} start waiting\n`;
+    expect(() => kernel.drainQueuedStart(reservation)).toThrow("evidence_invalid");
+  });
+  it("retains the separately fenced production absent-cgroup behavior and propagates permission failures", () => {
+    const kernel = new HostedReadonlyHostKernel();
+    os.records.set(completionPath(reservation), completionBytes(reservation));
+    kernel.fenceCreator(reservation, bootId);
+    kernel.drainQueuedStart(reservation);
+    expect(() => kernel.confirmTerminalDescendants(reservation)).not.toThrow();
+    const events = `/sys/fs/cgroup/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${reservation.unit}/cgroup.events`;
+    os.fileErrors.set(events, "EACCES");
+    expect(() => kernel.confirmTerminalDescendants(reservation)).toThrow("synthetic permission failure");
+    os.fileErrors.clear();
+    os.systemctl.mockReturnValue({ status: 1, stdout: "LoadState=not-found\n" });
+    expect(() => kernel.confirmTerminalDescendants(reservation)).toThrow("evidence_invalid");
+  });
 });
 
 it("outer service invocation uses a fixed bootstrap and no environment/credential properties", () => {
   const record = { startId, creatorId: startId, unit: `subscription-runtime-outer-${startId}.service` };
   const invocation = new HostedReadonlyHostKernel().runtimeInvocation(record, "/runtime/node", ["/runtime/cli.js"], "/synthetic/W");
   expect(invocation.command).toBe("/usr/bin/systemd-run");
-  expect(invocation.args).toEqual(expect.arrayContaining(["--wait", "--pipe", "--collect", "--service-type=exec",
-    "--property=KillMode=control-group", "--property=SendSIGKILL=yes", "--property=Delegate=no"]));
+  expect(invocation.args).toContain(`--unit=${record.unit}`);
+  expect(invocation.args).toContain("--working-directory=/synthetic/W");
+  expect(invocation.args.at(-2)).toBe(process.execPath);
   expect(invocation.args.at(-1)).toMatch(/hosted-readonly-runtime-bootstrap\.js$/);
+  expect(invocation.args.some(value => /Environment|setenv|BindPaths/.test(value))).toBe(false);
+});
+it("ordinary service invocation preserves the independent custody cgroup and fixed bootstrap", () => {
+  const record = { ...reservation, unit: `subscription-runtime-ordinary-${startId}.service`,
+    originSha256: "a".repeat(64), generation: 1 };
+  const invocation = new HostedReadonlyHostKernel().ordinaryRuntimeInvocation(record, "/synthetic/W");
+  expect(invocation.command).toBe("/usr/bin/systemd-run");
+  expect(invocation.args).toContain(`--unit=${record.unit}`);
+  expect(invocation.args).toContain("--working-directory=/synthetic/W");
+  expect(invocation.args.at(-3)).toBe(process.execPath);
+  expect(invocation.args.at(-2)).toMatch(/hosted-readonly-host-launch-cli\.js$/);
+  expect(invocation.args.at(-1)).toBe("ordinary-bootstrap");
   expect(invocation.args.some(value => /Environment|setenv|BindPaths/.test(value))).toBe(false);
 });
 it.each(["valid", "wrong-group", "closed", "terminal", "old-generation", "wrong-supervisor"])("outer owner requires actual reserved service membership: %s", scenario => {

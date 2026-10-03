@@ -1,4 +1,6 @@
 import { assertJsonRecordsTerminal } from "./application/project-control/codex-goal-ledger-epoch-record-guard";
+import { verifiedLegacyTransportLinksForScope } from
+  "./application/project-control/codex-goal-legacy-integration-transport-link";
 import { codexGoalManifestRevision, publishCodexGoalLedgerScopeUnderMaintenance } from "./codex-goal-job-manifest-revision";
 import { readFile, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -392,6 +394,8 @@ export async function projectControlLedgerEpochMigrationView(
     await assertControllerQuiescent(
       locked.controller.jobRootDir,
       lockedQuarantine,
+      locked.controller.jobId,
+      locked.scope,
     );
     const assertNoLegacyWriterProcesses = async () => {
       await (deps.assertNoLegacyWriterProcesses
@@ -939,7 +943,12 @@ export function controllerScopeLockIdentity(
 async function assertControllerQuiescent(
   jobRootDir: string,
   quarantine: ActiveLegacyAttemptQuarantine,
+  controllerJobId: string,
+  scope: ProjectAccessScope,
 ): Promise<void> {
+  const linked = await verifiedLegacyTransportLinksForScope({
+    controllerJobRootDir: jobRootDir, controllerJobId, scope,
+  });
   await assertJsonRecordsTerminal(
     join(jobRootDir, "project-control-operations"),
     "operation.json",
@@ -970,7 +979,7 @@ async function assertControllerQuiescent(
     "attempt.json",
     new Set(["pushed", "rejected"]),
     "ledger_epoch_integration_attempt_in_flight",
-    quarantine.attemptIds,
+    new Set([...quarantine.attemptIds, ...linked]),
   );
 }
 

@@ -17,12 +17,16 @@ import type {
   SessionStorePort,
   WorkspaceHandle,
 } from "@vioxen/subscription-runtime/core";
-import { CodexJsonAgentDriver } from "@vioxen/subscription-runtime/provider-codex";
+import {
+  CodexJsonAgentDriver,
+  CodexModelBackend,
+} from "@vioxen/subscription-runtime/provider-codex";
 import { SubscriptionWorkerError } from "@vioxen/subscription-runtime/worker-core";
 import {
   hashArtifact,
   sameArtifactBytes,
 } from "./file-backend-codex-auth-artifacts";
+import { redactManagedRunValue } from "./file-backend-codex-managed-run-redaction";
 
 export type WaitingProviderTaskResult = Extract<
   ProviderTaskResult,
@@ -143,12 +147,16 @@ export class FileBackendCodexManagedRunCoordinator {
     const durableRecord = await this.options.managedRunStore.get({
       runId: input.runId,
     });
-    const session = await this.options.sessionStore.read({
-      providerInstanceId: this.options.providerInstanceId,
-      expectedProviderId: "codex",
-      purpose: "run",
-    });
-    if (!session) {
+    const isMimo =
+      agentDriver.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
+    const session = isMimo
+      ? null
+      : await this.options.sessionStore.read({
+          providerInstanceId: this.options.providerInstanceId,
+          expectedProviderId: "codex",
+          purpose: "run",
+        });
+    if (!isMimo && !session) {
       throw new SubscriptionWorkerError(
         "subscription_worker_run_failed",
         "Codex session is missing.",
@@ -161,7 +169,7 @@ export class FileBackendCodexManagedRunCoordinator {
     const workspace: WorkspaceHandle = { path: input.resumeHandle.workspacePath };
     try {
       const result = await agentDriver.resumeManagedRun({
-        session: session.artifact,
+        session: session?.artifact ?? null,
         runId: input.runId,
         requestId: input.requestId,
         answer: input.answer,
@@ -192,7 +200,7 @@ export class FileBackendCodexManagedRunCoordinator {
       });
     } finally {
       await workspace.dispose?.();
-      await this.options.exportAuthJsonFileQuietly("run");
+      if (!isMimo) await this.options.exportAuthJsonFileQuietly("run");
     }
   }
 
@@ -281,10 +289,11 @@ export class FileBackendCodexManagedRunCoordinator {
 
   private async persistResumeSessionUpdate(input: {
     readonly result: ProviderTaskResult;
-    readonly session: SessionEnvelope;
+    readonly session: SessionEnvelope | null;
     readonly runId: string;
   }): Promise<ProviderTaskResult> {
     if (
+      !input.session ||
       input.result.status !== "completed" ||
       !input.result.sessionUpdate ||
       sameArtifactBytes(input.result.sessionUpdate, input.session.artifact)
@@ -342,17 +351,34 @@ export class FileBackendCodexManagedRunCoordinator {
       result: input.result,
       context: input.context,
     });
+    for (const identifier of [
+      input.result.runId,
+      input.result.request.id,
+      input.result.resumeHandle.runId,
+      input.result.resumeHandle.workspacePath,
+      this.options.workerId,
+      this.options.providerInstanceId,
+    ]) {
+      if (this.options.redactor.redact(identifier) !== identifier) {
+        throw new SubscriptionWorkerError(
+          "subscription_worker_run_failed",
+          "Managed run identifier contains credential material.",
+          { details: { reason: "managed_run_identifier_not_safe" } },
+        );
+      }
+      this.options.redactor.assertNoKnownSecret(identifier, "managed-run-identifier");
+    }
     await this.options.managedRunStore.saveWaitingInput({
       runId: input.result.runId,
-      request: input.result.request,
-      resumeHandle: input.result.resumeHandle,
-      recoveryPacket,
+      request: redactManagedRunValue(input.result.request, this.options.redactor),
+      resumeHandle: redactManagedRunValue(input.result.resumeHandle, this.options.redactor),
+      recoveryPacket: redactManagedRunValue(recoveryPacket, this.options.redactor),
       taskId: input.result.runId,
       assignedWorkerId: this.options.workerId,
       providerInstanceId: this.options.providerInstanceId,
       workspacePath: input.result.resumeHandle.workspacePath,
       ...(input.result.outputText.trim()
-        ? { outputText: input.result.outputText }
+        ? { outputText: redactManagedRunValue(input.result.outputText, this.options.redactor) }
         : {}),
       now: this.options.clock.now(),
     });
@@ -469,11 +495,9 @@ function managedRunAttemptSummary(context: ManagedRunPersistContext): string {
   if (context.kind === "run") {
     return `Blocked during worker attempt ${context.attempt}.`;
   }
-  const answerPreview = context.input.answer.trim().slice(0, 240);
-  return [
-    `Recovered after answering request ${context.input.requestId}.`,
-    answerPreview ? `Answer preview: ${answerPreview}` : "Answer preview: (empty answer)",
-  ].join("\n");
+  // The answer is available to the active resume call. Repeating even a
+  // truncated prefix in durable recovery state can reveal credential bytes.
+  return `Recovered after answering request ${context.input.requestId}.`;
 }
 
 export function buildManagedRunRecoveryPrompt(input: {

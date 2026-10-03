@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccessBoundary, NetworkAccessMode, ProjectOperation, ProjectAdmissionWorkerRole, ProjectDebtReason,
   evaluateProjectAdmission } from "@vioxen/subscription-runtime/worker-core";
 import { LocalProjectControlEvidenceCustody } from "@vioxen/subscription-runtime/worker-local";
-import { withLocalControllerActivityLease } from "@vioxen/subscription-runtime/store-local-file";
+import { LocalTerminalCheckpointAdmission, withLocalControllerActivityLease } from "@vioxen/subscription-runtime/store-local-file";
 import { readCodexGoalJob, listCodexGoalJobs, createCodexGoalJob, updateCodexGoalJob, type CodexGoalJobManifest } from "../codex-goal-jobs";
 import { codexGoalManifestRevision } from "../codex-goal-job-manifest-revision";
 import { projectControlRelocateControllerWorkspaceView as relocate, type ControllerRelocationDeps } from "../codex-goal-mcp-project-controller-relocation";
@@ -68,6 +68,21 @@ async function fixture(controllerIdentity = { jobId: "test-controller", createdA
 }
 
 describe("idle controller workspace relocation", () => {
+  it("rejects relocation publication while the controller job is checkpoint fenced", async () => {
+    const f = await fixture();
+    const original = await readFile(f.manifestPath, "utf8");
+    const gate = new LocalTerminalCheckpointAdmission(f.controller.jobRootDir);
+    const claim = await gate.claim("test-controller-relocation", {
+      projectId: "test-project", workstreamId: "test-workstream", jobId: f.controller.jobId,
+      taskId: f.controller.taskId, executionGeneration: "test-generation", attemptNumber: 1,
+      ownershipEpoch: 1, runtimeSha: "a".repeat(40), registryRevisionSha256: "b".repeat(64),
+    });
+    try {
+      await expect(relocate(f.args, f.deps)).rejects.toThrow("terminal_checkpoint_job_fenced");
+      expect(await readFile(f.manifestPath, "utf8")).toBe(original);
+    } finally { await gate.release(claim, false); }
+  });
+
   it("requires explicit confirmation and preserves exact manifest fields and accepted records", async () => {
     const f = await fixture();
     const original = await readFile(f.manifestPath, "utf8");

@@ -1,7 +1,9 @@
+import { ScopedTerminationRecords, scopedFenceIdentity } from "./hosted-controller/scoped-termination-records";
+import { assertHostedActivationOperator, observeHostedScopedActorChildren } from "@vioxen/subscription-runtime/provider-codex";
+import { scopedDigest, ScopedActorDischargeMethod, parseScopedActorDischarge, type ScopedActorChain, type ScopedActorDischarge, type ScopedCollectedEvidence, type ScopedIdentityEvidence, type ScopedTerminationMember, type ScopedTerminationObservation, type ScopedSignal } from "../worker-core/hosted-custody/domain/scoped-termination";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { assertHostedProcessDescriptors } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedCustodyPhase, HostedCustodyReservationState, type HostedCustodyEpoch, type HostedCustodyReservation, type HostedOrdinaryReservation, type HostedOrdinaryStart } from "@vioxen/subscription-runtime/worker-core";
@@ -9,6 +11,11 @@ import { assertReadonlyHostOperator, decodePrivateJson } from "./hosted-readonly
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { HostedReadonlyEpochStore, readonlyEpochPath } from "./hosted-readonly-epoch-store";
 import { readonlySupervisorRoot } from "./hosted-readonly-custody";
+import { TrustedCustodyLaunchRole, trustedCustodySystemdLaunch } from "./trusted-custody-systemd-launch";
+import { assertExactUnitGroup, assertNoQueuedStart, assertPopulatedZero, assertTerminalUnit,
+  custodyControlGroup, observedJobUnits, parseScopedManagerJobs } from "./hosted-readonly-observations";
+import { collectBootId, collectCgroupProcesses, collectCustodyEvents, collectFutureCreatorShow, collectJobs,
+  collectProcessBirth, collectScopedInvocationAnchor, collectScopedRecursiveEmpty, collectUnitInvocation, fenceScopedSubmitter, withScopedCollectionBudget, requestScopedManagerEffect, collectProcessCgroup, collectSelfCgroup, collectUnitNotFound, collectUnitShow } from "./hosted-readonly-linux-collector";
 
 export enum HostedReadonlyRuntimeRole { Supervisor = "supervisor", Runtime = "runtime" }
 
@@ -23,6 +30,7 @@ export type HostedReadonlyHostInventory = {
 };
 export type HostedOrdinaryCreator = {
   readonly creatorId: string; readonly jobId: string; readonly jobRootDir: string; readonly workspacePath: string;
+  readonly childSlotSha256?: string;
   readonly launch: { readonly command: string; readonly args: readonly string[]; readonly cwd: string };
 };
 const unitPattern = /^[A-Za-z0-9_@.-]+\.(service|scope)$/;
@@ -57,10 +65,12 @@ export function readHostedReadonlyHostInventory(): HostedReadonlyHostInventory {
     if (!Array.isArray(value.ordinaryCreators) || value.ordinaryCreators.length > 128 ||
         !Array.isArray(value.disabledCreators) || value.disabledCreators.length > 128) invalid();
     ordinaryCreators = value.ordinaryCreators.map(entry => {
-      const row = object(entry, "creatorId,jobId,jobRootDir,launch,workspacePath");
+      const hasSlot = !!entry && typeof entry === "object" && "childSlotSha256" in entry;
+      const row = object(entry, hasSlot ? "childSlotSha256,creatorId,jobId,jobRootDir,launch,workspacePath" : "creatorId,jobId,jobRootDir,launch,workspacePath");
+      if (hasSlot && (typeof row.childSlotSha256 !== "string" || !/^[a-f0-9]{64}$/.test(row.childSlotSha256))) invalid();
       if (!identity(row.creatorId) || !identity(row.jobId) || !path(row.jobRootDir) || !path(row.workspacePath)) invalid();
       return Object.freeze({ creatorId: row.creatorId, jobId: row.jobId, jobRootDir: row.jobRootDir,
-        workspacePath: row.workspacePath, launch: parseLaunch(row.launch) });
+        workspacePath: row.workspacePath, ...(hasSlot ? { childSlotSha256: row.childSlotSha256 as string } : {}), launch: parseLaunch(row.launch) });
     });
     disabledCreators = value.disabledCreators.map(name => {
       if (typeof name !== "string" || name.length > 200 || !/^[A-Za-z0-9_@.-]+\.(service|socket|timer)$/.test(name) ||
@@ -72,6 +82,7 @@ export function readHostedReadonlyHostInventory(): HostedReadonlyHostInventory {
     // Multiple finite launch tuples may describe one job, but never conflicting
     // root/workspace provenance or two identities sharing a mutable job scope.
     for (const left of ordinaryCreators) for (const right of ordinaryCreators) {
+      if (left !== right && left.jobId === right.jobId && (left.childSlotSha256 || right.childSlotSha256)) invalid();
       if (left.jobId === right.jobId ? left.jobRootDir !== right.jobRootDir || left.workspacePath !== right.workspacePath :
           left.jobRootDir === right.jobRootDir || left.workspacePath === right.workspacePath) invalid();
     }
@@ -86,22 +97,20 @@ export class HostedReadonlyHostKernel {
     assertReadonlyHostOperator();
     const inventory = readHostedReadonlyHostInventory();
     const hostId = readFileSync("/etc/machine-id", "utf8").trim();
-    const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-    if (hostId !== inventory.hostId || !/^[a-f0-9-]{36}$/.test(bootId)) invalid();
+    const bootId = collectBootId();
+    if (hostId !== inventory.hostId) invalid();
     const supervisor = this.show(inventory.supervisorUnit);
     const expected = inventory.units.find(row => row.name === inventory.supervisorUnit)!;
-    if (supervisor.ControlGroup !== expected.controlGroup || !/^[1-9]\d*$/.test(supervisor.MainPID ?? "")) invalid();
-    const callerGroup = readFileSync("/proc/self/cgroup", "utf8").trim();
+    assertExactUnitGroup(inventory.supervisorUnit, supervisor, expected.controlGroup);
+    if (!/^[1-9]\d*$/.test(supervisor.MainPID ?? "")) invalid();
+    const callerGroup = collectSelfCgroup();
     // Initial namespace + real cgroup membership, not an inherited env marker.
     if (callerGroup !== `0::${expected.controlGroup}`) {
       const epoch = this.enrolledEpoch(), outer = epoch?.outerRuntime;
       if (!epoch || !outer || outer.state !== HostedCustodyReservationState.Reserved || epoch.bootId !== bootId ||
-          callerGroup !== `0::${unitGroup(outer.unit)}`) invalid();
+          callerGroup !== `0::${custodyControlGroup(outer.unit)}`) invalid();
     }
-    const stat = readFileSync(`/proc/${supervisor.MainPID}/stat`, "utf8");
-    const tail = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/);
-    if (tail.length < 20 || !/^\d+$/.test(tail[19] ?? "")) invalid();
-    return { hostId, bootId, supervisorId: `${supervisor.MainPID}:${tail[19]}` };
+    return { hostId, bootId, supervisorId: processBirth(supervisor.MainPID ?? "") };
   }
 
   verifyExclusiveInventory(): void {
@@ -122,11 +131,12 @@ export class HostedReadonlyHostKernel {
     if (outer?.state === HostedCustodyReservationState.Reserved) {
       assertUnitReservation(outer);
       const current = this.show(outer.unit);
-      if (current.Id !== outer.unit || current.DropInPaths !== "" || (current.ControlGroup && current.ControlGroup !== unitGroup(outer.unit))) invalid();
+      if (current.Id !== outer.unit || current.DropInPaths !== "" || (current.ControlGroup && current.ControlGroup !== custodyControlGroup(outer.unit))) invalid();
     }
     for (const row of inventory.units) {
       const current = this.show(row.name);
-      if (current.Id !== row.name || current.ControlGroup !== row.controlGroup || !path(current.FragmentPath) ||
+      assertExactUnitGroup(row.name, current, row.controlGroup);
+      if (!path(current.FragmentPath) ||
           current.DropInPaths !== "" ||
           hash(readTrustedFragment(current.FragmentPath)) !== row.fragmentSha256) invalid();
     }
@@ -137,20 +147,18 @@ export class HostedReadonlyHostKernel {
     const inspectGroup = (relative: string): void => {
       if (++groups > 4096) invalid();
       const absolute = "/sys/fs/cgroup" + relative;
-      const pids = lines(readFileSync(absolute + "/cgroup.procs", "utf8"));
+      const pids = lines(collectCgroupProcesses(relative));
       if (pids.some(pid => !/^[1-9]\d*$/.test(pid))) invalid();
       if (pids.length && !inventory.units.some(row => row.controlGroup === relative) &&
-          !(outer?.state === HostedCustodyReservationState.Reserved && relative === unitGroup(outer.unit)) &&
+          !(outer?.state === HostedCustodyReservationState.Reserved && relative === custodyControlGroup(outer.unit)) &&
           !(relative === "/init.scope" && pids.length === 1 && pids[0] === "1")) invalid();
       for (const child of readdirSync(absolute, { withFileTypes: true })) {
         if (child.isDirectory()) inspectGroup(relative + "/" + child.name);
       }
     };
     inspectGroup("");
-    for (const line of lines(this.systemctl(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"]))) {
-      const fields = line.trim().split(/\s+/);
-      if (fields.length < 4 || !/^\d+$/.test(fields[0] ?? "") ||
-          (!inventory.units.some(row => row.name === fields[1]) && !(outer?.state === HostedCustodyReservationState.Reserved && fields[1] === outer.unit))) invalid();
+    for (const name of observedJobUnits(collectJobs())) {
+      if (!inventory.units.some(row => row.name === name) && !(outer?.state === HostedCustodyReservationState.Reserved && name === outer.unit)) invalid();
     }
   }
 
@@ -159,7 +167,7 @@ export class HostedReadonlyHostKernel {
   operatorSession(): { hostId: string; bootId: string; supervisorId: string } {
     const inventory = readHostedReadonlyHostInventory();
     const supervisor = inventory.units.find(row => row.name === inventory.supervisorUnit)!;
-    if (readFileSync("/proc/self/cgroup", "utf8").trim() !== `0::${supervisor.controlGroup}`) invalid();
+    if (collectSelfCgroup() !== `0::${supervisor.controlGroup}`) invalid();
     return this.session();
   }
 
@@ -171,17 +179,18 @@ export class HostedReadonlyHostKernel {
     const owner = inventory.units.find(row => row.name === inventory.supervisorUnit)!;
     const supervisor = this.show(inventory.supervisorUnit), current = this.show(start.unit);
     const hostId = readFileSync("/etc/machine-id", "utf8").trim();
-    const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-    if (hostId !== inventory.hostId || bootId !== start.bootId || supervisor.Id !== owner.name ||
-        supervisor.ControlGroup !== owner.controlGroup || supervisor.DropInPaths !== "" ||
+    const bootId = collectBootId();
+    assertExactUnitGroup(owner.name, supervisor, owner.controlGroup);
+    assertExactUnitGroup(start.unit, current, start.controlGroup);
+    if (hostId !== inventory.hostId || bootId !== start.bootId || supervisor.DropInPaths !== "" ||
         !path(supervisor.FragmentPath) || hash(readTrustedFragment(supervisor.FragmentPath)) !== owner.fragmentSha256 ||
-        current.Id !== start.unit || current.ControlGroup !== start.controlGroup || current.DropInPaths !== "" ||
+        current.DropInPaths !== "" ||
         !/^[1-9]\d*$/.test(current.MainPID ?? "") ||
-        readFileSync("/proc/self/cgroup", "utf8").trim() !== `0::${start.controlGroup}`) invalid();
+        collectSelfCgroup() !== `0::${start.controlGroup}`) invalid();
     const supervisorId = processBirth(supervisor.MainPID ?? "");
     const creatorPid = start.creatorPidBirth.split(":")[0]!;
     if (supervisorId !== start.supervisorId || processBirth(creatorPid) !== start.creatorPidBirth ||
-        readFileSync(`/proc/${creatorPid}/cgroup`, "utf8").trim() !== `0::${owner.controlGroup}`) invalid();
+        collectProcessCgroup(creatorPid) !== `0::${owner.controlGroup}`) invalid();
     return { hostId, bootId, supervisorId };
   }
 
@@ -195,7 +204,7 @@ export class HostedReadonlyHostKernel {
    * Trusted host root remains outside this threat model. */
   private verifyFutureCreators(inventory: HostedReadonlyHostInventory): void {
     for (const name of inventory.disabledCreators) {
-      const result = this.systemctl(["show", "--property=Id,LoadState,ActiveState,UnitFileState,Job", "--", name]);
+      const result = collectFutureCreatorShow(name);
       const values = new Map(lines(result).map(line => {
         const at = line.indexOf("=");
         if (at < 1) invalid();
@@ -213,9 +222,8 @@ export class HostedReadonlyHostKernel {
     }
     if (lines(this.systemctl(["list-units", "--all", "--type=socket,timer",
       "--state=active,activating,reloading,deactivating", "--no-legend", "--plain", "--no-pager"])).length) invalid();
-    for (const line of lines(this.systemctl(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"]))) {
-      const fields = line.trim().split(/\s+/);
-      if (fields.length < 4 || !/^\d+$/.test(fields[0] ?? "") || inventory.disabledCreators.includes(fields[1] ?? "")) invalid();
+    for (const name of observedJobUnits(collectJobs())) {
+      if (inventory.disabledCreators.includes(name)) invalid();
     }
   }
 
@@ -238,11 +246,7 @@ export class HostedReadonlyHostKernel {
   private drainUnitQueue(unit: string): void {
     // No cancellation/absence is promoted into proof. After the creator has
     // been fenced, any remaining manager job keeps the reservation held.
-    for (const line of lines(this.systemctl(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"]))) {
-      const fields = line.trim().split(/\s+/);
-      if (fields.length < 4 || !/^\d+$/.test(fields[0] ?? "")) invalid();
-      if (fields[1] === unit) throw new Error("hosted_custody_start_still_queued");
-    }
+    assertNoQueuedStart(collectJobs(), unit);
   }
   confirmTerminalDescendants(reservation: HostedCustodyReservation): void {
     assertUnitReservation(reservation);
@@ -255,21 +259,14 @@ export class HostedReadonlyHostKernel {
       // Only after creator and queue fencing may an explicitly unloaded unit
       // combine with an empty/absent cgroup as terminal evidence. Bus failure
       // and arbitrary nonzero systemctl status remain failures.
-      if (this.systemctl(["show", "--property=LoadState", "--", unit], true).trim() !== "LoadState=not-found") invalid();
+      if (!collectUnitNotFound(unit)) invalid();
       current = { MainPID: "0", ControlGroup: "" };
     }
-    if (current.MainPID !== "0" || (current.ControlGroup && current.ControlGroup !== unitGroup(unit))) invalid();
-    const events = `/sys/fs/cgroup${unitGroup(unit)}/cgroup.events`;
-    try {
-      const text = readFileSync(events, "utf8");
-      if (text.split("\n").filter(line => line.startsWith("populated ")).join("\n") !== "populated 0") {
-        throw new Error("hosted_custody_descendants_not_terminal");
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      // Absence is useful only after independent creator and queue fencing; the
-      // application calls those operations first, under the same host mutex.
-    }
+    assertTerminalUnit(unit, current);
+    const events = collectCustodyEvents(unit);
+    if (events.kind === "present") assertPopulatedZero(events.text);
+    // Absence is useful only after independent creator and queue fencing; the
+    // application calls those operations first, under the same host mutex.
   }
   requestStop(reservation: HostedCustodyReservation): void {
     assertUnitReservation(reservation);
@@ -301,11 +298,132 @@ export class HostedReadonlyHostKernel {
     assertOrdinaryReservation(reservation); this.requestUnitStop(reservation.unit);
   }
 
+  #scopedIdentity(member: ScopedTerminationMember, fencing = false): ScopedIdentityEvidence {
+    assertReadonlyHostOperator();
+    const identity = member.identity, supervisor = collectUnitShow(identity.supervisorUnit);
+    const evidence: ScopedIdentityEvidence = { hostId: readFileSync("/etc/machine-id", "utf8").trim(), bootId: collectBootId(),
+      supervisorBirth: collectProcessBirth(supervisor.MainPID!), supervisorGroup: collectProcessCgroup(supervisor.MainPID!).replace(/^0::/, ""),
+      invocationId: collectUnitInvocation(member.unit), invocationAnchor: collectScopedInvocationAnchor(member.unit), unitGroup: collectUnitShow(member.unit).ControlGroup!,
+      creatorBirth: null, creatorGroup: null };
+    if (evidence.hostId !== identity.hostId || evidence.bootId !== identity.bootId || evidence.supervisorBirth !== identity.supervisorId ||
+        evidence.supervisorGroup !== identity.supervisorControlGroup || supervisor.ControlGroup !== identity.supervisorControlGroup || evidence.invocationId !== member.invocationId || evidence.invocationAnchor.invocationId !== member.invocationId || evidence.unitGroup !== member.controlGroup) invalid();
+    const pid = member.creatorPidBirth.split(":")[0]!;
+    try {
+      const creatorBirth = collectProcessBirth(pid), creatorGroup = collectProcessCgroup(pid).replace(/^0::/, "");
+      if (creatorBirth !== member.creatorPidBirth || creatorGroup !== member.creatorControlGroup) invalid();
+      return { ...evidence, creatorBirth, creatorGroup };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      // An absent creator is usable ONLY with retained positive discharge of the
+      // complete authenticated chain, including that exact original creator.
+      const records = new ScopedTerminationRecords(assertHostedActivationOperator), marker = records.terminating(member.identity.parentStartId);
+      if (!records.discharge(member) && !(fencing && marker && scopedDigest(marker.identity) === scopedDigest(scopedFenceIdentity(member.identity)) && records.actorChain(member))) throw e;
+      return evidence;
+    }
+  }
+  assertScopedIdentity(member: ScopedTerminationMember, remainingMs = 1000): void {
+    withScopedCollectionBudget(remainingMs, () => { this.#scopedIdentity(member); });
+  }
+  fenceScopedSubmitter(member: ScopedTerminationMember, chain: ScopedActorChain, remainingMs: number): ScopedActorDischarge {
+    return withScopedCollectionBudget(remainingMs, () => {
+      const end = performance.now() + remainingMs;
+      const records = new ScopedTerminationRecords(assertHostedActivationOperator), retained = records.actorChain(member);
+      if (scopedDigest(chain) !== scopedDigest(retained)) invalid();
+      this.#scopedIdentity(member, true);
+      const marker = records.terminating(member.identity.parentStartId);
+      if (!marker || scopedDigest(marker.identity) !== scopedDigest(scopedFenceIdentity(member.identity))) invalid();
+      // Reobserve every live admitted submitter, including all nonleader tasks.
+      // Absence supplies no discharge: the pidfd collector below still owes an
+      // independent positive exit for every retained noncreator.
+      const observeMembership = () => {
+        const live = chain.actors.slice(1).filter(actor => {
+          try { if (collectProcessBirth(actor.pidBirth.split(":")[0]!) !== actor.pidBirth) invalid(); return true; }
+          catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; return false; }
+        });
+        return live.map(actor => {
+          const snapshot = observeHostedScopedActorChildren(actor, end);
+          const expected = live.filter(a => a.parentPidBirth === actor.pidBirth).map(a => a.pidBirth.split(":")[0]!).sort();
+          if (JSON.stringify(snapshot.children) !== JSON.stringify(expected)) invalid();
+          const parent = chain.actors.find(a => a.pidBirth === actor.parentPidBirth)!;
+          let parentLive = false;
+          try { parentLive = collectProcessBirth(parent.pidBirth.split(":")[0]!) === parent.pidBirth; }
+          catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+          // An exited original parent permits reparenting; never substitute that
+          // parent's birth or skip observing the actual surviving actor.
+          if (parentLive && snapshot.tasks.some(t => t.parent !== parent.pidBirth.split(":")[0])) invalid();
+          return { birth: actor.pidBirth, snapshot };
+        });
+      };
+      const membership = observeMembership();
+      if (scopedDigest(membership) !== scopedDigest(observeMembership())) invalid();
+      // Every enqueue-capable task is pinned independently; wrapper exit alone
+      // cannot discharge a surviving systemd-run or original scoped creator.
+      for (const actor of chain.actors.slice(1).reverse()) fenceScopedSubmitter(actor.pidBirth, actor.controlGroup, Math.floor(end - performance.now()));
+      return parseScopedActorDischarge({ schemaVersion: 2, chainDigest: scopedDigest(chain), fenceDigest: scopedDigest(marker),
+        actors: chain.actors.map((a, i) => ({ ...a, method: i === 0 ? ScopedActorDischargeMethod.ScopedAdmissionFence : ScopedActorDischargeMethod.PidfdExit })) }, chain);
+    });
+  }
+  drainScopedQueue(member: ScopedTerminationMember, remainingMs: number): void {
+    return withScopedCollectionBudget(remainingMs, () => {
+      const end = performance.now() + remainingMs;
+      for (const job of parseScopedManagerJobs(collectJobs()).filter(job => job.unit === member.unit)) {
+        this.assertScopedIdentity(member, Math.max(1, Math.floor(end - performance.now())));
+        const fresh = parseScopedManagerJobs(collectJobs()).find(row => row.id === job.id);
+        if (!fresh || fresh.unit !== job.unit || fresh.type !== job.type) invalid();
+        const left = Math.floor(end - performance.now()); if (left < 1) invalid();
+        requestScopedManagerEffect(["cancel", job.id], left);
+      }
+      if (parseScopedManagerJobs(collectJobs()).some(job => job.unit === member.unit)) invalid();
+    });
+  }
+  signalScoped(member: ScopedTerminationMember, signal: ScopedSignal, remainingMs: number): void {
+    return withScopedCollectionBudget(remainingMs, () => {
+      const end = performance.now() + remainingMs;
+      this.assertScopedIdentity(member, Math.max(1, Math.floor(end - performance.now())));
+      requestScopedManagerEffect(["kill", `--signal=${signal}`, "--kill-whom=all", "--", member.unit], Math.floor(end - performance.now()));
+      this.assertScopedIdentity(member, Math.max(1, Math.floor(end - performance.now())));
+      requestScopedManagerEffect(["stop", "--no-block", "--", member.unit], Math.floor(end - performance.now()));
+    });
+  }
+  /** Nonblocking checks of retained capabilities and pinned birth identities.
+   * Manager queries and waits remain exclusively in lock-free collection. */
+  validateScopedPublication(member: ScopedTerminationMember, evidence: ScopedCollectedEvidence): void {
+    assertReadonlyHostOperator();
+    const records = new ScopedTerminationRecords(assertHostedActivationOperator), discharge = records.discharge(member);
+    if (!discharge || scopedDigest(discharge) !== scopedDigest(evidence.discharge) || scopedDigest(records.actorChain(member)) !== scopedDigest(evidence.chain) ||
+        readFileSync("/etc/machine-id", "utf8").trim() !== member.identity.hostId || collectBootId() !== member.identity.bootId ||
+        collectProcessBirth(member.identity.supervisorId.split(":")[0]!) !== member.identity.supervisorId ||
+        collectProcessCgroup(member.identity.supervisorId.split(":")[0]!) !== `0::${member.identity.supervisorControlGroup}`) invalid();
+    if (scopedDigest(collectScopedInvocationAnchor(member.unit)) !== scopedDigest(evidence.identityAfter.invocationAnchor)) invalid();
+    for (const node of evidence.cgroups) {
+      const current = lstatSync("/sys/fs/cgroup" + node.path);
+      if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== node.device || current.ino !== node.inode) invalid();
+    }
+    for (const actor of evidence.chain.actors.slice(1)) {
+      try { if (collectProcessBirth(actor.pidBirth.split(":")[0]!) === actor.pidBirth) invalid(); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+    }
+  }
+  collectScoped(member: ScopedTerminationMember, remainingMs: number): ScopedTerminationObservation {
+    return withScopedCollectionBudget(remainingMs, () => {
+      const end = performance.now() + remainingMs, records = new ScopedTerminationRecords(assertHostedActivationOperator);
+      const chain = records.actorChain(member), discharge = records.discharge(member);
+      if (!discharge) throw new Error("scoped_creator_discharge_required");
+      const identityBefore = this.#scopedIdentity(member), queueBefore = collectJobs();
+      const queue = parseScopedManagerJobs(queueBefore), tree = collectScopedRecursiveEmpty(member.controlGroup, Math.floor(end - performance.now()));
+      const identityAfter = this.#scopedIdentity(member), queueAfter = collectJobs(); parseScopedManagerJobs(queueAfter);
+      if (queueBefore !== queueAfter || scopedDigest(identityBefore) !== scopedDigest(identityAfter)) invalid();
+      const evidence = { schemaVersion: 1 as const, memberDigest: scopedDigest(member), chain, discharge, identityBefore, identityAfter, queueBefore, queueAfter, cgroups: tree.nodes };
+      return Object.freeze({ startId: member.startId, identityUnchanged: true, creatorFenced: true,
+        queueEmpty: !queue.some(row => row.unit === member.unit), recursiveEmpty: tree.empty, digest: scopedDigest(evidence), evidence });
+    });
+  }
+
   assertRuntimeLaunch(epoch: HostedCustodyEpoch, command: string, args: readonly string[], cwd: string): void {
     const inventory = readHostedReadonlyHostInventory();
     const actual = this.session();
     const owner = inventory.units.find(row => row.name === inventory.supervisorUnit)!;
-    if (readFileSync("/proc/self/cgroup", "utf8").trim() !== `0::${owner.controlGroup}`) invalid();
+    if (collectSelfCgroup() !== `0::${owner.controlGroup}`) invalid();
     if (epoch.hostId !== actual.hostId || epoch.bootId !== actual.bootId || epoch.supervisorId !== actual.supervisorId ||
         command !== inventory.runtimeLaunch.command || cwd !== inventory.runtimeLaunch.cwd ||
         JSON.stringify(args) !== JSON.stringify(inventory.runtimeLaunch.args)) {
@@ -315,7 +433,7 @@ export class HostedReadonlyHostKernel {
   runtimeRole(): HostedReadonlyRuntimeRole {
     const inventory = readHostedReadonlyHostInventory();
     const owner = inventory.units.find(row => row.name === inventory.supervisorUnit)!;
-    if (readFileSync("/proc/self/cgroup", "utf8").trim() === `0::${owner.controlGroup}`) {
+    if (collectSelfCgroup() === `0::${owner.controlGroup}`) {
       const epoch = this.enrolledEpoch();
       if (!epoch) invalid();
       this.assertRuntimeLaunch(epoch, inventory.runtimeLaunch.command, inventory.runtimeLaunch.args, inventory.runtimeLaunch.cwd);
@@ -328,30 +446,23 @@ export class HostedReadonlyHostKernel {
     const epoch = this.enrolledEpoch(), outer = epoch?.outerRuntime;
     if (!epoch || epoch.phase !== HostedCustodyPhase.Ready || epoch.revoked || !outer || outer.state !== HostedCustodyReservationState.Reserved ||
         outer.generation !== epoch.generation ||
-        readFileSync("/proc/self/cgroup", "utf8").trim() !== `0::${unitGroup(outer.unit)}`) invalid();
+        collectSelfCgroup() !== `0::${custodyControlGroup(outer.unit)}`) invalid();
     const actual = this.session();
     if (epoch.hostId !== actual.hostId || epoch.bootId !== actual.bootId || epoch.supervisorId !== actual.supervisorId) invalid();
     const current = this.show(outer.unit);
-    if (current.ControlGroup !== unitGroup(outer.unit) || !/^[1-9]\d*$/.test(current.MainPID ?? "")) invalid();
+    assertExactUnitGroup(outer.unit, current, custodyControlGroup(outer.unit));
+    if (!/^[1-9]\d*$/.test(current.MainPID ?? "")) invalid();
   }
   runtimeInvocation(record: Pick<HostedCustodyReservation, "startId" | "unit" | "creatorId">,
     command: string, args: readonly string[], cwd: string): { command: string; args: readonly string[] } {
     assertUnitReservation(record);
     if (!record.unit.startsWith("subscription-runtime-outer-")) invalid();
-    return { command: "/usr/bin/systemd-run", args: ["--quiet", "--wait", "--pipe", "--collect",
-      `--unit=${record.unit}`, "--service-type=exec", "--property=Slice=subscription-runtime-hosted.slice",
-      "--property=KillMode=control-group", "--property=SendSIGKILL=yes", "--property=Delegate=no",
-      `--working-directory=${cwd}`, "--", process.execPath,
-      fileURLToPath(new URL("./hosted-readonly-runtime-bootstrap.js", import.meta.url))] };
+    return trustedCustodySystemdLaunch(TrustedCustodyLaunchRole.Outer, record.startId, cwd);
   }
   ordinaryRuntimeInvocation(record: HostedOrdinaryReservation, cwd: string): { command: string; args: readonly string[] } {
     assertOrdinaryReservation(record);
     if (record.unit !== `subscription-runtime-ordinary-${record.startId}.service` || !path(cwd)) invalid();
-    return { command: "/usr/bin/systemd-run", args: ["--quiet", "--wait", "--pipe", "--collect",
-      `--unit=${record.unit}`, "--service-type=exec", "--property=Slice=subscription-runtime-hosted.slice",
-      "--property=KillMode=control-group", "--property=SendSIGKILL=yes", "--property=Delegate=no",
-      `--working-directory=${cwd}`, "--", process.execPath,
-      fileURLToPath(new URL("./hosted-readonly-host-launch-cli.js", import.meta.url)), "ordinary-bootstrap"] };
+    return trustedCustodySystemdLaunch(TrustedCustodyLaunchRole.Ordinary, record.startId, cwd);
   }
   private enrolledEpoch(): HostedCustodyEpoch | null {
     if (!readHostedPrivateBytes(readonlyEpochPath, 64 * 1024)) return null;
@@ -363,16 +474,7 @@ export class HostedReadonlyHostKernel {
     return epoch;
   }
   private show(name: string): Record<string, string> {
-    if (!unit(name)) invalid();
-    const result: Record<string, string> = {};
-    for (const line of lines(this.systemctl(["show", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID", "--", name]))) {
-      const split = line.indexOf("=");
-      const key = line.slice(0, split);
-      if (split < 1 || !["Id", "FragmentPath", "DropInPaths", "ControlGroup", "MainPID"].includes(key) || key in result) invalid();
-      result[key] = line.slice(split + 1);
-    }
-    if (Object.keys(result).length !== 5) invalid();
-    return result;
+    return collectUnitShow(name);
   }
   private systemctl(args: readonly string[], allowNotFound = false): string {
     const result = spawnSync("/usr/bin/systemctl", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
@@ -395,11 +497,6 @@ export function completionBytes(reservation: Pick<HostedCustodyReservation, "sta
 function assertUnitReservation(value: Pick<HostedCustodyReservation, "startId" | "unit" | "creatorId">): void {
   if (!/^[a-f0-9-]{36}$/.test(value.startId) || value.creatorId !== value.startId ||
       ![`subscription-runtime-hosted-${value.startId}.service`, `subscription-runtime-outer-${value.startId}.service`].includes(value.unit)) invalid();
-}
-function unitGroup(name: string): string {
-  if (!/^subscription-runtime-(?:hosted|outer|ordinary)-[a-f0-9-]{36}\.service$/.test(name)) invalid();
-  // systemd slice names encode their hierarchy at each dash.
-  return `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${name}`;
 }
 function readTrustedFragment(input: string): Buffer {
   const file = realpathSync(input);
@@ -442,12 +539,7 @@ function assertOrdinaryReservation(value: HostedOrdinaryReservation): void {
       ![`subscription-runtime-ordinary-${value.startId}.service`, `subscription-runtime-hosted-${value.startId}.service`].includes(value.unit)) invalid();
 }
 function processBirth(pid: string): string {
-  if (!/^[1-9][0-9]{0,9}$/.test(pid)) invalid();
-  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-  if (!stat.startsWith(pid + " (") || stat.lastIndexOf(") ") < 0) invalid();
-  const birth = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/)[19];
-  if (!birth || !/^[1-9][0-9]{0,19}$/.test(birth)) invalid();
-  return `${pid}:${birth}`;
+  return collectProcessBirth(pid);
 }
 export function ordinaryCompletionPath(startId: string): string {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(startId)) invalid();

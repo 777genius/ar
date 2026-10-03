@@ -1,3 +1,5 @@
+import { childConfigFromRecord } from "./child-execution-confinement";
+import { createHash } from "node:crypto";
 import { initializeControllerStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import {
   lstat,
@@ -20,6 +22,8 @@ import {
 import { LocalProjectControlEvidenceCustody } from
   "../worker-local/project-control-evidence-custody-local-adapter";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
+import type { CodexGoalMimoAccountSlot } from "./codex-goal-mimo-account-slots";
+import { optionalCodexGoalMimoAccountSlots } from "./codex-goal-mimo-account-slots";
 import type { CodexGoalOutputFormat } from "./codex-goal-ops";
 import {
   assertCodexGoalStoredAccessBoundaryAllowed,
@@ -33,11 +37,30 @@ import {
   optionalCodexGoalProviderSandboxMode,
 } from "./codex-goal-control-modes";
 import { withCodexGoalManifestUpdate, withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
+import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { durableReplaceJsonFile } from "./project-control-operation-file-store";
-
+import {
+  CodexGoalAccountSelectionMode,
+  assertAccountReplacementHasKnownOrigin,
+  optionalCodexGoalAccountSelectionMode,
+} from "./codex-goal-account-selection-mode";
+export { CodexGoalAccountSelectionMode } from "./codex-goal-account-selection-mode";
+import { optionalCodexGoalModelBackend } from "./codex-goal-model-backend";
+import {
+  assertJobId,
+  isRecord,
+  optionalBooleanProperty,
+  optionalPositiveIntegerProperty,
+  optionalString,
+  optionalWorkerReportMode,
+  readStringArray,
+  requiredIsoDate,
+  requiredString,
+  resolvePath,
+  uniqueManifestStrings,
+} from "./codex-goal-job-manifest-parse-primitives";
 export const codexGoalJobManifestSchemaVersion = 1;
 export const codexGoalObjectiveMaxChars = 4000;
-
 export type CodexGoalProjectPreStartAdmission =
   | {
       readonly schemaVersion: 1;
@@ -70,6 +93,8 @@ export type CodexGoalJobManifest = {
   readonly codexGoalObjective?: string;
   readonly taskId: string;
   readonly accounts: readonly string[];
+  readonly mimoAccounts?: readonly CodexGoalMimoAccountSlot[];
+  readonly accountSelectionMode?: CodexGoalAccountSelectionMode;
   readonly outputPath?: string;
   readonly progressPath?: string;
   readonly progressHeartbeatMs?: number;
@@ -78,10 +103,16 @@ export type CodexGoalJobManifest = {
   readonly reasoningEffort?: CodexGoalRunConfig["reasoningEffort"];
   readonly serviceTier?: CodexGoalRunConfig["serviceTier"];
   readonly executionEngine?: CodexGoalRunConfig["executionEngine"];
+  readonly checkpointRequired?: boolean;
+  /** Defaults to OpenAiChatGpt — an existing manifest with no modelBackend needs no migration. */
+  readonly modelBackend?: CodexGoalRunConfig["modelBackend"];
   readonly taskTimeoutMs?: number;
   readonly appServerStartupTimeoutMs?: number;
   readonly staleLockMs?: number;
   readonly maxAccountCycles?: number;
+  readonly childLifetime?: CodexGoalRunConfig["childLifetime"];
+  readonly maxGoalTurns?: number;
+  readonly safeExecutionPolicy?: CodexGoalRunConfig["safeExecutionPolicy"];
   readonly editMode?: CodexGoalRunConfig["editMode"];
   readonly providerSandboxMode?: CodexGoalRunConfig["providerSandboxMode"];
   readonly accessBoundary?: AccessBoundary;
@@ -223,11 +254,29 @@ export async function createCodexGoalJob(input: {
     registryRootDir,
     jobId: manifest.jobId,
   });
-  return await withCodexGoalRegistryMutation({
+  const existedBeforeAdmission = await pathExists(path);
+  if (existedBeforeAdmission && !input.overwrite) {
+    throw codexGoalJobManifestAlreadyExists(path);
+  }
+  if (existedBeforeAdmission) {
+    const previous: unknown = JSON.parse(await readFile(path, "utf8"));
+    if (!previous || typeof previous !== "object" ||
+        !("jobRootDir" in previous) || previous.jobRootDir !== manifest.jobRootDir) {
+      throw new Error("job_manifest_activity_identity_invalid");
+    }
+  }
+  const publish = () => withCodexGoalRegistryMutation({
     registryRootDir,
     effect: async () => {
-      if (!input.overwrite && await pathExists(path)) {
+      if ((await pathExists(path)) && !existedBeforeAdmission) {
         throw codexGoalJobManifestAlreadyExists(path);
+      }
+      if (existedBeforeAdmission) {
+        const current: unknown = JSON.parse(await readFile(path, "utf8"));
+        if (!current || typeof current !== "object" ||
+            !("jobRootDir" in current) || current.jobRootDir !== manifest.jobRootDir) {
+          throw new Error("job_manifest_activity_identity_invalid");
+        }
       }
       if (!await pathExists(path) && manifest.accessBoundary === AccessBoundary.ProjectScopedControl) {
         await initializeControllerStateOrigin(manifest);
@@ -253,6 +302,11 @@ export async function createCodexGoalJob(input: {
       }
     },
   });
+  // A new manifest has no checkpointable identity yet. Its registry mutex
+  // protects initial publication; preserve the absent-root origin attestation.
+  return existedBeforeAdmission
+    ? new LocalTerminalCheckpointAdmission(manifest.jobRootDir).withWriter(publish)
+    : publish();
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -273,7 +327,11 @@ export async function updateCodexGoalJob(input: {
   readonly cwd?: string;
   readonly now?: Date;
   readonly evidenceCustody?: ProjectControlEvidenceCustodyPort;
+  /** Revision of persisted bytes, including unknown fields. */
   readonly expectedManifestSha256?: string;
+  /** Revision of the parsed controller loaded by scope recovery. */
+  readonly expectedParsedManifestSha256?: string;
+  readonly beforeManifestPublication?: () => Promise<void>;
 }): Promise<CodexGoalJobManifest> {
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
   const lockedManifestPath = codexGoalJobManifestPath({ registryRootDir, jobId: input.jobId });
@@ -287,6 +345,14 @@ export async function updateCodexGoalJob(input: {
         registryRootDir,
         jobId: input.jobId,
       });
+      const assertExpectedParsedManifest = (current: CodexGoalJobManifest) => {
+        if (input.expectedParsedManifestSha256 !== undefined &&
+          createHash("sha256").update(JSON.stringify(current)).digest("hex") !== input.expectedParsedManifestSha256) {
+          throw new Error("project_control_controller_scope_cas_mismatch");
+        }
+      };
+      assertExpectedParsedManifest(existing);
+      assertAccountReplacementHasKnownOrigin({ existing, patch: input.patch });
       const manifest = parseCodexGoalJobManifest({
         ...existing,
         ...input.patch,
@@ -295,6 +361,11 @@ export async function updateCodexGoalJob(input: {
         createdAt: existing.createdAt,
         updatedAt: (input.now ?? new Date()).toISOString(),
       });
+      // Admission is held for the persisted job root. Moving that identity
+      // would publish a manifest under the wrong checkpoint fence.
+      if (manifest.jobRootDir !== existing.jobRootDir) {
+        throw new Error("job_manifest_activity_identity_invalid");
+      }
       assertCodexGoalStoredAccessBoundaryAllowed(manifest);
       await assertCodexGoalJobManifestAccessConsistency(
         manifest,
@@ -319,7 +390,12 @@ export async function updateCodexGoalJob(input: {
         : undefined;
       try {
         await custodyCertification?.revalidate();
-        await durableReplaceJsonFile({ path: manifestPath, value: manifest });
+        await durableReplaceJsonFile({ path: manifestPath, value: manifest,
+          beforePublication: async () => {
+            await input.beforeManifestPublication?.();
+            assertExpectedParsedManifest(await readCodexGoalJob({ registryRootDir, jobId: input.jobId }));
+          },
+        });
         return manifest;
       } finally {
         await custodyCertification?.close();
@@ -359,6 +435,9 @@ export function codexGoalJobToArgs(
     codexGoalObjective: manifest.codexGoalObjective,
     taskId: manifest.taskId,
     accounts: manifest.accounts,
+    ...(manifest.mimoAccounts === undefined
+      ? {}
+      : { mimoAccounts: manifest.mimoAccounts }),
     outputPath: manifest.outputPath,
     progressPath: manifest.progressPath,
     progressHeartbeatMs: manifest.progressHeartbeatMs,
@@ -367,10 +446,13 @@ export function codexGoalJobToArgs(
     reasoningEffort: manifest.reasoningEffort,
     serviceTier: manifest.serviceTier,
     executionEngine: manifest.executionEngine,
+    checkpointRequired: manifest.checkpointRequired,
+    modelBackend: manifest.modelBackend,
     taskTimeoutMs: manifest.taskTimeoutMs,
     appServerStartupTimeoutMs: manifest.appServerStartupTimeoutMs,
     staleLockMs: manifest.staleLockMs,
     maxAccountCycles: manifest.maxAccountCycles,
+    ...childConfigFromRecord(manifest as unknown as Readonly<Record<string, unknown>>),
     editMode: manifest.editMode,
     providerSandboxMode: manifest.providerSandboxMode,
     accessBoundary: manifest.accessBoundary,
@@ -435,6 +517,9 @@ function parseCodexGoalJobManifestValue(
   assertJobId(jobId);
   const accounts = readStringArray(value.accounts, "accounts");
   if (accounts.length === 0) throw new Error("codex_goal_job_accounts_required");
+  const mimoAccounts = value.mimoAccounts === undefined
+    ? undefined
+    : optionalCodexGoalMimoAccountSlots(value.mimoAccounts).mimoAccounts;
   const editMode = optionalCodexGoalEditMode(
     optionalString(value.editMode) ?? optionalString(value.permissionMode),
     optionalString(value.editMode) === undefined &&
@@ -481,6 +566,8 @@ function parseCodexGoalJobManifestValue(
       : { codexGoalObjective: optionalString(value.codexGoalObjective) as string }),
     taskId: requiredString(value.taskId, "taskId"),
     accounts,
+    ...(mimoAccounts === undefined ? {} : { mimoAccounts }),
+    ...optionalCodexGoalAccountSelectionMode(value.accountSelectionMode),
     ...(optionalString(value.outputPath) === undefined
       ? {}
       : { outputPath: optionalString(value.outputPath) as string }),
@@ -518,6 +605,8 @@ function parseCodexGoalJobManifestValue(
             CodexGoalRunConfig["executionEngine"]
           >,
         }),
+    ...(value.checkpointRequired === true ? { checkpointRequired: true } : {}),
+    ...optionalCodexGoalModelBackend(value.modelBackend),
     ...optionalPositiveIntegerProperty(value.taskTimeoutMs, "taskTimeoutMs"),
     ...optionalPositiveIntegerProperty(
       value.appServerStartupTimeoutMs,
@@ -525,6 +614,7 @@ function parseCodexGoalJobManifestValue(
     ),
     ...optionalPositiveIntegerProperty(value.staleLockMs, "staleLockMs"),
     ...optionalPositiveIntegerProperty(value.maxAccountCycles, "maxAccountCycles"),
+    ...childConfigFromRecord(value),
     ...(editMode === undefined ? {} : { editMode }),
     ...(providerSandboxMode === undefined ? {} : { providerSandboxMode }),
     ...(accessBoundary === undefined ? {} : { accessBoundary }),
@@ -727,6 +817,14 @@ export async function bootstrapInitialProjectControlCustody(
   manifest: CodexGoalJobManifest,
   custody: ProjectControlEvidenceCustodyPort,
 ): Promise<ProjectControlCustodyBootstrapCertification | undefined> {
+  const plan = await resolveInitialProjectControlCustodyPlan(manifest, custody);
+  return plan ? await custody.materializeApprovedProjectControlCustody(plan) : undefined;
+}
+
+export async function resolveInitialProjectControlCustodyPlan(
+  manifest: CodexGoalJobManifest,
+  custody: ProjectControlEvidenceCustodyPort,
+): Promise<Parameters<ProjectControlEvidenceCustodyPort["materializeApprovedProjectControlCustody"]>[0] | undefined> {
   if (manifest.accessBoundary !== AccessBoundary.ProjectScopedControl ||
     !manifest.projectAccessScope) return undefined;
   const scope = manifest.projectAccessScope;
@@ -771,12 +869,12 @@ export async function bootstrapInitialProjectControlCustody(
   }
   const anchor = candidates.sort((left, right) => right.length - left.length)[0];
   if (!anchor) throw new Error("evidence_custody_bootstrap_anchor_unsafe");
-  return await custody.materializeApprovedProjectControlCustody({
+  return {
     approvedAnchor: anchor,
     ledgerRoots,
     evidenceRoots,
     deniedRoots: scope.deniedRoots ?? [],
-  });
+  };
 }
 
 function pathStrictlyInside(parent: string, child: string): boolean {
@@ -853,87 +951,4 @@ async function existingCanonicalNonSymlinkRoot(
   } catch {
     return undefined;
   }
-}
-
-function uniqueManifestStrings(values: readonly string[]): readonly string[] {
-  return [...new Set(values.filter((value) => value.trim().length > 0))];
-}
-
-function assertJobId(value: string): void {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(value)) {
-    throw new Error("codex_goal_job_id_invalid");
-  }
-}
-
-function requiredString(value: unknown, field: string): string {
-  const text = optionalString(value);
-  if (!text) throw new Error(`codex_goal_job_${field}_required`);
-  return text;
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function requiredIsoDate(value: unknown, field: string): string {
-  const text = requiredString(value, field);
-  if (!Number.isFinite(Date.parse(text))) {
-    throw new Error(`codex_goal_job_${field}_invalid`);
-  }
-  return text;
-}
-
-function readStringArray(value: unknown, field: string): readonly string[] {
-  if (!Array.isArray(value)) throw new Error(`codex_goal_job_${field}_invalid`);
-  return value.map((item) => requiredString(item, field));
-}
-
-function optionalPositiveIntegerProperty(
-  value: unknown,
-  key:
-    | "taskTimeoutMs"
-    | "appServerStartupTimeoutMs"
-    | "staleLockMs"
-    | "maxAccountCycles"
-    | "progressHeartbeatMs",
-): Partial<Pick<CodexGoalJobManifest, typeof key>> {
-  if (value === undefined) return {};
-  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-    throw new Error(`codex_goal_job_${key}_invalid`);
-  }
-  return { [key]: value } as Partial<Pick<CodexGoalJobManifest, typeof key>>;
-}
-
-function optionalBooleanProperty(
-  value: unknown,
-  key:
-    | "allowDuplicateAccountIdentities"
-    | "allowDangerFullAccess"
-    | "requireGitWorkspace"
-    | "prewarmOnStart",
-): Partial<Pick<CodexGoalJobManifest, typeof key>> {
-  if (value === undefined) return {};
-  if (typeof value !== "boolean") {
-    throw new Error(`codex_goal_job_${key}_invalid`);
-  }
-  return { [key]: value } as Partial<Pick<CodexGoalJobManifest, typeof key>>;
-}
-
-function optionalWorkerReportMode(
-  value: unknown,
-): CodexGoalRunConfig["workerReportMode"] | undefined {
-  if (value === undefined) return undefined;
-  if (value === "runtime-only" || value === "structured-output") return value;
-  throw new Error("codex_goal_job_workerReportMode_invalid");
-}
-
-function resolvePath(cwd: string, value: string): string {
-  const expanded = value.startsWith("~/")
-    ? join(homedir(), value.slice(2))
-    : value;
-  return isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

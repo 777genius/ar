@@ -1,11 +1,24 @@
-import { createHash } from "node:crypto";
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
+import { assertChildExecutor } from "./child-execution-confinement";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ObservabilityPort } from "@vioxen/subscription-runtime/core";
 import {
-  validateCodexAuthJsonBytes,
-  type ValidatedCodexAuthJson,
+  DefaultRedactor,
+  type ObservabilityPort,
+} from "@vioxen/subscription-runtime/core";
+import {
+  CodexModelBackend,
+  type AppServerCompletedTurnCheckpoint,
+  AppServerExecutionLifetime,
+  codexApiKeyCredentialIdentity,
+  codexMimoApiKeyEnvVarDefault,
+  loadCodexApiKeyCredential,
 } from "@vioxen/subscription-runtime/provider-codex";
+import {
+  codexAccountIdentityFromAuthJson,
+  hashText,
+  type CodexAccountIdentity,
+} from "./codex-account-identity";
 import {
   LocalFileWorkerAccountCapacityStore,
   LocalFileWorkerControlInboxStore,
@@ -51,6 +64,11 @@ import {
 import { CodexAccountCapacityRechecker } from "./application/codex-account-capacity-rechecker";
 import { CodexAccountCapacityAliasStore } from "./application/codex-account-capacity-alias-store";
 import { recordCodexAppServerRateLimitsSnapshot } from "./application/codex-live-quota-capacity";
+import {
+  assertCodexSessionHomeProfile,
+  CodexSessionHomeProfileKind,
+  type CodexSessionHomeProfile,
+} from "./codex-session-home-profile";
 
 const REPLACEMENT_GOAL_OBJECTIVE =
   "Continue the same authorized task using broker-delivered replacement wording.";
@@ -65,8 +83,19 @@ export type FileBackendCodexSafeExecutorAccount = {
 };
 
 export type FileBackendCodexSafeExecutorOptions = {
+  readonly childBudget?: ChildExecutionBudget;
+  readonly executionLifetime?: AppServerExecutionLifetime;
   readonly executorId?: string;
   readonly stateRootDir: string;
+  readonly terminalCheckpointJobRootDir?: string;
+  readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
+  readonly executionGeneration?: string;
+  readonly runtimeHomeRootDir?: string;
+  /**
+   * Prefer createOneShotExecutor or createContinuationExecutor. Omission keeps
+   * the legacy preserve-on-dispose behavior for existing integrations.
+   */
+  readonly sessionHomeProfile?: CodexSessionHomeProfile;
   readonly authRootDir?: string;
   readonly workspacePath: string;
   readonly accounts: readonly FileBackendCodexSafeExecutorAccount[];
@@ -117,13 +146,6 @@ type WorkerAccount = {
   readonly worker: FileBackendCodexWorker;
 };
 
-type CodexAccountIdentity = {
-  readonly label: string;
-  readonly key: string;
-  readonly hash: string;
-  readonly source: string;
-};
-
 const defaultMaxAccountCycles = 5;
 
 export class FileBackendCodexSafeExecutor {
@@ -138,9 +160,22 @@ export class FileBackendCodexSafeExecutor {
   private readonly runner: SafeExecutionRunner;
   private startPromise: Promise<void> | null = null;
   private disposed = false;
+  private childRunEntered = false;
 
   constructor(private readonly options: FileBackendCodexSafeExecutorOptions) {
+    if (options.childBudget && !options.executionLifetime) {
+      const executionLifetime = new AppServerExecutionLifetime({ childBudget: options.childBudget });
+      options = { ...options, executionLifetime, accounts: options.accounts.map(account => ({ ...account,
+        worker: { ...account.worker, executionLifetime } })) };
+      this.options = options;
+    }
     assertSafeExecutorOptions(options);
+    if (options.executionLifetime && (options.accounts.length !== 1 || options.maxAccountCycles !== 1 ||
+        options.prewarmOnStart !== false || options.controlInbox !== undefined ||
+        options.safeExecutionPolicy?.maxAttempts !== 1 || options.safeExecutionPolicy.continuationMode !== "disabled" ||
+        options.accounts[0]!.worker.executionLifetime !== options.executionLifetime)) {
+      throw new Error("codex_bounded_executor_profile_conflict");
+    }
     this.executorId =
       options.executorId ??
       `file-backend-codex-safe:${hashText(options.workspacePath).slice(0, 12)}`;
@@ -159,7 +194,7 @@ export class FileBackendCodexSafeExecutor {
       store: baseAccountCapacityStore,
       authJsonPaths: Object.fromEntries(
         options.accounts.flatMap((account, index) =>
-          account.codexAuthJsonPath
+          account.codexAuthJsonPath && !isMimoSafeExecutorAccount(account)
             ? [
                 [
                   safeExecutorAccountLabel(account, index),
@@ -171,7 +206,8 @@ export class FileBackendCodexSafeExecutor {
       ),
       authJsonByAlias: Object.fromEntries(
         options.accounts.flatMap((account, index) =>
-          account.codexAuthJson !== undefined
+          account.codexAuthJson !== undefined &&
+          !isMimoSafeExecutorAccount(account)
             ? [
                 [
                   safeExecutorAccountLabel(account, index),
@@ -210,7 +246,9 @@ export class FileBackendCodexSafeExecutor {
         recheckFailureCooldownMs: 60_000,
         capacityRecheckerFactory: ({ slotIndex }) => {
           const account = options.accounts[slotIndex];
-          if (!account?.codexAuthJsonPath) return undefined;
+          if (!account?.codexAuthJsonPath || isMimoSafeExecutorAccount(account)) {
+            return undefined;
+          }
           return new CodexAccountCapacityRechecker({
             accountId:
               account.worker.capacityAccountId ??
@@ -228,6 +266,12 @@ export class FileBackendCodexSafeExecutor {
           }
           const worker = new FileBackendCodexWorker({
             ...account.worker,
+            ...(options.runtimeHomeRootDir === undefined
+              ? {}
+              : { runtimeHomeRootDir: options.runtimeHomeRootDir }),
+            ...(options.sessionHomeProfile === undefined
+              ? {}
+              : { sessionHomeProfile: options.sessionHomeProfile }),
             capacityAccountId:
               account.worker.capacityAccountId ??
               safeExecutorAccountLabel(account, slotIndex),
@@ -250,6 +294,7 @@ export class FileBackendCodexSafeExecutor {
             },
             workerId: account.worker.workerId ?? workerId,
             workspacePath: options.workspacePath,
+            ...(options.completedTurnCheckpoint ? { completedTurnCheckpoint: options.completedTurnCheckpoint } : {}),
             ...(options.outputSchemas === undefined
               ? {}
               : { outputSchemas: options.outputSchemas }),
@@ -261,18 +306,24 @@ export class FileBackendCodexSafeExecutor {
     });
     const localSafeExecutionStores = createLocalFileSafeExecutionStores({
       rootDir: options.stateRootDir,
+      ...(options.terminalCheckpointJobRootDir === undefined ? {} : {
+        terminalCheckpointJobRootDir: options.terminalCheckpointJobRootDir,
+      }),
+      ...(options.executionGeneration === undefined ? {} : {
+        executionGeneration: options.executionGeneration,
+      }),
     });
     this.runner = new SafeExecutionRunner({
       lockStore: options.lockStore ?? localSafeExecutionStores.lockStore,
       journal: options.journal ?? localSafeExecutionStores.journal,
-      controlInbox:
+      ...(!options.childBudget && !options.executionLifetime ? { controlInbox:
         options.controlInbox ??
         new WorkerControlService({
           store: new LocalFileWorkerControlInboxStore({
             rootDir: options.stateRootDir,
           }),
           ...(options.clock ? { clock: options.clock } : {}),
-        }),
+        }) } : {}),
       ...(options.activeAttemptRegistry === undefined
         ? {}
         : { activeAttemptRegistry: options.activeAttemptRegistry }),
@@ -304,6 +355,7 @@ export class FileBackendCodexSafeExecutor {
   }
 
   async prewarm(): Promise<void> {
+    if (this.options.childBudget || this.options.executionLifetime) throw new Error("child_prewarm_denied");
     await this.start();
     await this.pool.prewarm();
   }
@@ -311,6 +363,35 @@ export class FileBackendCodexSafeExecutor {
   async run(
     input: FileBackendCodexSafeExecutorRunInput,
   ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+    assertChildExecutor(this.options, input);
+    const lifetime = this.options.executionLifetime;
+    lifetime?.assertActive(input.abortSignal);
+    lifetime?.arm();
+    if (lifetime) {
+      if (input.logicalThread || input.recoveryPacket || (input.maxAccountCycles !== undefined && input.maxAccountCycles !== 1) ||
+          (input.safeExecutionPolicy?.maxAttempts !== undefined && input.safeExecutionPolicy.maxAttempts !== 1) ||
+          (input.safeExecutionPolicy?.continuationMode !== undefined && input.safeExecutionPolicy.continuationMode !== "disabled")) {
+        throw new Error("codex_bounded_executor_continuation_denied");
+      }
+    }
+    // The lifetime fences provider work inside the pool/driver. Its closure
+    // also requests cleanup; it must not cancel the runner's terminal journal
+    // writes or race away the structured attempt result during that cleanup.
+    return await this.runForeground(input);
+  }
+
+  private async runForeground(input: FileBackendCodexSafeExecutorRunInput): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+    if (this.options.childBudget || this.options.executionLifetime) {
+      if (this.childRunEntered) throw new Error("child_invocation_consumed");
+      this.childRunEntered = true;
+    }
+    if (
+      this.options.sessionHomeProfile?.kind ===
+        CodexSessionHomeProfileKind.OneShot &&
+      (input.logicalThread !== undefined || input.recoveryPacket !== undefined)
+    ) {
+      throw new Error("file_backend_codex_one_shot_continuation_invalid");
+    }
     // Provider setup is not a task attempt. A prewarm failure must surface once
     // instead of consuming the account-rotation retry budget.
     if (this.options.prewarmOnStart) await this.start();
@@ -345,7 +426,9 @@ export class FileBackendCodexSafeExecutor {
       provider: "codex",
       pool: {
         run: async (runJob, runOptions) => {
+          this.options.executionLifetime?.assertActive(runJob.abortSignal);
           await this.start();
+          this.options.executionLifetime?.assertActive(runJob.abortSignal);
           return this.pool.run(runJob, runOptions);
         },
       },
@@ -440,9 +523,10 @@ export class FileBackendCodexSafeExecutor {
   }
 
   async dispose(): Promise<void> {
+    this.options.executionLifetime?.close();
     if (this.disposed) return;
-    this.disposed = true;
     await this.pool.dispose();
+    this.disposed = true;
   }
 
   private async startOnce(): Promise<void> {
@@ -456,6 +540,7 @@ export class FileBackendCodexSafeExecutor {
 
   private async seedAccounts(): Promise<void> {
     for (const { account, worker } of this.workerAccounts) {
+      if (isMimoSafeExecutorAccount(account)) continue;
       if (account.codexAuthJsonPath) {
         await worker.seedCodexAuthJsonFile(account.codexAuthJsonPath);
       }
@@ -682,17 +767,52 @@ function assertSafeExecutorOptions(
   if (!options.stateRootDir.trim()) {
     throw new Error("file_backend_codex_safe_state_root_required");
   }
+  if (options.runtimeHomeRootDir !== undefined && !options.runtimeHomeRootDir.trim()) {
+    throw new Error("file_backend_codex_safe_runtime_home_root_required");
+  }
   if (!options.workspacePath.trim()) {
     throw new Error("file_backend_codex_safe_workspace_required");
   }
   if (options.accounts.length === 0) {
     throw new Error("file_backend_codex_safe_accounts_required");
   }
+  assertChildExecutor(options);
+  assertCodexSessionHomeProfile(options.sessionHomeProfile);
   assertMaxAccountCycles(options.maxAccountCycles);
   for (const account of options.accounts) {
-    if (account.codexAuthJson && account.codexAuthJsonPath) {
+    if (
+      !isMimoSafeExecutorAccount(account) &&
+      account.codexAuthJson &&
+      account.codexAuthJsonPath
+    ) {
       throw new Error("file_backend_codex_safe_account_seed_conflict");
     }
+  }
+  assertUniformCodexModelBackend(options.accounts);
+}
+
+/**
+ * SR-AP-2 fail-closed: `BoundedSubscriptionWorkerPool`'s round-robin
+ * `slotSelector` (see {@link FileBackendCodexSafeExecutor.selectRoundRobinSlot})
+ * and its retry-on-failure path pick any available slot purely by index —
+ * they have no notion of `CodexModelBackend`. Account rotation across
+ * retries must never cross a backend boundary (a MiMo slot must never be
+ * replaced by a ChatGPT slot or vice versa). Rather than teach the generic
+ * pool selector about backends, this asserts the invariant once, at
+ * construction: every account in one executor's pool shares one
+ * `modelBackend`, so cross-backend rotation is structurally impossible —
+ * there is only ever one backend's worth of slots to rotate across.
+ */
+function assertUniformCodexModelBackend(
+  accounts: readonly FileBackendCodexSafeExecutorAccount[],
+): void {
+  const backends = new Set(
+    accounts.map(
+      (account) => account.worker.modelBackend ?? CodexModelBackend.OpenAiChatGpt,
+    ),
+  );
+  if (backends.size > 1) {
+    throw new Error("file_backend_codex_safe_mixed_model_backend");
   }
 }
 
@@ -752,6 +872,28 @@ async function codexAccountIdentityFromSafeExecutorAccount(
   account: FileBackendCodexSafeExecutorAccount,
   index: number,
 ): Promise<CodexAccountIdentity | null> {
+  if (isMimoSafeExecutorAccount(account)) {
+    try {
+      const credential = loadCodexApiKeyCredential({
+        backend: CodexModelBackend.XiaomiMimoTokenPlan,
+        envVarName:
+          account.worker.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault,
+        ...(account.worker.sourceEnv === undefined
+          ? {}
+          : { sourceEnv: account.worker.sourceEnv }),
+        redactor: new DefaultRedactor(),
+      });
+      const identity = codexApiKeyCredentialIdentity(credential);
+      return {
+        label: safeExecutorAccountLabel(account, index),
+        key: identity,
+        hash: identity.slice("mimo:".length),
+        source: "mimo_api_key",
+      };
+    } catch {
+      return null;
+    }
+  }
   const authJson = await readSafeExecutorAccountAuthJson(account);
   if (!authJson) return null;
   try {
@@ -762,6 +904,15 @@ async function codexAccountIdentityFromSafeExecutorAccount(
   } catch {
     return null;
   }
+}
+
+function isMimoSafeExecutorAccount(
+  account: FileBackendCodexSafeExecutorAccount,
+): boolean {
+  return (
+    (account.worker.modelBackend ?? CodexModelBackend.OpenAiChatGpt) ===
+    CodexModelBackend.XiaomiMimoTokenPlan
+  );
 }
 
 async function readSafeExecutorAccountAuthJson(
@@ -783,113 +934,4 @@ function safeExecutorAccountLabel(
     account.worker.providerInstanceId.trim() ||
     `slot-${index + 1}`
   );
-}
-
-function codexAccountIdentityFromAuthJson(input: {
-  readonly authJson: string;
-  readonly label: string;
-}): CodexAccountIdentity {
-  const validation = validateCodexAuthJsonBytes({
-    authJsonBytes: input.authJson,
-  });
-  const identity = resolveCodexAccountIdentity(validation.parsed);
-  return {
-    label: input.label,
-    key: identity.key,
-    hash: hashText(identity.key).slice(0, 16),
-    source: identity.source,
-  };
-}
-
-function resolveCodexAccountIdentity(authJson: ValidatedCodexAuthJson): {
-  readonly key: string;
-  readonly source: string;
-} {
-  const directAccountId = firstNonEmptyString(
-    authJson.tokens.account_id,
-    authJson.tokens.chatgpt_account_id,
-    authJson.account_id,
-    authJson.chatgpt_account_id,
-  );
-  if (directAccountId) {
-    return {
-      key: `account:${directAccountId.toLowerCase()}`,
-      source: "auth_json_account_id",
-    };
-  }
-
-  const idTokenClaims = decodeJwtClaims(authJson.tokens.id_token);
-  if (idTokenClaims) {
-    const authNamespace = objectClaim(
-      idTokenClaims["https://api.openai.com/auth"],
-    );
-    const accountId = firstNonEmptyString(
-      idTokenClaims["https://api.openai.com/auth.chatgpt_account_id"],
-      idTokenClaims["chatgpt_account_id"],
-      idTokenClaims["account_id"],
-      authNamespace?.chatgpt_account_id,
-      authNamespace?.account_id,
-      idTokenClaims["sub"],
-    );
-    if (accountId) {
-      return {
-        key: `account:${accountId.toLowerCase()}`,
-        source: "id_token_account_id",
-      };
-    }
-
-    const email = firstNonEmptyString(
-      idTokenClaims["https://api.openai.com/profile.email"],
-      idTokenClaims["email"],
-      authNamespace?.email,
-    );
-    if (email) {
-      return {
-        key: `email:${email.toLowerCase()}`,
-        source: "id_token_email",
-      };
-    }
-  }
-
-  return {
-    key: `refresh:${hashText(authJson.tokens.refresh_token)}`,
-    source: "refresh_token_hash",
-  };
-}
-
-function decodeJwtClaims(
-  token: string | undefined,
-): Record<string, unknown> | null {
-  if (!token) return null;
-  const parts = token.split(".");
-  const payload = parts[1];
-  if (!payload) return null;
-  try {
-    const decoded = Buffer.from(payload, "base64url").toString("utf8");
-    const parsed: unknown = JSON.parse(decoded);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function objectClaim(value: unknown): Record<string, unknown> | null {
-  return isRecord(value) ? value : null;
-}
-
-function firstNonEmptyString(...values: readonly unknown[]): string | null {
-  for (const value of values) {
-    if (typeof value !== "string") continue;
-    const trimmed = value.trim();
-    if (trimmed) return trimmed;
-  }
-  return null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function hashText(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
 }

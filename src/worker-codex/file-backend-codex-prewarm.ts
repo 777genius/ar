@@ -6,6 +6,7 @@ import type {
   WorkspacePort,
 } from "@vioxen/subscription-runtime/core";
 import type { CodexSessionPrewarmResult } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import {
   SubscriptionWorkerError,
   type SubscriptionWorkerPrewarmResult,
@@ -13,7 +14,7 @@ import {
 
 type PrewarmCapableCodexAgentDriver = {
   prewarmSession(input: {
-    readonly session: SessionArtifact;
+    readonly session: SessionArtifact | null;
     readonly redactor: RedactorPort;
     readonly workspacePath?: string;
     readonly runner?: RunnerPort;
@@ -42,19 +43,22 @@ export class FileBackendCodexPrewarmer {
   constructor(private readonly options: FileBackendCodexPrewarmerOptions) {}
 
   async prewarm(): Promise<SubscriptionWorkerPrewarmResult> {
-    await this.options.importAuthJsonFileIfChanged("prewarm");
-    const session = await this.options.sessionStore.read({
-      providerInstanceId: this.options.providerInstanceId,
-      expectedProviderId: "codex",
-      purpose: "run",
-    });
-    if (!session) {
+    const isMimo = isMimoAgentDriver(this.options.agentDriver);
+    if (!isMimo) await this.options.importAuthJsonFileIfChanged("prewarm");
+    const session = isMimo
+      ? null
+      : await this.options.sessionStore.read({
+          providerInstanceId: this.options.providerInstanceId,
+          expectedProviderId: "codex",
+          purpose: "run",
+        });
+    if (!isMimo && !session) {
       throw new SubscriptionWorkerError(
         "subscription_worker_prewarm_failed",
         "Codex session is missing.",
       );
     }
-    this.options.rememberQuotaGroup(session.artifact);
+    if (session) this.options.rememberQuotaGroup(session.artifact);
 
     if (!hasPrewarmSession(this.options.agentDriver)) {
       try {
@@ -68,7 +72,7 @@ export class FileBackendCodexPrewarmer {
           },
         };
       } finally {
-        await this.options.exportAuthJsonFileQuietly("prewarm");
+          if (!isMimo) await this.options.exportAuthJsonFileQuietly("prewarm");
       }
     }
 
@@ -78,7 +82,7 @@ export class FileBackendCodexPrewarmer {
     });
     try {
       const result = await this.options.agentDriver.prewarmSession({
-        session: session.artifact,
+        session: session?.artifact ?? null,
         redactor: this.options.redactor,
         workspacePath: workspace.path,
         runner: this.options.runner,
@@ -101,9 +105,17 @@ export class FileBackendCodexPrewarmer {
       };
     } finally {
       await workspace.dispose?.();
-      await this.options.exportAuthJsonFileQuietly("prewarm");
+      if (!isMimo) await this.options.exportAuthJsonFileQuietly("prewarm");
     }
   }
+}
+
+function isMimoAgentDriver(agentDriver: object): boolean {
+  return (
+    "modelBackend" in agentDriver &&
+    (agentDriver as { readonly modelBackend?: unknown }).modelBackend ===
+      CodexModelBackend.XiaomiMimoTokenPlan
+  );
 }
 
 function hasPrewarmSession(

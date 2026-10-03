@@ -1,3 +1,4 @@
+import { childConfigFromRecord, assertChildGoalConfig } from "../child-execution-confinement";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "../codex-worker-defaults";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -15,6 +16,8 @@ import {
   parseCodexGoalProjectAccessScope,
 } from "../codex-goal-access-plan";
 import type { CodexGoalInput } from "./codex-goal-use-case-inputs";
+import { optionalCodexGoalModelBackend } from "../codex-goal-model-backend";
+import { optionalCodexGoalMimoAccountSlots } from "../codex-goal-mimo-account-slots";
 import {
   accountNames,
   booleanValue,
@@ -57,7 +60,10 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
   );
   const workspacePath = requiredString(merged.workspacePath, "workspacePath", cwd);
   const promptPath = requiredString(merged.promptPath, "promptPath", cwd);
-  const accounts = codexGoalAccountSlots(accountNames(merged.accounts));
+  const accounts = codexGoalAccountSlots(
+    accountNames(merged.accounts),
+    optionalCodexGoalMimoAccountSlots(merged.mimoAccounts).mimoAccounts,
+  );
   if (!accounts.length) throw new Error("accounts are required");
   const controlModes = goalControlModesFromRecord(merged);
   const accessBoundary = optionalCodexGoalAccessBoundary(merged.accessBoundary);
@@ -81,6 +87,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     "maxAccountCycles",
   ) ?? 5;
   const config: CodexGoalRunConfig = {
+    ...childConfigFromRecord(merged),
     ...(jobId === undefined ? {} : { jobId }),
     jobRootDir,
     authRootDir,
@@ -91,6 +98,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
       : {}),
     taskId,
     accounts,
+    ...optionalCodexGoalMimoAccountSlots(merged.mimoAccounts),
     outputPath: resolvePath(
       cwd,
       stringValue(merged.outputPath) ??
@@ -108,6 +116,8 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
       (stringValue(merged.serviceTier) ?? "default") as NonNullable<CodexGoalRunConfig["serviceTier"]>,
     executionEngine:
       (stringValue(merged.executionEngine) ?? "app-server-goal") as NonNullable<CodexGoalRunConfig["executionEngine"]>,
+    ...(booleanValue(merged.checkpointRequired) ? { checkpointRequired: true } : {}),
+    ...optionalCodexGoalModelBackend(merged.modelBackend),
     codexBinaryPath: stringValue(merged.codexBinaryPath) ?? "codex",
     ...controlModes,
     ...(accessBoundary === undefined ? {} : { accessBoundary }),
@@ -133,6 +143,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
   const finalConfig = stateRootDir
     ? { ...config, stateRootDir: resolvePath(cwd, stateRootDir) }
     : config;
+  assertChildGoalConfig(finalConfig);
   return {
     config: finalConfig,
     ...(stringValue(merged.tmuxSession)

@@ -57,6 +57,9 @@ import {
   loadJobLaunch,
   loadProjectControlController,
   projectControlEvidenceCustody,
+  projectControlRecoveryStore,
+  projectControlRecoveryDirectories,
+  projectControlLedgerMutationLocks,
 } from "./codex-goal-mcp-project-control-deps";
 import { subscriptionRuntimePackageVersion } from
   "./subscription-runtime-package-version";
@@ -75,6 +78,9 @@ function projectControlAdminDeps() {
     loadProjectControlController,
     admissionDeps: codexProjectAdmissionDeps,
     evidenceCustody: projectControlEvidenceCustody,
+    recoveryStore: projectControlRecoveryStore,
+    recoveryDirectories: projectControlRecoveryDirectories,
+    mutationLocks: projectControlLedgerMutationLocks,
   };
 }
 

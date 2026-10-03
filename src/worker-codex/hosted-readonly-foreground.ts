@@ -1,3 +1,6 @@
+import { watchChildDeadline } from "./child-deadline-watch";
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
+import { readHostedChildSlot } from "./hosted-child-slot-files";
 import { HostedReadonlyRuntimeRole } from "./hosted-readonly-host-kernel";
 import { spawn } from "node:child_process";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
@@ -76,13 +79,14 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
   });
   return new Promise<number>(resolve => {
     let failed = false;
-    const close = () => { try { store.closeOrdinaryRuntimeLaunch(); } catch { failed = true; } };
+    const close = () => { try { if (!store.requestOrdinaryChildCleanup()) store.closeOrdinaryRuntimeLaunch(); } catch { failed = true; } };
     const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
     const handlers = signals.map(signal => {
       const handler = () => { failed = true; close(); child.kill(signal); };
       process.on(signal, handler); return handler;
     });
-    const detach = () => signals.forEach((signal, index) => process.off(signal, handlers[index]!));
+    let stopWatch = () => {};
+    const detach = () => { stopWatch(); signals.forEach((signal, index) => process.off(signal, handlers[index]!)); };
     child.stdin.on("error", () => { failed = true; close(); child.kill("SIGTERM"); });
     child.once("error", () => { failed = true; close(); detach(); resolve(70); });
     child.once("exit", (code, signal) => {
@@ -92,12 +96,22 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
       if (failed || signal !== null || code !== 0) close();
       detach(); resolve(failed || signal !== null ? 70 : code ?? 70);
     });
+    const budget = store.ordinaryChildBudget();
+    if (budget) stopWatch = watchChildDeadline(budget, () => {
+      failed = true; close(); child.kill("SIGTERM");
+    });
   });
 }
 
 /** Fixed service bootstrap: only environment crosses stdin; command/args/cwd
  * come from the private actual-process origin and independently pinned inventory. */
 export async function runHostedOrdinaryBootstrap(): Promise<number> {
+  const budget = withHostedActivationFence(fence => {
+    const slot = readHostedChildSlot(readHostedOrdinaryRuntime(fence).creator);
+    if (!slot) return undefined;
+    const budget = new ChildExecutionBudget(slot.lifetime); budget.remainingMs(); return budget;
+  });
+  let stopInputWatch = () => {};
   const bytes = await new Promise<Buffer>((resolve, reject) => {
     let bytes = Buffer.alloc(0), failed = false;
     process.stdin.on("data", (chunk: Buffer) => {
@@ -109,7 +123,10 @@ export async function runHostedOrdinaryBootstrap(): Promise<number> {
     });
     process.stdin.once("end", () => { if (!failed) resolve(bytes); });
     process.stdin.once("error", reject);
-  });
+    if (budget) stopInputWatch = watchChildDeadline(budget, error => {
+      failed = true; process.stdin.destroy(); reject(error);
+    });
+  }).finally(() => stopInputWatch());
   const frame: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   if (!frame || typeof frame !== "object" || Array.isArray(frame) ||
       Object.keys(frame).sort().join(",") !== "env,schemaVersion" ||
@@ -118,15 +135,19 @@ export async function runHostedOrdinaryBootstrap(): Promise<number> {
       !Object.entries(frame.env).every(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
         typeof value === "string" && !value.includes("\0"))) throw new Error("hosted_custody_launch_frame_invalid");
   const child = withHostedActivationFence(fence => {
-    const { launch } = readHostedOrdinaryRuntime(fence);
+    const { launch, creator } = readHostedOrdinaryRuntime(fence);
+    const slot = readHostedChildSlot(creator);
+    if (slot) { if (!budget) throw new Error("hosted_child_slot_binding_invalid"); budget.remainingMs(); }
     const child = spawn(launch.command, [...launch.args], { cwd: launch.cwd,
       env: frame.env as Record<string, string>, stdio: ["pipe", "inherit", "inherit"] });
     child.stdin.end(); return child;
   });
   return new Promise<number>(resolve => {
     let failed = false;
+    let stopWatch = () => {};
     child.stdin.on("error", () => { failed = true; child.kill("SIGTERM"); });
-    child.once("error", () => { failed = true; resolve(70); });
-    child.once("exit", (code, signal) => resolve(failed || signal !== null ? 70 : code ?? 70));
+    child.once("error", () => { failed = true; stopWatch(); resolve(70); });
+    child.once("exit", (code, signal) => { stopWatch(); resolve(failed || signal !== null ? 70 : code ?? 70); });
+    if (budget) stopWatch = watchChildDeadline(budget, () => { failed = true; child.kill("SIGTERM"); });
   });
 }

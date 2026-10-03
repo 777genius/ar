@@ -52,6 +52,7 @@ describe("finite TEST egress propagation", () => {
       command: "/synthetic/codex", args: ["app-server", "--listen", "stdio://", "--config", "features.network_proxy.enabled=false",
         "--config", 'features.network_proxy.domains={ "unrelated.invalid" = "allow" }'], cwd: "/synthetic/home",
       env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+        SUBSCRIPTION_RUNTIME_JOB_ID: "synthetic-job",
         SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "forged" },
     });
     const input = observed[0]!;
@@ -61,11 +62,10 @@ describe("finite TEST egress propagation", () => {
     expect(input.args.at(-1)).not.toContain("unrelated.invalid");
     expect(codexAppServerSandboxPolicy({ workspacePath: "/synthetic/workspace",
       sourceEnv: input.env })).toMatchObject({ networkAccess: true });
-    const invocation = codexAppServerProcessInvocation({ ...input, platform: "linux", ioLimitPaths: [] });
-    expect(invocation.command).toBe("/usr/bin/systemd-run");
-    expect(invocation.args).toContain("--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user -/var/lib/subscription-runtime-host-policy");
-    expect(invocation.args).toContain("--map-user=65532");
-    expect(invocation.args).toContain("--bounding-set=-all");
+    const invocation = codexAppServerProcessInvocation({ ...input, platform: "linux" });
+    expect(invocation.command).toBe(process.execPath);
+    expect(invocation.args[1]).toBe("provider");
+    expect(JSON.parse(invocation.args[2]!).operation).toBe("provider");
     expect(JSON.parse(invocation.stdinBootstrap!).args).toEqual(input.args);
   });
   it("keeps refresh bootstrap explicitly API-only", () => {

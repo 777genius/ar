@@ -11,7 +11,13 @@ import {
 import {
   CodexAppServerExecutionEngine,
   CodexJsonAgentDriver,
+  CodexModelBackend,
   codexAuthJsonFromArtifact,
+  codexMimoApiKeyEnvVarDefault,
+  codexMimoTokenPlanEgressPolicy,
+  codexProviderApiEgressPolicy,
+  codexProviderEgressEnv,
+  egressBoundCodexProcessFactory,
   sessionArtifactFromCodexAuthJson,
   sessionArtifactHash,
   type CodexAppServerProcessFactory,
@@ -19,6 +25,7 @@ import {
   type CodexReasoningEffort,
   type CodexServiceTier,
   type CodexSessionMaterializer,
+  type HostedControllerDynamicToolAdapter,
   writeCodexJsonHomeSnapshot,
 } from "@vioxen/subscription-runtime/provider-codex";
 import {
@@ -32,18 +39,23 @@ import {
   type ControlledAgentProviderStopResult,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  assertHostedMimoControlledAgentProfile,
   codexControlledAgentProviderEgressEnv,
+  withControlledAgentModelBackend,
   type CodexControlledAgentProfile,
 } from "./codex-controlled-agent-profile";
 
 export type CodexControlledAgentProviderOptions = {
   readonly profile: CodexControlledAgentProfile;
-  readonly sessionArtifact: SessionArtifact;
+  readonly hostedControllerTools?: HostedControllerDynamicToolAdapter;
+  readonly sessionArtifact: SessionArtifact | null;
   readonly workspacePath: string;
   readonly codexBinaryPath: string;
   readonly model?: string;
   readonly reasoningEffort?: CodexReasoningEffort;
   readonly serviceTier?: CodexServiceTier;
+  readonly modelBackend?: CodexModelBackend;
+  readonly mimoApiKeyEnvVarName?: string;
   readonly processFactory?: CodexAppServerProcessFactory;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly redactor?: RedactorPort;
@@ -76,7 +88,17 @@ type CodexControllerRunRecord =
 export class CodexControlledAgentProvider implements ControlledAgentProviderPort {
   private readonly runs = new Map<string, CodexControllerRunRecord>();
 
-  constructor(private readonly options: CodexControlledAgentProviderOptions) {}
+  constructor(private readonly options: CodexControlledAgentProviderOptions) {
+    if (options.profile.hostedController === true &&
+        (!options.hostedControllerTools || options.profile.enabledTools.length !== 0 ||
+         options.profile.configToml.includes("[mcp_servers.") ||
+         options.profile.appServerNativeToolSurface !== "disabled")) {
+      throw new Error("hosted_controller_tool_authority_unavailable");
+    }
+    if (options.hostedControllerTools && options.profile.hostedController !== true) {
+      throw new Error("hosted_controller_profile_required");
+    }
+  }
 
   start(input: ControlledAgentProviderStartInput): ControlledAgentProviderStartResult {
     const providerRunId = `${input.session.sessionId}:codex-app-server`;
@@ -104,7 +126,9 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
       session: this.options.sessionArtifact,
       task: {
         kind: "structured-prompt",
-        prompt: controlledAgentPrompt(
+        prompt: this.options.profile.hostedController === true
+          ? hostedControllerPrompt(this.options.controllerObjective)
+          : controlledAgentPrompt(
           input,
           this.options.controllerObjective,
           this.options.controllerRegistryRootDir,
@@ -114,7 +138,9 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
           editMode: "read-only",
         },
         metadata: {
-          codexGoalObjective: controlledAgentGoalObjective(input),
+          codexGoalObjective: this.options.profile.hostedController === true
+            ? "Use only launch, observe, and stop for preallocated child slots. The dispatcher currently reports unavailable; report that state to the operator."
+            : controlledAgentGoalObjective(input),
           codexManagedRunId: providerRunId,
         },
       },
@@ -252,23 +278,61 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
   }
 
   private createDriver(): CodexJsonAgentDriver {
+    const modelBackend =
+      this.options.modelBackend ?? this.options.profile.modelBackend;
+    const hostedMimo = modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+      (this.options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+    if (hostedMimo) {
+      assertHostedMimoControlledAgentProfile(this.options.profile);
+      throw new Error("hosted_mimo_activation_closed");
+    }
+    const mimoApiKeyEnvVarName =
+      this.options.mimoApiKeyEnvVarName ??
+      this.options.profile.mimoApiKeyEnvVarName ??
+      codexMimoApiKeyEnvVarDefault;
+    const effectiveProfile = withControlledAgentModelBackend(
+      this.options.profile, modelBackend, mimoApiKeyEnvVarName,
+    );
+    const providerEgressPolicy =
+      effectiveProfile.providerEgressPolicy ??
+      (modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+        ? codexMimoTokenPlanEgressPolicy()
+        : codexProviderApiEgressPolicy());
     return new CodexJsonAgentDriver({
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: this.options.codexBinaryPath,
-        ...(this.options.sourceEnv === undefined ? {} : { sourceEnv: this.options.sourceEnv }),
-        ...(this.options.processFactory === undefined
-          ? {}
-          : { processFactory: this.options.processFactory }),
+        modelBackend,
+        ...(hostedMimo ? { hostedPermissionProfiles: true } : {}),
+        sourceEnv: {
+          ...(this.options.sourceEnv ?? {}),
+          ...codexProviderEgressEnv(providerEgressPolicy),
+        },
+        processFactory: egressBoundCodexProcessFactory(
+          providerEgressPolicy,
+          this.options.processFactory,
+          hostedMimo ? { namedPermissions: true } : undefined,
+        ),
         goalMode: true,
-        nativeToolSurface: this.options.profile.appServerNativeToolSurface,
+        nativeToolSurface: effectiveProfile.appServerNativeToolSurface,
+        ...(this.options.hostedControllerTools
+          ? { hostedControllerTools: this.options.hostedControllerTools }
+          : {}),
         cleanThreadPrewarm: false,
         ...(this.options.maxGoalTurns === undefined
           ? {}
           : { maxGoalTurns: this.options.maxGoalTurns }),
       }),
       sessionMaterializer: new ControlledCodexSessionMaterializer({
-        profile: this.options.profile,
+        profile: effectiveProfile,
       }),
+      modelBackend,
+      mimoApiKeyEnvVarName,
+      ...(modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+        ? { mimoConfigToml: effectiveProfile.configToml }
+        : {}),
+      ...(this.options.sourceEnv === undefined
+        ? {}
+        : { sourceEnv: this.options.sourceEnv }),
       ...(this.options.model === undefined ? {} : { model: this.options.model }),
       ...(this.options.reasoningEffort === undefined
         ? {}
@@ -369,6 +433,14 @@ function controlledAgentPrompt(
     "Use only the broker/status MCP tools available in this session.",
     "At the start of each loop and before spawning or integrating workers, call codex_goal_project_controller_consume_guidance for your controller job and apply any returned guidance.",
     "Do not request raw shell, raw git, raw tmux, filesystem grants or auth files.",
+  ].join("\n");
+}
+
+function hostedControllerPrompt(objective?: string): string {
+  return [
+    "Use only the launch, observe, and stop dynamic tools for host-approved child slots.",
+    "The tools currently return disabled or unavailable. Report that state and do not seek another execution path.",
+    ...(objective ? ["Controller objective:", objective] : []),
   ].join("\n");
 }
 

@@ -35,6 +35,12 @@ const genericFixtures: readonly (readonly [string, string])[] = [
 ];
 
 const signatureFixtures: readonly (readonly [string, string, string])[] = [
+  // Accepted merge-tree-review-r3 proof: unchanged exact-base redaction fixture.
+  [
+    "src/worker-local/tests/project-integration-local-adapters.test.ts",
+    "693f5072f49dad8d5fac77242b0ef1cad8c3b74d7b93cd9f4a54b64937efe0a3",
+    "ff17f4073997825aded3c7ceeb7f7458f1fe76f8e3f86e3510eff21877da1b10"
+  ],
   [
     "packages/contexts/agent-execution/tests/features/contained-agent-turn/claude-agent-sdk-contained-turn-provider.test.ts",
     "afaaab9f65f36136a819dfcab138873ae3f7d02f4f9fbc6b0b69ddb50f20f0ef",

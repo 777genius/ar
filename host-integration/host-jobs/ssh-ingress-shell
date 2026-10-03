@@ -1,0 +1,4 @@
+#!/bin/sh
+# Installed as the dedicated transport account's login shell. Never evaluate
+# arguments (including sshd's -c string or SSH_ORIGINAL_COMMAND).
+exec /usr/bin/sudo -n -- /opt/subscription-runtime/host-jobs/ssh-endpoint

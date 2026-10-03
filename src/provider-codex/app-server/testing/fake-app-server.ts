@@ -87,7 +87,7 @@ export type FakeAppServerRequest = {
 };
 
 export type FakeAppServerResponse = {
-  readonly id: number;
+  readonly id: string | number;
   readonly result?: unknown;
   readonly error?: unknown;
 };
@@ -101,6 +101,7 @@ export class FakeAppServerFactory {
   readonly responses: FakeAppServerResponse[] = [];
   readonly processes: FakeAppServerProcess[] = [];
   readonly spawnArgs: string[][] = [];
+  readonly envs: Readonly<Record<string, string>>[] = [];
 
   constructor(private readonly options: FakeAppServerFactoryOptions = {}) {}
 
@@ -113,6 +114,7 @@ export class FakeAppServerFactory {
     this.codexHomes.push(input.env.CODEX_HOME ?? "");
     this.cwds.push(input.cwd);
     this.spawnArgs.push([...input.args]);
+    this.envs.push({ ...input.env });
     const process = new FakeAppServerProcess({
       ...this.options,
       onPrompt: (prompt) => this.prompts.push(prompt),
@@ -337,6 +339,11 @@ export class FakeAppServerProcess extends EventEmitter {
                   turn: { id: turnId, status: "inProgress" },
                 },
               }),
+              ...(this.options.emitServerRequestOnTurn ? [JSON.stringify({
+                id: this.options.emitServerRequestOnTurn.id ?? 9_002,
+                method: this.options.emitServerRequestOnTurn.method,
+                params: this.options.emitServerRequestOnTurn.params,
+              })] : []),
               ...outputDeltas.map((delta) => JSON.stringify({
                 method: "item/agentMessage/delta",
                 params: { turnId, delta },

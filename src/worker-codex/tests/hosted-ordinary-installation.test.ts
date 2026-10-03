@@ -1,3 +1,4 @@
+import { registerKeyedCorrelationTests, registerChildForegroundDeadlineTests } from "./hosted-child-foreground-deadline-test-support";
 import { routeHostedGoalLaunch, stopHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import { codexGoalAccountSlots, runCodexGoal } from "../codex-goal-runner";
 import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
@@ -40,8 +41,8 @@ function local(path: string): string {
     const prefix = "/run/user/0/subscription-runtime-host-policy/" + kind;
     if (path === prefix || path.startsWith(prefix + "/")) return join(fixture.root, directory!, path.slice(prefix.length));
   }
-  if (["/managed", "/work"].includes(path)) return fixture.root;
-  for (const workspace of ["/managed/W", "/work/ordinary-job"]) {
+  if (["/managed", "/work", "/jobs", "/jobs/ordinary-job"].includes(path)) return fixture.root;
+  for (const workspace of ["/managed/W", "/jobs/ordinary-job/workspace"]) {
     if (path === workspace || path.startsWith(workspace + "/")) return join(fixture.root, "managed-W", path.slice(workspace.length));
   }
   if (path === stages || path.startsWith(stages + "/")) return join(fixture.root, "stages", path.slice(stages.length));
@@ -109,7 +110,7 @@ const stageName = "stages/" + hash(runtimeDirectory) + ".json";
 function put(name: string, value: unknown) { writeFileSync(join(fixture.root, name), JSON.stringify(value) + "\n", { mode: 0o600 }); }
 function read(name: string) { return JSON.parse(readFileSync(join(fixture.root, name), "utf8")); }
 function creator() { return { creatorId: "ordinary-creator", jobId: "ordinary-job", jobRootDir: "/jobs/ordinary-job",
-  workspacePath: "/work/ordinary-job", launch: { command: process.execPath, args: [join(runtimeDirectory, "dist/worker-codex/codex-goal-cli.js"), "start", "ordinary-job"], cwd: "/work/ordinary-job" } }; }
+  workspacePath: "/jobs/ordinary-job/workspace", launch: { command: process.execPath, args: [join(runtimeDirectory, "dist/worker-codex/codex-goal-cli.js"), "start", "ordinary-job"], cwd: "/jobs/ordinary-job/workspace" } }; }
 beforeEach(() => {
   vi.spyOn(process, "getuid").mockReturnValue(0);
   fixture.root = mkdtempSync(join(tmpdir(), "ordinary-installation-")); fixture.group = "/system.slice/trusted.service";
@@ -120,7 +121,7 @@ beforeEach(() => {
     stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(() => true) });
   fixture.child = child; fixture.spawn.mockReturnValue(child);
   fixture.creatorBirth = "789"; fixture.creatorGroup = "/system.slice/trusted.service"; fixture.runtimeUnit = "";
-  for (const dir of ["stages", "grants", "policies", "reviews", "managed-W", "ordinary-origins", "ordinary-starts", "ordinary-completed", "codex-readonly-custody", "codex-readonly-revoked"]) mkdirSync(join(fixture.root, dir), { mode: 0o700 });
+  for (const dir of ["stages", "grants", "policies", "reviews", "managed-W", "ordinary-origins", "ordinary-starts", "ordinary-completed", "scoped-terminating", "codex-readonly-custody", "codex-readonly-revoked"]) mkdirSync(join(fixture.root, dir), { mode: 0o700 });
   mkdirSync(join(fixture.root, "managed-W/input"), { mode: 0o700 });
   writeFileSync(join(fixture.root, "fragment"), "reviewed", { mode: 0o600 });
   put("readonly-inventory.json", { schemaVersion: 2, hostId: "a".repeat(32), supervisorUnit: "trusted.service",
@@ -671,12 +672,15 @@ describe("real default provider primitive under ordinary activation", () => {
     const child = spawnCodexAppServerProcess(input);
     expect(fixture.spawn).toHaveBeenCalledTimes(1);
     const [command, args, options] = fixture.spawn.mock.calls[0]!;
-    expect(command).toBe("/usr/bin/systemd-run");
-    expect(args).toContain("--map-user=65532");
-    expect(args).toContain("--no-new-privs");
-    expect(args.some((arg: string) => arg.includes("BindReadOnlyPaths"))).toBe(false);
+    expect(command).toBe(process.execPath);
+    expect(args.slice(0, 2)).toEqual(["/opt/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
+    const request = JSON.parse(args[2]);
+    expect(request).toEqual({ operation: "provider", jobId: "ordinary-job", unit: store.read().ordinaryStarts[1]!.unit,
+      payload: [process.execPath, expect.stringMatching(/\/hosted-app-server-launcher\.js$/)] });
+    expect(request.readonlyPaths).toBeUndefined();
     expect(options).toEqual(expect.objectContaining({ cwd: input.cwd, env: input.env, stdio: ["pipe", "pipe", "pipe"] }));
-    expect(child.stdin.write).toHaveBeenCalledWith(JSON.stringify({ schemaVersion: 1, ...input }) + "\n");
+    expect(child.stdin.write).toHaveBeenCalledWith(JSON.stringify({ schemaVersion: 1, ...input,
+      env: { ...input.env, SUBSCRIPTION_RUNTIME_JOB_ID: "ordinary-job" } }) + "\n");
     const reservation = store.read().ordinaryStarts[1]!;
     (fixture.child as EventEmitter).emit("exit", 0, null);
     expect(read(`ordinary-completed/${reservation.startId}.json`).startSha256).toBe(hash(readFileSync(join(fixture.root, `ordinary-starts/${reservation.startId}.json`))));
@@ -861,11 +865,11 @@ describe("actual ordinary outer dispatcher and fixed bootstrap", () => {
 });
 
 it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default factory revalidate on quota account switch: %s", async mode => {
-  const config = { jobId: "ordinary-job", taskId: "ordinary-job", jobRootDir: join(fixture.root, "job"),
-    workspacePath: join(fixture.root, "workspace"), promptPath: join(fixture.root, "prompt"),
+  const config = { jobId: "ordinary-job", taskId: "ordinary-job", jobRootDir: join(fixture.root, "jobs/ordinary-job"),
+    workspacePath: join(fixture.root, "jobs/ordinary-job/workspace"), promptPath: join(fixture.root, "prompt"),
     authRootDir: join(fixture.root, "unused-synthetic-auth"), accounts: codexGoalAccountSlots(["fake-a", "fake-b"]),
     maxAccountCycles: 1, sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } };
-  mkdirSync(config.jobRootDir); mkdirSync(config.workspacePath); writeFileSync(config.promptPath, "Offline rotation");
+  mkdirSync(config.jobRootDir, { recursive: true, mode: 0o700 }); mkdirSync(config.workspacePath); writeFileSync(config.promptPath, "Offline rotation");
   const bound = { ...creator(), jobRootDir: config.jobRootDir, workspacePath: config.workspacePath,
     launch: { ...creator().launch, cwd: config.workspacePath } };
   put("readonly-inventory.json", { ...read("readonly-inventory.json"), ordinaryCreators: [bound] });
@@ -879,13 +883,17 @@ it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default f
     onRequest: request => { if (request.method === "turn/start" && mode === "npm-grant-deleted") rmSync(join(fixture.root, grant)); } }), new FakeAppServerFactory()];
   const frames: { env: Record<string, string> }[] = [];
   fixture.spawn.mockImplementation((command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
-    expect(command).toBe("/usr/bin/systemd-run");
+    expect(command).toBe(process.execPath);
+    expect(args.slice(0, 2)).toEqual(["/opt/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
     expect(options.cwd).toBe(options.env.HOME);
     expect(options.cwd).not.toBe(config.workspacePath);
     expect(store.read().ordinaryStarts).toHaveLength(frames.length + 2);
     expect(() => withHostedActivationFence(() => {})).toThrow();
-    expect(args).toContain("--bounding-set=-all");
-    expect(args.some(arg => arg.includes("BindReadOnlyPaths"))).toBe(false);
+    const request = JSON.parse(args[2]!);
+    expect(request).toEqual({ operation: "provider", jobId: config.jobId,
+      unit: store.read().ordinaryStarts[frames.length + 1]!.unit,
+      payload: [process.execPath, expect.stringMatching(/\/hosted-app-server-launcher\.js$/)] });
+    expect(request.readonlyPaths).toBeUndefined();
     const child = fakes[frames.length]!.create({ ...options, args });
     const write = child.stdin.write; let bootstrap = true;
     child.stdin.write = chunk => {
@@ -896,7 +904,8 @@ it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default f
   });
   fixture.onStop = () => { for (const fake of fakes) for (const child of fake.processes) child.kill(); };
   const clock = { now: () => new Date("2026-05-31T00:05:00.000Z"), monotonicMs: () => performance.now() };
-  const result = await runCodexGoal(config, { createExecutor: options => new FileBackendCodexSafeExecutor({
+  const result = await runCodexGoal(config, {
+    createExecutor: options => new FileBackendCodexSafeExecutor({
     ...options, requireGitWorkspace: false, prewarmOnStart: false, clock,
     accounts: options.accounts.map((account, index) => ({
       codexAuthJson: codexAuthJsonForAccount(`synthetic-refresh-${index}`, `synthetic-account-${index}`),
@@ -950,8 +959,12 @@ describe("managed inspected installation admission", () => {
       SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job", SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "codex-test-managed-qualification" } });
     if (fault === "exact") {
       launch(); expect(fixture.spawn).toHaveBeenCalledOnce();
-      expect(fixture.spawn.mock.calls[0]![1]).toContain("--property=BindReadOnlyPaths=/managed/W/input:/managed/W/input:norbind");
+      const request = JSON.parse(fixture.spawn.mock.calls[0]![1][2]);
+      expect(request.readonlyPaths).toContain("/managed/W/input");
       expect(read("readonly-epoch.json").reservations).toHaveLength(1);
     } else { expect(launch).toThrow(); expect(fixture.spawn).not.toHaveBeenCalled(); }
   });
 });
+registerChildForegroundDeadlineTests({ fixture, runtimeDirectory, read, put });
+
+registerKeyedCorrelationTests({ fixture, runtimeDirectory, read, put });

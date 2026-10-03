@@ -21,6 +21,7 @@ import {
   type RuntimeResultArtifact,
 } from "@vioxen/subscription-runtime/worker-core";
 import { readGitBlobBatch } from "@vioxen/subscription-runtime/worker-local";
+import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { assertGitPatchBlobsSecretSafe } from "./git-patch-secret-validator";
 import { publishImmutableTextArtifact } from "./local-immutable-text-artifact";
 import {
@@ -212,6 +213,23 @@ export async function materializeCodexGoalHandoffArtifacts(input: {
     readonly afterPatchSnapshot?: (snapshot: 1 | 2) => Promise<void>;
   };
 }): Promise<MaterializedCodexGoalHandoffArtifacts | null> {
+  return new LocalTerminalCheckpointAdmission(input.jobRootDir).withWriter(
+    () => materializeCodexGoalHandoffArtifactsAdmitted(input),
+  );
+}
+
+async function materializeCodexGoalHandoffArtifactsAdmitted(input: {
+  readonly workerJobId: string;
+  readonly taskId: string;
+  readonly workspacePath: string;
+  readonly jobRootDir: string;
+  readonly expectedBaseCommit?: string;
+  readonly limits?: Partial<HandoffArtifactLimits>;
+  readonly testHooks?: {
+    readonly afterSafetyScan?: (scan: 1 | 2) => Promise<void>;
+    readonly afterPatchSnapshot?: (snapshot: 1 | 2) => Promise<void>;
+  };
+}): Promise<MaterializedCodexGoalHandoffArtifacts | null> {
   assertSafeId(input.workerJobId, "worker_job_id");
   assertSafeId(input.taskId, "task_id");
   const limits = handoffArtifactLimits(input.limits);
@@ -350,7 +368,15 @@ async function captureStableHandoffPatch(input: {
         worktreeIndexEnv,
         input.gitBinaryPath,
       );
-      if (changedPaths.length === 0) return null;
+      if (changedPaths.length === 0) {
+        await assertGitHeadUnchanged(workspacePath, baseCommit, input.gitBinaryPath);
+        const confirmed = await gitChangedPaths(workspacePath, baseCommit,
+          limits.maxChangedFiles, worktreeIndexEnv, input.gitBinaryPath);
+        if (confirmed.length !== 0) {
+          throw new Error("handoff_workspace_changed_during_materialization");
+        }
+        return null;
+      }
       await assertSafeChangedFiles({
         workspacePath,
         changedPaths,
@@ -447,7 +473,7 @@ async function gitChangedPaths(
   worktreeIndexEnv: NodeJS.ProcessEnv,
   gitBinaryPath?: string,
 ): Promise<readonly string[]> {
-  const [tracked, untracked] = await Promise.all([
+  const [tracked, untracked, stagedAdditions] = await Promise.all([
     gitNullPaths(workspacePath, [
       "diff",
       "--no-ext-diff",
@@ -463,11 +489,40 @@ async function gitChangedPaths(
       "--exclude-standard",
       "-z",
     ], worktreeIndexEnv, gitBinaryPath),
+    gitLiveIndexAddedPaths(workspacePath, baseCommit, gitBinaryPath),
   ]);
-  if (tracked.length + untracked.length > maxChangedFiles) {
+  // A forced-ignored addition can remain in the live index after its worktree
+  // file is removed. The patch represents final worktree bytes, not that index.
+  const presentStagedAdditions: string[] = [];
+  for (const stagedPath of stagedAdditions.map(assertSafeRelativePath)) {
+    const absolute = resolve(workspacePath, stagedPath);
+    if (!pathInside(workspacePath, absolute)) throw new Error("handoff_changed_path_escape");
+    try {
+      await lstat(absolute);
+      presentStagedAdditions.push(stagedPath);
+    } catch (error) {
+      if (!isNodeError(error, "ENOENT")) throw error;
+    }
+  }
+  const changed = uniqueSorted([...tracked, ...untracked, ...presentStagedAdditions]
+    .map(assertSafeRelativePath));
+  if (changed.length > maxChangedFiles) {
     throw new Error("handoff_changed_file_limit_exceeded");
   }
-  return uniqueSorted([...tracked, ...untracked].map(assertSafeRelativePath));
+  return changed;
+}
+
+async function gitLiveIndexAddedPaths(
+  workspacePath: string,
+  baseCommit: string,
+  gitBinaryPath?: string,
+): Promise<readonly string[]> {
+  // Forced additions can match .gitignore. The synthetic HEAD index cannot
+  // see them, and --others --exclude-standard deliberately omits them.
+  return gitNullPaths(workspacePath, [
+    "diff", "--cached", "--no-ext-diff", "--name-only", "--no-renames",
+    "--diff-filter=A", "-z", baseCommit, "--",
+  ], undefined, gitBinaryPath);
 }
 
 async function assertSafeChangedFiles(input: {
@@ -709,14 +764,16 @@ async function buildDeterministicPatch(input: {
   readonly worktreeIndexEnv: NodeJS.ProcessEnv;
   readonly gitBinaryPath?: string;
 }): Promise<string> {
-  const untracked = new Set(
-    await gitNullPaths(input.workspacePath, [
+  const addedPaths = new Set([
+    ...await gitNullPaths(input.workspacePath, [
       "ls-files",
       "--others",
       "--exclude-standard",
       "-z",
     ], input.worktreeIndexEnv, input.gitBinaryPath),
-  );
+    ...await gitLiveIndexAddedPaths(input.workspacePath, input.baseCommit,
+      input.gitBinaryPath),
+  ]);
   const trackedPatch = await gitOutput(
     input.workspacePath,
     [
@@ -734,7 +791,7 @@ async function buildDeterministicPatch(input: {
   const parts = trackedPatch ? [ensureTrailingNewline(trackedPatch)] : [];
   let byteLength = Buffer.byteLength(trackedPatch);
   for (const changedPath of input.changedPaths.filter((path) =>
-    untracked.has(path),
+    addedPaths.has(path),
   )) {
     const remaining = input.limits.maxPatchBytes - byteLength;
     if (remaining <= 0) throw new Error("handoff_patch_byte_limit_exceeded");
@@ -756,23 +813,24 @@ async function buildDeterministicPatch(input: {
   return patch;
 }
 
-async function assertExactPatchSecretSafe(input: {
+export async function assertExactPatchSecretSafe(input: {
   readonly workspacePath: string;
   readonly jobRootDir: string;
   readonly baseCommit: string;
   readonly patch: string;
   readonly changedPaths: readonly string[];
-  readonly limits: HandoffArtifactLimits;
+  readonly limits?: Partial<HandoffArtifactLimits>;
 }): Promise<number> {
   try {
+    const limits = handoffArtifactLimits(input.limits);
     return await assertGitPatchBlobsSecretSafe({
       workspacePath: input.workspacePath,
       baseCommit: input.baseCommit,
       patch: input.patch,
       changedPaths: input.changedPaths,
       tempRootDir: input.jobRootDir,
-      maxFileBytes: input.limits.maxFileBytes,
-      maxTotalFileBytes: input.limits.maxTotalFileBytes,
+      maxFileBytes: limits.maxFileBytes,
+      maxTotalFileBytes: limits.maxTotalFileBytes,
     });
   } catch (error) {
     throw handoffPatchValidationError(error);

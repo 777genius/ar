@@ -4,6 +4,7 @@ import type {
   RuntimeResultArtifact,
   RuntimeResultEnvelope,
 } from "@vioxen/subscription-runtime/worker-core";
+import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import { createCodexGoalResultRecorder } from "./codex-goal-runtime-result-io";
 import {
   materializeCodexGoalHandoffArtifacts,
@@ -27,6 +28,16 @@ export async function refreshCompletedCodexGoalResultArtifacts(input: {
   readonly recommendedAction: RuntimeRecommendedAction;
   readonly result: RuntimeResultEnvelope;
 }> {
+  // This function is exported as well as called by the admitted reconciler.
+  // Hold admission while creating referenced handoff files and replacing result.
+  return new LocalTerminalCheckpointAdmission(input.config.jobRootDir).withWriter(
+    () => refreshCompletedCodexGoalResultArtifactsAdmitted(input),
+  );
+}
+
+async function refreshCompletedCodexGoalResultArtifactsAdmitted(input: Parameters<
+  typeof refreshCompletedCodexGoalResultArtifacts
+>[0]): ReturnType<typeof refreshCompletedCodexGoalResultArtifacts> {
   const handoff = input.preservePatch && input.changedFiles.length > 0
     ? await refreshedHandoffArtifacts(input)
     : null;
@@ -34,6 +45,7 @@ export async function refreshCompletedCodexGoalResultArtifacts(input: {
   const changedFiles = handoff?.changedPaths ?? input.existingResult.changedFiles;
   const result = await createCodexGoalResultRecorder({
     outputPath: input.outputPath,
+    terminalCheckpointJobRootDir: input.config.jobRootDir,
   }).record({
     status: "done",
     provider: input.existingResult.provider,

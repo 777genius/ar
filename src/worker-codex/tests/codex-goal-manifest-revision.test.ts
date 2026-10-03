@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   acquireLocalControllerMaintenanceFence,
+  LocalTerminalCheckpointAdmission,
   withLocalControllerActivityLease,
   releaseLocalControllerMaintenanceFence,
 } from "@vioxen/subscription-runtime/store-local-file";
@@ -142,5 +143,32 @@ describe("already-fenced ledger scope publication", () => {
     await expect(publishCodexGoalLedgerScopeUnderMaintenance({ ...publication,
       expectedManifestSha256: await codexGoalManifestRevision(input.manifestPath),
     })).rejects.toThrow();
+  });
+
+  it("keeps ledger publication behind the job claim while maintenance is owned", async () => {
+    const input = await fixture();
+    const original = { jobId: "test-controller", jobRootDir: input.jobRootDir,
+      accessBoundary: "project_scoped_control", projectAccessScope: { consumedOutputLedgerRoots: [] } };
+    await writeFile(input.manifestPath, JSON.stringify(original));
+    const fence = await acquireLocalControllerMaintenanceFence({
+      controllerJobRootDir: input.jobRootDir, owner: "TEST-ledger",
+    });
+    const admission = new LocalTerminalCheckpointAdmission(input.jobRootDir);
+    const claim = await admission.claim("test-ledger-checkpoint", {
+      projectId: "test-project", workstreamId: "test-workstream", jobId: "test-controller",
+      taskId: "test-task", executionGeneration: "test-generation", attemptNumber: 1,
+      ownershipEpoch: 1, runtimeSha: "a".repeat(40), registryRevisionSha256: "b".repeat(64),
+    });
+    try {
+      await expect(publishCodexGoalLedgerScopeUnderMaintenance({ ...input, fence,
+        controllerJobId: original.jobId,
+        expectedManifestSha256: await codexGoalManifestRevision(input.manifestPath),
+        consumedOutputLedgerRoot: "new",
+      })).rejects.toThrow("terminal_checkpoint_job_fenced");
+      expect(JSON.parse(await readFile(input.manifestPath, "utf8"))).toEqual(original);
+    } finally {
+      await admission.release(claim, false);
+      await releaseLocalControllerMaintenanceFence(fence);
+    }
   });
 });

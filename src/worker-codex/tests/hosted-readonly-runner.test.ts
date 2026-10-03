@@ -1,7 +1,9 @@
+import "./unmanaged-goal-host-fixture";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { codexGoalAccountSlots, runCodexGoal } from "../codex-goal-runner";
 import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
@@ -11,6 +13,9 @@ import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provi
 import { HostedCustodyPhase, HostedCustodyRequirement, parseHostedCustodyEpoch, type HostedCustodyEpoch } from "@vioxen/subscription-runtime/worker-core";
 import { completionPath } from "../hosted-readonly-host-kernel";
 import { parseHostedReadonlyPolicy } from "../hosted-readonly-inputs";
+
+const runtimeDirectory = fileURLToPath(new URL("../../../", import.meta.url)).replace(/\/$/, "");
+const inventoryBytes = () => Buffer.from(JSON.stringify({ schemaVersion: 2, hostId: facts.epoch!.hostId, ordinaryCreators: [] }));
 
 // Synthetic authority at filesystem/custody boundaries. Admission, runner,
 // safe executor, account factories, egress wrapper and node adapter are real.
@@ -28,8 +33,8 @@ vi.mock("@vioxen/subscription-runtime/provider-codex", async original => ({
     if (name === "readonly-enrollment.json") return birth;
     if (name === "readonly-epoch.json") return Buffer.from(JSON.stringify(epoch));
     if (name === "host-installation.json") return Buffer.from(JSON.stringify({ schemaVersion: 1, installationId: "install",
-      hostId: epoch.hostId, runtimeDirectory: "/runtime", runtimeSha: epoch.identity.runtimeSha,
-      runtimeManifestSha256: epoch.identity.runtimeManifestSha256, inventorySha256: "a".repeat(64) }));
+      hostId: epoch.hostId, runtimeDirectory, runtimeSha: epoch.identity.runtimeSha,
+      runtimeManifestSha256: epoch.identity.runtimeManifestSha256, inventorySha256: hash(inventoryBytes()) }));
     if (name === "host-activation.json") return facts.activationPhase === "missing" ? null : Buffer.from(JSON.stringify({ schemaVersion: 1, installationId: "install", hostId: epoch.hostId,
       bootId: epoch.bootId, supervisorId: epoch.supervisorId, generation: 1, phase: facts.activationPhase,
       ordinaryOriginsSha256: "a".repeat(64), ordinaryStarts: [], exclusiveEnrollmentSha256: createHash("sha256").update(birth).digest("hex") }));
@@ -66,6 +71,7 @@ vi.mock("../hosted-readonly-epoch-store", () => ({
 }));
 vi.mock("../hosted-readonly-host-kernel", async original => ({
   ...await original<typeof import("../hosted-readonly-host-kernel")>(),
+  readHostedReadonlyHostInventory: () => JSON.parse(inventoryBytes().toString()),
   HostedReadonlyHostKernel: class {
     session() { return { hostId: "synthetic-host", bootId: "synthetic-boot", supervisorId: "synthetic-supervisor" }; }
     verifyRuntimeOwner() {} // Explicit synthetic outer ownership.
@@ -119,8 +125,15 @@ it.each(["none", "revoked", "CLOSED", "ORDINARY", "missing"])("rechecks real adm
   const serviceRecords = () => facts.reserve.mock.calls.filter(([path]) => path.includes("codex-readonly-services/"));
   let revoked = false;
   facts.policy.mockReturnValue({ policy, bytes });
-  facts.bytes.mockImplementation((path: string) => path.includes("codex-readonly-custody/") ? lease :
-    path.includes("codex-readonly-revoked/") && revoked ? Buffer.from("revoked") : null);
+  facts.bytes.mockImplementation((path: string) => {
+    if (path === "/var/lib/subscription-runtime-host-policy/readonly-inventory.json") return inventoryBytes();
+    if (path === "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages/" + hash(Buffer.from(runtimeDirectory)) + ".json") {
+      return Buffer.from(JSON.stringify({ schemaVersion: 1, runtimeDirectory,
+        runtimeSha: policy.runtimeSha, runtimeManifestSha256: policy.runtimeManifestSha256 }));
+    }
+    return path.includes("codex-readonly-custody/") ? lease :
+      path.includes("codex-readonly-revoked/") && revoked ? Buffer.from("revoked") : null;
+  });
   facts.grantFile.mockResolvedValue(grant);
   facts.grant.mockReturnValue(Buffer.from(JSON.stringify(grant)));
   facts.review.mockReturnValue({ reviewBytes, stageBytes });
@@ -135,13 +148,14 @@ it.each(["none", "revoked", "CLOSED", "ORDINARY", "missing"])("rechecks real adm
   const frames: { env: Record<string, string>; args: string[] }[] = [];
   const units: string[] = [];
   facts.spawn.mockImplementation((command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
-    expect(command).toBe("/usr/bin/systemd-run");
+    expect(command).toBe(process.execPath);
     expect(serviceRecords()).toHaveLength(frames.length + 1);
-    expect(args).toContain(`--property=BindReadOnlyPaths=${policy.readonlyPaths[0]}:${policy.readonlyPaths[0]}:norbind`);
-    expect(args).toContain(`--property=BindPaths=${config.workspacePath}:${config.workspacePath}:norbind`);
-    expect(args).toContain("--property=PrivateMounts=yes");
-    expect(args).toContain("--bounding-set=-all");
-    units.push(args[0]!);
+    expect(args.slice(0, 2)).toEqual(["/opt/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
+    const request = JSON.parse(args[2]!);
+    expect(request).toMatchObject({ operation: "provider", jobId: config.jobId, readonlyPaths: policy.readonlyPaths });
+    expect(request).not.toHaveProperty("cwd");
+    expect(request).not.toHaveProperty("mounts");
+    units.push(request.unit);
     const child = fakes[frames.length]!.create({ ...options, args });
     // This fixture models the systemd-run proxy, not a directly killed provider.
     // A service cleanly stopped by the synthetic manager acknowledges --wait

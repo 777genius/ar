@@ -364,6 +364,29 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
     expect(ensured).toEqual([join(root, "one"), join(root, "one", "two")]);
   });
 
+  it("allows denied siblings of custody paths while rejecting denied custody and lock subtrees", async () => {
+    const anchor = await mkdtemp(join(tmpdir(), "custody-denied-siblings-"));
+    const ledger = join(anchor, "control", "ledger");
+    const archives = join(anchor, "control", "archives");
+    const deniedRoots = [join(anchor, "private"), join(anchor, "control", "private")];
+    await mkdir(join(anchor, "control"), { recursive: true });
+    for (const path of deniedRoots) await writeFile(path, "untouched");
+    const custody = new LocalProjectControlEvidenceCustody();
+    try {
+      const certification = await custody.materializeApprovedProjectControlCustody({
+        approvedAnchor: anchor, ledgerRoots: [ledger], evidenceRoots: [archives], deniedRoots,
+      });
+      try { await certification.revalidate(); } finally { await certification.close(); }
+      for (const path of deniedRoots) expect(await readFile(path, "utf8")).toBe("untouched");
+      for (const denied of [anchor, join(anchor, "control"), ledger, join(ledger, "items"),
+        join(anchor, "control", ".consumed-output-ledger-mutation-locks", "private")]) {
+        await expect(custody.materializeApprovedProjectControlCustody({
+          approvedAnchor: anchor, ledgerRoots: [ledger], evidenceRoots: [archives], deniedRoots: [denied],
+        })).rejects.toThrow("evidence_custody_bootstrap_root_denied");
+      }
+    } finally { await rm(anchor, { recursive: true, force: true }); }
+  });
+
   it("materializes new and pre-existing custody directories under a held anchor", async () => {
     const outer = await mkdtemp(join(tmpdir(), "custody-bootstrap-"));
     const anchor = join(outer, "project");
@@ -382,7 +405,9 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
     await certification.close();
 
     expect((await lstat(ledger)).isDirectory()).toBe(true);
+    expect(await readdir(join(ledger, "items"))).toEqual([]);
     expect((await lstat(archives)).isDirectory()).toBe(true);
+    expect(await readdir(join(archives, "items"))).toEqual([]);
     const derivedLock = join(
       dirname(ledger),
       ".consumed-output-ledger-mutation-locks",
@@ -390,6 +415,26 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
     );
     expect((await lstat(join(ledger, ".mutation-locks"))).isDirectory()).toBe(true);
     expect((await lstat(derivedLock)).isDirectory()).toBe(true);
+  });
+
+  it.each(["ledger", "archives"].flatMap(root => ["file", "symlink", "dangling"].map(kind => ({ root, kind }))))("rejects $kind at $root/items", async ({ root, kind }) => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-bootstrap-items-"));
+    const ledger = join(outer, root);
+    const target = join(outer, "target");
+    await mkdir(ledger);
+    if (kind === "file") await writeFile(join(ledger, "items"), "sentinel");
+    else {
+      if (kind === "symlink") await mkdir(target);
+      await symlink(target, join(ledger, "items"));
+    }
+    try {
+      await expect(new LocalProjectControlEvidenceCustody().materializeApprovedProjectControlCustody({
+        approvedAnchor: outer, ledgerRoots: root === "ledger" ? [ledger] : [],
+        evidenceRoots: root === "archives" ? [ledger] : [], deniedRoots: [],
+      })).rejects.toThrow("evidence_custody_bootstrap_items_unsafe");
+      if (kind === "file") expect(await readFile(join(ledger, "items"), "utf8")).toBe("sentinel");
+      if (kind === "symlink") expect(await readdir(target)).toEqual([]);
+    } finally { await rm(outer, { recursive: true, force: true }); }
   });
 
   it("rejects custody symlinks, non-directories, boundary escape, and unsafe locks", async () => {
@@ -469,6 +514,22 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
       await certification.close();
     }
   });
+
+  it.each(["ledger", "archives"].flatMap(root => ["directory", "symlink"].map(kind => ({ root, kind }))))(
+    "rejects $root/items replacement with $kind before publication", async ({ root, kind }) => {
+      const outer = await mkdtemp(join(tmpdir(), "custody-items-drift-"));
+      const target = join(outer, root);
+      const certification = await new LocalProjectControlEvidenceCustody().materializeApprovedProjectControlCustody({
+        approvedAnchor: outer, ledgerRoots: root === "ledger" ? [target] : [],
+        evidenceRoots: root === "archives" ? [target] : [], deniedRoots: [],
+      });
+      try {
+        await rename(join(target, "items"), join(target, "saved-items"));
+        if (kind === "directory") await mkdir(join(target, "items"));
+        else await symlink(join(target, "saved-items"), join(target, "items"));
+        await expect(certification.revalidate()).rejects.toThrow("identity_drift");
+      } finally { await certification.close(); await rm(outer, { recursive: true, force: true }); }
+    });
 
   it("rejects a legacy lock replaced by a late symlink", async () => {
     const outer = await mkdtemp(join(tmpdir(), "custody-bootstrap-late-legacy-link-"));

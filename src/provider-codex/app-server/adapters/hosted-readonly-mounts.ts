@@ -1,5 +1,6 @@
 /** Trusted adapter input, never a job/launch option or proof of admission. */
 export type HostedReadonlyMounts = {
+  readonly jobId: string;
   readonly workspacePath: string;
   readonly readonlyPaths: readonly string[];
 };

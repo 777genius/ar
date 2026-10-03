@@ -1,3 +1,4 @@
+import { LocalConsumedOutputLedgerMutationLock } from "../worker-local/consumed-output-ledger-local-adapter";
 import {
   AccessBoundary,
   type ProjectAccessScope,
@@ -95,3 +96,10 @@ export function codexProjectControlBroker(
     admissionDeps: codexProjectAdmissionDeps,
   });
 }
+
+export { openProjectControlRecoveryStore as projectControlRecoveryStore } from
+  "../worker-local/project-control-recovery-file-store";
+export { localProjectControlRecoveryDirectories as projectControlRecoveryDirectories } from
+  "../worker-local/project-control-recovery-directory-identity";
+
+export const projectControlLedgerMutationLocks = new LocalConsumedOutputLedgerMutationLock();

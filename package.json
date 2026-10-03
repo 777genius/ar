@@ -162,8 +162,9 @@
     "prepack": "npm run build",
     "typecheck": "npm run build:packages && tsc --noEmit -p tsconfig.json && npm run typecheck:packages",
     "typecheck:packages": "npm run --prefix packages/agent-account-observability typecheck",
-    "test": "npm run test:global-scan-guard && npm run build:packages && vitest run && npm run test:packages && npm run check:publish-preflight",
+    "test": "npm run build && npm run test:global-scan-guard && npm run test:host-storage && vitest run && npm run test:packages && npm run check:publish-preflight",
     "test:global-scan-guard": "node --test host-integration/global-scan-guard/global-scan-guard.node-test.mjs",
+    "test:host-storage": "node --test host-integration/custody-canary/run.node-test.mjs host-integration/host-jobs/host-jobs.node-test.mjs host-integration/host-jobs/legacy-lifecycle-e2e.node-test.mjs host-integration/managed-launcher/install.node-test.mjs host-integration/managed-launcher/install-policy.node-test.mjs host-integration/managed-launcher/launch.node-test.mjs host-integration/managed-launcher/layout.node-test.mjs",
     "test:packages": "npm run --prefix packages/agent-account-observability test",
     "test:crash-shard": "vitest run --config vitest.crash-shard.config.ts --maxWorkers=1",
     "e2e:live-workers": "npm run build && node scripts/e2e-live-workers/run.mjs",
@@ -177,6 +178,10 @@
     "eval:logical-thread-continuation:live:claude": "npm run build && node scripts/e2e-live-workers/agent-runtime-goal.mjs --allow-live --provider=claude",
     "e2e:live-codex-bounded-workspace": "npm run build && node scripts/e2e-live-workers/codex-bounded-workspace.mjs --allow-live",
     "ops:codex-account-quota": "node scripts/ops/codex-account-quota-table.mjs",
+    "ops:codex-limit-alarm": "node scripts/ops/codex-limit-alarm.mjs",
+    "ops:codex-limit-alarm:test": "node scripts/ops/codex-limit-alarm-self-test.mjs",
+    "ops:codex-limit-alarm:install": "node scripts/ops/install-codex-limit-alarm.mjs",
+    "ops:codex-limit-alarm:uninstall": "node scripts/ops/install-codex-limit-alarm.mjs --uninstall",
     "ops:sync-codex-auth": "node scripts/ops/sync-codex-auth-to-host.mjs",
     "smoke:worker-claude": "npm run build && node scripts/smoke-claude-worker.mjs",
     "smoke:worker-claude-thread": "npm run build && CLAUDE_WORKER_SMOKE_MODE=thread node scripts/smoke-claude-worker.mjs",
@@ -189,7 +194,7 @@
     "check:publish-preflight": "node scripts/publish-preflight-self-test.mjs",
     "check:publish-registry-contract": "node scripts/check-publish-registry-contract.mjs",
     "check": "npm run check:diff && npm run check:dist-policy && npm run typecheck && npm run build && npm run check:dist && npm test && npm run check:boundaries && npm pack --dry-run && npm run check:packed-consumer && npm run check:agent-runtime-task-artifact",
-    "check:architecture-guardrails": "node scripts/check-architecture-guardrails.mjs && node scripts/check-architecture-guardrails-self-test.mjs"
+    "check:architecture-guardrails": "node scripts/check-architecture-guardrails.mjs && node scripts/check-architecture-guardrails-self-test.mjs && node scripts/check-managed-launch-boundary-self-test.mjs && node scripts/check-managed-launch-boundary.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.237",

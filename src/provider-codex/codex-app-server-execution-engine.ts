@@ -1,4 +1,8 @@
+import { AppServerExecutionLifetime, bindAppServerSessionLifetime } from "./app-server/application/app-server-child-lifetime";
+export { AppServerExecutionLifetime, AppServerExecutionReadiness, type AppServerExecutionBinding, type AppServerExecutionReadyEvent } from "./app-server/application/app-server-child-lifetime";
+import { parseAppServerOutputWithUsage } from "./app-server/application/app-server-structured-output";
 import { isAppServerAdmissionError } from "./app-server/application/app-server-admission";
+import { assertHostedAppServerEngineOptions } from "./codex-app-server-hosted-admission";
 import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
 import type {
   ManagedRunResumeHandle,
@@ -42,10 +46,7 @@ import type {
   CodexAppServerCommandApprovalPolicy,
   CodexAppServerNativeToolSurface,
 } from "./app-server/domain/app-server-types";
-import type {
-  CodexAppServerRolloutBudget,
-} from "./app-server/domain/app-server-rollout-budget";
-import { codexAppServerRolloutBudgetConfig } from "./app-server/domain/app-server-rollout-budget";
+import { codexAppServerRolloutBudgetConfig, type CodexAppServerRolloutBudget } from "./app-server/domain/app-server-rollout-budget";
 import {
   defaultGoalContinuePrompt,
   defaultMaxGoalTurns,
@@ -76,14 +77,13 @@ import {
   AppServerSlotAcquireAbortedError,
 } from "./app-server/application/app-server-slot-pool";
 import { runCodexAppServerLogicalThreadWithSlot } from "./app-server/application/app-server-logical-thread-slot-lifecycle";
-import { parseCodexAppServerStructuredOutput } from "./app-server/application/app-server-structured-output";
 import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
 import {
   isCodexAppServerRateLimitsRejectedError,
   type CodexAppServerRateLimitsSnapshotHandler,
 } from "./app-server/application/app-server-rate-limits-monitor";
 import type { CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
-
+import { CodexModelBackend } from "./codex-model-backend";
 export type {
   CodexAppServerChildProcess,
   CodexAppServerProcessFactory,
@@ -97,18 +97,26 @@ export type {
   CodexAppServerRateLimitsSnapshotHandler,
 };
 export type { CodexAppServerExecutionEngineOptions };
+export type { AppServerCompletedTurnCheckpoint } from "./app-server/application/app-server-turn-checkpoint";
 export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   readonly kind: "app-server-pool" | "app-server-goal";
   readonly capabilities: CodexExecutionEngine["capabilities"];
+  readonly modelBackend: CodexModelBackend;
 
+  readonly executionLifetime: AppServerExecutionLifetime | undefined;
   private readonly executionProfile: ResolvedCodexExecutionProfile;
   private readonly runStore: ManagedRunStorePort;
   private readonly slotPool: AppServerSlotPool;
-
   constructor(private readonly options: CodexAppServerExecutionEngineOptions) {
+    this.executionLifetime = options.executionLifetime ?? (options.childBudget ? new AppServerExecutionLifetime({ childBudget: options.childBudget }) : undefined);
+    if (options.executionLifetime && (options.executionLifetime.childBudget !== options.childBudget ||
+        options.goalMode !== true || options.nativeToolSurface !== "disabled" || options.cleanThreadPrewarm !== false || options.fallback !== undefined ||
+        options.maxGoalTurns !== options.executionLifetime.maxGoalTurns)) throw new Error("codex_app_server_bounded_profile_conflict");
+    this.modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
     if (!options.codexBinaryPath.trim()) {
       throw new Error("codex_app_server_binary_required");
     }
+    assertHostedAppServerEngineOptions(options);
     assertPositiveInteger(options.timeoutMs, "codex_app_server_timeout_invalid");
     assertPositiveInteger(
       options.startupTimeoutMs,
@@ -146,17 +154,23 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
           }
         : {}),
     };
+    if (options.childBudget && (!options.goalMode || options.nativeToolSurface !== "disabled" ||
+        options.cleanThreadPrewarm !== false || options.fallback !== undefined || options.hostedControllerTools !== undefined ||
+        options.maxGoalTurns !== options.childBudget.lifetime.maxGoalTurns)) throw new Error("child_engine_confinement_conflict");
     this.kind = options.goalMode ? "app-server-goal" : "app-server-pool";
     this.executionProfile = resolveCodexExecutionProfile(
       options.executionProfile,
     );
     this.runStore = options.runStore ?? new InMemoryManagedRunStore();
     this.slotPool = new AppServerSlotPool({
+      ...(options.childBudget ? { childBudget: options.childBudget } : {}),
       codexBinaryPath: options.codexBinaryPath,
       ...(options.sourceEnv === undefined ? {} : { sourceEnv: options.sourceEnv }),
+      ...(options.hostedPermissionProfiles === undefined ? {} : { hostedPermissionProfiles: options.hostedPermissionProfiles }),
       processFactory: options.processFactory ?? spawnCodexAppServerProcess,
       signalChildProcess: signalCodexAppServerChildGroup,
       runStore: this.runStore,
+      ...(options.completedTurnCheckpoint ? { completedTurnCheckpoint: options.completedTurnCheckpoint } : {}),
       executionProfile: this.executionProfile,
       ...(options.commandApprovalPolicy === undefined
         ? {}
@@ -164,6 +178,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ...(options.nativeToolSurface === undefined
         ? {}
         : { nativeToolSurface: options.nativeToolSurface }),
+      ...(options.hostedControllerTools ? { hostedControllerTools: options.hostedControllerTools } : {}),
       ...(options.rolloutBudget === undefined
         ? {}
         : { rolloutBudget: options.rolloutBudget }),
@@ -182,18 +197,34 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         ? {}
         : { reconnectGraceMs: options.reconnectGraceMs }),
       maxOutputBytes: this.maxOutputBytes(),
+      ...(options.modelBackend === undefined
+        ? {}
+        : { modelBackend: options.modelBackend }),
     });
   }
-
   async run(input: CodexExecutionInput): Promise<CodexExecutionResult> {
+    this.options.childBudget?.beginInvocation();
+    const pending = this.runInvocation(input);
+    return this.executionLifetime ? await this.executionLifetime.wait(pending, input.abortSignal) : await pending;
+  }
+
+  private async runInvocation(input: CodexExecutionInput): Promise<CodexExecutionResult> {
+    this.executionLifetime?.beginInvocation(input.abortSignal);
+    const lifetime = this.executionLifetime;
+    if (lifetime) input = { ...input, session: bindAppServerSessionLifetime(input.session, lifetime),
+      abortSignal: AbortSignal.any([input.abortSignal, lifetime.signal]) };
     const schemaPlan = input.outputSchemaPlan ?? prepareCodexOutputSchemaPlan(input.outputSchema);
     try {
       const result = await this.runViaAppServer(input, schemaPlan);
+      this.executionLifetime?.assertActive(input.abortSignal);
       if (result.status === "waiting_for_input") return result;
-      return await this.parseStructuredOutput(result, input, schemaPlan);
+      const parsed = await parseAppServerOutputWithUsage({ result, requested: Boolean(input.outputSchema), ...(schemaPlan ? { schemaPlan } : {}), goalMode: this.options.goalMode, ...(input.runId ? { runId: input.runId } : {}), runStore: this.runStore });
+      this.executionLifetime?.assertActive(input.abortSignal);
+      this.options.childBudget?.remainingMs();
+      return parsed;
     } catch (error) {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
-      await this.slotPool.disposeSessionSlot(input.session);
+      await this.disposeFailedSession(input.session, error, "codex_app_server_run_cleanup_failed");
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (isCodexAppServerBudgetExceededError(error)) throw error;
       if (isCodexAppServerRateLimitsRejectedError(error)) throw error;
@@ -222,6 +253,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       readonly previousCheckpoint?: string;
     },
   ): Promise<CodexLogicalThreadExecutionResult> {
+    if (this.executionLifetime) throw new Error("child_continuation_denied");
     return await runCodexAppServerLogicalThreadWithSlot(input, {
       goalMode: this.options.goalMode ?? false,
       timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
@@ -238,7 +270,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
           maxOutputBytes: this.maxOutputBytes(),
         }),
       parse: async (result, parseInput, schemaPlan) =>
-        await this.parseStructuredOutput(result, parseInput, schemaPlan),
+        await parseAppServerOutputWithUsage({ result, requested: Boolean(parseInput.outputSchema), ...(schemaPlan ? { schemaPlan } : {}), goalMode: this.options.goalMode, ...(parseInput.runId ? { runId: parseInput.runId } : {}), runStore: this.runStore }),
     });
   }
 
@@ -258,25 +290,26 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     readonly outputSchema?: unknown;
     readonly abortSignal: AbortSignal;
   }): Promise<CodexExecutionResult> {
+    if (this.executionLifetime) throw new Error("child_continuation_denied");
     const schemaPlan = prepareCodexOutputSchemaPlan(input.outputSchema);
     try {
       const result = await this.resumeViaAppServer(input, schemaPlan);
       if (result.status === "waiting_for_input") return result;
-      return await this.parseStructuredOutput(result, input, schemaPlan);
+      return await parseAppServerOutputWithUsage({ result, requested: Boolean(input.outputSchema), ...(schemaPlan ? { schemaPlan } : {}), goalMode: this.options.goalMode, ...(input.runId ? { runId: input.runId } : {}), runStore: this.runStore });
     } catch (error) {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       if (!isManagedRunResumeValidationError(error)) {
-        await this.slotPool.disposeSessionSlot(input.session);
+        await this.disposeFailedSession(input.session, error, "codex_app_server_resume_cleanup_failed");
       }
       throw error;
     }
   }
 
   async dispose(): Promise<void> {
+    this.executionLifetime?.close();
     await this.slotPool.dispose();
     await this.options.fallback?.dispose?.();
   }
-
   async prewarm(input: {
     readonly session: CodexMaterializedSession;
     readonly workspacePath: string;
@@ -288,6 +321,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     readonly warmupPrompt?: string;
     readonly abortSignal: AbortSignal;
   }): Promise<CodexExecutionPrewarmResult> {
+    if (this.executionLifetime) throw new Error("child_prewarm_denied");
     try {
       const slot = await this.slotPool.ensureSlot(input);
       const warmupPrompt = input.warmupPrompt?.trim();
@@ -339,28 +373,20 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       };
     } catch (error) {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
-      await this.slotPool.disposeSessionSlot(input.session);
+      await this.disposeFailedSession(input.session, error, "codex_app_server_prewarm_cleanup_failed");
       throw error;
     }
   }
 
-  private async runViaAppServer(input: {
-    readonly runId?: string;
-    readonly prompt: string;
-    readonly goalObjective?: string;
-    readonly systemPrompt?: string;
-    readonly session: CodexMaterializedSession;
-    readonly workspacePath: string;
-    readonly redactor: RedactorPort;
-    readonly model: string;
-    readonly reasoningEffort: CodexReasoningEffort;
-    readonly serviceTier?: CodexServiceTier;
-    readonly sandboxMode?: CodexSandboxMode;
-    readonly outputSchema?: unknown;
-    readonly abortSignal: AbortSignal;
-    readonly onTextDelta?: (text: string) => void;
-  }, schemaPlan: CodexStructuredOutputSchemaPlan | undefined): Promise<CodexExecutionResult> {
+  private async disposeFailedSession(session: CodexMaterializedSession, error: unknown, message: string): Promise<void> {
+    try { await this.slotPool.disposeSessionSlot(session); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], message); }
+  }
+  private async runViaAppServer(input: CodexExecutionInput,
+    schemaPlan: CodexStructuredOutputSchemaPlan | undefined): Promise<CodexExecutionResult> {
+    this.options.childBudget?.remainingMs();
     const slot = await this.slotPool.ensureSlot(input);
+    this.executionLifetime?.assertActive(input.abortSignal);
     const outputSchema = schemaPlan?.codexSchema;
     const schemaWarnings = input.outputSchema && outputSchema === undefined
       ? [appServerOutputSchemaNotNativeWarning()]
@@ -391,11 +417,13 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     const result = this.options.goalMode
       ? await slot.goalRunner.runGoal({
           ...common,
+          redactor: input.redactor,
           maxGoalTurns: this.options.maxGoalTurns ?? defaultMaxGoalTurns,
           goalContinuePrompt:
             this.options.goalContinuePrompt ?? defaultGoalContinuePrompt,
         })
       : await slot.turnRunner.runCleanTurn(common);
+    this.executionLifetime?.assertActive(input.abortSignal);
     return redactCompletedAppServerResult({
       result,
       schemaWarnings,
@@ -429,12 +457,15 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       resumeHandle: input.resumeHandle,
       workspacePath: input.workspacePath,
     });
+    this.options.childBudget?.remainingMs();
     const slot = await this.slotPool.ensureSlot(input);
+    this.executionLifetime?.assertActive(input.abortSignal);
     const outputSchema = schemaPlan?.codexSchema;
     const schemaWarnings = input.outputSchema && outputSchema === undefined
       ? [appServerOutputSchemaNotNativeWarning()]
       : [];
     const result = await slot.goalRunner.resumeGoal({
+      redactor: input.redactor,
       runId: input.runId,
       requestId: input.requestId,
       answer: input.answer,
@@ -454,34 +485,13 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         this.options.goalContinuePrompt ?? defaultGoalContinuePrompt,
       skipResumeValidation: true,
     });
+    this.executionLifetime?.assertActive(input.abortSignal);
     return redactCompletedAppServerResult({
       result,
       schemaWarnings,
       redactor: input.redactor,
       maxOutputBytes: this.maxOutputBytes(),
     });
-  }
-
-  private async parseStructuredOutput(
-    result: CodexExecutionResult,
-    input: {
-      readonly runId?: string;
-      readonly outputSchema?: unknown;
-    },
-    schemaPlan: CodexStructuredOutputSchemaPlan | undefined,
-  ): Promise<CodexExecutionResult> {
-    try {
-      return await parseCodexAppServerStructuredOutput({
-        result,
-        requested: Boolean(input.outputSchema),
-        ...(schemaPlan === undefined ? {} : { schemaPlan }),
-        goalMode: this.options.goalMode,
-        ...(input.runId === undefined ? {} : { runId: input.runId }),
-        runStore: this.runStore,
-      });
-    } catch (error) {
-      throw new AppServerUsageError(error, result.usage, true);
-    }
   }
 
   private maxOutputBytes(): number {

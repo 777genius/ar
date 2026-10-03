@@ -84,7 +84,9 @@ describe("direct factory hosted environment selection", () => {
         expect(launch.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND).toBe("hosted-codex-job");
         expect(launch.env.PATH?.split(":" )).toContain(explicit ? explicitEnv.PATH : hostedEnv.PATH);
         expect(launch.env.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE).toBe(expectedPolicy.profileId);
-        expect(launch.args.slice(-6)).toEqual(codexProviderEgressCliConfigArgs(expectedPolicy));
+        expect(launch.args.slice(-4)).toEqual(codexProviderEgressCliConfigArgs(expectedPolicy,
+          { namedPermissions: true }));
+        expect(launch.args.join(" ")).not.toContain("sandbox_workspace_write");
         expect(launch.args).toContain("--dangerously-bypass-hook-trust");
         // Only the synthetic materialized home's config is read; no real session is used.
         const config = await readFile(join(launch.env.CODEX_HOME!, "config.toml"), "utf8");
@@ -92,12 +94,13 @@ describe("direct factory hosted environment selection", () => {
         expect(config.includes("registry.npmjs.org")).toBe(expectedPolicy.profileId !== CodexProviderEgressProfileId.ProviderApi);
         expect(config.includes("api.github.com")).toBe(false);
         const invocation = codexAppServerProcessInvocation({
-          ...launch, platform: "linux", ioLimitPaths: [],
-          systemdUnit: "synthetic-inherited-env.service",
+          ...launch, platform: "linux",
+          systemdUnit: "subscription-runtime-hosted-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.service",
         });
-        expect(invocation.command).toBe("/usr/bin/systemd-run");
-        expect(invocation.args).toContain("/usr/bin/unshare");
-        expect(invocation.systemdUnit).toBe("synthetic-inherited-env.service");
+        expect(invocation.command).toBe(process.execPath);
+        expect(invocation.args[1]).toBe("provider");
+        expect(JSON.parse(invocation.args[2]!).operation).toBe("provider");
+        expect(invocation.systemdUnit).toBe("subscription-runtime-hosted-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.service");
       }
     } finally { await driver.dispose(); }
   });
