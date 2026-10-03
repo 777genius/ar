@@ -80,11 +80,15 @@ export function codexGoalLaunchManifestInputFromLaunch(
     ...(launch.config.executionEngine
       ? { executionEngine: launch.config.executionEngine }
       : {}),
+    ...(launch.config.checkpointRequired || launch.config.checkpointPublisherSocketPath
+      ? { checkpointRequired: true } : {}),
     ...(launch.config.taskTimeoutMs ? { taskTimeoutMs: launch.config.taskTimeoutMs } : {}),
     ...(launch.config.appServerStartupTimeoutMs
       ? { appServerStartupTimeoutMs: launch.config.appServerStartupTimeoutMs }
       : {}),
     ...(launch.config.staleLockMs ? { staleLockMs: launch.config.staleLockMs } : {}),
+    ...(launch.config.childLifetime ? { childLifetime: launch.config.childLifetime,
+      maxGoalTurns: launch.config.maxGoalTurns!, safeExecutionPolicy: launch.config.safeExecutionPolicy! } : {}),
     ...(launch.config.maxAccountCycles
       ? { maxAccountCycles: launch.config.maxAccountCycles }
       : {}),

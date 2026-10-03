@@ -160,6 +160,19 @@ export class FakeIntegratedOutputLedger implements IntegratedOutputLedgerPort {
   prepareRejectionCalls = 0;
   finalizeRejectionCalls = 0;
   lastRejectedAt?: string;
+  private prepared?: IntegratedOutputLedgerPreparation;
+
+  async readPrepared(input: { readonly attempt: IntegrationAttempt; readonly commitSha: string }) {
+    if (this.prepared &&
+        (this.prepared.attemptId !== input.attempt.attemptId || this.prepared.commitSha !== input.commitSha)) {
+      throw new Error("integrated_output_ledger_preparation_conflict");
+    }
+    return this.prepared;
+  }
+
+  async prepareAdoption(input: { readonly attempt: IntegrationAttempt; readonly commitSha: string }) {
+    return this.prepare(input);
+  }
 
   async prepare(input: {
     readonly attempt: IntegrationAttempt;
@@ -167,7 +180,7 @@ export class FakeIntegratedOutputLedger implements IntegratedOutputLedgerPort {
   }): Promise<IntegratedOutputLedgerPreparation> {
     this.prepareCalls += 1;
     if (this.prepareError) throw this.prepareError;
-    return {
+    return (this.prepared = {
       attemptId: input.attempt.attemptId,
       workerJobId: input.attempt.workerOutput.workerJobId,
       workerWorkspacePath: input.attempt.workerOutput.workspacePath,
@@ -176,7 +189,7 @@ export class FakeIntegratedOutputLedger implements IntegratedOutputLedgerPort {
       statusPath: "/archive/status",
       patchPath: "/archive/patch",
       numstatPath: "/archive/numstat",
-    };
+    });
   }
 
   async finalize(input: {
@@ -256,6 +269,10 @@ export class MemoryAttemptStore implements IntegrationAttemptStorePort {
   appendEvent(_attemptId: string, event: IntegrationAuditEvent): void {
     this.events.push(event);
   }
+
+  readEvents(attemptId: string): readonly IntegrationAuditEvent[] {
+    return this.events.filter((event) => event.attemptId === attemptId);
+  }
 }
 
 export class FakeGit implements GitPort {
@@ -294,6 +311,8 @@ export class FakeGit implements GitPort {
         : {}),
     };
   }
+
+  async verifyMergeOutputTree() { return "e".repeat(40); }
 
   diffCheck() {
     this.calls.push("diffCheck");

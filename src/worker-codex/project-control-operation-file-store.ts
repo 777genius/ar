@@ -182,6 +182,7 @@ export async function durableReplaceJsonFile(input: {
   readonly value: unknown;
   readonly mode?: number;
   readonly ensureParent?: boolean;
+  readonly beforePublication?: () => Promise<void>;
 }): Promise<void> {
   const parent = dirname(input.path);
   if (input.ensureParent !== false) {
@@ -198,6 +199,7 @@ export async function durableReplaceJsonFile(input: {
       value: input.value,
       mode: input.mode ?? 0o600,
     });
+    await input.beforePublication?.();
     await rename(temporaryPath, input.path);
     await syncDirectory(parent);
   } finally {

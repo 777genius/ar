@@ -23,6 +23,26 @@ export class CodexAppServerProviderError extends Error {
   }
 }
 
+export class CodexAppServerOutputLimitError extends Error {
+  constructor() {
+    super("codex_app_server_output_too_large");
+    this.name = "CodexAppServerOutputLimitError";
+  }
+}
+
+export function isCodexAppServerOutputLimitError(
+  error: unknown,
+): error is CodexAppServerOutputLimitError {
+  const seen = new Set<Error>();
+  let current = error;
+  while (current instanceof Error && !seen.has(current)) {
+    if (current instanceof CodexAppServerOutputLimitError) return true;
+    seen.add(current);
+    current = current.cause;
+  }
+  return false;
+}
+
 export function codexAppServerProviderError(
   prefix: string,
   payload: unknown,
@@ -131,13 +151,18 @@ export function isAbortLikeError(error: unknown): boolean {
 }
 
 export function safeMessage(error: unknown): string {
-  if (error instanceof Error) return error.message.slice(-1000);
-  if (typeof error === "string") return error.slice(-1000);
+  if (error instanceof Error) return boundedErrorMessage(error.message);
+  if (typeof error === "string") return boundedErrorMessage(error);
   const record = readRecord(error);
-  if (typeof record?.message === "string") return record.message.slice(-1000);
+  if (typeof record?.message === "string") return boundedErrorMessage(record.message);
   const nested = record ? readRecord(record.error) : null;
-  if (typeof nested?.message === "string") return nested.message.slice(-1000);
+  if (typeof nested?.message === "string") return boundedErrorMessage(nested.message);
   return "unknown";
+}
+
+function boundedErrorMessage(message: string): string {
+  // Tail slicing can turn a registered secret into an unrecognizable prefix.
+  return message.length > 1000 ? "[redacted:oversized-app-server-error]" : message;
 }
 
 function stringValue(value: unknown): string | null {

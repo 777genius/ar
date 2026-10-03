@@ -80,6 +80,7 @@ export type SafeExecutionRunInput<Job, Result> = {
   ) => SafeExecutionFailureClassification;
   readonly summarizeResult?: (result: Result) => string | undefined;
   readonly attemptUsage?: (result: Result) => AttemptUsage | undefined;
+  readonly attemptUsageFromError?: (error: unknown) => AttemptUsage | undefined;
   readonly summarizeError?: (error: unknown) => string | undefined;
   readonly summarizeErrorOutput?: (error: unknown) => string | undefined;
   readonly controlTarget?: WorkerControlTarget;

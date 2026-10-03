@@ -44,6 +44,8 @@ export type GoalMcpArgs = {
   readonly reasoningEffort?: CodexGoalRunConfig["reasoningEffort"];
   readonly serviceTier?: CodexGoalRunConfig["serviceTier"];
   readonly executionEngine?: CodexGoalRunConfig["executionEngine"];
+  readonly checkpointRequired?: boolean;
+  readonly modelBackend?: CodexGoalRunConfig["modelBackend"];
   readonly taskTimeoutMs?: number;
   readonly appServerStartupTimeoutMs?: number;
   readonly staleLockMs?: number;
@@ -91,6 +93,7 @@ export type JobWatchMcpArgs = JobOverviewMcpArgs & {
 };
 
 export type AgentRunWatchMcpArgs = JobOverviewMcpArgs & {
+  readonly cursor?: string;
   readonly providerKind?: string;
   readonly jobId?: string;
   readonly jobIds?: string | readonly string[];
@@ -123,6 +126,7 @@ export type AgentRunEventCompactionMcpArgs = JobRegistryMcpArgs & {
 
 export type AgentRunProjectEventsMcpArgs = AgentRunEventsMcpArgs & {
   readonly hostId?: string;
+  readonly eventLimit?: number;
 };
 
 export type JobIdMcpArgs = JobRegistryMcpArgs & {
@@ -166,6 +170,9 @@ export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
   readonly confirmFastForwardExisting?: boolean;
   readonly confirmIntegrate?: boolean;
   readonly confirmUpdate?: boolean;
+  readonly confirmRelocate?: boolean;
+  readonly historicalNeverRunAttestation?: import("./application/project-control/codex-goal-controller-historical-attestation").ControllerHistoricalAttestation;
+  readonly expectedManifestSha256?: string;
   readonly confirmPush?: boolean;
   readonly confirmStart?: boolean;
   readonly continuationAccounts?: string | readonly string[];
@@ -240,6 +247,7 @@ export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
   readonly captureReviewedOutput?: boolean;
   readonly reviewedOutputId?: string;
   readonly expectedPatchSha256?: string;
+  readonly reviewedOutputFileByteAllowance?: number;
   readonly reviewDecision?: string;
   readonly reviewedBy?: string;
   readonly reviewReason?: string;
@@ -292,9 +300,17 @@ export type JobLifecycleMcpArgs = JobIdMcpArgs & {
 export type JobBriefMcpArgs = JobIdMcpArgs & {
   readonly staleAfterMs?: number;
   readonly tailLines?: number;
+  readonly includeLogTail?: boolean;
+  readonly detail?: CodexGoalBriefDetail;
+  readonly afterRevision?: string;
   readonly targetCommit?: string;
   readonly targetWorkspacePath?: string;
 };
+
+export enum CodexGoalBriefDetail {
+  Compact = "compact",
+  Full = "full",
+}
 
 export type JobResultReconcileMcpArgs = JobBriefMcpArgs & {
   readonly forceWrite?: boolean;

@@ -27,6 +27,39 @@ describe("Codex goal handoff secret security", () => {
     ));
   });
 
+  it("binds the original base and blobs despite replacement refs", async () => {
+    const fixture = await createFixture();
+    const path = join(fixture.workspacePath, "README.md");
+    await writeFile(path, 'secret = "' + "replacement-probe-".repeat(3) + '";\n');
+    await git(fixture.workspacePath, ["add", "README.md"]);
+    await git(fixture.workspacePath, ["commit", "-m", "test: unsafe original"]);
+    const original = await gitOutput(fixture.workspacePath, ["rev-parse", "HEAD"]);
+    const originalBlob = await gitOutput(fixture.workspacePath, [
+      "rev-parse", "HEAD:README.md",
+    ]);
+    const safeBlob = await gitOutput(fixture.workspacePath, [
+      "rev-parse", `${fixture.baseCommit}:README.md`,
+    ]);
+    await git(fixture.workspacePath, ["replace", original, fixture.baseCommit]);
+    await git(fixture.workspacePath, ["replace", originalBlob, safeBlob]);
+    const patch = [
+      "diff --git a/README.md b/README.md",
+      "--- a/README.md", "+++ b/README.md",
+      "@@ -1 +1 @@", "-fixture", "+safe replacement", "",
+    ].join("\n");
+    const validate = (baseCommit: string) => assertGitPatchBlobsSecretSafe({
+      workspacePath: fixture.workspacePath,
+      tempRootDir: fixture.jobRootDir,
+      baseCommit,
+      changedPaths: ["README.md"],
+      patch,
+    });
+    await expect(validate(fixture.baseCommit)).resolves.toBe(25);
+    await expect(validate(original)).rejects.toThrow("git_patch_secret_");
+    await git(fixture.workspacePath, ["replace", "-d", original]);
+    await expect(validate(original)).rejects.toThrow("git_patch_secret_");
+  });
+
   it("allows an exact fixture literal only in an explicit fixture path", async () => {
     const fixture = await createFixture();
     const fixtureDirectory = join(fixture.workspacePath, "tests", "fixtures");
@@ -195,6 +228,34 @@ describe("Codex goal handoff secret security", () => {
       maxTotalFileBytes: 64 * 1024,
       opaqueContentPolicy: OpaqueSecretDetectionPolicy.ScanKnownSignatures,
     })).resolves.toBe(64 * 1024);
+  });
+
+  it("rejects surplus binary directions and trailing compressed input", async () => {
+    const fixture = await createFixture();
+    const before = Buffer.from("fixture\n");
+    const after = Buffer.from("safe replacement\n");
+    const { createHash } = await import("node:crypto");
+    const oid = (bytes: Buffer) => createHash("sha1")
+      .update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+    const header = [
+      "diff --git a/README.md b/README.md",
+      `index ${oid(before)}..${oid(after)} 100644`, "GIT binary patch",
+    ].join("\n") + "\n";
+    const forward = binaryHunk("literal", after);
+    const reverse = binaryHunk("literal", before);
+    const validate = (payload: string) => assertGitPatchBlobsSecretSafe({
+      workspacePath: fixture.workspacePath, baseCommit: fixture.baseCommit,
+      changedPaths: ["README.md"], tempRootDir: fixture.jobRootDir,
+      patch: header + payload + "\n\n",
+    });
+    await expect(validate(forward + "\n\n" + reverse)).resolves.toBe(25);
+    await expect(validate([forward, reverse, reverse].join("\n\n")))
+      .rejects.toThrow("git_patch_secret_binary_patch_invalid");
+    const trailing = `literal ${after.length}\n` + encodeGitBase85(
+      Buffer.concat([deflateSync(after), deflateSync(Buffer.from("extra"))]),
+    );
+    await expect(validate(trailing + "\n\n" + reverse))
+      .rejects.toThrow("git_patch_secret_binary_patch_invalid");
   });
 
   it("rejects an oversized expanded binary before materializing patch objects", async () => {

@@ -1,3 +1,8 @@
+import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
+import { resolve } from "node:path";
+import { RunEventProviderKind } from "@vioxen/subscription-runtime/worker-core";
+import { bindControllerStateLocation } from "./application/project-control/codex-goal-controller-state-location";
+import { withLocalControllerActivityLease } from "@vioxen/subscription-runtime/store-local-file";
 import {
   LaunchPlanStatus,
   type ProjectAccessScope,
@@ -96,52 +101,76 @@ export async function projectControllerStartView(
   args: ProjectControllerLaunchPlanMcpArgs,
   deps: CodexGoalMcpProjectControllerDeps,
 ): Promise<JsonObject> {
-  const controller = await deps.loadProjectControlController(args);
-  const options = projectControllerOptionsFromMcpArgs(args);
-  const state = projectControllerState(options, controller, deps.providerRuntimeRegistry);
-  const profile = state.profile;
-  const base = controllerViewBase(controller, state, projectControllerProviderKind(options));
-  const plan = projectControllerLaunchInput(controller, state, profile);
-  if (plan.status === LaunchPlanStatus.Blocked) {
-    return projectControllerStartLaunchBlockedViewJson({ base, plan });
-  }
-  const launch = await goalLaunchInput(codexGoalJobToArgs(controller.controller));
-  const providerInput = await projectControllerProvider({
-    options,
-    controller,
-    launch,
-    profile,
-    state,
-    registry: deps.providerRuntimeRegistry,
-  });
-  const started = await startProjectControllerControlledRun({
-    controllerJobId: controller.controller.jobId,
-    scope: controller.scope,
-    profile,
-    state,
-    launch,
-    providerInput,
-    deps,
-  });
-  if (!started.result.ok) {
-    if ("reason" in started.result) {
-      return projectControllerStartExistingRunViewJson({
-        base,
-        result: started.result,
+  const observed = await deps.loadProjectControlController(args);
+  return await withLocalControllerActivityLease({
+    controllerJobRootDir: observed.controller.jobRootDir,
+    owner: `controller-start:${observed.controller.jobId}`,
+    effect: async () => {
+      const controller = await deps.loadProjectControlController(args);
+      if (JSON.stringify(controller.controller) !== JSON.stringify(observed.controller)) {
+        throw new Error("controller_start_manifest_drift");
+      }
+      const options = projectControllerOptionsFromMcpArgs(args);
+      let state = projectControllerState(options, controller, deps.providerRuntimeRegistry);
+      let profile = state.profile;
+      const base = controllerViewBase(controller, state, projectControllerProviderKind(options));
+      const plan = projectControllerLaunchInput(controller, state, profile);
+      if (plan.status === LaunchPlanStatus.Blocked) {
+        return projectControllerStartLaunchBlockedViewJson({ base, plan });
+      }
+      // Pure prerequisites belong inside the activity lease, but must not
+      // consume the immutable state location when no provider effect occurred.
+      const launch = await goalLaunchInput(codexGoalJobToArgs(controller.controller));
+      if (profile.kind === RunEventProviderKind.Codex) {
+        if (!controller.scope.authRoot) {
+          throw new Error("project_control_controller_auth_root_scope_required");
+        }
+        if (resolve(launch.config.authRootDir) !== resolve(controller.scope.authRoot)) {
+          throw new Error("project_control_controller_auth_root_outside_scope");
+        }
+      }
+      if (profile.kind === RunEventProviderKind.Codex) await admitHostedControllerLaunch(launch);
+      const canonicalStateDir = await bindControllerStateLocation(controller.controller, state.stateDir);
+      state = projectControllerState({ ...options, stateDir: canonicalStateDir }, controller, deps.providerRuntimeRegistry);
+      profile = state.profile;
+      const providerInput = await projectControllerProvider({
+        options,
+        controller,
+        launch,
+        profile,
+        state,
+        registry: deps.providerRuntimeRegistry,
       });
-    }
-    return projectControllerStartUseCaseBlockedViewJson({
-      base,
-      result: started.result,
-    });
-  }
-  return projectControllerStartReadyViewJson({
-    base,
-    profile,
-    plan,
-    result: started.result,
-    owner: started.owner,
-    providerEvidence: started.providerEvidence,
+      const started = await startProjectControllerControlledRun({
+        controllerJobId: controller.controller.jobId,
+        scope: controller.scope,
+        profile,
+        state,
+        launch,
+        providerInput,
+        deps,
+      });
+      if (!started.result.ok) {
+        if ("reason" in started.result) {
+          return projectControllerStartExistingRunViewJson({
+            base,
+            result: started.result,
+          });
+        }
+        return projectControllerStartUseCaseBlockedViewJson({
+          base,
+          result: started.result,
+        });
+      }
+      return projectControllerStartReadyViewJson({
+        base,
+        profile,
+        plan,
+        result: started.result,
+        owner: started.owner,
+        providerEvidence: started.providerEvidence,
+      });
+    },
   });
 }
 

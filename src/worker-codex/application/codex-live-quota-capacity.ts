@@ -1,6 +1,14 @@
 import {
   AccountAvailability,
+  AgentProvider,
+  AuthSessionStatus,
+  ObservationEvidenceConfidence,
+  ObservationEvidenceKind,
+  ObservationEvidenceSource,
+  ObservationPolicy,
   QuotaLimitState,
+  codexMainQuotaSnapshot,
+  quotaSnapshotFromRateLimits,
   type AccountObservation,
   type QuotaWindow,
 } from "@vioxen/agent-account-observability";
@@ -19,6 +27,57 @@ import {
 
 export const codexLiveQuotaCapacitySource = "codex_app_server_live_quota";
 const maxQuotaRecordsClearedPerObservation = 64;
+
+export function recordCodexAppServerRateLimitsSnapshot(input: {
+  readonly accountId: string;
+  readonly result: unknown;
+  readonly observedAt: Date;
+  readonly store: WorkerAccountCapacityStore;
+}):
+  | { readonly status: "admitted" }
+  | { readonly status: "rejected"; readonly reason: string } {
+  const auth = {
+    status: AuthSessionStatus.Authenticated,
+    checkedAt: input.observedAt,
+  } as const;
+  const quota = codexMainQuotaSnapshot(
+    quotaSnapshotFromRateLimits({
+      result: input.result,
+      now: input.observedAt,
+    }),
+  );
+  if (!quota || quota.windows.length === 0) {
+    return { status: "admitted" };
+  }
+  const decision = new ObservationPolicy().decide({ auth, quota });
+  const observation: AccountObservation = {
+    account: {
+      provider: AgentProvider.Codex,
+      slotId: input.accountId,
+    },
+    auth,
+    quota,
+    decision,
+    evidence: [
+      {
+        source: ObservationEvidenceSource.CodexAppServer,
+        kind: ObservationEvidenceKind.Quota,
+        confidence: ObservationEvidenceConfidence.High,
+        observedAt: input.observedAt,
+        message: "account_rate_limits_snapshot",
+      },
+    ],
+    checkedAt: input.observedAt,
+  };
+  recordCodexLiveQuotaCapacity({
+    accountId: input.accountId,
+    observation,
+    store: input.store,
+  });
+  return decision.availability === AccountAvailability.Limited
+    ? { status: "rejected", reason: "quota_limited" }
+    : { status: "admitted" };
+}
 
 export function recordCodexLiveQuotaCapacity(input: {
   readonly accountId: string;
@@ -48,10 +107,11 @@ export function recordCodexLiveQuotaCapacity(input: {
     accountId,
     now: input.observation.checkedAt,
   });
+  // Live metadata must not relabel an execution failure or another blocker.
+  if (current && !isQuotaCapacityRecord(current.capacity)) return false;
   if (
     current &&
     current.demand === null &&
-    isQuotaCapacityRecord(current.capacity) &&
     capacity
   ) {
     const claimed = input.store.tryClaimRecheck({
@@ -141,9 +201,9 @@ function clearObservedQuotaCapacity(input: {
 }
 
 function isQuotaCapacityRecord(capacity: WorkerCapacitySnapshot): boolean {
-  return capacity.reason === "quota_limited" ||
-    capacity.reason?.startsWith("quota_recheck_") === true ||
-    capacity.details?.capacitySource === codexLiveQuotaCapacitySource;
+  return capacity.details?.capacitySource === codexLiveQuotaCapacitySource &&
+    (capacity.reason === "quota_limited" ||
+      capacity.reason === "quota_recheck_in_progress");
 }
 
 export function codexLiveQuotaCapacitySnapshot(

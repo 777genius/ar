@@ -1,3 +1,4 @@
+import { parseChildLifetime, type ChildLifetime } from "@vioxen/subscription-runtime/core";
 import type { ProviderTaskControls } from "@vioxen/subscription-runtime/core";
 import {
   AccessBoundary,
@@ -22,6 +23,7 @@ export type CodexGoalAccessConfig = {
 };
 
 export type CodexGoalAccessPlanConfig = CodexGoalAccessConfig & {
+  readonly childLifetime?: ChildLifetime | undefined;
   readonly editMode?: ProviderTaskControls["editMode"];
   readonly providerSandboxMode?: ProviderTaskControls["providerSandboxMode"];
 };
@@ -105,12 +107,13 @@ export function buildCodexGoalAccessLaunchPlan(
   }
   const networkBlocker = codexGoalNetworkAccessBlocker(config);
   if (networkBlocker) return networkBlocker;
+  if (config.childLifetime && parseChildLifetime(config.childLifetime).accessBoundary !== config.accessBoundary) throw new Error("child_access_boundary_conflict");
   return buildLaunchPlan({
     boundary: config.accessBoundary,
     ...(config.projectAccessScope === undefined
       ? {}
       : { scope: config.projectAccessScope }),
-    adapter: codexGoalLaunchAdapterCapabilities,
+    adapter: config.childLifetime ? { ...codexGoalLaunchAdapterCapabilities, canDisableRawShell: true } : codexGoalLaunchAdapterCapabilities,
     ...(config.allowDangerFullAccess === undefined
       ? {}
       : { allowDangerFullAccess: config.allowDangerFullAccess }),
@@ -124,6 +127,15 @@ export function commandPolicyForHostedCodexGoal(input: {
   readonly accessLaunchPlan: LaunchPlan | undefined;
   readonly sourceEnv: Readonly<Record<string, string | undefined>> | undefined;
 }): CommandPolicy | undefined {
+  if (
+    input.accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
+    input.accessLaunchPlan.boundary === AccessBoundary.IsolatedWorkspaceWrite
+  ) {
+    return {
+      ...input.accessLaunchPlan.commandPolicy,
+      validateCommands: false,
+    };
+  }
   if (
     input.accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
     input.accessLaunchPlan.commandPolicy.validateCommands
@@ -140,6 +152,21 @@ export function commandPolicyForHostedCodexGoal(input: {
     deniedPathPrefixes: [],
     deniedInlineCodeExecutables: [],
     deniedScriptExecutables: [],
+  };
+}
+
+export function codexGoalHostedExecutionBoundary(input: {
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  readonly projectAccessScope?: ProjectAccessScope;
+  readonly accessBoundary?: AccessBoundary;
+  readonly commandPolicy?: CommandPolicy | undefined;
+}) {
+  return {
+    sourceEnv: input.sourceEnv ?? process.env,
+    enforceProjectReadBoundary: input.projectAccessScope !== undefined &&
+      (input.accessBoundary === AccessBoundary.ReadOnly ||
+        input.accessBoundary === AccessBoundary.IsolatedWorkspaceWrite),
+    ...(input.commandPolicy === undefined ? {} : { commandPolicy: input.commandPolicy }),
   };
 }
 

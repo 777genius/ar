@@ -404,6 +404,7 @@ describe("codex goal MCP project-control server", () => {
       const controllerSignals = await callToolJson(client, "codex_goal_control_list", {
         registryRootDir,
         jobId: "infinity-context-controller-v1",
+        state: "all",
       });
       expect(controllerSignals.signals).toMatchObject([
         {
@@ -414,7 +415,6 @@ describe("codex goal MCP project-control server", () => {
           },
         },
       ]);
-
       const childDecision = await callToolJson(client, "codex_goal_control_decision", {
         registryRootDir,
         jobId: "infinity-context-child-v1",

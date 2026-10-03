@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   mkdir,
   lstat,
@@ -17,17 +18,20 @@ import {
   type ProjectControlEvidenceCustodyPort,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
+  CodexGoalAccountSelectionMode,
   codexGoalJobManifestPath,
   codexGoalJobToArgs,
   codexGoalJobManifestSchemaVersion,
   createCodexGoalJob,
   listCodexGoalJobs,
+  parseCodexGoalJobManifest,
   readCodexGoalJob,
   summarizeCodexGoalJob,
   updateCodexGoalJob,
   type CodexGoalJobManifestInput,
 } from "../codex-goal-jobs";
 import { upsertCodexGoalLaunchManifest } from "../codex-goal-launch-manifest";
+import { updateCodexGoalJobUseCase } from "../application/codex-goal-job-use-cases";
 import { loadProjectControlController } from
   "../codex-goal-mcp-project-control-deps";
 import {
@@ -37,6 +41,77 @@ import {
   "../../worker-local/project-control-evidence-custody-local-adapter";
 
 describe("codex goal job registry", () => {
+  it("updates ordinary account provenance and rejects unknown-origin replacement of marked pools", async () => {
+    const root = await mkdtemp(join(tmpdir(), "account-update-provenance-"));
+    const registryRootDir = join(root, "registry");
+    try {
+      const {
+        projectAccessScope: _scope, accessBoundary: _boundary, ...ordinaryJob
+      } = jobManifest(root);
+      const created = await createCodexGoalJob({
+        registryRootDir,
+        manifest: {
+          ...ordinaryJob,
+          accountSelectionMode: CodexGoalAccountSelectionMode.Automatic,
+        },
+      });
+      await expect(updateCodexGoalJob({
+        registryRootDir, jobId: created.jobId,
+        patch: { accounts: ["account-b", "account-a"] },
+      })).rejects.toThrow("codex_goal_job_account_selection_origin_required");
+      expect((await readCodexGoalJob({ registryRootDir, jobId: created.jobId })).accounts)
+        .toEqual(["account-a", "account-b"]);
+      const updated = await updateCodexGoalJobUseCase({
+        registryRootDir, jobId: created.jobId,
+        accounts: ["account-b", "account-a"],
+      });
+      expect(updated).toMatchObject({ ok: true });
+      expect(await readCodexGoalJob({ registryRootDir, jobId: created.jobId }))
+        .toMatchObject({
+          accounts: ["account-b", "account-a"],
+          accountSelectionMode: CodexGoalAccountSelectionMode.Explicit,
+        });
+      const legacy = await createCodexGoalJob({
+        registryRootDir,
+        manifest: { ...ordinaryJob, jobId: "job-legacy", jobRootDir: join(root, "legacy") },
+      });
+      const updatedLegacy = await updateCodexGoalJob({
+        registryRootDir, jobId: legacy.jobId, patch: { accounts: ["account-b"] },
+      });
+      expect(updatedLegacy.accountSelectionMode).toBeUndefined();
+      expect((await readCodexGoalJob({ registryRootDir, jobId: legacy.jobId }))
+        .accountSelectionMode).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("persists account selection provenance and validates legacy absence", async () => {
+    const root = await mkdtemp(join(tmpdir(), "project-account-provenance-"));
+    const registryRootDir = join(root, "registry");
+    try {
+      const created = await createCodexGoalJob({
+        registryRootDir,
+        manifest: {
+          ...jobManifest(root),
+          accountSelectionMode: CodexGoalAccountSelectionMode.Explicit,
+        },
+      });
+      expect((await readCodexGoalJob({
+        registryRootDir,
+        jobId: created.jobId,
+      })).accountSelectionMode).toBe(CodexGoalAccountSelectionMode.Explicit);
+      const { accountSelectionMode: _mode, ...legacy } = created;
+      expect(parseCodexGoalJobManifest(legacy).accountSelectionMode).toBeUndefined();
+      expect(() => parseCodexGoalJobManifest({
+        ...created,
+        accountSelectionMode: "preferred",
+      })).toThrow("codex_goal_job_accountSelectionMode_invalid");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("creates, lists, reads, updates and summarizes versioned job manifests", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-jobs-"));
     const registryRootDir = join(root, "registry");
@@ -88,6 +163,55 @@ describe("codex goal job registry", () => {
       expect(updated.taskTimeoutMs).toBe(42_000);
       expect(updated.createdAt).toBe(created.createdAt);
       expect(updated.updatedAt).toBe("2026-06-01T00:10:00.000Z");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects moving a manifest to a different root under the old job admission", async () => {
+    const root = await mkdtemp(join(tmpdir(), "test-job-root-admission-"));
+    const registryRootDir = join(root, "registry");
+    try {
+      const created = await createCodexGoalJob({ registryRootDir, manifest: jobManifest(root) });
+      const path = codexGoalJobManifestPath({ registryRootDir, jobId: created.jobId });
+      const before = await readFile(path, "utf8");
+      await expect(updateCodexGoalJob({ registryRootDir, jobId: created.jobId,
+        patch: { jobRootDir: join(root, "other-job-root") },
+      })).rejects.toThrow("job_manifest_activity_identity_invalid");
+      expect(await readFile(path, "utf8")).toBe(before);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps raw revision CAS and parsed scope CAS distinct and revalidates before publication", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-jobs-cas-"));
+    const registryRootDir = join(root, "registry");
+    const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+    try {
+      const created = await createCodexGoalJob({ registryRootDir, manifest: jobManifest(root) });
+      const input = { registryRootDir, jobId: created.jobId, patch: { description: "updated" } };
+      const path = codexGoalJobManifestPath(input);
+      const raw = await readFile(path, "utf8");
+      const parsed = sha(JSON.stringify(created));
+      expect(sha(raw)).not.toBe(parsed);
+      await expect(updateCodexGoalJob({ ...input, expectedManifestSha256: parsed }))
+        .rejects.toThrow("job_manifest_revision_mismatch");
+      await expect(updateCodexGoalJob({ ...input, expectedParsedManifestSha256: sha(raw) }))
+        .rejects.toThrow("project_control_controller_scope_cas_mismatch");
+      let invoked = false;
+      await expect(updateCodexGoalJob({ ...input,
+        expectedManifestSha256: sha(raw), expectedParsedManifestSha256: parsed,
+        beforeManifestPublication: async () => {
+          invoked = true;
+          await writeFile(path, JSON.stringify({ ...created, description: "concurrent" }));
+        },
+      })).rejects.toThrow("project_control_controller_scope_cas_mismatch");
+      expect(invoked).toBe(true);
+      const current = await readCodexGoalJob(input);
+      expect(current.description).toBe("concurrent");
+      await expect(updateCodexGoalJob({ ...input,
+        expectedManifestSha256: sha(await readFile(path, "utf8")),
+        expectedParsedManifestSha256: sha(JSON.stringify(current)),
+      })).resolves.toMatchObject({ description: "updated" });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

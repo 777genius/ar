@@ -1,3 +1,4 @@
+import type { CodexGoalObservationContext } from "./application/codex-goal-observation-context";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -45,12 +46,14 @@ import {
 } from "./codex-goal-ops";
 import { codexGoalProgressPath } from "./codex-goal-runner";
 import { isCodexGoalHeartbeatOnlyNoOutput } from "./application/codex-goal-decision";
+import { boundCodexGoalLogTailText } from "./codex-goal-log-tail";
 
 const defaultAuthRoot = "~/.cache/subscription-runtime/live-codex-auth";
 const defaultStaleAfterMs = 10 * 60_000;
 const defaultTailLines = 20;
 
 export type CodexRunObservationAdapterOptions = {
+  readonly observationContext?: CodexGoalObservationContext;
   readonly registryRootDir?: string;
   readonly cwd?: string;
   readonly staleAfterMs?: number;
@@ -107,7 +110,7 @@ export class CodexRunObservationAdapter implements RunObservationPort {
       logPath: paths.logPath,
       progressPath: paths.progressPath,
       ...(manifest.tmuxSession ? { tmuxSession: manifest.tmuxSession } : {}),
-    });
+    }, this.options.observationContext);
     const capacity = await this.capacityHints({ manifest, paths });
     const warnings = status.warnings.map((message): RunObservationWarning => ({
       code: "codex_status_warning",
@@ -346,10 +349,7 @@ export class CodexRunObservationAdapter implements RunObservationPort {
       taskId: input.manifest.taskId,
       workspaceId: input.paths.workspacePath,
     };
-    const [report, signals] = await Promise.all([
-      control.reconcile({ target }),
-      control.listSignals({ target, includeExpired: true, includeBodies: false }),
-    ]);
+    const { report, signals } = await control.reconcileSnapshot({ target });
     if (report.signalCount === 0) return undefined;
     const latestSignalAt = latestIso(signals.map((view) => view.signal.createdAt));
     const latestDeliveredAt = latestIso(signals
@@ -453,7 +453,11 @@ export class CodexRunObservationAdapter implements RunObservationPort {
       return {
         ...log,
         tailLines: lines,
-        tail: this.redactor.redact(await tailCodexGoalLog(input.status.logPath, lines)),
+        tail: boundCodexGoalLogTailText(
+          this.redactor.redact(
+            await tailCodexGoalLog(input.status.logPath, lines),
+          ),
+        ),
         ...(input.status.logByteLength === undefined
           ? {}
           : { truncated: input.status.logByteLength > 0 }),

@@ -1,3 +1,5 @@
+import { childConfigFromRecord } from "../child-execution-confinement";
+import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "../codex-worker-defaults";
 import { join } from "node:path";
 import {
   defaultCodexGoalJobRoot,
@@ -14,6 +16,9 @@ import {
   parseCodexGoalProjectAccessScope,
 } from "../codex-goal-access-plan";
 import { defaultCodexGoalAuthRoot } from "./codex-goal-account-roots";
+import { CodexGoalAccountSelectionMode } from "../codex-goal-account-selection-mode";
+import { optionalCodexGoalModelBackend } from "../codex-goal-model-backend";
+import { optionalCodexGoalMimoAccountSlots } from "../codex-goal-mimo-account-slots";
 import {
   CODEX_GOAL_DEFAULT_TIMEOUT_MS,
   goalControlModesFromRecord,
@@ -54,6 +59,7 @@ export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGo
   );
   const networkAccess = optionalCodexGoalNetworkAccess(args.networkAccess);
   return {
+    ...childConfigFromRecord(args as unknown as JsonObject),
     jobId,
     ...(stringValue(args.description) ? { description: stringValue(args.description) as string } : {}),
     ...(tagValues(args.tags).length ? { tags: tagValues(args.tags) } : {}),
@@ -67,14 +73,17 @@ export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGo
       : {}),
     taskId: args.taskId ?? jobId,
     accounts: accountNames(args.accounts),
+    ...optionalCodexGoalMimoAccountSlots(args.mimoAccounts),
     ...(args.outputPath ? { outputPath: resolvePath(cwd, args.outputPath) } : {}),
     ...(args.progressPath ? { progressPath: resolvePath(cwd, args.progressPath) } : {}),
     progressHeartbeatMs: args.progressHeartbeatMs ?? 60_000,
     ...(args.codexBinaryPath ? { codexBinaryPath: args.codexBinaryPath } : {}),
-    model: args.model ?? "gpt-5.5",
-    reasoningEffort: args.reasoningEffort ?? "high",
+    model: args.model ?? CODEX_WORKER_DEFAULT_MODEL,
+    reasoningEffort: args.reasoningEffort ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT,
     serviceTier: args.serviceTier ?? "default",
     executionEngine: args.executionEngine ?? "app-server-goal",
+    ...(args.checkpointRequired === true ? { checkpointRequired: true } : {}),
+    ...optionalCodexGoalModelBackend(args.modelBackend),
     taskTimeoutMs: args.taskTimeoutMs ?? defaultTimeoutMs,
     ...(args.appServerStartupTimeoutMs
       ? { appServerStartupTimeoutMs: args.appServerStartupTimeoutMs }
@@ -112,7 +121,15 @@ export function jobManifestPatchFromArgs(args: CodexGoalJobUpdateInput): CodexGo
   putIfDefined(patch, "promptPath", args.promptPath && resolvePath(cwd, args.promptPath));
   putIfDefined(patch, "codexGoalObjective", stringValue(args.codexGoalObjective));
   putIfDefined(patch, "taskId", stringValue(args.taskId));
-  if (args.accounts !== undefined) patch.accounts = accountNames(args.accounts);
+  if (args.accounts !== undefined) {
+    patch.accounts = accountNames(args.accounts);
+    patch.accountSelectionMode = CodexGoalAccountSelectionMode.Explicit;
+  }
+  putIfDefined(
+    patch,
+    "mimoAccounts",
+    optionalCodexGoalMimoAccountSlots(args.mimoAccounts).mimoAccounts,
+  );
   putIfDefined(patch, "outputPath", args.outputPath && resolvePath(cwd, args.outputPath));
   putIfDefined(patch, "progressPath", args.progressPath && resolvePath(cwd, args.progressPath));
   putIfDefined(patch, "progressHeartbeatMs", numberValue(args.progressHeartbeatMs));
@@ -121,6 +138,11 @@ export function jobManifestPatchFromArgs(args: CodexGoalJobUpdateInput): CodexGo
   putIfDefined(patch, "reasoningEffort", stringValue(args.reasoningEffort));
   putIfDefined(patch, "serviceTier", stringValue(args.serviceTier));
   putIfDefined(patch, "executionEngine", stringValue(args.executionEngine));
+  putIfDefined(
+    patch,
+    "modelBackend",
+    optionalCodexGoalModelBackend(args.modelBackend).modelBackend,
+  );
   putIfDefined(patch, "taskTimeoutMs", numberValue(args.taskTimeoutMs));
   putIfDefined(
     patch,

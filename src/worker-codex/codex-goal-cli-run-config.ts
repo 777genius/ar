@@ -1,3 +1,7 @@
+import { assertVerifiedHostedChildConfig } from "./hosted-child-slot-files";
+import { parseChildLifetimeJson } from "@vioxen/subscription-runtime/core";
+import { assertChildGoalConfig } from "./child-execution-confinement";
+import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
 import { join } from "node:path";
 import {
   type ParsedFlags,
@@ -11,6 +15,7 @@ import {
   codexGoalAccountSlots,
   type CodexGoalRunConfig,
 } from "./codex-goal-runner";
+import { optionalCodexGoalModelBackend } from "./codex-goal-model-backend";
 import {
   assertCodexGoalProviderSandboxModeAllowed,
   optionalCodexGoalProviderSandboxMode,
@@ -46,13 +51,20 @@ export function runConfigFromFlags(
   );
   const reasoningEffort = (option(values, env, "--effort", [
     "CODEX_REASONING_EFFORT",
-  ]) ?? "high") as CodexGoalRunConfig["reasoningEffort"];
+  ]) ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT) as CodexGoalRunConfig["reasoningEffort"];
   const serviceTier = (option(values, env, "--service-tier", [
     "CODEX_SERVICE_TIER",
   ]) ?? "default") as CodexGoalRunConfig["serviceTier"];
   const executionEngine = (option(values, env, "--execution-engine", [
     "CODEX_EXECUTION_ENGINE",
   ]) ?? "app-server-goal") as CodexGoalRunConfig["executionEngine"];
+  const modelBackend = optionalCodexGoalModelBackend(
+    option(values, env, "--model-backend", ["CODEX_MODEL_BACKEND"]),
+    "--model-backend",
+  );
+  const checkpointPublisherSocketPath = option(values, env, "--checkpoint-publisher-socket", [
+    "SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET",
+  ]);
   const staleLockMs = parseOptionalPositiveInteger(
     option(values, env, "--stale-lock-ms", []),
     "--stale-lock-ms",
@@ -115,7 +127,15 @@ export function runConfigFromFlags(
     TMP: agentTempRoot,
     TEMP: agentTempRoot,
   } as const;
+  const childLifetimeJson = option(values, env, "--child-lifetime-json", []);
+  const childLifetime = childLifetimeJson === undefined ? undefined : parseChildLifetimeJson(childLifetimeJson);
   const config: CodexGoalRunConfigWithAppServerStartupTimeout = {
+    ...(childLifetime ? { childLifetime } : {}),
+    ...(option(values, env, "--max-goal-turns", []) === undefined ? {} : { maxGoalTurns: parseOptionalPositiveInteger(option(values, env, "--max-goal-turns", []), "--max-goal-turns")! }),
+    ...(option(values, env, "--max-attempts", []) === undefined && option(values, env, "--continuation-mode", []) === undefined ? {} : { safeExecutionPolicy: {
+      ...(option(values, env, "--max-attempts", []) === undefined ? {} : { maxAttempts: parseOptionalPositiveInteger(option(values, env, "--max-attempts", []), "--max-attempts")! }),
+      ...(option(values, env, "--continuation-mode", []) === undefined ? {} : { continuationMode: option(values, env, "--continuation-mode", []) as "disabled" }),
+    } }),
     ...(option(values, env, "--job-id", ["SUBSCRIPTION_RUNTIME_JOB_ID"]) === undefined
       ? {}
       : {
@@ -160,10 +180,14 @@ export function runConfigFromFlags(
       option(values, env, "--progress", []) ??
         join(resolvePath(cwd, jobRootDir), `${taskId}.progress.json`),
     ),
-    model: option(values, env, "--model", ["CODEX_MODEL"]) ?? "gpt-5.5",
+    model: option(values, env, "--model", ["CODEX_MODEL"]) ?? CODEX_WORKER_DEFAULT_MODEL,
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(serviceTier ? { serviceTier } : {}),
     ...(executionEngine ? { executionEngine } : {}),
+    ...(checkpointPublisherSocketPath ? { checkpointPublisherSocketPath: resolvePath(cwd, checkpointPublisherSocketPath) } : {}),
+    ...(checkpointPublisherSocketPath || flag(values, "--require-turn-checkpoint")
+      ? { checkpointRequired: true } : {}),
+    ...modelBackend,
     codexBinaryPath: option(values, env, "--codex-binary", [
       "CODEX_BINARY_PATH",
     ]) ?? "codex",
@@ -200,6 +224,8 @@ export function runConfigFromFlags(
     ...(workerReportMode === undefined ? {} : { workerReportMode }),
     sourceEnv,
   };
+  assertVerifiedHostedChildConfig(config);
+  assertChildGoalConfig(config);
   const stateRoot = option(values, env, "--state-root", []);
   return stateRoot
     ? { ...config, stateRootDir: resolvePath(cwd, stateRoot) }

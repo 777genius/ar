@@ -7,24 +7,22 @@ import type {
   CodexAppServerChildProcessSignaler,
   CodexAppServerProcessFactory,
 } from "../application/app-server-process-port";
+import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait } from "./hosted-process-activation";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
-import {
-  hostedAppServerSystemdProperties,
-  hostedIoLimitPaths,
-} from "./hosted-app-server-resource-policy";
+import { hostedReadonlyMountProperties, type HostedReadonlyMounts } from "./hosted-readonly-mounts";
+import { codexProviderEgressProfileEnvVar, CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
 
 const hostedSandboxKind = "hosted-codex-job";
-const systemdRunPath = "/usr/bin/systemd-run";
+const managedLauncherNodePath = process.execPath;
+const managedLauncherPath = "/opt/subscription-runtime/managed-launcher/launch.mjs";
 const systemctlPath = "/usr/bin/systemctl";
-const unsharePath = "/usr/bin/unshare";
-const setprivPath = "/usr/bin/setpriv";
-// Namespace-local identity, deliberately distinct from Linux's overflow ID 65534.
-// The host UID/GID and ownership of workspaces/auth files are not changed.
-const hostedNamespaceIdentity = "65532";
 const hostedLauncherPath = fileURLToPath(
   new URL("./hosted-app-server-launcher.js", import.meta.url),
 );
 const hostedSystemdUnits = new WeakMap<CodexAppServerChildProcess, string>();
+// A synchronous host-fence callback may submit one exact service, only while
+// that callback is active. Launch arguments cannot supply or retain this ticket.
+const hostedSubmissions = new WeakSet<object>();
 
 export type HostedSystemctlResult = {
   readonly status: number | null;
@@ -92,60 +90,46 @@ export function codexAppServerProcessInvocation(input: {
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
   readonly hostedLauncher?: string;
-  readonly ioLimitPaths?: readonly string[];
   readonly nodePath?: string;
   readonly platform?: NodeJS.Platform;
   readonly systemdUnit?: string;
-}): CodexAppServerProcessInvocation {
+}, admittedMounts?: HostedReadonlyMounts): CodexAppServerProcessInvocation {
   if (
     (input.platform ?? process.platform) !== "linux" ||
     input.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== hostedSandboxKind
   ) {
+    if (admittedMounts) throw new Error("hosted_readonly_engine_unsupported");
     return { command: input.command, args: input.args };
+  }
+  // Detached provider units need persisted ownership before host jobs can own them.
+  if (input.env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID !== undefined) {
+    throw new Error("host-job detached provider ownership is not supported");
   }
   const systemdUnit =
     input.systemdUnit ?? `subscription-runtime-hosted-${randomUUID()}.service`;
-  const properties = hostedAppServerSystemdProperties(
-    input.ioLimitPaths ?? hostedIoLimitPaths(),
-  );
+  const providerUuid = /^subscription-runtime-hosted-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.service$/.exec(systemdUnit)?.[1];
+  const jobId = admittedMounts ? admittedMounts.jobId :
+    input.env.SUBSCRIPTION_RUNTIME_JOB_ID ?? (providerUuid ? `provider-${providerUuid}` : undefined);
+  if (typeof jobId !== "string" || jobId !== jobId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(jobId)) {
+    throw new Error("hosted_managed_job_identity_required");
+  }
   return {
-    command: systemdRunPath,
+    command: managedLauncherNodePath,
     systemdUnit,
     stdinBootstrap: encodeHostedAppServerLaunchFrame({
       schemaVersion: 1,
       command: input.command,
       args: input.args,
       cwd: input.cwd,
-      env: input.env,
+      env: { ...input.env, SUBSCRIPTION_RUNTIME_JOB_ID: jobId },
     }),
     args: [
-      `--unit=${systemdUnit}`,
-      "--pipe",
-      "--wait",
-      "--collect",
-      "--quiet",
-      "--service-type=exec",
-      "--slice=subscription-runtime-hosted.slice",
-      ...properties.map((property) => `--property=${property}`),
-      "--",
-      unsharePath,
-      `--map-user=${hostedNamespaceIdentity}`,
-      `--map-group=${hostedNamespaceIdentity}`,
-      // Only the trusted setpriv bootstrap retains namespace capabilities; it
-      // drops every set before Node/Codex runs. A capability-less UID 0 cannot
-      // create the nested user namespace required by bubblewrap on Linux 5.12+.
-      "--keep-caps",
-      "--pid",
-      "--fork",
-      "--mount-proc",
-      "--kill-child=SIGKILL",
-      setprivPath,
-      "--bounding-set=-all",
-      "--inh-caps=-all",
-      "--ambient-caps=-all",
-      "--no-new-privs",
-      input.nodePath ?? process.execPath,
-      input.hostedLauncher ?? hostedLauncherPath,
+      managedLauncherPath,
+      "provider",
+      JSON.stringify({ operation: "provider", jobId, unit: systemdUnit,
+        payload: [input.nodePath ?? process.execPath, input.hostedLauncher ?? hostedLauncherPath],
+        ...(admittedMounts ? { readonlyPaths: admittedMounts.readonlyPaths } : {}),
+      }),
     ],
   };
 }
@@ -155,8 +139,30 @@ export function spawnCodexAppServerProcess(input: {
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
-}): CodexAppServerChildProcess {
-  const invocation = codexAppServerProcessInvocation(input);
+}, admittedMounts?: HostedReadonlyMounts, reservedSystemdUnit?: string, submission?: object): CodexAppServerChildProcess {
+  if (requiresHostedProcessAdmission(input.env) &&
+      input.env[codexProviderEgressProfileEnvVar] === CodexProviderEgressProfileId.MimoTokenPlan) {
+    throw new Error("hosted_mimo_activation_closed");
+  }
+  if (submission && !hostedSubmissions.has(submission)) throw new Error("hosted_custody_synchronous_fence_required");
+  if (!submission && requiresHostedProcessAdmission(input.env)) {
+    if (admittedMounts || reservedSystemdUnit) throw new Error("hosted_custody_synchronous_fence_required");
+    return submitHostedOrdinaryProcess(input, (unit, identity) => spawnInvocation(input,
+      codexAppServerProcessInvocation({ ...input, env: { ...input.env,
+        SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit })));
+  }
+  const invocation = codexAppServerProcessInvocation({
+    command: input.command, args: input.args, cwd: input.cwd, env: input.env,
+    ...(reservedSystemdUnit ? { systemdUnit: reservedSystemdUnit } : {}),
+  }, admittedMounts);
+  if (invocation.systemdUnit !== undefined && (!submission || !hostedSubmissions.delete(submission))) {
+    throw new Error("hosted_custody_synchronous_fence_required");
+  }
+  return spawnInvocation(input, invocation);
+}
+
+function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
+  invocation: CodexAppServerProcessInvocation): CodexAppServerChildProcess {
   const child = spawn(invocation.command, invocation.args, {
     cwd: input.cwd,
     env: input.env,
@@ -172,6 +178,28 @@ export function spawnCodexAppServerProcess(input: {
   return child;
 }
 
+/** Admission and per-spawn custody checks belong to the worker-owned closure. */
+export function admittedReadonlyCodexProcessFactory(
+  policy: HostedReadonlyMounts,
+  submitSystemdUnit?: (unit: string, submit: () => CodexAppServerChildProcess) => CodexAppServerChildProcess,
+): CodexAppServerProcessFactory {
+  hostedReadonlyMountProperties(policy);
+  const mounts = Object.freeze({
+    jobId: policy.jobId,
+    workspacePath: policy.workspacePath,
+    readonlyPaths: Object.freeze([...policy.readonlyPaths]),
+  });
+  return input => {
+    if (!submitSystemdUnit) throw new Error("hosted_custody_synchronous_fence_required");
+    const unit = `subscription-runtime-hosted-${randomUUID()}.service`;
+    const ticket = {};
+    const submit = () => spawnCodexAppServerProcess(input, mounts, unit, ticket);
+    hostedSubmissions.add(ticket);
+    try { return submitSystemdUnit(unit, submit); }
+    finally { hostedSubmissions.delete(ticket); }
+  };
+}
+
 export type {
   CodexAppServerChildProcess,
   CodexAppServerChildProcessSignaler,
@@ -182,6 +210,7 @@ export function signalCodexAppServerChildGroup(
   child: CodexAppServerChildProcess,
   signal: NodeJS.Signals,
 ): void {
+  invalidateHostedOrdinaryWait(child);
   try {
     const systemdUnit = hostedSystemdUnits.get(child);
     if (systemdUnit !== undefined) {

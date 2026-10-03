@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as patchValidator from "../git-patch-secret-validator";
 import type { CodexGoalJobManifest } from "../codex-goal-jobs";
 import {
   captureCodexGoalContinuationWorkspaceFingerprint,
@@ -28,12 +29,139 @@ const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
 });
 
 describe("project verifier handoff", () => {
+  it("preserves independently checked manifest identity, descriptors and exact paths", async () => {
+    const root = await temporaryRoot("verifier-manifest-bindings-");
+    const workspacePath = join(root, "producer");
+    const jobRootDir = join(root, "jobs", "producer-1");
+    await initRepository(workspacePath);
+    await mkdir(jobRootDir, { recursive: true });
+    await writeFile(join(workspacePath, "feature.txt"), "changed\n");
+    const artifact = await materializeCodexGoalHandoffArtifacts({
+      workerJobId: "producer-1", taskId: "task-1", workspacePath, jobRootDir,
+    });
+    if (!artifact) throw new Error("expected synthetic handoff");
+    const manifestPath = join(jobRootDir, "task-1.handoff.manifest.json");
+    const producer = manifest({ workspacePath, jobRootDir });
+    const original = artifact.manifest;
+    const mutations = [
+      { ...original, workerJobId: "another-worker" },
+      { ...original, taskId: "another-task" },
+      { ...original, workspacePath: root },
+      { ...original, jobRootDir: root },
+      { ...original, provenance: { ...original.provenance, baseCommit: "a".repeat(40) } },
+    ];
+    for (const value of mutations) {
+      await writeFile(manifestPath, JSON.stringify(value));
+      await expect(readVerifiedProducerHandoff({ producer }))
+        .rejects.toThrow("project_control_verifier_handoff_identity_mismatch");
+    }
+    for (const descriptor of [
+      { ...original.artifacts.patch, sha256: "0".repeat(64) },
+      { ...original.artifacts.patch, byteLength: original.artifacts.patch.byteLength + 1 },
+    ]) {
+      await writeFile(manifestPath, JSON.stringify({
+        ...original, artifacts: { ...original.artifacts, patch: descriptor },
+      }));
+      await expect(readVerifiedProducerHandoff({ producer }))
+        .rejects.toThrow("project_control_verifier_handoff_descriptor_mismatch");
+    }
+    await writeFile(manifestPath, JSON.stringify({ ...original, changedPaths: ["other.txt"] }));
+    await expect(readVerifiedProducerHandoff({ producer }))
+      .rejects.toThrow("project_control_verifier_handoff_changed_paths_mismatch");
+    await writeFile(manifestPath, JSON.stringify(original));
+    await expect(readVerifiedProducerHandoff({ producer })).resolves.toMatchObject({
+      baseCommit: original.baseCommit, changedPaths: ["feature.txt"],
+      patchSha256: original.artifacts.patch.sha256,
+    });
+  });
+
+  it.each(["addition", "deletion", "context"])(
+    "classifies a proved full source line consistently in %s", async (direction) => {
+      const root = await temporaryRoot("verifier-proved-line-");
+      const workspacePath = join(root, "producer");
+      const jobRootDir = join(root, "jobs", "producer-1");
+      await initRepository(workspacePath);
+      await mkdir(jobRootDir, { recursive: true });
+      const directory = "packages/contexts/agent-execution/tests/features/contained-agent-turn";
+      const relativePath = `${directory}/claude-agent-sdk-contained-turn-provider.test.ts`;
+      const fixturePath = join(workspacePath, relativePath);
+      const line = '  const secret = "' + "sk-" + "ant-" +
+        "abcdefghijklmnopqrstuvwxyz0123456789" + '";\n';
+      await mkdir(join(workspacePath, directory), { recursive: true });
+      if (direction !== "addition") {
+        await writeFile(fixturePath, line + "// before\n");
+        await git(workspacePath, ["add", relativePath]);
+        await git(workspacePath, ["commit", "-m", "test: proved source preimage"]);
+      }
+      if (direction === "deletion") await rm(fixturePath);
+      else await writeFile(fixturePath, line + "// after\n");
+      const artifact = await materializeProducerHandoff({
+        workerJobId: "producer-1", taskId: "task-1", workspacePath, jobRootDir,
+      });
+      await expect(readVerifiedProducerHandoff({ producer: manifest({ workspacePath, jobRootDir }) }))
+        .resolves.toMatchObject({
+          baseCommit: artifact.baseCommit, changedPaths: [relativePath],
+          patchSha256: artifact.manifest.artifacts.patch.sha256,
+        });
+    },
+  );
+
+  it("uses the verified buffer if its pathname changes before reconstruction", async () => {
+    const root = await temporaryRoot("verifier-bound-buffer-");
+    const workspacePath = join(root, "producer");
+    const jobRootDir = join(root, "jobs", "producer-1");
+    await initRepository(workspacePath);
+    await mkdir(jobRootDir, { recursive: true });
+    await writeFile(join(workspacePath, "feature.txt"), "changed\n");
+    const artifact = await materializeProducerHandoff({
+      workerJobId: "producer-1", taskId: "task-1", workspacePath, jobRootDir,
+    });
+    const original = patchValidator.assertGitPatchBlobsSecretSafe;
+    const snapshot = await readFile(artifact.patchPath);
+    vi.spyOn(patchValidator, "assertGitPatchBlobsSecretSafe").mockImplementationOnce(async (input) => {
+      expect(Buffer.isBuffer(input.patch)).toBe(true);
+      expect(Buffer.from(input.patch!).equals(snapshot)).toBe(true);
+      expect(input.patchPath).toBeUndefined();
+      expect(input.baseCommit).toBe(artifact.baseCommit);
+      expect(input.changedPaths).toEqual(artifact.changedPaths);
+      await writeFile(artifact.patchPath, "replaced after descriptor verification\n");
+      return original(input);
+    });
+    const producer = manifest({ workspacePath, jobRootDir });
+    await expect(readVerifiedProducerHandoff({ producer })).resolves.toMatchObject({
+      patchPath: artifact.patchPath, patchByteLength: snapshot.length,
+      patchSha256: createHash("sha256").update(snapshot).digest("hex"),
+    });
+    await expect(readVerifiedProducerHandoff({ producer })).rejects.toThrow(
+      "project_control_verifier_handoff_descriptor_mismatch",
+    );
+  });
+
+  it("compares result base even when a patch could apply to the manifest base", async () => {
+    const root = await temporaryRoot("verifier-result-base-");
+    const workspacePath = join(root, "producer");
+    const jobRootDir = join(root, "jobs", "producer-1");
+    await initRepository(workspacePath);
+    await mkdir(jobRootDir, { recursive: true });
+    await writeFile(join(workspacePath, "feature.txt"), "changed\n");
+    await materializeProducerHandoff({
+      workerJobId: "producer-1", taskId: "task-1", workspacePath, jobRootDir,
+    });
+    const resultPath = join(jobRootDir, "task-1.latest-result.json");
+    const result = JSON.parse(await readFile(resultPath, "utf8"));
+    result.details.baseCommit = "a".repeat(40);
+    await writeFile(resultPath, JSON.stringify(result));
+    await expect(readVerifiedProducerHandoff({ producer: manifest({ workspacePath, jobRootDir }) }))
+      .rejects.toThrow("project_control_verifier_handoff_result_base_mismatch");
+  });
+
   it("accepts an immutable terminal patch and rejects tampering", async () => {
     const root = await temporaryRoot("verifier-handoff-");
     const workspacePath = join(root, "producer");

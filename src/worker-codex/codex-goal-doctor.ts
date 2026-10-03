@@ -4,6 +4,7 @@ import { access, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import { CodexModelBackend, codexMimoApiKeyEnvVarDefault, hostedMimoCredentialSourceReady } from "@vioxen/subscription-runtime/provider-codex";
 import { hostExecutableNotFoundMessage } from "@vioxen/subscription-runtime/worker-core";
 import { resolveHostExecutable } from "../worker-local/host-command";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
@@ -29,23 +30,32 @@ export async function doctorCodexGoal(input: {
   const checks = await Promise.all([
     checkFile("prompt", input.config.promptPath),
     checkDirectory("jobRoot", input.config.jobRootDir),
-    checkDirectory("authRoot", input.config.authRootDir),
+    ...(input.config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+      ? [] : [checkDirectory("authRoot", input.config.authRootDir)]),
     checkGitWorkspace(input.config.workspacePath),
     ...(input.tmuxSession
       ? [checkTmuxSessionAvailable(input.tmuxSession)]
       : []),
-    ...input.config.accounts.map((account) =>
-      checkFile(
-        "account:" + account.name,
-        account.authJsonPath ??
-          join(input.config.authRootDir, account.name, "auth.json"),
-      ),
-    ),
+    ...input.config.accounts.map((account) => input.config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+      ? checkMimoCredential("account:" + account.name,
+          account.envVarName ?? input.config.mimoAccounts?.find(slot => slot.name === account.name)?.envVarName ?? codexMimoApiKeyEnvVarDefault,
+          input.config.sourceEnv ?? process.env)
+      : checkFile("account:" + account.name,
+          account.authJsonPath ?? join(input.config.authRootDir, account.name, "auth.json"))),
   ]);
   return {
     ok: checks.every((check) => check.ok),
     checks,
   };
+}
+
+function checkMimoCredential(name: string, envVarName: string,
+  sourceEnv: Readonly<Record<string, string | undefined>>): CodexGoalDoctorCheck {
+  const hosted = sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  const present = hosted ? hostedMimoCredentialSourceReady() : Boolean(sourceEnv[envVarName]?.trim());
+  return { name, ok: present, message: present
+    ? (hosted ? "MiMo Token Plan credential source is available" : "MiMo Token Plan credential is available")
+    : "MiMo Token Plan credential is missing" };
 }
 
 export async function resolveCodexGoalTmuxExecutable(): Promise<string> {

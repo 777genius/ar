@@ -24,9 +24,40 @@ export type GitCommitResult = {
   readonly commitSha: string;
   readonly parentCommits?: readonly string[];
   readonly diffStat?: string;
+  readonly reviewedIndexRecoveryPending?: boolean;
+};
+
+export type PreparedReviewedGitCommit = {
+  readonly commitSha: string;
+  readonly parent: string;
+  readonly tree: string;
+  readonly originalIndexTree: string;
+};
+
+export type InspectedIntegrationCommit = {
+  readonly commitSha: string;
+  readonly tree: string;
+  readonly parentCommits: readonly string[];
+  readonly author: CommitIdentity;
+  readonly committer: CommitIdentity;
+  readonly message: string;
+  readonly files: readonly string[];
 };
 
 export interface GitPort {
+  inspectIntegrationCommit?(input: { readonly workspacePath: string; readonly commitSha: string }): Promise<InspectedIntegrationCommit>;
+  reviewedOutputTreeFromPatch?(attempt: IntegrationAttempt): Promise<string>;
+  currentHead?(input: { readonly workspacePath: string }): Promise<string>;
+  remoteRepository?(input: { readonly workspacePath: string; readonly remote: string }): Promise<string>;
+  reconcileReviewedCommit?(attempt: IntegrationAttempt): Promise<GitCommitResult | undefined>;
+  verifyMergeOutputTree?(attempt: IntegrationAttempt): Promise<string>;
+  verifyReviewedOutputTree?(attempt: IntegrationAttempt): Promise<string>;
+
+  reviewedTreeChangedFiles?(input: {
+    readonly attempt: IntegrationAttempt;
+    readonly tree: string;
+  }): Promise<readonly string[]>;
+
   getStatus(input: {
     readonly workspacePath: string;
   }): Promise<GitWorkspaceStatus> | GitWorkspaceStatus;
@@ -52,6 +83,9 @@ export interface GitPort {
     readonly files: readonly string[];
     readonly identity: CommitIdentity;
     readonly expectedParentCommits?: readonly string[];
+    readonly expectedMergeTree?: string;
+    readonly reviewedAttempt?: IntegrationAttempt;
+    readonly onReviewedCommitPrepared?: (prepared: PreparedReviewedGitCommit) => Promise<void>;
   }): Promise<GitCommitResult> | GitCommitResult;
 
   abortMerge?(input: {

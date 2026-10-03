@@ -73,7 +73,7 @@ If you inherit a running Codex worker pool, do this first:
    when `codex_goal_brief.safeToContinue` is true.
 8. If the runner stopped because of provider output, runtime, code, test or
    benchmark failure, inspect the dirty work before retrying.
-9. Keep model `gpt-5.5`, reasoning effort `high`, service tier `fast`, engine
+9. Keep model `gpt-6-astra`, reasoning effort `high`, service tier `fast`, engine
    `app-server-goal`, and a 72 hour task timeout unless the task owner changed
    them explicitly.
 10. Verify with targeted tests before full benchmarks.
@@ -99,7 +99,7 @@ subscription-runtime-codex-goal run \
 
 Defaults:
 
-- model: `gpt-5.5`;
+- model: `gpt-6-astra`;
 - reasoning effort: `high`;
 - service tier: `fast`;
 - task timeout: `72h`;
@@ -477,7 +477,7 @@ Use the highest-level surface that still gives the operator enough control:
 | CLI MCP fallback `subscription-runtime-codex-goal tool <name>` | Agents in Codex threads where native MCP tools did not load | Same MCP server via SDK, but called through shell commands |
 | CLI direct commands `subscription-runtime-codex-goal run/status/doctor/tail` | Humans, shell scripts, tmux and simple cron monitors | Smaller surface than MCP, but easy to inspect |
 | `runCodexGoal()` TypeScript API | Host apps or orchestrators that want to own scheduling, UI, notifications or persistence | Caller must preserve the safety policy and account status checks |
-| `FileBackendCodexSafeExecutor` | Advanced integrations that need custom workers, custom account definitions or custom execution policy | Most flexible, most responsibility |
+| `createOneShotExecutor()` / `createContinuationExecutor()` | Advanced integrations that need custom workers, custom account definitions or custom execution policy | Explicit CODEX_HOME lifecycle; caller must still own disposal and safety policy |
 
 The recommended order for agents is native MCP first, CLI MCP fallback second,
 direct API only when the agent is editing a host integration. Direct API should
@@ -533,7 +533,7 @@ await runCodexGoal({
   taskId: "my-task-001",
   accounts: codexGoalAccountSlots(["account-a", "account-b", "account-c"]),
   outputPath: "/Users/me/.cache/subscription-runtime/my-job/my-task-001.latest-result.json",
-  model: "gpt-5.5",
+  model: "gpt-6-astra",
   reasoningEffort: "high",
   serviceTier: "fast",
   taskTimeoutMs: 72 * 60 * 60 * 1000,
@@ -541,8 +541,8 @@ await runCodexGoal({
 });
 ```
 
-Use `FileBackendCodexSafeExecutor` directly only when `runCodexGoal()` is too
-high level. Common reasons:
+Use the typed safe-executor factories only when `runCodexGoal()` is too high
+level. Common reasons:
 
 - the host app already owns task queues and wants to construct `run()` input
   itself;
@@ -561,6 +561,32 @@ Even in direct API mode, keep these invariants:
 - inject one shared `accountCapacityStore` for every executor using the same
   auth pool; the Codex goal runner does this automatically from `authRootDir`;
 - never print raw auth files, tokens or provider payloads.
+
+Choose the session-home lifecycle once in the composition root, not per task:
+
+```ts
+import {
+  createContinuationExecutor,
+  createOneShotExecutor,
+} from "@vioxen/subscription-runtime/worker-codex";
+
+const executor = createOneShotExecutor(options);
+
+const resumable = createContinuationExecutor({
+  ...options,
+  sessionId: "stable-application-session-id",
+});
+```
+
+`createOneShotExecutor()` rejects logical-thread and managed-run recovery input
+and removes its materialized `CODEX_HOME` when the executor is disposed.
+`createContinuationExecutor()` requires a non-empty stable `sessionId`, retains
+the matching home across executor restarts and scrubs `auth.json` on disposal.
+Always dispose either executor in `finally`.
+
+Direct `new FileBackendCodexSafeExecutor(options)` remains preserve-on-dispose
+for backward compatibility. New host integrations should use a typed factory so
+agents and job payloads never choose a retention boolean.
 
 ## MCP adapter for agents
 
@@ -634,7 +660,7 @@ Minimal `codex_goal_create_job` input:
   "taskId": "memo-locomo-cat1-recall",
   "accounts": ["account-a", "account-b", "account-c"],
   "tmuxSession": "memo-locomo-cat1-recall",
-  "model": "gpt-5.5",
+  "model": "gpt-6-astra",
   "reasoningEffort": "high",
   "serviceTier": "fast",
   "executionEngine": "app-server-goal",
@@ -904,7 +930,7 @@ Minimal MCP `codex_goal_start` input:
   "taskId": "my-task-001",
   "accounts": ["account-a", "account-b", "account-c"],
   "tmuxSession": "my-codex-worker",
-  "model": "gpt-5.5",
+  "model": "gpt-6-astra",
   "reasoningEffort": "high",
   "serviceTier": "fast",
   "taskTimeoutMs": 259200000,
@@ -1157,13 +1183,24 @@ Use `account-labels.json` for operator-facing labels:
 
 ```json
 {
-  "account-a": { "email": "operator@example.com" },
+  "account-a": {
+    "email": "operator@example.com",
+    "resetCount": 2,
+    "plan": "free",
+    "unpaid": "19.08.2026"
+  },
   "account-g": { "displayName": "usa18303530342" }
 }
 ```
 
 Status tools may then show both the stable slot and label, for example
 `operator@example.com - a - limited`.
+The optional `resetCount` field is operator metadata for quota tables. Use a
+non-negative integer when known; omit it when unknown so operator tables print
+`-`.
+The optional `plan` field records the operator-confirmed subscription plan.
+The optional `unpaid` field records the date in `DD.MM.YYYY` format and is
+shown as the last quota-table column; omit it when unknown.
 
 Device auth is preferred for handoff because it gives a short-lived code and
 does not depend on a specific browser callback window.
@@ -1202,6 +1239,48 @@ and account availability. The `5h free` and `7d free` columns include a compact
 progress bar, available rows are bolded and sorted first, and the end of the
 output includes the total `7d free` capacity across the account pool. Accounts
 with `0%` weekly free are kept below accounts with usable weekly capacity.
+
+### Local Codex limit alarm
+
+Install the macOS background monitor once:
+
+```sh
+npm run ops:codex-limit-alarm:install
+open http://127.0.0.1:47831
+```
+
+The LaunchAgent checks the current local Codex Desktop/CLI account from
+`~/.codex/auth.json` every 10 minutes by reusing the quota table JSON contract.
+It does not inspect or contact the remote worker pool. The dashboard shows the
+current account's 5h and 7d free capacity, supports an immediate check and has
+`Test sound` and `Stop sound` controls.
+
+**Sound is off by default.** A fresh install only monitors and shows status;
+it never plays sound until you press `Включить звук` (enable) on the dashboard
+once. This choice persists across monitor restarts (`~/Library/Application
+Support/Codex Limit Alarm/state.json`), so you only need to enable it once per
+machine. `Test sound` still works while disabled, for checking the sound
+device independently of arming the alarm.
+
+Once enabled, the repeating alarm starts when the current account has less
+than 10% free in a known main 5h or 7d quota window. Exactly 10% does not
+trigger it. Relogin requirements and observation outages are shown but do not
+trigger the sound. `Stop sound` acknowledges the current low-quota incident;
+later checks remain silent until every known main window recovers to at least
+10%. Recovery rearms the alarm for the next low-quota incident.
+Acknowledgement survives monitor restarts. Pressing `Выключить звук` disarms
+the alarm entirely until re-enabled, silencing any active sound immediately.
+
+The service binds only to `127.0.0.1:47831`. Mutating dashboard actions require
+a per-process control token, and the monitor never exposes auth payloads or
+tokens. Logs are written to `~/Library/Logs/CodexLimitAlarm.log` and
+`~/Library/Logs/CodexLimitAlarm.error.log`.
+
+Remove it with:
+
+```sh
+npm run ops:codex-limit-alarm:uninstall
+```
 
 Expected statuses:
 
@@ -1249,7 +1328,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { FileBackendCodexSafeExecutor } from "@vioxen/subscription-runtime/worker-codex";
+import { createContinuationExecutor } from "@vioxen/subscription-runtime/worker-codex";
 
 const root = process.env.SUBSCRIPTION_RUNTIME_JOB_ROOT;
 const authRoot = process.env.SUBSCRIPTION_RUNTIME_CODEX_AUTH_ROOT;
@@ -1285,8 +1364,9 @@ const accountNames = (process.env.CODEX_ACCOUNTS ?? "account-a")
   .map((name) => name.trim())
   .filter(Boolean);
 
-const executor = new FileBackendCodexSafeExecutor({
+const executor = createContinuationExecutor({
   executorId: process.env.SUBSCRIPTION_RUNTIME_EXECUTOR_ID ?? taskId,
+  sessionId: taskId,
   stateRootDir,
   workspacePath,
   maxAccountCycles: Number(process.env.SUBSCRIPTION_RUNTIME_MAX_ACCOUNT_CYCLES ?? 5),
@@ -1296,7 +1376,7 @@ const executor = new FileBackendCodexSafeExecutor({
       providerInstanceId: `${taskId}-${accountName}`,
       stateRootDir,
       codexBinaryPath: process.env.CODEX_BINARY_PATH ?? "codex",
-      model: process.env.CODEX_MODEL ?? "gpt-5.5",
+      model: process.env.CODEX_MODEL ?? "gpt-6-astra",
       reasoningEffort: process.env.CODEX_REASONING_EFFORT ?? "high",
       serviceTier: process.env.CODEX_SERVICE_TIER ?? "fast",
       executionEngine: "app-server-goal",
@@ -1358,7 +1438,7 @@ tmux new-session -d -s my-codex-worker -c /path/to/subscription-runtime \
     SUBSCRIPTION_RUNTIME_TASK_ID=my-task-001 \
     SUBSCRIPTION_RUNTIME_PROMPT_PATH=$HOME/.cache/subscription-runtime/my-job/prompt.md \
     SUBSCRIPTION_RUNTIME_TASK_TIMEOUT_MS=259200000 \
-    CODEX_MODEL=gpt-5.5 \
+    CODEX_MODEL=gpt-6-astra \
     CODEX_REASONING_EFFORT=high \
     CODEX_SERVICE_TIER=fast \
     node $HOME/.cache/subscription-runtime/my-job/run-goal.mjs \
@@ -1519,7 +1599,7 @@ tmux: my-codex-worker
 Task id: my-task-001
 Prompt: ~/.cache/subscription-runtime/my-job/prompt.md
 Accounts: account-a,account-b,account-c
-Model: gpt-5.5
+Model: gpt-6-astra
 Effort: high
 Service tier: fast
 Execution engine: app-server-goal
@@ -1527,3 +1607,24 @@ Do not run two writers in the same worktree.
 If quota/capacity/auth/reconnect happens, use pool continuation.
 If unknown/runtime/test failure happens, inspect dirty work before retry.
 ```
+
+### Bounded control inbox listing
+
+`control-list` / `codex_goal_control_list` returns compact pending signals by
+default, with counts for every state. The default page has at most 50 signals;
+`--limit` accepts 1-100. Use `--state all` (or a specific delivery state) to
+inspect delivered history. Follow `page.nextCursor` using `--cursor`; preserve
+the job and state filter. Ordering is ascending creation time, then signal ID.
+Cursors remain usable if the last row changes state; missing rows produce an
+explicit stale-cursor error. Pages are live reads, not snapshots: restart without
+a cursor to observe older rows that became pending during pagination.
+
+The entire MCP result, including duplicated text and structured content, is
+capped at 64 KiB. `--include-bodies` still respects this cap. If one body cannot
+fit, its row explicitly reports `bodyOmitted`, `bodyBytes`, and retrieval guidance;
+remaining rows remain reachable through pagination. Compact rows omit target,
+metadata and full receipt details; oversized identifier/diagnostic fields report
+`truncatedFields`. Full storage and SDK history are unchanged: use
+`WorkerControlService.listSignals({target, includeBodies:true, includeExpired:true})`
+to retrieve complete signals and bodies. This output cap does not bound the cost
+of reading the stored archive or provide a snapshot across pages.

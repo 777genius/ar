@@ -1,6 +1,74 @@
-// Options validation for FileBackendCodexWorker, split out to keep the
-// worker decomposed (quality guardrail: tightened line cap).
-import type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker";
+import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
+import type { AgentRuntimeToolName, ClockPort, ObservabilityPort, RuntimeDeps } from "@vioxen/subscription-runtime/core";
+import { CodexModelBackend, type AppServerCompletedTurnCheckpoint, type AppServerExecutionLifetime, type CodexExecutionProfile, type CodexProviderEgressPolicy, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
+import type { CommandPolicy } from "@vioxen/subscription-runtime/worker-core";
+import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
+import type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
+import {
+  assertCodexSessionHomeProfile,
+  type CodexSessionHomeProfile,
+} from "./codex-session-home-profile";
+
+export type FileBackendCodexWorkerOptions = {
+  readonly childBudget?: ChildExecutionBudget;
+  readonly executionLifetime?: AppServerExecutionLifetime;
+  readonly workerId?: string;
+  readonly providerInstanceId: string;
+  readonly stateRootDir: string;
+  /** Payload-writable homes/cache; defaults to stateRootDir for legacy callers. */
+  readonly runtimeHomeRootDir?: string;
+  /** Executor-scoped CODEX_HOME lifecycle. Omitted for legacy preservation. */
+  readonly sessionHomeProfile?: CodexSessionHomeProfile;
+  readonly codexBinaryPath: string;
+  readonly encryptionKey: Uint8Array | string;
+  /** Defaults to {@link CodexModelBackend.OpenAiChatGpt} — existing Codex jobs are unaffected. */
+  readonly modelBackend?: CodexModelBackend;
+  /** Env var holding the MiMo Token Plan key. Only read when `modelBackend` is `XiaomiMimoTokenPlan`. */
+  readonly mimoApiKeyEnvVarName?: string;
+  readonly model?: string;
+  readonly reasoningEffort?: CodexReasoningEffort;
+  readonly serviceTier?: CodexServiceTier;
+  readonly sessionCacheSlots?: number;
+  /**
+   * Prompt used to fully warm the Codex app-server and model path.
+   * Set to false to warm only the daemon process.
+   */
+  readonly warmupPrompt?: string | false;
+  readonly taskTimeoutMs?: number;
+  readonly appServerStartupTimeoutMs?: number;
+  readonly refreshFreshnessMs?: number;
+  readonly refreshBeforeExpiryMs?: number;
+  readonly maxSessionAgeMs?: number;
+  readonly refreshConflictRetryMaxMs?: number;
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  /** Brokered project jobs require native filesystem permissions even without the host marker. */
+  readonly enforceProjectReadBoundary?: boolean;
+  readonly executionEngine?: CodexWorkerExecutionEngine;
+  /** Already admitted by the trusted host; never taken from job configuration. */
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy;
+  readonly appServerProcessFactory?: CodexAppServerProcessFactory;
+  readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
+  readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
+  readonly executionProfile?: CodexExecutionProfile;
+  readonly boundedWorkspaceTools?: {
+    readonly allowedTools: readonly AgentRuntimeToolName[];
+    readonly denyProjectInstructions?: boolean;
+  };
+  readonly rolloutBudget?: {
+    readonly weightedTokenLimit: number;
+  };
+  readonly maxGoalTurns?: number;
+  readonly cleanThreadPrewarm?: boolean;
+  readonly outputSchemas?: Readonly<Record<string, unknown>>;
+  readonly observability?: ObservabilityPort;
+  readonly runner?: RuntimeDeps["runner"];
+  readonly commandPolicy?: CommandPolicy;
+  readonly workspace?: RuntimeDeps["workspace"];
+  readonly workspacePath?: string;
+  readonly clock?: ClockPort;
+  readonly capacityAccountId?: string;
+  readonly capacityPolicy?: CodexWorkerCapacityPolicy;
+};
 
 export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): void {
   if (!options.providerInstanceId.trim()) {
@@ -9,6 +77,10 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
   if (!options.stateRootDir.trim()) {
     throw new Error("file_backend_codex_state_root_required");
   }
+  if (options.runtimeHomeRootDir !== undefined && !options.runtimeHomeRootDir.trim()) {
+    throw new Error("file_backend_codex_runtime_home_root_required");
+  }
+  assertCodexSessionHomeProfile(options.sessionHomeProfile);
   if (!options.codexBinaryPath.trim()) {
     throw new Error("file_backend_codex_binary_required");
   }
@@ -39,8 +111,34 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
   ) {
     throw new Error("file_backend_codex_execution_engine_invalid");
   }
+  const modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  if (
+    modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
+    (options.executionEngine ?? "app-server") !== "app-server-goal"
+  ) {
+    // SR-AP-2 fail-closed: MiMo is only validated through the app-server
+    // goal path. Never let it silently fall back to plain-exec/packaged-exec.
+    throw new Error("file_backend_codex_mimo_requires_app_server_goal_engine");
+  }
+  if (
+    modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan &&
+    options.mimoApiKeyEnvVarName !== undefined
+  ) {
+    throw new Error("file_backend_codex_mimo_env_var_requires_mimo_backend");
+  }
+  if (options.providerEgressPolicy !== undefined && modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+    // MiMo's egress domain is fixed and derived from modelBackend; it is not
+    // a host-configurable input, unlike the ChatGPT/test-qualification profiles.
+    throw new Error("file_backend_codex_mimo_provider_egress_policy_not_configurable");
+  }
+  if (options.completedTurnCheckpoint && (options.executionEngine ?? "app-server") !== "app-server-goal") {
+    throw new Error("checkpoint_requires_app_server_goal_engine");
+  }
   const hostedGlobalScanGuard =
-    options.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+    (options.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+  if (hostedGlobalScanGuard && modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
+    throw new Error("hosted_mimo_activation_closed");
+  }
   const hostedExecutionEngine = options.executionEngine ?? "app-server";
   if (
     hostedGlobalScanGuard &&

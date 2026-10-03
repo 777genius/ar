@@ -9,6 +9,7 @@ export function projectControlChildManifestInput(input: {
   readonly args: CodexGoalJobCreateInput;
   readonly scope: ProjectAccessScope;
   readonly registryRootDir: string;
+  readonly controllerCheckpointRequired?: boolean | undefined;
 }): CodexGoalJobManifestInput {
   const jobId = requiredRawString(input.args.jobId, "jobId");
   const projectRoot = dirname(
@@ -16,6 +17,7 @@ export function projectControlChildManifestInput(input: {
   );
   return jobManifestInputFromArgs({
     ...input.args,
+    checkpointRequired: input.controllerCheckpointRequired === true || input.args.checkpointRequired === true,
     ...(input.args.jobRootDir === undefined
       ? { jobRootDir: join(projectRoot, jobId) }
       : {}),

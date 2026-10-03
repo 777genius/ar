@@ -2,6 +2,7 @@ import type { CodexGoalAccountSlotStatus } from "../../codex-goal-account-status
 import { listCodexGoalAccountStatuses } from "../../codex-goal-ops";
 import type { CodexGoalLaunchInput } from "../../codex-goal-ops";
 import type { CodexProjectAccountContinuation } from "./codex-goal-project-account-reservation";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 
 export async function withProjectContinuationAccounts(input: {
   readonly launch: CodexGoalLaunchInput;
@@ -100,6 +101,26 @@ export async function withProjectContinuationAccounts(input: {
     input.listAccountStatuses ?? listCodexGoalAccountStatuses
   )({
     authRootDir: input.launch.config.authRootDir,
+    ...(input.launch.config.modelBackend === undefined
+      ? {}
+      : { modelBackend: input.launch.config.modelBackend }),
+    ...(input.launch.config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
+      ? {
+          mimoAccounts:
+            input.launch.config.mimoAccounts ??
+            input.launch.config.accounts.map((account) => ({
+              name: account.name,
+              ...(account.envVarName === undefined
+                ? {}
+                : { envVarName: account.envVarName }),
+            })),
+        }
+      : input.launch.config.mimoAccounts === undefined
+        ? {}
+        : { mimoAccounts: input.launch.config.mimoAccounts }),
+    ...(input.launch.config.sourceEnv === undefined
+      ? {}
+      : { sourceEnv: input.launch.config.sourceEnv }),
   });
   const statusesByName = new Map(
     statuses.map((status) => [status.name, status]),
@@ -132,7 +153,20 @@ export async function withProjectContinuationAccounts(input: {
 }
 
 function accountSlot(
-  status: Pick<CodexGoalAccountSlotStatus, "name" | "authJsonPath">,
-): { readonly name: string; readonly authJsonPath: string } {
-  return { name: status.name, authJsonPath: status.authJsonPath };
+  status: Pick<
+    CodexGoalAccountSlotStatus,
+    "name" | "authJsonPath" | "envVarName"
+  >,
+): {
+  readonly name: string;
+  readonly authJsonPath: string;
+  readonly envVarName?: string;
+} {
+  return {
+    name: status.name,
+    authJsonPath: status.authJsonPath,
+    ...(status.envVarName === undefined
+      ? {}
+      : { envVarName: status.envVarName }),
+  };
 }

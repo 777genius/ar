@@ -1,3 +1,4 @@
+import { LocalReviewedOutputIntegrationIntegrity } from "../../reviewed-worker-output/adapters/local-reviewed-output-integration-integrity";
 import { dirname, join } from "node:path";
 import { LocalIntegrationAttemptStore } from "@vioxen/subscription-runtime/store-local-file";
 import {
@@ -96,7 +97,7 @@ function isNodeError(
   return error instanceof Error && "code" in error && error.code === code;
 }
 
-function localProjectIntegrationDeps(
+export function localProjectIntegrationDeps(
   controller: ProjectIntegrationMcpController,
 ): ProjectIntegrationMcpUseCaseDeps {
   const rootDir = join(controller.controller.jobRootDir, "project-integration");
@@ -123,6 +124,10 @@ function localProjectIntegrationDeps(
     }),
     checks: new LocalProjectCheckRunner(),
     scanner: new SimpleSecretScanner(),
+    reviewedOutputIntegrity: new LocalReviewedOutputIntegrationIntegrity({
+      rootDir: reviewedWorkerOutputRoot(controller.registryRootDir),
+      projectId: controller.scope.projectId,
+    }),
     locks: new LocalWorkspaceIntegrationLock({
       rootDir: projectControlWorkspaceLockRoot(controller.registryRootDir),
       staleLockMs: 30 * 60_000,

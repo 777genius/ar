@@ -298,6 +298,45 @@ export function summarizeProjectAdmissionDebt(
   };
 }
 
+/**
+ * Fingerprint admission debt for CAS checks that span multiple observations.
+ * Disk capacity is sampled at observation time, so its current free-byte
+ * value is intentionally volatile. The configured threshold and every other
+ * debt field remain part of the fingerprint; malformed disk evidence remains
+ * exact and therefore fails closed.
+ */
+export function projectAdmissionDebtFingerprint(
+  debt: readonly ProjectDebtItem[],
+): string {
+  const canonical = debt.map((item) => ({
+    reason: item.reason,
+    subject: item.subject,
+    severity: item.severity ?? "blocking",
+    evidence: canonicalProjectAdmissionEvidence(item),
+    ...(item.affectedPaths
+      ? { affectedPaths: [...item.affectedPaths].sort() }
+      : {}),
+    ...(item.pathDisjointProducerEligible
+      ? { pathDisjointProducerEligible: true as const }
+      : {}),
+  })).sort((left, right) =>
+    JSON.stringify(left).localeCompare(JSON.stringify(right))
+  );
+  return JSON.stringify(canonical);
+}
+
+function canonicalProjectAdmissionEvidence(
+  item: ProjectDebtItem,
+): readonly string[] {
+  if (item.reason !== ProjectDebtReason.DiskPressure) {
+    return [...item.evidence];
+  }
+  return item.evidence.map((evidence) => {
+    const match = /^availableKb=[^\s]+ (minFreeKb=[^\s]+)$/.exec(evidence);
+    return match?.[1] ?? evidence;
+  }).sort();
+}
+
 export function normalizeProjectAdmissionWorkerRole(
   value?: ProjectAdmissionRequest["workerRole"],
   tags: readonly string[] = [],

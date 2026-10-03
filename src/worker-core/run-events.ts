@@ -21,3 +21,5 @@ export {
   projectRunObservationEvents,
 } from "./run-event-projection-service";
 export { RunEventRelayService } from "./run-event-relay";
+
+export { runEventSourceKey, sameRunEventSource } from "./run-event-source";

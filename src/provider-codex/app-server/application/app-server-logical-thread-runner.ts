@@ -1,3 +1,4 @@
+import { isAppServerAdmissionError } from "./app-server-admission";
 import type {
   CodexExecutionInput,
   CodexExecutionResult,
@@ -46,6 +47,7 @@ export async function runCodexAppServerLogicalThread(
       ? [appServerOutputSchemaNotNativeWarning()]
       : [];
     const result = await deps.runGoal({
+      redactor: input.redactor,
       ...(input.runId === undefined ? {} : { runId: input.runId }),
       prompt: input.prompt,
       ...(input.goalObjective === undefined
@@ -84,7 +86,7 @@ export async function runCodexAppServerLogicalThread(
       outcome: result.outcome,
     };
   } catch (error) {
-    await deps.disposeSession();
+    if (!isAppServerAdmissionError(error)) await deps.disposeSession();
     throw error;
   }
 }

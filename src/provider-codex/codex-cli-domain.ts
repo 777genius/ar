@@ -218,7 +218,8 @@ function isCodexInvalidOutputFailure(normalizedMessage: string): boolean {
     normalizedMessage.includes("codex_app_server_final_message_missing") ||
     normalizedMessage.includes("codex_app_server_goal_turn_output_missing") ||
     normalizedMessage.includes("codex_app_server_structured_output_invalid") ||
-    normalizedMessage.includes("codex_app_server_output_too_large")
+    normalizedMessage.includes("codex_app_server_output_too_large") ||
+    normalizedMessage.includes("codex_stream_output_invalid")
   );
 }
 

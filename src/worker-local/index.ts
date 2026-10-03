@@ -19,3 +19,4 @@ export * from "./stdout-run-event-publisher";
 export * from "./temp-workspace";
 export * from "./webhook-run-event-publisher";
 export * from "./safe-execution";
+export * from "./retained-terminal-archive-io";

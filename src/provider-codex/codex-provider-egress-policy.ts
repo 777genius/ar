@@ -1,32 +1,68 @@
 export const codexProviderEgressProfileEnvVar =
   "SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE";
 
-export const codexProviderApiEgressProfileId = "codex-provider-api" as const;
-
-export type CodexProviderEgressProfileId =
-  typeof codexProviderApiEgressProfileId;
+export enum CodexProviderEgressProfileId {
+  ProviderApi = "codex-provider-api",
+  TestNpmQualification = "codex-test-npm-qualification",
+  TestManagedQualification = "codex-test-managed-qualification",
+  MimoTokenPlan = "codex-provider-mimo-token-plan",
+}
+export const codexProviderApiEgressProfileId = CodexProviderEgressProfileId.ProviderApi;
 
 export type CodexProviderEgressPolicy = {
   readonly profileId: CodexProviderEgressProfileId;
   readonly domains: readonly string[];
 };
 
-const codexProviderApiDomains = ["api.openai.com"] as const;
-
-export function codexProviderApiEgressPolicy(): CodexProviderEgressPolicy {
-  return {
-    profileId: codexProviderApiEgressProfileId,
-    domains: codexProviderApiDomains,
-  };
+export function codexProviderEgressPolicy(
+  profileId: CodexProviderEgressProfileId,
+): CodexProviderEgressPolicy {
+  switch (profileId) {
+    case CodexProviderEgressProfileId.ProviderApi:
+      return Object.freeze({ profileId, domains: Object.freeze(["api.openai.com"]) });
+    case CodexProviderEgressProfileId.TestNpmQualification:
+      return Object.freeze({
+        profileId,
+        domains: Object.freeze([
+          "api.openai.com", "registry.npmjs.org", "tuf-repo-cdn.sigstore.dev",
+        ]),
+      });
+    case CodexProviderEgressProfileId.TestManagedQualification:
+      return Object.freeze({
+        profileId,
+        domains: Object.freeze([
+          "api.openai.com", "registry.npmjs.org", "tuf-repo-cdn.sigstore.dev",
+          "api.github.com", "raw.githubusercontent.com",
+        ]),
+      });
+    case CodexProviderEgressProfileId.MimoTokenPlan:
+      // Host confirmed 2026-09-25 during a manual Stage 0 smoke test with a
+      // real Token Plan key. Never merged with the OpenAI domain: MiMo runs
+      // are a distinct credential and must not silently gain ChatGPT egress.
+      return Object.freeze({ profileId, domains: Object.freeze(["token-plan-sgp.xiaomimimo.com"]) });
+    default:
+      throw new Error("codex_provider_egress_profile_invalid");
+  }
 }
 
+export function codexProviderApiEgressPolicy(): CodexProviderEgressPolicy {
+  return codexProviderEgressPolicy(CodexProviderEgressProfileId.ProviderApi);
+}
+
+export function codexMimoTokenPlanEgressPolicy(): CodexProviderEgressPolicy {
+  return codexProviderEgressPolicy(CodexProviderEgressProfileId.MimoTokenPlan);
+}
+
+/** A marker transports an already admitted policy; it never authorizes a job. */
 export function codexProviderEgressPolicyFromEnv(
   sourceEnv: Readonly<Record<string, string | undefined>> | undefined,
 ): CodexProviderEgressPolicy | null {
   const profileId = sourceEnv?.[codexProviderEgressProfileEnvVar]?.trim();
-  if (!profileId) return null;
-  if (profileId === codexProviderApiEgressProfileId) {
-    return codexProviderApiEgressPolicy();
+  if (profileId === CodexProviderEgressProfileId.ProviderApi ||
+      profileId === CodexProviderEgressProfileId.TestNpmQualification ||
+      profileId === CodexProviderEgressProfileId.TestManagedQualification ||
+      profileId === CodexProviderEgressProfileId.MimoTokenPlan) {
+    return codexProviderEgressPolicy(profileId);
   }
   return null;
 }
@@ -45,12 +81,11 @@ export function codexProviderEgressNetworkAccessFromEnv(
 
 export function codexProviderEgressConfigToml(
   policy: CodexProviderEgressPolicy = codexProviderApiEgressPolicy(),
+  input?: { readonly namedPermissions?: boolean },
 ): string {
   return [
-    "# Provider egress stays constrained to the trusted Codex model API profile.",
-    "[sandbox_workspace_write]",
-    "network_access = true",
-    "",
+    "# Provider egress is selected by trusted host admission.",
+    ...(input?.namedPermissions ? [] : ["[sandbox_workspace_write]", "network_access = true", ""]),
     "[features.network_proxy]",
     "enabled = true",
     `domains = { ${tomlDomainRules(policy)} }`,
@@ -60,10 +95,10 @@ export function codexProviderEgressConfigToml(
 
 export function codexProviderEgressCliConfigArgs(
   policy: CodexProviderEgressPolicy = codexProviderApiEgressPolicy(),
+  input?: { readonly namedPermissions?: boolean },
 ): readonly string[] {
   return [
-    "--config",
-    "sandbox_workspace_write.network_access=true",
+    ...(input?.namedPermissions ? [] : ["--config", "sandbox_workspace_write.network_access=true"]),
     "--config",
     "features.network_proxy.enabled=true",
     "--config",
@@ -72,9 +107,7 @@ export function codexProviderEgressCliConfigArgs(
 }
 
 function tomlDomainRules(policy: CodexProviderEgressPolicy): string {
-  return policy.domains.map((domain) => `${tomlString(domain)} = "allow"`).join(", ");
-}
-
-function tomlString(value: string): string {
-  return JSON.stringify(value);
+  // Reconstruct the finite policy rather than trusting a caller's domain array.
+  return codexProviderEgressPolicy(policy.profileId).domains
+    .map((domain) => `${JSON.stringify(domain)} = "allow"`).join(", ");
 }

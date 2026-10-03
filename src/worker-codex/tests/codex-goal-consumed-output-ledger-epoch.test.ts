@@ -65,13 +65,17 @@ describe("consumed-output ledger epoch migration", () => {
       },
     })).not.toThrow();
   });
+
   it("builds a deterministic hash-bound plan without exposing record contents", async () => {
     const fixture = await ledgerFixture();
     const plan = await fixture.buildPlan();
     expect(plan.evidenceBindings.some((binding) =>
       binding.declaredPath === fixture.statusPath && binding.state === "file"
     )).toBe(true);
-
+    expect(plan.evidenceBindings).toContainEqual(expect.objectContaining({
+      declaredPath: fixture.archivePath,
+      state: "directory",
+    }));
     expect(plan).toMatchObject({
       schemaVersion: 1,
       controllerJobId: "controller-v4",
@@ -83,7 +87,6 @@ describe("consumed-output ledger epoch migration", () => {
     expect(JSON.stringify(plan)).not.toContain("never-print-this-secret");
     expect((await fixture.buildPlan()).planSha256).toBe(plan.planSha256);
   });
-
   it("commits exact legacy-attempt quarantine provenance into plan and receipt", async () => {
     const fixture = await ledgerFixture();
     const legacyAttemptQuarantine = {
@@ -107,18 +110,12 @@ describe("consumed-output ledger epoch migration", () => {
     expect((await resolveConsumedOutputLedgerEpochReceipt(fixture.newRoot))
       .legacyAttemptQuarantine).toEqual(legacyAttemptQuarantine);
   });
-
   it("quarantines a current record whose donor evidence is missing", async () => {
     const fixture = await ledgerFixture({ missingDonor: true });
     const plan = await fixture.buildPlan();
-
-    expect(plan.files).toContainEqual(expect.objectContaining({
-      relativePath: "items/current-v4.json",
-      disposition: "quarantine",
-      quarantineReason: "invalid_or_missing_evidence",
-    }));
+    expect(plan.files.find((file) => file.relativePath === "items/current-v4.json"))
+      .toMatchObject({ disposition: "quarantine", quarantineReason: "invalid_or_missing_evidence" });
   });
-
   it("never trusts terminal evidence below a denied root", async () => {
     const fixture = await ledgerFixture();
     const plan = await buildConsumedOutputLedgerEpochPlan({
@@ -160,7 +157,6 @@ describe("consumed-output ledger epoch migration", () => {
     });
     expect(applied.receipt.status).toBe("active");
   });
-
   it("rejects an invalid expected plan hash before writing", async () => {
     const fixture = await ledgerFixture();
     const plan = await fixture.buildPlan();
@@ -171,7 +167,6 @@ describe("consumed-output ledger epoch migration", () => {
     })).rejects.toThrow("ledger_epoch_plan_hash_mismatch");
     await expect(stat(fixture.newRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
-
   it("fails closed when the old root drifts after preview", async () => {
     const fixture = await ledgerFixture();
     const plan = await fixture.buildPlan();
@@ -182,7 +177,6 @@ describe("consumed-output ledger epoch migration", () => {
       expectedPlanSha256: plan.planSha256,
     })).rejects.toThrow("ledger_epoch_plan_drift");
   });
-
   it("binds orphan dirty workspace quarantine and blocks later drift", async () => {
     const fixture = await ledgerFixture({ orphanWorkspace: true });
     const plan = await fixture.buildPlan();
@@ -198,7 +192,6 @@ describe("consumed-output ledger epoch migration", () => {
       expectedPlanSha256: plan.planSha256,
     })).rejects.toThrow("ledger_epoch_plan_drift");
   });
-
   it("quarantines a record whose filename does not match its payload", async () => {
     const fixture = await ledgerFixture();
     const source = await readFile(
@@ -215,7 +208,6 @@ describe("consumed-output ledger epoch migration", () => {
       quarantineReason: "invalid_or_missing_evidence",
     });
   });
-
   it("keeps an owned prepared root for fail-forward retry when scope switch fails", async () => {
     const fixture = await ledgerFixture();
     const plan = await fixture.buildPlan();
@@ -240,7 +232,6 @@ describe("consumed-output ledger epoch migration", () => {
     });
     expect(resumed.receipt.status).toBe("active");
   });
-
   it("rejects source drift before resuming a prepared transaction", async () => {
     const fixture = await ledgerFixture();
     const plan = await fixture.buildPlan();
@@ -261,7 +252,6 @@ describe("consumed-output ledger epoch migration", () => {
     })).rejects.toThrow("ledger_epoch_plan_drift");
     expect(fixture.activeRoot()).toBe(fixture.oldRoot);
   });
-
   it("resumes after crashes at both durable transaction phases", async () => {
     for (const crashAfterPhase of [
       "prepared",
@@ -295,7 +285,6 @@ describe("consumed-output ledger epoch migration", () => {
       ))).isFile()).toBe(true);
     }
   });
-
   it("seeds byte-identical preservation, activates once and replays idempotently", async () => {
     const fixture = await ledgerFixture();
     await writeFile(join(fixture.oldRoot, ".maintenance.lock"), "legacy-lock-byte\n");
@@ -322,7 +311,6 @@ describe("consumed-output ledger epoch migration", () => {
     });
     expect(second.idempotentReplay).toBe(true);
   });
-
   it("preserves the original pre-switch admission summary across recovery", async () => {
     const fixture = await ledgerFixture();
     const plan = await fixture.buildPlan();
@@ -339,7 +327,6 @@ describe("consumed-output ledger epoch migration", () => {
     });
     expect(resumed.receipt.admissionBefore).toEqual({ debtCount: 377 });
   });
-
   it("selects the controller active root and verifies its epoch receipt", async () => {
     const fixture = await ledgerFixture();
     const plan = await fixture.buildPlan();
@@ -355,7 +342,6 @@ describe("consumed-output ledger epoch migration", () => {
     expect(selected.ledgerRoot).toBe(fixture.newRoot);
     expect(selected.epochReceipt?.planSha256).toBe(plan.planSha256);
   });
-
   it("fails closed when an active epoch is missing its state", async () => {
     const fixture = await ledgerFixture();
     const plan = await fixture.buildPlan();
@@ -380,7 +366,6 @@ describe("consumed-output ledger epoch migration", () => {
       controllerStableScopeSha256: "2".repeat(64),
     })).rejects.toThrow("ledger_epoch_partial_artifacts");
   });
-
   it("requires the retirement marker and restores it during locked recovery", async () => {
     const fixture = await ledgerFixture();
     const plan = await fixture.buildPlan();
@@ -403,7 +388,6 @@ describe("consumed-output ledger epoch migration", () => {
     await expect(resolveConsumedOutputLedgerEpochReceipt(fixture.newRoot))
       .rejects.toThrow("ledger_epoch_retired_marker_conflict");
   });
-
   it("rejects missing or mutated quarantine artifacts during replay", async () => {
     for (const mutation of ["missing", "mutated"] as const) {
       const fixture = await ledgerFixture();
@@ -881,7 +865,7 @@ function terminalDecision(
   };
 }
 
-async function ledgerFixture(options: {
+export async function ledgerFixture(options: {
   readonly missingDonor?: boolean;
   readonly orphanWorkspace?: boolean;
 } = {}) {
@@ -927,6 +911,7 @@ async function ledgerFixture(options: {
     jobId: "current-v4",
     status: "rejected",
     closedAt: "2026-08-02T00:00:00.000Z",
+    archivePath: backup,
     backup: { workspace, statusPath, patchPath, numstatPath },
   })}\n`);
   await writeFile(join(items, "legacy-invalid.json"), `${JSON.stringify({
@@ -944,6 +929,7 @@ async function ledgerFixture(options: {
   let activeRoot = oldRoot;
   const buildPlan = async (
     legacyAttemptQuarantine?: ConsumedOutputLedgerEpochLegacyAttemptQuarantineAnchor,
+    deniedRoots: readonly string[] = [],
   ) => await buildConsumedOutputLedgerEpochPlan({
     controllerJobId: "controller-v4",
     projectId: "social-monitor",
@@ -952,6 +938,7 @@ async function ledgerFixture(options: {
     cutoff: "2026-08-01T00:00:00.000Z",
     currentJobIds: new Set(["current-v4"]),
     evidenceRoots: [root],
+    deniedRoots,
     orphanWorkspacePaths: orphanWorkspace ? [orphanWorkspace] : [],
     controllerManifestSha256: "1".repeat(64),
     controllerStableScopeSha256: "2".repeat(64),
@@ -988,6 +975,7 @@ async function ledgerFixture(options: {
     oldRoot,
     newRoot,
     statusPath,
+    archivePath: backup,
     orphanWorkspace,
     buildPlan,
     applyDeps,

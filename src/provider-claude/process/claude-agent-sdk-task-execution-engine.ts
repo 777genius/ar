@@ -204,7 +204,7 @@ export class ClaudeAgentSdkTaskExecutionEngine
             reconnectRequired: false,
             safeMessage:
               "Claude stopped before reporting verified Goal completion.",
-          });
+          }, result.telemetry);
         }
         return result;
       }

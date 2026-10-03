@@ -51,12 +51,14 @@ import {
 } from "./file-backend-codex-worker-test-support";
 
 describe("FileBackendCodexWorker", () => {
-  it("exposes lifecycle, seed, prewarm, health, and dispose", async () => {
+  it.each([false, true])("exposes lifecycle with separate runtime home: %s", async separateHome => {
     const rootDir = await mkdtemp(join(tmpdir(), "codex-worker-"));
+    const runtimeHomeRootDir = separateHome ? join(rootDir, "payload-home") : rootDir;
     const appServer = new FakeAppServerFactory();
     const worker = new FileBackendCodexWorker({
       providerInstanceId: "codex:test",
       stateRootDir: rootDir,
+      ...(separateHome ? { runtimeHomeRootDir } : {}),
       codexBinaryPath: "codex",
       encryptionKey: new Uint8Array(32).fill(7),
       appServerProcessFactory: appServer.create,
@@ -82,7 +84,12 @@ describe("FileBackendCodexWorker", () => {
           engineReusable: "true",
         },
       });
-      await expect(access(join(rootDir, "codex-session-cache"))).resolves.toBeUndefined();
+      await expect(access(join(runtimeHomeRootDir, "codex-session-cache"))).resolves.toBeUndefined();
+      await expect(access(join(rootDir, "sessions"))).resolves.toBeUndefined();
+      if (separateHome) {
+        await expect(access(join(rootDir, "codex-session-cache"))).rejects.toThrow();
+        await expect(access(join(rootDir, "workspaces"))).rejects.toThrow();
+      }
       expect(appServer.spawnCount).toBe(1);
       const expectedPathEntries = [
         ...(process.env.PATH ?? "").split(delimiter).filter(Boolean),
@@ -95,6 +102,7 @@ describe("FileBackendCodexWorker", () => {
       );
       expect(appServer.prompts).toEqual([]);
       const codexHome = appServer.codexHomes[0]!;
+      expect(codexHome.startsWith(join(runtimeHomeRootDir, "codex-session-cache") + "/")).toBe(true);
       await worker.dispose();
       await expect(access(codexHome)).resolves.toBeUndefined();
       await expect(access(join(codexHome, "auth.json"))).rejects.toThrow();

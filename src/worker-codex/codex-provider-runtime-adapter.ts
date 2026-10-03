@@ -1,7 +1,14 @@
+import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
+import { withControlledAgentEgress } from "./controlled-agent/codex-controlled-agent-profile";
+import { createCodexGoalObservationContext } from "./application/codex-goal-observation-context";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { SessionArtifact } from "@vioxen/subscription-runtime/core";
-import { sessionArtifactFromCodexAuthJson } from "@vioxen/subscription-runtime/provider-codex";
+import {
+  CodexModelBackend,
+  codexMimoApiKeyEnvVarDefault,
+  sessionArtifactFromCodexAuthJson,
+} from "@vioxen/subscription-runtime/provider-codex";
 import {
   RunEventProviderKind,
   type ProjectAccessScope,
@@ -17,6 +24,7 @@ import {
   buildCodexControlledAgentProfile,
   CodexControlledAgentProvider,
   type CodexControlledAgentProfile,
+  withControlledAgentModelBackend,
 } from "./controlled-agent";
 import { CodexRunObservationAdapter } from "./codex-run-observation";
 import {
@@ -49,6 +57,7 @@ class CodexProviderRuntimeAdapter implements ProviderRuntimeAdapter {
     const staleAfterMs = input.staleAfterMs ?? defaultStaleAfterMs;
     const tailLines = input.tailLines ?? defaultTailLines;
     const adapter = new CodexRunObservationAdapter({
+      observationContext: createCodexGoalObservationContext(),
       registryRootDir,
       ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input.staleAfterMs === undefined ? {} : { staleAfterMs: input.staleAfterMs }),
@@ -102,16 +111,36 @@ class CodexProviderRuntimeAdapter implements ProviderRuntimeAdapter {
   ): Promise<ProviderControlledAgentResult> {
     const launch = input.launch as CodexGoalLaunchInput;
     const options = input.controllerOptions as ProjectControllerOptions;
-    const profile = input.profile.rawProfile as CodexControlledAgentProfile;
+    if (!input.scope.authRoot) throw new Error("project_control_controller_auth_root_scope_required");
+    if (resolve(launch.config.authRootDir) !== resolve(input.scope.authRoot)) {
+      throw new Error("project_control_controller_auth_root_outside_scope");
+    }
+    const admitted = await admitHostedControllerLaunch(launch);
+    const modelBackend =
+      launch.config.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
     const account = await controlledAgentCodexAccount({
       scope: input.scope,
       launch,
     });
+    const profile = withControlledAgentEgress(
+      withControlledAgentModelBackend(
+        input.profile.rawProfile as CodexControlledAgentProfile,
+        modelBackend,
+        account.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault,
+      ),
+      admitted.policy,
+    );
     const controllerObjective = await input.controllerObjective();
     return {
       provider: new CodexControlledAgentProvider({
         profile,
+        processFactory: admitted.processFactory,
+        sourceEnv: launch.config.sourceEnv ?? process.env,
         sessionArtifact: account.sessionArtifact,
+        modelBackend,
+        ...(account.mimoApiKeyEnvVarName === undefined
+          ? {}
+          : { mimoApiKeyEnvVarName: account.mimoApiKeyEnvVarName }),
         workspacePath: launch.config.workspacePath,
         codexBinaryPath: launch.config.codexBinaryPath ?? "codex",
         controllerObjective,
@@ -163,7 +192,8 @@ async function controlledAgentCodexAccount(input: {
 }): Promise<{
   readonly name: string;
   readonly authJsonSha256Prefix?: string;
-  readonly sessionArtifact: SessionArtifact;
+  readonly sessionArtifact: SessionArtifact | null;
+  readonly mimoApiKeyEnvVarName?: string;
 }> {
   if (!input.scope.authRoot) {
     throw new Error("project_control_controller_auth_root_scope_required");
@@ -174,6 +204,17 @@ async function controlledAgentCodexAccount(input: {
   const slots = await listCodexGoalAccountStatuses({
     authRootDir: input.launch.config.authRootDir,
     accounts: input.launch.config.accounts.map((account) => account.name),
+    ...(input.launch.config.modelBackend === undefined
+      ? {}
+      : { modelBackend: input.launch.config.modelBackend }),
+    mimoAccounts:
+      input.launch.config.mimoAccounts ??
+      input.launch.config.accounts.map((account) => ({
+        name: account.name,
+        ...(account.envVarName === undefined
+          ? {}
+          : { envVarName: account.envVarName }),
+      })),
     stateRootDir: codexGoalStateRootDir(input.launch),
   });
   const selected = selectProjectControllerCodexAccountSlot({
@@ -182,6 +223,18 @@ async function controlledAgentCodexAccount(input: {
   });
   if (!selected) {
     throw new Error("project_control_controller_no_available_account");
+  }
+  if (
+    (input.launch.config.modelBackend ?? CodexModelBackend.OpenAiChatGpt) ===
+    CodexModelBackend.XiaomiMimoTokenPlan
+  ) {
+    return {
+      name: selected.name,
+      sessionArtifact: null,
+      ...(selected.envVarName === undefined
+        ? {}
+        : { mimoApiKeyEnvVarName: selected.envVarName }),
+    };
   }
   const authJsonBytes = await readFile(selected.authJsonPath, "utf8");
   return {

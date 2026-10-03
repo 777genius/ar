@@ -1,5 +1,5 @@
 import type { ActiveAttemptRegistry, WorkerControlTarget } from "./types";
-import { WorkerControlService } from "./worker-control-service";
+import { WorkerControlService, workerControlTargetMatches } from "./worker-control-service";
 
 export type ActiveAttemptInterruptMonitorOptions = {
   readonly control: Pick<WorkerControlService, "listSignals">;
@@ -59,8 +59,16 @@ export class ActiveAttemptInterruptMonitor {
           ) {
             continue;
           }
+          if (!workerControlTargetMatches(target, view.signal.target)) continue;
+          // Intersect both scopes: omitted signal fields must not broaden the
+          // monitor, and omitted monitor fields must not erase the addressee.
+          const interruptTarget = { ...target };
+          for (const key of Object.keys(view.signal.target) as (keyof WorkerControlTarget)[]) {
+            const value = view.signal.target[key];
+            if (value !== undefined) Object.assign(interruptTarget, { [key]: value });
+          }
           const interrupt = await this.options.activeAttemptRegistry.interrupt(
-            target,
+            interruptTarget,
             {
               code: "runtime_controlled_interrupt",
               safeMessage:

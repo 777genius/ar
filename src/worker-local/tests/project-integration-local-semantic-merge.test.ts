@@ -2,6 +2,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { IntegrationAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { LocalGitIntegrationAdapter } from "../index";
 import {
   createSemanticMergeFixture,
@@ -51,6 +52,7 @@ describe("local semantic merge integration", () => {
       message: "merge: integrate semantic base policy",
       files: fixture.changedFiles,
       identity: { name: "Integrator", email: "integrator@example.com" },
+      expectedMergeTree: (await gitOutput(fixture.workspacePath, ["write-tree"])).trim(),
       expectedParentCommits: [fixture.targetCommit, fixture.sourceCommit],
     });
 
@@ -193,11 +195,22 @@ describe("local semantic merge integration", () => {
     expect(applied.mergeSourceCommit).toBe(advancedHead);
     expect(applied.changedFiles).toContain("BASE_ADVANCED.md");
 
+    const binding = { ...semanticAttempt(fixture), targetBranch: "main",
+      workerOutput: semanticWorkerOutput(fixture), appliedFiles: applied.changedFiles,
+      appliedMergeSourceCommit: advancedHead } as IntegrationAttempt;
+    const authorizedTree = await adapter.verifyMergeOutputTree(binding);
+    expect(authorizedTree).toBe((await gitOutput(fixture.workspacePath, ["write-tree"])).trim());
+    // Descendant bytes are part of the authorized tree, too.
+    await writeFile(join(fixture.workspacePath, "BASE_ADVANCED.md"), "unreviewed descendant bytes\n");
+    await expect(adapter.verifyMergeOutputTree({ ...binding, authorizedMergeTree: authorizedTree }))
+      .rejects.toThrow("merge_output_target_tree_mismatch");
+    await writeFile(join(fixture.workspacePath, "BASE_ADVANCED.md"), "advanced\n");
     const commit = await adapter.commit({
       workspacePath: fixture.workspacePath,
       message: "merge: integrate semantic base policy",
       files: applied.changedFiles,
       identity: { name: "Integrator", email: "integrator@example.com" },
+      expectedMergeTree: authorizedTree,
       expectedParentCommits: [fixture.targetCommit, advancedHead],
     });
     expect(commit.parentCommits).toEqual([

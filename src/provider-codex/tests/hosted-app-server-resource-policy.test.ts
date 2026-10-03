@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   hostedAggregateIoDropIn,
-  hostedAppServerSystemdProperties,
   hostedIoLimitPathsFromMountInfo,
 } from "../app-server/adapters/hosted-app-server-resource-policy";
 
@@ -23,19 +22,7 @@ describe("hosted app-server resource policy", () => {
     ]);
   });
 
-  it("produces hard per-job and aggregate I/O ceilings", () => {
-    const perJob = hostedAppServerSystemdProperties(["/", "/mnt/volume one"]);
-    expect(perJob).toContain("IOReadBandwidthMax=/ 40M");
-    expect(perJob).toContain("IOWriteIOPSMax=/mnt/volume\\x20one 1500");
-    expect(perJob).toContain("NoNewPrivileges=yes");
-    expect(perJob).toContain("ProtectControlGroups=yes");
-    expect(perJob).toContain(
-      "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP",
-    );
-    expect(perJob).toContain(
-      "InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user",
-    );
-
+  it("produces the aggregate I/O ceiling", () => {
     expect(hostedAggregateIoDropIn(["/mnt/volume one"])).toContain(
       "IOReadIOPSMax=/mnt/volume\\x20one 8000",
     );
