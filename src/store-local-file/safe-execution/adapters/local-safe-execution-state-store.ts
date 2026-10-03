@@ -9,6 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { LocalTerminalCheckpointAdmission } from "../../terminal-checkpoint/local-terminal-checkpoint-admission";
 
 import {
   SafeExecutionError,
@@ -33,6 +34,8 @@ import {
 
 export type LocalFileSafeExecutionStoreOptions = {
   readonly rootDir: string;
+  readonly terminalCheckpointJobRootDir?: string;
+  readonly executionGeneration?: string;
 };
 
 export type LocalFileSafeExecutionStores = {
@@ -49,6 +52,8 @@ export function createLocalFileSafeExecutionStores(
     ),
     journal: new LocalFileAttemptJournal(
       join(options.rootDir, "attempt-journal"),
+      options.terminalCheckpointJobRootDir,
+      options.executionGeneration,
     ),
   };
 }
@@ -124,13 +129,17 @@ export class LocalFileWorkspaceLockStore implements WorkspaceLockStore {
 }
 
 export class LocalFileAttemptJournal implements AttemptJournal {
-  constructor(private readonly rootDir: string) {}
+  constructor(
+    private readonly rootDir: string,
+    private readonly terminalCheckpointJobRootDir?: string,
+    private readonly executionGeneration?: string,
+  ) {}
 
   async readTask(input: {
     readonly taskId: TaskRunId;
   }): Promise<SafeExecutionTaskRecord | null> {
     try {
-      return parseTaskRecord(
+      return parseLocalSafeExecutionTaskRecord(
         await readFile(this.taskPath(input.taskId), "utf8"),
       );
     } catch (error) {
@@ -162,8 +171,10 @@ export class LocalFileAttemptJournal implements AttemptJournal {
           updatedAt: input.now,
           attempts: [],
         };
-    await this.writeTask(record);
-    return record;
+    const current = this.executionGeneration === undefined
+      ? record : { ...record, executionGeneration: this.executionGeneration };
+    await this.writeTask(current);
+    return current;
   }
 
   async appendAttempt(input: {
@@ -252,8 +263,15 @@ export class LocalFileAttemptJournal implements AttemptJournal {
 
   private async writeTask(record: SafeExecutionTaskRecord): Promise<void> {
     const path = this.taskPath(record.taskId);
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    await atomicWriteJson(path, serializeTaskRecord(record));
+    const publish = async () => {
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      await atomicWriteJson(path, serializeTaskRecord(record));
+    };
+    if (this.terminalCheckpointJobRootDir) {
+      await new LocalTerminalCheckpointAdmission(this.terminalCheckpointJobRootDir).withWriter(publish);
+    } else {
+      await publish();
+    }
   }
 }
 
@@ -463,10 +481,12 @@ function serializeAttemptRecord(
   };
 }
 
-function parseTaskRecord(raw: string): SafeExecutionTaskRecord {
+export function parseLocalSafeExecutionTaskRecord(raw: string): SafeExecutionTaskRecord {
   const value = JSON.parse(raw) as Record<string, unknown>;
   return {
     taskId: requireString(value.taskId, "taskId"),
+    ...(typeof value.executionGeneration === "string"
+      ? { executionGeneration: value.executionGeneration } : {}),
     workspaceRunId: requireString(value.workspaceRunId, "workspaceRunId"),
     workspacePath: requireString(value.workspacePath, "workspacePath"),
     effectMode: requireEffectMode(value.effectMode),

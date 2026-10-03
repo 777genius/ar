@@ -31,6 +31,7 @@ import {
   createCodexGoalMcpServer,
   projectControllerPendingGuidancePromptContext,
 } from "../codex-goal-mcp";
+import { assertRefilledWorkerCheckpointRequired } from "./codex-goal-project-refill-checkpoint-assertions";
 import {
   auditDecision,
   callToolJson,
@@ -141,6 +142,7 @@ describe("codex goal MCP server", () => {
         promptPath: join(controllerJobRoot, "prompt.md"),
         taskId: "infinity-context-controller-v1",
         accounts: ["account-a"],
+        checkpointRequired: true,
         accessBoundary: AccessBoundary.ProjectScopedControl,
         networkAccess: NetworkAccessMode.Restricted,
         projectAccessScope: {
@@ -206,6 +208,7 @@ describe("codex goal MCP server", () => {
         promptBody: "Run a focused memory fastgate and report cleanly.\n",
         taskId: "infinity-context-memory-fastgate-v1",
         accounts: ["account-a"],
+        checkpointRequired: false,
         workerRole: "fastgate",
         preStartAdmission: builtinAdmission,
         confirmPreStartAdmission: true,
@@ -213,6 +216,8 @@ describe("codex goal MCP server", () => {
         confirmRefill: true,
       });
       if (result.ok !== true) throw new Error(JSON.stringify(result));
+      await assertRefilledWorkerCheckpointRequired({ registryRootDir, root, phaseStartSha,
+        childJobId: "infinity-context-memory-fastgate-v1" });
 
       expect(result).toMatchObject({
         ok: true,

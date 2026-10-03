@@ -125,6 +125,15 @@ export function commandPolicyForHostedCodexGoal(input: {
 }): CommandPolicy | undefined {
   if (
     input.accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
+    input.accessLaunchPlan.boundary === AccessBoundary.IsolatedWorkspaceWrite
+  ) {
+    return {
+      ...input.accessLaunchPlan.commandPolicy,
+      validateCommands: false,
+    };
+  }
+  if (
+    input.accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
     input.accessLaunchPlan.commandPolicy.validateCommands
   ) {
     return input.accessLaunchPlan.commandPolicy;
@@ -139,6 +148,21 @@ export function commandPolicyForHostedCodexGoal(input: {
     deniedPathPrefixes: [],
     deniedInlineCodeExecutables: [],
     deniedScriptExecutables: [],
+  };
+}
+
+export function codexGoalHostedExecutionBoundary(input: {
+  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  readonly projectAccessScope?: ProjectAccessScope;
+  readonly accessBoundary?: AccessBoundary;
+  readonly commandPolicy?: CommandPolicy | undefined;
+}) {
+  return {
+    sourceEnv: input.sourceEnv ?? process.env,
+    enforceProjectReadBoundary: input.projectAccessScope !== undefined &&
+      (input.accessBoundary === AccessBoundary.ReadOnly ||
+        input.accessBoundary === AccessBoundary.IsolatedWorkspaceWrite),
+    ...(input.commandPolicy === undefined ? {} : { commandPolicy: input.commandPolicy }),
   };
 }
 

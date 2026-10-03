@@ -507,7 +507,7 @@ async function writeIndexTree(
     .toLowerCase();
 }
 
-async function writeTemporaryIndexTree(input: {
+export async function writeTemporaryIndexTree(input: {
   readonly runtime: LocalGitOutputRollbackRuntime;
   readonly workspacePath: string;
   readonly baseCommit: string;

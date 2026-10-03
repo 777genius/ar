@@ -297,7 +297,7 @@ describe("run events", () => {
         RunEventType.Failed,
       ]),
     );
-    expect(result.events.map((event) => event.sequence)).toEqual([10, 11, 12]);
+    expect(result.events.map((event) => event.sequence)).toEqual([10, 11, 12, 13]);
   });
 
   it("rebuilds read models from durable events when projection state is gone", () => {
@@ -406,7 +406,7 @@ describe("run events", () => {
         });
       },
     };
-    const service = new RunEventProjectionService({
+    const service = new RunEventProjectionService({ providerKind: RunEventProviderKind.Codex,
       observationPort,
       eventStore: events,
       stateStore: states,
@@ -439,7 +439,7 @@ describe("run events", () => {
         });
       },
     };
-    const service = new RunEventProjectionService({
+    const service = new RunEventProjectionService({ providerKind: RunEventProviderKind.Codex,
       observationPort,
       eventStore: events,
       stateStore: states,
@@ -479,7 +479,7 @@ describe("run events", () => {
         };
       },
     };
-    const service = new RunEventProjectionService({
+    const service = new RunEventProjectionService({ providerKind: RunEventProviderKind.Codex,
       observationPort,
       eventStore: events,
       stateStore: states,
@@ -505,7 +505,7 @@ describe("run events", () => {
     });
     const recovered = await service.projectRun({ runId: "run-a" });
 
-    expect(recovered.events.map((event) => event.type)).not.toContain(
+    expect(recovered.events.map((event) => event.type)).toContain(
       RunEventType.ObservationRecorded,
     );
     expect(recovered.events.map((event) => event.type)).toEqual(
@@ -604,6 +604,20 @@ describe("run events", () => {
 
 class MemoryProjectionStateStore implements RunEventProjectionStateStorePort {
   private readonly states = new Map<string, RunEventProjectionState>();
+  private readonly pending = new Map<string, ReturnType<typeof projectRunObservationEvents>>();
+  private readonly locks = new Map<string, Promise<unknown>>();
+
+  async withProjectionLock<T>(runId: string, operation: () => Promise<T>): Promise<T> {
+    const next = (this.locks.get(runId) ?? Promise.resolve()).catch(() => undefined).then(operation);
+    this.locks.set(runId, next);
+    try { return await next; } finally { if (this.locks.get(runId) === next) this.locks.delete(runId); }
+  }
+  async readPendingProjection(runId: string) { return this.pending.get(runId) ?? null; }
+  async writePendingProjection(projection: ReturnType<typeof projectRunObservationEvents>) {
+    this.pending.set(projection.nextState.runId, projection);
+  }
+  async clearPendingProjection(runId: string) { this.pending.delete(runId); }
+
 
   async readProjectionState(runId: string): Promise<RunEventProjectionState | null> {
     return this.states.get(runId) ?? null;

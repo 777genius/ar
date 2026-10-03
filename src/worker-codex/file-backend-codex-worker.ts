@@ -3,7 +3,6 @@ import {
   DefaultRedactor,
   type AgentUsage,
   type ClockPort,
-  type AgentRuntimeToolName,
   type ManagedRunInputRequest,
   type ManagedRunRecoveryPacket,
   type ManagedRunResumeHandle,
@@ -13,16 +12,11 @@ import {
   type ProviderTask,
   type RefreshThenRunResult,
   type RedactorPort,
-  type RuntimeDeps,
   type SessionArtifact,
   assertProviderTaskSystemPrompt,
 } from "@vioxen/subscription-runtime/core";
 import {
-  type CodexExecutionProfile,
   CodexJsonAgentDriver,
-  type CodexAppServerProcessFactory,
-  type CodexReasoningEffort,
-  type CodexServiceTier,
 } from "@vioxen/subscription-runtime/provider-codex";
 import {
   SubscriptionWorkerError,
@@ -33,7 +27,6 @@ import {
   type SubscriptionWorkerRunOptions,
   type SubscriptionWorkerState,
   type WorkerCapacitySnapshot,
-  type CommandPolicy,
 } from "@vioxen/subscription-runtime/worker-core";
 import { NullWorkerObservability } from "../worker-local/observability";
 import {
@@ -43,65 +36,20 @@ import {
 import {
   FileBackendCodexCapacityState,
   isSevereCapacity,
-  type CodexWorkerCapacityPolicy,
 } from "./file-backend-codex-capacity";
 import {
   createFileBackendCodexWorkerRuntime,
-  type CodexWorkerExecutionEngine,
   type FileBackendCodexWorkerRuntimeParts,
 } from "./file-backend-codex-runtime-factory";
 import { FileBackendCodexPrewarmer } from "./file-backend-codex-prewarm";
 import { FileBackendCodexSessionSeeder } from "./file-backend-codex-session-seeding";
 
-export type FileBackendCodexWorkerOptions = {
-  readonly workerId?: string;
-  readonly providerInstanceId: string;
-  readonly stateRootDir: string;
-  readonly codexBinaryPath: string;
-  readonly encryptionKey: Uint8Array | string;
-  readonly model?: string;
-  readonly reasoningEffort?: CodexReasoningEffort;
-  readonly serviceTier?: CodexServiceTier;
-  readonly sessionCacheSlots?: number;
-  /**
-   * Prompt used to fully warm the Codex app-server and model path.
-   * Set to false to warm only the daemon process.
-   */
-  readonly warmupPrompt?: string | false;
-  readonly taskTimeoutMs?: number;
-  readonly appServerStartupTimeoutMs?: number;
-  readonly refreshFreshnessMs?: number;
-  readonly refreshBeforeExpiryMs?: number;
-  readonly maxSessionAgeMs?: number;
-  readonly refreshConflictRetryMaxMs?: number;
-  readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
-  readonly executionEngine?: CodexWorkerExecutionEngine;
-  readonly appServerProcessFactory?: CodexAppServerProcessFactory;
-  readonly executionProfile?: CodexExecutionProfile;
-  readonly boundedWorkspaceTools?: {
-    readonly allowedTools: readonly AgentRuntimeToolName[];
-    readonly denyProjectInstructions?: boolean;
-  };
-  readonly rolloutBudget?: {
-    readonly weightedTokenLimit: number;
-  };
-  readonly maxGoalTurns?: number;
-  readonly cleanThreadPrewarm?: boolean;
-  readonly outputSchemas?: Readonly<Record<string, unknown>>;
-  readonly observability?: ObservabilityPort;
-  readonly runner?: RuntimeDeps["runner"];
-  readonly commandPolicy?: CommandPolicy;
-  readonly workspace?: RuntimeDeps["workspace"];
-  readonly workspacePath?: string;
-  readonly clock?: ClockPort;
-  readonly capacityAccountId?: string;
-  readonly capacityPolicy?: CodexWorkerCapacityPolicy;
-};
+import type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker-options";
+export type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker-options";
 export type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 export type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
 export type { FileBackendCodexManagedRunResumeInput } from "./file-backend-codex-managed-run-recovery";
 import { assertWorkerOptions } from "./file-backend-codex-worker-options";
-
 export type FileBackendCodexWorkerJob = {
   readonly runId?: string;
   readonly prompt: string;
@@ -180,7 +128,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     this.capacityTracker = new FileBackendCodexCapacityState({
       clock: this.clock,
       providerInstanceId: options.providerInstanceId,
-      reasoningEffort: options.reasoningEffort ?? "low",
+      ...(options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }),
       ...(options.model === undefined ? {} : { model: options.model }),
       ...(options.capacityAccountId === undefined
         ? {}

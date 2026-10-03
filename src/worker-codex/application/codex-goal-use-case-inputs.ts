@@ -7,6 +7,7 @@ import type {
 import { resolveCodexGoalJobRegistryRoot } from "../codex-goal-jobs";
 import type { CodexGoalOutputFormat } from "../codex-goal-ops";
 import type { CodexGoalRunConfig } from "../codex-goal-runner";
+import type { CodexGoalMimoAccountSlot } from "../codex-goal-mimo-account-slots";
 
 export type CodexGoalInput = {
   readonly jobId?: string;
@@ -19,6 +20,7 @@ export type CodexGoalInput = {
   readonly codexGoalObjective?: string;
   readonly taskId?: string;
   readonly accounts?: string | readonly string[];
+  readonly mimoAccounts?: readonly CodexGoalMimoAccountSlot[];
   readonly outputPath?: string;
   readonly progressPath?: string;
   readonly progressHeartbeatMs?: number;
@@ -27,6 +29,8 @@ export type CodexGoalInput = {
   readonly reasoningEffort?: CodexGoalRunConfig["reasoningEffort"];
   readonly serviceTier?: CodexGoalRunConfig["serviceTier"];
   readonly executionEngine?: CodexGoalRunConfig["executionEngine"];
+  readonly checkpointRequired?: boolean;
+  readonly modelBackend?: CodexGoalRunConfig["modelBackend"];
   readonly taskTimeoutMs?: number;
   readonly appServerStartupTimeoutMs?: number;
   readonly staleLockMs?: number;

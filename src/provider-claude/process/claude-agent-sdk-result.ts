@@ -1,10 +1,9 @@
+import { sdkClaudeTelemetry } from "./claude-agent-sdk-telemetry";
 import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import Ajv2020 from "ajv/dist/2020.js";
 import {
-  AgentRuntimeCostCurrency,
   AgentRuntimeFailureCode,
   type ProviderFailure,
-  type ProviderTaskTelemetry,
 } from "@vioxen/subscription-runtime/core";
 import {
   ClaudeProviderFailureError,
@@ -16,7 +15,25 @@ import type {
 } from "../task/engine-contract";
 import type { ClaudeAgentSdkSafeDiagnostics } from "./claude-agent-sdk-safe-diagnostics";
 
+import { ClaudeTaskTelemetryError } from "../protocol/task-telemetry";
+
 export function resultFromSdkMessage(
+  message: SDKResultMessage,
+  input: ClaudeTaskEngineInput,
+  policyAudit: ReadonlySet<string>,
+  safeDiagnostics: ClaudeAgentSdkSafeDiagnostics,
+): ClaudeTaskExecutionResult {
+  try {
+    return parseSdkResult(message, input, policyAudit, safeDiagnostics);
+  } catch (error) {
+    if (error instanceof ClaudeProviderFailureError) {
+      throw new ClaudeProviderFailureError(error.failure, sdkClaudeTelemetry(message));
+    }
+    throw new ClaudeTaskTelemetryError(error, sdkClaudeTelemetry(message));
+  }
+}
+
+function parseSdkResult(
   message: SDKResultMessage,
   input: ClaudeTaskEngineInput,
   policyAudit: ReadonlySet<string>,
@@ -55,14 +72,9 @@ export function resultFromSdkMessage(
     outputText,
     ...(structuredOutput === undefined ? {} : { structuredOutput }),
     telemetry: {
-      durationMs: message.duration_ms,
-      turns: message.num_turns,
-      cost: {
-        amount: message.total_cost_usd,
-        currency: AgentRuntimeCostCurrency.Usd,
-      },
+      ...sdkClaudeTelemetry(message),
       providerSessionId: message.session_id,
-    } satisfies ProviderTaskTelemetry,
+    },
     warnings: usedStructuredOutputTextFallback
       ? [{
           code: "claude_structured_output_text_fallback",

@@ -1,5 +1,9 @@
+import { AppServerUsageError } from "./app-server-usage-error";
 import { randomUUID } from "node:crypto";
-import type { ManagedRunInputRequest } from "@vioxen/subscription-runtime/core";
+import type {
+  AgentUsage,
+  ManagedRunInputRequest,
+} from "@vioxen/subscription-runtime/core";
 import {
   appServerGoalObjectiveMaxChars,
   type CodexThreadGoal,
@@ -44,13 +48,24 @@ export function goalInputRequest(input: {
 export function goalMaxTurnsExceededError(input: {
   readonly maxGoalTurns: number;
   readonly outputText: string;
-}): Error {
-  const error = new Error(
-    `codex_app_server_goal_max_turns_exceeded:${input.maxGoalTurns}`,
-  ) as Error & { lastOutputText?: string };
-  const outputText = input.outputText.trim();
-  if (outputText) error.lastOutputText = outputText;
-  return error;
+  readonly usage?: AgentUsage;
+}): AppServerGoalMaxTurnsExceededError {
+  return new AppServerGoalMaxTurnsExceededError(input);
+}
+
+export class AppServerGoalMaxTurnsExceededError extends AppServerUsageError {
+  readonly lastOutputText?: string;
+
+  constructor(input: {
+    readonly maxGoalTurns: number;
+    readonly outputText: string;
+    readonly usage?: AgentUsage;
+  }) {
+    super(new Error(`codex_app_server_goal_max_turns_exceeded:${input.maxGoalTurns}`), input.usage);
+    this.name = "AppServerGoalMaxTurnsExceededError";
+    const outputText = input.outputText.trim();
+    if (outputText) this.lastOutputText = outputText;
+  }
 }
 
 export function formatGoalSetError(

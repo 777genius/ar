@@ -33,6 +33,7 @@ export function buildFrozenOutputPathAuthorization(input: {
     ...(input.scope.isolatedWorkspaceRoot
       ? [input.scope.isolatedWorkspaceRoot]
       : []),
+    ...(input.scope.registryRoot ? [input.scope.registryRoot] : []),
   ]);
   const readRoots = unique(input.scope.readRoots ?? []);
   const evidenceRoots = unique(input.scope.consumedOutputEvidenceRoots ?? []);

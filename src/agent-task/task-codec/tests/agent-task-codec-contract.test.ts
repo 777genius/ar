@@ -10,6 +10,12 @@ import { compareAgentTaskRoundMembers } from "../../rounds";
 import { agentTaskProtocolVersion } from "../../types";
 
 describe("agent-task codec contract", () => {
+  it("round-trips all known optional usage counters", () => {
+    const usage = { inputTokens: 100, outputTokens: 25, totalTokens: 125, cachedInputTokens: 80, cacheWriteInputTokens: 10, reasoningOutputTokens: 5 };
+    const encoded = providerTaskResultToAgentTaskResult({ status: "completed", outputText: "done", warnings: [], telemetry: { usage } });
+    expect(agentTaskResultToProviderTaskResult(parseAgentTaskResult(encoded)).telemetry?.usage).toEqual(usage);
+  });
+
   it("keeps request contracts JSON-safe while mapping only provider controls downstream", () => {
     const request = parseAgentTaskRequest({
       protocolVersion: agentTaskProtocolVersion,

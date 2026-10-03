@@ -285,10 +285,12 @@ function quotaWindowFromNestedRecord(input: {
 }): QuotaWindow {
   const limitId = stringValue(input.parent.limitId) ?? input.fallbackLimitId;
   const limitName = stringValue(input.parent.limitName);
-  const reachedType = stringValue(input.nested.rateLimitReachedType);
+  const reachedType = stringValue(input.nested.rateLimitReachedType) ??
+    stringValue(input.parent.rateLimitReachedType);
   return quotaWindowFromRecord(
     {
       ...input.nested,
+      ...(input.parent.credits !== undefined ? { credits: input.parent.credits } : {}),
       ...(limitId ? { limitId } : {}),
       ...(limitName ? { limitName } : {}),
       ...(reachedType ? { rateLimitReachedType: reachedType } : {}),
@@ -307,12 +309,24 @@ function quotaWindowFromRecord(
   const reachedType = stringValue(record.rateLimitReachedType);
   const credits = readRecord(record.credits);
   const resetCredits = readRecord(record.rateLimitResetCredits);
-  const creditsRemaining = numberValue(credits?.remaining);
+  const balance = credits?.balance;
+  const parsedBalance = typeof balance === "number" ? balance :
+    typeof balance === "string" && balance.length <= 128 && /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(balance) ? Number(balance) : undefined;
+  const modernBalance = numberValue(parsedBalance);
+  // Legacy remaining is display-only; a supplied modern balance is authoritative.
+  const creditsRemaining = credits && "balance" in credits
+    ? modernBalance
+    : numberValue(credits?.remaining);
   const resetCreditsAvailable = numberValue(resetCredits?.available);
   const limitId = stringValue(record.limitId) ?? fallbackLimitId;
   const limitName = stringValue(record.limitName);
+  // Included usage can be exhausted while the provider still permits Codex
+  // through credits. Explicit provider denials and other buckets remain closed.
+  const usableCodexCredits = limitId === "codex" && credits?.hasCredits === true &&
+    (credits.unlimited === true || (credits.unlimited === false &&
+      modernBalance !== undefined && modernBalance > 0));
   const state =
-    reachedType || (usedPercent !== undefined && usedPercent >= 100)
+    reachedType || (usedPercent !== undefined && usedPercent >= 100 && !usableCodexCredits)
       ? QuotaLimitState.Limited
       : QuotaLimitState.Clear;
 

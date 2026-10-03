@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import {
   SecretScanStatus,
+  reviewedOutputFileByteAllowance,
   detectSecretLikeContent,
   matchesSecretLikeContentPatterns,
   normalizeProjectRelativePath,
@@ -38,10 +39,13 @@ export class SimpleSecretScanner implements SecretScannerPort {
   async scanFiles(input: {
     readonly workspacePath: string;
     readonly files: readonly string[];
+    readonly reviewedOutputFileByteAllowance?: number;
+    readonly reviewedTree?: string;
+    readonly reviewedParent?: string;
   }): Promise<SecretScanResult> {
     const workspacePath = await realpath(input.workspacePath);
     const maxFileBytes = scannerLimit(
-      this.options.maxFileBytes,
+      reviewedOutputFileByteAllowance(input.reviewedOutputFileByteAllowance) ?? this.options.maxFileBytes,
       defaultMaxFileBytes,
       maximumByteLimit,
       "secret_scan_max_file_bytes_invalid",
@@ -73,7 +77,8 @@ export class SimpleSecretScanner implements SecretScannerPort {
     if (files.length > maxChangedFiles) {
       return failed("secret_scan_changed_file_limit_exceeded");
     }
-    const baseCommit = await this.gitText(
+    if (input.reviewedParent !== undefined && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(input.reviewedParent)) return failed("secret_scan_parent_invalid");
+    const baseCommit = input.reviewedParent ?? await this.gitText(
       ["rev-parse", "--verify", "HEAD"],
       workspacePath,
     ).catch(() => undefined);
@@ -81,7 +86,20 @@ export class SimpleSecretScanner implements SecretScannerPort {
 
     const currentBlobs = new Map<string, Buffer>();
     let totalBytes = 0;
-    for (const file of files) {
+    if (input.reviewedTree !== undefined) {
+      if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(input.reviewedTree)) return failed("secret_scan_tree_invalid");
+      try {
+        const objects = await this.gitBaseBlobObjects(workspacePath, input.reviewedTree, files);
+        for (const [file, objectId] of objects) {
+          const [bytes] = await readGitBlobBatch({ workspacePath, objectNames: [objectId], maxBlobBytes: maxFileBytes, maxTotalBytes: maxTotalFileBytes - totalBytes,
+            ...(this.options.gitBinaryPath === undefined ? {} : { gitBinaryPath: this.options.gitBinaryPath }) });
+          if (bytes === undefined) return failed("secret_scan_tree_blob_missing");
+          currentBlobs.set(file, bytes);
+          totalBytes += bytes.byteLength;
+        }
+      } catch (error) { return failed(gitBlobScanSafeMessage(error)); }
+    }
+    for (const file of input.reviewedTree === undefined ? files : []) {
       const result = await readCurrentRegularFile({
         workspacePath,
         file,
@@ -198,7 +216,7 @@ export class SimpleSecretScanner implements SecretScannerPort {
     if (confirmedBase !== baseCommit) return failed("secret_scan_base_changed");
     return matches.length > 0
       ? failed(`secret_like_content:${matches.join(",")}`)
-      : { status: SecretScanStatus.Passed };
+      : { status: SecretScanStatus.Passed, ...(input.reviewedTree === undefined ? {} : { scannedReviewedTree: input.reviewedTree, ...(input.reviewedParent === undefined ? {} : { scannedReviewedParent: input.reviewedParent }) }) };
   }
 
   private async gitText(
@@ -210,6 +228,7 @@ export class SimpleSecretScanner implements SecretScannerPort {
       [...args],
       {
         cwd: workspacePath,
+        env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null" },
         encoding: "utf8",
         maxBuffer: 1024 * 1024,
         timeout: 15_000,
@@ -236,6 +255,7 @@ export class SimpleSecretScanner implements SecretScannerPort {
       ],
       {
         cwd: workspacePath,
+        env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null" },
         encoding: "utf8",
         maxBuffer: 2 * 1024 * 1024,
         timeout: 15_000,

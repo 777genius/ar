@@ -15,7 +15,10 @@ import {
   WorkerAccountCapacityResolutionType,
   WorkerAccountCapacityResolveStatus,
 } from "../../worker-core";
-import { recordCodexLiveQuotaCapacity } from "../application/codex-live-quota-capacity";
+import {
+  recordCodexAppServerRateLimitsSnapshot,
+  recordCodexLiveQuotaCapacity,
+} from "../application/codex-live-quota-capacity";
 
 const checkedAt = new Date("2026-07-12T10:00:00.000Z");
 
@@ -259,6 +262,93 @@ describe("recordCodexLiveQuotaCapacity", () => {
     expect(stale.status).toBe(WorkerAccountCapacityResolveStatus.StaleClaim);
     expect(store.read({ accountId: "account-a", now: checkedAt })).toMatchObject({
       cooldownUntil: freshReset,
+    });
+  });
+});
+
+describe("recordCodexAppServerRateLimitsSnapshot", () => {
+  it("rejects and persists a limited full app-server snapshot", () => {
+    const store = new InMemoryWorkerAccountCapacityStore();
+    const resetAt = new Date("2026-07-12T12:00:00.000Z");
+
+    expect(
+      recordCodexAppServerRateLimitsSnapshot({
+        accountId: "account-a",
+        result: {
+          rateLimits: {
+            primary: {
+              usedPercent: 100,
+              windowDurationMins: 300,
+              resetsAt: Math.floor(resetAt.getTime() / 1000),
+            },
+            rateLimitReachedType: "usage_limit_reached",
+          },
+        },
+        observedAt: checkedAt,
+        store,
+      }),
+    ).toEqual({ status: "rejected", reason: "quota_limited" });
+    expect(store.read({ accountId: "account-a", now: checkedAt })).toMatchObject({
+      availability: "quota_exhausted",
+      cooldownUntil: resetAt,
+      details: { capacitySource: "codex_app_server_live_quota" },
+    });
+  });
+
+  it("admits an available snapshot and clears stale capacity", () => {
+    const store = new InMemoryWorkerAccountCapacityStore();
+    store.observe({
+      accountId: "account-a",
+      observedAt: new Date("2026-07-12T09:00:00.000Z"),
+      capacity: {
+        availability: "quota_exhausted",
+        reason: "quota_limited",
+        cooldownUntil: new Date("2026-07-12T12:00:00.000Z"),
+      },
+    });
+
+    expect(
+      recordCodexAppServerRateLimitsSnapshot({
+        accountId: "account-a",
+        result: {
+          rateLimits: {
+            primary: {
+              usedPercent: 25,
+              windowDurationMins: 300,
+              resetsAt: 1780000000,
+            },
+            rateLimitReachedType: null,
+          },
+        },
+        observedAt: checkedAt,
+        store,
+      }),
+    ).toEqual({ status: "admitted" });
+    expect(store.read({ accountId: "account-a", now: checkedAt })).toBeNull();
+  });
+
+  it("does not clear known capacity from an unparseable snapshot", () => {
+    const store = new InMemoryWorkerAccountCapacityStore();
+    store.observe({
+      accountId: "account-a",
+      observedAt: new Date("2026-07-12T09:00:00.000Z"),
+      capacity: {
+        availability: "quota_exhausted",
+        reason: "quota_limited",
+        cooldownUntil: new Date("2026-07-12T12:00:00.000Z"),
+      },
+    });
+
+    expect(
+      recordCodexAppServerRateLimitsSnapshot({
+        accountId: "account-a",
+        result: {},
+        observedAt: checkedAt,
+        store,
+      }),
+    ).toEqual({ status: "admitted" });
+    expect(store.read({ accountId: "account-a", now: checkedAt })).toMatchObject({
+      reason: "quota_limited",
     });
   });
 });

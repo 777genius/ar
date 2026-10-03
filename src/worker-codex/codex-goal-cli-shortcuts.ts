@@ -55,6 +55,7 @@ export function parseCodexGoalCliMcpShortcut(
         ...(values.values.get("--run-artifacts-root")
           ? { runArtifactsRootDir: values.values.get("--run-artifacts-root") }
           : {}),
+        ...optionalStringArg(values, "--cursor", "cursor"),
         ...optionalNumberArg(values, "--stale-after-ms", "staleAfterMs"),
         ...optionalNumberArg(values, "--tail-lines", "tailLines"),
         ...optionalNumberArg(values, "--limit", "limit"),
@@ -299,9 +300,17 @@ export function parseCodexGoalCliMcpShortcut(
       tool: "codex_goal_control_list",
       argv,
       io,
-      extraArgs: (values) => ({
-        ...(flag(values, "--include-bodies") ? { includeBodies: true } : {}),
-      }),
+      extraArgs: (values) => {
+        for (const name of ["--limit", "--cursor", "--state"]) {
+          if (values.flags.has(name)) throw new Error(`${name} requires a value`);
+        }
+        return {
+          ...(values.values.has("--limit") ? { limit: Number(values.values.get("--limit")) } : {}),
+          ...(values.values.has("--cursor") ? { cursor: values.values.get("--cursor") } : {}),
+          ...(values.values.has("--state") ? { state: values.values.get("--state") } : {}),
+          ...(flag(values, "--include-bodies") ? { includeBodies: true } : {}),
+        };
+      },
     });
   }
   if (commandName === "control-decision" || commandName === "inbox-decision") {

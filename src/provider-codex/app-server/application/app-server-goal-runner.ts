@@ -1,8 +1,10 @@
+import { AppServerUsageError, usageFromError } from "../domain/app-server-usage-error";
 import type {
   AgentUsage,
   ManagedRunInputRequest,
   ManagedRunResumeHandle,
   ManagedRunStorePort,
+  RedactorPort,
 } from "@vioxen/subscription-runtime/core";
 import {
   ProviderLogicalThreadOutcome,
@@ -26,7 +28,7 @@ import {
 } from "../domain/app-server-types";
 import {
   mergeAgentUsage,
-  preferredUsage,
+  subtractAgentUsage,
   usageField,
 } from "../domain/app-server-usage";
 import type { CodexAppServerClient } from "./app-server-client";
@@ -38,16 +40,19 @@ import {
   assertManagedRunCanResume,
   managedRunFailureFromError,
 } from "./app-server-managed-run-mapper";
+import { AppServerTurnCheckpointError, type AppServerCompletedTurnCheckpoint } from "./app-server-turn-checkpoint";
 
 export class AppServerGoalRunner {
   constructor(
     private readonly options: {
       readonly client: CodexAppServerClient;
       readonly runStore: ManagedRunStorePort;
+      readonly completedTurnCheckpoint?: AppServerCompletedTurnCheckpoint;
     },
   ) {}
 
   async runGoal(input: {
+    readonly redactor: RedactorPort;
     readonly runId?: string;
     readonly prompt: string;
     readonly goalObjective?: string;
@@ -63,30 +68,37 @@ export class AppServerGoalRunner {
     readonly maxGoalTurns: number;
     readonly goalContinuePrompt: string;
   }): Promise<AppServerRunResult> {
-    const warnings = this.options.client.drainWarnings();
-    const runId = normalizeRunId(input.runId);
-    const threadId = await this.options.client.startThread({
-      ...input,
-      goalMode: true,
-    });
-    await this.options.client.setGoal({
-      threadId,
-      objective: input.goalObjective ?? input.prompt,
-      status: "active",
-      timeoutMs: input.timeoutMs,
-      abortSignal: input.abortSignal,
-    });
+    const usageLease = this.options.client.acquireExecution();
+    try {
+      const warnings = this.options.client.drainWarnings();
+      const runId = normalizeRunId(input.runId);
+      const threadId = await this.options.client.startThread({
+        usageLease,
+        ...input,
+        goalMode: true,
+      });
+      await this.options.client.setGoal({
+        threadId,
+        objective: input.goalObjective ?? input.prompt,
+        status: "active",
+        timeoutMs: input.timeoutMs,
+        abortSignal: input.abortSignal,
+      });
 
-    return this.continueGoal({
-      ...input,
-      runId,
-      threadId,
-      firstPrompt: input.prompt,
-      warnings,
-    });
+      return await this.continueGoal({
+        ...input,
+        runId,
+        threadId,
+        firstPrompt: input.prompt,
+        warnings,
+      });
+    } finally {
+      usageLease.release();
+    }
   }
 
   async runLogicalThreadGoal(input: {
+    readonly redactor: RedactorPort;
     readonly runId?: string;
     readonly prompt: string;
     readonly goalObjective?: string;
@@ -110,70 +122,79 @@ export class AppServerGoalRunner {
     readonly providerCheckpoint: string;
     readonly outcome: ProviderLogicalThreadOutcome;
   }> {
-    const warnings = this.options.client.drainWarnings();
-    const runId = normalizeRunId(input.runId);
-    let outcome = ProviderLogicalThreadOutcome.StartedFresh;
-    let threadId: string;
-    if (input.previousCheckpoint === undefined) {
-      threadId = await this.options.client.startThread({
-        ...input,
-        goalMode: true,
-      });
-    } else {
-      try {
-        threadId = await this.options.client.forkThread({
-          threadId: input.previousCheckpoint,
-          timeoutMs: input.timeoutMs,
-          abortSignal: input.abortSignal,
-        });
-        outcome = ProviderLogicalThreadOutcome.Continued;
-      } catch (error) {
-        if (input.abortSignal.aborted) throw error;
-        if (
-          !(error instanceof CodexAppServerThreadForkError) ||
-          !error.sourceThreadUnavailable
-        ) {
-          throw error;
-        }
+    const usageLease = this.options.client.acquireExecution();
+    try {
+      const warnings = this.options.client.drainWarnings();
+      const runId = normalizeRunId(input.runId);
+      let outcome = ProviderLogicalThreadOutcome.StartedFresh;
+      let threadId: string;
+      if (input.previousCheckpoint === undefined) {
         threadId = await this.options.client.startThread({
+          usageLease,
           ...input,
           goalMode: true,
         });
-        outcome = ProviderLogicalThreadOutcome.RecoveredFresh;
-        warnings.push({
-          code: "codex_app_server_thread_recovered_fresh",
-          safeMessage:
-            "Codex source thread was unavailable; execution started fresh before any turn.",
-        });
+      } else {
+        try {
+          threadId = await this.options.client.forkThread({
+            usageLease,
+            threadId: input.previousCheckpoint,
+            timeoutMs: input.timeoutMs,
+            abortSignal: input.abortSignal,
+          });
+          outcome = ProviderLogicalThreadOutcome.Continued;
+        } catch (error) {
+          if (input.abortSignal.aborted) throw error;
+          if (
+            !(error instanceof CodexAppServerThreadForkError) ||
+            !error.sourceThreadUnavailable
+          ) {
+            throw error;
+          }
+          threadId = await this.options.client.startThread({
+            usageLease,
+            ...input,
+            goalMode: true,
+          });
+          outcome = ProviderLogicalThreadOutcome.RecoveredFresh;
+          warnings.push({
+            code: "codex_app_server_thread_recovered_fresh",
+            safeMessage:
+              "Codex source thread was unavailable; execution started fresh before any turn.",
+          });
+        }
       }
+      await this.options.client.setGoal({
+        threadId,
+        objective: input.goalObjective ?? input.prompt,
+        status: "active",
+        timeoutMs: input.timeoutMs,
+        abortSignal: input.abortSignal,
+      });
+      const result = await this.continueGoal({
+        ...input,
+        runId,
+        threadId,
+        firstPrompt: input.prompt,
+        warnings,
+        allowWaitingForInput: false,
+      });
+      if (result.status === "waiting_for_input") {
+        throw new Error("codex_logical_thread_goal_waiting_for_input_invalid");
+      }
+      return {
+        ...result,
+        status: "completed",
+        providerCheckpoint: threadId,
+        outcome,
+      };
+    } finally {
+      usageLease.release();
     }
-    await this.options.client.setGoal({
-      threadId,
-      objective: input.goalObjective ?? input.prompt,
-      status: "active",
-      timeoutMs: input.timeoutMs,
-      abortSignal: input.abortSignal,
-    });
-    const result = await this.continueGoal({
-      ...input,
-      runId,
-      threadId,
-      firstPrompt: input.prompt,
-      warnings,
-      allowWaitingForInput: false,
-    });
-    if (result.status === "waiting_for_input") {
-      throw new Error("codex_logical_thread_goal_waiting_for_input_invalid");
-    }
-    return {
-      ...result,
-      status: "completed",
-      providerCheckpoint: threadId,
-      outcome,
-    };
   }
 
   async resumeGoal(input: {
+    readonly redactor: RedactorPort;
     readonly runId: string;
     readonly requestId: string;
     readonly answer: string;
@@ -190,42 +211,59 @@ export class AppServerGoalRunner {
     readonly goalContinuePrompt: string;
     readonly skipResumeValidation?: boolean;
   }): Promise<AppServerRunResult> {
-    const threadId = input.resumeHandle.threadId;
-    if (!threadId) throw new Error("codex_managed_run_thread_missing");
-    if (!input.skipResumeValidation) {
-      await assertManagedRunCanResume({
-        runStore: this.options.runStore,
+    const usageLease = this.options.client.acquireExecution();
+    try {
+      const threadId = input.resumeHandle.threadId;
+      if (threadId) usageLease.retain(threadId);
+      if (!threadId) throw new Error("codex_managed_run_thread_missing");
+      if (!input.skipResumeValidation) {
+        await assertManagedRunCanResume({
+          runStore: this.options.runStore,
+          runId: input.runId,
+          requestId: input.requestId,
+          resumeHandle: input.resumeHandle,
+          workspacePath: input.workspacePath,
+        });
+      }
+      await this.options.runStore.resume({
         runId: input.runId,
         requestId: input.requestId,
-        resumeHandle: input.resumeHandle,
-        workspacePath: input.workspacePath,
-      });
-    }
-    await this.options.runStore.resume({
-      runId: input.runId,
-      requestId: input.requestId,
-      answer: input.answer,
-      now: new Date(),
-    });
-
-    try {
-      return await this.continueGoal({
-        ...input,
-        threadId,
-        firstPrompt: buildGoalResumePrompt(input),
-        warnings: this.options.client.drainWarnings(),
-      });
-    } catch (error) {
-      await this.options.runStore.fail({
-        runId: input.runId,
-        failure: managedRunFailureFromError(error),
+        answer: this.redactForStore(input.redactor, input.answer),
         now: new Date(),
       });
-      throw error;
+
+      try {
+        return await this.continueGoal({
+          ...input,
+          threadId,
+          firstPrompt: buildGoalResumePrompt(input),
+          resumed: true,
+          warnings: this.options.client.drainWarnings(),
+        });
+      } catch (error) {
+        const failure = managedRunFailureFromError(error);
+        await this.options.runStore.fail({
+          runId: input.runId,
+          failure: {
+            ...failure,
+            safeMessage: this.redactForStore(input.redactor, failure.safeMessage),
+            ...(failure.details === undefined ? {} : {
+              details: Object.fromEntries(Object.entries(failure.details).map(
+                ([key, value]) => [key, this.redactForStore(input.redactor, value)],
+              )),
+            }),
+          },
+          now: new Date(),
+        });
+        throw error;
+      }
+    } finally {
+      usageLease.release();
     }
   }
 
   private async continueGoal(input: {
+    readonly redactor: RedactorPort;
     readonly runId: string;
     readonly threadId: string;
     readonly firstPrompt: string;
@@ -241,89 +279,145 @@ export class AppServerGoalRunner {
     readonly goalContinuePrompt: string;
     readonly warnings: AppServerWarning[];
     readonly allowWaitingForInput?: boolean;
+    readonly resumed?: boolean;
   }): Promise<AppServerRunResult> {
     let outputText = "";
     let turnUsage: AgentUsage | undefined;
-    let goalUsage: AgentUsage | undefined;
-    for (
-      let turnNumber = 1;
-      turnNumber <= input.maxGoalTurns;
-      turnNumber += 1
-    ) {
-      const startedAt = Date.now();
-      const turn = await this.options.client
-        .startTurn({
-          ...input,
-          goalMode: true,
-          turnNumber,
-          prompt:
-            turnNumber === 1 ? input.firstPrompt : input.goalContinuePrompt,
-        })
-        .catch((error: unknown) => {
-          throw turnFailureError(error, {
-            phase: "turn_start_rejected",
+    let executionMayHaveStarted = false;
+    let goalBaseline = input.resumed ? (await this.options.client.getGoal({
+      threadId: input.threadId,
+      timeoutMs: controlRequestTimeoutMs(input.timeoutMs),
+      abortSignal: input.abortSignal,
+    }))?.usage : { totalTokens: 0 };
+    let detailedSinceGoal: AgentUsage | undefined;
+    let missingUsageSinceGoal = false;
+    // A turn whose exact usage was untrusted is NOT a turn that reported
+    // nothing: backfilling it from the goal's cumulative counter would restore
+    // by the back door exactly the number the turn refused to stand behind.
+    let untrustedUsageSinceGoal = false;
+    try {
+      for (
+        let turnNumber = 1;
+        turnNumber <= input.maxGoalTurns;
+        turnNumber += 1
+      ) {
+        const startedAt = Date.now();
+        const turn = await this.options.client
+          .startTurn({
+            ...input,
+            goalMode: true,
             turnNumber,
-            elapsedMs: Date.now() - startedAt,
+            prompt:
+              turnNumber === 1 ? input.firstPrompt : input.goalContinuePrompt,
+          })
+          .catch((error: unknown) => {
+            turnUsage = mergeAgentUsage(turnUsage, usageFromError(error));
+            throw turnFailureError(error, {
+              phase: "turn_start_rejected",
+              turnNumber,
+              elapsedMs: Date.now() - startedAt,
+            });
           });
-        });
-      if (turn.error) throw turn.error;
-      outputText = turn.outputText;
-      turnUsage = mergeAgentUsage(turnUsage, turn.usage);
+        executionMayHaveStarted = true;
+        turnUsage = mergeAgentUsage(turnUsage, turn.usage);
+        detailedSinceGoal = mergeAgentUsage(detailedSinceGoal, turn.usage);
+        missingUsageSinceGoal ||= turn.usage === undefined;
+        untrustedUsageSinceGoal ||= turn.usagePoisoned;
+        if (turn.error) throw turn.error;
+        outputText = turn.outputText;
 
-      const goal = await this.options.client.getGoal({
-        threadId: input.threadId,
-        timeoutMs: controlRequestTimeoutMs(input.timeoutMs),
-        abortSignal: input.abortSignal,
-      });
-      if (!goal) {
-        throw new Error("codex_app_server_goal_missing");
-      }
-      goalUsage = mergeAgentUsage(goalUsage, goal.usage);
-      if (goal.status === "complete") {
-        input.warnings.push(...this.options.client.drainWarnings());
-        await this.options.runStore.complete({
-          runId: input.runId,
-          outputText,
-          now: new Date(),
-        });
-        return {
-          status: "completed",
-          outputText,
-          ...usageField(preferredUsage(turnUsage, goalUsage)),
-          warnings: input.warnings,
-        };
-      }
-      if (goal.status === "blocked" || goal.status === "paused") {
-        if (input.allowWaitingForInput === false) {
-          throw new Error(
-            "codex_logical_thread_goal_waiting_for_input_invalid",
-          );
+        if (this.options.completedTurnCheckpoint) {
+          try {
+            await this.options.completedTurnCheckpoint({
+              runId: input.runId,
+              workspacePath: input.workspacePath,
+              turnNumber,
+            });
+          } catch (error) {
+            throw new AppServerTurnCheckpointError(error);
+          }
         }
-        return this.waitForGoalInput({
-          runId: input.runId,
-          threadId: input.threadId,
-          goal,
-          outputText,
-          workspacePath: input.workspacePath,
-          ...usageField(preferredUsage(turnUsage, goalUsage)),
-          warnings: input.warnings,
-        });
-      }
-      if (goal.status !== "active") {
-        throw new Error(`codex_app_server_goal_${goal.status}`);
-      }
-      if (!outputText.trim()) {
-        throw new Error("codex_app_server_goal_turn_output_missing");
-      }
-    }
 
-    throw goalMaxTurnsExceededError({
-      maxGoalTurns: input.maxGoalTurns,
-      outputText,
-    });
+        const goal = await this.options.client.getGoal({
+          threadId: input.threadId,
+          timeoutMs: controlRequestTimeoutMs(input.timeoutMs),
+          abortSignal: input.abortSignal,
+        });
+        if (!goal) {
+          throw new Error("codex_app_server_goal_missing");
+        }
+        const reportedTotal = goal.usage?.totalTokens;
+        if (
+          reportedTotal !== undefined &&
+          reportedTotal >= (goalBaseline?.totalTokens ?? 0)
+        ) {
+          if (goalBaseline && missingUsageSinceGoal && !untrustedUsageSinceGoal) {
+            const windowUsage = subtractAgentUsage(goal.usage, goalBaseline);
+            turnUsage = mergeAgentUsage(
+              turnUsage,
+              subtractAgentUsage(windowUsage, detailedSinceGoal),
+            );
+          }
+          goalBaseline = goal.usage;
+          detailedSinceGoal = undefined;
+          missingUsageSinceGoal = false;
+          untrustedUsageSinceGoal = false;
+        }
+        if (goal.status === "complete") {
+          input.warnings.push(...this.options.client.drainWarnings());
+          await this.options.runStore.complete({
+            runId: input.runId,
+            outputText: this.redactForStore(input.redactor, outputText),
+            now: new Date(),
+          });
+          return {
+            status: "completed",
+            outputText,
+            ...usageField(turnUsage),
+            warnings: input.warnings,
+          };
+        }
+        if (goal.status === "blocked" || goal.status === "paused") {
+          if (input.allowWaitingForInput === false) {
+            throw new Error(
+              "codex_logical_thread_goal_waiting_for_input_invalid",
+            );
+          }
+          return await this.waitForGoalInput({
+            redactor: input.redactor,
+            runId: input.runId,
+            threadId: input.threadId,
+            goal,
+            outputText,
+            workspacePath: input.workspacePath,
+            ...usageField(turnUsage),
+            warnings: input.warnings,
+          });
+        }
+        if (goal.status !== "active") {
+          throw new Error(`codex_app_server_goal_${goal.status}`);
+        }
+        if (!outputText.trim()) {
+          throw new Error("codex_app_server_goal_turn_output_missing");
+        }
+      }
+
+    } catch (error) {
+      throw new AppServerUsageError(error, turnUsage, executionMayHaveStarted);
+    }
+    throw new AppServerUsageError(
+      goalMaxTurnsExceededError({
+        maxGoalTurns: input.maxGoalTurns,
+        outputText,
+        ...usageField(turnUsage),
+      }),
+      turnUsage,
+      executionMayHaveStarted,
+    );
   }
 
   private async waitForGoalInput(input: {
+    readonly redactor: RedactorPort;
     readonly runId: string;
     readonly threadId: string;
     readonly goal: CodexThreadGoal;
@@ -358,9 +452,28 @@ export class AppServerGoalRunner {
     };
     await this.options.runStore.saveWaitingInput({
       runId: input.runId,
-      request,
-      resumeHandle,
-      ...(input.outputText.trim() ? { outputText: input.outputText } : {}),
+      request: {
+        ...request,
+        question: this.redactForStore(input.redactor, request.question),
+        ...(request.contextSummary === undefined ? {} : {
+          contextSummary: this.redactForStore(input.redactor, request.contextSummary),
+        }),
+        ...(request.suggestedAnswers === undefined ? {} : {
+          suggestedAnswers: request.suggestedAnswers.map((answer) =>
+            this.redactForStore(input.redactor, answer)),
+        }),
+      },
+      resumeHandle: {
+        ...resumeHandle,
+        ...(resumeHandle.providerState === undefined ? {} : {
+          providerState: Object.fromEntries(Object.entries(resumeHandle.providerState).map(
+            ([key, value]) => [key, this.redactForStore(input.redactor, value)],
+          )),
+        }),
+      },
+      ...(input.outputText.trim() ? {
+        outputText: this.redactForStore(input.redactor, input.outputText),
+      } : {}),
       now: new Date(),
     });
     return {
@@ -372,5 +485,11 @@ export class AppServerGoalRunner {
       ...usageField(input.usage),
       warnings: input.warnings,
     };
+  }
+
+  private redactForStore(redactor: RedactorPort, value: string): string {
+    const redacted = redactor.redact(value);
+    redactor.assertNoKnownSecret(redacted, "codex_managed_run_store");
+    return redacted;
   }
 }

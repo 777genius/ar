@@ -1,3 +1,4 @@
+import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
 import { join } from "node:path";
 import {
   type ParsedFlags,
@@ -11,6 +12,7 @@ import {
   codexGoalAccountSlots,
   type CodexGoalRunConfig,
 } from "./codex-goal-runner";
+import { optionalCodexGoalModelBackend } from "./codex-goal-model-backend";
 import {
   assertCodexGoalProviderSandboxModeAllowed,
   optionalCodexGoalProviderSandboxMode,
@@ -46,13 +48,20 @@ export function runConfigFromFlags(
   );
   const reasoningEffort = (option(values, env, "--effort", [
     "CODEX_REASONING_EFFORT",
-  ]) ?? "high") as CodexGoalRunConfig["reasoningEffort"];
+  ]) ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT) as CodexGoalRunConfig["reasoningEffort"];
   const serviceTier = (option(values, env, "--service-tier", [
     "CODEX_SERVICE_TIER",
   ]) ?? "default") as CodexGoalRunConfig["serviceTier"];
   const executionEngine = (option(values, env, "--execution-engine", [
     "CODEX_EXECUTION_ENGINE",
   ]) ?? "app-server-goal") as CodexGoalRunConfig["executionEngine"];
+  const modelBackend = optionalCodexGoalModelBackend(
+    option(values, env, "--model-backend", ["CODEX_MODEL_BACKEND"]),
+    "--model-backend",
+  );
+  const checkpointPublisherSocketPath = option(values, env, "--checkpoint-publisher-socket", [
+    "SUBSCRIPTION_RUNTIME_CHECKPOINT_PUBLISHER_SOCKET",
+  ]);
   const staleLockMs = parseOptionalPositiveInteger(
     option(values, env, "--stale-lock-ms", []),
     "--stale-lock-ms",
@@ -160,10 +169,14 @@ export function runConfigFromFlags(
       option(values, env, "--progress", []) ??
         join(resolvePath(cwd, jobRootDir), `${taskId}.progress.json`),
     ),
-    model: option(values, env, "--model", ["CODEX_MODEL"]) ?? "gpt-5.5",
+    model: option(values, env, "--model", ["CODEX_MODEL"]) ?? CODEX_WORKER_DEFAULT_MODEL,
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(serviceTier ? { serviceTier } : {}),
     ...(executionEngine ? { executionEngine } : {}),
+    ...(checkpointPublisherSocketPath ? { checkpointPublisherSocketPath: resolvePath(cwd, checkpointPublisherSocketPath) } : {}),
+    ...(checkpointPublisherSocketPath || flag(values, "--require-turn-checkpoint")
+      ? { checkpointRequired: true } : {}),
+    ...modelBackend,
     codexBinaryPath: option(values, env, "--codex-binary", [
       "CODEX_BINARY_PATH",
     ]) ?? "codex",

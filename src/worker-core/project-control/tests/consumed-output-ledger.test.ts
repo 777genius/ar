@@ -27,6 +27,31 @@ import {
 import { prunedRetentionInvalidProvenanceCases } from "./pruned-retention-provenance-fixtures";
 
 describe("consumed output ledger", () => {
+  it("propagates operational evidence storage failures", async () => {
+    const error = Object.assign(new Error("disk I/O failure"), { code: "EIO" });
+    const source = {
+      async pathExists() { throw error; },
+      async pathSize() { throw error; },
+      async pathSha256() { throw error; },
+      async resolveWorkspacePath() { return undefined; },
+    } as unknown as ConsumedOutputLedgerSourcePort;
+    await expect(consumedOutputRecordFromJson({
+      ledgerPath: "/tmp/worker-1.json",
+      value: {
+        schemaVersion: 1,
+        jobId: "worker-1",
+        status: "rejected",
+        note: "terminal",
+        closedAt: "2026-08-01T00:00:00.000Z",
+        backup: {
+          workspace: "/tmp/workspace",
+          statusPath: "/tmp/backup/status.txt",
+          patchPath: "/tmp/backup/patch.diff",
+        },
+      },
+      source,
+    })).rejects.toMatchObject({ code: "EIO" });
+  });
   it.each([
     { name: "incomplete terminal schema", value: { jobId: "worker-1", status: "rejected" } },
     { name: "unknown terminal status", value: { jobId: "worker-1", status: "unknown" } },

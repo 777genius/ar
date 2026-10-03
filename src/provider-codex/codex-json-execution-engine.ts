@@ -18,7 +18,15 @@ import { createCodexRuntimeTempRoot } from "./codex-runtime-temp";
 import { classifyCodexFailure } from "./failure-classifier";
 import { pruneCodexChildEnv } from "./codex-cli-domain";
 import { composeCodexPrompt } from "./codex-prompt-composer";
-import { codexProviderEgressCliConfigArgs } from "./codex-provider-egress-policy";
+import {
+  codexProviderEgressCliConfigArgs,
+  type CodexProviderEgressPolicy,
+} from "./codex-provider-egress-policy";
+import {
+  CodexModelBackend,
+  codexModelBackendExcludesConfigKey,
+  codexModelBackendModelProviderName,
+} from "./codex-model-backend";
 import { parseCodexStructuredOutput } from "./structured-output";
 import {
   normalizeCodexStructuredOutput,
@@ -120,6 +128,8 @@ export type CodexExecutionPrewarmResult = {
 
 export type CodexExecutionEngine = {
   readonly kind: string;
+  /** Fixed backend for engines that can select a non-ChatGPT provider. */
+  readonly modelBackend?: CodexModelBackend;
   readonly capabilities: {
     readonly supportsStructuredOutput: boolean;
     readonly supportsJsonEvents: boolean;
@@ -167,6 +177,8 @@ export type CodexExecutionEngine = {
 
 export type PackagedCodexJsonExecutionEngineOptions = {
   readonly codexBinaryPath: string;
+  readonly modelBackend?: CodexModelBackend;
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly timeoutMs?: number;
   readonly jsonFlag?: "--json" | "--experimental-json";
@@ -178,6 +190,7 @@ const defaultMaxOutputBytes = 512 * 1024;
 
 export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
   readonly kind = "packaged-json" as const;
+  readonly modelBackend: CodexModelBackend;
   readonly capabilities = {
     supportsStructuredOutput: true,
     supportsJsonEvents: true,
@@ -191,6 +204,7 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
     if (!options.codexBinaryPath.trim()) {
       throw new Error("codex_packaged_binary_required");
     }
+    this.modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
   }
 
   async run(input: {
@@ -216,6 +230,10 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
     try {
       const args = buildCodexJsonExecArgs({
         jsonFlag: this.options.jsonFlag ?? "--json",
+        modelBackend: this.modelBackend,
+        ...(this.options.providerEgressPolicy === undefined
+          ? {}
+          : { providerEgressPolicy: this.options.providerEgressPolicy }),
         model: input.model,
         reasoningEffort: input.reasoningEffort,
         ...(input.serviceTier === undefined
@@ -234,6 +252,8 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
         env: {
           ...pruneCodexChildEnv(this.options.sourceEnv ?? process.env),
           ...input.session.env,
+          HOME: input.session.home,
+          CODEX_HOME: input.session.codexHome,
           CI: "true",
         },
         stdin: new TextEncoder().encode(
@@ -302,12 +322,16 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
 
 export function buildCodexJsonExecArgs(input: {
   readonly jsonFlag: "--json" | "--experimental-json";
+  readonly modelBackend?: CodexModelBackend;
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy;
   readonly model: string;
   readonly reasoningEffort: CodexReasoningEffort;
   readonly serviceTier?: CodexServiceTier;
   readonly sandboxMode?: CodexSandboxMode;
   readonly outputSchemaPath?: string;
 }): readonly string[] {
+  const modelBackend = input.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+  const modelProviderName = codexModelBackendModelProviderName(modelBackend);
   return [
     "exec",
     input.jsonFlag,
@@ -321,17 +345,23 @@ export function buildCodexJsonExecArgs(input: {
     'cli_auth_credentials_store="file"',
     "--config",
     `model_reasoning_effort=${JSON.stringify(input.reasoningEffort)}`,
-    ...(input.serviceTier
+    ...(modelProviderName === undefined
+      ? []
+      : ["--config", `model_provider=${JSON.stringify(modelProviderName)}`]),
+    ...(input.serviceTier &&
+    !codexModelBackendExcludesConfigKey(modelBackend, "service_tier")
       ? [
           "--config",
           `service_tier=${JSON.stringify(input.serviceTier)}`,
-          ...(input.serviceTier === "fast"
+          ...(input.serviceTier === "fast" &&
+          !codexModelBackendExcludesConfigKey(modelBackend, "fast_mode")
             ? ["--config", "features.fast_mode=true"]
             : []),
         ]
       : []),
-    "--config",
-    'model_verbosity="low"',
+    ...(codexModelBackendExcludesConfigKey(modelBackend, "model_verbosity")
+      ? []
+      : ["--config", 'model_verbosity="low"']),
     "--config",
     'web_search="disabled"',
     "--config",
@@ -346,10 +376,10 @@ export function buildCodexJsonExecArgs(input: {
     "features.shell_snapshot=false",
     "--config",
     "features.skill_mcp_dependency_install=false",
-    ...codexProviderEgressCliConfigArgs(),
+    ...codexProviderEgressCliConfigArgs(input.providerEgressPolicy),
     ...(input.outputSchemaPath ? ["--output-schema", input.outputSchemaPath] : []),
     "--ephemeral",
-    "--ignore-user-config",
+    ...(modelProviderName === undefined ? ["--ignore-user-config"] : []),
     "--ignore-rules",
     "--color",
     "never",

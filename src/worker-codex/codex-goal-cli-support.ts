@@ -143,8 +143,9 @@ export function usage(): string {
   subscription-runtime-codex-goal doctor --job-root <dir> --workspace <dir> --prompt <file> --task-id <id> --accounts account-a,account-b
   subscription-runtime-codex-goal tail --job-root <dir> --task-id <id> [--lines 100]
   subscription-runtime-codex-goal doctor-control
+  subscription-runtime-codex-goal project-control-operation-run --operation-file <file> [--json|--text]
   subscription-runtime-codex-goal overview [--registry-root <dir>] [--job-prefix <prefix>]
-  subscription-runtime-codex-goal run-watch [jobId] [--provider codex|claude|agent-runtime-task] [--registry-root <dir>] [--state-root <dir>] [--include-log-tail] [--include-changed-files] [--json|--text]
+  subscription-runtime-codex-goal run-watch [jobId] [--cursor <nextCursor>] [--limit <n: default 25, max 100>] [--provider codex|claude|agent-runtime-task] [--registry-root <dir>] [--state-root <dir>] [--include-log-tail] [--include-changed-files] [--json|--text]
   subscription-runtime-codex-goal events [jobId] [--provider codex|claude|local|agent-runtime-task|unknown] [--registry-root <dir>] [--event-root <dir>] [--cursor <cursor>] [--type <event-type>] [--limit 100]
   subscription-runtime-codex-goal state <jobId> [--provider codex|claude|local|agent-runtime-task|unknown] [--registry-root <dir>] [--event-root <dir>]
   subscription-runtime-codex-goal event-compaction-plan [--registry-root <dir>] [--event-root <dir>] [--compact-delivered] [--keep-latest-per-run 100] [--drop-invalid-lines]
@@ -152,6 +153,7 @@ export function usage(): string {
   subscription-runtime-codex-goal project-events [jobId] [--provider codex] [--registry-root <dir>] [--event-root <dir>] [--host-id <id>] [--include-changed-files]
   subscription-runtime-codex-goal relay-events --event-root <dir> --consumer-id <id> [--publisher stdout|webhook] [--webhook-url <url>] [--limit 100] [--run-id <id>] [--type run.completed]
   subscription-runtime-codex-goal reconcile-preview [--registry-root <dir>] [--continue-safe-jobs]
+  subscription-runtime-codex-goal tool codex_goal_project_quarantine_legacy_integration_attempts --args-file <json>
   subscription-runtime-codex-goal brief <jobId> [--registry-root <dir>]
   subscription-runtime-codex-goal decision <jobId> [--registry-root <dir>]
   subscription-runtime-codex-goal handoff <jobId> [--registry-root <dir>]
@@ -176,7 +178,7 @@ export function usage(): string {
   subscription-runtime-codex-goal prompt <mcp_prompt_name> [--args-json '{"jobId":"..."}' | --args-file args.json]
 
 defaults:
-  --model gpt-5.5 --effort high --service-tier default --execution-engine app-server-goal --timeout 72h --max-account-cycles 5
+  --model gpt-6-astra --effort high --service-tier default --execution-engine app-server-goal --timeout 72h --app-server-startup-timeout-ms 120000 --max-account-cycles 5
   --codex-goal-objective <text> sets a short app-server goal objective, max 4000 chars. Keep long instructions in --prompt.
 
 escape hatches:

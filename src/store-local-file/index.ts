@@ -8,6 +8,8 @@ export * from "./local-controlled-agent-state-store";
 export * from "./local-safe-execution-state-store";
 export * from "./local-file-lease-store";
 export * from "./local-controller-maintenance-fence";
+export * from "./terminal-checkpoint/local-terminal-checkpoint-admission";
+export * from "./terminal-checkpoint/immutable-terminal-checkpoint-store";
 export * from "./local-encrypted-file-store";
 export * from "./worker-account-leases";
 export * from "./manifest";

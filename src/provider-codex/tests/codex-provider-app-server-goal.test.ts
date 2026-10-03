@@ -64,6 +64,70 @@ import {
 } from "./codex-provider-test-support";
 
 describe("Codex provider app-server adapter", () => {
+  it("redacts model output before a goal run is persisted, including a blocked checkpoint", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-goal-redaction-test-"));
+    const syntheticSecret = "synthetic-goal-key-123456789";
+    const redactor = new DefaultRedactor();
+    redactor.registerSecret(syntheticSecret, "test-key");
+    const runStore = new RecordingManagedRunStore();
+    const fakeFactory = new FakeAppServerFactory({
+      goalStatusesAfterTurns: ["blocked", "complete"],
+    });
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        cleanThreadPrewarm: false,
+        goalMode: true,
+        runStore,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const waiting = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: {
+          kind: "structured-prompt",
+          prompt: `echo ${syntheticSecret}`,
+          metadata: { codexManagedRunId: "managed-goal-redaction-1" },
+          controls: { editMode: "allow-edits" },
+        },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor,
+        abortSignal: new AbortController().signal,
+      });
+      if (waiting.status !== "waiting_for_input") {
+        throw new Error("expected waiting result");
+      }
+      const storedWaiting = await runStore.get({ runId: waiting.runId });
+      expect(JSON.stringify(storedWaiting)).not.toContain(syntheticSecret);
+      expect(JSON.stringify(storedWaiting)).toContain("[redacted:test-key]");
+
+      const completed = await driver.resumeManagedRun({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        runId: waiting.runId,
+        requestId: waiting.request.id,
+        answer: `continue ${syntheticSecret}`,
+        resumeHandle: waiting.resumeHandle,
+        task: { controls: { editMode: "allow-edits" } },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor,
+        abortSignal: new AbortController().signal,
+      });
+      expect(completed.status).toBe("completed");
+      const storedCompleted = await runStore.get({ runId: waiting.runId });
+      expect(JSON.stringify(storedCompleted)).not.toContain(syntheticSecret);
+      expect(JSON.stringify(storedCompleted)).toContain("[redacted:test-key]");
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("preserves the turn cause and typed diagnostics through timeout classification", () => {
     const cause = new Error("node_process_runner_timeout:50000");
     const error = new CodexAppServerTurnError({

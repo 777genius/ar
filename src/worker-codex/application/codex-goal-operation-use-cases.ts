@@ -1,3 +1,6 @@
+import { CodexGoalLaunchState } from "../codex-goal-ops";
+import { HostedGoalLifecycleOperation } from "./codex-goal-foreground-command";
+import { isHostedGoalLaunch, routeHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import { join } from "node:path";
 import {
   buildCodexGoalNoTmuxCommand,
@@ -25,6 +28,7 @@ import {
 import {
   resolvePath,
 } from "./codex-goal-input-values";
+import { redactLogTail } from "./codex-goal-log-view";
 import {
   projectControlGenericScopeDenial,
   projectControlGenericToolDenial,
@@ -67,7 +71,7 @@ export async function startCodexGoalLaunch(input: {
   });
   if (projectControlDenial) return projectControlDenial;
 
-  if (!input.launch.tmuxSession) {
+  if (!input.launch.tmuxSession && !isHostedGoalLaunch(input.launch)) {
     return {
       ok: false,
       reason: "tmux_session_required",
@@ -75,11 +79,8 @@ export async function startCodexGoalLaunch(input: {
     };
   }
 
-  if (input.confirmStart) {
-    await prepareCodexGoalLaunchPaths(input.launch);
-  }
-
-  const statusBefore = await collectCodexGoalStatus(statusInput(input.launch));
+  const { tmuxSession: _tmuxSession, ...foregroundStatus } = statusInput(input.launch);
+  const statusBefore = await collectCodexGoalStatus(isHostedGoalLaunch(input.launch) ? foregroundStatus : statusInput(input.launch));
   if (statusBefore.tmuxAlive) {
     return {
       ok: false,
@@ -101,11 +102,17 @@ export async function startCodexGoalLaunch(input: {
     return {
       ok: false,
       reason: "confirm_start_required",
-      tmuxCommand: buildCodexGoalTmuxCommand(input.launch).preview,
+      tmuxCommand: input.launch.tmuxSession ? buildCodexGoalTmuxCommand(input.launch).preview : undefined,
       summary: launchSummary(input.launch),
     };
   }
 
+  const outerStatus = await routeHostedGoalLaunch({ ...input.launch, registryRootDir: input.registryRootDir }, {
+    operation: HostedGoalLifecycleOperation.Start, jobId: input.jobId,
+    confirmed: input.confirmStart, skipDoctor: input.skipDoctor, forceStart: input.forceStart,
+  });
+  if (outerStatus !== undefined) return { ok: outerStatus === 0, launchState: outerStatus === 0 ? CodexGoalLaunchState.Completed : CodexGoalLaunchState.Failed, exitCode: outerStatus };
+  await prepareCodexGoalLaunchPaths(input.launch);
   const manifest = await upsertCodexGoalLaunchManifest({
     registryRootDir: input.registryRootDir,
     launch: input.launch,
@@ -113,7 +120,7 @@ export async function startCodexGoalLaunch(input: {
   if (!input.skipDoctor) {
     const doctor = await doctorCodexGoal({
       config: input.launch.config,
-      tmuxSession: input.launch.tmuxSession,
+      ...(isHostedGoalLaunch(input.launch) ? {} : { tmuxSession: input.launch.tmuxSession }),
     });
     if (!doctor.ok) {
       return {
@@ -126,12 +133,13 @@ export async function startCodexGoalLaunch(input: {
 
   const command = await startCodexGoalTmux(input.launch);
   return {
-    ok: true,
+    ok: command.launchState !== CodexGoalLaunchState.Failed,
     registryRootDir: input.registryRootDir,
     jobId: manifest.jobId,
     taskId: input.launch.config.taskId,
     tmuxSession: input.launch.tmuxSession,
     tmuxCommand: command.preview,
+    launchState: command.launchState ?? CodexGoalLaunchState.Scheduled,
     manifest,
     summary: launchSummary(input.launch),
   };
@@ -187,6 +195,8 @@ export async function tailCodexGoalRunLog(input: {
   if (!logPath) throw new Error("logPath or jobRootDir with taskId is required");
 
   const resolvedLogPath = resolvePath(cwd, logPath);
-  const text = await tailCodexGoalLog(resolvedLogPath, input.lines ?? 100);
+  const text = redactLogTail(
+    await tailCodexGoalLog(resolvedLogPath, input.lines ?? 100),
+  );
   return { ok: true, logPath: resolvedLogPath, text };
 }

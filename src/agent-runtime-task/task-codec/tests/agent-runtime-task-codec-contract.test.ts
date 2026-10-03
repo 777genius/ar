@@ -27,6 +27,12 @@ import {
 } from "../../types";
 
 describe("agent-runtime-task codec contract", () => {
+  it("round-trips all known optional usage counters", () => {
+    const usage = { inputTokens: 100, outputTokens: 25, totalTokens: 125, cachedInputTokens: 80, cacheWriteInputTokens: 10, reasoningOutputTokens: 5 };
+    const encoded = providerTaskResultToAgentRuntimeTaskResult({ status: "completed", outputText: "done", warnings: [], telemetry: { usage } });
+    expect(agentRuntimeTaskResultToProviderTaskResult(parseAgentRuntimeTaskResult(encoded)).telemetry?.usage).toEqual(usage);
+  });
+
   it("exports high-level host controls from the public agent-runtime-task entrypoint", () => {
     expect(AgentRuntimeAccessBoundary.IsolatedWorkspaceWrite).toBe(
       "isolated_workspace_write",

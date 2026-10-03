@@ -7,6 +7,11 @@ export * from "./codex-goal-jobs";
 export * from "./codex-goal-ops";
 export * from "./codex-goal-mcp-client";
 export * from "./codex-run-observation";
+export {
+  CodexSessionHomeProfileKind,
+  type CodexSessionHomeProfile,
+} from "./codex-session-home-profile";
+export * from "./file-backend-codex-executor-factories";
 export * from "./file-backend-codex-safe-executor";
 export * from "./file-backend-codex-worker";
 export * from "./node-process-runner";

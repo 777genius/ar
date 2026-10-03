@@ -14,6 +14,7 @@ import {
   type ProjectControlOperationResult,
 } from "@vioxen/subscription-runtime/worker-core";
 import { withCurrentControllerScopeActivity } from "./application/project-control/codex-goal-current-controller-activity";
+import { withCurrentControllerLaunchPolicy } from "./codex-goal-mcp-project-controller-launch-policy";
 import { projectControlAdmissionOwnedPaths } from "./application/project-control/codex-goal-project-admission-owned-paths";
 import { buildProjectControlRecoverOperationsView } from
   "./codex-goal-mcp-project-control-recovery";
@@ -184,6 +185,7 @@ export async function projectControlRefillWorkerView(
   const requested = projectControlChildManifestInput({
     args: args as JobCreateMcpArgs,
     scope: controller.scope,
+    controllerCheckpointRequired: controller.controller.checkpointRequired,
     registryRootDir: controller.registryRootDir,
   });
   if (
@@ -612,7 +614,12 @@ export async function projectControlRefillWorkerView(
   if (booleanValue(args.startWorker) !== false) {
     await assertReadablePrompt({ promptPath: manifest.promptPath });
     const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
-    const started = await withValidatedProjectWorkspaceLock({
+    const started = await withCurrentControllerLaunchPolicy({
+      registryRootDir: controller.registryRootDir,
+      controllerJobId: controller.controller.jobId,
+      expectedScope: controller.scope,
+      loadCurrentController: async () => await deps.loadProjectControlController(args),
+      effect: async (currentController) => await withValidatedProjectWorkspaceLock({
       locks: projectControlWorkspaceLocks(controller.registryRootDir),
       scope: controller.scope,
       requestedWorkspacePath: manifest.workspacePath,
@@ -649,7 +656,7 @@ export async function projectControlRefillWorkerView(
         try {
           const startBroker = deps.codexProjectControlBroker({
             registryRootDir: controller.registryRootDir,
-            controller: controller.controller,
+            controller: currentController,
             scope: controller.scope,
             startLaunch: reservedLaunch,
             startManifest: manifest,
@@ -692,6 +699,7 @@ export async function projectControlRefillWorkerView(
           throw error;
         }
       },
+      }),
     });
     start = started.start;
     accountReservation = started.accountReservation;
@@ -813,6 +821,7 @@ async function projectControlRefillWorkerBoundedView(
   const requested = projectControlChildManifestInput({
     args: args as JobCreateMcpArgs,
     scope: controller.scope,
+    controllerCheckpointRequired: controller.controller.checkpointRequired,
     registryRootDir: controller.registryRootDir,
   });
   if (

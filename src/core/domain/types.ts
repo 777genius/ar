@@ -333,6 +333,7 @@ export enum AgentRuntimeFailureCode {
   BudgetExceeded = "budget_exceeded",
   ProviderRuntimeUnavailable = "provider_runtime_unavailable",
   CleanupUnconfirmed = "cleanup_unconfirmed",
+  CheckpointUnprotected = "checkpoint_unprotected",
   UnknownRuntimeFailure = "unknown_runtime_failure",
 }
 
@@ -463,6 +464,9 @@ export type AgentUsage = {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly totalTokens?: number;
+  readonly cachedInputTokens?: number;
+  readonly cacheWriteInputTokens?: number;
+  readonly reasoningOutputTokens?: number;
 };
 
 export type AgentCost = {

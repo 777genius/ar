@@ -4,7 +4,7 @@ type JsonObject = Readonly<Record<string, unknown>>;
 
 export function mcpJson(value: JsonObject) {
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    content: [{ type: "text" as const, text: JSON.stringify(value) }],
     structuredContent: value,
   };
 }

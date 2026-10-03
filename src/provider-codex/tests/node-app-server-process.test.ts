@@ -1,77 +1,125 @@
 import { describe, expect, it } from "vitest";
+import { pruneCodexChildEnv } from "../codex-cli-domain";
 import {
   codexAppServerProcessInvocation,
   signalHostedSystemdUnit,
 } from "../app-server/adapters/node-app-server-process";
 
 describe("hosted Codex app-server resource containment", () => {
-  it("places hosted Linux app-server trees in the bounded worker slice", () => {
-    expect(
-      codexAppServerProcessInvocation({
-        command: "/opt/codex/bin/codex",
-        args: ["app-server", "--listen", "stdio://"],
-        cwd: "/var/data/worktrees/task",
-        env: {
-          SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
-          SECRET_TOKEN: "not-in-argv",
-        },
-        hostedLauncher: "/runtime/hosted-app-server-launcher.js",
-        ioLimitPaths: ["/", "/mnt/data disk"],
-        nodePath: "/usr/bin/node",
-        platform: "linux",
-        systemdUnit: "subscription-runtime-hosted-test.service",
+  it("rejects detached provider units without durable host-job ownership", () => {
+    expect(() => codexAppServerProcessInvocation({
+      command: "/opt/codex/bin/codex",
+      args: ["app-server"],
+      cwd: "/sandbox",
+      env: pruneCodexChildEnv({
+        SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+        SUBSCRIPTION_RUNTIME_HOST_JOB_ID: "sandbox-job",
       }),
-    ).toEqual({
-      command: "/usr/bin/systemd-run",
-      systemdUnit: "subscription-runtime-hosted-test.service",
-      stdinBootstrap:
-        '{"schemaVersion":1,"command":"/opt/codex/bin/codex","args":["app-server","--listen","stdio://"],"cwd":"/var/data/worktrees/task","env":{"SUBSCRIPTION_RUNTIME_SANDBOX_KIND":"hosted-codex-job","SECRET_TOKEN":"not-in-argv"}}\n',
-      args: [
-        "--unit=subscription-runtime-hosted-test.service",
-        "--pipe",
-        "--wait",
-        "--collect",
-        "--quiet",
-        "--service-type=exec",
-        "--slice=subscription-runtime-hosted.slice",
-        "--property=CPUQuota=200%",
-        "--property=IOWeight=25",
-        "--property=IOReadBandwidthMax=/ 40M",
-        "--property=IOReadIOPSMax=/ 3000",
-        "--property=IOWriteBandwidthMax=/ 20M",
-        "--property=IOWriteIOPSMax=/ 1500",
-        "--property=IOReadBandwidthMax=/mnt/data\\x20disk 40M",
-        "--property=IOReadIOPSMax=/mnt/data\\x20disk 3000",
-        "--property=IOWriteBandwidthMax=/mnt/data\\x20disk 20M",
-        "--property=IOWriteIOPSMax=/mnt/data\\x20disk 1500",
-        "--property=MemoryHigh=2G",
-        "--property=MemoryMax=4G",
-        "--property=TasksMax=512",
-        "--property=RuntimeMaxSec=8h",
-        "--property=TimeoutStopSec=30s",
-        "--property=KillMode=control-group",
-        "--property=NoNewPrivileges=yes",
-        "--property=ProtectControlGroups=yes",
-        "--property=CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP",
-        "--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/user",
-        "--",
-        "/usr/bin/unshare",
-        "--map-user=65532",
-        "--map-group=65532",
-        "--keep-caps",
-        "--pid",
-        "--fork",
-        "--mount-proc",
-        "--kill-child=SIGKILL",
-        "/usr/bin/setpriv",
-        "--bounding-set=-all",
-        "--inh-caps=-all",
-        "--ambient-caps=-all",
-        "--no-new-privs",
-        "/usr/bin/node",
-        "/runtime/hosted-app-server-launcher.js",
-      ],
+      platform: "linux",
+    })).toThrow("host-job detached provider ownership is not supported");
+  });
+  it("places hosted Linux app-server trees in the bounded worker slice", () => {
+    const systemdUnit = "subscription-runtime-hosted-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.service";
+    const invocation = codexAppServerProcessInvocation({
+      command: "/opt/codex/bin/codex",
+      args: ["app-server", "--listen", "stdio://"],
+      cwd: "/var/data/worktrees/task",
+      env: {
+        SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+        SECRET_TOKEN: "not-in-argv",
+        SUBSCRIPTION_RUNTIME_JOB_ID: "task",
+      },
+      hostedLauncher: "/runtime/hosted-app-server-launcher.js",
+      nodePath: "/usr/bin/node",
+      platform: "linux",
+      systemdUnit,
     });
+    expect(invocation.command).toBe(process.execPath);
+    expect(invocation.systemdUnit).toBe(systemdUnit);
+    expect(invocation.stdinBootstrap).toBe(
+      '{"schemaVersion":1,"command":"/opt/codex/bin/codex","args":["app-server","--listen","stdio://"],"cwd":"/var/data/worktrees/task","env":{"SUBSCRIPTION_RUNTIME_SANDBOX_KIND":"hosted-codex-job","SECRET_TOKEN":"not-in-argv","SUBSCRIPTION_RUNTIME_JOB_ID":"task"}}\n',
+    );
+    expect(invocation.args.slice(0, 2)).toEqual([
+      "/opt/subscription-runtime/managed-launcher/launch.mjs", "provider",
+    ]);
+    expect(JSON.parse(invocation.args[2]!)).toEqual({
+      operation: "provider", jobId: "task", unit: systemdUnit,
+      payload: ["/usr/bin/node", "/runtime/hosted-app-server-launcher.js"],
+    });
+  });
+
+  it("keeps the managed entrypoint fixed when the in-service node and launcher are customized", () => {
+    const invocation = codexAppServerProcessInvocation({
+      command: "/sandbox/codex",
+      args: ["app-server"],
+      cwd: "/sandbox/workspace",
+      env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job", SUBSCRIPTION_RUNTIME_JOB_ID: "task" },
+      platform: "linux",
+      nodePath: "/sandbox/node",
+      hostedLauncher: "/sandbox/hosted-app-server-launcher.js",
+    });
+    expect(invocation.command).toBe(process.execPath);
+    expect(invocation.args.slice(0, 2)).toEqual([
+      "/opt/subscription-runtime/managed-launcher/launch.mjs", "provider",
+    ]);
+    expect(JSON.parse(invocation.args[2]!).payload).toEqual(["/sandbox/node", "/sandbox/hosted-app-server-launcher.js"]);
+  });
+
+  it("derives distinct standalone identities from the generated provider unit UUID", () => {
+    const input = {
+      command: "/synthetic/codex", args: ["app-server"], cwd: "/synthetic/home",
+      env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
+      platform: "linux" as const,
+    };
+    const first = codexAppServerProcessInvocation(input);
+    const second = codexAppServerProcessInvocation(input);
+    const request = JSON.parse(first.args[2]!);
+    expect(request.jobId).toMatch(/^provider-[0-9a-f-]{36}$/);
+    expect(first.systemdUnit).toBe(`subscription-runtime-hosted-${request.jobId.slice("provider-".length)}.service`);
+    expect(JSON.parse(first.stdinBootstrap!).env.SUBSCRIPTION_RUNTIME_JOB_ID).toBe(request.jobId);
+    expect(JSON.parse(second.args[2]!).jobId).not.toBe(request.jobId);
+    expect(() => codexAppServerProcessInvocation({ ...input, systemdUnit: "../escape" }))
+      .toThrow("hosted_managed_job_identity_required");
+  });
+
+  it.each(["", "../escape", "/absolute", "bad/name", "task:checkpoint", " a", "a".repeat(129)])("rejects invalid managed job identity %j", jobId => {
+    expect(() => codexAppServerProcessInvocation({
+      command: "/synthetic/codex", args: ["app-server"], cwd: "/synthetic/home",
+      env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+        ...(jobId === undefined ? {} : { SUBSCRIPTION_RUNTIME_JOB_ID: jobId }) },
+      platform: "linux",
+    })).toThrow("hosted_managed_job_identity_required");
+  });
+
+  it("prefers admitted identity to environment and preserves session HOME in the private frame", () => {
+    const invocation = codexAppServerProcessInvocation({
+      command: "/synthetic/codex", args: ["app-server"], cwd: "/synthetic/session-home",
+      env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job", SUBSCRIPTION_RUNTIME_JOB_ID: "untrusted" },
+      platform: "linux",
+    }, { jobId: "admitted", workspacePath: "/synthetic/workspace", readonlyPaths: ["/synthetic/workspace/input"] });
+    expect(JSON.parse(invocation.args[2]!)).toMatchObject({ jobId: "admitted", readonlyPaths: ["/synthetic/workspace/input"] });
+    expect(JSON.parse(invocation.args[2]!)).not.toHaveProperty("cwd");
+    expect(JSON.parse(invocation.args[2]!)).not.toHaveProperty("mounts");
+    expect(JSON.parse(invocation.stdinBootstrap!).cwd).toBe("/synthetic/session-home");
+    expect(JSON.parse(invocation.stdinBootstrap!).env.SUBSCRIPTION_RUNTIME_JOB_ID).toBe("admitted");
+  });
+
+  it.each(["a", "a".repeat(128)])("accepts managed contract identity %j", jobId => {
+    const invocation = codexAppServerProcessInvocation({
+      command: "/synthetic/codex", args: ["app-server"], cwd: "/synthetic/home",
+      env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job", SUBSCRIPTION_RUNTIME_JOB_ID: jobId },
+      platform: "linux",
+    });
+    expect(JSON.parse(invocation.args[2]!).jobId).toBe(jobId);
+  });
+
+  it("rejects missing admitted identity without falling back to environment", () => {
+    expect(() => codexAppServerProcessInvocation({
+      command: "/synthetic/codex", args: ["app-server"], cwd: "/synthetic/home",
+      env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job", SUBSCRIPTION_RUNTIME_JOB_ID: "fallback" },
+      platform: "linux",
+    }, { jobId: undefined as unknown as string, workspacePath: "/synthetic/workspace", readonlyPaths: ["/synthetic/workspace/input"] }))
+      .toThrow("hosted_managed_job_identity_required");
   });
 
   it("does not add a host-specific wrapper outside marked hosted Linux jobs", () => {

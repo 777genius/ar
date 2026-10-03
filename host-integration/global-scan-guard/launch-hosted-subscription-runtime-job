@@ -45,4 +45,4 @@ fi
 # and an explicit `--codex-binary codex` through this job-local PATH prefix.
 # Absolute caller overrides remain explicit operator configuration.
 export PATH="${guarded_codex_dir}:${PATH}"
-exec "$@"
+exec "${integration_dir}/../readonly-test-supervisor.mjs" runtime -- "$@"

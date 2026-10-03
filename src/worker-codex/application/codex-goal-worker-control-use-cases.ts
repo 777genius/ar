@@ -183,12 +183,20 @@ export async function enqueueCodexGoalControlSignal(
 export async function listCodexGoalControlSignals(
   args: CodexGoalWorkerControlInput,
 ): Promise<JsonObject> {
+  const result = await readCodexGoalControlSignals(args);
+  return {
+    ...result,
+    signals: result.signals.map((view) =>
+      workerControlSignalViewJson(view, booleanValue(args.includeBodies) ?? false)),
+  };
+}
+
+/** Shared read only source; SDK callers retain the complete history projection. */
+export async function readCodexGoalControlSignals(args: CodexGoalWorkerControlInput) {
   const loaded = await loadJobLaunch(args);
-  const control = codexGoalWorkerControlService(loaded.launch);
-  const includeBodies = booleanValue(args.includeBodies) ?? false;
-  const signals = await control.listSignals({
+  const signals = await codexGoalWorkerControlService(loaded.launch).listSignals({
     target: codexGoalWorkerControlTarget(loaded),
-    includeBodies,
+    includeBodies: booleanValue(args.includeBodies) ?? false,
     includeExpired: true,
   });
   return {
@@ -196,7 +204,7 @@ export async function listCodexGoalControlSignals(
     registryRootDir: loaded.registryRootDir,
     jobId: loaded.manifest.jobId,
     taskId: loaded.launch.config.taskId,
-    signals: signals.map((view) => workerControlSignalViewJson(view, includeBodies)),
+    signals,
   };
 }
 

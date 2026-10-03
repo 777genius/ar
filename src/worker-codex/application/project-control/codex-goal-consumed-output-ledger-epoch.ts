@@ -59,9 +59,13 @@ import {
   assertLedgerEpochEvidenceBindingsUnchanged,
   bindLedgerEpochEvidencePath,
   canonicalLedgerEpochRoots,
+  collectTerminalLedgerEpochEvidence,
+  isExpectedEvidencePathError,
+  quarantineUnboundMigratedLedgerEpochFiles,
   restrictedLedgerEpochEvidenceSource,
   scanLedgerEpochRoot,
-  terminalLedgerEpochEvidencePaths,
+  terminalLedgerEpochDirectoryEvidencePaths,
+  terminalLedgerEpochFileEvidencePaths,
 } from "./codex-goal-ledger-epoch-evidence";
 import { assertConsumedOutputLedgerEpochAdmissionTransition } from
   "./codex-goal-ledger-epoch-admission-transition";
@@ -141,6 +145,8 @@ export async function buildConsumedOutputLedgerEpochPlan(
     }),
   );
   const evidencePathValues = new Set<string>();
+  const migrateFileEvidencePaths = new Map<string, readonly string[]>();
+  const migrateDirectoryEvidencePaths = new Map<string, readonly string[]>();
   const requiredOrphanWorkspacePaths = new Set(
     (input.orphanWorkspacePaths ?? []).map((path) => resolve(path)),
   );
@@ -160,9 +166,6 @@ export async function buildConsumedOutputLedgerEpochPlan(
     let value: unknown;
     try {
       value = JSON.parse(await readFile(file.path, "utf8"));
-      for (const path of terminalLedgerEpochEvidencePaths(value)) {
-        evidencePathValues.add(path);
-      }
     } catch {
       return {
         ...base,
@@ -178,11 +181,34 @@ export async function buildConsumedOutputLedgerEpochPlan(
         quarantineReason: "invalid_or_missing_evidence",
       };
     }
-    const record = await consumedOutputRecordFromJson({
-      value,
-      ledgerPath: file.path,
-      source: evidenceSource,
-    });
+    const terminalEvidence = collectTerminalLedgerEpochEvidence(
+      value, evidenceRoots, deniedRoots,
+    );
+    for (const path of terminalEvidence.paths) evidencePathValues.add(path);
+    if (!terminalEvidence.valid) {
+      rememberQuarantinedOrphanCandidate(value, input.currentJobIds, orphanWorkspacePaths);
+      return {
+        ...base,
+        disposition: "quarantine",
+        quarantineReason: "invalid_or_missing_evidence",
+      };
+    }
+    let record: Awaited<ReturnType<typeof consumedOutputRecordFromJson>>;
+    try {
+      record = await consumedOutputRecordFromJson({
+        value,
+        ledgerPath: file.path,
+        source: evidenceSource,
+      });
+    } catch (error) {
+      if (!isExpectedEvidencePathError(error)) throw error;
+      rememberQuarantinedOrphanCandidate(value, input.currentJobIds, orphanWorkspacePaths);
+      return {
+        ...base,
+        disposition: "quarantine",
+        quarantineReason: "invalid_or_missing_evidence",
+      };
+    }
     if (!record?.valid) {
       rememberQuarantinedOrphanCandidate(value, input.currentJobIds, orphanWorkspacePaths);
       return {
@@ -200,11 +226,11 @@ export async function buildConsumedOutputLedgerEpochPlan(
         quarantineReason: "legacy_before_cutoff",
       };
     }
+    migrateFileEvidencePaths.set(file.path, terminalLedgerEpochFileEvidencePaths(value));
+    migrateDirectoryEvidencePaths.set(file.path, terminalLedgerEpochDirectoryEvidencePaths(value));
     return { ...base, disposition: "migrate" };
   }));
-  const filesInOrder = planned.sort((left, right) =>
-    left.relativePath.localeCompare(right.relativePath)
-  );
+  const filesInOrder = planned.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
   const evidenceBindings = await Promise.all(
     [...evidencePathValues].sort().map(async (path) =>
       await bindLedgerEpochEvidencePath({
@@ -216,6 +242,7 @@ export async function buildConsumedOutputLedgerEpochPlan(
       })
     ),
   );
+  const filesWithEvidenceDisposition = quarantineUnboundMigratedLedgerEpochFiles(filesInOrder, oldRoot, migrateFileEvidencePaths, migrateDirectoryEvidencePaths, evidenceBindings);
   const currentOrphanWorkspaceBindings = input.preboundOrphanWorkspaceBindings ??
     await bindLedgerEpochOrphanWorkspaces({
       workspacePaths: [...orphanWorkspacePaths].sort(),
@@ -223,7 +250,7 @@ export async function buildConsumedOutputLedgerEpochPlan(
       deniedRoots,
     });
   const registryJobIds = [...input.currentJobIds].sort();
-  const oldRootHash = treeHash(filesInOrder);
+  const oldRootHash = treeHash(filesWithEvidenceDisposition);
   const previousEpoch = await previousEpochReceipt(oldRoot);
   if (previousEpoch?.legacyAdmission && input.legacyAdmission &&
     JSON.stringify(previousEpoch.legacyAdmission) !==
@@ -237,7 +264,7 @@ export async function buildConsumedOutputLedgerEpochPlan(
   });
   const { migratedCount, quarantinedCount } = ledgerEpochLegacyAdmissionPlanCounts({
     anchor: input.legacyAdmission,
-    files: filesInOrder,
+    files: filesWithEvidenceDisposition,
     orphanWorkspaceCount: orphanWorkspaceBindings.length,
   });
   const preTransactionUnsigned = {
@@ -248,7 +275,7 @@ export async function buildConsumedOutputLedgerEpochPlan(
     newRoot,
     cutoff,
     oldRootHash,
-    oldRootFileCount: filesInOrder.length,
+    oldRootFileCount: filesWithEvidenceDisposition.length,
     oldRootDevice: oldRootStats.dev,
     oldRootInode: oldRootStats.ino,
     newRootParentDevice: newRootParentStats.dev,
@@ -273,7 +300,7 @@ export async function buildConsumedOutputLedgerEpochPlan(
     ...(input.legacyAttemptQuarantine
       ? { legacyAttemptQuarantine: input.legacyAttemptQuarantine }
       : {}),
-    files: filesInOrder,
+    files: filesWithEvidenceDisposition,
   };
   const unsigned = input.transactionVersion === 1
     ? preTransactionUnsigned
@@ -961,8 +988,7 @@ function uniqueResolvedRoots(values: readonly string[]): readonly string[] {
 }
 
 function pathInsideOrEqual(path: string, root: string): boolean {
-  const child = relative(resolve(root), resolve(path));
-  return child === "" || (child !== ".." && !child.startsWith(`..${sep}`));
+  const child = relative(resolve(root), resolve(path)); return child === "" || (child !== ".." && !child.startsWith(`..${sep}`));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

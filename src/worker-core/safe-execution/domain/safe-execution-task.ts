@@ -58,6 +58,9 @@ export type AttemptUsage = {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly totalTokens?: number;
+  readonly cachedInputTokens?: number;
+  readonly cacheWriteInputTokens?: number;
+  readonly reasoningOutputTokens?: number;
 };
 
 export type AttemptPatchStatsSource =
@@ -108,6 +111,8 @@ export type ContinuationPacket = {
 
 export type SafeExecutionTaskRecord = {
   readonly taskId: TaskRunId;
+  /** Run admission identity; absent on legacy journals and therefore not checkpoint eligible. */
+  readonly executionGeneration?: string;
   readonly workspaceRunId: WorkspaceRunId;
   readonly workspacePath: string;
   readonly effectMode: TaskEffectMode;

@@ -535,6 +535,7 @@ export class SafeExecutionRunner {
           );
           const errorSummary = input.summarizeError?.(error);
           const errorOutputSummary = input.summarizeErrorOutput?.(error);
+          const usage = input.attemptUsageFromError?.(error);
           const failureMessage = errorSummary ?? classification.safeMessage;
           const attempt = failedAttemptRecord({
             input,
@@ -548,6 +549,7 @@ export class SafeExecutionRunner {
             metadata:
               input.attemptMetadata?.({ error }) ??
               safeExecutionAttemptMetadataFromError(error),
+            ...(usage === undefined ? {} : { usage }),
           });
           task = await this.options.journal.appendAttempt({
             taskId: input.taskId,

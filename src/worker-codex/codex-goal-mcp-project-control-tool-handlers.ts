@@ -1,3 +1,4 @@
+import { projectControlRelocateControllerWorkspaceView } from "./codex-goal-mcp-project-controller-relocation";
 import { mcpJson } from "./codex-goal-mcp-response";
 import type {
   JobUpdateMcpArgs,
@@ -56,9 +57,13 @@ import {
   loadJobLaunch,
   loadProjectControlController,
   projectControlEvidenceCustody,
+  projectControlRecoveryStore,
+  projectControlRecoveryDirectories,
+  projectControlLedgerMutationLocks,
 } from "./codex-goal-mcp-project-control-deps";
+import { subscriptionRuntimePackageVersion } from
+  "./subscription-runtime-package-version";
 
-const serverVersion = process.env.npm_package_version ?? "0.0.0";
 const projectControllerProviderRegistry =
   createInMemoryProjectControllerProviderRegistry();
 
@@ -73,6 +78,9 @@ function projectControlAdminDeps() {
     loadProjectControlController,
     admissionDeps: codexProjectAdmissionDeps,
     evidenceCustody: projectControlEvidenceCustody,
+    recoveryStore: projectControlRecoveryStore,
+    recoveryDirectories: projectControlRecoveryDirectories,
+    mutationLocks: projectControlLedgerMutationLocks,
   };
 }
 
@@ -149,7 +157,7 @@ export async function projectControlLedgerEpochMigration(
 function projectControllerDeps(providerRuntimeRegistry?: ProviderRuntimeRegistry) {
   return {
     loadProjectControlController,
-    runtimeVersion: serverVersion,
+    runtimeVersion: subscriptionRuntimePackageVersion,
     providerRegistry: projectControllerProviderRegistry,
     providerRuntimeRegistry: providerRuntimeRegistry ?? defaultProviderRuntimeRegistry(),
   };
@@ -281,4 +289,15 @@ export async function projectControlRecordFailedNoOutput(
     args,
     projectControlActionDeps(),
   ));
+}
+
+export async function projectControlRelocateControllerWorkspace(args: ProjectControlMcpArgs) {
+  return mcpJson(await projectControlRelocateControllerWorkspaceView(args, {
+    ...projectControlAdminDeps(),
+    assertNoHostedControllers: () => {
+      if (projectControllerProviderRegistry.hasAny?.() !== false) {
+        throw new Error("controller_relocation_hosted_controller_active");
+      }
+    },
+  }));
 }

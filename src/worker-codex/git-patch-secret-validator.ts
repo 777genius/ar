@@ -10,6 +10,7 @@ import {
   OpaqueSecretDetectionPolicy,
 } from "@vioxen/subscription-runtime/worker-core";
 import { readGitBlobBatch } from "@vioxen/subscription-runtime/worker-local";
+import { parsePatchCoverage, assertTextAndEnvelopeCoverage } from "./git-patch-content-coverage";
 import { withLiteralGitPathspecs } from "./git-literal-pathspecs";
 
 const execFileAsync = promisify(execFile);
@@ -64,7 +65,18 @@ export async function assertGitPatchBlobsSecretSafe(
   }
   const patchSnapshot = await readBoundedPatch(input);
   const patchText = decodePatchText(patchSnapshot);
-  assertExpandedBinaryPatchLimits(patchText, maxFileBytes, maxTotalFileBytes);
+  const coverage = parsePatchCoverage(patchText, assertSafePath);
+  if (coverage.copySources.length > maximumChangedPaths ||
+    coverage.sections.length > maximumInputChangedPaths) {
+    throw new Error("git_patch_secret_changed_path_limit_exceeded");
+  }
+  const readPaths = uniqueSorted([...changedPaths, ...coverage.copySources,
+    ...coverage.sections.flatMap((section) => section.oldPath === undefined ? [] : [section.oldPath]),
+  ]);
+  if (readPaths.length > maximumInputChangedPaths) {
+    throw new Error("git_patch_secret_changed_path_limit_exceeded");
+  }
+  const binarySections = assertExpandedBinaryPatchLimits(patchText, maxFileBytes, maxTotalFileBytes);
   await input.testHooks?.afterPatchPreflight?.();
   await mkdir(input.tempRootDir, { recursive: true, mode: 0o700 });
   const tempDir = await mkdtemp(join(input.tempRootDir, ".secret-scan-"));
@@ -85,6 +97,7 @@ export async function assertGitPatchBlobsSecretSafe(
     const realObjectDirectory = await realpath(join(commonDirectory, "objects"));
     const env = {
       ...process.env,
+      GIT_NO_REPLACE_OBJECTS: "1",
       GIT_INDEX_FILE: indexPath,
       GIT_OBJECT_DIRECTORY: objectDirectory,
       GIT_ALTERNATE_OBJECT_DIRECTORIES: realObjectDirectory,
@@ -120,7 +133,7 @@ export async function assertGitPatchBlobsSecretSafe(
         "-z",
         input.baseCommit,
         "--",
-        ...changedPaths,
+        ...readPaths,
       ], env, 2 * 1024 * 1024),
       git(input, [
         "ls-files",
@@ -130,9 +143,12 @@ export async function assertGitPatchBlobsSecretSafe(
         ...changedPaths,
       ], env, 2 * 1024 * 1024),
     ]);
-    const baseObjects = parseTreeEntries(baseOutput, changedPaths);
+    const baseObjects = parseTreeEntries(baseOutput, readPaths);
+    for (const path of coverage.copySources) {
+      if (!baseObjects.has(path)) throw new Error("git_patch_secret_copy_source_missing");
+    }
     const postObjects = parseIndexEntries(postOutput, changedPaths);
-    const objectIds = [...new Set(changedPaths.flatMap((path) => [
+    const objectIds = [...new Set(readPaths.flatMap((path) => [
       baseObjects.get(path),
       postObjects.get(path),
     ].filter((value): value is string => value !== undefined)))];
@@ -143,6 +159,7 @@ export async function assertGitPatchBlobsSecretSafe(
         : await readGitBlobBatch({
           workspacePath: input.workspacePath,
           objectNames: objectIds,
+          noReplaceObjects: true,
           maxBlobBytes: maxFileBytes,
           maxTotalBytes: maxTotalFileBytes,
           env,
@@ -160,9 +177,9 @@ export async function assertGitPatchBlobsSecretSafe(
       bytesByObject.set(objectId, bytes);
     }
     let logicalBytes = 0;
-    for (const path of changedPaths) {
+    for (const path of readPaths) {
       const objectPair = [baseObjects.get(path), postObjects.get(path)];
-      if (objectPair.every((value) => value === undefined)) {
+      if (changedPaths.includes(path) && objectPair.every((value) => value === undefined)) {
         throw new Error("git_patch_secret_changed_blob_missing");
       }
       for (const objectId of objectPair) {
@@ -182,6 +199,92 @@ export async function assertGitPatchBlobsSecretSafe(
         }
       }
     }
+    const blobs = (objects: ReadonlyMap<string, string>): ReadonlyMap<string, Buffer> =>
+      new Map([...objects].map(([path, oid]) => [path, bytesByObject.get(oid)!]));
+    const baseBlobs = blobs(baseObjects);
+    const postBlobs = blobs(postObjects);
+    // A full patch can introduce and then erase an assignment whose beginning
+    // lies outside every changed hunk. Replay relevant prefixes in an isolated
+    // index and scan complete intermediate blobs, rather than lexical fragments.
+    const references = new Map<string, number>();
+    for (const section of coverage.sections) {
+      for (const path of new Set([section.oldPath, section.newPath])) {
+        if (path !== undefined) references.set(path, (references.get(path) ?? 0) + 1);
+      }
+    }
+    const prefixPaths = new Map<number, Set<string>>();
+    for (const [index, section] of coverage.sections.entries()) {
+      if (![section.oldPath, section.newPath].some((path) =>
+        path !== undefined && (references.get(path) ?? 0) > 1)) continue;
+      for (const [end, path] of [
+        [section.startLine, section.oldPath],
+        [coverage.sections[index + 1]?.startLine ?? coverage.lines.length, section.newPath],
+      ] as const) {
+        if (path === undefined || end === coverage.sections[0]?.startLine || end === coverage.lines.length) continue;
+        const paths = prefixPaths.get(end) ?? new Set<string>();
+        paths.add(path); prefixPaths.set(end, paths);
+      }
+    }
+    // A boundary can also border a section on another path. Include both sides
+    // so a prefix snapshot never substitutes a partial path map for that side.
+    for (const [index, section] of coverage.sections.entries()) {
+      const before = prefixPaths.get(section.startLine);
+      if (section.oldPath !== undefined) before?.add(section.oldPath);
+      const after = prefixPaths.get(coverage.sections[index + 1]?.startLine ?? coverage.lines.length);
+      if (section.newPath !== undefined) after?.add(section.newPath);
+    }
+    const intermediates = new Map<number, ReadonlyMap<string, Buffer>>();
+    const prefixEnv = { ...env, GIT_INDEX_FILE: join(tempDir, "prefix-index") };
+    for (const [end, paths] of prefixPaths) {
+      await git(input, ["read-tree", input.baseCommit], prefixEnv, 1024 * 1024);
+      const prefix = Buffer.from(coverage.lines.slice(0, end).join("\n") + "\n");
+      await gitWithInput(input, ["apply", "--cached", "--whitespace=nowarn", "-"],
+        prefixEnv, prefix, 1024 * 1024);
+      const entries = parseIndexEntries(await git(input, [
+        "ls-files", "--stage", "-z", "--", ...paths,
+      ], prefixEnv, 2 * 1024 * 1024), [...paths]);
+      const ids = [...entries.values()];
+      let contents: readonly (Buffer | undefined)[];
+      try {
+        contents = ids.length === 0 ? [] : await readGitBlobBatch({
+          workspacePath: input.workspacePath, objectNames: ids,
+          noReplaceObjects: true, env: prefixEnv,
+          maxBlobBytes: maxFileBytes, maxTotalBytes: maxTotalFileBytes,
+          ...(input.gitBinaryPath === undefined ? {} : { gitBinaryPath: input.gitBinaryPath }),
+        });
+      } catch (error) { throw mapBlobReadError(error); }
+      const scanned = new Map<string, Buffer>();
+      for (const [index, path] of [...entries.keys()].entries()) {
+        const bytes = contents[index];
+        if (bytes === undefined) throw new Error("git_patch_secret_blob_missing");
+        logicalBytes += bytes.length;
+        if (logicalBytes > maxTotalFileBytes) throw new Error("git_patch_secret_total_limit_exceeded");
+        if (detectSecretLikeContent(bytes, {
+          filePath: path,
+          opaqueContentPolicy: input.opaqueContentPolicy ?? OpaqueSecretDetectionPolicy.Reject,
+        }) !== undefined) throw new Error(`git_patch_secret_like_content:${path}`);
+        scanned.set(path, bytes);
+      }
+      intermediates.set(end, scanned);
+    }
+    const binaryPayloadLines = new Set<number>();
+    for (const [line, binary] of binarySections) {
+      const section = coverage.sections.find((candidate) => candidate.binaryLine === line);
+      if (section === undefined) throw new Error("git_patch_secret_binary_patch_invalid");
+      const sectionIndex = coverage.sections.indexOf(section);
+      const beforeBlobs = intermediates.get(section.startLine) ?? baseBlobs;
+      const afterBlobs = intermediates.get(coverage.sections[sectionIndex + 1]?.startLine ?? coverage.lines.length) ?? postBlobs;
+      const before = section.oldPath === undefined ? undefined : beforeBlobs.get(section.oldPath);
+      const after = section.newPath === undefined ? undefined : afterBlobs.get(section.newPath);
+      if (before === undefined && after === undefined) throw new Error("git_patch_secret_binary_patch_invalid");
+      const empty = Buffer.alloc(0);
+      assertBinaryDirection(binary.hunks[0]!, before ?? empty, after ?? empty, maxFileBytes);
+      if (binary.hunks[1] !== undefined) {
+        assertBinaryDirection(binary.hunks[1], after ?? empty, before ?? empty, maxFileBytes);
+      }
+      for (const index of binary.payloadLines) binaryPayloadLines.add(index);
+    }
+    assertTextAndEnvelopeCoverage(coverage, baseBlobs, postBlobs, binaryPayloadLines, intermediates);
     return logicalBytes;
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("git_patch_secret_")) {
@@ -282,16 +385,22 @@ function decodePatchText(snapshot: Buffer): string {
   return patch;
 }
 
+type BinaryHunk = { readonly delta: boolean; readonly bytes: Buffer };
+type BinarySection = { readonly hunks: BinaryHunk[]; readonly payloadLines: number[] };
+
 function assertExpandedBinaryPatchLimits(
   patch: string,
   maxFileBytes: number,
   maxTotalFileBytes: number,
-): void {
+): ReadonlyMap<number, BinarySection> {
+  const result = new Map<number, BinarySection>();
   const lines = patch.split("\n");
   let declaredTotalBytes = 0;
   let reconstructedTotalBytes = 0;
   for (let index = 0; index < lines.length; index += 1) {
     if (patchLine(lines, index) !== "GIT binary patch") continue;
+    const section: BinarySection = { hunks: [], payloadLines: [] };
+    result.set(index, section);
     let cursor = index + 1;
     let hunkCount = 0;
     while (cursor < lines.length) {
@@ -325,10 +434,13 @@ function assertExpandedBinaryPatchLimits(
         if (encodedLine === undefined || encodedLine.startsWith("diff --git ")) {
           throw new Error("git_patch_secret_binary_patch_invalid");
         }
+        if (lines[cursor] !== encodedLine) throw new Error("git_patch_secret_binary_patch_invalid");
+        section.payloadLines.push(cursor);
         encodedLines.push(encodedLine);
         cursor += 1;
       }
       const hunk = inflateGitBinaryHunk(encodedLines, declaredHunkBytes);
+      section.hunks.push({ delta: match[1] === "delta", bytes: hunk });
       const reconstructedBytes = match[1] === "literal"
         ? declaredHunkBytes
         : deltaTargetSize(hunk, maxFileBytes);
@@ -341,11 +453,12 @@ function assertExpandedBinaryPatchLimits(
       }
       hunkCount += 1;
     }
-    if (hunkCount === 0) {
+    if (hunkCount === 0 || hunkCount > 2) {
       throw new Error("git_patch_secret_binary_patch_invalid");
     }
     index = cursor - 1;
   }
+  return result;
 }
 
 function patchLine(
@@ -366,11 +479,15 @@ function inflateGitBinaryHunk(
   try {
     const inflated = inflateSync(compressed, {
       maxOutputLength: declaredBytes + 1,
-    });
-    if (inflated.byteLength !== declaredBytes) {
+      info: true,
+    }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+    if (
+      inflated.buffer.byteLength !== declaredBytes ||
+      inflated.engine.bytesWritten !== compressed.byteLength
+    ) {
       throw new Error("git_patch_secret_binary_patch_invalid");
     }
-    return inflated;
+    return inflated.buffer;
   } catch (error) {
     if (isGitPatchSecretError(error)) throw error;
     throw new Error("git_patch_secret_binary_patch_invalid");
@@ -406,6 +523,9 @@ function decodeGitBase85Lines(lines: readonly string[]): Buffer {
       const block = Buffer.allocUnsafe(4);
       block.writeUInt32BE(value, 0);
       const copied = Math.min(4, lineBytes - decodedOffset);
+      if (block.subarray(copied).some((byte) => byte !== 0)) {
+        throw new Error("git_patch_secret_binary_patch_invalid");
+      }
       block.copy(decoded, decodedOffset, 0, copied);
       decodedOffset += copied;
     }
@@ -426,6 +546,57 @@ function gitBase85LineBytes(prefix: string | undefined): number {
   if (code >= 0x41 && code <= 0x5a) return code - 0x41 + 1;
   if (code >= 0x61 && code <= 0x7a) return code - 0x61 + 27;
   throw new Error("git_patch_secret_binary_patch_invalid");
+}
+
+function assertBinaryDirection(
+  hunk: BinaryHunk, source: Buffer, target: Buffer, limit: number,
+): void {
+  if (!hunk.delta) {
+    if (!hunk.bytes.equals(target)) throw new Error("git_patch_secret_binary_direction_mismatch");
+    return;
+  }
+  const delta = hunk.bytes;
+  const sourceSize = deltaHeaderSize(delta, 0, limit);
+  const targetSize = deltaHeaderSize(delta, sourceSize.nextOffset, limit);
+  if (sourceSize.size !== source.length || targetSize.size !== target.length) {
+    throw new Error("git_patch_secret_binary_direction_mismatch");
+  }
+  let cursor = targetSize.nextOffset;
+  let written = 0;
+  const nextByte = (): number => {
+    const value = delta[cursor++];
+    if (value === undefined) throw new Error("git_patch_secret_binary_patch_invalid");
+    return value;
+  };
+  while (cursor < delta.length) {
+    const command = nextByte();
+    let piece: Buffer;
+    if ((command & 0x80) !== 0) {
+      let offset = 0;
+      let length = 0;
+      for (let byte = 0; byte < 4; byte += 1) {
+        if ((command & (1 << byte)) !== 0) offset += nextByte() * 256 ** byte;
+      }
+      for (let byte = 0; byte < 3; byte += 1) {
+        if ((command & (1 << (byte + 4))) !== 0) length += nextByte() * 256 ** byte;
+      }
+      if (length === 0) length = 65536;
+      if (offset + length > source.length) throw new Error("git_patch_secret_binary_patch_invalid");
+      piece = source.subarray(offset, offset + length);
+    } else {
+      if (command === 0 || cursor + command > delta.length) {
+        throw new Error("git_patch_secret_binary_patch_invalid");
+      }
+      piece = delta.subarray(cursor, cursor + command);
+      cursor += command;
+    }
+    if (written + piece.length > target.length ||
+      !piece.equals(target.subarray(written, written + piece.length))) {
+      throw new Error("git_patch_secret_binary_direction_mismatch");
+    }
+    written += piece.length;
+  }
+  if (written !== target.length) throw new Error("git_patch_secret_binary_patch_invalid");
 }
 
 function deltaTargetSize(delta: Buffer, maxFileBytes: number): number {
@@ -493,7 +664,7 @@ async function git(
     ]),
     {
       encoding: "utf8",
-      env,
+      env: { ...process.env, ...env, GIT_NO_REPLACE_OBJECTS: "1" },
       maxBuffer,
       timeout: 30_000,
     },
@@ -521,7 +692,10 @@ async function gitWithInput(
         input.workspacePath,
         ...args,
       ]),
-      { env, stdio: ["pipe", "pipe", "pipe"] },
+      {
+        env: { ...env, GIT_NO_REPLACE_OBJECTS: "1" },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
     );
     const stdout: Buffer[] = [];
     let stdoutBytes = 0;

@@ -1,3 +1,4 @@
+import { LocalConsumedOutputLedgerMutationLock } from "@vioxen/subscription-runtime/worker-local";
 import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -185,6 +186,7 @@ describe("project-control manifest repair workspace mode", () => {
         manifestPath: join(registryRootDir, jobId, "job.json"),
       };
       const deps = {
+        mutationLocks: new LocalConsumedOutputLedgerMutationLock(),
         loadProjectControlController: async () => ({
           registryRootDir,
           controller,

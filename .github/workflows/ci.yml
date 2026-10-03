@@ -14,21 +14,24 @@ concurrency:
 
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
+      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # retried — only this fetch.
+      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run typecheck
       - run: npm run build
       - run: npm run check:dist
       - run: npm run check:boundaries
 
   unit-tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
       - uses: actions/checkout@v4
       - name: Fetch pinned legacy ledger fixture
@@ -37,24 +40,37 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
+      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # retried — only this fetch.
+      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+      - name: Install encrypted checkpoint restore test dependency
+        run: |
+          if ! command -v restic >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends restic
+          fi
+          restic version
       - run: npm test
 
   package:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
+      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # retried — only this fetch.
+      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run check:packed-consumer
 
   crash-boundary-shards:
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     timeout-minutes: 35
     strategy:
       fail-fast: false
@@ -70,7 +86,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # Bounded retry: `npm ci` is a pure download step and the ARC runners'
+      # egress to the registry mirrors is intermittently flaky. Gates are never
+      # retried — only this fetch.
+      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
       - run: npm run build:packages
       - name: Certify crash-boundary shards in lane ${{ matrix.lane }}
         env:
@@ -90,7 +109,7 @@ jobs:
       contents: read
     if: ${{ always() }}
     needs: [crash-boundary-shards]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
       - name: Verify every crash-boundary shard lane passed
         env:
@@ -100,7 +119,7 @@ jobs:
   test:
     if: ${{ always() }}
     needs: [quality, unit-tests, package, crash-boundary-shards-complete]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
       - name: Verify all CI gates passed
         env:

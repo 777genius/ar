@@ -68,6 +68,7 @@ export function failedAttemptRecord<Job, Result>(input: {
     readonly workerId?: string;
     readonly accountId?: string;
   };
+  readonly usage?: AttemptUsage;
 }): AttemptRecord {
   const patch = patchStatsBetween(input.before, input.after);
   return {
@@ -91,6 +92,10 @@ export function failedAttemptRecord<Job, Result>(input: {
     workspaceDirtyBefore: input.before.dirty,
     workspaceDirtyAfter: input.after.dirty,
     changedFiles: changedFilesBetween(input.before, input.after),
+    ...(input.usage === undefined ? {} : { usage: input.usage }),
+    ...(input.usage === undefined
+      ? {}
+      : { usageSource: "provider_structured" as const }),
     ...(patch === undefined ? {} : { patch }),
   };
 }

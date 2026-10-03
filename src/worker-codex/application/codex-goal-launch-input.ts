@@ -1,3 +1,4 @@
+import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "../codex-worker-defaults";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { execPath } from "node:process";
@@ -14,6 +15,8 @@ import {
   parseCodexGoalProjectAccessScope,
 } from "../codex-goal-access-plan";
 import type { CodexGoalInput } from "./codex-goal-use-case-inputs";
+import { optionalCodexGoalModelBackend } from "../codex-goal-model-backend";
+import { optionalCodexGoalMimoAccountSlots } from "../codex-goal-mimo-account-slots";
 import {
   accountNames,
   booleanValue,
@@ -56,7 +59,10 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
   );
   const workspacePath = requiredString(merged.workspacePath, "workspacePath", cwd);
   const promptPath = requiredString(merged.promptPath, "promptPath", cwd);
-  const accounts = codexGoalAccountSlots(accountNames(merged.accounts));
+  const accounts = codexGoalAccountSlots(
+    accountNames(merged.accounts),
+    optionalCodexGoalMimoAccountSlots(merged.mimoAccounts).mimoAccounts,
+  );
   if (!accounts.length) throw new Error("accounts are required");
   const controlModes = goalControlModesFromRecord(merged);
   const accessBoundary = optionalCodexGoalAccessBoundary(merged.accessBoundary);
@@ -90,6 +96,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
       : {}),
     taskId,
     accounts,
+    ...optionalCodexGoalMimoAccountSlots(merged.mimoAccounts),
     outputPath: resolvePath(
       cwd,
       stringValue(merged.outputPath) ??
@@ -100,13 +107,15 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
       stringValue(merged.progressPath) ??
         codexGoalProgressPath({ jobRootDir, taskId }),
     ),
-    model: stringValue(merged.model) ?? "gpt-5.5",
+    model: stringValue(merged.model) ?? CODEX_WORKER_DEFAULT_MODEL,
     reasoningEffort:
-      (stringValue(merged.reasoningEffort) ?? "high") as NonNullable<CodexGoalRunConfig["reasoningEffort"]>,
+      (stringValue(merged.reasoningEffort) ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT) as NonNullable<CodexGoalRunConfig["reasoningEffort"]>,
     serviceTier:
       (stringValue(merged.serviceTier) ?? "default") as NonNullable<CodexGoalRunConfig["serviceTier"]>,
     executionEngine:
       (stringValue(merged.executionEngine) ?? "app-server-goal") as NonNullable<CodexGoalRunConfig["executionEngine"]>,
+    ...(booleanValue(merged.checkpointRequired) ? { checkpointRequired: true } : {}),
+    ...optionalCodexGoalModelBackend(merged.modelBackend),
     codexBinaryPath: stringValue(merged.codexBinaryPath) ?? "codex",
     ...controlModes,
     ...(accessBoundary === undefined ? {} : { accessBoundary }),

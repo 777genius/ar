@@ -31,6 +31,16 @@ Provider task adapters should follow `docs/pluggable-agent-runtime.md`:
 - expose streaming through provider-neutral `ProviderTaskEvent` only when the
   host needs live progress.
 
+When comparing this tree to Agent Runtime, the contained-turn adapters are
+canonical: Codex App Server JSONL under Host Custody, Claude Agent SDK
+`query()` with `spawnClaudeCodeProcess` replaced by Host Custody,
+`persistSession: false`. Extra engines here (`codex exec`, `claude -p`,
+Claude BG, resume/fork, App Server→CLI fallback) are product history, not
+the pattern to copy. Protocol helpers may be diffed only against a named
+gap. Named anti-patterns `SR-AP-1` … `SR-AP-11` live in that document; do not
+reintroduce them here as "how Agent Runtime should work". See
+`/Users/belief/dev/projects/agent-teams-ai/agent-runtime/docs/architecture/subscription-runtime-port-candidates.md`.
+
 Concrete SDK or process runtimes belong at the provider adapter boundary, not
 in `core`. For example, `provider-claude` exposes `ClaudeTaskAgentDriver` for
 injected engines and `ClaudeRuntimeTaskExecutionEngine` for composition roots

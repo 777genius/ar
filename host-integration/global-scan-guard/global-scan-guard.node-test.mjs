@@ -308,7 +308,7 @@ describe("hosted Codex global scan launch", () => {
 
     assert.doesNotMatch(source, /bwrap|--ro-bind|--bind \/ \//);
     assert.match(source, /export PATH="\$\{integration_dir\}\/bin:\$\{PATH\}"/);
-    assert.match(source, /exec "\$@"/);
+    assert.match(source, /readonly-test-supervisor\.mjs" legacy -- "\$@"/);
   });
 
   it("refuses launcher use outside the new hosted Codex sandbox scope", async () => {
@@ -319,19 +319,26 @@ describe("hosted Codex global scan launch", () => {
     await assert.rejects(execFile(guardedCodex, ["--version"], { env: outsideHostedEnv }), { code: 64 });
   });
 
-  it("intercepts PATH scans and returns the detailed exit-64 diagnostic", async () => {
+  it("preserves the PATH scan guard inside the contained provider namespace", async () => {
     const scan = await writeExecutable("scan", "#!/bin/sh\nexec rg --files /\n");
+    // This suite runs both on a developer host and inside an existing hosted
+    // namespace. The latter may run a nested shim; the former must be denied.
+    const nested = process.getuid?.() === 65532 && process.getgid?.() === 65532 &&
+      (await readFile("/proc/self/uid_map", "utf8")).trim().replace(/\s+/g, " ") === "65532 0 1";
     await assert.rejects(
       execFile(launcher, [scan], { env: launcherEnv() }),
       (error) => {
-        assert.equal(error.code, 64);
-        assert.match(error.stderr, /subscription_runtime_global_scan_blocked tool=rg root=\//);
+        assert.equal(error.code, nested ? 64 : 70);
+        assert.match(error.stderr, nested
+          ? /subscription_runtime_global_scan_blocked tool=rg root=\//
+          : /hosted_custody_launch_denied/);
+        assert.equal(error.stdout, "");
         return true;
       },
     );
   });
 
-  it("routes an explicit --codex-binary codex through the guarded entrypoint", async () => {
+  it("does not let --codex-binary codex bypass the common host fence", async () => {
     const fakeCodex = await writeExecutable("codex.real", delegatedExecutable());
     const fakeHost = await writeExecutable("subscription-runtime-host", `#!/bin/sh
 codex_binary=codex
@@ -345,7 +352,7 @@ while [ "$#" -gt 0 ]; do
 done
 exec "$codex_binary" app-server --listen stdio://
 `);
-    const result = await execFile(hostLauncher, [
+    await assert.rejects(execFile(hostLauncher, [
       fakeHost,
       "--provider",
       "codex",
@@ -355,11 +362,15 @@ exec "$codex_binary" app-server --listen stdio://
       env: launcherEnv({
         SUBSCRIPTION_RUNTIME_GLOBAL_SCAN_GUARD_CODEX_SOURCE: fakeCodex,
       }),
+    }), error => {
+      assert.equal(error.code, 70);
+      assert.match(error.stderr, /hosted_custody_launch_denied/);
+      assert.equal(error.stdout, "");
+      return true;
     });
-    assert.equal(result.stdout, "delegated:app-server --listen stdio://\n");
   });
 
-  it("preserves app-server stdio and the direct process identity", async () => {
+  it("rejects an unadmitted app-server before consuming its protocol input", async () => {
     const fakeCodex = await writeExecutable("codex.real", `#!/bin/sh
 IFS= read -r request
 printf 'pid=%s args=%s request=%s\\n' "$$" "$*" "$request"
@@ -379,11 +390,10 @@ exec codex app-server --listen stdio://
       '{"method":"initialize"}\n',
     );
 
-    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.code, 70, result.stderr);
     assert.equal(result.signal, null);
-    assert.match(result.stdout, new RegExp(`^pid=${result.pid} `));
-    assert.match(result.stdout, /args=app-server --listen stdio:\/\//);
-    assert.match(result.stdout, /request=\{"method":"initialize"\}/);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /hosted_custody_launch_denied/);
   });
 
   it("fails closed when an executable prerequisite is unavailable", async () => {
