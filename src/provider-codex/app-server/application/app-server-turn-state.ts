@@ -35,11 +35,21 @@ export type TurnState = {
  * "this turn's usage is untrusted", because only the first may be backfilled.
  */
 export type AppServerTurnResult = {
+  /** The thread targeted by turn/start, when reported by the implementation. */
+  readonly threadId?: string;
+  /** The turn ID from the turn/start ACK, never a notification alias. */
+  readonly acknowledgedTurnId?: string;
   readonly outputText: string;
   readonly usage: AgentUsage | undefined;
   readonly usagePoisoned: boolean;
   readonly completed: boolean;
   readonly error: Error | null;
+};
+
+/** Protocol facts guaranteed by the concrete client on every returned result. */
+export type AppServerAcknowledgedTurnResult = AppServerTurnResult & {
+  readonly threadId: string;
+  readonly acknowledgedTurnId: string;
 };
 
 export type PendingRequest = {

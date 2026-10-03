@@ -44,7 +44,7 @@ import {
 } from "../domain/app-server-errors";
 import { CodexAppServerThreadForkError } from "./app-server-thread-fork-error";
 import {
-  type AppServerTurnResult,
+  type AppServerAcknowledgedTurnResult,
   createTurnState,
   type PendingRequest,
   type TurnState,
@@ -102,7 +102,7 @@ export {
 } from "./app-server-turn-failure";
 export { CodexAppServerThreadForkError, turnFailureError };
 
-export type { AppServerTurnResult } from "./app-server-turn-state";
+export type { AppServerTurnResult, AppServerAcknowledgedTurnResult } from "./app-server-turn-state";
 
 const maxRetainedTurnStates = appServerTurnCapacity;
 const maxRetainedEarlyTurnIds = 128;
@@ -525,7 +525,8 @@ export class CodexAppServerClient {
     readonly goalMode?: boolean;
     readonly turnNumber?: number;
     readonly onTextDelta?: (text: string) => void;
-  }): Promise<AppServerTurnResult> {
+  }): Promise<AppServerAcknowledgedTurnResult> {
+    const targetedThreadId = input.threadId;
     const release = this.turnAdmission.acquire(input.threadId);
     const usage = this.tokenUsage.activate(input.threadId);
     try {
@@ -580,7 +581,6 @@ export class CodexAppServerClient {
           },
         );
       }
-
       const turnId = nestedString(response.result, ["turn", "id"]);
       if (!turnId) {
         this.clearStartingTurn(input.threadId);
@@ -593,6 +593,7 @@ export class CodexAppServerClient {
           elapsedMs: Date.now() - startedAt,
         });
       }
+      const identity = { threadId: targetedThreadId, acknowledgedTurnId: turnId };
       let turn: TurnState;
       try {
         turn = await this.waitForTurn(turnId, input);
@@ -606,15 +607,13 @@ export class CodexAppServerClient {
       }
       this.startingTurnThreads.delete(input.threadId);
       this.clearIdleTurnState();
-      if (!turn.error) return turn;
+      if (!turn.error) return { ...turn, ...identity };
       return {
         ...turn,
+        ...identity,
         usage: turn.usage ?? usage.usage,
         error: turnFailureError(new AppServerExecutionMayHaveStartedError(turn.error), {
-          phase:
-            turn.outputText.length > 0
-              ? "turn_error_after_output"
-              : "turn_error_before_output",
+          phase: turn.outputText.length > 0 ? "turn_error_after_output" : "turn_error_before_output",
           turnNumber: input.turnNumber,
           outputText: turn.outputText,
           elapsedMs: Date.now() - startedAt,
