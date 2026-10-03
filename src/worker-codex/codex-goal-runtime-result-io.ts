@@ -85,13 +85,15 @@ export async function captureGitWorkspacePatch(input: {
     gitBinaryPath,
     workspacePath: input.workspacePath,
   });
+  // Disable presentation drivers. Git clean conversions can still normalize
+  // bytes; callers claiming raw identity must separately check eligibility.
   const trackedPatch = await gitDiff({
     retention: true,
     gitBinaryPath,
     workspacePath: input.workspacePath,
     args: hasHead
-      ? ["diff", "--binary", "--no-renames", "HEAD", "--"]
-      : ["diff", "--binary", "--"],
+      ? ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD", "--"]
+      : ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--"],
   });
   const patches: string[] = [];
   let bytes = 0;
@@ -107,7 +109,7 @@ export async function captureGitWorkspacePatch(input: {
     append(await gitDiff({
       retention: true,
       gitBinaryPath, workspacePath: input.workspacePath,
-      args: ["diff", "--binary", "--no-index", "--", "/dev/null", path],
+      args: ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-index", "--", "/dev/null", path],
       allowDifferenceExitCode: true,
     }));
   }
@@ -138,6 +140,81 @@ export async function captureGitWorkspaceChangedFiles(input: {
     ...tracked.split("\0").filter(Boolean),
     ...untracked,
   ])].sort();
+}
+
+/** Fail closed before using a Git patch as proof of unchanged authored bytes.
+ * Attribute/config inspection does not invoke clean or process filters.
+ */
+export async function assertGitWorkspaceRawPatchIdentitySupported(
+  workspacePath: string,
+): Promise<void> {
+  const options = { timeout: defaultGitCommandTimeoutMs, maxBuffer: 16 * 1024 * 1024 };
+  // assume-unchanged and skip-worktree can hide raw source edits from both
+  // status and diff, including the clean failed_no_output closure path.
+  const { stdout: flags } = await execFileAsync("git", ["-C", workspacePath,
+    "ls-files", "-v", "-z"], options);
+  if (flags && !flags.endsWith("\0")) {
+    throw new Error("failed_no_output_git_index_uncertain");
+  }
+  for (const entry of flags ? flags.slice(0, -1).split("\0") : []) {
+    if (entry.length < 3 || entry[1] !== " ") {
+      throw new Error("failed_no_output_git_index_uncertain");
+    }
+    if (entry[0] !== "H") throw new Error("failed_no_output_git_index_flags_present");
+  }
+  let autocrlf: string;
+  try {
+    ({ stdout: autocrlf } = await execFileAsync("git", ["-C", workspacePath,
+      "config", "--get", "core.autocrlf"], options));
+  } catch (error) {
+    if (!isRecord(error) || error.code !== 1) throw error;
+    autocrlf = "false";
+  }
+  if (!/^(false|no|off|0)$/i.test(autocrlf.trim())) {
+    throw new Error("failed_no_output_git_conversion_unsupported");
+  }
+  // check-attr prints the same sentinel for -filter and filter=unset (and
+  // for an absent filter and filter=unspecified). Deny configured drivers
+  // with those names rather than interpreting ambiguous output as safe.
+  try {
+    await execFileAsync("git", ["-C", workspacePath, "config", "--name-only",
+      "--get-regexp", "^filter\\.(unset|unspecified)\\.(clean|process)$"], options);
+  } catch (error) {
+    if (!isRecord(error) || error.code !== 1) throw error;
+    // No ambiguous driver configuration.
+    return await assertNoGitPathConversions(workspacePath, options);
+  }
+  throw new Error("failed_no_output_git_conversion_unsupported");
+}
+
+async function assertNoGitPathConversions(
+  workspacePath: string,
+  options: { readonly timeout: number; readonly maxBuffer: number },
+): Promise<void> {
+  const { stdout: paths } = await execFileAsync("git", ["-C", workspacePath,
+    "ls-files", "--cached", "--others", "--exclude-standard", "-z"], options);
+  if (!paths) return;
+  const attributes = ["filter", "text", "eol", "working-tree-encoding", "ident", "crlf"];
+  const output = await new Promise<string>((resolve, reject) => {
+    const child = execFile("git", ["-C", workspacePath, "check-attr", "-z",
+      "--stdin", ...attributes], options, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(stdout);
+    });
+    child.stdin!.on("error", reject);
+    child.stdin!.end(paths);
+  });
+  const fields = output.split("\0");
+  if (fields.pop() !== "" || fields.length % 3 !== 0 ||
+      fields.length !== paths.split("\0").slice(0, -1).length * attributes.length * 3) {
+    throw new Error("failed_no_output_git_conversion_uncertain");
+  }
+  for (let i = 0; i < fields.length; i += 3) {
+    if (!fields[i] || !attributes.includes(fields[i + 1]!) ||
+        !["unspecified", "unset"].includes(fields[i + 2]!)) {
+      throw new Error("failed_no_output_git_conversion_unsupported");
+    }
+  }
 }
 
 function ensureTrailingNewline(value: string): string {
