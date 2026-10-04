@@ -237,7 +237,7 @@ export function assertHostedDependencyInstallerPlan(plan: HostedDependencyInstal
 }
 export function hostedDependencyInstallerProperties(plan: HostedDependencyInstallerPlan): readonly string[] {
   assertHostedDependencyInstallerPlan(plan);
-  return ["Restart=no", "User=0", "Group=0", "NoNewPrivileges=yes", "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP", "AmbientCapabilities=",
+  return ["Restart=no", "User=0", "Group=0", "NoNewPrivileges=yes", "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP", "AmbientCapabilities=CAP_SETUID",
     "Environment=PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME=/home/installer",
     "UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES OPENSSL_CONF OPENSSL_MODULES NODE_V8_COVERAGE",
     "PrivateDevices=yes", "ProtectSystem=strict", "ProtectHome=yes", "RestrictSUIDSGID=yes", "MountAPIVFS=no",

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   IntegrationAttemptStatus, IntegrationAuditEventType, SecretScanStatus,
   adoptPublishedIntegrationCommit, applyWorkerOutput, openProjectIntegrationAttempt,
-  runRequiredChecks,
+  runRequiredChecks, pushApprovedCommit, ReviewDecisionStatus, AccessBoundary, createAccessPolicyService,
 } from "../../index";
 import { createFixture, input, policy } from "./project-integration-use-cases.fixture";
 
@@ -55,12 +55,19 @@ async function setup() {
   });
   const deps = {
     ...fixture.deps(), git,
+    authorizePublishedAdoption: async () => {},
     reviewedOutputIntegrity: { verify: async () => {} },
     scanner: { scanFiles: async () => ({
       status: SecretScanStatus.Passed, scannedReviewedTree: tree, scannedReviewedParent: parent,
     }) },
   };
-  const request = { attemptId: opened.attemptId, commitSha: sha, message, attestation, policy: policy() };
+  const configured = policy();
+  const recordOnlyPolicy = {
+    ...configured, access: {
+      ...configured.access, scope: { ...configured.access.scope!, allowedGitRemotes: [] },
+    },
+  };
+  const request = { attemptId: opened.attemptId, commitSha: sha, message, attestation, policy: recordOnlyPolicy };
   return { fixture, deps, request, commit };
 }
 
@@ -69,11 +76,17 @@ describe("externally published reviewed commit adoption", () => {
     const { fixture, deps, request } = await setup();
     const adopted = await adoptPublishedIntegrationCommit(deps, request);
     expect(adopted.status).toBe(IntegrationAttemptStatus.Pushed);
+    expect(createAccessPolicyService(request.policy.access).canPushBranch({
+      workspacePath: adopted.targetWorkspacePath, branch: adopted.targetBranch,
+      remote: adopted.targetRemote,
+    }).allowed).toBe(false);
     expect(adopted.externalPublicationAttestation).toEqual(attestation);
     expect(fixture.ledger.finalizeCalls).toBe(1);
     await adoptPublishedIntegrationCommit(deps, request);
     expect(fixture.ledger.finalizeCalls).toBe(2);
     expect(fixture.ledger.prepareCalls).toBe(1);
+    expect(fixture.git.calls).not.toContain("push");
+    expect(fixture.git.calls).not.toContain("commit");
     expect(fixture.events.filter((event) => event.type === IntegrationAuditEventType.ExternalCommitAdopted)).toHaveLength(1);
     expect(fixture.events.filter((event) => event.type === IntegrationAuditEventType.Pushed)).toHaveLength(1);
   });
@@ -90,6 +103,82 @@ describe("externally published reviewed commit adoption", () => {
     await expect(adoptPublishedIntegrationCommit(deps, request)).rejects.toThrow("published_commit_adoption_commit_mismatch");
     expect(fixture.ledger.prepareCalls).toBe(0);
     expect(fixture.store.get(request.attemptId)?.status).toBe(IntegrationAttemptStatus.ChecksPassed);
+  });
+
+  it("requires a trusted authorizer even when the dependency is absent at runtime", async () => {
+    const { fixture, deps, request } = await setup();
+    const { authorizePublishedAdoption: _authority, ...untrusted } = deps;
+    // External JS callers can omit a dependency despite the TypeScript contract.
+    await expect(adoptPublishedIntegrationCommit(
+      untrusted as typeof deps, request,
+    )).rejects.toThrow("published_commit_adoption_authority_required");
+    expect(fixture.ledger.prepareCalls).toBe(0);
+    expect(fixture.store.get(request.attemptId)?.status).toBe(IntegrationAttemptStatus.ChecksPassed);
+  });
+
+  it("rejects an unauthenticated caller before any durable mutation", async () => {
+    const { fixture, deps, request } = await setup();
+    deps.authorizePublishedAdoption = async () => { throw new Error("unauthorized_caller"); };
+    const before = fixture.store.get(request.attemptId);
+    await expect(adoptPublishedIntegrationCommit(deps, request)).rejects.toThrow("unauthorized_caller");
+    expect(fixture.store.get(request.attemptId)).toEqual(before);
+    expect(fixture.ledger.prepareCalls).toBe(0);
+  });
+
+  it.each(["project", "branch", "target", "source", "boundary"] as const)(
+    "rejects %s outside controller scope before ledger mutation", async (field) => {
+      const { fixture, deps, request } = await setup();
+      const scope = { ...request.policy.access.scope!, worktreeRoots: [] };
+      if (field === "project") scope.projectId = "different-project";
+      if (field === "branch") scope.allowedBranches = ["other"];
+      if (field === "target") scope.workspaceRoots = ["/work/infinity-context-child"];
+      if (field === "source") scope.workspaceRoots = ["/work/infinity-context-main"];
+      const access = { ...request.policy.access, scope,
+        ...(field === "boundary" ? { boundary: AccessBoundary.ReadOnly } : {}),
+      };
+      await expect(adoptPublishedIntegrationCommit(deps, {
+        ...request, policy: { ...request.policy, access },
+      })).rejects.toThrow(/published_commit_adoption_(authority_required|scope_denied)/);
+      expect(fixture.ledger.prepareCalls).toBe(0);
+      expect(fixture.store.get(request.attemptId)?.status).toBe(IntegrationAttemptStatus.ChecksPassed);
+    },
+  );
+
+  it("rejects a different authenticated repository before consuming the ledger", async () => {
+    const { fixture, deps, request } = await setup();
+    await expect(adoptPublishedIntegrationCommit(deps, {
+      ...request, attestation: { ...attestation, repository: "other/repository" },
+    })).rejects.toThrow("published_commit_adoption_repository_mismatch");
+    expect(fixture.ledger.prepareCalls).toBe(0);
+  });
+
+  it.each(["review", "checks", "output"] as const)(
+    "requires retained %s evidence before consumption", async (missing) => {
+      const { fixture, deps, request } = await setup();
+      const attempt = fixture.store.get(request.attemptId)!;
+      if (missing === "review") fixture.store.update({ ...attempt,
+        reviewDecision: { ...attempt.reviewDecision, decision: ReviewDecisionStatus.Rejected },
+      });
+      if (missing === "checks") fixture.store.update({ ...attempt, checkRuns: [] });
+      if (missing === "output") fixture.store.update({ ...attempt,
+        workerOutput: { ...attempt.workerOutput, reviewedOutputId: "" },
+      });
+      await expect(adoptPublishedIntegrationCommit(deps, request)).rejects.toThrow();
+      expect(fixture.ledger.prepareCalls).toBe(0);
+      expect(fixture.store.get(request.attemptId)?.status).toBe(IntegrationAttemptStatus.ChecksPassed);
+    },
+  );
+
+  it("still denies a new push with the same record-only controller", async () => {
+    const { fixture, deps, request } = await setup();
+    fixture.ledger.finalizeError = new Error("ledger_finalize_failed");
+    await expect(adoptPublishedIntegrationCommit(deps, request)).rejects.toThrow("ledger_finalize_failed");
+    delete fixture.ledger.finalizeError;
+    await expect(pushApprovedCommit(deps, { attemptId: request.attemptId, policy: request.policy }))
+      .rejects.toThrow();
+    expect(fixture.ledger.finalizeCalls).toBe(1);
+    expect(fixture.git.calls).not.toContain("push");
+    expect(fixture.store.get(request.attemptId)?.status).toBe(IntegrationAttemptStatus.CommitCreated);
   });
 
   it("rejects a failed immutable-tree secret scan before ledger mutation", async () => {

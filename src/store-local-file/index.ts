@@ -15,3 +15,4 @@ export * from "./worker-account-leases";
 export * from "./manifest";
 export * from "./dependency-environment/local-dependency-manifest-blob-store";
 export * from "./dependency-environment/local-dependency-owner-store";
+export * from "./dependency-environment/local-dependency-receipt-store";
