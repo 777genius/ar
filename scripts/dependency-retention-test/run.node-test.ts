@@ -198,7 +198,7 @@ async function publicRegistryInputs(): Promise<{ packageBytes: Buffer; lockBytes
 
 async function run(): Promise<void> {
   assertReadonlyHostOperator(); assert.equal(process.arch, "x64");
-  assert.equal(script, artifact + "/scripts/dependency-retention-test/run.ts");
+  assert.equal(script, artifact + "/scripts/dependency-retention-test/run.node-test.ts");
   assert.match(process.env.TEST_SOURCE_SHA ?? "", /^[a-f0-9]{40}$/);
   assert(!existsSync(policy), "TEST fixture refuses an existing host policy namespace");
   assert(existsSync("/run/systemd/system"));
