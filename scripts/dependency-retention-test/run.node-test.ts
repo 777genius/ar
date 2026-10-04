@@ -39,15 +39,36 @@ const identity = (path: string) => {
   assert(s.isDirectory() && !s.isSymbolicLink());
   return { canonicalPath: path, dev: String(s.dev), ino: String(s.ino) };
 };
+function runtimeExecDiagnostics(text: string) {
+  // Public fixed ELF names only. Never retain raw subprocess lines or paths.
+  const names = ["libc.so.6", "libcap-ng.so.0", "libstdc++.so.6", "libgcc_s.so.1", "libm.so.6", "libdl.so.2",
+    "libpthread.so.0", "librt.so.1", "ld-linux-x86-64.so.2"];
+  const classes = ["error while loading shared libraries", "cannot open shared object file", "symbol lookup error",
+    "error while loading shared library", "bad ELF interpreter", "Exec format error", "failed to execute",
+    "No such file or directory", "Permission denied", "Operation not permitted"];
+  const missing = [...text.matchAll(/(?:error while loading shared libraries|error while loading shared library): ([A-Za-z0-9_.+-]{1,128}):/g)]
+    .map(match => match[1]).filter((name): name is string => name !== undefined);
+  return { classifications: classes.filter(message => text.includes(message)),
+    missingLibraries: names.filter(name => missing.includes(name)), unlistedMissingLibrary: missing.some(name => !names.includes(name)),
+    glibcVersionMissing: /version [`']GLIBC_[0-9.]+['`] not found/.test(text),
+    glibcxxVersionMissing: /version [`']GLIBCXX_[0-9.]+['`] not found/.test(text) };
+}
+class TestCommandFailure extends Error {
+  readonly runtime: ReturnType<typeof runtimeExecDiagnostics>;
+  constructor(executable: string, status: number | null, signal: NodeJS.Signals | null, output: string) {
+    super(`TEST command failed: ${executable}, status=${status}, signal=${signal}`);
+    this.runtime = runtimeExecDiagnostics(output.slice(0, 8192));
+  }
+}
 function command(executable: string, args: readonly string[], timeout = 30000): string {
   const result = spawnSync(executable, [...args], { env: cleanEnvironment, cwd: "/",
     encoding: "utf8", timeout, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   // Errors do not print subprocess output, environment or an arbitrary payload.
-  assert(!result.error && result.signal === null && result.status === 0,
-    `TEST command failed: ${executable}, status=${result.status}, signal=${result.signal}`);
+  if (result.error || result.signal !== null || result.status !== 0)
+    throw new TestCommandFailure(executable, result.status, result.signal, result.stderr ?? "");
   return result.stdout;
 }
-function failedInstallerDiagnostics(unit: string): unknown {
+function failedInstallerDiagnostics(unit: string, error: unknown): unknown {
   assert.match(unit, /^subscription-runtime-installer-[a-f0-9-]{36}\.service$/);
   const properties = ["LoadState", "ActiveState", "SubState", "Result", "ExecMainCode", "ExecMainStatus", "User", "Group"];
   const show = spawnSync("/usr/bin/systemctl", ["show", unit, ...properties.map(p => "--property=" + p)],
@@ -67,6 +88,8 @@ function failedInstallerDiagnostics(unit: string): unknown {
     "Failed to set up user namespacing", "Failed at step USER", "Failed to determine group credentials"];
   const text = journal.stdout ?? "";
   return { unit, fixedUid: hostedDependencyInstallerUid, states, showStatus: show.status, journalStatus: journal.status,
+    runtimeExec: { ownedUnitJournal: runtimeExecDiagnostics(text),
+      ownedRunPipe: error instanceof TestCommandFailure ? error.runtime : null },
     userLookupStatus: lookup.status, setupFailures: setup.filter(message => text.includes(message)),
     setupErrnos: ["No such process", "Operation not permitted", "Permission denied"].filter(message => text.includes(message)),
     observationsFailed: Boolean(show.error || journal.error || lookup.error) };
@@ -318,7 +341,7 @@ async function run(): Promise<void> {
     const launch = trustedCustodySystemdLaunch(TrustedCustodyLaunchRole.Installer, startId, plan.stagingDirectory, plan);
     const unit = `subscription-runtime-installer-${startId}.service`;
     try { command(launch.command, launch.args, 12 * 60 * 1000); }
-    catch (error) { facts.installerFailureDiagnostics = failedInstallerDiagnostics(unit); throw error; }
+    catch (error) { facts.installerFailureDiagnostics = failedInstallerDiagnostics(unit, error); throw error; }
     assertInstallerTerminalUnit(unit);
     const drainDigest = observeInstallerCgroupEmpty("/sys/fs/cgroup/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/" + unit);
     const installed = await observeDependencyTree({ workspacePath: plan.stagingDirectory, treeName: "node_modules", limits });
