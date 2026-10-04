@@ -49,6 +49,7 @@ export type DependencyInstallProof = DependencyProofBinding & (
 export enum DependencyPreservationKind {
   KnownFreshAbsence = "known_fresh_absence",
   CommittedPreservation = "committed_preservation",
+  CommittedAbsence = "committed_absence",
 }
 
 export type DependencyPreservationProof = {
@@ -62,6 +63,10 @@ export type DependencyPreservationProof = {
       readonly originalTree: DependencyTreeIdentity; readonly preservedTree: DependencyTreeIdentity;
       readonly destinationParent: DependencyWorkspaceIdentity; readonly destinationName: string;
       readonly mappingDigest: string; readonly commitEvidenceId: string }
+  | { readonly kind: DependencyPreservationKind.CommittedAbsence;
+      readonly prior: { readonly generation: string; readonly revision: number; readonly operationId: string;
+        readonly installKey: string; readonly tree: DependencyTreeIdentity; readonly manifestDigest: string; readonly commitEvidenceId: string;
+        readonly receipt: { readonly path: string; readonly identity: DependencyTreeIdentity; readonly sha256: string } } }
 );
 
 export type DependencyTrashIntent = {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyOwnerPhase,
-  sameDependencyWorkspace, parseDependencyOwner, type DependencyWorkspaceIdentity, type DependencyAttempt } from "@vioxen/subscription-runtime/core";
+  sameDependencyWorkspace, parseDependencyOwner, isDependencyConsumerOwner, type DependencyWorkspaceIdentity, type DependencyAttempt } from "@vioxen/subscription-runtime/core";
 import { assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes } from "./hosted-process-activation";
 
 export const hostedDependencyPolicyRoot = "/var/lib/subscription-runtime-host-policy";
@@ -148,7 +148,8 @@ export function readHostedDependencyAttempt(binding: HostedDependencyBinding,
   // exception may turn an uncertain store effect into admission.
   if (readHostedActivationBytes(name + ".lock")) invalid();
   assertHostedDependencyPhysicalWorkspace(binding);
-  if (!sameDependencyWorkspace(owner.workspace, binding.workspace) || owner.owner?.phase !== phase) invalid();
+  if (owner.version !== 2 || !sameDependencyWorkspace(owner.workspace, binding.workspace) ||
+      !isDependencyConsumerOwner(owner.owner) || owner.owner.phase !== phase) invalid();
   const attempt = owner.owner.attempt;
   if (attempt.launch.startId !== startId || attempt.launch.unit !== start.unit || attempt.launch.bootId !== start.bootId ||
       attempt.launch.installationId !== binding.installationId || attempt.launch.runtimeSha !== binding.runtimeSha ||

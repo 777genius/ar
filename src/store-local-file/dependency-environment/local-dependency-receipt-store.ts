@@ -8,7 +8,7 @@ import { DependencyInstallProofKind as Install, DependencyPreservationKind as Pr
 } from "../../worker-core/dependency-environment/domain/dependency-receipt";
 import { DependencyReceiptParseStatus, parseDependencyReceipt } from "../../worker-core/dependency-environment/domain/parse-dependency-receipt";
 import { detectSecretLikeContent } from "../../worker-core/secret-detection";
-import type { DependencyCommittedAbsentReceipt, DependencyReceiptStore } from "../../worker-core/dependency-environment/ports/dependency-receipt-store";
+import type { DependencyCommittedAbsentReceipt, DependencyCommittedReceiptReference, DependencyReceiptStore } from "../../worker-core/dependency-environment/ports/dependency-receipt-store";
 
 export enum DependencyReceiptStorageFailure {
   Unsupported = "unsupported", InvalidConfig = "invalid_config", UnsafeRoot = "unsafe_root", UnsafeStore = "unsafe_store",
@@ -95,9 +95,17 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
     let mutexIdentity: BigIntStats | undefined, started = false, complete = false;
     try {
       mutexIdentity = fstatSync(mutex, { bigint: true }); this.privateLeaf(mutexIdentity, mount(mutex));
-      const current = this.underMutex(key, mutexIdentity, () => this.capture(workspace, key));
-      if ((current?.receipt.revision ?? null) !== expectedRevision) fail(Failure.StaleRevision);
-      transition(current?.receipt ?? null, receipt);
+      const current = this.underMutex(key, mutexIdentity, () => {
+        const captured = this.capture(workspace, key);
+        if ((captured?.receipt.revision ?? null) !== expectedRevision) fail(Failure.StaleRevision);
+        // Authenticate against the captured immutable current receipt while our
+        // mutex is owned. Public history reads intentionally veto this mutex.
+        transition(captured?.receipt ?? null, receipt, captured ? {
+          path: join(this.rootPath, captured.commit.receipt.name), identity: captured.commit.receipt.identity,
+          sha256: captured.commit.receipt.sha256,
+        } : null);
+        return captured;
+      });
       const receiptName = `${key}.r${receipt.revision}-${sha(bytes)}.receipt.json`;
       const temporaryName = `${key}.pending-${randomUUID()}`;
       started = true;
@@ -248,13 +256,22 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
   }
 }
 
-function transition(previous: DependencyReceipt | null, next: DependencyReceipt): void {
+function transition(previous: DependencyReceipt | null, next: DependencyReceipt, committed: DependencyCommittedReceiptReference | null): void {
   if (next.revision !== (previous?.revision ?? 0) + 1) fail(Failure.StaleRevision);
   if (!previous) {
     if (next.state === State.Unverified || (next.state === State.Installing && next.preservation.kind === Preserve.KnownFreshAbsence)) return;
     fail(Failure.InvalidTransition);
   }
   if (!sameDependencyWorkspace(previous.workspace, next.workspace) || previous.coverageRevision !== next.coverageRevision) fail(Failure.InvalidTransition);
+  if (previous.state === State.Absent && next.state === State.Installing && next.preservation.kind === Preserve.CommittedAbsence) {
+    const prior = next.preservation.prior;
+    if (committed && next.generation !== previous.generation && next.operationId !== previous.operationId &&
+      prior.generation === previous.generation && prior.revision === previous.revision && prior.operationId === previous.operationId &&
+      prior.installKey === previous.installKey && sameDependencyTree(prior.tree, previous.evictionCommit.tree) &&
+      prior.manifestDigest === previous.evictionCommit.manifestDigest && prior.commitEvidenceId === previous.evictionCommit.commitEvidenceId &&
+      prior.receipt.path === committed.path && sameDependencyTree(prior.receipt.identity, committed.identity) && prior.receipt.sha256 === committed.sha256) return;
+    fail(Failure.InvalidTransition);
+  }
   if (previous.state === State.Unverified && next.state === State.Installing && next.generation !== previous.generation &&
     next.preservation.kind === Preserve.CommittedPreservation && sameDependencyTree(previous.tree, next.preservation.originalTree)) return;
   if (previous.generation !== next.generation) fail(Failure.InvalidTransition);

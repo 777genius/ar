@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { DependencyReceiptState, type DependencyReceipt, type DependencyWorkspaceIdentity } from "../../../worker-core/dependency-environment/domain/dependency-receipt";
 import { DependencyTreeObservationStatus as Status } from "../../../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import { observeDependencyTree } from "../observe-dependency-tree";
-import { openCommittedDependencyTrashRemoval, openDependencyTreeRename, type DependencyTreeEffectInput } from "../dependency-tree-effects";
+import { openCommittedDependencyTrashRemoval, openDependencyTreeRename, readDependencyTreeEffectReferenceAnchors, type DependencyTreeEffectInput } from "../dependency-tree-effects";
 
 const run = promisify(execFile);
 const limits = { maxEntries: 128, maxTotalBytes: 65536, maxManifestBytes: 65536, maxDurationMs: 30000 };
@@ -48,6 +48,29 @@ async function fixture(raw = false) {
 // real user project. Protected fixture commits model only the adapter contract;
 // actual admission, grant exclusion and kernel mount coverage require hosted TEST.
 describe.skipIf(process.platform !== "linux")("anchored dependency effects", () => {
+  it("only a live exact operation can exempt its actual retained directory descriptors", async () => {
+    // Copying a receipt or retaining it after close must not hide an unrelated
+    // supervisor reference from the final retiring-tree veto.
+    const f = await fixture(), operation = await openDependencyTreeRename(f.input), unrelated = await open(join(f.pkg, "a.js"), "r");
+    const expected = { workspace: f.input.workspace, trashPath: f.target, operationId: f.input.trash.operationId };
+    try {
+      const descriptors = readDependencyTreeEffectReferenceAnchors(operation.referenceSession, expected);
+      expect(descriptors.some(item => item.dev === f.input.trash.originalTree.dev && item.ino === f.input.trash.originalTree.ino)).toBe(true);
+      expect(descriptors.some(item => item.fd === unrelated.fd)).toBe(false);
+      for (const descriptor of descriptors) {
+        const retained = await stat(`/proc/self/fd/${descriptor.fd}`, { bigint: true });
+        expect(retained.isDirectory()).toBe(true);
+        expect([String(retained.dev), String(retained.ino)]).toEqual([descriptor.dev, descriptor.ino]);
+        expect(descriptor.flags).toMatch(/^[0-7]+$/);
+      }
+      expect(() => readDependencyTreeEffectReferenceAnchors({ ...operation.referenceSession }, expected)).toThrow("closed");
+      expect(() => readDependencyTreeEffectReferenceAnchors(operation.referenceSession, { ...expected, operationId: randomUUID() })).toThrow();
+      expect(await readFile(join(f.pkg, "a.js"), "utf8")).toBe("original-a");
+      await operation.close();
+      expect(() => readDependencyTreeEffectReferenceAnchors(operation.referenceSession, expected)).toThrow("closed");
+      expect(await readFile(join(f.pkg, "a.js"), "utf8")).toBe("original-a");
+    } finally { await unrelated.close(); await operation.close(); await f.cleanup(); }
+  });
   it("renames the exact tree while preserving source Git and inode", async () => {
     const f = await fixture();
     try {

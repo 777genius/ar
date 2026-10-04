@@ -4,7 +4,8 @@ import { lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { claimDependencyConsumer, fenceDependencyConsumer, markDependencyConsumerRunning,
-  DependencyInstallProofKind, DependencyPreservationKind, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
+  claimDependencyMaintenance, isDependencyConsumerOwner, DependencyInstallProofKind, DependencyPreservationKind, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
+import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { LocalDependencyOwnerStore } from "../../store-local-file/dependency-environment/local-dependency-owner-store";
 import { hostedDependencyBindingName, hostedDependencyJobRoot, hostedDependencyOwnerRoot, parseHostedDependencyBinding } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { submitHostedOrdinaryProcess } from "../../provider-codex/app-server/adapters/hosted-process-activation";
@@ -15,6 +16,7 @@ import { runHostedRuntimeForeground } from "../hosted-readonly-foreground";
 import type { EventEmitter } from "node:events";
 import type { CodexAppServerChildProcess } from "../../provider-codex/app-server/application/app-server-process-port";
 import { dependencyCoverageRevision, readHostedDependencyReceipt } from "../hosted-dependency-materialization";
+import { publishHostedDependencyReceipt, hostedDependencyReceiptHistoryRoot } from "../hosted-dependency-receipts";
 
 /** Uses the ordinary suite's real private FS and retained origin composition.
  * Synthetic kernel facts do not certify the production mount/capability fence. */
@@ -66,6 +68,25 @@ export function registerDependencyConsumerAdmissionTests(input: {
   }
   const providerInput = () => ({ cwd: workspacePath, env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
     SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "codex-test-npm-qualification" } });
+  function completedFixture(p: ReturnType<typeof prepared>) {
+    const generation = randomUUID(), coverageRevision = dependencyCoverageRevision(p.binding);
+    mkdirSync(input.local(workspacePath + "/node_modules"), { mode: 0o700 });
+    writeFileSync(input.local(workspacePath + "/node_modules/original-TEST-file"), "original dependency TEST bytes\n", { mode: 0o640 });
+    const stat = lstatSync(input.local(workspacePath + "/node_modules"), { bigint: true });
+    const tree = { dev: String(stat.dev), ino: String(stat.ino) }, installKey = "a".repeat(64), manifestDigest = "c".repeat(64);
+    const base = { version: 1 as const, generation, workspace: p.binding.workspace, coverageRevision };
+    const intent = { ...base, revision: 1, state: DependencyReceiptState.Installing, operationId: generation, requestedKey: installKey,
+      preservation: { kind: DependencyPreservationKind.KnownFreshAbsence, generation, workspace: p.binding.workspace,
+        coverageRevision, operationId: generation, absenceEvidenceId: "b".repeat(64) } };
+    const proof = { generation, workspace: p.binding.workspace, coverageRevision, installKey, tree, manifestDigest };
+    const ready = { ...base, revision: 2, state: DependencyReceiptState.Ready as const, ...proof,
+      provenance: { ...proof, kind: DependencyInstallProofKind.CompletedInstall as const, operationId: generation,
+        verificationEvidenceId: "d".repeat(64), installerDrainEvidenceId: "e".repeat(64) } };
+    const directory = `dependency-receipts/${p.binding.workspace.dev}-${p.binding.workspace.ino}`;
+    mkdirSync(join(input.fixture.root, directory), { recursive: true, mode: 0o700 });
+    input.put(directory + "/installing.json", intent); input.put(directory + "/ready.json", ready);
+    return { ready, directory };
+  }
   describe("private physical dependency consumer admission", () => {
     beforeEach(async () => {
       // Match the outer fixture's root-owned stat facts without changing the
@@ -73,19 +94,105 @@ export function registerDependencyConsumerAdmissionTests(input: {
       vi.spyOn(process, "geteuid").mockReturnValue(0);
       const real = await vi.importActual<typeof import("node:fs")>("node:fs");
       const fixtureRealpath = fs.realpathSync, fixtureReadFile = fs.readFileSync;
+      const usesBufferEncoding = (value: unknown): boolean => value === "buffer";
       vi.spyOn(fs, "realpathSync").mockImplementation((path, options) => {
         if (typeof path !== "string") return fixtureRealpath(path, options);
         const physical = input.local(path);
         if (physical === path) return fixtureRealpath(path, options);
         if (real.realpathSync(physical) !== physical) throw new Error("noncanonical TEST fixture path");
         const encoding = typeof options === "string" ? options : options?.encoding;
-        const usesBufferEncoding = (value: unknown): boolean => value === "buffer";
         return usesBufferEncoding(encoding) ? Buffer.from(path) : path;
       });
       // The Git guard reads an already validated descriptor, not a path. Keep
       // real descriptor I/O while the outer fixture supplies finite /proc facts.
       vi.spyOn(fs, "readFileSync").mockImplementation((path, options) =>
         typeof path === "number" ? real.readFileSync(path, options) : fixtureReadFile(path, options));
+    });
+    it("active legacy v1 cannot admit a provider but its exact release fence remains available", () => {
+      // A new parser must not reinterpret an old Running owner as new authority.
+      const p = prepared(), attempt = running(p);
+      expect(() => assertHostedDependencyExecutionWorkspace(workspacePath)).not.toThrow();
+      const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
+      try {
+        const current = store.read(p.binding.workspace);
+        if (!current || !isDependencyConsumerOwner(current.owner)) throw new Error("missing TEST consumer");
+        const path = input.local(`${hostedDependencyOwnerRoot}/${p.binding.workspace.dev}-${p.binding.workspace.ino}.json`);
+        writeFileSync(path, JSON.stringify({ ...current, version: 1, owner: { phase: current.owner.phase, attempt: current.owner.attempt } }) + "\n", { mode: 0o600 });
+        const bytes = readFileSync(path), submit = vi.fn();
+        expect(() => assertHostedDependencyExecutionWorkspace(workspacePath)).toThrow();
+        expect(() => submitHostedOrdinaryProcess(providerInput(), submit)).toThrow();
+        expect(submit).not.toHaveBeenCalled(); expect(readFileSync(path)).toEqual(bytes);
+        fenceDependencyConsumer(store, p.binding.workspace, attempt);
+        expect(store.read(p.binding.workspace)?.version).toBe(1);
+        expect(store.read(p.binding.workspace)?.owner?.phase).toBe("fenced");
+      } finally { store.close(); }
+    });
+    it("protected maintenance ownership cannot mint provider or executor permission", () => {
+      const p = prepared(); input.fixture.group = "/system.slice/trusted.service";
+      const actual = withHostedActivationFence(fence => p.host.dependencyMaintenanceAuthority(fence, jobId));
+      const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
+      try {
+        claimDependencyMaintenance(store, p.binding.workspace, { installationId: actual.installation.installationId,
+          bootId: actual.session.bootId, runtimeSha: actual.installation.runtimeSha, inventoryDigest: actual.installation.inventorySha256,
+          grantDigest: p.binding.grantDigest, supervisorId: actual.session.supervisorId }, randomUUID());
+      } finally { store.close(); }
+      const path = input.local(`${hostedDependencyOwnerRoot}/${p.binding.workspace.dev}-${p.binding.workspace.ino}.json`), before = readFileSync(path);
+      input.fixture.group = `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${p.retained.reservation.unit}`;
+      const submit = vi.fn();
+      expect(() => assertHostedDependencyExecutionWorkspace(workspacePath)).toThrow();
+      expect(() => submitHostedOrdinaryProcess(providerInput(), submit)).toThrow();
+      expect(submit).not.toHaveBeenCalled(); expect(readFileSync(path)).toEqual(before);
+      expect(input.fixture.spawn).not.toHaveBeenCalled();
+    });
+    it("default-off host eviction policy preserves source and creates no owner or child", async () => {
+      const p = prepared(); input.fixture.group = "/system.slice/trusted.service";
+      await expect(p.host.evictDependencyCandidate({ jobId, generation: randomUUID(), revision: 2, installKey: "a".repeat(64) }))
+        .resolves.toEqual({ outcome: "skipped" });
+      expect(readdirSync(input.local(hostedDependencyOwnerRoot))).toEqual([]);
+      expect(input.fixture.spawn).not.toHaveBeenCalled();
+      expect(readFileSync(input.local(workspacePath + "/dirty-source"), "utf8")).toBe("original dirty TEST bytes\n");
+    });
+    it("enabled eviction rejects a stale candidate before ownership or tree effects", async () => {
+      // Removing the candidate comparison would claim Maintenance and try a
+      // destructive transaction against a different current generation.
+      const p = prepared(), completed = completedFixture(p);
+      readHostedDependencyReceipt(p.binding);
+      const originalPath = join(input.fixture.root, completed.directory, "ready.json"), original = readFileSync(originalPath);
+      input.put("dependency-retention-policy.json", { version: 1, managedReadyRequired: true, evictionEnabled: true });
+      input.fixture.group = "/system.slice/trusted.service";
+      await expect(p.host.evictDependencyCandidate({ jobId, generation: completed.ready.generation,
+        revision: completed.ready.revision + 1, installKey: completed.ready.installKey })).rejects.toThrow("dependency_transaction_unresolved");
+      expect(readHostedDependencyReceipt(p.binding)).toEqual(completed.ready);
+      expect(readFileSync(originalPath)).toEqual(original);
+      expect(readdirSync(input.local(hostedDependencyOwnerRoot))).toEqual([]);
+      expect(readFileSync(input.local(workspacePath + "/node_modules/original-TEST-file"), "utf8")).toBe("original dependency TEST bytes\n");
+      expect(input.fixture.spawn).not.toHaveBeenCalled();
+    });
+    it("authenticated Absent with an unexpected existing tree refuses before ownership or install", async () => {
+      // A committed absence is not permission to overwrite a newly present
+      // tree. This exercises real history transitions and the final entry.
+      const p = prepared(), completed = completedFixture(p), ready = completed.ready, operationId = randomUUID();
+      readHostedDependencyReceipt(p.binding);
+      const parent = lstatSync(input.fixture.root, { bigint: true });
+      const trash = { operationId, originalTree: ready.tree,
+        destinationParent: { canonicalPath: "/var/lib/subscription-runtime-host-policy/dependency-trash", dev: String(parent.dev), ino: String(parent.ino) },
+        destinationName: `dependency-${operationId}` };
+      publishHostedDependencyReceipt(p.binding, 2, { version: 1, state: DependencyReceiptState.Evicting, revision: 3,
+        generation: ready.generation, workspace: ready.workspace, coverageRevision: ready.coverageRevision,
+        operationId, installKey: ready.installKey, tree: ready.tree, manifestDigest: ready.manifestDigest, trash });
+      const absent = publishHostedDependencyReceipt(p.binding, 3, { version: 1, state: DependencyReceiptState.Absent, revision: 4,
+        generation: ready.generation, workspace: ready.workspace, coverageRevision: ready.coverageRevision, operationId, installKey: ready.installKey,
+        evictionCommit: { generation: ready.generation, workspace: ready.workspace, coverageRevision: ready.coverageRevision,
+          operationId, installKey: ready.installKey, tree: ready.tree, manifestDigest: ready.manifestDigest, trash, commitEvidenceId: "f".repeat(64) } });
+      const files = readdirSync(input.local(hostedDependencyReceiptHistoryRoot)).sort();
+      const before = files.map(name => readFileSync(input.local(hostedDependencyReceiptHistoryRoot + "/" + name)));
+      await expect(admitHostedDependencyConsumer({ jobId, taskId: jobId, jobRootDir, workspacePath } as Parameters<typeof admitHostedDependencyConsumer>[0]))
+        .rejects.toThrow("dependency_admission:unsafe_tree");
+      expect(readHostedDependencyReceipt(p.binding)).toEqual(absent);
+      expect(files.map(name => readFileSync(input.local(hostedDependencyReceiptHistoryRoot + "/" + name)))).toEqual(before);
+      expect(readdirSync(input.local(hostedDependencyOwnerRoot))).toEqual([]);
+      expect(readFileSync(input.local(workspacePath + "/node_modules/original-TEST-file"), "utf8")).toBe("original dependency TEST bytes\n");
+      expect(input.fixture.spawn).not.toHaveBeenCalled();
     });
     it("mixed legacy privileged creators remain unsupported before actual runtime reservation", () => {
       expect(() => prepared(true)).toThrow("dependency_admission:unsupported");
@@ -154,6 +261,12 @@ export function registerDependencyConsumerAdmissionTests(input: {
         expect(() => readHostedDependencyReceipt(p.binding)).toThrow();
         expect(readFileSync(join(input.fixture.root, directory, "ready.json"))).toEqual(before);
       }
+      input.put(directory + "/installing.json", intent);
+      const history = input.local(`/var/lib/subscription-runtime-host-policy/dependency-receipt-history/${p.binding.workspace.dev}-${p.binding.workspace.ino}.lock`);
+      writeFileSync(history, "retained uncertain TEST publisher\n", { mode: 0o600 });
+      expect(() => readHostedDependencyReceipt(p.binding)).toThrow();
+      expect(readFileSync(history, "utf8")).toBe("retained uncertain TEST publisher\n");
+      expect(readFileSync(join(input.fixture.root, directory, "ready.json"))).toEqual(before);
       expect(input.fixture.spawn).not.toHaveBeenCalled();
     });
     it("successful job result survives unresolved dependency cleanup and retains fenced owner", async () => {
