@@ -48,7 +48,7 @@ jobs:
             TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
             /usr/local/lib/subscription-runtime-dependency-TEST/toolchain/bin/node \
             --experimental-strip-types \
-            /usr/local/lib/subscription-runtime-dependency-TEST/scripts/dependency-retention-test/run.ts
+            /usr/local/lib/subscription-runtime-dependency-TEST/scripts/dependency-retention-test/run.node-test.ts
       - name: Retain bounded evidence
         if: always()
         run: |

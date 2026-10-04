@@ -4,13 +4,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync,
-  realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync,
+  readSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-readonly-authority.js";
 import { createHostedDependencyInstallerPlan, hostedDependencyInstallerNpmRootSha256,
-  hostedDependencyInstallerProperties, type HostedDependencyInstallerProfile } from "../../dist/worker-codex/hosted-dependency-installer-recipe.js";
+  hostedDependencyInstallerProperties, hostedDependencyInstallerNetworkRoot, HostedDependencyInstallerNetworkInput,
+  readHostedDependencyInstallerProfile, type HostedDependencyInstallerProfile } from "../../dist/worker-codex/hosted-dependency-installer-recipe.js";
 import { qualifyHostedDependencyInstallerInputs } from "../../dist/worker-codex/hosted-dependency-installer-inputs.js";
 import { TrustedCustodyLaunchRole, trustedCustodySystemdLaunch } from "../../dist/worker-codex/trusted-custody-systemd-launch.js";
 import { assertInstallerTerminalUnit } from "../../dist/worker-codex/hosted-dependency-installer-unit.js";
@@ -117,8 +118,53 @@ function issueActualToolchainProfile(): HostedDependencyInstallerProfile {
     nodePath, nodeSha256: hash(readFileSync(nodePath)), nodeVersion: process.version,
     nodeAbi: process.versions.modules, npmCliPath, npmSha256: hash(readFileSync(npmCliPath)),
     npmVersion: command(nodePath, [npmCliPath, "--version"]).trim(), npmRootPath,
-    npmRootSha256: hostedDependencyInstallerNpmRootSha256(npmRootPath), toolRoots,
+    npmRootSha256: hostedDependencyInstallerNpmRootSha256(npmRootPath), toolRoots, networkInputs: issueNetworkInputs(),
     libc: { family: DependencyLibcFamily.Glibc, version: libcVersion, path: libc.path, sha256: libc.sha256 } };
+}
+function issueNetworkInputs(): HostedDependencyInstallerProfile["networkInputs"] {
+  privateDirectory(hostedDependencyInstallerNetworkRoot);
+  const capture = (name: HostedDependencyInstallerNetworkInput): string => {
+    // OS resolver data is transport input, never executable or operator authority.
+    const alias = "/etc/" + name, link = lstatSync(alias, { bigint: true }), path = realpathSync(alias), before = lstatSync(path, { bigint: true });
+    assert(before.isFile() && before.nlink === 1n && before.size > 0n && before.size <= 65536n);
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let bytes: Buffer;
+    try {
+      const opened = fstatSync(fd, { bigint: true }), buffer = Buffer.alloc(65537), count = readSync(fd, buffer, 0, buffer.length, 0);
+      const after = fstatSync(fd, { bigint: true }), fresh = lstatSync(path, { bigint: true }), freshLink = lstatSync(alias, { bigint: true });
+      for (const stat of [opened, after, fresh]) assert(stat.isFile() && stat.nlink === 1n && stat.dev === before.dev && stat.ino === before.ino &&
+        stat.size === before.size && stat.mtimeNs === before.mtimeNs && stat.ctimeNs === before.ctimeNs);
+      assert(BigInt(count) === before.size && realpathSync(alias) === path && freshLink.dev === link.dev && freshLink.ino === link.ino &&
+        freshLink.mtimeNs === link.mtimeNs && freshLink.ctimeNs === link.ctimeNs);
+      bytes = buffer.subarray(0, count);
+    } finally { closeSync(fd); }
+    const target = hostedDependencyInstallerNetworkRoot + "/" + name;
+    const out = openSync(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try { writeFileSync(out, bytes); fsyncSync(out); } finally { closeSync(out); }
+    return hash(bytes);
+  };
+  const pins = { [HostedDependencyInstallerNetworkInput.Hosts]: capture(HostedDependencyInstallerNetworkInput.Hosts),
+    [HostedDependencyInstallerNetworkInput.Resolver]: capture(HostedDependencyInstallerNetworkInput.Resolver),
+    [HostedDependencyInstallerNetworkInput.NameService]: capture(HostedDependencyInstallerNetworkInput.NameService) };
+  const fd = openSync(hostedDependencyInstallerNetworkRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+  return pins;
+}
+function networkPreflight(): unknown[] {
+  return [...Object.values(HostedDependencyInstallerNetworkInput).map(name => "/etc/" + name),
+    artifact + "/dist/worker-codex/hosted-dependency-installer-bootstrap.js"].map(source => {
+    const path = realpathSync(source), stat = lstatSync(path);
+    let unsafeAncestor: unknown = null;
+    for (let parent = dirname(path);; parent = dirname(parent)) {
+      const s = lstatSync(parent);
+      if (!s.isDirectory() || s.isSymbolicLink() || s.uid !== 0 || (s.mode & 0o022)) {
+        unsafeAncestor = { path: parent, uid: s.uid, gid: s.gid, mode: (s.mode & 0o7777).toString(8) }; break;
+      }
+      if (parent === "/") break;
+    }
+    return { source, resolved: path, regular: stat.isFile(), uid: stat.uid, gid: stat.gid,
+      mode: (stat.mode & 0o7777).toString(8), nlink: stat.nlink, dev: String(stat.dev), ino: String(stat.ino), unsafeAncestor };
+  });
 }
 
 async function publicRegistryInputs(): Promise<{ packageBytes: Buffer; lockBytes: Buffer }> {
@@ -179,7 +225,15 @@ async function run(): Promise<void> {
     assert(!existsSync(policy + "/dependency-owners"));
     assert(!existsSync(workspace + "/node_modules"));
     results.push({ scenario: "unadmitted_root_consumer", result: "denied_before_effect" });
+    facts.networkInputPreflight = networkPreflight(); // Metadata only, never record contents.
     privateJson(policy + "/dependency-installer-profile.json", issueActualToolchainProfile());
+    const resolverSnapshot = hostedDependencyInstallerNetworkRoot + "/" + HostedDependencyInstallerNetworkInput.Resolver;
+    const snapshotBytes = readFileSync(resolverSnapshot);
+    chmodSync(resolverSnapshot, 0o640); assert.throws(readHostedDependencyInstallerProfile, /recipe_unsupported/); chmodSync(resolverSnapshot, 0o600);
+    writeFileSync(resolverSnapshot, Buffer.concat([snapshotBytes, Buffer.from("\n")]));
+    assert.throws(readHostedDependencyInstallerProfile, /recipe_unsupported/); writeFileSync(resolverSnapshot, snapshotBytes);
+    readHostedDependencyInstallerProfile();
+    results.push({ scenario: "private_network_snapshot_permissions_and_digest", result: "unsafe_and_stale_refused" });
     const inputs = await publicRegistryInputs();
     writeFileSync(workspace + "/package.json", inputs.packageBytes, { flag: "wx", mode: 0o600 });
     writeFileSync(workspace + "/package-lock.json", inputs.lockBytes, { flag: "wx", mode: 0o600 });
