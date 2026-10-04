@@ -13,3 +13,4 @@ export * from "./terminal-checkpoint/immutable-terminal-checkpoint-store";
 export * from "./local-encrypted-file-store";
 export * from "./worker-account-leases";
 export * from "./manifest";
+export * from "./dependency-environment/local-dependency-manifest-blob-store";
