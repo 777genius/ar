@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 
 /** Fixed unprivileged contained payload. It has no launch/store authority and
  * reads only its readonly closed profile plus package/lock staging mounts. */
+const groups = process.getgroups?.(); // Node appends effective GID to this API.
+if (process.getuid?.() !== 65532 || process.geteuid?.() !== 65532 || process.getgid?.() !== 65532 || process.getegid?.() !== 65532 ||
+    !groups || groups.length !== 1 || groups[0] !== 65532) process.exit(74);
 const profile = JSON.parse(readFileSync("/runtime/profile.json", "utf8")) as {
   nodePath: string; npmCliPath: string; nodeVersion: string; npmVersion: string; stagingDirectory: string; installArgv: string[];
   nodeAbi: string; platform: string; arch: string; environment: Record<string, string>; umask: number;

@@ -66,7 +66,7 @@ function keyInputs(binding: HostedDependencyBinding) {
       try { lstatSync(`/proc/self/fd/${fd}/${name}`); fail(); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
     }
     const packageBytes = bytes(fd, "package.json"), lockBytes = bytes(fd, "package-lock.json");
-    const { schemaVersion: _version, networkInputs: _networkInputs, ...toolchain } = readHostedDependencyInstallerProfile();
+    const { schemaVersion: _version, networkInputs: _networkInputs, privilegeDropper: _dropper, recipeRevision: _recipe, ...toolchain } = readHostedDependencyInstallerProfile();
     const key = buildTestNpmDependencyInstallKey({ packageBytes, lockBytes, lockName: DependencyNpmLockName.PackageLock,
       toolchain, maxInputBytes: 16 * 1024 * 1024, maxCanonicalBytes: 128 * 1024 });
     return { packageBytes, lockBytes, key };

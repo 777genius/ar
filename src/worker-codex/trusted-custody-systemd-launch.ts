@@ -4,7 +4,7 @@ import { parseResearchStartSpec, researchProviderSetupTimeoutMs, type ResearchSt
 import { researchDescription, researchProviderUnitPattern } from "./research-launch-host";
 import { researchInvalid, researchName, researchPath } from "./research-launch-files";
 import { assertResearchProviderRoot, researchProviderProtectedPaths, ResearchRootMountAccess, type ResearchProviderRootPlan } from "./research-provider-root";
-import { hostedDependencyInstallerProperties, type HostedDependencyInstallerPlan } from "./hosted-dependency-installer-recipe";
+import { hostedDependencyInstallerProperties, hostedDependencyInstallerBootstrapCommand, type HostedDependencyInstallerPlan } from "./hosted-dependency-installer-recipe";
 
 export enum TrustedCustodyLaunchRole { Outer = "outer", Ordinary = "ordinary", Installer = "installer" }
 
@@ -21,8 +21,8 @@ export function trustedCustodySystemdLaunch(role: TrustedCustodyLaunchRole, star
     const properties = hostedDependencyInstallerProperties(installer);
     return { command: "/usr/bin/systemd-run", args: ["--quiet", "--wait", "--pipe", `--unit=subscription-runtime-installer-${startId}.service`,
       "--service-type=exec", "--expand-environment=no", "--property=Slice=subscription-runtime-hosted.slice", "--property=KillMode=control-group",
-      "--property=SendSIGKILL=yes", "--property=Delegate=no", `--working-directory=${cwd}`, ...properties.map(p => "--property=" + p),
-      "--", installer.profile.nodePath, "/runtime/bootstrap.js"] };
+      "--property=SendSIGKILL=yes", "--property=Delegate=no", "--working-directory=/", ...properties.map(p => "--property=" + p),
+      "--", ...hostedDependencyInstallerBootstrapCommand(installer)] };
   }
   if (installer) throw new Error("hosted_custody_kernel_evidence_invalid");
   switch (role) {
