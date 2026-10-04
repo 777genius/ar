@@ -1,3 +1,5 @@
+import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { managedDependencyGitEnvironment, managedDependencyGitFlags } from "./managed-dependency-git";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type {
@@ -19,9 +21,10 @@ export class LocalGitRevisionReader implements RevisionReaderPort {
   }): Promise<RevisionReadResult> {
     try {
       const { stdout } = await execFileAsync(
-        this.options.gitBinaryPath ?? "git",
-        ["-C", input.workspacePath, "rev-parse", "--verify", "HEAD"],
-        { timeout: this.options.timeoutMs ?? gitRevisionTimeoutMs },
+        isHostedDependencyWorkspace(input.workspacePath) ? "/usr/bin/git" : this.options.gitBinaryPath ?? "git",
+        [...(isHostedDependencyWorkspace(input.workspacePath) ? managedDependencyGitFlags : []), "-C", input.workspacePath, "rev-parse", "--verify", "HEAD"],
+        { timeout: this.options.timeoutMs ?? gitRevisionTimeoutMs,
+          ...(isHostedDependencyWorkspace(input.workspacePath) ? { env: managedDependencyGitEnvironment() } : {}) },
       );
       const commit = stdout.trim();
       return commit ? { commit } : { reason: "head_commit_empty" };

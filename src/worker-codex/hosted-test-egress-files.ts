@@ -1,7 +1,11 @@
+import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
+import { fenceDependencyConsumer } from "@vioxen/subscription-runtime/worker-core";
+import { assertHostedDependencyQualifiedInventory, hostedDependencyBindingName, hostedDependencyBindingRoot, hostedDependencyOwnerRoot, hostedDependencyJobsRoot, hostedDependencyJobRoot, isHostedDependencyWorkspace, parseHostedDependencyBinding, assertHostedDependencyPhysicalWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedActivationPhase } from "@vioxen/subscription-runtime/worker-core";
 import { createHash, randomUUID } from "node:crypto";
-import { constants, lstatSync, mkdirSync } from "node:fs";
+import { constants, lstatSync, mkdirSync, unlinkSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { lstat, mkdir, open, readFile, readlink, link, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
@@ -124,6 +128,12 @@ export async function writeHostedTestEgressGrant(
   await assertHostedTestEgressOperator();
   const validated = parseHostedTestEgressGrant(grant);
   await canonicalHostedTestIdentity(validated);
+  if (isHostedDependencyWorkspace(validated.workspacePath) &&
+      (validated.schemaVersion !== 1 || validated.profileId !== CodexProviderEgressProfileId.TestNpmQualification ||
+       validated.jobRootDir !== hostedDependencyJobRoot(validated.jobId) ||
+       validated.workspacePath !== validated.jobRootDir + "/workspace")) {
+    throw new Error("hosted_dependency_profile_unsupported");
+  }
 
   const target = join(hostedTestEgressGrantRoot, hostedTestEgressGrantName(grant.jobId));
   if (validated.schemaVersion === 3) {
@@ -140,6 +150,44 @@ export async function writeHostedTestEgressGrant(
   }
   await assertHostedTestEgressDirectory(hostedTestEgressGrantRoot, true);
   await publishImmutableHostedGrantFile(hostedTestEgressGrantRoot, validated);
+  if (isHostedDependencyWorkspace(validated.workspacePath)) {
+    const { readHostedInstallationActivation } = await import("./hosted-installation-activation");
+    const { createReadonlyPrivateRecord } = await import("./hosted-readonly-custody");
+    withHostedActivationFence(() => {
+      const { installation } = readHostedInstallationActivation();
+      assertHostedDependencyQualifiedInventory();
+      const stat = lstatSync(validated.workspacePath, { bigint: true });
+      const binding = parseHostedDependencyBinding({ version: 1, jobId: validated.jobId,
+        jobRootDir: validated.jobRootDir, workspace: { canonicalPath: validated.workspacePath,
+          dev: stat.dev.toString(), ino: stat.ino.toString() }, installationId: installation.installationId,
+        runtimeSha: installation.runtimeSha,
+        grantDigest: createHash("sha256").update(Buffer.from(JSON.stringify(validated) + "\n")).digest("hex") });
+      assertHostedDependencyPhysicalWorkspace(binding);
+      // This namespace is a fresh TEST backing, not a flag on an arbitrary user
+      // path. Old managed profiles already hide the entire policy prefix.
+      for (const path of [hostedDependencyJobsRoot, validated.jobRootDir]) {
+        if ((lstatSync(path).mode & 0o077) !== 0) throw new Error("hosted_dependency_backing_private_required");
+      }
+      createPrivateGrantDirectory(hostedDependencyBindingRoot);
+      createPrivateGrantDirectory(hostedDependencyOwnerRoot);
+      createPrivateGrantDirectory("/var/lib/subscription-runtime-host-policy/dependency-provider-attempts");
+      createPrivateGrantDirectory("/var/lib/subscription-runtime-host-policy/dependency-attempt-fences");
+      createPrivateGrantDirectory("/var/lib/subscription-runtime-host-policy/dependency-installers");
+      createPrivateGrantDirectory("/var/lib/subscription-runtime-host-policy/dependency-fresh-absence");
+      // Enrollment captures fresh absence only before any binding has existed.
+      // Reissuing an old grant after a user removed a tree cannot mint absence.
+      if (!readHostedDependencyBinding(validated.jobId)) {
+        let absent = false;
+        try { lstatSync(validated.workspacePath + "/node_modules"); }
+        catch (error) { if (!isMissing(error)) throw error; absent = true; }
+        if (absent) createReadonlyPrivateRecord(`/var/lib/subscription-runtime-host-policy/dependency-fresh-absence/${binding.workspace.dev}-${binding.workspace.ino}.json`,
+          Buffer.from(JSON.stringify({ version: 1, workspace: binding.workspace,
+            coverageRevision: createHash("sha256").update(Buffer.from(JSON.stringify(binding) + "\n")).digest("hex") }) + "\n"));
+      }
+      createReadonlyPrivateRecord("/var/lib/subscription-runtime-host-policy/" + hostedDependencyBindingName(validated.jobId),
+        Buffer.from(JSON.stringify(binding) + "\n"));
+    });
+  }
 }
 
 /** Filesystem publication seam for fresh disposable TEST registries. Production
@@ -197,6 +245,27 @@ export async function revokeHostedTestEgressGrant(jobId: string): Promise<void> 
   } catch { throw new Error("hosted_test_egress_grant_invalid"); }
   finally { await record.close(); }
   if (grant.schemaVersion === 3) throw new Error("hosted_child_grant_immutable");
+  const binding = readHostedDependencyBinding(jobId);
+  if (binding) {
+    const { createReadonlyPrivateRecord } = await import("./hosted-readonly-custody");
+    withHostedActivationFence(() => {
+      const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
+      try {
+        const owner = store.read(binding.workspace);
+        if (owner?.owner) {
+          const attempt = owner.owner.attempt;
+          fenceDependencyConsumer(store, binding.workspace, attempt);
+          createReadonlyPrivateRecord(`/var/lib/subscription-runtime-host-policy/dependency-attempt-fences/${attempt.launch.startId}.json`,
+            Buffer.from(JSON.stringify({ version: 1, startId: attempt.launch.startId, attemptId: attempt.attemptId, epoch: attempt.epoch }) + "\n"));
+        }
+        unlinkSync(target);
+        const parent = openSync(hostedTestEgressGrantRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        try { fsyncSync(parent); } finally { closeSync(parent); }
+      } finally { store.close(); }
+    });
+    // Revocation alone never releases Running or a mapped/uncertain child.
+    return;
+  }
   await unlink(target)
     .catch((error: unknown) => { if (!isMissing(error)) throw error; });
 }

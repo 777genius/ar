@@ -1,3 +1,6 @@
+import type { DependencyTreeIdentity, DependencyWorkspaceIdentity } from "@vioxen/subscription-runtime/core";
+export { sameDependencyTree, sameDependencyWorkspace, type DependencyTreeIdentity, type DependencyWorkspaceIdentity } from "@vioxen/subscription-runtime/core";
+
 export enum DependencyReceiptState {
   Unverified = "unverified",
   Installing = "installing",
@@ -12,8 +15,6 @@ export enum DependencyUnverifiedReason {
   InputsChanged = "inputs_changed",
 }
 
-export type DependencyTreeIdentity = { readonly dev: string; readonly ino: string };
-export type DependencyWorkspaceIdentity = DependencyTreeIdentity & { readonly canonicalPath: string };
 
 export type DependencyReceiptBase = {
   readonly version: 1;
@@ -90,11 +91,3 @@ export type DependencyReceipt = DependencyReceiptBase & (
   | { readonly state: DependencyReceiptState.Absent; readonly operationId: string;
       readonly installKey: string; readonly evictionCommit: DependencyEvictionProof }
 );
-
-export function sameDependencyTree(left: DependencyTreeIdentity, right: DependencyTreeIdentity): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
-export function sameDependencyWorkspace(left: DependencyWorkspaceIdentity, right: DependencyWorkspaceIdentity): boolean {
-  return left.canonicalPath === right.canonicalPath && sameDependencyTree(left, right);
-}

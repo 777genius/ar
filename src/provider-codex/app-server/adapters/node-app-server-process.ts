@@ -1,3 +1,4 @@
+import { hostedDependencyProviderInvocation } from "./hosted-dependency-provider-launch";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -148,7 +149,8 @@ export function spawnCodexAppServerProcess(input: {
   if (submission && !hostedSubmissions.has(submission)) throw new Error("hosted_custody_synchronous_fence_required");
   if (!submission && requiresHostedProcessAdmission(input.env)) {
     if (admittedMounts || reservedSystemdUnit) throw new Error("hosted_custody_synchronous_fence_required");
-    return submitHostedOrdinaryProcess(input, (unit, identity) => spawnInvocation(input,
+    return submitHostedOrdinaryProcess(input, (unit, identity, fence) => spawnInvocation(input,
+      hostedDependencyProviderInvocation(fence, unit, input) ??
       codexAppServerProcessInvocation({ ...input, env: { ...input.env,
         SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit })));
   }

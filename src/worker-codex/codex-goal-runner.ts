@@ -1,3 +1,8 @@
+import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { ManagedDependencyGitRunner, managedDependencyGitEnvironment, managedDependencyGitFlags } from "./managed-dependency-git";
+import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
+import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
+import { admitHostedDependencyConsumer } from "./hosted-dependency-admission";
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { researchProviderAdmissionGuard } from "./research-launch-admission";
 import { prepareHostScratchTemp } from "./host-scratch-temp";
@@ -228,6 +233,7 @@ export async function runCodexGoal(
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   config = mapManagedGoalLayout({ config }).config;
   assertCodexGoalRunConfig(config);
+  await admitHostedDependencyConsumer(config);
   assertHostedMimoGoalConfinement(config);
   assertCodexGoalAccessLaunchAllowed(config);
   const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
@@ -486,6 +492,8 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
 }): FileBackendCodexSafeExecutorOptions {
   const { config } = input;
+  const dependencyGit = isHostedDependencyWorkspace(config.workspacePath) ? new ManagedDependencyGitRunner() : undefined;
+  const runtimeHomeRootDir = dependencyGit ? join(config.jobRootDir, "home") : config.runtimeHomeRootDir;
   const assertProviderAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
   assertProviderAdmission?.();
   const publicSourceReader = input.providerEgressPolicy && codexProviderHasPublicSources(input.providerEgressPolicy)
@@ -517,6 +525,10 @@ export function buildCodexGoalExecutorOptions(input: {
     sourceEnv: config.sourceEnv,
   });
   return {
+    ...(dependencyGit ? {
+      snapshotter: new DefaultWorkspaceSnapshotter({ commandRunner: dependencyGit, gitBinaryPath: "/usr/bin/git" }),
+      workspaceAccess: new NodeSafeExecutionWorkspaceAccess({ commandRunner: dependencyGit, gitBinaryPath: "/usr/bin/git" }),
+    } : {}),
     ...(assertProviderAdmission ? { assertProviderAdmission } : {}),
     ...(config.executorId ? { executorId: config.executorId } : {}),
     ...(childBudget ? { childBudget } : {}),
@@ -531,7 +543,7 @@ export function buildCodexGoalExecutorOptions(input: {
     terminalCheckpointJobRootDir: config.jobRootDir,
     ...(completedTurnCheckpoint ? { completedTurnCheckpoint } : {}),
     ...(input.executionGeneration === undefined ? {} : { executionGeneration: input.executionGeneration }),
-    ...(config.runtimeHomeRootDir === undefined ? {} : { runtimeHomeRootDir: config.runtimeHomeRootDir }),
+    ...(runtimeHomeRootDir === undefined ? {} : { runtimeHomeRootDir }),
     accountCapacityStore: isMimo
       ? codexAccountCapacityStore(config.authRootDir, {
           ...(input.observability ? { observability: input.observability } : {}),
@@ -745,14 +757,15 @@ async function codexGoalLinkedWorktreeHandoffPreflight(input: {
 
 async function isLinkedGitWorktree(workspacePath: string): Promise<boolean> {
   try {
-    const { stdout } = await execFileAsync("git", [
+    const { stdout } = await execFileAsync(isHostedDependencyWorkspace(workspacePath) ? "/usr/bin/git" : "git", [
+      ...(isHostedDependencyWorkspace(workspacePath) ? managedDependencyGitFlags : []),
       "-C",
       workspacePath,
       "rev-parse",
       "--path-format=absolute",
       "--git-dir",
       "--git-common-dir",
-    ], { timeout: gitMetadataTimeoutMs });
+    ], { timeout: gitMetadataTimeoutMs, ...(isHostedDependencyWorkspace(workspacePath) ? { env: managedDependencyGitEnvironment() } : {}) });
     const [gitDir, gitCommonDir] = stdout
       .split(/\r?\n/)
       .map((line) => line.trim())

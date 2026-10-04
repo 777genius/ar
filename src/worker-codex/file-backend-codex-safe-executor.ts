@@ -1,4 +1,5 @@
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
+import { assertHostedDependencyExecutionWorkspace } from "./hosted-dependency-admission";
 import { assertChildExecutor } from "./child-execution-confinement";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -164,6 +165,7 @@ export class FileBackendCodexSafeExecutor {
   private childRunEntered = false;
 
   constructor(private readonly options: FileBackendCodexSafeExecutorOptions) {
+    assertHostedDependencyExecutionWorkspace(options.workspacePath);
     options.assertProviderAdmission?.();
     if (options.childBudget && !options.executionLifetime) {
       const executionLifetime = new AppServerExecutionLifetime({ childBudget: options.childBudget });
@@ -345,6 +347,7 @@ export class FileBackendCodexSafeExecutor {
   }
 
   start(): Promise<void> {
+    assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
     if (this.disposed) {
       return Promise.reject(
         new SubscriptionWorkerError(
@@ -363,6 +366,7 @@ export class FileBackendCodexSafeExecutor {
   }
 
   async prewarm(): Promise<void> {
+    assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
     if (this.options.childBudget || this.options.executionLifetime) throw new Error("child_prewarm_denied");
     await this.start();
     await this.pool.prewarm();
@@ -371,6 +375,7 @@ export class FileBackendCodexSafeExecutor {
   async run(
     input: FileBackendCodexSafeExecutorRunInput,
   ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+    assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
     assertChildExecutor(this.options, input);
     const lifetime = this.options.executionLifetime;
     lifetime?.assertActive(input.abortSignal);

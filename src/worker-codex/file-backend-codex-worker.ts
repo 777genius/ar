@@ -1,3 +1,4 @@
+import { assertHostedDependencyExecutionWorkspace } from "./hosted-dependency-admission";
 import { createHash, randomUUID } from "node:crypto";
 import {
   DefaultRedactor,
@@ -107,6 +108,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   private readonly prewarmer: FileBackendCodexPrewarmer;
 
   constructor(private readonly options: FileBackendCodexWorkerOptions) {
+    assertHostedDependencyExecutionWorkspace(options.workspacePath);
     this.workerId =
       options.workerId ??
       `file-backend-codex:${hashText(options.providerInstanceId).slice(0, 12)}`;
@@ -189,6 +191,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   }
 
   async start(): Promise<void> {
+    assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
     if (this.workerState === "disposed") {
       throw new SubscriptionWorkerError(
         "subscription_worker_disposed",
@@ -213,6 +216,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   }
 
   async prewarm(): Promise<SubscriptionWorkerPrewarmResult> {
+    assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
     this.assertStarted();
     this.workerState = "prewarming";
     try {
@@ -229,6 +233,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     job: FileBackendCodexWorkerJob,
     options: SubscriptionWorkerRunOptions = {},
   ): Promise<FileBackendCodexWorkerResult> {
+    assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
     this.assertStarted();
     assertProviderTaskSystemPrompt(job.systemPrompt, "job.systemPrompt");
     await this.sessionSeeder.importAuthJsonFileIfChanged("run");
@@ -331,6 +336,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   async resumeManagedRun(
     input: FileBackendCodexManagedRunResumeInput,
   ): Promise<FileBackendCodexWorkerResult> {
+    assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
     this.assertStarted();
     return await this.managedRuns.resume(input);
   }
