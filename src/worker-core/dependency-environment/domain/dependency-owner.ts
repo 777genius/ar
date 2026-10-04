@@ -47,7 +47,7 @@ const positive = (n: unknown): n is number => typeof n === "number" && Number.is
 const object = (v: unknown, keys: string): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v) && Object.keys(v).sort().join(",") === keys;
 export function parseDependencyOwner(value: unknown): DependencyOwnerRecord {
-  const invalid = (): never => { throw new DependencyAdmissionError(DependencyAdmissionFailure.InvalidRecord); };
+  function invalid(): never { throw new DependencyAdmissionError(DependencyAdmissionFailure.InvalidRecord); }
   if (!object(value, "epoch,owner,revision,version,workspace") || value.version !== 1 ||
       !positive(value.revision) || !positive(value.epoch)) invalid();
   const workspace = value.workspace;
