@@ -1,8 +1,9 @@
 /** Signed Ubuntu indexes and downloaded .deb extraction only. No dpkg install,
  * maintainer script, chroot command, or outer apt state mutation is permitted. */
 import assert from "node:assert/strict";
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
+  readdirSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { command, directory, fileDigest, json, runtime } from "./common.ts";
 
 export function assemble(root: string, state: string, source: string, toolchain: string, sourceSha: string, machineId: string): void {
@@ -63,11 +64,11 @@ export function assemble(root: string, state: string, source: string, toolchain:
   writeFileSync(root + "/etc/hosts", "127.0.0.1 localhost\n", { mode: 0o644 });
   writeFileSync(root + "/etc/nsswitch.conf", "hosts: files dns\n", { mode: 0o644 });
   writeFileSync(root + "/etc/services", "", { mode: 0o644 });
-  // nspawn supplies DNS; npm's fixed installer copies the resolved regular file.
-  if (existsSync(root + "/etc/resolv.conf")) rmSync(root + "/etc/resolv.conf");
-  cpSync("/etc/resolv.conf", root + "/etc/resolv.conf", { dereference: true });
+  // These finite transport files are data. Resolve aliases and read bounded
+  // regular FDs; cpSync dereference can classify a source symlink as a directory.
+  snapshotPublicFile("/etc/resolv.conf", root + "/etc/resolv.conf", 65536);
   directory(root + "/etc/ssl/certs", 0o755);
-  cpSync("/etc/ssl/certs/ca-certificates.crt", root + "/etc/ssl/certs/ca-certificates.crt", { dereference: true });
+  snapshotPublicFile("/etc/ssl/certs/ca-certificates.crt", root + "/etc/ssl/certs/ca-certificates.crt", 1024 * 1024);
   const units = root + "/etc/systemd/test-units";
   writeFileSync(units + "/TEST-retention.target", "[Unit]\nDescription=Owned dependency TEST OS\nDefaultDependencies=no\nRequires=TEST-retention-supervisor.service\nAfter=TEST-retention-supervisor.service\n", { mode: 0o644 });
   writeFileSync(units + "/TEST-retention-supervisor.service", `[Unit]\nDescription=Owned TEST issuer and retained supervisor\nDefaultDependencies=no\n[Service]\nType=exec\nExecStart=${runtime}/toolchain/bin/node --experimental-strip-types ${runtime}/scripts/dependency-retention-os-test/guest.ts supervisor\nEnvironment=TEST_SOURCE_SHA=${sourceSha}\nEnvironment=PATH=${runtime}/toolchain/bin:/usr/bin:/bin LANG=C LC_ALL=C\nRestart=no\nKillMode=control-group\nRuntimeMaxSec=25min\nTimeoutStopSec=20s\nStandardOutput=null\nStandardError=null\n`, { mode: 0o644 });
@@ -78,4 +79,28 @@ export function assemble(root: string, state: string, source: string, toolchain:
     releases: releases.map(name => ({ name, sha256: fileDigest(state + "/lists/" + name) })), packages });
   assert(existsSync(root + "/usr/bin/systemd-nspawn"));
   assert(existsSync(root + "/usr/lib/systemd/systemd"));
+}
+
+function snapshotPublicFile(alias: string, target: string, maxBytes: number): void {
+  const path = realpathSync(alias), before = lstatSync(path, { bigint: true });
+  assert(before.isFile() && before.nlink === 1n && before.size > 0n && before.size <= BigInt(maxBytes));
+  const input = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let bytes: Buffer;
+  try {
+    const opened = fstatSync(input, { bigint: true }), buffer = Buffer.alloc(maxBytes + 1);
+    const count = readSync(input, buffer, 0, buffer.length, 0);
+    for (const stat of [opened, fstatSync(input, { bigint: true }), lstatSync(path, { bigint: true })])
+      assert(stat.isFile() && stat.nlink === 1n && stat.dev === before.dev && stat.ino === before.ino && stat.size === before.size &&
+        stat.mtimeNs === before.mtimeNs && stat.ctimeNs === before.ctimeNs);
+    assert(BigInt(count) === before.size && realpathSync(alias) === path);
+    bytes = buffer.subarray(0, count);
+  } finally { closeSync(input); }
+  assert.equal(realpathSync(dirname(target)), dirname(target));
+  // Only an exact fresh guest destination is replaced. This also removes a
+  // dangling extracted symlink without following its target into the runner.
+  assert(target.startsWith("/var/lib/subscription-runtime-os-TEST/") && target.includes("/root/etc/"));
+  rmSync(target, { force: true });
+  const output = openSync(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644);
+  try { writeFileSync(output, bytes); fsyncSync(output); } finally { closeSync(output); }
+  chmodSync(target, 0o644);
 }
