@@ -35,3 +35,6 @@ export * from "./project-control-broker";
 export * from "./worker-health";
 export * from "./worker-pool";
 export * from "./hosted-custody";
+export * from "./dependency-environment/domain/dependency-owner";
+export * from "./dependency-environment/ports/dependency-owner-store";
+export * from "./dependency-environment/application/dependency-consumer-ownership";
