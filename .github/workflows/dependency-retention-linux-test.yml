@@ -32,29 +32,29 @@ jobs:
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-test/tsconfig.json
       - name: Prepare fresh root-owned TEST artifact and toolchain
         run: |
-          test ! -e /opt/subscription-runtime-dependency-TEST
+          test ! -e /usr/local/lib/subscription-runtime-dependency-TEST
           test ! -e /var/lib/subscription-runtime-host-policy
-          sudo mkdir -m 0755 /opt/subscription-runtime-dependency-TEST
-          sudo cp -a dist package.json scripts node_modules packages /opt/subscription-runtime-dependency-TEST/
-          sudo mkdir -m 0755 /opt/subscription-runtime-dependency-TEST/toolchain
-          sudo cp -a "$(dirname "$(dirname "$(readlink -f "$(command -v node)")")")/." /opt/subscription-runtime-dependency-TEST/toolchain/
-          sudo chown -R root:root /opt/subscription-runtime-dependency-TEST
-          sudo chmod -R go-w /opt/subscription-runtime-dependency-TEST
+          sudo mkdir -m 0755 /usr/local/lib/subscription-runtime-dependency-TEST
+          sudo cp -a dist package.json scripts node_modules packages /usr/local/lib/subscription-runtime-dependency-TEST/
+          sudo mkdir -m 0755 /usr/local/lib/subscription-runtime-dependency-TEST/toolchain
+          sudo cp -a "$(dirname "$(dirname "$(readlink -f "$(command -v node)")")")/." /usr/local/lib/subscription-runtime-dependency-TEST/toolchain/
+          sudo chown -R root:root /usr/local/lib/subscription-runtime-dependency-TEST
+          sudo chmod -R go-w /usr/local/lib/subscription-runtime-dependency-TEST
       - name: Exercise real Linux TEST primitives
         env:
           TEST_SOURCE_SHA: ${{ github.sha }}
         run: |
           sudo env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C \
             TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
-            /opt/subscription-runtime-dependency-TEST/toolchain/bin/node \
+            /usr/local/lib/subscription-runtime-dependency-TEST/toolchain/bin/node \
             --experimental-strip-types \
-            /opt/subscription-runtime-dependency-TEST/scripts/dependency-retention-test/run.ts
+            /usr/local/lib/subscription-runtime-dependency-TEST/scripts/dependency-retention-test/run.ts
       - name: Retain bounded evidence
         if: always()
         run: |
           mkdir -p dependency-retention-evidence
-          sudo test ! -f /opt/subscription-runtime-dependency-TEST/evidence.json || \
-            sudo cp /opt/subscription-runtime-dependency-TEST/evidence.json dependency-retention-evidence/
+          sudo test ! -f /usr/local/lib/subscription-runtime-dependency-TEST/evidence.json || \
+            sudo cp /usr/local/lib/subscription-runtime-dependency-TEST/evidence.json dependency-retention-evidence/
           sudo chown -R "$(id -u):$(id -g)" dependency-retention-evidence
       - uses: actions/upload-artifact@v4
         if: always()

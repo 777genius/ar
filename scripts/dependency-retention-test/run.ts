@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync,
   realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
 import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-readonly-authority.js";
 import { createHostedDependencyInstallerPlan, hostedDependencyInstallerNpmRootSha256,
   hostedDependencyInstallerProperties, type HostedDependencyInstallerProfile } from "../../dist/worker-codex/hosted-dependency-installer-recipe.js";
@@ -21,7 +22,7 @@ import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRoot
 import { admitHostedDependencyConsumer } from "../../dist/worker-codex/hosted-dependency-admission.js";
 import type { CodexGoalRunConfig } from "../../dist/worker-codex/codex-goal-runner.js";
 
-const artifact = "/opt/subscription-runtime-dependency-TEST";
+const artifact = "/usr/local/lib/subscription-runtime-dependency-TEST";
 const policy = "/var/lib/subscription-runtime-host-policy";
 const evidencePath = artifact + "/evidence.json";
 const script = fileURLToPath(import.meta.url);
@@ -89,6 +90,16 @@ async function sameDeviceBindVeto(root: string): Promise<void> {
 function issueActualToolchainProfile(): HostedDependencyInstallerProfile {
   const nodePath = realpathSync(process.execPath), npmRootPath = artifact + "/toolchain/lib/node_modules/npm";
   const npmCliPath = npmRootPath + "/bin/npm-cli.js";
+  // Root trust includes every ancestor, not just the copied TEST artifact.
+  // Preserve actual metadata on failure; never repair runner directories.
+  for (let parent = dirname(npmCliPath);; parent = dirname(parent)) {
+    const stat = lstatSync(parent);
+    const facts = { path: parent, uid: stat.uid, gid: stat.gid, mode: (stat.mode & 0o7777).toString(8),
+      directory: stat.isDirectory(), symlink: stat.isSymbolicLink() };
+    assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && !(stat.mode & 0o022),
+      `TEST unsafe toolchain ancestor: ${JSON.stringify(facts)}`);
+    if (parent === "/") break;
+  }
   assert(nodePath.startsWith(artifact + "/toolchain/"));
   const ldd = command("/usr/bin/ldd", [nodePath]);
   const libraryPaths = [...new Set([...ldd.matchAll(/(?:=>\s+)?(\/[A-Za-z0-9_./+-]+)\s+\(/g)]
