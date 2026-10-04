@@ -1,0 +1,210 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
+  readdirSync, readFileSync, readlinkSync, readSync, realpathSync, writeFileSync } from "node:fs";
+import { HostedInstallationActivationStore } from "../../dist/worker-codex/hosted-installation-activation.js";
+import { HostedReadonlyHostKernel } from "../../dist/worker-codex/hosted-readonly-host-kernel.js";
+import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-readonly-authority.js";
+import { runHostedRuntimeForeground } from "../../dist/worker-codex/hosted-readonly-foreground.js";
+import { writeHostedTestEgressGrant } from "../../dist/worker-codex/hosted-test-egress-files.js";
+import { CodexProviderEgressProfileId } from "../../dist/provider-codex/index.js";
+import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRootKind } from "../../dist/worker-core/index.js";
+import { HostedDependencyInstallerNetworkInput, hostedDependencyInstallerNetworkRoot, hostedDependencyInstallerNpmRootSha256,
+  type HostedDependencyInstallerProfile } from "../../dist/worker-codex/hosted-dependency-installer-recipe.js";
+import { readHostedDependencyBinding } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
+import { LocalDependencyOwnerStore } from "../../dist/store-local-file/dependency-environment/local-dependency-owner-store.js";
+import { readHostedDependencyReceipt } from "../../dist/worker-codex/hosted-dependency-materialization.js";
+import { cleanEnv, command, digest, directory, directoryIdentity, fileDigest, installedArtifactDigest, json, node, policy, runtime } from "./common.ts";
+
+if (process.argv[2] === "supervisor") {
+  // PID remains the actual systemd MainPID until VM-owned shutdown. Qualification
+  // is a child in this same cgroup with exactly three pipe descriptors.
+  const child = spawn(node, ["--experimental-strip-types", runtime + "/scripts/dependency-retention-os-test/guest.ts", "qualify"],
+    { env: { ...cleanEnv, TEST_SOURCE_SHA: process.env.TEST_SOURCE_SHA }, stdio: ["pipe", "pipe", "pipe"] });
+  child.stdin.end(); child.stdout.resume(); child.stderr.resume();
+  const timeout = setTimeout(() => child.kill("SIGTERM"), 21 * 60 * 1000);
+  child.once("exit", () => clearTimeout(timeout));
+  child.once("error", () => { clearTimeout(timeout); process.exitCode = 70; });
+  setInterval(() => {}, 60000);
+} else {
+  const evidence: Record<string, unknown> = { schemaVersion: 1, sourceSha: process.env.TEST_SOURCE_SHA,
+    qualification: "native_fresh_hot_synthetic_provider", machineId: readFileSync("/etc/machine-id", "utf8").trim(),
+    status: "failed", results: [], requiredCompanionGates: [{ workflow: "dependency-retention-linux-test.yml",
+      sourceSha: process.env.TEST_SOURCE_SHA, observedInvariant: "actual npm UID/GID 65532 before normalization" }],
+    unsupported: ["committed_absent_eviction_and_cold_restore", "live_account_provider_acceptance"] };
+  try { await qualify(evidence); evidence.status = "partial_pass"; }
+  catch (error) {
+    evidence.failure = error instanceof Error ? error.message.slice(0, 512) : "TEST native qualification failed";
+    process.exitCode = 1;
+  } finally { json(runtime + "/guest-evidence.json", evidence, 0o644); }
+}
+
+async function qualify(evidence: Record<string, unknown>): Promise<void> {
+  assert.equal(process.argv[2], "qualify"); assertReadonlyHostOperator();
+  assert.match(process.env.TEST_SOURCE_SHA ?? "", /^[a-f0-9]{40}$/);
+  assert(!existsSync(policy)); directory(policy);
+  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-inputs"])
+    directory(policy + "/" + name);
+  const results = evidence.results as unknown[];
+  evidence.kernel = command("/usr/bin/uname", ["--release"]).trim();
+  const guestNamespaces = { user: readlinkSync("/proc/self/ns/user"), mnt: readlinkSync("/proc/self/ns/mnt"), pid: readlinkSync("/proc/self/ns/pid") };
+  evidence.namespaces = { ...guestNamespaces, cgroup: readlinkSync("/proc/self/ns/cgroup") };
+  evidence.uidMap = readFileSync("/proc/self/uid_map", "utf8").trim();
+  evidence.bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  evidence.runtimeManifestSha256 = installedArtifactDigest();
+  evidence.runtimeDirectory = directoryIdentity(runtime);
+  evidence.systemdVersion = command("/usr/bin/systemctl", ["--version"]).split("\n")[0];
+  evidence.cgroupControllers = readFileSync("/sys/fs/cgroup/cgroup.controllers", "utf8").trim();
+  assert.match(String(evidence.cgroupControllers), /\bcpu\b/); assert.match(String(evidence.cgroupControllers), /\bmemory\b/);
+  assert.match(String(evidence.cgroupControllers), /\bpids\b/);
+  const jobId = "TEST-os-" + randomUUID(), root = policy + "/dependency-test-jobs/jobs/" + jobId;
+  directory(root); const workspace = root + "/workspace"; directory(workspace);
+  const inputs = await publicInputs();
+  writeFileSync(workspace + "/package.json", inputs.packageBytes, { flag: "wx", mode: 0o600 });
+  writeFileSync(workspace + "/package-lock.json", inputs.lockBytes, { flag: "wx", mode: 0o600 });
+  writeFileSync(workspace + "/source-sentinel", "TEST source original\n", { flag: "wx", mode: 0o600 });
+  writeFileSync(workspace + "/.gitignore", ".needed-ignored\nTEST-provider-probe-*.json\nnode_modules/\n", { flag: "wx", mode: 0o600 });
+  command("/usr/bin/git", ["init", "--initial-branch=main", workspace]);
+  command("/usr/bin/git", ["config", "user.name", "iliya"], 30000, workspace);
+  command("/usr/bin/git", ["config", "user.email", "iliyazelenkog@gmail.com"], 30000, workspace);
+  command("/usr/bin/git", ["add", "package.json", "package-lock.json", ".gitignore", "source-sentinel"], 30000, workspace);
+  const author = command("/usr/bin/git", ["var", "GIT_AUTHOR_IDENT"], 30000, workspace);
+  const committer = command("/usr/bin/git", ["var", "GIT_COMMITTER_IDENT"], 30000, workspace);
+  assert(author.startsWith("iliya <iliyazelenkog@gmail.com> ")); assert(committer.startsWith("iliya <iliyazelenkog@gmail.com> "));
+  command("/usr/bin/git", ["commit", "-m", "test: initialize disposable dependency fixture"], 30000, workspace);
+  const sentinels = [workspace + "/source-sentinel", workspace + "/.git/config", workspace + "/.needed-ignored",
+    root + "/key-sentinel", root + "/state-sentinel", root + "/output-sentinel", policy + "/privileged-sibling-sentinel"];
+  for (const path of sentinels.slice(2)) writeFileSync(path, "TEST private original\n", { flag: "wx", mode: 0o600 });
+  const before = sentinels.map(path => ({ path, sha256: fileDigest(path), ino: String(lstatSync(path).ino) }));
+  const gitBefore = command("/usr/bin/git", ["rev-parse", "HEAD"], 30000, workspace).trim();
+  directory(root + "/auth/TEST-account");
+  json(root + "/auth/TEST-account/auth.json", { auth_mode: "chatgpt", tokens: { refresh_token: "TEST-NOT-A-CREDENTIAL" }, last_refresh: new Date().toISOString() });
+  writeFileSync(root + "/prompt", "Execute the fixed dependency-reading TEST probe. This is a synthetic provider protocol fixture.\n", { flag: "wx", mode: 0o600 });
+  directory(runtime + "/codex/bin", 0o755);
+  cpSync(runtime + "/scripts/dependency-retention-os-test/provider.ts", runtime + "/codex/bin/provider.ts");
+  chmodSync(runtime + "/codex/bin/provider.ts", 0o755);
+  json(runtime + "/codex/package.json", { name: "@openai/codex", type: "module", private: true }, 0o644);
+  json(runtime + "/codex/TEST-probe.json", { workspace, guestNamespaces }, 0o644);
+  const args = [runtime + "/dist/worker-codex/codex-goal-cli.js", "run", "--task-id", jobId, "--job-id", jobId,
+    "--job-root", root, "--workspace", workspace, "--prompt", root + "/prompt", "--accounts", "TEST-account", "--auth-root", root + "/auth",
+    "--codex-binary", runtime + "/codex/bin/provider.ts", "--model", "TEST-synthetic-model", "--effort", "low",
+    "--timeout", "5m", "--max-goal-turns", "1", "--max-attempts", "1", "--continuation-mode", "disabled",
+    "--registry-root", root + "/state/registry", "--worker-report-mode", "structured-output"];
+  const launch = { command: node, args, cwd: workspace };
+  const supervisorUnit = "TEST-retention-supervisor.service";
+  const controlGroup = command("/usr/bin/systemctl", ["show", supervisorUnit, "--property=ControlGroup", "--value"]).trim();
+  json(policy + "/readonly-inventory.json", { schemaVersion: 2, hostId: evidence.machineId, supervisorUnit,
+    units: [{ name: supervisorUnit, controlGroup, fragmentSha256: fileDigest("/etc/systemd/test-units/" + supervisorUnit) }],
+    ordinaryCreators: [{ creatorId: jobId, jobId, jobRootDir: root, workspacePath: workspace, launch }],
+    disabledCreators: [], runtimeLaunch: launch });
+  const stage = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages"; directory(stage);
+  json(stage + "/" + digest(runtime) + ".json", { schemaVersion: 1, runtimeDirectory: runtime,
+    runtimeSha: process.env.TEST_SOURCE_SHA, runtimeManifestSha256: evidence.runtimeManifestSha256 });
+  const installerProfile = actualToolchainProfile();
+  evidence.installerProfile = installerProfile;
+  json(policy + "/dependency-installer-profile.json", installerProfile);
+  new HostedReadonlyHostKernel().verifyExclusiveInventory();
+  const store = new HostedInstallationActivationStore(); store.install();
+  results.push({ scenario: "unchanged_cold_host_installation", result: "qualified_actual_finite_inventory", controlGroup });
+  await writeHostedTestEgressGrant({ schemaVersion: 1, jobId, jobRootDir: root, workspacePath: workspace,
+    profileId: CodexProviderEgressProfileId.TestNpmQualification });
+  store.enrollOrdinary(jobId); store.resumeOrdinary();
+  const binding = readHostedDependencyBinding(jobId); assert(binding);
+  const env = { ...cleanEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" };
+  let readyDigest: string | undefined;
+  for (const mode of ["fresh", "hot"] as const) {
+    assert.equal(await runHostedRuntimeForeground(node, args, workspace, env), 0, `actual ${mode} CLI failed`);
+    const receipt = readHostedDependencyReceipt(binding); assert(receipt);
+    const owner = LocalDependencyOwnerStore.open({ rootPath: policy + "/dependency-owners", maxRecordBytes: 16384 });
+    try { assert.equal(owner.read(binding.workspace)?.owner, null, "actual creator/drain release unresolved"); }
+    finally { owner.close(); }
+    const probes = readdirSync(workspace).filter(name => /^TEST-provider-probe-[12]\.json$/.test(name)).sort();
+    assert.equal(probes.length, mode === "fresh" ? 1 : 2);
+    const probePath = workspace + "/" + probes.at(-1)!;
+    const probeStat = lstatSync(probePath); assert(probeStat.isFile() && probeStat.nlink === 1 && probeStat.uid === 0 && probeStat.size < 4096);
+    const observed = JSON.parse(readFileSync(probePath, "utf8")) as Record<string, unknown>;
+    assert(typeof observed.uidMap === "string" && /^65532\s+0\s+1$/.test(observed.uidMap));
+    assert(typeof observed.gidMap === "string" && /^65532\s+0\s+1$/.test(observed.gidMap));
+    assert(observed.namespaces && typeof observed.namespaces === "object" && !Array.isArray(observed.namespaces));
+    const namespaces = observed.namespaces as Record<string, unknown>;
+    assert.equal(Object.keys(namespaces).sort().join(","), "mnt,pid,user");
+    for (const kind of ["user", "mnt", "pid"] as const) {
+      assert(typeof namespaces[kind] === "string" && new RegExp(`^${kind}:\\[\\d+\\]$`).test(namespaces[kind]));
+      assert.notEqual(namespaces[kind], guestNamespaces[kind], `actual provider ${kind} namespace must differ from guest`);
+    }
+    assert.deepEqual(observed, { schemaVersion: 1, result: "dependency_read_and_actual_enclosure_denial_passed",
+      ids: { uid: 65532, euid: 65532, gid: 65532, egid: 65532 }, uidMap: observed.uidMap, gidMap: observed.gidMap,
+      namespaces, noNewPrivs: 1, capabilities: "zero" });
+    const installs = readdirSync(policy + "/dependency-installers").filter(name => /^[a-f0-9-]{36}$/.test(name));
+    assert.equal(installs.length, 1, "hot reuse must not reinstall");
+    const currentReady = digest(JSON.stringify(receipt));
+    if (mode === "hot") assert.equal(currentReady, readyDigest); else readyDigest = currentReady;
+    results.push({ scenario: mode + "_real_cli_provider_and_drain", result: "passed", installCount: installs.length,
+      receiptSha256: currentReady, probe: observed });
+  }
+  assert.deepEqual(before, sentinels.map(path => ({ path, sha256: fileDigest(path), ino: String(lstatSync(path).ino) })));
+  assert.equal(command("/usr/bin/git", ["rev-parse", "HEAD"], 30000, workspace).trim(), gitBefore);
+  results.push({ scenario: "source_git_ignored_key_state_output_sentinels", result: "unchanged" });
+}
+
+function actualToolchainProfile(): HostedDependencyInstallerProfile {
+  assert.equal(realpathSync(process.execPath), node);
+  const npmRootPath = runtime + "/toolchain/lib/node_modules/npm", npmCliPath = npmRootPath + "/bin/npm-cli.js";
+  const paths = [...new Set([...command("/usr/bin/ldd", [node]).matchAll(/(?:=>\s+)?(\/[A-Za-z0-9_./+-]+)\s+\(/g)].map(m => realpathSync(m[1]!)))].sort();
+  assert(paths.length > 0 && paths.length <= 32);
+  const toolRoots = paths.map(path => { assert(path.startsWith("/usr/lib/")); return { path, kind: DependencyToolRootKind.File as const, sha256: fileDigest(path) }; });
+  const libc = toolRoots.find(row => /\/libc\.so\.[0-9]+$/.test(row.path)); assert(libc);
+  const version = /^glibc\s+([0-9]+\.[0-9]+)\s*$/.exec(command("/usr/bin/getconf", ["GNU_LIBC_VERSION"]))?.[1]; assert(version);
+  return { schemaVersion: 1, platform: "linux", arch: DependencyInstallArchitecture.X64, nodePath: node,
+    nodeSha256: fileDigest(node), nodeVersion: process.version, nodeAbi: process.versions.modules,
+    npmCliPath, npmSha256: fileDigest(npmCliPath), npmVersion: command(node, [npmCliPath, "--version"]).trim(), npmRootPath,
+    npmRootSha256: hostedDependencyInstallerNpmRootSha256(npmRootPath), toolRoots, networkInputs: issueOwnedNetworkInputs(),
+    libc: { family: DependencyLibcFamily.Glibc, version, path: libc.path, sha256: libc.sha256 } };
+}
+function issueOwnedNetworkInputs(): HostedDependencyInstallerProfile["networkInputs"] {
+  directory(hostedDependencyInstallerNetworkRoot);
+  const capture = (name: HostedDependencyInstallerNetworkInput): string => {
+    // Assembly owns these exact regular files. No alias/OS service mutation is
+    // required; data is read through a bounded stable FD, never as authority.
+    const path = "/etc/" + name; assert.equal(realpathSync(path), path);
+    const before = lstatSync(path, { bigint: true });
+    assert(before.isFile() && before.uid === 0n && before.nlink === 1n && before.size > 0n && before.size <= 65536n);
+    const input = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let bytes: Buffer;
+    try {
+      const buffer = Buffer.alloc(65537), opened = fstatSync(input, { bigint: true });
+      const count = readSync(input, buffer, 0, buffer.length, 0);
+      for (const stat of [opened, fstatSync(input, { bigint: true }), lstatSync(path, { bigint: true })])
+        assert(stat.isFile() && stat.nlink === 1n && stat.dev === before.dev && stat.ino === before.ino && stat.size === before.size &&
+          stat.mtimeNs === before.mtimeNs && stat.ctimeNs === before.ctimeNs);
+      assert.equal(BigInt(count), before.size); bytes = buffer.subarray(0, count);
+    } finally { closeSync(input); }
+    const output = openSync(hostedDependencyInstallerNetworkRoot + "/" + name,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try { writeFileSync(output, bytes); fsyncSync(output); } finally { closeSync(output); }
+    return digest(bytes);
+  };
+  const pins = { [HostedDependencyInstallerNetworkInput.Hosts]: capture(HostedDependencyInstallerNetworkInput.Hosts),
+    [HostedDependencyInstallerNetworkInput.Resolver]: capture(HostedDependencyInstallerNetworkInput.Resolver),
+    [HostedDependencyInstallerNetworkInput.NameService]: capture(HostedDependencyInstallerNetworkInput.NameService) };
+  const parent = openSync(hostedDependencyInstallerNetworkRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(parent); } finally { closeSync(parent); }
+  return pins;
+}
+async function publicInputs() {
+  const response = await fetch("https://registry.npmjs.org/is-number/7.0.0", { signal: AbortSignal.timeout(30000) });
+  assert.equal(response.status, 200); assert(response.body);
+  const chunks: Uint8Array[] = []; let total = 0; const reader = response.body.getReader();
+  try { for (;;) { const chunk = await reader.read(); if (chunk.done) break; total += chunk.value.length;
+    assert(total <= 128 * 1024); chunks.push(chunk.value); } } finally { await reader.cancel(); }
+  const metadata = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { name: string; version: string; dependencies?: object; dist: { tarball: string; integrity: string } };
+  assert.equal(metadata.name, "is-number"); assert.equal(metadata.version, "7.0.0");
+  assert(!metadata.dependencies || Object.keys(metadata.dependencies).length === 0);
+  assert.equal(metadata.dist.tarball, "https://registry.npmjs.org/is-number/-/is-number-7.0.0.tgz");
+  assert.match(metadata.dist.integrity, /^sha512-[A-Za-z0-9+/]{86}==$/);
+  const pkg = { name: "owned-os-dependency-test", version: "1.0.0", private: true, dependencies: { "is-number": "7.0.0" } };
+  return { packageBytes: Buffer.from(JSON.stringify(pkg) + "\n"), lockBytes: Buffer.from(JSON.stringify({ name: pkg.name,
+    version: pkg.version, lockfileVersion: 3, requires: true, packages: { "": pkg,
+      "node_modules/is-number": { version: "7.0.0", resolved: metadata.dist.tarball, integrity: metadata.dist.integrity } } }) + "\n") };
+}

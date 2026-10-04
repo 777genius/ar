@@ -1,0 +1,53 @@
+name: Dependency retention owned OS TEST
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/dependency-retention-os-test/**'
+      - '.github/workflows/dependency-retention-os-test.yml'
+      - 'src/**/dependency-environment/**'
+      - 'src/**/hosted-dependency-*.ts'
+      - 'src/worker-codex/hosted-installation-activation.ts'
+      - 'src/worker-codex/hosted-readonly-*.ts'
+      - 'src/worker-codex/hosted-test-egress-*.ts'
+      - 'src/worker-codex/trusted-custody-systemd-launch.ts'
+      - 'src/worker-codex/codex-goal-*.ts'
+      - 'src/provider-codex/app-server/adapters/hosted-*.ts'
+
+permissions:
+  contents: read
+
+jobs:
+  owned-native-os:
+    # Fresh GitHub VM only. Never point this fixture at a worker or user host.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Typecheck handwritten OS fixture
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.json
+      - name: Run one fresh owned OS qualification
+        env:
+          TEST_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          TEST_NODE="$(readlink -f "$(command -v node)")"
+          TEST_TOOLCHAIN="$(dirname "$(dirname "$TEST_NODE")")"
+          sudo env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C GITHUB_ACTIONS=true \
+            TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
+            "$TEST_NODE" --experimental-strip-types \
+            "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/outer.ts" \
+            "$GITHUB_WORKSPACE" "$TEST_TOOLCHAIN"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-retention-owned-os-${{ github.sha }}
+          path: dependency-retention-os-evidence.json
+          if-no-files-found: error
