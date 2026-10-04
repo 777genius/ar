@@ -1,6 +1,8 @@
 import { detectSecretLikeContent } from "../../secret-detection";
 
-export enum DependencyInstallProfile { TestNpmQualification = "test_npm_qualification_v1" }
+// v2 requires the qualified numeric UID-drop launcher. Older launch profiles
+// cannot share a Ready install key even when npm inputs and toolchain match.
+export enum DependencyInstallProfile { TestNpmQualification = "test_npm_qualification_v2" }
 export enum DependencyNpmLockName { PackageLock = "package-lock.json", Shrinkwrap = "npm-shrinkwrap.json" }
 export enum DependencyToolRootKind { File = "file", Directory = "directory" }
 export enum DependencyLibcFamily { Glibc = "glibc", Musl = "musl" }

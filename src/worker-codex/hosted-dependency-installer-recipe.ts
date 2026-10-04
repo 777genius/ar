@@ -15,8 +15,12 @@ import { encodeDependencyTreeManifest, DependencyManifestEntryKind as Kind, type
 export const hostedDependencyInstallerRoot = join(readonlySupervisorRoot, "dependency-installers");
 export const hostedDependencyInstallerNetworkRoot = join(readonlySupervisorRoot, "dependency-installer-network");
 export enum HostedDependencyInstallerNetworkInput { Hosts = "hosts", Resolver = "resolv.conf", NameService = "nsswitch.conf" }
+export enum HostedDependencyInstallerRevision { NumericUidDropV2 = "npm_registry_no_scripts_numeric_uid_drop_v2" }
 export type HostedDependencyInstallerProfile = DependencyTestNpmToolchain & { readonly schemaVersion: 1;
-  readonly networkInputs: Readonly<Record<HostedDependencyInstallerNetworkInput, string>> };
+  readonly networkInputs: Readonly<Record<HostedDependencyInstallerNetworkInput, string>>;
+  readonly recipeRevision: HostedDependencyInstallerRevision.NumericUidDropV2;
+  readonly privilegeDropper: { readonly path: "/usr/bin/setpriv"; readonly sha256: string; readonly version: "2.39.3";
+    readonly libraries: DependencyTestNpmToolchain["toolRoots"] } };
 const plans = new WeakMap<object, string>();
 export type HostedDependencyInstallerPlan = Readonly<{ startId: string; directory: string; rootDirectory: string;
   stagingDirectory: string; inputSha256: string; profile: HostedDependencyInstallerProfile }>;
@@ -42,6 +46,11 @@ function trustedFile(path: string, expected?: string): Buffer {
         after.ctimeMs !== before.ctimeMs || after.size !== before.size || (expected && createHash("sha256").update(bytes).digest("hex") !== expected)) fail();
     return bytes;
   } finally { closeSync(fd); }
+}
+export function hostedDependencyInstallerDropperSha256(): string {
+  assertReadonlyHostOperator(); const bytes = trustedFile("/usr/bin/setpriv");
+  if (!(lstatSync("/usr/bin/setpriv").mode & 0o111)) fail();
+  return createHash("sha256").update(bytes).digest("hex");
 }
 /** Content pin for the qualified bundled npm tree. The host profile issuer uses
  * these same canonical bytes; incomplete bounds, mounts or external links fail.
@@ -75,10 +84,10 @@ export function hostedDependencyInstallerNpmRootSha256(root: string): string {
 }
 export function readHostedDependencyInstallerProfile(): HostedDependencyInstallerProfile {
   assertReadonlyHostOperator();
-  const bytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "dependency-installer-profile.json"), 8192);
+  const bytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "dependency-installer-profile.json"), 16384);
   if (!bytes) fail();
   const v = decodePrivateJson(bytes) as HostedDependencyInstallerProfile;
-  if (!v || Object.keys(v).sort().join(",") !== "arch,libc,networkInputs,nodeAbi,nodePath,nodeSha256,nodeVersion,npmCliPath,npmRootPath,npmRootSha256,npmSha256,npmVersion,platform,schemaVersion,toolRoots" ||
+  if (!v || Object.keys(v).sort().join(",") !== "arch,libc,networkInputs,nodeAbi,nodePath,nodeSha256,nodeVersion,npmCliPath,npmRootPath,npmRootSha256,npmSha256,npmVersion,platform,privilegeDropper,recipeRevision,schemaVersion,toolRoots" ||
       v.schemaVersion !== 1 || ![v.nodeSha256, v.npmSha256].every(s => typeof s === "string" && /^[a-f0-9]{64}$/.test(s)) ||
       typeof v.nodeVersion !== "string" || !/^v\d+\.\d+\.\d+$/.test(v.nodeVersion) ||
       typeof v.npmVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(v.npmVersion) ||
@@ -91,18 +100,32 @@ export function readHostedDependencyInstallerProfile(): HostedDependencyInstalle
       !/^[0-9]+\.[0-9]+$/.test(v.libc.version) || !/^[a-f0-9]{64}$/.test(v.libc.sha256) ||
       !Array.isArray(v.toolRoots) || v.toolRoots.length < 1 || v.toolRoots.length > 32 ||
       !v.networkInputs || Object.keys(v.networkInputs).sort().join(",") !== "hosts,nsswitch.conf,resolv.conf" ||
-      !Object.values(v.networkInputs).every(s => typeof s === "string" && /^[a-f0-9]{64}$/.test(s))) fail();
+      !Object.values(v.networkInputs).every(s => typeof s === "string" && /^[a-f0-9]{64}$/.test(s)) ||
+      v.recipeRevision !== HostedDependencyInstallerRevision.NumericUidDropV2 || !v.privilegeDropper ||
+      Object.keys(v.privilegeDropper).sort().join(",") !== "libraries,path,sha256,version" || v.privilegeDropper.path !== "/usr/bin/setpriv" ||
+      v.privilegeDropper.version !== "2.39.3" || !/^[a-f0-9]{64}$/.test(v.privilegeDropper.sha256) ||
+      !Array.isArray(v.privilegeDropper.libraries) || v.privilegeDropper.libraries.length < 1 || v.privilegeDropper.libraries.length > 32) fail();
   for (const name of Object.values(HostedDependencyInstallerNetworkInput)) trustedNetworkInput(name, v.networkInputs[name]);
   trustedFile(v.nodePath, v.nodeSha256); trustedFile(v.npmCliPath, v.npmSha256);
-  for (const library of v.toolRoots) {
-    if (!library || Object.keys(library).sort().join(",") !== "kind,path,sha256" || library.kind !== DependencyToolRootKind.File ||
-        typeof library.path !== "string" || !library.path.startsWith("/usr/lib/") || !/^[a-f0-9]{64}$/.test(library.sha256) || realpathSync(library.path) !== library.path) fail();
+  if (hostedDependencyInstallerDropperSha256() !== v.privilegeDropper.sha256) fail();
+  for (const library of libraries(v)) {
     trustedFile(library.path, library.sha256);
   }
   if (new Set(v.toolRoots.map(l => l.path)).size !== v.toolRoots.length ||
+      new Set(v.privilegeDropper.libraries.map(l => l.path)).size !== v.privilegeDropper.libraries.length ||
       !v.toolRoots.some(l => l.sha256 === v.libc.sha256 && l.path === v.libc.path && /\/libc\.so\.[0-9]+$/.test(l.path)) ||
       hostedDependencyInstallerNpmRootSha256(v.npmRootPath) !== v.npmRootSha256) fail();
   return Object.freeze({ ...v });
+}
+function libraries(profile: HostedDependencyInstallerProfile): DependencyTestNpmToolchain["toolRoots"] {
+  const result = new Map<string, DependencyTestNpmToolchain["toolRoots"][number]>();
+  for (const item of [...profile.toolRoots, ...profile.privilegeDropper.libraries]) {
+    if (!item || Object.keys(item).sort().join(",") !== "kind,path,sha256" || item.kind !== DependencyToolRootKind.File ||
+        typeof item.path !== "string" || !item.path.startsWith("/usr/lib/") || !/^[a-f0-9]{64}$/.test(item.sha256) || realpathSync(item.path) !== item.path ||
+        (result.has(item.path) && result.get(item.path)?.sha256 !== item.sha256)) fail();
+    result.set(item.path, item);
+  }
+  if (result.size > 32) fail(); return [...result.values()];
 }
 function trustedNetworkInput(name: HostedDependencyInstallerNetworkInput, sha256: string): Buffer {
   const parent = lstatSync(hostedDependencyInstallerNetworkRoot), path = join(hostedDependencyInstallerNetworkRoot, name), stat = lstatSync(path);
@@ -120,7 +143,7 @@ function snapshot(plan: HostedDependencyInstallerPlan): string {
     const s = lstatSync(path); if (!s.isDirectory() || s.isSymbolicLink()) fail();
     return [path, s.dev, s.ino, s.uid, s.gid, s.mode];
   });
-  for (const parent of new Set(["/usr/lib64", ...plan.profile.toolRoots.map(l => dirname(l.path))])) {
+  for (const parent of new Set(["/usr/lib64", ...libraries(plan.profile).map(l => dirname(l.path))])) {
     const local = join(plan.rootDirectory, parent.slice(1));
     for (const name of readdirSync(local).sort()) {
       const path = join(local, name), stat = lstatSync(path);
@@ -142,7 +165,7 @@ function snapshot(plan: HostedDependencyInstallerPlan): string {
 export function createHostedDependencyInstallerPlan(startId: string, inputs: HostedDependencyInstallerInputs): HostedDependencyInstallerPlan {
   assertReadonlyHostOperator();
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(startId)) fail();
-  const selected = readHostedDependencyInstallerProfile();
+  const selected = readHostedDependencyInstallerProfile(), selectedLibraries = libraries(selected);
   mkdirSync(hostedDependencyInstallerRoot, { recursive: true, mode: 0o700 });
   for (let p = hostedDependencyInstallerRoot;; p = dirname(p)) {
     const s = lstatSync(p); if (!s.isDirectory() || s.isSymbolicLink() || s.uid !== 0 || (s.mode & 0o022) ||
@@ -156,20 +179,21 @@ export function createHostedDependencyInstallerPlan(startId: string, inputs: Hos
     directory(join(root, relative), relative === "tmp" ? 0o1777 : 0o755);
   directory(join(root, "home/installer")); directory(join(root, "etc/ssl")); directory(join(root, "etc/ssl/certs"));
   mkdirSync(join(root, staging.slice(1)), { recursive: true, mode: 0o755 });
-  for (const target of [dirname(selected.nodePath), selected.npmRootPath, "/usr/lib64", ...selected.toolRoots.map(l => dirname(l.path))]) {
+  for (const target of [dirname(selected.nodePath), dirname(selected.privilegeDropper.path), selected.npmRootPath, "/usr/lib64", ...selectedLibraries.map(l => dirname(l.path))]) {
     mkdirSync(join(root, target.slice(1)), { recursive: true, mode: 0o755 });
   }
   writeFileSync(join(root, selected.nodePath.slice(1)), "", { flag: "wx", mode: 0o644 });
-  for (const library of selected.toolRoots) writeFileSync(join(root, library.path.slice(1)), "", { flag: "wx", mode: 0o644 });
+  writeFileSync(join(root, selected.privilegeDropper.path.slice(1)), "", { flag: "wx", mode: 0o644 });
+  for (const library of selectedLibraries) writeFileSync(join(root, library.path.slice(1)), "", { flag: "wx", mode: 0o644 });
   // Preserve only SONAME aliases that resolve to a listed exact pinned file.
   // No parent library directory or unrelated sibling is exposed.
-  for (const parent of new Set(selected.toolRoots.map(l => dirname(l.path)))) {
+  for (const parent of new Set(selectedLibraries.map(l => dirname(l.path)))) {
     for (const name of readdirSync(parent)) {
       const path = join(parent, name), stat = lstatSync(path);
       if (!stat.isSymbolicLink()) continue;
       if (stat.uid !== 0 || stat.nlink !== 1) fail();
       let resolved: string; try { resolved = realpathSync(path); } catch { continue; }
-      if (selected.toolRoots.some(l => l.path === resolved)) symlinkSync(readlinkSync(path), join(root, path.slice(1)));
+      if (selectedLibraries.some(l => l.path === resolved)) symlinkSync(readlinkSync(path), join(root, path.slice(1)));
     }
   }
   const loader = "/usr/lib64/ld-linux-x86-64.so.2", loaderTarget = realpathSync(loader);
@@ -213,14 +237,19 @@ export function assertHostedDependencyInstallerPlan(plan: HostedDependencyInstal
 }
 export function hostedDependencyInstallerProperties(plan: HostedDependencyInstallerPlan): readonly string[] {
   assertHostedDependencyInstallerPlan(plan);
-  return ["Restart=no", `User=${hostedDependencyInstallerUid}`, `Group=${hostedDependencyInstallerUid}`, "NoNewPrivileges=yes", "CapabilityBoundingSet=", "AmbientCapabilities=",
+  return ["Restart=no", "User=0", "Group=0", "NoNewPrivileges=yes", "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP", "AmbientCapabilities=",
     "Environment=PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME=/home/installer",
-    "UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH OPENSSL_CONF OPENSSL_MODULES NODE_V8_COVERAGE",
+    "UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES OPENSSL_CONF OPENSSL_MODULES NODE_V8_COVERAGE",
     "PrivateDevices=yes", "ProtectSystem=strict", "ProtectHome=yes", "RestrictSUIDSGID=yes", "MountAPIVFS=no",
     "InaccessiblePaths=-/proc -/sys -/run", "RuntimeMaxSec=20min", "TimeoutStopSec=30s", "TasksMax=256", "LimitCORE=0",
-    `RootDirectory=${plan.rootDirectory}`, `BindReadOnlyPaths=${plan.profile.nodePath}:${plan.profile.nodePath}:norbind ${plan.profile.npmRootPath}:${plan.profile.npmRootPath}:norbind /etc/ssl/certs:/etc/ssl/certs:norbind`,
-    ...plan.profile.toolRoots.map(l => `BindReadOnlyPaths=${l.path}:${l.path}:norbind`),
+    `RootDirectory=${plan.rootDirectory}`, `BindReadOnlyPaths=${plan.profile.nodePath}:${plan.profile.nodePath}:norbind ${plan.profile.privilegeDropper.path}:${plan.profile.privilegeDropper.path}:norbind ${plan.profile.npmRootPath}:${plan.profile.npmRootPath}:norbind /etc/ssl/certs:/etc/ssl/certs:norbind`,
+    ...libraries(plan.profile).map(l => `BindReadOnlyPaths=${l.path}:${l.path}:norbind`),
     `BindPaths=${plan.stagingDirectory}:${plan.stagingDirectory}:norbind ${join(plan.directory, "home")}:/home/installer:norbind ${join(plan.directory, "cache")}:/cache:norbind`,
     `BindReadOnlyPaths=${join(plan.directory, "inputs/package.json")}:${plan.stagingDirectory}/package.json:norbind ${join(plan.directory, "inputs/package-lock.json")}:${plan.stagingDirectory}/package-lock.json:norbind`,
     `ReadWritePaths=${plan.stagingDirectory} /home/installer /cache`, "TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M"];
+}
+export function hostedDependencyInstallerBootstrapCommand(plan: HostedDependencyInstallerPlan): readonly string[] {
+  assertHostedDependencyInstallerPlan(plan);
+  return [plan.profile.privilegeDropper.path, `--reuid=${hostedDependencyInstallerUid}`, `--regid=${hostedDependencyInstallerUid}`,
+    "--clear-groups", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "--", plan.profile.nodePath, "/runtime/bootstrap.js"];
 }
