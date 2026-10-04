@@ -4,7 +4,7 @@ import { open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { AccessBoundary, adoptPublishedIntegrationCommit,
-  type ExternalPublicationAttestation } from "@vioxen/subscription-runtime/worker-core";
+  type IntegrationAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { mcpJson } from "./codex-goal-mcp-response";
 import { loadProjectControlController } from "./codex-goal-mcp-project-control-deps";
 import { localProjectIntegrationDeps } from
@@ -24,7 +24,12 @@ const attestationSchema = z.object({
   evidenceSha256: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 const permitSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
+  projectId: z.string().min(1),
+  reviewedOutputId: z.string().regex(/^[a-f0-9]{64}$/),
+  reviewedTree: sha,
+  patchSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  targetWorkspacePath: z.string().min(1),
   controllerJobId: z.string().min(1),
   attemptId: z.string().min(1),
   commitSha: sha,
@@ -66,7 +71,12 @@ export async function projectControlAdoptPublishedIntegrationCommit(
     attemptId: args.attemptId,
   });
   const permit = await readPublishedAdoptionPermit(args);
-  const attempt = await adoptPublishedIntegrationCommit(localProjectIntegrationDeps(controller), {
+  const attempt = await adoptPublishedIntegrationCommit({
+    ...localProjectIntegrationDeps(controller),
+    authorizePublishedAdoption: async (candidate) => {
+      assertPublishedAdoptionPermitAttempt(permit, candidate, controller.scope.projectId);
+    },
+  }, {
     attemptId: args.attemptId,
     commitSha: args.commitSha,
     message: args.message,
@@ -83,9 +93,26 @@ export async function projectControlAdoptPublishedIntegrationCommit(
   });
 }
 
-async function readPublishedAdoptionPermit(args: PublishedAdoptionMcpArgs): Promise<{
-  readonly attestation: ExternalPublicationAttestation;
-}> {
+type PublishedAdoptionPermit = z.infer<typeof permitSchema>;
+
+export function assertPublishedAdoptionPermitAttempt(
+  permit: PublishedAdoptionPermit,
+  attempt: IntegrationAttempt,
+  controllerProjectId: string,
+): void {
+  if (permit.projectId !== controllerProjectId || attempt.projectId !== permit.projectId ||
+      attempt.controllerJobId !== permit.controllerJobId || attempt.attemptId !== permit.attemptId ||
+      attempt.workerOutput.reviewedOutputId !== permit.reviewedOutputId ||
+      attempt.checkedReviewedTree !== permit.reviewedTree ||
+      attempt.workerOutput.patchSha256 !== permit.patchSha256 ||
+      attempt.targetWorkspacePath !== permit.targetWorkspacePath ||
+      attempt.targetBranch !== permit.attestation.branch ||
+      attempt.targetRemote !== permit.attestation.remote) {
+    throw new Error("published_commit_adoption_permit_attempt_mismatch");
+  }
+}
+
+async function readPublishedAdoptionPermit(args: PublishedAdoptionMcpArgs): Promise<PublishedAdoptionPermit> {
   if (process.geteuid?.() !== 0) throw new Error("published_commit_adoption_root_required");
   if (!isAbsolute(args.permitFile)) throw new Error("published_commit_adoption_permit_absolute_required");
   const handle = await open(args.permitFile, constants.O_RDONLY | constants.O_NOFOLLOW);

@@ -1,4 +1,4 @@
-import { createAccessPolicyService } from "../../access-control";
+import { AccessBoundary, createAccessPolicyService } from "../../access-control";
 import {
   IntegrationAttemptStatus, PushAttemptStatus, SecretScanStatus, ReviewDecisionStatus,
   allCheckRunsPassed, assertIntegrationCommitFiles, markCommitCreated, markPushed,
@@ -19,6 +19,8 @@ import {
 
 export type AdoptPublishedIntegrationCommitDeps = CommitApprovedChangesDeps & {
   readonly integratedOutputLedger: IntegratedOutputLedgerPort;
+  /** Trusted host adapter must authenticate and bind the record-only permit. */
+  readonly authorizePublishedAdoption: (attempt: IntegrationAttempt) => Promise<void>;
 };
 
 export type AdoptPublishedIntegrationCommitInput = {
@@ -106,11 +108,22 @@ async function adoptLocked(
   if (attempt.checkRuns.length === 0 || !allCheckRunsPassed(attempt.checkRuns)) {
     throw new Error("published_commit_adoption_checks_not_passed");
   }
-  const decision = createAccessPolicyService(input.policy.access).canPushBranch({
-    workspacePath: attempt.targetWorkspacePath,
-    branch: attempt.targetBranch, remote: attempt.targetRemote, force: false,
+  if (input.policy.access.boundary !== AccessBoundary.ProjectScopedControl ||
+      input.policy.access.scope?.projectId !== attempt.projectId ||
+      !deps.authorizePublishedAdoption) {
+    throw new Error("published_commit_adoption_authority_required");
+  }
+  const access = createAccessPolicyService(input.policy.access);
+  const targetDecision = access.canIntegrateCommit({
+    workspacePath: attempt.targetWorkspacePath, branch: attempt.targetBranch,
   });
-  if (!decision.allowed) throw new Error("published_commit_adoption_push_policy_denied");
+  const workerDecision = access.canStartWorker({
+    jobId: attempt.workerJobId, workspacePath: attempt.sourceWorkspacePath,
+  });
+  if (!targetDecision.allowed || !workerDecision.allowed) {
+    throw new Error("published_commit_adoption_scope_denied");
+  }
+  await deps.authorizePublishedAdoption(attempt);
   if (!deps.reviewedOutputIntegrity || !deps.git.reviewedOutputTreeFromPatch ||
       !deps.git.inspectIntegrationCommit || !deps.git.currentHead || !deps.git.remoteRepository) {
     throw new Error("published_commit_adoption_verifier_required");
