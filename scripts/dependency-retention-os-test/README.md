@@ -30,6 +30,13 @@ mount/user namespace capability plus actual CPU/memory/pids delegation.
 Unsupported kernel/manager/capability behavior fails the job; it never fabricates
 positive authority. If unavailable, use the separately designed QEMU fallback.
 
+An initial inventory rejection retains only fixed production throw locations
+and bounded read-only TEST observations of the supervisor, manager queues,
+future unit inventory and cgroup PID predicates. Diagnostics run after rejection,
+never delay the production check, and never authorize a retry or installation.
+Unknown unit/group names are digested; raw process names, paths and logs are not
+exported. These observations cannot substitute for the unchanged production gate.
+
 The qualification child has three actual pipes and remains in the supervisor's
 cgroup. It issues only independent TEST inventory/stage/profile input, then calls
 the real installation store, TEST npm grant writer, ordinary enrollment/resume,

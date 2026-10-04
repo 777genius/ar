@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
   readdirSync, readFileSync, readlinkSync, readSync, realpathSync, writeFileSync } from "node:fs";
@@ -26,6 +27,7 @@ import { cleanEnv, command, digest, directory, directoryIdentity, fileDigest, in
   try { await qualify(evidence); evidence.status = "partial_pass"; }
   catch (error) {
     evidence.failure = error instanceof Error ? error.message.slice(0, 512) : "TEST native qualification failed";
+    if (error instanceof Error) evidence.kernelFailureLocations = kernelFailureLocations(error);
     process.exitCode = 1;
   } finally { json(runtime + "/guest-evidence.json", evidence, 0o644); }
 }
@@ -97,8 +99,21 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   const installerProfile = actualToolchainProfile();
   evidence.installerProfile = installerProfile;
   json(policy + "/dependency-installer-profile.json", installerProfile);
-  new HostedReadonlyHostKernel().verifyExclusiveInventory();
-  const store = new HostedInstallationActivationStore(); store.install();
+  evidence.kernelGatePhase = "exclusive_inventory";
+  try { new HostedReadonlyHostKernel().verifyExclusiveInventory(); }
+  catch (error) {
+    try { evidence.kernelInventoryObservation = observeKernelInventory(supervisorUnit, controlGroup); }
+    catch { evidence.kernelInventoryObservation = { purpose: "TEST_kernel_predicate_observation_only", unavailable: true }; }
+    throw error;
+  }
+  evidence.kernelGatePhase = "cold_installation";
+  const store = new HostedInstallationActivationStore();
+  try { store.install(); }
+  catch (error) {
+    try { evidence.kernelInventoryObservation = observeKernelInventory(supervisorUnit, controlGroup); }
+    catch { evidence.kernelInventoryObservation = { purpose: "TEST_kernel_predicate_observation_only", unavailable: true }; }
+    throw error;
+  }
   results.push({ scenario: "unchanged_cold_host_installation", result: "qualified_actual_finite_inventory", controlGroup });
   await writeHostedTestEgressGrant({ schemaVersion: 1, jobId, jobRootDir: root, workspacePath: workspace,
     profileId: CodexProviderEgressProfileId.TestNpmQualification });
@@ -139,6 +154,73 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   assert.deepEqual(before, sentinels.map(path => ({ path, sha256: fileDigest(path), ino: String(lstatSync(path).ino) })));
   assert.equal(command("/usr/bin/git", ["rev-parse", "HEAD"], 30000, workspace).trim(), gitBefore);
   results.push({ scenario: "source_git_ignored_key_state_output_sentinels", result: "unchanged" });
+}
+
+function kernelFailureLocations(error: Error) {
+  // Fixed production source locations only, never raw stack paths or names.
+  const files = ["hosted-readonly-host-kernel", "hosted-readonly-linux-collector", "hosted-readonly-observations"];
+  return (error.stack ?? "").split("\n").slice(0, 16).flatMap(line => files.flatMap(file => {
+    const match = new RegExp(`/(${file}\\.js):(\\d+):(\\d+)\\)?$`).exec(line.trim());
+    return match ? [{ file: match[1], line: Number(match[2]), column: Number(match[3]) }] : [];
+  }));
+}
+function observeKernelInventory(supervisor: string, expectedGroup: string) {
+  // Read-only TEST diagnostics have no authority or effect on production gates.
+  const observation: Record<string, unknown> = { purpose: "TEST_kernel_predicate_observation_only",
+    selfGroupMatches: readFileSync("/proc/self/cgroup", "utf8").trim() === "0::" + expectedGroup };
+  const observe = (args: string[], summarize: (rows: string[]) => unknown) => {
+    const result = spawnSync("/usr/bin/systemctl", args, { env: cleanEnv, encoding: "utf8", timeout: 5000,
+      maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+    return { status: result.status, signal: result.signal, failed: !!result.error,
+      facts: result.status === 0 && !result.error ? summarize(result.stdout.split("\n").filter(line => line.trim())) : null };
+  };
+  observation.supervisor = observe(["show", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID", "--", supervisor], rows => {
+    const fields = new Map(rows.map(row => { const at = row.indexOf("="); return [row.slice(0, at), row.slice(at + 1)]; }));
+    return { exactFiveKeys: rows.length === 5 && [...fields.keys()].sort().join(",") === "ControlGroup,DropInPaths,FragmentPath,Id,MainPID",
+      idMatches: fields.get("Id") === supervisor, groupMatches: fields.get("ControlGroup") === expectedGroup,
+      fragmentMatches: fields.get("FragmentPath") === "/etc/systemd/test-units/" + supervisor,
+      dropInsEmpty: fields.get("DropInPaths") === "", mainPidValid: /^[1-9]\d*$/.test(fields.get("MainPID") ?? "") };
+  });
+  const inventoryRows = (rows: string[], allowInit: boolean) => ({ count: rows.length,
+    unknownCount: rows.filter(row => { const name = row.trim().split(/\s+/)[0]; return name !== supervisor && !(allowInit && name === "init.scope"); }).length,
+    unknownNameDigests: rows.flatMap(row => { const name = row.trim().split(/\s+/)[0]!;
+      return name !== supervisor && !(allowInit && name === "init.scope") ? [digest(name)] : []; }).slice(0, 32) });
+  observation.activeUnits = observe(["list-units", "--all", "--type=service,scope", "--state=active,activating,reloading,deactivating,failed",
+    "--no-legend", "--plain", "--no-pager"], rows => inventoryRows(rows, true));
+  observation.futureUnits = observe(["list-unit-files", "--type=service,socket,timer", "--state=enabled,enabled-runtime,linked,linked-runtime,alias",
+    "--no-legend", "--no-pager"], rows => inventoryRows(rows, false));
+  observation.activeTriggers = observe(["list-units", "--all", "--type=socket,timer", "--state=active,activating,reloading,deactivating",
+    "--no-legend", "--plain", "--no-pager"], rows => ({ count: rows.length }));
+  observation.managerJobs = observe(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"], rows => ({ count: rows.length,
+    malformedRows: rows.filter(row => { const fields = row.trim().split(/\s+/); return fields.length < 4 || !/^\d+$/.test(fields[0]!); }).length,
+    supervisorJobs: rows.filter(row => row.trim().split(/\s+/)[1] === supervisor).length,
+    ownedTargetJobs: rows.filter(row => row.trim().split(/\s+/)[1] === "TEST-retention.target").length,
+    otherNameDigests: rows.flatMap(row => { const name = row.trim().split(/\s+/)[1];
+      return name && name !== supervisor && name !== "TEST-retention.target" ? [digest(name)] : []; }).slice(0, 32) }));
+  let count = 0, zeroPids = 0, malformedPidGroups = 0, foreignPopulatedGroups = 0;
+  const end = Date.now() + 5000, foreignGroupDigests: string[] = [];
+  const walk = (relative: string): void => {
+    assert(++count <= 4096 && Date.now() < end);
+    assert(/^(?:\/[A-Za-z0-9_.@+-]+)*$/.test(relative) && !relative.split("/").some(part => part === "." || part === ".."));
+    const absolute = "/sys/fs/cgroup" + relative, stat = lstatSync(absolute); assert(stat.isDirectory() && !stat.isSymbolicLink());
+    const fd = openSync(absolute + "/cgroup.procs", constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let pidText: string;
+    try { const bytes = Buffer.alloc(65537); let length = 0;
+      for (;;) { assert(Date.now() < end && length < bytes.length);
+        const read = readSync(fd, bytes, length, bytes.length - length, null); if (read === 0) break; length += read; }
+      assert(length <= 65536); pidText = bytes.subarray(0, length).toString("utf8"); }
+    finally { closeSync(fd); }
+    const pids = pidText.split("\n").filter(line => line.trim());
+    zeroPids += pids.filter(pid => pid === "0").length;
+    if (pids.some(pid => !/^[1-9]\d*$/.test(pid))) malformedPidGroups++;
+    if (pids.length && relative !== expectedGroup && !(relative === "/init.scope" && pids.length === 1 && pids[0] === "1")) {
+      foreignPopulatedGroups++; if (foreignGroupDigests.length < 32) foreignGroupDigests.push(digest(relative));
+    }
+    for (const child of readdirSync(absolute, { withFileTypes: true })) if (child.isDirectory()) walk(relative + "/" + child.name);
+  };
+  try { walk(""); observation.cgroups = { completed: true, count, zeroPids, malformedPidGroups, foreignPopulatedGroups, foreignGroupDigests }; }
+  catch { observation.cgroups = { completed: false, count, zeroPids, malformedPidGroups, foreignPopulatedGroups, foreignGroupDigests }; }
+  return observation;
 }
 
 function actualToolchainProfile(): HostedDependencyInstallerProfile {
