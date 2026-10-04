@@ -46,7 +46,7 @@ function runtimeExecDiagnostics(text: string) {
     "libpthread.so.0", "librt.so.1", "ld-linux-x86-64.so.2"];
   const classes = ["error while loading shared libraries", "cannot open shared object file", "symbol lookup error",
     "error while loading shared library", "bad ELF interpreter", "Exec format error", "failed to execute",
-    "No such file or directory", "Permission denied", "Operation not permitted"];
+    "No such file or directory", "Permission denied", "Operation not permitted", "OpenSSL configuration error"];
   // Exact util-linux 2.39.3 failure sites; stage labels are diagnostics only.
   const stages = ["disallow granting new privileges failed", "keep process capabilities failed", "activate capabilities",
     "reactivate capabilities", "getresuid failed", "setresuid failed", "getresgid failed", "setresgid failed",
@@ -348,6 +348,16 @@ function networkPreflight(): unknown[] {
       mode: (stat.mode & 0o7777).toString(8), nlink: stat.nlink, dev: String(stat.dev), ino: String(stat.ino), unsafeAncestor };
   });
 }
+function syntheticCaPreflight(plan: HostedDependencyInstallerPlan) {
+  return ["/", "/etc", "/etc/ssl", "/etc/ssl/certs"].map(relative => {
+    const stat = lstatSync(plan.rootDirectory + (relative === "/" ? "" : relative));
+    const facts = { relative, uid: stat.uid, gid: stat.gid, mode: (stat.mode & 0o7777).toString(8),
+      dev: String(stat.dev), ino: String(stat.ino), directory: stat.isDirectory(), symlink: stat.isSymbolicLink() };
+    assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && (stat.mode & 0o7777) === 0o755,
+      "TEST synthetic CA ancestry must be traversable before unprivileged launch");
+    return facts;
+  });
+}
 
 async function publicRegistryInputs(): Promise<{ packageBytes: Buffer; lockBytes: Buffer }> {
   // This is a TEST dependency, not a new dependency of the repository/tooling.
@@ -421,6 +431,7 @@ async function run(): Promise<void> {
     writeFileSync(workspace + "/package-lock.json", inputs.lockBytes, { flag: "wx", mode: 0o600 });
     const startId = randomUUID(), plan = createHostedDependencyInstallerPlan(startId,
       qualifyHostedDependencyInstallerInputs(inputs.packageBytes, inputs.lockBytes));
+    facts.syntheticCaPreflight = syntheticCaPreflight(plan); // Fixed paths and metadata only.
     const launch = trustedCustodySystemdLaunch(TrustedCustodyLaunchRole.Installer, startId, plan.stagingDirectory, plan);
     const unit = `subscription-runtime-installer-${startId}.service`;
     try { command(launch.command, launch.args, 12 * 60 * 1000); }
