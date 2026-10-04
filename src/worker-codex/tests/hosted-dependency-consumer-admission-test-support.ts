@@ -12,12 +12,13 @@ import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executo
 import { HostedInstallationActivationStore } from "../hosted-installation-activation";
 import { runHostedRuntimeForeground } from "../hosted-readonly-foreground";
 import type { EventEmitter } from "node:events";
+import type { CodexAppServerChildProcess } from "../../provider-codex/app-server/application/app-server-process-port";
 import { dependencyCoverageRevision, readHostedDependencyReceipt } from "../hosted-dependency-materialization";
 
 /** Uses the ordinary suite's real private FS and retained origin composition.
  * Synthetic kernel facts do not certify the production mount/capability fence. */
 export function registerDependencyConsumerAdmissionTests(input: {
-  fixture: { root: string; runtimeUnit: string; group: string; spawn: Mock<(...args: unknown[]) => unknown> };
+  fixture: { root: string; runtimeUnit: string; group: string; spawn: Mock<(...args: unknown[]) => CodexAppServerChildProcess> };
   stageName: string; runtimeDirectory: string; local: (path: string) => string;
   put: (name: string, value: unknown) => void; read: (name: string) => any;
 }): void {
