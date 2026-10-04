@@ -20,3 +20,6 @@ export * from "./temp-workspace";
 export * from "./webhook-run-event-publisher";
 export * from "./safe-execution";
 export * from "./retained-terminal-archive-io";
+export * from "./dependency-environment/build-test-npm-dependency-install-key";
+export * from "./dependency-environment/observe-dependency-tree";
+export * from "./dependency-environment/observe-dependency-pinned-file";
