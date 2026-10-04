@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
+import * as fs from "node:fs";
 import { lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi, type Mock } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { claimDependencyConsumer, fenceDependencyConsumer, markDependencyConsumerRunning,
   DependencyInstallProofKind, DependencyPreservationKind, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
 import { LocalDependencyOwnerStore } from "../../store-local-file/dependency-environment/local-dependency-owner-store";
@@ -18,7 +19,7 @@ import { dependencyCoverageRevision, readHostedDependencyReceipt } from "../host
 /** Uses the ordinary suite's real private FS and retained origin composition.
  * Synthetic kernel facts do not certify the production mount/capability fence. */
 export function registerDependencyConsumerAdmissionTests(input: {
-  fixture: { root: string; runtimeUnit: string; group: string; spawn: Mock<(...args: unknown[]) => CodexAppServerChildProcess> };
+  fixture: { root: string; runtimeUnit: string; group: string; jobs: string; spawn: Mock<(...args: unknown[]) => CodexAppServerChildProcess> };
   stageName: string; runtimeDirectory: string; local: (path: string) => string;
   put: (name: string, value: unknown) => void; read: (name: string) => any;
 }): void {
@@ -40,7 +41,9 @@ export function registerDependencyConsumerAdmissionTests(input: {
     const grant = { schemaVersion: 1, jobId, jobRootDir, workspacePath, profileId: "codex-test-npm-qualification" };
     input.put(`grants/${hash(jobId)}.json`, grant);
     const store = new HostedInstallationActivationStore(), installed = store.install();
-    store.enrollOrdinary(creator.creatorId); store.resumeOrdinary();
+    store.enrollOrdinary(creator.creatorId);
+    if (mixedLegacy) store.enrollOrdinary(legacy.creatorId);
+    store.resumeOrdinary();
     const stat = lstatSync(input.local(workspacePath), { bigint: true });
     const binding = parseHostedDependencyBinding({ version: 1, jobId, jobRootDir,
       workspace: { canonicalPath: workspacePath, dev: String(stat.dev), ino: String(stat.ino) },
@@ -64,6 +67,25 @@ export function registerDependencyConsumerAdmissionTests(input: {
   const providerInput = () => ({ cwd: workspacePath, env: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
     SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "codex-test-npm-qualification" } });
   describe("private physical dependency consumer admission", () => {
+    beforeEach(async () => {
+      // Match the outer fixture's root-owned stat facts without changing the
+      // production store's effective-UID check or touching host policy paths.
+      vi.spyOn(process, "geteuid").mockReturnValue(0);
+      const real = await vi.importActual<typeof import("node:fs")>("node:fs");
+      const fixtureRealpath = fs.realpathSync, fixtureReadFile = fs.readFileSync;
+      vi.spyOn(fs, "realpathSync").mockImplementation((path, options) => {
+        if (typeof path !== "string") return fixtureRealpath(path, options);
+        const physical = input.local(path);
+        if (physical === path) return fixtureRealpath(path, options);
+        if (real.realpathSync(physical) !== physical) throw new Error("noncanonical TEST fixture path");
+        const encoding = typeof options === "string" ? options : options?.encoding;
+        return encoding === "buffer" ? Buffer.from(path) : path;
+      });
+      // The Git guard reads an already validated descriptor, not a path. Keep
+      // real descriptor I/O while the outer fixture supplies finite /proc facts.
+      vi.spyOn(fs, "readFileSync").mockImplementation((path, options) =>
+        typeof path === "number" ? real.readFileSync(path, options) : fixtureReadFile(path, options));
+    });
     it("mixed legacy privileged creators remain unsupported before actual runtime reservation", () => {
       expect(() => prepared(true)).toThrow("dependency_admission:unsupported");
       expect(input.read("host-activation.json").ordinaryStarts).toHaveLength(0);
@@ -151,8 +173,9 @@ export function registerDependencyConsumerAdmissionTests(input: {
           startId: latest.startId, unit: latest.unit }, randomUUID());
         markDependencyConsumerRunning(store, p.binding.workspace, attempt);
       } finally { store.close(); }
-      // No installer namespace was enrolled by this synthetic grant: release
-      // cannot invent a positive sibling drain and must retain ownership.
+      // An actual queued start for this exact retained unit prevents release
+      // after the successful wait; unrelated units are not used as a fault.
+      input.fixture.jobs = `9 ${latest.unit} start waiting\n`;
       const warning = vi.spyOn(process.stderr, "write").mockReturnValue(true);
       const child = input.fixture.spawn.mock.results.at(-1)!.value as EventEmitter;
       child.emit("exit", 0, null);
