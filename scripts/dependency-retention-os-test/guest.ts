@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
-  readdirSync, readFileSync, readlinkSync, readSync, realpathSync, writeFileSync } from "node:fs";
+  readdirSync, readFileSync, readlinkSync, readSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { HostedInstallationActivationStore } from "../../dist/worker-codex/hosted-installation-activation.js";
 import { HostedReadonlyHostKernel } from "../../dist/worker-codex/hosted-readonly-host-kernel.js";
 import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-readonly-authority.js";
@@ -88,6 +88,21 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
     "--registry-root", root + "/state/registry", "--worker-report-mode", "structured-output"];
   const launch = { command: node, args, cwd: workspace };
   const supervisorUnit = "TEST-retention-supervisor.service";
+  // v255 list-unit-files exits ENOENT for a zero-row filtered list. Enable only
+  // the already-required, inventoried TEST supervisor through an actual guest
+  // runtime wants link; no extra unit, reload or process is introduced.
+  const runtimeUnits = "/run/systemd/system", wants = runtimeUnits + "/TEST-retention.target.wants";
+  directory(runtimeUnits, 0o755); assert(!existsSync(wants)); directory(wants, 0o755);
+  const link = wants + "/" + supervisorUnit, fragment = "/etc/systemd/test-units/" + supervisorUnit;
+  symlinkSync(fragment, link);
+  const linkStat = lstatSync(link); assert(linkStat.isSymbolicLink() && linkStat.uid === 0 && linkStat.nlink === 1);
+  assert.equal(readlinkSync(link), fragment); assert.equal(realpathSync(link), fragment);
+  const enabled = command("/usr/bin/systemctl", ["list-unit-files", "--type=service,socket,timer",
+    "--state=enabled,enabled-runtime,linked,linked-runtime,alias", "--no-legend", "--no-pager"])
+    .split("\n").filter(line => line.trim()).map(line => line.trim().split(/\s+/));
+  assert.equal(enabled.length, 1); assert.equal(enabled[0]?.[0], supervisorUnit); assert.equal(enabled[0]?.[1], "enabled-runtime");
+  evidence.runtimeSupervisorEnablement = { unit: supervisorUnit, actualState: enabled[0]![1],
+    linkRootOwned: true, linkTargetMatches: true, fragmentSha256: fileDigest(fragment) };
   const controlGroup = command("/usr/bin/systemctl", ["show", supervisorUnit, "--property=ControlGroup", "--value"]).trim();
   json(policy + "/readonly-inventory.json", { schemaVersion: 2, hostId: evidence.machineId, supervisorUnit,
     units: [{ name: supervisorUnit, controlGroup, fragmentSha256: fileDigest("/etc/systemd/test-units/" + supervisorUnit) }],

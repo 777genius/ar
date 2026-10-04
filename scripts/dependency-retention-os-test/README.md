@@ -30,6 +30,12 @@ mount/user namespace capability plus actual CPU/memory/pids delegation.
 Unsupported kernel/manager/capability behavior fails the job; it never fabricates
 positive authority. If unavailable, use the separately designed QEMU fallback.
 
+The already-required TEST supervisor is enabled by one root-owned guest runtime
+target-wants link. The actual filtered unit-file query must report exactly that
+unit as enabled-runtime. This keeps systemd v255's empty-list ENOENT behavior from
+rejecting the minimal fixture while retaining the unchanged finite inventory gate.
+It creates no extra unit or process and does not reload or stop the manager.
+
 An initial inventory rejection retains only fixed production throw locations
 and bounded read-only TEST observations of the supervisor, manager queues,
 future unit inventory and cgroup PID predicates. Diagnostics run after rejection,
