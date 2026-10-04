@@ -46,9 +46,14 @@ function runtimeExecDiagnostics(text: string) {
   const classes = ["error while loading shared libraries", "cannot open shared object file", "symbol lookup error",
     "error while loading shared library", "bad ELF interpreter", "Exec format error", "failed to execute",
     "No such file or directory", "Permission denied", "Operation not permitted"];
+  // Exact util-linux 2.39.3 failure sites; stage labels are diagnostics only.
+  const stages = ["disallow granting new privileges failed", "keep process capabilities failed", "activate capabilities",
+    "reactivate capabilities", "getresuid failed", "setresuid failed", "getresgid failed", "setresgid failed",
+    "setgroups failed", "apply bounding set", "apply capabilities"];
   const missing = [...text.matchAll(/(?:error while loading shared libraries|error while loading shared library): ([A-Za-z0-9_.+-]{1,128}):/g)]
     .map(match => match[1]).filter((name): name is string => name !== undefined);
   return { classifications: classes.filter(message => text.includes(message)),
+    privilegeDropFailures: stages.filter(stage => new RegExp(`(?:^|\\n)setpriv: ${stage}:`).test(text)),
     missingLibraries: names.filter(name => missing.includes(name)), unlistedMissingLibrary: missing.some(name => !names.includes(name)),
     glibcVersionMissing: /version [`']GLIBC_[0-9.]+['`] not found/.test(text),
     glibcxxVersionMissing: /version [`']GLIBCXX_[0-9.]+['`] not found/.test(text) };
