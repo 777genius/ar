@@ -155,25 +155,23 @@ describe("bounded private durable keyed store", () => {
     expect(() => store.initialize(token)).toThrow("common_fence_required");
     expect(readFileSync(path(), "utf8")).toBe(initial().serialize());
   });
-  it("reconstructs terminal replay from request values, permanently retaining key and handles", async () => {
+  it("plain no-effect DTO cannot release durable occupancy or admit the next distinct key", async () => {
     const store = enroll(); await accept(store);
-    const terminal = await transact(store, 1, l => l.terminalizeBeforeIntent({ kind: NoEffectProofKind.IndependentlyEstablished,
-      correlation: view(l), evidenceDigest: "f".repeat(64) }));
+    await expect(transact(store, 1, l => l.terminalizeBeforeIntent({ kind: NoEffectProofKind.IndependentlyEstablished,
+      correlation: view(l), evidenceDigest: "f".repeat(64) }))).rejects.toThrow("preintent_authenticated_terminal_authority_required");
     const before = readFileSync(path()); fixture.synced = [];
-    const replay = await transact(fresh(), 2, l => l.accept(2, { ...request() }, 9999));
-    expect(view(replay)).toEqual(view(terminal)); expect(replay.remainingAllowance).toBe(1);
+    const replay = await transact(fresh(), 1, l => l.accept(1, { ...request() }, 9999));
+    expect(view(replay).state).toBe(State.Claimed); expect(replay.remainingAllowance).toBe(1);
     expect(readFileSync(path())).toEqual(before);
     expect(fixture.synced.some(p => p.endsWith(".json"))).toBe(true);
     expect(fixture.synced.at(-1)).toBe(prefix + "/keyed-child-ledgers");
-    await expect(transact(fresh(), 2, l => l.accept(2, { ...request(), task: "changed" }, 10))).rejects.toThrow("conflict");
+    await expect(transact(fresh(), 1, l => l.accept(1, { ...request(), task: "changed" }, 10))).rejects.toThrow("conflict");
     expect(readFileSync(path())).toEqual(before);
-    const second = await transact(fresh(), 2, l => l.accept(2, { ...request(), key: "second" }, 20));
-    expect(second.observe(scope, "child-2").startId).toBe("start-2"); expect(second.remainingAllowance).toBe(0);
+    await expect(transact(fresh(), 1, l => l.accept(1, { ...request(), key: "second" }, 20))).rejects.toThrow("occupied");
   });
-  it("validated hydration cannot replace or forget accepted terminal history", async () => {
+  it("validated hydration cannot replace or forget accepted history", async () => {
     const store = enroll(); await accept(store);
-    await transact(store, 1, c => c.terminalizeBeforeIntent({ kind: NoEffectProofKind.IndependentlyEstablished,
-      correlation: view(c), evidenceDigest: "f".repeat(64) }));
+    await transact(store, 1, c => c.markUncertain(view(c)));
     const before = readFileSync(path());
     let other = initial().accept(0, { ...request(), key: "rewritten" }, 10);
     other = other.terminalizeBeforeIntent({ kind: NoEffectProofKind.IndependentlyEstablished,
@@ -332,8 +330,7 @@ describe("private publication review regressions", () => {
     if (kind === "intent") {
       await prepared(store); await transact(store, 3, c => c.advance(view(c), State.DispatchIntent, 20));
     } else {
-      await accept(store); await transact(store, 1, c => c.terminalizeBeforeIntent({
-        kind: NoEffectProofKind.IndependentlyEstablished, correlation: view(c), evidenceDigest: "f".repeat(64) }));
+      await accept(store); await transact(store, 1, c => c.markUncertain(view(c)));
     }
     const before = readFileSync(path()), generation = kind === "intent" ? 4 : 2;
     await expect(transact(store, generation, current => {

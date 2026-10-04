@@ -13,7 +13,24 @@ import { KeyedChildState as State, type ChildCorrelation, type ChildObservation,
 import { KeyedAuthorizationMode as Mode, type KeyedChildApplicationPort, type KeyedDispatchAcknowledgment, type KeyedScopedStopPort } from "../../worker-core/project-control/application/keyed-child-launch";
 import { KeyedLaunchLedgerStore } from "./keyed-launch-ledger-store";
 import { RetainedKeyedAuthority } from "./retained-authority";
-import { SlotMaterialization } from "./slot-materialization";
+import { SlotMaterialization, type PreparationMaterializationPort } from "./slot-materialization";
+import { PreintentPreparationRecords } from "./preintent-preparation-records";
+import { PreparationEffect, type OriginalPreparationOwner, type OriginalPreparationQuiescence } from "../../worker-core/hosted-custody/domain/preintent-preparation";
+import type { OriginalPreparationCustodyPort } from "../../worker-core/hosted-custody/ports/preintent-preparation";
+import { joinOriginalPreparation } from "../../worker-core/hosted-custody/application/preintent-preparation";
+import { ScopedStopReason } from "../../worker-core/project-control/ports/keyed-child-application-ports";
+
+/** Installed native owner must supply this exact original operation. There is
+ * deliberately no execFile, shell, process scan or reconstructed-PID fallback. */
+export interface OwnedPreparationGitCustody extends OriginalPreparationCustodyPort {
+  /** Successful completion requires positive discharge of this original Git
+   * operation's owned tasks. Exit/timeout alone must reject or remain pending. */
+  startGit(effect: PreparationEffect, args: readonly string[], remainingMs: number):
+    { readonly completion: Promise<{ readonly stdout: string }> };
+}
+export interface OwnedPreparationNativePort {
+  retain(owner: OriginalPreparationOwner): OwnedPreparationGitCustody;
+}
 
 const permissions = new WeakSet<object>();
 type PinnedDirectory = { readonly path: string; readonly dev: number; readonly ino: number };
@@ -90,9 +107,13 @@ export class KeyedChildDispatchAdapter implements KeyedChildApplicationPort {
   readonly #leases = new WeakSet<object>();
   readonly stopPort: KeyedScopedStopPort;
   readonly #foreground = new Map<string, Promise<void>>();
+  readonly #preparation: PreintentPreparationRecords;
+  readonly #originalCustody = new Map<string, OwnedPreparationGitCustody>();
+  readonly #writers = new Map<string, Promise<void>>();
+  readonly #joins = new Map<string, Promise<OriginalPreparationQuiescence | null>>();
   constructor(private readonly retained: RetainedKeyedAuthority, private readonly ledger: KeyedLaunchLedgerStore,
     private readonly materialization: SlotMaterialization | null, private readonly host: KeyedHostSubmissionPort | null,
-    stopPort?: KeyedScopedStopPort) {
+    stopPort?: KeyedScopedStopPort, private readonly preparationNative?: OwnedPreparationNativePort) {
     retained.assertCleanup();
     withHostedActivationFence(f => retained.retainCleanup(f));
     this.scope = Object.freeze({ projectId: retained.authority.projectId, workstreamId: retained.authority.workstreamId,
@@ -101,6 +122,7 @@ export class KeyedChildDispatchAdapter implements KeyedChildApplicationPort {
     this.deadlineEpochMs = retained.authority.absoluteDeadline; this.maxGoalTurns = retained.authority.maxGoalTurns;
     this.#parents = ["/var/lib/subscription-runtime-host-policy/keyed-child-ledgers",
       ...retained.slots.map(s => s.jobRootDir)].map(path => ({ path, ...lstatSync(path) }));
+    this.#preparation = new PreintentPreparationRecords(retained);
     this.stopPort = stopPort ?? new HostedKeyedScopedStopAdapter(retained, this);
   }
   static cleanup(retained: RetainedKeyedAuthority, ledger: KeyedLaunchLedgerStore): KeyedChildDispatchAdapter {
@@ -148,9 +170,109 @@ export class KeyedChildDispatchAdapter implements KeyedChildApplicationPort {
   transact(scope: ChildScope, authorityDigest: string, generation: number, successor: (l: KeyedChildLedger) => KeyedChildLedger, mode = Mode.Work): Promise<KeyedChildLedger> {
     this.#assertCoordination(); this.authenticate(mode); return this.ledger.transact(scope, authorityDigest, generation, successor);
   }
+  transactPreparation(binding: ChildCorrelation, successor: (current: KeyedChildLedger) => KeyedChildLedger): KeyedChildLedger {
+    this.#assertCoordination(); this.authenticate();
+    return withHostedActivationFence(fence => this.ledger.transactHeld(fence, this.scope, this.authorityDigest,
+      binding.generation, current => {
+        // Original native admission can close between separate acquisitions
+        // without changing ledger generation. Authenticate it in this CAS.
+        this.#admissionHeld(fence, binding);
+        return successor(current);
+      }));
+  }
+  retainPreparation(binding: ChildCorrelation): void {
+    this.#assertCoordination(); this.authenticate();
+    withHostedActivationFence(fence => {
+      const latest = this.ledger.readHeld(fence, this.scope, this.authorityDigest).observe(this.scope, binding.childHandle);
+      if (latest.state !== State.Claimed || latest.generation !== binding.generation) throw new Error("keyed_preparation_ineligible");
+      if (!this.materialization) throw new Error("keyed_live_admission_required");
+      const owner = this.#preparation.retain(fence, binding, this.materialization.preparationPlanDigest(binding));
+      if (!this.preparationNative) throw new Error("preparation_original_native_custody_required");
+      const custody = this.preparationNative.retain(owner);
+      if (custody.owner.ownershipDigest !== owner.ownershipDigest ||
+          custody.owner.preparationGeneration !== owner.preparationGeneration ||
+          custody.owner.preparationPlanDigest !== owner.preparationPlanDigest ||
+          stableChildDigest(custody.owner.correlation, 0) !== stableChildDigest(binding, 0) ||
+          custody.owner.deadlineEpochMs !== owner.deadlineEpochMs || custody.owner.maxGoalTurns !== owner.maxGoalTurns) {
+        throw new Error("preparation_original_native_custody_mismatch");
+      }
+      // Retain the validated original handle even if its admission check fails:
+      // cleanup still owns this same operation and must be able to close it.
+      this.#originalCustody.set(binding.startId, custody); custody.assertAdmission(binding);
+    });
+  }
+  assertPreparationAdmission(binding: ChildCorrelation): void {
+    this.#assertCoordination(); this.authenticate();
+    withHostedActivationFence(fence => this.#admissionHeld(fence, binding));
+  }
+  #admissionHeld(fence: HostedActivationFence, binding: ChildCorrelation): void {
+    const latest = this.ledger.readHeld(fence, this.scope, this.authorityDigest).observe(this.scope, binding.childHandle);
+    if (latest.generation !== binding.generation || latest.dispatchIntent ||
+        ![State.Claimed, State.Materializing, State.Prepared].includes(latest.state)) throw new Error("keyed_preparation_ineligible");
+    this.#preparation.assertOpen(fence, binding);
+    const custody = this.#originalCustody.get(binding.startId);
+    if (!custody) throw new Error("preparation_original_native_custody_required");
+    custody.assertAdmission(binding); this.retained.budget(binding.slotId).remainingMs();
+  }
+  closePreparation(binding: ChildCorrelation, reason: ScopedStopReason): void {
+    this.#assertCoordination(); this.authenticate(Mode.Cleanup);
+    withHostedActivationFence(fence => {
+      const latest = this.ledger.readHeld(fence, this.scope, this.authorityDigest).observe(this.scope, binding.childHandle);
+      if (latest.generation !== binding.generation || latest.state !== State.StopRequested || latest.dispatchIntent) {
+        throw new Error("keyed_preparation_stop_ineligible");
+      }
+      try { this.#preparation.close(fence, binding, reason); }
+      finally {
+        // Durable StopRequested already forbids further admission. A record
+        // publication failure must still request closure of original custody;
+        // it never proves closure or releases occupancy.
+        this.#originalCustody.get(binding.startId)?.requestStop();
+      }
+    });
+    const custody = this.#originalCustody.get(binding.startId);
+    if (custody && !this.#joins.has(binding.startId)) {
+      // Schedule the exact original join outside this coordination's lease.
+      const join = this.#tail.then(() => joinOriginalPreparation(custody,
+        this.#writers.get(binding.startId) ?? Promise.resolve(), () => this.materialization?.rereadPartial(binding)));
+      this.#joins.set(binding.startId, join);
+      void join.catch(() => {}); // Loss/uncertainty remains held; never retry custody.
+    }
+  }
+  #effects(): PreparationMaterializationPort {
+    return {
+      effect: <T>(binding: ChildCorrelation, effect: PreparationEffect, start: () => T): Promise<T> =>
+        this.coordinate(async () => withHostedActivationFence(fence => {
+          this.#admissionHeld(fence, binding);
+          this.#preparation.prefix(fence, binding, effect);
+          // Recheck after durable prefix publication immediately before effect.
+          this.#admissionHeld(fence, binding);
+          const result = start();
+          if (result && (typeof result === "object" || typeof result === "function") && "then" in result) {
+            throw new Error("preparation_synchronous_effect_required");
+          }
+          return result;
+        })),
+      git: async (binding, effect, args, remainingMs) => {
+        const original = await this.#effects().effect(binding, effect, () => {
+          const started = this.#originalCustody.get(binding.startId)!.startGit(effect, args,
+            Math.min(remainingMs, this.retained.budget(binding.slotId).remainingMs()));
+          // A synchronous native failure can reject before asynchronous lock
+          // release. Observe it immediately, while preserving the original
+          // rejected promise for the foreground join and cancellation policy.
+          void started.completion.catch(() => {});
+          return started;
+        });
+        // This original foreground operation is joined outside coordination.
+        return original.completion;
+      },
+    };
+  }
   async materialize(binding: ChildCorrelation, task: string): Promise<void> {
     if (!this.materialization) throw new Error("keyed_live_admission_required");
     let ownership: PinnedDirectory & { readonly parent: PinnedDirectory } | undefined;
+    let settleWriter!: () => void;
+    let rejectWriter!: (error: Error) => void;
+    let writer: Promise<void> | undefined;
     try {
       await this.coordinate(async () => {
         const latest = this.read().observe(this.scope, binding.childHandle);
@@ -164,11 +286,14 @@ export class KeyedChildDispatchAdapter implements KeyedChildApplicationPort {
         const path = join(parent.path, ".keyed-materialization.lock");
         await mkdir(path, { mode: 0o700 });
         const lock = lstatSync(path); ownership = { path, dev: lock.dev, ino: lock.ino, parent };
+        writer = new Promise<void>((resolve, reject) => { settleWriter = resolve; rejectWriter = reject; });
+        void writer.catch(() => {}); // Retain loss as unresolved original ownership.
+        this.#writers.set(binding.startId, writer);
       });
       this.authenticate();
-      await this.materialization.materialize(binding, task);
+      await this.materialization.materialize(binding, task, this.#effects());
     } finally {
-      if (ownership) {
+      try { if (ownership) {
         const parent = lstatSync(ownership.parent.path), lock = lstatSync(ownership.path);
         if (!parent.isDirectory() || parent.uid !== 0 || (parent.mode & 0o022) ||
             parent.dev !== ownership.parent.dev || parent.ino !== ownership.parent.ino ||
@@ -176,7 +301,11 @@ export class KeyedChildDispatchAdapter implements KeyedChildApplicationPort {
           throw new Error("keyed_materialization_ownership_changed");
         }
         await rmdir(ownership.path);
+      } } catch (error) {
+        if (writer) rejectWriter(new Error("preparation_original_writer_custody_lost"));
+        throw error;
       }
+      if (writer) settleWriter();
     }
   }
   dispatchPrepared(binding: ChildCorrelation): KeyedDispatchAcknowledgment {
@@ -184,6 +313,7 @@ export class KeyedChildDispatchAdapter implements KeyedChildApplicationPort {
     if (!this.host || !this.materialization) throw new Error("keyed_live_admission_required");
     const host = this.host, materialization = this.materialization;
     return withHostedActivationFence(fence => {
+      this.#admissionHeld(fence, binding);
       this.authenticate(); assertHostedScopedAdmission(fence, binding.startId); materialization.verify(binding);
       const current = this.ledger.readHeld(fence, this.scope, this.authorityDigest);
       const latest = current.observe(this.scope, binding.childHandle);

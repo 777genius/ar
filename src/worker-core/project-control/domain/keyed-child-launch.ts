@@ -321,6 +321,9 @@ export class KeyedChildLedger {
   markUncertain(binding: ChildCorrelation): KeyedChildLedger {
     const c = this.#correlated(binding);
     if (c.state === KeyedChildState.Terminal) throw new Error("terminal child");
+    // Stop is irreversible, including late materialization/dispatch failures.
+    // Uncertainty is already represented by its retained occupancy.
+    if (c.state === KeyedChildState.StopRequested) return this;
     return c.state === KeyedChildState.Uncertain ? this : this.#replace(c, KeyedChildState.Uncertain);
   }
   stop(binding: ChildCorrelation): KeyedChildLedger {

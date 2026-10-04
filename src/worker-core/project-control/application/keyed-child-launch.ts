@@ -32,6 +32,22 @@ export class KeyedChildLaunchApplication {
           return next;
         });
       const row = ledger.snapshot().accepted.find(c => c.key === request.key)!;
+      if (ledger.generation !== current.generation) {
+        const binding = ledger.observe(this.port.scope, row.allocation.childHandle);
+        try { this.port.retainPreparation(binding); }
+        catch (error) {
+          // The claim already consumed its finite key/slot. Failure before
+          // scheduling the owner also means there is no deadline timer; close
+          // this original admission now, under the same coordination.
+          try {
+            this.port.authenticate(Mode.Cleanup);
+            const stopped = await this.port.transact(this.port.scope, this.port.authorityDigest,
+              ledger.generation, l => l.stop(binding), Mode.Cleanup);
+            this.port.closePreparation(stopped.observe(this.port.scope, row.allocation.childHandle), ScopedStopReason.Completion);
+          } catch { /* Failed closure/publication retains the original obligation and error. */ }
+          throw error;
+        }
+      }
       return { view: ledger.observe(this.port.scope, row.allocation.childHandle),
         fresh: ledger.generation !== current.generation };
     });
@@ -71,7 +87,13 @@ export class KeyedChildLaunchApplication {
       const binding = current.observe(this.port.scope, handle);
       const next = await this.port.transact(this.port.scope, this.port.authorityDigest,
         current.generation, l => l.stop(binding), Mode.Cleanup);
-      return next.observe(this.port.scope, handle);
+      const stopped = next.observe(this.port.scope, handle);
+      if (stopped.state !== State.Terminal && !stopped.dispatchIntent) {
+        // StopRequested is durable even if closing the original gate fails.
+        // Such failure leaves occupancy held and forbids subsequent effects.
+        this.port.closePreparation(stopped, reason);
+      }
+      return stopped;
     }, Mode.Cleanup);
     if (stopped.state !== State.Terminal) {
       try { await this.port.stopPort?.request(stopped, reason); } catch { /* Unresolved, retained. */ }
@@ -84,6 +106,7 @@ export class KeyedChildLaunchApplication {
   async reconcile(handle: string, reason = ScopedStopReason.Completion): Promise<KeyedLaunchView> {
     this.port.authenticate(Mode.Cleanup);
     const binding = await this.port.coordinate(async () => this.port.read(Mode.Cleanup).observe(this.port.scope, handle), Mode.Cleanup);
+    if (binding.state !== State.Terminal && !binding.dispatchIntent) return this.stop(handle, reason);
     if (binding.state !== State.Terminal) {
       try { await this.port.stopPort?.request(binding, reason); } catch { /* Held. */ }
     }
@@ -96,10 +119,10 @@ export class KeyedChildLaunchApplication {
       this.port.authenticate();
       const current = this.port.read(), latest = current.observe(this.port.scope, binding.childHandle);
       if (latest.state !== from || latest.generation !== binding.generation) return null;
+      this.port.assertPreparationAdmission(binding);
       // Advance with the retained binding, so the domain checks full identity
       // as well as generation after work outside coordination.
-      const next = await this.port.transact(this.port.scope, this.port.authorityDigest,
-        current.generation, l => l.advance(binding, to, Date.now()));
+      const next = this.port.transactPreparation(binding, l => l.advance(binding, to, Date.now()));
       return next.observe(this.port.scope, binding.childHandle);
     });
   }
@@ -113,6 +136,7 @@ export class KeyedChildLaunchApplication {
       this.port.authenticate();
       const latest = this.port.read().observe(this.port.scope, binding.childHandle);
       if (latest.state !== State.Prepared || latest.generation !== prepared.generation) return null;
+      this.port.assertPreparationAdmission(prepared);
       // Adapter owns fresh intent + reservation/start + OS call in ONE sync fence.
       return this.port.dispatchPrepared(prepared);
     });
@@ -125,16 +149,21 @@ export class KeyedChildLaunchApplication {
   }
   async #hold(binding: ChildCorrelation): Promise<void> {
     try {
+      let cancelPreparation = false;
       await this.port.coordinate(async () => {
         this.port.authenticate(Mode.Cleanup);
         const current = this.port.read(Mode.Cleanup), latest = current.observe(this.port.scope, binding.childHandle);
         // Late completion cannot regress stop or terminal state. No stale CAS.
         if (latest.state === State.Terminal) { this.#view(latest); return; }
         if (latest.state === State.StopRequested) return;
+        cancelPreparation = !latest.dispatchIntent;
         await this.port.transact(this.port.scope, this.port.authorityDigest,
           current.generation, l => l.markUncertain(latest), Mode.Cleanup);
       }, Mode.Cleanup);
-      if (Date.now() >= this.port.deadlineEpochMs) await this.stop(binding.childHandle, ScopedStopReason.Deadline);
+      if (cancelPreparation || Date.now() >= this.port.deadlineEpochMs) {
+        await this.stop(binding.childHandle, Date.now() >= this.port.deadlineEpochMs
+          ? ScopedStopReason.Deadline : ScopedStopReason.Completion);
+      }
     } catch { /* Corrupt/pending storage remains authoritative; never reconstruct/release. */ }
   }
   #view(o: ChildObservation): KeyedLaunchView {

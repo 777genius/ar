@@ -1,13 +1,18 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync,
   realpathSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
-import { promisify } from "node:util";
 
 import type { ChildCorrelation } from "../../worker-core/project-control/domain/keyed-child-launch";
 import { assertRetainedKeyedAuthority, RetainedKeyedAuthority } from "./retained-authority";
-const git = promisify(execFile);
+import { PreparationEffect as Effect } from "../../worker-core/hosted-custody/domain/preintent-preparation";
+import type { PreparationAdmissionPort } from "../../worker-core/hosted-custody/ports/preintent-preparation";
+
+/** Fixed Git effects use the original consumer-owned supervision operation.
+ * The adapter records creation prefixes before invoking its native start. */
+export interface PreparationMaterializationPort extends PreparationAdmissionPort {
+  git(binding: ChildCorrelation, effect: Effect, args: readonly string[], remainingMs: number): Promise<{ readonly stdout: string }>;
+}
 const same = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;
 
 /** No provisioning: all authority parents are already private PR3 inventory.
@@ -27,29 +32,37 @@ export class SlotMaterialization {
       }
     }
   }
-  #check(): void {
-    this.retained.assertCurrent();
+  preparationPlanDigest(binding: ChildCorrelation): string {
+    this.#check();
+    const slot = this.retained.slot(binding.slotId);
+    return createHash("sha256").update(JSON.stringify(["original-keyed-preparation", 1,
+      this.sourceRoot, slot.promptPath, slot.workspacePath, slot.jobRootDir, slot.sourceSha,
+      "/usr/bin/git", "core.hooksPath=/dev/null", "clone --no-local --no-checkout",
+      "checkout --detach", "rev-parse HEAD", "core.fsmonitor=false status --porcelain --untracked-files=all"])).digest("hex");
+  }
+  #check(cleanup = false): void {
+    if (cleanup) this.retained.assertCleanup(); else this.retained.assertCurrent();
     for (const [path, stat] of this.#parents) {
       const actual = lstatSync(path);
       if (!actual.isDirectory() || actual.uid !== 0 || (actual.mode & 0o022) ||
           !same(stat, actual) || realpathSync(path) !== path) fail();
     }
   }
-  #read(path: string): Buffer | null {
-    this.#check();
+  #read(path: string, cleanup = false): Buffer | null {
+    this.#check(cleanup);
     const parent = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     let fd: number | undefined;
     try {
       if (!same(fstatSync(parent), this.#parents.get(dirname(path))!)) fail();
       const anchored = `/proc/self/fd/${parent}/${path.slice(dirname(path).length + 1)}`;
       try { fd = openSync(anchored, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-      catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") { this.#check(); return null; } throw e; }
+      catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") { this.#check(cleanup); return null; } throw e; }
       const before = fstatSync(fd);
       if (!before.isFile() || before.uid !== 0 || before.nlink !== 1 || (before.mode & 0o7777) !== 0o600 || before.size > 32768) fail();
       const bytes = readFileSync(fd), after = fstatSync(fd);
       if (!same(before, lstatSync(anchored)) || after.size !== before.size || bytes.length !== before.size ||
           after.ctimeMs !== before.ctimeMs || after.mtimeMs !== before.mtimeMs) fail();
-      this.#check(); return bytes;
+      this.#check(cleanup); return bytes;
     } finally { if (fd !== undefined) closeSync(fd); closeSync(parent); }
   }
   #publish(path: string, bytes: Buffer): void {
@@ -75,7 +88,7 @@ export class SlotMaterialization {
     } finally { if (fd !== undefined) closeSync(fd); closeSync(parent); }
     // Failures retain partial files, never overwrite, unlink or retry them.
   }
-  async materialize(binding: ChildCorrelation, task: string): Promise<void> {
+  async materialize(binding: ChildCorrelation, task: string, effects: PreparationMaterializationPort): Promise<void> {
     this.#check();
     const slot = this.retained.slot(binding.slotId), budget = this.retained.budget(binding.slotId);
     budget.remainingMs();
@@ -92,7 +105,8 @@ export class SlotMaterialization {
       plan = Buffer.from(JSON.stringify({ bindingDigest: this.retained.seed.authorityDigest,
         requestDigest: binding.requestDigest, artifactSha: slot.artifactSha, sourceSha: slot.sourceSha,
         manifest: JSON.stringify(manifest) + "\n" }) + "\n");
-      this.#publish(planPath, plan);
+      const publication = plan;
+      await effects.effect(binding, Effect.PublicationPlan, () => this.#publish(planPath, publication));
     }
     if (this.#plans.has(slot.slotId) && !plan.equals(this.#plans.get(slot.slotId)!)) fail();
     this.#plans.set(slot.slotId, Buffer.from(plan));
@@ -109,34 +123,43 @@ export class SlotMaterialization {
         manifest.requestDigest !== binding.requestDigest || typeof manifest.createdAt !== "string" ||
         !Number.isFinite(Date.parse(manifest.createdAt)) || manifest.updatedAt !== manifest.createdAt ||
         decoded.manifest !== JSON.stringify(manifest) + "\n") fail();
-    this.#publish(slot.promptPath, Buffer.from(task));
+    await effects.effect(binding, Effect.Prompt, () => this.#publish(slot.promptPath, Buffer.from(task)));
     budget.remainingMs(); this.#check();
     // No fallback clone/checkout after partial effects. Opaque fixed slot owns it.
     try { lstatSync(slot.workspacePath); }
     catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-      await git("/usr/bin/git", ["-c", "core.hooksPath=/dev/null", "clone", "--no-local", "--no-checkout", "--", this.sourceRoot, slot.workspacePath], { env: {}, timeout: Math.min(30000, budget.remainingMs()) });
+      await effects.git(binding, Effect.SourceClone, ["-c", "core.hooksPath=/dev/null", "clone", "--no-local", "--no-checkout", "--", this.sourceRoot, slot.workspacePath], Math.min(30000, budget.remainingMs()));
       this.#check(); budget.remainingMs();
       const stagedWorkspace = lstatSync(slot.workspacePath);
       if (!stagedWorkspace.isDirectory() || realpathSync(slot.workspacePath) !== slot.workspacePath ||
           !lstatSync(join(slot.workspacePath, ".git")).isDirectory() ||
           realpathSync(join(slot.workspacePath, ".git")) !== join(slot.workspacePath, ".git")) fail();
       this.#workspaces.set(slot.slotId, stagedWorkspace);
-      await git("/usr/bin/git", ["-C", slot.workspacePath, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", slot.sourceSha], { env: {}, timeout: Math.min(30000, budget.remainingMs()) });
+      await effects.git(binding, Effect.SourceCheckout, ["-C", slot.workspacePath, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", slot.sourceSha], Math.min(30000, budget.remainingMs()));
     }
     this.#check(); budget.remainingMs();
     const workspace = lstatSync(slot.workspacePath);
     if (!workspace.isDirectory() || realpathSync(slot.workspacePath) !== slot.workspacePath ||
         (this.#workspaces.has(slot.slotId) && !same(this.#workspaces.get(slot.slotId)!, workspace))) fail();
-    const head = await git("/usr/bin/git", ["-C", slot.workspacePath, "rev-parse", "HEAD"], { env: {}, timeout: Math.min(5000, budget.remainingMs()) });
+    const head = await effects.git(binding, Effect.SourceHead, ["-C", slot.workspacePath, "rev-parse", "HEAD"], Math.min(5000, budget.remainingMs()));
     this.#check(); budget.remainingMs();
     if (head.stdout.trim() !== slot.sourceSha || !same(workspace, lstatSync(slot.workspacePath))) fail();
-    const clean = await git("/usr/bin/git", ["-C", slot.workspacePath, "-c", "core.fsmonitor=false",
-      "status", "--porcelain", "--untracked-files=all"], { env: {}, timeout: Math.min(5000, budget.remainingMs()) });
+    const clean = await effects.git(binding, Effect.SourceStatus, ["-C", slot.workspacePath, "-c", "core.fsmonitor=false",
+      "status", "--porcelain", "--untracked-files=all"], Math.min(5000, budget.remainingMs()));
     this.#check(); budget.remainingMs();
     if (clean.stdout.length || !same(workspace, lstatSync(slot.workspacePath))) fail();
-    this.#publish(manifestPath, Buffer.from(decoded.manifest));
+    await effects.effect(binding, Effect.Manifest, () => this.#publish(manifestPath, Buffer.from(decoded.manifest)));
     this.#workspaces.set(slot.slotId, workspace);
+  }
+  /** Final partial files are descriptive facts, never quiescence authority.
+   * Called only after joining the original writer and native subtree. */
+  rereadPartial(binding: ChildCorrelation): void {
+    this.#check(true);
+    const slot = this.retained.cleanupSlot(binding.slotId);
+    for (const path of [slot.promptPath, join(slot.jobRootDir, "keyed-publication.json"),
+      join(slot.jobRootDir, "keyed-child-manifest.json")]) this.#read(path, true);
+    this.#check(true);
   }
   verify(binding: ChildCorrelation): void {
     this.#check();

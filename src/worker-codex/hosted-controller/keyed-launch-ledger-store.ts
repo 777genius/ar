@@ -174,6 +174,12 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
     if (!bytes) throw new Error("keyed_ledger_existing_state_required");
     const current = KeyedChildLedger.restore(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes), this.#seed);
     if (!bytes.equals(Buffer.from(current.serialize()))) throw new Error("keyed_ledger_noncanonical_bytes");
+    if (current.snapshot().accepted.some(child => !child.dispatchIntent && child.state === KeyedChildState.Terminal)) {
+      // Historical DTO terminal rows also cannot restore dispatch occupancy.
+      // The native receipt adoption/reauthentication prerequisite is still
+      // absent; quarantine these rows rather than trusting serialized state.
+      throw new Error("preintent_authenticated_terminal_authority_required");
+    }
     // Archived obligations are immutable high-water evidence. A replaced seed
     // or older canonical target cannot silently discard accepted history.
     const prefix = basename(this.#path).slice(0, -5) + ".history.";
@@ -239,6 +245,13 @@ export class KeyedLaunchLedgerStore implements KeyedChildLedgerTransactionPort {
       }
       current.assertSuccessor(next);
       for (const child of next.snapshot().accepted) {
+        if (!child.dispatchIntent && child.state === KeyedChildState.Terminal &&
+            current.observe(this.#scope, child.allocation.childHandle).state !== KeyedChildState.Terminal) {
+          // A domain value/DTO is not authenticated native terminal authority.
+          // C1 adoption stays closed until the original custody issuer and its
+          // complete inventory verifier are integrated in this fresh callback.
+          throw new Error("preintent_authenticated_terminal_authority_required");
+        }
         if (child.dispatchIntent && child.state === KeyedChildState.Terminal) {
           const priorChild = current.observe(this.#scope, child.allocation.childHandle);
           if (priorChild.state === KeyedChildState.Terminal) continue;

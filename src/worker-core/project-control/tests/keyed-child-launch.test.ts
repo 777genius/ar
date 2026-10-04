@@ -26,6 +26,15 @@ function noEffects(l: KeyedChildLedger, handle = "child-1") {
 }
 
 describe("finite keyed child ledger", () => {
+  it("stop cannot be regressed by a late materialization failure", () => {
+    const l = accepted(), stopped = l.stop(view(l));
+    expect(stopped.markUncertain(view(stopped))).toBe(stopped);
+    expect(view(stopped).state).toBe(State.StopRequested);
+    expect(stopped.stop(view(stopped))).toBe(stopped);
+    expect(stopped.remainingAllowance).toBe(1);
+    expect(() => stopped.advance(view(stopped), State.Prepared, 50)).toThrow();
+    expect(() => stopped.advance(view(stopped), State.DispatchIntent, 50)).toThrow();
+  });
   it("lost replies and terminal replay cannot allocate a replacement child", () => {
     let l = accepted();
     const initial = view(l);

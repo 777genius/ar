@@ -27,6 +27,21 @@ export interface KeyedChildApplicationPort extends KeyedChildLedgerTransactionPo
   beforeFreshClaim(slotId: string): void;
   coordinate<T>(action: () => Promise<T>, mode?: KeyedAuthorizationMode): Promise<T>;
   read(mode?: KeyedAuthorizationMode): KeyedChildLedger;
+  /** Durable original ownership before any preparation effects. Called under
+   * controller/workspace coordination after the claim's durable publication. */
+  retainPreparation(binding: ChildCorrelation): void;
+  /** Early preflight only; it cannot authorize a later state transition.
+   * A reconstructed owner never reopens the original admission. */
+  assertPreparationAdmission(binding: ChildCorrelation): void;
+  /** Synchronously authenticate the original admission and fresh generation
+   * inside the successor CAS callback, under the same common fence as its
+   * publication. The application owns the transition policy; the adapter owns
+   * the concrete fence/store. No asynchronous callback or renewed authority. */
+  transactPreparation(binding: ChildCorrelation,
+    successor: (current: KeyedChildLedger) => KeyedChildLedger): KeyedChildLedger;
+  /** Close once under coordination. Neither repeated stop nor retry can mint
+   * a new original operation, gate, lifetime or cleanup allowance. */
+  closePreparation(binding: ChildCorrelation, reason: ScopedStopReason): void;
   materialize(binding: ChildCorrelation, task: string): Promise<void>;
   dispatchPrepared(binding: ChildCorrelation): KeyedDispatchAcknowledgment;
   readonly stopPort?: KeyedScopedStopPort | undefined;

@@ -5,6 +5,8 @@ import { ScopedTerminationKind, ScopedSignal, stableChildDigest, scopedDigest,
 import { HostedInstallationActivationStore } from "../hosted-installation-activation";
 import { KeyedAuthorizationMode as Mode, type KeyedScopedStopPort } from "../../worker-core/project-control/ports/keyed-child-application-ports";
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, renameSync, symlinkSync, readdirSync, chmodSync, linkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -17,7 +19,9 @@ import { KeyedChildLaunchApplication, ScopedStopReason, ScopedStopResult } from 
 import { KeyedLaunchLedgerStore } from "../hosted-controller/keyed-launch-ledger-store";
 import { RetainedKeyedAuthority } from "../hosted-controller/retained-authority";
 import { SlotMaterialization } from "../hosted-controller/slot-materialization";
-import { KeyedChildDispatchAdapter, OrdinaryKeyedChildHost, consumeFreshKeyedSubmission, type FreshKeyedSubmission } from "../hosted-controller/child-submission";
+import { PreintentPreparationRecords } from "../hosted-controller/preintent-preparation-records";
+import { PreparationEffect } from "../../worker-core/hosted-custody/domain/preintent-preparation";
+import { KeyedChildDispatchAdapter, OrdinaryKeyedChildHost, consumeFreshKeyedSubmission, type FreshKeyedSubmission, type OwnedPreparationNativePort } from "../hosted-controller/child-submission";
 import { HostedControllerOriginCapability } from "../hosted-controller-origin-binding";
 import { assertHostedControllerKeyedToolAdapter, HostedControllerKeyedToolAdapter } from "../hosted-controller/tool-adapter";
 import { HostedControllerFramedDispatcher, hostedControllerAdapterFromFramedDispatcher, hostedControllerPipe } from "../hosted-controller-framed-dispatcher";
@@ -64,7 +68,8 @@ vi.mock("node:fs", async original => {
           (facts.syncFault === "receipt-file" && path.includes("/scoped-receipts/") && path.endsWith(".json")) ||
           (facts.syncFault === "receipt-parent" && path.endsWith("/scoped-receipts")) ||
           (facts.syncFault === "activation" && path.endsWith("host-activation.next")) ||
-          (facts.syncFault === "keyed" && path.includes("/keyed-child-ledgers/") && path.endsWith(".next"))) throw new Error("TEST publication interrupted");
+          (facts.syncFault === "keyed" && path.includes("/keyed-child-ledgers/") && path.endsWith(".next")) ||
+          (facts.syncFault === "preparation-close" && path.endsWith("/keyed-preparation-closed.json"))) throw new Error("TEST publication interrupted");
       fs.fsyncSync(fd);
       if (path.endsWith("/scoped-receipts") && facts.mutateOnSync) { const mutate = facts.mutateOnSync; facts.mutateOnSync = null; mutate(); }
     },
@@ -114,7 +119,15 @@ beforeEach(() => {
   vi.spyOn(process, "getuid").mockReturnValue(0);
 });
 afterEach(async () => { stop?.(); await joinWork?.(); vi.useRealTimers(); vi.restoreAllMocks(); rmSync(facts.root, { recursive: true, force: true }); });
-function fixture(production = false, deadline = Date.now() + 60000, stopMode: "unresolved" | "throw" | "absent" | "proof" = "unresolved") {
+function testPreparationNative(): OwnedPreparationNativePort {
+  // Policy/wiring fixture only. It explicitly supplies NO native quiescence
+  // authority and can never authorize a persisted pre-intent terminal.
+  return { retain: owner => ({ owner, assertAdmission: () => {}, requestStop: () => {},
+    join: async () => null, authenticateQuiescence: () => { throw new Error("TEST has no native authority"); },
+    startGit: (_effect, args, remainingMs) => ({ completion: promisify(execFile)("/usr/bin/git", [...args], { env: {}, timeout: remainingMs }) }),
+  }) };
+}
+function fixture(production = false, deadline = Date.now() + 60000, stopMode: "unresolved" | "throw" | "absent" | "proof" = "unresolved", nativeAvailable: boolean | OwnedPreparationNativePort = true) {
   for (const name of ["keyed-child-ledgers", "child-slots", "grants", "prompts", "source", "jobs", "scoped-terminating", "keyed-child-owners"]) mkdirSync(join(facts.root, name), { mode: 0o700 });
   const slots = [1, 2].map(n => {
     const slotId = `TEST-slot-${n}`, creatorId = `TEST-creator-${n}`, jobId = `TEST-child-${n}`, jobRootDir = join(facts.root, "jobs", jobId);
@@ -180,7 +193,7 @@ function fixture(production = false, deadline = Date.now() + 60000, stopMode: "u
       if (stopMode === "throw") throw new Error("TEST unresolved stop failure");
       return ScopedStopResult.Unresolved;
     },
-  });
+  }, typeof nativeAvailable === "boolean" ? nativeAvailable ? testPreparationNative() : undefined : nativeAvailable);
   const app = new KeyedChildLaunchApplication(adapter), tools = new HostedControllerKeyedToolAdapter(retained, app);
   stop = wait.resolve; joinWork = () => app.drain();
   return { slots, authority, allocations, store, retained, adapter, app, tools, wait, calls, stops, stopRequests, materialization,
@@ -193,6 +206,106 @@ async function submitted(f: ReturnType<typeof fixture>) {
 }
 
 describe("PR4 keyed application with private TEST persistence and controlled host", () => {
+  it.each(["missing-custody", "rejected-admission"] as const)("failed original retention (%s) durably closes admission before launch rejects", async mode => {
+    const requested = vi.fn(), joined = vi.fn(async () => null), base = testPreparationNative();
+    let retains = 0;
+    const native: OwnedPreparationNativePort = { retain: owner => {
+      retains++;
+      return { ...base.retain(owner), requestStop: requested, join: joined,
+        assertAdmission: () => { throw new Error("TEST original admission rejected"); } };
+    } };
+    const f = fixture(false, Date.now() + 60000, "unresolved", mode === "missing-custody" ? false : native);
+    await expect(f.app.launch(request, new AbortController().signal)).rejects.toThrow(
+      mode === "missing-custody" ? "preparation_original_native_custody_required" : "TEST original admission rejected");
+    const handle = f.allocations[0]!.childHandle, slot = f.slots[0]!;
+    const stopped = f.ledger();
+    expect(stopped.observe(f.authority, handle).state).toBe(State.StopRequested);
+    expect(stopped.observe(f.authority, handle).dispatchIntent).toBeNull();
+    expect(stopped.occupied).toBe(true); expect(stopped.remainingAllowance).toBe(1);
+    const closurePath = join(slot.jobRootDir, "keyed-preparation-closed.json");
+    const closure = readFileSync(closurePath);
+    const ownerPath = join(slot.jobRootDir, "keyed-preparation-owner.json"), ownerBytes = readFileSync(ownerPath);
+    const owner = JSON.parse(ownerBytes.toString("utf8")) as
+      { preparationGeneration: number; deadlineEpochMs: number; maxGoalTurns: number };
+    expect(JSON.parse(closure.toString("utf8"))).toMatchObject({ preparationGeneration: owner.preparationGeneration,
+      closureGeneration: stopped.generation, reason: ScopedStopReason.Completion });
+    expect(owner.deadlineEpochMs).toBe(f.authority.absoluteDeadline); expect(owner.maxGoalTurns).toBe(f.authority.maxGoalTurns);
+    expect(() => readFileSync(slot.promptPath)).toThrow();
+    expect(() => readFileSync(join(slot.jobRootDir, "keyed-publication.json"))).toThrow();
+    const replay = await f.app.launch(request, new AbortController().signal);
+    expect(replay.childHandle).toBe(handle); expect(replay.state).toBe(State.StopRequested);
+    expect(retains).toBe(mode === "missing-custody" ? 0 : 1);
+    if (mode === "rejected-admission") {
+      expect(requested).toHaveBeenCalled(); await vi.waitFor(() => expect(joined).toHaveBeenCalledOnce());
+    }
+    await f.app.stop(handle, ScopedStopReason.Budget);
+    expect(readFileSync(closurePath)).toEqual(closure);
+    expect(readFileSync(ownerPath)).toEqual(ownerBytes);
+    expect(f.ledger().generation).toBe(stopped.generation); expect(f.ledger().remainingAllowance).toBe(stopped.remainingAllowance);
+    expect(f.calls).toHaveLength(0);
+    if (mode === "rejected-admission") expect(joined).toHaveBeenCalledOnce();
+    await expect(f.app.launch({ ...request, key: "next" }, new AbortController().signal)).rejects.toThrow("occupied");
+  });
+  it("closed preparation record inventory captures zero effects and refuses an unknown durable prefix", async () => {
+    const f = fixture(false, Date.now() + 60000, "unresolved", false);
+    await expect(f.app.launch(request, new AbortController().signal)).rejects.toThrow("preparation_original_native_custody_required");
+    await f.app.stop(f.allocations[0]!.childHandle);
+    const records = new PreintentPreparationRecords(f.retained);
+    const binding = f.ledger().observe(f.authority, f.allocations[0]!.childHandle);
+    const inventory = withHostedActivationFence(fence => records.closedInventory(fence, binding));
+    expect(Object.keys(inventory.prefixDigests).sort()).toEqual(Object.values(PreparationEffect).sort());
+    expect(Object.values(inventory.prefixDigests).every(value => value === null)).toBe(true);
+    expect(inventory.ledgerGeneration).toBe(binding.generation);
+    const closure = readFileSync(join(f.slots[0]!.jobRootDir, "keyed-preparation-closed.json"));
+    expect(inventory.closureDigest).toBe(createHash("sha256").update(closure).digest("hex"));
+    writeFileSync(join(f.slots[0]!.jobRootDir, "keyed-preparation-effect-unknown.json"), "{}\n", { mode: 0o600 });
+    expect(() => withHostedActivationFence(fence => records.closedInventory(fence, binding))).toThrow("preparation_ownership_conflict");
+    expect(f.ledger().occupied).toBe(true);
+  });
+  it("failed initial preparation closure fsync preserves the launch error and stops original custody without renewing allowance", async () => {
+    const requested = vi.fn(), joined = vi.fn(async () => null), base = testPreparationNative();
+    const native: OwnedPreparationNativePort = { retain: owner => ({ ...base.retain(owner),
+      assertAdmission: () => { throw new Error("TEST original admission lost"); },
+      requestStop: requested, join: joined,
+    }) };
+    const f = fixture(false, Date.now() + 60000, "unresolved", native);
+    facts.syncFault = "preparation-close";
+    await expect(f.app.launch(request, new AbortController().signal)).rejects.toThrow("TEST original admission lost");
+    const handle = f.allocations[0]!.childHandle;
+    expect(requested).toHaveBeenCalledOnce(); expect(joined).not.toHaveBeenCalled();
+    const closurePath = join(f.slots[0]!.jobRootDir, "keyed-preparation-closed.json");
+    const bytes = readFileSync(closurePath);
+    const before = f.ledger();
+    expect(before.observe(f.authority, handle).state).toBe(State.StopRequested);
+    expect(before.occupied).toBe(true); expect(before.remainingAllowance).toBe(1);
+    facts.syncFault = "";
+    expect((await f.app.stop(handle, ScopedStopReason.Budget)).occupied).toBe(true);
+    await vi.waitFor(() => expect(joined).toHaveBeenCalledOnce());
+    expect(readFileSync(closurePath)).toEqual(bytes);
+    expect(f.ledger().generation).toBe(before.generation);
+    expect(f.ledger().remainingAllowance).toBe(before.remainingAllowance);
+    expect(f.calls).toHaveLength(0);
+    expect(f.ledger().observe(f.authority, handle).dispatchIntent).toBeNull();
+  });
+  it("a durable preparation prefix after original closure is rejected instead of omitted", async () => {
+    const f = fixture(false, Date.now() + 60000, "unresolved", false);
+    await expect(f.app.launch(request, new AbortController().signal)).rejects.toThrow("preparation_original_native_custody_required");
+    await f.app.stop(f.allocations[0]!.childHandle);
+    const records = new PreintentPreparationRecords(f.retained);
+    const binding = f.ledger().observe(f.authority, f.allocations[0]!.childHandle);
+    const owner = readFileSync(join(f.slots[0]!.jobRootDir, "keyed-preparation-owner.json"));
+    const prefixPath = join(f.slots[0]!.jobRootDir, `keyed-preparation-effect-${PreparationEffect.SourceClone}.json`);
+    const prefix = { schemaVersion: 1, ownershipDigest: createHash("sha256").update(owner).digest("hex"),
+      generation: binding.generation + 1, effect: PreparationEffect.SourceClone };
+    writeFileSync(prefixPath, JSON.stringify(prefix) + "\n", { mode: 0o600 });
+    expect(() => withHostedActivationFence(fence => records.closedInventory(fence, binding))).toThrow("preparation_ownership_conflict");
+    // A valid durable prefix is still only an obligation record, not proof that
+    // clone started or quiesced. The persisted ledger remains occupied.
+    writeFileSync(prefixPath, JSON.stringify({ ...prefix, generation: binding.generation - 1 }) + "\n");
+    const inventory = withHostedActivationFence(fence => records.closedInventory(fence, binding));
+    expect(inventory.prefixDigests[PreparationEffect.SourceClone]).toBe(createHash("sha256").update(readFileSync(prefixPath)).digest("hex"));
+    expect(f.ledger().occupied).toBe(true); expect(f.calls).toHaveLength(0);
+  });
   it.each(["explicit", "deadline"])("PR4-R1: %s stop and observe settle while actual checkout is gated; no later dispatch", async mode => {
     if (mode === "deadline") vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const f = fixture(false, Date.now() + (mode === "deadline" ? 5000 : 60000));
@@ -218,6 +331,8 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
       const latest = f.ledger().observe(f.authority, view.childHandle);
       expect(latest.state).toBe(State.StopRequested); expect(latest.generation).toBeGreaterThan(preparing.generation);
       expect(latest.dispatchIntent).toBeNull(); expect(f.calls).toHaveLength(0); expect(f.ledger().occupied).toBe(true);
+      expect(() => readFileSync(join(f.slots[0]!.jobRootDir, "keyed-preparation-effect-source_head.json"))).toThrow();
+      expect(() => readFileSync(join(f.slots[0]!.jobRootDir, "keyed-child-manifest.json"))).toThrow();
       await expect(f.adapter.materialize(preparing, request.task)).rejects.toThrow();
     } finally { checkout.resolve(); }
   });
@@ -262,7 +377,7 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
     expect(atDeadline).toMatchObject({ state: State.StopRequested, occupied: true, deadlineEpochMs: deadline });
     expect(f.calls).toHaveLength(1);
   });
-  it.each(["observe", "stop"] as const)("authoritative terminal reconciliation through %s cancels the original timer", async reconciliation => {
+  it.each(["observe", "stop"] as const)("forged pre-intent reconciliation through %s retains occupancy and original deadline", async reconciliation => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const deadline = Date.now() + 5000, f = fixture(false, deadline);
     const checkout = deferred(), entered = deferred();
@@ -270,19 +385,15 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
     const view = await f.app.launch(request, new AbortController().signal);
     try {
       await entered.promise; await f.app.stop(view.childHandle);
-      // Fresh TEST boundary supplies pre-intent no-effect evidence. The
-      // ledger's real successor/publication validation remains authoritative.
-      await f.adapter.coordinate(async () => {
+      await expect(f.adapter.coordinate(async () => {
         const current = f.adapter.read();
         await f.adapter.transact(f.authority, f.retained.seed.authorityDigest, current.generation,
           l => l.terminalizeBeforeIntent({ kind: NoEffectProofKind.IndependentlyEstablished,
             correlation: l.observe(f.authority, view.childHandle), evidenceDigest: "a".repeat(64) }));
-      });
+      })).rejects.toThrow("preintent_authenticated_terminal_authority_required");
       const terminal = await f.app[reconciliation](view.childHandle);
-      expect(terminal).toMatchObject({ state: State.Terminal, occupied: false, deadlineEpochMs: deadline });
-      const stopCalls = vi.spyOn(f.app, "stop");
-      await vi.advanceTimersByTimeAsync(deadline - Date.now()); await delay(500);
-      expect(stopCalls).not.toHaveBeenCalled(); expect(f.stops).toHaveLength(1); expect(f.calls).toHaveLength(0);
+      expect(terminal).toMatchObject({ state: State.StopRequested, occupied: true, deadlineEpochMs: deadline });
+      expect(f.calls).toHaveLength(0);
     } finally { checkout.resolve(); await f.app.drain(); }
   });
   it.each([-60000, 60000])("wall clock shift %i cannot postpone an accepted pending child's deadline", async shift => {
@@ -349,15 +460,15 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
     await submitted(f); f.wait.resolve(); await f.app.drain(); expect(f.calls).toHaveLength(1);
     expect((await f.app.observe(f.allocations[0]!.childHandle)).occupied).toBe(true);
   });
-  it("terminal same key keeps original handles forever without new effects", async () => {
+  it("forged terminal keeps the accepted key held without new effects", async () => {
     const f = fixture();
     await f.adapter.coordinate(async () => {
       const claim = await f.store.transact(f.authority, f.retained.seed.authorityDigest, 0, l => l.accept(0, request, Date.now()));
-      await f.store.transact(f.authority, f.retained.seed.authorityDigest, claim.generation, l => l.terminalizeBeforeIntent({ kind: NoEffectProofKind.IndependentlyEstablished,
-        correlation: l.observe(f.authority, f.allocations[0]!.childHandle), evidenceDigest: "a".repeat(64) }));
+      await expect(f.store.transact(f.authority, f.retained.seed.authorityDigest, claim.generation, l => l.terminalizeBeforeIntent({ kind: NoEffectProofKind.IndependentlyEstablished,
+        correlation: l.observe(f.authority, f.allocations[0]!.childHandle), evidenceDigest: "a".repeat(64) }))).rejects.toThrow("preintent_authenticated_terminal_authority_required");
     });
     const replay = await f.app.launch(request, new AbortController().signal);
-    expect(replay.state).toBe(State.Terminal); expect(replay.childHandle).toBe(f.allocations[0]!.childHandle); expect(f.calls).toHaveLength(0);
+    expect(replay.state).toBe(State.Claimed); expect(replay.childHandle).toBe(f.allocations[0]!.childHandle); expect(f.calls).toHaveLength(0);
     expect(f.ledger().remainingAllowance).toBe(1);
   });
   it("cancelled response/dropped acknowledgment retains accepted work independently", async () => {
@@ -374,7 +485,7 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
   it.each(["checkout", "before-os", "accepted-then-throw"])("retains claim/correlation across %s and never invokes replay", async failure => {
     const f = fixture(); facts.fail = failure; const first = await f.app.launch(request, new AbortController().signal); await f.app.drain();
     const l = f.ledger(), binding = l.observe(f.authority, first.childHandle);
-    expect(binding.state).toBe(State.Uncertain); expect(l.occupied).toBe(true);
+    expect(binding.state).toBe(failure === "checkout" ? State.StopRequested : State.Uncertain); expect(l.occupied).toBe(true);
     expect(!!binding.dispatchIntent).toBe(failure !== "checkout");
     facts.fail = ""; expect((await f.app.launch(request, new AbortController().signal)).childHandle).toBe(first.childHandle);
     expect(f.calls).toHaveLength(failure === "accepted-then-throw" ? 1 : 0);
@@ -405,9 +516,10 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
   it("exact prompt and manifest replay preserves bytes; conflicts/partial/symlink fail without clobber", async () => {
     const f = fixture(); await f.app.launch(request, new AbortController().signal); await submitted(f);
     const binding = f.ledger().observe(f.authority, f.allocations[0]!.childHandle), path = join(f.slots[0]!.jobRootDir, "keyed-child-manifest.json"), original = readFileSync(path);
-    await f.materialization.materialize(binding, request.task); expect(readFileSync(path)).toEqual(original);
-    writeFileSync(path, original.subarray(0, 6), { mode: 0o600 }); await expect(f.materialization.materialize(binding, request.task)).rejects.toThrow(); expect(readFileSync(path)).toEqual(original.subarray(0, 6));
-    rmSync(path); symlinkSync(f.slots[0]!.promptPath, path); await expect(f.materialization.materialize(binding, request.task)).rejects.toThrow();
+    f.materialization.verify(binding); expect(readFileSync(path)).toEqual(original);
+    await expect(f.adapter.materialize(binding, request.task)).rejects.toThrow("keyed_materialization_ineligible");
+    writeFileSync(path, original.subarray(0, 6), { mode: 0o600 }); expect(() => f.materialization.verify(binding)).toThrow(); expect(readFileSync(path)).toEqual(original.subarray(0, 6));
+    rmSync(path); symlinkSync(f.slots[0]!.promptPath, path); expect(() => f.materialization.verify(binding)).toThrow();
     f.wait.resolve(); await f.app.drain(); expect(f.calls).toHaveLength(1);
   });
   it.each(["directory", "symlink"])("replaced parent during staging (%s) is rejected and claim is held", async mode => {
@@ -441,7 +553,7 @@ describe("PR4 keyed application with private TEST persistence and controlled hos
     expect(view.state).toBe(State.DispatchIntent); expect(view.occupied).toBe(true); expect(f.calls).toHaveLength(0);
   });
   it("stop without a PR5 implementation is durable unresolved; returned booleans never release", async () => {
-    const f = fixture(), app = new KeyedChildLaunchApplication(new KeyedChildDispatchAdapter(f.retained, f.store, f.materialization, new OrdinaryKeyedChildHost()));
+    const f = fixture(), app = new KeyedChildLaunchApplication(new KeyedChildDispatchAdapter(f.retained, f.store, f.materialization, new OrdinaryKeyedChildHost(), undefined, testPreparationNative()));
     const view = await app.launch(request, new AbortController().signal); await app.drain();
     const stopped = await app.stop(view.childHandle); expect(stopped.reason).toBe("termination_unresolved"); expect(stopped.occupied).toBe(true);
     expect((await app.stop(view.operationHandle)).state).toBe(State.StopRequested);
