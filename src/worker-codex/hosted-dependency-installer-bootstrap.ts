@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
 
 /** Fixed unprivileged contained payload. It has no launch/store authority and
  * reads only its readonly closed profile plus package/lock staging mounts. */
@@ -12,15 +12,23 @@ const profile = JSON.parse(readFileSync("/runtime/profile.json", "utf8")) as {
 };
 process.umask(profile.umask);
 const env = profile.environment;
-if (process.versions.modules !== profile.nodeAbi || process.platform !== profile.platform || process.arch !== profile.arch) process.exit(71);
-function run(args: readonly string[]): { status: number | null; stdout: string } {
+enum PreflightStage { RuntimeIdentity = "runtime_identity", ToolVersions = "tool_versions" }
+function refusePreflight(stage: PreflightStage, facts: Readonly<Record<string, boolean | number | null>>): never {
+  try { writeSync(2, "dependency_installer_preflight_v1 " + JSON.stringify({ stage, ...facts }) + "\n"); }
+  finally { process.exit(71); }
+}
+const runtime = { abiMatch: process.versions.modules === profile.nodeAbi, platformMatch: process.platform === profile.platform, archMatch: process.arch === profile.arch };
+if (!runtime.abiMatch || !runtime.platformMatch || !runtime.archMatch) refusePreflight(PreflightStage.RuntimeIdentity, runtime);
+function run(args: readonly string[]): { status: number | null; stdout: string; duplicateConfig: boolean } {
   const r = spawnSync(profile.nodePath, args, { cwd: profile.stagingDirectory, env, encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"], timeout: 10 * 60 * 1000, maxBuffer: 2 * 1024 * 1024 });
+    stdio: ["ignore", "pipe", "pipe"], timeout: 10 * 60 * 1000, maxBuffer: 2 * 1024 * 1024 });
   if (r.error || r.signal) process.exit(70);
-  return { status: r.status, stdout: r.stdout };
+  return { status: r.status, stdout: r.stdout, duplicateConfig: r.stderr.includes("double-loading config") };
 }
 const node = run(["--version"]), npm = run([profile.npmCliPath, "--version"]);
-if (node.status !== 0 || npm.status !== 0 || node.stdout.trim() !== profile.nodeVersion || npm.stdout.trim() !== profile.npmVersion) process.exit(71);
+const versions = { nodeStatus: node.status, npmStatus: npm.status, nodeVersionMatch: node.stdout.trim() === profile.nodeVersion,
+  npmVersionMatch: npm.stdout.trim() === profile.npmVersion, duplicateConfig: npm.duplicateConfig };
+if (node.status !== 0 || npm.status !== 0 || !versions.nodeVersionMatch || !versions.npmVersionMatch) refusePreflight(PreflightStage.ToolVersions, versions);
 const install = run([profile.npmCliPath, ...profile.installArgv]);
 if (install.status !== 0) process.exit(72);
 // Graph verification runs in the same contained lifetime; receipt/capability and
