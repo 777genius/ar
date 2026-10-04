@@ -1,5 +1,5 @@
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { ManagedDependencyGitRunner, managedDependencyGitEnvironment, managedDependencyGitFlags } from "./managed-dependency-git";
+import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
 import { admitHostedDependencyConsumer } from "./hosted-dependency-admission";
@@ -24,12 +24,10 @@ import {
   createPublicResearchSourceReader,
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile } from "node:fs/promises";
 import { mapManagedGoalLayout, usesManagedJobLayout } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
-import { promisify } from "node:util";
 import type { ObservabilityPort } from "@vioxen/subscription-runtime/core";
 import type { ProviderTaskControls } from "@vioxen/subscription-runtime/core";
 import {
@@ -114,8 +112,6 @@ export type {
   CodexGoalRuntimeEventLevel,
 } from "./codex-goal-runtime-events";
 
-const execFileAsync = promisify(execFile);
-const gitMetadataTimeoutMs = 5_000;
 
 export type CodexGoalAccountSlot = {
   readonly name: string;
@@ -753,27 +749,6 @@ async function codexGoalLinkedWorktreeHandoffPreflight(input: {
     enabled: true,
     commitRequested: promptRequestsWorkerGitCommit(input.prompt),
   };
-}
-
-async function isLinkedGitWorktree(workspacePath: string): Promise<boolean> {
-  try {
-    const { stdout } = await execFileAsync(isHostedDependencyWorkspace(workspacePath) ? "/usr/bin/git" : "git", [
-      ...(isHostedDependencyWorkspace(workspacePath) ? managedDependencyGitFlags : []),
-      "-C",
-      workspacePath,
-      "rev-parse",
-      "--path-format=absolute",
-      "--git-dir",
-      "--git-common-dir",
-    ], { timeout: gitMetadataTimeoutMs, ...(isHostedDependencyWorkspace(workspacePath) ? { env: managedDependencyGitEnvironment() } : {}) });
-    const [gitDir, gitCommonDir] = stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    return Boolean(gitDir && gitCommonDir && gitDir !== gitCommonDir);
-  } catch {
-    return false;
-  }
 }
 
 function promptRequestsWorkerGitCommit(prompt: string): boolean {
