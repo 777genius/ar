@@ -115,12 +115,33 @@ export function resolvePreparedHostScratchBinds(jobRootDir: string, codexHome: s
     if (prepared) {
       // A replaced source can leave a valid-looking old bind behind. Require the
       // physical source to still name the exact mounted directory, not its replacement.
-      const source = host.lstat(prepared.source), mounted = host.lstat(target);
-      if (source.dev !== mounted.dev || source.ino !== mounted.ino) throw new Error("Prepared scratch source identity changed");
+      assertPreparedSourceIdentity(prepared, host);
       binds.push(prepared);
     }
   }
   return binds;
+}
+/** Observe only existing mounts at the two fixed cache leaves. An absent leaf
+ * grants no authority; selected provider homes still use the all-three resolver. */
+export function resolvePreparedHostScratchCacheBinds(codexHome: string, host: ScratchTempHost = systemHost): readonly { source: string; target: string }[] {
+  const policy = readPolicy(host);
+  if (!policy) return [];
+  assertDirectory(codexHome, host);
+  const binds: { source: string; target: string }[] = [];
+  for (const suffix of ["plugins/cache", "cache/remote_plugin_catalog"]) {
+    const target = join(codexHome, suffix);
+    if (!host.inspectMount(target)) continue;
+    assertDirectory(dirname(target), host);
+    const prepared = preparedTarget(policy, target, sourceLayout(policy, target, "runtime-caches", host), host);
+    if (!prepared) throw new Error("Observed scratch cache mount changed");
+    assertPreparedSourceIdentity(prepared, host);
+    binds.push(prepared);
+  }
+  return binds;
+}
+function assertPreparedSourceIdentity(prepared: { source: string; target: string }, host: ScratchTempHost): void {
+  const source = host.lstat(prepared.source), mounted = host.lstat(prepared.target);
+  if (source.dev !== mounted.dev || source.ino !== mounted.ino) throw new Error("Prepared scratch source identity changed");
 }
 function matchesScratchMount(policy: Policy, target: string, fsroot: string, mount: Mount | undefined): boolean {
   return mount?.target === target && mount.uuid?.toLowerCase() === policy.uuid.toLowerCase() && mount.fsroot === fsroot;

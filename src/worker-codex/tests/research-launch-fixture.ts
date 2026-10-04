@@ -1,6 +1,7 @@
 import { vi } from "vitest";
-import { join } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
@@ -12,8 +13,29 @@ const fixture = vi.hoisted(() => ({ root: "", group: "/user.slice/TEST-session.s
     state?: "inactive" | "failed" | "activating" | "deactivating"; dropIns?: string }>(),
   processGroups: new Map<number, string>(), killFailures: new Set<string>(), stopFailures: new Set<string>(),
   processNamespaces: new Map<number, Record<"user" | "mnt" | "pid" | "net", string>>(), showFailures: new Set<string>(),
-  jobs: new Set<string>(), spawn: vi.fn(), authReads: 0 }));
+  jobs: new Set<string>(), spawn: vi.fn(), authReads: 0,
+  scratchNodes: new Map<string, import("../host-scratch-temp").ScratchTempHost extends { lstat(path: string): infer Info } ? Info : never>(),
+  scratchMounts: new Map<string, { target?: string; uuid?: string; fsroot?: string } | undefined>() }));
 export const host = fixture;
+const nativeFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+let ownedRoot: { path: string; device: number; inode: number } | undefined;
+/** Optional physical backing exists only after this module allocates a TEST root.
+ * Callers still use native IO and check actual ancestry before every mutation. */
+export function researchScratchBackingPath(path: string): string | undefined {
+  if (!fixture.root) return undefined;
+  if (!ownedRoot || fixture.root !== ownedRoot.path) throw new Error("Unowned TEST scratch backing root");
+  const root = nativeFs.lstatSync(ownedRoot.path);
+  if (!root.isDirectory() || root.isSymbolicLink() || (root.mode & 0o777) !== 0o700 ||
+      root.dev !== ownedRoot.device || root.ino !== ownedRoot.inode) throw new Error("Allocated TEST scratch backing root changed");
+  const backing = resolve(local(path));
+  if (!backing.startsWith(resolve(ownedRoot.path) + "/")) throw new Error("TEST scratch backing path escaped its allocated root");
+  return backing;
+}
+// Official public ISRG Root X1 CA, https://letsencrypt.org/certs/isrgrootx1.pem.
+export const publicTestCa = "-----BEGIN CERTIFICATE-----\nMIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw\nTzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh\ncmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4\nWhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu\nZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY\nMTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc\nh77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+\n0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U\nA5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW\nT8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH\nB5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC\nB5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv\nKBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn\nOlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn\njh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw\nqHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI\nrU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV\nHRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq\nhkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL\nubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ\n3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK\nNFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5\nORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur\nTkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC\njNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc\noyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq\n4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA\nmRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d\nemyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n-----END CERTIFICATE-----\n";
+// Public synthetic non-CA certificate from nodejs/node test/fixtures/keys/agent1-cert.pem.
+// Upstream test-crypto-x509.js independently asserts !x509.ca for this certificate.
+export const publicTestLeaf = "-----BEGIN CERTIFICATE-----\nMIID6DCCAtCgAwIBAgIUFH02wcL3Qgben6tfIibXitsApCYwDQYJKoZIhvcNAQEL\nBQAwejELMAkGA1UEBhMCVVMxCzAJBgNVBAgMAkNBMQswCQYDVQQHDAJTRjEPMA0G\nA1UECgwGSm95ZW50MRAwDgYDVQQLDAdOb2RlLmpzMQwwCgYDVQQDDANjYTExIDAe\nBgkqhkiG9w0BCQEWEXJ5QHRpbnljbG91ZHMub3JnMCAXDTIyMDkwMzIxNDAzN1oY\nDzIyOTYwNjE3MjE0MDM3WjB9MQswCQYDVQQGEwJVUzELMAkGA1UECAwCQ0ExCzAJ\nBgNVBAcMAlNGMQ8wDQYDVQQKDAZKb3llbnQxEDAOBgNVBAsMB05vZGUuanMxDzAN\nBgNVBAMMBmFnZW50MTEgMB4GCSqGSIb3DQEJARYRcnlAdGlueWNsb3Vkcy5vcmcw\nggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDUVjIK+yDTgnCT3CxChO0E\n37q9VuHdrlKeKLeQzUJW2yczSfNzX/0zfHpjY+zKWie39z3HCJqWxtiG2wxiOI8c\n3WqWOvzVmdWADlh6EfkIlg+E7VC6JaKDA+zabmhPvnuu3JzogBMnsWl68lCXzuPx\ndeQAmEwNtqjrh74DtM+Ud0ulb//Ixjxo1q3rYKu+aaexSramuee6qJta2rjrB4l8\nB/bU+j1mDf9XQQfSjo9jRnp4hiTFdBl2k+lZzqE2L/rhu6EMjA2IhAq/7xA2MbLo\n9cObVUin6lfoo5+JKRgT9Fp2xEgDOit+2EA/S6oUfPNeLSVUqmXOSWlXlwlb9Nxr\nAgMBAAGjYTBfMF0GCCsGAQUFBwEBBFEwTzAjBggrBgEFBQcwAYYXaHR0cDovL29j\nc3Aubm9kZWpzLm9yZy8wKAYIKwYBBQUHMAKGHGh0dHA6Ly9jYS5ub2RlanMub3Jn\nL2NhLmNlcnQwDQYJKoZIhvcNAQELBQADggEBAMM0mBBjLMt9pYXePtUeNO0VTw9y\nFWCM8nAcAO2kRNwkJwcsispNpkcsHZ5o8Xf5mpCotdvziEWG1hyxwU6nAWyNOLcN\nG0a0KUfbMO3B6ZYe1GwPDjXaQnv75SkAdxgX5zOzca3xnhITcjUUGjQ0fbDfwFV5\nix8mnzvfXjDONdEznVa7PFcN6QliFUMwR/h8pCRHtE5+a10OSPeJSrGG+FtrGnRW\nG1IJUv6oiGF/MvWCr84REVgc1j78xomGANJIu2hN7bnD1nEMON6em8IfnDOUtynV\n9wfWTqiQYD5Zifj6WcGa0aAHMuetyFG4lIfMAHmd3gaKpks7j9l26LwRPvI=\n-----END CERTIFICATE-----\n";
 export function local(path: string): string {
   const authority = "/run/user/subscription-runtime-research-v1", artifact = "/TEST-artifact", project = "/TEST-project";
   // This portable TEST fixture has no Host scratch policy. Never inspect or
@@ -24,12 +46,13 @@ export function local(path: string): string {
   // modes or symlinks on selected files/directories (or chmod the real /tmp).
   if (fixture.physicalPaths && fixture.root.startsWith(path + "/")) return fixture.root;
   for (const [pin, target] of fixture.pins) if (path === pin || path.startsWith(pin + "/")) return local(target + path.slice(pin.length));
-  for (const [prefix, name] of [[authority, "authority"], [artifact, "artifact"], [project, "project"], ["/TEST-auth", "auth"], ["/TEST-operator", "operator"], ["/run/systemd/transient", "units"]]) {
+  for (const [prefix, name] of [[authority, "authority"], [artifact, "artifact"], [project, "project"], ["/TEST-auth", "auth"], ["/TEST-operator", "operator"], ["/run/systemd/transient", "units"], ["/run/systemd/resolve", "system/run/systemd/resolve"]]) {
     if (path === prefix || path.startsWith(prefix + "/")) return join(fixture.root, name!, path.slice(prefix!.length));
   }
   if (path === "/var/lib/subscription-runtime-host-policy" || path === "/run/user/0/subscription-runtime-host-policy") return join(fixture.root, fixture.global ? "global" : "absent");
   if (path.startsWith("/var/lib/subscription-runtime-host-policy/") || path.startsWith("/run/user/0/subscription-runtime-host-policy/")) return join(fixture.root, "absent", path.split("/").at(-1)!);
   if (path === process.execPath || path.startsWith("/usr/bin/")) return join(fixture.root, "executable");
+  for (const prefix of ["/usr", "/etc", "/opt", "/bin", "/sbin", "/lib", "/lib64"]) if (path === prefix || path.startsWith(prefix + "/")) return join(fixture.root, "system", path.slice(1));
   if (["/", "/run", "/run/systemd", "/run/user", "/run/user/0", "/var", "/var/lib", "/usr", "/usr/bin", "/opt"].includes(path) || process.execPath.startsWith(path + "/")) return fixture.root;
   return path;
 }
@@ -43,12 +66,19 @@ vi.mock("node:url", async original => {
 vi.mock("node:fs", async original => {
   const real = await original<typeof import("node:fs")>();
   return { ...real,
-    lstatSync: (path: string) => Object.assign(real.lstatSync(local(path)), { uid: fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0 }),
-    fstatSync: (fd: number) => Object.assign(real.fstatSync(fd), { uid: fixture.foreign.has(fixture.fdPaths.get(fd) ?? "") ? 999 : 0 }),
+    lstatSync: (path: string) => fixture.scratchNodes.get(path) ?? Object.assign(real.lstatSync(local(path)), { dev: 2049, gid: 0, uid: fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0 }),
+    statSync: (path: string) => Object.assign(real.statSync(local(path)), { dev: 2049, gid: 0, uid: fixture.foreign.has(path) ? 999 : 0 }),
+    fstatSync: (fd: number) => Object.assign(real.fstatSync(fd), { dev: 2049, gid: 0, uid: fixture.foreign.has(fixture.fdPaths.get(fd) ?? "") ? 999 : 0 }),
     openSync: (path: string, flags: number | string, mode: number) => { const fd = real.openSync(local(path), flags, mode); fixture.fdPaths.set(fd, path); return fd; },
     existsSync: (path: string) => real.existsSync(local(path)),
     readFileSync: (path: string | number, opts: Parameters<typeof real.readFileSync>[1]) => {
       if (typeof path === "string" && path.startsWith("/proc/")) {
+        if (path === "/proc/self/mountinfo") {
+          const lines = ["1 0 8:1 / / rw - ext4 /dev/TEST rw"];
+          for (const [pin, target] of fixture.pins) lines.push(`${lines.length + 1} 1 8:1 ${target} ${pin} rw - ext4 /dev/TEST rw`);
+          for (const [target, mount] of fixture.scratchMounts) if (mount) lines.push(`${lines.length + 1} 1 0:11 ${mount.fsroot} ${target} rw - ext4 /dev/TEST-scratch rw`);
+          return lines.join("\n") + "\n";
+        }
         if (path.endsWith("/uid_map") || path.endsWith("/gid_map")) return fixture.uidMap;
         if (path === "/proc/sys/kernel/random/boot_id") return fixture.boot;
         if (path.endsWith("/cgroup")) return `0::${fixture.processGroups.get(Number(path.split("/")[2])) ?? fixture.group}\n`;
@@ -60,9 +90,11 @@ vi.mock("node:fs", async original => {
     },
     readlinkSync: (path: string) => path.startsWith("/proc/") ? (fixture.processNamespaces.get(Number(path.split("/")[2]))?.[path.split("/").at(-1) as "user"] ??
       (fixture.namespaceRoot && path.startsWith("/proc/self") ? "TEST-namespace" : "TEST-host")) : real.readlinkSync(local(path)),
-    realpathSync: (path: string) => { const target = real.realpathSync(local(path)); return target.startsWith(join(fixture.root, "artifact")) ? "/TEST-artifact" + target.slice(join(fixture.root, "artifact").length) : target === local(path) ? path : target; },
+    realpathSync: (path: string) => { if (fixture.scratchNodes.has(path)) return path; const target = real.realpathSync(local(path)); return target.startsWith(join(fixture.root, "artifact")) ? "/TEST-artifact" + target.slice(join(fixture.root, "artifact").length) : target.startsWith(join(fixture.root, "system") + "/") ? target.slice(join(fixture.root, "system").length) : target === local(path) ? path : target; },
     readdirSync: (path: string, opts: Parameters<typeof real.readdirSync>[1]) => real.readdirSync(local(path), opts),
     mkdirSync: (path: string, opts: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), opts),
+    symlinkSync: (target: string, path: string) => real.symlinkSync(target, local(path)),
+    writeFileSync: (path: string | number, bytes: Parameters<typeof real.writeFileSync>[1], options: Parameters<typeof real.writeFileSync>[2]) => real.writeFileSync(typeof path === "string" ? local(path) : path, bytes, options),
     renameSync: (from: string, to: string) => real.renameSync(local(from), local(to)),
     unlinkSync: (path: string) => real.unlinkSync(local(path)),
   };
@@ -119,12 +151,22 @@ export const request = () => ({ schemaVersion: 1, jobId: "TEST-research-r7", tas
   authRootDir: fixture.physicalPaths ? join(fixture.root, "auth") : "/TEST-auth", accounts: ["TEST-a", "TEST-b"],
   codexBinaryPath: "/usr/bin/TEST-codex", model: "gpt-6.1-sol", reasoningEffort: "xhigh", serviceTier: "default", taskTimeoutMs: 3600000 });
 export function setupResearchFixture(): void {
-  fixture.root = mkdtempSync(join(tmpdir(), "TEST-research-launch-r7-"));
+  fixture.root = nativeFs.mkdtempSync(join(tmpdir(), "TEST-research-launch-r7-"));
+  const allocated = nativeFs.lstatSync(fixture.root);
+  ownedRoot = { path: fixture.root, device: allocated.dev, inode: allocated.ino };
   fixture.group = "/user.slice/TEST-session.scope"; fixture.birth = "12345"; fixture.uidMap = "0 0 4294967295";
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-  fixture.namespaceRoot = false; fixture.global = false; fixture.projectParent = false; fixture.physicalPaths = false; fixture.foreign.clear(); fixture.fdPaths.clear(); fixture.pins.clear(); fixture.calls = []; fixture.units.clear(); fixture.processGroups.clear(); fixture.processNamespaces.clear(); fixture.showFailures.clear(); fixture.killFailures.clear(); fixture.stopFailures.clear(); fixture.jobs.clear(); fixture.spawn.mockReset(); fixture.authReads = 0;
+  fixture.namespaceRoot = false; fixture.global = false; fixture.projectParent = false; fixture.physicalPaths = false; fixture.foreign.clear(); fixture.fdPaths.clear(); fixture.pins.clear(); fixture.calls = []; fixture.units.clear(); fixture.processGroups.clear(); fixture.processNamespaces.clear(); fixture.showFailures.clear(); fixture.killFailures.clear(); fixture.stopFailures.clear(); fixture.jobs.clear(); fixture.spawn.mockReset(); fixture.authReads = 0; fixture.scratchNodes.clear(); fixture.scratchMounts.clear();
   vi.spyOn(process, "getuid").mockReturnValue(0); vi.spyOn(process, "geteuid").mockReturnValue(0);
-  for (const dir of ["global", "artifact/dist", "artifact/host-integration", "artifact/node_modules", "artifact/packages/dependency", "project/jobs/TEST-research-r7/workspace", "auth/TEST-a", "auth/TEST-b", "operator", "units"]) mkdirSync(join(fixture.root, dir), { recursive: true, mode: 0o700 });
+  for (const dir of ["global", "artifact/dist", "artifact/host-integration", "artifact/node_modules", "artifact/packages/dependency", "project/jobs/TEST-research-r7/workspace", "auth/TEST-a", "auth/TEST-b", "operator", "units", "system/etc/ssl/certs", "system/opt", "system/usr/bin", "system/usr/sbin", "system/usr/lib", "system/usr/lib64"]) mkdirSync(join(fixture.root, dir), { recursive: true, mode: 0o700 });
+  mkdirSync(local(dirname(process.execPath)), { recursive: true, mode: 0o700 });
+  for (const leaf of ["bin", "sbin", "lib", "lib64"]) symlinkSync("usr/" + leaf, join(fixture.root, "system", leaf));
+  for (const [name, bytes] of Object.entries({
+    passwd: "root:x:0:0:root:/root:/bin/sh\n", group: "root:x:0:\n",
+    "nsswitch.conf": "passwd: files\ngroup: files\nhosts: files dns\n", hosts: "127.0.0.1 localhost\n",
+    "gai.conf": "# TEST public address-selection defaults\n", "host.conf": "multi on\n", "ssl/certs/ca-certificates.crt": publicTestCa,
+  })) writeFileSync(join(fixture.root, "system/etc", name), bytes, { mode: 0o644 });
+  writeFileSync(join(fixture.root, "system/etc/resolv.conf"), "nameserver 192.0.2.1\n", { mode: 0o644 });
   writeFileSync(join(fixture.root, "executable"), "TEST executable bytes", { mode: 0o755 });
   writeFileSync(local("/TEST-artifact/package.json"), '{"type":"module"}', { mode: 0o644 });
   writeFileSync(local("/TEST-artifact/dist/main.js"), "TEST runtime bytes", { mode: 0o644 });
@@ -133,4 +175,18 @@ export function setupResearchFixture(): void {
   writeFileSync(local("/TEST-operator/request.json"), JSON.stringify(request()) + "\n", { mode: 0o600 });
   fixture.spawn.mockImplementation(() => Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() }));
 }
-export function cleanupResearchFixture(): void { fixture.pins.clear(); rmSync(fixture.root, { recursive: true, force: true }); vi.restoreAllMocks(); }
+export function cleanupResearchFixture(): void {
+  fixture.pins.clear();
+  try {
+    if (ownedRoot) {
+      let root: import("node:fs").Stats | undefined;
+      try { root = nativeFs.lstatSync(ownedRoot.path); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      if (root) {
+        if (!root.isDirectory() || root.isSymbolicLink() || root.dev !== ownedRoot.device || root.ino !== ownedRoot.inode)
+          throw new Error("Refusing cleanup of replaced TEST fixture root");
+        nativeFs.rmSync(ownedRoot.path, { recursive: true, force: true });
+      }
+    }
+  } finally { ownedRoot = undefined; fixture.root = ""; vi.restoreAllMocks(); }
+}

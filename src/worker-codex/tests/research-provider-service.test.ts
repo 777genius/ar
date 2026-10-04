@@ -1,4 +1,4 @@
-import { host, local, request, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
+import { publicTestCa, host, local, request, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as processes from "node:child_process";
@@ -15,17 +15,18 @@ import { signalCodexAppServerChildGroup } from "../../provider-codex/app-server/
 import * as scratch from "../host-scratch-temp";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import { trustedResearchProviderLaunch, trustedResearchRuntimeLaunch } from "../trusted-custody-systemd-launch";
+import { prepareResearchProviderRoot, type ResearchProviderRootPlan } from "../research-provider-root";
 
 let previousExitCode: typeof process.exitCode;
 const streams = new Set<PassThrough>();
 beforeEach(() => { previousExitCode = process.exitCode; setupResearchFixture(); });
 afterEach(() => { for (const stream of streams) { stream.unpipe(); stream.destroy(); } streams.clear(); vi.useRealTimers(); process.exitCode = previousExitCode; cleanupResearchFixture(); });
-function prepareHelper() {
+function prepareHelper(homeLeaf = "TEST-a") {
   const req = request(); grantResearchLaunch(req.jobId, req.jobRootDir, req.workspacePath);
   const start = startResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")));
   host.group = `/system.slice/${start.unit}`; bindResearchRuntime(start.jobId, start.startId);
   const current = researchCurrentStart(start.jobId);
-  const home = join(req.jobRootDir, "home", "TEST-a");
+  const home = join(req.jobRootDir, "home", homeLeaf);
   fs.mkdirSync(local(home), { recursive: true, mode: 0o700 });
   const helper = admitResearchProcessFactory(req)({ command: req.codexBinaryPath, args: ["app-server"], cwd: req.workspacePath,
     env: { HOME: join(req.jobRootDir, "home"), CODEX_HOME: home } });
@@ -39,6 +40,12 @@ function prepareHelper() {
   const held = helper.stdin as PassThrough;
   const forward = vi.spyOn(process.stdin, "pipe").mockImplementation(destination => held.pipe(destination));
   return { ...current, ...start, provider: unit, helper, forward, home };
+}
+const rootPlans = new WeakMap<ReturnType<typeof prepareHelper>, ResearchProviderRootPlan>();
+function providerLaunch(current: ReturnType<typeof prepareHelper>, home = current.home, scratchHost?: scratch.ScratchTempHost) {
+  let root = rootPlans.get(current);
+  if (!root) { root = prepareResearchProviderRoot(current.spec, current.provider, home, scratchHost); rootPlans.set(current, root); }
+  return trustedResearchProviderLaunch(current.spec, current.provider, home, root);
 }
 const readyFrame = "subscription-runtime-research-provider-ready-v1\n";
 const settledNamespaces = { user: "TEST-provider-user", mnt: "TEST-provider-mnt", pid: "TEST-host", net: "TEST-host" };
@@ -90,7 +97,7 @@ describe("private finite launch diagnostics", () => {
 describe("authenticated prepared scratch visibility (synthetic Host, no OS mounts)", () => {
   it("carries all three selected physical sources so independent providers see runtime-private data", async () => {
     const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
-    const plan = trustedResearchProviderLaunch(current.spec, current.provider, current.home, f.host);
+    const plan = providerLaunch(current, current.home, f.host);
     expect(plan.args).toContain("--property=TimeoutStartSec=300s");
     const runtime = trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes));
     const pinBinds = runtime.args.filter(arg => arg.startsWith("--property=BindPaths="));
@@ -110,66 +117,206 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
       .map(arg => { const [source, target] = arg.slice("--property=BindPaths=".length).split(":"); return [target, data.get(source!)] as const; }));
     for (const { target } of selected) expect(visible(pinBinds).get(target)).toBeUndefined();
     expect(selected.map(({ target }) => visible(plan.args).get(target))).toEqual(["TEST-agent-marker", "TEST-plugin-data", "TEST-catalog-data"]);
-    expect(plan.args.some(arg => arg.includes("/proc/"))).toBe(false);
+    expect(plan.args).toContain("--property=MountAPIVFS=yes");
+    expect(plan.args.filter(arg => arg.startsWith("--property=BindReadOnlyPaths="))).toContain("--property=BindReadOnlyPaths=/usr:/usr:norbind");
     expect(plan.args).toContain(`--property=ReadWritePaths=${current.spec.request.jobRootDir} ${current.spec.request.workspacePath}`);
     expect(plan.args).toContain("--mount-proc"); expect(plan.args.at(-1)).toBe("--research-ready-v1");
     expect(f.mutations).toEqual([]);
   });
   it.each(["absent", "legacy"])("keeps %s policy as a positive launch without extra binds or mutations", async kind => {
     const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
-    if (kind === "absent") f.nodes.delete(f.configPath);
+    if (kind === "absent") {
+      f.nodes.delete(f.configPath);
+      for (const { target } of f.prepared) { f.mounts.delete(target); host.scratchMounts.delete(target); }
+    }
     else {
       const legacyTemps = Object.fromEntries(f.prepared.map(({ target }) => {
-        f.mounts.delete(target); const info = f.nodes.get(target)!;
+        f.mounts.delete(target); host.scratchMounts.delete(target); const info = f.nodes.get(target)!;
         return [target, { device: info.dev, inode: info.ino }];
       }));
       f.setPolicy({ schemaVersion: 1, root: f.root, uuid: f.uuid, legacyTemps });
     }
-    const plan = trustedResearchProviderLaunch(current.spec, current.provider, current.home, f.host);
+    const plan = providerLaunch(current, current.home, f.host);
     expect(plan.args.filter(arg => arg.startsWith("--property=BindPaths="))).toEqual(
       trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args.filter(arg => arg.startsWith("--property=BindPaths=")));
     expect(f.mutations).toEqual([]);
   });
-  it("selects only this account's caches when another generated home is prepared", async () => {
-    const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
-    const other = join(current.spec.request.jobRootDir, "home", "TEST-b");
-    fs.mkdirSync(local(other), { mode: 0o700 }); f.nodes.set(other, f.directory());
-    await scratch.prepareHostScratchCaches(other, {}, f.host); f.mutations.length = 0;
-    const plan = trustedResearchProviderLaunch(current.spec, current.provider, other, f.host);
-    const binds = plan.args.filter(arg => arg.startsWith("--property=BindPaths="));
-    expect(binds).toHaveLength(5);
+  async function fallbackHomes(partial = false) {
+    const current = prepareHelper(`codex-session-cache/codex-${"b".repeat(32)}/codex-home`), other = current.home;
+    const earlier = join(current.spec.request.jobRootDir, "home/codex-session-cache", `codex-${"a".repeat(32)}`, "codex-home");
+    fs.mkdirSync(local(earlier), { recursive: true, mode: 0o700 });
+    const f = await preparedResearchScratch(current.spec.request.jobRootDir, earlier, partial);
+    expect(f.observedCacheFailure?.message).toBe(partial ? "TEST second cache preparation failed" : undefined);
+    f.nodes.set(other, f.directory()); await scratch.prepareHostScratchCaches(other, {}, f.host); f.mutations.length = 0;
+    return { current, f, other, earlier };
+  }
+  // Regression: A's genuine native mounts survive when B is selected; neither
+  // complete nor partially prepared A caches may become B's explicit sources.
+  it.each([false, true])("selects only this account's caches with earlier partial=%s preparation", async partial => {
+    const { current, f, other, earlier } = await fallbackHomes(partial);
+    const foreign = f.prepared.filter(bind => bind.target.startsWith(earlier + "/") && f.mounts.has(bind.target));
+    expect(foreign).toHaveLength(partial ? 1 : 2);
+    for (const { target } of foreign) expect(host.scratchMounts.get(target)).toEqual(f.mounts.get(target));
+    const plan = providerLaunch(current, other, f.host), binds = plan.args.filter(arg => arg.startsWith("--property=BindPaths="));
+    expect(binds).toEqual([
+      ...trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args.filter(arg => arg.startsWith("--property=BindPaths=")),
+      ...f.prepared.filter(bind => !bind.target.startsWith(earlier + "/")).map(({ source, target }) => `--property=BindPaths=${source}:${target}:norbind`),
+    ]);
     expect(binds.slice(2).map(arg => arg.split(":")[1])).toEqual([join(current.spec.request.jobRootDir, "tmp"), join(other, "plugins/cache"), join(other, "cache/remote_plugin_catalog")]);
-    expect(binds.some(arg => arg.includes(current.home + "/"))).toBe(false); expect(f.mutations).toEqual([]);
+    expect(plan.args.some(arg => foreign.some(bind => arg.includes(bind.source) || arg.includes(bind.target)))).toBe(false);
+    expect(providerLaunch(current, other, f.host).args).toEqual(plan.args);
+    expect(f.mutations).toEqual([]); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
-  it.each([0, 1, 2])("rejects changed mount/source/legacy facts at exact selected leaf %s before launch", async index => {
+  // Regression: the default descriptor reader must select the fixed CA role
+  // for both public source and retained snapshot, rather than the DNS limit.
+  it("prepares and revalidates a public CA bundle above 64 KiB through the default root adapter", () => {
+    const current = prepareHelper(), bytes = publicTestCa.repeat(94);
+    fs.writeFileSync("/etc/ssl/certs/ca-certificates.crt", bytes, { mode: 0o644 });
+    const plan = providerLaunch(current);
+    expect(providerLaunch(current).args).toEqual(plan.args);
+    expect(plan.args.some(arg => arg.startsWith("--property=RootDirectory="))).toBe(true);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  // Regression: the real policy is over 1 MiB; borrowing DNS's 64 KiB cap
+  // rejects valid fallback, while an unbounded policy reader admits >8 MiB.
+  it("accepts a large legacy policy through the policy-role contract and denies its fixed ceiling", async () => {
+    const { current, f, other } = await fallbackHomes(true);
+    const legacyTemps = Object.fromEntries(Array.from({ length: 25000 }, (_, index) =>
+      [`/TEST-retired-job/${index}/tmp`, { device: 2049, inode: index + 1 }]));
+    f.setPolicy({ schemaVersion: 1, root: f.root, uuid: f.uuid, legacyTemps });
+    const bytes = fs.readFileSync(f.configPath);
+    expect(bytes.length).toBeGreaterThan(1249282); expect(bytes.length).toBeLessThan(8 * 1024 * 1024);
+    fs.writeFileSync(f.configPath, Buffer.concat([bytes, Buffer.alloc(8 * 1024 * 1024, 0x20)]));
+    expect(() => providerLaunch(current, other, f.host)).toThrow();
+    expect(fs.existsSync(local(join(current.directory, "provider-roots")))).toBe(false);
+    fs.writeFileSync(f.configPath, bytes);
+    const plan = providerLaunch(current, other, f.host);
+    expect(providerLaunch(current, other, f.host).args).toEqual(plan.args);
+    expect(plan.args.filter(arg => arg.startsWith("--property=BindPaths="))).toHaveLength(5);
+    expect(f.mutations).toEqual([]); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  // Regression: the omission class must retain native/policy/base custody, and
+  // reject the same corrupted topology both initially and on a retained receipt.
+  it.each(["native-source", "mount-backing", "source-owner", "home-owner", "base-data", "base-alias", "unknown-child", "unknown-suffix", "unknown-home", "foreign-uuid", "selected-alias"])(
+    "denies foreign cache %s before root effects and at revalidation", async fault => {
+      const { current, f, other, earlier } = await fallbackHomes(true), foreign = f.prepared.find(bind => bind.target === join(earlier, "plugins/cache"))!;
+      const source = host.scratchNodes.get(foreign.source)!, target = host.scratchNodes.get(foreign.target)!, mount = host.scratchMounts.get(foreign.target)!;
+      const base = join(current.directory, "pins/job", foreign.target.slice(current.spec.request.jobRootDir.length));
+      const corrupt = () => {
+        if (fault === "native-source") host.scratchNodes.set(foreign.source, { ...source, ino: source.ino + 1 });
+        if (fault === "mount-backing") host.scratchMounts.set(foreign.target, { ...mount, fsroot: "/TEST-foreign" });
+        if (fault === "source-owner") host.scratchNodes.set(foreign.source, { ...source, uid: 999 });
+        if (fault === "home-owner") host.foreign.add(earlier);
+        if (fault === "base-data") fs.writeFileSync(join(base, "TEST-data"), "TEST", { mode: 0o600 });
+        if (fault === "base-alias") { fs.renameSync(base, base + "-saved"); fs.symlinkSync(base + "-saved", base); }
+        if (fault === "unknown-child") host.scratchMounts.set(foreign.target + "/TEST-child", { ...mount, target: foreign.target + "/TEST-child" });
+        if (fault === "unknown-suffix") host.scratchMounts.set(join(earlier, "TEST-unknown"), { ...mount, target: join(earlier, "TEST-unknown") });
+        if (fault === "unknown-home") host.scratchMounts.set(join(current.spec.request.jobRootDir, "home/TEST-b/plugins/cache"), { ...mount, target: join(current.spec.request.jobRootDir, "home/TEST-b/plugins/cache") });
+        if (fault === "foreign-uuid") f.mounts.set(foreign.target, { ...mount, uuid: "11111111-1111-1111-1111-111111111111" });
+        if (fault === "selected-alias") {
+          const selected = f.prepared.find(bind => bind.target === join(other, "plugins/cache"))!, alias = host.scratchNodes.get(selected.source)!;
+          for (const path of [foreign.source, foreign.target]) { host.scratchNodes.set(path, alias); f.nodes.set(path, alias); }
+        }
+      };
+      const restore = () => {
+        host.scratchNodes.set(foreign.source, source); host.scratchNodes.set(foreign.target, target); f.nodes.set(foreign.source, source); f.nodes.set(foreign.target, target);
+        host.scratchMounts.set(foreign.target, mount); f.mounts.set(foreign.target, mount); host.foreign.delete(earlier);
+        host.scratchMounts.delete(foreign.target + "/TEST-child"); host.scratchMounts.delete(join(earlier, "TEST-unknown")); host.scratchMounts.delete(join(current.spec.request.jobRootDir, "home/TEST-b/plugins/cache"));
+        if (fault === "base-data") fs.unlinkSync(join(base, "TEST-data"));
+        if (fault === "base-alias") { fs.unlinkSync(base); fs.renameSync(base + "-saved", base); }
+        f.setPolicy({ schemaVersion: 1, root: f.root, uuid: f.uuid });
+      };
+      corrupt(); expect(() => providerLaunch(current, other, f.host)).toThrow();
+      expect(fs.existsSync(local(join(current.directory, "provider-roots")))).toBe(false);
+      restore(); const plan = providerLaunch(current, other, f.host);
+      corrupt(); expect(() => providerLaunch(current, other, f.host)).toThrow();
+      restore(); expect(providerLaunch(current, other, f.host).args).toEqual(plan.args);
+      expect(host.spawn).not.toHaveBeenCalled(); expect(current.forward).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+      expect(() => record(current, ".submission")).toThrow(); expect(f.mutations).toEqual([]);
+    });
+  it("retains native policy identity/semantics and the foreign lower anchor after preparation", async () => {
+    const { current, f, other, earlier } = await fallbackHomes(true), foreign = f.prepared.find(bind => bind.target === join(earlier, "plugins/cache"))!;
+    const base = join(current.directory, "pins/job", foreign.target.slice(current.spec.request.jobRootDir.length));
+    const plan = providerLaunch(current, other, f.host), policyBytes = fs.readFileSync(f.configPath);
+    // Valid unrelated legacy data preserves the adapter's selected binds, but
+    // changes the trusted policy fingerprint retained by this exact receipt.
+    f.setPolicy({ schemaVersion: 1, root: f.root, uuid: f.uuid, legacyTemps: { "/TEST-unselected": { device: 2049, inode: 1 } } });
+    expect(() => providerLaunch(current, other, f.host)).toThrow();
+    f.setPolicy({ schemaVersion: 1, root: f.root, uuid: f.uuid });
+    expect(providerLaunch(current, other, f.host).args).toEqual(plan.args);
+    for (const path of [base, f.configPath]) {
+      fs.renameSync(path, path + "-saved");
+      if (path === base) fs.mkdirSync(path, { mode: 0o701 }); else fs.writeFileSync(path, policyBytes, { mode: 0o600 });
+      expect(() => providerLaunch(current, other, f.host)).toThrow();
+      if (path === base) fs.rmdirSync(local(path)); else fs.unlinkSync(path);
+      fs.renameSync(path + "-saved", path); expect(providerLaunch(current, other, f.host).args).toEqual(plan.args);
+    }
+    expect(f.mutations).toEqual([]); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  it.each([0, 1, 2])("rejects changed mount/source facts at exact selected leaf %s before launch", async index => {
     const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
     const selected = f.prepared[index]!, mount = f.mounts.get(selected.target)!, originalSource = f.nodes.get(selected.source)!;
     const resolve = scratch.resolvePreparedHostScratchBinds;
     vi.spyOn(scratch, "resolvePreparedHostScratchBinds").mockImplementation((job, home) => resolve(job, home, f.host));
-    // Positive control precedes every independent rejection.
-    expect(trustedResearchProviderLaunch(current.spec, current.provider, current.home).args).toContain(`--property=BindPaths=${selected.source}:${selected.target}:norbind`);
+    // Revalidate the same retained receipt on healthy and corrupted facts.
+    // Re-entering the service would deny the pre-existing root independently.
+    const healthy = (): string[] => {
+      const args = providerLaunch(current).args;
+      expect(args).toContain(`--property=BindPaths=${selected.source}:${selected.target}:norbind`);
+      return args;
+    };
+    const originalArgs = healthy();
+    const rootRecord = join(current.directory, "provider-roots", current.provider, "plan.json"), originalRootBytes = researchRead(rootRecord);
     for (const badMount of [{ ...mount, uuid: "foreign" }, { ...mount, fsroot: "/foreign" }, { ...mount, target: "/foreign" }, undefined]) {
+      expect(healthy()).toEqual(originalArgs);
       f.mounts.set(selected.target, badMount);
-      await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
+      expect(() => providerLaunch(current)).toThrow();
+      f.mounts.set(selected.target, mount);
+      expect(healthy()).toEqual(originalArgs);
     }
-    f.mounts.set(selected.target, mount);
     const originalTarget = f.nodes.get(selected.target)!;
     for (const badTarget of [{ ...originalTarget, uid: 999 }, { ...originalTarget, mode: 0o777 }, { ...originalTarget, ino: originalTarget.ino + 1 }, { ...originalTarget, isSymbolicLink: () => true }]) {
+      expect(healthy()).toEqual(originalArgs);
       f.nodes.set(selected.target, badTarget);
-      await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
+      expect(() => providerLaunch(current)).toThrow();
+      f.nodes.set(selected.target, originalTarget);
+      expect(healthy()).toEqual(originalArgs);
     }
-    f.nodes.set(selected.target, originalTarget);
     for (const badSource of [{ ...originalSource, uid: 999 }, { ...originalSource, mode: 0o777 }, { ...originalSource, ino: originalSource.ino + 1 }, { ...originalSource, isSymbolicLink: () => true }]) {
+      expect(healthy()).toEqual(originalArgs);
       f.nodes.set(selected.source, badSource);
-      await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
+      expect(() => providerLaunch(current)).toThrow();
+      f.nodes.set(selected.source, originalSource);
+      expect(healthy()).toEqual(originalArgs);
     }
-    f.nodes.set(selected.source, originalSource);
-    f.mounts.delete(selected.target);
-    const node = f.nodes.get(selected.target)!;
-    for (const entry of [true, { device: node.dev, inode: node.ino + 1 }]) {
-      f.setPolicy({ schemaVersion: 1, root: f.root, uuid: f.uuid, legacyTemps: { [selected.target]: entry } });
-      await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
+    expect(researchRead(rootRecord)).toEqual(originalRootBytes);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(current.forward).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(() => record(current, ".submission")).toThrow(); expect(f.mutations).toEqual([]);
+  });
+  it.each([0, 1, 2])("rejects changed legacy identity at selected leaf %s through the same healthy receipt", async index => {
+    const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
+    const selected = f.prepared[index]!;
+    f.mounts.delete(selected.target); host.scratchMounts.delete(selected.target);
+    const legacy = { ...f.nodes.get(selected.target)!, dev: 2049, ino: 90000 + index };
+    f.nodes.set(selected.target, legacy); host.scratchNodes.set(selected.target, legacy);
+    const originalEntry = { device: 2049, inode: 90000 + index };
+    const policy = (entry: unknown) => f.setPolicy({ schemaVersion: 1, root: f.root, uuid: f.uuid, legacyTemps: { [selected.target]: entry } });
+    policy(originalEntry);
+    const resolve = scratch.resolvePreparedHostScratchBinds;
+    vi.spyOn(scratch, "resolvePreparedHostScratchBinds").mockImplementation((job, home) => resolve(job, home, f.host));
+    const healthy = () => providerLaunch(current).args;
+    const originalArgs = healthy();
+    expect(originalArgs.filter(arg => arg.startsWith("--property=BindPaths="))).toEqual([
+      ...trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args.filter(arg => arg.startsWith("--property=BindPaths=")),
+      ...f.prepared.filter(bind => bind.target !== selected.target).map(({ source, target }) => `--property=BindPaths=${source}:${target}:norbind`),
+    ]);
+    const rootRecord = join(current.directory, "provider-roots", current.provider, "plan.json"), originalRootBytes = researchRead(rootRecord);
+    for (const entry of [true, { device: originalEntry.device, inode: originalEntry.inode + 1 }]) {
+      expect(healthy()).toEqual(originalArgs);
+      policy(entry); expect(() => providerLaunch(current)).toThrow();
+      policy(originalEntry); expect(healthy()).toEqual(originalArgs);
     }
+    expect(researchRead(rootRecord)).toEqual(originalRootBytes);
     expect(host.spawn).not.toHaveBeenCalled(); expect(current.forward).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
     expect(() => record(current, ".submission")).toThrow(); expect(f.mutations).toEqual([]);
   });
@@ -768,7 +915,7 @@ describe("independent review: selected plan changes across the added handoff yie
     let planReads = 0, changed = false;
     vi.spyOn(scratch, "resolvePreparedHostScratchBinds").mockImplementation((job, home) => {
       const result = resolve(job, home, f.host);
-      if (++planReads === 2) process.nextTick(() => {
+      if (++planReads > 2 && host.fdPaths.size && host.units.has(current.provider) && !changed) process.nextTick(() => {
         if (fault === "source-inode") {
           const selected = f.prepared[0]!;
           const source = f.nodes.get(selected.source)!;
@@ -786,7 +933,7 @@ describe("independent review: selected plan changes across the added handoff yie
     try { await runResearchProviderService(current.jobId, current.provider, current.home); } catch { denied = true; }
     let planNowMatches = false;
     try {
-      planNowMatches = JSON.stringify(trustedResearchProviderLaunch(current.spec, current.provider, current.home).args) ===
+      planNowMatches = JSON.stringify(providerLaunch(current).args) ===
         JSON.stringify(host.spawn.mock.calls[0]![1]);
     } catch { /* Changed selected source is now explicitly refused by the existing validator. */ }
     console.info(JSON.stringify({ fault, changed, denied, planNowMatches, bootstrapBytes: Buffer.concat(forwarded).length, forwardCalls: current.forward.mock.calls.length, submission: record(current, ".submission").state }));

@@ -7,6 +7,7 @@ import { captureResearchRuntime, researchCurrentStart } from "./research-launch-
 import { isResearchDenialObservation, researchInvalid, researchPublish, type ResearchDenialObservation } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
 import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
+import { assertResearchProviderRoot, prepareResearchProviderRoot } from "./research-provider-root";
 
 const denialChecks = ["assertResearchInitialRoot", "assertResearchSharedHost", "researchCustody", "researchRead",
   "researchCurrentStart", "researchServiceIdentity", "researchCommand", "researchProcessIdentity",
@@ -106,7 +107,8 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
   const reservation = readResearchProviderReservation(directory, unit);
   assertResearchProviderNotCancelled(directory, unit);
   phase("service-plan");
-  const launch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome);
+  const rootPlan = prepareResearchProviderRoot(spec, unit, selectedCodexHome);
+  const launch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome, rootPlan);
   phase("executable-custody");
   for (const path of [launch.command, "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
   const assertForwardPermission = (): void => {
@@ -125,6 +127,7 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
     // polling. Cancellation can race both the pending publication and the walk.
     captured.assertCurrent();
     assertForwardPermission();
+    assertResearchProviderRoot(rootPlan, spec, unit, selectedCodexHome);
     phase("systemd-submission");
     const proxy = spawn(launch.command, launch.args, { env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdio: ["pipe", "pipe", "pipe"] });
     child = proxy;
@@ -183,13 +186,13 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
       // Exactly one full material walk during handoff. It must finish within
       // both budgets; a file/artifact deadline remains a denial, never admission.
       captured.assertCurrent();
-      const currentLaunch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome);
+      const currentLaunch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome, rootPlan);
       if (currentLaunch.command !== launch.command || JSON.stringify(currentLaunch.args) !== JSON.stringify(launch.args)) researchInvalid();
       // Keep the control guard attached through the walk and then yield once:
       // EOF/duplicates queued during synchronous Host I/O must latch before the
       // final synchronous authority/owner/transport check and stdin release.
       await new Promise<void>(resolve => setImmediate(resolve));
-      const settledLaunch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome);
+      const settledLaunch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome, rootPlan);
       if (settledLaunch.command !== launch.command || JSON.stringify(settledLaunch.args) !== JSON.stringify(launch.args)) researchInvalid();
       assertRetainedOwner();
       readiness.assertCurrent(); // An accepted start is not permission to send auth.
