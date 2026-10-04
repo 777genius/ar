@@ -1,11 +1,12 @@
 /** The runner only operates one newly registered service/root. Guest creation
  * is not authority: all positive gates execute inside its actual kernel view. */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { assemble } from "./assemble.ts";
-import { command, directory, directoryIdentity, fileDigest, json, runtime } from "./common.ts";
+import { cleanEnv, command, directory, directoryIdentity, fileDigest, json, node, runtime, setupDiagnostic } from "./common.ts";
 
 assert.equal(process.platform, "linux"); assert.equal(process.getuid?.(), 0); assert.equal(process.arch, "x64");
 assert.equal(process.env.GITHUB_ACTIONS, "true", "owned OS fixture requires a disposable GitHub VM");
@@ -32,6 +33,19 @@ try {
   const packagePath = root + runtime + "/os-packages.json";
   const packageStat = lstatSync(packagePath); assert(packageStat.isFile() && packageStat.uid === 0 && packageStat.size < 65536);
   evidence.osPackageFacts = JSON.parse(readFileSync(packagePath, "utf8"));
+  assert.equal(fileDigest(root + node), fileDigest(process.execPath));
+  // This trusted startup probe runs only in the newly extracted CI guest root,
+  // before jobs, auth fixtures or systemd units. It cannot mount host libraries.
+  const startup = spawnSync("/usr/sbin/chroot", [root, node, "--version"], { env: cleanEnv, cwd: "/",
+    encoding: "utf8", timeout: 10000, maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"] });
+  const versionOutput = startup.stdout?.trim() ?? "";
+  evidence.nodePreboot = { status: startup.status, signal: startup.signal,
+    errorCode: startup.error && "code" in startup.error && ["ENOENT", "EACCES", "ETIMEDOUT"].includes(String(startup.error.code))
+      ? startup.error.code : startup.error ? "other" : null,
+    version: /^v\d+\.\d+\.\d+$/.test(versionOutput) ? versionOutput : null,
+    diagnostic: setupDiagnostic(startup.stderr ?? "") };
+  assert(!startup.error && startup.status === 0 && startup.signal === null && versionOutput === process.version,
+    "owned TEST pinned Node preboot failed");
   const nspawn = root + "/usr/bin/systemd-nspawn";
   const version = command(nspawn, ["--version"]).split("\n")[0]!;
   assert.match(version, /^systemd 255(?:\.|\s)/);
@@ -50,9 +64,26 @@ try {
   invocationId = command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"]).trim();
   // A queued start may not yet have its invocation. Poll only this registered unit.
   const deadline = Date.now() + 22 * 60 * 1000;
+  const bootDeadline = Date.now() + 90000;
   const path = root + runtime + "/guest-evidence.json";
   while (!existsSync(path)) {
     assert(Date.now() < deadline, "owned TEST guest qualification timed out");
+    const childFailure = root + runtime + "/guest-child-exit.json";
+    if (existsSync(childFailure)) {
+      const stat = lstatSync(childFailure); assert(stat.isFile() && stat.uid === 0 && stat.size < 4096);
+      const failure = JSON.parse(readFileSync(childFailure, "utf8")) as Record<string, unknown>;
+      assert.equal(failure.sourceSha, process.env.TEST_SOURCE_SHA); assert.equal(failure.purpose, "TEST_child_failure_observation_only");
+      evidence.guestChildFailure = failure;
+      throw new Error("owned TEST qualification child exited before evidence");
+    }
+    const started = root + runtime + "/guest-started.json";
+    if (!existsSync(started)) assert(Date.now() < bootDeadline, "owned TEST guest bootstrap timed out");
+    else if (!evidence.guestBootstrap) {
+      const stat = lstatSync(started); assert(stat.isFile() && stat.uid === 0 && stat.size < 4096);
+      const bootstrap = JSON.parse(readFileSync(started, "utf8")) as Record<string, unknown>;
+      assert.equal(bootstrap.sourceSha, process.env.TEST_SOURCE_SHA); assert.equal(bootstrap.machineId, machineId);
+      assert.equal(bootstrap.purpose, "TEST_bootstrap_observation_only"); evidence.guestBootstrap = bootstrap;
+    }
     const state = command("/usr/bin/systemctl", ["show", unit, "--property=ActiveState", "--value"]).trim();
     assert(["active", "activating"].includes(state), "owned TEST guest exited before evidence");
     if (!invocationId) invocationId = command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"]).trim();
@@ -79,6 +110,21 @@ try {
       assert.equal(fileDigest("/run/systemd/system/" + unit), retained.fragmentSha256);
       const current = command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"]).trim();
       assert(invocationId && current === invocationId, "uncertain owned unit: leave held for VM disposal");
+      if (evidence.status !== "partial_pass") {
+        try {
+        const shown = command("/usr/bin/systemctl", ["show", unit,
+          "--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus"]);
+        const properties: Record<string, string> = {};
+        for (const line of shown.trim().split("\n")) {
+          const [key, value, ...extra] = line.split("=");
+          assert(key && value !== undefined && extra.length === 0 && /^[A-Za-z0-9_-]{0,80}$/.test(value));
+          assert(["ActiveState", "SubState", "Result", "ExecMainCode", "ExecMainStatus"].includes(key)); properties[key] = value;
+        }
+        const journal = spawnSync("/usr/bin/journalctl", ["--unit", unit, "--no-pager", "--output=cat", "--lines=80"],
+          { env: cleanEnv, encoding: "utf8", timeout: 5000, maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"] });
+        evidence.ownedUnitFailure = { properties, journalDiagnostic: setupDiagnostic(journal.stdout ?? ""), journalStatus: journal.status };
+        } catch { evidence.ownedUnitDiagnosticUnavailable = true; }
+      }
       command("/usr/bin/systemctl", ["stop", unit], 45000);
       evidence.ownedOsStopped = true;
     } catch { evidence.ownedOsStopped = false; process.exitCode = 1; }

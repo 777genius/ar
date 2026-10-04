@@ -12,6 +12,15 @@ source artifacts and TEST projects are freshly owned. One outer systemd service
 delegates its subtree to nspawn; no runner services are masked/stopped and no
 outer root/account/bus/checkout directory is mounted into the guest.
 
+Assembly independently discovers the pinned Node ELF SONAMEs and adds only their
+fixed supported distro packages from authenticated indexes. Unknown requirements
+fail closed. A bounded preboot chroot `node --version` runs that exact copied
+binary in the new root before any job/auth fixture or OS launch. Its fixed setup
+classifications are retained; no host library directory is copied or mounted.
+The builtin-only supervisor writes a startup marker, then records an early
+qualification-child exit without raw stdout/stderr. Missing startup fails within
+90 seconds instead of silently waiting through the whole qualification budget.
+
 The guest disables OS-layer user remapping so the unchanged initial-UID-map
 guard can run, while keeping private PID/mount/cgroup views. Its unit search
 path contains only an owned minimal target and permanent supervisor. Unknown
@@ -54,3 +63,7 @@ The final bounded artifact retains signed-index/package hashes and versions,
 owned launch registration, namespace observations and toolchain/network pins.
 Actual npm UID/GID before normalization remains a required separate primitive
 gate on this exact source SHA; this fixture independently observes provider IDs.
+The issuer requires the production NumericUidDropV2 recipe and independently
+pins `/usr/bin/setpriv` bytes, exact version and actual library closure before
+launch. The guest has no UID/GID 65532 NSS entry; numeric privilege dropping must
+work without creating a host or guest installer account.

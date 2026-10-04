@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
   readdirSync, readFileSync, readlinkSync, readSync, realpathSync, writeFileSync } from "node:fs";
@@ -11,23 +10,14 @@ import { writeHostedTestEgressGrant } from "../../dist/worker-codex/hosted-test-
 import { CodexProviderEgressProfileId } from "../../dist/provider-codex/index.js";
 import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRootKind } from "../../dist/worker-core/index.js";
 import { HostedDependencyInstallerNetworkInput, hostedDependencyInstallerNetworkRoot, hostedDependencyInstallerNpmRootSha256,
+  HostedDependencyInstallerRevision, hostedDependencyInstallerDropperSha256,
   type HostedDependencyInstallerProfile } from "../../dist/worker-codex/hosted-dependency-installer-recipe.js";
 import { readHostedDependencyBinding } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
 import { LocalDependencyOwnerStore } from "../../dist/store-local-file/dependency-environment/local-dependency-owner-store.js";
 import { readHostedDependencyReceipt } from "../../dist/worker-codex/hosted-dependency-materialization.js";
 import { cleanEnv, command, digest, directory, directoryIdentity, fileDigest, installedArtifactDigest, json, node, policy, runtime } from "./common.ts";
 
-if (process.argv[2] === "supervisor") {
-  // PID remains the actual systemd MainPID until VM-owned shutdown. Qualification
-  // is a child in this same cgroup with exactly three pipe descriptors.
-  const child = spawn(node, ["--experimental-strip-types", runtime + "/scripts/dependency-retention-os-test/guest.ts", "qualify"],
-    { env: { ...cleanEnv, TEST_SOURCE_SHA: process.env.TEST_SOURCE_SHA }, stdio: ["pipe", "pipe", "pipe"] });
-  child.stdin.end(); child.stdout.resume(); child.stderr.resume();
-  const timeout = setTimeout(() => child.kill("SIGTERM"), 21 * 60 * 1000);
-  child.once("exit", () => clearTimeout(timeout));
-  child.once("error", () => { clearTimeout(timeout); process.exitCode = 70; });
-  setInterval(() => {}, 60000);
-} else {
+{
   const evidence: Record<string, unknown> = { schemaVersion: 1, sourceSha: process.env.TEST_SOURCE_SHA,
     qualification: "native_fresh_hot_synthetic_provider", machineId: readFileSync("/etc/machine-id", "utf8").trim(),
     status: "failed", results: [], requiredCompanionGates: [{ workflow: "dependency-retention-linux-test.yml",
@@ -56,6 +46,9 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   evidence.runtimeDirectory = directoryIdentity(runtime);
   evidence.systemdVersion = command("/usr/bin/systemctl", ["--version"]).split("\n")[0];
   evidence.cgroupControllers = readFileSync("/sys/fs/cgroup/cgroup.controllers", "utf8").trim();
+  assert(!readFileSync("/etc/passwd", "utf8").split("\n").some(line => line.split(":")[2] === "65532"));
+  assert(!readFileSync("/etc/group", "utf8").split("\n").some(line => line.split(":")[2] === "65532"));
+  evidence.installerNssIdentityAbsent = true;
   assert.match(String(evidence.cgroupControllers), /\bcpu\b/); assert.match(String(evidence.cgroupControllers), /\bmemory\b/);
   assert.match(String(evidence.cgroupControllers), /\bpids\b/);
   const jobId = "TEST-os-" + randomUUID(), root = policy + "/dependency-test-jobs/jobs/" + jobId;
@@ -151,16 +144,27 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
 function actualToolchainProfile(): HostedDependencyInstallerProfile {
   assert.equal(realpathSync(process.execPath), node);
   const npmRootPath = runtime + "/toolchain/lib/node_modules/npm", npmCliPath = npmRootPath + "/bin/npm-cli.js";
-  const paths = [...new Set([...command("/usr/bin/ldd", [node]).matchAll(/(?:=>\s+)?(\/[A-Za-z0-9_./+-]+)\s+\(/g)].map(m => realpathSync(m[1]!)))].sort();
-  assert(paths.length > 0 && paths.length <= 32);
-  const toolRoots = paths.map(path => { assert(path.startsWith("/usr/lib/")); return { path, kind: DependencyToolRootKind.File as const, sha256: fileDigest(path) }; });
+  const toolRoots = actualLibraries(node);
+  // Production validates canonical root ownership and bytes BEFORE execution.
+  const helperSha256 = hostedDependencyInstallerDropperSha256();
+  assert.equal(command("/usr/bin/setpriv", ["--version"]).trim(), "setpriv from util-linux 2.39.3");
+  const privilegeDropper: HostedDependencyInstallerProfile["privilegeDropper"] = { path: "/usr/bin/setpriv", version: "2.39.3",
+    sha256: helperSha256, libraries: actualLibraries("/usr/bin/setpriv") };
+  assert.equal(hostedDependencyInstallerDropperSha256(), helperSha256);
   const libc = toolRoots.find(row => /\/libc\.so\.[0-9]+$/.test(row.path)); assert(libc);
   const version = /^glibc\s+([0-9]+\.[0-9]+)\s*$/.exec(command("/usr/bin/getconf", ["GNU_LIBC_VERSION"]))?.[1]; assert(version);
   return { schemaVersion: 1, platform: "linux", arch: DependencyInstallArchitecture.X64, nodePath: node,
     nodeSha256: fileDigest(node), nodeVersion: process.version, nodeAbi: process.versions.modules,
     npmCliPath, npmSha256: fileDigest(npmCliPath), npmVersion: command(node, [npmCliPath, "--version"]).trim(), npmRootPath,
-    npmRootSha256: hostedDependencyInstallerNpmRootSha256(npmRootPath), toolRoots, networkInputs: issueOwnedNetworkInputs(),
+    npmRootSha256: hostedDependencyInstallerNpmRootSha256(npmRootPath), toolRoots, networkInputs: issueOwnedNetworkInputs(), privilegeDropper,
+    recipeRevision: HostedDependencyInstallerRevision.NumericUidDropV2,
     libc: { family: DependencyLibcFamily.Glibc, version, path: libc.path, sha256: libc.sha256 } };
+}
+function actualLibraries(executable: string): HostedDependencyInstallerProfile["toolRoots"] {
+  const output = command("/usr/bin/ldd", [executable]); assert(!output.includes("not found"));
+  const paths = [...new Set([...output.matchAll(/(?:=>\s+)?(\/[A-Za-z0-9_./+-]+)\s+\(/g)].map(m => realpathSync(m[1]!)))].sort();
+  assert(paths.length > 0 && paths.length <= 32);
+  return paths.map(path => { assert(path.startsWith("/usr/lib/")); return { path, kind: DependencyToolRootKind.File as const, sha256: fileDigest(path) }; });
 }
 function issueOwnedNetworkInputs(): HostedDependencyInstallerProfile["networkInputs"] {
   directory(hostedDependencyInstallerNetworkRoot);
@@ -205,6 +209,6 @@ async function publicInputs() {
   assert.match(metadata.dist.integrity, /^sha512-[A-Za-z0-9+/]{86}==$/);
   const pkg = { name: "owned-os-dependency-test", version: "1.0.0", private: true, dependencies: { "is-number": "7.0.0" } };
   return { packageBytes: Buffer.from(JSON.stringify(pkg) + "\n"), lockBytes: Buffer.from(JSON.stringify({ name: pkg.name,
-    version: pkg.version, lockfileVersion: 3, requires: true, packages: { "": pkg,
+    version: pkg.version, lockfileVersion: 3, requires: true, packages: { "": { name: pkg.name, version: pkg.version, dependencies: pkg.dependencies },
       "node_modules/is-number": { version: "7.0.0", resolved: metadata.dist.tarball, integrity: metadata.dist.integrity } } }) + "\n") };
 }

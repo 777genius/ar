@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
   readdirSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { command, directory, fileDigest, json, runtime } from "./common.ts";
+import { command, directory, elfPackages, fileDigest, json, runtime } from "./common.ts";
 
 export function assemble(root: string, state: string, source: string, toolchain: string, sourceSha: string, machineId: string): void {
   assert(root.startsWith("/var/lib/subscription-runtime-os-TEST/"));
@@ -26,9 +26,25 @@ export function assemble(root: string, state: string, source: string, toolchain:
   const releases = readdirSync(state + "/lists").filter(name => name.endsWith("_InRelease"));
   assert.equal(releases.length, 3);
   for (const name of releases) command("/usr/bin/gpgv", ["--keyring", "/usr/share/keyrings/ubuntu-archive-keyring.gpg", state + "/lists/" + name]);
+  const pinnedNode = realpathSync(toolchain + "/bin/node"), pinnedSha = fileDigest(pinnedNode);
+  assert.equal(pinnedNode, realpathSync(process.execPath));
+  const linkage = command("/usr/bin/ldd", [pinnedNode]);
+  assert(!linkage.includes("not found"));
+  const requirements = [...linkage.matchAll(/^\s*([A-Za-z0-9_.+-]+)\s+=>\s+(\/[^\s]+)\s+\(/gm)]
+    .map(match => ({ soname: match[1]!, resolved: realpathSync(match[2]!) }));
+  const loader = /^\s*(\/[^\s]+\/ld-linux-x86-64\.so\.2)\s+\(/m.exec(linkage)?.[1]; assert(loader);
+  requirements.push({ soname: "ld-linux-x86-64.so.2", resolved: realpathSync(loader) });
+  assert(requirements.length > 1 && requirements.length <= 32);
+  const requiredPackages = [...new Set(requirements.map(row => {
+    assert(Object.hasOwn(elfPackages, row.soname), "unsupported pinned Node ELF requirement");
+    assert(row.resolved.startsWith("/usr/lib/"));
+    return elfPackages[row.soname as keyof typeof elfPackages];
+  }))].sort();
+  assert.equal(fileDigest(pinnedNode), pinnedSha);
   // --download-only never configures the extracted guest or starts runner services.
   command("/usr/bin/apt-get", [...options, "--yes", "--download-only", "--no-install-recommends", "install",
-    "systemd", "systemd-container", "util-linux", "bash", "coreutils", "libc-bin", "git", "ca-certificates", "tini", "python3-minimal"], 300000);
+    "systemd", "systemd-container", "util-linux", "bash", "coreutils", "libc-bin", "git", "ca-certificates", "tini", "python3-minimal",
+    ...requiredPackages], 300000);
   for (const name of ["usr/bin", "usr/sbin", "usr/lib", "usr/lib64"]) directory(root + "/" + name, 0o755);
   for (const name of ["bin", "sbin", "lib", "lib64"]) symlinkSync("usr/" + name, root + "/" + name);
   const packages: unknown[] = [];
@@ -59,8 +75,9 @@ export function assemble(root: string, state: string, source: string, toolchain:
     if (existsSync(path)) rmSync(path, { recursive: true });
   }
   writeFileSync(root + "/etc/machine-id", machineId + "\n", { mode: 0o444 });
-  writeFileSync(root + "/etc/passwd", "root:x:0:0:TEST root:/root:/bin/bash\nTEST-installer:x:65532:65532:TEST installer:/nonexistent:/usr/sbin/nologin\n", { mode: 0o644 });
-  writeFileSync(root + "/etc/group", "root:x:0:\nTEST-installer:x:65532:\n", { mode: 0o644 });
+  // Numeric privilege drop must work with no installer account in NSS.
+  writeFileSync(root + "/etc/passwd", "root:x:0:0:TEST root:/root:/bin/bash\n", { mode: 0o644 });
+  writeFileSync(root + "/etc/group", "root:x:0:\n", { mode: 0o644 });
   writeFileSync(root + "/etc/hosts", "127.0.0.1 localhost\n", { mode: 0o644 });
   writeFileSync(root + "/etc/nsswitch.conf", "hosts: files dns\n", { mode: 0o644 });
   writeFileSync(root + "/etc/services", "", { mode: 0o644 });
@@ -71,12 +88,14 @@ export function assemble(root: string, state: string, source: string, toolchain:
   snapshotPublicFile("/etc/ssl/certs/ca-certificates.crt", root + "/etc/ssl/certs/ca-certificates.crt", 1024 * 1024);
   const units = root + "/etc/systemd/test-units";
   writeFileSync(units + "/TEST-retention.target", "[Unit]\nDescription=Owned dependency TEST OS\nDefaultDependencies=no\nRequires=TEST-retention-supervisor.service\nAfter=TEST-retention-supervisor.service\n", { mode: 0o644 });
-  writeFileSync(units + "/TEST-retention-supervisor.service", `[Unit]\nDescription=Owned TEST issuer and retained supervisor\nDefaultDependencies=no\n[Service]\nType=exec\nExecStart=${runtime}/toolchain/bin/node --experimental-strip-types ${runtime}/scripts/dependency-retention-os-test/guest.ts supervisor\nEnvironment=TEST_SOURCE_SHA=${sourceSha}\nEnvironment=PATH=${runtime}/toolchain/bin:/usr/bin:/bin LANG=C LC_ALL=C\nRestart=no\nKillMode=control-group\nRuntimeMaxSec=25min\nTimeoutStopSec=20s\nStandardOutput=null\nStandardError=null\n`, { mode: 0o644 });
+  writeFileSync(units + "/TEST-retention-supervisor.service", `[Unit]\nDescription=Owned TEST issuer and retained supervisor\nDefaultDependencies=no\n[Service]\nType=exec\nExecStart=${runtime}/toolchain/bin/node --experimental-strip-types ${runtime}/scripts/dependency-retention-os-test/common.ts supervisor\nEnvironment=TEST_SOURCE_SHA=${sourceSha}\nEnvironment=PATH=${runtime}/toolchain/bin:/usr/bin:/bin LANG=C LC_ALL=C\nRestart=no\nKillMode=control-group\nRuntimeMaxSec=25min\nTimeoutStopSec=20s\nStandardOutput=null\nStandardError=null\n`, { mode: 0o644 });
   // Recursively copied CI checkout files become root-owned immutable artifacts.
   command("/usr/bin/chown", ["-R", "0:0", root + runtime]);
   command("/usr/bin/chmod", ["-R", "go-w", root + runtime]);
   json(root + runtime + "/os-packages.json", { schemaVersion: 1, release: "ubuntu-noble",
-    releases: releases.map(name => ({ name, sha256: fileDigest(state + "/lists/" + name) })), packages });
+    releases: releases.map(name => ({ name, sha256: fileDigest(state + "/lists/" + name) })), packages,
+    pinnedNode: { sha256: pinnedSha, version: process.version, requirements: requirements.map(row => ({ soname: row.soname,
+      sha256: fileDigest(row.resolved), package: elfPackages[row.soname as keyof typeof elfPackages] })), requiredPackages } });
   assert(existsSync(root + "/usr/bin/systemd-nspawn"));
   assert(existsSync(root + "/usr/lib/systemd/systemd"));
 }
