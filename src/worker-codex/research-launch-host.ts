@@ -39,6 +39,21 @@ export type ResearchProcessIdentity = Readonly<{
   pid: number; birthTicks: string; bootId: string; machineId: string; controlGroup: string;
   namespaces: Readonly<{ user: string; mnt: string; pid: string; net: string }>;
 }>;
+/** Kernel membership may include v1 hierarchies alongside the unified manager.
+ * Only the unique v2 row supplies authority; preserve its path verbatim. */
+function researchUnifiedControlGroup(text: string): string | null {
+  let unified: string | null = null;
+  for (const line of text.replace(/\n$/, "").split("\n")) {
+    const row = /^(0|[1-9][0-9]*):([^:]*):(\/[^\0\r\n]*)$/.exec(line);
+    if (!row) return null;
+    const [, hierarchy, controllers, group] = row;
+    if (hierarchy === "0") {
+      if (controllers !== "" || unified !== null) return null;
+      unified = group!;
+    } else if (!/^(?:[a-zA-Z0-9_-]+|name=[a-zA-Z0-9_.-]+)(?:,(?:[a-zA-Z0-9_-]+|name=[a-zA-Z0-9_.-]+))*$/.test(controllers!)) return null;
+  }
+  return unified;
+}
 export function researchProcessIdentity(pid = process.pid): ResearchProcessIdentity {
   if (!Number.isSafeInteger(pid) || pid < 1) researchInvalid();
   const stat = readFileSync(`/proc/${pid}/stat`, "utf8"), end = stat.lastIndexOf(")");
@@ -47,7 +62,7 @@ export function researchProcessIdentity(pid = process.pid): ResearchProcessIdent
   const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
   const machineId = readFileSync("/etc/machine-id", "utf8").trim();
   if (!/^[a-f0-9-]{36}$/.test(bootId) || !/^[a-f0-9]{32}$/.test(machineId)) researchInvalid();
-  const group = /^0::([^\n]+)$/.exec(readFileSync(`/proc/${pid}/cgroup`, "utf8").trim())?.[1];
+  const group = researchUnifiedControlGroup(readFileSync(`/proc/${pid}/cgroup`, "utf8"));
   if (!group) researchInvalid();
   const namespaces = Object.freeze({ user: readlinkSync(`/proc/${pid}/ns/user`), mnt: readlinkSync(`/proc/${pid}/ns/mnt`),
     pid: readlinkSync(`/proc/${pid}/ns/pid`), net: readlinkSync(`/proc/${pid}/ns/net`) });
@@ -81,8 +96,8 @@ export function researchServiceIdentity(unit: string, allowPending = false): Res
 }
 export function researchUnitFromCurrentProcess(): string | null {
   if (process.platform !== "linux") return null;
-  const group = readFileSync("/proc/self/cgroup", "utf8").trim();
-  const unit = /^0::\/system\.slice\/(subscription-runtime-research-[a-f0-9-]{36}\.service)$/.exec(group)?.[1];
+  const group = researchUnifiedControlGroup(readFileSync("/proc/self/cgroup", "utf8"));
+  const unit = group === null ? undefined : /^\/system\.slice\/(subscription-runtime-research-[a-f0-9-]{36}\.service)$/.exec(group)?.[1];
   return unit ?? null;
 }
 export function assertResearchServiceOwner(processIdentity: ResearchProcessIdentity, service: ResearchServiceIdentity, description: string): void {
