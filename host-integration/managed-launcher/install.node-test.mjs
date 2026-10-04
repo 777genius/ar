@@ -12,6 +12,8 @@ function fixture(t) {
   const integration = join(root, 'source');
   const bin = join(root, 'bin');
   for (const path of [bin, `${integration}/managed-launcher`, `${integration}/host-jobs`, `${destination}/managed-launcher`, `${destination}/host-jobs`]) mkdirSync(path, { recursive: true });
+  // Keep the generated CommonJS commands independent of temporary ancestors.
+  writeFileSync(join(bin, 'package.json'), '{"type":"commonjs"}\n');
   for (const path of ['managed-launcher/launch.mjs', 'managed-launcher/payload-guard.mjs', 'managed-launcher/profiles.mjs', 'host-jobs/storage-policy.mjs']) {
     writeFileSync(`${integration}/${path}`, `trusted ${path}\n`);
     writeFileSync(`${destination}/${path}`, 'old installation\n');
