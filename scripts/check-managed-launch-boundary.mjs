@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const launcher = 'host-integration/managed-launcher/launch.mjs';
 const trustedCustodyLauncher = 'src/worker-codex/trusted-custody-systemd-launch.ts';
+// Closed producer: requires the live host fence, retained origin and Running
+// dependency owner before building one finite provider root. No directory exemption.
+const trustedDependencyProviderLauncher = 'src/provider-codex/app-server/adapters/hosted-dependency-provider-launch.ts';
 const excludedDirectories = new Set(['node_modules', 'dist', '.git', 'docs', 'tests', '__tests__', 'fixtures', '__fixtures__', 'coverage']);
 const sourceExtension = /\.(?:[cm]?[jt]sx?|sh|bash|py)$/;
 const testFile = /(?:\.test\.|\.spec\.|\.node-test\.|-self-test\.)/;
@@ -94,7 +97,7 @@ export async function checkManagedLaunchBoundary(root = repositoryRoot) {
         if (!excludedDirectories.has(entry.name)) await walk(path);
       } else if (entry.isFile() && sourceExtension.test(entry.name) && !testFile.test(entry.name)) {
         const name = relative(root, path).replaceAll('\\', '/');
-        if (name === launcher || name === trustedCustodyLauncher ||
+        if (name === launcher || name === trustedCustodyLauncher || name === trustedDependencyProviderLauncher ||
             name === 'scripts/check-managed-launch-boundary.mjs') continue;
         scanned++;
         for (const line of findRawLaunches(await readFile(path, 'utf8'), name)) violations.push(`${name}:${line}`);

@@ -22,6 +22,13 @@ runner-github-action -> core
 `core` must never import Claude, Codex, BullMQ, GitHub or file-system custody
 adapters. Providers are sibling modules, not special cases inside `core`.
 
+Managed `systemd-run` recipes are confined to the managed launcher, the trusted
+custody launcher, and the exact dependency provider launcher adapter. The latter
+requires a live host fence, retained origin, current Running owner and protected
+provider reservation before synchronous submission into a finite root. Its TEST
+qualification profile is opt-in; this exception permits no adjacent module or
+request-selected systemd properties. Native qualification is a separate gate.
+
 `account-diagnostics` is a provider-neutral application module. It owns the
 status model, merge policy and cached capacity bridge, while Codex and Claude
 diagnostic adapters live under their worker modules. See
