@@ -180,6 +180,7 @@ async function assertTerminalEvidenceInCanonicalRoots(
     decision.backup.numstatPath,
     decision.backup.untrackedArchivePath,
     decision.preexistingWorkspacePatch?.path,
+    decision.publicationIncorporation?.path,
   ].filter((path): path is string => path !== undefined);
   for (const input of directories) {
     const lexical = resolve(input);

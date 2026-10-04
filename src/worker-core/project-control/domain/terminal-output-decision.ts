@@ -25,6 +25,7 @@ export type TerminalOutputDecision = {
   readonly status: TerminalOutputStatus;
   readonly closedAt: string;
   readonly commitSha?: string;
+  readonly publicationIncorporation?: { readonly path: string; readonly sha256: string };
   readonly archivePath?: string;
   readonly failure?: {
     readonly category: string;
@@ -58,6 +59,11 @@ export function assertTerminalOutputDecision(
   }
   if (decision.status === "integrated" && !decision.commitSha) {
     throw new Error("terminal_output_integrated_commit_required");
+  }
+  if (decision.publicationIncorporation && (decision.status !== "integrated" || decision.attemptId !== undefined ||
+      !decision.publicationIncorporation.path.startsWith("/") ||
+      !/^[a-f0-9]{64}$/.test(decision.publicationIncorporation.sha256))) {
+    throw new Error("terminal_output_publication_incorporation_invalid");
   }
   if (
     decision.status === "failed_no_output" &&
