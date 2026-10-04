@@ -34,7 +34,7 @@ async function fixture(raw = false) {
   async function stage() { const op = await openDependencyTreeRename(input); try { await op.rename(); } finally { await op.close(); } }
   async function commit() {
     const installKey = "a".repeat(64), proof = { generation: "TEST-generation", workspace, coverageRevision: "TEST-coverage",
-      installKey, tree: observed.tree, manifestDigest: observed.digest, operationId, trash: input.trash, commitEvidenceId: operationId };
+      installKey, tree: input.trash.originalTree, manifestDigest: input.manifestDigest, operationId, trash: input.trash, commitEvidenceId: operationId };
     const receipt: DependencyReceipt = { version: 1, revision: 2, generation: proof.generation, workspace,
       coverageRevision: proof.coverageRevision, state: DependencyReceiptState.Absent, operationId, installKey, evictionCommit: proof };
     const bytes = Buffer.from(JSON.stringify(receipt) + "\n"), path = join(records, operationId + ".json");
