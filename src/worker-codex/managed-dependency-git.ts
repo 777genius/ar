@@ -28,3 +28,24 @@ export class ManagedDependencyGitRunner implements SafeExecutionCommandRunner {
     return { stdout: String(result.stdout), stderr: String(result.stderr) };
   }
 }
+
+export async function isLinkedGitWorktree(workspacePath: string): Promise<boolean> {
+  try {
+    const { stdout } = await execute(isHostedDependencyWorkspace(workspacePath) ? "/usr/bin/git" : "git", [
+      ...(isHostedDependencyWorkspace(workspacePath) ? managedDependencyGitFlags : []),
+      "-C",
+      workspacePath,
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-dir",
+      "--git-common-dir",
+    ], { timeout: 5_000, ...(isHostedDependencyWorkspace(workspacePath) ? { env: managedDependencyGitEnvironment() } : {}) });
+    const [gitDir, gitCommonDir] = stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    return Boolean(gitDir && gitCommonDir && gitDir !== gitCommonDir);
+  } catch {
+    return false;
+  }
+}
