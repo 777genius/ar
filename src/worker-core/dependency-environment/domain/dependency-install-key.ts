@@ -17,7 +17,7 @@ export const dependencyTestNpmArgv: readonly string[] = Object.freeze([
 ]);
 export const dependencyTestNpmEnvironment: Readonly<Record<string, string>> = Object.freeze({
   PATH: "/usr/local/bin:/usr/bin:/bin", HOME: "/home/installer", LANG: "C", LC_ALL: "C",
-  npm_config_cache: "/cache", npm_config_userconfig: "/runtime/npmrc", npm_config_globalconfig: "/runtime/npmrc",
+  npm_config_cache: "/cache", npm_config_userconfig: "/runtime/npmrc", npm_config_globalconfig: "/runtime/global-npmrc",
   npm_config_registry: "https://registry.npmjs.org/", npm_config_ignore_scripts: "true",
   npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false",
 });
