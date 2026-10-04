@@ -54,10 +54,27 @@ function runtimeExecDiagnostics(text: string) {
   const missing = [...text.matchAll(/(?:error while loading shared libraries|error while loading shared library): ([A-Za-z0-9_.+-]{1,128}):/g)]
     .map(match => match[1]).filter((name): name is string => name !== undefined);
   return { classifications: classes.filter(message => text.includes(message)),
+    bootstrapPreflight: bootstrapPreflightDiagnostic(text),
     privilegeDropFailures: stages.filter(stage => new RegExp(`(?:^|\\n)setpriv: ${stage}:`).test(text)),
     missingLibraries: names.filter(name => missing.includes(name)), unlistedMissingLibrary: missing.some(name => !names.includes(name)),
     glibcVersionMissing: /version [`']GLIBC_[0-9.]+['`] not found/.test(text),
     glibcxxVersionMissing: /version [`']GLIBCXX_[0-9.]+['`] not found/.test(text) };
+}
+function bootstrapPreflightDiagnostic(text: string): unknown {
+  const marker = /^dependency_installer_preflight_v1 (.{1,512})$/m.exec(text)?.[1]; if (!marker) return null;
+  try {
+    const value = JSON.parse(marker);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (value.stage === "runtime_identity" && Object.keys(value).sort().join(",") === "abiMatch,archMatch,platformMatch,stage" &&
+        [value.abiMatch, value.archMatch, value.platformMatch].every(v => typeof v === "boolean"))
+      return { stage: "runtime_identity", abiMatch: value.abiMatch, archMatch: value.archMatch, platformMatch: value.platformMatch };
+    const status = (v: unknown) => v === null || (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 255);
+    if (value.stage === "tool_versions" && Object.keys(value).sort().join(",") === "duplicateConfig,nodeStatus,nodeVersionMatch,npmStatus,npmVersionMatch,stage" &&
+        status(value.nodeStatus) && status(value.npmStatus) && [value.nodeVersionMatch, value.npmVersionMatch, value.duplicateConfig].every(v => typeof v === "boolean"))
+      return { stage: "tool_versions", nodeStatus: value.nodeStatus, npmStatus: value.npmStatus,
+        nodeVersionMatch: value.nodeVersionMatch, npmVersionMatch: value.npmVersionMatch, duplicateConfig: value.duplicateConfig };
+  } catch { /* Malformed markers never become retained raw output. */ }
+  return null;
 }
 class TestCommandFailure extends Error {
   readonly runtime: ReturnType<typeof runtimeExecDiagnostics>;
