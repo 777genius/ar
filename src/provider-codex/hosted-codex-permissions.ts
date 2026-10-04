@@ -1,5 +1,5 @@
 import type { CodexSandboxMode } from "./codex-json-execution-engine";
-import type { CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
+import { codexProviderEgressPolicy, CodexProviderEgressProfileId, type CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
@@ -66,7 +66,7 @@ export function hostedCodexPermissionProfilesToml(
   executableReadPath?: string,
   privateKeyFilePath?: string,
 ): string {
-  const domains = policy.domains.map(domain => `${JSON.stringify(domain)} = "allow"`).join(", ");
+  const domains = codexProviderEgressPolicy(policy.profileId).domains.map(domain => `${JSON.stringify(domain)} = "allow"`).join(", ");
   let nodeExecutableReadPath: string | undefined;
   try {
     const resolved = realpathSync(process.execPath);
@@ -99,7 +99,7 @@ export function hostedCodexPermissionProfilesToml(
     "",
     `[permissions.${HostedCodexPermissionProfileId.ReadOnly}.network]`,
     "enabled = true",
-    `domains = { ${domains} }`,
+    ...(policy.profileId === CodexProviderEgressProfileId.FullInternetV1 ? [] : [`domains = { ${domains} }`]),
     "",
     `[permissions.${HostedCodexPermissionProfileId.WorkspaceWrite}.filesystem]`,
     '":root" = "deny"',
@@ -114,7 +114,7 @@ export function hostedCodexPermissionProfilesToml(
     "",
     `[permissions.${HostedCodexPermissionProfileId.WorkspaceWrite}.network]`,
     "enabled = true",
-    `domains = { ${domains} }`,
+    ...(policy.profileId === CodexProviderEgressProfileId.FullInternetV1 ? [] : [`domains = { ${domains} }`]),
     "",
   ].join("\n");
 }

@@ -97,26 +97,57 @@ export async function prepareHostScratchCaches(codexHome: string, sourceEnv: Rea
     bindTarget(policy, join(parent, leaf!), "runtime-caches", host);
   }
 }
+/** Read-only facts for an independent provider namespace. Never prepares a mount
+ * or accepts caller-selected targets; all three leaves must already be prepared. */
+export function resolvePreparedHostScratchBinds(jobRootDir: string, codexHome: string, host: ScratchTempHost = systemHost): readonly { source: string; target: string }[] {
+  const policy = readPolicy(host);
+  if (!policy) return [];
+  assertDirectory(jobRootDir, host); assertDirectory(codexHome, host);
+  const binds: { source: string; target: string }[] = [];
+  for (const [target, family, hashInput] of [
+    [join(jobRootDir, "tmp"), "runtime-tmp", jobRootDir],
+    [join(codexHome, "plugins/cache"), "runtime-caches", join(codexHome, "plugins/cache")],
+    [join(codexHome, "cache/remote_plugin_catalog"), "runtime-caches", join(codexHome, "cache/remote_plugin_catalog")],
+  ] as const) {
+    assertDirectory(dirname(target), host);
+    const prepared = preparedTarget(policy, target, sourceLayout(policy, hashInput, family, host), host);
+    if (prepared === undefined) throw new Error("Selected scratch target is not prepared");
+    if (prepared) {
+      // A replaced source can leave a valid-looking old bind behind. Require the
+      // physical source to still name the exact mounted directory, not its replacement.
+      const source = host.lstat(prepared.source), mounted = host.lstat(target);
+      if (source.dev !== mounted.dev || source.ino !== mounted.ino) throw new Error("Prepared scratch source identity changed");
+      binds.push(prepared);
+    }
+  }
+  return binds;
+}
+function matchesScratchMount(policy: Policy, target: string, fsroot: string, mount: Mount | undefined): boolean {
+  return mount?.target === target && mount.uuid?.toLowerCase() === policy.uuid.toLowerCase() && mount.fsroot === fsroot;
+}
+function preparedTarget(policy: Policy, target: string, layout: { source: string; fsroot: string }, host: ScratchTempHost): { source: string; target: string } | null | undefined {
+  const info = optionalInfo(target, host);
+  if (info) assertDirectory(target, host);
+  const mount = host.inspectMount(target);
+  if (mount) {
+    if (!matchesScratchMount(policy, target, layout.fsroot, mount)) throw new Error("Unknown mount at scratch target");
+    assertPrivateSource(layout.source, host);
+    return { source: layout.source, target };
+  }
+  if (Object.prototype.hasOwnProperty.call(policy.legacyTemps, target)) {
+    const entry = policy.legacyTemps[target] as { device?: unknown; inode?: unknown } | null;
+    if (!entry || typeof entry !== "object" || !Number.isSafeInteger(entry.device) || !Number.isSafeInteger(entry.inode) || (entry.device as number) <= 0 || (entry.inode as number) <= 0) throw new Error("Invalid selected legacy temp identity");
+    if (!info || info.dev !== entry.device || info.ino !== entry.inode) throw new Error("Legacy scratch target device/inode changed");
+    return null;
+  }
+  return undefined;
+}
 function bindTarget(policy: Policy, target: string, family: string, host: ScratchTempHost, hashInput = target): void {
   assertCanonical(target);
   const layout = sourceLayout(policy, hashInput, family, host);
-  const matches = (mount: Mount | undefined) => mount?.target === target && mount.uuid?.toLowerCase() === policy.uuid.toLowerCase() && mount.fsroot === layout.fsroot;
   const checkExisting = () => {
-    const info = optionalInfo(target, host);
-    if (info) assertDirectory(target, host);
-    const mount = host.inspectMount(target);
-    if (mount) {
-      if (!matches(mount)) throw new Error("Unknown mount at scratch target");
-      assertPrivateSource(layout.source, host);
-      return true;
-    }
-    if (Object.prototype.hasOwnProperty.call(policy.legacyTemps, target)) {
-      const entry = policy.legacyTemps[target] as { device?: unknown; inode?: unknown } | null;
-      if (!entry || typeof entry !== "object" || !Number.isSafeInteger(entry.device) || !Number.isSafeInteger(entry.inode) || (entry.device as number) <= 0 || (entry.inode as number) <= 0) throw new Error("Invalid selected legacy temp identity");
-      if (!info || info.dev !== entry.device || info.ino !== entry.inode) throw new Error("Legacy scratch target device/inode changed");
-      return true;
-    }
-    if (info && host.entries(target).length !== 0) throw new Error("Refusing to hide nonempty legacy scratch directory");
+    if (preparedTarget(policy, target, layout, host) !== undefined) return true;
+    if (optionalInfo(target, host) && host.entries(target).length !== 0) throw new Error("Refusing to hide nonempty legacy scratch directory");
     return false;
   };
   if (checkExisting()) return;
@@ -133,7 +164,7 @@ function bindTarget(policy: Policy, target: string, family: string, host: Scratc
     assertDirectory(target, host);
     host.chmod(target, 0o701);
     host.bind(layout.source, target);
-    if (!matches(host.inspectMount(target))) throw new Error("Scratch bind mount verification failed");
+    if (!matchesScratchMount(policy, target, layout.fsroot, host.inspectMount(target))) throw new Error("Scratch bind mount verification failed");
   } finally { host.removeLock(lock); }
 }
 function optionalInfo(path: string, host: ScratchTempHost): Info | undefined {

@@ -1,3 +1,4 @@
+import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { sameTools } from "./child-execution-confinement";
 import { assertReadonlyAdmittedFactory } from "./hosted-readonly-admission";
 import { prepareHostScratchCaches } from "./host-scratch-temp";
@@ -34,6 +35,7 @@ import {
   hostedCodexPermissionProfilesToml,
   CodexProviderEgressProfileId,
   egressBoundCodexProcessFactory,
+  createPublicResearchSourceReader,
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { createLocalFileBackendRuntimeAdapters } from "@vioxen/subscription-runtime/store-local-file";
@@ -274,9 +276,15 @@ function createCodexAgentDriver(input: {
       );
   if (modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan &&
       providerEgressPolicy.profileId !== CodexProviderEgressProfileId.ProviderApi &&
+      providerEgressPolicy.profileId !== CodexProviderEgressProfileId.FullInternetV1 &&
       (process.platform !== "linux" || !hostedGlobalScanGuard ||
        executionEngine !== "app-server-goal" || options.boundedWorkspaceTools)) {
     throw new Error("hosted_test_egress_engine_unsupported");
+  }
+  if (providerEgressPolicy.profileId === CodexProviderEgressProfileId.FullInternetV1 &&
+      (process.platform !== "linux" || !hostedGlobalScanGuard ||
+       (executionEngine !== "app-server" && executionEngine !== "app-server-goal"))) {
+    throw new Error("hosted_permission_profiles_engine_unsupported");
   }
   if (providerEgressPolicy.profileId === CodexProviderEgressProfileId.TestManagedQualification) {
     assertReadonlyAdmittedFactory(options.appServerProcessFactory, options.workspacePath);
@@ -329,6 +337,7 @@ function createCodexAgentDriver(input: {
     ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
   });
   return new CodexJsonAgentDriver({
+    ...(options.assertProviderAdmission ? { assertProviderAdmission: options.assertProviderAdmission } : {}),
     ...(options.executionLifetime ? { executionLifetime: options.executionLifetime } : {}),
     engine: executionEngine === "packaged-exec"
       ? packagedExec
@@ -338,6 +347,9 @@ function createCodexAgentDriver(input: {
           codexBinaryPath: options.codexBinaryPath,
           modelBackend,
           sourceEnv: appServerEnv,
+          providerEgressPolicy,
+          ...(codexProviderHasPublicSources(providerEgressPolicy)
+            ? { publicSourceReader: options.publicSourceReader ?? createPublicResearchSourceReader(providerEgressPolicy) } : {}),
           ...(projectReadBoundary ? { hostedPermissionProfiles: true } : {}),
           ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
           ...(options.appServerStartupTimeoutMs

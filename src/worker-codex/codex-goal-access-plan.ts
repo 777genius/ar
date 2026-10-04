@@ -19,7 +19,7 @@ export type CodexGoalAccessConfig = {
   readonly accessBoundary?: AccessBoundary;
   readonly projectAccessScope?: ProjectAccessScope;
   readonly allowDangerFullAccess?: boolean;
-  readonly networkAccess?: NetworkAccessMode.Disabled | NetworkAccessMode.Restricted;
+  readonly networkAccess?: NetworkAccessMode;
 };
 
 export type CodexGoalAccessPlanConfig = CodexGoalAccessConfig & {
@@ -48,9 +48,6 @@ export function optionalCodexGoalNetworkAccess(
 ): CodexGoalAccessConfig["networkAccess"] | undefined {
   if (value === undefined) return undefined;
   const parsed = parseNetworkAccessMode(value, fieldName);
-  if (parsed === NetworkAccessMode.Unrestricted) {
-    throw new Error(`${fieldName}_unrestricted_requires_danger_full_access`);
-  }
   return parsed;
 }
 
@@ -117,9 +114,7 @@ export function buildCodexGoalAccessLaunchPlan(
     ...(config.allowDangerFullAccess === undefined
       ? {}
       : { allowDangerFullAccess: config.allowDangerFullAccess }),
-    ...(config.networkAccess === undefined
-      ? {}
-      : { networkAccess: config.networkAccess }),
+    networkAccess: config.networkAccess ?? NetworkAccessMode.Unrestricted,
   });
 }
 
@@ -129,31 +124,31 @@ export function commandPolicyForHostedCodexGoal(input: {
 }): CommandPolicy | undefined {
   if (
     input.accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
-    input.accessLaunchPlan.boundary === AccessBoundary.IsolatedWorkspaceWrite
+    input.accessLaunchPlan.commandPolicy.validateCommands
   ) {
     return {
       ...input.accessLaunchPlan.commandPolicy,
-      validateCommands: false,
+      deniedExecutableNames: [...new Set([...input.accessLaunchPlan.commandPolicy.deniedExecutableNames, ...hostedDeniedExecutables])],
+      deniedGitSubcommands: [...new Set([...input.accessLaunchPlan.commandPolicy.deniedGitSubcommands, ...hostedDeniedGitSubcommands])],
     };
-  }
-  if (
-    input.accessLaunchPlan?.status === LaunchPlanStatus.Ready &&
-    input.accessLaunchPlan.commandPolicy.validateCommands
-  ) {
-    return input.accessLaunchPlan.commandPolicy;
   }
   if (input.sourceEnv?.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job") {
     return undefined;
   }
   return {
     validateCommands: true,
-    deniedExecutableNames: [],
-    deniedGitSubcommands: [],
+    deniedExecutableNames: hostedDeniedExecutables,
+    deniedGitSubcommands: hostedDeniedGitSubcommands,
     deniedPathPrefixes: [],
-    deniedInlineCodeExecutables: [],
-    deniedScriptExecutables: [],
+    deniedInlineCodeExecutables: ["python", "python3", "node"],
+    deniedScriptExecutables: ["sh", "bash", "zsh"],
   };
 }
+
+// Command admission remains independent of Internet permission. The native
+// filesystem profile is still the authority for .git, .codex and private roots.
+const hostedDeniedExecutables = ["sudo", "su", "docker", "docker-compose", "podman", "tmux", "systemctl", "service"];
+const hostedDeniedGitSubcommands = ["push", "commit", "merge", "rebase", "reset", "clean", "update-ref", "gc", "repack"];
 
 export function codexGoalHostedExecutionBoundary(input: {
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
@@ -394,6 +389,8 @@ function codexGoalNetworkAccessBlocker(
   if (
     config.accessBoundary === undefined ||
     config.accessBoundary === AccessBoundary.DangerFullAccess ||
+    config.networkAccess === undefined ||
+    config.networkAccess === NetworkAccessMode.Unrestricted ||
     config.networkAccess === NetworkAccessMode.Restricted
   ) {
     return null;
@@ -403,7 +400,7 @@ function codexGoalNetworkAccessBlocker(
     boundary: config.accessBoundary,
     reason: AccessDecisionReason.CannotEnforceAccessBoundary,
     evidence: [
-      'Codex goal adapter cannot enforce network_access=disabled; set networkAccess="restricted" until OS/container egress isolation exists',
+      'Codex goal adapter cannot enforce network_access=disabled; use the default full Internet policy or an explicitly restricted profile',
     ],
   };
 }

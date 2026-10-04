@@ -39,8 +39,11 @@ Publication validates existing canonical directories and atomically replaces a
 }
 ```
 
-The only accepted schemaVersion 1 profile values are the two TEST IDs above;
-API-only, unknown profiles and extra record keys are rejected.
+The schemaVersion 1 grant reader also accepts the separately admitted production
+`codex-public-research-v1` profile. Its Host admission, anonymous source broker
+and native web rules are documented in [hosted-public-research.md](hosted-public-research.md).
+TEST operations do not grant that capability. API-only, unknown profiles and
+extra record keys are rejected.
 
 There is no domain list or alternate root argument. Environment, task labels,
 config files, manifests, CLI create/start flags, and MCP cannot issue grants.

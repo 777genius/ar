@@ -143,7 +143,9 @@ export class AppServerGoalRunner {
       } else {
         try {
           threadId = await this.options.client.forkThread({
+            ...input,
             usageLease,
+            goalMode: true,
             threadId: input.previousCheckpoint,
             timeoutMs: input.timeoutMs,
             abortSignal: input.abortSignal,
@@ -232,6 +234,7 @@ export class AppServerGoalRunner {
           workspacePath: input.workspacePath,
         });
       }
+      await this.options.client.resumePublicResearchThread({ ...input, threadId });
       await this.options.runStore.resume({
         runId: input.runId,
         requestId: input.requestId,

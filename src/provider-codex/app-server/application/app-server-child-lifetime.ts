@@ -200,7 +200,8 @@ export function bindAppServerSessionLifetime(session: CodexMaterializedSession, 
 /** The request continuation and the write consume the same original fence.
  * Kept here so ordinary request timeout defaults stay in the client. */
 export async function sendAppServerLifetimeRequest(method: string, params: unknown,
-  input: { readonly timeoutMs?: number; readonly abortSignal?: AbortSignal; readonly usageLease?: AppServerExecutionLease },
+  input: { readonly timeoutMs?: number; readonly abortSignal?: AbortSignal; readonly usageLease?: AppServerExecutionLease;
+    readonly observeResponse?: (response: CodexAppServerJsonRpcResponse) => void },
   port: {
     readonly child: CodexAppServerChildProcess | null;
     readonly terminalError: Error | null;
@@ -225,6 +226,7 @@ export async function sendAppServerLifetimeRequest(method: string, params: unkno
       port.executionLifetime?.remainingMs() ?? Infinity, port.childBudget?.remainingMs() ?? Infinity),
     ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
     ...(input.usageLease === undefined ? {} : { usageLease: input.usageLease }),
+    ...(input.observeResponse === undefined ? {} : { observeResponse: input.observeResponse }),
     pending: port.pending,
     write: message => {
       assertActive();

@@ -82,8 +82,9 @@ import {
   isCodexAppServerRateLimitsRejectedError,
   type CodexAppServerRateLimitsSnapshotHandler,
 } from "./app-server/application/app-server-rate-limits-monitor";
-import type { CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
+import { resolveAppServerEngineLifetime, type CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
 import { CodexModelBackend } from "./codex-model-backend";
+import { codexProviderEgressPolicy } from "./codex-provider-egress-policy";
 export type {
   CodexAppServerChildProcess,
   CodexAppServerProcessFactory,
@@ -108,10 +109,10 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   private readonly runStore: ManagedRunStorePort;
   private readonly slotPool: AppServerSlotPool;
   constructor(private readonly options: CodexAppServerExecutionEngineOptions) {
-    this.executionLifetime = options.executionLifetime ?? (options.childBudget ? new AppServerExecutionLifetime({ childBudget: options.childBudget }) : undefined);
-    if (options.executionLifetime && (options.executionLifetime.childBudget !== options.childBudget ||
-        options.goalMode !== true || options.nativeToolSurface !== "disabled" || options.cleanThreadPrewarm !== false || options.fallback !== undefined ||
-        options.maxGoalTurns !== options.executionLifetime.maxGoalTurns)) throw new Error("codex_app_server_bounded_profile_conflict");
+    this.options = { ...options, ...(options.providerEgressPolicy ? {
+      providerEgressPolicy: codexProviderEgressPolicy(options.providerEgressPolicy.profileId),
+    } : {}) };
+    this.executionLifetime = resolveAppServerEngineLifetime(options);
     this.modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
     if (!options.codexBinaryPath.trim()) {
       throw new Error("codex_app_server_binary_required");
@@ -166,6 +167,8 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ...(options.childBudget ? { childBudget: options.childBudget } : {}),
       codexBinaryPath: options.codexBinaryPath,
       ...(options.sourceEnv === undefined ? {} : { sourceEnv: options.sourceEnv }),
+      ...(this.options.providerEgressPolicy ? { providerEgressPolicy: this.options.providerEgressPolicy } : {}),
+      ...(options.publicSourceReader ? { publicSourceReader: options.publicSourceReader } : {}),
       ...(options.hostedPermissionProfiles === undefined ? {} : { hostedPermissionProfiles: options.hostedPermissionProfiles }),
       processFactory: options.processFactory ?? spawnCodexAppServerProcess,
       signalChildProcess: signalCodexAppServerChildGroup,
@@ -235,7 +238,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ) {
         throw error;
       }
-
       const fallbackResult = await this.options.fallback.run({
         ...input,
         ...(schemaPlan === undefined ? {} : { outputSchemaPlan: schemaPlan }),
@@ -247,7 +249,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       });
     }
   }
-
   async runLogicalThread(
     input: CodexExecutionInput & {
       readonly previousCheckpoint?: string;
@@ -273,7 +274,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         await parseAppServerOutputWithUsage({ result, requested: Boolean(parseInput.outputSchema), ...(schemaPlan ? { schemaPlan } : {}), goalMode: this.options.goalMode, ...(parseInput.runId ? { runId: parseInput.runId } : {}), runStore: this.runStore }),
     });
   }
-
   async resume(input: {
     readonly runId: string;
     readonly requestId: string;

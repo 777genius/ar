@@ -12,6 +12,7 @@ import type {
 } from "@vioxen/subscription-runtime/worker-core";
 
 export type CodexAccountCapacityAliasStoreOptions = {
+  readonly assertProviderAdmission?: () => void;
   readonly authRootDir: string;
   readonly store: WorkerAccountCapacityStore;
   readonly authJsonPaths?: Readonly<Record<string, string>>;
@@ -109,6 +110,7 @@ class CodexAccountCapacityAliasResolver {
   constructor(private readonly options: CodexAccountCapacityAliasStoreOptions) {}
 
   resolve(slotAlias: string): string {
+    this.options.assertProviderAdmission?.();
     if (slotAlias.startsWith("codex-provider:")) return slotAlias;
     const inlineAuthJson = this.options.authJsonByAlias?.[slotAlias];
     if (inlineAuthJson !== undefined) {

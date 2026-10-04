@@ -83,6 +83,7 @@ export type FileBackendCodexSafeExecutorAccount = {
 };
 
 export type FileBackendCodexSafeExecutorOptions = {
+  readonly assertProviderAdmission?: () => void;
   readonly childBudget?: ChildExecutionBudget;
   readonly executionLifetime?: AppServerExecutionLifetime;
   readonly executorId?: string;
@@ -163,6 +164,7 @@ export class FileBackendCodexSafeExecutor {
   private childRunEntered = false;
 
   constructor(private readonly options: FileBackendCodexSafeExecutorOptions) {
+    options.assertProviderAdmission?.();
     if (options.childBudget && !options.executionLifetime) {
       const executionLifetime = new AppServerExecutionLifetime({ childBudget: options.childBudget });
       options = { ...options, executionLifetime, accounts: options.accounts.map(account => ({ ...account,
@@ -190,6 +192,7 @@ export class FileBackendCodexSafeExecutor {
         ...(observability ? { observability } : {}),
       });
     const aliasedAccountCapacityStore = new CodexAccountCapacityAliasStore({
+      ...(options.assertProviderAdmission ? { assertProviderAdmission: options.assertProviderAdmission } : {}),
       authRootDir: options.authRootDir ?? options.stateRootDir,
       store: baseAccountCapacityStore,
       authJsonPaths: Object.fromEntries(
@@ -245,6 +248,10 @@ export class FileBackendCodexSafeExecutor {
         recheckClaimTtlMs: 5 * 60_000,
         recheckFailureCooldownMs: 60_000,
         capacityRecheckerFactory: ({ slotIndex }) => {
+          options.assertProviderAdmission?.();
+          // Account-observability's independent quota daemon cannot inherit the
+          // per-job process factory. Research never launches that unfenced daemon.
+          if (options.assertProviderAdmission) return undefined;
           const account = options.accounts[slotIndex];
           if (!account?.codexAuthJsonPath || isMimoSafeExecutorAccount(account)) {
             return undefined;
@@ -260,6 +267,7 @@ export class FileBackendCodexSafeExecutor {
         },
         ...(options.clock ? { clock: options.clock } : {}),
         workerFactory: ({ slotIndex, workerId }) => {
+          options.assertProviderAdmission?.();
           const account = options.accounts[slotIndex];
           if (!account) {
             throw new Error("file_backend_codex_safe_account_missing");
@@ -530,6 +538,7 @@ export class FileBackendCodexSafeExecutor {
   }
 
   private async startOnce(): Promise<void> {
+    this.options.assertProviderAdmission?.();
     await assertUniqueCodexAccountIdentities(this.options);
     await this.pool.start();
     await this.seedAccounts();
@@ -918,6 +927,7 @@ function isMimoSafeExecutorAccount(
 async function readSafeExecutorAccountAuthJson(
   account: FileBackendCodexSafeExecutorAccount,
 ): Promise<string | null> {
+  account.worker.assertProviderAdmission?.();
   if (account.codexAuthJson !== undefined) return account.codexAuthJson;
   if (account.codexAuthJsonPath !== undefined) {
     return readFile(account.codexAuthJsonPath, "utf8");

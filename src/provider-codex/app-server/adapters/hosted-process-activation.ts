@@ -210,7 +210,7 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence) {
   if (staged.schemaVersion !== 1) invalid(); same(staged, installation, "runtimeDirectory,runtimeSha,runtimeManifestSha256");
   const grantBytes = readActivationPath(`/run/user/0/subscription-runtime-host-policy/codex-egress/${jobName}`);
   if ((grantBytes ? sha256(grantBytes) : null) !== start.grantSha256) invalid();
-  let profileId = CodexProviderEgressProfileId.ProviderApi;
+  let profileId = CodexProviderEgressProfileId.FullInternetV1;
   if (grantBytes) {
     const grant = decodeHostedActivationBytes(grantBytes);
     if (typeof grant !== "object" || grant === null || Array.isArray(grant)) invalid();
@@ -222,8 +222,8 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence) {
       profileId = CodexProviderEgressProfileId.MimoTokenPlan;
     } else {
       const legacy = wire(grant, "schemaVersion,jobId,jobRootDir,workspacePath,profileId");
-      if (legacy.schemaVersion !== 1 || legacy.profileId !== CodexProviderEgressProfileId.TestNpmQualification) invalid();
-      same(legacy, start, "jobId,jobRootDir,workspacePath"); profileId = CodexProviderEgressProfileId.TestNpmQualification;
+      if (legacy.schemaVersion !== 1 || (legacy.profileId !== CodexProviderEgressProfileId.TestNpmQualification && legacy.profileId !== CodexProviderEgressProfileId.PublicResearchV1 && legacy.profileId !== CodexProviderEgressProfileId.FullInternetV1)) invalid();
+      same(legacy, start, "jobId,jobRootDir,workspacePath"); profileId = legacy.profileId;
     }
   }
   const creator = validateOrdinaryKernel(installation, activation, start);
@@ -392,7 +392,7 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
     // nor HOME supplies origin authority: that was read from the actual cgroup.
     const cwd = canonical(input.cwd);
     if ((cwd !== start.workspacePath && cwd !== input.env.HOME) || input.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job" ||
-        (input.env[codexProviderEgressProfileEnvVar] ?? CodexProviderEgressProfileId.ProviderApi) !== profileId) invalid();
+        (input.env[codexProviderEgressProfileEnvVar] ?? CodexProviderEgressProfileId.FullInternetV1) !== profileId) invalid();
     const starts = rows(activation.ordinaryStarts);
     if (childBound && starts.some(row => !!row && typeof row === "object" &&
         "creatorId" in row && row.creatorId === start.creatorId && "unit" in row &&
@@ -585,7 +585,7 @@ function syncActivationDirectory(path: string): void {
 export function requiresHostedProcessAdmission(env: Readonly<Record<string, string | undefined>>): boolean {
   if (process.platform !== "linux") return false;
   if (env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job" ||
-      /\/subscription-runtime-(?:ordinary|outer|hosted)-/.test(readFileSync("/proc/self/cgroup", "utf8"))) return true;
+      /\/subscription-runtime-(?:ordinary|outer|hosted|research)-/.test(readFileSync("/proc/self/cgroup", "utf8"))) return true;
   try { lstatSync(root); return true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }

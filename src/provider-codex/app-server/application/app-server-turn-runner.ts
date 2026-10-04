@@ -151,6 +151,7 @@ export class AppServerTurnRunner {
       prepared.sandboxMode !== (input.sandboxMode ?? "read-only") ||
       prepared.systemPrompt !== normalizeSystemPrompt(input.systemPrompt)
     ) {
+      this.options.client.releasePublicResearchThread(prepared.threadId);
       this.options.client.pushBackgroundWarning({
         code: "codex_app_server_prepared_thread_discarded",
         safeMessage:
@@ -191,6 +192,10 @@ export class AppServerTurnRunner {
     if (this.preparedThread && this.preparedThreadMatches(input)) return;
     if (this.prepareThreadInFlight) return await this.prepareThreadInFlight;
 
+    if (this.preparedThread) {
+      this.options.client.releasePublicResearchThread(this.preparedThread.threadId);
+      this.preparedThread = null;
+    }
     this.prepareThreadInFlight = this.options.client.startThread(input)
       .then((threadId) => {
         this.preparedThread = {

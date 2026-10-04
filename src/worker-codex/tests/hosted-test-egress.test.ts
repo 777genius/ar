@@ -77,6 +77,15 @@ describe.each(["inherited", "symlinked"] as const)("trusted hosted TEST egress c
     expect(await readHostedTestEgressGrantFile(authority, identity, uid)).toEqual(grant());
     expect(await readHostedTestEgressGrantFile(authority, { ...identity, jobId: "other" }, uid)).toBeNull();
   });
+  it("admits a separately named production research grant from real private bytes and rejects tuple drift", async () => {
+    const research = { ...grant(), profileId: CodexProviderEgressProfileId.PublicResearchV1 };
+    await writeFile(filename(), JSON.stringify(research), { mode: 0o600 });
+    expect(await readHostedTestEgressGrantFile(authority, identity, uid)).toEqual(research);
+    for (const field of ["jobId", "jobRootDir", "workspacePath"] as const) {
+      await writeFile(filename(), JSON.stringify({ ...research, [field]: research[field] + "-other" }), { mode: 0o600 });
+      await expect(readHostedTestEgressGrantFile(authority, identity, uid)).rejects.toThrow("grant_invalid");
+    }
+  });
   it("reads an exact MiMo grant from private custody and rejects changed effective confinement", async () => {
     // Regression: the worker reader accepting a widened grant would admit it.
     const mimoGrant = {
@@ -176,7 +185,7 @@ describe.each(["inherited", "symlinked"] as const)("trusted hosted TEST egress c
       config: {
         ...identity, taskId: identity.jobId, promptPath: join(root, "prompt"),
         authRootDir: join(root, "synthetic-auth"), accounts: codexGoalAccountSlots(["fake"]),
-        sourceEnv: { SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "codex-test-npm-qualification" },
+        sourceEnv: { SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: CodexProviderEgressProfileId.PublicResearchV1 },
       },
       stateRootDir: join(root, "synthetic-state"), encryptionKey: new Uint8Array(32),
     });

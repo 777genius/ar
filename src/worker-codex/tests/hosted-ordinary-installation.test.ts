@@ -1,3 +1,4 @@
+import { registerManagedInstallationAdmissionTests } from "./hosted-managed-installation-admission-test-support";
 import { registerKeyedCorrelationTests, registerChildForegroundDeadlineTests } from "./hosted-child-foreground-deadline-test-support";
 import { routeHostedGoalLaunch, stopHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import { codexGoalAccountSlots, runCodexGoal } from "../codex-goal-runner";
@@ -19,6 +20,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { codexProviderEgressPolicy, CodexProviderEgressProfileId, withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { assertDefaultInternetEngine, assertHostedNetworkLaunch } from "./hosted-network-launch-assertions";
 import { HostedCustodyReservationState, parseHostedActivation, type HostedOrdinaryReservation } from "@vioxen/subscription-runtime/worker-core";
 import { HostedReadonlyEpochStore } from "../hosted-readonly-epoch-store";
 import { HostedReadonlySupervisorHost } from "../hosted-readonly-supervisor-host";
@@ -34,6 +36,7 @@ const fixture = vi.hoisted(() => ({ root: "", boot: "aaaaaaaa-aaaa-aaaa-aaaa-aaa
 const root = "/var/lib/subscription-runtime-host-policy";
 const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages";
 function local(path: string): string {
+  if (path === "/etc/subscription-runtime/scratch-temp.json") return join(fixture.root, "absent-scratch-policy");
   if (["/", "/var", "/var/lib", root, "/run", "/run/user", "/run/user/0", "/run/user/0/subscription-runtime-host-policy", "/etc", "/etc/systemd", "/etc/systemd/system"].includes(path)) return fixture.root;
   const grants = "/run/user/0/subscription-runtime-host-policy/codex-egress";
   if (path === grants || path.startsWith(grants + "/")) return join(fixture.root, "grants", path.slice(grants.length));
@@ -620,17 +623,40 @@ describe("real default provider primitive under ordinary activation", () => {
     fixture.runtimeUnit = start.unit; fixture.group = start.controlGroup;
     const input = { command: "/TEST/codex", args: ["app-server"], cwd: creator().workspacePath, env: {
       SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job", SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE:
-        npm ? "codex-test-npm-qualification" : "codex-provider-api", TEST_BOOTSTRAP_VALUE: "fixture-only" } };
+        npm ? "codex-test-npm-qualification" : "codex-full-internet-v1", TEST_BOOTSTRAP_VALUE: "fixture-only" } };
     return { store, input };
   }
-  it.each(["app-server", "app-server-goal", "packaged-exec", "plain-exec"] as const)("no-grant egress preserves ordinary engine eligibility: %s", async executionEngine => {
+  it.each(["app-server", "app-server-goal", "packaged-exec", "plain-exec"] as const)("no-grant Internet preserves supported native engines and refuses legacy sandboxes: %s", async executionEngine => {
     const { input } = runtime();
     const identity = { jobId: creator().jobId, jobRootDir: creator().jobRootDir, workspacePath: creator().workspacePath,
-      sourceEnv: input.env, executionEngine };
-    const policy = await admitHostedTestEgress(identity);
-    expect(policy.profileId).toBe("codex-provider-api");
-    expect(admitHostedReadonlyInputs({ ...identity, providerEgressPolicy: policy })).toBeUndefined();
+      sourceEnv: { ...input.env, SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: CodexProviderEgressProfileId.PublicResearchV1 }, executionEngine };
+    await assertDefaultInternetEngine(identity, input);
     expect(fixture.spawn).not.toHaveBeenCalled();
+  });
+  it("admits a production research grant through the real ordinary reader and default primitive", async () => {
+    const store = new HostedInstallationActivationStore(); store.install();
+    const grantPath = "grants/" + hash("ordinary-job") + ".json";
+    put(grantPath, { schemaVersion: 1, jobId: creator().jobId, jobRootDir: creator().jobRootDir,
+      workspacePath: creator().workspacePath, profileId: CodexProviderEgressProfileId.PublicResearchV1 });
+    store.enrollOrdinary("ordinary-creator"); store.resumeOrdinary();
+    const launch = creator().launch;
+    const { start } = store.serialized(fence => store.reserveOrdinaryRuntime(fence, launch.command, launch.args, launch.cwd));
+    fixture.runtimeUnit = start.unit; fixture.group = start.controlGroup;
+    const env = { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
+      SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "forged" };
+    const identity = { jobId: creator().jobId, jobRootDir: creator().jobRootDir, workspacePath: creator().workspacePath, sourceEnv: env };
+    const policy = await admitHostedTestEgress(identity);
+    expect(policy.profileId).toBe("codex-public-research-v1");
+    expect(admitHostedReadonlyInputs({ ...identity, providerEgressPolicy: policy })).toBeUndefined();
+    const input = { command: "/TEST/codex", args: ["app-server"], cwd: creator().workspacePath,
+      env: { ...env, SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: policy.profileId } };
+    spawnCodexAppServerProcess(input);
+    expect(fixture.spawn).toHaveBeenCalledTimes(1);
+    expect(start.grantSha256).toBe(hash(readFileSync(join(fixture.root, grantPath))));
+    put(grantPath, { ...read(grantPath), workspacePath: "/another-project" });
+    expect(() => spawnCodexAppServerProcess(input)).toThrow();
+    await expect(admitHostedTestEgress(identity)).rejects.toThrow();
+    expect(fixture.spawn).toHaveBeenCalledTimes(1);
   });
   it.each([false, true])("official controller composition preserves the genuine default factory; npm=%s", async npm => {
     const { store, input } = runtime(npm);
@@ -864,7 +890,7 @@ describe("actual ordinary outer dispatcher and fixed bootstrap", () => {
   });
 });
 
-it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default factory revalidate on quota account switch: %s", async mode => {
+it.each(["internet", "npm", "npm-grant-deleted", "research", "research-grant-deleted", "research-grant-mutated"])("real ordinary runner and default factory revalidate on quota account switch: %s", async mode => {
   const config = { jobId: "ordinary-job", taskId: "ordinary-job", jobRootDir: join(fixture.root, "jobs/ordinary-job"),
     workspacePath: join(fixture.root, "jobs/ordinary-job/workspace"), promptPath: join(fixture.root, "prompt"),
     authRootDir: join(fixture.root, "unused-synthetic-auth"), accounts: codexGoalAccountSlots(["fake-a", "fake-b"]),
@@ -874,14 +900,19 @@ it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default f
     launch: { ...creator().launch, cwd: config.workspacePath } };
   put("readonly-inventory.json", { ...read("readonly-inventory.json"), ordinaryCreators: [bound] });
   const grant = `grants/${hash(config.jobId)}.json`;
-  if (mode !== "api") put(grant, { schemaVersion: 1, jobId: config.jobId, jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath, profileId: "codex-test-npm-qualification" });
+  const selectedProfile = mode.startsWith("research") ? CodexProviderEgressProfileId.PublicResearchV1 : mode === "internet" ? CodexProviderEgressProfileId.FullInternetV1 : CodexProviderEgressProfileId.TestNpmQualification;
+  if (mode !== "internet") put(grant, { schemaVersion: 1, jobId: config.jobId, jobRootDir: config.jobRootDir,
+    workspacePath: config.workspacePath, profileId: selectedProfile });
   const store = new HostedInstallationActivationStore(); store.install(); store.enrollOrdinary(bound.creatorId); store.resumeOrdinary();
   const prepared = store.serialized(fence => store.reserveOrdinaryRuntime(fence, bound.launch.command, bound.launch.args, bound.launch.cwd));
   fixture.runtimeUnit = prepared.start.unit; fixture.group = prepared.start.controlGroup;
   const fakes = [new FakeAppServerFactory({ emitTopLevelErrorOnTurn: "You've hit your usage limit",
-    onRequest: request => { if (request.method === "turn/start" && mode === "npm-grant-deleted") rmSync(join(fixture.root, grant)); } }), new FakeAppServerFactory()];
-  const frames: { env: Record<string, string> }[] = [];
+    onRequest: request => { if (request.method === "turn/start" && mode.endsWith("grant-deleted")) rmSync(join(fixture.root, grant));
+      if (request.method === "turn/start" && mode.endsWith("grant-mutated")) {
+        // Same valid semantic grant, different bytes: fallback must still refuse.
+        writeFileSync(join(fixture.root, grant), readFileSync(join(fixture.root, grant), "utf8") + "\n", { mode: 0o600 });
+      } } }), new FakeAppServerFactory()];
+  const frames: { env: Record<string, string>; args: string[] }[] = [];
   fixture.spawn.mockImplementation((command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
     expect(command).toBe(process.execPath);
     expect(args.slice(0, 2)).toEqual(["/opt/subscription-runtime/managed-launcher/launch.mjs", "provider"]);
@@ -912,59 +943,16 @@ it.each(["api", "npm", "npm-grant-deleted"])("real ordinary runner and default f
       worker: { ...account.worker, clock, warmupPrompt: false, runner: new StaticRunner({ exitCode: 0, stdout: "", stderr: "" }) },
     })),
   }) });
-  expect(fixture.spawn).toHaveBeenCalledTimes(mode === "npm-grant-deleted" ? 1 : 2);
+  expect(fixture.spawn).toHaveBeenCalledTimes(mode.includes("-grant-") ? 1 : 2);
   expect(result.attempts[0]?.failureReason, result.attempts[0]?.failureMessage).toBe("quota_limited");
   expect(frames.every(frame => frame.env.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE ===
-    (mode === "api" ? "codex-provider-api" : "codex-test-npm-qualification"))).toBe(true);
-  if (mode === "npm-grant-deleted") expect(result.status).not.toBe("completed");
+    selectedProfile)).toBe(true);
+  assertHostedNetworkLaunch(frames, selectedProfile, fakes);
+  if (mode.includes("-grant-")) expect(result.status).not.toBe("completed");
   else { expect(result.status).toBe("completed"); expect(new Set(frames.map(frame => frame.env.CODEX_HOME)).size).toBe(2); }
 });
 
-// C1-R1: the genuine migrated installation binds both submission boundaries.
-describe("managed inspected installation admission", () => {
-  function migrated() {
-    seedManaged(); put("readonly-epoch.json", { ...read("readonly-epoch.json"), phase: "closed" });
-    const store = new HostedInstallationActivationStore(); store.installManaged(); store.enterExclusive();
-    store.withExclusivePreparation(fence => new HostedReadonlySupervisorHost().recoverWithHeldFence(fence, read("readonly-epoch.json").identity));
-    store.finishExclusive();
-  }
-  function drift(fault: string) {
-    if (fault === "inventory") {
-      const inventory = read("readonly-inventory.json"); inventory.runtimeLaunch.args.push("--UNREVIEWED-TEST-ARG");
-      put("readonly-inventory.json", inventory);
-    }
-    if (fault === "directory") put("host-installation.json", { ...read("host-installation.json"), runtimeDirectory: "/TEST/foreign" });
-    if (fault === "digest") put("host-installation.json", { ...read("host-installation.json"), inventorySha256: "f".repeat(64) });
-    if (fault === "stage") put(stageName, { ...read(stageName), runtimeSha: "f".repeat(40) });
-  }
-  it.each(["exact", "inventory", "directory", "digest", "stage"])("outer submission binds %s before callback", fault => {
-    migrated(); drift(fault);
-    const command = read("readonly-inventory.json").runtimeLaunch, submit = vi.fn(() => 17);
-    const run = () => new HostedReadonlySupervisorHost().runRuntimeLaunch(command.command, command.args, command.cwd, submit);
-    if (fault === "exact") { expect(run()).toBe(17); expect(submit).toHaveBeenCalledOnce(); }
-    else { expect(run).toThrow(); expect(submit).not.toHaveBeenCalled(); }
-    expect(fixture.spawn).not.toHaveBeenCalled();
-  });
-  it.each(["exact", "inventory", "directory", "digest", "stage"])("retained provider factory binds %s before spawn", fault => {
-    migrated(); const command = read("readonly-inventory.json").runtimeLaunch;
-    new HostedReadonlySupervisorHost().runRuntimeLaunch(command.command, command.args, command.cwd, () => 17);
-    const epoch = read("readonly-epoch.json"); fixture.runtimeUnit = epoch.outerRuntime.unit;
-    fixture.group = `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${fixture.runtimeUnit}`;
-    mkdirSync(join(fixture.root, "codex-readonly-services"), { mode: 0o700 });
-    mkdirSync(join(fixture.root, "codex-readonly-services", hash("managed-job") + ".json"), { mode: 0o700 });
-    const factory = admitHostedReadonlyInputs({ ...epoch.identity, sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
-      providerEgressPolicy: codexProviderEgressPolicy(CodexProviderEgressProfileId.TestManagedQualification) })!;
-    drift(fault);
-    const launch = () => factory({ command: "/TEST/codex", args: ["app-server"], cwd: "/managed/W", env: {
-      SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job", SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: "codex-test-managed-qualification" } });
-    if (fault === "exact") {
-      launch(); expect(fixture.spawn).toHaveBeenCalledOnce();
-      const request = JSON.parse(fixture.spawn.mock.calls[0]![1][2]);
-      expect(request.readonlyPaths).toContain("/managed/W/input");
-      expect(read("readonly-epoch.json").reservations).toHaveLength(1);
-    } else { expect(launch).toThrow(); expect(fixture.spawn).not.toHaveBeenCalled(); }
-  });
-});
+registerManagedInstallationAdmissionTests({ fixture, stageName, seedManaged, read, put });
 registerChildForegroundDeadlineTests({ fixture, runtimeDirectory, read, put });
 
 registerKeyedCorrelationTests({ fixture, runtimeDirectory, read, put });

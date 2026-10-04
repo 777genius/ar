@@ -234,7 +234,7 @@ describe("codex goal MCP server", () => {
           accessBoundary: AccessBoundary.IsolatedWorkspaceWrite,
           reasoningEffort: "high",
           serviceTier: "default",
-          networkAccess: NetworkAccessMode.Restricted,
+          networkAccess: NetworkAccessMode.Unrestricted,
           tags: expect.arrayContaining([
             "project-control-refill",
             "worker-role-fastgate",

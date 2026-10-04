@@ -13,6 +13,7 @@ import { readonlyCustodyRoot, readonlyCustodySnapshot, readonlyRevokedRoot,
   createReadonlyPrivateRecord, readonlyServiceRoot, withReadonlyCustodyLock } from "./hosted-readonly-custody";
 
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
+import { admitResearchProcessFactory, admitResearchRuntime, assertResearchRuntimeEngine } from "./research-launch-admission";
 
 const guardedFactories = new WeakMap<CodexAppServerProcessFactory, string>();
 
@@ -28,6 +29,12 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
   readonly executionEngine?: CodexWorkerExecutionEngine;
   readonly sourceEnv: Readonly<Record<string, string | undefined>>;
 }): CodexAppServerProcessFactory | undefined {
+  const research = admitResearchRuntime(input);
+  if (research) {
+    assertResearchRuntimeEngine(input);
+    if (input.providerEgressPolicy.profileId !== research) throw new Error("hosted_research_launch_denied");
+    return admitResearchProcessFactory(input);
+  }
   const managed = input.providerEgressPolicy.profileId === CodexProviderEgressProfileId.TestManagedQualification;
   if (process.platform !== "linux" || process.getuid?.() !== 0) {
     if (managed || isHostedOrdinaryRuntime()) throw new Error("hosted_readonly_host_operator_required");
@@ -37,9 +44,14 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
   if (hosted && isHostedOrdinaryRuntime()) {
     const profile = admitHostedOrdinaryIdentity(input);
     if (managed || input.providerEgressPolicy.profileId !== profile ||
-        (profile === CodexProviderEgressProfileId.TestNpmQualification &&
+        ((profile === CodexProviderEgressProfileId.TestNpmQualification ||
+          profile === CodexProviderEgressProfileId.PublicResearchV1) &&
           ((input.executionEngine ?? "app-server-goal") !== "app-server-goal" ||
             input.sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job"))) throw new Error("hosted_readonly_engine_unsupported");
+    if (profile === CodexProviderEgressProfileId.FullInternetV1 &&
+        !["app-server", "app-server-goal"].includes(input.executionEngine ?? "app-server-goal")) {
+      throw new Error("hosted_permission_profiles_engine_unsupported");
+    }
     return undefined; // Genuine default factory performs its own fresh fenced admission.
   }
   const name = readonlyIdentityName(input.jobId);

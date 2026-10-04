@@ -61,6 +61,45 @@ describe("CommandPolicyRunner", () => {
     }
   });
 
+  it.each([
+    ["git pu?h origin main", "push\norigin\nmain\n"],
+    ["git p[us][us]h origin main", "push\norigin\nmain\n"],
+    ["git {push,status} origin main", "push\nstatus\norigin\nmain\n"],
+    ["git @(push|status) origin main", "push\norigin\nmain\n"],
+  ])("denies additional Bash expansions observed at argv: %s", async (payload, argv) => {
+    const cwd = await mkdtemp(join(tmpdir(), "TEST-command-policy-expansion-"));
+    try {
+      await writeFile(join(cwd, "push"), "");
+      const recorded = await promisify(execFile)("/bin/bash", [
+        "--noprofile", "--norc", "-O", "extglob", "-c",
+        `git() { printf '%s\\n' "$@"; }; ${payload}`,
+      ], { cwd, env: {}, timeout: 1_000 });
+      expect(recorded.stdout).toBe(argv);
+      const approval = codexAppServerCommandApprovalPolicy(
+        isolatedWorkspaceCommandPolicy(), new MemoryWorkerObservability(), {},
+      );
+      for (const input of [
+        { source: "thread_shell_command" as const, commandText: payload },
+        { source: "command_execution" as const, command: ["bash", "-c", payload] },
+        { source: "thread_shell_command" as const, commandText: `bash -c '${payload}'` },
+      ]) expect(approval.reviewCommand(input)).toEqual({ approved: false, reason: "script_interpreter_denied" });
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    "curl 'https://public.example.test/?q=one&lang=en'",
+    'curl "https://public.example.test/?q=one&lang=en"',
+    "curl 'https://public.example.test/?q=[literal]{value}(x)*'",
+  ])("preserves literal quoted network operands through wrappers: %s", commandText => {
+    const approval = codexAppServerCommandApprovalPolicy(
+      isolatedWorkspaceCommandPolicy(), new MemoryWorkerObservability(), {},
+    );
+    for (const input of [
+      { source: "thread_shell_command" as const, commandText },
+      { source: "command_execution" as const, command: ["bash", "-lc", commandText] },
+    ]) expect(approval.reviewCommand(input)).toEqual({ approved: true, reason: "command_policy_allowed" });
+  });
+
   it.each(["p*", "p?sh", "p[uv]sh", "p{u..u}sh", "{push,}", "(push)"])(
     "preserves literal expansion characters in a direct vector: %s", (operation) => {
       const policy = codexAppServerCommandApprovalPolicy(

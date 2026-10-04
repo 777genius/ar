@@ -230,7 +230,7 @@ export async function projectControlRefillWorkerView(
       requested.workspacePath,
     ),
     allowDangerFullAccess: false,
-    networkAccess: requested.networkAccess ?? NetworkAccessMode.Restricted,
+    networkAccess: requested.networkAccess ?? NetworkAccessMode.Unrestricted,
     reasoningEffort: requested.reasoningEffort ?? "high",
     serviceTier: requested.serviceTier ?? "default",
   };
@@ -839,7 +839,7 @@ async function projectControlRefillWorkerBoundedView(
       requested.workspacePath,
     ),
     allowDangerFullAccess: false,
-    networkAccess: requested.networkAccess ?? NetworkAccessMode.Restricted,
+    networkAccess: requested.networkAccess ?? NetworkAccessMode.Unrestricted,
   };
   const mergeBinding = parseProjectMergeBindingRequest({
     value: args.mergeBinding,

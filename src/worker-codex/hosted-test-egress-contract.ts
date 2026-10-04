@@ -10,7 +10,10 @@ export type HostedTestEgressGrant = {
   readonly jobRootDir: string;
   readonly workspacePath: string;
   readonly profileId: CodexProviderEgressProfileId.TestNpmQualification
-    | CodexProviderEgressProfileId.TestManagedQualification;
+    | CodexProviderEgressProfileId.TestManagedQualification
+    | CodexProviderEgressProfileId.PublicResearchV1
+    | CodexProviderEgressProfileId.FullInternetV1;
+
 } | HostedMimoGrant | HostedMimoSlotGrant;
 
 export type HostedMimoSlotGrant = Omit<HostedMimoGrant, "schemaVersion" | "accountId" | "hostedProfile"> & {
@@ -63,6 +66,8 @@ export function parseHostedTestEgressGrant(value: unknown): HostedTestEgressGran
       "jobId,jobRootDir,profileId,schemaVersion,workspacePath" ||
       record.schemaVersion !== 1 ||
       (record.profileId !== CodexProviderEgressProfileId.TestNpmQualification &&
+       record.profileId !== CodexProviderEgressProfileId.PublicResearchV1 &&
+       record.profileId !== CodexProviderEgressProfileId.FullInternetV1 &&
        record.profileId !== CodexProviderEgressProfileId.TestManagedQualification) ||
       typeof record.jobId !== "string" || !record.jobId.trim() ||
       record.jobId.length > 256 ||

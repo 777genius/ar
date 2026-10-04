@@ -4,6 +4,8 @@ import { codexAppServerRolloutBudgetConfig, type CodexAppServerRolloutBudget } f
 import { codexAppServerToolConfig } from "../domain/app-server-tool-config";
 import { readRecord } from "../protocol/app-server-content-parser";
 import type { HostedCodexPermissionProfileId } from "../../hosted-codex-permissions";
+import { codexProviderWebSearchMode, CodexWebSearchMode, type CodexProviderEgressPolicy } from "../../codex-provider-egress-policy";
+import type { CodexModelBackend } from "../../codex-model-backend";
 
 export function appServerThreadConfig(input: {
   readonly reasoningEffort: CodexReasoningEffort;
@@ -13,6 +15,9 @@ export function appServerThreadConfig(input: {
   readonly sandboxMode: CodexSandboxMode;
   readonly toolConfig: ReturnType<typeof codexAppServerToolConfig>;
   readonly rolloutBudget?: CodexAppServerRolloutBudget | undefined;
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy | undefined;
+  readonly modelBackend?: CodexModelBackend | undefined;
+  readonly webToolsEnabled?: boolean;
 }) {
   return {
     model_reasoning_effort: input.reasoningEffort,
@@ -20,7 +25,9 @@ export function appServerThreadConfig(input: {
     ...(input.serviceTier === undefined ? {} : { service_tier: input.serviceTier }),
     approval_policy: input.commandApprovalPolicy === undefined ? "never" : "on-request",
     ...(input.hostedPermissions ? {} : { sandbox_mode: input.sandboxMode }),
-    web_search: "disabled",
+    web_search: input.webToolsEnabled === true
+      ? codexProviderWebSearchMode(input.providerEgressPolicy, input.modelBackend)
+      : CodexWebSearchMode.Disabled,
     ...input.toolConfig,
     features: {
       ...(readRecord(input.toolConfig.features) ?? {}),

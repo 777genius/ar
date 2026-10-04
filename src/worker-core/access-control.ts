@@ -284,7 +284,7 @@ export type LaunchAdapterCapabilities = {
 export type LaunchPlanInput = AccessPolicyContext & {
   readonly adapter: LaunchAdapterCapabilities;
   readonly allowDangerFullAccess?: boolean;
-  readonly networkAccess?: NetworkAccessMode.Disabled | NetworkAccessMode.Restricted;
+  readonly networkAccess?: NetworkAccessMode;
 };
 
 export type LaunchPlan =
@@ -789,7 +789,7 @@ function launchEnforcementBlocker(input: LaunchPlanInput): LaunchPlan | null {
   }
   if (!input.adapter.canIsolateHome) missing.push("HOME isolation is unavailable");
   if (!input.adapter.canIsolateTemp) missing.push("temporary directory isolation is unavailable");
-  if (!input.adapter.canRestrictNetwork) {
+  if (input.networkAccess !== NetworkAccessMode.Unrestricted && !input.adapter.canRestrictNetwork) {
     missing.push("network restriction is unavailable");
   }
   if (

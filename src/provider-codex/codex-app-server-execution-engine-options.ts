@@ -1,4 +1,4 @@
-import type { AppServerExecutionLifetime } from "./app-server/application/app-server-child-lifetime";
+import { AppServerExecutionLifetime } from "./app-server/application/app-server-child-lifetime";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { ManagedRunStorePort } from "@vioxen/subscription-runtime/core";
 import type {
@@ -12,6 +12,8 @@ import type { AppServerCompletedTurnCheckpoint } from "./app-server/application/
 import type { CodexExecutionProfile } from "./codex-execution-profile";
 import type { CodexExecutionEngine } from "./codex-json-execution-engine";
 import type { CodexModelBackend } from "./codex-model-backend";
+import type { CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
+import type { PublicResearchSourceReader } from "./app-server/application/public-research-source-port";
 import type { HostedControllerDynamicToolAdapter } from "./app-server/domain/hosted-controller-dynamic-tools";
 
 export type CodexAppServerExecutionEngineOptions = {
@@ -25,6 +27,9 @@ export type CodexAppServerExecutionEngineOptions = {
    */
   readonly modelBackend?: CodexModelBackend;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  /** Captured trusted Host policy; environment markers never enable native web tools. */
+  readonly providerEgressPolicy?: CodexProviderEgressPolicy;
+  readonly publicSourceReader?: PublicResearchSourceReader;
   /** Set only with a generated CODEX_HOME containing the hosted profiles. */
   readonly hostedPermissionProfiles?: boolean;
   readonly timeoutMs?: number;
@@ -51,3 +56,12 @@ export type CodexAppServerExecutionEngineOptions = {
   readonly bypassHookTrust?: boolean;
   readonly rateLimitsSnapshotHandler?: CodexAppServerRateLimitsSnapshotHandler;
 };
+
+/** Resolve and validate the original bounded execution fence before admission. */
+export function resolveAppServerEngineLifetime(options: CodexAppServerExecutionEngineOptions): AppServerExecutionLifetime | undefined {
+  const lifetime = options.executionLifetime ?? (options.childBudget ? new AppServerExecutionLifetime({ childBudget: options.childBudget }) : undefined);
+  if (options.executionLifetime && (options.executionLifetime.childBudget !== options.childBudget ||
+        options.goalMode !== true || options.nativeToolSurface !== "disabled" || options.cleanThreadPrewarm !== false || options.fallback !== undefined ||
+        options.maxGoalTurns !== options.executionLifetime.maxGoalTurns)) throw new Error("codex_app_server_bounded_profile_conflict");
+  return lifetime;
+}

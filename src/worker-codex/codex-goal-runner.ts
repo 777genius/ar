@@ -1,3 +1,5 @@
+import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
+import { researchProviderAdmissionGuard } from "./research-launch-admission";
 import { prepareHostScratchTemp } from "./host-scratch-temp";
 import { assertVerifiedHostedChildConfig } from "./hosted-child-slot-files";
 import { ChildExecutionBudget, type ChildLifetime } from "@vioxen/subscription-runtime/core";
@@ -13,6 +15,8 @@ import {
   codexMimoApiKeyEnvVarDefault,
   codexMimoTokenPlanEgressPolicy,
   codexProviderEgressPolicy,
+  CodexProviderEgressProfileId,
+  createPublicResearchSourceReader,
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { execFile } from "node:child_process";
@@ -156,7 +160,7 @@ export type CodexGoalRunConfig = {
   readonly accessBoundary?: AccessBoundary;
   readonly projectAccessScope?: ProjectAccessScope;
   readonly allowDangerFullAccess?: boolean;
-  readonly networkAccess?: NetworkAccessMode.Disabled | NetworkAccessMode.Restricted;
+  readonly networkAccess?: NetworkAccessMode;
   readonly goalSummary?: string;
   readonly codexGoalObjective?: string;
   readonly effectMode?: TaskEffectMode;
@@ -482,6 +486,10 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
 }): FileBackendCodexSafeExecutorOptions {
   const { config } = input;
+  const assertProviderAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
+  assertProviderAdmission?.();
+  const publicSourceReader = input.providerEgressPolicy && codexProviderHasPublicSources(input.providerEgressPolicy)
+    ? createPublicResearchSourceReader(input.providerEgressPolicy) : undefined;
   assertVerifiedHostedChildConfig(config);
   assertChildGoalConfig(config);
   const childBudget = config.childLifetime ? new ChildExecutionBudget(config.childLifetime) : undefined;
@@ -509,6 +517,7 @@ export function buildCodexGoalExecutorOptions(input: {
     sourceEnv: config.sourceEnv,
   });
   return {
+    ...(assertProviderAdmission ? { assertProviderAdmission } : {}),
     ...(config.executorId ? { executorId: config.executorId } : {}),
     ...(childBudget ? { childBudget } : {}),
     ...(executionLifetime ? { executionLifetime } : {}),
@@ -528,6 +537,7 @@ export function buildCodexGoalExecutorOptions(input: {
           ...(input.observability ? { observability: input.observability } : {}),
         })
       : migrateLegacyCodexAccountCapacity({
+          ...(assertProviderAdmission ? { assertProviderAdmission } : {}),
           authRootDir: config.authRootDir,
           stateRootDir: input.stateRootDir,
           accountIds: config.accounts.map((account) => account.name),
@@ -566,6 +576,7 @@ export function buildCodexGoalExecutorOptions(input: {
               join(config.authRootDir, account.name, "auth.json"),
           }),
       worker: {
+        ...(assertProviderAdmission ? { assertProviderAdmission } : {}),
         providerInstanceId: `${config.taskId}-${account.name}`,
         stateRootDir: input.stateRootDir,
         codexBinaryPath: config.codexBinaryPath ?? "codex",
@@ -585,6 +596,7 @@ export function buildCodexGoalExecutorOptions(input: {
           : {}),
         ...(!isMimo && input.providerEgressPolicy ? { providerEgressPolicy: input.providerEgressPolicy } : {}),
         ...(input.appServerProcessFactory ? { appServerProcessFactory: input.appServerProcessFactory } : {}),
+        ...(publicSourceReader ? { publicSourceReader } : {}),
         capacityAccountId: account.name,
         ...(executionLifetime ? { executionLifetime, cleanThreadPrewarm: false } : {}),
         ...(childBudget ? { childBudget, cleanThreadPrewarm: false,

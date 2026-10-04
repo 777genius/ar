@@ -61,6 +61,7 @@ import {
 } from "./codex-provider-egress-policy";
 
 type CodexJsonAgentDriverBaseOptions = {
+  readonly assertProviderAdmission?: () => void;
   readonly executionLifetime?: AppServerExecutionLifetime;
   readonly model?: string;
   readonly reasoningEffort?: CodexReasoningEffort;
@@ -206,6 +207,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     readonly onTextDelta?: (text: string) => void;
     readonly logicalThread?: ProviderLogicalThreadExecution;
   }): Promise<ProviderTaskResult> {
+    this.options.assertProviderAdmission?.();
     assertProviderTaskSystemPrompt(input.task.systemPrompt, "task.systemPrompt");
 
     const startedAt = Date.now();
@@ -264,6 +266,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
           throw error;
         }
       } else {
+        this.options.assertProviderAdmission?.();
         materialized = await this.awaitMaterialization(this.sessionMaterializer.materialize({
           session: input.session!,
           redactor: input.redactor,
@@ -526,6 +529,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     readonly redactor: RedactorPort;
     readonly abortSignal: AbortSignal;
   }): Promise<ProviderTaskResult> {
+    this.options.assertProviderAdmission?.();
     if (this.executionLifetime) throw new Error("child_continuation_denied");
     if (!this.engine.resume) {
       return {
@@ -658,6 +662,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     readonly runner?: Parameters<AgentDriver["runTask"]>[0]["runner"];
     readonly abortSignal?: AbortSignal;
   }): Promise<CodexSessionPrewarmResult> {
+    this.options.assertProviderAdmission?.();
     if (this.executionLifetime) throw new Error("child_prewarm_denied");
     let mimoMaterialized: CodexMaterializedSession | null = null;
     let sessionPrewarm: CodexSessionPrewarmResult;
@@ -732,6 +737,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     readonly session: SessionArtifact;
     readonly redactor: RedactorPort;
   }): Promise<CodexSessionPrewarmResult> {
+    this.options.assertProviderAdmission?.();
     const materialized = await this.sessionMaterializer.materialize(input);
     try {
       return {
@@ -751,6 +757,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     readonly session: SessionArtifact | null;
     readonly redactor: RedactorPort;
   }): Promise<CodexMaterializedSession> {
+    this.options.assertProviderAdmission?.();
     if (!input.session) {
       throw new Error("codex_json_agent_driver_missing_session_invariant");
     }
