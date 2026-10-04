@@ -1,0 +1,247 @@
+import { createHash, randomUUID } from "node:crypto";
+import {
+  closeSync, constants, fsyncSync, fstatSync, lstatSync, openSync, readSync,
+  realpathSync, renameSync, unlinkSync, writeFileSync, type BigIntStats,
+} from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
+import {
+  DependencyAdmissionError, DependencyAdmissionFailure as AdmissionFailure,
+  parseDependencyOwner, sameDependencyAttempt, sameDependencyWorkspace,
+  type DependencyOwnerRecord, type DependencyOwnerStore, type DependencyWorkspaceIdentity,
+} from "@vioxen/subscription-runtime/worker-core";
+
+export enum DependencyOwnerStorageFailure {
+  Unsupported = "unsupported", InvalidConfig = "invalid_config", UnsafeRoot = "unsafe_root",
+  UnsafeStore = "unsafe_store", Closed = "closed",
+}
+export class DependencyOwnerStorageError extends Error {
+  constructor(readonly reason: DependencyOwnerStorageFailure) { super(`dependency_owner_storage:${reason}`); }
+}
+
+/** Trusted composition provides an existing private root outside tool grants.
+ * The store serializes facts; it does not authenticate launches or authorize
+ * release. Mutexes have no PID/TTL takeover. Failed publication retains its
+ * mutex and any temporary record for authenticated reconciliation.
+ */
+export class LocalDependencyOwnerStore implements DependencyOwnerStore {
+  private closed = false;
+  private constructor(
+    private readonly rootPath: string,
+    private readonly fd: number,
+    private readonly identity: BigIntStats,
+    private readonly maxRecordBytes: number,
+  ) {}
+
+  static open(input: { readonly rootPath: string; readonly maxRecordBytes: number }): LocalDependencyOwnerStore {
+    if (process.platform !== "linux") storageFailure(DependencyOwnerStorageFailure.Unsupported);
+    if (!isAbsolute(input.rootPath) || resolve(input.rootPath) !== input.rootPath
+      || !Number.isSafeInteger(input.maxRecordBytes) || input.maxRecordBytes < 1) {
+      storageFailure(DependencyOwnerStorageFailure.InvalidConfig);
+    }
+    if (realpathSync(input.rootPath) !== input.rootPath) storageFailure(DependencyOwnerStorageFailure.UnsafeRoot);
+    const fd = openSync(input.rootPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const info = fstatSync(fd, { bigint: true });
+      const observed = lstatSync(input.rootPath, { bigint: true });
+      if (!info.isDirectory() || !privateMode(info, 0o700n) || !sameIdentity(info, observed)) {
+        storageFailure(DependencyOwnerStorageFailure.UnsafeRoot);
+      }
+      return new LocalDependencyOwnerStore(input.rootPath, fd, info, input.maxRecordBytes);
+    } catch (error) { closeSync(fd); throw error; }
+  }
+
+  read(workspace: DependencyWorkspaceIdentity): DependencyOwnerRecord | null {
+    const key = this.key(workspace);
+    this.assertRoot();
+    this.assertNoMutex(key);
+    const result = this.readRecord(workspace, key);
+    this.assertRoot();
+    this.assertNoMutex(key);
+    return result;
+  }
+
+  compareAndSwap(workspace: DependencyWorkspaceIdentity, expectedRevision: number | null,
+    next: DependencyOwnerRecord): DependencyOwnerRecord {
+    const key = this.key(workspace);
+    const record = parseDependencyOwner(next);
+    if (!sameDependencyWorkspace(record.workspace, workspace)) admissionFailure(AdmissionFailure.WorkspaceChanged);
+    if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) {
+      admissionFailure(AdmissionFailure.InvalidRecord);
+    }
+    const bytes = Buffer.from(`${JSON.stringify(record)}\n`);
+    if (bytes.length > this.maxRecordBytes) admissionFailure(AdmissionFailure.InvalidRecord);
+    this.assertRoot();
+    const mutexPath = this.path(`${key}.lock`);
+    let mutex: number;
+    try {
+      mutex = openSync(mutexPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    } catch (error) {
+      if (hasCode(error, "EEXIST")) admissionFailure(AdmissionFailure.Busy);
+      throw error;
+    }
+    let mutexIdentity: BigIntStats | undefined;
+    let publicationStarted = false;
+    let publicationComplete = false;
+    try {
+      mutexIdentity = fstatSync(mutex, { bigint: true });
+      this.assertPrivateLeaf(mutexIdentity);
+      const current = this.readRecordUnderOwnMutex(workspace, key, mutexIdentity);
+      if ((current?.revision ?? null) !== expectedRevision) admissionFailure(AdmissionFailure.StaleAttempt);
+      if (record.revision !== (current?.revision ?? 0) + 1 || record.epoch < (current?.epoch ?? 1)
+        || record.epoch > (current?.epoch ?? 0) + 1) admissionFailure(AdmissionFailure.InvalidRecord);
+      if (current?.owner && record.owner && record.epoch === current.epoch
+        && !sameDependencyAttempt(current.owner.attempt, record.owner.attempt)) admissionFailure(AdmissionFailure.StaleAttempt);
+      if (current?.owner && record.epoch !== current.epoch) admissionFailure(AdmissionFailure.Busy);
+      if (record.owner && !current?.owner && record.epoch !== (current?.epoch ?? 0) + 1) {
+        admissionFailure(AdmissionFailure.StaleAttempt);
+      }
+
+      // From here even a failed sync is uncertain. Never discard the intent.
+      publicationStarted = true;
+      const temporaryName = `${key}.pending-${randomUUID()}`;
+      writeFileSync(mutex, `${JSON.stringify({ version: 1, operationId: randomUUID(), temporaryName,
+        expectedRevision, nextRevision: record.revision, digest: createHash("sha256").update(bytes).digest("hex") })}\n`);
+      fsyncSync(mutex);
+      fsyncSync(this.fd);
+      const temporaryPath = this.path(temporaryName);
+      const temporary = openSync(temporaryPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      let temporaryIdentity: BigIntStats;
+      try {
+        temporaryIdentity = fstatSync(temporary, { bigint: true });
+        this.assertPrivateLeaf(temporaryIdentity);
+        writeFileSync(temporary, bytes);
+        fsyncSync(temporary);
+      } finally { closeSync(temporary); }
+      this.assertRoot();
+      const observedTemporary = lstatSync(temporaryPath, { bigint: true });
+      this.assertPrivateLeaf(observedTemporary);
+      if (!sameIdentity(temporaryIdentity, observedTemporary)) storageFailure(DependencyOwnerStorageFailure.UnsafeStore);
+      // The private root and per-key mutex exclude other governed publishers.
+      // A fresh read also vetoes corrupt/substituted destination records.
+      const beforeRename = this.readRecordUnderOwnMutex(workspace, key, mutexIdentity);
+      if (JSON.stringify(beforeRename) !== JSON.stringify(current)) admissionFailure(AdmissionFailure.StaleAttempt);
+      renameSync(temporaryPath, this.path(`${key}.json`));
+      fsyncSync(this.fd);
+      const committed = this.readRecordUnderOwnMutex(workspace, key, mutexIdentity);
+      if (JSON.stringify(committed) !== JSON.stringify(record)) storageFailure(DependencyOwnerStorageFailure.UnsafeStore);
+      publicationComplete = true;
+      return committed!;
+    } finally {
+      closeSync(mutex);
+      if (mutexIdentity && (!publicationStarted || publicationComplete)) {
+        this.assertRoot();
+        const observed = lstatSync(mutexPath, { bigint: true });
+        this.assertPrivateLeaf(observed);
+        if (!sameIdentity(mutexIdentity, observed)) storageFailure(DependencyOwnerStorageFailure.UnsafeStore);
+        unlinkSync(mutexPath);
+        fsyncSync(this.fd);
+      }
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    closeSync(this.fd);
+  }
+
+  private key(workspace: DependencyWorkspaceIdentity): string {
+    if (this.closed) storageFailure(DependencyOwnerStorageFailure.Closed);
+    return ownerKey(workspace);
+  }
+  private path(name: string): string { return join(`/proc/self/fd/${this.fd}`, name); }
+  private assertRoot(): void {
+    if (this.closed) storageFailure(DependencyOwnerStorageFailure.Closed);
+    const observed = lstatSync(this.rootPath, { bigint: true });
+    const retained = fstatSync(this.fd, { bigint: true });
+    if (!observed.isDirectory() || !privateMode(observed, 0o700n) || !sameIdentity(observed, this.identity)
+      || !sameIdentity(retained, this.identity) || realpathSync(this.rootPath) !== this.rootPath) {
+      storageFailure(DependencyOwnerStorageFailure.UnsafeRoot);
+    }
+  }
+  private assertPrivateLeaf(info: BigIntStats): void {
+    if (!info.isFile() || info.dev !== this.identity.dev || info.nlink !== 1n || !privateMode(info, 0o600n)) {
+      storageFailure(DependencyOwnerStorageFailure.UnsafeStore);
+    }
+  }
+  private assertNoMutex(key: string): void {
+    let present = true;
+    try {
+      lstatSync(this.path(`${key}.lock`));
+    } catch (error) {
+      if (hasCode(error, "ENOENT")) present = false;
+      else throw error;
+    }
+    this.assertRoot();
+    if (present) admissionFailure(AdmissionFailure.Busy);
+  }
+  private readRecordUnderOwnMutex(workspace: DependencyWorkspaceIdentity, key: string,
+    mutexIdentity: BigIntStats): DependencyOwnerRecord | null {
+    this.assertRoot();
+    this.assertOwnedMutex(key, mutexIdentity);
+    const result = this.readRecord(workspace, key);
+    this.assertRoot();
+    this.assertOwnedMutex(key, mutexIdentity);
+    return result;
+  }
+  private assertOwnedMutex(key: string, expected: BigIntStats): void {
+    const observed = lstatSync(this.path(`${key}.lock`), { bigint: true });
+    this.assertPrivateLeaf(observed);
+    if (!sameIdentity(observed, expected)) storageFailure(DependencyOwnerStorageFailure.UnsafeStore);
+  }
+  private readRecord(workspace: DependencyWorkspaceIdentity, key: string): DependencyOwnerRecord | null {
+    const result = this.readLeaf(key);
+    if (result && !sameDependencyWorkspace(result.workspace, workspace)) admissionFailure(AdmissionFailure.WorkspaceChanged);
+    return result;
+  }
+  private readLeaf(key: string): DependencyOwnerRecord | null {
+    const path = this.path(`${key}.json`);
+    let observed: BigIntStats;
+    try { observed = lstatSync(path, { bigint: true }); } catch (error) {
+      if (hasCode(error, "ENOENT")) return null;
+      throw error;
+    }
+    this.assertPrivateLeaf(observed);
+    if (observed.size < 1n || observed.size > BigInt(this.maxRecordBytes)) admissionFailure(AdmissionFailure.InvalidRecord);
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const before = fstatSync(fd, { bigint: true });
+      this.assertPrivateLeaf(before);
+      if (!sameIdentity(before, observed) || before.size !== observed.size) storageFailure(DependencyOwnerStorageFailure.UnsafeStore);
+      const bytes = Buffer.alloc(Number(before.size));
+      let offset = 0;
+      while (offset < bytes.length) {
+        const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+        if (count === 0) admissionFailure(AdmissionFailure.InvalidRecord);
+        offset += count;
+      }
+      if (readSync(fd, Buffer.alloc(1), 0, 1, offset) !== 0) admissionFailure(AdmissionFailure.InvalidRecord);
+      const after = fstatSync(fd, { bigint: true });
+      this.assertPrivateLeaf(after);
+      if (!sameIdentity(before, after) || before.size !== after.size || before.mtimeNs !== after.mtimeNs
+        || before.ctimeNs !== after.ctimeNs) storageFailure(DependencyOwnerStorageFailure.UnsafeStore);
+      const text = bytes.toString("utf8");
+      if (!Buffer.from(text, "utf8").equals(bytes)) admissionFailure(AdmissionFailure.InvalidRecord);
+      let value: unknown;
+      try { value = JSON.parse(text); } catch { admissionFailure(AdmissionFailure.InvalidRecord); }
+      return parseDependencyOwner(value);
+    } finally { closeSync(fd); }
+  }
+}
+
+function privateMode(info: BigIntStats, mode: bigint): boolean {
+  return (info.mode & 0o7777n) === mode && info.uid === BigInt(process.geteuid!());
+}
+export function dependencyOwnerStorageName(workspace: DependencyWorkspaceIdentity): string { return `${ownerKey(workspace)}.json`; }
+function ownerKey(workspace: DependencyWorkspaceIdentity): string {
+  // Reuse the core schema, without treating this validation as authority.
+  parseDependencyOwner({ version: 1, workspace, revision: 1, epoch: 1, owner: null });
+  if (workspace.dev.length > 40 || workspace.ino.length > 40) admissionFailure(AdmissionFailure.InvalidRecord);
+  return `${workspace.dev}-${workspace.ino}`;
+}
+function sameIdentity(left: BigIntStats, right: BigIntStats): boolean { return left.dev === right.dev && left.ino === right.ino; }
+function hasCode(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+function admissionFailure(reason: AdmissionFailure): never { throw new DependencyAdmissionError(reason); }
+function storageFailure(reason: DependencyOwnerStorageFailure): never { throw new DependencyOwnerStorageError(reason); }
