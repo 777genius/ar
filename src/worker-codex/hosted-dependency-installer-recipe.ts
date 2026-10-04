@@ -13,7 +13,10 @@ import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRoot
 import { encodeDependencyTreeManifest, DependencyManifestEntryKind as Kind, type DependencyManifestEntry } from "../worker-core/dependency-environment/domain/dependency-tree-manifest";
 
 export const hostedDependencyInstallerRoot = join(readonlySupervisorRoot, "dependency-installers");
-export type HostedDependencyInstallerProfile = DependencyTestNpmToolchain & { readonly schemaVersion: 1 };
+export const hostedDependencyInstallerNetworkRoot = join(readonlySupervisorRoot, "dependency-installer-network");
+export enum HostedDependencyInstallerNetworkInput { Hosts = "hosts", Resolver = "resolv.conf", NameService = "nsswitch.conf" }
+export type HostedDependencyInstallerProfile = DependencyTestNpmToolchain & { readonly schemaVersion: 1;
+  readonly networkInputs: Readonly<Record<HostedDependencyInstallerNetworkInput, string>> };
 const plans = new WeakMap<object, string>();
 export type HostedDependencyInstallerPlan = Readonly<{ startId: string; directory: string; rootDirectory: string;
   stagingDirectory: string; inputSha256: string; profile: HostedDependencyInstallerProfile }>;
@@ -72,10 +75,10 @@ export function hostedDependencyInstallerNpmRootSha256(root: string): string {
 }
 export function readHostedDependencyInstallerProfile(): HostedDependencyInstallerProfile {
   assertReadonlyHostOperator();
-  const bytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "dependency-installer-profile.json"), 4096);
+  const bytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "dependency-installer-profile.json"), 8192);
   if (!bytes) fail();
   const v = decodePrivateJson(bytes) as HostedDependencyInstallerProfile;
-  if (!v || Object.keys(v).sort().join(",") !== "arch,libc,nodeAbi,nodePath,nodeSha256,nodeVersion,npmCliPath,npmRootPath,npmRootSha256,npmSha256,npmVersion,platform,schemaVersion,toolRoots" ||
+  if (!v || Object.keys(v).sort().join(",") !== "arch,libc,networkInputs,nodeAbi,nodePath,nodeSha256,nodeVersion,npmCliPath,npmRootPath,npmRootSha256,npmSha256,npmVersion,platform,schemaVersion,toolRoots" ||
       v.schemaVersion !== 1 || ![v.nodeSha256, v.npmSha256].every(s => typeof s === "string" && /^[a-f0-9]{64}$/.test(s)) ||
       typeof v.nodeVersion !== "string" || !/^v\d+\.\d+\.\d+$/.test(v.nodeVersion) ||
       typeof v.npmVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(v.npmVersion) ||
@@ -86,7 +89,10 @@ export function readHostedDependencyInstallerProfile(): HostedDependencyInstalle
       typeof v.npmRootSha256 !== "string" || !/^[a-f0-9]{64}$/.test(v.npmRootSha256) ||
       !v.libc || Object.keys(v.libc).sort().join(",") !== "family,path,sha256,version" || v.libc.family !== DependencyLibcFamily.Glibc ||
       !/^[0-9]+\.[0-9]+$/.test(v.libc.version) || !/^[a-f0-9]{64}$/.test(v.libc.sha256) ||
-      !Array.isArray(v.toolRoots) || v.toolRoots.length < 1 || v.toolRoots.length > 32) fail();
+      !Array.isArray(v.toolRoots) || v.toolRoots.length < 1 || v.toolRoots.length > 32 ||
+      !v.networkInputs || Object.keys(v.networkInputs).sort().join(",") !== "hosts,nsswitch.conf,resolv.conf" ||
+      !Object.values(v.networkInputs).every(s => typeof s === "string" && /^[a-f0-9]{64}$/.test(s))) fail();
+  for (const name of Object.values(HostedDependencyInstallerNetworkInput)) trustedNetworkInput(name, v.networkInputs[name]);
   trustedFile(v.nodePath, v.nodeSha256); trustedFile(v.npmCliPath, v.npmSha256);
   for (const library of v.toolRoots) {
     if (!library || Object.keys(library).sort().join(",") !== "kind,path,sha256" || library.kind !== DependencyToolRootKind.File ||
@@ -97,6 +103,12 @@ export function readHostedDependencyInstallerProfile(): HostedDependencyInstalle
       !v.toolRoots.some(l => l.sha256 === v.libc.sha256 && l.path === v.libc.path && /\/libc\.so\.[0-9]+$/.test(l.path)) ||
       hostedDependencyInstallerNpmRootSha256(v.npmRootPath) !== v.npmRootSha256) fail();
   return Object.freeze({ ...v });
+}
+function trustedNetworkInput(name: HostedDependencyInstallerNetworkInput, sha256: string): Buffer {
+  const parent = lstatSync(hostedDependencyInstallerNetworkRoot), path = join(hostedDependencyInstallerNetworkRoot, name), stat = lstatSync(path);
+  if (!parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== 0 || (parent.mode & 0o7777) !== 0o700 ||
+      !stat.isFile() || stat.uid !== 0 || (stat.mode & 0o7777) !== 0o600 || stat.size < 1 || stat.size > 64 * 1024) fail();
+  return trustedFile(path, sha256);
 }
 function directory(path: string, mode = 0o700, writable = false): void {
   mkdirSync(path, { mode }); if (writable) chownSync(path, hostedDependencyInstallerUid, hostedDependencyInstallerUid);
@@ -116,7 +128,8 @@ function snapshot(plan: HostedDependencyInstallerPlan): string {
     }
   }
   for (const path of [join(plan.directory, "inputs/package.json"), join(plan.directory, "inputs/package-lock.json"),
-    join(plan.rootDirectory, "runtime/bootstrap.js"), join(plan.rootDirectory, "runtime/package.json"), join(plan.rootDirectory, "runtime/profile.json"), join(plan.rootDirectory, "runtime/npmrc")]) {
+    join(plan.rootDirectory, "runtime/bootstrap.js"), join(plan.rootDirectory, "runtime/package.json"), join(plan.rootDirectory, "runtime/profile.json"), join(plan.rootDirectory, "runtime/npmrc"),
+    ...Object.values(HostedDependencyInstallerNetworkInput).map(name => join(plan.rootDirectory, "etc", name))]) {
     const bytes = trustedFile(path); facts.push([path, createHash("sha256").update(bytes).digest("hex")]);
   }
   return JSON.stringify(facts);
@@ -168,9 +181,8 @@ export function createHostedDependencyInstallerPlan(startId: string, inputs: Hos
     if (!stat.isSymbolicLink() || readlinkSync(host) !== "usr/" + name) fail();
     symlinkSync("usr/" + name, join(root, name));
   }
-  for (const name of ["hosts", "resolv.conf", "nsswitch.conf"]) {
-    const path = realpathSync("/etc/" + name), bytes = trustedFile(path);
-    if (bytes.length > 64 * 1024) fail();
+  for (const name of Object.values(HostedDependencyInstallerNetworkInput)) {
+    const bytes = trustedNetworkInput(name, selected.networkInputs[name]);
     writeFileSync(join(root, "etc", name), bytes, { flag: "wx", mode: 0o644 });
   }
   for (const [name, bytes] of [["package.json", inputs.packageBytes], ["package-lock.json", inputs.lockBytes]] as const) {
