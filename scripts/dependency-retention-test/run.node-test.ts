@@ -15,6 +15,7 @@ import { createHostedDependencyInstallerPlan, hostedDependencyInstallerNpmRootSh
 import { qualifyHostedDependencyInstallerInputs } from "../../dist/worker-codex/hosted-dependency-installer-inputs.js";
 import { TrustedCustodyLaunchRole, trustedCustodySystemdLaunch } from "../../dist/worker-codex/trusted-custody-systemd-launch.js";
 import { assertInstallerTerminalUnit } from "../../dist/worker-codex/hosted-dependency-installer-unit.js";
+import { hostedDependencyInstallerUid } from "../../dist/worker-codex/hosted-dependency-installer-identity.js";
 import { observeInstallerCgroupEmpty } from "../../dist/worker-codex/hosted-dependency-installer-cgroup.js";
 import { observeDependencyTree } from "../../dist/worker-local/dependency-environment/observe-dependency-tree.js";
 import { openDependencyTreeRename, DependencyTreeEffectError, DependencyTreeEffectFailure } from "../../dist/worker-local/dependency-environment/dependency-tree-effects.js";
@@ -43,6 +44,30 @@ function command(executable: string, args: readonly string[], timeout = 30000): 
   assert(!result.error && result.signal === null && result.status === 0,
     `TEST command failed: ${executable}, status=${result.status}, signal=${result.signal}`);
   return result.stdout;
+}
+function failedInstallerDiagnostics(unit: string): unknown {
+  assert.match(unit, /^subscription-runtime-installer-[a-f0-9-]{36}\.service$/);
+  const properties = ["LoadState", "ActiveState", "SubState", "Result", "ExecMainCode", "ExecMainStatus", "User", "Group"];
+  const show = spawnSync("/usr/bin/systemctl", ["show", unit, ...properties.map(p => "--property=" + p)],
+    { env: cleanEnvironment, cwd: "/", encoding: "utf8", timeout: 5000, maxBuffer: 8192 });
+  const journal = spawnSync("/usr/bin/journalctl", ["--unit=" + unit, "--no-pager", "--lines=24", "--output=cat"],
+    { env: cleanEnvironment, cwd: "/", encoding: "utf8", timeout: 5000, maxBuffer: 8192 });
+  const lookup = spawnSync("/usr/bin/getent", ["passwd", String(hostedDependencyInstallerUid)],
+    { env: cleanEnvironment, cwd: "/", timeout: 5000, stdio: "ignore" });
+  // Record only fixed setup classifications and whitelisted unit properties.
+  // Neither passwd records, payload output nor raw journal/stderr is retained.
+  const states = Object.fromEntries((show.stdout ?? "").split("\n").flatMap(line => {
+    const match = /^([A-Za-z]+)=([A-Za-z0-9_-]*)$/.exec(line);
+    const name = match?.[1], value = match?.[2];
+    return name !== undefined && value !== undefined && properties.includes(name) ? [[name, value]] : [];
+  }));
+  const setup = ["Failed to determine user credentials", "Failed to change UID", "Failed to send user credentials to PID1",
+    "Failed to set up user namespacing", "Failed at step USER", "Failed to determine group credentials"];
+  const text = journal.stdout ?? "";
+  return { unit, fixedUid: hostedDependencyInstallerUid, states, showStatus: show.status, journalStatus: journal.status,
+    userLookupStatus: lookup.status, setupFailures: setup.filter(message => text.includes(message)),
+    setupErrnos: ["No such process", "Operation not permitted", "Permission denied"].filter(message => text.includes(message)),
+    observationsFailed: Boolean(show.error || journal.error || lookup.error) };
 }
 function privateDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -240,8 +265,9 @@ async function run(): Promise<void> {
     const startId = randomUUID(), plan = createHostedDependencyInstallerPlan(startId,
       qualifyHostedDependencyInstallerInputs(inputs.packageBytes, inputs.lockBytes));
     const launch = trustedCustodySystemdLaunch(TrustedCustodyLaunchRole.Installer, startId, plan.stagingDirectory, plan);
-    command(launch.command, launch.args, 12 * 60 * 1000);
     const unit = `subscription-runtime-installer-${startId}.service`;
+    try { command(launch.command, launch.args, 12 * 60 * 1000); }
+    catch (error) { facts.installerFailureDiagnostics = failedInstallerDiagnostics(unit); throw error; }
     assertInstallerTerminalUnit(unit);
     const drainDigest = observeInstallerCgroupEmpty("/sys/fs/cgroup/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/" + unit);
     const installed = await observeDependencyTree({ workspacePath: plan.stagingDirectory, treeName: "node_modules", limits });
