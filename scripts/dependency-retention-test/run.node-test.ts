@@ -24,6 +24,7 @@ import { observeDependencyTree } from "../../dist/worker-local/dependency-enviro
 import { openDependencyTreeRename, DependencyTreeEffectError, DependencyTreeEffectFailure } from "../../dist/worker-local/dependency-environment/dependency-tree-effects.js";
 import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRootKind,
   DependencyTreeObservationStatus, DependencyTreeObservationFailure } from "../../dist/worker-core/index.js";
+import { dependencyTestNpmConfig, dependencyTestNpmEnvironment } from "../../dist/worker-core/dependency-environment/domain/dependency-install-key.js";
 import { admitHostedDependencyConsumer } from "../../dist/worker-codex/hosted-dependency-admission.js";
 import type { CodexGoalRunConfig } from "../../dist/worker-codex/codex-goal-runner.js";
 
@@ -375,6 +376,20 @@ function syntheticCaPreflight(plan: HostedDependencyInstallerPlan) {
     return facts;
   });
 }
+function npmConfigPreflight(plan: HostedDependencyInstallerPlan) {
+  const profile = JSON.parse(readFileSync(plan.rootDirectory + "/runtime/profile.json", "utf8"));
+  assert.deepEqual(profile.environment, dependencyTestNpmEnvironment);
+  const paths = [profile.environment.npm_config_userconfig, profile.environment.npm_config_globalconfig];
+  assert.deepEqual(paths, ["/runtime/npmrc", "/runtime/global-npmrc"]);
+  const facts = paths.map((relative: string) => {
+    const path = plan.rootDirectory + relative, stat = lstatSync(path), digest = hash(readFileSync(path));
+    assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid === 0 && stat.nlink === 1 && (stat.mode & 0o7777) === 0o644);
+    assert.equal(digest, hash(dependencyTestNpmConfig));
+    return { relative, dev: String(stat.dev), ino: String(stat.ino), uid: stat.uid, mode: "644", sha256: digest };
+  });
+  assert.notEqual(facts[0]?.dev + ":" + facts[0]?.ino, facts[1]?.dev + ":" + facts[1]?.ino);
+  return facts;
+}
 
 async function publicRegistryInputs(): Promise<{ packageBytes: Buffer; lockBytes: Buffer }> {
   // This is a TEST dependency, not a new dependency of the repository/tooling.
@@ -449,6 +464,7 @@ async function run(): Promise<void> {
     const startId = randomUUID(), plan = createHostedDependencyInstallerPlan(startId,
       qualifyHostedDependencyInstallerInputs(inputs.packageBytes, inputs.lockBytes));
     facts.syntheticCaPreflight = syntheticCaPreflight(plan); // Fixed paths and metadata only.
+    facts.npmConfigPreflight = npmConfigPreflight(plan); // Actual distinct immutable config files, never their contents.
     const launch = trustedCustodySystemdLaunch(TrustedCustodyLaunchRole.Installer, startId, plan.stagingDirectory, plan);
     const unit = `subscription-runtime-installer-${startId}.service`;
     try { command(launch.command, launch.args, 12 * 60 * 1000); }
