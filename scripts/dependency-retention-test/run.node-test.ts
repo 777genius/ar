@@ -12,12 +12,13 @@ import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-reado
 import { createHostedDependencyInstallerPlan, hostedDependencyInstallerNpmRootSha256,
   hostedDependencyInstallerProperties, hostedDependencyInstallerNetworkRoot, HostedDependencyInstallerNetworkInput,
   HostedDependencyInstallerRevision, hostedDependencyInstallerBootstrapCommand, hostedDependencyInstallerDropperSha256, readHostedDependencyInstallerProfile,
-  type HostedDependencyInstallerProfile } from "../../dist/worker-codex/hosted-dependency-installer-recipe.js";
+  type HostedDependencyInstallerPlan, type HostedDependencyInstallerProfile } from "../../dist/worker-codex/hosted-dependency-installer-recipe.js";
 import { qualifyHostedDependencyInstallerInputs } from "../../dist/worker-codex/hosted-dependency-installer-inputs.js";
 import { TrustedCustodyLaunchRole, trustedCustodySystemdLaunch } from "../../dist/worker-codex/trusted-custody-systemd-launch.js";
 import { assertInstallerTerminalUnit } from "../../dist/worker-codex/hosted-dependency-installer-unit.js";
 import { hostedDependencyInstallerUid } from "../../dist/worker-codex/hosted-dependency-installer-identity.js";
-import { collectProcessBirth, collectProcessCgroup } from "../../dist/worker-codex/hosted-readonly-linux-collector.js";
+import { collectJobs, collectProcessBirth, collectProcessCgroup, collectUnitNotFound } from "../../dist/worker-codex/hosted-readonly-linux-collector.js";
+import { parseScopedManagerJobs } from "../../dist/worker-codex/hosted-readonly-observations.js";
 import { observeInstallerCgroupEmpty } from "../../dist/worker-codex/hosted-dependency-installer-cgroup.js";
 import { observeDependencyTree } from "../../dist/worker-local/dependency-environment/observe-dependency-tree.js";
 import { openDependencyTreeRename, DependencyTreeEffectError, DependencyTreeEffectFailure } from "../../dist/worker-local/dependency-environment/dependency-tree-effects.js";
@@ -45,7 +46,7 @@ function runtimeExecDiagnostics(text: string) {
     "libpthread.so.0", "librt.so.1", "ld-linux-x86-64.so.2"];
   const classes = ["error while loading shared libraries", "cannot open shared object file", "symbol lookup error",
     "error while loading shared library", "bad ELF interpreter", "Exec format error", "failed to execute",
-    "No such file or directory", "Permission denied", "Operation not permitted"];
+    "No such file or directory", "Permission denied", "Operation not permitted", "OpenSSL configuration error"];
   // Exact util-linux 2.39.3 failure sites; stage labels are diagnostics only.
   const stages = ["disallow granting new privileges failed", "keep process capabilities failed", "activate capabilities",
     "reactivate capabilities", "getresuid failed", "setresuid failed", "getresgid failed", "setresgid failed",
@@ -60,8 +61,11 @@ function runtimeExecDiagnostics(text: string) {
 }
 class TestCommandFailure extends Error {
   readonly runtime: ReturnType<typeof runtimeExecDiagnostics>;
-  constructor(executable: string, status: number | null, signal: NodeJS.Signals | null, output: string) {
+  readonly status: number | null;
+  readonly completed: boolean;
+  constructor(executable: string, status: number | null, completed: boolean, signal: NodeJS.Signals | null, output: string) {
     super(`TEST command failed: ${executable}, status=${status}, signal=${signal}`);
+    this.status = status; this.completed = completed;
     this.runtime = runtimeExecDiagnostics(output.slice(0, 8192));
   }
 }
@@ -70,7 +74,7 @@ function command(executable: string, args: readonly string[], timeout = 30000): 
     encoding: "utf8", timeout, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   // Errors do not print subprocess output, environment or an arbitrary payload.
   if (result.error || result.signal !== null || result.status !== 0)
-    throw new TestCommandFailure(executable, result.status, result.signal, result.stderr ?? "");
+    throw new TestCommandFailure(executable, result.status, !result.error && result.signal === null && result.status !== null, result.signal, result.stderr ?? "");
   return result.stdout;
 }
 function failedInstallerDiagnostics(unit: string, error: unknown): unknown {
@@ -98,6 +102,80 @@ function failedInstallerDiagnostics(unit: string, error: unknown): unknown {
     userLookupStatus: lookup.status, setupFailures: setup.filter(message => text.includes(message)),
     setupErrnos: ["No such process", "Operation not permitted", "Permission denied"].filter(message => text.includes(message)),
     observationsFailed: Boolean(show.error || journal.error || lookup.error) };
+}
+function diagnosticUnitDrained(unit: string, status: 0 | 127) {
+  assert.match(unit, /^subscription-runtime-installer-[a-f0-9-]{36}\.service$/);
+  const absent = () => assert(!parseScopedManagerJobs(collectJobs()).some(job => job.unit === unit)); absent();
+  const names = ["Id", "LoadState", "ActiveState", "SubState", "MainPID", "ControlGroup", "DropInPaths", "ExecMainStatus", "User", "Group",
+    "CapabilityBoundingSet", "NoNewPrivileges", "PrivateUsers", "SecureBits"];
+  const show = spawnSync("/usr/bin/systemctl", ["show", unit, ...names.map(name => "--property=" + name)],
+    { env: cleanEnvironment, cwd: "/", encoding: "utf8", timeout: 5000, maxBuffer: 8192 });
+  assert(!show.error && show.signal === null && (show.status === 0 || show.status === 4));
+  const output = show.stdout;
+  const row: Record<string, string> = {};
+  for (const line of output.trimEnd().split("\n")) {
+    const i = line.indexOf("="), name = line.slice(0, i);
+    assert(i > 0 && names.includes(name) && !Object.hasOwn(row, name)); row[name] = line.slice(i + 1);
+  }
+  const group = "/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/" + unit;
+  assert.equal(row.Id, unit);
+  if (status === 0 && row.LoadState === "not-found") {
+    assert(collectUnitNotFound(unit)); const digest = observeInstallerCgroupEmpty("/sys/fs/cgroup" + group); absent();
+    return { digest, properties: { state: "positive_not_found" } };
+  }
+  assert.equal(show.status, 0); assert.equal(Object.keys(row).length, names.length); assert.equal(row.LoadState, "loaded");
+  assert.equal(row.ActiveState, status === 0 ? "inactive" : "failed"); assert.equal(row.SubState, status === 0 ? "dead" : "failed");
+  assert.equal(row.MainPID, "0"); assert.equal(row.ExecMainStatus, String(status)); assert.equal(row.DropInPaths, "");
+  assert.equal(row.User, "0"); assert.equal(row.Group, "0");
+  assert(row.ControlGroup === "" || row.ControlGroup === group);
+  const digest = observeInstallerCgroupEmpty("/sys/fs/cgroup" + group); absent();
+  const known = ["cap_setuid", "cap_setgid", "cap_setpcap"], tokens = (row.CapabilityBoundingSet ?? "").split(" ").filter(Boolean);
+  assert(row.NoNewPrivileges === "yes" || row.NoNewPrivileges === "no"); assert(row.PrivateUsers === "yes" || row.PrivateUsers === "no");
+  assert.match(row.SecureBits ?? "", /^[0-9]{1,10}$/);
+  return { digest, properties: { bounding: known.filter(cap => tokens.includes(cap)), unknownCapability: tokens.some(cap => !known.includes(cap)),
+    noNewPrivileges: row.NoNewPrivileges, privateUsers: row.PrivateUsers, secureBits: row.SecureBits } };
+}
+function retainDiagnosticJson(path: string, value: unknown): void {
+  privateJson(path, value); const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+  const parentFd = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(parentFd); } finally { closeSync(parentFd); }
+}
+function capabilityDiagnostic(plan: HostedDependencyInstallerPlan, originalUnit: string, error: unknown): unknown {
+  if (!(error instanceof TestCommandFailure) || !error.completed || error.status !== 127) return { status: "original_result_uncertain_no_launch" };
+  const originalDrain = diagnosticUnitDrained(originalUnit, 127), startId = randomUUID();
+  const unit = `subscription-runtime-installer-${startId}.service`, registration = plan.directory + "/TEST-dropper-diagnostic.json";
+  const record = { schemaVersion: 1, purpose: "TEST_native_dropper_boundary_diagnostic", unit, startId, originalUnit, originalDrain,
+    bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(), sourceSha: process.env.TEST_SOURCE_SHA,
+    planStartId: plan.startId, planSha256: hash(JSON.stringify(plan)), executableSha256: plan.profile.privilegeDropper.sha256 };
+  retainDiagnosticJson(registration, record);
+  // v2.39.3 returns from dump before NNP/keepcaps/ID changes or target exec.
+  // This separate PID is boundary diagnostics, never failing-PID authority.
+  const result = spawnSync("/usr/bin/systemd-run", ["--quiet", "--wait", "--pipe", `--unit=${unit}`, "--service-type=exec", "--expand-environment=no",
+    "--working-directory=/", "--property=Slice=subscription-runtime-hosted.slice", "--property=KillMode=control-group",
+    "--property=SendSIGKILL=yes", "--property=Delegate=no", ...hostedDependencyInstallerProperties(plan).map(p => "--property=" + p),
+    "--", plan.profile.privilegeDropper.path, "-ddd"],
+  { env: cleanEnvironment, cwd: "/", encoding: "utf8", timeout: 10000, maxBuffer: 8192, stdio: ["ignore", "pipe", "pipe"] });
+  if (result.error || result.signal || result.status !== 0) return { unit, status: "diagnostic_result_uncertain_held",
+    runtimeExec: runtimeExecDiagnostics((result.stderr ?? "").slice(0, 8192)) };
+  const drained = diagnosticUnitDrained(unit, 0), text = result.stdout;
+  const ids = Object.fromEntries(["uid", "euid", "suid", "gid", "egid", "sgid"].map(name => {
+    const value = new RegExp(`^${name}: ([0-9]{1,10})$`, "m").exec(text)?.[1]; assert(value); return [name, value];
+  }));
+  const known = ["setuid", "setgid", "setpcap"];
+  const caps = Object.fromEntries(["Effective", "Permitted", "Inheritable", "Ambient", "Capability bounding set"].map(name => {
+    const label = name === "Capability bounding set" ? "Capability bounding set" : name + " capabilities";
+    const value = new RegExp(`^${label}: ([^\\n]*)$`, "m").exec(text)?.[1]; assert(value !== undefined);
+    const tokens = value === "[none]" ? [] : value.split(",");
+    return [name, { known: known.filter(cap => tokens.includes(cap)), unknownCapability: tokens.some(cap => !known.includes(cap)) }];
+  }));
+  const secure = /^Securebits: ([^\n]*)$/m.exec(text)?.[1]; assert(secure !== undefined);
+  const bits = ["noroot", "noroot_locked", "no_setuid_fixup", "no_setuid_fixup_locked", "keep_caps_locked"];
+  const tokens = secure === "[none]" ? [] : secure.split(",");
+  const nnp = /^no_new_privs: ([01])$/m.exec(text)?.[1]; assert(nnp !== undefined);
+  retainDiagnosticJson(plan.directory + "/TEST-dropper-diagnostic-completion.json", { unit, status: 0, drained });
+  return { unit, status: "separate_native_boundary_observed", originalDrain, drained, ids, caps,
+    noNewPrivileges: nnp === "1", securebits: bits.filter(bit => tokens.includes(bit)), unknownSecurebit: tokens.some(bit => !bits.includes(bit)) };
 }
 function actualProbeCredentials(unit: string, planRoot: string, nodePath: string) {
   const pid = command("/usr/bin/systemctl", ["show", unit, "--property=MainPID", "--value"], 5000).trim();
@@ -270,6 +348,16 @@ function networkPreflight(): unknown[] {
       mode: (stat.mode & 0o7777).toString(8), nlink: stat.nlink, dev: String(stat.dev), ino: String(stat.ino), unsafeAncestor };
   });
 }
+function syntheticCaPreflight(plan: HostedDependencyInstallerPlan) {
+  return ["/", "/etc", "/etc/ssl", "/etc/ssl/certs"].map(relative => {
+    const stat = lstatSync(plan.rootDirectory + (relative === "/" ? "" : relative));
+    const facts = { relative, uid: stat.uid, gid: stat.gid, mode: (stat.mode & 0o7777).toString(8),
+      dev: String(stat.dev), ino: String(stat.ino), directory: stat.isDirectory(), symlink: stat.isSymbolicLink() };
+    assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && (stat.mode & 0o7777) === 0o755,
+      "TEST synthetic CA ancestry must be traversable before unprivileged launch");
+    return facts;
+  });
+}
 
 async function publicRegistryInputs(): Promise<{ packageBytes: Buffer; lockBytes: Buffer }> {
   // This is a TEST dependency, not a new dependency of the repository/tooling.
@@ -343,10 +431,16 @@ async function run(): Promise<void> {
     writeFileSync(workspace + "/package-lock.json", inputs.lockBytes, { flag: "wx", mode: 0o600 });
     const startId = randomUUID(), plan = createHostedDependencyInstallerPlan(startId,
       qualifyHostedDependencyInstallerInputs(inputs.packageBytes, inputs.lockBytes));
+    facts.syntheticCaPreflight = syntheticCaPreflight(plan); // Fixed paths and metadata only.
     const launch = trustedCustodySystemdLaunch(TrustedCustodyLaunchRole.Installer, startId, plan.stagingDirectory, plan);
     const unit = `subscription-runtime-installer-${startId}.service`;
     try { command(launch.command, launch.args, 12 * 60 * 1000); }
-    catch (error) { facts.installerFailureDiagnostics = failedInstallerDiagnostics(unit, error); throw error; }
+    catch (error) {
+      facts.installerFailureDiagnostics = failedInstallerDiagnostics(unit, error);
+      try { facts.dropperBoundaryDiagnostic = capabilityDiagnostic(plan, unit, error); }
+      catch { facts.dropperBoundaryDiagnostic = { status: "boundary_unresolved_held" }; }
+      throw error;
+    }
     assertInstallerTerminalUnit(unit);
     const drainDigest = observeInstallerCgroupEmpty("/sys/fs/cgroup/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/" + unit);
     const installed = await observeDependencyTree({ workspacePath: plan.stagingDirectory, treeName: "node_modules", limits });

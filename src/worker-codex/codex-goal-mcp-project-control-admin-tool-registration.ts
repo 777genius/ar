@@ -10,6 +10,8 @@ import {
 import { withMcpErrors } from "./codex-goal-mcp-response";
 import { projectControlAdoptPublishedIntegrationCommit,
   type PublishedAdoptionMcpArgs } from "./codex-goal-mcp-project-control-published-adoption";
+import { projectControlReconcilePublishedReviewedOutput,
+  type PublishedReconciliationMcpArgs } from "./codex-goal-mcp-project-control-published-reconciliation";
 import { projectControlLinkLegacyIntegrationTransport,
   type LegacyTransportLinkMcpArgs } from
   "./codex-goal-mcp-project-control-legacy-transport-link";
@@ -31,6 +33,14 @@ import {
 } from "./codex-goal-mcp-project-control-tool-schemas";
 
 export function registerCodexGoalProjectControlAdminTools(server: McpServer): void {
+  server.registerTool("codex_goal_project_reconcile_published_reviewed_output", {
+    title: "Reconcile Incorporated Reviewed Publication",
+    description: "Root admin ledger-only reconciliation of approved frozen output incorporated in an authenticated historical canonical publication. Exact publication CI, review tree and immutable permit required; creates no integration attempt or Git write.",
+    inputSchema: { ...jobRegistryInputSchema(), controllerJobId: z.string().min(1),
+      reviewedOutputId: z.string().regex(/^[a-f0-9]{64}$/), permitFile: z.string().min(1),
+      expectedPermitSha256: z.string().regex(/^[a-f0-9]{64}$/), confirmReconciliation: z.boolean().optional() },
+  }, async (args) => withMcpErrors(async () =>
+    projectControlReconcilePublishedReviewedOutput(args as PublishedReconciliationMcpArgs)));
   server.registerTool("codex_goal_project_link_legacy_integration_transport", {
     title: "Link Legacy Integration Transport",
     description: "Root admin append-only receipt linking an unchanged legacy checks_passed attempt to an exact adopted pushed attempt and consumed-output ledger record.",

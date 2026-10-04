@@ -177,7 +177,7 @@ export function createHostedDependencyInstallerPlan(startId: string, inputs: Hos
   directory(join(dir, "home"), 0o700, true); directory(join(dir, "cache"), 0o700, true);
   for (const relative of ["usr", "etc", "workspace", "home", "cache", "runtime", "dev", "proc", "tmp"])
     directory(join(root, relative), relative === "tmp" ? 0o1777 : 0o755);
-  directory(join(root, "home/installer")); directory(join(root, "etc/ssl")); directory(join(root, "etc/ssl/certs"));
+  directory(join(root, "home/installer")); directory(join(root, "etc/ssl"), 0o755); directory(join(root, "etc/ssl/certs"), 0o755);
   mkdirSync(join(root, staging.slice(1)), { recursive: true, mode: 0o755 });
   for (const target of [dirname(selected.nodePath), dirname(selected.privilegeDropper.path), selected.npmRootPath, "/usr/lib64", ...selectedLibraries.map(l => dirname(l.path))]) {
     mkdirSync(join(root, target.slice(1)), { recursive: true, mode: 0o755 });
@@ -237,7 +237,7 @@ export function assertHostedDependencyInstallerPlan(plan: HostedDependencyInstal
 }
 export function hostedDependencyInstallerProperties(plan: HostedDependencyInstallerPlan): readonly string[] {
   assertHostedDependencyInstallerPlan(plan);
-  return ["Restart=no", "User=0", "Group=0", "NoNewPrivileges=yes", "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP", "AmbientCapabilities=",
+  return ["Restart=no", "User=0", "Group=0", "NoNewPrivileges=yes", "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP", "AmbientCapabilities=CAP_SETUID",
     "Environment=PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME=/home/installer",
     "UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES OPENSSL_CONF OPENSSL_MODULES NODE_V8_COVERAGE",
     "PrivateDevices=yes", "ProtectSystem=strict", "ProtectHome=yes", "RestrictSUIDSGID=yes", "MountAPIVFS=no",
