@@ -2,7 +2,7 @@
  * consumer certificate: no account, auth seed, provider or production host is used.
  */
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync,
   readSync, realpathSync, writeFileSync } from "node:fs";
@@ -11,11 +11,13 @@ import { dirname } from "node:path";
 import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-readonly-authority.js";
 import { createHostedDependencyInstallerPlan, hostedDependencyInstallerNpmRootSha256,
   hostedDependencyInstallerProperties, hostedDependencyInstallerNetworkRoot, HostedDependencyInstallerNetworkInput,
-  readHostedDependencyInstallerProfile, type HostedDependencyInstallerProfile } from "../../dist/worker-codex/hosted-dependency-installer-recipe.js";
+  HostedDependencyInstallerRevision, hostedDependencyInstallerBootstrapCommand, hostedDependencyInstallerDropperSha256, readHostedDependencyInstallerProfile,
+  type HostedDependencyInstallerProfile } from "../../dist/worker-codex/hosted-dependency-installer-recipe.js";
 import { qualifyHostedDependencyInstallerInputs } from "../../dist/worker-codex/hosted-dependency-installer-inputs.js";
 import { TrustedCustodyLaunchRole, trustedCustodySystemdLaunch } from "../../dist/worker-codex/trusted-custody-systemd-launch.js";
 import { assertInstallerTerminalUnit } from "../../dist/worker-codex/hosted-dependency-installer-unit.js";
 import { hostedDependencyInstallerUid } from "../../dist/worker-codex/hosted-dependency-installer-identity.js";
+import { collectProcessBirth, collectProcessCgroup } from "../../dist/worker-codex/hosted-readonly-linux-collector.js";
 import { observeInstallerCgroupEmpty } from "../../dist/worker-codex/hosted-dependency-installer-cgroup.js";
 import { observeDependencyTree } from "../../dist/worker-local/dependency-environment/observe-dependency-tree.js";
 import { openDependencyTreeRename, DependencyTreeEffectError, DependencyTreeEffectFailure } from "../../dist/worker-local/dependency-environment/dependency-tree-effects.js";
@@ -68,6 +70,47 @@ function failedInstallerDiagnostics(unit: string): unknown {
     userLookupStatus: lookup.status, setupFailures: setup.filter(message => text.includes(message)),
     setupErrnos: ["No such process", "Operation not permitted", "Permission denied"].filter(message => text.includes(message)),
     observationsFailed: Boolean(show.error || journal.error || lookup.error) };
+}
+function actualProbeCredentials(unit: string, planRoot: string, nodePath: string) {
+  const pid = command("/usr/bin/systemctl", ["show", unit, "--property=MainPID", "--value"], 5000).trim();
+  assert.match(pid, /^[1-9][0-9]{0,9}$/);
+  const birth = collectProcessBirth(pid), group = collectProcessCgroup(pid), prefix = "/proc/" + pid;
+  assert.equal(group, "0::/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/" + unit);
+  assert.equal(realpathSync(prefix + "/exe"), nodePath); assert.equal(realpathSync(prefix + "/root"), planRoot);
+  const status = readFileSync(prefix + "/status", "utf8"); assert(status.length <= 8192);
+  for (const kind of ["Uid", "Gid"]) assert(new RegExp(`^${kind}:[ \\t]+65532[ \\t]+65532[ \\t]+65532[ \\t]+65532[ \\t]*$`, "m").test(status));
+  assert(/^Groups:[ \t]*$/m.test(status)); assert(/^NoNewPrivs:[ \t]+1$/m.test(status));
+  for (const kind of ["Inh", "Prm", "Eff", "Bnd", "Amb"]) assert(new RegExp(`^Cap${kind}:[ \\t]+0{16}$`, "m").test(status));
+  assert.notEqual(readlinkSync(prefix + "/ns/mnt"), readlinkSync("/proc/self/ns/mnt"));
+  assert.equal(readlinkSync(prefix + "/ns/user"), readlinkSync("/proc/self/ns/user"));
+  assert.equal(collectProcessBirth(pid), birth); assert.equal(collectProcessCgroup(pid), group);
+  return { pid, birth, uidColumns: [65532, 65532, 65532, 65532], gidColumns: [65532, 65532, 65532, 65532],
+    supplementaryGroups: [], capabilitySets: "all_zero", noNewPrivileges: 1, privateMountNamespace: true, initialUserNamespace: true };
+}
+async function runObservedProbe(args: readonly string[], unit: string, planRoot: string, nodePath: string) {
+  return new Promise<{ output: string; credentials: ReturnType<typeof actualProbeCredentials> }>((resolve, reject) => {
+    const child = spawn("/usr/bin/systemd-run", [...args], { env: cleanEnvironment, cwd: "/", stdio: ["pipe", "pipe", "ignore"] });
+    let output = "", ready = false, credentials: ReturnType<typeof actualProbeCredentials> | undefined;
+    const timer = setTimeout(() => reject(new Error("TEST owned probe observation timeout")), 30000);
+    child.once("error", () => { clearTimeout(timer); reject(new Error("TEST owned probe creator failed")); });
+    child.stdout.on("data", bytes => {
+      try {
+        output += bytes.toString("utf8"); assert(output.length <= 8192);
+        const end = output.indexOf("\n");
+        if (!ready && end !== -1) {
+          assert.deepEqual(JSON.parse(output.slice(0, end)), { schemaVersion: 1, scenario: "typed_installer_root_probe_ready" });
+          // Read the unit's actual PID, never an untrusted marker's claimed PID.
+          credentials = actualProbeCredentials(unit, planRoot, nodePath); ready = true; output = output.slice(end + 1);
+          child.stdin.end("observed\n");
+        }
+      } catch (error) { reject(error); }
+    });
+    child.once("close", (status, signal) => {
+      clearTimeout(timer);
+      if (status !== 0 || signal !== null || !credentials) reject(new Error("TEST owned probe did not complete actual observation"));
+      else resolve({ output, credentials });
+    });
+  });
 }
 function privateDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -127,14 +170,13 @@ function issueActualToolchainProfile(): HostedDependencyInstallerProfile {
     if (parent === "/") break;
   }
   assert(nodePath.startsWith(artifact + "/toolchain/"));
-  const ldd = command("/usr/bin/ldd", [nodePath]);
-  const libraryPaths = [...new Set([...ldd.matchAll(/(?:=>\s+)?(\/[A-Za-z0-9_./+-]+)\s+\(/g)]
-    .map(match => realpathSync(match[1]!)))].sort();
-  assert(libraryPaths.length > 0 && libraryPaths.length <= 32);
-  const toolRoots = libraryPaths.map(path => {
-    assert(path.startsWith("/usr/lib/"));
-    return { path, kind: DependencyToolRootKind.File as const, sha256: hash(readFileSync(path)) };
-  });
+  const toolRoots = actualLibraries(nodePath);
+  const helper = "/usr/bin/setpriv", helperSha256 = hostedDependencyInstallerDropperSha256();
+  assert.equal(realpathSync(helper), helper);
+  assert.equal(command(helper, ["--version"]).trim(), "setpriv from util-linux 2.39.3");
+  const privilegeDropper: HostedDependencyInstallerProfile["privilegeDropper"] = { path: helper, version: "2.39.3",
+    sha256: helperSha256, libraries: actualLibraries(helper) };
+  assert.equal(hostedDependencyInstallerDropperSha256(), helperSha256);
   const libc = toolRoots.find(row => /\/libc\.so\.[0-9]+$/.test(row.path));
   assert(libc, "TEST requires concrete glibc in Node's actual dynamic closure");
   const libcVersion = /^glibc\s+([0-9]+\.[0-9]+)\s*$/.exec(command("/usr/bin/getconf", ["GNU_LIBC_VERSION"]))?.[1];
@@ -143,8 +185,17 @@ function issueActualToolchainProfile(): HostedDependencyInstallerProfile {
     nodePath, nodeSha256: hash(readFileSync(nodePath)), nodeVersion: process.version,
     nodeAbi: process.versions.modules, npmCliPath, npmSha256: hash(readFileSync(npmCliPath)),
     npmVersion: command(nodePath, [npmCliPath, "--version"]).trim(), npmRootPath,
-    npmRootSha256: hostedDependencyInstallerNpmRootSha256(npmRootPath), toolRoots, networkInputs: issueNetworkInputs(),
+    npmRootSha256: hostedDependencyInstallerNpmRootSha256(npmRootPath), toolRoots, networkInputs: issueNetworkInputs(), privilegeDropper,
+    recipeRevision: HostedDependencyInstallerRevision.NumericUidDropV2,
     libc: { family: DependencyLibcFamily.Glibc, version: libcVersion, path: libc.path, sha256: libc.sha256 } };
+}
+function actualLibraries(executable: string): HostedDependencyInstallerProfile["toolRoots"] {
+  const ldd = command("/usr/bin/ldd", [executable]);
+  const paths = [...new Set([...ldd.matchAll(/(?:=>\s+)?(\/[A-Za-z0-9_./+-]+)\s+\(/g)].map(match => {
+    const path = match[1]; assert(path); return realpathSync(path);
+  }))].sort(); assert(paths.length > 0 && paths.length <= 32);
+  return paths.map(path => { assert(path.startsWith("/usr/lib/"));
+    return { path, kind: DependencyToolRootKind.File, sha256: hash(readFileSync(path)) }; });
 }
 function issueNetworkInputs(): HostedDependencyInstallerProfile["networkInputs"] {
   privateDirectory(hostedDependencyInstallerNetworkRoot);
@@ -288,18 +339,20 @@ async function run(): Promise<void> {
     // The only addition to the production recipe is this trusted, typed TEST
     // reader file. It does not broaden a directory or policy-state grant.
     writeFileSync(plan.rootDirectory + "/runtime/test-probe.ts", "", { flag: "wx", mode: 0o644 });
-    const probeOutput = command("/usr/bin/systemd-run", ["--quiet", "--wait", "--pipe", `--unit=${probeUnit}`, "--service-type=exec",
+    const probeCommand = hostedDependencyInstallerBootstrapCommand(plan);
+    const probe = await runObservedProbe(["--quiet", "--wait", "--pipe", `--unit=${probeUnit}`, "--service-type=exec", "--working-directory=/",
       "--property=Slice=subscription-runtime-hosted.slice", "--property=KillMode=control-group",
       ...hostedDependencyInstallerProperties(plan).map(p => "--property=" + p),
       `--property=BindReadOnlyPaths=${artifact}/scripts/dependency-retention-test/probe.ts:/runtime/test-probe.ts:norbind`,
-      "--", plan.profile.nodePath, "--experimental-strip-types", "/runtime/test-probe.ts",
-      plan.stagingDirectory, JSON.stringify(sentinels)]);
-    const probeEvidence: unknown = JSON.parse(probeOutput.trim());
+      "--", ...probeCommand.slice(0, -2), plan.profile.nodePath, "--experimental-strip-types", "/runtime/test-probe.ts",
+      plan.stagingDirectory, JSON.stringify(sentinels)], probeUnit, plan.rootDirectory, plan.profile.nodePath);
+    const probeEvidence: unknown = JSON.parse(probe.output.trim());
     assert.deepEqual(probeEvidence, { schemaVersion: 1, scenario: "typed_installer_root_probe",
       observedIds: { uid: 65532, euid: 65532, gid: 65532, egid: 65532 }, dependencyRead: "passed", sentinelDenial: "passed" });
     assertInstallerTerminalUnit(probeUnit);
     observeInstallerCgroupEmpty("/sys/fs/cgroup/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/" + probeUnit);
-    results.push({ scenario: "installer_root_dependency_read_and_sentinel_denial", result: "passed", unit: probeUnit, probeEvidence });
+    results.push({ scenario: "installer_root_dependency_read_and_sentinel_denial", result: "passed", unit: probeUnit, probeEvidence,
+      actualCredentials: probe.credentials });
     for (const relative of ["mount-workspace/node_modules/mounted", "mount-external", "mount-trash"]) privateDirectory(root + "/" + relative);
     writeFileSync(root + "/mount-workspace/node_modules/original", "original TEST tree\n", { flag: "wx", mode: 0o600 });
     writeFileSync(root + "/mount-external/sentinel", "external TEST original\n", { flag: "wx", mode: 0o600 });

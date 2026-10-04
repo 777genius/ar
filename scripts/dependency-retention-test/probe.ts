@@ -8,6 +8,13 @@ import { createRequire } from "node:module";
 const observedIds = { uid: process.getuid?.(), euid: process.geteuid?.(),
   gid: process.getgid?.(), egid: process.getegid?.() };
 assert.deepEqual(observedIds, { uid: 65532, euid: 65532, gid: 65532, egid: 65532 });
+assert.deepEqual(process.getgroups?.(), [65532]); // Node includes effective GID.
+process.stdout.write(JSON.stringify({ schemaVersion: 1, scenario: "typed_installer_root_probe_ready" }) + "\n");
+await new Promise<void>((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error("TEST host credential observation missing")), 15000);
+  process.stdin.once("data", bytes => { clearTimeout(timer); bytes.equals(Buffer.from("observed\n")) ? resolve() : reject(new Error("TEST invalid release")); });
+  process.stdin.resume();
+});
 const staging = process.argv[2];
 assert(staging && /^\/var\/lib\/subscription-runtime-host-policy\/dependency-installers\/[a-f0-9-]{36}\/staging$/.test(staging));
 const sentinels: unknown = JSON.parse(process.argv[3] ?? "null");
