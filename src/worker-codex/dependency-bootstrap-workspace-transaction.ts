@@ -67,6 +67,7 @@ type DirectoryIdentity = { readonly dev: string; readonly ino: string };
 export enum DependencyBootstrapRecoveryReason {
   AncestorChanged = "ancestor_changed",
   LeafChanged = "leaf_changed",
+  ScopedIndexChanged = "scoped_shared_index_changed",
   InspectionFailed = "post_action_inspection_failed",
   ActionFailed = "action_failed",
   MutationDetected = "workspace_mutation_detected",
@@ -120,6 +121,12 @@ export async function withDependencyBootstrapWorkspaceTransaction<T>(input: {
       actionFailed = true;
     }
     const current = await captureAfterAction(workspace, baseline, actionError);
+    // A nested workspace does not own the repository-wide index. Refuse every
+    // recovery write if it drifted, including when scoped source also changed.
+    if (workspace.workspacePath !== workspace.rootPath &&
+      (baseline.indexDigest !== current.indexDigest || baseline.indexMode !== current.indexMode)) {
+      throw recoveryError(baseline, DependencyBootstrapRecoveryReason.ScopedIndexChanged, actionError);
+    }
     const mutations = workspaceMutations(baseline, current);
     if (mutations.length > 0) {
       await rollbackWorkspace(workspace, baseline, current, actionError);

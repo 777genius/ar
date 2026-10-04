@@ -105,6 +105,44 @@ describe("legacy dependency workspace recovery", () => {
     } finally { await sample.cleanup(); }
   });
 
+  // Red regression: restoring the full shared index erases another package's
+  // staging even though both status and tracked entries are scoped to package a.
+  it.each([false, true])("holds nested recovery without source/index writes on outside staging (source changed=%s)", async (changeSource) => {
+    const sample = await fixture();
+    const packageA = join(sample.workspace, "packages", "a");
+    const packageB = join(sample.workspace, "packages", "b");
+    const sourceA = join(packageA, "file.txt");
+    const sourceB = join(packageB, "file.txt");
+    try {
+      await mkdir(packageA, { recursive: true });
+      await mkdir(packageB, { recursive: true });
+      await writeFile(sourceA, "package a staged baseline");
+      await writeFile(sourceB, "package b staged baseline");
+      await git(sample.workspace, ["add", "packages"]);
+      const baselineIndex = await readFile(join(sample.workspace, ".git", "index"));
+      const originalA = Buffer.from("package a independent dirty original");
+      await writeFile(sourceA, originalA);
+      let indexAfterAction: Buffer | undefined;
+      const error = await capturedRecovery(() => transaction({ workspacePath: packageA, action: async () => {
+        if (changeSource) await writeFile(sourceA, "package a changed during action");
+        await writeFile(sourceB, "package b independently staged during action");
+        await git(sample.workspace, ["add", "packages/b/file.txt"]);
+        indexAfterAction = await readFile(join(sample.workspace, ".git", "index"));
+      } }));
+      expect(error.reason).toBe(Reason.ScopedIndexChanged);
+      expect(await readFile(sourceA)).toEqual(changeSource ? Buffer.from("package a changed during action") : originalA);
+      expect(await readFile(join(sample.workspace, ".git", "index"))).toEqual(indexAfterAction);
+      expect((await git(sample.workspace, ["show", ":packages/b/file.txt"])).stdout).toBe("package b independently staged during action");
+      expect((await git(sample.workspace, ["show", ":packages/a/file.txt"])).stdout).toBe("package a staged baseline");
+      const manifest = JSON.parse(await readFile(error.recovery.manifestPath, "utf8")) as Manifest;
+      expect(manifest.workspace.canonicalPath).toBe(packageA);
+      const originalEntry = manifest.entries.find((entry) => entry.path === "packages/a/file.txt");
+      expect(originalEntry?.digest).toBe(createHash("sha256").update(originalA).digest("hex"));
+      expect(await readFile(join(dirname(error.recovery.manifestPath), originalEntry!.backupPath!))).toEqual(originalA);
+      expect(await readFile(join(dirname(error.recovery.manifestPath), manifest.index.backupPath))).toEqual(baselineIndex);
+    } finally { await sample.cleanup(); }
+  });
+
   // Red regression: unconditional finally deletes originals despite action failure.
   it("retains originals after an unchanged action fails without exposing its output", async () => {
     const sample = await fixture();
