@@ -79,7 +79,8 @@ export function registerDependencyConsumerAdmissionTests(input: {
         if (physical === path) return fixtureRealpath(path, options);
         if (real.realpathSync(physical) !== physical) throw new Error("noncanonical TEST fixture path");
         const encoding = typeof options === "string" ? options : options?.encoding;
-        return encoding === "buffer" ? Buffer.from(path) : path;
+        const usesBufferEncoding = (value: unknown): boolean => value === "buffer";
+        return usesBufferEncoding(encoding) ? Buffer.from(path) : path;
       });
       // The Git guard reads an already validated descriptor, not a path. Keep
       // real descriptor I/O while the outer fixture supplies finite /proc facts.
