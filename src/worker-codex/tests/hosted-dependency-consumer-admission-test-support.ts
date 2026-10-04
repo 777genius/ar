@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import { claimDependencyConsumer, fenceDependencyConsumer, markDependencyConsumerRunning,
   DependencyInstallProofKind, DependencyPreservationKind, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
 import { LocalDependencyOwnerStore } from "../../store-local-file/dependency-environment/local-dependency-owner-store";
@@ -17,7 +17,7 @@ import { dependencyCoverageRevision, readHostedDependencyReceipt } from "../host
 /** Uses the ordinary suite's real private FS and retained origin composition.
  * Synthetic kernel facts do not certify the production mount/capability fence. */
 export function registerDependencyConsumerAdmissionTests(input: {
-  fixture: { root: string; runtimeUnit: string; group: string; spawn: ReturnType<typeof vi.fn> };
+  fixture: { root: string; runtimeUnit: string; group: string; spawn: Mock<(...args: unknown[]) => unknown> };
   stageName: string; runtimeDirectory: string; local: (path: string) => string;
   put: (name: string, value: unknown) => void; read: (name: string) => any;
 }): void {

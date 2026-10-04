@@ -5,7 +5,8 @@ import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, Depend
   DependencyNpmLockName, DependencyPreservationKind, DependencyReceiptParseStatus, DependencyReceiptState,
   DependencyTreeObservationStatus, parseDependencyReceipt, sameDependencyTree, sameDependencyWorkspace,
   type DependencyAttempt, type DependencyReceipt } from "@vioxen/subscription-runtime/worker-core";
-import { withHostedActivationFence, readHostedOrdinaryProcessOrigin } from "@vioxen/subscription-runtime/provider-codex";
+import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { readHostedOrdinaryProcessOrigin } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { DependencyOwnerPhase } from "@vioxen/subscription-runtime/worker-core";
 import { LocalDependencyManifestBlobStore } from "../store-local-file/dependency-environment/local-dependency-manifest-blob-store";
 import { buildTestNpmDependencyInstallKey } from "../worker-local/dependency-environment/build-test-npm-dependency-install-key";

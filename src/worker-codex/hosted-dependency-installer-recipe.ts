@@ -17,7 +17,7 @@ export type HostedDependencyInstallerProfile = DependencyTestNpmToolchain & { re
 const plans = new WeakMap<object, string>();
 export type HostedDependencyInstallerPlan = Readonly<{ startId: string; directory: string; rootDirectory: string;
   stagingDirectory: string; inputSha256: string; profile: HostedDependencyInstallerProfile }>;
-const fail = (): never => { throw new Error("dependency_installer_recipe_unsupported"); };
+function fail(): never { throw new Error("dependency_installer_recipe_unsupported"); }
 export function installerPath(value: string): string {
   if (!/^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(value) ||
       value.split("/").some(p => p === "." || p === "..")) fail();

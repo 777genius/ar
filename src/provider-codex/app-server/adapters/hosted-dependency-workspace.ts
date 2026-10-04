@@ -133,8 +133,7 @@ export function assertHostedDependencyQualifiedInventory(): void {
 }
 
 export function readHostedDependencyAttempt(binding: HostedDependencyBinding,
-  start: { readonly installationId: unknown; readonly bootId: unknown; readonly grantSha256: unknown;
-    readonly unit: unknown }, startId: string, phase = DependencyOwnerPhase.Running): DependencyAttempt {
+  start: Readonly<Record<string, unknown>>, startId: string, phase = DependencyOwnerPhase.Running): DependencyAttempt {
   assertHostedDependencyQualifiedInventory();
   assertHostedDependencyPhysicalWorkspace(binding);
   assertHostedDependencyStartAllowed(startId);

@@ -34,15 +34,15 @@ export type HostedDependencyInstallerCompletion = {
 };
 const encode = (v: unknown): Buffer => Buffer.from(JSON.stringify(v) + "\n");
 const digest = (v: Buffer): string => createHash("sha256").update(v).digest("hex");
-const fail = (): never => { throw new Error("dependency_installer_unresolved"); };
+function fail(): never { throw new Error("dependency_installer_unresolved"); }
 function assertOwner(fence: HostedActivationFence, request: HostedDependencyInstallerRequest): void {
   assertReadonlyHostOperator();
-  const origin = readHostedOrdinaryRuntime(fence), { start, installation } = origin, a = request.attempt.launch;
+  const origin = readHostedOrdinaryRuntime(fence), { start, installation, reservation } = origin, a = request.attempt.launch;
   const binding = readHostedDependencyBinding(start.jobId);
   if (!binding || binding.workspace.canonicalPath !== request.workspace.canonicalPath || binding.workspace.dev !== request.workspace.dev ||
       binding.workspace.ino !== request.workspace.ino ||
       request.workspace.canonicalPath !== start.workspacePath || a.installationId !== installation.installationId ||
-      a.runtimeSha !== installation.runtimeSha || a.startId !== start.startId || a.unit !== start.unit || a.bootId !== start.bootId ||
+      a.runtimeSha !== installation.runtimeSha || a.startId !== reservation.startId || a.unit !== start.unit || a.bootId !== start.bootId ||
       a.grantDigest !== start.grantSha256) fail();
   const bytes = readHostedPrivateBytes(join(hostedTestEgressGrantRoot, readonlyIdentityName(start.jobId)), 4096);
   if (!bytes || digest(bytes) !== a.grantDigest) fail();
@@ -52,7 +52,7 @@ function assertOwner(fence: HostedActivationFence, request: HostedDependencyInst
   const identity = lstatSync(request.workspace.canonicalPath, { bigint: true });
   if (!identity.isDirectory() || identity.isSymbolicLink() || String(identity.dev) !== request.workspace.dev ||
       String(identity.ino) !== request.workspace.ino) fail();
-  const admitted = readHostedDependencyAttempt(binding, start, start.startId, DependencyOwnerPhase.ExclusiveMutation);
+  const admitted = readHostedDependencyAttempt(binding, start, reservation.startId, DependencyOwnerPhase.ExclusiveMutation);
   if (!sameDependencyAttempt(admitted, request.attempt)) fail();
 }
 

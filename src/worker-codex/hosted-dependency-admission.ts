@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { claimDependencyConsumer, markDependencyConsumerRunning, DependencyAdmissionError,
   DependencyAdmissionFailure as Failure, DependencyOwnerPhase, DependencyTreeObservationStatus, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
-import { withHostedActivationFence, readHostedOrdinaryProcessOrigin, CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
+import { withHostedActivationFence, CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
+import { readHostedOrdinaryProcessOrigin } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { observeDependencyTree } from "../worker-local/dependency-environment/observe-dependency-tree";
 import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysicalWorkspace, hostedDependencyOwnerRoot, isHostedDependencyWorkspace,
