@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { findRawLaunches } from './check-managed-launch-boundary.mjs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { findRawLaunches, checkManagedLaunchBoundary } from './check-managed-launch-boundary.mjs';
 
 for (const source of [
   'spawn("/usr/bin/systemd-run", args)',
@@ -23,4 +26,19 @@ for (const source of [
 ]) assert.deepEqual(findRawLaunches(source), [], `Unexpected violation: ${source}`);
 
 assert.deepEqual(findRawLaunches('# systemd-run comment\nsudo /usr/bin/systemd-run --wait true', 'launch.sh'), [2]);
+// A directory-wide exemption would let an unrelated provider bypass the boundary.
+const root = await mkdtemp(join(tmpdir(), 'TEST-managed-launch-boundary-'));
+try {
+  for (const directory of ['src/provider-codex/app-server/adapters', 'packages', 'scripts', 'host-integration']) {
+    await mkdir(join(root, directory), { recursive: true });
+  }
+  const adapters = join(root, 'src/provider-codex/app-server/adapters');
+  await writeFile(join(adapters, 'hosted-dependency-provider-launch.ts'), 'const command = "/usr/bin/systemd-run";\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, []);
+  await writeFile(join(adapters, 'unapproved-provider-launch.ts'), 'const command = "/usr/bin/systemd-run";\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
+    ['src/provider-codex/app-server/adapters/unapproved-provider-launch.ts:1']);
+} finally {
+  await rm(root, { recursive: true, force: true });
+}
 console.log('Managed-launch boundary self-tests OK.');
