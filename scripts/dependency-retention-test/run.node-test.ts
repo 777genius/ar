@@ -200,16 +200,35 @@ function actualProbeCredentials(unit: string, planRoot: string, nodePath: string
   assert.match(pid, /^[1-9][0-9]{0,9}$/);
   const birth = collectProcessBirth(pid), group = collectProcessCgroup(pid), prefix = "/proc/" + pid;
   assert.equal(group, "0::/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/" + unit);
-  assert.equal(realpathSync(prefix + "/exe"), nodePath); assert.equal(realpathSync(prefix + "/root"), planRoot);
-  const status = readFileSync(prefix + "/status", "utf8"); assert(status.length <= 8192);
-  for (const kind of ["Uid", "Gid"]) assert(new RegExp(`^${kind}:[ \\t]+65532[ \\t]+65532[ \\t]+65532[ \\t]+65532[ \\t]*$`, "m").test(status));
-  assert(/^Groups:[ \t]*$/m.test(status)); assert(/^NoNewPrivs:[ \t]+1$/m.test(status));
-  for (const kind of ["Inh", "Prm", "Eff", "Bnd", "Amb"]) assert(new RegExp(`^Cap${kind}:[ \\t]+0{16}$`, "m").test(status));
-  assert.notEqual(readlinkSync(prefix + "/ns/mnt"), readlinkSync("/proc/self/ns/mnt"));
-  assert.equal(readlinkSync(prefix + "/ns/user"), readlinkSync("/proc/self/ns/user"));
-  assert.equal(collectProcessBirth(pid), birth); assert.equal(collectProcessCgroup(pid), group);
-  return { pid, birth, uidColumns: [65532, 65532, 65532, 65532], gidColumns: [65532, 65532, 65532, 65532],
-    supplementaryGroups: [], capabilitySets: "all_zero", noNewPrivileges: 1, privateMountNamespace: true, initialUserNamespace: true };
+  assert.equal(realpathSync(prefix + "/exe"), nodePath);
+  const expectedRootFd = openSync(planRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  let actualRootFd: number | undefined;
+  try {
+    // Proc root is a kernel magic link; its readlink text may be '/' in the
+    // target mount namespace. Follow the exact birth-bound PID link to its object.
+    actualRootFd = openSync(prefix + "/root", constants.O_RDONLY | constants.O_DIRECTORY);
+    const expectedRoot = fstatSync(expectedRootFd, { bigint: true }), actualRoot = fstatSync(actualRootFd, { bigint: true });
+    assert(expectedRoot.isDirectory() && actualRoot.isDirectory());
+    assert.equal(actualRoot.dev, expectedRoot.dev); assert.equal(actualRoot.ino, expectedRoot.ino);
+    const status = readFileSync(prefix + "/status", "utf8"); assert(status.length <= 8192);
+    for (const kind of ["Uid", "Gid"]) assert(new RegExp(`^${kind}:[ \\t]+65532[ \\t]+65532[ \\t]+65532[ \\t]+65532[ \\t]*$`, "m").test(status));
+    assert(/^Groups:[ \t]*$/m.test(status)); assert(/^NoNewPrivs:[ \t]+1$/m.test(status));
+    for (const kind of ["Inh", "Prm", "Eff", "Bnd", "Amb"]) assert(new RegExp(`^Cap${kind}:[ \\t]+0{16}$`, "m").test(status));
+    assert.notEqual(readlinkSync(prefix + "/ns/mnt"), readlinkSync("/proc/self/ns/mnt"));
+    assert.equal(readlinkSync(prefix + "/ns/user"), readlinkSync("/proc/self/ns/user"));
+    const freshRootFd = openSync(prefix + "/root", constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+      const freshRoot = fstatSync(freshRootFd, { bigint: true }), freshExpected = lstatSync(planRoot, { bigint: true });
+      assert(freshExpected.isDirectory() && !freshExpected.isSymbolicLink());
+      for (const stat of [freshRoot, freshExpected]) {
+        assert.equal(stat.dev, expectedRoot.dev); assert.equal(stat.ino, expectedRoot.ino);
+      }
+    } finally { closeSync(freshRootFd); }
+    assert.equal(collectProcessBirth(pid), birth); assert.equal(collectProcessCgroup(pid), group);
+    return { pid, birth, uidColumns: [65532, 65532, 65532, 65532], gidColumns: [65532, 65532, 65532, 65532],
+      rootIdentity: { dev: String(actualRoot.dev), ino: String(actualRoot.ino) },
+      supplementaryGroups: [], capabilitySets: "all_zero", noNewPrivileges: 1, privateMountNamespace: true, initialUserNamespace: true };
+  } finally { if (actualRootFd !== undefined) closeSync(actualRootFd); closeSync(expectedRootFd); }
 }
 async function runObservedProbe(args: readonly string[], unit: string, planRoot: string, nodePath: string) {
   return new Promise<{ output: string; credentials: ReturnType<typeof actualProbeCredentials> }>((resolve, reject) => {
