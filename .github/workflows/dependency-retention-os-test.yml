@@ -14,6 +14,8 @@ on:
       - 'src/worker-codex/trusted-custody-systemd-launch.ts'
       - 'src/worker-codex/codex-goal-*.ts'
       - 'src/provider-codex/app-server/adapters/hosted-*.ts'
+      - 'src/provider-codex/app-server/adapters/system-bus-infrastructure.ts'
+      - 'src/core/host-infrastructure/**'
 
 permissions:
   contents: read

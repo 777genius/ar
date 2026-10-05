@@ -4,9 +4,21 @@ import assert from "node:assert/strict";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
   readdirSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { command, directory, elfPackages, fileDigest, json, runtime } from "./common.ts";
+import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
+  SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/core/host-infrastructure/system-bus-infrastructure.js";
+import { command as runCommand, directory, elfPackages, fileDigest, json, OwnedOsScenario, readonlyStorage, runtime } from "./common.ts";
 
-export function assemble(root: string, state: string, source: string, toolchain: string, sourceSha: string, machineId: string): void {
+export function assemble(root: string, state: string, source: string, toolchain: string, sourceSha: string, machineId: string,
+  scenario: OwnedOsScenario, remainingMs: () => number): void {
+  // The caller owns one monotonic deadline across both fresh roots. Every
+  // existing subprocess keeps its argv and is capped by the remaining budget.
+  const checkBudget = (): number => {
+    const remaining = remainingMs(); assert(Number.isSafeInteger(remaining) && remaining > 0); return remaining;
+  };
+  const command = (file: string, args: readonly string[], timeout = 30000): string => {
+    const output = runCommand(file, args, Math.min(timeout, checkBudget())); checkBudget(); return output;
+  };
+  checkBudget();
   assert(root.startsWith("/var/lib/subscription-runtime-os-TEST/"));
   assert(!existsSync(root)); directory(root, 0o755); directory(state);
   for (const name of ["lists/partial", "archives/partial", "etc"]) directory(join(state, name));
@@ -43,7 +55,7 @@ export function assemble(root: string, state: string, source: string, toolchain:
   assert.equal(fileDigest(pinnedNode), pinnedSha);
   // --download-only never configures the extracted guest or starts runner services.
   command("/usr/bin/apt-get", [...options, "--yes", "--download-only", "--no-install-recommends", "install",
-    "systemd", "systemd-container", "util-linux", "bash", "coreutils", "libc-bin", "git", "ca-certificates", "tini", "python3-minimal",
+    "systemd", "systemd-container", "dbus-daemon", "dbus-bin", "iproute2=6.1.0-1ubuntu6.4", "util-linux", "bash", "coreutils", "libc-bin", "git", "ca-certificates", "tini", "python3-minimal",
     ...requiredPackages], 300000);
   for (const name of ["usr/bin", "usr/sbin", "usr/lib", "usr/lib64"]) directory(root + "/" + name, 0o755);
   for (const name of ["bin", "sbin", "lib", "lib64"]) symlinkSync("usr/" + name, root + "/" + name);
@@ -51,6 +63,7 @@ export function assemble(root: string, state: string, source: string, toolchain:
   const debs = readdirSync(state + "/archives").filter(name => name.endsWith(".deb")).sort();
   assert(debs.length > 10 && debs.length < 200);
   for (const name of debs) {
+    checkBudget();
     const path = state + "/archives/" + name;
     const fields = command("/usr/bin/dpkg-deb", ["--field", path, "Package", "Version", "Architecture"]);
     const pkg = /^Package: (\S+)$/m.exec(fields)?.[1], version = /^Version: (\S+)$/m.exec(fields)?.[1];
@@ -63,10 +76,53 @@ export function assemble(root: string, state: string, source: string, toolchain:
     command("/usr/bin/dpkg-deb", ["--extract", path, root], 30000);
     packages.push({ package: pkg, version, arch, sha256: sha, size });
   }
+  // Independent bytes from authenticated package extraction only, before any
+  // runtime/config copy. No library directory from the runner is included.
+  const signedElfPins: { path: string; sha256: string }[] = []; let visited = 0, elfBytes = 0;
+  const elfDeadline = process.hrtime.bigint() + 30000000000n;
+  const captureElf = (path: string): void => {
+    checkBudget();
+    assert(++visited <= 20000 && process.hrtime.bigint() < elfDeadline);
+    const stat = lstatSync(path); assert(stat.uid === 0 && (stat.isSymbolicLink() || (stat.mode & 0o022) === 0));
+    if (stat.isDirectory()) { for (const name of readdirSync(path).sort()) captureElf(path + "/" + name); return; }
+    if (stat.isSymbolicLink() || !stat.isFile()) return;
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const header = Buffer.alloc(20); let count: number;
+    try { count = readSync(fd, header, 0, header.length, 0); } finally { closeSync(fd); }
+    if (count !== 20 || header[0] !== 0x7f || header.subarray(1, 4).toString() !== "ELF") return;
+    assert(stat.nlink === 1 && stat.size <= 32 * 1024 * 1024 && (elfBytes += stat.size) <= 512 * 1024 * 1024);
+    assert(header[4] === 2 && header[5] === 1 && header.readUInt16LE(18) === 62);
+    signedElfPins.push({ path: path.slice(root.length), sha256: fileDigest(path) });
+  };
+  captureElf(root + "/usr/lib");
+  for (const path of [SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", "/usr/bin/systemd-run", "/usr/bin/tini", "/usr/bin/unshare"])
+    captureElf(root + path);
+  assert(signedElfPins.some(pin => pin.path === SYSTEM_BUS_EXECUTABLE));
   directory(root + runtime, 0o755);
-  for (const name of ["dist", "packages", "node_modules", "scripts", "package.json"])
+  assert(Buffer.byteLength(JSON.stringify(signedElfPins)) <= 128 * 1024);
+  json(root + runtime + "/os-signed-elf-pins.json", { schemaVersion: 1, pins: signedElfPins });
+  for (const name of ["dist", "packages", "node_modules", "scripts", "package.json"]) {
+    checkBudget();
     cpSync(source + "/" + name, root + runtime + "/" + name, { recursive: true, dereference: false, verbatimSymlinks: true });
+    checkBudget();
+  }
+  checkBudget();
   cpSync(toolchain, root + runtime + "/toolchain", { recursive: true, dereference: false, verbatimSymlinks: true });
+  checkBudget();
+  if (scenario === OwnedOsScenario.Readonly) {
+    // Real reviewed launcher artifacts and their finite static import closure.
+    // These bytes are never replaced by a TEST launcher or generated alias.
+    for (const path of ["managed-launcher/launch.mjs", "managed-launcher/payload-guard.mjs",
+      "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs"]) {
+      directory(root + "/opt/subscription-runtime/" + dirname(path), 0o755);
+      cpSync(source + "/host-integration/" + path, root + "/opt/subscription-runtime/" + path, { dereference: false });
+      command("/usr/bin/chown", ["0:0", root + "/opt/subscription-runtime/" + path]);
+      chmodSync(root + "/opt/subscription-runtime/" + path, 0o644);
+    }
+    directory(root + readonlyStorage, 0o700);
+    directory(root + "/etc/subscription-runtime", 0o755);
+    writeFileSync(root + "/etc/subscription-runtime/storage-root", readonlyStorage + "\n", { flag: "wx", mode: 0o600 });
+  }
   // These are freshly extracted guest files only. Discard distro activation links
   // and use an explicit TEST-only unit search path, never mask an outer service.
   directory(root + "/etc/systemd/test-units", 0o755);
@@ -87,8 +143,12 @@ export function assemble(root: string, state: string, source: string, toolchain:
   directory(root + "/etc/ssl/certs", 0o755);
   snapshotPublicFile("/etc/ssl/certs/ca-certificates.crt", root + "/etc/ssl/certs/ca-certificates.crt", 1024 * 1024);
   const units = root + "/etc/systemd/test-units";
-  writeFileSync(units + "/TEST-retention.target", "[Unit]\nDescription=Owned dependency TEST OS\nDefaultDependencies=no\nRequires=TEST-retention-supervisor.service\nAfter=TEST-retention-supervisor.service\n", { mode: 0o644 });
-  writeFileSync(units + "/TEST-retention-supervisor.service", `[Unit]\nDescription=Owned TEST issuer and retained supervisor\nDefaultDependencies=no\n[Service]\nType=exec\nExecStart=${runtime}/toolchain/bin/node --experimental-strip-types ${runtime}/scripts/dependency-retention-os-test/common.ts supervisor\nEnvironment=TEST_SOURCE_SHA=${sourceSha}\nEnvironment=PATH=${runtime}/toolchain/bin:/usr/bin:/bin LANG=C LC_ALL=C\nRestart=no\nKillMode=control-group\nRuntimeMaxSec=25min\nTimeoutStopSec=20s\nStandardOutput=null\nStandardError=null\n`, { mode: 0o644 });
+  directory(root + dirname(SYSTEM_BUS_CONFIG_PATH), 0o755);
+  writeFileSync(root + SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_CONFIG, { flag: "wx", mode: 0o600 });
+  writeFileSync(units + "/dbus.service", SYSTEM_BUS_SERVICE_FRAGMENT, { flag: "wx", mode: 0o644 });
+  writeFileSync(units + "/dbus.socket", SYSTEM_BUS_SOCKET_FRAGMENT, { flag: "wx", mode: 0o644 });
+  writeFileSync(units + "/TEST-retention.target", "[Unit]\nDescription=Owned dependency TEST OS\nDefaultDependencies=no\nRequires=dbus.service TEST-retention-supervisor.service\nAfter=dbus.service TEST-retention-supervisor.service\n", { mode: 0o644 });
+  writeFileSync(units + "/TEST-retention-supervisor.service", `[Unit]\nDescription=Owned TEST issuer and retained supervisor\nDefaultDependencies=no\nRequires=dbus.service\nAfter=dbus.service\n[Service]\nType=exec\nExecStart=${runtime}/toolchain/bin/node --experimental-strip-types ${runtime}/scripts/dependency-retention-os-test/common.ts supervisor\nEnvironment=TEST_SOURCE_SHA=${sourceSha}\nEnvironment=TEST_OS_SCENARIO=${scenario}\nEnvironment=PATH=${runtime}/toolchain/bin:/usr/bin:/bin LANG=C LC_ALL=C\nRestart=no\nKillMode=control-group\nRuntimeMaxSec=25min\nTimeoutStopSec=20s\nStandardOutput=null\nStandardError=null\n`, { mode: 0o644 });
   // Recursively copied CI checkout files become root-owned immutable artifacts.
   command("/usr/bin/chown", ["-R", "0:0", root + runtime]);
   command("/usr/bin/chmod", ["-R", "go-w", root + runtime]);
@@ -98,6 +158,7 @@ export function assemble(root: string, state: string, source: string, toolchain:
       sha256: fileDigest(row.resolved), package: elfPackages[row.soname as keyof typeof elfPackages] })), requiredPackages } });
   assert(existsSync(root + "/usr/bin/systemd-nspawn"));
   assert(existsSync(root + "/usr/lib/systemd/systemd"));
+  checkBudget();
 }
 
 function snapshotPublicFile(alias: string, target: string, maxBytes: number): void {
