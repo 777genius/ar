@@ -110,7 +110,7 @@ export function parseSystemBusInfrastructure(value: unknown): SystemBusInfrastru
 /** Inventory revision 3 requires exactly this role; old revisions cannot carry
  * an ignored field. Callers retain their own independent full inventory parser. */
 export function readSystemBusInfrastructureField(inventory: Readonly<Record<string, unknown>>): SystemBusInfrastructure | undefined {
-  if (inventory.schemaVersion === 3) return parseSystemBusInfrastructure(inventory.systemBusInfrastructure);
+  if (inventory.schemaVersion === 3 || inventory.schemaVersion === 4) return parseSystemBusInfrastructure(inventory.systemBusInfrastructure);
   if ((inventory.schemaVersion !== 1 && inventory.schemaVersion !== 2) || "systemBusInfrastructure" in inventory) failure();
   return undefined;
 }

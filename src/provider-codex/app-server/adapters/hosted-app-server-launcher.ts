@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { assertHostedProcessDescriptors } from "./hosted-process-descriptors";
+import { assertHostedProcessDescriptors, assertHostedFdPreludeDescriptors } from "./hosted-process-descriptors";
+import { announceHostedFdPrelude } from "./hosted-fd-prelude";
 import {
   decodeHostedAppServerLaunchFrame,
   type HostedAppServerLaunchFrame,
@@ -10,6 +11,8 @@ let buffered = Buffer.alloc(0);
 let launched = false;
 // Closed installed-launcher mode; ordinary/MiMo launches pass no argument.
 const researchReady = process.argv.length === 3 && process.argv[2] === "--research-ready-v1";
+const fdReady = process.argv.length === 3 && process.argv[2] === "--fd-ready-v1";
+let stopFdPrelude: (() => void) | undefined;
 let bootstrapDeadline: ReturnType<typeof setTimeout> | undefined;
 
 function fail(message: string): never {
@@ -26,6 +29,7 @@ function onInput(chunk: Buffer): void {
   const separator = buffered.indexOf(0x0a);
   if (separator < 0) return;
   launched = true;
+  stopFdPrelude?.();
   if (bootstrapDeadline) clearTimeout(bootstrapDeadline);
   process.stdin.off("data", onInput);
 
@@ -40,7 +44,7 @@ function onInput(chunk: Buffer): void {
   const pendingInput = buffered.subarray(separator + 1);
   buffered = Buffer.alloc(0);
 
-  try { assertHostedProcessDescriptors(); }
+  try { if (fdReady) assertHostedFdPreludeDescriptors(); else assertHostedProcessDescriptors(); }
   catch { fail("hosted_app_server_descriptor_boundary_invalid"); }
 
   const child = spawn(frame.command, frame.args, {
@@ -65,7 +69,7 @@ function onInput(chunk: Buffer): void {
   process.stdin.pipe(child.stdin);
 }
 
-if (process.argv.length !== 2 && !researchReady) fail("hosted_app_server_launch_mode_invalid");
+if (process.argv.length !== 2 && !researchReady && !fdReady) fail("hosted_app_server_launch_mode_invalid");
 if (researchReady) {
   // Runs only after the fixed unshare/setpriv/Tini chain has entered confinement.
   // Native provider/user code does not exist yet and cannot emit this frame.
@@ -80,3 +84,8 @@ process.stdin.on("data", onInput);
 process.stdin.on("end", () => {
   if (!launched) fail("hosted_app_server_launch_frame_missing");
 });
+if (fdReady) {
+  try { assertHostedFdPreludeDescriptors(); }
+  catch { fail("hosted_app_server_descriptor_boundary_invalid"); }
+  stopFdPrelude = announceHostedFdPrelude();
+}

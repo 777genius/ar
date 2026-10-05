@@ -1,6 +1,7 @@
 #!/usr/bin/node
 import { spawn } from 'node:child_process';
-import { constants } from 'node:fs';
+import { constants, lstatSync, openSync, fstatSync, readFileSync, closeSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { prepareManagedJobLayout } from '../host-jobs/storage-policy.mjs';
@@ -9,6 +10,33 @@ import { requireTrustedExecutable, profileProperties } from './profiles.mjs';
 
 export const MANAGED_LAUNCHER_PATH = '/opt/subscription-runtime/managed-launcher/launch.mjs';
 const denied = () => { throw new Error('managed launcher: unsupported invocation'); };
+const fdUnsetEnvironment = 'NODE_OPTIONS NODE_PATH NODE_V8_COVERAGE NODE_EXTRA_CA_CERTS NODE_REDIRECT_WARNINGS OPENSSL_CONF OPENSSL_MODULES LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES';
+function governedFdProfile() {
+  const root = '/var/lib/subscription-runtime-host-policy';
+  try { lstatSync(root + '/readonly-inventory.json'); }
+  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  for (const path of ['/', '/var', '/var/lib', root]) {
+    const stat = lstatSync(path);
+    if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o022)) denied();
+  }
+  const read = name => {
+    const path = root + '/' + name, fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const before = fstatSync(fd);
+      if (!before.isFile() || before.uid !== 0 || before.nlink !== 1 || (before.mode & 0o077) || before.size > 65536) denied();
+      const bytes = readFileSync(fd), after = fstatSync(fd), current = lstatSync(path);
+      if (before.dev !== current.dev || before.ino !== current.ino || before.ctimeMs !== after.ctimeMs ||
+          before.mtimeMs !== after.mtimeMs || before.size !== bytes.length) denied();
+      return bytes;
+    } finally { closeSync(fd); }
+  };
+  const bytes = read('readonly-inventory.json'), inventory = JSON.parse(bytes.toString('utf8'));
+  if ([1, 2, 3].includes(inventory.schemaVersion)) return false;
+  if (inventory.schemaVersion !== 4 || inventory.collectorProfile?.path !== root + '/fd-collector-profile.v1.json' ||
+      !/^[a-f0-9]{64}$/.test(inventory.collectorProfile?.sha256 ?? '') ||
+      JSON.parse(read('host-installation.json').toString('utf8')).inventorySha256 !== createHash('sha256').update(bytes).digest('hex')) denied();
+  return true;
+}
 const safePath = value => typeof value === 'string' && /^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]*$/.test(value) && !value.split('/').some(part => part === '.' || part === '..');
 const UNSHARE_PATH = '/usr/bin/unshare';
 const SETPRIV_PATH = '/usr/bin/setpriv';
@@ -36,7 +64,8 @@ export function parseInvocation(request) {
   } else {
     if (!/^subscription-runtime-hosted-[a-f0-9-]{36}\.service$/.test(unit) ||
         !payload[0].endsWith('/node') || !safePath(payload[1])) denied();
-    if (!payload[1].endsWith('/hosted-app-server-launcher.js') || payload.length !== 2) denied();
+    if (!payload[1].endsWith('/hosted-app-server-launcher.js') ||
+        !(payload.length === 2 || (payload.length === 3 && payload[2] === '--fd-ready-v1' && governedFdProfile()))) denied();
     trusted = payload.slice(0, 2);
   }
   if (request.readonlyPaths !== undefined) {
@@ -71,6 +100,7 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
     ...['/', policy.storageRoot].flatMap(path => ['IOReadBandwidthMax=' + path + ' 40M', 'IOReadIOPSMax=' + path + ' 3000', 'IOWriteBandwidthMax=' + path + ' 20M', 'IOWriteIOPSMax=' + path + ' 1500']),
     'ProtectControlGroups=yes',
     ...profileProperties(),
+    ...(governedFdProfile() ? ['FileDescriptorStoreMax=0', 'PassEnvironment=', `UnsetEnvironment=${fdUnsetEnvironment}`] : []),
     ...(operation === 'job' ? ['StandardOutput=null', 'StandardError=null'] : []),
     'ProtectSystem=strict', `ReadWritePaths=${policy.jobRoot}`, `RequiresMountsFor=${policy.storageRoot}`,
     'TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M',
