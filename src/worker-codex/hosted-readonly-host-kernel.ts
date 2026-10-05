@@ -6,6 +6,8 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { assertHostedProcessDescriptors } from "@vioxen/subscription-runtime/provider-codex";
+import { verifySystemBusInfrastructure } from "@vioxen/subscription-runtime/provider-codex";
+import { readSystemBusInfrastructureField, type SystemBusInfrastructure } from "@vioxen/subscription-runtime/core";
 import { HostedCustodyPhase, HostedCustodyReservationState, type HostedCustodyEpoch, type HostedCustodyReservation, type HostedOrdinaryReservation, type HostedOrdinaryStart } from "@vioxen/subscription-runtime/worker-core";
 import { assertReadonlyHostOperator, decodePrivateJson } from "./hosted-readonly-authority";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
@@ -20,13 +22,14 @@ import { collectBootId, collectCgroupProcesses, collectCustodyEvents, collectFut
 export enum HostedReadonlyRuntimeRole { Supervisor = "supervisor", Runtime = "runtime" }
 
 export type HostedReadonlyHostInventory = {
-  readonly schemaVersion: 1 | 2;
+  readonly schemaVersion: 1 | 2 | 3;
   readonly hostId: string;
   readonly supervisorUnit: string;
   readonly units: readonly { readonly name: string; readonly controlGroup: string; readonly fragmentSha256: string }[];
   readonly ordinaryCreators: readonly HostedOrdinaryCreator[];
   readonly disabledCreators: readonly string[];
   readonly runtimeLaunch: { readonly command: string; readonly args: readonly string[]; readonly cwd: string };
+  readonly systemBusInfrastructure?: SystemBusInfrastructure;
 };
 export type HostedOrdinaryCreator = {
   readonly creatorId: string; readonly jobId: string; readonly jobRootDir: string; readonly workspacePath: string;
@@ -45,10 +48,12 @@ export function readHostedReadonlyHostInventory(): HostedReadonlyHostInventory {
   const bytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "readonly-inventory.json"), 64 * 1024);
   if (!bytes) invalid();
   const decoded = decodePrivateJson(bytes);
-  const v2 = !!decoded && typeof decoded === "object" && "schemaVersion" in decoded && decoded.schemaVersion === 2;
-  const value = object(decoded, v2 ? "disabledCreators,hostId,ordinaryCreators,runtimeLaunch,schemaVersion,supervisorUnit,units" :
+  const revision = !!decoded && typeof decoded === "object" && "schemaVersion" in decoded ? decoded.schemaVersion : undefined;
+  const modern = revision === 2 || revision === 3;
+  const value = object(decoded, revision === 3 ? "disabledCreators,hostId,ordinaryCreators,runtimeLaunch,schemaVersion,supervisorUnit,systemBusInfrastructure,units" :
+    modern ? "disabledCreators,hostId,ordinaryCreators,runtimeLaunch,schemaVersion,supervisorUnit,units" :
     "hostId,runtimeLaunch,schemaVersion,supervisorUnit,units");
-  if ((value.schemaVersion !== 1 && value.schemaVersion !== 2) || typeof value.hostId !== "string" || !/^[a-f0-9]{32}$/.test(value.hostId) ||
+  if ((value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== 3) || typeof value.hostId !== "string" || !/^[a-f0-9]{32}$/.test(value.hostId) ||
       !unit(value.supervisorUnit) || !Array.isArray(value.units) || value.units.length < 1 || value.units.length > 128) invalid();
   const units = value.units.map(entry => {
     const row = object(entry, "controlGroup,fragmentSha256,name");
@@ -59,9 +64,13 @@ export function readHostedReadonlyHostInventory(): HostedReadonlyHostInventory {
   if (new Set(units.map(row => row.name)).size !== units.length ||
       new Set(units.map(row => row.controlGroup)).size !== units.length ||
       !units.some(row => row.name === value.supervisorUnit)) invalid();
+  const systemBusInfrastructure = readSystemBusInfrastructureField(value);
+  if (systemBusInfrastructure && (value.supervisorUnit === "dbus.service" ||
+      !units.some(row => row.name === "dbus.service" && row.controlGroup === systemBusInfrastructure.service.controlGroup &&
+        row.fragmentSha256 === systemBusInfrastructure.service.fragmentSha256))) invalid();
   const launch = parseLaunch(value.runtimeLaunch);
   let ordinaryCreators: HostedOrdinaryCreator[] = [], disabledCreators: string[] = [];
-  if (v2) {
+  if (modern) {
     if (!Array.isArray(value.ordinaryCreators) || value.ordinaryCreators.length > 128 ||
         !Array.isArray(value.disabledCreators) || value.disabledCreators.length > 128) invalid();
     ordinaryCreators = value.ordinaryCreators.map(entry => {
@@ -74,7 +83,7 @@ export function readHostedReadonlyHostInventory(): HostedReadonlyHostInventory {
     });
     disabledCreators = value.disabledCreators.map(name => {
       if (typeof name !== "string" || name.length > 200 || !/^[A-Za-z0-9_@.-]+\.(service|socket|timer)$/.test(name) ||
-          units.some(row => row.name === name)) invalid();
+          units.some(row => row.name === name) || (systemBusInfrastructure && name === "dbus.socket")) invalid();
       return name;
     });
     if (new Set(ordinaryCreators.map(row => row.creatorId)).size !== ordinaryCreators.length ||
@@ -87,9 +96,10 @@ export function readHostedReadonlyHostInventory(): HostedReadonlyHostInventory {
           left.jobRootDir === right.jobRootDir || left.workspacePath === right.workspacePath) invalid();
     }
   }
-  return Object.freeze({ schemaVersion: v2 ? 2 : 1, hostId: value.hostId, supervisorUnit: value.supervisorUnit,
+  return Object.freeze({ schemaVersion: value.schemaVersion, hostId: value.hostId, supervisorUnit: value.supervisorUnit,
     units: Object.freeze(units), runtimeLaunch: launch,
-    ordinaryCreators: Object.freeze(ordinaryCreators), disabledCreators: Object.freeze(disabledCreators) });
+    ordinaryCreators: Object.freeze(ordinaryCreators), disabledCreators: Object.freeze(disabledCreators),
+    ...(systemBusInfrastructure ? { systemBusInfrastructure } : {}) });
 }
 
 export class HostedReadonlyHostKernel {
@@ -116,7 +126,8 @@ export class HostedReadonlyHostKernel {
   verifyExclusiveInventory(): void {
     const inventory = readHostedReadonlyHostInventory();
     this.session();
-    if (inventory.schemaVersion === 2) this.verifyFutureCreators(inventory);
+    if (inventory.systemBusInfrastructure) verifySystemBusInfrastructure(inventory.systemBusInfrastructure);
+    if (inventory.schemaVersion !== 1) this.verifyFutureCreators(inventory);
     const outer = this.enrolledEpoch()?.outerRuntime;
     const observed = this.systemctl(["list-units", "--all", "--type=service,scope",
       "--state=active,activating,reloading,deactivating,failed", "--no-legend", "--plain", "--no-pager"]);
@@ -218,10 +229,13 @@ export class HostedReadonlyHostKernel {
       "--no-legend", "--no-pager"]);
     for (const line of lines(enabled)) {
       const fields = line.trim().split(/\s+/);
-      if (fields.length < 2 || fields.length > 3 || !inventory.units.some(row => row.name === fields[0])) invalid();
+      if (fields.length < 2 || fields.length > 3 || (!inventory.units.some(row => row.name === fields[0]) &&
+          !(inventory.systemBusInfrastructure && fields[0] === "dbus.socket"))) invalid();
     }
-    if (lines(this.systemctl(["list-units", "--all", "--type=socket,timer",
-      "--state=active,activating,reloading,deactivating", "--no-legend", "--plain", "--no-pager"])).length) invalid();
+    for (const line of lines(this.systemctl(["list-units", "--all", "--type=socket,timer",
+      "--state=active,activating,reloading,deactivating", "--no-legend", "--plain", "--no-pager"]))) {
+      if (!inventory.systemBusInfrastructure || line.trim().split(/\s+/)[0] !== "dbus.socket") invalid();
+    }
     for (const name of observedJobUnits(collectJobs())) {
       if (inventory.disabledCreators.includes(name)) invalid();
     }
