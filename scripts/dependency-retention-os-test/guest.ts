@@ -18,7 +18,7 @@ import { readCodexGoalResultSummary } from "../../dist/worker-codex/codex-goal-s
 import { collectCodexGoalStatus } from "../../dist/worker-codex/codex-goal-ops.js";
 import { writeHostedTestEgressGrant } from "../../dist/worker-codex/hosted-test-egress-files.js";
 import { CodexProviderEgressProfileId, verifySystemBusInfrastructure } from "../../dist/provider-codex/index.js";
-import { parseSystemBusInfrastructure, SystemBusInfrastructureRole, SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH,
+import { parseSystemBusInfrastructure, SystemBusInfrastructureRole, SYSTEM_BUS_ARGUMENTS, SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH,
   SYSTEM_BUS_CONTROL_GROUP, SYSTEM_BUS_ENDPOINT, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
   SYSTEM_BUS_SOCKET_FRAGMENT, type SystemBusFilePin, type SystemBusInfrastructure } from "../../dist/core/index.js";
 import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRootKind, HostedCustodyPhase, HostedCustodyReservationState, parseHostedOrdinaryStart } from "../../dist/worker-core/index.js";
@@ -942,7 +942,73 @@ async function issueActualSystemBusInfrastructure(evidence: Record<string, unkno
     mode: endpoint.mode & 0o777, listenerInode: listener }, observedManagerPid: 1, extractionPinsSha256: digest(pinBytes) };
   // Execute the real production verifier before issuing any inventory. Its
   // return is not serialized as authority; every later gate verifies again.
-  verifySystemBusInfrastructure(descriptor); assert.equal(processBirth(), birth);
+  try { verifySystemBusInfrastructure(descriptor); }
+  catch (error) {
+    const observation: Record<string, unknown> = { purpose: "TEST_post_failure_current_bus_predicates_only", unavailable: true };
+    evidence.systemBusRejectedCurrentObservation = observation;
+    try {
+      // Reuse the existing manager acquisition deadline; telemetry gets no
+      // extra budget and never reconstructs the original failing query.
+      const until = process.hrtime.bigint() + BigInt(Math.min(deadline - Date.now(), 5000)) * 1000000n;
+      const remainingMs = () => Number((until - process.hrtime.bigint()) / 1000000n);
+      const systemctl = "/usr/bin/systemctl", tool = lstatSync(systemctl);
+      assert(tool.isFile() && tool.uid === 0 && tool.nlink === 1 && !(tool.mode & 0o022) && tool.size <= 32 * 1024 * 1024);
+      const expectedTool = signed.get(systemctl); assert(expectedTool);
+      for (let parent = dirname(systemctl);; parent = dirname(parent)) {
+        const stat = lstatSync(parent); assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && !(stat.mode & 0o022));
+        if (parent === "/") break;
+      }
+      assert.equal(realpathSync(systemctl), systemctl); assert.equal(fileDigest(systemctl), expectedTool);
+      const current = () => {
+        assert(remainingMs() > 0); assert.equal(processBirth(), birth);
+        for (const name of ["user", "mnt", "pid", "net"] as const)
+          assert.equal(readlinkSync(`/proc/self/ns/${name}`), readlinkSync(`/proc/1/ns/${name}`));
+        const now = lstatSync(systemctl), socket = lstatSync(SYSTEM_BUS_ENDPOINT);
+        assert(now.isFile() && now.uid === 0 && now.nlink === 1 && !(now.mode & 0o022) &&
+          now.dev === tool.dev && now.ino === tool.ino && now.size === tool.size && now.ctimeMs === tool.ctimeMs && now.mtimeMs === tool.mtimeMs);
+        assert.equal(fileDigest(systemctl), expectedTool);
+        assert(socket.isSocket() && socket.uid === 0 && (socket.mode & 0o777) === 0o600 && socket.dev === endpoint.dev && socket.ino === endpoint.ino);
+        assert(remainingMs() > 0);
+      };
+      const common = ["Id", "Names", "LoadState", "ActiveState", "SubState", "FragmentPath", "DropInPaths", "Job"] as const;
+      const queries = [
+        { unit: "dbus.service", keys: [...common, "ControlGroup", "MainPID", "ExecStart", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "Environment", "EnvironmentFiles", "User", "Group", "Restart", "Type", "TriggeredBy"] },
+        { unit: "dbus.socket", keys: [...common, "Listen", "Accept", "Triggers", "SocketMode", "DirectoryMode", "RemoveOnStop"] },
+      ] as const;
+      const facts = [];
+      for (const query of queries) {
+        current(); const allowance = remainingMs(); assert(allowance > 0);
+        const read = spawnSync(systemctl, ["show", `--property=${query.keys.join(",")}`, "--", query.unit],
+          { env: cleanEnv, encoding: "utf8", timeout: Math.min(2000, allowance), maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"] });
+        assert(!read.error && read.status === 0 && read.signal === null); current();
+        const values: Record<string, string> = {}, rows = read.stdout.trim().split("\n"); assert(rows.length <= 64);
+        let unknown = 0, duplicates = 0;
+        for (const row of rows) {
+          const at = row.indexOf("="), key = row.slice(0, at); assert(at > 0);
+          if (!query.keys.some(known => known === key)) { unknown++; continue; }
+          if (Object.hasOwn(values, key)) duplicates++;
+          values[key] = row.slice(at + 1);
+        }
+        const checks: Record<string, boolean> = { exactKeys: unknown === 0 && duplicates === 0 && Object.keys(values).length === query.keys.length,
+          Id: values.Id === query.unit, Names: values.Names === query.unit, LoadState: values.LoadState === "loaded",
+          ActiveState: values.ActiveState === "active", SubState: values.SubState === "running", DropInPaths: values.DropInPaths === "", Job: values.Job === "" };
+        if (query.unit === "dbus.service") {
+          const exec = /^\{ path=([^;]+) ; argv\[\]=(.*?) ; ignore_errors=no ; [^{}]*\}$/.exec(values.ExecStart ?? "");
+          Object.assign(checks, { FragmentPath: values.FragmentPath === serviceFragment, ControlGroup: values.ControlGroup === SYSTEM_BUS_CONTROL_GROUP,
+            MainPID: /^[1-9][0-9]{0,9}$/.test(values.MainPID ?? ""), User: values.User === "", Group: values.Group === "",
+            Restart: values.Restart === "no", Type: values.Type === "notify", TriggeredBy: values.TriggeredBy === "dbus.socket",
+            ExecStart: !!exec && exec[1] === SYSTEM_BUS_EXECUTABLE && exec[2] === [SYSTEM_BUS_EXECUTABLE, ...SYSTEM_BUS_ARGUMENTS].join(" ") });
+          for (const key of ["ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "Environment", "EnvironmentFiles"] as const) checks[key] = values[key] === "";
+        } else Object.assign(checks, { FragmentPath: values.FragmentPath === socketFragment, Listen: values.Listen === `${SYSTEM_BUS_ENDPOINT} (Stream)`,
+          Accept: values.Accept === "no", Triggers: values.Triggers === "dbus.service", SocketMode: values.SocketMode === "0600",
+          DirectoryMode: values.DirectoryMode === "0755", RemoveOnStop: values.RemoveOnStop === "yes" });
+        facts.push({ unit: query.unit, checks, missingKnownFields: query.keys.filter(key => !Object.hasOwn(values, key)), unknownFields: unknown, duplicates });
+      }
+      current(); observation.unavailable = false; observation.units = facts;
+    } catch { /* Only closed unavailable telemetry; preserve the real rejection. */ }
+    throw error;
+  }
+  assert.equal(processBirth(), birth);
   return descriptor;
 }
 function boundedProc(path: string, max: number): string {
