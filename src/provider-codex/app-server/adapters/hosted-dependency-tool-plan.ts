@@ -5,11 +5,11 @@ import { dirname, join } from "node:path";
 import { DependencyAdmissionError, DependencyAdmissionFailure, sameDependencyAttempt } from "../../../core/dependency-environment/dependency-owner";
 import { dependencyToolGuestConfig, dependencyToolGuestConfigPath, dependencyToolQualificationRecordName,
   parseDependencyToolQualification, type DependencyToolFile, type DependencyToolQualification } from "../../../core/dependency-environment/dependency-tool-profile";
-import { DependencyInstallProofKind, DependencyReceiptState } from "../../../worker-core/dependency-environment/domain/dependency-receipt";
+import { DependencyToolReadyReadStatus, matchesRegistryDependencyToolReady,
+  type DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes, readHostedOrdinaryProcessOrigin,
   type HostedActivationFence } from "./hosted-process-activation";
 import { assertHostedDependencyPhysicalWorkspace, readHostedDependencyAttempt, readHostedDependencyBinding, hostedDependencyPolicyRoot, type HostedDependencyBinding } from "./hosted-dependency-workspace";
-import { HostedDependencyHistoryStatus, readHostedDependencyCommittedHistory } from "./hosted-dependency-committed-history";
 import { assertHostedDependencyToolProfileFiles, trustedFile } from "./hosted-dependency-tool-files";
 import { hostedFdTable, observeHostedFdProcess, readHostedFdProfile, type HostedFdProcess, type HostedFdUnit } from "./hosted-fd-observation";
 import type { CodexAppServerProcessInvocation } from "./node-app-server-process";
@@ -18,6 +18,7 @@ import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRe
 
 type Leaf = Readonly<{ path: string; fd: number; dev: bigint; ino: bigint; ctimeNs: bigint; mtimeNs: bigint; bytes: Buffer }>;
 type Plan = { readonly unit: string; readonly root: string; readonly binding: HostedDependencyBinding;
+  readonly readyReader: DependencyToolReadyReader;
   readonly qualification: DependencyToolQualification; readonly record: Leaf; readonly capsule: Leaf;
   readonly attempt: ReturnType<typeof readHostedDependencyAttempt>; readonly parentBirth: string;
   readonly parentGroup: string; readonly sources: readonly string[];
@@ -104,9 +105,10 @@ function assertParentAuthWriterScope(binding: HostedDependencyBinding, args: rea
 /** Only a live enrolled origin and its reserved provider can prepare the plan.
  * The returned configuration is not a permit; the retained record FD is private. */
 export function prepareHostedDependencyToolPlan(fence: HostedActivationFence, unit: string, binding: HostedDependencyBinding,
-  root: string, writable: readonly string[], sources: readonly string[]): { readonly mounts: readonly string[]; readonly cache: string } | undefined {
+  root: string, writable: readonly string[], sources: readonly string[], readyReader?: DependencyToolReadyReader): { readonly mounts: readonly string[]; readonly cache: string } | undefined {
   assertHostedActivationFence(fence);
   if (binding.version === 1) return undefined;
+  if (!readyReader) fail();
   if (pending.has(unit)) fail();
   const origin = readHostedOrdinaryProcessOrigin(fence);
   const attempt = readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId));
@@ -129,7 +131,7 @@ export function prepareHostedDependencyToolPlan(fence: HostedActivationFence, un
     capsule = openLeaf(path, 65536);
     const parentProcess = observeHostedFdProcess(process.pid);
     const rootStat = lstatSync(root, { bigint: true });
-    const plan: Plan = { unit, root, binding, qualification: q, record, capsule, attempt, parentBirth: parentProcess.birth,
+    const plan: Plan = { unit, root, binding, readyReader, qualification: q, record, capsule, attempt, parentBirth: parentProcess.birth,
       files: Object.freeze([...q.profile.readonlyFiles, q.profile.node].map(pin => {
         const s = lstatSync(pin.path, { bigint: true }); return Object.freeze({ pin, dev: s.dev, ino: s.ino });
       })),
@@ -226,14 +228,16 @@ function validatePlan(fence: HostedActivationFence, plan: Plan): void {
       row.providerStartId !== providerId(plan.unit) || row.unit !== plan.unit || row.startDigest !== hash(provider) ||
       start.jobId !== binding.jobId || start.unit !== plan.unit || start.workspacePath !== binding.workspace.canonicalPath ||
       start.installationId !== binding.installationId || start.grantSha256 !== binding.grantDigest) fail();
-  const history = readHostedDependencyCommittedHistory(binding.jobId);
-  if (history.status !== HostedDependencyHistoryStatus.Known || !encode(history.binding).equals(encode(binding))) fail();
-  const receipt = history.receipt;
-  if (receipt.state !== DependencyReceiptState.Ready || receipt.provenance.kind !== DependencyInstallProofKind.CompletedInstall ||
+  // The admitted worker-owned reader opens only established history and closes
+  // every temporary descriptor before the FD-table checks below. It is retained
+  // with this actual invocation/child, never reconstructed from serialized facts.
+  const ready = plan.readyReader.readCurrent();
+  if (ready.status !== DependencyToolReadyReadStatus.Ready ||
+      !matchesRegistryDependencyToolReady({ workspace: binding.workspace, coverageRevision: hash(encode(binding)),
+        revision: q.readyRevision, installKey: q.installKey, tree: q.tree, manifestDigest: q.manifestDigest }, ready.facts) ||
       q.installationId !== binding.installationId || q.runtimeSha !== binding.runtimeSha || q.grantDigest !== binding.grantDigest ||
       !encode(q.workspace).equals(encode(binding.workspace)) || q.startId !== plan.attempt.launch.startId || q.attemptId !== plan.attempt.attemptId ||
-      q.epoch !== plan.attempt.epoch || q.readyRevision !== receipt.revision || q.installKey !== receipt.installKey ||
-      q.manifestDigest !== receipt.manifestDigest || q.tree.dev !== receipt.tree.dev || q.tree.ino !== receipt.tree.ino ||
+      q.epoch !== plan.attempt.epoch ||
       binding.version !== 2 || !encode(q.profile).equals(encode(binding.toolProfile))) fail();
   assertLeaf(plan.record); assertLeaf(plan.capsule);
   assertHostedDependencyToolProfileFiles(q.profile, binding.jobRootDir);

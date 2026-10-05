@@ -9,7 +9,7 @@ import { HostedDependencyInstallerRecipe } from "./hosted-dependency-installer-i
 import { openHostedDependencyManifestPlacement } from "./hosted-dependency-manifest-placement";
 import { withHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { hostedDependencyOwnerRoot } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { readHostedDependencyCommittedHistory, HostedDependencyHistoryStatus } from "../provider-codex/app-server/adapters/hosted-dependency-committed-history";
+import { readHostedDependencyCommittedHistory, HostedDependencyHistoryStatus } from "./hosted-dependency-committed-history";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { isDependencyConsumerOwner, type DependencyOwnerRecord } from "../core/dependency-environment/dependency-owner";
 import { DependencyReceiptState, sameDependencyTree, sameDependencyWorkspace, type DependencyReceipt } from "../worker-core/dependency-environment/domain/dependency-receipt";
