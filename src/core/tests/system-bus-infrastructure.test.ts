@@ -19,12 +19,19 @@ describe("closed system-bus infrastructure wire contract", () => {
     expect(Object.isFrozen(parsed.elfClosure)).toBe(true);
     expect(Object.isFrozen(parsed.socket)).toBe(true);
   });
-  it("requires the role in revision 3 and rejects it in older revisions", () => {
-    expect(readSystemBusInfrastructureField({ schemaVersion: 2 })).toBeUndefined();
-    expect(readSystemBusInfrastructureField({ schemaVersion: 1 })).toBeUndefined();
-    expect(() => readSystemBusInfrastructureField({ schemaVersion: 3 })).toThrow("infrastructure_invalid");
-    for (const schemaVersion of [1, 2, 4]) expect(() => readSystemBusInfrastructureField({ schemaVersion, systemBusInfrastructure: descriptor() })).toThrow();
-    expect(readSystemBusInfrastructureField({ schemaVersion: 3, systemBusInfrastructure: descriptor() })?.role).toBe(SystemBusInfrastructureRole.SystemBus);
+  it("requires the role in revisions 3 and 4 and rejects legacy field smuggling and unknown revisions", () => {
+    for (const schemaVersion of [1, 2]) {
+      expect(readSystemBusInfrastructureField({ schemaVersion })).toBeUndefined();
+      expect(() => readSystemBusInfrastructureField({ schemaVersion, systemBusInfrastructure: descriptor() })).toThrow("infrastructure_invalid");
+    }
+    for (const schemaVersion of [3, 4]) {
+      expect(() => readSystemBusInfrastructureField({ schemaVersion })).toThrow("infrastructure_invalid");
+      expect(readSystemBusInfrastructureField({ schemaVersion, systemBusInfrastructure: descriptor() })?.role).toBe(SystemBusInfrastructureRole.SystemBus);
+    }
+    for (const schemaVersion of [0, 5, "4"]) {
+      expect(() => readSystemBusInfrastructureField({ schemaVersion })).toThrow("infrastructure_invalid");
+      expect(() => readSystemBusInfrastructureField({ schemaVersion, systemBusInfrastructure: descriptor() })).toThrow("infrastructure_invalid");
+    }
   });
   it.each(["unknown-role", "unknown-field", "socket-cgroup", "other-socket", "other-config", "dot-path", "unbound-executable", "missing-loader", "duplicate-closure"])(
     "rejects %s rather than widening the closed role", fault => {
