@@ -29,6 +29,18 @@ function assertDependencyHostFrameEnvironment(env: Readonly<Record<string, strin
  * supplies a host implementation or a completion receipt. */
 export async function runHostedReadonlyForeground(command: string, args: readonly string[], cwd: string,
   env: Readonly<Record<string, string | undefined>>): Promise<number | HostedForegroundResult> {
+  return (await runHostedReadonlyCompletion(command, args, cwd, env)).result;
+}
+
+/** Outer CLI outcome only. It conveys no lifecycle receipt or admission and
+ * retains the actual terminal signal only after legacy close and detach. */
+export async function runHostedReadonlyCliForeground(command: string, args: readonly string[], cwd: string,
+  env: Readonly<Record<string, string | undefined>>): Promise<Readonly<{ result: number | HostedForegroundResult; signal: NodeJS.Signals | null }>> {
+  return runHostedReadonlyCompletion(command, args, cwd, env);
+}
+
+async function runHostedReadonlyCompletion(command: string, args: readonly string[], cwd: string,
+  env: Readonly<Record<string, string | undefined>>): Promise<Readonly<{ result: number | HostedForegroundResult; signal: NodeJS.Signals | null }>> {
   const host = new HostedReadonlySupervisorHost();
   const fdProfile = readHostedFdProfile();
   const output = fdProfile ? requireHostedForegroundRequest(args, cwd) : undefined;
@@ -45,11 +57,11 @@ export async function runHostedReadonlyForeground(command: string, args: readonl
     child.stdin.end(frame);
     return child;
   }); } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }
-  return await new Promise<number | HostedForegroundResult>((resolve) => {
-    let failed = false;
+  return await new Promise<Readonly<{ result: number | HostedForegroundResult; signal: NodeJS.Signals | null }>>((resolve) => {
+    let failed = false, cleanupFailed = false;
     const close = () => {
       try { host.closeRuntimeLaunch(); }
-      catch { failed = true; }
+      catch { failed = true; cleanupFailed = true; }
     };
     const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
     const handlers = signals.map(signal => {
@@ -59,7 +71,7 @@ export async function runHostedReadonlyForeground(command: string, args: readonl
     });
     const detach = () => { if (output) closeHostedForegroundRequest(output); signals.forEach((signal, index) => process.off(signal, handlers[index]!)); };
     child.stdin!.on("error", () => { failed = true; close(); child.kill("SIGTERM"); });
-    child.once("error", () => { failed = true; close(); detach(); resolve(70); });
+    child.once("error", () => { failed = true; close(); detach(); resolve({ result: 70, signal: null }); });
     child.once(fdProfile ? "close" : "exit", (code, signal) => {
       let result: HostedForegroundResult | undefined;
       if (!failed && signal === null && code !== null && (code === 0 || output)) {
@@ -75,7 +87,8 @@ export async function runHostedReadonlyForeground(command: string, args: readonl
       close(); detach();
       // A published nonzero result is a truthful completed failure, independent
       // of cleanup uncertainty. It grants no zero wait receipt or release.
-      resolve(result && result.exitCode !== 0 && signal === null ? result : failed || signal !== null ? 70 : result ?? code ?? 70);
+      resolve({ result: result && result.exitCode !== 0 && signal === null ? result : failed || signal !== null ? 70 : result ?? code ?? 70,
+        signal: !fdProfile && !cleanupFailed ? signal : null });
     });
     if (fdProfile) {
       const guard = hostedFdLaunch(child);

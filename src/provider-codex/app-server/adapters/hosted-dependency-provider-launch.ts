@@ -12,19 +12,25 @@ import type { CodexAppServerProcessInvocation } from "./node-app-server-process"
 import { readHostedFdProfile } from "./hosted-fd-observation";
 import { hostedFdSystemdProperties } from "./hosted-fd-prelude";
 import { dependencyToolGuestConfigPath } from "../../../core/dependency-environment/dependency-tool-profile";
+import type { DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import { abandonHostedDependencyToolPlan, prepareHostedDependencyToolPlan, retainHostedDependencyToolInvocation } from "./hosted-dependency-tool-plan";
+
+export const hostedDependencySystemdRunExecutable = "/usr/bin/systemd-run";
 
 /** Called inside the real private provider reservation fence, before enclosure.
  * The guest never reads host authority. No payload-selected mounts or root dirs.
  */
 export function hostedDependencyProviderInvocation(fence: HostedActivationFence, unit: string,
   input: { readonly command: string; readonly args: readonly string[]; readonly cwd: string;
-    readonly env: Readonly<Record<string, string>> }): CodexAppServerProcessInvocation | undefined {
+    readonly env: Readonly<Record<string, string>> }, readyReader?: DependencyToolReadyReader): CodexAppServerProcessInvocation | undefined {
   assertHostedActivationFence(fence);
   const fdProfile = readHostedFdProfile();
   const { start, reservation } = readHostedOrdinaryProcessOrigin(fence);
   const binding = readHostedDependencyBinding(String(start.jobId));
   if (!binding) return undefined;
+  // Refuse the v2 default/injected route before any dependency read or root
+  // construction. Only the worker-branded factory retains the genuine reader.
+  if (binding.version === 2 && !readyReader) invalid();
   readHostedDependencyAttempt(binding, start, String(reservation.startId));
   if (binding.version === 2 && !fdProfile) invalid();
   if (start.workspacePath !== binding.workspace.canonicalPath || start.jobRootDir !== binding.jobRootDir ||
@@ -100,7 +106,7 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
   try {
   if (binding.version === 2) {
     const tools = prepareHostedDependencyToolPlan(fence, unit, binding, root,
-      [binding.workspace.canonicalPath, home, codexHome], mounted);
+      [binding.workspace.canonicalPath, home, codexHome], mounted, readyReader);
     if (!tools) invalid();
     toolCache = tools.cache; mounts.push(...tools.mounts);
   }
@@ -116,7 +122,7 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
     "MountAPIVFS=yes", ...mounts,
     `ReadWritePaths=${binding.workspace.canonicalPath} ${home} ${codexHome}${toolCache ? " " + toolCache : ""}`,
     "TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M"];
-  const invocation: CodexAppServerProcessInvocation = { command: "/usr/bin/systemd-run", systemdUnit: unit,
+  const invocation: CodexAppServerProcessInvocation = { command: hostedDependencySystemdRunExecutable, systemdUnit: unit,
     args: ["--quiet", "--wait", "--pipe", "--collect", `--unit=${unit}`, "--service-type=exec",
       "--expand-environment=no", `--working-directory=${input.cwd}`, ...properties.map(p => `--property=${p}`), "--",
       "/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",

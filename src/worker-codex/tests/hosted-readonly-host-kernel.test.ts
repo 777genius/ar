@@ -32,6 +32,9 @@ vi.mock("../hosted-readonly-inputs", async original => ({
   readHostedPrivateBytes: (path: string) => os.records.get(path) ?? null,
 }));
 vi.mock("@vioxen/subscription-runtime/provider-codex", () => ({ assertHostedProcessDescriptors: os.descriptors }));
+// These synthetic legacy inventories have no authenticated FD profile. Keep
+// their real kernel-to-recipe delegation without entering installed host IO.
+vi.mock("../../provider-codex/app-server/adapters/hosted-fd-observation", () => ({ readHostedFdProfile: () => undefined }));
 const root = "/var/lib/subscription-runtime-host-policy";
 const hostId = "a".repeat(32), bootId = "11111111-1111-4111-8111-111111111111";
 const startId = "22222222-2222-4222-8222-222222222222";
