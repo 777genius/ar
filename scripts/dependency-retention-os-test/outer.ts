@@ -297,6 +297,8 @@ function classifyBusStderr(bytes: Uint8Array) {
     ["unsupported_auth", "Unsupported auth mechanism \""], ["invalid_message_type", "Bad message type \""],
     ["xml_parse", "Error in file "], ["apparmor_context", "Error getting AppArmor context of bus:"],
     ["apparmor_required", "AppArmor mediation required but not present"],
+    ["config_user_rule_scope", "<allow> rule cannot be per-user because it has bus-global semantics"],
+    ["config_user_rule_scope", "<deny> rule cannot be per-user because it has bus-global semantics"],
   ] as const;
   const lines = new TextDecoder("utf-8", { fatal: true }).decode(bytes).split("\n"); assert(lines.length <= 256);
   const labels = new Set<(typeof prefixes)[number][0] | "unclassified">();
