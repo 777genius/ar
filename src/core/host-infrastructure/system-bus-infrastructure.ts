@@ -44,11 +44,11 @@ export const SYSTEM_BUS_CONFIG = `<busconfig>
   <auth>EXTERNAL</auth>
   <policy context="default">
     <deny user="*"/>
+    <allow user="root"/>
     <deny own="*"/>
     <deny send_type="method_call"/>
   </policy>
   <policy user="root">
-    <allow user="root"/>
     <allow own="org.freedesktop.systemd1"/>
     <allow send_destination="org.freedesktop.systemd1"/>
 ${handshakeMembers.map(member => `    <allow send_destination="org.freedesktop.DBus" send_interface="org.freedesktop.DBus" send_member="${member}"/>`).join("\n")}

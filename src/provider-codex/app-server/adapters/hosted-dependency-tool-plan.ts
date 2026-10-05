@@ -1,25 +1,25 @@
 import { createHash } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DependencyAdmissionError, DependencyAdmissionFailure, sameDependencyAttempt } from "../../../core/dependency-environment/dependency-owner";
-import { dependencyToolGuestConfig, dependencyToolGuestConfigPath, dependencyToolQualificationRecordName,
-  parseDependencyToolQualification, type DependencyToolFile, type DependencyToolQualification } from "../../../core/dependency-environment/dependency-tool-profile";
+import { dependencyToolGuestConfigPath, type DependencyToolFile, type DependencyToolQualification } from "../../../core/dependency-environment/dependency-tool-profile";
 import { DependencyToolReadyReadStatus, matchesRegistryDependencyToolReady,
   type DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes, readHostedOrdinaryProcessOrigin,
   type HostedActivationFence } from "./hosted-process-activation";
 import { assertHostedDependencyPhysicalWorkspace, readHostedDependencyAttempt, readHostedDependencyBinding, hostedDependencyPolicyRoot, type HostedDependencyBinding } from "./hosted-dependency-workspace";
 import { assertHostedDependencyToolProfileFiles, trustedFile } from "./hosted-dependency-tool-files";
-import { hostedFdTable, observeHostedFdProcess, readHostedFdProfile, type HostedFdProcess, type HostedFdUnit } from "./hosted-fd-observation";
+import { observeHostedFdProcess, readHostedFdProfile, type HostedFdProcess, type HostedFdUnit } from "./hosted-fd-observation";
+import { openHostedRetainedToolFiles, assertHostedRetainedToolDescriptors, retainHostedToolFilesInvocation, bindHostedToolFilesChild,
+  revokeHostedRetainedToolFiles, hostedToolFilesForChild, assertHostedToolCapsuleCopy, type HostedRetainedToolFiles } from "./hosted-retained-tool-files";
 import type { CodexAppServerProcessInvocation } from "./node-app-server-process";
 import { CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
 import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 
-type Leaf = Readonly<{ path: string; fd: number; dev: bigint; ino: bigint; ctimeNs: bigint; mtimeNs: bigint; bytes: Buffer }>;
 type Plan = { readonly unit: string; readonly root: string; readonly binding: HostedDependencyBinding;
   readonly readyReader: DependencyToolReadyReader;
-  readonly qualification: DependencyToolQualification; readonly record: Leaf; readonly capsule: Leaf;
+  readonly qualification: DependencyToolQualification; readonly descriptorScope: HostedRetainedToolFiles;
   readonly attempt: ReturnType<typeof readHostedDependencyAttempt>; readonly parentBirth: string;
   readonly parentGroup: string; readonly sources: readonly string[];
   readonly rootIdentity: Readonly<{ dev: bigint; ino: bigint }>;
@@ -117,21 +117,13 @@ export function prepareHostedDependencyToolPlan(fence: HostedActivationFence, un
       root !== `${hostedDependencyPolicyRoot}/dependency-provider-roots/${providerId(unit)}` || writable.length !== 3 ||
       writable[0] !== binding.workspace.canonicalPath || sources.some(path => path === "/" || path === hostedDependencyPolicyRoot)) fail();
   assertHostedDependencyToolProfileFiles(binding.toolProfile, binding.jobRootDir);
-  const record = openLeaf(join(hostedDependencyPolicyRoot, dependencyToolQualificationRecordName(attempt.launch.startId)), 65536);
-  let capsule: Leaf | undefined;
+  if (readyReader.readCurrent().status !== DependencyToolReadyReadStatus.Ready) fail();
+  const opened = openHostedRetainedToolFiles({ unit, parentStartId: attempt.launch.startId, jobId: binding.jobId, bindingBytes: encode(binding) });
   try {
-    const q = parseDependencyToolQualification(decodeHostedActivationBytes(record.bytes));
-    if (!encode(q).equals(record.bytes)) fail();
-    const path = join(root, dependencyToolGuestConfigPath);
-    // The trusted finite root builder has created only these placeholder parents.
-    const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    try { writeFileSync(fd, encode(dependencyToolGuestConfig(q))); fsyncSync(fd); } finally { closeSync(fd); }
-    const parent = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-    try { fsyncSync(parent); } finally { closeSync(parent); }
-    capsule = openLeaf(path, 65536);
+    const q = opened.qualification, path = opened.capsulePath;
     const parentProcess = observeHostedFdProcess(process.pid);
     const rootStat = lstatSync(root, { bigint: true });
-    const plan: Plan = { unit, root, binding, readyReader, qualification: q, record, capsule, attempt, parentBirth: parentProcess.birth,
+    const plan: Plan = { unit, root, binding, readyReader, qualification: q, descriptorScope: opened.scope, attempt, parentBirth: parentProcess.birth,
       files: Object.freeze([...q.profile.readonlyFiles, q.profile.node].map(pin => {
         const s = lstatSync(pin.path, { bigint: true }); return Object.freeze({ pin, dev: s.dev, ino: s.ino });
       })),
@@ -150,14 +142,14 @@ export function prepareHostedDependencyToolPlan(fence: HostedActivationFence, un
       `BindPaths=${binding.toolProfile.cache.canonicalPath}:${binding.toolProfile.cache.canonicalPath}:norbind`,
       `BindReadOnlyPaths=${path}:${dependencyToolGuestConfigPath}:norbind`,
     ]) });
-  } catch (error) { closeSync(record.fd); if (capsule) closeSync(capsule.fd); throw error; }
+  } catch (error) { revokeHostedRetainedToolFiles(opened.scope); throw error; }
 }
 // The only cross-function handle is keyed by the real just-reserved unit. It is
 // consumed synchronously by the same fixed producer, never exported as data.
 const pending = new Map<string, Plan>(), prepared = new WeakMap<Plan, boolean>();
 function closePlan(plan: Plan): void {
   if (plan.closed) return; plan.closed = true;
-  try { closeSync(plan.record.fd); } finally { closeSync(plan.capsule.fd); }
+  revokeHostedRetainedToolFiles(plan.descriptorScope);
 }
 export function abandonHostedDependencyToolPlan(unit: string): void {
   const plan = pending.get(unit); if (!plan) return;
@@ -170,16 +162,17 @@ export function abandonHostedDependencyToolInvocation(invocation: CodexAppServer
 export function retainHostedDependencyToolInvocation(fence: HostedActivationFence, invocation: CodexAppServerProcessInvocation): void {
   assertHostedActivationFence(fence);
   const unit = invocation.systemdUnit; if (!unit) fail();
-  const origin = readHostedOrdinaryProcessOrigin(fence), binding = readHostedDependencyBinding(String(origin.start.jobId));
-  if (binding?.version !== 2) return;
   const plan = pending.get(unit);
+  const origin = readHostedOrdinaryProcessOrigin(fence, plan?.descriptorScope), binding = readHostedDependencyBinding(String(origin.start.jobId));
+  if (binding?.version !== 2) return;
   if (!plan || !prepared.has(plan) || invocations.has(invocation)) fail();
-  try { validatePlan(fence, plan); invocations.set(invocation, plan); pending.delete(unit); }
+  try { validatePlan(fence, plan); retainHostedToolFilesInvocation(plan.descriptorScope, invocation); invocations.set(invocation, plan); pending.delete(unit); }
   catch (error) { abandonHostedDependencyToolPlan(unit); throw error; }
 }
 export function bindHostedDependencyToolChild(invocation: CodexAppServerProcessInvocation, child: ChildProcess): void {
   const plan = invocations.get(invocation); if (!plan) return;
   if (plan.closed || !child.pid || children.has(child)) fail();
+  bindHostedToolFilesChild(plan.descriptorScope, invocation, child);
   invocations.delete(invocation); children.set(child, plan);
   const close = () => {
     children.delete(child); closePlan(plan);
@@ -197,8 +190,10 @@ export function assertHostedDependencyToolRelease(child: ChildProcess, fence: Ho
   if (!/^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-[a-f0-9-]{36}\.service$/.test(readFileSync("/proc/self/cgroup", "utf8").trim())) {
     if (children.has(child)) fail(); return;
   }
-  const origin = readHostedOrdinaryProcessOrigin(fence), binding = readHostedDependencyBinding(String(origin.start.jobId));
   const plan = children.get(child);
+  const scope = hostedToolFilesForChild(child);
+  if (plan && scope !== plan.descriptorScope) fail();
+  const origin = readHostedOrdinaryProcessOrigin(fence, scope), binding = readHostedDependencyBinding(String(origin.start.jobId));
   if (binding?.version !== 2) { if (plan) fail(); return; }
   if (!plan || plan.closed || plan.unit !== unit.unit || !child.pid || unit.root !== plan.root) fail();
   validatePlan(fence, plan);
@@ -211,7 +206,7 @@ export function assertHostedDependencyToolRelease(child: ChildProcess, fence: Ho
 function validatePlan(fence: HostedActivationFence, plan: Plan): void {
   assertHostedActivationFence(fence);
   if (plan.closed) fail();
-  const origin = readHostedOrdinaryProcessOrigin(fence), q = plan.qualification, binding = plan.binding;
+  const origin = readHostedOrdinaryProcessOrigin(fence, plan.descriptorScope), q = plan.qualification, binding = plan.binding;
   const root = lstatSync(plan.root, { bigint: true }), parentDirectory = lstatSync(dirname(plan.root), { bigint: true });
   if (!root.isDirectory() || root.uid !== 0n || root.gid !== 0n || (root.mode & 0o777n) !== 0o700n ||
       root.dev !== plan.rootIdentity.dev || root.ino !== plan.rootIdentity.ino || !parentDirectory.isDirectory() ||
@@ -239,7 +234,7 @@ function validatePlan(fence: HostedActivationFence, plan: Plan): void {
       !encode(q.workspace).equals(encode(binding.workspace)) || q.startId !== plan.attempt.launch.startId || q.attemptId !== plan.attempt.attemptId ||
       q.epoch !== plan.attempt.epoch ||
       binding.version !== 2 || !encode(q.profile).equals(encode(binding.toolProfile))) fail();
-  assertLeaf(plan.record); assertLeaf(plan.capsule);
+  assertHostedRetainedToolDescriptors(plan.descriptorScope);
   assertHostedDependencyToolProfileFiles(q.profile, binding.jobRootDir);
   for (const file of plan.files) {
     const s = lstatSync(file.pin.path, { bigint: true });
@@ -251,54 +246,9 @@ function validatePlan(fence: HostedActivationFence, plan: Plan): void {
   if (!tree.isDirectory() || String(tree.dev) !== q.tree.dev || String(tree.ino) !== q.tree.ino) fail();
   const parent = observeHostedFdProcess(process.pid);
   if (parent.birth !== plan.parentBirth || parent.group !== plan.parentGroup || parent.group !== `0::${String(origin.start.controlGroup)}`) fail();
-  // The enrolled fixed CLI parent performs only fixed root record writes and
-  // read-only Git hygiene. Reject unresolved regular/directory handles,
-  // including an inode opened through another bind/path alias. Its fixed
-  // private state journal can legitimately be open in an async write; that
-  // host-only subtree is never exposed by the finite provider construction.
-  for (const fd of hostedFdTable(process.pid)) {
-    if (fd.fd <= 2 || !fd.file && !fd.directory) continue;
-    const leaf = [plan.record, plan.capsule].find(leaf => leaf.fd === fd.fd);
-    if (leaf && fd.file && (fd.flags & 3) === 0 && fd.dev === String(leaf.dev) && fd.ino === String(leaf.ino) && fd.target === leaf.path) continue;
-    if (!fd.file || !fd.target.startsWith(`${binding.jobRootDir}/state/`) || realpathSync(fd.target) !== fd.target) fail();
-    const opened = fstatSync(fd.fd, { bigint: true }), named = lstatSync(fd.target, { bigint: true });
-    if (!opened.isFile() || opened.uid !== 0n || opened.nlink !== 1n || (opened.mode & 0o077n) ||
-        opened.dev !== named.dev || opened.ino !== named.ino || realpathSync(dirname(fd.target)) !== dirname(fd.target)) fail();
-  }
-}
-function openLeaf(path: string, bound: number): Leaf {
-  for (let p = dirname(path);; p = dirname(p)) {
-    const s = lstatSync(p);
-    if (!s.isDirectory() || s.uid !== 0 || (s.mode & 0o022)) fail();
-    if (p === "/") break;
-  }
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const before = fstatSync(fd, { bigint: true }), entry = lstatSync(path, { bigint: true });
-    if (!before.isFile() || before.uid !== 0n || before.nlink !== 1n || (before.mode & 0o077n) || before.size > BigInt(bound) ||
-        entry.dev !== before.dev || entry.ino !== before.ino) fail();
-    const leaf = Object.freeze({ path, fd, dev: before.dev, ino: before.ino, ctimeNs: before.ctimeNs, mtimeNs: before.mtimeNs,
-      bytes: readLeafFd(fd, bound) }); assertLeaf(leaf); return leaf;
-  } catch (error) { closeSync(fd); throw error; }
-}
-function assertLeaf(leaf: Leaf): void {
-  const before = fstatSync(leaf.fd, { bigint: true }), entry = lstatSync(leaf.path, { bigint: true });
-  if (!before.isFile() || before.uid !== 0n || before.nlink !== 1n || (before.mode & 0o077n) || before.dev !== leaf.dev || before.ino !== leaf.ino ||
-      before.ctimeNs !== leaf.ctimeNs || before.mtimeNs !== leaf.mtimeNs ||
-      entry.dev !== leaf.dev || entry.ino !== leaf.ino || before.size !== BigInt(leaf.bytes.length)) fail();
-  const bytes = readLeafFd(leaf.fd, leaf.bytes.length), after = fstatSync(leaf.fd, { bigint: true }), current = lstatSync(leaf.path, { bigint: true });
-  if (!bytes.equals(leaf.bytes) || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs ||
-      current.dev !== leaf.dev || current.ino !== leaf.ino || current.ctimeNs !== after.ctimeNs || current.mtimeNs !== after.mtimeNs) fail();
-}
-function readLeafFd(fd: number, bound: number): Buffer {
-  const s = fstatSync(fd);
-  if (!s.isFile() || s.size > bound) fail();
-  const bytes = Buffer.alloc(s.size + 1); let length = 0;
-  while (length < bytes.length) {
-    const count = readSync(fd, bytes, length, bytes.length - length, length);
-    if (!count) break; length += count;
-  }
-  if (length !== s.size) fail(); return bytes.subarray(0, length);
+  // Temporary history/profile IO has closed. Only the continuously retained
+  // two leaves may remain: state journals and same-inode alias opens deny too.
+  assertHostedRetainedToolDescriptors(plan.descriptorScope);
 }
 function providerId(unit: string): string {
   const id = /^subscription-runtime-hosted-([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\.service$/.exec(unit)?.[1];
@@ -359,9 +309,7 @@ function assertNamespace(plan: Plan, process: HostedFdProcess): void {
   const fd = openSync(prefix + dependencyToolGuestConfigPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const capsule = fstatSync(fd, { bigint: true });
-    if (!capsule.isFile() || capsule.uid !== 0n || capsule.nlink !== 1n || (capsule.mode & 0o777n) !== 0o600n || capsule.dev !== plan.capsule.dev ||
-        capsule.ino !== plan.capsule.ino || capsule.size !== BigInt(plan.capsule.bytes.length) ||
-        !readLeafFd(fd, 65536).equals(plan.capsule.bytes)) fail();
+    assertHostedToolCapsuleCopy(plan.descriptorScope, fd);
     const after = fstatSync(fd, { bigint: true }), current = statSync(prefix + dependencyToolGuestConfigPath, { bigint: true });
     if (after.ctimeNs !== capsule.ctimeNs || after.mtimeNs !== capsule.mtimeNs || current.dev !== capsule.dev || current.ino !== capsule.ino) fail();
   } finally { closeSync(fd); }
