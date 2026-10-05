@@ -1,8 +1,9 @@
 /** Signed Ubuntu indexes and downloaded .deb extraction only. No dpkg install,
  * maintainer script, chroot command, or outer apt state mutation is permitted. */
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
-  readdirSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+  readdirSync, readlinkSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, join } from "node:path";
 import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
   SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/core/host-infrastructure/system-bus-infrastructure.js";
@@ -76,6 +77,9 @@ export function assemble(root: string, state: string, source: string, toolchain:
     command("/usr/bin/dpkg-deb", ["--extract", path, root], 30000);
     packages.push({ package: pkg, version, arch, sha256: sha, size });
   }
+  // Ordinary tar extraction may replace the original aliases with directories.
+  // Only signed package bytes exist here; no runtime/config/job has been copied.
+  const usrLayout = normalizeSignedUsrLayout(root, checkBudget);
   // Independent bytes from authenticated package extraction only, before any
   // runtime/config copy. No library directory from the runner is included.
   const signedElfPins: { path: string; sha256: string }[] = []; let visited = 0, elfBytes = 0;
@@ -97,6 +101,12 @@ export function assemble(root: string, state: string, source: string, toolchain:
   captureElf(root + "/usr/lib");
   for (const path of [SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", "/usr/bin/systemd-run", "/usr/bin/tini", "/usr/bin/unshare"])
     captureElf(root + path);
+  for (const tool of usrLayout.tools) {
+    const stat = lstatSync(root + tool.path, { bigint: true });
+    assert.equal(signedElfPins.find(pin => pin.path === tool.path)?.sha256, tool.sha256);
+    assert.equal(String(stat.dev), tool.dev); assert.equal(String(stat.ino), tool.ino);
+    assert.equal(Number(stat.mode & 0o7777n), tool.mode); assert.equal(String(stat.size), tool.bytes);
+  }
   assert(signedElfPins.some(pin => pin.path === SYSTEM_BUS_EXECUTABLE));
   directory(root + runtime, 0o755);
   assert(Buffer.byteLength(JSON.stringify(signedElfPins)) <= 128 * 1024);
@@ -153,12 +163,80 @@ export function assemble(root: string, state: string, source: string, toolchain:
   command("/usr/bin/chown", ["-R", "0:0", root + runtime]);
   command("/usr/bin/chmod", ["-R", "go-w", root + runtime]);
   json(root + runtime + "/os-packages.json", { schemaVersion: 1, release: "ubuntu-noble",
-    releases: releases.map(name => ({ name, sha256: fileDigest(state + "/lists/" + name) })), packages,
+    releases: releases.map(name => ({ name, sha256: fileDigest(state + "/lists/" + name) })), packages, usrLayout,
     pinnedNode: { sha256: pinnedSha, version: process.version, requirements: requirements.map(row => ({ soname: row.soname,
       sha256: fileDigest(row.resolved), package: elfPackages[row.soname as keyof typeof elfPackages] })), requiredPackages } });
   assert(existsSync(root + "/usr/bin/systemd-nspawn"));
   assert(existsSync(root + "/usr/lib/systemd/systemd"));
   checkBudget();
+}
+
+function normalizeSignedUsrLayout(root: string, checkBudget: () => number) {
+  assert(/^\/var\/lib\/subscription-runtime-os-TEST\/[a-f0-9-]{36}\/root$/.test(root));
+  const device = lstatSync(root, { bigint: true }).dev, deadline = process.hrtime.bigint() + 30000000000n;
+  const manifest = createHash("sha256"); let visited = 0, moved = 0, bytes = 0n;
+  const bound = () => { checkBudget(); assert(++visited <= 20000 && process.hrtime.bigint() < deadline); };
+  const entry = (path: string): BigIntStats | undefined => {
+    try { return lstatSync(path, { bigint: true }); }
+    catch (error) { assert.equal((error as NodeJS.ErrnoException).code, "ENOENT"); return undefined; }
+  };
+  const protectedDirectory = (path: string): BigIntStats => {
+    bound(); const stat = lstatSync(path, { bigint: true });
+    assert(stat.isDirectory() && stat.uid === 0n && stat.gid === 0n && stat.dev === device && !(stat.mode & 0o022n));
+    assert.equal(realpathSync(path), path); return stat;
+  };
+  protectedDirectory(dirname(root)); protectedDirectory(root); protectedDirectory(root + "/usr");
+  const merge = (source: string, target: string): void => {
+    const from = protectedDirectory(source), to = protectedDirectory(target); assert.equal(to.mode, from.mode);
+    for (const name of readdirSync(source).sort()) {
+      bound(); assert(Buffer.byteLength(name) <= 255 && name !== "." && name !== ".." && !/[\/\u0000-\u001f\u007f]/.test(name));
+      const oldPath = source + "/" + name, newPath = target + "/" + name, stat = lstatSync(oldPath, { bigint: true });
+      assert(stat.uid === 0n && stat.gid === 0n && stat.dev === device);
+      const existing = entry(newPath);
+      if (stat.isDirectory()) {
+        protectedDirectory(oldPath);
+        if (!existing) directory(newPath, Number(stat.mode & 0o7777n));
+        else assert(existing.isDirectory(), "TEST usrmerge directory collision");
+        merge(oldPath, newPath); continue;
+      }
+      assert(!existing, "TEST usrmerge leaf collision");
+      assert(stat.nlink === 1n && (stat.isSymbolicLink() || stat.isFile() && !(stat.mode & 0o022n)));
+      assert(stat.size <= 32n * 1024n * 1024n && (bytes += stat.size) <= 512n * 1024n * 1024n);
+      const link = stat.isSymbolicLink() ? readlinkSync(oldPath) : undefined;
+      if (link !== undefined) assert(Buffer.byteLength(link) <= 4096);
+      const sha256 = link === undefined ? fileDigest(oldPath) : createHash("sha256").update(link).digest("hex");
+      bound(); renameSync(oldPath, newPath);
+      const current = lstatSync(newPath, { bigint: true });
+      for (const key of ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeNs"] as const) assert.equal(current[key], stat[key]);
+      assert.equal(link === undefined ? fileDigest(newPath) : createHash("sha256").update(readlinkSync(newPath)).digest("hex"), sha256);
+      assert.equal(entry(oldPath), undefined); ++moved;
+      manifest.update(JSON.stringify([oldPath.slice(root.length), newPath.slice(root.length), String(stat.dev), String(stat.ino), String(stat.mode), sha256]) + "\n");
+      bound();
+    }
+    const current = protectedDirectory(source); assert(current.dev === from.dev && current.ino === from.ino);
+    assert.equal(readdirSync(source).length, 0); rmdirSync(source);
+  };
+  const aliases = ["bin", "sbin", "lib", "lib64"].map(name => {
+    const source = root + "/" + name, target = root + "/usr/" + name, before = lstatSync(source, { bigint: true });
+    protectedDirectory(target); const priorMoved = moved;
+    if (before.isSymbolicLink()) {
+      assert(before.uid === 0n && before.gid === 0n && before.dev === device && before.nlink === 1n);
+      assert.equal(readlinkSync(source), "usr/" + name); assert.equal(realpathSync(source), target);
+    } else { assert(before.isDirectory()); merge(source, target); symlinkSync("usr/" + name, source); }
+    const after = lstatSync(source, { bigint: true });
+    assert(after.isSymbolicLink() && after.uid === 0n && after.gid === 0n && after.dev === device && after.nlink === 1n);
+    assert.equal(readlinkSync(source), "usr/" + name); assert.equal(realpathSync(source), target);
+    return { alias: "/" + name, target: "/usr/" + name, priorKind: before.isSymbolicLink() ? "symlink" : "directory", movedEntries: moved - priorMoved };
+  });
+  const tools = [SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", "/usr/bin/systemd-run", "/usr/bin/tini", "/usr/bin/unshare"].map(path => {
+    protectedDirectory(root + dirname(path)); const actual = root + path, stat = lstatSync(actual, { bigint: true });
+    assert.equal(realpathSync(actual), actual);
+    assert(stat.isFile() && stat.uid === 0n && stat.gid === 0n && stat.dev === device && stat.nlink === 1n && !(stat.mode & 0o022n) && (stat.mode & 0o111n));
+    assert(stat.size > 0n && stat.size <= 32n * 1024n * 1024n);
+    const sha256 = fileDigest(actual); bound();
+    return { path, sha256, dev: String(stat.dev), ino: String(stat.ino), mode: Number(stat.mode & 0o7777n), bytes: String(stat.size) };
+  });
+  bound(); return { aliases, movedEntries: moved, movedBytes: String(bytes), movedManifestSha256: manifest.digest("hex"), tools };
 }
 
 function snapshotPublicFile(alias: string, target: string, maxBytes: number): void {
