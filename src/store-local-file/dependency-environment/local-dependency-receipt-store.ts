@@ -9,6 +9,7 @@ import { DependencyInstallProofKind as Install, DependencyPreservationKind as Pr
 import { DependencyReceiptParseStatus, parseDependencyReceipt } from "../../worker-core/dependency-environment/domain/parse-dependency-receipt";
 import { detectSecretLikeContent } from "../../worker-core/secret-detection";
 import type { DependencyCommittedAbsentReceipt, DependencyCommittedReceiptReference, DependencyReceiptStore } from "../../worker-core/dependency-environment/ports/dependency-receipt-store";
+import type { DependencyLocalInstallProofVerifier } from "../../worker-core/dependency-environment/ports/dependency-source-binding";
 
 export enum DependencyReceiptStorageFailure {
   Unsupported = "unsupported", InvalidConfig = "invalid_config", UnsafeRoot = "unsafe_root", UnsafeStore = "unsafe_store",
@@ -40,9 +41,11 @@ const same = (left: BigIntStats, right: BigIntStats): boolean => sameDependencyT
 export class LocalDependencyReceiptStore implements DependencyReceiptStore {
   private closed = false;
   private constructor(private readonly rootPath: string, private readonly root: number, private readonly rootIdentity: BigIntStats,
-    private readonly rootMount: string, private readonly maxRecordBytes: number, private readonly maxHistorySteps: number) {}
+    private readonly rootMount: string, private readonly maxRecordBytes: number, private readonly maxHistorySteps: number,
+    private readonly localInstallVerifier?: DependencyLocalInstallProofVerifier) {}
 
-  static open(input: { readonly rootPath: string; readonly maxRecordBytes: number; readonly maxHistorySteps: number }): LocalDependencyReceiptStore {
+  static open(input: { readonly rootPath: string; readonly maxRecordBytes: number; readonly maxHistorySteps: number;
+    readonly localInstallVerifier?: DependencyLocalInstallProofVerifier }): LocalDependencyReceiptStore {
     if (process.platform !== "linux" || statfsSync("/proc/self/fd", { bigint: true }).type !== 0x9fa0n) fail(Failure.Unsupported);
     if (!isAbsolute(input.rootPath) || resolve(input.rootPath) !== input.rootPath || input.rootPath.includes("\0") ||
       ![input.maxRecordBytes, input.maxHistorySteps].every(n => Number.isSafeInteger(n) && n > 0)) fail(Failure.InvalidConfig);
@@ -51,7 +54,7 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
     try {
       const stat = fstatSync(root, { bigint: true });
       if (!stat.isDirectory() || !privateMode(stat, 0o700n) || !same(stat, lstatSync(input.rootPath, { bigint: true }))) fail(Failure.UnsafeRoot);
-      return new LocalDependencyReceiptStore(input.rootPath, root, stat, mount(root), input.maxRecordBytes, input.maxHistorySteps);
+      return new LocalDependencyReceiptStore(input.rootPath, root, stat, mount(root), input.maxRecordBytes, input.maxHistorySteps, input.localInstallVerifier);
     } catch (error) { closeSync(root); throw error; }
   }
 
@@ -103,7 +106,7 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
         transition(captured?.receipt ?? null, receipt, captured ? {
           path: join(this.rootPath, captured.commit.receipt.name), identity: captured.commit.receipt.identity,
           sha256: captured.commit.receipt.sha256,
-        } : null);
+        } : null, this.localInstallVerifier);
         return captured;
       });
       const receiptName = `${key}.r${receipt.revision}-${sha(bytes)}.receipt.json`;
@@ -256,7 +259,8 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
   }
 }
 
-function transition(previous: DependencyReceipt | null, next: DependencyReceipt, committed: DependencyCommittedReceiptReference | null): void {
+function transition(previous: DependencyReceipt | null, next: DependencyReceipt, committed: DependencyCommittedReceiptReference | null,
+  localInstallVerifier?: DependencyLocalInstallProofVerifier): void {
   if (next.revision !== (previous?.revision ?? 0) + 1) fail(Failure.StaleRevision);
   if (!previous) {
     if (next.state === State.Unverified || (next.state === State.Installing && next.preservation.kind === Preserve.KnownFreshAbsence)) return;
@@ -277,6 +281,13 @@ function transition(previous: DependencyReceipt | null, next: DependencyReceipt,
   if (previous.generation !== next.generation) fail(Failure.InvalidTransition);
   if (previous.state === State.Installing && next.state === State.Ready && next.provenance.kind === Install.CompletedInstall &&
     next.provenance.operationId === previous.operationId && next.installKey === previous.requestedKey) return;
+  if (previous.state === State.Installing && next.state === State.Ready && next.provenance.kind === Install.CompletedLocalInstallV1 &&
+      next.provenance.operationId === previous.operationId && next.installKey === previous.requestedKey) {
+    if (!localInstallVerifier) fail(Failure.InvalidTransition);
+    try { localInstallVerifier.assertCompletedLocalInstall({ ...next, provenance: next.provenance }); }
+    catch { fail(Failure.InvalidTransition); }
+    return;
+  }
   if (previous.state === State.Unverified && next.state === State.Ready && next.provenance.kind === Install.LegacyCompared && sameDependencyTree(previous.tree, next.tree)) return;
   if (previous.state === State.Ready && next.state === State.Unverified &&
     (sameDependencyTree(previous.tree, next.tree) || next.reason === DependencyUnverifiedReason.TreeChanged)) return;
