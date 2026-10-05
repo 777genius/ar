@@ -8,6 +8,7 @@ import { assertHostedFdBootstrap, assertHostedFdConfinement, assertHostedFdManag
 import type { FdCollectorProfile } from "@vioxen/subscription-runtime/core";
 import { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
 import { assertHostedDependencyToolParentFrame, assertHostedDependencyToolRelease } from "./hosted-dependency-tool-plan";
+import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-provider-launch";
 
 export { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
 export enum HostedFdLaunchKind { Foreground = "foreground", Provider = "provider", Installer = "installer" }
@@ -58,7 +59,7 @@ export class HostedFdLaunch {
     if (!child.pid || !child.stdin) invalid();
     this.profile = profile; this.input = child.stdin; this.output = child.stdout; this.errorOutput = child.stderr;
     this.proxyBirth = observeHostedFdProcess(child.pid).birth;
-    if (command === "/usr/bin/systemd-run") {
+    if (command === hostedDependencySystemdRunExecutable) {
       const at = args.indexOf("--"); if (at < 0) invalid(); this.serviceArgv = Object.freeze(args.slice(at + 1));
       const roots = args.filter(arg => arg.startsWith("--property=RootDirectory="));
       if (roots.length > 1) invalid(); this.root = roots[0]?.slice("--property=RootDirectory=".length) ?? "";
@@ -335,7 +336,7 @@ export class HostedFdLaunch {
     unit: string, kind: HostedFdLaunchKind): ChildProcess {
     if (!/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider)-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
     const profile = readHostedFdProfile();
-    if (!profile || (command !== profile.node.path && command !== "/usr/bin/systemd-run")) invalid();
+    if (!profile || (command !== profile.node.path && command !== hostedDependencySystemdRunExecutable)) invalid();
     if (command === profile.node.path && !profile.bootstraps.some(pin => pin.path === args[0] &&
         pin.path === "/opt/subscription-runtime/managed-launcher/launch.mjs")) invalid();
     const before = hostedFdTable(process.pid);

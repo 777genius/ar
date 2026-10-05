@@ -1,4 +1,4 @@
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -102,7 +102,7 @@ describe.skipIf(process.platform !== "linux")("finite actual TEST local installe
     expect(f.observe()).toBe(before);
     await writeFile(join(f.stagePath, ".npmrc"), "TEST unexpected config\n");
     expect(f.observe).toThrow("local_stage_changed"); await rm(join(f.stagePath, ".npmrc"));
-    await rm(join(f.stagePath, "packages/b/dist/empty")); expect(f.observe).toThrow();
+    await rmdir(join(f.stagePath, "packages/b/dist/empty")); expect(f.observe).toThrow();
   });
   // Red if plan observation records only matching content and misses physical
   // inode replacement. The real private plan compares these observations.
