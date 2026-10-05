@@ -14,6 +14,8 @@ import { hostedFdSystemdProperties } from "./hosted-fd-prelude";
 import { dependencyToolGuestConfigPath } from "../../../core/dependency-environment/dependency-tool-profile";
 import { abandonHostedDependencyToolPlan, prepareHostedDependencyToolPlan, retainHostedDependencyToolInvocation } from "./hosted-dependency-tool-plan";
 
+export const hostedDependencySystemdRunExecutable = "/usr/bin/systemd-run";
+
 /** Called inside the real private provider reservation fence, before enclosure.
  * The guest never reads host authority. No payload-selected mounts or root dirs.
  */
@@ -116,7 +118,7 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
     "MountAPIVFS=yes", ...mounts,
     `ReadWritePaths=${binding.workspace.canonicalPath} ${home} ${codexHome}${toolCache ? " " + toolCache : ""}`,
     "TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M"];
-  const invocation: CodexAppServerProcessInvocation = { command: "/usr/bin/systemd-run", systemdUnit: unit,
+  const invocation: CodexAppServerProcessInvocation = { command: hostedDependencySystemdRunExecutable, systemdUnit: unit,
     args: ["--quiet", "--wait", "--pipe", "--collect", `--unit=${unit}`, "--service-type=exec",
       "--expand-environment=no", `--working-directory=${input.cwd}`, ...properties.map(p => `--property=${p}`), "--",
       "/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
