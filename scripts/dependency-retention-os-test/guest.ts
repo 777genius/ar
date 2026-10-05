@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
   readdirSync, readFileSync, readlinkSync, readSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { HostedInstallationActivationStore } from "../../dist/worker-codex/hosted-installation-activation.js";
+import { hostedReadonlyPolicyRoot, readHostedPrivateBytes } from "../../dist/worker-codex/hosted-readonly-inputs.js";
 import { HostedReadonlyHostKernel } from "../../dist/worker-codex/hosted-readonly-host-kernel.js";
 import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-readonly-authority.js";
 import { runHostedRuntimeForeground } from "../../dist/worker-codex/hosted-readonly-foreground.js";
@@ -27,7 +28,7 @@ import { cleanEnv, command, digest, directory, directoryIdentity, fileDigest, in
   try { await qualify(evidence); evidence.status = "partial_pass"; }
   catch (error) {
     evidence.failure = error instanceof Error ? error.message.slice(0, 512) : "TEST native qualification failed";
-    if (error instanceof Error) evidence.kernelFailureLocations = kernelFailureLocations(error);
+    if (error instanceof Error) evidence.failureLocations = failureLocations(error);
     process.exitCode = 1;
   } finally { json(runtime + "/guest-evidence.json", evidence, 0o644); }
 }
@@ -130,14 +131,32 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
     throw error;
   }
   results.push({ scenario: "unchanged_cold_host_installation", result: "qualified_actual_finite_inventory", controlGroup });
+  evidence.kernelGatePhase = "private_policy_namespace_setup";
+  // The strict private reader recognizes only a missing leaf beneath existing
+  // trusted ancestry. An absent parent is invalid, never managed-policy absence.
+  assert(!existsSync(hostedReadonlyPolicyRoot)); directory(hostedReadonlyPolicyRoot);
+  const parents = ["/", "/run", "/run/user", "/run/user/0", "/run/user/0/subscription-runtime-host-policy", hostedReadonlyPolicyRoot];
+  const ancestry = parents.map((path, index) => {
+    const stat = lstatSync(path); assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && (stat.mode & 0o022) === 0);
+    if (path === hostedReadonlyPolicyRoot) assert.equal(stat.mode & 0o777, 0o700);
+    return { component: index, uid: stat.uid, mode: stat.mode & 0o777, dev: String(stat.dev), ino: String(stat.ino) };
+  });
+  assert.equal(readdirSync(hostedReadonlyPolicyRoot).length, 0);
+  assert.equal(readHostedPrivateBytes(hostedReadonlyPolicyRoot + "/" + digest(jobId) + ".json", 64 * 1024), null);
+  evidence.privatePolicyNamespace = { ancestry, entries: 0, unchangedReaderMissingLeaf: true };
+  evidence.kernelGatePhase = "write_test_egress_grant";
   await writeHostedTestEgressGrant({ schemaVersion: 1, jobId, jobRootDir: root, workspacePath: workspace,
     profileId: CodexProviderEgressProfileId.TestNpmQualification });
-  store.enrollOrdinary(jobId); store.resumeOrdinary();
+  evidence.kernelGatePhase = "enroll_ordinary"; store.enrollOrdinary(jobId);
+  evidence.kernelGatePhase = "resume_ordinary"; store.resumeOrdinary();
+  evidence.kernelGatePhase = "read_dependency_binding";
   const binding = readHostedDependencyBinding(jobId); assert(binding);
   const env = { ...cleanEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" };
   let readyDigest: string | undefined;
   for (const mode of ["fresh", "hot"] as const) {
+    evidence.kernelGatePhase = mode + "_real_cli";
     assert.equal(await runHostedRuntimeForeground(node, args, workspace, env), 0, `actual ${mode} CLI failed`);
+    evidence.kernelGatePhase = mode + "_receipt_owner_probe";
     const receipt = readHostedDependencyReceipt(binding); assert(receipt);
     const owner = LocalDependencyOwnerStore.open({ rootPath: policy + "/dependency-owners", maxRecordBytes: 16384 });
     try { assert.equal(owner.read(binding.workspace)?.owner, null, "actual creator/drain release unresolved"); }
@@ -171,9 +190,10 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   results.push({ scenario: "source_git_ignored_key_state_output_sentinels", result: "unchanged" });
 }
 
-function kernelFailureLocations(error: Error) {
+function failureLocations(error: Error) {
   // Fixed production source locations only, never raw stack paths or names.
-  const files = ["hosted-readonly-host-kernel", "hosted-readonly-linux-collector", "hosted-readonly-observations"];
+  const files = ["hosted-readonly-host-kernel", "hosted-readonly-linux-collector", "hosted-readonly-observations",
+    "hosted-readonly-inputs", "hosted-installation-activation", "hosted-test-egress-files"];
   return (error.stack ?? "").split("\n").slice(0, 16).flatMap(line => files.flatMap(file => {
     const match = new RegExp(`/(${file}\\.js):(\\d+):(\\d+)\\)?$`).exec(line.trim());
     return match ? [{ file: match[1], line: Number(match[2]), column: Number(match[3]) }] : [];

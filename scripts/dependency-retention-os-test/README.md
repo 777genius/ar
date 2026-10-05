@@ -43,6 +43,12 @@ never delay the production check, and never authorize a retry or installation.
 Unknown unit/group names are digested; raw process names, paths and logs are not
 exported. These observations cannot substitute for the unchanged production gate.
 
+Before ordinary enrollment, the fixture creates the empty fixed managed-policy
+namespace with root ownership and mode 0700. It observes the actual finite
+ancestry and verifies the unchanged private reader reports the missing job leaf.
+No managed policy record is issued. Grant, enrollment, resume and fresh/hot CLI
+phases are separately recorded, with only fixed source locations on failure.
+
 The qualification child has three actual pipes and remains in the supervisor's
 cgroup. It issues only independent TEST inventory/stage/profile input, then calls
 the real installation store, TEST npm grant writer, ordinary enrollment/resume,
