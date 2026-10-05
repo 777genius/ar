@@ -9,7 +9,7 @@ import { constants, lstatSync, mkdirSync, unlinkSync, openSync, fsyncSync, close
 import { lstat, mkdir, open, readFile, readlink, link, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parseDependencyToolRegistration, type DependencyToolRegistration } from "../core/dependency-environment/dependency-tool-profile";
-import { createHostedDependencyToolProfile } from "./hosted-dependency-tool-profile";
+import { createHostedDependencyToolProfile } from "./hosted-dependency-tool-profile-files";
 import {
   assertHostedTestEgressIdentity,
   parseHostedTestEgressGrant,
