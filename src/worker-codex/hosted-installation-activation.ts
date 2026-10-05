@@ -821,7 +821,7 @@ function invalid(): never { throw new Error("hosted_activation_evidence_invalid"
 function encoded(value: unknown): Buffer { return Buffer.from(JSON.stringify(value) + "\n"); }
 function inspectedInstallation(): Omit<HostedInstallation, "schemaVersion" | "installationId"> {
   const inventory = readHostedReadonlyHostInventory();
-  if (inventory.schemaVersion !== 2) invalid();
+  if (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3) invalid();
   const runtimeDirectory = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
   const cliPath = join(runtimeDirectory, "dist/worker-codex/codex-goal-cli.js");
   for (const creator of inventory.ordinaryCreators) {

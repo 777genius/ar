@@ -1,7 +1,8 @@
 import { readHostedDependencyBinding, readHostedDependencyAttempt } from "./hosted-dependency-workspace";
 import { parseScopedActorChain, bindScopedActorChain, type ScopedActorChain, type ScopedEnqueueActor, parseScopedSubmitter, parseScopedStartCorrelation, parseScopedInvocation, scopedDigest, ScopedTerminationKind,
   type ScopedStartCorrelation } from "@vioxen/subscription-runtime/core";
-import { parseImmutableChildSlot } from "@vioxen/subscription-runtime/core";
+import { parseImmutableChildSlot, readSystemBusInfrastructureField } from "@vioxen/subscription-runtime/core";
+import { verifySystemBusInfrastructure } from "./system-bus-infrastructure";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync,
   readlinkSync, readSync, opendirSync, rmdirSync, writeSync, fsyncSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -300,8 +301,14 @@ function validateOrdinaryManagedHistory(activation: Wire, installation: Wire, jo
   same(birth.identity, installation, "runtimeSha,runtimeManifestSha256");
 }
 function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wire): Wire {
-  const inventory = requiredWire("readonly-inventory.json", "schemaVersion,hostId,supervisorUnit,units,runtimeLaunch,ordinaryCreators,disabledCreators");
-  if (inventory.value.schemaVersion !== 2 || inventory.value.hostId !== installation.hostId || sha256(inventory.bytes) !== installation.inventorySha256) invalid();
+  const inventoryBytes = readHostedActivationBytes("readonly-inventory.json");
+  if (!inventoryBytes) invalid();
+  const decoded = decodeHostedActivationBytes(inventoryBytes);
+  const revision = decoded && typeof decoded === "object" && "schemaVersion" in decoded ? decoded.schemaVersion : undefined;
+  const inventory = { bytes: inventoryBytes, value: wire(decoded,
+    "schemaVersion,hostId,supervisorUnit,units,runtimeLaunch,ordinaryCreators,disabledCreators" + (revision === 3 ? ",systemBusInfrastructure" : "")) };
+  if ((revision !== 2 && revision !== 3) || inventory.value.hostId !== installation.hostId || sha256(inventory.bytes) !== installation.inventorySha256) invalid();
+  const systemBusInfrastructure = readSystemBusInfrastructureField(inventory.value);
   const units = rows(inventory.value.units).map(value => {
     const row = wire(value, "name,controlGroup,fragmentSha256"); str(row.name, /^[A-Za-z0-9_@.-]+\.(service|scope)$/);
     if (str(row.name).startsWith("subscription-runtime-hosted-")) invalid();
@@ -309,10 +316,14 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   });
   if (!units.length || units.length > 128) invalid();
   distinct(units.map(row => row.name)); distinct(units.map(row => row.controlGroup));
+  if (systemBusInfrastructure && (inventory.value.supervisorUnit === "dbus.service" ||
+      !units.some(row => row.name === "dbus.service" && row.controlGroup === systemBusInfrastructure.service.controlGroup &&
+        row.fragmentSha256 === systemBusInfrastructure.service.fragmentSha256))) invalid();
   const disabled = rows(inventory.value.disabledCreators);
   if (disabled.length > 128) invalid(); distinct(disabled);
   for (const name of disabled) {
-    if (str(name, /^[A-Za-z0-9_@.-]+\.(service|socket|timer)$/).length > 200 || units.some(row => row.name === name)) invalid();
+    if (str(name, /^[A-Za-z0-9_@.-]+\.(service|socket|timer)$/).length > 200 || units.some(row => row.name === name) ||
+        (systemBusInfrastructure && name === "dbus.socket")) invalid();
   }
   const validateLaunch = (value: unknown) => {
     const launch = wire(value, "command,args,cwd"); canonical(launch.command); canonical(launch.cwd);
@@ -366,6 +377,7 @@ function validateOrdinaryKernel(installation: Wire, activation: Wire, start: Wir
   const creatorPid = str(start.creatorPidBirth).split(":")[0]!;
   if (pidBirth(creatorPid) !== start.creatorPidBirth ||
       readFileSync(`/proc/${creatorPid}/cgroup`, "utf8").trim() !== `0::${owner.controlGroup}`) invalid();
+  if (systemBusInfrastructure) verifySystemBusInfrastructure(systemBusInfrastructure);
   return creator;
 }
 function pidBirth(pid: string): string {

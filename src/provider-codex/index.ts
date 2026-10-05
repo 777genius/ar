@@ -37,3 +37,4 @@ export { withHostedActivationFence, assertHostedActivationFence, assertHostedAct
 export type { HostedActivationFence } from "./app-server/adapters/hosted-process-activation";
 
 export type { HostedRetainedLifetimeBinding, HostedRetainedLifetimePort, HostedScopedActorBarrierPort } from "./app-server/adapters/hosted-process-activation";
+export { verifySystemBusInfrastructure } from "./app-server/adapters/system-bus-infrastructure";
