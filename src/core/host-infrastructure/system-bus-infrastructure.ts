@@ -40,6 +40,7 @@ const handshakeMembers = ["Hello", "RequestName", "ReleaseName", "GetNameOwner",
  * workload identities; filesystem/FD boundaries separately exclude workloads. */
 export const SYSTEM_BUS_CONFIG = `<busconfig>
   <type>system</type>
+  <listen>systemd:</listen>
   <auth>EXTERNAL</auth>
   <policy context="default">
     <deny user="*"/>
