@@ -99,7 +99,7 @@ export function assemble(root: string, state: string, source: string, toolchain:
     signedElfPins.push({ path: path.slice(root.length), sha256: fileDigest(path) });
   };
   captureElf(root + "/usr/lib");
-  for (const path of [SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", "/usr/bin/systemd-run", "/usr/bin/tini", "/usr/bin/unshare"])
+  for (const path of [SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", "/usr/bin/systemd-run", "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/systemctl"])
     captureElf(root + path);
   for (const tool of usrLayout.tools) {
     const stat = lstatSync(root + tool.path, { bigint: true });

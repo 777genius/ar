@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, statfsSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { assemble } from "./assemble.ts";
 import { cleanEnv, command as runCommand, directory, directoryIdentity, fileDigest, json, node, OwnedOsScenario, readonlyStorage, runtime, setupDiagnostic } from "./common.ts";
@@ -15,9 +15,9 @@ const milliseconds = (value: number): bigint => BigInt(value) * 1000000n;
 const workDeadline = outerStarted + milliseconds(27 * 60 * 1000);
 const outerDeadline = outerStarted + milliseconds(30 * 60 * 1000);
 const earlier = (left: bigint, right: bigint): bigint => left < right ? left : right;
-function remaining(deadline: bigint): number {
+function remaining(deadline: bigint, failure = "owned TEST shared monotonic work budget exhausted"): number {
   const value = Number((deadline - process.hrtime.bigint()) / 1000000n);
-  assert(value > 0, "owned TEST shared monotonic budget exhausted"); return value;
+  assert(value > 0, failure); return value;
 }
 function boundedCommand(file: string, args: readonly string[], deadline: bigint, timeout = 30000): string {
   const output = runCommand(file, args, Math.min(timeout, remaining(deadline)));
@@ -125,7 +125,8 @@ try {
   command("/usr/bin/systemctl", ["start", "--no-block", unit]);
   invocationId = command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"]).trim();
   // A queued start may not yet have its invocation. Poll only this registered unit.
-  const bootDeadline = earlier(deadline, process.hrtime.bigint() + milliseconds(90000));
+  const bootStarted = process.hrtime.bigint();
+  const bootDeadline = earlier(deadline, bootStarted + milliseconds(90000));
   const path = root + runtime + "/guest-evidence.json";
   while (!existsSync(path)) {
     remaining(deadline);
@@ -138,7 +139,11 @@ try {
       throw new Error("owned TEST qualification child exited before evidence");
     }
     const started = root + runtime + "/guest-started.json";
-    if (!existsSync(started)) remaining(bootDeadline);
+    evidence.bootObservation = { purpose: "TEST_readiness_observation_only", phase: evidence.guestBootstrap ? "qualification" : "supervisor_start",
+      supervisorMarkerPresent: existsSync(started), readinessLimitMs: 90000,
+      readinessElapsedMs: Number((process.hrtime.bigint() - bootStarted) / 1000000n),
+      scenarioRemainingMs: remaining(deadline), workRemainingMs: remaining(workDeadline) };
+    if (!existsSync(started)) remaining(bootDeadline, "owned TEST guest supervisor readiness deadline exhausted");
     else if (!evidence.guestBootstrap) {
       const stat = lstatSync(started); assert(stat.isFile() && stat.uid === 0 && stat.size < 4096);
       const bootstrap = JSON.parse(readFileSync(started, "utf8")) as Record<string, unknown>;
@@ -203,6 +208,13 @@ try {
           { env: cleanEnv, encoding: "utf8", timeout: Math.min(5000, remaining(deadline)), maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"] });
         evidence.ownedUnitFailure = { properties, journalDiagnostic: setupDiagnostic(journal.stdout ?? ""), journalStatus: journal.status };
         } catch { evidence.ownedUnitDiagnosticUnavailable = true; }
+        try {
+          // Observation starts only after failure and exact outer ownership
+          // checks. Its own allowance cannot consume the stop reservation.
+          const observationDeadline = earlier(deadline - milliseconds(60000), process.hrtime.bigint() + milliseconds(15000));
+          evidence.guestBootFailure = observeGuestBoot(root, registered, unit, invocationId, observationDeadline);
+          assert.equal(command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"], 2000).trim(), invocationId);
+        } catch { delete evidence.guestBootFailure; evidence.guestBootDiagnosticUnavailable = true; }
       }
       command("/usr/bin/systemctl", ["stop", unit], 45000);
       evidence.ownedOsStopped = true;
@@ -218,4 +230,125 @@ try {
   json(owned + "/owned-evidence.json", evidence, 0o644);
 }
 return evidence;
+}
+
+// No result here can authorize a launch. Every query addresses only the
+// already-failed owned guest's PID1 private socket, never a system-bus fallback.
+function observeGuestBoot(root: string, registered: ReturnType<typeof directoryIdentity>, unit: string,
+  invocationId: string, deadline: bigint): Record<string, unknown> {
+  function proc(path: string, bound: number): string {
+    remaining(deadline, "owned TEST boot diagnostic allowance exhausted");
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try { const bytes = Buffer.alloc(bound + 1); let size = 0, count = 0;
+      while ((count = readSync(fd, bytes, size, bytes.length - size, null)) > 0) { size += count; assert(size <= bound); }
+      return bytes.subarray(0, size).toString("utf8");
+    } finally { closeSync(fd); }
+  }
+  const pinsPath = root + runtime + "/os-signed-elf-pins.json";
+  const pinsStat = lstatSync(pinsPath); assert(pinsStat.isFile() && pinsStat.uid === 0 && pinsStat.nlink === 1 &&
+    (pinsStat.mode & 0o777) === 0o600 && pinsStat.size <= 128 * 1024);
+  const signed = JSON.parse(proc(pinsPath, 128 * 1024)) as { schemaVersion: unknown; pins: unknown };
+  assert(signed.schemaVersion === 1 && Array.isArray(signed.pins) && signed.pins.length <= 20000);
+  const busPins = signed.pins.filter((pin: unknown): pin is { path: string; sha256: string } => {
+    if (!pin || typeof pin !== "object" || !("path" in pin) || !("sha256" in pin)) return false;
+    return pin.path === "/usr/bin/systemctl" && typeof pin.sha256 === "string" && /^[a-f0-9]{64}$/.test(pin.sha256);
+  });
+  assert.equal(busPins.length, 1);
+  const systemctl = root + "/usr/bin/systemctl", binary = lstatSync(systemctl, { bigint: true });
+  assert(binary.isFile() && binary.uid === 0n && binary.nlink === 1n && (binary.mode & 0o6022n) === 0n &&
+    binary.size > 0n && binary.size <= 32n * 1024n * 1024n);
+  assert.equal(fileDigest(systemctl), busPins[0]!.sha256);
+  const binaryIdentity = { dev: String(binary.dev), ino: String(binary.ino), bytes: String(binary.size), sha256: busPins[0]!.sha256 };
+  const group = "/system.slice/" + unit;
+  assert.equal(boundedCommand("/usr/bin/systemctl", ["show", unit, "--property=ControlGroup", "--value"], deadline, 2000).trim(), group);
+  const pids = new Set<number>(); let groups = 0;
+  function scan(path: string, depth: number): void {
+    assert(++groups <= 128 && depth <= 8); remaining(deadline);
+    const stat = lstatSync(path); assert(stat.isDirectory() && !stat.isSymbolicLink());
+    for (const row of proc(path + "/cgroup.procs", 32768).trim().split("\n").filter(Boolean)) {
+      assert(/^[1-9][0-9]*$/.test(row)); pids.add(Number(row)); assert(pids.size <= 256);
+    }
+    const names = readdirSync(path); assert(names.length <= 512);
+    for (const name of names) { assert(/^[A-Za-z0-9_.:@-]+$/.test(name));
+      const child = lstatSync(path + "/" + name); if (child.isDirectory()) scan(path + "/" + name, depth + 1); }
+  }
+  scan("/sys/fs/cgroup" + group, 0);
+  const candidates = [...pids].filter(pid => {
+    try { const ids = /^NSpid:\s+([0-9 \t]+)$/m.exec(proc(`/proc/${pid}/status`, 16384))?.[1]?.trim().split(/\s+/).map(Number);
+      return ids && ids.length >= 2 && ids[0] === pid && ids.at(-1) === 1;
+    } catch { return false; }
+  });
+  assert.equal(candidates.length, 1); const pid = candidates[0]!;
+  function identity() {
+    const currentBinary = lstatSync(systemctl, { bigint: true });
+    assert(currentBinary.isFile() && currentBinary.uid === 0n && currentBinary.nlink === 1n && (currentBinary.mode & 0o6022n) === 0n &&
+      currentBinary.dev === binary.dev && currentBinary.ino === binary.ino && currentBinary.size === binary.size);
+    assert.equal(fileDigest(systemctl), binaryIdentity.sha256);
+    const status = proc(`/proc/${pid}/status`, 16384); assert.match(status, /^Uid:\s+0\s+0\s+0\s+0$/m);
+    const ids = /^NSpid:\s+([0-9 \t]+)$/m.exec(status)?.[1]?.trim().split(/\s+/).map(Number);
+    assert(ids && ids.length >= 2 && ids[0] === pid && ids.at(-1) === 1);
+    const cg = proc(`/proc/${pid}/cgroup`, 4096).trim(); assert(cg === "0::" + group || cg.startsWith("0::" + group + "/"));
+    const stat = proc(`/proc/${pid}/stat`, 4096), fields = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/);
+    assert.match(fields[19] ?? "", /^[1-9][0-9]*$/);
+    const currentRoot = statSync(`/proc/${pid}/root`, { bigint: true });
+    assert(currentRoot.isDirectory() && String(currentRoot.dev) === registered.dev && String(currentRoot.ino) === registered.ino);
+    assert.deepEqual(directoryIdentity(root), registered);
+    const exe = statSync(`/proc/${pid}/exe`, { bigint: true }), expected = lstatSync(root + "/usr/lib/systemd/systemd", { bigint: true });
+    assert(expected.isFile() && expected.uid === 0n && expected.nlink === 1n && (expected.mode & 0o022n) === 0n);
+    assert(exe.dev === expected.dev && exe.ino === expected.ino);
+    const mnt = readlinkSync(`/proc/${pid}/ns/mnt`), pidNamespace = readlinkSync(`/proc/${pid}/ns/pid`);
+    assert(mnt !== readlinkSync("/proc/self/ns/mnt") && pidNamespace !== readlinkSync("/proc/self/ns/pid"));
+    // /run is the guest's runtime tmpfs, visible through the authenticated
+    // process-root magic link, not the underlying extracted host directory.
+    const socket = lstatSync(`/proc/${pid}/root/run/systemd/private`, { bigint: true }); assert(socket.isSocket() && socket.uid === 0n);
+    const descriptors = readdirSync(`/proc/${pid}/fd`); assert(descriptors.length <= 4096); const held = new Set<string>();
+    for (const fd of descriptors) { assert(/^[0-9]+$/.test(fd));
+      try { const match = /^socket:\[([1-9][0-9]*)\]$/.exec(readlinkSync(`/proc/${pid}/fd/${fd}`)); if (match) held.add(match[1]!); }
+      catch { /* A concurrently closed FD supplies no listener identity. */ }
+    }
+    const rows = proc(`/proc/${pid}/net/unix`, 2 * 1024 * 1024).trim().split("\n").slice(1); assert(rows.length <= 65536);
+    const listeners = rows.map(row => row.trim().split(/\s+/)).filter(row => row.length === 8 && row[7] === "/run/systemd/private" &&
+      row[4] === "0001" && (Number.parseInt(row[3]!, 16) & 0x10000) !== 0 && held.has(row[6]!));
+    assert.equal(listeners.length, 1);
+    return { pid, birth: fields[19]!, group: cg, rootDev: registered.dev, rootIno: registered.ino,
+      mnt, pidNamespace, listenerInode: listeners[0]![6]!, socketDev: String(socket.dev), socketIno: String(socket.ino) };
+  }
+  const before = identity(); const observations: unknown[] = [], retained: number[] = [];
+  try {
+  // Retained namespace/root handles prevent a target PID reuse between the
+  // checks and nsenter from redirecting even a read-only query outside TEST.
+  for (const suffix of ["ns/mnt", "ns/pid", "root"] as const)
+    retained.push(openSync(`/proc/${pid}/${suffix}`, constants.O_RDONLY));
+  assert.equal(String(fstatSync(retained[0]!, { bigint: true }).ino), /^mnt:\[([0-9]+)\]$/.exec(before.mnt)?.[1]);
+  assert.equal(String(fstatSync(retained[1]!, { bigint: true }).ino), /^pid:\[([0-9]+)\]$/.exec(before.pidNamespace)?.[1]);
+  const retainedRoot = fstatSync(retained[2]!, { bigint: true }); assert(retainedRoot.isDirectory() &&
+    String(retainedRoot.dev) === registered.dev && String(retainedRoot.ino) === registered.ino);
+  assert.deepEqual(identity(), before);
+  for (const name of ["dbus.socket", "dbus.service", "TEST-retention-supervisor.service", "TEST-retention.target"] as const) {
+      assert.deepEqual(identity(), before);
+      const keys = ["Id", "LoadState", "ActiveState", "SubState", "Job", "Result", "MainPID", "ExecMainCode", "ExecMainStatus", "TimeoutStartUSec"];
+      const result = spawnSync("/usr/bin/nsenter", ["--mount=/proc/self/fd/3", "--pid=/proc/self/fd/4", "--root=/proc/self/fd/5", "--wdns=/", "--",
+        "/usr/bin/systemctl", "--system", "--no-pager", "--no-ask-password", "show", "--property=" + keys.join(","), "--", name],
+        { env: { ...cleanEnv, DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/run/systemd/private" }, encoding: "utf8",
+          timeout: Math.min(2000, remaining(deadline)), maxBuffer: 8192,
+          stdio: ["ignore", "pipe", "pipe", retained[0]!, retained[1]!, retained[2]!] });
+      assert.deepEqual(identity(), before);
+      const rows = result.status === 0 && !result.error && result.signal === null ? result.stdout.trim().split("\n") : [];
+      assert(rows.length <= keys.length); const properties: Record<string, string> = {};
+      for (const row of rows) {
+        const [key, value, ...extra] = row.split("=");
+        assert(key && keys.includes(key) && value !== undefined && extra.length === 0 && !(key in properties));
+        // Only fixed scalar status/timer fields, no paths, environment, raw
+        // journal or arbitrary unit/provider names are copied to evidence.
+        assert(/^[A-Za-z0-9_. -]{0,80}$/.test(value)); if (key === "Id") assert.equal(value, name);
+        properties[key] = value;
+      }
+      if (rows.length) assert(properties.Id === name && properties.LoadState && properties.ActiveState && properties.SubState);
+      observations.push({ unit: name, status: result.status, signal: result.signal,
+        failed: !!result.error, properties, diagnostic: setupDiagnostic(result.stderr ?? "") });
+  }
+  assert.deepEqual(identity(), before);
+  return { purpose: "TEST_failed_guest_boot_observation_only", invocationId, pid1: before,
+    address: "unix:path=/run/systemd/private", systemctl: binaryIdentity, observations };
+  } finally { for (const fd of retained) closeSync(fd); }
 }
