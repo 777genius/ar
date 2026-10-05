@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { lstatSync, realpathSync } from "node:fs";
-import { LocalDependencyReceiptStore } from "../../../store-local-file/dependency-environment/local-dependency-receipt-store";
+import { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
 import { DependencyInstallProofKind, sameDependencyWorkspace, DependencyReceiptState,
-  type DependencyReceipt } from "../../../worker-core/dependency-environment/domain/dependency-receipt";
-import { hostedDependencyReceiptHistoryRoot } from "./hosted-dependency-history-path";
-import { assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes } from "./hosted-process-activation";
-import { assertHostedDependencyPhysicalWorkspace, readHostedDependencyBinding, type HostedDependencyBinding } from "./hosted-dependency-workspace";
+  type DependencyReceipt } from "../worker-core/dependency-environment/domain/dependency-receipt";
+import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
+import { assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { assertHostedDependencyPhysicalWorkspace, readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 
 export enum HostedDependencyHistoryStatus { Known = "known", Unknown = "unknown" }
 export enum HostedDependencyHistoryFailure { Unresolved = "unresolved" }

@@ -1,4 +1,5 @@
 import { hostedDependencyProviderInvocation } from "./hosted-dependency-provider-launch";
+import type { DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -168,6 +169,17 @@ export function spawnCodexAppServerProcess(input: {
     throw new Error("hosted_custody_synchronous_fence_required");
   }
   return spawnInvocation(input, invocation);
+}
+
+/** Trusted worker composition captures established Ready history. The worker
+ * executor separately brands this exact returned factory; accepting this port
+ * as a public caller option is never sufficient for v2 admission. */
+export function admittedDependencyToolCodexProcessFactory(readyReader: DependencyToolReadyReader): CodexAppServerProcessFactory {
+  return input => submitHostedOrdinaryProcess(input, (unit, _identity, fence) => {
+    const invocation = hostedDependencyProviderInvocation(fence, unit, input, readyReader);
+    if (!invocation) throw new Error("hosted_dependency_tool_binding_required");
+    return spawnInvocation(input, invocation, (child, release) => releaseHostedOrdinaryProcess(child, release));
+  });
 }
 
 function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
