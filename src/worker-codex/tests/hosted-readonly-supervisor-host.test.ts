@@ -150,7 +150,7 @@ it("late outer completion cannot stop a new recovered generation", () => {
 
 // Exercise the actual CLI handlers, with process creation and host authority
 // substituted. No signal is sent to this test process or to an OS child.
-it.each(["exit", "error", "SIGTERM", "SIGINT", "SIGHUP", "close-failure", "cancelled-zero", "stdin-error", "error-zero"] as const)(
+it.each(["exit", "error", "SIGTERM", "SIGINT", "SIGHUP", "close-failure", "cancelled-zero", "stdin-error", "error-zero", "child-signal", "signal-close-failure"] as const)(
   "outer CLI handles %s without promoting process exit into unit termination", async event => {
     const { ChildProcess } = await import("node:child_process");
     const child = new ChildProcess(), order: string[] = [];
@@ -158,18 +158,29 @@ it.each(["exit", "error", "SIGTERM", "SIGINT", "SIGHUP", "close-failure", "cance
     const { PassThrough } = await import("node:stream");
     Object.defineProperty(child, "stdin", { value: new PassThrough() });
     const killChild = vi.spyOn(child, "kill").mockImplementation(() => { order.push("signal"); return true; });
-    const killSelf = vi.spyOn(process, "kill").mockImplementation(() => true);
+    let lastEffectAtSelfSignal: string | undefined, detachedAtSelfSignal = false;
+    const killSelf = vi.spyOn(process, "kill").mockImplementation(() => {
+      lastEffectAtSelfSignal = order.at(-1);
+      detachedAtSelfSignal = signals.every((signal, index) => {
+        const listeners = process.listeners(signal), previous = before[index]!;
+        return listeners.length === previous.length && listeners.every((listener, i) => listener === previous[i]);
+      });
+      return true;
+    });
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const close = vi.fn(() => {
       order.push("close");
-      if (event === "close-failure") throw new Error("synthetic publication failure");
+      if (event === "close-failure" || event === "signal-close-failure") throw new Error("synthetic publication failure");
     });
     const argv = process.argv, exitCode = process.exitCode;
     const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
     const before = signals.map(signal => process.listeners(signal));
+    let markSubmitted = () => {};
+    const submitted = new Promise<void>(resolve => { markSubmitted = resolve; });
+    let cli: Promise<unknown> | undefined, joined = false;
     vi.doMock("node:child_process", async () => ({
       ...await vi.importActual<typeof import("node:child_process")>("node:child_process"),
-      spawn: () => child,
+      spawn: () => { markSubmitted(); return child; },
     }));
     vi.doMock("../hosted-readonly-supervisor-host", () => ({ HostedReadonlySupervisorHost: class {
       runRuntimeLaunch(_command: string, _args: readonly string[], _cwd: string, submit: (launch: { command: string; args: string[] }) => unknown) { return submit({ command: "/usr/bin/systemd-run", args: [] }); }
@@ -180,7 +191,9 @@ it.each(["exit", "error", "SIGTERM", "SIGINT", "SIGHUP", "close-failure", "cance
       process.argv = ["node", "host-cli", "runtime", "--", "/synthetic/node", "/synthetic/cli"];
       process.exitCode = undefined;
       vi.resetModules();
-      await import("../hosted-readonly-host-launch-cli");
+      cli = import("../hosted-readonly-host-launch-cli");
+      await Promise.race([submitted, cli.then(() => { throw new Error("TEST CLI completed before submission"); })]);
+      expect(child.listenerCount("exit")).toBe(1);
       if (event === "cancelled-zero" || event === "stdin-error" || event === "error-zero") {
         if (event === "cancelled-zero") {
           const handler = process.listeners("SIGTERM").find(listener => !before[0]!.includes(listener));
@@ -190,25 +203,33 @@ it.each(["exit", "error", "SIGTERM", "SIGINT", "SIGHUP", "close-failure", "cance
         if (event !== "error-zero") expect(order).toEqual(["close", "signal"]);
         child.emit("exit", 0, null);
         expect(receipt).not.toHaveBeenCalled();
-        expect(process.exitCode).toBe(70);
       }
       else if (event === "error") child.emit("error", new Error("synthetic asynchronous spawn failure"));
       else if (event === "exit" || event === "close-failure") child.emit("exit", 0, null);
+      else if (event === "child-signal") child.emit("exit", null, "SIGTERM");
       else {
-        const index = signals.indexOf(event);
-        const handler = process.listeners(event).find(listener => !before[index]!.includes(listener));
+        const signal = event === "signal-close-failure" ? "SIGTERM" : event;
+        const index = signals.indexOf(signal);
+        const handler = process.listeners(signal).find(listener => !before[index]!.includes(listener));
         expect(handler).toBeDefined();
-        handler!(event);
+        handler!(signal);
         expect(order).toEqual(["close", "signal"]);
-        expect(killChild).toHaveBeenCalledExactlyOnceWith(event);
-        child.emit("exit", null, event);
-        expect(killSelf).toHaveBeenCalledExactlyOnceWith(process.pid, event);
+        expect(killChild).toHaveBeenCalledExactlyOnceWith(signal);
+        child.emit("exit", null, signal);
       }
+      await cli; joined = true;
+      if (event === "child-signal" || event === "SIGTERM" || event === "SIGINT" || event === "SIGHUP") {
+        expect(killSelf).toHaveBeenCalledExactlyOnceWith(process.pid, event === "child-signal" ? "SIGTERM" : event);
+        expect(lastEffectAtSelfSignal).toBe("close"); expect(detachedAtSelfSignal).toBe(true);
+        expect(receipt).not.toHaveBeenCalled();
+      } else expect(killSelf).not.toHaveBeenCalled();
       expect(close).toHaveBeenCalled();
-      if (event === "error" || event === "close-failure") expect(process.exitCode).toBe(70);
+      if (event === "error" || event === "close-failure" || event === "cancelled-zero" || event === "stdin-error" ||
+          event === "error-zero" || event === "signal-close-failure") expect(process.exitCode).toBe(70);
       else if (event === "exit") { expect(process.exitCode).toBe(0); expect(receipt).toHaveBeenCalledOnce(); }
       signals.forEach((signal, index) => expect(process.listeners(signal)).toEqual(before[index]));
     } finally {
+      if (cli && !joined) { child.emit("exit", 70, null); await cli; }
       signals.forEach((signal, index) => {
         for (const listener of process.listeners(signal)) if (!before[index]!.includes(listener)) process.off(signal, listener);
       });
@@ -240,7 +261,7 @@ it.each(["valid", "command-injection", "owner-denied"])("outer bootstrap %s uses
   Object.defineProperty(child, "stdin", { value: new PassThrough() });
   vi.spyOn(process, "stdin", "get").mockReturnValue(stdin as unknown as NodeJS.ReadStream & { fd: 0 });
   const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-  vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("synthetic-bootstrap-denial"); });
+  const exit = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("synthetic-bootstrap-denial"); });
   const spawn = vi.fn(() => child), owner = vi.fn(() => { if (scenario === "owner-denied") throw new Error("synthetic owner denied"); });
   vi.doMock("node:child_process", async () => ({ ...await vi.importActual<typeof import("node:child_process")>("node:child_process"), spawn }));
   vi.doMock("../hosted-readonly-supervisor-host", () => ({ HostedReadonlySupervisorHost: class {
@@ -257,14 +278,18 @@ it.each(["valid", "command-injection", "owner-denied"])("outer bootstrap %s uses
     const frame = { schemaVersion: 1, env: { SYNTHETIC_PRIVATE: "never-log-this" },
       ...(scenario === "command-injection" ? { command: "/unreviewed/node" } : {}) };
     stdin.emit("data", Buffer.from(JSON.stringify(frame)));
+    const listeners = stdin.listeners("end"); expect(listeners).toHaveLength(1);
+    const end = listeners[0]; if (!end) throw new Error("TEST bootstrap end handler absent");
     if (scenario === "valid") {
-      stdin.emit("end");
+      await end.call(stdin);
       expect(spawn).toHaveBeenCalledWith("/reviewed/node", ["/reviewed/cli.js"], {
         cwd: "/synthetic/W", env: frame.env, stdio: ["pipe", "inherit", "inherit"],
       });
     } else {
-      expect(() => stdin.emit("end")).toThrow("synthetic-bootstrap-denial");
+      await expect(end.call(stdin)).rejects.toThrow("synthetic-bootstrap-denial");
+      expect(exit).toHaveBeenCalledWith(70);
       expect(spawn).not.toHaveBeenCalled();
+      expect(stderr).toHaveBeenCalledWith("hosted_custody_runtime_bootstrap_denied\n");
     }
     expect(JSON.stringify(stderr.mock.calls)).not.toContain("never-log-this");
   } finally {
