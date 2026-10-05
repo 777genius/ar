@@ -31,7 +31,7 @@ import { readHostedDependencyReceipt } from "../../dist/worker-codex/hosted-depe
 import { fdCollectorProfilePath, FdCollectorRenderer, parseFdCollectorProfile, parseFdCollectorRows,
   type FdCollectorProfile, type FdExecutablePin, type FdFilePin } from "../../dist/core/host-infrastructure/fd-collector-profile.js";
 import { assertHostedFdInternals, observeHostedFdProcess, hostedFdTable } from "../../dist/provider-codex/app-server/adapters/hosted-fd-observation.js";
-import { hostedFdLaunch, hostedFdInvocationUnit, spawnHostedFdChild, HostedFdLaunchKind, HostedForegroundArtifactKind } from "../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js";
+import { hostedFdLaunch, hostedFdInvocationUnit, spawnHostedFdChild, HostedFdLaunchKind, HostedForegroundArtifactKind, type HostedForegroundResult } from "../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js";
 import { startResearchLaunch } from "../../dist/worker-codex/research-launch-owner.js";
 import { assertResearchInitialRoot } from "../../dist/worker-codex/research-launch-host.js";
 import { cleanEnv, command, ControlSinkPhase, digest, directory, directoryIdentity, fileDigest, installedArtifactDigest, json, node, OwnedOsScenario,
@@ -527,7 +527,7 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
   assert.equal(failedForeground.artifacts.length, 2);
   for (const [kind, suffix, bytes] of [[HostedForegroundArtifactKind.Stdout, "stdout", failedSummary.foregroundOutput.stdout],
     [HostedForegroundArtifactKind.Stderr, "stderr", failedSummary.foregroundOutput.stderr]] as const) {
-    const refs = failedForeground.artifacts.filter(ref => ref.kind === kind); assert.equal(refs.length, 1);
+    const refs: HostedForegroundResult["artifacts"] = failedForeground.artifacts.filter(ref => ref.kind === kind); assert.equal(refs.length, 1);
     const ref = refs[0]!; assert.equal(ref.path, policy + "/foreground-output/" + failedForeground.unit + "." + suffix);
     const stat = lstatSync(ref.path); assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid === 0 && stat.nlink === 1 && (stat.mode & 0o777) === 0o600);
     assert.equal(String(stat.dev), ref.dev); assert.equal(String(stat.ino), ref.ino);
