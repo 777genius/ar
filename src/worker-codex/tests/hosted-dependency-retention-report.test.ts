@@ -59,6 +59,8 @@ vi.mock("node:fs", async original => {
       return real.readFileSync(typeof path === "string" ? local(path) : path, options);
     },
     openSync: (path: string, flags: number, mode?: number) => real.openSync(local(path), flags, mode),
+    readdirSync: (path: Parameters<typeof real.readdirSync>[0], options: Parameters<typeof real.readdirSync>[1]) =>
+      real.readdirSync(typeof path === "string" ? local(path) : path, options),
     mkdirSync: (path: string, options?: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), options),
     rmdirSync: (path: string) => real.rmdirSync(local(path)),
   };
