@@ -38,6 +38,8 @@ export enum DependencyTreeObservationFailure {
   SpecialFile = "special_file",
   Hardlink = "hardlink",
   ExternalSymlink = "external_symlink",
+  InvalidAllocation = "invalid_allocation",
+  AllocationChanged = "allocation_changed",
   Unstable = "unstable",
   Bounds = "bounds",
   Access = "access",
@@ -49,6 +51,27 @@ export type DependencyObservedEntryIdentity = {
   readonly mountId: string;
 };
 
+export enum DependencyTreeAllocationBasis {
+  RetainedInodeBlocks512 = "retained_inode_blocks_512",
+}
+
+export type DependencyTreeAllocationCategory = {
+  readonly inodeCount: string;
+  readonly allocatedBytesEstimate: string;
+};
+
+// Factual target-inode observation only. Shared/COW extents, filesystem metadata,
+// concurrent host effects and reserved blocks prevent a guaranteed reclaim claim.
+// Physical allocation and scan timing never enter canonical manifest v1 identity.
+export type DependencyTreeMeasurement = {
+  readonly allocationBasis: DependencyTreeAllocationBasis;
+  readonly allocatedBytesEstimate: string;
+  readonly allocationByKind: Readonly<Record<DependencyManifestEntryKind, DependencyTreeAllocationCategory>>;
+  // Rounded up actual monotonic elapsed time through inventory/validation/hash;
+  // retained-descriptor close time is outside this scan observation.
+  readonly observedScanDurationMs: string;
+};
+
 // Content identity deliberately excludes inode, device, timestamps and mount
 // IDs. Equal independent installs can share the protected content blob.
 export type DependencyCapturedTreeObservation =
@@ -56,7 +79,8 @@ export type DependencyCapturedTreeObservation =
       readonly workspace: DependencyWorkspaceIdentity; readonly tree: DependencyTreeIdentity;
       readonly mountId: string; readonly canonicalBytes: Uint8Array; readonly digest: string;
       readonly entries: readonly DependencyManifestEntry[];
-      readonly identities: readonly DependencyObservedEntryIdentity[]; readonly totalBytes: string }
+      readonly identities: readonly DependencyObservedEntryIdentity[]; readonly totalBytes: string;
+      readonly measurement: DependencyTreeMeasurement }
   | { readonly status: DependencyTreeObservationStatus.Incomplete;
       readonly reason: DependencyTreeObservationFailure };
 
