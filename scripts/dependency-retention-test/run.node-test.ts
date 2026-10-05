@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync,
-  readSync, realpathSync, writeFileSync } from "node:fs";
+  readSync, realpathSync, writeFileSync, writeSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-readonly-authority.js";
@@ -41,6 +41,39 @@ const identity = (path: string) => {
   assert(s.isDirectory() && !s.isSymbolicLink());
   return { canonicalPath: path, dev: String(s.dev), ino: String(s.ino) };
 };
+// Finite, erasable TEST labels: this harness runs with Node type stripping.
+const bindCanaryStages = ["fixture_identity", "mount_namespace", "user_namespace", "baseline_inventory",
+  "same_device", "make_private", "bind_mount", "mounted_inventory", "rename_veto", "sentinels", "unmount"] as const;
+type BindCanaryStage = typeof bindCanaryStages[number];
+const bindCanaryCodes = ["EACCES", "EPERM", "ENOENT", "EINVAL", "EBUSY", "ERR_ASSERTION", "TEST_COMMAND", "OTHER"] as const;
+function bindCanaryDiagnostics(text: string): unknown[] {
+  const records: unknown[] = [];
+  for (const match of text.matchAll(/^dependency_bind_canary_v1 (.{1,512})$/gm)) {
+    if (records.length === 2) break;
+    try {
+      const value = JSON.parse(match[1] ?? "");
+      if (!value || typeof value !== "object" || Array.isArray(value) ||
+          Object.keys(value).sort().join(",") !== "code,commandStatus,operationNotPermitted,permissionDenied,stage" ||
+          !bindCanaryStages.some(stage => stage === value.stage) || !bindCanaryCodes.some(code => code === value.code) ||
+          !(value.commandStatus === null || (Number.isInteger(value.commandStatus) && value.commandStatus >= 0 && value.commandStatus <= 255)) ||
+          typeof value.permissionDenied !== "boolean" || typeof value.operationNotPermitted !== "boolean") continue;
+      records.push({ stage: value.stage, code: value.code, commandStatus: value.commandStatus,
+        permissionDenied: value.permissionDenied, operationNotPermitted: value.operationNotPermitted });
+    } catch { /* No raw or malformed child output enters evidence. */ }
+  }
+  return records;
+}
+async function bindCanaryStep<T>(stage: BindCanaryStage, operation: () => T | Promise<T>): Promise<T> {
+  try { return await operation(); } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+    const fixedCode = bindCanaryCodes.find(known => known === code) ?? (error instanceof TestCommandFailure ? "TEST_COMMAND" : "OTHER");
+    const classes = error instanceof TestCommandFailure ? error.runtime.classifications : [];
+    writeSync(2, "dependency_bind_canary_v1 " + JSON.stringify({ stage, code: fixedCode,
+      commandStatus: error instanceof TestCommandFailure ? error.status : null,
+      permissionDenied: classes.includes("Permission denied"), operationNotPermitted: classes.includes("Operation not permitted") }) + "\n");
+    throw error;
+  }
+}
 function runtimeExecDiagnostics(text: string) {
   // Public fixed ELF names only. Never retain raw subprocess lines or paths.
   const names = ["libc.so.6", "libcap-ng.so.0", "libstdc++.so.6", "libgcc_s.so.1", "libm.so.6", "libdl.so.2",
@@ -55,6 +88,9 @@ function runtimeExecDiagnostics(text: string) {
   const missing = [...text.matchAll(/(?:error while loading shared libraries|error while loading shared library): ([A-Za-z0-9_.+-]{1,128}):/g)]
     .map(match => match[1]).filter((name): name is string => name !== undefined);
   return { classifications: classes.filter(message => text.includes(message)),
+    bindCanary: bindCanaryDiagnostics(text),
+    unshareFailures: ["unshare failed", "cannot change root filesystem propagation", "setgroups failed", "setgid failed", "setuid failed",
+      "fork failed", "waitpid failed", "child exit failed"].filter(stage => text.includes("unshare: " + stage + ":")),
     bootstrapPreflight: bootstrapPreflightDiagnostic(text),
     privilegeDropFailures: stages.filter(stage => new RegExp(`(?:^|\\n)setpriv: ${stage}:`).test(text)),
     missingLibraries: names.filter(name => missing.includes(name)), unlistedMissingLibrary: missing.some(name => !names.includes(name)),
@@ -267,35 +303,43 @@ function privateJson(path: string, value: unknown): void {
 
 async function sameDeviceBindVeto(root: string): Promise<void> {
   // Only this fresh mount namespace may mount these fresh fixture directories.
-  assert.equal(process.argv[2], "mount-veto");
-  assert(root.startsWith(policy + "/dependency-test-jobs/jobs/TEST-native-"));
-  assert.notEqual(readlinkSync("/proc/self/ns/mnt"), readlinkSync("/proc/1/ns/mnt"));
-  assert.notEqual(readlinkSync("/proc/self/ns/user"), readlinkSync("/proc/1/ns/user"));
+  await bindCanaryStep("fixture_identity", () => {
+    assert.equal(process.argv[2], "mount-veto");
+    assert(root.startsWith(policy + "/dependency-test-jobs/jobs/TEST-native-"));
+  });
+  await bindCanaryStep("mount_namespace", () => assert.notEqual(readlinkSync("/proc/self/ns/mnt"), readlinkSync("/proc/1/ns/mnt")));
+  await bindCanaryStep("user_namespace", () => assert.notEqual(readlinkSync("/proc/self/ns/user"), readlinkSync("/proc/1/ns/user")));
   const workspace = root + "/mount-workspace", external = root + "/mount-external", trash = root + "/mount-trash";
-  const baseline = await observeDependencyTree({ workspacePath: workspace, treeName: "node_modules", limits });
-  assert.equal(baseline.status, DependencyTreeObservationStatus.Complete);
+  const baseline = await bindCanaryStep("baseline_inventory", async () => {
+    const observed = await observeDependencyTree({ workspacePath: workspace, treeName: "node_modules", limits });
+    assert.equal(observed.status, DependencyTreeObservationStatus.Complete); return observed;
+  });
   if (baseline.status !== DependencyTreeObservationStatus.Complete) throw new Error("TEST baseline incomplete");
-  assert.equal(lstatSync(external).dev, lstatSync(workspace).dev);
-  command("/usr/bin/mount", ["--make-rprivate", "/"]);
-  command("/usr/bin/mount", ["--bind", external, workspace + "/node_modules/mounted"]);
+  await bindCanaryStep("same_device", () => assert.equal(lstatSync(external).dev, lstatSync(workspace).dev));
+  await bindCanaryStep("make_private", () => command("/usr/bin/mount", ["--make-rprivate", "/"]));
+  await bindCanaryStep("bind_mount", () => command("/usr/bin/mount", ["--bind", external, workspace + "/node_modules/mounted"]));
   try {
-    const mounted = await observeDependencyTree({ workspacePath: workspace, treeName: "node_modules", limits });
-    assert.equal(mounted.status, DependencyTreeObservationStatus.Incomplete);
-    if (mounted.status !== DependencyTreeObservationStatus.Incomplete) throw new Error("TEST mount inventory unexpectedly complete");
-    assert.equal(mounted.reason, DependencyTreeObservationFailure.MountCrossing);
+    await bindCanaryStep("mounted_inventory", async () => {
+      const mounted = await observeDependencyTree({ workspacePath: workspace, treeName: "node_modules", limits });
+      assert.equal(mounted.status, DependencyTreeObservationStatus.Incomplete);
+      if (mounted.status !== DependencyTreeObservationStatus.Incomplete) throw new Error("TEST mount inventory unexpectedly complete");
+      assert.equal(mounted.reason, DependencyTreeObservationFailure.MountCrossing);
+    });
     const operationId = randomUUID();
-    await assert.rejects(openDependencyTreeRename({ workspace: identity(workspace),
+    await bindCanaryStep("rename_veto", () => assert.rejects(openDependencyTreeRename({ workspace: identity(workspace),
       trash: { operationId, originalTree: baseline.tree, destinationName: `dependency-${operationId}`,
         destinationParent: identity(trash) }, manifestCanonicalBytes: baseline.canonicalBytes,
       manifestDigest: baseline.digest, limits }),
       (error: unknown) => error instanceof DependencyTreeEffectError && error.reason === DependencyTreeEffectFailure.ManifestMismatch,
-      "mount must veto before rename");
-    assert(!existsSync(trash + `/dependency-${operationId}`));
-    assert.equal(readFileSync(external + "/sentinel", "utf8"), "external TEST original\n");
-    assert(existsSync(workspace + "/node_modules/original"));
-    assert.equal(lstatSync(trash).isDirectory(), true);
+      "mount must veto before rename"));
+    await bindCanaryStep("sentinels", () => {
+      assert(!existsSync(trash + `/dependency-${operationId}`));
+      assert.equal(readFileSync(external + "/sentinel", "utf8"), "external TEST original\n");
+      assert(existsSync(workspace + "/node_modules/original"));
+      assert.equal(lstatSync(trash).isDirectory(), true);
+    });
   } finally {
-    command("/usr/bin/umount", ["--", workspace + "/node_modules/mounted"]);
+    await bindCanaryStep("unmount", () => command("/usr/bin/umount", ["--", workspace + "/node_modules/mounted"]));
   }
 }
 
@@ -530,8 +574,14 @@ async function run(): Promise<void> {
     for (const relative of ["mount-workspace/node_modules/mounted", "mount-external", "mount-trash"]) privateDirectory(root + "/" + relative);
     writeFileSync(root + "/mount-workspace/node_modules/original", "original TEST tree\n", { flag: "wx", mode: 0o600 });
     writeFileSync(root + "/mount-external/sentinel", "external TEST original\n", { flag: "wx", mode: 0o600 });
-    command("/usr/bin/unshare", ["--user", "--map-root-user", "--mount", "--fork", "--",
-      process.execPath, "--experimental-strip-types", script, "mount-veto", root]);
+    try {
+      command("/usr/bin/unshare", ["--user", "--map-root-user", "--mount", "--fork", "--",
+        process.execPath, "--experimental-strip-types", script, "mount-veto", root]);
+    } catch (error) {
+      facts.bindCanaryFailure = error instanceof TestCommandFailure ? { status: error.status, completed: error.completed,
+        diagnostics: error.runtime } : { status: null, completed: false };
+      throw error;
+    }
     results.push({ scenario: "fresh_user_mount_namespace_same_device_bind", result: "veto_before_rename_external_sentinel_unchanged" });
     assert.deepEqual(before, sentinels.map(path => ({ path, sha256: hash(readFileSync(path)), ino: String(lstatSync(path).ino) })));
     results.push({ scenario: "source_git_ignored_key_state_output_sentinels", result: "unchanged_bytes_and_inodes" });
@@ -549,7 +599,7 @@ async function run(): Promise<void> {
 }
 
 if (process.argv[2] === "mount-veto") {
-  const root = process.argv[3]; assert(root); await sameDeviceBindVeto(root);
+  try { await sameDeviceBindVeto(process.argv[3] ?? ""); } catch { process.exitCode = 1; }
 } else {
   await run();
 }
