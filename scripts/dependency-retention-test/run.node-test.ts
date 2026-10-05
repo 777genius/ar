@@ -301,14 +301,25 @@ function privateJson(path: string, value: unknown): void {
   writeFileSync(path, JSON.stringify(value) + "\n", { flag: "wx", mode: 0o600 });
 }
 
-async function sameDeviceBindVeto(root: string): Promise<void> {
+function initialBindCanaryNamespaces(): { mount: string; user: string } {
+  assert.equal(process.getuid?.(), 0); assert.equal(process.geteuid?.(), 0);
+  const mount = readlinkSync("/proc/self/ns/mnt"), user = readlinkSync("/proc/self/ns/user");
+  assert.match(mount, /^mnt:\[[0-9]{1,20}\]$/); assert.match(user, /^user:\[[0-9]{1,20}\]$/);
+  assert.equal(mount, readlinkSync("/proc/1/ns/mnt")); assert.equal(user, readlinkSync("/proc/1/ns/user"));
+  return { mount, user };
+}
+async function sameDeviceBindVeto(root: string, initialMount: string, initialUser: string): Promise<void> {
   // Only this fresh mount namespace may mount these fresh fixture directories.
   await bindCanaryStep("fixture_identity", () => {
+    assert.equal(process.argv.length, 6);
     assert.equal(process.argv[2], "mount-veto");
     assert(root.startsWith(policy + "/dependency-test-jobs/jobs/TEST-native-"));
+    assert.match(initialMount, /^mnt:\[[0-9]{1,20}\]$/); assert.match(initialUser, /^user:\[[0-9]{1,20}\]$/);
   });
-  await bindCanaryStep("mount_namespace", () => assert.notEqual(readlinkSync("/proc/self/ns/mnt"), readlinkSync("/proc/1/ns/mnt")));
-  await bindCanaryStep("user_namespace", () => assert.notEqual(readlinkSync("/proc/self/ns/user"), readlinkSync("/proc/1/ns/user")));
+  // PID 1's namespace links require authority in its initial user namespace.
+  // These exact kernel facts were captured by our trusted parent before unshare.
+  await bindCanaryStep("mount_namespace", () => assert.notEqual(readlinkSync("/proc/self/ns/mnt"), initialMount));
+  await bindCanaryStep("user_namespace", () => assert.notEqual(readlinkSync("/proc/self/ns/user"), initialUser));
   const workspace = root + "/mount-workspace", external = root + "/mount-external", trash = root + "/mount-trash";
   const baseline = await bindCanaryStep("baseline_inventory", async () => {
     const observed = await observeDependencyTree({ workspacePath: workspace, treeName: "node_modules", limits });
@@ -574,9 +585,11 @@ async function run(): Promise<void> {
     for (const relative of ["mount-workspace/node_modules/mounted", "mount-external", "mount-trash"]) privateDirectory(root + "/" + relative);
     writeFileSync(root + "/mount-workspace/node_modules/original", "original TEST tree\n", { flag: "wx", mode: 0o600 });
     writeFileSync(root + "/mount-external/sentinel", "external TEST original\n", { flag: "wx", mode: 0o600 });
+    const initialNamespaces = initialBindCanaryNamespaces(); // Kernel facts, never a caller-supplied authority flag.
+    facts.bindCanaryInitialNamespaces = initialNamespaces;
     try {
       command("/usr/bin/unshare", ["--user", "--map-root-user", "--mount", "--fork", "--",
-        process.execPath, "--experimental-strip-types", script, "mount-veto", root]);
+        process.execPath, "--experimental-strip-types", script, "mount-veto", root, initialNamespaces.mount, initialNamespaces.user]);
     } catch (error) {
       facts.bindCanaryFailure = error instanceof TestCommandFailure ? { status: error.status, completed: error.completed,
         diagnostics: error.runtime } : { status: null, completed: false };
@@ -599,7 +612,8 @@ async function run(): Promise<void> {
 }
 
 if (process.argv[2] === "mount-veto") {
-  try { await sameDeviceBindVeto(process.argv[3] ?? ""); } catch { process.exitCode = 1; }
+  try { await sameDeviceBindVeto(process.argv[3] ?? "", process.argv[4] ?? "", process.argv[5] ?? ""); }
+  catch { process.exitCode = 1; }
 } else {
   await run();
 }
