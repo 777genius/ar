@@ -49,7 +49,8 @@ async function fixture() {
   const pkg = { name: "test-local-root", version: "1.0.0", private: true, workspaces: ["packages/a"], dependencies: { a: "*" } };
   await writeFile(join(workspacePath, "package.json"), encode(pkg), { mode: 0o644 });
   await writeFile(join(workspacePath, "package-lock.json"), encode({ name: pkg.name, version: pkg.version, lockfileVersion: 3, requires: true,
-    packages: { "": pkg, "packages/a": { name: "a", version: "1.0.0" }, "node_modules/a": { resolved: "packages/a", link: true } } }), { mode: 0o644 });
+    packages: { "": { name: pkg.name, version: pkg.version, workspaces: pkg.workspaces, dependencies: pkg.dependencies },
+      "packages/a": { name: "a", version: "1.0.0" }, "node_modules/a": { resolved: "packages/a", link: true } } }), { mode: 0o644 });
   await writeFile(join(workspacePath, "packages/a/package.json"), encode({ name: "a", version: "1.0.0", main: "code.js" }), { mode: 0o644 });
   await writeFile(join(workspacePath, "packages/a/code.js"), "TEST original source", { mode: 0o644 });
   const captured = await captureNpmLocalClosure({ workspacePath, maxInputBytes: 1024 * 1024, maxEntries: 2048, maxPackages: 16, maxDurationMs: 10000 });
