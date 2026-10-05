@@ -1,5 +1,6 @@
 import { registerManagedInstallationAdmissionTests } from "./hosted-managed-installation-admission-test-support";
 import { registerDependencyConsumerAdmissionTests } from "./hosted-dependency-consumer-admission-test-support";
+import { registerManifestPlacementInstallationTests } from "./hosted-manifest-placement-installation-test-support";
 import { registerKeyedCorrelationTests, registerChildForegroundDeadlineTests } from "./hosted-child-foreground-deadline-test-support";
 import { routeHostedGoalLaunch, stopHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import { codexGoalAccountSlots, runCodexGoal } from "../codex-goal-runner";
@@ -15,7 +16,7 @@ import { admitHostedReadonlyInputs } from "../hosted-readonly-admission";
 import { EventEmitter } from "node:events";
 import { spawnCodexAppServerProcess, signalCodexAppServerChildGroup } from "../../provider-codex/app-server/adapters/node-app-server-process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,8 +29,6 @@ import { HostedReadonlySupervisorHost } from "../hosted-readonly-supervisor-host
 import { ordinaryCompletionBytes } from "../hosted-readonly-host-kernel";
 import { readonlyCustodySnapshot } from "../hosted-readonly-custody";
 import { HostedInstallationActivationStore, readHostedOrdinaryBirth, readHostedOrdinaryRuntime } from "../hosted-installation-activation";
-import { HostedManifestLimitsRevision, HostedManifestPlacementFailure,
-  openHostedDependencyManifestPlacement } from "../hosted-dependency-manifest-placement";
 
 // Real private record I/O and real installation/kernel composition. Only finite
 // synthetic /proc, systemd and private filesystem facts replace the actual host.
@@ -172,56 +171,7 @@ afterEach(() => { rmSync(fixture.root, { recursive: true, force: true }); vi.res
 
 registerDependencyConsumerAdmissionTests({ fixture, stageName, runtimeDirectory, local, put, read });
 
-describe.skipIf(process.platform !== "linux")("actual fresh installation manifest-placement hook", () => {
-  async function prepareScratch(configured: boolean) {
-    const real = await vi.importActual<typeof import("node:fs")>("node:fs");
-    fixture.manifestMountInfo = real.readFileSync("/proc/self/mountinfo", "utf8");
-    mkdirSync(local(manifestScratch), { mode: 0o700 });
-    const jobId = "TEST-manifest-placement", jobRootDir = root + "/dependency-test-jobs/jobs/" + jobId;
-    const launch = { command: process.execPath, args: [runtimeDirectory + "/dist/worker-codex/codex-goal-cli.js", "run",
-      "--task-id", jobId, "--job-root", jobRootDir, "--workspace", jobRootDir + "/workspace"], cwd: jobRootDir + "/workspace" };
-    put("readonly-inventory.json", { ...read("readonly-inventory.json"), runtimeLaunch: launch,
-      ordinaryCreators: [{ creatorId: "TEST-manifest-creator", jobId, jobRootDir, workspacePath: launch.cwd, launch }] });
-    const fd = openSync(manifestScratch, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-    try {
-      const stat = fstatSync(fd, { bigint: true });
-      const mountId = /^mnt_id:\s+([1-9][0-9]*)$/m.exec(real.readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"))?.[1];
-      if (!mountId) throw new Error("TEST scratch mount identity unavailable");
-      const scratchRoot = { canonicalPath: manifestScratch, dev: String(stat.dev), ino: String(stat.ino), mountId };
-      if (configured) put("dependency-manifest-storage-policy.json", { version: 1, scratchRoot, bootId: fixture.boot,
-        limitsRevision: HostedManifestLimitsRevision.TestUnqualifiedV1 });
-      return scratchRoot;
-    } finally { closeSync(fd); }
-  }
-  it("issues scratch placement through install and preserves source and legacy-root bytes", async () => {
-    // Red if createInstallation drops the issuer hook: no placement exists and
-    // the real factory refuses. Direct issuer tests do not cover this call site.
-    const scratchRoot = await prepareScratch(true), source = join(fixture.root, "managed-W/input/TEST-source");
-    writeFileSync(source, "TEST original source", { mode: 0o600 });
-    new HostedInstallationActivationStore().install();
-    const placement = read("dependency-manifest-placement.json");
-    expect(placement.installation).toEqual(read("host-installation.json")); expect(placement.scratchRoot).toEqual(scratchRoot);
-    expect(placement.blobs.canonicalPath).toBe(manifestScratch + "/dependency-manifests/" + placement.installation.installationId);
-    mkdirSync(join(fixture.root, "dependency-manifests"), { mode: 0o700 });
-    const legacy = join(fixture.root, "dependency-manifests/TEST-retained"); writeFileSync(legacy, "TEST old blob bytes", { mode: 0o600 });
-    const store = await openHostedDependencyManifestPlacement(), bytes = Buffer.from("TEST hook manifest bytes");
-    let digest: string;
-    try { digest = await store.put(bytes); expect(await store.get(digest)).toEqual(bytes); } finally { await store.close(); }
-    withHostedActivationFence(fence => store.assertCurrent(fence));
-    expect(readdirSync(local(placement.blobs.canonicalPath))).toEqual([digest + ".gz"]);
-    expect(readdirSync(join(fixture.root, "dependency-manifests"))).toEqual(["TEST-retained"]);
-    expect(readFileSync(legacy, "utf8")).toBe("TEST old blob bytes"); expect(readFileSync(source, "utf8")).toBe("TEST original source");
-  });
-  it("preserves unmanaged install without manufacturing placement or falling back to legacy blobs", async () => {
-    await prepareScratch(false); new HostedInstallationActivationStore().install();
-    mkdirSync(join(fixture.root, "dependency-manifests"), { mode: 0o700 });
-    const legacy = join(fixture.root, "dependency-manifests/TEST-retained"); writeFileSync(legacy, "TEST legacy original", { mode: 0o600 });
-    await expect(openHostedDependencyManifestPlacement()).rejects.toMatchObject({ reason: HostedManifestPlacementFailure.Unsupported });
-    expect(readdirSync(local(manifestScratch))).toEqual([]);
-    expect(() => read("dependency-manifest-placement.json")).toThrow();
-    expect(readFileSync(legacy, "utf8")).toBe("TEST legacy original");
-  });
-});
+registerManifestPlacementInstallationTests({ fixture, root, manifestScratch, runtimeDirectory, local, put, read });
 
 describe("trusted same-artifact installation and ordinary origin enrollment", () => {
   it("derives installation from reviewed stage/inventory, enrolls configured identity and explicitly resumes", () => {
