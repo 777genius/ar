@@ -10,6 +10,7 @@ import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysica
   readHostedDependencyBinding, readHostedDependencyAttempt, assertHostedDependencyStartAllowed } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import { isHostedOrdinaryRuntime } from "./hosted-installation-activation";
+import { qualifyHostedDependencyToolClosure } from "./hosted-dependency-tool-profile";
 import { hasHostedDependencyFreshAbsence, materializeHostedDependencyAbsence, matchesHostedDependencyReady,
   readHostedDependencyReceipt, hostedDependencyObservationLimits, readHostedDependencyKeyInputs,
   assertHostedDependencyKeyInputsCurrent } from "./hosted-dependency-materialization";
@@ -74,6 +75,9 @@ export async function admitHostedDependencyConsumer(config: CodexGoalRunConfig):
       treeName: "node_modules", expectedWorkspace: admission.binding.workspace, limits: hostedDependencyObservationLimits });
     if (observation.status !== DependencyTreeObservationStatus.Complete) fail(Failure.UnsafeTree);
   }
+  // Explicit N3 profile only: authenticate its installed executable graph while
+  // still exclusive. Generic Ready reuse keeps its existing hash-free path.
+  await qualifyHostedDependencyToolClosure(admission.binding, admission.attempt);
   withHostedActivationFence(fence => {
     const origin = readHostedOrdinaryProcessOrigin(fence);
     readHostedDependencyAttempt(admission.binding, origin.start, String(origin.reservation.startId),
