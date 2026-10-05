@@ -7,8 +7,9 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-  assertDependencyConsumer, claimDependencyConsumer, DependencyAdmissionFailure as AdmissionFailure, DependencyOwnerPhase,
-  markDependencyConsumerRunning, type DependencyLaunchBinding, type DependencyOwnerRecord,
+  assertDependencyConsumer, claimDependencyConsumer, DependencyAdmissionFailure as AdmissionFailure, DependencyOwnerPhase, DependencyOwnerKind,
+  markDependencyConsumerRunning, fenceDependencyConsumer, claimDependencyMaintenance, releaseDependencyMaintenance,
+  isDependencyConsumerOwner, type DependencyLaunchBinding, type DependencyOwnerRecord,
 } from "@vioxen/subscription-runtime/worker-core";
 import {
   dependencyOwnerStorageName, DependencyOwnerStorageFailure as StorageFailure,
@@ -55,6 +56,53 @@ async function childRead(rootPath: string, workspace: DependencyOwnerRecord["wor
 }
 
 describe.skipIf(process.platform !== "linux")("durable dependency consumer owner store", () => {
+  it("active v1 is release-only; idle upgrade preserves exact legacy bytes and denies downgrade", async () => {
+    // This fails if schema upgrade accidentally grants a legacy Running owner
+    // new admission, blocks its old fence, or discards original idle evidence.
+    const sample = await fixture();
+    try {
+      const attempt = { attemptId: randomUUID(), epoch: 1, launch };
+      const legacy: DependencyOwnerRecord = { ...initial(sample.workspace), owner: { phase: DependencyOwnerPhase.Running, attempt } };
+      sample.store.compareAndSwap(sample.workspace, null, legacy);
+      const before = await readFile(sample.file);
+      expect(reason(() => assertDependencyConsumer(sample.store, sample.workspace, attempt, DependencyOwnerPhase.Running))).toBe(AdmissionFailure.StaleAttempt);
+      expect(reason(() => claimDependencyConsumer(sample.store, sample.workspace, launch, randomUUID()))).toBe(AdmissionFailure.Busy);
+      expect(await readFile(sample.file)).toEqual(before);
+      fenceDependencyConsumer(sample.store, sample.workspace, attempt);
+      const fenced = sample.store.read(sample.workspace)!;
+      expect(fenced.version).toBe(1); expect(fenced.owner?.phase).toBe(DependencyOwnerPhase.Fenced);
+      // The store alone is not drain authority. This is the authorized adapter's
+      // final storage transition after separate real host proof.
+      sample.store.compareAndSwap(sample.workspace, fenced.revision, { ...fenced, revision: fenced.revision + 1, owner: null });
+      const original = Buffer.from(JSON.stringify(sample.store.read(sample.workspace), null, 2) + "\n");
+      await writeFile(sample.file, original, { mode: 0o600 });
+      claimDependencyConsumer(sample.store, sample.workspace, launch, randomUUID());
+      const modern = sample.store.read(sample.workspace)!;
+      expect(modern.version).toBe(2);
+      const preserved = (await readdir(sample.rootPath)).filter(name => name.includes(".v1-"));
+      expect(preserved).toHaveLength(1); expect(await readFile(join(sample.rootPath, preserved[0]!))).toEqual(original);
+      expect(reason(() => sample.store.compareAndSwap(sample.workspace, modern.revision,
+        { version: 1, workspace: sample.workspace, revision: modern.revision + 1, epoch: modern.epoch, owner: null }))).toBe(AdmissionFailure.InvalidRecord);
+    } finally { await sample.cleanup(); }
+  });
+  it("same physical CAS excludes maintenance and consumers, and consumer release cannot fence maintenance", async () => {
+    const sample = await fixture(), competing = Store.open({ rootPath: sample.rootPath, maxRecordBytes: 4096 });
+    try {
+      const attempt = claimDependencyMaintenance(sample.store, sample.workspace, { installationId: launch.installationId,
+        bootId: launch.bootId, runtimeSha: launch.runtimeSha, grantDigest: launch.grantDigest,
+        inventoryDigest: "c".repeat(64), supervisorId: "123:456" }, randomUUID());
+      const bytes = await readFile(sample.file);
+      expect(reason(() => claimDependencyConsumer(competing, sample.workspace, launch, randomUUID()))).toBe(AdmissionFailure.Busy);
+      const consumer = { attemptId: randomUUID(), epoch: attempt.epoch, launch };
+      expect(reason(() => fenceDependencyConsumer(competing, sample.workspace, consumer))).toBe(AdmissionFailure.StaleAttempt);
+      expect(reason(() => markDependencyConsumerRunning(competing, sample.workspace, consumer))).toBe(AdmissionFailure.StaleAttempt);
+      expect(await readFile(sample.file)).toEqual(bytes);
+      releaseDependencyMaintenance(sample.store, sample.workspace, attempt);
+      const next = claimDependencyConsumer(competing, sample.workspace, launch, randomUUID());
+      expect(next.epoch).toBe(attempt.epoch + 1);
+      expect(isDependencyConsumerOwner(competing.read(sample.workspace)!.owner)).toBe(true);
+    } finally { competing.close(); await sample.cleanup(); }
+  });
   it("retains an exclusive owner across handle disposal and refuses a new attempt", async () => {
     const sample = await fixture();
     let reopened: Store | undefined;
@@ -66,7 +114,7 @@ describe.skipIf(process.platform !== "linux")("durable dependency consumer owner
       expect(JSON.parse((await childRead(sample.rootPath, sample.workspace)).stdout))
         .toEqual({ status: "present", revision: 1, phase: DependencyOwnerPhase.ExclusiveMutation });
       reopened = Store.open({ rootPath: sample.rootPath, maxRecordBytes: 4096 });
-      expect(reopened.read(sample.workspace)?.owner).toEqual({ phase: DependencyOwnerPhase.ExclusiveMutation, attempt });
+      expect(reopened.read(sample.workspace)?.owner).toEqual({ kind: DependencyOwnerKind.Consumer, phase: DependencyOwnerPhase.ExclusiveMutation, attempt });
       expect(reason(() => claimDependencyConsumer(reopened!, sample.workspace, launch, randomUUID()))).toBe(AdmissionFailure.Busy);
       markDependencyConsumerRunning(reopened, sample.workspace, attempt);
       expect(reopened.read(sample.workspace)?.owner?.phase).toBe(DependencyOwnerPhase.Running);
@@ -94,15 +142,15 @@ describe.skipIf(process.platform !== "linux")("durable dependency consumer owner
   it("stale revisions and same-epoch owner replacement preserve the current owner", async () => {
     const sample = await fixture();
     try {
-      claimDependencyConsumer(sample.store, sample.workspace, launch, randomUUID());
+      const first = claimDependencyConsumer(sample.store, sample.workspace, launch, randomUUID());
       const current = sample.store.read(sample.workspace)!;
       const before = await readFile(sample.file);
       expect(reason(() => sample.store.compareAndSwap(sample.workspace, null, current))).toBe(AdmissionFailure.StaleAttempt);
       expect(reason(() => sample.store.compareAndSwap(sample.workspace, current.revision,
         { ...current, revision: current.revision + 2 }))).toBe(AdmissionFailure.InvalidRecord);
-      const attempt = { ...current.owner!.attempt, attemptId: randomUUID() };
+      const attempt = { ...first, attemptId: randomUUID() };
       expect(reason(() => sample.store.compareAndSwap(sample.workspace, current.revision,
-        { ...current, revision: current.revision + 1, owner: { phase: DependencyOwnerPhase.Running, attempt } })))
+        { ...current, revision: current.revision + 1, owner: { kind: DependencyOwnerKind.Consumer, phase: DependencyOwnerPhase.Running, attempt } })))
         .toBe(AdmissionFailure.StaleAttempt);
       expect(await readFile(sample.file)).toEqual(before);
       expect(await readdir(sample.rootPath)).toEqual([dependencyOwnerStorageName(sample.workspace)]);

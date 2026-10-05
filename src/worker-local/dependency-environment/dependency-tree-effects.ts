@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants, type BigIntStats } from "node:fs";
+import { constants, fstatSync, readFileSync, type BigIntStats } from "node:fs";
 import { lstat, open, readFile, rename, rmdir, statfs, unlink, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { DependencyReceiptState, sameDependencyTree, sameDependencyWorkspace,
@@ -7,6 +7,8 @@ import { DependencyReceiptState, sameDependencyTree, sameDependencyWorkspace,
 import { parseDependencyReceipt, DependencyReceiptParseStatus } from "../../worker-core/dependency-environment/domain/parse-dependency-receipt";
 import { DependencyManifestEntryKind as Kind, DependencyTreeObservationStatus as Status, encodeDependencyTreeManifest,
   type DependencyCapturedTreeObservation, type DependencyManifestEntry, type DependencyTreeObservationLimits } from "../../worker-core/dependency-environment/domain/dependency-tree-manifest";
+import type { DependencyLogicalSourceLink } from "../../worker-core/dependency-environment/domain/dependency-tree-manifest";
+import { dependencySourceLinkProof, type DependencySourceLinkSession } from "./dependency-source-binding";
 import { observeDependencyDirectoryRoot } from "./observe-dependency-tree";
 import { observeDependencyPinnedFile } from "./observe-dependency-pinned-file";
 
@@ -18,6 +20,7 @@ export class DependencyTreeEffectError extends Error {
 export type DependencyTreeEffectInput = {
   readonly workspace: DependencyWorkspaceIdentity; readonly trash: DependencyTrashIntent;
   readonly manifestCanonicalBytes: Uint8Array; readonly manifestDigest: string; readonly limits: DependencyTreeObservationLimits;
+  readonly sourceLinkSession?: DependencySourceLinkSession;
 };
 export type ProtectedDependencyEvictionCommit = {
   /** Immutable protected canonical Absent receipt, published after invalidation.
@@ -25,6 +28,40 @@ export type ProtectedDependencyEvictionCommit = {
   readonly path: string; readonly identity: DependencyTreeIdentity; readonly sha256: string;
 };
 type Anchor = { handle: FileHandle; before: BigIntStats; mountId: string; parent?: Anchor; name?: Buffer };
+/** Opaque, local effect-session facts. JSON or a copied object is never genuine. */
+export type DependencyTreeEffectReferenceSession = Readonly<{ operationId: string }>;
+type ReferenceDescriptor = { readonly fd: number; readonly dev: string; readonly ino: string; readonly flags: string; readonly mountId: string };
+const referenceSessions = new WeakMap<object, { anchors: Anchors; input: DependencyTreeEffectInput;
+  birth: string; descriptors: readonly ReferenceDescriptor[] }>();
+function ownBirth(): string {
+  const text = readFileSync("/proc/self/stat", "utf8"), start = text.slice(text.lastIndexOf(")") + 2).split(" ")[19];
+  if (!start || !/^[0-9]+$/.test(start)) fail(DependencyTreeEffectFailure.Unsupported);
+  return `${process.pid}:${start}`;
+}
+function referenceDescriptor(item: Anchor): ReferenceDescriptor {
+  const stat = fstatSync(item.handle.fd, { bigint: true }), info = readFileSync(`/proc/self/fdinfo/${item.handle.fd}`, "utf8");
+  const flags = /^flags:\s*([0-7]+)\s*$/m.exec(info)?.[1], mountId = /^mnt_id:\s*([0-9]+)\s*$/m.exec(info)?.[1];
+  if (info.length > 65536 || !flags || !mountId || mountId !== item.mountId || !stat.isDirectory() || !stable(item.before, stat)) fail(DependencyTreeEffectFailure.IdentityChanged);
+  return { fd: item.handle.fd, ...identity(stat), flags, mountId };
+}
+function referenceSession(anchors: Anchors, input: DependencyTreeEffectInput): DependencyTreeEffectReferenceSession {
+  const session = Object.freeze({ operationId: input.trash.operationId });
+  referenceSessions.set(session, { anchors, input, birth: ownBirth(), descriptors: anchors.retained.map(referenceDescriptor) });
+  return session;
+}
+export function readDependencyTreeEffectReferenceAnchors(session: DependencyTreeEffectReferenceSession,
+  expected: { workspace: DependencyWorkspaceIdentity; trashPath: string; operationId: string }): readonly ReferenceDescriptor[] {
+  const retained = referenceSessions.get(session);
+  if (!retained || !retained.anchors.retained.length) fail(DependencyTreeEffectFailure.Closed);
+  retained.anchors.check();
+  if (retained.birth !== ownBirth() || retained.input.trash.operationId !== expected.operationId ||
+      !sameDependencyWorkspace(retained.input.workspace, expected.workspace) ||
+      `${retained.input.trash.destinationParent.canonicalPath}/${retained.input.trash.destinationName}` !== expected.trashPath ||
+      retained.anchors.retained.length !== retained.descriptors.length) fail(DependencyTreeEffectFailure.IdentityChanged);
+  const current = retained.anchors.retained.map(referenceDescriptor);
+  if (JSON.stringify(current) !== JSON.stringify(retained.descriptors)) fail(DependencyTreeEffectFailure.IdentityChanged);
+  return current;
+}
 const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 const pathFlags = 0x200000 | constants.O_NOFOLLOW;
 const key = (path: readonly string[]): string => JSON.stringify(path);
@@ -35,7 +72,8 @@ const stable = (a: BigIntStats, b: BigIntStats): boolean => a.dev === b.dev && a
 const anchored = (parent: Anchor, name: Buffer): Buffer => Buffer.concat([Buffer.from(`/proc/self/fd/${parent.handle.fd}/`), name]);
 const detach = (input: DependencyTreeEffectInput): DependencyTreeEffectInput => ({ workspace: { ...input.workspace },
   trash: { ...input.trash, originalTree: { ...input.trash.originalTree }, destinationParent: { ...input.trash.destinationParent } },
-  manifestCanonicalBytes: Buffer.from(input.manifestCanonicalBytes), manifestDigest: input.manifestDigest, limits: { ...input.limits } });
+  manifestCanonicalBytes: Buffer.from(input.manifestCanonicalBytes), manifestDigest: input.manifestDigest, limits: { ...input.limits },
+  ...(input.sourceLinkSession ? { sourceLinkSession: input.sourceLinkSession } : {}) });
 async function mount(handle: FileHandle): Promise<string> {
   const info = await readFile(`/proc/self/fdinfo/${handle.fd}`, "utf8"), id = /^mnt_id:\s*(\d+)\s*$/m.exec(info)?.[1];
   if (!id || info.length > 65536) fail(DependencyTreeEffectFailure.Unsupported); return id;
@@ -49,11 +87,18 @@ function component(value: string): Buffer {
 function manifest(input: DependencyTreeEffectInput): Map<string, DependencyManifestEntry> {
   if (!input.manifestCanonicalBytes.length || input.manifestCanonicalBytes.length > input.limits.maxManifestBytes ||
       digest(input.manifestCanonicalBytes) !== input.manifestDigest) fail(DependencyTreeEffectFailure.ManifestMismatch);
-  let value: { version: number; entries: DependencyManifestEntry[] };
+  let value: { version: number; entries: DependencyManifestEntry[]; sourceLinks?: DependencyLogicalSourceLink[] };
   try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(input.manifestCanonicalBytes)); }
   catch { fail(DependencyTreeEffectFailure.ManifestMismatch); }
-  if (!value || value.version !== 1 || !Array.isArray(value.entries) || value.entries.length < 1 || value.entries.length > input.limits.maxEntries ||
-      Object.keys(value).sort().join(",") !== "entries,version") fail(DependencyTreeEffectFailure.ManifestMismatch);
+  if (!value || ![1, 2].includes(value.version) || !Array.isArray(value.entries) || value.entries.length < 1 || value.entries.length > input.limits.maxEntries ||
+      Object.keys(value).sort().join(",") !== (value.version === 1 ? "entries,version" : "entries,sourceLinks,version")) fail(DependencyTreeEffectFailure.ManifestMismatch);
+  if (value.version === 2) {
+    if (!input.sourceLinkSession || !Array.isArray(value.sourceLinks)) fail(DependencyTreeEffectFailure.ManifestMismatch);
+    const proof = dependencySourceLinkProof(input.sourceLinkSession);
+    if (proof.record.manifestDigest !== input.manifestDigest || !sameDependencyWorkspace(proof.record.workspace, input.workspace) ||
+        !sameDependencyTree(proof.record.tree, input.trash.originalTree) ||
+        JSON.stringify(proof.record.sourceLinks) !== JSON.stringify(value.sourceLinks)) fail(DependencyTreeEffectFailure.ManifestMismatch);
+  } else if (input.sourceLinkSession) fail(DependencyTreeEffectFailure.ManifestMismatch);
   const result = new Map<string, DependencyManifestEntry>();
   for (const entry of value.entries) {
     if (!entry || !Array.isArray(entry.path) || !Number.isInteger(entry.mode) || entry.mode < 0 || entry.mode > 0o7777 ||
@@ -66,7 +111,7 @@ function manifest(input: DependencyTreeEffectInput): Map<string, DependencyManif
     result.set(key(entry.path), entry);
   }
   if (result.get("[]")?.kind !== Kind.Directory ||
-      !Buffer.from(encodeDependencyTreeManifest(value.entries)).equals(Buffer.from(input.manifestCanonicalBytes))) fail(DependencyTreeEffectFailure.ManifestMismatch);
+      !Buffer.from(encodeDependencyTreeManifest(value.entries, value.sourceLinks)).equals(Buffer.from(input.manifestCanonicalBytes))) fail(DependencyTreeEffectFailure.ManifestMismatch);
   for (const entry of result.values()) {
     if (entry.path.length && result.get(key(entry.path.slice(0, -1)))?.kind !== Kind.Directory) fail(DependencyTreeEffectFailure.ManifestMismatch);
   }
@@ -129,7 +174,8 @@ async function protectTrash(parent: Anchor): Promise<void> {
 async function observe(input: DependencyTreeEffectInput, parent: Anchor, name: string,
   original: Map<string, DependencyManifestEntry>, subset: boolean): Promise<Extract<DependencyCapturedTreeObservation, { status: Status.Complete }>> {
   const result = await observeDependencyDirectoryRoot({ parentPath: name === "node_modules" ? input.workspace.canonicalPath : input.trash.destinationParent.canonicalPath,
-    name, expectedTree: input.trash.originalTree, limits: input.limits });
+    name, expectedTree: input.trash.originalTree, limits: input.limits,
+    ...(input.sourceLinkSession ? { sourceLinkSession: input.sourceLinkSession } : {}) });
   if (result.status !== Status.Complete || result.mountId !== parent.mountId) fail(DependencyTreeEffectFailure.ManifestMismatch);
   if (!subset && result.digest !== input.manifestDigest) fail(DependencyTreeEffectFailure.ManifestMismatch);
   for (const entry of result.entries) if (JSON.stringify(entry) !== JSON.stringify(original.get(key(entry.path)))) fail(DependencyTreeEffectFailure.ManifestMismatch);
@@ -146,6 +192,7 @@ async function absent(parent: Anchor, name: Buffer): Promise<void> {
  * No overwrite or path-only fallback is provided for an uncontrolled boundary.
  */
 export async function openDependencyTreeRename(request: DependencyTreeEffectInput): Promise<{
+  readonly referenceSession: DependencyTreeEffectReferenceSession;
   rename(): Promise<{ readonly tree: DependencyTreeIdentity; readonly manifestDigest: string }>;
   close(): Promise<{ readonly closeFailures: number }>;
 }> {
@@ -161,12 +208,13 @@ export async function openDependencyTreeRename(request: DependencyTreeEffectInpu
     if (!sameDependencyTree(identity(tree.before), input.trash.originalTree) || tree.mountId !== source.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
     const target = Buffer.from(input.trash.destinationName);
     await absent(destination, target); await anchors.verify();
-    return { async rename() {
+    return { referenceSession: referenceSession(anchors, input), async rename() {
       if (finished || anchors.retained.length === 0) fail(DependencyTreeEffectFailure.Closed);
       finished = true; // Single-use, including an uncertain or failed publication.
       let settle!: () => void; running = new Promise<void>(done => { settle = done; });
       try {
       await anchors.verify(); await observe(input, source, "node_modules", original, false); await anchors.verify(); await absent(destination, target);
+      if (input.sourceLinkSession) dependencySourceLinkProof(input.sourceLinkSession);
       await rename(anchored(source, Buffer.from("node_modules")), anchored(destination, target));
       finished = true; // Any post-publication error preserves intent for reconciliation.
       const moved = await open(anchored(destination, target), directoryFlags);
@@ -204,6 +252,11 @@ async function committed(input: DependencyTreeEffectInput, commit: ProtectedDepe
         !sameDependencyTree(receipt.evictionCommit.trash.originalTree, input.trash.originalTree) ||
         !sameDependencyWorkspace(receipt.evictionCommit.trash.destinationParent, input.trash.destinationParent) ||
         receipt.evictionCommit.trash.destinationName !== input.trash.destinationName) fail(DependencyTreeEffectFailure.InvalidCommit);
+    if (input.sourceLinkSession) {
+      const { record } = dependencySourceLinkProof(input.sourceLinkSession);
+      if (record.generation !== receipt.generation || record.coverageRevision !== receipt.coverageRevision || record.installKey !== receipt.installKey ||
+          record.manifestDigest !== receipt.evictionCommit.manifestDigest || !sameDependencyTree(record.tree, receipt.evictionCommit.tree)) fail(DependencyTreeEffectFailure.InvalidCommit);
+    }
     if (!stable(stat, await file.stat({ bigint: true }))) fail(DependencyTreeEffectFailure.InvalidCommit);
   } finally { await file.close(); }
   await anchors.verify();
@@ -258,6 +311,7 @@ export async function openCommittedDependencyTrashRemoval(request: DependencyTre
       for (const entry of [...current.entries].reverse()) {
         anchors.check(); if (removed >= input.maxRemovals) fail(DependencyTreeEffectFailure.Bounds);
         await anchors.verify(anchors.retained.filter(item => !deleted.has(item)));
+        if (input.sourceLinkSession) dependencySourceLinkProof(input.sourceLinkSession);
         const owner = entry.path.length ? directories.get(key(entry.path.slice(0, -1)))! : parent;
         const path = entry.path.length ? anchored(owner, component(entry.path[entry.path.length - 1]!)) : anchored(parent, name);
         const pin = await open(path, pathFlags);

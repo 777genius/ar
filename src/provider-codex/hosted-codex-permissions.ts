@@ -2,6 +2,7 @@ import type { CodexSandboxMode } from "./codex-json-execution-engine";
 import { codexProviderEgressPolicy, CodexProviderEgressProfileId, type CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { dependencyToolCachePath, dependencyToolGuestConfigPath, parseDependencyToolGuestConfig, type DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
 
 export enum HostedCodexPermissionProfileId {
   ReadOnly = "hosted-project-read",
@@ -65,7 +66,18 @@ export function hostedCodexPermissionProfilesToml(
   policy: CodexProviderEgressPolicy,
   executableReadPath?: string,
   privateKeyFilePath?: string,
+  dependencyTools?: DependencyToolGuestConfig,
 ): string {
+  const tools = dependencyTools === undefined ? undefined : parseDependencyToolGuestConfig(dependencyTools);
+  if (tools && tools.profile.cache.canonicalPath !== dependencyToolCachePath(dirname(tools.workspace.canonicalPath))) {
+    throw new Error("hosted_permission_tool_layout_invalid");
+  }
+  const toolRules = tools ? [
+    ...new Set([...tools.profile.readonlyFiles.map(f => f.path), tools.profile.node.path, dependencyToolGuestConfigPath]),
+  ].map(path => `${JSON.stringify(path)} = "read"`).concat([
+    `${JSON.stringify(tools.profile.cache.canonicalPath)} = "write"`,
+    `${JSON.stringify(join(tools.workspace.canonicalPath, "node_modules"))} = "read"`,
+  ]) : [];
   const domains = codexProviderEgressPolicy(policy.profileId).domains.map(domain => `${JSON.stringify(domain)} = "allow"`).join(", ");
   let nodeExecutableReadPath: string | undefined;
   try {
@@ -93,9 +105,11 @@ export function hostedCodexPermissionProfilesToml(
     '":minimal" = "read"',
     ...executableRules,
     ...privateRules,
+    ...toolRules,
     "",
     `[permissions.${HostedCodexPermissionProfileId.ReadOnly}.filesystem.\":workspace_roots\"]`,
     '"." = "read"',
+    ...(tools ? ['"node_modules" = "read"'] : []),
     "",
     `[permissions.${HostedCodexPermissionProfileId.ReadOnly}.network]`,
     "enabled = true",
@@ -106,11 +120,13 @@ export function hostedCodexPermissionProfilesToml(
     '":minimal" = "read"',
     ...executableRules,
     ...privateRules,
+    ...toolRules,
     "",
     `[permissions.${HostedCodexPermissionProfileId.WorkspaceWrite}.filesystem.\":workspace_roots\"]`,
     '"." = "write"',
     '".git" = "read"',
     '".codex" = "read"',
+    ...(tools ? ['"node_modules" = "read"'] : []),
     "",
     `[permissions.${HostedCodexPermissionProfileId.WorkspaceWrite}.network]`,
     "enabled = true",

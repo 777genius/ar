@@ -8,7 +8,8 @@ import { DependencyInstallProofKind as Install, DependencyPreservationKind as Pr
 } from "../../worker-core/dependency-environment/domain/dependency-receipt";
 import { DependencyReceiptParseStatus, parseDependencyReceipt } from "../../worker-core/dependency-environment/domain/parse-dependency-receipt";
 import { detectSecretLikeContent } from "../../worker-core/secret-detection";
-import type { DependencyCommittedAbsentReceipt, DependencyReceiptStore } from "../../worker-core/dependency-environment/ports/dependency-receipt-store";
+import type { DependencyCommittedAbsentReceipt, DependencyCommittedReceiptReference, DependencyReceiptStore } from "../../worker-core/dependency-environment/ports/dependency-receipt-store";
+import type { DependencyLocalInstallProofVerifier } from "../../worker-core/dependency-environment/ports/dependency-source-binding";
 
 export enum DependencyReceiptStorageFailure {
   Unsupported = "unsupported", InvalidConfig = "invalid_config", UnsafeRoot = "unsafe_root", UnsafeStore = "unsafe_store",
@@ -40,9 +41,11 @@ const same = (left: BigIntStats, right: BigIntStats): boolean => sameDependencyT
 export class LocalDependencyReceiptStore implements DependencyReceiptStore {
   private closed = false;
   private constructor(private readonly rootPath: string, private readonly root: number, private readonly rootIdentity: BigIntStats,
-    private readonly rootMount: string, private readonly maxRecordBytes: number, private readonly maxHistorySteps: number) {}
+    private readonly rootMount: string, private readonly maxRecordBytes: number, private readonly maxHistorySteps: number,
+    private readonly localInstallVerifier?: DependencyLocalInstallProofVerifier) {}
 
-  static open(input: { readonly rootPath: string; readonly maxRecordBytes: number; readonly maxHistorySteps: number }): LocalDependencyReceiptStore {
+  static open(input: { readonly rootPath: string; readonly maxRecordBytes: number; readonly maxHistorySteps: number;
+    readonly localInstallVerifier?: DependencyLocalInstallProofVerifier }): LocalDependencyReceiptStore {
     if (process.platform !== "linux" || statfsSync("/proc/self/fd", { bigint: true }).type !== 0x9fa0n) fail(Failure.Unsupported);
     if (!isAbsolute(input.rootPath) || resolve(input.rootPath) !== input.rootPath || input.rootPath.includes("\0") ||
       ![input.maxRecordBytes, input.maxHistorySteps].every(n => Number.isSafeInteger(n) && n > 0)) fail(Failure.InvalidConfig);
@@ -51,7 +54,7 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
     try {
       const stat = fstatSync(root, { bigint: true });
       if (!stat.isDirectory() || !privateMode(stat, 0o700n) || !same(stat, lstatSync(input.rootPath, { bigint: true }))) fail(Failure.UnsafeRoot);
-      return new LocalDependencyReceiptStore(input.rootPath, root, stat, mount(root), input.maxRecordBytes, input.maxHistorySteps);
+      return new LocalDependencyReceiptStore(input.rootPath, root, stat, mount(root), input.maxRecordBytes, input.maxHistorySteps, input.localInstallVerifier);
     } catch (error) { closeSync(root); throw error; }
   }
 
@@ -82,7 +85,11 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
 
   compareAndSwap(workspace: DependencyWorkspaceIdentity, expectedRevision: number | null, next: DependencyReceipt): DependencyReceipt {
     const key = this.key(workspace); let receipt: DependencyReceipt;
-    try { receipt = parsed(JSON.parse(encode(next).toString("utf8"))); } catch { return fail(Failure.InvalidReceipt); }
+    try {
+      // Validate measurement presence before JSON can omit undefined or hidden fields.
+      parsed(next);
+      receipt = parsed(JSON.parse(encode(next).toString("utf8")));
+    } catch { return fail(Failure.InvalidReceipt); }
     if (!sameDependencyWorkspace(receipt.workspace, workspace)) fail(Failure.WorkspaceChanged);
     if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) fail(Failure.InvalidReceipt);
     const bytes = encode(receipt);
@@ -95,9 +102,17 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
     let mutexIdentity: BigIntStats | undefined, started = false, complete = false;
     try {
       mutexIdentity = fstatSync(mutex, { bigint: true }); this.privateLeaf(mutexIdentity, mount(mutex));
-      const current = this.underMutex(key, mutexIdentity, () => this.capture(workspace, key));
-      if ((current?.receipt.revision ?? null) !== expectedRevision) fail(Failure.StaleRevision);
-      transition(current?.receipt ?? null, receipt);
+      const current = this.underMutex(key, mutexIdentity, () => {
+        const captured = this.capture(workspace, key);
+        if ((captured?.receipt.revision ?? null) !== expectedRevision) fail(Failure.StaleRevision);
+        // Authenticate against the captured immutable current receipt while our
+        // mutex is owned. Public history reads intentionally veto this mutex.
+        transition(captured?.receipt ?? null, receipt, captured ? {
+          path: join(this.rootPath, captured.commit.receipt.name), identity: captured.commit.receipt.identity,
+          sha256: captured.commit.receipt.sha256,
+        } : null, this.localInstallVerifier);
+        return captured;
+      });
       const receiptName = `${key}.r${receipt.revision}-${sha(bytes)}.receipt.json`;
       const temporaryName = `${key}.pending-${randomUUID()}`;
       started = true;
@@ -248,18 +263,35 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
   }
 }
 
-function transition(previous: DependencyReceipt | null, next: DependencyReceipt): void {
+function transition(previous: DependencyReceipt | null, next: DependencyReceipt, committed: DependencyCommittedReceiptReference | null,
+  localInstallVerifier?: DependencyLocalInstallProofVerifier): void {
   if (next.revision !== (previous?.revision ?? 0) + 1) fail(Failure.StaleRevision);
   if (!previous) {
     if (next.state === State.Unverified || (next.state === State.Installing && next.preservation.kind === Preserve.KnownFreshAbsence)) return;
     fail(Failure.InvalidTransition);
   }
   if (!sameDependencyWorkspace(previous.workspace, next.workspace) || previous.coverageRevision !== next.coverageRevision) fail(Failure.InvalidTransition);
+  if (previous.state === State.Absent && next.state === State.Installing && next.preservation.kind === Preserve.CommittedAbsence) {
+    const prior = next.preservation.prior;
+    if (committed && next.generation !== previous.generation && next.operationId !== previous.operationId &&
+      prior.generation === previous.generation && prior.revision === previous.revision && prior.operationId === previous.operationId &&
+      prior.installKey === previous.installKey && sameDependencyTree(prior.tree, previous.evictionCommit.tree) &&
+      prior.manifestDigest === previous.evictionCommit.manifestDigest && prior.commitEvidenceId === previous.evictionCommit.commitEvidenceId &&
+      prior.receipt.path === committed.path && sameDependencyTree(prior.receipt.identity, committed.identity) && prior.receipt.sha256 === committed.sha256) return;
+    fail(Failure.InvalidTransition);
+  }
   if (previous.state === State.Unverified && next.state === State.Installing && next.generation !== previous.generation &&
     next.preservation.kind === Preserve.CommittedPreservation && sameDependencyTree(previous.tree, next.preservation.originalTree)) return;
   if (previous.generation !== next.generation) fail(Failure.InvalidTransition);
   if (previous.state === State.Installing && next.state === State.Ready && next.provenance.kind === Install.CompletedInstall &&
     next.provenance.operationId === previous.operationId && next.installKey === previous.requestedKey) return;
+  if (previous.state === State.Installing && next.state === State.Ready && next.provenance.kind === Install.CompletedLocalInstallV1 &&
+      next.provenance.operationId === previous.operationId && next.installKey === previous.requestedKey) {
+    if (!localInstallVerifier) fail(Failure.InvalidTransition);
+    try { localInstallVerifier.assertCompletedLocalInstall({ ...next, provenance: next.provenance }); }
+    catch { fail(Failure.InvalidTransition); }
+    return;
+  }
   if (previous.state === State.Unverified && next.state === State.Ready && next.provenance.kind === Install.LegacyCompared && sameDependencyTree(previous.tree, next.tree)) return;
   if (previous.state === State.Ready && next.state === State.Unverified &&
     (sameDependencyTree(previous.tree, next.tree) || next.reason === DependencyUnverifiedReason.TreeChanged)) return;

@@ -143,6 +143,7 @@ export type CodexGoalStatus = {
   readonly resultExists?: boolean;
   readonly resultStatus?: string;
   readonly resultReason?: string;
+  readonly foregroundOutput?: Readonly<{ unit: string; exitCode: number; stdout: string; stderr: string }>;
   readonly resultUpdatedAt?: string;
   readonly workspaceExists?: boolean;
   readonly workspaceDirty?: boolean;
@@ -515,6 +516,7 @@ export async function collectCodexGoalStatus(
     ...(visibleResult.reason === undefined
       ? {}
       : { resultReason: visibleResult.reason }),
+    ...(result.foregroundOutput === undefined ? {} : { foregroundOutput: result.foregroundOutput }),
     ...(visibleResult.updatedAt === undefined
       ? {}
       : { resultUpdatedAt: visibleResult.updatedAt }),

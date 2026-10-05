@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { claimDependencyConsumer, markDependencyConsumerRunning, DependencyAdmissionError,
-  DependencyAdmissionFailure as Failure, DependencyOwnerPhase, DependencyTreeObservationStatus, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
+  DependencyAdmissionFailure as Failure, DependencyOwnerPhase, DependencyReceiptState, DependencyTreeObservationStatus, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { withHostedActivationFence, CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { readHostedOrdinaryProcessOrigin } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
@@ -10,8 +10,10 @@ import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysica
   readHostedDependencyBinding, readHostedDependencyAttempt, assertHostedDependencyStartAllowed } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import { isHostedOrdinaryRuntime } from "./hosted-installation-activation";
-import { hasHostedDependencyFreshAbsence, materializeHostedDependencyFreshAbsence, matchesHostedDependencyReady,
-  readHostedDependencyReceipt, hostedDependencyObservationLimits } from "./hosted-dependency-materialization";
+import { qualifyHostedDependencyToolClosure } from "./hosted-dependency-tool-profile";
+import { hasHostedDependencyFreshAbsence, materializeHostedDependencyAbsence, matchesHostedDependencyReady,
+  readHostedDependencyReceipt, hostedDependencyObservationLimits, readHostedDependencyKeyInputs,
+  assertHostedDependencyKeyInputsCurrent } from "./hosted-dependency-materialization";
 
 /** First supported profile: safe warm TEST reuse and fresh script-free npm.
  * Actual origin and private grant decide authority; request config carries none.
@@ -43,14 +45,16 @@ export async function admitHostedDependencyConsumer(config: CodexGoalRunConfig):
     assertHostedDependencyStartAllowed(String(origin.reservation.startId));
     assertManagedDependencyGitInputs(binding.workspace.canonicalPath);
     const receipt = readHostedDependencyReceipt(binding);
+    if (receipt?.state === DependencyReceiptState.Installing || receipt?.state === DependencyReceiptState.Evicting) fail(Failure.Busy);
     let tree, absent = false;
     try { tree = lstatSync(`${binding.workspace.canonicalPath}/node_modules`); }
     catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-      if (receipt || !hasHostedDependencyFreshAbsence(binding)) fail(Failure.NeedsInstall);
+      if (receipt ? receipt.state !== DependencyReceiptState.Absent : !hasHostedDependencyFreshAbsence(binding)) fail(Failure.NeedsInstall);
       absent = true;
     }
     if (tree && (!tree.isDirectory() || tree.isSymbolicLink())) fail(Failure.UnsafeTree);
+    if (tree && receipt?.state === DependencyReceiptState.Absent) fail(Failure.UnsafeTree);
     const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
     try {
       const attempt = claimDependencyConsumer(store, binding.workspace, {
@@ -62,12 +66,18 @@ export async function admitHostedDependencyConsumer(config: CodexGoalRunConfig):
   });
   // Capture safety while durable ExclusiveMutation prevents other managed
   // consumers/materializers. Incomplete capture stays held, never legacy reuse.
-  if (admission.absent) await materializeHostedDependencyFreshAbsence(admission.binding, admission.attempt);
-  else if (!admission.receipt || !matchesHostedDependencyReady(admission.binding, admission.receipt)) {
+  const readyInputs = !admission.absent && admission.receipt?.state === DependencyReceiptState.Ready
+    ? await readHostedDependencyKeyInputs(admission.binding) : undefined;
+  if (admission.absent) await materializeHostedDependencyAbsence(admission.binding, admission.attempt);
+  else if (!readyInputs || admission.receipt?.state !== DependencyReceiptState.Ready ||
+      !matchesHostedDependencyReady(admission.binding, admission.receipt, readyInputs)) {
     const observation = await observeDependencyTree({ workspacePath: admission.binding.workspace.canonicalPath,
       treeName: "node_modules", expectedWorkspace: admission.binding.workspace, limits: hostedDependencyObservationLimits });
     if (observation.status !== DependencyTreeObservationStatus.Complete) fail(Failure.UnsafeTree);
   }
+  // Explicit N3 profile only: authenticate its installed executable graph while
+  // still exclusive. Generic Ready reuse keeps its existing hash-free path.
+  await qualifyHostedDependencyToolClosure(admission.binding, admission.attempt);
   withHostedActivationFence(fence => {
     const origin = readHostedOrdinaryProcessOrigin(fence);
     readHostedDependencyAttempt(admission.binding, origin.start, String(origin.reservation.startId),
@@ -76,8 +86,9 @@ export async function admitHostedDependencyConsumer(config: CodexGoalRunConfig):
       DependencyOwnerPhase.ExclusiveMutation);
     const current = readHostedDependencyBinding(String(origin.start.jobId));
     if (!current || JSON.stringify(current) !== JSON.stringify(admission.binding)) fail(Failure.Unsupported);
+    if (readyInputs) assertHostedDependencyKeyInputsCurrent(admission.binding, readyInputs);
     const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
-    try { markDependencyConsumerRunning(store, admission.binding.workspace, admission.attempt); }
+    try { markDependencyConsumerRunning(store, admission.binding.workspace, admission.attempt, String(Date.now())); }
     finally { store.close(); }
   });
   return admission.attempt;

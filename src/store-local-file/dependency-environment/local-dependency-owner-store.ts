@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync, constants, fsyncSync, fstatSync, lstatSync, openSync, readSync,
-  realpathSync, renameSync, unlinkSync, writeFileSync, type BigIntStats,
+  realpathSync, renameSync, unlinkSync, writeFileSync, readFileSync, type BigIntStats,
 } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import {
   DependencyAdmissionError, DependencyAdmissionFailure as AdmissionFailure,
-  parseDependencyOwner, sameDependencyAttempt, sameDependencyWorkspace,
+  parseDependencyOwner, sameDependencyOwnerIdentity, sameDependencyWorkspace,
+  DependencyOwnerPhase, isDependencyConsumerOwner,
   type DependencyOwnerRecord, type DependencyOwnerStore, type DependencyWorkspaceIdentity,
 } from "@vioxen/subscription-runtime/worker-core";
 
@@ -87,13 +88,38 @@ export class LocalDependencyOwnerStore implements DependencyOwnerStore {
       this.assertPrivateLeaf(mutexIdentity);
       const current = this.readRecordUnderOwnMutex(workspace, key, mutexIdentity);
       if ((current?.revision ?? null) !== expectedRevision) admissionFailure(AdmissionFailure.StaleAttempt);
+      if (current?.version === 2 && record.version !== 2) admissionFailure(AdmissionFailure.InvalidRecord);
+      if (current?.version === 1 && record.version === 2 && current.owner) admissionFailure(AdmissionFailure.Busy);
       if (record.revision !== (current?.revision ?? 0) + 1 || record.epoch < (current?.epoch ?? 1)
         || record.epoch > (current?.epoch ?? 0) + 1) admissionFailure(AdmissionFailure.InvalidRecord);
       if (current?.owner && record.owner && record.epoch === current.epoch
-        && !sameDependencyAttempt(current.owner.attempt, record.owner.attempt)) admissionFailure(AdmissionFailure.StaleAttempt);
+        && !sameDependencyOwnerIdentity(current.owner, record.owner)) admissionFailure(AdmissionFailure.StaleAttempt);
       if (current?.owner && record.epoch !== current.epoch) admissionFailure(AdmissionFailure.Busy);
       if (record.owner && !current?.owner && record.epoch !== (current?.epoch ?? 0) + 1) {
         admissionFailure(AdmissionFailure.StaleAttempt);
+      }
+      assertActivitySuccessor(current, record);
+
+      if (current?.version === 1 && record.version === 2) {
+        // Idle-only upgrade retains the exact original bytes before replacement.
+        const original = openSync(this.path(`${key}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
+        let bytes: Buffer;
+        try {
+          const before = fstatSync(original, { bigint: true }); this.assertPrivateLeaf(before);
+          bytes = readFileSync(original);
+          const after = fstatSync(original, { bigint: true });
+          if (!sameIdentity(before, after) || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs ||
+              JSON.stringify(parseDependencyOwner(JSON.parse(bytes.toString("utf8")))) !== JSON.stringify(current)) {
+            storageFailure(DependencyOwnerStorageFailure.UnsafeStore);
+          }
+        } finally { closeSync(original); }
+        // Preservation itself is a durable publication phase. Any uncertainty
+        // keeps the same mutex rather than admitting a second upgrade.
+        publicationStarted = true;
+        const preserved = openSync(this.path(`${key}.v1-${createHash("sha256").update(bytes).digest("hex")}.json`),
+          constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+        try { writeFileSync(preserved, bytes); fsyncSync(preserved); } finally { closeSync(preserved); }
+        fsyncSync(this.fd);
       }
 
       // From here even a failed sync is uncertain. Never discard the intent.
@@ -231,6 +257,27 @@ export class LocalDependencyOwnerStore implements DependencyOwnerStore {
 
 function privateMode(info: BigIntStats, mode: bigint): boolean {
   return (info.mode & 0o7777n) === mode && info.uid === BigInt(process.geteuid!());
+}
+function assertActivitySuccessor(current: DependencyOwnerRecord | null, next: DependencyOwnerRecord): void {
+  const before = current?.activity, after = next.activity;
+  if (before !== undefined && after === undefined) admissionFailure(AdmissionFailure.InvalidRecord);
+  const consumer = current && isDependencyConsumerOwner(current.owner) ? current.owner : null;
+  const entry = consumer?.phase === DependencyOwnerPhase.ExclusiveMutation &&
+    isDependencyConsumerOwner(next.owner) && next.owner.phase === DependencyOwnerPhase.Running;
+  if (entry) {
+    if (!after?.lastEntry || after.lastEntry.epoch !== next.epoch ||
+        (before?.lastEntry && after.lastEntry.epoch <= before.lastEntry.epoch) ||
+        JSON.stringify(after.lastRelease) !== JSON.stringify(before?.lastRelease ?? null)) admissionFailure(AdmissionFailure.InvalidRecord);
+    return;
+  }
+  const release = consumer !== null && next.owner === null &&
+    before?.lastEntry?.epoch === current?.epoch;
+  if (release) {
+    if (consumer.phase !== DependencyOwnerPhase.Fenced || !after?.lastRelease || after.lastRelease.epoch !== current!.epoch ||
+        JSON.stringify(after.lastEntry) !== JSON.stringify(before!.lastEntry)) admissionFailure(AdmissionFailure.InvalidRecord);
+    return;
+  }
+  if (JSON.stringify(before) !== JSON.stringify(after)) admissionFailure(AdmissionFailure.InvalidRecord);
 }
 export function dependencyOwnerStorageName(workspace: DependencyWorkspaceIdentity): string { return `${ownerKey(workspace)}.json`; }
 function ownerKey(workspace: DependencyWorkspaceIdentity): string {

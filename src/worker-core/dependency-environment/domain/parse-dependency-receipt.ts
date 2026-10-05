@@ -3,6 +3,7 @@ import {
   DependencyUnverifiedReason, sameDependencyTree, sameDependencyWorkspace,
   type DependencyReceipt, type DependencyTreeIdentity, type DependencyWorkspaceIdentity,
 } from "./dependency-receipt";
+import { DependencyTreeMeasurementParseStatus, parseDependencyTreeMeasurement } from "./parse-dependency-tree-measurement";
 
 export enum DependencyReceiptParseStatus { Valid = "valid", Invalid = "invalid" }
 export type DependencyReceiptParseResult =
@@ -86,6 +87,18 @@ function preservation(value: unknown, receipt: RecordValue): boolean {
         && !sameDependencyTree(value.destinationParent, value.originalTree)
         && protectedDestination(value.destinationParent, receipt.workspace)
         && name(value.destinationName) && digest(value.mappingDigest) && id(value.commitEvidenceId);
+    case DependencyPreservationKind.CommittedAbsence: {
+      const prior = value.prior;
+      if (!exact(value, [...fields, "prior"]) || !record(prior) ||
+          !exact(prior, ["generation", "revision", "operationId", "installKey", "tree", "manifestDigest", "commitEvidenceId", "receipt"]) ||
+          !id(prior.generation) || prior.generation === value.generation || !id(prior.operationId) || prior.operationId === value.operationId ||
+          typeof prior.revision !== "number" || !Number.isSafeInteger(prior.revision) || prior.revision < 1 ||
+          prior.revision + 1 !== receipt.revision || !digest(prior.installKey) || !tree(prior.tree) ||
+          !digest(prior.manifestDigest) || !id(prior.commitEvidenceId) || !record(prior.receipt)) return false;
+      return exact(prior.receipt, ["path", "identity", "sha256"]) && path(prior.receipt.path) && workspace(receipt.workspace) &&
+        prior.receipt.path !== receipt.workspace.canonicalPath && !prior.receipt.path.startsWith(`${receipt.workspace.canonicalPath}/`) &&
+        tree(prior.receipt.identity) && digest(prior.receipt.sha256);
+    }
     default: return false;
   }
 }
@@ -95,6 +108,17 @@ function installProof(value: unknown, receipt: RecordValue): boolean {
     case DependencyInstallProofKind.CompletedInstall:
       return exact(value, [...bindingFields, "kind", "operationId", "verificationEvidenceId", "installerDrainEvidenceId"])
         && id(value.operationId) && id(value.verificationEvidenceId) && id(value.installerDrainEvidenceId);
+    case DependencyInstallProofKind.CompletedLocalInstallV1: {
+      const reference = value.sourceBinding;
+      return exact(value, [...bindingFields, "kind", "operationId", "verificationEvidenceId", "installerDrainEvidenceId", "sourceBinding"])
+        && value.operationId === value.generation && typeof value.generation === "string"
+        && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.generation)
+        && value.verificationEvidenceId === value.manifestDigest && digest(value.installerDrainEvidenceId)
+        && record(reference) && exact(reference, ["path", "identity", "sha256"])
+        && path(reference.path) && tree(reference.identity) && digest(reference.sha256)
+        && workspace(value.workspace) && !reference.path.startsWith(value.workspace.canonicalPath + "/")
+        && reference.path.endsWith(`/dependency-source-bindings/${value.workspace.dev}-${value.workspace.ino}/${value.generation}.json`);
+    }
     case DependencyInstallProofKind.LegacyCompared:
       return exact(value, [...bindingFields, "kind", "referenceInstallationId", "comparisonEvidenceId"])
         && id(value.referenceInstallationId) && id(value.comparisonEvidenceId);
@@ -113,7 +137,11 @@ function valid(value: unknown): value is DependencyReceipt {
       return exact(value, [...baseFields, "operationId", "requestedKey", "preservation"])
         && id(value.operationId) && digest(value.requestedKey) && preservation(value.preservation, value);
     case DependencyReceiptState.Ready:
-      return exact(value, [...baseFields, "installKey", "tree", "manifestDigest", "provenance"])
+      return exact(value, [...baseFields, "installKey", "tree", "manifestDigest", "provenance",
+        ...(Object.hasOwn(value, "treeMeasurement") ? ["treeMeasurement"] : [])])
+        && (!("treeMeasurement" in value) || Object.hasOwn(value, "treeMeasurement"))
+        && (!Object.hasOwn(value, "treeMeasurement") ||
+          parseDependencyTreeMeasurement(value.treeMeasurement).status === DependencyTreeMeasurementParseStatus.Valid)
         && digest(value.installKey) && tree(value.tree) && digest(value.manifestDigest) && installProof(value.provenance, value);
     case DependencyReceiptState.Evicting:
       return exact(value, [...baseFields, "operationId", "installKey", "tree", "manifestDigest", "trash"])
@@ -135,7 +163,11 @@ function valid(value: unknown): value is DependencyReceipt {
 // Shape validation is not authentication. Only the protected store supplies trusted receipts/evidence.
 // Never echo rejected payloads: they may contain credentials or unrelated caller data.
 export function parseDependencyReceipt(value: unknown): DependencyReceiptParseResult {
-  return valid(value)
-    ? { status: DependencyReceiptParseStatus.Valid, receipt: value }
-    : { status: DependencyReceiptParseStatus.Invalid };
+  if (!valid(value)) return { status: DependencyReceiptParseStatus.Invalid };
+  if (value.state === DependencyReceiptState.Ready && Object.hasOwn(value, "treeMeasurement")) {
+    const measurement = parseDependencyTreeMeasurement(value.treeMeasurement);
+    if (measurement.status !== DependencyTreeMeasurementParseStatus.Valid) return { status: DependencyReceiptParseStatus.Invalid };
+    return { status: DependencyReceiptParseStatus.Valid, receipt: { ...value, treeMeasurement: measurement.measurement } };
+  }
+  return { status: DependencyReceiptParseStatus.Valid, receipt: value };
 }
