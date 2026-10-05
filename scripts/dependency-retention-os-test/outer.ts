@@ -96,6 +96,14 @@ try {
   assert.equal(guest.sourceSha, process.env.TEST_SOURCE_SHA); assert.equal(guest.machineId, machineId);
   assert.equal(guest.qualification, "native_fresh_hot_synthetic_provider");
   evidence.guest = guest; evidence.status = guest.status;
+  const outputPath = root + runtime + "/guest-output-observation.json", outputDeadline = Date.now() + 2000;
+  while (!existsSync(outputPath) && Date.now() < outputDeadline) await new Promise(resolve => setTimeout(resolve, 100));
+  if (existsSync(outputPath)) {
+    const outputStat = lstatSync(outputPath); assert(outputStat.isFile() && outputStat.uid === 0 && outputStat.nlink === 1 && outputStat.size < 16384);
+    const output = JSON.parse(readFileSync(outputPath, "utf8")) as Record<string, unknown>;
+    assert.equal(output.sourceSha, process.env.TEST_SOURCE_SHA); assert.equal(output.purpose, "TEST_output_classification_only");
+    evidence.guestOutputObservation = output;
+  } else evidence.guestOutputObservationUnavailable = true;
   assert.equal(guest.status, "partial_pass", "actual unchanged guest gate did not qualify");
 } catch (error) {
   evidence.failure = error instanceof Error ? error.message.slice(0, 512) : "owned TEST fixture failure";

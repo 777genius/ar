@@ -22,6 +22,23 @@ export function setupDiagnostic(text: string) {
   return { classifications: classes.filter(value => text.includes(value)),
     libraryNames: Object.keys(elfPackages).filter(value => text.includes(value)) };
 }
+export function runtimeDiagnostic(text: string) {
+  const reasons = ["hosted_custody_launch_denied", "hosted_custody_launch_failed", "hosted_custody_runtime_reconciliation_required",
+    "hosted_custody_runtime_bootstrap_denied", "hosted_custody_kernel_evidence_invalid", "hosted_readonly_policy_invalid",
+    "hosted_activation_evidence_invalid", "hosted_activation_authority_required", "hosted_process_admission_required",
+    "hosted_process_activation_invalid", "dependency_cleanup_unresolved", "dependency_profile_unsupported", "dependency_environment_busy",
+    "dependency_needs_install", "dependency_tree_unsafe", "TEST_provider_protocol_or_probe_failed", "TEST_provider_deadline"];
+  const sourceFiles = ["hosted-readonly-host-launch-cli", "hosted-readonly-foreground", "hosted-installation-activation",
+    "hosted-readonly-host-kernel", "hosted-readonly-inputs", "hosted-dependency-admission", "hosted-dependency-materialization",
+    "hosted-dependency-installer", "hosted-dependency-installer-recipe", "hosted-process-activation", "codex-goal-cli"];
+  return { ...setupDiagnostic(text), reasons: reasons.filter(reason => new RegExp(`(?:^|[^A-Za-z0-9_])${reason}(?:$|[^A-Za-z0-9_])`).test(text)),
+    unitSetup: ["Failed to start transient service unit", "Failed to create bus connection", "Failed to connect to bus",
+      "Failed to execute", "Failed at step", "Unit subscription-runtime-hosted.slice not found"].filter(value => text.includes(value)),
+    locations: text.split("\n").slice(-32).flatMap(line => sourceFiles.flatMap(file => {
+      const match = new RegExp(`/(${file}\\.js):(\\d+):(\\d+)\\)?$`).exec(line.trim());
+      return match ? [{ file: match[1]!, line: Number(match[2]), column: Number(match[3]) }] : [];
+    })).slice(0, 16) };
+}
 export const digest = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
 export function command(file: string, args: readonly string[], timeout = 30000, cwd = "/"): string {
   const result = spawnSync(file, [...args], { cwd, env: cleanEnv, encoding: "utf8", timeout,
@@ -74,21 +91,31 @@ if (process.argv[2] === "supervisor" && process.argv[1] === runtime + "/scripts/
     sourceSha: process.env.TEST_SOURCE_SHA, machineId: readFileSync("/etc/machine-id", "utf8").trim(), pid: process.pid });
   const child = spawn(node, ["--experimental-strip-types", runtime + "/scripts/dependency-retention-os-test/guest.ts", "qualify"],
     { env: { ...cleanEnv, TEST_SOURCE_SHA: process.env.TEST_SOURCE_SHA }, stdio: ["pipe", "pipe", "pipe"] });
-  const classifications = new Set<string>(), libraryNames = new Set<string>(); let tail = "";
-  child.stderr.on("data", (chunk: Buffer) => {
-    tail = (tail + chunk.toString("utf8")).slice(-4096);
-    const diagnostic = setupDiagnostic(tail);
+  const classifications = new Set<string>(), libraryNames = new Set<string>(), reasons = new Set<string>(), unitSetup = new Set<string>();
+  const locations = new Map<string, { file: string; line: number; column: number }>();
+  const tails = { stdout: "", stderr: "" }, observedBytes = { stdout: 0, stderr: 0 };
+  const collect = (stream: "stdout" | "stderr", chunk: Buffer) => {
+    observedBytes[stream] += chunk.length; tails[stream] = (tails[stream] + chunk.toString("utf8")).slice(-4096);
+    const diagnostic = runtimeDiagnostic(tails[stream]);
     diagnostic.classifications.forEach(value => classifications.add(value)); diagnostic.libraryNames.forEach(value => libraryNames.add(value));
-  });
-  child.stdin.on("error", () => {}); child.stdin.end(); child.stdout.resume();
+    diagnostic.reasons.forEach(value => reasons.add(value)); diagnostic.unitSetup.forEach(value => unitSetup.add(value));
+    diagnostic.locations.forEach(value => { if (locations.size < 16) locations.set(JSON.stringify(value), value); });
+  };
+  child.stderr.on("data", (chunk: Buffer) => collect("stderr", chunk));
+  child.stdout.on("data", (chunk: Buffer) => collect("stdout", chunk));
+  child.stdin.on("error", () => {}); child.stdin.end();
   const timeout = setTimeout(() => child.kill("SIGTERM"), 21 * 60 * 1000);
   const failed = (reason: "spawn_failed" | "child_exited_without_evidence", code: number | null, signal: string | null) => {
-    clearTimeout(timeout); tail = "";
+    clearTimeout(timeout); tails.stdout = ""; tails.stderr = "";
+    if (!existsSync(runtime + "/guest-output-observation.json")) json(runtime + "/guest-output-observation.json", {
+      schemaVersion: 1, purpose: "TEST_output_classification_only", sourceSha: process.env.TEST_SOURCE_SHA, observedBytes,
+      code, signal, classifications: [...classifications].sort(), libraryNames: [...libraryNames].sort(),
+      reasons: [...reasons].sort(), unitSetup: [...unitSetup].sort(), locations: [...locations.values()] });
     if (!existsSync(runtime + "/guest-evidence.json") && !existsSync(runtime + "/guest-child-exit.json"))
       json(runtime + "/guest-child-exit.json", { schemaVersion: 1, purpose: "TEST_child_failure_observation_only",
         sourceSha: process.env.TEST_SOURCE_SHA, reason, code, signal, classifications: [...classifications].sort(), libraryNames: [...libraryNames].sort() });
   };
-  child.once("exit", (code, signal) => failed("child_exited_without_evidence", code, signal));
+  child.once("close", (code, signal) => failed("child_exited_without_evidence", code, signal));
   child.once("error", () => failed("spawn_failed", null, null));
   setInterval(() => {}, 60000);
 }

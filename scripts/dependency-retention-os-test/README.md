@@ -49,6 +49,13 @@ ancestry and verifies the unchanged private reader reports the missing job leaf.
 No managed policy record is issued. Grant, enrollment, resume and fresh/hot CLI
 phases are separately recorded, with only fixed source locations on failure.
 
+A failed fresh/hot foreground CLI retains bounded classifications from its real
+inherited output pipes, without raw output or provider/auth payloads. The guest
+reads actual protected creator records for this exact TEST job before querying
+only their owned units. It retains fixed unit states, completion presence, and
+bounded classifications of exact TEST job output files. These are diagnostics,
+never creator/drain proof or permission to retry an uncertain launch.
+
 The qualification child has three actual pipes and remains in the supervisor's
 cgroup. It issues only independent TEST inventory/stage/profile input, then calls
 the real installation store, TEST npm grant writer, ordinary enrollment/resume,

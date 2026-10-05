@@ -3,21 +3,21 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
   readdirSync, readFileSync, readlinkSync, readSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { HostedInstallationActivationStore } from "../../dist/worker-codex/hosted-installation-activation.js";
+import { HostedInstallationActivationStore, readHostedInstallationActivation } from "../../dist/worker-codex/hosted-installation-activation.js";
 import { hostedReadonlyPolicyRoot, readHostedPrivateBytes } from "../../dist/worker-codex/hosted-readonly-inputs.js";
 import { HostedReadonlyHostKernel } from "../../dist/worker-codex/hosted-readonly-host-kernel.js";
 import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-readonly-authority.js";
 import { runHostedRuntimeForeground } from "../../dist/worker-codex/hosted-readonly-foreground.js";
 import { writeHostedTestEgressGrant } from "../../dist/worker-codex/hosted-test-egress-files.js";
 import { CodexProviderEgressProfileId } from "../../dist/provider-codex/index.js";
-import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRootKind } from "../../dist/worker-core/index.js";
+import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRootKind, parseHostedOrdinaryStart } from "../../dist/worker-core/index.js";
 import { HostedDependencyInstallerNetworkInput, hostedDependencyInstallerNetworkRoot, hostedDependencyInstallerNpmRootSha256,
   HostedDependencyInstallerRevision, hostedDependencyInstallerDropperSha256,
   type HostedDependencyInstallerProfile } from "../../dist/worker-codex/hosted-dependency-installer-recipe.js";
 import { readHostedDependencyBinding } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
 import { LocalDependencyOwnerStore } from "../../dist/store-local-file/dependency-environment/local-dependency-owner-store.js";
 import { readHostedDependencyReceipt } from "../../dist/worker-codex/hosted-dependency-materialization.js";
-import { cleanEnv, command, digest, directory, directoryIdentity, fileDigest, installedArtifactDigest, json, node, policy, runtime } from "./common.ts";
+import { cleanEnv, command, digest, directory, directoryIdentity, fileDigest, installedArtifactDigest, json, node, policy, runtime, runtimeDiagnostic } from "./common.ts";
 
 {
   const evidence: Record<string, unknown> = { schemaVersion: 1, sourceSha: process.env.TEST_SOURCE_SHA,
@@ -155,7 +155,12 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   let readyDigest: string | undefined;
   for (const mode of ["fresh", "hot"] as const) {
     evidence.kernelGatePhase = mode + "_real_cli";
-    assert.equal(await runHostedRuntimeForeground(node, args, workspace, env), 0, `actual ${mode} CLI failed`);
+    const cliStatus = await runHostedRuntimeForeground(node, args, workspace, env);
+    if (cliStatus !== 0) {
+      try { evidence.cliFailureObservation = observeOwnedCliFailure(jobId, root, workspace, cliStatus); }
+      catch { evidence.cliFailureObservation = { purpose: "TEST_owned_cli_failure_only", status: cliStatus, unavailable: true }; }
+    }
+    assert.equal(cliStatus, 0, `actual ${mode} CLI failed`);
     evidence.kernelGatePhase = mode + "_receipt_owner_probe";
     const receipt = readHostedDependencyReceipt(binding); assert(receipt);
     const owner = LocalDependencyOwnerStore.open({ rootPath: policy + "/dependency-owners", maxRecordBytes: 16384 });
@@ -188,6 +193,51 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   assert.deepEqual(before, sentinels.map(path => ({ path, sha256: fileDigest(path), ino: String(lstatSync(path).ino) })));
   assert.equal(command("/usr/bin/git", ["rev-parse", "HEAD"], 30000, workspace).trim(), gitBefore);
   results.push({ scenario: "source_git_ignored_key_state_output_sentinels", result: "unchanged" });
+}
+
+function observeOwnedCliFailure(jobId: string, root: string, workspace: string, status: number) {
+  const observation: Record<string, unknown> = { purpose: "TEST_owned_cli_failure_only", status };
+  const { installation, activation } = readHostedInstallationActivation();
+  assert(activation.ordinaryStarts.length <= 32);
+  const rows = activation.ordinaryStarts.flatMap(row => {
+    assert(/^[a-f0-9-]{36}$/.test(row.startId));
+    const bytes = readHostedPrivateBytes(policy + "/ordinary-starts/" + row.startId + ".json", 65536); assert(bytes);
+    const start = parseHostedOrdinaryStart(JSON.parse(bytes.toString("utf8")));
+    if (start.jobId !== jobId) return [];
+    assert.equal(start.jobRootDir, root); assert.equal(start.workspacePath, workspace);
+    assert.equal(start.unit, row.unit); assert.equal(start.creatorId, row.creatorId); assert.equal(start.activationGeneration, row.generation);
+    assert.equal(start.installationId, installation.installationId); assert.equal(start.bootId, activation.bootId);
+    assert.equal(start.supervisorId, activation.supervisorId); assert.equal(start.originSha256, row.originSha256);
+    assert.equal(start.controlGroup, "/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/" + row.unit);
+    assert([`subscription-runtime-ordinary-${row.startId}.service`, `subscription-runtime-hosted-${row.startId}.service`].includes(row.unit));
+    const shown = spawnSync("/usr/bin/systemctl", ["show", "--property=LoadState,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus", "--", row.unit],
+      { env: cleanEnv, encoding: "utf8", timeout: 5000, maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"] });
+    const fields: Record<string, string> = {};
+    if (!shown.error && shown.status === 0) for (const line of shown.stdout.trim().split("\n")) {
+      const [key, value, ...extra] = line.split("=");
+      assert(key && value !== undefined && extra.length === 0 && /^[A-Za-z0-9_-]{0,80}$/.test(value));
+      assert(["LoadState", "ActiveState", "SubState", "Result", "ExecMainCode", "ExecMainStatus"].includes(key)); fields[key] = value;
+    }
+    const journal = spawnSync("/usr/bin/journalctl", ["--unit", row.unit, "--no-pager", "--output=cat", "--lines=40"],
+      { env: cleanEnv, encoding: "utf8", timeout: 5000, maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"] });
+    const completion = readHostedPrivateBytes(policy + "/ordinary-completed/" + row.startId + ".json", 4096);
+    return [{ startId: row.startId, reservationState: row.state, startSha256: digest(bytes), completionPresent: completion !== null,
+      completionSha256: completion ? digest(completion) : null, showStatus: shown.status, showFailed: !!shown.error, states: fields,
+      journalStatus: journal.status, journalFailed: !!journal.error, journalDiagnostic: runtimeDiagnostic(journal.stdout ?? "") }];
+  });
+  observation.starts = rows;
+  const files = [root + "/state/registry/" + jobId + "/job.json", root + "/" + jobId + ".latest-result.json", root + "/" + jobId + ".log"];
+  observation.jobOutputs = files.map((path, index) => {
+    try { const stat = lstatSync(path); assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid === 0 && stat.nlink === 1);
+      // No artifact/auth payload is copied or hashed. Inspect only bounded
+      // exact TEST log/result bytes for fixed reason/source classifications.
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try { const buffer = Buffer.alloc(Math.min(stat.size, 32768)); const count = readSync(fd, buffer, 0, buffer.length, Math.max(0, stat.size - buffer.length));
+        return { slot: index, present: true, bytes: stat.size, diagnostic: runtimeDiagnostic(buffer.subarray(0, count).toString("utf8")) }; }
+      finally { closeSync(fd); }
+    } catch (error) { return { slot: index, present: false, unavailable: (error as NodeJS.ErrnoException).code !== "ENOENT" }; }
+  });
+  return observation;
 }
 
 function failureLocations(error: Error) {
