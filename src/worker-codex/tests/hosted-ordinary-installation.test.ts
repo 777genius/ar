@@ -15,7 +15,7 @@ import { admitHostedReadonlyInputs } from "../hosted-readonly-admission";
 import { EventEmitter } from "node:events";
 import { spawnCodexAppServerProcess, signalCodexAppServerChildGroup } from "../../provider-codex/app-server/adapters/node-app-server-process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,15 +28,20 @@ import { HostedReadonlySupervisorHost } from "../hosted-readonly-supervisor-host
 import { ordinaryCompletionBytes } from "../hosted-readonly-host-kernel";
 import { readonlyCustodySnapshot } from "../hosted-readonly-custody";
 import { HostedInstallationActivationStore, readHostedOrdinaryBirth, readHostedOrdinaryRuntime } from "../hosted-installation-activation";
+import { HostedManifestLimitsRevision, HostedManifestPlacementFailure,
+  openHostedDependencyManifestPlacement } from "../hosted-dependency-manifest-placement";
 
 // Real private record I/O and real installation/kernel composition. Only finite
 // synthetic /proc, systemd and private filesystem facts replace the actual host.
 const fixture = vi.hoisted(() => ({ root: "", boot: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", group: "/system.slice/trusted.service",
   spawn: vi.fn(), child: null as unknown, creatorBirth: "789", creatorGroup: "/system.slice/trusted.service", runtimeUnit: "",
-  failRename: "", unsafeDescriptor: false, enabled: "trusted.service enabled enabled\n", jobs: "", stopFailed: false, populated: false, stops: [] as string[], onStop: undefined as (() => void) | undefined }));
+  failRename: "", unsafeDescriptor: false, enabled: "trusted.service enabled enabled\n", jobs: "", stopFailed: false, populated: false, manifestMountInfo: "", stops: [] as string[], onStop: undefined as (() => void) | undefined }));
 const root = "/var/lib/subscription-runtime-host-policy";
 const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages";
+const manifestScratch = "/mnt/TEST-private-manifests";
 function local(path: string): string {
+  if (path === manifestScratch || path.startsWith(manifestScratch + "/")) return join(fixture.root, "manifest-scratch", path.slice(manifestScratch.length));
+  if (path === "/mnt") return fixture.root;
   if (path === "/etc/subscription-runtime/scratch-temp.json") return join(fixture.root, "absent-scratch-policy");
   if (["/", "/var", "/var/lib", root, "/run", "/run/user", "/run/user/0", "/run/user/0/subscription-runtime-host-policy", "/etc", "/etc/systemd", "/etc/systemd/system"].includes(path)) return fixture.root;
   const grants = "/run/user/0/subscription-runtime-host-policy/codex-egress";
@@ -65,7 +70,10 @@ vi.mock("node:fs", async original => {
       if (path === "/proc/123/stat") return "123 (supervisor) " + [...Array(19).fill("0"), "456"].join(" ");
       if (path === `/proc/${process.pid}/stat`) return `${process.pid} (dispatcher) ` + [...Array(19).fill("0"), fixture.creatorBirth].join(" ");
       if (path === `/proc/${process.pid}/cgroup`) return `0::${fixture.creatorGroup}\n`;
-      if (path === "/proc/self/mountinfo") return "1 0 8:1 / / rw - ext4 /dev/TEST rw\n";
+      if (path === "/proc/self/mountinfo") {
+        const text = fixture.manifestMountInfo || "1 0 8:1 / / rw - ext4 /dev/TEST rw\n";
+        return options === "utf8" ? text : Buffer.from(text);
+      }
       if (path.startsWith("/sys/fs/cgroup") && path.endsWith("/cgroup.events")) return `populated ${fixture.populated ? 1 : 0}\n`;
       if (path.startsWith("/sys/fs/cgroup") && path.endsWith("/cgroup.procs")) return path.includes("trusted.service") ? "123\n" : "";
       return real.readFileSync(local(path), options);
@@ -79,6 +87,9 @@ vi.mock("node:fs", async original => {
     readlinkSync: (path: string) => path.startsWith("/proc/") ? "host" : real.readlinkSync(local(path)),
     realpathSync: (path: string) => {
       if (path === "/etc/systemd/system/trusted.service") return path;
+      if (path === manifestScratch || path.startsWith(manifestScratch + "/")) {
+        const physical = local(path), actual = real.realpathSync(physical); return physical === actual ? path : actual;
+      }
       if (path.startsWith(root + "/")) { real.realpathSync(local(path)); return path; }
       return real.realpathSync(path);
     },
@@ -95,6 +106,24 @@ vi.mock("node:fs", async original => {
       if (fixture.failRename && from.endsWith(fixture.failRename)) throw new Error("synthetic publication interruption");
       real.renameSync(local(from), local(to));
     },
+  };
+});
+// Only the scratch namespace is projected; blob contents and retained FD I/O
+// remain actual private TEST files. No operator/fence result is replaced here.
+vi.mock("node:fs/promises", async original => {
+  const real = await original<typeof import("node:fs/promises")>();
+  const projected = (path: Parameters<typeof real.open>[0]) =>
+    typeof path === "string" && (path === manifestScratch || path.startsWith(manifestScratch + "/")) ? local(path) : path;
+  return { ...real,
+    realpath: async (path: Parameters<typeof real.realpath>[0], options?: Parameters<typeof real.realpath>[1]) => {
+      const physical = projected(path), actual = await real.realpath(physical, options);
+      if (typeof physical === "string" && typeof path === "string" && Buffer.isBuffer(actual)) {
+        return actual.equals(Buffer.from(physical)) ? Buffer.from(path) : actual;
+      }
+      return physical === actual ? path : actual;
+    },
+    lstat: (path: Parameters<typeof real.lstat>[0], options?: Parameters<typeof real.lstat>[1]) => real.lstat(projected(path), options),
+    open: (path: Parameters<typeof real.open>[0], flags: Parameters<typeof real.open>[1], mode?: number) => real.open(projected(path), flags, mode),
   };
 });
 vi.mock("node:child_process", () => ({ execFile: () => { throw new Error("unexpected external command"); },
@@ -124,7 +153,7 @@ function creator() { return { creatorId: "ordinary-creator", jobId: "ordinary-jo
 beforeEach(() => {
   vi.spyOn(process, "getuid").mockReturnValue(0);
   fixture.root = mkdtempSync(join(tmpdir(), "ordinary-installation-")); fixture.group = "/system.slice/trusted.service";
-  fixture.failRename = ""; fixture.unsafeDescriptor = false; fixture.enabled = "trusted.service enabled enabled\n"; fixture.jobs = ""; fixture.stopFailed = false; fixture.populated = false; fixture.stops = []; fixture.onStop = undefined;
+  fixture.failRename = ""; fixture.unsafeDescriptor = false; fixture.enabled = "trusted.service enabled enabled\n"; fixture.jobs = ""; fixture.stopFailed = false; fixture.populated = false; fixture.manifestMountInfo = ""; fixture.stops = []; fixture.onStop = undefined;
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
   fixture.spawn.mockReset();
   const child = Object.assign(new EventEmitter(), { stdin: Object.assign(new EventEmitter(), { write: vi.fn(() => true), end: vi.fn() }),
@@ -142,6 +171,57 @@ beforeEach(() => {
 afterEach(() => { rmSync(fixture.root, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
 registerDependencyConsumerAdmissionTests({ fixture, stageName, runtimeDirectory, local, put, read });
+
+describe.skipIf(process.platform !== "linux")("actual fresh installation manifest-placement hook", () => {
+  async function prepareScratch(configured: boolean) {
+    const real = await vi.importActual<typeof import("node:fs")>("node:fs");
+    fixture.manifestMountInfo = real.readFileSync("/proc/self/mountinfo", "utf8");
+    mkdirSync(local(manifestScratch), { mode: 0o700 });
+    const jobId = "TEST-manifest-placement", jobRootDir = root + "/dependency-test-jobs/jobs/" + jobId;
+    const launch = { command: process.execPath, args: [runtimeDirectory + "/dist/worker-codex/codex-goal-cli.js", "run",
+      "--task-id", jobId, "--job-root", jobRootDir, "--workspace", jobRootDir + "/workspace"], cwd: jobRootDir + "/workspace" };
+    put("readonly-inventory.json", { ...read("readonly-inventory.json"), runtimeLaunch: launch,
+      ordinaryCreators: [{ creatorId: "TEST-manifest-creator", jobId, jobRootDir, workspacePath: launch.cwd, launch }] });
+    const fd = openSync(manifestScratch, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const stat = fstatSync(fd, { bigint: true });
+      const mountId = /^mnt_id:\s+([1-9][0-9]*)$/m.exec(real.readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"))?.[1];
+      if (!mountId) throw new Error("TEST scratch mount identity unavailable");
+      const scratchRoot = { canonicalPath: manifestScratch, dev: String(stat.dev), ino: String(stat.ino), mountId };
+      if (configured) put("dependency-manifest-storage-policy.json", { version: 1, scratchRoot, bootId: fixture.boot,
+        limitsRevision: HostedManifestLimitsRevision.TestUnqualifiedV1 });
+      return scratchRoot;
+    } finally { closeSync(fd); }
+  }
+  it("issues scratch placement through install and preserves source and legacy-root bytes", async () => {
+    // Red if createInstallation drops the issuer hook: no placement exists and
+    // the real factory refuses. Direct issuer tests do not cover this call site.
+    const scratchRoot = await prepareScratch(true), source = join(fixture.root, "managed-W/input/TEST-source");
+    writeFileSync(source, "TEST original source", { mode: 0o600 });
+    new HostedInstallationActivationStore().install();
+    const placement = read("dependency-manifest-placement.json");
+    expect(placement.installation).toEqual(read("host-installation.json")); expect(placement.scratchRoot).toEqual(scratchRoot);
+    expect(placement.blobs.canonicalPath).toBe(manifestScratch + "/dependency-manifests/" + placement.installation.installationId);
+    mkdirSync(join(fixture.root, "dependency-manifests"), { mode: 0o700 });
+    const legacy = join(fixture.root, "dependency-manifests/TEST-retained"); writeFileSync(legacy, "TEST old blob bytes", { mode: 0o600 });
+    const store = await openHostedDependencyManifestPlacement(), bytes = Buffer.from("TEST hook manifest bytes");
+    let digest: string;
+    try { digest = await store.put(bytes); expect(await store.get(digest)).toEqual(bytes); } finally { await store.close(); }
+    withHostedActivationFence(fence => store.assertCurrent(fence));
+    expect(readdirSync(local(placement.blobs.canonicalPath))).toEqual([digest + ".gz"]);
+    expect(readdirSync(join(fixture.root, "dependency-manifests"))).toEqual(["TEST-retained"]);
+    expect(readFileSync(legacy, "utf8")).toBe("TEST old blob bytes"); expect(readFileSync(source, "utf8")).toBe("TEST original source");
+  });
+  it("preserves unmanaged install without manufacturing placement or falling back to legacy blobs", async () => {
+    await prepareScratch(false); new HostedInstallationActivationStore().install();
+    mkdirSync(join(fixture.root, "dependency-manifests"), { mode: 0o700 });
+    const legacy = join(fixture.root, "dependency-manifests/TEST-retained"); writeFileSync(legacy, "TEST legacy original", { mode: 0o600 });
+    await expect(openHostedDependencyManifestPlacement()).rejects.toMatchObject({ reason: HostedManifestPlacementFailure.Unsupported });
+    expect(readdirSync(local(manifestScratch))).toEqual([]);
+    expect(() => read("dependency-manifest-placement.json")).toThrow();
+    expect(readFileSync(legacy, "utf8")).toBe("TEST legacy original");
+  });
+});
 
 describe("trusted same-artifact installation and ordinary origin enrollment", () => {
   it("derives installation from reviewed stage/inventory, enrolls configured identity and explicitly resumes", () => {

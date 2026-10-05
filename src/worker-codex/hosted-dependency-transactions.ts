@@ -6,7 +6,7 @@ import { DependencyOwnerKind, DependencyOwnerPhase, DependencyReceiptState as St
   type DependencyMaintenanceAttempt, type DependencyReceipt, type DependencyTrashIntent, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { withHostedActivationFence, readHostedActivationBytes, decodeHostedActivationBytes } from "@vioxen/subscription-runtime/provider-codex";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
-import { LocalDependencyManifestBlobStore } from "../store-local-file/dependency-environment/local-dependency-manifest-blob-store";
+import { openHostedDependencyManifestPlacement } from "./hosted-dependency-manifest-placement";
 import { hostedDependencyOwnerRoot, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { openDependencyTreeRename, openCommittedDependencyTrashRemoval, DependencyTreeEffectError, DependencyTreeEffectFailure,
   type DependencyTreeEffectInput } from "../worker-local/dependency-environment/dependency-tree-effects";
@@ -18,7 +18,8 @@ import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 import { assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependency-installer";
 import { hostedDependencyInstallerRoot } from "./hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRecipe } from "./hosted-dependency-installer-inputs";
-import { hostedDependencyObservationLimits as limits, readHostedDependencyKeyInputs } from "./hosted-dependency-materialization";
+import { hostedDependencyObservationLimits as limits, readHostedDependencyKeyInputs,
+  assertHostedDependencyKeyInputsCurrent, sameHostedDependencyKeyInputs } from "./hosted-dependency-materialization";
 import { ensureHostedDependencyDirectory, readHostedDependencyReceipt, publishHostedDependencyReceipt,
   readHostedDependencyCommittedAbsent } from "./hosted-dependency-receipts";
 import { assertHostedDependencyReferenceVeto, DependencyReferenceEffect } from "./hosted-dependency-reference-veto";
@@ -125,10 +126,9 @@ function covered(a: Authority, effect = DependencyReferenceEffect.Eviction): str
   }
   return [...groups];
 }
-async function baseline(binding: HostedDependencyBinding, ready: Pick<Ready, "manifestDigest">): Promise<Uint8Array> {
-  const store = await LocalDependencyManifestBlobStore.open({ rootPath: root + "/dependency-manifests",
-    maxManifestBytes: limits.maxManifestBytes, maxStoredBytes: 512 * 1024 * 1024, maxBlobs: 2048 });
-  try { return await store.get(ready.manifestDigest); } finally { await store.close(); }
+async function baseline(ready: Pick<Ready, "manifestDigest">) {
+  const placement = await openHostedDependencyManifestPlacement();
+  try { return { bytes: await placement.get(ready.manifestDigest), placement }; } finally { await placement.close(); }
 }
 function input(binding: HostedDependencyBinding, header: Header, bytes: Uint8Array): DependencyTreeEffectInput {
   return { workspace: binding.workspace, trash: header.trash, manifestCanonicalBytes: bytes, manifestDigest: header.ready.manifestDigest, limits };
@@ -146,7 +146,7 @@ function absent(path: string): boolean {
 async function finish(jobId: string, header: Header): Promise<{ outcome: HostedDependencyTransactionOutcome; revision: number }> {
   validateTrash(header.trash, header.attempt.operationId);
   let a = guard(jobId, header.attempt), receipt = readHostedDependencyReceipt(a.binding);
-  const bytes = await baseline(a.binding, header.ready), destination = header.trash.destinationParent.canonicalPath + "/" + header.trash.destinationName;
+  const { bytes, placement } = await baseline(header.ready), destination = header.trash.destinationParent.canonicalPath + "/" + header.trash.destinationName;
   if (!receipt) fail();
   if (receipt.state === State.Absent && receipt.operationId === header.attempt.operationId) {
     const proof = receipt.evictionCommit, evidence = readHostedPrivateBytes(`${operations}/${header.attempt.operationId}.renamed.json`, 16384);
@@ -165,13 +165,16 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
       !encode(receipt.trash).equals(encode(header.trash)) || receipt.manifestDigest !== header.ready.manifestDigest)) fail();
   const sourceAbsent = absent(a.binding.workspace.canonicalPath + "/node_modules"), targetAbsent = absent(destination);
   if (sourceAbsent === targetAbsent) fail();
-  if (readHostedDependencyKeyInputs(a.binding).key.installKey !== header.ready.installKey) fail();
+  const keyInputs = await readHostedDependencyKeyInputs(a.binding);
+  a = guard(jobId, header.attempt);
+  if (keyInputs.key.installKey !== header.ready.installKey) fail();
   if (!sourceAbsent) {
     a = guard(jobId, header.attempt, true);
     const observed = await observeDependencyTree({ workspacePath: a.binding.workspace.canonicalPath, treeName: "node_modules",
       expectedWorkspace: a.binding.workspace, expectedTree: header.ready.tree, limits });
     if (observed.status !== Observed.Complete || observed.digest !== header.ready.manifestDigest ||
-        readHostedDependencyKeyInputs(a.binding).key.installKey !== header.ready.installKey) fail();
+        !sameHostedDependencyKeyInputs(keyInputs, await readHostedDependencyKeyInputs(a.binding))) fail();
+    a = guard(jobId, header.attempt, true);
     const operation = await openDependencyTreeRename(input(a.binding, header, bytes));
     let closeFailures = 0;
     try {
@@ -184,11 +187,17 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
           workspace: receipt.workspace, coverageRevision: receipt.coverageRevision, state: State.Evicting,
           operationId: header.attempt.operationId, installKey: receipt.installKey, tree: receipt.tree,
           manifestDigest: receipt.manifestDigest, trash: header.trash };
-        publishHostedDependencyReceipt(a.binding, receipt.revision, evicting); receipt = evicting;
+        withHostedActivationFence(fence => {
+          assertHostedDependencyKeyInputsCurrent(a.binding, keyInputs);
+          placement.assertCurrent(fence);
+          publishHostedDependencyReceipt(a.binding, evicting.revision - 1, evicting);
+        });
+        receipt = evicting;
       }
       a = guard(jobId, header.attempt, true);
       assertHostedDependencyReferenceVeto(a.binding.workspace, destination, covered(a), DependencyReferenceEffect.Eviction,
         { session: operation.referenceSession, operationId: header.attempt.operationId });
+      withHostedActivationFence(() => assertHostedDependencyKeyInputsCurrent(a.binding, keyInputs));
       const moved = await operation.rename();
       if (!sameDependencyTree(moved.tree, header.ready.tree) || moved.manifestDigest !== header.ready.manifestDigest) fail();
     } finally {
@@ -208,7 +217,7 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
     assertHostedDependencyReferenceVeto(a.binding.workspace, destination, covered(a), DependencyReferenceEffect.Eviction);
   }
   if (receipt.state !== State.Evicting || !absent(a.binding.workspace.canonicalPath + "/node_modules") ||
-      readHostedDependencyKeyInputs(a.binding).key.installKey !== header.ready.installKey) fail();
+      !sameHostedDependencyKeyInputs(keyInputs, await readHostedDependencyKeyInputs(a.binding))) fail();
   a = guard(jobId, header.attempt);
   const evidence = encode({ version: 1, operationId: header.attempt.operationId, workspace: a.binding.workspace,
     epoch: header.attempt.epoch, tree: header.ready.tree, trash: header.trash, manifestDigest: header.ready.manifestDigest });
@@ -221,7 +230,11 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
     evictionCommit: { generation: receipt.generation, workspace: receipt.workspace, coverageRevision: receipt.coverageRevision,
       installKey: receipt.installKey, tree: receipt.tree, manifestDigest: receipt.manifestDigest,
       operationId: header.attempt.operationId, trash: receipt.trash, commitEvidenceId: hash(evidence) } };
-  publishHostedDependencyReceipt(a.binding, receipt.revision, committed);
+  withHostedActivationFence(fence => {
+    assertHostedDependencyKeyInputsCurrent(a.binding, keyInputs);
+    placement.assertCurrent(fence);
+    publishHostedDependencyReceipt(a.binding, committed.revision - 1, committed);
+  });
   readHostedDependencyCommittedAbsent(a.binding, committed.revision);
   release(jobId, header.attempt);
   return { outcome: HostedDependencyTransactionOutcome.Evicted, revision: committed.revision };
@@ -288,7 +301,7 @@ export async function removeHostedDependencyCommittedTrash(jobId: string, revisi
   if (!enabled()) return { outcome: HostedDependencyTransactionOutcome.Skipped };
   const committed = readHostedDependencyCommittedAbsent(a.binding, revision), proof = committed.receipt.evictionCommit;
   validateTrash(proof.trash, proof.operationId);
-  const bytes = await baseline(a.binding, proof);
+  const { bytes, placement } = await baseline(proof);
   const parent = openSync(operations, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW), parentIdentity = fstatSync(parent, { bigint: true });
   if (parentIdentity.uid !== 0n || (parentIdentity.mode & 0o7777n) !== 0o700n) { closeSync(parent); fail(); }
   const lockPath = `/proc/self/fd/${parent}/${proof.operationId}.remove.lock`;
@@ -301,6 +314,7 @@ export async function removeHostedDependencyCommittedTrash(jobId: string, revisi
     writeFileSync(lock, encode({ version: 1, operationId: proof.operationId, commitSha256: committed.reference.sha256,
       bootId: a.session.bootId, supervisorId: a.session.supervisorId })); fsyncSync(lock); fsyncSync(parent);
     const current = authority(jobId); if (!enabled()) fail();
+    withHostedActivationFence(fence => placement.assertCurrent(fence));
     const destination = proof.trash.destinationParent.canonicalPath + "/" + proof.trash.destinationName;
     assertHostedDependencyReferenceVeto(current.binding.workspace, destination, covered(current, DependencyReferenceEffect.TrashRemoval), DependencyReferenceEffect.TrashRemoval);
     const operation = await openCommittedDependencyTrashRemoval({ workspace: a.binding.workspace, trash: proof.trash,
