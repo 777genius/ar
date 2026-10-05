@@ -26,7 +26,11 @@ export interface DependencyToolReadyReader { readCurrent(): DependencyToolReadyR
  * profile; declaring it above does not enable it for this profile. */
 export function matchesRegistryDependencyToolReady(expected: DependencyToolReadyIdentity, facts: DependencyToolReadyFacts): boolean {
   return facts.provenance.kind === DependencyToolReadyProvenanceKind.RegistryCompleted &&
-    sameDependencyWorkspace(expected.workspace, facts.workspace) && expected.coverageRevision === facts.coverageRevision &&
+    matchesDependencyToolReadyIdentity(expected, facts);
+}
+/** Identity equality only. Does not authenticate provenance or grant a consumer. */
+export function matchesDependencyToolReadyIdentity(expected: DependencyToolReadyIdentity, facts: DependencyToolReadyIdentity): boolean {
+  return sameDependencyWorkspace(expected.workspace, facts.workspace) && expected.coverageRevision === facts.coverageRevision &&
     expected.revision === facts.revision && expected.installKey === facts.installKey &&
     sameDependencyTree(expected.tree, facts.tree) && expected.manifestDigest === facts.manifestDigest;
 }

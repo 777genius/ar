@@ -108,6 +108,9 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
     const tools = prepareHostedDependencyToolPlan(fence, unit, binding, root,
       [binding.workspace.canonicalPath, home, codexHome], mounted, readyReader);
     if (!tools) invalid();
+    // These are construction data from the actual retained plan, never caller
+    // selected source paths. Release independently verifies each actual mount.
+    for (const source of tools.sourcePaths) placeholder(root, source, true);
     toolCache = tools.cache; mounts.push(...tools.mounts);
   }
   syncDirectory(root);
