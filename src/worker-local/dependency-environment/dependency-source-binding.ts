@@ -229,7 +229,7 @@ function validateRecord(value: DependencySourceBindingRecord): void {
       typeof link.target !== "string" || Buffer.from(link.target, "base64").toString("base64") !== link.target ||
       !value.directories.some(pin => pin.path === link.sourcePath)) fail();
   for (const link of value.sourceLinks) {
-    const parts = link.path.map(part => { if (typeof part !== "string" || part.length > 1024) fail(); const bytes = Buffer.from(part, "base64");
+    const parts = link.path.map((part: unknown) => { if (typeof part !== "string" || part.length > 1024) fail(); const bytes = Buffer.from(part, "base64");
       if (!bytes.length || bytes.toString("base64") !== part || bytes.includes(47) || bytes.includes(0)) fail();
       return new TextDecoder("utf-8", { fatal: true }).decode(bytes); });
     const installed = "node_modules/" + parts.join("/");
