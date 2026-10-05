@@ -3,10 +3,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, statSync, statfsSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, statSync, statfsSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { assemble } from "./assemble.ts";
-import { cleanEnv, command as runCommand, directory, directoryIdentity, fileDigest, json, node, OwnedOsScenario, readonlyStorage, runtime, setupDiagnostic } from "./common.ts";
+import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, cleanEnv, command as runCommand, directory, directoryIdentity, fileDigest, json, node, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, setupDiagnostic, type OwnedOsFixtureScenario } from "./common.ts";
 
 // This starts after workflow checkout/build/typecheck, not at workflow start.
 // The unchanged 40-minute job timeout is the independent platform backstop.
@@ -29,21 +29,23 @@ assert.equal(process.env.GITHUB_ACTIONS, "true", "owned OS fixture requires a di
 assert.match(process.env.TEST_SOURCE_SHA ?? "", /^[a-f0-9]{40}$/);
 assert.equal(boundedCommand("/usr/bin/lsb_release", ["--codename", "--short"], workDeadline).trim(), "noble");
 const source = resolve(process.argv[2] ?? ""), toolchain = resolve(process.argv[3] ?? "");
+const diagnostic = process.argv[4] === OwnedOsMode.BusDiagnostic;
+assert(process.argv.length === 4 || process.argv.length === 5 && (diagnostic || process.argv[4] === OwnedOsMode.Qualification));
 assert(source.startsWith("/home/runner/work/")); assert(toolchain.startsWith("/opt/hostedtoolcache/node/"));
 assert(existsSync(source + "/dist/worker-codex/codex-goal-cli.js"));
 assert.equal(dirname(dirname(process.execPath)), toolchain);
 const base = "/var/lib/subscription-runtime-os-TEST";
 assert(!existsSync(base), "refuse any existing fixture namespace"); directory(base);
-const defaultEvidence = await runOwnedOs(OwnedOsScenario.Dependency);
+const defaultEvidence = await runOwnedOs(diagnostic ? OwnedOsMode.BusDiagnostic : OwnedOsScenario.Dependency);
 // Incompatible authenticated inventories never share an installation. A second
 // fresh OS gets the same exact reviewed runtime/FDA source and its own data FS.
-if (defaultEvidence.status === "partial_pass") {
+if (!diagnostic && defaultEvidence.status === "partial_pass") {
   defaultEvidence.readonlyFixture = process.hrtime.bigint() + milliseconds(1) < workDeadline
     ? await runOwnedOs(OwnedOsScenario.Readonly)
     : { status: "failed", scenario: OwnedOsScenario.Readonly, notLaunched: true,
       failure: "owned TEST shared monotonic budget exhausted before readonly preparation" };
 }
-if ((defaultEvidence.readonlyFixture as Record<string, unknown> | undefined)?.status !== "partial_pass") {
+if (!diagnostic && (defaultEvidence.readonlyFixture as Record<string, unknown> | undefined)?.status !== "partial_pass") {
   defaultEvidence.status = "failed"; process.exitCode = 1;
 }
 defaultEvidence.outerBudget = { clock: "process.hrtime.bigint", workMs: 27 * 60 * 1000,
@@ -53,16 +55,18 @@ defaultEvidence.outerBudget = { clock: "process.hrtime.bigint", workMs: 27 * 60 
 assert(Buffer.byteLength(JSON.stringify(defaultEvidence)) <= 512 * 1024);
 json(source + "/dependency-retention-os-evidence.json", defaultEvidence, 0o644);
 
-async function runOwnedOs(scenario: OwnedOsScenario): Promise<Record<string, unknown>> {
+async function runOwnedOs(scenario: OwnedOsFixtureScenario): Promise<Record<string, unknown>> {
+const diagnostic = scenario === OwnedOsMode.BusDiagnostic;
 const id = randomUUID(), owned = base + "/" + id; directory(owned);
 const root = owned + "/root", unit = `TEST-retention-os-${id}.service`;
 const machineId = randomUUID().replaceAll("-", ""), outerMachineId = readFileSync("/etc/machine-id", "utf8").trim();
-const evidence: Record<string, unknown> = { schemaVersion: 1, qualification: "owned_native_os_synthetic_provider",
+const evidence: Record<string, unknown> = { schemaVersion: 1, qualification: diagnostic ? "diagnostic_only" : "owned_native_os_synthetic_provider",
   sourceSha: process.env.TEST_SOURCE_SHA, scenario, unit, machineId, outerMachineId, status: "failed", results: [],
   unsupported: ["committed_absent_eviction_and_cold_restore", "live_account_provider_acceptance", "complete_stdio_fd_peer_provenance"] };
 let registered: ReturnType<typeof directoryIdentity> | undefined;
 let invocationId: string | undefined;
 let fragmentSha256: string | undefined;
+let sink: DiagnosticSink | undefined;
 const scenarioStarted = process.hrtime.bigint();
 let deadline = earlier(workDeadline, scenarioStarted + milliseconds(22 * 60 * 1000));
 const command = (file: string, args: readonly string[], timeout = 30000): string => boundedCommand(file, args, deadline, timeout);
@@ -90,9 +94,11 @@ try {
       attachment: "owned service MountImages only; no runner mount operation" };
   }
   registered = directoryIdentity(root);
+  if (diagnostic) sink = retainDiagnosticSink(root, registered);
   const packagePath = root + runtime + "/os-packages.json";
   const packageStat = lstatSync(packagePath); assert(packageStat.isFile() && packageStat.uid === 0 && packageStat.size < 65536);
   evidence.osPackageFacts = JSON.parse(readFileSync(packagePath, "utf8"));
+  if (!diagnostic) {
   assert.equal(fileDigest(root + node), fileDigest(process.execPath));
   // This trusted startup probe runs only in the newly extracted CI guest root,
   // before jobs, auth fixtures or systemd units. It cannot mount host libraries.
@@ -107,6 +113,7 @@ try {
   assert(!startup.error && startup.status === 0 && startup.signal === null && versionOutput === process.version,
     "owned TEST pinned Node preboot failed");
   remaining(deadline);
+  }
   const nspawn = root + "/usr/bin/systemd-nspawn";
   const version = command(nspawn, ["--version"]).split("\n")[0]!;
   assert.match(version, /^systemd 255(?:\.|\s)/);
@@ -115,7 +122,8 @@ try {
   json(owned + "/registration.json", launch);
   evidence.launchRegistration = launch;
   const runtimeSeconds = Math.ceil(remaining(deadline) / 1000) + 90;
-  const fragment = `[Unit]\nDescription=Owned disposable dependency TEST OS ${id}\n[Service]\nType=exec\nDelegate=yes\nKillMode=control-group\nRestart=no\nRuntimeMaxSec=${runtimeSeconds}s\nTimeoutStopSec=30s\n${dataImage ? `MountImages=${dataImage}:${readonlyStorage}\n` : ""}Environment=SYSTEMD_NSPAWN_USE_CGNS=1\nExecStart=${nspawn} --directory=${root} --machine=TEST-retention-${id} --register=no --keep-unit --private-users=no --boot --console=pipe --resolv-conf=off --capability=CAP_SYS_ADMIN,CAP_MKNOD,CAP_SETPCAP,CAP_SETFCAP,CAP_SYS_PTRACE ${dataImage ? `--bind=${readonlyStorage} ` : ""}--setenv=SYSTEMD_UNIT_PATH=/etc/systemd/test-units:/run/systemd/system -- --unit=TEST-retention.target --log-target=console\n`;
+  const target = diagnostic ? "TEST-retention-bus-diagnostic.target" : "TEST-retention.target";
+  const fragment = `[Unit]\nDescription=Owned disposable dependency TEST OS ${id}\n[Service]\nType=exec\nDelegate=yes\nKillMode=control-group\nRestart=no\nRuntimeMaxSec=${runtimeSeconds}s\nTimeoutStopSec=30s\n${dataImage ? `MountImages=${dataImage}:${readonlyStorage}\n` : ""}Environment=SYSTEMD_NSPAWN_USE_CGNS=1\nExecStart=${nspawn} --directory=${root} --machine=TEST-retention-${id} --register=no --keep-unit --private-users=no --boot --console=pipe --resolv-conf=off --capability=CAP_SYS_ADMIN,CAP_MKNOD,CAP_SETPCAP,CAP_SETFCAP,CAP_SYS_PTRACE ${dataImage ? `--bind=${readonlyStorage} ` : ""}--setenv=SYSTEMD_UNIT_PATH=/etc/systemd/test-units:/run/systemd/system -- --unit=${target} --log-target=console\n`;
   const unitPath = "/run/systemd/system/" + unit;
   assert(!existsSync(unitPath)); writeFileSync(unitPath, fragment, { flag: "wx", mode: 0o644 });
   fragmentSha256 = fileDigest(unitPath);
@@ -127,6 +135,19 @@ try {
   // A queued start may not yet have its invocation. Poll only this registered unit.
   const bootStarted = process.hrtime.bigint();
   const bootDeadline = earlier(deadline, bootStarted + milliseconds(90000));
+  if (diagnostic) {
+    evidence.observation = { purpose: "TEST_daemon_stderr_only", outcome: "unqualified", limitBytes: 65536, totalStartsLimit: 1 };
+    const bootRemaining = () => remaining(bootDeadline, "owned TEST diagnostic boot deadline exhausted");
+    while (process.hrtime.bigint() < bootDeadline) {
+      remaining(deadline);
+      const state = command("/usr/bin/systemctl", ["show", unit, "--property=ActiveState", "--value"], Math.min(2000, bootRemaining())).trim();
+      if (!invocationId) invocationId = command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"], Math.min(2000, bootRemaining())).trim();
+      if (!["active", "activating"].includes(state)) break;
+      await new Promise(resolve => setTimeout(resolve, Math.min(1000, bootRemaining())));
+    }
+    assert.match(invocationId ?? "", /^[a-f0-9]{32}$/); evidence.invocationId = invocationId;
+    throw new Error("owned TEST diagnostic-only observation; qualification not attempted");
+  }
   const path = root + runtime + "/guest-evidence.json";
   while (!existsSync(path)) {
     remaining(deadline);
@@ -178,7 +199,7 @@ try {
   assert.equal(guest.status, "partial_pass", "actual unchanged guest gate did not qualify");
   remaining(deadline);
 } catch (error) {
-  evidence.status = "failed";
+  evidence.status = diagnostic ? "unqualified" : "failed";
   evidence.failure = error instanceof Error ? error.message.slice(0, 512) : "owned TEST fixture failure";
   process.exitCode = 1;
 } finally {
@@ -212,7 +233,7 @@ try {
           // Observation starts only after failure and exact outer ownership
           // checks. Its own allowance cannot consume the stop reservation.
           const observationDeadline = earlier(deadline - milliseconds(60000), process.hrtime.bigint() + milliseconds(15000));
-          evidence.guestBootFailure = observeGuestBoot(root, registered, unit, invocationId, observationDeadline);
+          evidence.guestBootFailure = observeGuestBoot(root, registered, unit, invocationId, observationDeadline, sink);
           assert.equal(command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"], 2000).trim(), invocationId);
         } catch { delete evidence.guestBootFailure; evidence.guestBootDiagnosticUnavailable = true; }
       }
@@ -220,6 +241,7 @@ try {
       evidence.ownedOsStopped = true;
     } catch { evidence.status = "failed"; evidence.ownedOsStopped = false; process.exitCode = 1; }
   }
+  if (sink) { try { closeSync(sink.fd); } catch { evidence.status = "failed"; evidence.sinkCloseFailed = true; process.exitCode = 1; } }
   // No guest registry/root is deleted. VM disposal retains uncertain state until
   // the platform ends the owned job; export bounded sanitized facts only.
   if (process.hrtime.bigint() >= outerDeadline) {
@@ -232,10 +254,65 @@ try {
 return evidence;
 }
 
+type DiagnosticSink = Readonly<{ fd: number; birth: BigIntStats }>;
+function sinkState(prefix: string, registered: ReturnType<typeof directoryIdentity>, sink: DiagnosticSink): BigIntStats {
+  const retained: number[] = [];
+  const mount = (fd: number) => { const info = readFileSync(`/proc/self/fdinfo/${fd}`, "utf8");
+    assert(info.length <= 4096); const id = /^mnt_id:\s+([1-9][0-9]*)$/m.exec(info)?.[1]; assert(id); return id; };
+  try {
+    const root = statSync(prefix, { bigint: true });
+    assert(root.isDirectory() && (root.mode & 0o7777n) === 0o700n && String(root.dev) === registered.dev && String(root.ino) === registered.ino);
+    let rootMount: string | undefined;
+    for (const suffix of ["", "/var", "/var/lib", dirname(busDiagnosticSink)]) {
+      const path = prefix + suffix, named = suffix ? lstatSync(path, { bigint: true }) : root;
+      assert(named.isDirectory() && !named.isSymbolicLink() && named.uid === 0n && named.gid === 0n &&
+        !(named.mode & 0o022n) && String(named.dev) === registered.dev);
+      if (suffix === dirname(busDiagnosticSink)) assert.equal(named.mode & 0o7777n, 0o700n);
+      const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | (suffix ? constants.O_NOFOLLOW : 0)); retained.push(fd);
+      const opened = fstatSync(fd, { bigint: true }); assert(opened.dev === named.dev && opened.ino === named.ino);
+      rootMount ??= mount(fd); assert.equal(mount(fd), rootMount);
+    }
+    const path = prefix + busDiagnosticSink, named = lstatSync(path, { bigint: true });
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); retained.push(fd);
+    const actual = fstatSync(sink.fd, { bigint: true });
+    for (const stat of [named, fstatSync(fd, { bigint: true }), actual]) {
+      assert(stat.isFile() && stat.uid === 0n && stat.gid === 0n && stat.nlink === 1n &&
+        (stat.mode & 0o7777n) === 0o600n && stat.dev === sink.birth.dev && stat.ino === sink.birth.ino);
+      for (const key of ["size", "mtimeNs", "ctimeNs"] as const) assert.equal(stat[key], actual[key]);
+    }
+    assert.equal(mount(fd), rootMount); return actual;
+  } finally { for (const fd of retained) closeSync(fd); }
+}
+function retainDiagnosticSink(root: string, registered: ReturnType<typeof directoryIdentity>): DiagnosticSink {
+  const fd = openSync(root + busDiagnosticSink, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try { const sink = { fd, birth: fstatSync(fd, { bigint: true }) }; assert.equal(sinkState(root, registered, sink).size, 0n); return sink; }
+  catch (error) { closeSync(fd); throw error; }
+}
+function classifyBusStderr(bytes: Uint8Array) {
+  // Exact dbus-1.14.10 startup error prefixes; variable suffixes never escape.
+  const prefixes = [
+    ["missing_listen", "Configuration file needs one or more <listen> elements giving addresses"],
+    ["missing_socket", "No socket received."], ["wrong_socket", "Passed socket has wrong type."],
+    ["socket_acquisition", "Failed to acquire systemd socket:"], ["socket_type", "Failed to verify systemd socket type:"],
+    ["unsupported_auth", "Unsupported auth mechanism \""], ["invalid_message_type", "Bad message type \""],
+    ["xml_parse", "Error in file "], ["apparmor_context", "Error getting AppArmor context of bus:"],
+    ["apparmor_required", "AppArmor mediation required but not present"],
+  ] as const;
+  const lines = new TextDecoder("utf-8", { fatal: true }).decode(bytes).split("\n"); assert(lines.length <= 256);
+  const labels = new Set<(typeof prefixes)[number][0] | "unclassified">();
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const message = /^(?:dbus|dbus-daemon)\[[1-9][0-9]*\]: Failed to start message bus: (.*)$/.exec(line)?.[1];
+    const matched = message === undefined ? [] : prefixes.filter(([, prefix]) => message.startsWith(prefix));
+    for (const [label] of matched) labels.add(label); if (!matched.length) labels.add("unclassified");
+  }
+  return [...labels].sort();
+}
+
 // No result here can authorize a launch. Every query addresses only the
 // already-failed owned guest's PID1 private socket, never a system-bus fallback.
 function observeGuestBoot(root: string, registered: ReturnType<typeof directoryIdentity>, unit: string,
-  invocationId: string, deadline: bigint): Record<string, unknown> {
+  invocationId: string, deadline: bigint, sink?: DiagnosticSink): Record<string, unknown> {
   function proc(path: string, bound: number): string {
     remaining(deadline, "owned TEST boot diagnostic allowance exhausted");
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -324,9 +401,11 @@ function observeGuestBoot(root: string, registered: ReturnType<typeof directoryI
   const retainedRoot = fstatSync(retained[2]!, { bigint: true }); assert(retainedRoot.isDirectory() &&
     String(retainedRoot.dev) === registered.dev && String(retainedRoot.ino) === registered.ino);
   assert.deepEqual(identity(), before);
-  for (const name of ["dbus.socket", "dbus.service", "TEST-retention-supervisor.service", "TEST-retention.target"] as const) {
+  function query(name: "dbus.socket" | "dbus.service" | "TEST-retention-supervisor.service" | "TEST-retention.target") {
       assert.deepEqual(identity(), before);
       const keys = ["Id", "LoadState", "ActiveState", "SubState", "Job", "Result", "MainPID", "ExecMainCode", "ExecMainStatus", "TimeoutStartUSec"];
+      if (sink) keys.push("InvocationID", "NRestarts", "ControlGroup", "StartLimitBurst", "StartLimitIntervalUSec",
+        "LimitFSIZE", "LimitCORE", "StandardError", "DropInPaths", "Restart", "Type");
       const result = spawnSync("/usr/bin/nsenter", ["--mount=/proc/self/fd/3", "--pid=/proc/self/fd/4", "--root=/proc/self/fd/5", "--wdns=/", "--",
         "/usr/bin/systemctl", "--system", "--no-pager", "--no-ask-password", "show", "--property=" + keys.join(","), "--", name],
         { env: { ...cleanEnv, DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/run/systemd/private" }, encoding: "utf8",
@@ -340,15 +419,68 @@ function observeGuestBoot(root: string, registered: ReturnType<typeof directoryI
         assert(key && keys.includes(key) && value !== undefined && extra.length === 0 && !(key in properties));
         // Only fixed scalar status/timer fields, no paths, environment, raw
         // journal or arbitrary unit/provider names are copied to evidence.
-        assert(/^[A-Za-z0-9_. -]{0,80}$/.test(value)); if (key === "Id") assert.equal(value, name);
+        assert(key === "ControlGroup" ? value === "" || value === "/system.slice/dbus.service" || value === "/system.slice/dbus.socket" :
+          key === "DropInPaths" ? value === "" || value === busDiagnosticDropInPath : /^[A-Za-z0-9_. -]{0,80}$/.test(value));
+        if (key === "Id") assert.equal(value, name);
         properties[key] = value;
       }
       if (rows.length) assert(properties.Id === name && properties.LoadState && properties.ActiveState && properties.SubState);
-      observations.push({ unit: name, status: result.status, signal: result.signal,
-        failed: !!result.error, properties, diagnostic: setupDiagnostic(result.stderr ?? "") });
+      return { unit: name, status: result.status, signal: result.signal,
+        failed: !!result.error, properties, diagnostic: setupDiagnostic(result.stderr ?? "") };
+  }
+  for (const name of sink ? ["dbus.socket", "dbus.service"] as const :
+    ["dbus.socket", "dbus.service", "TEST-retention-supervisor.service", "TEST-retention.target"] as const) observations.push(query(name));
+  let stderr: Record<string, unknown> | undefined;
+  if (sink) {
+    stderr = { capture: "unavailable", purpose: "TEST_fixed_unit_stderr_only" };
+    try {
+      const service = query("dbus.service"); const properties = service.properties;
+      assert(service.status === 0 && !service.failed && service.signal === null && properties.MainPID === "0" &&
+        properties.ActiveState === "failed" && properties.NRestarts === "0" && properties.Result === "exit-code" &&
+        properties.ExecMainCode === "1" && /^[a-f0-9]{32}$/.test(properties.InvocationID ?? ""));
+      assert(properties.StartLimitBurst === "1" && properties.StartLimitIntervalUSec === "infinity" &&
+        properties.LimitFSIZE === "65536" && properties.LimitCORE === "0" && properties.StandardError === "append" &&
+        properties.DropInPaths === busDiagnosticDropInPath && properties.Restart === "no" && properties.Type === "notify");
+      const verifyDropIn = () => {
+        for (const suffix of ["/etc", "/etc/systemd", "/etc/systemd/test-units", dirname(busDiagnosticDropInPath)]) {
+          const parent = lstatSync(`/proc/${pid}/root` + suffix, { bigint: true });
+          assert(parent.isDirectory() && parent.uid === 0n && parent.gid === 0n && !(parent.mode & 0o022n));
+        }
+        const path = `/proc/${pid}/root` + busDiagnosticDropInPath, prior = lstatSync(path, { bigint: true });
+        assert(prior.isFile() && prior.uid === 0n && prior.gid === 0n && prior.nlink === 1n &&
+          (prior.mode & 0o7777n) === 0o644n && prior.size <= 4096n); assert.equal(proc(path, 4096), busDiagnosticDropIn);
+        const after = lstatSync(path, { bigint: true });
+        for (const key of ["dev", "ino", "mode", "uid", "gid", "nlink", "size", "mtimeNs", "ctimeNs"] as const) assert.equal(after[key], prior[key]);
+      };
+      const quiescent = () => {
+        assert.equal(statfsSync(`/proc/${pid}/root/sys/fs/cgroup`, { bigint: true }).type, 0x63677270n);
+        let visited = 0;
+        function empty(path: string, depth: number): void {
+          remaining(deadline); assert(++visited <= 32 && depth <= 4);
+          assert(lstatSync(path).isDirectory()); assert.equal(proc(path + "/cgroup.procs", 4096).trim(), "");
+          const names = readdirSync(path); assert(names.length <= 256);
+          for (const name of names) { assert(/^[A-Za-z0-9_.:@-]+$/.test(name));
+            const child = lstatSync(path + "/" + name); if (child.isDirectory()) empty(path + "/" + name, depth + 1); }
+        }
+        const path = `/proc/${pid}/root/sys/fs/cgroup/system.slice/dbus.service`;
+        try { lstatSync(path); } catch (error) { assert.equal((error as NodeJS.ErrnoException).code, "ENOENT"); return; }
+        empty(path, 0);
+      };
+      verifyDropIn(); quiescent(); assert.deepEqual(identity(), before); remaining(deadline);
+      const prior = sinkState(`/proc/${pid}/root`, registered, sink); sinkState(root, registered, sink);
+      assert(prior.size < 65536n); const bytes = Buffer.alloc(65536); let size = 0, count = 0;
+      while ((count = readSync(sink.fd, bytes, size, bytes.length - size, size)) > 0) { size += count; assert(size < 65536); }
+      const after = sinkState(`/proc/${pid}/root`, registered, sink); sinkState(root, registered, sink);
+      for (const key of ["size", "mtimeNs", "ctimeNs"] as const) assert.equal(after[key], prior[key]);
+      assert.equal(BigInt(size), prior.size); verifyDropIn(); quiescent(); assert.deepEqual(identity(), before);
+      assert.deepEqual(query("dbus.service").properties, properties); remaining(deadline);
+      stderr = { purpose: "TEST_fixed_unit_stderr_only", capture: size ? "observed" : "empty",
+        bytes: size, dev: String(prior.dev), ino: String(prior.ino), serviceInvocationId: properties.InvocationID,
+        classifications: classifyBusStderr(bytes.subarray(0, size)) };
+    } catch { stderr = { purpose: "TEST_fixed_unit_stderr_only", capture: "inconclusive" }; }
   }
   assert.deepEqual(identity(), before);
   return { purpose: "TEST_failed_guest_boot_observation_only", invocationId, pid1: before,
-    address: "unix:path=/run/systemd/private", systemctl: binaryIdentity, observations };
+    address: "unix:path=/run/systemd/private", systemctl: binaryIdentity, observations, ...(sink ? { stderr } : {}) };
   } finally { for (const fd of retained) closeSync(fd); }
 }

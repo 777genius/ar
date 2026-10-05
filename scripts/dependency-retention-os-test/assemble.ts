@@ -7,10 +7,10 @@ import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSy
 import { dirname, join } from "node:path";
 import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
   SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/core/host-infrastructure/system-bus-infrastructure.js";
-import { command as runCommand, directory, elfPackages, fileDigest, json, OwnedOsScenario, readonlyStorage, runtime } from "./common.ts";
+import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, command as runCommand, directory, elfPackages, fileDigest, json, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, type OwnedOsFixtureScenario } from "./common.ts";
 
 export function assemble(root: string, state: string, source: string, toolchain: string, sourceSha: string, machineId: string,
-  scenario: OwnedOsScenario, remainingMs: () => number): void {
+  scenario: OwnedOsFixtureScenario, remainingMs: () => number): void {
   // The caller owns one monotonic deadline across both fresh roots. Every
   // existing subprocess keeps its argv and is capped by the remaining budget.
   const checkBudget = (): number => {
@@ -80,6 +80,7 @@ export function assemble(root: string, state: string, source: string, toolchain:
   // Ordinary tar extraction may replace the original aliases with directories.
   // Only signed package bytes exist here; no runtime/config/job has been copied.
   const usrLayout = normalizeSignedUsrLayout(root, checkBudget);
+  if (scenario === OwnedOsMode.BusDiagnostic) chmodSync(root, 0o700);
   // Independent bytes from authenticated package extraction only, before any
   // runtime/config copy. No library directory from the runner is included.
   const signedElfPins: { path: string; sha256: string }[] = []; let visited = 0, elfBytes = 0;
@@ -111,13 +112,14 @@ export function assemble(root: string, state: string, source: string, toolchain:
   directory(root + runtime, 0o755);
   assert(Buffer.byteLength(JSON.stringify(signedElfPins)) <= 128 * 1024);
   json(root + runtime + "/os-signed-elf-pins.json", { schemaVersion: 1, pins: signedElfPins });
-  for (const name of ["dist", "packages", "node_modules", "scripts", "package.json"]) {
+  for (const name of scenario === OwnedOsMode.BusDiagnostic ? [] : ["dist", "packages", "node_modules", "scripts", "package.json"]) {
     checkBudget();
     cpSync(source + "/" + name, root + runtime + "/" + name, { recursive: true, dereference: false, verbatimSymlinks: true });
     checkBudget();
   }
   checkBudget();
-  cpSync(toolchain, root + runtime + "/toolchain", { recursive: true, dereference: false, verbatimSymlinks: true });
+  if (scenario !== OwnedOsMode.BusDiagnostic)
+    cpSync(toolchain, root + runtime + "/toolchain", { recursive: true, dereference: false, verbatimSymlinks: true });
   checkBudget();
   if (scenario === OwnedOsScenario.Readonly) {
     // Real reviewed launcher artifacts and their finite static import closure.
@@ -157,8 +159,21 @@ export function assemble(root: string, state: string, source: string, toolchain:
   writeFileSync(root + SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_CONFIG, { flag: "wx", mode: 0o600 });
   writeFileSync(units + "/dbus.service", SYSTEM_BUS_SERVICE_FRAGMENT, { flag: "wx", mode: 0o644 });
   writeFileSync(units + "/dbus.socket", SYSTEM_BUS_SOCKET_FRAGMENT, { flag: "wx", mode: 0o644 });
+  if (scenario === OwnedOsMode.BusDiagnostic) {
+    directory(root + "/var", 0o755); directory(root + "/var/lib", 0o755);
+    directory(root + dirname(busDiagnosticSink));
+    const fd = openSync(root + busDiagnosticSink, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try { const stat = fstatSync(fd, { bigint: true });
+      assert(stat.isFile() && stat.uid === 0n && stat.gid === 0n && stat.nlink === 1n && stat.size === 0n &&
+        (stat.mode & 0o7777n) === 0o600n && stat.dev === lstatSync(root, { bigint: true }).dev); fsyncSync(fd);
+    } finally { closeSync(fd); }
+    directory(units + "/dbus.service.d", 0o755);
+    writeFileSync(root + busDiagnosticDropInPath, busDiagnosticDropIn, { flag: "wx", mode: 0o644 });
+    writeFileSync(units + "/TEST-retention-bus-diagnostic.target", "[Unit]\nDescription=Unqualified TEST daemon stderr observation\nDefaultDependencies=no\nRequires=dbus.service\nAfter=dbus.service\n", { flag: "wx", mode: 0o644 });
+  } else {
   writeFileSync(units + "/TEST-retention.target", "[Unit]\nDescription=Owned dependency TEST OS\nDefaultDependencies=no\nRequires=dbus.service TEST-retention-supervisor.service\nAfter=dbus.service TEST-retention-supervisor.service\n", { mode: 0o644 });
   writeFileSync(units + "/TEST-retention-supervisor.service", `[Unit]\nDescription=Owned TEST issuer and retained supervisor\nDefaultDependencies=no\nRequires=dbus.service\nAfter=dbus.service\n[Service]\nType=exec\nExecStart=${runtime}/toolchain/bin/node --experimental-strip-types ${runtime}/scripts/dependency-retention-os-test/common.ts supervisor\nEnvironment=TEST_SOURCE_SHA=${sourceSha}\nEnvironment=TEST_OS_SCENARIO=${scenario}\nEnvironment=PATH=${runtime}/toolchain/bin:/usr/bin:/bin LANG=C LC_ALL=C\nRestart=no\nKillMode=control-group\nRuntimeMaxSec=25min\nTimeoutStopSec=20s\nStandardOutput=null\nStandardError=null\n`, { mode: 0o644 });
+  }
   // Recursively copied CI checkout files become root-owned immutable artifacts.
   command("/usr/bin/chown", ["-R", "0:0", root + runtime]);
   command("/usr/bin/chmod", ["-R", "go-w", root + runtime]);

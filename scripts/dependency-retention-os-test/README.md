@@ -5,6 +5,17 @@ changing this fixture or its production dependency boundaries. Do not execute on
 machine, production worker, configured pool, or real project. Source review and
 remote typecheck/native execution are required before claiming any passing result.
 
+Manual workflow mode `bus-startup-diagnostic` runs one fresh owned guest with only
+the signed daemon/socket and a fixed diagnostic target. No runtime, supervisor,
+provider, account, enrollment or qualification code is copied or executed. A
+TEST-only drop-in redirects stderr into a retained private 0600 sink, limits file
+size to 65536 bytes/core size to zero, and permits one total daemon start. Only
+stable terminal-unit stderr classifications leave the guest; missing provenance,
+running/signal/limit/changed input remains inconclusive. This mode always reports
+`diagnostic_only`/unqualified and exits nonzero, including successful observation.
+Only sanitized JSON is uploaded. Default PR/manual `qualification` is unchanged;
+remove the diagnostic override before any genuine qualification claim.
+
 The next source-only revision adds two genuine native scenarios, awaiting review
 and execution. The default dependency OS still performs fresh/hot real CLI,
 synthetic provider, installer, owner and drain checks. A retained TEST creator
@@ -51,7 +62,7 @@ host capability change, file/ambient grant or consumer permission is introduced.
 Actual provider and numeric UID child still require all capability sets zero,
 empty supplementary groups and NoNewPrivs. Missing access fails qualification.
 
-The workflow remains unmodified and unactivated. The outer has one real monotonic
+The default qualification flow remains unchanged. The outer has one real monotonic
 27-minute assembly/scenario budget and a separate 3-minute evidence/owned-cleanup
 reserve, within the unchanged 40-minute workflow. That clock starts after workflow
 setup/build/typecheck; it does not claim to cover their duration. Assembly and

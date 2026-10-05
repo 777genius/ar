@@ -9,6 +9,11 @@ export const node = runtime + "/toolchain/bin/node";
 // Closed TEST modes use erasable syntax supported by the existing pinned runner.
 export const OwnedOsScenario = { Dependency: "dependency", Readonly: "readonly" } as const;
 export type OwnedOsScenario = typeof OwnedOsScenario[keyof typeof OwnedOsScenario];
+export const OwnedOsMode = { Qualification: "qualification", BusDiagnostic: "bus-startup-diagnostic" } as const;
+export type OwnedOsFixtureScenario = OwnedOsScenario | typeof OwnedOsMode.BusDiagnostic;
+export const busDiagnosticSink = "/var/lib/subscription-runtime-TEST-observation/dbus-startup.stderr";
+export const busDiagnosticDropInPath = "/etc/systemd/test-units/dbus.service.d/TEST-stderr.conf";
+export const busDiagnosticDropIn = `[Unit]\nStartLimitBurst=1\nStartLimitIntervalSec=infinity\n[Service]\nStandardError=append:${busDiagnosticSink}\nLimitFSIZE=65536\nLimitCORE=0\n`;
 export const readonlyStorage = "/mnt/TEST-retention-readonly-storage";
 export const ControlSinkPhase = { Observed: "observed", Release: "release", Drained: "drained" } as const;
 export const cleanEnv = { PATH: runtime + "/toolchain/bin:/usr/bin:/bin", LANG: "C", LC_ALL: "C", SYSTEMD_COLORS: "0" };

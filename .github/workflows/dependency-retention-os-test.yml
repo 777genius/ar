@@ -2,6 +2,14 @@ name: Dependency retention owned OS TEST
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Qualification or unqualified daemon startup diagnostic'
+        type: choice
+        default: qualification
+        options:
+          - qualification
+          - bus-startup-diagnostic
   pull_request:
     paths:
       - 'scripts/dependency-retention-os-test/**'
@@ -39,6 +47,7 @@ jobs:
       - name: Run one fresh owned OS qualification
         env:
           TEST_SOURCE_SHA: ${{ github.sha }}
+          TEST_OS_MODE: ${{ github.event.inputs.mode || 'qualification' }}
         run: |
           TEST_NODE="$(readlink -f "$(command -v node)")"
           TEST_TOOLCHAIN="$(dirname "$(dirname "$TEST_NODE")")"
@@ -46,7 +55,7 @@ jobs:
             TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
             "$TEST_NODE" --experimental-strip-types \
             "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/outer.ts" \
-            "$GITHUB_WORKSPACE" "$TEST_TOOLCHAIN"
+            "$GITHUB_WORKSPACE" "$TEST_TOOLCHAIN" "$TEST_OS_MODE"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
