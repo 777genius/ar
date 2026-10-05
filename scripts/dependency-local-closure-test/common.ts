@@ -92,7 +92,7 @@ export async function observeTools(npmRootInput: string, cwd: string, env: NodeJ
     const path = await realpath(raw); assert(path.startsWith("/usr/lib/")); libraries.add(path);
   }
   assert(libraries.size > 0 && libraries.size <= 32);
-  const toolRoots = await Promise.all([...libraries].sort().map(async path => ({ path,
+  const toolRoots = await Promise.all([...libraries].sort().map(async (path): Promise<DependencyTestNpmToolchain["toolRoots"][number]> => ({ path,
     sha256: await fileHash(path), kind: DependencyToolRootKind.File })));
   const libc = toolRoots.find(root => /\/libc\.so\.6$/.test(root.path)); assert(libc);
   const version = await command("/usr/bin/getconf", ["GNU_LIBC_VERSION"], cwd, env, "glibc_version", 30000);
