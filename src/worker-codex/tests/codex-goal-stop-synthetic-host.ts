@@ -34,9 +34,11 @@ if (kind === "tmux") {
   state.psReads++;
   writeFileSync(statePath, JSON.stringify(state));
   if (state.mode === "absent" || state.mode === "race") process.exit(2);
+  const fullTable = command === "-axo";
+  if (fullTable) process.stdout.write(`${process.ppid} 1 S 0.0 Thu Aug 21 02:00:00 2026 node TEST-observer\n`);
   if (state.terminated) process.exit(0);
   if (state.mode === "race-live" && !state.stopped) process.exit(0);
   if (state.mode === "dead" || state.stopped && state.mode !== "race-live") process.exit(0);
   const cmd = state.mode === "foreign" ? "bash foreign.sh" : `node subscription-runtime-codex-goal run --no-tmux --task-id proof-child --progress ${join(dirname(statePath), "jobs", "proof-child", "proof-child.progress.json")}`;
-  process.stdout.write(`987654 1 S 0.0 Thu Aug 21 02:00:00 2026 ${cmd}\n`);
+  process.stdout.write(`${fullTable ? "987654 1 " : ""}S 0.0 Thu Aug 21 02:00:00 2026 ${cmd}\n`);
 }
