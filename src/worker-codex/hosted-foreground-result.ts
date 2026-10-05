@@ -98,7 +98,7 @@ export function requireHostedForegroundRequest(args: readonly string[], cwd: str
         prior = { fd, dev: stat.dev, ino: stat.ino, sha256: hash(bytes) };
       } catch (error) { closeSync(fd); throw error; }
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    requests.set(request, { prior }); return request;
+    requests.set(request, prior ? { prior } : {}); return request;
   });
 }
 export function closeHostedForegroundRequest(request: HostedForegroundRequest): void {
