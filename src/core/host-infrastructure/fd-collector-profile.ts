@@ -65,7 +65,7 @@ export function parseFdCollectorProfile(value: unknown): FdCollectorProfile {
     "hosted-readonly-host-launch-cli.js", "hosted-readonly-runtime-bootstrap.js"];
   if (new Set(bootstraps.map(pin => pin.path)).size !== bootstraps.length ||
       required.some(name => names.filter(candidate => candidate === name).length !== 1)) invalid();
-  const limits = object(row.limits, "setupTimeoutMs,collectorTimeoutMs,maxOutputBytes,maxRows,maxBufferedInputBytes,maxEventPoll,maxEventFd,maxPipeEndpoints,maxDevNullReserves");
+  const limits = { ...object(row.limits, "setupTimeoutMs,collectorTimeoutMs,maxOutputBytes,maxRows,maxBufferedInputBytes,maxEventPoll,maxEventFd,maxPipeEndpoints,maxDevNullReserves") };
   const maxima = { setupTimeoutMs: 60_000, collectorTimeoutMs: 5_000, maxOutputBytes: 4 * 1024 * 1024,
     maxRows: 65_536, maxBufferedInputBytes: 4 * 1024 * 1024, maxEventPoll: 8, maxEventFd: 8,
     maxPipeEndpoints: 32, maxDevNullReserves: 8 };
