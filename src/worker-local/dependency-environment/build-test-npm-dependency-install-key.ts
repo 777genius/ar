@@ -9,7 +9,7 @@ import {
 } from "../../worker-core/dependency-environment/domain/dependency-install-key";
 import {
   dependencyLocalNpmArgv, qualifyDependencyNpmLocalClosure,
-  type DependencyLocalInstallKey, type DependencyTestNpmLocalInstallKeyInput, type DependencyNpmLocalClosure,
+  type DependencyLocalInstallKey, type DependencyTestNpmLocalInstallKeyInput, type DependencyNpmLocalClosure, type DependencyLocalCopiedFile,
 } from "../../worker-core/dependency-environment/domain/dependency-local-closure";
 
 export { DependencyInstallKeyError, validateDependencyTestNpmInputs };
@@ -119,7 +119,7 @@ export function buildTestNpmLocalDependencyInstallKey(input: DependencyTestNpmLo
         !Array.isArray(local.directories) || local.directories.length > 8192) fail(Failure.InvalidInputs);
     total += local.packageBytes.length;
     if (total > input.maxInputBytes) fail(Failure.InvalidInputs);
-    return { ...local, packageBytes: Buffer.from(local.packageBytes), directories: [...local.directories], files: local.files.map((file) => {
+    return { ...local, packageBytes: Buffer.from(local.packageBytes), directories: [...local.directories], files: local.files.map((file: DependencyLocalCopiedFile) => {
       allowed(object(file), ["path", "mode", "bytes"]);
       if (!(file.bytes instanceof Uint8Array)) fail(Failure.InvalidInputs);
       total += file.bytes.length; if (total > input.maxInputBytes) fail(Failure.InvalidInputs);

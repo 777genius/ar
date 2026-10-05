@@ -1,4 +1,4 @@
-import { chmod, link, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -193,6 +193,28 @@ describe.skipIf(process.platform !== "linux")("fresh TEST local npm input closur
     await rm(join(root, "packages/b/dist/index.js")); await link(join(foreign, "sentinel"), join(root, "packages/b/dist/index.js"));
     expect(await captureNpmLocalClosure(request(root))).toMatchObject({ status: Status.Unknown, reason: Reason.UnsafeInput });
     expect(await readFile(join(foreign, "sentinel"), "utf8")).toBe("TEST foreign bytes must survive\n");
+  });
+
+  it("preserves valid UTF-8 names and refuses invalid raw names on capture and revalidation without replacing their bytes", async () => {
+    const root = await fixture(), directory = join(root, "packages/b/dist");
+    const valid = join(directory, "caf\u00e9.js");
+    await writeFile(valid, "TEST valid UTF-8 name\n", { mode: 0o644 });
+    const capture = await qualified(root);
+    expect(capture.closure.packages.find(local => local.path === "packages/b")?.files)
+      .toContainEqual({ path: "dist/caf\u00e9.js", mode: 0o644, bytes: Buffer.from("TEST valid UTF-8 name\n") });
+    const invalid = Buffer.concat([Buffer.from(directory + "/"), Buffer.from([0xff]), Buffer.from(".js")]);
+    await writeFile(invalid, "TEST invalid raw filename must survive\n", { mode: 0o644 });
+    const before = await lstat(invalid, { bigint: true });
+    const names = async () => (await readdir(directory, { encoding: "buffer" })).map(name => name.toString("hex")).sort();
+    const beforeNames = await names();
+    expect(revalidateNpmLocalClosure({ capture, maxDurationMs: 10000 }).status).toBe(Status.Unknown);
+    expect((await captureNpmLocalClosure(request(root))).status).toBe(Status.Unknown);
+    const after = await lstat(invalid, { bigint: true });
+    expect([after.dev, after.ino, after.mode, after.size]).toEqual([before.dev, before.ino, before.mode, before.size]);
+    expect(await names()).toEqual(beforeNames);
+    expect(await readFile(invalid, "utf8")).toBe("TEST invalid raw filename must survive\n");
+    expect(await readFile(valid, "utf8")).toBe("TEST valid UTF-8 name\n");
+    expect(await readFile(join(root, "source-sentinel"), "utf8")).toBe("TEST authored source must survive\n");
   });
 
   it("refuses default-excluded selectors, nested ignore and aggregate byte overflow without altering source", async () => {

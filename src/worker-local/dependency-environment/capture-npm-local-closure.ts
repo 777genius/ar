@@ -171,11 +171,10 @@ export async function captureNpmLocalClosure(input: {
     const locals = new Map<string, DependencyLocalPackage>(), physical = new Set<string>();
     const watches: QualifiedNpmLocalInputs["watches"][number][] = [];
     const names = async (parent: Anchor): Promise<string[]> => {
-      check(); const result: string[] = [], iterator = await opendir(at(parent.handle.fd, ""), { encoding: "buffer", bufferSize: 32 });
+      check(); const result: string[] = [], iterator = await opendir(at(parent.handle.fd, ""), { encoding: "latin1", bufferSize: 32 });
       for await (const entry of iterator) {
         check(); if (result.length >= input.maxEntries) unknown(Reason.Bounds);
-        const raw: unknown = entry.name;
-        if (!Buffer.isBuffer(raw)) unknown(Reason.UnsafeInput);
+        const raw = Buffer.from(entry.name, "latin1");
         const name = new TextDecoder("utf-8", { fatal: true }).decode(raw);
         if (!Buffer.from(name).equals(raw)) unsupported(); safeName(name); result.push(name);
       }
@@ -328,12 +327,12 @@ export function revalidateNpmLocalClosure(input: { readonly capture: QualifiedNp
         check(); const slash = path.lastIndexOf("/"); if (current(directory(path.slice(0, slash === -1 ? 0 : slash)), path.slice(slash + 1))) unknown(Reason.Unstable);
       }
       for (const watch of capture.watches) {
-        check(); const iterator = opendirSync(at(directory(watch.path), ""), { encoding: "buffer", bufferSize: 32 }), names: string[] = [];
+        check(); const iterator = opendirSync(at(directory(watch.path), ""), { encoding: "latin1", bufferSize: 32 }), names: string[] = [];
         try {
           while (true) {
             check(); const entry = iterator.readSync(); if (!entry) break;
             if (names.length >= 16384) unknown(Reason.Bounds);
-            const raw: unknown = entry.name; if (!Buffer.isBuffer(raw)) unknown(Reason.UnsafeInput);
+            const raw = Buffer.from(entry.name, "latin1");
             const text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
             if (!Buffer.from(text).equals(raw)) unsupported(); safeName(text); names.push(text);
           }
