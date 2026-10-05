@@ -31,6 +31,7 @@ function fields(value: unknown, expected: readonly string[], version: 1 | 2): as
       ![value.installKey, value.manifestDigest, value.installerCompletionSha256, value.closureDigest].every(digest) ||
       !Array.isArray(value.sourceLinks) || !Array.isArray(value.directories) || !Array.isArray(value.ancestors) ||
       value.sourceLinks.length > 128 || value.directories.length > 512 || value.ancestors.length > 512) fail();
+  const ancestors = value.ancestors;
   if (version === 2 && (BigInt(String(value.workspace.ino)) === 0n || BigInt(String(value.tree.ino)) === 0n)) fail();
   const pins: unknown[] = [...value.ancestors, ...value.directories];
   for (const pin of pins) if (!exact(pin, ["path", "dev", "ino", "mode", "mountId"]) ||
@@ -42,7 +43,7 @@ function fields(value: unknown, expected: readonly string[], version: 1 | 2): as
   for (const pin of value.directories) if (!coordinate(pin.path)) fail();
   const ancestry = ["/"]; let ancestor = "";
   for (const part of value.workspace.canonicalPath.split("/").filter(Boolean).slice(0, -1)) { ancestor += "/" + part; ancestry.push(ancestor); }
-  if (value.ancestors.length !== ancestry.length || ancestry.some(path => !value.ancestors.some((pin: { path: unknown }) => pin.path === path))) fail();
+  if (ancestors.length !== ancestry.length || ancestry.some(path => !ancestors.some((pin: { path: unknown }) => pin.path === path))) fail();
   for (const pin of value.directories) if (pin.path && !value.directories.some((parent: { path: unknown }) =>
     parent.path === (pin.path.includes("/") ? pin.path.slice(0, pin.path.lastIndexOf("/")) : ""))) fail();
   const linkPaths = new Set<string>();
