@@ -1,4 +1,5 @@
 import type { DependencyTreeIdentity, DependencyWorkspaceIdentity } from "@vioxen/subscription-runtime/core";
+import type { DependencyTreeMeasurement } from "./dependency-tree-manifest";
 export { sameDependencyTree, sameDependencyWorkspace, type DependencyTreeIdentity, type DependencyWorkspaceIdentity } from "@vioxen/subscription-runtime/core";
 
 export enum DependencyReceiptState {
@@ -97,7 +98,8 @@ export type DependencyReceipt = DependencyReceiptBase & (
       readonly requestedKey: string; readonly preservation: DependencyPreservationProof }
   | { readonly state: DependencyReceiptState.Ready; readonly installKey: string;
       readonly tree: DependencyTreeIdentity; readonly manifestDigest: string;
-      readonly provenance: DependencyInstallProof }
+      readonly provenance: DependencyInstallProof;
+      readonly treeMeasurement?: DependencyTreeMeasurement }
   | { readonly state: DependencyReceiptState.Evicting; readonly operationId: string;
       readonly installKey: string; readonly tree: DependencyTreeIdentity;
       readonly manifestDigest: string; readonly trash: DependencyTrashIntent }
