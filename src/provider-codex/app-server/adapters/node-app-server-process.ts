@@ -13,6 +13,7 @@ import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidate
 import { readHostedFdProfile } from "./hosted-fd-observation";
 import { spawnHostedFdChild, hostedFdLaunch, HostedFdLaunchKind } from "./hosted-fd-launch";
 import { retryHostedFenceAcquisition } from "./hosted-fd-fence";
+import { abandonHostedDependencyToolInvocation, bindHostedDependencyToolChild } from "./hosted-dependency-tool-plan";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
 import { hostedReadonlyMountProperties, type HostedReadonlyMounts } from "./hosted-readonly-mounts";
 import { codexProviderEgressProfileEnvVar, CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
@@ -183,8 +184,12 @@ function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<R
       request.payload = [...request.payload, "--fd-ready-v1"];
       args = [args[0]!, args[1]!, JSON.stringify(request)];
     }
-    const child = spawnHostedFdChild(invocation.command, args, { cwd: input.cwd, detached: process.platform !== "win32" },
-      invocation.systemdUnit, HostedFdLaunchKind.Provider) as ChildProcessWithoutNullStreams;
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawnHostedFdChild(invocation.command, args, { cwd: input.cwd, detached: process.platform !== "win32" },
+        invocation.systemdUnit, HostedFdLaunchKind.Provider) as ChildProcessWithoutNullStreams;
+      bindHostedDependencyToolChild(invocation, child);
+    } catch (error) { abandonHostedDependencyToolInvocation(invocation); throw error; }
     hostedSystemdUnits.set(child, invocation.systemdUnit);
     const guard = hostedFdLaunch(child);
     void guard.observe().then(() => retryHostedFenceAcquisition(() =>

@@ -7,6 +7,7 @@ import { assertHostedFdBootstrap, assertHostedFdConfinement, assertHostedFdManag
   observeHostedFdUnit, readHostedFdProfile, type HostedFdFact, type HostedFdProcess, type HostedFdUnit } from "./hosted-fd-observation";
 import type { FdCollectorProfile } from "@vioxen/subscription-runtime/core";
 import { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
+import { assertHostedDependencyToolParentFrame, assertHostedDependencyToolRelease } from "./hosted-dependency-tool-plan";
 
 export { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
 export enum HostedFdLaunchKind { Foreground = "foreground", Provider = "provider", Installer = "installer" }
@@ -314,6 +315,16 @@ export class HostedFdLaunch {
     // run. The actual authority owner and own live setup budget are rechecked
     // after collection, inside the very same fence, immediately before enqueue.
     revalidateOwner();
+    if (this.kind === HostedFdLaunchKind.Foreground) {
+      assertHostedDependencyToolParentFrame(fence, this.unit, frame);
+      revalidateOwner();
+    }
+    if (this.kind === HostedFdLaunchKind.Provider) {
+      assertHostedDependencyToolRelease(this.child, fence, current.bootstrap, current.unit);
+      // N3's synchronous namespace/file observations are also bounded by the
+      // real owner lifetime and this same one-shot release fence.
+      revalidateOwner();
+    }
     this.remaining();
     this.input.write(frame);
     this.released = true;

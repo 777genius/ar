@@ -16,7 +16,8 @@ import { assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependen
 import { hostedDependencyInstallerRoot } from "./hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRecipe } from "./hosted-dependency-installer-inputs";
 
-export const hostedDependencyReceiptHistoryRoot = "/var/lib/subscription-runtime-host-policy/dependency-receipt-history";
+import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
+export { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
 const legacyRoot = "/var/lib/subscription-runtime-host-policy/dependency-receipts";
 export const hostedDependencySourceBindingRoot = "/var/lib/subscription-runtime-host-policy/dependency-source-bindings";
 const encode = (v: unknown): Buffer => Buffer.from(JSON.stringify(v) + "\n");
