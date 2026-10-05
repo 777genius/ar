@@ -7,6 +7,10 @@ import {
   DependencyInstallKeyError, validateDependencyTestNpmInputs,
   type DependencyInstallKey, type DependencyTestNpmInstallKeyInput, type DependencyTestNpmToolchain,
 } from "../../worker-core/dependency-environment/domain/dependency-install-key";
+import {
+  dependencyLocalNpmArgv, qualifyDependencyNpmLocalClosure,
+  type DependencyLocalInstallKey, type DependencyTestNpmLocalInstallKeyInput, type DependencyNpmLocalClosure, type DependencyLocalCopiedFile,
+} from "../../worker-core/dependency-environment/domain/dependency-local-closure";
 
 export { DependencyInstallKeyError, validateDependencyTestNpmInputs };
 function fail(reason: Failure): never { throw new DependencyInstallKeyError(reason); }
@@ -89,4 +93,62 @@ export function buildTestNpmDependencyInstallKey(input: DependencyTestNpmInstall
   }) + "\n");
   if (canonicalBytes.length > input.maxCanonicalBytes) fail(Failure.InvalidInputs);
   return { profile: DependencyInstallProfile.TestNpmQualification, canonicalBytes, installKey: digest(canonicalBytes) };
+}
+
+/** Additive complete local-input key. Registry v1 bytes/API remain unchanged.
+ * Logical observations are validated again here; supplied physical pins,
+ * custody/Ready facts and hidden npm options cannot enter this input DTO. */
+export function buildTestNpmLocalDependencyInstallKey(input: DependencyTestNpmLocalInstallKeyInput & {
+  readonly maxInputBytes: number; readonly maxCanonicalBytes: number;
+}): DependencyLocalInstallKey {
+  allowed(object(input), ["packageBytes", "lockBytes", "lockName", "toolchain", "closure", "maxInputBytes", "maxCanonicalBytes"]);
+  if (![input.maxInputBytes, input.maxCanonicalBytes].every((n) => Number.isSafeInteger(n) && n > 0) ||
+      !(input.packageBytes instanceof Uint8Array) || !(input.lockBytes instanceof Uint8Array) ||
+      input.maxInputBytes > 64 * 1024 * 1024 || input.packageBytes.length + input.lockBytes.length > input.maxInputBytes ||
+      !Object.values(DependencyNpmLockName).includes(input.lockName)) fail(Failure.InvalidInputs);
+  const supplied = object(input.closure);
+  allowed(supplied, ["version", "profile", "layout", "packages", "edges"]);
+  if (input.closure.version !== 1 || input.closure.profile !== DependencyInstallProfile.TestNpmLocalNoLifecycleV1 ||
+      !Array.isArray(input.closure.packages) || input.closure.packages.length > 128 || !Array.isArray(input.closure.edges) ||
+      input.closure.edges.length > 8192) fail(Failure.UnsupportedClosure);
+  let total = input.packageBytes.length + input.lockBytes.length;
+  const packageBytes = Buffer.from(input.packageBytes), lockBytes = Buffer.from(input.lockBytes);
+  const packages = input.closure.packages.map((local) => {
+    allowed(object(local), ["path", "kind", "packageBytes", "directories", "files"]);
+    if (!(local.packageBytes instanceof Uint8Array) || !Array.isArray(local.files) || local.files.length > 8192 ||
+        !Array.isArray(local.directories) || local.directories.length > 8192) fail(Failure.InvalidInputs);
+    total += local.packageBytes.length;
+    if (total > input.maxInputBytes) fail(Failure.InvalidInputs);
+    return { ...local, packageBytes: Buffer.from(local.packageBytes), directories: [...local.directories], files: local.files.map((file: DependencyLocalCopiedFile) => {
+      allowed(object(file), ["path", "mode", "bytes"]);
+      if (!(file.bytes instanceof Uint8Array)) fail(Failure.InvalidInputs);
+      total += file.bytes.length; if (total > input.maxInputBytes) fail(Failure.InvalidInputs);
+      return { ...file, bytes: Buffer.from(file.bytes) };
+    }) };
+  });
+  if (total > input.maxInputBytes) fail(Failure.InvalidInputs);
+  const closure = qualifyDependencyNpmLocalClosure({ packageBytes, lockBytes, packages });
+  const normalizeEdges = (value: DependencyNpmLocalClosure["edges"]) => value.map((edge) => {
+    allowed(object(edge), ["declaringPath", "field", "name", "spec", "resolutionBase", "targetPath", "kind", "installedPaths"]);
+    if (!Array.isArray(edge.installedPaths)) fail(Failure.InvalidInputs);
+    return { declaringPath: edge.declaringPath, field: edge.field, name: edge.name, spec: edge.spec,
+      resolutionBase: edge.resolutionBase, targetPath: edge.targetPath, kind: edge.kind, installedPaths: [...edge.installedPaths].sort() };
+  }).sort((a, b) => Buffer.compare(Buffer.from(JSON.stringify(a)), Buffer.from(JSON.stringify(b))));
+  if (input.closure.layout !== closure.layout || JSON.stringify(normalizeEdges(input.closure.edges)) !== JSON.stringify(normalizeEdges(closure.edges))) fail(Failure.UnsupportedClosure);
+  const toolchain = validateDependencyTestNpmToolchain(input.toolchain);
+  if (toolchain.npmVersion !== "10.9.9") fail(Failure.UnsupportedProfile);
+  const canonicalBytes = Buffer.from(JSON.stringify({ version: 2, profile: closure.profile,
+    package: { bytes: packageBytes.length, sha256: digest(packageBytes) },
+    lock: { name: input.lockName, bytes: lockBytes.length, sha256: digest(lockBytes) },
+    local: { version: closure.version, layout: closure.layout, packages: closure.packages.map((local) => ({
+      path: local.path, kind: local.kind, package: { bytes: local.packageBytes.length, sha256: digest(local.packageBytes) },
+      directories: [...local.directories].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))),
+      files: local.files.map((file) => ({ path: file.path, mode: file.mode, bytes: file.bytes.length, sha256: digest(file.bytes) }))
+        .sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path))),
+    })), edges: normalizeEdges(closure.edges) }, toolchain,
+    argv: dependencyLocalNpmArgv(closure.layout), runtimeConfig: dependencyTestNpmConfig,
+    umask: dependencyTestNpmUmask, environment: dependencyTestNpmEnvironment,
+  }) + "\n");
+  if (canonicalBytes.length > input.maxCanonicalBytes) fail(Failure.InvalidInputs);
+  return { profile: DependencyInstallProfile.TestNpmLocalNoLifecycleV1, canonicalBytes, installKey: digest(canonicalBytes) };
 }

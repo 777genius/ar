@@ -3,6 +3,8 @@ import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-depen
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
 import { admitHostedDependencyConsumer } from "./hosted-dependency-admission";
+import { readAdmittedHostedDependencyToolConfig, hostedDependencyToolInstruction } from "./hosted-dependency-tool-profile";
+import type { DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { researchProviderAdmissionGuard } from "./research-launch-admission";
 import { prepareHostScratchTemp } from "./host-scratch-temp";
@@ -230,6 +232,7 @@ export async function runCodexGoal(
   config = mapManagedGoalLayout({ config }).config;
   assertCodexGoalRunConfig(config);
   await admitHostedDependencyConsumer(config);
+  const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(config.workspacePath);
   assertHostedMimoGoalConfinement(config);
   assertCodexGoalAccessLaunchAllowed(config);
   const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
@@ -273,7 +276,7 @@ export async function runCodexGoal(
   return new LocalTerminalCheckpointAdmission(config.jobRootDir).withWriter(
     async () => {
       await prepareHostScratchTemp(config.jobRootDir, config.sourceEnv ?? process.env);
-      return runCodexGoalAdmitted(config, deps, providerEgressPolicy, appServerProcessFactory, baseCommit);
+      return runCodexGoalAdmitted(config, deps, providerEgressPolicy, appServerProcessFactory, baseCommit, dependencyToolConfig);
     },
   );
 }
@@ -284,6 +287,7 @@ async function runCodexGoalAdmitted(
   providerEgressPolicy: CodexProviderEgressPolicy,
   appServerProcessFactory: CodexAppServerProcessFactory | undefined,
   baseCommit: string | undefined,
+  dependencyToolConfig: DependencyToolGuestConfig | undefined,
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   const prompt = await readFile(config.promptPath, "utf8");
   const progressPath = codexGoalProgressPath(config);
@@ -411,6 +415,7 @@ async function runCodexGoalAdmitted(
       },
       systemPrompt: codexGoalRunSystemPrompt(config, {
         linkedWorktreeHandoff: linkedWorktreeHandoff.enabled,
+        ...(dependencyToolConfig ? { dependencyToolInstruction: hostedDependencyToolInstruction(dependencyToolConfig) } : {}),
       }),
       metadata: {
         goal: config.goalSummary ?? config.taskId,
@@ -724,9 +729,10 @@ function codexGoalWorkerSystemPrompt(taskId: string): string {
 
 function codexGoalRunSystemPrompt(
   config: Pick<CodexGoalRunConfig, "taskId" | "workerReportMode">,
-  options: { readonly linkedWorktreeHandoff?: boolean } = {},
+  options: { readonly linkedWorktreeHandoff?: boolean; readonly dependencyToolInstruction?: string } = {},
 ): string {
   const prompts = [codexGoalWorkerSystemPrompt(config.taskId)];
+  if (options.dependencyToolInstruction) prompts.push(options.dependencyToolInstruction);
   if (options.linkedWorktreeHandoff === true) {
     prompts.push(codexGoalLinkedWorktreeHandoffSystemPrompt);
   }

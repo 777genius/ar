@@ -1,7 +1,9 @@
 import { dependencyOwnedReservations, releaseHostedDependencyConsumer } from "./hosted-dependency-release";
-import { assertHostedDependencyQualifiedInventory, hostedDependencyOwnerRoot, isHostedDependencyWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { evictHostedDependencyCandidate, recoverHostedDependencyEviction, removeHostedDependencyCommittedTrash,
+  type HostedDependencyEvictionCandidate } from "./hosted-dependency-transactions";
+import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysicalWorkspace, hostedDependencyOwnerRoot, isHostedDependencyWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
-import { fenceDependencyConsumer } from "@vioxen/subscription-runtime/worker-core";
+import { fenceDependencyConsumer, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/worker-core";
 import { scopedOrdinaryAuthority } from "./hosted-controller/scoped-termination-validation";
 import { ScopedTerminationRecords } from "./hosted-controller/scoped-termination-records";
 import { ScopedTerminationKind, type RuntimeValidatedOrdinaryTermination } from "../worker-core/hosted-custody/domain/scoped-termination";
@@ -16,12 +18,14 @@ import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedAct
 } from "@vioxen/subscription-runtime/provider-codex";
 import { fileURLToPath } from "node:url";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory, ordinaryCompletionBytes, ordinaryCompletionPath } from "./hosted-readonly-host-kernel";
+import { assertHostedForegroundResult, type HostedForegroundResult } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import { parseHostedTestEgressGrant, assertHostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import { hostedTestEgressGrantRoot } from "./hosted-test-egress-files";
 import { HostedReadonlyEpochStore } from "./hosted-readonly-epoch-store";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { readHostedPrivateBytes, hostedReadonlyPolicyRoot } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot, readonlyRevokedRoot } from "./hosted-readonly-custody";
+import { issueFreshHostedManifestPlacement } from "./hosted-dependency-manifest-placement";
 
 /** Installation, origin and activation persistence under the common host fence.
  * Authority derives from independently staged inventory and actual kernel facts;
@@ -29,6 +33,27 @@ import { createReadonlyPrivateRecord, readonlySupervisorRoot, readonlyRevokedRoo
 export class HostedInstallationActivationStore {
   private ordinaryLaunch: ReturnType<HostedInstallationActivationStore["reserveOrdinaryRuntime"]> | undefined;
   read(): HostedActivation { return readHostedInstallationActivation().activation; }
+
+  /** Candidate fields are comparisons only. Actual inspected operator/grant
+   * facts are resolved here, never supplied as a request authorization DTO. */
+  dependencyMaintenanceAuthority(fence: HostedActivationFence, jobId: string) {
+      assertHostedActivationFence(fence);
+      const kernel = new HostedReadonlyHostKernel(), session = kernel.operatorSession();
+      const origin = readHostedOrdinaryBirth(jobId);
+      assertInspectedInstallation(origin.installation); assertActivationSession(origin.activation, session);
+      const binding = readHostedDependencyBinding(jobId);
+      if (!binding || binding.installationId !== origin.installation.installationId || binding.runtimeSha !== origin.installation.runtimeSha ||
+          binding.workspace.canonicalPath !== origin.birth.workspacePath || binding.jobRootDir !== origin.birth.jobRootDir ||
+          assertNoManagedOrigin(origin.birth) !== binding.grantDigest) invalid();
+      const grantBytes = readHostedPrivateBytes(join(hostedTestEgressGrantRoot, digest(Buffer.from(jobId)) + ".json"), 4096);
+      if (!grantBytes || parseHostedTestEgressGrant(decodeHostedActivationBytes(grantBytes)).profileId !== CodexProviderEgressProfileId.TestNpmQualification) invalid();
+      assertHostedDependencyQualifiedInventory();
+      assertHostedDependencyPhysicalWorkspace(binding);
+      return { ...origin, binding, session };
+  }
+  evictDependencyCandidate(candidate: HostedDependencyEvictionCandidate) { return evictHostedDependencyCandidate(candidate); }
+  recoverDependencyEviction(jobId: string) { return recoverHostedDependencyEviction(jobId); }
+  removeDependencyCommittedTrash(jobId: string, revision: number) { return removeHostedDependencyCommittedTrash(jobId, revision); }
 
   serialized<T>(action: (fence: HostedActivationFence) => T): T {
     return withHostedActivationFence(fence => {
@@ -108,7 +133,7 @@ export class HostedInstallationActivationStore {
   /** Root installation migration derives its identity from the independently
    * staged same artifact and finite inventory. No caller-authored approval JSON. */
   install(): HostedActivation {
-    return withHostedActivationFence(() => {
+    return withHostedActivationFence(fence => {
       const kernel = new HostedReadonlyHostKernel(), session = kernel.operatorSession();
       kernel.verifyExclusiveInventory(); kernel.verifyDescriptorBoundary();
       const binding = inspectedInstallation();
@@ -128,14 +153,14 @@ export class HostedInstallationActivationStore {
         const path = join(readonlySupervisorRoot, directory), stat = lstatSync(path);
         if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o077) || readdirSync(path).length) invalid();
       }
-      return this.createInstallation(binding, session, null);
+      return this.createInstallation(binding, session, null, fence);
     });
   }
 
   /** Explicit migration of retained managed custody. No inferred empty history,
    * stage rebinding, grant creation, revocation removal or automatic activation. */
   installManaged(): HostedActivation {
-    return withHostedActivationFence(() => {
+    return withHostedActivationFence(fence => {
       const kernel = new HostedReadonlyHostKernel(), session = kernel.operatorSession();
       const binding = inspectedInstallation();
       kernel.verifyExclusiveInventory(); kernel.verifyDescriptorBoundary();
@@ -164,13 +189,14 @@ export class HostedInstallationActivationStore {
         const path = join(readonlySupervisorRoot, directory), stat = lstatSync(path);
         if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o077) || readdirSync(path).length) invalid();
       }
-      return this.createInstallation(binding, session, digest(enrollment));
+      return this.createInstallation(binding, session, digest(enrollment), fence);
     });
   }
 
   private createInstallation(binding: Omit<HostedInstallation, "schemaVersion" | "installationId">,
-    session: Pick<HostedActivation, "hostId" | "bootId" | "supervisorId">, enrollmentSha256: string | null): HostedActivation {
+    session: Pick<HostedActivation, "hostId" | "bootId" | "supervisorId">, enrollmentSha256: string | null, fence: HostedActivationFence): HostedActivation {
     const installation = parseHostedInstallation({ ...binding, schemaVersion: 1, installationId: randomUUID() });
+    issueFreshHostedManifestPlacement(fence, installation);
     const catalog = { schemaVersion: 1, installationId: installation.installationId, revision: 1, origins: [] };
     const catalogBytes = encoded(catalog);
     const activation = parseHostedActivation({ schemaVersion: 1, installationId: installation.installationId,
@@ -329,6 +355,26 @@ export class HostedInstallationActivationStore {
       throw error;
     }
   }
+  releaseOrdinaryRuntimeFrame(release: (fence: HostedActivationFence, revalidate: () => void) => void): void {
+    this.serialized(fence => {
+      const revalidate = () => {
+      const launch = this.ordinaryLaunch;
+      if (!launch) invalid();
+      const { installation, activation, birth, originSha256 } = readHostedOrdinaryBirth(launch.start.jobId);
+      assertInspectedInstallation(installation);
+      assertActivationSession(activation, new HostedReadonlyHostKernel().operatorSession());
+      const row = activation.ordinaryStarts.find(row => row.startId === launch.reservation.startId);
+      if (!row || row.state !== HostedCustodyReservationState.Reserved || JSON.stringify(row) !== JSON.stringify(launch.reservation) ||
+          installation.installationId !== launch.start.installationId || activation.bootId !== launch.start.bootId ||
+          originSha256 !== launch.start.originSha256 || birth.workspacePath !== launch.start.workspacePath ||
+          !required(`ordinary-starts/${row.startId}.json`).equals(encoded(launch.start))) invalid();
+      launch.childBudget?.remainingMs();
+      if (isHostedDependencyWorkspace(launch.start.workspacePath)) assertHostedDependencyQualifiedInventory();
+      launch.childBudget?.remainingMs();
+      };
+      revalidate(); release(fence, revalidate);
+    });
+  }
   /** Dependency attempt release is per retained invocation, never global phase
    * closure. Called by the host --wait owner after successful completion. */
   releaseOrdinaryDependencyConsumer(): boolean {
@@ -351,7 +397,9 @@ export class HostedInstallationActivationStore {
       if (!runtime || JSON.stringify(runtime) !== JSON.stringify(launch.reservation)) invalid();
       const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
       try {
-        const owner = store.read(binding.workspace), attempt = owner?.owner?.attempt;
+        const owner = store.read(binding.workspace);
+        if (owner?.owner && !isDependencyConsumerOwner(owner.owner)) invalid();
+        const attempt = owner && isDependencyConsumerOwner(owner.owner) ? owner.owner.attempt : undefined;
         if (attempt) {
           if (attempt.launch.startId !== runtime.startId || attempt.launch.grantDigest !== binding.grantDigest ||
               attempt.launch.installationId !== binding.installationId) invalid();
@@ -370,6 +418,29 @@ export class HostedInstallationActivationStore {
   }
   ordinaryChildLifetime() { return this.ordinaryLaunch?.childLifetime; }
   ordinaryChildBudget() { return this.ordinaryLaunch?.childBudget; }
+
+  withOrdinaryForegroundTerminal<T>(result: HostedForegroundResult, action: (owner: { jobRootDir: string; args: readonly string[]; fence: HostedActivationFence }) => T): T {
+    return this.serialized(fence => {
+      assertHostedForegroundResult(result);
+      const launch = this.ordinaryLaunch;
+      if (!launch || launch.start.unit !== result.unit || launch.reservation.startId !== result.startId ||
+          !required(`ordinary-starts/${launch.reservation.startId}.json`).equals(encoded(launch.start))) invalid();
+      const kernel = new HostedReadonlyHostKernel();
+      const activation = this.read();
+      assertActivationSession(activation, kernel.operatorSession());
+      const reservation = activation.ordinaryStarts.find(row => row.startId === launch.reservation.startId);
+      if (!reservation || JSON.stringify(reservation) !== JSON.stringify(launch.reservation)) invalid();
+      if (result.exitCode === 0) {
+        if (!required(`ordinary-completed/${launch.reservation.startId}.json`).equals(
+            ordinaryCompletionBytes(launch.reservation.startId, digest(encoded(launch.start))))) invalid();
+        kernel.fenceOrdinaryCreator(launch.reservation, launch.start.bootId, digest(encoded(launch.start)));
+      }
+      kernel.drainOrdinaryQueue(launch.reservation); kernel.confirmOrdinaryDescendants(launch.reservation);
+      const creator = readHostedReadonlyHostInventory().ordinaryCreators.find(row => row.creatorId === launch.start.creatorId);
+      if (!creator || creator.jobRootDir !== launch.start.jobRootDir) invalid();
+      return action({ jobRootDir: launch.start.jobRootDir, args: creator.launch.args, fence });
+    });
+  }
 
   recordOrdinaryRuntimeWaitCompletion(): void {
     this.serialized(() => {
@@ -794,7 +865,7 @@ function invalid(): never { throw new Error("hosted_activation_evidence_invalid"
 function encoded(value: unknown): Buffer { return Buffer.from(JSON.stringify(value) + "\n"); }
 function inspectedInstallation(): Omit<HostedInstallation, "schemaVersion" | "installationId"> {
   const inventory = readHostedReadonlyHostInventory();
-  if (inventory.schemaVersion !== 2) invalid();
+  if (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4) invalid();
   const runtimeDirectory = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
   const cliPath = join(runtimeDirectory, "dist/worker-codex/codex-goal-cli.js");
   for (const creator of inventory.ordinaryCreators) {

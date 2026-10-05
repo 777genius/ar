@@ -2,6 +2,8 @@ import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/prov
 import { sameTools } from "./child-execution-confinement";
 import { assertReadonlyAdmittedFactory } from "./hosted-readonly-admission";
 import { prepareHostScratchCaches } from "./host-scratch-temp";
+import { readAdmittedHostedDependencyToolConfig } from "./hosted-dependency-tool-profile";
+import type { DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -263,6 +265,10 @@ function createCodexAgentDriver(input: {
   const hostedGlobalScanGuard =
     sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
   const projectReadBoundary = hostedGlobalScanGuard || options.enforceProjectReadBoundary === true;
+  const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(options.workspacePath);
+  if (dependencyToolConfig && (!hostedGlobalScanGuard || executionEngine !== "app-server-goal" || options.boundedWorkspaceTools)) {
+    throw new Error("hosted_dependency_tool_engine_unsupported");
+  }
   const executableReadPath = projectReadBoundary
     ? hostedCodexExecutableReadPath({ codexBinaryPath: options.codexBinaryPath, sourceEnv })
     : undefined;
@@ -311,11 +317,11 @@ function createCodexAgentDriver(input: {
     : undefined;
   const projectConfigToml = projectReadBoundary && !hostedGlobalScanGuard
     ? projectReadBoundaryConfigToml(providerEgressPolicy, executableReadPath,
-        modelBackend, mimoApiKeyEnvVarName, sourceEnv.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE)
+        modelBackend, mimoApiKeyEnvVarName, sourceEnv.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE, dependencyToolConfig)
     : undefined;
   const mimoConfigToml = workspaceToolsProfile?.configToml ??
     (hostedGlobalScanGuard
-      ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath, modelBackend, mimoApiKeyEnvVarName)
+      ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath, modelBackend, mimoApiKeyEnvVarName, dependencyToolConfig)
       : projectConfigToml);
   if (executionEngine === "plain-exec") {
     return new CodexCliAgentDriver({
@@ -438,9 +444,9 @@ function createCodexAgentDriver(input: {
         : projectReadBoundary
         ? {
             configToml: hostedGlobalScanGuard
-              ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath)
+              ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath, undefined, undefined, dependencyToolConfig)
               : projectReadBoundaryConfigToml(providerEgressPolicy, executableReadPath,
-                  modelBackend, mimoApiKeyEnvVarName),
+                  modelBackend, mimoApiKeyEnvVarName, undefined, dependencyToolConfig),
           }
         : {}),
     }),
@@ -470,10 +476,11 @@ function projectReadBoundaryConfigToml(
   modelBackend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
   mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
   privateKeyFilePath?: string,
+  dependencyTools?: DependencyToolGuestConfig,
 ): string {
   return codexJsonHomeConfigToml({ providerEgressPolicy, namedPermissions: true,
     modelBackend, mimoApiKeyEnvVarName }) +
-    "\n" + hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath, privateKeyFilePath);
+    "\n" + hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath, privateKeyFilePath, dependencyTools);
 }
 
 function hostedGlobalScanConfigToml(
@@ -481,6 +488,7 @@ function hostedGlobalScanConfigToml(
   executableReadPath?: string,
   modelBackend: CodexModelBackend = CodexModelBackend.OpenAiChatGpt,
   mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
+  dependencyTools?: DependencyToolGuestConfig,
 ): string {
   const hookPath = fileURLToPath(
     new URL("./hosted-global-scan-pre-tool-hook.js", import.meta.url),
@@ -489,7 +497,7 @@ function hostedGlobalScanConfigToml(
   return [
     codexJsonHomeConfigToml({ hooksEnabled: true, providerEgressPolicy, namedPermissions: true,
       modelBackend, mimoApiKeyEnvVarName }),
-    hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath),
+    hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath, undefined, dependencyTools),
     "[hooks]",
     "[[hooks.PreToolUse]]",
     'matcher = "Bash|exec"',

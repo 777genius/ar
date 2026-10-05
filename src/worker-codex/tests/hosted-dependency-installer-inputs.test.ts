@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { qualifyHostedDependencyInstallerInputs } from "../hosted-dependency-installer-inputs";
+import { DependencyNpmLockName } from "../../worker-core/dependency-environment/domain/dependency-install-key";
 
 const packageJson = { name: "TEST-contained-installer", version: "1.0.0", dependencies: { tiny: "1.0.0" } };
 const lock = () => ({ name: packageJson.name, version: "1.0.0", lockfileVersion: 3,
@@ -8,6 +9,18 @@ const lock = () => ({ name: packageJson.name, version: "1.0.0", lockfileVersion:
 const bytes = (value: unknown) => Buffer.from(JSON.stringify(value));
 
 describe("contained installer input closure", () => {
+  // Regression: identical bytes relabeled under another selected name lose
+  // their actual npm precedence in the retained installer input commitment.
+  it("binds the selected filename as well as detached exact lock bytes", () => {
+    const pkg = bytes(packageJson), locked = bytes(lock());
+    const packageLock = qualifyHostedDependencyInstallerInputs(pkg, locked, DependencyNpmLockName.PackageLock);
+    const shrinkwrap = qualifyHostedDependencyInstallerInputs(pkg, locked, DependencyNpmLockName.Shrinkwrap);
+    expect(shrinkwrap.lockName).toBe(DependencyNpmLockName.Shrinkwrap);
+    expect(shrinkwrap.lockBytes).toEqual(locked);
+    expect(shrinkwrap.sha256).not.toBe(packageLock.sha256);
+    locked.fill(0);
+    expect(JSON.parse(shrinkwrap.lockBytes.toString()).lockfileVersion).toBe(3);
+  });
   // Regression: caller-buffer mutation changes captured bytes after admission.
   it("retains detached exact bytes and keys every input byte", () => {
     const pkg = bytes(packageJson), original = Buffer.from(pkg), locked = bytes(lock());

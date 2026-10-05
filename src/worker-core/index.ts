@@ -39,5 +39,6 @@ export * from "./dependency-environment/domain/dependency-owner";
 export * from "./dependency-environment/ports/dependency-owner-store";
 export * from "./dependency-environment/ports/dependency-receipt-store";
 export * from "./dependency-environment/application/dependency-consumer-ownership";
+export * from "./dependency-environment/application/dependency-maintenance-ownership";
 export * from "./dependency-environment/domain/dependency-install-key";
 export * from "./dependency-environment/domain/dependency-tree-manifest";

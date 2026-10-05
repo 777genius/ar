@@ -1,4 +1,5 @@
 import type { DependencyTreeIdentity, DependencyWorkspaceIdentity } from "@vioxen/subscription-runtime/core";
+import type { DependencyTreeMeasurement } from "./dependency-tree-manifest";
 export { sameDependencyTree, sameDependencyWorkspace, type DependencyTreeIdentity, type DependencyWorkspaceIdentity } from "@vioxen/subscription-runtime/core";
 
 export enum DependencyReceiptState {
@@ -35,13 +36,21 @@ export type DependencyProofBinding = {
 
 export enum DependencyInstallProofKind {
   CompletedInstall = "completed_install",
+  CompletedLocalInstallV1 = "completed_local_install_v1",
   LegacyCompared = "legacy_compared",
 }
+
+export type DependencySourceBindingReference = {
+  readonly path: string; readonly identity: DependencyTreeIdentity; readonly sha256: string;
+};
 
 // Evidence IDs refer to authenticated protected records, never worker-written claims.
 export type DependencyInstallProof = DependencyProofBinding & (
   | { readonly kind: DependencyInstallProofKind.CompletedInstall; readonly operationId: string;
       readonly verificationEvidenceId: string; readonly installerDrainEvidenceId: string }
+  | { readonly kind: DependencyInstallProofKind.CompletedLocalInstallV1; readonly operationId: string;
+      readonly verificationEvidenceId: string; readonly installerDrainEvidenceId: string;
+      readonly sourceBinding: DependencySourceBindingReference }
   | { readonly kind: DependencyInstallProofKind.LegacyCompared; readonly referenceInstallationId: string;
       readonly comparisonEvidenceId: string }
 );
@@ -49,6 +58,7 @@ export type DependencyInstallProof = DependencyProofBinding & (
 export enum DependencyPreservationKind {
   KnownFreshAbsence = "known_fresh_absence",
   CommittedPreservation = "committed_preservation",
+  CommittedAbsence = "committed_absence",
 }
 
 export type DependencyPreservationProof = {
@@ -62,6 +72,10 @@ export type DependencyPreservationProof = {
       readonly originalTree: DependencyTreeIdentity; readonly preservedTree: DependencyTreeIdentity;
       readonly destinationParent: DependencyWorkspaceIdentity; readonly destinationName: string;
       readonly mappingDigest: string; readonly commitEvidenceId: string }
+  | { readonly kind: DependencyPreservationKind.CommittedAbsence;
+      readonly prior: { readonly generation: string; readonly revision: number; readonly operationId: string;
+        readonly installKey: string; readonly tree: DependencyTreeIdentity; readonly manifestDigest: string; readonly commitEvidenceId: string;
+        readonly receipt: { readonly path: string; readonly identity: DependencyTreeIdentity; readonly sha256: string } } }
 );
 
 export type DependencyTrashIntent = {
@@ -84,7 +98,8 @@ export type DependencyReceipt = DependencyReceiptBase & (
       readonly requestedKey: string; readonly preservation: DependencyPreservationProof }
   | { readonly state: DependencyReceiptState.Ready; readonly installKey: string;
       readonly tree: DependencyTreeIdentity; readonly manifestDigest: string;
-      readonly provenance: DependencyInstallProof }
+      readonly provenance: DependencyInstallProof;
+      readonly treeMeasurement?: DependencyTreeMeasurement }
   | { readonly state: DependencyReceiptState.Evicting; readonly operationId: string;
       readonly installKey: string; readonly tree: DependencyTreeIdentity;
       readonly manifestDigest: string; readonly trash: DependencyTrashIntent }

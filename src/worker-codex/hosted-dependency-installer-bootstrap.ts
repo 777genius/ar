@@ -1,17 +1,61 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { lstatSync, readFileSync, writeSync } from "node:fs";
+
+// This exact switch is emitted only by the protected schema4 recipe. EOF on
+// the one newly-created private stdin is the release boundary. No profile,
+// package, lock or npm input is read before it; legacy all-ignore stays intact.
+if (process.argv.length !== 2 && !(process.argv.length === 3 && process.argv[2] === "--fd-ready-v1")) process.exit(70);
+if (process.argv.length === 3) {
+  await new Promise<void>((resolve, reject) => {
+    let bytes = Buffer.alloc(0);
+    const timer = setTimeout(() => reject(new Error("dependency_installer_release_timeout")), 60_000);
+    process.stdin.on("data", (chunk: Buffer) => {
+      if (bytes.length + chunk.length > 128) { clearTimeout(timer); reject(new Error("dependency_installer_release_denied")); return; }
+      bytes = Buffer.concat([bytes, chunk]);
+    });
+    process.stdin.once("error", error => { clearTimeout(timer); reject(error); });
+    process.stdin.once("end", () => {
+      clearTimeout(timer);
+      if (!bytes.equals(Buffer.from("subscription-runtime-installer-fd-release-v1\n"))) reject(new Error("dependency_installer_release_denied"));
+      else resolve();
+    });
+  }).catch(() => process.exit(70));
+}
 
 /** Fixed unprivileged contained payload. It has no launch/store authority and
  * reads only its readonly closed profile plus package/lock staging mounts. */
 const groups = process.getgroups?.(); // Node appends effective GID to this API.
 if (process.getuid?.() !== 65532 || process.geteuid?.() !== 65532 || process.getgid?.() !== 65532 || process.getegid?.() !== 65532 ||
     !groups || groups.length !== 1 || groups[0] !== 65532) process.exit(74);
+enum LockName { PackageLock = "package-lock.json", Shrinkwrap = "npm-shrinkwrap.json" }
 const profile = JSON.parse(readFileSync("/runtime/profile.json", "utf8")) as {
   nodePath: string; npmCliPath: string; nodeVersion: string; npmVersion: string; stagingDirectory: string; installArgv: string[];
   nodeAbi: string; platform: string; arch: string; environment: Record<string, string>; umask: number;
+  lockName: LockName; inputSha256: string;
 };
 process.umask(profile.umask);
 const env = profile.environment;
+// The protected finite plan binds exactly the selected lock leaf readonly.
+// Refuse relabeling or an extra npm precedence/config input before npm starts.
+if (!Object.values(LockName).includes(profile.lockName)) process.exit(75);
+for (const name of [profile.lockName === LockName.Shrinkwrap ? LockName.PackageLock : LockName.Shrinkwrap, ".npmrc"]) {
+  try { lstatSync(`${profile.stagingDirectory}/${name}`); process.exit(75); }
+  catch (error) {
+    if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") process.exit(75);
+  }
+}
+function inputBytes(name: string): Buffer {
+  const path = `${profile.stagingDirectory}/${name}`, stat = lstatSync(path);
+  if (!stat.isFile() || stat.nlink !== 1 || stat.size <= 0 || stat.size > 8 * 1024 * 1024 || (stat.mode & 0o022)) process.exit(75);
+  const bytes = readFileSync(path);
+  if (bytes.length !== stat.size) process.exit(75);
+  return bytes;
+}
+const packageBytes = inputBytes("package.json"), lockBytes = inputBytes(profile.lockName);
+const inputSha256 = createHash("sha256").update(String(Buffer.byteLength(profile.lockName)) + ":").update(profile.lockName)
+  .update(String(packageBytes.length) + ":").update(packageBytes).update(String(lockBytes.length) + ":").update(lockBytes).digest("hex");
+if (inputSha256 !== profile.inputSha256) process.exit(75);
 enum PreflightStage { RuntimeIdentity = "runtime_identity", ToolVersions = "tool_versions" }
 function refusePreflight(stage: PreflightStage, facts: Readonly<Record<string, boolean | number | null>>): never {
   try { writeSync(2, "dependency_installer_preflight_v1 " + JSON.stringify({ stage, ...facts }) + "\n"); }
