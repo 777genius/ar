@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync,
+import { chownSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync,
   readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,10 @@ const evidencePath = join(source, "observer-mount-evidence", "result.json");
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
+function runnerId(value: string | undefined) {
+  assert.match(value ?? "", /^[1-9][0-9]{0,9}$/);
+  const id = Number(value); assert.ok(Number.isSafeInteger(id) && id < 4294967295); return id;
+}
 const pin = (fd: number) => { const s = fstatSync(fd, { bigint: true }); return `${s.dev}:${s.ino}`; };
 function closeAll(fds: readonly number[]) {
   let failure: unknown;
@@ -64,18 +68,31 @@ try {
   common.lockSha256 = sha256(lockBytes); common.vitestVersion = locked.version;
   common.testSha256 = sha256(read(join(source, testFile), 65536));
   common.observerSha256 = sha256(read(join(source, "src/worker-local/dependency-environment/observe-dependency-tree.ts"), 65536));
+  const parent = process.argv.length === 2;
+  const uid = runnerId(process.env[parent ? "SUDO_UID" : "TEST_RUNNER_UID"]);
+  const gid = runnerId(process.env[parent ? "SUDO_GID" : "TEST_RUNNER_GID"]);
+  common.originalRunner = { uid, gid };
   const env = { PATH: "/usr/bin:/bin", CI: "true", GITHUB_ACTIONS: "true", GITHUB_WORKSPACE: source,
-    TEST_SOURCE_SHA: String(common.sourceSha), LANG: "C.UTF-8", LC_ALL: "C.UTF-8" };
-  if (process.argv.length === 2) {
+    TEST_SOURCE_SHA: String(common.sourceSha), TEST_RUNNER_UID: String(uid), TEST_RUNNER_GID: String(gid), LANG: "C.UTF-8", LC_ALL: "C.UTF-8" };
+  if (parent) {
     assert.match(readFileSync("/proc/self/uid_map", "utf8").trim(), /^0\s+0\s+4294967295$/);
+    assert.equal(lstatSync(source).uid, uid, "checkout owner differs from genuine sudo caller");
+    const ancestry: { path: string; uid: number; gid: number; mode: number }[] = [];
+    for (let path = source; ; path = dirname(path)) {
+      const info = lstatSync(path); assert.ok(info.isDirectory() && !info.isSymbolicLink() && ancestry.length < 64);
+      ancestry.push({ path, uid: info.uid, gid: info.gid, mode: info.mode & 0o7777 });
+      if (path === dirname(path)) break;
+    }
+    common.parentSourceAncestry = ancestry;
     const root = realpathSync(mkdtempSync(join(realpathSync(process.env.RUNNER_TEMP ?? ""), "observer-mount-TEST-")));
+    chownSync(root, uid, gid); // Only the NEW private TEST root; never checkout/ancestor permissions.
     const targetRows = () => mounts().filter(row => row.point === root || row.point.startsWith(root + "/")).map(row => row.line);
     const beforeRows = targetRows(), fds = openNamespaces();
     const before = fds.map(pin);
     try {
       const run = spawnSync("/usr/bin/unshare", ["--user", "--map-root-user", "--mount", "--pid", "--fork",
         "--mount-proc", "--propagation", "private", "--kill-child=SIGKILL", "--", process.execPath,
-        "--experimental-strip-types", self, "--inside", root], { cwd: source, env, encoding: "utf8",
+        "--experimental-strip-types", self, "--inside", root], { cwd: source, env, uid, gid, encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe", ...fds], timeout: 180000, killSignal: "SIGKILL", maxBuffer: 1024 ** 2 });
       common.childStatus = run.status; common.childSignal = run.signal;
       if (run.error || run.status !== 0) { process.stderr.write((run.stderr ?? "").slice(0, 4096)); throw new Error("owned_namespace_or_required_TEST_failed"); }
@@ -87,14 +104,17 @@ try {
       assert.deepEqual(targetRows(), beforeRows, "TEST mounts propagated into parent");
       const child: unknown = JSON.parse(read(evidencePath, 128 * 1024).toString("utf8"));
       assert.ok(object(child) && child.status === "passed" && child.sourceSha === common.sourceSha);
-      publish({ ...child, parentNamespacesBeforeAfter: before, parentTargetMountsUnchanged: true });
+      publish({ ...child, parentSourceAncestry: ancestry, parentNamespacesBeforeAfter: before, parentTargetMountsUnchanged: true });
       rmSync(root, { recursive: true }); // Success only, after joined PID-namespace teardown.
     } finally { closeAll(fds); }
   } else {
     assert.equal(process.argv.length, 4); assert.equal(process.argv[2], "--inside");
     const root = realpathSync(process.argv[3]!); assert.ok(root.includes("/observer-mount-TEST-"));
-    assert.equal(process.pid, 1); assert.match(readFileSync("/proc/self/uid_map", "utf8").trim(), /^0\s+0\s+1$/);
-    assert.match(readFileSync("/proc/self/gid_map", "utf8").trim(), /^0\s+0\s+1$/);
+    assert.equal(process.pid, 1); assert.match(readFileSync("/proc/self/uid_map", "utf8").trim(), new RegExp(`^0\\s+${uid}\\s+1$`));
+    assert.match(readFileSync("/proc/self/gid_map", "utf8").trim(), new RegExp(`^0\\s+${gid}\\s+1$`));
+    assert.equal(process.getgid?.(), 0); assert.equal(process.getegid?.(), 0);
+    assert.deepEqual(process.getgroups?.(), [0], "unshare inherited supplementary groups"); // Node includes effective GID.
+    assert.equal(lstatSync(source).uid, 0, "checkout owner was not mapped to namespace root");
     const original = namespaces.map((name, index) => {
       assert.match(readlinkSync(`/proc/self/fd/${index + 3}`), new RegExp(`^${name}:\\[[0-9]+\\]$`)); return pin(index + 3);
     });
