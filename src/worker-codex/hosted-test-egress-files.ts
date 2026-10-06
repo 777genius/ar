@@ -1,3 +1,7 @@
+import { types } from "node:util";
+import { assertHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import { assertHostedDependencyBindingInventoryRevision, HostedDependencyReferenceKind } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { HostedCustodyReservationState, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { fenceDependencyConsumer, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedDependencyQualifiedInventory, hostedDependencyBindingName, hostedDependencyBindingRoot, hostedDependencyOwnerRoot, hostedDependencyJobsRoot, hostedDependencyJobRoot, isHostedDependencyWorkspace, parseHostedDependencyBinding, assertHostedDependencyPhysicalWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
@@ -5,11 +9,11 @@ import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provi
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedActivationPhase } from "@vioxen/subscription-runtime/worker-core";
 import { createHash, randomUUID } from "node:crypto";
-import { constants, lstatSync, mkdirSync, unlinkSync, openSync, fsyncSync, closeSync } from "node:fs";
+import { constants, lstatSync, mkdirSync, unlinkSync, openSync, fsyncSync, closeSync, fstatSync, readdirSync } from "node:fs";
 import { lstat, mkdir, open, readFile, readlink, link, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parseDependencyToolRegistration, type DependencyToolRegistration } from "../core/dependency-environment/dependency-tool-profile";
-import { createHostedDependencyToolProfile } from "./hosted-dependency-tool-profile-files";
+import { createHostedDependencyToolProfile, assertHostedDependencyToolProfileFiles } from "./hosted-dependency-tool-profile-files";
 import {
   assertHostedTestEgressIdentity,
   parseHostedTestEgressGrant,
@@ -124,12 +128,35 @@ export async function readHostedTestEgressGrantFile(
   }
 }
 
+/** Finite selection data only; no caller operation/proof/profile/binding. The
+ * SAME original issuer generates and authenticates the protected v3 record. */
+export type HostedDependencyReferenceEnrollment = Readonly<{
+  candidateJobId: string;
+  kind: HostedDependencyReferenceKind.LegacyLocalNoLifecycleV1;
+}>;
+function localReferenceSelection(value: unknown): HostedDependencyReferenceEnrollment {
+  if (!value || typeof value !== "object" || types.isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype) referenceEnrollmentFailed();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.length !== 2 || !keys.includes("candidateJobId") || !keys.includes("kind") ||
+      !Object.values(descriptors).every(d => "value" in d)) referenceEnrollmentFailed();
+  const candidateJobId: unknown = descriptors.candidateJobId!.value, kind: unknown = descriptors.kind!.value;
+  if (typeof candidateJobId !== "string" || kind !== HostedDependencyReferenceKind.LegacyLocalNoLifecycleV1) referenceEnrollmentFailed();
+  hostedDependencyJobRoot(candidateJobId);
+  return Object.freeze({ candidateJobId, kind });
+}
+function referenceEnrollmentFailed(): never { throw new Error("hosted_dependency_reference_fresh_closed_enrollment_required"); }
+
 export async function writeHostedTestEgressGrant(
   grant: HostedTestEgressGrant,
   toolRegistration?: DependencyToolRegistration,
+  referenceEnrollment?: HostedDependencyReferenceEnrollment,
 ): Promise<void> {
+  const reference = referenceEnrollment === undefined ? undefined : localReferenceSelection(referenceEnrollment);
+  if (reference && toolRegistration !== undefined) referenceEnrollmentFailed();
+  const detachedGrant = reference ? parseHostedTestEgressGrant(grant) : undefined;
   await assertHostedTestEgressOperator();
-  const validated = parseHostedTestEgressGrant(grant);
+  const validated = detachedGrant ?? parseHostedTestEgressGrant(grant);
   await canonicalHostedTestIdentity(validated);
   const tools = toolRegistration === undefined ? undefined : parseDependencyToolRegistration(toolRegistration);
   if (tools && (!isHostedDependencyWorkspace(validated.workspacePath) || validated.schemaVersion !== 1 ||
@@ -141,7 +168,141 @@ export async function writeHostedTestEgressGrant(
     throw new Error("hosted_dependency_profile_unsupported");
   }
 
-  const target = join(hostedTestEgressGrantRoot, hostedTestEgressGrantName(grant.jobId));
+  const target = join(hostedTestEgressGrantRoot, hostedTestEgressGrantName(reference ? validated.jobId : grant.jobId));
+  if (reference) {
+    if (validated.schemaVersion !== 1 || validated.profileId !== CodexProviderEgressProfileId.TestNpmQualification ||
+        validated.jobRootDir !== hostedDependencyJobRoot(validated.jobId) || validated.workspacePath !== validated.jobRootDir + "/workspace") referenceEnrollmentFailed();
+    // Lazy original adapters keep the existing non-reference import/behavior
+    // surface unchanged; all asynchronous work finishes BEFORE the fence.
+    const { readHostedInstallationActivation } = await import("./hosted-installation-activation");
+    const { createReadonlyPrivateRecord } = await import("./hosted-readonly-custody");
+    const { assertInspectedInstallation, assertActivationSession } = await import("./hosted-installation-physical-facts");
+    const { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } = await import("./hosted-readonly-host-kernel");
+    const { pinReferenceFile, referencePath } = await import("./hosted-dependency-legacy-reference-records");
+    const { readHostedDependencyEstablishedReceipt, hostedDependencyReceiptHistoryRoot } = await import("./hosted-dependency-receipts");
+    withHostedActivationFence(() => {
+      const original = readHostedInstallationActivation(), kernel = new HostedReadonlyHostKernel(), session = kernel.operatorSession();
+      if (original.activation.phase !== HostedActivationPhase.Closed ||
+          original.activation.ordinaryStarts.some(row => row.state !== HostedCustodyReservationState.Terminal)) referenceEnrollmentFailed();
+      assertInspectedInstallation(original.installation); assertActivationSession(original.activation,session);
+      assertHostedDependencyQualifiedInventory(); kernel.verifyExclusiveInventory(); kernel.verifyDescriptorBoundary();
+      const candidate = readHostedDependencyBinding(reference.candidateJobId);
+      if (!candidate || candidate.version !== 2 || candidate.jobId === validated.jobId ||
+          candidate.installationId !== original.installation.installationId || candidate.runtimeSha !== original.installation.runtimeSha) referenceEnrollmentFailed();
+      assertHostedDependencyPhysicalWorkspace(candidate); assertHostedDependencyToolProfileFiles(candidate.toolProfile,candidate.jobRootDir);
+      const candidateBindingPath = "/var/lib/subscription-runtime-host-policy/" + hostedDependencyBindingName(candidate.jobId);
+      const candidatePin = pinReferenceFile(candidateBindingPath), candidateGrantPath = join(hostedTestEgressGrantRoot,hostedTestEgressGrantName(candidate.jobId));
+      const candidateGrant = pinReferenceFile(candidateGrantPath,4096), parsedCandidateGrant = parseHostedTestEgressGrant(JSON.parse(candidateGrant.bytes.toString("utf8")));
+      assertHostedTestEgressIdentity(parsedCandidateGrant,{jobId:candidate.jobId,jobRootDir:candidate.jobRootDir,workspacePath:candidate.workspace.canonicalPath});
+      if (parsedCandidateGrant.schemaVersion !== 1 || parsedCandidateGrant.profileId !== CodexProviderEgressProfileId.TestNpmQualification ||
+          candidateGrant.reference.sha256 !== candidate.grantDigest || !candidatePin.bytes.equals(Buffer.from(JSON.stringify(candidate)+"\n"))) referenceEnrollmentFailed();
+      // Established read never initializes or migrates history. A missing
+      // history root is observed separately, not created by eligibility checks.
+      let historyPresent = true;
+      try { lstatSync(hostedDependencyReceiptHistoryRoot); } catch(error) { if (!isMissing(error)) throw error; historyPresent = false; }
+      const prior = historyPresent ? readHostedDependencyEstablishedReceipt(candidate) : null;
+      if (prior && prior.state !== DependencyReceiptState.Unverified) referenceEnrollmentFailed();
+      const owners = LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+      let candidateOwner: ReturnType<LocalDependencyOwnerStore["read"]>;
+      try { candidateOwner = owners.read(candidate.workspace); } finally { owners.close(); }
+      if (candidateOwner?.owner) referenceEnrollmentFailed();
+      const stat = lstatSync(validated.workspacePath,{bigint:true}), bytes = Buffer.from(JSON.stringify(validated)+"\n");
+      const workspace = {canonicalPath:validated.workspacePath,dev:String(stat.dev),ino:String(stat.ino)};
+      if (workspace.canonicalPath === candidate.workspace.canonicalPath || workspace.dev === candidate.workspace.dev && workspace.ino === candidate.workspace.ino || bytes.length > 4096) referenceEnrollmentFailed();
+      const bindingPath = "/var/lib/subscription-runtime-host-policy/" + hostedDependencyBindingName(validated.jobId);
+      const absencePath = `/var/lib/subscription-runtime-host-policy/dependency-fresh-absence/${workspace.dev}-${workspace.ino}.json`;
+      const absent = (path: string) => { try { lstatSync(path); referenceEnrollmentFailed(); } catch(error) { if (!isMissing(error)) throw error; } };
+      // Existing/partial leaves forbid re-entry BEFORE another UUID can exist.
+      for (const path of [bindingPath,target,absencePath,hostedDependencyOwnerRoot+`/${workspace.dev}-${workspace.ino}.json`,
+        `/var/lib/subscription-runtime-host-policy/dependency-receipts/${workspace.dev}-${workspace.ino}`,
+        `/var/lib/subscription-runtime-host-policy/ordinary-origins/${hostedTestEgressGrantName(validated.jobId)}`]) absent(path);
+      const inventory = readHostedReadonlyHostInventory();
+      for (const jobId of [candidate.jobId,validated.jobId]) if (inventory.ordinaryCreators.filter(row=>row.jobId===jobId).length !== 1) referenceEnrollmentFailed();
+      for (const [jobId,root,path] of [[candidate.jobId,candidate.jobRootDir,candidate.workspace.canonicalPath],
+        [validated.jobId,validated.jobRootDir,workspace.canonicalPath]] as const) {
+        const creator = inventory.ordinaryCreators.find(row=>row.jobId===jobId)!;
+        assertHostedDependencyParentRecipe(creator.launch.args,root,path);
+      }
+      const assertReferenceHistoryAbsent = () => {
+        let present = true;
+        try { lstatSync(hostedDependencyReceiptHistoryRoot); } catch(error) { if (!isMissing(error)) throw error; present = false; }
+        if (present !== historyPresent) referenceEnrollmentFailed();
+        if (present) {
+          const names = readdirSync(hostedDependencyReceiptHistoryRoot);
+          if (names.length > 4096 || names.some(name=>name.startsWith(`${workspace.dev}-${workspace.ino}.`))) referenceEnrollmentFailed();
+        }
+        absent(`/var/lib/subscription-runtime-host-policy/dependency-receipts/${workspace.dev}-${workspace.ino}`);
+        const ownerNames = readdirSync(hostedDependencyOwnerRoot);
+        if (ownerNames.length > 4096 || ownerNames.some(name=>name.startsWith(`${workspace.dev}-${workspace.ino}.`))) referenceEnrollmentFailed();
+      };
+      assertReferenceHistoryAbsent();
+      absent(`/var/lib/subscription-runtime-host-policy/dependency-receipts/${candidate.workspace.dev}-${candidate.workspace.ino}`);
+      for (const row of original.activation.ordinaryStarts) {
+        const start = pinReferenceFile(`/var/lib/subscription-runtime-host-policy/ordinary-starts/${row.startId}.json`);
+        if (JSON.parse(start.bytes.toString("utf8")).workspacePath === workspace.canonicalPath) referenceEnrollmentFailed();
+      }
+      // The reference body is issued here, never supplied by a TEST seed.
+      const operationId = randomUUID();
+      const binding = parseHostedDependencyBinding({version:3,jobId:validated.jobId,jobRootDir:validated.jobRootDir,workspace,
+        installationId:original.installation.installationId,runtimeSha:original.installation.runtimeSha,
+        grantDigest:createHash("sha256").update(bytes).digest("hex"),reference:{kind:reference.kind,operationId}});
+      assertHostedDependencyBindingInventoryRevision(binding,inventory.schemaVersion);
+      for (const row of inventory.ordinaryCreators) {
+        const retained = readHostedDependencyBinding(row.jobId);
+        if (retained?.version === 3 && retained.reference.operationId === operationId) referenceEnrollmentFailed();
+      }
+      for (const suffix of ["reference","reference-start","reference-entry","reference-result","reference-release","comparison"] as const) absent(referencePath(operationId,suffix));
+      assertHostedDependencyPhysicalWorkspace(binding);
+      for (const path of [hostedDependencyJobsRoot,validated.jobRootDir]) if (lstatSync(path).mode & 0o077) referenceEnrollmentFailed();
+      const fd = openSync(workspace.canonicalPath,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+      const bindingBytes = Buffer.from(JSON.stringify(binding)+"\n"), absenceBytes = Buffer.from(JSON.stringify({version:1,workspace,
+        coverageRevision:createHash("sha256").update(bindingBytes).digest("hex")})+"\n");
+      try {
+        const physical = fstatSync(fd,{bigint:true});
+        const rejoin = (published: 0 | 1 | 2 | 3) => {
+          const current = readHostedInstallationActivation();
+          if (JSON.stringify(current) !== JSON.stringify(original)) referenceEnrollmentFailed();
+          assertActivationSession(current.activation,kernel.operatorSession()); assertInspectedInstallation(current.installation);
+          assertHostedDependencyPhysicalWorkspace(candidate); assertHostedDependencyPhysicalWorkspace(binding);
+          assertHostedDependencyToolProfileFiles(candidate.toolProfile,candidate.jobRootDir);
+          assertHostedDependencyQualifiedInventory(); kernel.verifyExclusiveInventory();
+          assertReferenceHistoryAbsent();
+          absent(`/var/lib/subscription-runtime-host-policy/ordinary-origins/${hostedTestEgressGrantName(validated.jobId)}`);
+          for (const suffix of ["reference","reference-start","reference-entry","reference-result","reference-release","comparison"] as const) absent(referencePath(operationId,suffix));
+          const currentOwners = LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+          try { if (JSON.stringify(currentOwners.read(candidate.workspace)) !== JSON.stringify(candidateOwner)) referenceEnrollmentFailed(); }
+          finally { currentOwners.close(); }
+          if (JSON.stringify(historyPresent ? readHostedDependencyEstablishedReceipt(candidate) : null) !== JSON.stringify(prior)) referenceEnrollmentFailed();
+          absent(`/var/lib/subscription-runtime-host-policy/dependency-receipts/${candidate.workspace.dev}-${candidate.workspace.ino}`);
+          const currentBinding = pinReferenceFile(candidateBindingPath), currentGrant = pinReferenceFile(candidateGrantPath,4096);
+          if (!currentBinding.bytes.equals(candidatePin.bytes) || !currentGrant.bytes.equals(candidateGrant.bytes) ||
+              JSON.stringify(currentBinding.reference) !== JSON.stringify(candidatePin.reference) ||
+              JSON.stringify(currentGrant.reference) !== JSON.stringify(candidateGrant.reference)) referenceEnrollmentFailed();
+          const held = fstatSync(fd,{bigint:true}), named = lstatSync(workspace.canonicalPath,{bigint:true});
+          for (const value of [held,named]) if (!value.isDirectory() || value.uid !== 0n || value.dev !== physical.dev || value.ino !== physical.ino ||
+            value.dev.toString() !== workspace.dev || value.ino.toString() !== workspace.ino || value.ctimeNs !== physical.ctimeNs || value.mtimeNs !== physical.mtimeNs) referenceEnrollmentFailed();
+          const names = readdirSync(`/proc/self/fd/${fd}`); if (names.length !== 1 || names[0] !== ".git") referenceEnrollmentFailed();
+          const git = lstatSync(workspace.canonicalPath+"/.git"); if (!git.isDirectory() || git.isSymbolicLink() || git.uid !== 0 || git.mode & 0o022) referenceEnrollmentFailed();
+          for (const [index,path,value] of [[1,bindingPath,bindingBytes],[2,absencePath,absenceBytes],[3,target,bytes]] as const) {
+            if (published < index) absent(path); else if (!pinReferenceFile(path,65536).bytes.equals(value)) referenceEnrollmentFailed();
+          }
+        };
+        rejoin(0);
+        for (const path of [hostedDependencyBindingRoot,hostedDependencyOwnerRoot,hostedTestEgressGrantRoot,
+          "/var/lib/subscription-runtime-host-policy/dependency-fresh-absence","/var/lib/subscription-runtime-host-policy/dependency-provider-attempts",
+          "/var/lib/subscription-runtime-host-policy/dependency-attempt-fences","/var/lib/subscription-runtime-host-policy/dependency-installers"])
+          createPrivateGrantDirectory(path);
+        rejoin(0);
+        // Every interrupted prefix remains refused by original consumers:
+        // binding without grant has no matching origin; no original prepared
+        // relation exists. Grant is the LAST leaf, never an early bypass.
+        createReadonlyPrivateRecord(bindingPath,bindingBytes); rejoin(1);
+        createReadonlyPrivateRecord(absencePath,absenceBytes); rejoin(2);
+        createReadonlyPrivateRecord(target,bytes); rejoin(3);
+      } finally { closeSync(fd); }
+    });
+    return;
+  }
   if (validated.schemaVersion === 3) {
     const { readHostedInstallationActivation } = await import("./hosted-installation-activation");
     const { createReadonlyPrivateRecord } = await import("./hosted-readonly-custody");
