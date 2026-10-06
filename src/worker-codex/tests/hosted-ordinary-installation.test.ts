@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { codexProviderEgressPolicy, CodexProviderEgressProfileId, withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
-import { assertDefaultInternetEngine, assertHostedNetworkLaunch } from "./hosted-network-launch-assertions";
+import { assertDefaultInternetEngine, assertHostedNetworkLaunch, assertRevokedGrantCollectionUnavailable } from "./hosted-network-launch-assertions";
 import { HostedCustodyReservationState, parseHostedActivation, type HostedOrdinaryReservation } from "@vioxen/subscription-runtime/worker-core";
 import { HostedReadonlyEpochStore } from "../hosted-readonly-epoch-store";
 import { HostedReadonlySupervisorHost } from "../hosted-readonly-supervisor-host";
@@ -990,7 +990,7 @@ it.each(["internet", "npm", "npm-grant-deleted", "research", "research-grant-del
   expect(frames.every(frame => frame.env.SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE ===
     selectedProfile)).toBe(true);
   assertHostedNetworkLaunch(frames, selectedProfile, fakes);
-  if (mode.includes("-grant-")) expect(result.status).not.toBe("completed");
+  if (mode.includes("-grant-")) assertRevokedGrantCollectionUnavailable(config, result);
   else { expect(result.status).toBe("completed"); expect(new Set(frames.map(frame => frame.env.CODEX_HOME)).size).toBe(2); }
 });
 
