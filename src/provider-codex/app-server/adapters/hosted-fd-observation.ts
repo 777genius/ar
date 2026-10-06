@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { parseFdCollectorProfile, parseFdCollectorRows, readFdCollectorProfileField, readSystemBusInfrastructureField,
-  type FdCollectorProfile, type FdFilePin, type FdCollectorProfilePin } from "@vioxen/subscription-runtime/core";
+  type FdCollectorProfile, type FdFilePin, type FdCollectorProfilePin, type FdCollectorPeer } from "@vioxen/subscription-runtime/core";
 import { assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes } from "./hosted-process-activation";
 import { hostedFdUnsetEnvironment } from "./hosted-fd-prelude";
 import { observeSystemBusFdEmptyArrays } from "./system-bus-infrastructure";
@@ -241,7 +241,7 @@ export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[
   return Object.freeze({ unit, invocation: rows.get("InvocationID")!, group, mainPid: Number(rows.get("MainPID")), root: rows.get("RootDirectory")! });
 }
 
-export function collectHostedFdPeers(profile: FdCollectorProfile, remaining?: SystemdObservationRemaining): ReadonlyMap<string, string> {
+export function collectHostedFdPeers(profile: FdCollectorProfile, remaining?: SystemdObservationRemaining): ReadonlyMap<string, FdCollectorPeer> {
   const pin = profile.ss;
   for (const file of pin.elfFiles) protectedBytes(file, false, "", remaining);
   const result = spawnSync(pin.path, ["-H", "-n", "-A", "unix_stream", "state", "established", "src", "unix:"],
