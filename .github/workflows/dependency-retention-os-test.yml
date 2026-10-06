@@ -44,6 +44,10 @@ jobs:
       - run: npm run build
       - name: Typecheck handwritten OS fixture
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.json
+      - name: Test closed control diagnostic protocol
+        run: |
+          TEST_NODE="$(readlink -f "$(command -v node)")"
+          "$TEST_NODE" --experimental-strip-types --test "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/io-uring.test.ts"
       - name: Run one fresh owned OS qualification
         env:
           TEST_SOURCE_SHA: ${{ github.sha }}

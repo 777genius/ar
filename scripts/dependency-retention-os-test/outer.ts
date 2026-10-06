@@ -1,4 +1,4 @@
-import { assertOuterIoUringPins, controlIoUringFixture } from "./io-uring.ts";
+import { assertOuterIoUringPins, controlIoUringFixture, IoUringControlFailure } from "./io-uring.ts";
 /** The runner only operates one newly registered service/root. Guest creation
  * is not authority: all positive gates execute inside its actual kernel view. */
 import assert from "node:assert/strict";
@@ -100,7 +100,11 @@ try {
   const packageStat = lstatSync(packagePath); assert(packageStat.isFile() && packageStat.uid === 0 && packageStat.size < 65536);
   evidence.osPackageFacts = JSON.parse(readFileSync(packagePath, "utf8"));
   if (!diagnostic) {
-  evidence.ioUringControl = controlIoUringFixture(root, () => remaining(deadline));
+  try { evidence.ioUringControl = controlIoUringFixture(root, () => remaining(deadline)); }
+  catch (error) {
+    if (error instanceof IoUringControlFailure) evidence.ioUringControlFailure = error.observation;
+    throw error;
+  }
   assert.equal(fileDigest(root + node), fileDigest(process.execPath));
   // This trusted startup probe runs only in the newly extracted CI guest root,
   // before jobs, auth fixtures or systemd units. It cannot mount host libraries.

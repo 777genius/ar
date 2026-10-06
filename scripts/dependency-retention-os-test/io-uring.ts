@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { chmodSync, cpSync, lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { chmodSync, closeSync, constants, cpSync, lstatSync, openSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { assertPinnedSystemBusQueryTool, assertSystemdManagerOwner, assertSystemdIoUringPolicy }
   from "../../dist/provider-codex/app-server/adapters/systemd-service-arrays.js";
@@ -77,13 +77,127 @@ export function assertOuterIoUringPins(root: string): ProbeManifest {
   const value = readManifest(root); assert.deepEqual(elf(value.compiler.path), { path: value.compiler.path, sha256: value.compiler.sha256 });
   return value;
 }
+type ControlCall = Readonly<{ returnValue: number; errno: number }>;
+type ControlTrace = Readonly<{ setup: ControlCall; close: ControlCall | null; enter: ControlCall | null;
+  register: ControlCall | null; child: { noNewPrivs: ControlCall; seccomp: ControlCall } }>;
+/** TEST-only numeric facts; never a permit or a successful control assertion. */
+export function decodeIoUringControlFailure(text: string): ControlTrace {
+  const match = /^TEST_uring_control_failure_v1 ((?:-1|0|[1-9][0-9]{0,9})(?: (?:-1|0|[1-9][0-9]{0,9})){15})\n$/.exec(text);
+  assert(Buffer.byteLength(text) <= 384 && match && match[0] === text, "TEST control diagnostic malformed");
+  const n = match[1]!.split(" ").map(Number);
+  const call = (index: number): ControlCall | null => {
+    const attempted = n[index]!, value = n[index + 1]!, errno = n[index + 2]!;
+    assert((attempted === 0 || attempted === 1) && value >= -1 && value <= 2147483647 && errno >= 0 && errno <= 4095);
+    if (attempted === 0) { assert(value === 0 && errno === 0); return null; }
+    assert(value === -1 ? errno > 0 : errno === 0); return { returnValue: value, errno };
+  };
+  const setup = call(0), close = call(3), enter = call(6), register = call(9); assert(setup);
+  if (setup.returnValue >= 0) { assert(close && close.returnValue <= 0); }
+  else assert(close === null);
+  if (close?.returnValue === -1) assert(enter === null && register === null);
+  else assert(enter && register);
+  const get = (index: number, maximum: number): ControlCall => {
+    const value = n[index]!, errno = n[index + 1]!;
+    assert(value >= -1 && value <= maximum && errno >= 0 && errno <= 4095 && (value === -1 ? errno > 0 : errno === 0));
+    return { returnValue: value, errno };
+  };
+  return { setup, close, enter, register, child: { noNewPrivs: get(12, 1), seccomp: get(14, 2) } };
+}
+type ControlContext = Readonly<{ ids: { uid: number[]; gid: number[] } | null; noNewPrivs: number | null;
+  seccomp: number | null; seccompFilters: number | null; capEffHex: string | null; kernelRelease: string | null;
+  ioUringDisabled: number | null; ioUringGroup: number | null; lsm: { kind: "unconfined" } |
+    { kind: "other"; bytes: number; sha256: string } | null }>;
+/** No selected-path API: only the five literal outer diagnostic inputs exist. */
+function controlContext(remaining: () => number): ControlContext {
+  const raw: Partial<Record<"status" | "release" | "disabled" | "group" | "lsm", string>> = {};
+  for (const [name, path, bound] of [["status", "/proc/self/status", 16384], ["release", "/proc/sys/kernel/osrelease", 128],
+    ["disabled", "/proc/sys/kernel/io_uring_disabled", 32], ["group", "/proc/sys/kernel/io_uring_group", 32],
+    ["lsm", "/proc/self/attr/current", 4096]] as const) {
+    remaining(); let fd: number | undefined;
+    try {
+      fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const bytes = Buffer.alloc(bound + 1); let size = 0, count: number;
+      while (size < bytes.length && (count = readSync(fd, bytes, size, bytes.length - size, null)) > 0) {
+        size += count; remaining();
+      }
+      if (size <= bound) raw[name] = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size));
+    } catch { /* Diagnostic unavailable; no default kernel/process state is inferred. */ }
+    finally { if (fd !== undefined) { try { closeSync(fd); } catch { delete raw[name]; } } }
+    remaining();
+  }
+  const field = (name: "Uid" | "Gid" | "NoNewPrivs" | "Seccomp" | "Seccomp_filters" | "CapEff") => {
+    const rows = (raw.status ?? "").split("\n").filter(row => row.startsWith(name + ":"));
+    return rows.length === 1 ? rows[0]!.slice(name.length + 1).trim() : undefined;
+  };
+  const ids = (name: "Uid" | "Gid") => {
+    const text = field(name); if (!text || !/^(?:0|[1-9][0-9]{0,9})(?:\s+(?:0|[1-9][0-9]{0,9})){3}$/.test(text)) return null;
+    const numbers = text.split(/\s+/).map(Number); return numbers.every(n => n <= 4294967295) ? numbers : null;
+  };
+  const scalar = (text: string | undefined, maximum: number) => text && /^(?:0|[1-9][0-9]{0,9})$/.test(text) &&
+    Number(text) <= maximum ? Number(text) : null;
+  const uid = ids("Uid"), gid = ids("Gid"), cap = field("CapEff"), profile = raw.lsm?.trim();
+  const group = raw.group?.trim(), release = raw.release?.replace(/\n$/, "");
+  return { ids: uid && gid ? { uid, gid } : null, noNewPrivs: scalar(field("NoNewPrivs"), 1), seccomp: scalar(field("Seccomp"), 2),
+    seccompFilters: scalar(field("Seccomp_filters"), 2147483647), capEffHex: cap && /^[a-f0-9]{1,16}$/.test(cap) ? cap : null,
+    kernelRelease: release && /^[A-Za-z0-9._+-]{1,80}$/.exec(release)?.[0] === release ? release : null,
+    ioUringDisabled: scalar(raw.disabled?.trim(), 2), ioUringGroup: group === "-1" ? -1 : scalar(group, 4294967295),
+    lsm: profile === "unconfined" ? { kind: "unconfined" } : raw.lsm ?
+      { kind: "other", bytes: Buffer.byteLength(raw.lsm), sha256: digest(raw.lsm) } : null };
+}
+/** Pure redacted summary of the existing fixed child result, not a command API. */
+export function ioUringControlProcessFacts(result: { status: number | null; signal: string | null;
+  error?: unknown; stdout: string | null; stderr: string | null }) {
+  const stdout = result.stdout ?? "", stderr = result.stderr ?? "";
+  let record: { state: "observed"; facts: ControlTrace } | { state: "missing" | "malformed" };
+  try { record = stdout === "" ? { state: "missing" } : { state: "observed", facts: decodeIoUringControlFailure(stdout) }; }
+  catch { record = { state: "malformed" }; }
+  const code = typeof result.error === "object" && result.error !== null && "code" in result.error ? result.error.code : undefined;
+  const errors = ["ENOENT", "EACCES", "ETIMEDOUT", "E2BIG"] as const;
+  const error = result.error ? errors.find(value => code === value) ?? "OTHER" : "none";
+  const signals = ["SIGABRT", "SIGBUS", "SIGFPE", "SIGHUP", "SIGILL", "SIGINT", "SIGKILL", "SIGPIPE", "SIGQUIT",
+    "SIGSEGV", "SIGSYS", "SIGTERM", "SIGTRAP", "SIGXCPU", "SIGXFSZ"] as const;
+  const signal = result.signal === null ? null : signals.find(value => value === result.signal) ?? "OTHER";
+  const text = stderr.slice(0, 1024);
+  const classes: ("loader_missing" | "glibc_version_missing" | "permission_denied" | "none" | "other")[] = [];
+  if (text.includes("error while loading shared libraries") || text.includes("cannot open shared object file") || text.includes("No such file or directory")) classes.push("loader_missing");
+  if (/version [`']GLIBC_[0-9.]+['`] not found/.test(text)) classes.push("glibc_version_missing");
+  if (text.includes("Permission denied")) classes.push("permission_denied");
+  if (!classes.length) classes.push(stderr === "" ? "none" : "other");
+  return { status: Number.isInteger(result.status) && result.status! >= 0 && result.status! <= 255 ? result.status : null,
+    signal, error, stdoutBytes: Buffer.byteLength(stdout), stderrBytes: Buffer.byteLength(stderr), record, stderrClasses: classes,
+    mentionsLibc: text.includes("libc.so.6"), mentionsLoader: text.includes("ld-linux-x86-64.so.2") };
+}
+type ControlFailureObservation = Readonly<{ child: ReturnType<typeof ioUringControlProcessFacts>; elapsedMs: number;
+  budget: "available" | "exhausted"; pinBracket: "matched" | "mismatch" | "unavailable";
+  before: ControlContext | null; after: ControlContext | null;
+  bindings: { manifestSha256: string; sourceSha256: string; elfSha256: string; compilerSha256: string;
+    compilerVersionSha256: string; compilerVersionBytes: number; loaderClosureSha256: string[] } }>;
+export class IoUringControlFailure extends Error {
+  readonly observation: ControlFailureObservation;
+  constructor(observation: ControlFailureObservation) { super("TEST io_uring unfiltered control unavailable"); this.observation = observation; }
+}
 export function controlIoUringFixture(root: string, remaining: () => number): ProbeManifest {
-  const value = assertOuterIoUringPins(root);
+  const value = assertOuterIoUringPins(root), manifestSha256 = fileDigest(root + manifest), began = process.hrtime.bigint();
+  const before = controlContext(remaining);
   const result = spawnSync("/usr/sbin/chroot", [root, binary, "control"], { env: cleanEnv, cwd: "/", encoding: "utf8",
     timeout: Math.min(5000, remaining()), maxBuffer: 1024, stdio: ["ignore", "pipe", "pipe"] });
-  remaining(); assert(!result.error && result.signal === null && result.status === 0 && result.stderr === "" &&
-    result.stdout === "TEST_uring_control\n", "TEST io_uring unfiltered control unavailable");
-  assert.deepEqual(assertOuterIoUringPins(root), value); return value;
+  let budget: "available" | "exhausted" = "available", pinBracket: "matched" | "mismatch" | "unavailable" = "unavailable";
+  let after: ControlContext | null = null;
+  try { remaining(); } catch { budget = "exhausted"; }
+  if (budget === "available") {
+    try { assert.deepEqual(assertOuterIoUringPins(root), value); assert.equal(fileDigest(root + manifest), manifestSha256); pinBracket = "matched"; }
+    catch (error) { pinBracket = (error as NodeJS.ErrnoException).code === "ERR_ASSERTION" ? "mismatch" : "unavailable"; }
+    try { after = controlContext(remaining); remaining(); } catch { budget = "exhausted"; }
+  }
+  if (budget !== "available" || pinBracket !== "matched" || result.error || result.signal !== null || result.status !== 0 ||
+      result.stderr !== "" || result.stdout !== "TEST_uring_control\n") {
+    throw new IoUringControlFailure({ child: ioUringControlProcessFacts(result), before, after, budget, pinBracket,
+      elapsedMs: Number((process.hrtime.bigint() - began) / 1_000_000n), bindings: { manifestSha256,
+        sourceSha256: value.source.sha256, elfSha256: value.elf.sha256, compilerSha256: value.compiler.sha256,
+        compilerVersionSha256: digest(value.compiler.version), compilerVersionBytes: Buffer.byteLength(value.compiler.version),
+        loaderClosureSha256: value.loaderClosure.map(row => row.sha256) } });
+  }
+  return value;
 }
 export async function qualifyIoUringEffects(bus: SystemBusInfrastructure, remaining: () => number) {
   const before = readManifest(), fragment = "/etc/systemd/test-units/TEST-retention-supervisor.service", fragmentPin = pin(fragment);
