@@ -1,10 +1,14 @@
+import { prepareHostedDependencyRootHelpers } from "./hosted-dependency-root-preparation";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { claimDependencyConsumer, markDependencyConsumerRunning, DependencyAdmissionError,
-  DependencyAdmissionFailure as Failure, DependencyOwnerPhase, DependencyReceiptState, DependencyTreeObservationStatus, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
+  DependencyAdmissionFailure as Failure, DependencyOwnerPhase, DependencyReceiptState, DependencyTreeObservationStatus, type DependencyAttempt, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/worker-core";
 import { sameDependencyAttempt } from "@vioxen/subscription-runtime/core";
 import { withHostedActivationFence, CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
-import { readHostedOrdinaryProcessOrigin } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt,
+  isCurrentHostedDependencyManagedReadonlyOrigin, isHostedManagedReadonlyOuterRuntime, readHostedDependencyRootGitConfigPin, CurrentHostedDependencyOriginKind } from "../provider-codex/app-server/adapters/hosted-current-dependency-origin";
+import { consumeHostedReadonlyDependencyPreclaim, readHostedReadonlyDependencyPreclaim, publishHostedReadonlyDependencyReaderReady } from "./hosted-readonly-dependency-reader-entry";
+import { readHostedDependencyEstablishedReceipt } from "./hosted-dependency-receipts";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { observeDependencyTree } from "../worker-local/dependency-environment/observe-dependency-tree";
 import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysicalWorkspace, hostedDependencyOwnerRoot, isHostedDependencyWorkspace,
@@ -29,32 +33,40 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
   attempt: DependencyAttempt; toolEntry?: HostedDependencyQualifiedToolEntry;
 }> | undefined> {
   const selected = isHostedDependencyWorkspace(config.workspacePath);
-  if (!isHostedOrdinaryRuntime()) {
+  const managed = isHostedManagedReadonlyOuterRuntime() && withHostedActivationFence(fence => isCurrentHostedDependencyManagedReadonlyOrigin(fence));
+  if (!isHostedOrdinaryRuntime() && !managed) {
     if (selected) fail(Failure.Unsupported);
     return undefined;
   }
-  const held = withHostedActivationFence(fence => readHostedOrdinaryProcessOrigin(fence));
-  const actualSelected = isHostedDependencyWorkspace(String(held.start.workspacePath));
+  const context = withHostedActivationFence(fence => readCurrentHostedDependencyOrigin(fence));
+  const held = withHostedActivationFence(fence => assertCurrentHostedDependencyOrigin(context,fence));
+  const actualSelected = isHostedDependencyWorkspace(held.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal ?
+    held.binding.workspace.canonicalPath : String(held.ordinary.start.workspacePath));
   if (!actualSelected && !selected) return undefined;
   // Keep the ordinary initial-host principal guard intact. These finite paths
   // are hidden from old managed payloads, not selected by env or model options.
   const admission = withHostedActivationFence(fence => {
-    const origin = readHostedOrdinaryProcessOrigin(fence);
-    if (origin.profileId !== CodexProviderEgressProfileId.TestNpmQualification || !actualSelected ||
-        origin.start.workspacePath !== config.workspacePath || origin.start.jobRootDir !== config.jobRootDir ||
-        origin.start.jobId !== (config.jobId ?? config.taskId) ||
+    const current = assertCurrentHostedDependencyOrigin(context,fence);
+    const readonly = current.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal;
+    const logicalJobId = readonly ? current.binding.jobId : String(current.ordinary.start.jobId);
+    const root = readonly ? current.binding.jobRootDir : String(current.ordinary.start.jobRootDir);
+    const workspace = readonly ? current.binding.workspace.canonicalPath : String(current.ordinary.start.workspacePath);
+    if ((!readonly && current.ordinary.profileId !== CodexProviderEgressProfileId.TestNpmQualification) || !actualSelected ||
+        workspace !== config.workspacePath || root !== config.jobRootDir || logicalJobId !== (config.jobId ?? config.taskId) ||
         (config.executionEngine ?? "app-server-goal") !== "app-server-goal" ||
         config.allowDangerFullAccess || config.providerSandboxMode === "danger-full-access" ||
         config.childLifetime || config.checkpointPublisherSocketPath) fail(Failure.Unsupported);
     if (config.runtimeHomeRootDir !== undefined && config.runtimeHomeRootDir !== `${config.jobRootDir}/home`) fail(Failure.Unsupported);
-    const binding = readHostedDependencyBinding(String(origin.start.jobId));
-    if (!binding || binding.grantDigest !== origin.start.grantSha256 || binding.installationId !== origin.start.installationId) fail(Failure.Unsupported);
-    if (binding.version === 3) fail(Failure.Unsupported); // Only the closed CLI reference handler may enter.
+    const binding = readonly ? current.binding : readHostedDependencyBinding(logicalJobId);
+    if (!binding || (!readonly && (binding.grantDigest !== current.ordinary.start.grantSha256 ||
+        binding.installationId !== current.ordinary.start.installationId))) fail(Failure.Unsupported);
+    if (binding.version === 3) fail(Failure.Unsupported);
     assertHostedDependencyQualifiedInventory();
     assertHostedDependencyPhysicalWorkspace(binding);
-    assertHostedDependencyStartAllowed(String(origin.reservation.startId));
+    assertHostedDependencyStartAllowed(readonly ? current.start.startId : String(current.ordinary.reservation.startId));
+    const preclaimed = readonly ? consumeHostedReadonlyDependencyPreclaim(context,fence) : undefined;
     assertManagedDependencyGitInputs(binding.workspace.canonicalPath);
-    const receipt = readHostedDependencyReceipt(binding);
+    const receipt = readonly ? readHostedDependencyEstablishedReceipt(binding) : readHostedDependencyReceipt(binding);
     if (receipt?.state === DependencyReceiptState.Installing || receipt?.state === DependencyReceiptState.Evicting) fail(Failure.Busy);
     let tree, absent = false;
     try { tree = lstatSync(`${binding.workspace.canonicalPath}/node_modules`); }
@@ -67,10 +79,10 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
     if (tree && receipt?.state === DependencyReceiptState.Absent) fail(Failure.UnsafeTree);
     const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
     try {
-      const attempt = claimDependencyConsumer(store, binding.workspace, {
-        installationId: binding.installationId, bootId: String(origin.start.bootId), runtimeSha: binding.runtimeSha,
-        grantDigest: binding.grantDigest, startId: String(origin.reservation.startId), unit: String(origin.start.unit),
-      }, randomUUID());
+      const attempt = readonly ? (preclaimed ?? fail(Failure.StaleAttempt)) : claimDependencyConsumer(store,binding.workspace,{
+        installationId:binding.installationId,bootId:String(current.ordinary.start.bootId),runtimeSha:binding.runtimeSha,
+        grantDigest:binding.grantDigest,startId:String(current.ordinary.reservation.startId),unit:String(current.ordinary.start.unit),
+      },randomUUID());
       return { binding, attempt, absent, receipt };
     } finally { store.close(); }
   });
@@ -89,21 +101,20 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
   // Explicit N3 profile only: authenticate its installed executable graph while
   // still exclusive. Generic Ready reuse keeps its existing hash-free path.
   let toolEntry: HostedDependencyQualifiedToolEntry | undefined;
-  try { toolEntry = await qualifyHostedDependencyToolClosure(admission.binding, admission.attempt, coldHandoff); }
+  try { toolEntry = await qualifyHostedDependencyToolClosure(admission.binding, admission.attempt, coldHandoff,context); }
   finally { closeHostedDependencyColdHandoff(coldHandoff); }
   if (admission.binding.version === 2 && !toolEntry) fail(Failure.Unsupported);
   try {
   withHostedActivationFence(fence => {
-    const origin = readHostedOrdinaryProcessOrigin(fence);
-    const heldAttempt = readHostedDependencyAttempt(admission.binding, origin.start, String(origin.reservation.startId),
-      // Final ownership remains exclusive until either warm safety capture or
-      // contained install verification has completed.
-      DependencyOwnerPhase.ExclusiveMutation);
-    if (!sameDependencyAttempt(heldAttempt, admission.attempt)) fail(Failure.StaleAttempt);
-    const current = readHostedDependencyBinding(String(origin.start.jobId));
-    if (!current || JSON.stringify(current) !== JSON.stringify(admission.binding)) fail(Failure.Unsupported);
+    const current = assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+    if (!sameDependencyAttempt(current.attempt,admission.attempt) ||
+        JSON.stringify(current.binding) !== JSON.stringify(admission.binding)) fail(Failure.StaleAttempt);
     if (readyInputs) assertHostedDependencyKeyInputsCurrent(admission.binding, readyInputs);
     if (toolEntry) assertHostedDependencyQualifiedToolEntry(toolEntry, fence, DependencyOwnerPhase.ExclusiveMutation);
+    if (toolEntry) {
+      publishHostedReadonlyDependencyReaderReady(context,fence);
+      prepareHostedDependencyRootHelpers(fence);
+    }
     const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
     try { markDependencyConsumerRunning(store, admission.binding.workspace, admission.attempt, String(Date.now())); }
     finally { store.close(); }
@@ -117,42 +128,36 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
  * host hygiene. Provider .git is OS read-only; host global config is disabled.
  */
 export function assertManagedDependencyGitInputs(workspacePath: string): void {
-  const fd = openSync(`${workspacePath}/.git/config`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  let config: string;
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 65536 || (stat.mode & 0o022)) fail(Failure.Unsupported);
-    const bytes = readFileSync(fd);
-    config = bytes.toString("utf8");
-    if (bytes.length > 65536 || !Buffer.from(config).equals(bytes) || config.includes("\0")) fail(Failure.Unsupported);
-  } finally { closeSync(fd); }
-  let section = "";
-  for (const raw of config.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
-    if (/^\[(core|user)\]$/i.test(line)) { section = line.slice(1, -1).toLowerCase(); continue; }
-    const setting = /^([a-zA-Z]+)\s*=\s*(.*)$/.exec(line);
-    if (!setting || (section === "core" ? !["repositoryformatversion", "filemode", "bare", "logallrefupdates"].includes(setting[1]!.toLowerCase()) :
-        section === "user" ? !["name", "email"].includes(setting[1]!.toLowerCase()) : true)) fail(Failure.Unsupported);
-    if (section === "core" && setting[1]!.toLowerCase() === "bare" && setting[2]!.toLowerCase() !== "false") fail(Failure.Unsupported);
-  }
+  readHostedDependencyRootGitConfigPin(workspacePath);
 }
 /** Mandatory direct-library/prewarm entry, separate from the legacy optional
  * provider callback. A path or a fabricated config cannot mint host authority. */
 export function assertHostedDependencyExecutionWorkspace(workspacePath: string | undefined): void {
   // Actual reference purpose vetoes every direct-library/prewarm/provider call,
   // including one hiding the selected workspace behind an absent/foreign cwd.
-  if (isHostedOrdinaryRuntime()) withHostedActivationFence(fence => {
-    const origin = readHostedOrdinaryProcessOrigin(fence);
-    if (readHostedDependencyBinding(String(origin.start.jobId))?.version === 3) fail(Failure.Unsupported);
-  });
-  if (workspacePath === undefined || !isHostedDependencyWorkspace(workspacePath)) return;
+  if (!isHostedOrdinaryRuntime() && !isHostedManagedReadonlyOuterRuntime()) {
+    if (workspacePath !== undefined && isHostedDependencyWorkspace(workspacePath)) fail(Failure.Unsupported);
+    return;
+  }
   withHostedActivationFence(fence => {
-    const origin = readHostedOrdinaryProcessOrigin(fence);
-    if (origin.profileId !== CodexProviderEgressProfileId.TestNpmQualification || origin.start.workspacePath !== workspacePath) fail(Failure.Unsupported);
-    const binding = readHostedDependencyBinding(String(origin.start.jobId));
-    if (!binding || binding.workspace.canonicalPath !== workspacePath) fail(Failure.Unsupported);
-    readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId));
+    const readonly = isCurrentHostedDependencyManagedReadonlyOrigin(fence);
+    if (!readonly && !isHostedOrdinaryRuntime()) {
+      if (workspacePath !== undefined && isHostedDependencyWorkspace(workspacePath)) fail(Failure.Unsupported);
+      return;
+    }
+    const context = readCurrentHostedDependencyOrigin(fence), current = assertCurrentHostedDependencyOrigin(context,fence);
+    if (current.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal) {
+      if (workspacePath !== undefined && workspacePath !== current.binding.workspace.canonicalPath) fail(Failure.Unsupported);
+      if (!isDependencyConsumerOwner(current.owner.owner) || current.owner.owner.phase === DependencyOwnerPhase.Fenced) fail(Failure.Unsupported);
+      readHostedReadonlyDependencyPreclaim(context,fence,current.owner.owner.phase);
+      return;
+    }
+    const origin = current.ordinary, binding = readHostedDependencyBinding(String(origin.start.jobId));
+    if (binding?.version === 3) fail(Failure.Unsupported);
+    if (workspacePath === undefined || !isHostedDependencyWorkspace(workspacePath)) return;
+    if (origin.profileId !== CodexProviderEgressProfileId.TestNpmQualification || origin.start.workspacePath !== workspacePath ||
+        !binding || binding.workspace.canonicalPath !== workspacePath) fail(Failure.Unsupported);
+    readHostedDependencyAttempt(binding,origin.start,String(origin.reservation.startId));
   });
 }
 function fail(reason: Failure): never { throw new DependencyAdmissionError(reason); }

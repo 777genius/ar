@@ -3,8 +3,9 @@ import { lstatSync } from "node:fs";
 import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, DependencyOwnerPhase, sameDependencyAttempt,
   sameDependencyTree, DependencyPreservationKind, DependencyReceiptState, type DependencyReceipt, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
-import { readHostedOrdinaryProcessOrigin, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { readHostedDependencyAttempt, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt } from "../provider-codex/app-server/adapters/hosted-current-dependency-origin";
+import { type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { buildTestNpmDependencyInstallKey, buildTestNpmLocalDependencyInstallKey } from "../worker-local/dependency-environment/build-test-npm-dependency-install-key";
 import { captureNpmInstallInputs, revalidateNpmInstallInputs, NpmInputCaptureStatus as Status, NpmInputCaptureReason as Reason,
   type NpmInputRevalidation, type QualifiedNpmInstallInputs } from "../worker-local/dependency-environment/capture-npm-install-inputs";
@@ -23,10 +24,8 @@ function fail(reason = Failure.Unsupported): never { throw new DependencyAdmissi
  * awaits; this short fence reauthenticates them before each effect. */
 export function assertHostedDependencyMaterializationOwnerUnderFence(fence: HostedActivationFence,
   binding: HostedDependencyBinding, attempt: DependencyAttempt): void {
-  const origin = readHostedOrdinaryProcessOrigin(fence);
-  const held = readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId), DependencyOwnerPhase.ExclusiveMutation);
-  if (!sameDependencyAttempt(held, attempt)) fail(Failure.StaleAttempt);
-  if (origin.start.workspacePath !== binding.workspace.canonicalPath) fail();
+  const context = readCurrentHostedDependencyOrigin(fence), current = assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+  if (!sameDependencyAttempt(current.attempt,attempt) || JSON.stringify(current.binding) !== JSON.stringify(binding)) fail(Failure.StaleAttempt);
 }
 export function assertHostedDependencyMaterializationOwner(binding: HostedDependencyBinding, attempt: DependencyAttempt): void {
   withHostedActivationFence(fence => assertHostedDependencyMaterializationOwnerUnderFence(fence, binding, attempt));
