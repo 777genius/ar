@@ -1,8 +1,8 @@
 import type { ChildCorrelation } from "../../project-control/domain/keyed-child-launch";
 import { scopedDigest, parseScopedReceipt, type ScopedTerminationReceipt } from "@vioxen/subscription-runtime/core";
-export { ScopedTerminationKind, ScopedTerminationReason, ScopedTerminationOutcome, ScopedTerminationCause, ScopedSignal,
+export { ScopedTerminationExtent, parseScopedProviderOnlyReceipt, ScopedTerminationKind, ScopedTerminationReason, ScopedTerminationOutcome, ScopedTerminationCause, ScopedSignal,
   scopedDigest, parseRetainedScopeIdentity, parseScopedStartCorrelation, parseScopedInvocation, parseScopedOperation, parseScopedReceipt, parseScopedSubmitter, parseScopedActorChain, parseScopedActorDischarge, bindScopedActorChain, validateScopedCollectedEvidence, ScopedEnqueueActorRole, ScopedActorDischargeMethod } from "@vioxen/subscription-runtime/core";
-export type { RetainedScopeIdentity, ScopedStartCorrelation, ScopedInvocation, ScopedSubmitter, ScopedTerminationMember,
+export type { ScopedProviderOnlyReceipt, ScopedProviderOnlyMember, RetainedScopeIdentity, ScopedStartCorrelation, ScopedInvocation, ScopedSubmitter, ScopedTerminationMember,
   ScopedTerminationOperation, ScopedTerminationObservation, ScopedTerminationReceipt, ScopedActorChain, ScopedActorDischarge, ScopedEnqueueActor, ScopedCollectedEvidence, ScopedIdentityEvidence, ScopedCgroupNode } from "@vioxen/subscription-runtime/core";
 function match(value: unknown, pattern: RegExp): void { if (typeof value !== "string" || !pattern.test(value)) throw new Error("scoped_record_invalid"); }
 const hash = /^[a-f0-9]{64}$/;

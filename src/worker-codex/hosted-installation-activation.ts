@@ -1,3 +1,8 @@
+import { inspectedInstallation, assertInspectedInstallation, assertActivationSession } from "./hosted-installation-physical-facts";
+import { OriginalHostedOrdinaryProviderTerminal } from "./hosted-ordinary-provider-terminal-view";
+import { readOriginalHostedOrdinaryProviderTerminal } from "./hosted-current-dependency-origin";
+import { assertHostedOrdinaryDependencyToolParentFrame } from "./hosted-managed-dependency-tool-plan";
+import { assertHostedOrdinaryDependencyWriterBoundary, preclaimHostedOrdinaryDependencyReader } from "./hosted-ordinary-dependency-reader";
 import { assertHostedOrdinaryDependencyNotAdopted } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
 import { dependencyOwnedReservations, releaseHostedDependencyConsumer } from "./hosted-dependency-release";
 import { assertHostedLegacyReferenceReservationPrepared, sealHostedLegacyReferenceStart,
@@ -19,7 +24,6 @@ import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes,
   withHostedActivationFence, assertHostedActivationOperator, assertHostedScopedAdmission, retainHostedScopedCorrelation, CodexProviderEgressProfileId, type HostedActivationFence,
 } from "@vioxen/subscription-runtime/provider-codex";
-import { fileURLToPath } from "node:url";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory, ordinaryCompletionBytes, ordinaryCompletionPath } from "./hosted-readonly-host-kernel";
 import { assertHostedForegroundResult, type HostedForegroundResult } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import { parseHostedTestEgressGrant, assertHostedTestEgressIdentity } from "./hosted-test-egress-contract";
@@ -110,10 +114,11 @@ export class HostedInstallationActivationStore {
     });
   }
 
-  publish(fence: HostedActivationFence, next: HostedActivation, recovering = false, authority?: RuntimeValidatedOrdinaryTermination): void {
+  publish(fence: HostedActivationFence, next: HostedActivation, recovering = false, authority?: RuntimeValidatedOrdinaryTermination | OriginalHostedOrdinaryProviderTerminal): void {
     assertHostedActivationFence(fence);
     const prior = this.readCommitted(fence);
-    assertHostedActivationSuccessor(prior, next, authority ? scopedOrdinaryAuthority(authority) : undefined);
+    assertHostedActivationSuccessor(prior,next,authority ? OriginalHostedOrdinaryProviderTerminal.hasBrand(authority) ?
+      readOriginalHostedOrdinaryProviderTerminal(authority,fence) : scopedOrdinaryAuthority(authority) : undefined);
     const pending = readHostedActivationBytes("host-activation.next");
     if (pending && !recovering) throw new Error("hosted_activation_publication_recovery_required");
     const bytes = Buffer.from(JSON.stringify(parseHostedActivation(next)) + "\n");
@@ -136,8 +141,22 @@ export class HostedInstallationActivationStore {
 
   /** Receipt validation is a host-owned closure, never a DTO/caller path. It
    * rereads private receipt, identity and the complete correlation under fence. */
-  publishScopedTerminal(fence: HostedActivationFence, authority: RuntimeValidatedOrdinaryTermination): HostedActivation {
+  publishScopedTerminal(fence: HostedActivationFence, authority: RuntimeValidatedOrdinaryTermination | OriginalHostedOrdinaryProviderTerminal): HostedActivation {
     assertHostedActivationFence(fence);
+    if (OriginalHostedOrdinaryProviderTerminal.hasBrand(authority)) {
+      const receipt=readOriginalHostedOrdinaryProviderTerminal(authority,fence),prior=this.read();
+      const row=prior.ordinaryStarts.find(value=>value.startId===receipt.provider.startId);
+      if (!row || row.unit!==receipt.provider.unit || row.generation!==receipt.provider.generation) invalid();
+      if (row.state===HostedCustodyReservationState.Terminal) {
+        if (receipt.publicationGeneration>prior.generation) invalid();
+        readOriginalHostedOrdinaryProviderTerminal(authority,fence); return prior;
+      }
+      const next={...prior,generation:prior.generation+1,ordinaryStarts:prior.ordinaryStarts.map(value=>value.startId===row.startId ?
+        {...value,state:HostedCustodyReservationState.Terminal}:value)};
+      this.publish(fence,next,false,authority);const current=this.read();
+      if (JSON.stringify(current)!==JSON.stringify(next)) invalid();
+      readOriginalHostedOrdinaryProviderTerminal(authority,fence);return current;
+    }
     const receipt = scopedOrdinaryAuthority(authority), prior = this.read();
     const members = new Map(receipt.operation.members.map(m => [m.startId, m]));
     for (const member of members.values()) {
@@ -313,6 +332,7 @@ export class HostedInstallationActivationStore {
     if (candidates.length !== 1) invalid();
     const creator = candidates[0]!;
     assertHostedOrdinaryDependencyNotAdopted(fence, creator.workspacePath);
+    assertHostedOrdinaryDependencyWriterBoundary(fence,creator.jobId);
     const childSlot = readHostedChildSlot(creator);
     if (correlation && !childSlot) invalid();
     const childBudget = childSlot ? new ChildExecutionBudget(childSlot.lifetime) : undefined;
@@ -340,6 +360,7 @@ export class HostedInstallationActivationStore {
       originSha256, unit: row.unit, controlGroup: ordinaryUnitGroup(row), creatorId: row.creatorId, creatorPidBirth, grantSha256 });
     this.publish(fence, { ...activation, generation: row.generation, ordinaryStarts: [...activation.ordinaryStarts, row] });
     createReadonlyPrivateRecord(join(readonlySupervisorRoot, "ordinary-starts", startId + ".json"), encoded(start));
+    preclaimHostedOrdinaryDependencyReader(fence,startId);
     const dependencyBinding = readHostedDependencyBinding(birth.jobId);
     if (dependencyBinding?.version === 3) sealHostedLegacyReferenceStart(fence, dependencyBinding, start, row);
     if (correlation?.identity) {
@@ -386,6 +407,15 @@ export class HostedInstallationActivationStore {
       throw error;
     }
   }
+  assertOrdinaryDependencyFrame(frame:string|Buffer):void {
+    withHostedActivationFence(fence=>this.assertOrdinaryDependencyFrameWithHeldFence(fence,frame));
+  }
+
+  assertOrdinaryDependencyFrameWithHeldFence(fence:HostedActivationFence,frame:string|Buffer):void {
+    assertHostedActivationFence(fence); const launch=this.ordinaryLaunch; if (!launch) invalid();
+    assertHostedOrdinaryDependencyToolParentFrame(fence,launch.reservation.startId,frame);
+  }
+
   releaseOrdinaryRuntimeFrame(release: (fence: HostedActivationFence, revalidate: () => void) => void): void {
     this.serialized(fence => {
       const revalidate = () => {
@@ -897,33 +927,6 @@ function digest(bytes: Buffer): string { return createHash("sha256").update(byte
 function invalid(): never { throw new Error("hosted_activation_evidence_invalid"); }
 
 function encoded(value: unknown): Buffer { return Buffer.from(JSON.stringify(value) + "\n"); }
-function inspectedInstallation(): Omit<HostedInstallation, "schemaVersion" | "installationId"> {
-  const inventory = readHostedReadonlyHostInventory();
-  if (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4) invalid();
-  const runtimeDirectory = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
-  const cliPath = join(runtimeDirectory, "dist/worker-codex/codex-goal-cli.js");
-  for (const creator of inventory.ordinaryCreators) {
-    const launch = creator.launch;
-    if (launch.cwd !== creator.workspacePath || !(launch.command === cliPath ||
-        (launch.command === process.execPath && launch.args[0] === cliPath))) invalid();
-  }
-  const stagePath = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages/" + digest(Buffer.from(runtimeDirectory)) + ".json";
-  const stageBytes = readHostedPrivateBytes(stagePath, 4096);
-  if (!stageBytes) throw new Error("hosted_readonly_verified_stage_required");
-  const stage = decodeHostedActivationBytes(stageBytes);
-  if (!stage || typeof stage !== "object" || Array.isArray(stage) ||
-      Object.keys(stage).sort().join(",") !== "runtimeDirectory,runtimeManifestSha256,runtimeSha,schemaVersion" ||
-      !("schemaVersion" in stage) || stage.schemaVersion !== 1 || !("runtimeDirectory" in stage) || stage.runtimeDirectory !== runtimeDirectory ||
-      !("runtimeSha" in stage) || typeof stage.runtimeSha !== "string" || !("runtimeManifestSha256" in stage) || typeof stage.runtimeManifestSha256 !== "string") invalid();
-  const inventoryBytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "readonly-inventory.json"), 64 * 1024);
-  if (!inventoryBytes) invalid();
-  return { hostId: inventory.hostId, runtimeDirectory, runtimeSha: stage.runtimeSha,
-    runtimeManifestSha256: stage.runtimeManifestSha256, inventorySha256: digest(inventoryBytes) };
-}
-function assertInspectedInstallation(installation: HostedInstallation): void {
-  const binding = inspectedInstallation();
-  if (Object.keys(binding).some(key => installation[key as keyof typeof binding] !== binding[key as keyof typeof binding])) invalid();
-}
 function readOrdinaryCatalog(installation: HostedInstallation, expected: string): HostedOrdinaryOrigins {
   const bytes = required("ordinary-origins.json"), catalog = parseHostedOrdinaryOrigins(decodeHostedActivationBytes(bytes));
   if (digest(bytes) !== expected || catalog.installationId !== installation.installationId) invalid();
@@ -978,9 +981,7 @@ export function admitHostedOrdinaryIdentity(identity: { readonly jobId: string; 
 function managedReservations(epoch: HostedCustodyEpoch | undefined) {
   return epoch ? [...epoch.reservations, ...(epoch.outerRuntime ? [epoch.outerRuntime] : [])] : [];
 }
-function assertActivationSession(activation: HostedActivation, session: { hostId: string; bootId: string; supervisorId: string }): void {
-  if (activation.hostId !== session.hostId || activation.bootId !== session.bootId || activation.supervisorId !== session.supervisorId) invalid();
-}
+
 function ordinaryUnitGroup(row: HostedOrdinaryReservation): string {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(row.startId) ||
       ![`subscription-runtime-ordinary-${row.startId}.service`, `subscription-runtime-hosted-${row.startId}.service`].includes(row.unit)) invalid();

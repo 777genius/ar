@@ -1,3 +1,10 @@
+import type { HostedDependencyRootPreparationRecord } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
+import type { HostedDependencyRootDescriptorMaterial } from "../provider-codex/app-server/adapters/hosted-dependency-root-descriptor-material";
+import type { OriginalHostedDependencyRootPurpose as RootPurposeFacade } from "./hosted-dependency-root-purpose-view";
+import type { OriginalHostedDependencyRootDescriptor as RootDescriptor } from "./hosted-dependency-root-resource-view";
+import type { OriginalHostedDependencySessionHome as ManagedSessionHomeFacade } from "./hosted-managed-dependency-home-view";
+import type { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
+import type { CurrentHostedDependencyOriginKind } from "./hosted-current-dependency-origin";
 import type { LeaseStorePort, SessionStorePort, SessionExecutionUse, SessionExecutionLifecyclePort, SessionArtifact } from "@vioxen/subscription-runtime/core";
 import type { CodexJsonAgentDriver } from "../provider-codex/codex-json-agent-driver";
 import type { CodexMaterializedSession } from "../provider-codex/codex-json-execution-engine";
@@ -17,7 +24,10 @@ export type ManagedProviderState = {
   readonly record: HostedDependencyRootDescriptor; readonly capsule: HostedDependencyRootDescriptor; readonly capsulePath: string;
   invocation?: object; child?: ChildProcess; command?: string; args?: readonly string[];
   proxyPid?: number; proxyBirth?: string; proxyClosed?: boolean; proxyCode?: number | null; proxySignal?: NodeJS.Signals | null;
-  modelProbe?: true; inputTail?: Promise<void>; inputBytes?: number; inputEnding?: true;
+  modelProbe?: true; inputTail?: Promise<void>; inputBytes?: number; inputPending?:number; inputEnding?: true;
+  executionUse?:ManagedSessionUseState;
+  ordinaryTerminal?:import("./hosted-ordinary-provider-terminal-view").OriginalHostedOrdinaryProviderTerminal;
+  ordinaryCompletion?:import("../core/scoped-termination-contract").ScopedProviderOnlyReceipt;
   facade?: CodexAppServerChildProcess; wait?: Promise<void>; invocationId?: string; spawnAttempted?: boolean; stopping?: true; home?: ManagedSessionHomeState;
 };
 
@@ -37,9 +47,18 @@ export type ManagedSessionUseState = {
   credentialUnknown?: true; writing?: true; writeStatus?: "accepted" | "idempotent_replay" | "stale_generation";
 };
 export type ManagedSessionRuntimeState = {
+  readonly originKind:CurrentHostedDependencyOriginKind;
   readonly lifecycle: SessionExecutionLifecyclePort; readonly driver: CodexJsonAgentDriver;
   readonly materializer: HostedManagedDependencySessionMaterializer;
   readonly sessionStore: SessionStorePort; readonly leaseStore: LeaseStorePort;
   idleWrites: number; readonly model: string; readonly stateRoot:HostedDependencyRootDirectoryPin; readonly sessionRoot:HostedDependencyRootDirectoryPin;
   readonly sessionReads:WeakMap<SessionArtifact,{readonly account:string;readonly hash:string}>; tail: Promise<void>; use?: ManagedSessionUseState; retired?: ManagedSessionUseState;
+};
+
+export type RootPurposeState = {
+  readonly record: HostedDependencyRootPreparationRecord; readonly reference: DependencyProtectedReference;
+  readonly ready: ReturnType<LocalDependencyReceiptStore["getCommittedReady"]>;
+  readonly managed: RootPurposeFacade; cleanup?: RootPurposeFacade; refresh?: RootPurposeFacade;
+  readonly descriptors: Map<RootDescriptor, HostedDependencyRootDescriptorMaterial>;
+  provider?: ManagedProviderState; sessionHome?: ManagedSessionHomeState; sessionCache?: ManagedSessionHomeState; preparingHome?: ManagedSessionHomeFacade; sessionRuntime?: ManagedSessionRuntimeState;
 };

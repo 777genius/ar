@@ -14,7 +14,13 @@ function assertDirectory(pin:HostedDependencyRootDirectoryPin):void {
 export function selectHostedDependencyRootTaskFacts(inventory:ReturnType<typeof parseHostedReadonlyHostInventory>,
   binding:HostedDependencyBinding, executionJobId:string, durableEnvironment:string|undefined) {
   const creators = inventory.ordinaryCreators.filter(row => row.jobId === binding.jobId && row.jobRootDir === binding.jobRootDir && row.workspacePath === binding.workspace.canonicalPath);
-  if (creators.length !== 1) invalid(); const args = creators[0]!.launch.args;
+  if (creators.length !== 1) invalid();
+  return selectHostedDependencyRootTaskArgumentFacts(creators[0]!.launch.args,binding,executionJobId,durableEnvironment);
+}
+/** Pure closed argv projection. The actual C/R original-origin reader selects
+ * its authenticated signed recipe; argv is never a launch/root permit. */
+export function selectHostedDependencyRootTaskArgumentFacts(args:readonly string[],binding:HostedDependencyBinding,
+  executionJobId:string,durableEnvironment:string|undefined) {
   const value = (flag: string, optional = false): string | undefined => {
     const positions = args.flatMap((arg,i) => arg === flag ? [i] : []);
     if (positions.length !== (optional && positions.length === 0 ? 0 : 1)) invalid();

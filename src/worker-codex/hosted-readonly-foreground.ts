@@ -1,3 +1,5 @@
+import { assertHostedOrdinaryDependencyBootstrap } from "./hosted-ordinary-dependency-reader";
+import { assertHostedOrdinaryDependencyToolParentFrame } from "./hosted-managed-dependency-tool-plan";
 import { watchChildDeadline } from "./child-deadline-watch";
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import { readHostedChildSlot } from "./hosted-child-slot-files";
@@ -54,7 +56,7 @@ async function runHostedReadonlyCompletion(command: string, args: readonly strin
   try { child = host.runRuntimeLaunch(command, args, cwd, launch => {
     if (fdProfile) return spawnHostedFdChild(launch.command, launch.args, { cwd }, hostedFdInvocationUnit(launch.args), HostedFdLaunchKind.Foreground);
     const child = spawn(launch.command, [...launch.args], { cwd, env, stdio: ["pipe", "inherit", "inherit"] });
-    child.stdin.end(frame);
+    store.assertOrdinaryDependencyFrame(frame); child.stdin.end(frame);
     return child;
   }); } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }
   return await new Promise<Readonly<{ result: number | HostedForegroundResult; signal: NodeJS.Signals | null }>>((resolve) => {
@@ -183,7 +185,7 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
     if (fdProfile) {
       const guard = hostedFdLaunch(child);
       void guard.observe().then(() => retryHostedFenceAcquisition(() =>
-        store.releaseOrdinaryRuntimeFrame((fence, revalidate) => guard.release(fence, frame, true, revalidate)), guard.remainingSetupMs()))
+        store.releaseOrdinaryRuntimeFrame((fence, revalidate) => { store.assertOrdinaryDependencyFrameWithHeldFence(fence,frame); guard.release(fence, frame, true, revalidate); }), guard.remainingSetupMs()))
         .catch(() => { failed = true; guard.invalidate(); close(); child.kill("SIGTERM"); });
     }
   });
@@ -193,6 +195,7 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
  * come from the private actual-process origin and independently pinned inventory. */
 export async function runHostedOrdinaryBootstrap(): Promise<number> {
   const fdProfile = readHostedFdProfile(), began = process.hrtime.bigint();
+  withHostedActivationFence(fence=>assertHostedOrdinaryDependencyBootstrap(fence));
   const stopPrelude = fdProfile ? announceHostedFdPrelude() : () => {};
   const readBudget = () => withHostedActivationFence(fence => {
     const slot = readHostedChildSlot(readHostedOrdinaryRuntime(fence).creator);
@@ -224,7 +227,8 @@ export async function runHostedOrdinaryBootstrap(): Promise<number> {
       !Object.entries(frame.env).every(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
         typeof value === "string" && !value.includes("\0"))) throw new Error("hosted_custody_launch_frame_invalid");
   const submit = () => withHostedActivationFence(fence => {
-    const { launch, creator } = readHostedOrdinaryRuntime(fence);
+    const { launch, creator, reservation } = readHostedOrdinaryRuntime(fence);
+    assertHostedOrdinaryDependencyToolParentFrame(fence,reservation.startId,bytes);
     if (fdProfile) assertHostedFdFrameEnvironment(frame.env as Record<string, string>);
     if (isHostedDependencyWorkspace(creator.workspacePath)) {
       assertDependencyHostFrameEnvironment(frame.env as Record<string, string>);

@@ -16,11 +16,14 @@ export enum HostedDependencyRootPurpose {
   SessionRefreshV1 = "session_refresh_v1",
 }
 export type HostedDependencyRootDirectoryPin = Readonly<{ canonicalPath: string; dev: string; ino: string; mountId: string }>;
+export enum HostedDependencyRootOriginKind { ManagedReadonlyLocalV1 = "managed_readonly_local_v1", OrdinaryDependencyReaderV1 = "ordinary_dependency_reader_v1" }
 export type HostedDependencyRootScope = Readonly<{
   logicalJobId: string; logicalTaskId: string; executionJobId: string; jobRootDir: string;
   workspace: DependencyWorkspaceIdentity; attempt: DependencyAttempt;
-  ownerRevision: number; custodyReference: DependencyProtectedReference;
-}>;
+  ownerRevision: number;
+}> & (Readonly<{originKind:HostedDependencyRootOriginKind.ManagedReadonlyLocalV1;custodyReference:DependencyProtectedReference}> |
+  Readonly<{originKind:HostedDependencyRootOriginKind.OrdinaryDependencyReaderV1;originReference:DependencyProtectedReference;
+    readerProducer:DependencyProtectedReference;readerEntry:DependencyProtectedReference}>);
 export type HostedDependencyManagedGitScope = HostedDependencyRootScope & Readonly<{
   rootGit: HostedDependencyRootGitProfile; protectedProfile: DependencyProtectedReference;
   durableHandoffRoot: HostedDependencyRootDirectoryPin; scratchParent: HostedDependencyRootDirectoryPin;
@@ -28,7 +31,7 @@ export type HostedDependencyManagedGitScope = HostedDependencyRootScope & Readon
   sourceLookupAncestors: readonly HostedDependencyRootDirectoryPin[];
 }>;
 export type HostedDependencyRootPreparationRecord = Readonly<{
-  version: 2; attempt: DependencyAttempt; custodyReference: DependencyProtectedReference;
+  attempt: DependencyAttempt;
   providerReady: DependencyToolReadyFacts;
   qualification: DependencyProtectedReference; ready: DependencyProtectedReference; readyRevision: number;
   protectedProfile: DependencyProtectedReference; config: DependencyProtectedReference;
@@ -36,15 +39,20 @@ export type HostedDependencyRootPreparationRecord = Readonly<{
   durableHandoffRoot: HostedDependencyRootDirectoryPin; scratchParent: HostedDependencyRootDirectoryPin;
   authoredRoots: readonly HostedDependencyRootDirectoryPin[]; generatedRoots: readonly HostedDependencyRootDirectoryPin[];
   sourceLookupAncestors: readonly HostedDependencyRootDirectoryPin[];
-}>;
+}> & (Readonly<{version:2;custodyReference:DependencyProtectedReference}> |
+  Readonly<{version:3;originReference:DependencyProtectedReference;readerProducer:DependencyProtectedReference;readerEntry:DependencyProtectedReference}>);
 
 /** Fixed actual provider birth readback; factual data is not a registration permit. */
 export type HostedDependencyManagedProviderFacts = Readonly<{
-  version: 1; installationId: string; runtimeSha: string; hostId: string; bootId: string;
+  installationId: string; runtimeSha: string; hostId: string; bootId: string;
   supervisorId: string; generation: number; unit: string; providerStartId: string; parentStartId: string;
   logicalJobId: string; executionJobId: string; jobRootDir: string;
   workspace: DependencyWorkspaceIdentity; attempt: DependencyAttempt;
-  custodyReference: DependencyProtectedReference; originReference: DependencyProtectedReference;
+  originReference: DependencyProtectedReference;
   ready: DependencyProtectedReference; readyRevision: number; qualification: DependencyProtectedReference;
   protectedProfile: DependencyProtectedReference;
-}>;
+}> & (Readonly<{version:1;custodyReference:DependencyProtectedReference}> |
+  Readonly<{version:2;originKind:HostedDependencyRootOriginKind.OrdinaryDependencyReaderV1;parentGeneration:number;
+    ordinaryProviderReference:DependencyProtectedReference;readerProducer:DependencyProtectedReference;
+    readerEntry:DependencyProtectedReference;ordinaryRelation:Readonly<{version:1;parentStartId:string;attemptId:string;
+      epoch:number;providerStartId:string;startDigest:string;unit:string}>}>);

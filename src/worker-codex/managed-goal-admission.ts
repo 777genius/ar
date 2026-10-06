@@ -1,3 +1,4 @@
+import { enterCurrentHostedOrdinaryDependencyReader, requiresCurrentHostedDependencyRootPurpose, isHostedDependencySignedTaskId } from "./hosted-current-dependency-origin";
 import { join } from "node:path";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import { deriveManagedJobLayout, MANAGED_JOB_ROOT_ENV, MANAGED_JOB_ID_ENV, MANAGED_MARKER_ENV } from "./managed-job-layout";
@@ -16,6 +17,7 @@ export function usesManagedJobLayout(config: CodexGoalRunConfig): boolean {
 export function mapManagedGoalLayout(
   input: ManagedGoalAdmission,
 ): ManagedGoalAdmission {
+  enterCurrentHostedOrdinaryDependencyReader();
   const config = input.config;
   const env = config.sourceEnv ?? process.env;
   if (env[MANAGED_MARKER_ENV] === undefined) return input;
@@ -23,7 +25,8 @@ export function mapManagedGoalLayout(
   const layout = deriveManagedJobLayout(env[MANAGED_JOB_ROOT_ENV]!, env[MANAGED_JOB_ID_ENV]!);
   if (layout.jobId !== (config.jobId ?? config.taskId)) throw new Error('Managed job identity mismatch');
   // taskId becomes a filename, so it has the same closed identifier contract.
-  if (config.taskId !== config.taskId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(config.taskId)) {
+  if (requiresCurrentHostedDependencyRootPurpose() ? !isHostedDependencySignedTaskId(config.taskId) :
+      config.taskId !== config.taskId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(config.taskId)) {
     throw new Error("Invalid managed taskId");
   }
   const fixed = {

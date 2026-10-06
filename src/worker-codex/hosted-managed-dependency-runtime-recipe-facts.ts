@@ -7,7 +7,8 @@ import { assertHostedDependencyParentRecipe } from "../provider-codex/app-server
 import { parseHostedReadonlyHostInventory } from "../worker-core/hosted-custody/domain/hosted-readonly-inventory";
 import { parseFlags, option, resolvePath } from "./codex-goal-cli-support";
 import { sameRootDescriptorStat as sameStat, readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-physical-facts";
-import { readCurrentHostedManagedDependencyProviderParent, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { readCurrentHostedDependencySignedParentRecipe } from "./hosted-dependency-current-facts";
+import { CurrentHostedDependencyOriginKind, readCurrentHostedManagedDependencyProviderParent, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import type { createFixedCodexAgentDriver } from "./file-backend-codex-agent-driver-factory";
 const root = "/var/lib/subscription-runtime-host-policy";
 const hash = (bytes:Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -42,12 +43,14 @@ export function prepareOriginalHostedSessionRuntimeFacts(context:CurrentHostedDe
   options:Parameters<typeof createFixedCodexAgentDriver>[0]["options"]) {
   const actual = readCurrentHostedManagedDependencyProviderParent(context,fence);
     const bytes = fixed("readonly-inventory.json"), inventory = parseHostedReadonlyHostInventory(decodeHostedActivationBytes(bytes.bytes));
-    if (hash(bytes.bytes) !== actual.facts.installation.inventorySha256) invalid();
-    assertHostedDependencyParentRecipe(inventory.runtimeLaunch.args,actual.binding.jobRootDir,actual.binding.workspace.canonicalPath);
-    const flags = parseFlags(inventory.runtimeLaunch.args.slice(2));
+    const installation = actual.facts.kind === CurrentHostedDependencyOriginKind.Ordinary ? actual.facts.ordinary.installation : actual.facts.installation;
+    if (hash(bytes.bytes) !== installation.inventorySha256) invalid();
+    const launch = readCurrentHostedDependencySignedParentRecipe(actual.facts);
+    assertHostedDependencyParentRecipe(launch.args,actual.binding.jobRootDir,actual.binding.workspace.canonicalPath);
+    const flags = parseFlags(launch.args.slice(2));
     const signedRoot = option(flags,{},"--state-root",[]) ?? actual.binding.jobRootDir+"/state";
     const model = option(flags,{},"--model",[]);
-    if (options.stateRootDir !== resolvePath(inventory.runtimeLaunch.cwd,signedRoot) ||
+    if (options.stateRootDir !== resolvePath(launch.cwd,signedRoot) ||
         model !== "gpt-6.1-sol" || options.model !== model || (options.serviceTier ?? "default") !== "default" ||
         (option(flags,{},"--service-tier",[]) ?? "default") !== "default" || options.codexBinaryPath !== "codex" ||
         (option(flags,{},"--codex-binary",[]) ?? "codex") !== "codex") throw new Error("hosted_dependency_session_profile_unsupported");

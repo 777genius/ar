@@ -21,9 +21,16 @@ export function assertRootQualificationFacts(record:HostedDependencyRootPreparat
   const providerReady = record.providerReady;
   if (!matchesDependencyToolReadyIdentity({workspace:ready.workspace,coverageRevision:ready.coverageRevision,revision:ready.revision,
       installKey:ready.installKey,tree:ready.tree,manifestDigest:ready.manifestDigest},providerReady) ||
-      providerReady.provenance.kind === DependencyToolReadyProvenanceKind.RegistryCompleted ||
-      !encode(providerReady.provenance.readonlySources.map(source => ({canonicalPath:source.canonicalPath,
-        dev:source.identity.dev,ino:source.identity.ino}))).equals(encode(record.authoredRoots.slice(1).map(pin => ({canonicalPath:pin.canonicalPath,dev:pin.dev,ino:pin.ino}))))) invalid();
+      record.authoredRoots[0]?.canonicalPath !== binding.workspace.canonicalPath) invalid();
+  switch (providerReady.provenance.kind) {
+    case DependencyToolReadyProvenanceKind.RegistryCompleted:
+      if (record.version !== 3 || record.authoredRoots.length !== 1) invalid(); break;
+    case DependencyToolReadyProvenanceKind.LocalCompleted:
+    case DependencyToolReadyProvenanceKind.LocalCompared:
+      if (!encode(providerReady.provenance.readonlySources.map(source => ({canonicalPath:source.canonicalPath,
+        dev:source.identity.dev,ino:source.identity.ino}))).equals(encode(record.authoredRoots.slice(1).map(pin => ({canonicalPath:pin.canonicalPath,dev:pin.dev,ino:pin.ino}))))) invalid(); break;
+    default: invalid();
+  }
 }
 export function assertRootConfigAncestorFacts(record:HostedDependencyRootPreparationRecord,binding:HostedDependencyBinding):void {
   if (!Array.isArray(record.configAncestors) || record.configAncestors.length < 2 || record.configAncestors.length > 128) invalid();
@@ -32,9 +39,20 @@ export function assertRootConfigAncestorFacts(record:HostedDependencyRootPrepara
   if (record.configAncestors.at(-1)?.canonicalPath !== "/") invalid();
 }
 
-export function parseRootPreparationFacts(bytes:Buffer,attempt:DependencyAttempt,custody:DependencyProtectedReference):HostedDependencyRootPreparationRecord {
-  const record = decodeHostedActivationBytes(bytes) as HostedDependencyRootPreparationRecord;
+export function parseRootPreparationFacts(bytes:Buffer,attempt:DependencyAttempt,custody:DependencyProtectedReference):Extract<HostedDependencyRootPreparationRecord,{version:2}> {
+  const record = decodeHostedActivationBytes(bytes) as Extract<HostedDependencyRootPreparationRecord,{version:2}>;
   if (!record || Object.keys(record).sort().join(",") !== "attempt,authoredRoots,config,configAncestors,custodyReference,durableHandoffRoot,generatedRoots,protectedProfile,providerReady,qualification,ready,readyRevision,scratchParent,sourceLookupAncestors,version" ||
       record.version !== 2 || !encode(record).equals(bytes) || !sameDependencyAttempt(record.attempt,attempt) ||
       !sameDependencyProtectedReference(record.custodyReference,custody)) invalid(); return record;
+}
+
+/** Closed C provenance has its actual ordinary-start and consumed reader
+ * references. Neither a custody record nor a registry DTO can substitute. */
+export function parseOrdinaryRootPreparationFacts(bytes:Buffer,attempt:DependencyAttempt,
+  expected:Readonly<{origin:DependencyProtectedReference;producer:DependencyProtectedReference;entry:DependencyProtectedReference}>):Extract<HostedDependencyRootPreparationRecord,{version:3}> {
+  const record = decodeHostedActivationBytes(bytes) as Extract<HostedDependencyRootPreparationRecord,{version:3}>;
+  if (!record || Object.keys(record).sort().join(",") !== "attempt,authoredRoots,config,configAncestors,durableHandoffRoot,generatedRoots,originReference,protectedProfile,providerReady,qualification,readerEntry,readerProducer,ready,readyRevision,scratchParent,sourceLookupAncestors,version" ||
+      record.version !== 3 || !encode(record).equals(bytes) || !sameDependencyAttempt(record.attempt,attempt) ||
+      !sameDependencyProtectedReference(record.originReference,expected.origin) ||
+      !sameDependencyProtectedReference(record.readerProducer,expected.producer) || !sameDependencyProtectedReference(record.readerEntry,expected.entry)) invalid(); return record;
 }

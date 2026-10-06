@@ -3,12 +3,14 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, rea
 import { dirname } from "node:path";
 import { sameDependencyProtectedReference, type DependencyProtectedReference, DependencyOwnerPhase, DependencyConsumerLaunchKind, isDependencyConsumerOwner, parseDependencyOwner, sameDependencyWorkspace } from "@vioxen/subscription-runtime/core";
 import { HostedCustodyPhase, HostedCustodyReservationState, parseHostedCustodyEpoch } from "@vioxen/subscription-runtime/worker-core";
-import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes, readHostedOrdinaryProcessOrigin, withHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { isHostedDependencyWorkspace, readHostedDependencyBinding, readHostedDependencyAttempt, assertHostedDependencyStartAllowed, assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes, readHostedOrdinaryProcessOrigin, collectHostedOrdinaryProcessOriginFacts, withHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { isHostedDependencyWorkspace, readHostedDependencyBinding, hostedDependencyBindingName, readHostedDependencyAttempt, assertHostedDependencyStartAllowed, assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { sameRootDescriptorStat as sameStat, readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-physical-facts";
 import { CurrentHostedDependencyOriginKind, type CurrentHostedDependencyOriginFacts } from "./hosted-current-dependency-origin";
+import { formHostedOrdinarySelectedParentLineageFacts } from "../provider-codex/app-server/adapters/hosted-ordinary-selected-lineage-facts";
+import { assertHostedDependencyParentRecipe, assertHostedDependencyParentEnvironment } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
 import { parseHostedReadonlyHostInventory } from "../worker-core/hosted-custody/domain/hosted-readonly-inventory";
-import { selectHostedDependencyRootTaskFacts } from "./hosted-dependency-root-record-facts";
+import { selectHostedDependencyRootTaskArgumentFacts } from "./hosted-dependency-root-record-facts";
 import { type HostedDependencyRootDirectoryPin } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
 import { assertHostedDependencyRootGitConfigBytes } from "../provider-codex/app-server/adapters/hosted-dependency-root-git-config";
 const root = "/var/lib/subscription-runtime-host-policy";
@@ -42,6 +44,34 @@ function selectedFile(path: string, maximum: number, privateFile = true) {
   } finally { closeSync(fd); }
 }
 function fixed(name: string, maximum = 65536) { return selectedFile(`${root}/${name}`,maximum); }
+/** Fresh fixed factual C collection; the original map brackets this with its
+ * actual descriptor inventory. The returned digest grants no purpose/resource. */
+export function collectCurrentHostedOrdinaryDependencyOrigin(fence: HostedActivationFence) {
+  const ordinary = collectHostedOrdinaryProcessOriginFacts(fence);
+  const lineage = formHostedOrdinarySelectedParentLineageFacts(ordinary);
+  const binding = readHostedDependencyBinding(lineage.jobId);
+  const bindingPin = binding ? fixed(hostedDependencyBindingName(lineage.jobId),16384) : undefined;
+  if (binding && (!bindingPin || !bindingPin.bytes.equals(encode(binding)) ||
+      binding.installationId !== lineage.installationId || binding.runtimeSha !== lineage.runtimeSha ||
+      binding.workspace.canonicalPath !== lineage.workspacePath || binding.jobRootDir !== lineage.jobRootDir ||
+      binding.grantDigest !== lineage.grantSha256)) invalid();
+  return {digest:hash(encode({lineage,binding:bindingPin?.reference ?? null})),
+    facts:Object.freeze({kind:CurrentHostedDependencyOriginKind.Ordinary,ordinary})};
+}
+/** Actual signed parent selection only. C selects its exact creator identity;
+ * R keeps its independently authenticated runtimeLaunch. No caller recipe. */
+export function readCurrentHostedDependencySignedParentRecipe(facts:CurrentHostedDependencyOriginFacts) {
+  const installation = facts.kind === CurrentHostedDependencyOriginKind.Ordinary ? facts.ordinary.installation : facts.installation;
+  const bytes = fixed("readonly-inventory.json"), inventory = parseHostedReadonlyHostInventory(decodeHostedActivationBytes(bytes.bytes));
+  if (hash(bytes.bytes) !== installation.inventorySha256) invalid();
+  if (facts.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal) return inventory.runtimeLaunch;
+  const start = facts.ordinary.start;
+  const creators = inventory.ordinaryCreators.filter(row => row.creatorId === start.creatorId && row.jobId === start.jobId &&
+    row.jobRootDir === start.jobRootDir && row.workspacePath === start.workspacePath);
+  if (creators.length !== 1) invalid(); const launch = creators[0]!.launch;
+  assertHostedDependencyParentRecipe(launch.args,String(start.jobRootDir),String(start.workspacePath));
+  assertHostedDependencyParentEnvironment(process.env,String(start.jobRootDir)); return launch;
+}
 /** Routing facts only. */
 export function isHostedManagedReadonlyOuterRuntime(): boolean {
   return process.platform === "linux" && /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-outer-[a-f0-9-]{36}\.service$/.test(
@@ -115,10 +145,8 @@ export function readHostedDependencyAttemptFacts(facts: CurrentHostedDependencyO
 }
 
 export function rootIdentity(facts: CurrentHostedDependencyOriginFacts, binding: HostedDependencyBinding) {
-  const installation = facts.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal ? facts.installation : facts.ordinary.installation;
-  const inventoryPin = fixed("readonly-inventory.json"), inventory = parseHostedReadonlyHostInventory(decodeHostedActivationBytes(inventoryPin.bytes));
-  if (hash(inventoryPin.bytes) !== installation.inventorySha256) invalid();
-  return selectHostedDependencyRootTaskFacts(inventory,binding,
+  const launch=readCurrentHostedDependencySignedParentRecipe(facts);
+  return selectHostedDependencyRootTaskArgumentFacts(launch.args,binding,
     facts.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal ? facts.start.readonlyJobId : binding.jobId,
     process.env.SUBSCRIPTION_RUNTIME_DURABLE_HANDOFF_ROOT);
 }

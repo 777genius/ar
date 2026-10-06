@@ -1,3 +1,4 @@
+import { startCurrentHostedOrdinaryDependencyProvider } from "./hosted-ordinary-dependency-provider";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { HostedCustodyLaunchKind, HostedCustodySupervisor } from "@vioxen/subscription-runtime/worker-core";
@@ -19,7 +20,7 @@ import { readHostedDependencyBinding } from "../provider-codex/app-server/adapte
 import { captureHostedDependencyToolReadyReader } from "./hosted-dependency-tool-ready-reader";
 import type { HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 import { readCurrentHostedDependencyRootQualification } from "./hosted-dependency-tool-profile";
-import { isHostedManagedReadonlyOuterRuntime, requiresCurrentHostedDependencyRootPurpose,
+import { CurrentHostedDependencyOriginKind, isHostedManagedReadonlyOuterRuntime, requiresCurrentHostedDependencyRootPurpose,
   readCurrentHostedManagedDependencyProviderParent, createCurrentHostedDependencySessionRuntime, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 
 const guardedFactories = new WeakMap<CodexAppServerProcessFactory, string>();
@@ -32,7 +33,7 @@ const toolFactories = new WeakMap<CodexAppServerProcessFactory, Readonly<{
  * substitute the egress/config labels. No public reader/factory DTO is a brand. */
 export function assertHostedDependencyToolAdmittedFactory(factory: CodexAppServerProcessFactory | undefined,
   workspacePath: string | undefined): void {
-  if (isHostedManagedReadonlyOuterRuntime() && requiresCurrentHostedDependencyRootPurpose()) {
+  if (requiresCurrentHostedDependencyRootPurpose()) {
     const selected = withHostedActivationFence(fence => {
       const actual = readCurrentHostedDependencyRootQualification(fence), retained = factory && toolFactories.get(factory);
       if (!factory || !retained?.entry || retained.origin !== actual.context ||
@@ -97,6 +98,7 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
       const retained = captureHostedDependencyToolReadyReader(fence,input,toolEntry);
       if (!retained || retained.origin !== qualified.context) throw new Error("hosted_readonly_dependency_factory_denied");
       const current = readCurrentHostedManagedDependencyProviderParent(retained.origin,fence);
+      if (current.facts.kind!==CurrentHostedDependencyOriginKind.ManagedReadonlyLocal) throw new Error("hosted_readonly_dependency_factory_denied");
       return {retained,identity:Object.freeze({jobId:current.facts.start.readonlyJobId,
         jobRootDir:current.binding.jobRootDir,workspacePath:current.binding.workspace.canonicalPath})};
     });
@@ -118,6 +120,23 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
       toolFactories.set(factory,Object.freeze({workspacePath:identity.workspacePath,assertCurrent:retained.assertCurrent,origin:retained.origin,entry:toolEntry!}));
       return factory;
     }
+  }
+  if (requiresCurrentHostedDependencyRootPurpose()) {
+    return withHostedActivationFence(fence=>{
+      const qualified=readCurrentHostedDependencyRootQualification(fence);
+      const actual=readCurrentHostedManagedDependencyProviderParent(qualified.context,fence);
+      if (actual.facts.kind!==CurrentHostedDependencyOriginKind.Ordinary || !toolEntry ||
+          input.providerEgressPolicy.profileId!==CodexProviderEgressProfileId.TestNpmQualification ||
+          input.jobId!==actual.binding.jobId || input.jobRootDir!==actual.binding.jobRootDir || input.workspacePath!==actual.binding.workspace.canonicalPath ||
+          (input.executionEngine ?? "app-server-goal")!=="app-server-goal" || input.sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND!=="hosted-codex-job")
+        throw new Error("hosted_readonly_dependency_factory_denied");
+      const captured=captureHostedDependencyToolReadyReader(fence,input,toolEntry);
+      if (!captured || captured.origin!==qualified.context) throw new Error("hosted_readonly_dependency_factory_denied");
+      const factory:CodexAppServerProcessFactory=launch=>startCurrentHostedOrdinaryDependencyProvider(captured.origin,launch);
+      guardedFactories.set(factory,input.workspacePath);
+      toolFactories.set(factory,Object.freeze({workspacePath:input.workspacePath,assertCurrent:captured.assertCurrent,origin:captured.origin,entry:toolEntry}));
+      return factory;
+    });
   }
   const research = admitResearchRuntime(input);
   if (research) {
@@ -145,9 +164,13 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
     return withHostedActivationFence(fence => {
       const captured = captureHostedDependencyToolReadyReader(fence, input, toolEntry);
       if (!captured) return undefined; // V1 keeps genuine default admission.
-      const factory = admittedDependencyToolCodexProcessFactory(captured.reader);
+      if (!toolEntry) throw new Error("hosted_readonly_dependency_factory_denied");
+      const actual=readCurrentHostedManagedDependencyProviderParent(captured.origin,fence);
+      if (actual.facts.kind!==CurrentHostedDependencyOriginKind.Ordinary) throw new Error("hosted_readonly_dependency_factory_denied");
+      const factory:CodexAppServerProcessFactory=launch=>startCurrentHostedOrdinaryDependencyProvider(captured.origin,launch);
+      guardedFactories.set(factory,input.workspacePath);
       toolFactories.set(factory, Object.freeze({ workspacePath: input.workspacePath, assertCurrent: captured.assertCurrent,
-        ...(toolEntry ? { entry: toolEntry } : {}) }));
+        origin:captured.origin,entry:toolEntry }));
       return factory;
     });
   }

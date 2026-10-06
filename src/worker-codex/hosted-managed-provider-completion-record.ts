@@ -1,9 +1,11 @@
+import { HostedReadonlyEpochStore } from "./hosted-readonly-epoch-store";
+import { terminalHostedCustodyStart } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
 import { sameDependencyAttempt, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { readOriginalHostedManagedProviderWaitFacts, readCurrentHostedManagedDependencyProviderParent, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { CurrentHostedDependencyOriginKind, readOriginalHostedManagedProviderWaitFacts, readCurrentHostedManagedDependencyProviderParent, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { readHostedDependencyRootDirectoryPin, sameRootDescriptorStat as sameStat } from "./hosted-dependency-root-physical-facts";
 import { collectHostedManagedProviderDrain } from "./hosted-managed-provider-drain-observation";
 import { matchesManagedProviderProxyWait } from "./hosted-managed-provider-terminal-facts";
@@ -40,6 +42,7 @@ function selectedFile(path: string, maximum: number, privateFile = true) {
 // Fixed genuine context/unit reader -> actual drain -> fixed receipt. No caller wait/terminal facts or epoch publication.
 export function publishOriginalHostedManagedProviderCompletion(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,unit:string) {
   const selected = readOriginalHostedManagedProviderWaitFacts(context,fence,unit), parent = selected.parent;
+  if (parent.facts.kind!==CurrentHostedDependencyOriginKind.ManagedReadonlyLocal) invalid();
   try { lstatSync(`/proc/${selected.pid}`); invalid(); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const reservation = parent.facts.epoch.reservations.find(row => row.unit === unit);
@@ -59,6 +62,21 @@ export function publishOriginalHostedManagedProviderCompletion(context:CurrentHo
   if (selected.waitStatus === 0) createReadonlyPrivateRecord(completionPath(reservation),completionBytes(reservation,0));
   if (!selectedFile(path,16384).bytes.equals(completion)) invalid();
   const current = readCurrentHostedManagedDependencyProviderParent(context,fence);
-  if (!sameDependencyAttempt(current.attempt,parent.attempt) || !encode(current.facts.epoch).equals(encode(after.parent.facts.epoch))) invalid();
-  return {parent:current,reservation};
+  if (current.facts.kind!==CurrentHostedDependencyOriginKind.ManagedReadonlyLocal || after.parent.facts.kind!==CurrentHostedDependencyOriginKind.ManagedReadonlyLocal ||
+      !sameDependencyAttempt(current.attempt,parent.attempt) || !encode(current.facts.epoch).equals(encode(after.parent.facts.epoch))) invalid();
+  return {parent:{...current,facts:current.facts},reservation};
+}
+
+/** Fixed R-only native publication. No receipt/epoch/status DTO or callback
+ * enters; original map retains physical resources until exact postpublication
+ * identity and close succeed. C uses its distinct ProviderOnly store path. */
+export function publishOriginalHostedManagedProviderTerminal(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,unit:string):void {
+  const store=new HostedReadonlyEpochStore();
+  store.withHeldFence(fence,()=>{
+    const completed=publishOriginalHostedManagedProviderCompletion(context,fence,unit);
+    const current=readCurrentHostedManagedDependencyProviderParent(context,fence);
+    if (current.facts.kind!==CurrentHostedDependencyOriginKind.ManagedReadonlyLocal ||
+        !sameDependencyAttempt(current.attempt,completed.parent.attempt) || !encode(current.facts.epoch).equals(encode(completed.parent.facts.epoch))) invalid();
+    store.publishEpoch(terminalHostedCustodyStart(current.facts.epoch,completed.reservation.startId));
+  });
 }

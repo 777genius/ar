@@ -5,7 +5,7 @@ import { claimDependencyConsumer, markDependencyConsumerRunning, DependencyAdmis
   DependencyAdmissionFailure as Failure, DependencyOwnerPhase, DependencyReceiptState, DependencyTreeObservationStatus, type DependencyAttempt, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/worker-core";
 import { sameDependencyAttempt } from "@vioxen/subscription-runtime/core";
 import { withHostedActivationFence, CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
-import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt,
+import { enterCurrentHostedOrdinaryDependencyReader, consumeCurrentHostedOrdinaryDependencyExecution, readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt,
   isCurrentHostedDependencyManagedReadonlyOrigin, isHostedManagedReadonlyOuterRuntime, readHostedDependencyRootGitConfigPin, CurrentHostedDependencyOriginKind } from "./hosted-current-dependency-origin";
 import { consumeHostedReadonlyDependencyPreclaim, readHostedReadonlyDependencyPreclaim, publishHostedReadonlyDependencyReaderReady } from "./hosted-readonly-dependency-reader-entry";
 import { readHostedDependencyEstablishedReceipt } from "./hosted-dependency-receipts";
@@ -38,6 +38,7 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
     if (selected) fail(Failure.Unsupported);
     return undefined;
   }
+  enterCurrentHostedOrdinaryDependencyReader();
   const context = withHostedActivationFence(fence => readCurrentHostedDependencyOrigin(fence));
   const held = withHostedActivationFence(fence => assertCurrentHostedDependencyOrigin(context,fence));
   const actualSelected = isHostedDependencyWorkspace(held.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal ?
@@ -64,7 +65,8 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
     assertHostedDependencyQualifiedInventory();
     assertHostedDependencyPhysicalWorkspace(binding);
     assertHostedDependencyStartAllowed(readonly ? current.start.startId : String(current.ordinary.reservation.startId));
-    const preclaimed = readonly ? consumeHostedReadonlyDependencyPreclaim(context,fence) : undefined;
+    const preclaimed = readonly ? consumeHostedReadonlyDependencyPreclaim(context,fence) :
+      binding.version === 2 ? consumeCurrentHostedOrdinaryDependencyExecution(fence) : undefined;
     assertManagedDependencyGitInputs(binding.workspace.canonicalPath);
     const receipt = readonly ? readHostedDependencyEstablishedReceipt(binding) : readHostedDependencyReceipt(binding);
     if (receipt?.state === DependencyReceiptState.Installing || receipt?.state === DependencyReceiptState.Evicting) fail(Failure.Busy);
@@ -79,7 +81,7 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
     if (tree && receipt?.state === DependencyReceiptState.Absent) fail(Failure.UnsafeTree);
     const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
     try {
-      const attempt = readonly ? (preclaimed ?? fail(Failure.StaleAttempt)) : claimDependencyConsumer(store,binding.workspace,{
+      const attempt = readonly || binding.version === 2 ? (preclaimed ?? fail(Failure.StaleAttempt)) : claimDependencyConsumer(store,binding.workspace,{
         installationId:binding.installationId,bootId:String(current.ordinary.start.bootId),runtimeSha:binding.runtimeSha,
         grantDigest:binding.grantDigest,startId:String(current.ordinary.reservation.startId),unit:String(current.ordinary.start.unit),
       },randomUUID());

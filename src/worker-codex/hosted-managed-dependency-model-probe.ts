@@ -1,3 +1,5 @@
+import { drainCurrentHostedDependencySessionProvider } from "./hosted-current-dependency-origin";
+import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { readCurrentHostedDependencySessionModelProbeView, type CurrentHostedDependencySessionHome } from "./hosted-current-dependency-origin";
 import { readCodexModelCatalogPage } from "../provider-codex/app-server/protocol/app-server-model-catalog";
 function denied():never { throw new Error("hosted_dependency_session_model_probe_unknown"); }
@@ -62,4 +64,15 @@ export function readBoundedObservedSessionModelPage(raw:Record<string,unknown>,o
   }
   const page = readCodexModelCatalogPage({data,nextCursor:raw.nextCursor}); if (!page || page.data.length !== data.length) denied();
   return page;
+}
+
+/** Fixed same-home catalog subphase. Stop/drain never releases home/use or
+ * advances credential scheduling; original issuer independently rejoins its
+ * captured use/auth/executable/profile before retaining these factual models. */
+export async function collectOriginalHostedDependencySessionModelsAfterDrain(home:CurrentHostedDependencySessionHome):Promise<readonly string[]> {
+  new HostedReadonlySupervisorHost().startDependencySessionModelProbe(home);
+  try {
+    const models=await collectOriginalHostedDependencySessionModels(home);
+    await drainCurrentHostedDependencySessionProvider(home);return models;
+  } catch(error) {await drainCurrentHostedDependencySessionProvider(home);throw error;}
 }

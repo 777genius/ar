@@ -7,8 +7,10 @@ import { readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-p
 import { managedDependencyHomeConfig } from "./hosted-managed-dependency-home-config";
 function invalid():never { throw new Error("hosted_dependency_current_origin_unresolved"); }
 // Fixed path/config facts only, with no home context, state transition, raw writer or registration.
-export function formManagedDependencyHomePreparationFacts(bytes:Buffer,jobRootDir:string,attempt:DependencyAttempt) {
-  const policy = codexProviderEgressPolicy(CodexProviderEgressProfileId.TestManagedQualification);
+export function formManagedDependencyHomePreparationFacts(bytes:Buffer,jobRootDir:string,attempt:DependencyAttempt,
+  profile:CodexProviderEgressProfileId.TestManagedQualification|CodexProviderEgressProfileId.TestNpmQualification=CodexProviderEgressProfileId.TestManagedQualification) {
+  if (profile!==CodexProviderEgressProfileId.TestManagedQualification && profile!==CodexProviderEgressProfileId.TestNpmQualification) invalid();
+  const policy = codexProviderEgressPolicy(profile);
   const executable = hostedCodexExecutableReadPath({codexBinaryPath:"codex",sourceEnv:process.env}); if (!executable) invalid();
   const configBytes = managedDependencyHomeConfig(policy,executable,dependencyToolGuestConfig(parseDependencyToolQualification(decodeHostedActivationBytes(bytes))));
   return Object.freeze({jobRoot:readHostedDependencyRootDirectoryPin(jobRootDir),

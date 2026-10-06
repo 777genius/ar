@@ -1,3 +1,4 @@
+import { readHostedOrdinaryDependencyParentFrame } from "./hosted-ordinary-dependency-reader";
 import { fileURLToPath } from "node:url";
 import { hostedCodexExecutableReadPath } from "../provider-codex/hosted-codex-permissions";
 import { encodeHostedAppServerLaunchFrame } from "../provider-codex/app-server/adapters/hosted-app-server-launch-frame";
@@ -51,6 +52,14 @@ export function assertHostedManagedDependencyToolParentFrame(fence: HostedActiva
   const id = /^subscription-runtime-outer-([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\.service$/.exec(unit)?.[1];
   if (!id) fail();
   assertManagedParentFrame(fence,unit,id,frame);
+}
+
+/** C foreground frame derives its writer scope from the actual reserved
+ * ordinary parent/preclaim and exact signed inventory recipe. No root issuer. */
+export function assertHostedOrdinaryDependencyToolParentFrame(fence:HostedActivationFence,startId:string,frame:string|Buffer):void {
+  const selected=readHostedOrdinaryDependencyParentFrame(fence,startId,frame); if (!selected) return;
+  assertParentAuthWriterScope(selected.binding,selected.launch.args);
+  readHostedOrdinaryDependencyParentFrame(fence,startId,frame);
 }
 
 /** Before the R CLI exists, the real FDA foreground unit selects its fixed
@@ -179,8 +188,7 @@ function assertParentAuthWriterScope(binding: HostedDependencyBinding, args: rea
 function prepareHostedDependencyToolPlan(fence: HostedActivationFence, unit: string, binding: HostedDependencyBinding,
   root: string, writable: readonly string[], sources: readonly string[], managedOrigin: CurrentHostedDependencyOrigin): { readonly mounts: readonly string[]; readonly cache: string; readonly sourcePaths: readonly string[] } | undefined {
   assertHostedActivationFence(fence);
-  if (!isHostedManagedReadonlyOuterRuntime()) fail();
-  const actualManaged = assertCurrentHostedDependencyAttempt(managedOrigin,fence);
+  const actualManaged = assertCurrentHostedDependencyAttempt(managedOrigin,fence,DependencyOwnerPhase.Running);
   if (!encode(actualManaged.binding).equals(encode(binding)) || binding.version !== 2 || pending.has(unit)) fail();
   const attempt = actualManaged.attempt;
   const session = readCurrentHostedDependencyProviderSessionHome(managedOrigin,fence,writable[1],writable[2]);
@@ -251,7 +259,7 @@ function retainHostedDependencyToolInvocation(fence: HostedActivationFence, invo
   assertHostedActivationFence(fence);
   const unit = invocation.systemdUnit; if (!unit) fail();
   const plan = pending.get(unit);
-  if (!isHostedManagedReadonlyOuterRuntime() || !plan || !prepared.has(plan) || invocations.has(invocation)) fail();
+  if (!plan || !prepared.has(plan) || invocations.has(invocation)) fail();
   try { validatePlan(fence,plan);
     plan.invocation = invocation; invocations.set(invocation,plan); pending.delete(unit); }
   catch (error) { abandonHostedDependencyToolPlan(unit); throw error; }
@@ -604,7 +612,6 @@ export function hostedManagedDependencyProviderInvocation(fence: HostedActivatio
   input: { readonly command: string; readonly args: readonly string[]; readonly cwd: string;
     readonly env: Readonly<Record<string, string>> }, managedOrigin: CurrentHostedDependencyOrigin): CodexAppServerProcessInvocation | undefined {
   assertHostedActivationFence(fence);
-  if (!isHostedManagedReadonlyOuterRuntime()) invalid();
   const fdProfile = readHostedFdProfile(), actual = assertCurrentHostedDependencyAttempt(managedOrigin,fence), binding = actual.binding;
   const session = readCurrentHostedDependencyProviderSessionHome(managedOrigin,fence,input.env.HOME,input.env.CODEX_HOME);
   const workspace = session.refresh ? session.emptyWorkdir : binding.workspace.canonicalPath;

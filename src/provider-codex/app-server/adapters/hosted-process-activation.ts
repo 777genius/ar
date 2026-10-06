@@ -461,10 +461,14 @@ export function releaseHostedOrdinaryProcess(child: CodexAppServerChildProcess, 
 
 /** Production default primitive calls this with its private synchronous spawn.
  * It never receives worker factory injection, mount options or a managed ticket. */
-export function submitHostedOrdinaryProcess(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
-  submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string }, fence: HostedActivationFence) => CodexAppServerChildProcess): CodexAppServerChildProcess {
-  return withHostedActivationFence(fence => {
-    const { activation, start, reservation: parentReservation, profileId, childBound } = readHostedOrdinaryProcessOrigin(fence);
+/** Fixed actual C reservation/history publication only. No descriptor policy,
+ * spawn callback, child, owner/purpose grant or caller-supplied origin is accepted.
+ * The selected original map must sandwich this operation with its own actual
+ * descriptor/current-purpose proof. Generic submit keeps strict ingress below. */
+export function reserveHostedOrdinaryProviderFacts(fence:HostedActivationFence,
+  input:Readonly<{cwd:string;env:Readonly<Record<string,string>>}>) {
+  assertHostedActivationFence(fence);
+    const { activation, start, reservation: parentReservation, profileId, childBound } = collectHostedOrdinaryProcessOriginFacts(fence);
     const jobRoot = canonical(start.jobRootDir);
     const workspacePath = canonical(start.workspacePath);
     const dependency = readHostedDependencyBinding(str(start.jobId));
@@ -528,6 +532,61 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
         }) + "\n"));
       }
       assertHostedScopedAdmission(fence, parentId);
+      return readHostedOrdinaryProviderFacts(fence,startId);
+    } catch (error) {
+      if (!childBound) publishOrdinaryActivation(fence,{...next,generation:generation+1,phase:"CLOSED"});
+      throw error;
+    }
+}
+/** Fresh exact selected provider row/start/parent/attempt relationship. The
+ * current authenticated catalog is collected on every call, never a saved DTO.
+ * This read model has no raw child registration or terminal status setter. */
+export enum HostedOrdinaryProviderReadPhase { Reserved="reserved", OwnTerminal="own_terminal" }
+export function readHostedOrdinaryProviderFacts(fence:HostedActivationFence,startId:string,
+  phase:HostedOrdinaryProviderReadPhase=HostedOrdinaryProviderReadPhase.Reserved) {
+  assertHostedActivationFence(fence); str(startId,/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
+  const parent = collectHostedOrdinaryProcessOriginFacts(fence), startPin = requiredWire(`ordinary-starts/${startId}.json`,startKeys);
+  const provider = startPin.value, unit = `subscription-runtime-hosted-${startId}.service`;
+  const found = parent.activation.ordinaryStarts.filter(row=>row.startId===startId);
+  if (found.length!==1) invalid(); const reservation=found[0]!;
+  if (reservation.unit!==unit || reservation.state!==(phase===HostedOrdinaryProviderReadPhase.Reserved ? "reserved":phase===HostedOrdinaryProviderReadPhase.OwnTerminal ? "terminal":invalid()) || reservation.creatorId!==parent.start.creatorId ||
+      reservation.originSha256!==parent.start.originSha256 || reservation.generation!==provider.activationGeneration ||
+      positive(reservation.generation)>positive(parent.activation.generation) || provider.unit!==unit || provider.controlGroup!==unitGroup(unit) ||
+      provider.creatorPidBirth!==pidBirth(String(process.pid))) invalid();
+  same(provider,parent.start,"installationId,hostId,bootId,supervisorId,originSha256,creatorId,jobId,jobRootDir,workspacePath,grantSha256");
+  const parentId=str(parent.reservation.startId), dependency=readHostedDependencyBinding(str(parent.start.jobId));
+  let relation:Wire|undefined;
+  if (dependency) {
+    const attempt=readHostedDependencyAttempt(dependency,parent.start,parentId);
+    const bytes=readHostedActivationBytes(`dependency-provider-attempts/${startId}.json`); if (!bytes) invalid();
+    relation=wire(decodeHostedActivationBytes(bytes),"version,parentStartId,attemptId,epoch,providerStartId,startDigest,unit");
+    if (relation.version!==1 || relation.parentStartId!==parentId || relation.attemptId!==attempt.attemptId || relation.epoch!==attempt.epoch ||
+        relation.providerStartId!==startId || relation.startDigest!==sha256(startPin.bytes) || relation.unit!==unit ||
+        !Buffer.from(JSON.stringify(relation)+"\n").equals(bytes)) invalid();
+  }
+  let companion:ScopedStartCorrelation|undefined;
+  if (parent.childBound) {
+    const bytes=readHostedActivationBytes(`ordinary-correlations/${startId}.json`); if (!bytes) invalid();
+    companion=parseScopedStartCorrelation(decodeHostedActivationBytes(bytes));
+    if (companion.kind!==ScopedTerminationKind.Provider || companion.startId!==startId || companion.startDigest!==sha256(startPin.bytes) ||
+        companion.identity.parentStartId!==parentId || companion.unit!==unit || companion.reservationGeneration!==reservation.generation ||
+        companion.identity.deadlineEpochMs<=Date.now() || !Buffer.from(JSON.stringify(companion)+"\n").equals(bytes)) invalid();
+  }
+  assertHostedScopedAdmission(fence,parentId);
+  return Object.freeze({parent,provider:Object.freeze({...provider}),reservation:Object.freeze({...reservation}),
+    startId,unit,parentId,bytes:Buffer.from(startPin.bytes),startSha256:sha256(startPin.bytes),
+    ...(relation?{relation:Object.freeze({...relation})}:{}),...(companion?{companion}:{}),dependency});
+}
+
+export function submitHostedOrdinaryProcess(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
+  submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string }, fence: HostedActivationFence) => CodexAppServerChildProcess): CodexAppServerChildProcess {
+  return withHostedActivationFence(fence => {
+    readHostedOrdinaryProcessOrigin(fence); // Generic strict descriptor ingress stays mandatory.
+    const actual=reserveHostedOrdinaryProviderFacts(fence,input);
+    const {parent:{activation,start,reservation:parentReservation,childBound},startId,unit,parentId,bytes,reservation,dependency,companion}=actual;
+    const workspacePath=canonical(start.workspacePath), generation=positive(reservation.generation);
+    const next={...activation,generation,ordinaryStarts:[...rows(activation.ordinaryStarts)]};
+    try {
       const child = submit(unit, { jobId: str(start.jobId), workspacePath }, fence);
       const descriptorScope = hostedToolFilesForChild(child);
       ordinaryReleases.set(child, { released: false, revalidate: held => {

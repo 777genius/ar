@@ -1,5 +1,6 @@
+import { startCurrentHostedOrdinaryDependencySessionBootstrap } from "./hosted-ordinary-dependency-provider";
 import { preclaimHostedReadonlyDependencyReader } from "./hosted-readonly-dependency-reader-entry";
-import { publishCurrentHostedManagedDependencyProvider, readCurrentHostedManagedDependencyProviderParent, spawnCurrentHostedManagedDependencyProvider, observeCurrentHostedManagedDependencyProviderFrame, remainingCurrentHostedManagedDependencyProviderSetup, releaseCurrentHostedManagedDependencyProviderFrame, invalidateCurrentHostedManagedDependencyProvider, readCurrentHostedDependencySessionRefreshParent, spawnCurrentHostedDependencySessionRefresh, spawnCurrentHostedDependencySessionModelProbe, observeCurrentHostedDependencySessionRefreshFrame, releaseCurrentHostedDependencySessionRefreshFrame, invalidateCurrentHostedDependencySessionRefresh, type CurrentHostedDependencySessionHome, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { CurrentHostedDependencyOriginKind, publishCurrentHostedManagedDependencyProvider, readCurrentHostedManagedDependencyProviderParent, spawnCurrentHostedManagedDependencyProvider, observeCurrentHostedManagedDependencyProviderFrame, remainingCurrentHostedManagedDependencyProviderSetup, releaseCurrentHostedManagedDependencyProviderFrame, invalidateCurrentHostedManagedDependencyProvider, readCurrentHostedDependencySessionRefreshParent, spawnCurrentHostedDependencySessionRefresh, spawnCurrentHostedDependencySessionModelProbe, observeCurrentHostedDependencySessionRefreshFrame, releaseCurrentHostedDependencySessionRefreshFrame, invalidateCurrentHostedDependencySessionRefresh, type CurrentHostedDependencySessionHome, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import type { CodexAppServerChildProcess } from "../provider-codex/app-server/application/app-server-process-port";
 import { retryHostedFenceAcquisition } from "../provider-codex/app-server/adapters/hosted-fd-fence";
 import { assertHostedManagedDependencyToolParentFrame } from "./hosted-managed-dependency-tool-plan";
@@ -192,6 +193,7 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
   spawnDependencyProvider(context: CurrentHostedDependencyOrigin, unit: string,
     input: {readonly command:string;readonly args:readonly string[];readonly cwd:string;readonly env:Readonly<Record<string,string>>}) {
     const fence = this.store.publicationFence(), current = readCurrentHostedManagedDependencyProviderParent(context,fence);
+    if (current.facts.kind!==CurrentHostedDependencyOriginKind.ManagedReadonlyLocal) throw new Error("hosted_dependency_current_origin_unresolved");
     const identity = {jobId:current.facts.start.readonlyJobId,jobRootDir:current.binding.jobRootDir,workspacePath:current.binding.workspace.canonicalPath};
     this.assertManagedAdmission(identity,CodexProviderEgressProfileId.TestManagedQualification);
     this.publishDependencyProviderStart(context,unit);
@@ -217,6 +219,7 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
   private startDependencySessionBootstrap(home:CurrentHostedDependencySessionHome,probe:boolean):CodexAppServerChildProcess {
     let child:CodexAppServerChildProcess|undefined;
     const current = withHostedActivationFence(fence => readCurrentHostedDependencySessionRefreshParent(home,fence));
+    if (current.facts.kind===CurrentHostedDependencyOriginKind.Ordinary) return startCurrentHostedOrdinaryDependencySessionBootstrap(home,probe);
     const identity = {jobId:current.facts.start.readonlyJobId,jobRootDir:current.binding.jobRootDir,workspacePath:current.binding.workspace.canonicalPath};
     const admitted = this.assertManagedAdmission(identity,CodexProviderEgressProfileId.TestManagedQualification);
     const startId = randomUUID(), unit = `subscription-runtime-hosted-${startId}.service`;

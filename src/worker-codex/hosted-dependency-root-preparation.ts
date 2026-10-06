@@ -4,11 +4,13 @@ import { join } from "node:path";
 import { DependencyOwnerPhase, sameDependencyAttempt, sameDependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { dependencyToolQualificationRecordName } from "../core/dependency-environment/dependency-tool-profile";
 import { assertCurrentHostedDependencyAttempt, prepareCurrentHostedDependencyRootPurpose,
-  readHostedDependencyRootDirectoryPin, readHostedDependencyRootGitConfigPin, CurrentHostedDependencyOriginKind } from "./hosted-current-dependency-origin";
+  readCurrentHostedOrdinaryDependencyReaderEntry, readHostedDependencyRootDirectoryPin, readHostedDependencyRootGitConfigPin, CurrentHostedDependencyOriginKind } from "./hosted-current-dependency-origin";
+import { DependencyToolReadyProvenanceKind } from "../core/dependency-environment/dependency-tool-ready-reader";
 import type { HostedDependencyRootPreparationRecord } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
 import { assertHostedDependencyRootGitConfigBytes } from "../provider-codex/app-server/adapters/hosted-dependency-root-git-config";
 import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readCurrentHostedDependencyRootQualification } from "./hosted-dependency-tool-profile";
+import { assertHostedDependencyKeyInputsCurrent } from "./hosted-dependency-materialization";
 import { HostedDependencyInstallerRecipe } from "./hosted-dependency-installer-inputs";
 import { readHostedDependencyInstallerProfile } from "./hosted-dependency-installer-recipe";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
@@ -34,11 +36,14 @@ function syncDirectory(path: string): void {
 export function prepareHostedDependencyRootHelpers(fence: HostedActivationFence): void {
   const qualified = readCurrentHostedDependencyRootQualification(fence), {context,binding,attempt,inputs,receipt} = qualified;
   const current = assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
-  if (current.facts.kind !== CurrentHostedDependencyOriginKind.ManagedReadonlyLocal) return;
   if (qualified.phase !== DependencyOwnerPhase.ExclusiveMutation || !sameDependencyAttempt(current.attempt,attempt) ||
-      inputs.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1 || !encode(readHostedDependencyEstablishedReceipt(binding)).equals(encode(receipt))) invalid();
+      (current.facts.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal && inputs.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1) || !encode(readHostedDependencyEstablishedReceipt(binding)).equals(encode(receipt))) invalid();
+  if (qualified.providerReady.provenance.kind === DependencyToolReadyProvenanceKind.RegistryCompleted ?
+      current.facts.kind !== CurrentHostedDependencyOriginKind.Ordinary || inputs.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1 || qualified.readonlySources.length !== 0 :
+      inputs.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1) invalid();
   const profile = readHostedDependencyInstallerProfile();
-  if (profile.schemaVersion !== 2 || createHash("sha256").update(encode(profile)).digest("hex") !== inputs.profileSha256) invalid();
+  assertHostedDependencyKeyInputsCurrent(binding,inputs);
+  if (profile.schemaVersion !== 2 || inputs.recipe === HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1 && createHash("sha256").update(encode(profile)).digest("hex") !== inputs.profileSha256) invalid();
   const profilePin = privatePin(root+"/dependency-installer-profile.json",16384);
   if (!profilePin.bytes.equals(encode(profile))) invalid();
   // Candidate C argv/root is independently selected again by the actual issuer.
@@ -64,7 +69,7 @@ export function prepareHostedDependencyRootHelpers(fence: HostedActivationFence)
   if (durableHandoffRoot.mountId !== authoredRoots[0]!.mountId) invalid();
   const generatedRoots = [readHostedDependencyRootDirectoryPin(join(binding.workspace.canonicalPath,"node_modules"))];
   if (generatedRoots[0]!.dev !== receipt.tree.dev || generatedRoots[0]!.ino !== receipt.tree.ino) invalid();
-  const sourceLookupAncestors = [...new Set(inputs.capture.ancestorPins.map(pin => pin.path))].sort().map(relative => {
+  const sourceLookupAncestors = inputs.recipe === HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1 ? [authoredRoots[0]!] : [...new Set(inputs.capture.ancestorPins.map(pin => pin.path))].sort().map(relative => {
     const pin = inputs.capture.ancestorPins.find(value => value.path === relative); if (!pin) invalid();
     const actual = readHostedDependencyRootDirectoryPin(join(binding.workspace.canonicalPath,relative));
     if (actual.dev !== pin.dev || actual.ino !== pin.ino || actual.mountId !== pin.mountId) invalid(); return actual;
@@ -76,16 +81,27 @@ export function prepareHostedDependencyRootHelpers(fence: HostedActivationFence)
   const qualification = privatePin(root+"/"+dependencyToolQualificationRecordName(attempt.launch.startId),16384);
   const committed = readHostedDependencyCommittedReady(binding,receipt.revision);
   if (!encode(committed.receipt).equals(encode(receipt))) invalid();
-  const record: HostedDependencyRootPreparationRecord = {version:2,attempt,custodyReference:current.facts.association.reference,
+  const fields = {attempt,
     providerReady:qualified.providerReady,
     qualification:qualification.reference,ready:committed.reference,readyRevision:receipt.revision,
     protectedProfile:profilePin.reference,config:configPin.reference,configAncestors:configPin.ancestors,durableHandoffRoot,scratchParent,authoredRoots,generatedRoots,sourceLookupAncestors};
+  const provenance = current.facts.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal ?
+    {version:2 as const,custodyReference:current.facts.association.reference} : (() => {
+      const entry = readCurrentHostedOrdinaryDependencyReaderEntry(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+      return {version:3 as const,originReference:entry.origin,readerProducer:entry.producer,readerEntry:entry.entry};
+    })();
+  const record:HostedDependencyRootPreparationRecord = {...fields,...provenance};
   ensureHostedDependencyDirectory(root+"/dependency-root-preparations");
   const recordPath = `${root}/dependency-root-preparations/${attempt.launch.startId}.json`;
   createReadonlyPrivateRecord(recordPath,encode(record));
   if (!privatePin(recordPath,65536).bytes.equals(encode(record))) invalid();
   const after = assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
-  if (!sameDependencyAttempt(after.attempt,attempt) || !sameDependencyProtectedReference(after.facts.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal ?
-      after.facts.association.reference : invalid(),record.custodyReference) || !encode(readHostedDependencyEstablishedReceipt(binding)).equals(encode(receipt))) invalid();
+  if (!sameDependencyAttempt(after.attempt,attempt) || !encode(readHostedDependencyEstablishedReceipt(binding)).equals(encode(receipt))) invalid();
+  if (record.version === 2) {
+    if (after.facts.kind !== CurrentHostedDependencyOriginKind.ManagedReadonlyLocal || !sameDependencyProtectedReference(after.facts.association.reference,record.custodyReference)) invalid();
+  } else { const entry = readCurrentHostedOrdinaryDependencyReaderEntry(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+    if (after.facts.kind !== CurrentHostedDependencyOriginKind.Ordinary || !sameDependencyProtectedReference(entry.origin,record.originReference) ||
+        !sameDependencyProtectedReference(entry.producer,record.readerProducer) || !sameDependencyProtectedReference(entry.entry,record.readerEntry)) invalid();
+  }
   prepareCurrentHostedDependencyRootPurpose(context,fence);
 }
