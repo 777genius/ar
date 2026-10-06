@@ -1,8 +1,11 @@
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, sep } from "node:path";
 import {
   AgentRuntimeTool,
   DefaultRedactor,
 } from "@vioxen/subscription-runtime/core";
-import { CodexModelBackend, codexProviderApiEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexJsonAgentDriver, CodexModelBackend, codexProviderApiEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
 import { describe, expect, it } from "vitest";
 import { createFileBackendCodexWorkerRuntime } from "../file-backend-codex-runtime-factory";
 import { assertWorkerOptions, type FileBackendCodexWorkerOptions } from "../file-backend-codex-worker-options";
@@ -107,6 +110,38 @@ describe("MiMo backend — app-server-goal-only enforcement", () => {
       });
     }
 
+    // The public nonreusable prewarm result exposes generated config without
+    // starting the engine or evaluating the hosted credential accessor.
+    async function generatedMimoConfig(options: Partial<FileBackendCodexWorkerOptions>) {
+      const root = await mkdtemp(join(tmpdir(), "TEST-mimo-factory-config-"));
+      let starts = 0;
+      try {
+        await mkdir(join(root,"workspace"));
+        const runtime = runtimeFor({ ...options, stateRootDir: join(root,"state"),
+          ...(options.workspacePath === undefined ? {} : {workspacePath:join(root,"workspace")}),
+          runtimeHomeRootDir: join(root,"runtime"),
+          sourceEnv: { ...options.sourceEnv, TMPDIR: root, MIMO_TEST_CONFIG_KEY: "TEST-synthetic-config-key" },
+          mimoApiKeyEnvVarName: "MIMO_TEST_CONFIG_KEY",
+          appServerProcessFactory: () => { starts++; throw new Error("TEST unexpected provider start"); },
+        });
+        const driver = runtime.agentDriver;
+        if (!(driver instanceof CodexJsonAgentDriver)) throw new Error("TEST expected JSON driver");
+        try {
+          const materialized = await driver.prewarmSession({ session: null, redactor: new DefaultRedactor() });
+          expect(materialized).toMatchObject({ mode: "ephemeral", reusable: false });
+          for (const path of [materialized.home,materialized.codexHome]) {
+            const selected = relative(root,path);
+            expect(selected).not.toBe("");
+            expect(isAbsolute(selected) || selected === ".." || selected.startsWith(`..${sep}`)).toBe(false);
+          }
+          return await readFile(join(materialized.codexHome,"config.toml"),"utf8");
+        } finally { await driver.dispose(); }
+      } finally {
+        await rm(root,{recursive:true,force:true});
+        expect(starts).toBe(0);
+      }
+    }
+
     it("throws an explicit error for MiMo combined with a non-goal engine, instead of silently building a plain-exec/packaged-exec/app-server driver", () => {
       for (const executionEngine of ["app-server", "packaged-exec", "plain-exec"] as const) {
         expect(() =>
@@ -140,15 +175,12 @@ describe("MiMo backend — app-server-goal-only enforcement", () => {
       expect(runtime.sessionDriver.capabilities.sessionRequirement.kind).toBe("required");
     });
 
-    it("passes MiMo provider and hosted scan hook into the effective driver config", () => {
-      const runtime = runtimeFor({
+    it("materializes MiMo provider and hosted scan hook in the actual generated config", async () => {
+      const config = await generatedMimoConfig({
         modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
         executionEngine: "app-server-goal",
         sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" },
       });
-      const config = (runtime.agentDriver as unknown as {
-        readonly options: { readonly mimoConfigToml?: string };
-      }).options.mimoConfigToml;
       expect(config).toContain("[model_providers.mimo]");
       expect(config).toContain('hooks = true');
       expect(config).toContain("[[hooks.PreToolUse]]");
@@ -164,8 +196,8 @@ describe("MiMo backend — app-server-goal-only enforcement", () => {
       ).not.toThrow();
     });
 
-    it("builds the MiMo boundedWorkspaceTools path with the generated MCP-only config", () => {
-      const runtime = runtimeFor({
+    it("materializes the MiMo boundedWorkspaceTools path with the generated MCP-only config", async () => {
+      const driverConfig = await generatedMimoConfig({
         modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
         executionEngine: "app-server-goal",
         workspacePath: "/tmp/does-not-need-to-exist-for-construction/workspace",
@@ -173,11 +205,6 @@ describe("MiMo backend — app-server-goal-only enforcement", () => {
           allowedTools: [AgentRuntimeTool.ReadFile],
         },
       });
-      const driverConfig = (
-        runtime.agentDriver as unknown as {
-          readonly options: { readonly mimoConfigToml?: string };
-        }
-      ).options.mimoConfigToml;
       expect(driverConfig).toContain("[mcp_servers.agent_runtime_workspace]");
       expect(driverConfig).toContain('enabled_tools = ["read_file"]');
       expect(driverConfig).toContain("shell_tool = false");

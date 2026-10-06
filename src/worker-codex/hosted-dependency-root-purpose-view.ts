@@ -7,7 +7,7 @@ export class OriginalHostedDependencyRootPurpose {
     this.#origin = origin; this.#purpose = purpose; this.#access = access; Object.freeze(this);
   }
   static origin(context:OriginalHostedDependencyRootPurpose,purpose:HostedDependencyRootPurpose,access:symbol):CurrentHostedDependencyOrigin {
-    if (context.#access !== access || context.#purpose !== purpose) throw new Error("hosted_dependency_current_origin_unresolved"); return context.#origin;
+    if (typeof context !== "object" || context === null || !(#access in context) || context.#access !== access || context.#purpose !== purpose) throw new Error("hosted_dependency_current_origin_unresolved"); return context.#origin;
   }
 }
 Object.freeze(OriginalHostedDependencyRootPurpose); Object.freeze(OriginalHostedDependencyRootPurpose.prototype);
