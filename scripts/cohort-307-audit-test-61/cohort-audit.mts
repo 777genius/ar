@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const cohortSha256 = '8b0467e9cdf7d83bace82df97893ed77e9f311dcd83110a18cbfcd0fc01a7da4';
-const payloadSha256 = 'acd7ba86293601dad9e5435f1359ced36fc661dbb93189943d83044f328fde6f';
+const payloadSha256 = '28d5d6e56d13f61b29db013607299aed854a21ae3ae55b131bbd43cf69e66bce';
 const machineId = 'd856d40da5ad4e23b4f67773e5942842';
 const Mode = { ProcReferences: 'ProcReferences', AllocatedMetadata: 'AllocatedMetadata' } as const;
 type Mode = (typeof Mode)[keyof typeof Mode];
@@ -44,7 +44,7 @@ SequentialWindowNotAbsenceProof ExternalHardlinkAndSymlinkAliasesUncovered Detac
 AnonymousKernelObjectsUncovered HistoricalAllocationNotCurrent
 CohortRoot CohortCapture CohortFinalJoin TaskDiscovery ProcessScan ProcessView ProcessLink FdEntry MapEntry SelfOrigin ProcVisibility NamespaceCoverage
 FinalTaskDiscovery AllocationTree AllocationOutput Request FinalCohort FinalIdentity FinalCapacity Output
-Deadline EntryLimit ByteLimit NameEncoding NameLimit TextLimit LineLimit PathShape AncestorDrift MountIdentityUnknown
+Deadline EntryLimit ByteLimit NameEncoding NameLimit DirectoryEntryShape TextLimit LineLimit PathShape AncestorDrift MountIdentityUnknown
 AmbiguousMountPath MountShape MountJoinUnknown SymlinkJoinUnknown StatShape LinkLimit PrivilegeOrPlatformUnknown
 MachineOrBootMismatch HostProcViewUnknown MachineOrBootDrift OwnNamespaceDrift HistoricalRootMismatch RootAlias
 RootMountJoinUnknown WorkspaceMountJoinUnknown WorkspaceDrift TreeDrift MountDrift AmbiguousReference ReferenceObjectMismatch

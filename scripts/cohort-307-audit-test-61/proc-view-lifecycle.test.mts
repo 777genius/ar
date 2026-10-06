@@ -209,6 +209,7 @@ def refused(call,reason):
     return False
 stage='DriverSetup'
 try:
+    assert lib.umount2(b'/proc',2)==0
     mount('proc','/proc','proc',0)
     source=r+'/'+('/'.join(['s'*180]*8));targets=r+'/'+('/'.join(['t'*180]*8));os.makedirs(source);os.makedirs(targets);spec['source']=source
     for i in range(2048):
@@ -324,6 +325,30 @@ try:
     renamed,rename_stable,rename_roots=observe('rename')
     physical,physical_stable,physical_roots=observe('physical')
     stage='FdBoundary'
+    fd_budget=p['Budget'](35);fd_directory=os.open('/proc/self/fd',p['O_DIR']);known_file=os.open(r+'/w/node_modules/dep',os.O_RDONLY);pipe_read,pipe_write=os.pipe();inventory=None
+    try:
+        inventory=p['FdInventory'](fd_directory,fd_budget);names=inventory.names(1024)
+        assert {str(number) for number in (fd_directory,known_file,pipe_read,pipe_write,inventory.fd)}<=set(names)
+        assert fd_budget.owned[inventory.fd]==p['object_pin'](os.fstat(inventory.fd))
+        for name in names:os.readlink(name,dir_fd=fd_directory);os.stat(name,dir_fd=fd_directory)
+        inventory.verify(names,1024)
+    finally:
+        if inventory is not None:inventory.close()
+        for number in (pipe_write,pipe_read,known_file,fd_directory):os.close(number)
+    child=subprocess.Popen([sys.executable,'-B','-c',"import sys;f=open(sys.argv[1],'rb');print(f.fileno(),flush=True);sys.stdin.buffer.read(1);f.close();print('CLOSED',flush=True);sys.stdin.buffer.read(1)",r+'/w2/node_modules/dep'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+    children.append(child);target_fds=None;inventory=None
+    try:
+        assert select.select([child.stdout],[],[],5)[0];known_external=int(child.stdout.readline(32))
+        target_fds=os.open('/proc/'+str(child.pid)+'/fd',p['O_DIR']);inventory=p['FdInventory'](target_fds,fd_budget);names=inventory.names(1024)
+        assert str(known_external) in names
+        child.stdin.write(b'X');child.stdin.flush()
+        assert select.select([child.stdout],[],[],5)[0] and child.stdout.readline(32)==b'CLOSED\n'
+        assert refused(lambda:inventory.verify(names,1024),'FdMembershipDrift')
+    finally:
+        if inventory is not None:inventory.close()
+        if target_fds is not None:os.close(target_fds)
+        if child.poll() is None:child.kill()
+        child.communicate(timeout=5);children.remove(child)
     budget=p['Budget'](35);task=os.open('/proc/1',p['O_DIR']);root_fd=os.open('root',os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC,dir_fd=task)
     original_limit=resource.getrlimit(resource.RLIMIT_NOFILE);census=os.open('/proc/self/fd',p['O_DIR'])
     try:open_count=len(os.listdir(census))

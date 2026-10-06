@@ -1,4 +1,4 @@
-import datetime, errno, hashlib, json, os, re, resource, select, stat, sys, time
+import ctypes, datetime, errno, hashlib, json, os, re, resource, select, stat, sys, time
 
 # Finite read-only operator payload. No tool calls, setns, file contents or writes.
 MACHINE = 'd856d40da5ad4e23b4f67773e5942842'
@@ -73,9 +73,11 @@ class Budget:
     def read_charge(self, size):
         self.text_bytes += size; self.charge(size)
 
-    def close(self, fd):
+    def forget_closed(self, fd):
         if fd in self.owned: self.owned.pop(fd); self.heap_release(512)
-        os.close(fd)
+
+    def close(self, fd):
+        self.forget_closed(fd); os.close(fd)
 
     def issue(self, phase, error, pid=None, tid=None, index=None):
         self.incomplete, self.error_total = True, self.error_total + 1
@@ -130,6 +132,69 @@ def bounded_names(fd, limit, budget, numeric=False):
             if len(names) >= limit: raise Refusal('NameLimit')
             names.append(name)
     return tuple(sorted(names))
+
+class FdInventory:
+    # Qualified Linux dirent64 stream: no hidden Python iterator descriptor.
+    def __init__(self, fd, budget):
+        self.budget, self.fd, self.stream = budget, None, None
+        self.heap_size = 1024 * 1024 + 1024
+        try:
+            self.lib = ctypes.CDLL(None, use_errno=True)
+            self.lib.gnu_get_libc_version.argtypes = []; self.lib.gnu_get_libc_version.restype = ctypes.c_char_p
+            if sys.platform != 'linux' or ctypes.sizeof(ctypes.c_void_p) != 8 or sys.byteorder != 'little' or self.lib.gnu_get_libc_version() not in (b'2.35', b'2.39'):
+                raise Refusal('PrivilegeOrPlatformUnknown')
+            for name, args, result in (('fdopendir', [ctypes.c_int], ctypes.c_void_p), ('readdir64', [ctypes.c_void_p], ctypes.c_void_p), ('rewinddir', [ctypes.c_void_p], None), ('closedir', [ctypes.c_void_p], ctypes.c_int), ('dirfd', [ctypes.c_void_p], ctypes.c_int)):
+                call = getattr(self.lib, name); call.argtypes, call.restype = args, result
+        except (AttributeError, OSError): raise Refusal('PrivilegeOrPlatformUnknown') from None
+        budget.heap_reserve(self.heap_size)
+        try:
+            self.fd = budget.own(os.open('.', O_DIR, dir_fd=fd))
+            ctypes.set_errno(0); self.stream = self.lib.fdopendir(self.fd)
+            if not self.stream: raise OSError(ctypes.get_errno() or errno.EIO)
+            if self.lib.dirfd(self.stream) != self.fd: raise Refusal('DirectoryEntryShape')
+        except BaseException:
+            if self.stream: self.close()
+            else:
+                if self.fd is not None: budget.close(self.fd); self.fd = None
+                budget.heap_release(self.heap_size)
+            raise
+
+    def names(self, limit):
+        if not self.stream: raise Refusal('DirectoryEntryShape')
+        self.budget.check(); ctypes.set_errno(0); self.lib.rewinddir(self.stream)
+        error = ctypes.get_errno()
+        if error: raise OSError(error)
+        names = []
+        while True:
+            self.budget.check(); ctypes.set_errno(0); entry = self.lib.readdir64(self.stream)
+            if not entry:
+                error = ctypes.get_errno()
+                if error: raise OSError(error)
+                break
+            header = ctypes.string_at(entry, 19); length = int.from_bytes(header[16:18], 'little')
+            if not 20 <= length <= 280: raise Refusal('DirectoryEntryShape')
+            raw = ctypes.string_at(entry + 19, length - 19); end = raw.find(b'\0')
+            if end < 1 or end > 255 or b'/' in raw[:end]: raise Refusal('DirectoryEntryShape')
+            raw = raw[:end]
+            if raw in (b'.', b'..'): continue
+            self.budget.entry(); name = os.fsdecode(raw)
+            if not name.isascii(): raise Refusal('NameEncoding')
+            if not name.isdecimal(): continue
+            self.budget.charge(len(raw))
+            if len(names) >= limit: raise Refusal('NameLimit')
+            names.append(name)
+        return tuple(sorted(names))
+
+    def verify(self, expected, limit):
+        if expected != self.names(limit): raise Refusal('FdMembershipDrift')
+
+    def close(self):
+        if not self.stream: return
+        stream, self.stream = self.stream, None
+        ctypes.set_errno(0); result = self.lib.closedir(stream)
+        if result != 0: raise OSError(ctypes.get_errno() or errno.EIO)
+        self.budget.forget_closed(self.fd); self.fd = None
+        self.budget.heap_release(self.heap_size)
 
 class DirectoryChain:
     def __init__(self, path, budget):
@@ -633,9 +698,9 @@ def proc_observation(p, items, budget):
                                     emit(item, kind, basis, scope, pid, tid, ticks, begin, own)
                                     if own: budget.issue('SelfOrigin', Refusal('UnclassifiedSelfOrigin'), pid, tid)
                             except Exception as error: budget.issue('ProcessLink', error, pid, tid)
-                        fds = os.open('fd', O_DIR, dir_fd=fd)
+                        fds = os.open('fd', O_DIR, dir_fd=fd); inventory = None
                         try:
-                            names = bounded_names(fds, 1024, budget, True)
+                            inventory = FdInventory(fds, budget); names = inventory.names(1024)
                             for name in names:
                                 budget.fd_entries += 1; counts['fdEntries'] += 1
                                 if budget.fd_entries > 32768: raise Refusal('FdLimit')
@@ -654,8 +719,11 @@ def proc_observation(p, items, budget):
                                         emit(item, 'Fd', basis, scope, pid, tid, ticks, begin, own, tracked)
                                         if own and not tracked: budget.issue('SelfOrigin', Refusal('UnclassifiedSelfOrigin'), pid, tid)
                                 except Exception as error: budget.issue('FdEntry', error, pid, tid)
-                            if names != bounded_names(fds, 1024, budget, True): raise Refusal('FdMembershipDrift')
-                        finally: os.close(fds)
+                            inventory.verify(names, 1024)
+                        finally:
+                            try:
+                                if inventory is not None: inventory.close()
+                            finally: os.close(fds)
                         for line in lines_at(fd, 'maps', budget):
                             try:
                                 counts['mapEntries'] += 1; fields = line.split(None, 5)
