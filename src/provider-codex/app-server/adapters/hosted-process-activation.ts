@@ -161,7 +161,7 @@ const installationKeys = "schemaVersion,installationId,hostId,runtimeDirectory,r
 
 /** No caller identity, environment or profile can select the private start.
  * Every use rereads the same-artifact stage, grant and retained managed history. */
-export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence, descriptorScope?: HostedRetainedToolFiles) {
+function collectHostedOrdinaryProcessFacts(fence: HostedActivationFence) {
   assertHostedActivationFence(fence); assertHostedActivationOperator();
   const group = readFileSync("/proc/self/cgroup", "utf8").trim();
   const match = new RegExp(`^0::${unitGroup(`subscription-runtime-ordinary-(${uuid}).service`).replace(/\./g, "\\.")}$`).exec(group);
@@ -189,7 +189,8 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence, de
   if (readHostedActivationBytes(`scoped-terminating/${match[1]}.json`)) throw new Error("scoped_termination_fenced");
   const reservation = starts.find(row => row.startId === match[1]);
   if (!reservation || reservation.state !== "reserved") invalid();
-  const start = requiredWire(`ordinary-starts/${match[1]}.json`, startKeys).value;
+  const startRecord = requiredWire(`ordinary-starts/${match[1]}.json`, startKeys);
+  const start = startRecord.value;
   jobFields(start); positive(start.activationGeneration); str(start.creatorId); str(start.bootId); str(start.supervisorId);
   str(start.creatorPidBirth, /^[1-9][0-9]{0,9}:[1-9][0-9]{0,19}$/); digestValue(start.originSha256);
   if (start.grantSha256 !== null) digestValue(start.grantSha256);
@@ -251,12 +252,48 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence, de
         slot.creatorId !== creator.creatorId || slot.launch.command !== (creator.launch as Wire).command || slot.launch.cwd !== (creator.launch as Wire).cwd || JSON.stringify(slot.launch.args) !== JSON.stringify((creator.launch as Wire).args) ||
         slot.lifetime.deadlineEpochMs <= Date.now()) invalid();
   } else if (grantBytes && (decodeHostedActivationBytes(grantBytes) as Wire).schemaVersion === 3) invalid();
+  return { installation, activation, start, reservation, profileId,
+    childBound: creator.childSlotSha256 !== undefined, parentStartSha256: sha256(startRecord.bytes) };
+}
+
+/** Fixed authenticated process/history facts only. This does not check or grant
+ * descriptor authority, dependency ownership, a root purpose or child launch.
+ * The selected original-map caller must pair its own genuine descriptor checks
+ * before/after collection. Generic callers keep readHostedOrdinaryProcessOrigin.
+ * No caller path, FD list, skip flag, callback or registration is accepted. */
+export interface HostedOrdinaryProcessOriginFacts {
+  readonly installation: Readonly<Record<string, unknown>>;
+  readonly activation: Readonly<Record<string, unknown>> & {
+    readonly ordinaryStarts: readonly Readonly<Record<string, unknown>>[];
+  };
+  readonly start: Readonly<Record<string, unknown>>;
+  readonly reservation: Readonly<Record<string, unknown>>;
+  readonly profileId: CodexProviderEgressProfileId;
+  readonly childBound: boolean;
+  readonly parentStartSha256: string;
+}
+export function collectHostedOrdinaryProcessOriginFacts(fence: HostedActivationFence): HostedOrdinaryProcessOriginFacts {
+  const facts = collectHostedOrdinaryProcessFacts(fence);
+  if (facts.profileId === CodexProviderEgressProfileId.MimoTokenPlan) throw new Error("hosted_mimo_activation_closed");
+  const ordinaryStarts = rows(facts.activation.ordinaryStarts).map(value =>
+    Object.freeze({ ...wire(value, "startId,unit,creatorId,originSha256,generation,state") }));
+  return Object.freeze({ installation: Object.freeze({ ...facts.installation }),
+    activation: Object.freeze({ ...facts.activation, ordinaryStarts: Object.freeze(ordinaryStarts) }),
+    start: Object.freeze({ ...facts.start }), reservation: Object.freeze({ ...facts.reservation }),
+    profileId: facts.profileId, childBound: facts.childBound, parentStartSha256: facts.parentStartSha256 });
+}
+
+/** Existing generic ingress retains the exact strict/legacy FD dispatch and
+ * deny ordering. The factual extraction is inactive until an original-map C
+ * producer joins its own resource, owner, binding and qualifier assertions. */
+export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence, descriptorScope?: HostedRetainedToolFiles) {
+  const { installation, activation, start, reservation, profileId, childBound } = collectHostedOrdinaryProcessFacts(fence);
   if (descriptorScope === undefined) assertHostedProcessDescriptors();
   else assertHostedRetainedToolDescriptors(descriptorScope);
   // PR1 prepares the independent reader; later lifecycle PRs must supply
   // bounded controller/child authority before activation can open.
   if (profileId === CodexProviderEgressProfileId.MimoTokenPlan) throw new Error("hosted_mimo_activation_closed");
-  return { installation, activation, start, reservation, profileId, childBound: creator.childSlotSha256 !== undefined };
+  return { installation, activation, start, reservation, profileId, childBound };
 }
 
 /** Same fixed private-file reader as production, with a path seam for synthetic
