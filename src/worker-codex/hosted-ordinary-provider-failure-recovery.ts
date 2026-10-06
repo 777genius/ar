@@ -1,10 +1,12 @@
+import { readHostedOrdinaryReaderParentCompletion } from "./hosted-ordinary-reader-parent-completion";
+import { ScopedTerminationExtent, parseScopedProviderOnlyReceipt, type ScopedProviderOnlyReceipt } from "@vioxen/subscription-runtime/core";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { DependencyOwnerPhase, isDependencyConsumerOwner, isDependencyCustodyObject,
   isDependencyProtectedReference, parseDependencyOwner, sameDependencyAttempt, sameDependencyProtectedReference,
   sameDependencyWorkspace, type DependencyAttempt, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
-import { HostedActivationPhase, HostedCustodyReservationState, parseHostedOrdinaryStart } from "@vioxen/subscription-runtime/worker-core";
+import { HostedActivationPhase, HostedCustodyReservationState, parseHostedOrdinaryStart, parseHostedActivation, type HostedOrdinaryReservation } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { HostedDependencyRootOriginKind } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
@@ -28,9 +30,9 @@ const uuid=(v:unknown):v is string=>typeof v==="string" && /^[a-f0-9]{8}(?:-[a-f
 function held():never {throw new Error("hosted_ordinary_provider_recovery_held");}
 type FailureReceipt=Readonly<{schemaVersion:2;parentAttempt:DependencyAttempt;unit:string;providerStartId:string;
   providerReference:DependencyProtectedReference;ordinaryProviderReference:DependencyProtectedReference;parentReference:DependencyProtectedReference;
-  relation:unknown;invocationId:string;proxyBirth:string;waitStatus:number;home:unknown;use:unknown;terminal:HostedManagedProviderTerminalFacts}>;
+  relation:unknown;invocationId:string;proxyBirth:string;waitStatus:number;home:unknown;use:unknown;terminal:HostedManagedProviderTerminalFacts|null}>;
 /** Captured protected bytes only. Parsing never publishes a row or authorizes IO/release. */
-export function parseHostedOrdinaryProviderFailureReceipt(bytes:Buffer):FailureReceipt {
+function parseCompletionReceipt(bytes:Buffer):FailureReceipt {
   if (!Buffer.isBuffer(bytes) || bytes.length<1 || bytes.length>16384) held(); const v=decodeHostedActivationBytes(bytes);
   if (!isDependencyCustodyObject(v,"home,invocationId,ordinaryProviderReference,parentAttempt,parentReference,providerReference,providerStartId,proxyBirth,relation,schemaVersion,terminal,unit,use,waitStatus") ||
       v.schemaVersion!==2 || !uuid(v.providerStartId) || typeof v.unit!=="string" || v.unit!==`subscription-runtime-hosted-${v.providerStartId}.service` ||
@@ -47,7 +49,7 @@ export function parseHostedOrdinaryProviderFailureReceipt(bytes:Buffer):FailureR
       !isDependencyProtectedReference(v.parentReference) || v.parentReference.path!==`${root}/ordinary-starts/${launch.startId}.json` ||
       typeof v.invocationId!=="string" || /^[a-f0-9]{32}$/.exec(v.invocationId)?.[0]!==v.invocationId ||
       typeof v.proxyBirth!=="string" || /^[1-9][0-9]{0,9}:[1-9][0-9]{0,19}$/.exec(v.proxyBirth)?.[0]!==v.proxyBirth ||
-      typeof v.waitStatus!=="number" || !Number.isInteger(v.waitStatus) || v.waitStatus<1 || v.waitStatus>255 ||
+      typeof v.waitStatus!=="number" || !Number.isInteger(v.waitStatus) || v.waitStatus<0 || v.waitStatus>255 ||
       !isDependencyCustodyObject(v.relation,"attemptId,epoch,parentStartId,providerStartId,startDigest,unit,version") ||
       v.relation.version!==1 || v.relation.parentStartId!==launch.startId || v.relation.providerStartId!==v.providerStartId ||
       v.relation.attemptId!==a.attemptId || v.relation.epoch!==a.epoch || v.relation.unit!==v.unit || v.relation.startDigest!==v.ordinaryProviderReference.sha256 ||
@@ -60,14 +62,19 @@ export function parseHostedOrdinaryProviderFailureReceipt(bytes:Buffer):FailureR
       !isDependencyCustodyObject(v.use,"accountId,restoredHash") || typeof v.use.accountId!=="string" ||
       v.use.accountId.length<1 || v.use.accountId.length>128 || v.use.accountId.includes("\0") || typeof v.use.restoredHash!=="string" ||
       /^[a-f0-9]{64}$/.exec(v.use.restoredHash)?.[0]!==v.use.restoredHash ||
-      !isDependencyCustodyObject(v.terminal,"invocationId,kind,result,status,unit") || !encode(v).equals(bytes)) held();
-  const t=v.terminal,terminal=parseHostedManagedProviderTerminalFacts(v.unit,
+      (v.terminal===null ? v.waitStatus!==0 : !isDependencyCustodyObject(v.terminal,"invocationId,kind,result,status,unit")) || !encode(v).equals(bytes)) held();
+  const t=v.terminal;if (t!==null && !isDependencyCustodyObject(t,"invocationId,kind,result,status,unit")) held();
+  const terminal=t===null ? null : parseHostedManagedProviderTerminalFacts(v.unit,
     `Id=${t.unit}\nInvocationID=${t.invocationId}\nActiveState=failed\nSubState=failed\nMainPID=0\nControlPID=0\nJob=\nExecMainCode=${t.kind}\nExecMainStatus=${t.status}\nResult=${t.result}\n`);
-  if (!encode(terminal).equals(encode(t)) || !matchesManagedProviderProxyWait(terminal,v.invocationId,v.waitStatus)) held();
+  if (!encode(terminal).equals(encode(t)) || !matchesManagedProviderProxyWait(terminal ?? undefined,v.invocationId,v.waitStatus)) held();
   return Object.freeze({schemaVersion:2,parentAttempt:{attemptId:a.attemptId,epoch:a.epoch,
     launch:{installationId:launch.installationId,bootId:launch.bootId,runtimeSha:launch.runtimeSha,grantDigest:launch.grantDigest,startId:launch.startId,unit:launch.unit}},
     unit:v.unit,providerStartId:v.providerStartId,providerReference:v.providerReference,ordinaryProviderReference:v.ordinaryProviderReference,
     parentReference:v.parentReference,relation:v.relation,invocationId:v.invocationId,proxyBirth:v.proxyBirth,waitStatus:v.waitStatus,home:v.home,use:v.use,terminal});
+}
+
+export function parseHostedOrdinaryProviderFailureReceipt(bytes:Buffer):FailureReceipt & {readonly terminal:HostedManagedProviderTerminalFacts} {
+  const receipt=parseCompletionReceipt(bytes);if (!receipt.waitStatus || !receipt.terminal) held();return {...receipt,terminal:receipt.terminal};
 }
 
 function sameFile(a: BigIntStats,b: BigIntStats): boolean {
@@ -129,12 +136,14 @@ function boundary(fence: HostedActivationFence): void {
 
 /** Selected-C historical creator proof only. The same fixed protected records
  * were emitted by the original-map native-child producer. This reader cannot
- * mint them, publish Terminal, release a home/credential or replace parent0.
- * Callers still perform their ordered queue and recursive-cgroup checks.
+ * mint them, publish Terminal or release a home/credential. Independent parent
+ * native completion is a separate fixed proof, never a recursive child grant.
+ * The SAME fixed reader proves its own provider queue/recursive drain before
+ * either scheduling publication or retained Terminal readback.
  */
-export function assertHostedOrdinaryProviderFailureCreator(fence:HostedActivationFence,startId:string,startSha256:string):void {
+function readCompletionForFinal(fence:HostedActivationFence,startId:string,startSha256:string,phase:HostedCustodyReservationState):ScopedProviderOnlyReceipt {
   boundary(fence); if (!uuid(startId) || /^[a-f0-9]{64}$/.exec(startSha256)?.[0]!==startSha256) held();
-  const receiptPin=fixedPin(`${root}/dependency-ordinary-provider-completions/${startId}.json`),receipt=parseHostedOrdinaryProviderFailureReceipt(receiptPin.bytes);
+  const receiptPin=fixedPin(`${root}/dependency-ordinary-provider-completions/${startId}.json`),receipt=parseCompletionReceipt(receiptPin.bytes);
   const attempt=receipt.parentAttempt,parentId=attempt.launch.startId,providerPin=referenced(receipt.ordinaryProviderReference,`${root}/ordinary-starts/${startId}.json`);
   if (providerPin.reference.sha256!==startSha256) held();
   const provider=parseHostedOrdinaryStart(wire(providerPin)),parentPin=referenced(receipt.parentReference,`${root}/ordinary-starts/${parentId}.json`);
@@ -143,7 +152,7 @@ export function assertHostedOrdinaryProviderFailureCreator(fence:HostedActivatio
   const parentRow=activation.ordinaryStarts.find(row=>row.startId===parentId),row=activation.ordinaryStarts.find(value=>value.startId===startId);
   if (activation.phase!==HostedActivationPhase.Ordinary || session.hostId!==activation.hostId || session.bootId!==activation.bootId ||
       session.supervisorId!==activation.supervisorId || parent.bootId!==session.bootId || parent.supervisorId!==session.supervisorId ||
-      !parentRow || !row || row.state!==HostedCustodyReservationState.Terminal ||
+      !parentRow || !row || row.state!==phase ||
       (parentRow.state!==HostedCustodyReservationState.Reserved && parentRow.state!==HostedCustodyReservationState.Terminal) ||
       parentRow.unit!==attempt.launch.unit || parentRow.unit!==parent.unit || parentRow.creatorId!==parent.creatorId ||
       parentRow.originSha256!==parent.originSha256 || parentRow.generation!==parent.activationGeneration ||
@@ -163,8 +172,11 @@ export function assertHostedOrdinaryProviderFailureCreator(fence:HostedActivatio
       attempt.launch.bootId!==parent.bootId || attempt.launch.grantDigest!==binding.grantDigest) held();
   const bindingPin=fixedPin(`${root}/${hostedDependencyBindingName(binding.jobId)}`);
   if (!bindingPin.bytes.equals(encode(binding))) held();
-  const parentCompletion=fixedPin(`${root}/ordinary-completed/${parentId}.json`,4096);
-  if (!parentCompletion.bytes.equals(encode({schemaVersion:1,startId:parentId,startSha256:parentPin.reference.sha256,waitStatus:0}))) held();
+  const ordinaryParentCompletion=readHostedActivationBytes(`ordinary-completed/${parentId}.json`);
+  const parentCompletion=ordinaryParentCompletion ? fixedPin(`${root}/ordinary-completed/${parentId}.json`,4096) :
+    fixedPin(readHostedOrdinaryReaderParentCompletion(fence,parentId,parentPin.reference.sha256).completion.path);
+  if (ordinaryParentCompletion && !parentCompletion.bytes.equals(encode({schemaVersion:1,startId:parentId,startSha256:parentPin.reference.sha256,waitStatus:0}))) held();
+  if (receipt.waitStatus===0 && !fixedPin(`${root}/ordinary-completed/${startId}.json`,4096).bytes.equals(encode({schemaVersion:1,startId,startSha256,waitStatus:0}))) held();
   const fencePin=fixedPin(`${root}/dependency-attempt-fences/${parentId}.json`,4096);
   if (!fencePin.bytes.equals(encode({version:1,startId:parentId,attemptId:attempt.attemptId,epoch:attempt.epoch}))) held();
   const ownerName=`dependency-owners/${binding.workspace.dev}-${binding.workspace.ino}`;
@@ -222,8 +234,12 @@ export function assertHostedOrdinaryProviderFailureCreator(fence:HostedActivatio
   if (!collectUnitNotFound(row.unit)) {
     const observation=spawnSync("/usr/bin/systemctl",["show","--property=Id,InvocationID,ActiveState,SubState,MainPID,ControlPID,Job,ExecMainCode,ExecMainStatus,Result","--",row.unit],
       {encoding:"utf8",stdio:["ignore","pipe","pipe"],timeout:5000,maxBuffer:4096,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",SYSTEMD_COLORS:"0"}});
-    if (observation.error || observation.status!==0 || !encode(parseHostedManagedProviderTerminalFacts(row.unit,observation.stdout)).equals(encode(receipt.terminal))) held();
+    if (observation.error || observation.status!==0 || !matchesManagedProviderProxyWait(parseHostedManagedProviderTerminalFacts(row.unit,observation.stdout),receipt.invocationId,receipt.waitStatus) ||
+        receipt.terminal!==null && !encode(parseHostedManagedProviderTerminalFacts(row.unit,observation.stdout)).equals(encode(receipt.terminal))) held();
   }
+  // Native creator/attempt fencing precedes this SAME selected provider drain.
+  // Parent/installer drain cannot stand in for its queue or descendants.
+  kernel.drainOrdinaryQueue(row);kernel.confirmOrdinaryDescendants(row);
   // Close every retained file before strict descriptor collection. Exact bytes,
   // identities and current catalog are reobserved, never caller proof snapshots.
   for (const pin of [receiptPin,providerPin,parentPin,inventoryPin,bindingPin,parentCompletion,fencePin,ownerPin,producer,entry,preparation,qualification,profile,relation,birth]) {
@@ -235,4 +251,25 @@ export function assertHostedOrdinaryProviderFailureCreator(fence:HostedActivatio
   if (!encode(after.installation).equals(encode(installation)) || !encode(after.activation).equals(encode(activation)) ||
       after.originSha256!==actual.originSha256 || !encode(after.birth).equals(encode(actual.birth))) held();
   boundary(fence);
+  const member=(r:HostedOrdinaryReservation,reference:DependencyProtectedReference)=>({startId:r.startId,unit:r.unit,creatorId:r.creatorId,originSha256:r.originSha256,generation:r.generation,start:reference});
+  return parseScopedProviderOnlyReceipt({schemaVersion:2,extent:ScopedTerminationExtent.ProviderOnly,publicationGeneration:activation.generation+1,
+    identity:{installationId:installation.installationId,hostId:activation.hostId,bootId:activation.bootId,supervisorId:activation.supervisorId,runtimeSha:installation.runtimeSha},
+    parent:member(parentRow,parentPin.reference),provider:member(row,providerPin.reference),attempt:{attemptId:attempt.attemptId,epoch:attempt.epoch,grantDigest:attempt.launch.grantDigest},
+    home:receipt.home,use:receipt.use,completion:receiptPin.reference});
+}
+
+/** Existing nonzero creator guard remains Terminal-only. Parent failure proof
+ * is independent, fixed and native-authenticated, never a recursive child grant. */
+export function assertHostedOrdinaryProviderFailureCreator(fence:HostedActivationFence,startId:string,startSha256:string):void {
+  boundary(fence);if (!uuid(startId) || /^[a-f0-9]{64}$/.exec(startSha256)?.[0]!==startSha256) held();parseHostedOrdinaryProviderFailureReceipt(fixedPin(`${root}/dependency-ordinary-provider-completions/${startId}.json`).bytes);
+  readCompletionForFinal(fence,startId,startSha256,HostedCustodyReservationState.Terminal);
+}
+/** Factual protected recovery of this exact provider before final parent
+ * accounting. No arbitrary phase/receipt/child setter and no publication IO. */
+export function readHostedOrdinaryProviderCompletionForFinal(fence:HostedActivationFence,startId:string,startSha256:string):ScopedProviderOnlyReceipt {
+  boundary(fence);if (!uuid(startId) || /^[a-f0-9]{64}$/.exec(startSha256)?.[0]!==startSha256) held();const bytes=readHostedActivationBytes("host-activation.json");if (!bytes) held();
+  const activation=parseHostedActivation(decodeHostedActivationBytes(bytes)),row=activation.ordinaryStarts.find(value=>value.startId===startId);
+  if (!row ||
+      row.state!==HostedCustodyReservationState.Reserved && row.state!==HostedCustodyReservationState.Terminal) held();
+  return readCompletionForFinal(fence,startId,startSha256,row.state);
 }

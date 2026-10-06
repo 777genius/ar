@@ -209,7 +209,7 @@ export function validateScopedCollectedEvidence(value: ScopedCollectedEvidence, 
 /** Closed scheduling variant for one dependency provider while its authentic
  * ordinary parent remains Reserved. Parsing is factual validation only; the
  * store must consume the same original-map native authority, never this DTO. */
-export enum ScopedTerminationExtent { ProviderOnly = "provider_only" }
+export enum ScopedTerminationExtent { ProviderOnly = "provider_only", OrdinaryReaderFinal = "ordinary_reader_final" }
 export interface ScopedProviderOnlyMember {
   readonly startId:string;readonly unit:string;readonly creatorId:string;readonly originSha256:string;
   readonly generation:number;readonly start:import("./dependency-environment/dependency-custody-evidence").DependencyProtectedReference;
@@ -248,3 +248,6 @@ export function parseScopedProviderOnlyReceipt(value:unknown):ScopedProviderOnly
   if (!isDependencyProtectedReference(v.completion) || v.completion.path!==`/var/lib/subscription-runtime-host-policy/dependency-ordinary-provider-completions/${provider.startId}.json`) throw new Error("scoped_provider_only_invalid");
   return Object.freeze({...v,identity:Object.freeze({...identity}),parent,provider,attempt:Object.freeze({...attempt}),home:Object.freeze({...home}),use:Object.freeze({...use}),completion:Object.freeze({...v.completion,identity:Object.freeze({...v.completion.identity})})}) as unknown as ScopedProviderOnlyReceipt;
 }
+
+export { parseScopedOrdinaryReaderFinalReceipt } from "./scoped-ordinary-reader-final-contract";
+export type { ScopedOrdinaryReaderFinalReceipt, ScopedOrdinaryReaderFinalProvider } from "./scoped-ordinary-reader-final-contract";

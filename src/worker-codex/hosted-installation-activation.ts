@@ -1,3 +1,12 @@
+import { readHostedOrdinaryReaderFinalFacts } from "./hosted-ordinary-reader-final-facts";
+import { collectHostedOrdinaryReaderParentCompletion, readHostedOrdinaryReaderParentCompletion, fenceHostedOrdinaryReaderOwner } from "./hosted-ordinary-reader-parent-completion";
+import { readHostedOrdinaryProviderCompletionForFinal } from "./hosted-ordinary-provider-failure-recovery";
+import { ensureHostedDependencyDirectory } from "./hosted-dependency-receipts";
+import { pinReferenceFile } from "./hosted-dependency-legacy-reference-records";
+import { readHostedInstallationActivation, readHostedOrdinaryBirth, readRetainedOrdinaryBirth, ordinaryUnitGroup } from "./hosted-installation-origin-facts";
+export { readHostedInstallationActivation, readHostedOrdinaryBirth } from "./hosted-installation-origin-facts";
+import { readHostedOrdinaryForegroundResultOwner } from "./hosted-ordinary-foreground-result-facts";
+import { ChildProcess } from "node:child_process";
 import { inspectedInstallation, assertInspectedInstallation, assertActivationSession } from "./hosted-installation-physical-facts";
 import { OriginalHostedOrdinaryProviderTerminal } from "./hosted-ordinary-provider-terminal-view";
 import { readOriginalHostedOrdinaryProviderTerminal } from "./hosted-current-dependency-origin";
@@ -25,7 +34,7 @@ import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedAct
   withHostedActivationFence, assertHostedActivationOperator, assertHostedScopedAdmission, retainHostedScopedCorrelation, CodexProviderEgressProfileId, type HostedActivationFence,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory, ordinaryCompletionBytes, ordinaryCompletionPath } from "./hosted-readonly-host-kernel";
-import { assertHostedForegroundResult, type HostedForegroundResult } from "../provider-codex/app-server/adapters/hosted-fd-launch";
+import { assertHostedForegroundResult, assertHostedForegroundResultForChild, readHostedForegroundLaunchObservation, hostedFdLaunch, HostedFdLaunchKind, type HostedForegroundResult } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import { parseHostedTestEgressGrant, assertHostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import { hostedTestEgressGrantRoot } from "./hosted-test-egress-files";
 import { HostedReadonlyEpochStore } from "./hosted-readonly-epoch-store";
@@ -38,6 +47,7 @@ import { issueFreshHostedManifestPlacement } from "./hosted-dependency-manifest-
  * Authority derives from independently staged inventory and actual kernel facts;
  * caller records and stop requests never substitute for those proofs. */
 export class HostedInstallationActivationStore {
+  #ordinaryPhysicalChild:ChildProcess|undefined;
   private ordinaryLaunch: ReturnType<HostedInstallationActivationStore["reserveOrdinaryRuntime"]> | undefined;
   read(): HostedActivation { return readHostedInstallationActivation().activation; }
 
@@ -119,6 +129,11 @@ export class HostedInstallationActivationStore {
     const prior = this.readCommitted(fence);
     assertHostedActivationSuccessor(prior,next,authority ? OriginalHostedOrdinaryProviderTerminal.hasBrand(authority) ?
       readOriginalHostedOrdinaryProviderTerminal(authority,fence) : scopedOrdinaryAuthority(authority) : undefined);
+    this.#persist(fence,next,recovering,authority!==undefined);
+  }
+
+  #persist(fence:HostedActivationFence,next:HostedActivation,recovering:boolean,authenticated:boolean):void {
+    assertHostedActivationFence(fence);assertHostedActivationOperator();
     const pending = readHostedActivationBytes("host-activation.next");
     if (pending && !recovering) throw new Error("hosted_activation_publication_recovery_required");
     const bytes = Buffer.from(JSON.stringify(parseHostedActivation(next)) + "\n");
@@ -126,12 +141,12 @@ export class HostedInstallationActivationStore {
     if (pending && !pending.equals(bytes)) throw new Error("hosted_activation_publication_recovery_required");
     const nextPath = join(readonlySupervisorRoot, "host-activation.next");
     createReadonlyPrivateRecord(nextPath, bytes);
-    const staged = authority ? lstatSync(nextPath) : null;
+    const staged = authenticated ? lstatSync(nextPath) : null;
     renameSync(nextPath, join(readonlySupervisorRoot, "host-activation.json"));
-    const published = authority ? lstatSync(join(readonlySupervisorRoot, "host-activation.json")) : null;
+    const published = authenticated ? lstatSync(join(readonlySupervisorRoot, "host-activation.json")) : null;
     const parent = openSync(readonlySupervisorRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try { fsyncSync(parent); } finally { closeSync(parent); }
-    if (authority) {
+    if (authenticated) {
       const current = lstatSync(join(readonlySupervisorRoot, "host-activation.json"));
       if (!staged || !published || current.dev !== staged.dev || current.ino !== staged.ino || current.dev !== published.dev || current.ino !== published.ino ||
           !current.isFile() || current.uid !== 0 || current.nlink !== 1 || (current.mode & 0o7777) !== 0o600 ||
@@ -387,9 +402,18 @@ export class HostedInstallationActivationStore {
       return this.serialized(fence => {
         this.ordinaryLaunch = this.reserveOrdinaryRuntime(fence, command, args, cwd);
         try {
-          const invocation = new HostedReadonlyHostKernel().ordinaryRuntimeInvocation(this.ordinaryLaunch.reservation, cwd);
+          const selectedBinding=readHostedDependencyBinding(this.ordinaryLaunch.start.jobId);
+          const originalInvocation = new HostedReadonlyHostKernel().ordinaryRuntimeInvocation(this.ordinaryLaunch.reservation, cwd);
+          const invocation=selectedBinding?.version===2 ? {command:originalInvocation.command,args:originalInvocation.args.filter(arg=>arg!=="--collect")} : originalInvocation;
           this.ordinaryLaunch.childBudget?.remainingMs();
           const submitted = submit(invocation);
+          if (selectedBinding?.version===2) {
+            const currentBinding=readHostedDependencyBinding(this.ordinaryLaunch.start.jobId);
+            if (!currentBinding || !encoded(currentBinding).equals(encoded(selectedBinding)) || !(submitted instanceof ChildProcess)) invalid();
+            const native=hostedFdLaunch(submitted);
+            if (native.kind!==HostedFdLaunchKind.Foreground || native.unit!==this.ordinaryLaunch.reservation.unit) invalid();
+            this.#ordinaryPhysicalChild=submitted;
+          }
           // Submission can consume elapsed time or cross a clock rollback.
           // Failure retains the reserved origin and requests cleanup below.
           this.ordinaryLaunch.childBudget?.remainingMs();
@@ -448,6 +472,61 @@ export class HostedInstallationActivationStore {
       return released;
     });
   }
+  /** Only the retained producer's SAME genuine FDA result may enter this path.
+   * Existing public publish accepts no schema3 DTO or parent-completion grant. */
+  completeOrdinaryDependencyReader(result:HostedForegroundResult):boolean {
+    if (!this.#ordinaryPhysicalChild) return false;
+    assertHostedForegroundResultForChild(result,this.#ordinaryPhysicalChild);
+    const observed=readHostedForegroundLaunchObservation(result),launch=this.ordinaryLaunch;if (!launch || launch.reservation.startId!==result.startId || launch.start.unit!==result.unit) invalid();
+    const state=this.serialized(fence=>{assertHostedActivationFence(fence);const row=readHostedInstallationActivation().activation.ordinaryStarts.find(value=>value.startId===result.startId);
+      if (!row || row.unit!==launch.reservation.unit || row.generation!==launch.reservation.generation || row.originSha256!==launch.reservation.originSha256 ||
+          !required(`ordinary-starts/${result.startId}.json`).equals(encoded(launch.start))) invalid();return row.state;});
+    if (state===HostedCustodyReservationState.Reserved) this.serialized(fence=>fenceHostedOrdinaryReaderOwner(fence,result));
+    return this.serialized(fence=>{
+      assertHostedForegroundResultForChild(result,this.#ordinaryPhysicalChild!);
+      const name=`dependency-ordinary-reader-completions/${result.startId}.json`;
+      if (!readHostedPrivateBytes(`${readonlySupervisorRoot}/${name}`,16384)) {
+        const receipt=collectHostedOrdinaryReaderParentCompletion(fence,result);
+        ensureHostedDependencyDirectory(`${readonlySupervisorRoot}/dependency-ordinary-reader-completions`);
+        assertHostedForegroundResultForChild(result,this.#ordinaryPhysicalChild!);
+        createReadonlyPrivateRecord(`${readonlySupervisorRoot}/${name}`,encoded(receipt));
+      }
+      const parent=readHostedOrdinaryReaderParentCompletion(fence,result.startId,digest(encoded(launch.start)));
+      if (parent.receipt.waitStatus!==result.exitCode || parent.receipt.invocationId!==observed.invocationId || parent.receipt.proxyBirth!==observed.proxyBirth) invalid();
+      const current=this.#reconcileSelectedReaderProviders(fence,parent);
+      const final=readHostedOrdinaryReaderFinalFacts(fence,result.startId);
+      if (current.ordinaryStarts.find(row=>row.startId===result.startId)?.state===HostedCustodyReservationState.Reserved) {
+        const next={...current,generation:current.generation+1,ordinaryStarts:current.ordinaryStarts.map(row=>row.startId===result.startId ?
+          {...row,state:HostedCustodyReservationState.Terminal}:row)};
+        assertHostedActivationSuccessor(current,next,final);this.#persist(fence,next,false,true);
+      }
+      readHostedOrdinaryReaderFinalFacts(fence,result.startId);
+      const after=readHostedInstallationActivation().activation,row=after.ordinaryStarts.find(value=>value.startId===result.startId);
+      if (!row || row.state!==HostedCustodyReservationState.Terminal) invalid();
+      // Workspace ownership only. Credential/home/use leases are NEVER freed
+      // by this scheduling receipt or inferred absent from missing records.
+      return releaseHostedDependencyConsumer(fence,after,launch.start,row);
+    });
+  }
+  #reconcileSelectedReaderProviders(fence:HostedActivationFence,parent:ReturnType<typeof readHostedOrdinaryReaderParentCompletion>):HostedActivation {
+    let current=readHostedInstallationActivation().activation;
+    for (const row of current.ordinaryStarts.filter(value=>value.unit.startsWith("subscription-runtime-hosted-") && value.creatorId===parent.row.creatorId &&
+        value.originSha256===parent.row.originSha256 && value.generation>parent.row.generation)) {
+      const start=pinReferenceFile(`${readonlySupervisorRoot}/ordinary-starts/${row.startId}.json`,16384);
+      const proof=readHostedOrdinaryProviderCompletionForFinal(fence,row.startId,start.reference.sha256);
+      if (proof.parent.startId!==parent.row.startId || proof.parent.start.sha256!==parent.startPin.reference.sha256 ||
+          proof.attempt.attemptId!==parent.attempt.attemptId || proof.attempt.epoch!==parent.attempt.epoch || proof.attempt.grantDigest!==parent.attempt.launch.grantDigest) invalid();
+      if (row.state===HostedCustodyReservationState.Reserved) {
+        if (parent.row.state!==HostedCustodyReservationState.Reserved) invalid();
+        const next={...current,generation:current.generation+1,ordinaryStarts:current.ordinaryStarts.map(value=>value.startId===row.startId ?
+          {...value,state:HostedCustodyReservationState.Terminal}:value)};
+        const fresh=readHostedOrdinaryProviderCompletionForFinal(fence,row.startId,start.reference.sha256);
+        assertHostedActivationSuccessor(current,next,fresh);this.#persist(fence,next,false,true);current=readHostedInstallationActivation().activation;
+      }
+      readHostedOrdinaryProviderCompletionForFinal(fence,row.startId,start.reference.sha256);
+    }
+    return current;
+  }
   requestOrdinaryDependencyCleanup(): boolean {
     const retained = this.serialized(() => {
       const launch = this.ordinaryLaunch;
@@ -486,23 +565,15 @@ export class HostedInstallationActivationStore {
   withOrdinaryForegroundTerminal<T>(result: HostedForegroundResult, action: (owner: { jobRootDir: string; args: readonly string[]; fence: HostedActivationFence }) => T): T {
     return this.serialized(fence => {
       assertHostedForegroundResult(result);
+      if (this.#ordinaryPhysicalChild) {
+        assertHostedForegroundResultForChild(result,this.#ordinaryPhysicalChild);fenceHostedOrdinaryReaderOwner(fence,result);
+        collectHostedOrdinaryReaderParentCompletion(fence,result);
+      }
       const launch = this.ordinaryLaunch;
       if (!launch || launch.start.unit !== result.unit || launch.reservation.startId !== result.startId ||
           !required(`ordinary-starts/${launch.reservation.startId}.json`).equals(encoded(launch.start))) invalid();
-      const kernel = new HostedReadonlyHostKernel();
-      const activation = this.read();
-      assertActivationSession(activation, kernel.operatorSession());
-      const reservation = activation.ordinaryStarts.find(row => row.startId === launch.reservation.startId);
-      if (!reservation || JSON.stringify(reservation) !== JSON.stringify(launch.reservation)) invalid();
-      if (result.exitCode === 0) {
-        if (!required(`ordinary-completed/${launch.reservation.startId}.json`).equals(
-            ordinaryCompletionBytes(launch.reservation.startId, digest(encoded(launch.start))))) invalid();
-        kernel.fenceOrdinaryCreator(launch.reservation, launch.start.bootId, digest(encoded(launch.start)));
-      }
-      kernel.drainOrdinaryQueue(launch.reservation); kernel.confirmOrdinaryDescendants(launch.reservation);
-      const creator = readHostedReadonlyHostInventory().ordinaryCreators.find(row => row.creatorId === launch.start.creatorId);
-      if (!creator || creator.jobRootDir !== launch.start.jobRootDir) invalid();
-      return action({ jobRootDir: launch.start.jobRootDir, args: creator.launch.args, fence });
+      const owner=readHostedOrdinaryForegroundResultOwner(fence,result);
+      return action({...owner,fence});
     });
   }
 
@@ -812,71 +883,6 @@ export class HostedInstallationActivationStore {
   }
 }
 
-export function readHostedInstallationActivation(): {
-  readonly installation: HostedInstallation; readonly activation: HostedActivation;
-} {
-  if (readHostedActivationBytes("host-activation.next") || readHostedActivationBytes("ordinary-origins.next")) {
-    throw new Error("hosted_activation_publication_recovery_required");
-  }
-  const installation = parseHostedInstallation(decodeHostedActivationBytes(required("host-installation.json")));
-  const activation = parseHostedActivation(decodeHostedActivationBytes(required("host-activation.json")));
-  if (installation.installationId !== activation.installationId || installation.hostId !== activation.hostId) invalid();
-  // The durable exclusive reference cannot disappear with mutable egress grants.
-  const enrollment = readHostedActivationBytes("readonly-enrollment.json");
-  if ((activation.exclusiveEnrollmentSha256 === null) !== (enrollment === null) ||
-      (enrollment && digest(enrollment) !== activation.exclusiveEnrollmentSha256)) invalid();
-  const epochBytes = readHostedActivationBytes("readonly-epoch.json");
-  if (readHostedActivationBytes("readonly-epoch.next")) throw new Error("hosted_activation_publication_recovery_required");
-  if (enrollment) {
-    const jobId = parseHostedCustodyEnrollment(enrollment);
-    if (!epochBytes) invalid();
-    const epoch = parseHostedCustodyEpoch(decodeHostedActivationBytes(epochBytes));
-    const birth = parseHostedCustodyEpoch(decodeHostedActivationBytes(enrollment));
-    if (activation.phase === HostedActivationPhase.Ordinary &&
-        (epoch.phase !== HostedCustodyPhase.Closed ||
-          epoch.reservations.some(row => row.state !== HostedCustodyReservationState.Terminal) ||
-          (epoch.outerRuntime !== null && epoch.outerRuntime.state !== HostedCustodyReservationState.Terminal))) invalid();
-    if (epoch.identity.jobId !== jobId || epoch.hostId !== installation.hostId || birth.hostId !== epoch.hostId ||
-        Object.keys(birth.identity).some(key => birth.identity[key as keyof typeof birth.identity] !==
-          epoch.identity[key as keyof typeof epoch.identity])) invalid();
-  } else if (epochBytes) invalid();
-  return { installation, activation };
-}
-
-/** Positive origin lookup only. Session/kernel/stage binding and the common
- * fence remain required at the submission boundary. No grant-based downgrade. */
-export function readHostedOrdinaryBirth(jobId: string): {
-  readonly installation: HostedInstallation; readonly activation: HostedActivation;
-  readonly birth: HostedOrdinaryBirth; readonly originSha256: string;
-} {
-  const origin = readRetainedOrdinaryBirth(jobId);
-  if (origin.activation.phase !== HostedActivationPhase.Ordinary) invalid();
-  return origin;
-}
-
-function readRetainedOrdinaryBirth(jobId: string) {
-  const { installation, activation } = readHostedInstallationActivation();
-  const catalogBytes = required("ordinary-origins.json");
-  if (digest(catalogBytes) !== activation.ordinaryOriginsSha256) invalid();
-  const catalog = parseHostedOrdinaryOrigins(decodeHostedActivationBytes(catalogBytes));
-  if (catalog.installationId !== installation.installationId) invalid();
-  const row = catalog.origins.find(row => row.jobId === jobId);
-  if (!row) invalid();
-  const name = digest(Buffer.from(jobId)) + ".json";
-  const bytes = required("ordinary-origins/" + name), birth = parseHostedOrdinaryBirth(decodeHostedActivationBytes(bytes));
-  if (digest(bytes) !== row.birthSha256 || birth.installationId !== installation.installationId ||
-      birth.jobId !== row.jobId || birth.jobRootDir !== row.jobRootDir || birth.workspacePath !== row.workspacePath) invalid();
-  if (readHostedActivationBytes("codex-readonly-custody/" + name) ||
-      readHostedActivationBytes("codex-readonly-revoked/" + name)) invalid();
-  // Partial managed enrollment also takes priority over an older ordinary birth.
-  const enrollment = readHostedActivationBytes("readonly-enrollment.json");
-  if (enrollment) {
-    const value = parseHostedCustodyEnrollment(enrollment);
-    if (value === jobId) invalid();
-  }
-  return { installation, activation, birth, originSha256: row.birthSha256 };
-}
-
 /** Actual process-origin lookup for the ordinary runtime. Job ids and inherited
  * markers cannot select authority. Call under the common fence before effects;
  * generation belongs to the retained start, since sibling reservations advance
@@ -980,12 +986,6 @@ export function admitHostedOrdinaryIdentity(identity: { readonly jobId: string; 
 
 function managedReservations(epoch: HostedCustodyEpoch | undefined) {
   return epoch ? [...epoch.reservations, ...(epoch.outerRuntime ? [epoch.outerRuntime] : [])] : [];
-}
-
-function ordinaryUnitGroup(row: HostedOrdinaryReservation): string {
-  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(row.startId) ||
-      ![`subscription-runtime-ordinary-${row.startId}.service`, `subscription-runtime-hosted-${row.startId}.service`].includes(row.unit)) invalid();
-  return `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${row.unit}`;
 }
 
 /** Scheduling admission supplements, never replaces, managed material/owner

@@ -1,4 +1,5 @@
-import { parseScopedReceipt, parseScopedProviderOnlyReceipt, type ScopedTerminationReceipt, type ScopedProviderOnlyReceipt } from "./scoped-termination";
+import { assertOrdinaryReaderFinalSuccessor } from "./ordinary-reader-final-successor";
+import { parseScopedReceipt, parseScopedProviderOnlyReceipt, parseScopedOrdinaryReaderFinalReceipt, type ScopedOrdinaryReaderFinalReceipt, type ScopedTerminationReceipt, type ScopedProviderOnlyReceipt } from "./scoped-termination";
 /** Closed scheduling records, not proof of host authority. Adapters must bind
  * inspected bytes and independent creator/queue/descendant observations under
  * the common host mutex before publishing these transitions. */
@@ -128,13 +129,15 @@ export function parseHostedActivation(value: unknown): HostedActivation {
 /** Structural publication guard only. Positive OS evidence remains mandatory.
  * Each mutation advances exactly once; crash recovery may publish only that
  * retained immediate successor, never reconstruct or discard reservations. */
-export function assertHostedActivationSuccessor(before: HostedActivation, after: HostedActivation, evidence?: ScopedTerminationReceipt | ScopedProviderOnlyReceipt): void {
+export function assertHostedActivationSuccessor(before: HostedActivation, after: HostedActivation, evidence?: ScopedTerminationReceipt | ScopedProviderOnlyReceipt | ScopedOrdinaryReaderFinalReceipt): void {
   const prior = parseHostedActivation(before), next = parseHostedActivation(after);
   if (prior.installationId !== next.installationId || prior.hostId !== next.hostId ||
       next.generation !== prior.generation + 1 ||
       (prior.exclusiveEnrollmentSha256 !== null && prior.exclusiveEnrollmentSha256 !== next.exclusiveEnrollmentSha256)) invalid();
-  if (evidence!==undefined && (!evidence || evidence.schemaVersion!==1 && evidence.schemaVersion!==2)) invalid();
+  if (evidence!==undefined && (!evidence || evidence.schemaVersion!==1 && evidence.schemaVersion!==2 && evidence.schemaVersion!==3)) invalid();
   const providerReceipt=evidence?.schemaVersion===2 ? parseScopedProviderOnlyReceipt(evidence):null;
+  const finalReaderReceipt=evidence?.schemaVersion===3 ? parseScopedOrdinaryReaderFinalReceipt(evidence):null;
+  if (finalReaderReceipt) assertOrdinaryReaderFinalSuccessor(prior,next,finalReaderReceipt);
   const receipt = evidence?.schemaVersion===1 ? parseScopedReceipt(evidence) : null;
   if (providerReceipt) {
     const identity=providerReceipt.identity,parent=prior.ordinaryStarts.find(row=>row.startId===providerReceipt.parent.startId);
@@ -153,6 +156,7 @@ export function assertHostedActivationSuccessor(before: HostedActivation, after:
       receipt.operation.identity.bootId !== prior.bootId || receipt.operation.identity.supervisorId !== prior.supervisorId)) invalid();
   const authorized = new Map<string,{unit:string;reservationGeneration:number}>(receipt?.operation.members.map(m => [m.startId, m]) ?? []);
   if (providerReceipt) authorized.set(providerReceipt.provider.startId,{unit:providerReceipt.provider.unit,reservationGeneration:providerReceipt.provider.generation});
+  if (finalReaderReceipt) authorized.set(finalReaderReceipt.reader.startId,{unit:finalReaderReceipt.reader.unit,reservationGeneration:finalReaderReceipt.reader.generation});
   const phaseChanged = prior.phase !== next.phase;
   const edges: Record<HostedActivationPhase, readonly HostedActivationPhase[]> = {
     CLOSED: [HostedActivationPhase.Ordinary, HostedActivationPhase.EnteringExclusive],

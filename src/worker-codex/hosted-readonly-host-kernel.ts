@@ -1,3 +1,4 @@
+import { readHostedOrdinaryReaderParentCompletion } from "./hosted-ordinary-reader-parent-completion";
 import { assertHostedOrdinaryProviderFailureCreator } from "./hosted-ordinary-provider-failure-recovery";
 import { assertHostedManagedProviderFailureCreator } from "./hosted-managed-provider-failure-recovery";
 import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
@@ -244,6 +245,9 @@ export class HostedReadonlyHostKernel {
     if (!bytes || !bytes.equals(ordinaryCompletionBytes(reservation.startId, startSha256))) {
       if (!bytes && fence && reservation.unit === `subscription-runtime-hosted-${reservation.startId}.service`) {
         assertHostedOrdinaryProviderFailureCreator(fence,reservation.startId,startSha256); return;
+      }
+      if (!bytes && fence && reservation.unit===`subscription-runtime-ordinary-${reservation.startId}.service`) {
+        readHostedOrdinaryReaderParentCompletion(fence,reservation.startId,startSha256);return;
       }
       throw new Error("hosted_custody_creator_not_fenced");
     }

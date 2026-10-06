@@ -4,9 +4,21 @@ export enum HostedManagedProviderResult { Success = "success", ExitCode = "exit-
 export type HostedManagedProviderTerminalFacts = Readonly<{ unit:string;invocationId:string;
   kind:HostedManagedProviderWaitKind;status:number;result:HostedManagedProviderResult }>;
 export function parseHostedManagedProviderTerminalFacts(unit: string, text: string): HostedManagedProviderTerminalFacts {
+  if (typeof unit!=="string" || /^subscription-runtime-hosted-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.service$/.exec(unit)?.[0] !== unit)
+    throw new Error("hosted_dependency_provider_terminal_unresolved");
+  return parseTerminalFacts(unit,text);
+}
+/** Closed factual Ordinary-reader parser. This does not change the managed
+ * provider grammar or issue a C completion/owner-discharge permission. */
+export function parseHostedOrdinaryReaderTerminalFacts(unit:string,text:string):HostedManagedProviderTerminalFacts {
+  if (typeof unit!=="string" || /^subscription-runtime-ordinary-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.service$/.exec(unit)?.[0] !== unit)
+    throw new Error("hosted_dependency_provider_terminal_unresolved");
+  return parseTerminalFacts(unit,text);
+}
+function parseTerminalFacts(unit: string, text: string): HostedManagedProviderTerminalFacts {
   const fail = (): never => { throw new Error("hosted_dependency_provider_terminal_unresolved"); };
   if (typeof text !== "string" || text.length > 4096 || text.includes("\0") || text.includes("\r") ||
-      /^subscription-runtime-hosted-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.service$/.exec(unit)?.[0] !== unit) fail();
+      typeof unit !== "string") fail();
   const rows = text.endsWith("\n") ? text.slice(0,-1).split("\n") : text.split("\n"), values = new Map<string,string>();
   for (const row of rows) { const at = row.indexOf("="); if (at < 1 || values.has(row.slice(0,at))) fail(); values.set(row.slice(0,at),row.slice(at+1)); }
   const keys = ["Id","InvocationID","ActiveState","SubState","MainPID","ControlPID","Job","ExecMainCode","ExecMainStatus","Result"];

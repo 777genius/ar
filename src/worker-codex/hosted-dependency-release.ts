@@ -74,7 +74,16 @@ export function dependencyOwnedReservations(activation: HostedActivation, reserv
   for (const row of activation.ordinaryStarts) {
     if (!row.unit.startsWith("subscription-runtime-hosted-")) continue;
     const bytes = readHostedActivationBytes(`dependency-provider-attempts/${row.startId}.json`);
-    if (!bytes) continue; // Other independent consumers are not this attempt.
+    if (!bytes) {
+      // Selected C final accounting cannot classify an unrecorded same-origin
+      // later candidate as unrelated/never-issued. Generic behavior remains.
+      const parent=readHostedActivationBytes(`ordinary-starts/${reservation.startId}.json`);
+      if (!parent) invalid();const selected=decodeHostedActivationBytes(parent);
+      if (!selected || typeof selected!=="object" || !("jobId" in selected) || typeof selected.jobId!=="string") invalid();
+      if (readHostedDependencyBinding(selected.jobId)?.version===2 && row.creatorId===reservation.creatorId &&
+          row.originSha256===reservation.originSha256 && row.generation>reservation.generation) invalid();
+      continue;
+    }
     const v = decodeHostedActivationBytes(bytes) as Record<string, unknown>;
     if (v.parentStartId !== reservation.startId) continue;
     const provider = readHostedActivationBytes(`ordinary-starts/${row.startId}.json`);

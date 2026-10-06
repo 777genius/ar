@@ -18,7 +18,16 @@ const launches = new WeakMap<object, HostedFdLaunch>();
 export enum HostedForegroundArtifactKind { Stdout = "hosted_foreground_stdout", Stderr = "hosted_foreground_stderr" }
 export type HostedForegroundResult = Readonly<{ exitCode: number; unit: string; startId: string;
   artifacts: readonly Readonly<{ kind: HostedForegroundArtifactKind; path: string; dev: string; ino: string; byteLength: number; sha256: string }>[] }>;
-const foregroundResults = new WeakSet<object>();
+export type HostedForegroundLaunchObservation = Readonly<{unit:string;startId:string;proxyPid:number;proxyBirth:string;invocationId:string;closeStatus:number}>;
+// Existing result association retains only actual fixed-launch observations.
+// These are factual inputs; kernel/current creator/drain checks grant authority.
+const foregroundResults = new WeakMap<object,Readonly<{launch:HostedFdLaunch;observation:HostedForegroundLaunchObservation}>>();
+export function readHostedForegroundLaunchObservation(result:HostedForegroundResult):HostedForegroundLaunchObservation {
+  const observed=foregroundResults.get(result); if (!observed) invalid(); return observed.observation;
+}
+export function assertHostedForegroundResultForChild(result:HostedForegroundResult,child:ChildProcess):void {
+  const observed=foregroundResults.get(result); if (!observed || launches.get(child)!==observed.launch) invalid();
+}
 export function assertHostedForegroundResult(result: HostedForegroundResult): void {
   if (!foregroundResults.has(result)) invalid();
 }
@@ -237,7 +246,9 @@ export class HostedFdLaunch {
     });
     const result = Object.freeze({ exitCode: this.#exitStatus, unit: this.unit,
       startId: this.unit.replace(/^subscription-runtime-(?:outer|ordinary)-/, "").replace(/\.service$/, ""), artifacts: Object.freeze(artifacts) });
-    foregroundResults.add(result); return result;
+    if (!this.#proof || launches.get(this.#physicalChild)!==this || this.#proof.proxy.birth!==this.#proxyBirth) invalid();
+    foregroundResults.set(result,Object.freeze({launch:this,observation:Object.freeze({unit:result.unit,startId:result.startId,proxyPid:this.#proof.proxy.pid,
+      proxyBirth:this.#proxyBirth,invocationId:this.#proof.unit.invocation,closeStatus:this.#exitStatus})})); return result;
   }
   /** Actual retained-launch facts; worker authority rechecks before physical IO. */
   #assertProviderInputReceiver(): void {

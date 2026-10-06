@@ -156,16 +156,22 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
     child.once("error", () => { failed = true; close(); detach(); resolve(70); });
     child.once(fdProfile ? "close" : "exit", (code, signal) => {
       let result: HostedForegroundResult | undefined;
+      let actualFacts:HostedForegroundResult|undefined;
       if (!failed && signal === null && code !== null && (code === 0 || output)) {
         try {
           if (code === 0) store.recordOrdinaryRuntimeWaitCompletion();
           if (output) {
             const guard = hostedFdLaunch(child);
-            const facts = guard.foregroundResult();
+            const facts = guard.foregroundResult();actualFacts=facts;
             result = store.withOrdinaryForegroundTerminal(facts, owner => publishHostedForegroundResult(output, facts, owner));
           }
         } catch { failed = true; }
-        if (!failed && code === 0) {
+        let legacyRelease=true;
+        if (!failed && actualFacts) {
+          try {legacyRelease=!store.completeOrdinaryDependencyReader(actualFacts);}
+          catch {legacyRelease=false;try {store.requestOrdinaryDependencyCleanup();} catch { /* Exact owner/recovery stays held. */ }}
+        }
+        if (!failed && code === 0 && legacyRelease) {
           try { store.releaseOrdinaryDependencyConsumer(); }
           catch {
             // A successful job remains successful. Durable owner/intent stay
