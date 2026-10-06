@@ -1,0 +1,29 @@
+name: Cohort reference audit owned TEST
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/cohort-307-audit-test-61/**'
+      - '.github/workflows/cohort-307-audit-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  owned-audit-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.3'
+      - name: Fetch lock-pinned compiler and TEST types
+        run: npm ci --ignore-scripts
+      - name: Typecheck only the handwritten audit helpers
+        run: |
+          node --version
+          node_modules/.bin/tsc --version
+          node_modules/.bin/tsc --noEmit -p scripts/cohort-307-audit-test-61/tsconfig.helper.json
+      - name: Require eight genuine owned namespace TESTs with no skips
+        run: sudo -n --preserve-env=CI,GITHUB_ACTIONS "$(command -v node)" --experimental-strip-types scripts/cohort-307-audit-test-61/run-owned-ci-test.mts
