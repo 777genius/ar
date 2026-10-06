@@ -44,7 +44,7 @@ export async function enrollReferenceAndAssert(candidateJobId: string, reference
   const candidateBytes = pinReferenceFile(fixedRoot + "/" + hostedDependencyBindingName(candidateJobId)).bytes;
   const creator = selected(referenceJobId), stat = lstatSync(creator.workspacePath, { bigint: true });
   const grant = { schemaVersion: 1 as const, jobId: creator.jobId, jobRootDir: creator.jobRootDir,
-    workspacePath: creator.workspacePath, profileId: CodexProviderEgressProfileId.TestNpmQualification };
+    workspacePath: creator.workspacePath, profileId: CodexProviderEgressProfileId.TestNpmQualification } satisfies Parameters<typeof writeHostedTestEgressGrant>[0];
   const target = hostedTestEgressGrantRoot + "/" + hostedTestEgressGrantName(referenceJobId);
   const absence = fixedRoot + `/dependency-fresh-absence/${stat.dev}-${stat.ino}.json`;
   absent(fixedRoot + "/" + hostedDependencyBindingName(referenceJobId)); absent(target); absent(absence);
