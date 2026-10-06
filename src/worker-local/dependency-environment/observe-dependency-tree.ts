@@ -204,6 +204,32 @@ export async function observeDependencyTree(input: {
   return observeNamedRoot(input);
 }
 
+/** Fixed registry observation plus optional ORIGINAL physical metadata from
+ * that same hashing walk. Retention budgets never shrink canonical support;
+ * exhausted optional metadata yields no exposure, never a partial baseline. */
+export async function observeDependencyTreeWithPhysicalExposure(input: {
+  readonly workspacePath: string; readonly treeName: "node_modules"; readonly expectedWorkspace: DependencyWorkspaceIdentity;
+  readonly expectedTree: DependencyTreeIdentity; readonly limits: DependencyTreeObservationLimits;
+}): Promise<(Extract<DependencyCapturedTreeObservation, { status: Status.Complete }> & { readonly exposure?: DependencySourceExposure }) |
+  Extract<DependencyCapturedTreeObservation, { status: Status.Incomplete }>> {
+  const started = performance.now();
+  let owned: DependencySourceExposure | undefined;
+  try {
+    const physical: PhysicalRoot = { pins: [], storageBytes: 0, namespace: null, ancestorBudget: 512, directoryBudget: 512 };
+    const observed = await observeNamedRoot({ workspacePath: input.workspacePath, treeName: input.treeName,
+      expectedWorkspace: input.expectedWorkspace, expectedTree: input.expectedTree, limits: input.limits }, physical, false, false, true);
+    // observeNamedRoot returns only after every retained scan FD joins close.
+    if (observed.status !== Status.Complete || !physical.namespace) return observed;
+    const exposure: DependencySourceExposure = Object.freeze({ [sourceExposureBrand]: true }); owned = exposure;
+    sourceExposures.set(exposure, { roots: [physical], limits: Object.freeze({ ...input.limits }), closed: false });
+    assertDependencySourceExposureCurrent(exposure, Math.floor(input.limits.maxDurationMs - (performance.now() - started)));
+    owned = undefined; return { ...observed, exposure };
+  } catch (error) {
+    if (owned) closeDependencySourceExposure(owned);
+    return { status: Status.Incomplete, reason: error instanceof ObservationError ? error.reason : Failure.Access };
+  }
+}
+
 /** One original hashing walk with privately retained physical membership. */
 export async function observeDependencyTreeWithLocalRegistrySelection(input: {
   readonly workspacePath: string; readonly treeName: "node_modules"; readonly expectedWorkspace: DependencyWorkspaceIdentity;
@@ -295,7 +321,7 @@ async function observeNamedRoot(input: {
   readonly expectedWorkspace?: DependencyWorkspaceIdentity; readonly expectedTree?: DependencyTreeIdentity;
   readonly limits: DependencyTreeObservationLimits;
   readonly sourceLinkSession?: DependencySourceLinkSession;
-}, exposure?: PhysicalRoot, rawPhysical = false, localRootOnly = false): Promise<DependencyCapturedTreeObservation> {
+}, exposure?: PhysicalRoot, rawPhysical = false, localRootOnly = false, optionalPhysical = false): Promise<DependencyCapturedTreeObservation> {
   const anchors: Anchor[] = [];
   let sourceNamespace: FileHandle | undefined;
   try {
@@ -347,13 +373,21 @@ async function observeNamedRoot(input: {
     const checked: CheckedEntry[] = [];
     const prefix = [...input.workspacePath.split("/").filter(Boolean).map(part => Buffer.from(part)), treeName];
     const physicalPins = new Map<string, PhysicalPin>();
+    const physicalBounds = (): void => {
+      if (!optionalPhysical || !exposure) fail(Failure.Bounds);
+      // Atomically abandon the entire optional baseline. Canonical observation
+      // keeps its own membership arrays/limits; strict exposure routes still fail.
+      for (const pin of exposure.pins) delete pin.names;
+      exposure.pins.length = 0; exposure.storageBytes = 0; exposure.namespace = null;
+      physicalPins.clear(); exposure = undefined;
+    };
     const remember = (path: readonly Buffer[], info: BigIntStats, mountId: string, full: boolean, target?: Buffer): void => {
       if (!exposure) return;
-      if ((!full && --exposure.ancestorBudget < 0) || (full && info.isDirectory() && --exposure.directoryBudget < 0)) fail(Failure.Bounds);
+      if ((!full && --exposure.ancestorBudget < 0) || (full && info.isDirectory() && --exposure.directoryBudget < 0)) { physicalBounds(); return; }
       const pin: PhysicalPin = { path, before: info, mountId, full, ...(target ? { target } : {}) };
       exposure.storageBytes += Buffer.byteLength(JSON.stringify([physicalKey(path), String(info.dev), String(info.ino), String(info.mode),
         String(info.uid), String(info.gid), String(info.size), String(info.nlink), String(info.ctimeNs), String(info.mtimeNs), mountId])) + (target?.length ?? 0);
-      if (exposure.storageBytes + manifestEstimate > input.limits.maxManifestBytes) fail(Failure.Bounds);
+      if (exposure.storageBytes + manifestEstimate > input.limits.maxManifestBytes) { physicalBounds(); return; }
       exposure.pins.push(pin); physicalPins.set(physicalKey(path), pin);
     };
     let totalBytes = 0;
@@ -393,7 +427,7 @@ async function observeNamedRoot(input: {
         const pin = physicalPins.get(physicalKey([...prefix, ...path.map(part => Buffer.from(part, "base64"))]));
         if (!pin) fail(Failure.UnsafeNamespace); pin.names = beforeNames;
         exposure.storageBytes += beforeNames.reduce((sum, name) => sum + name.length, 0);
-        if (exposure.storageBytes + manifestEstimate > input.limits.maxManifestBytes) fail(Failure.Bounds);
+        if (exposure.storageBytes + manifestEstimate > input.limits.maxManifestBytes) physicalBounds();
       }
       for (const name of beforeNames) {
         checkTime();
@@ -494,7 +528,7 @@ async function observeNamedRoot(input: {
     if (canonicalBytes.length > input.limits.maxManifestBytes) fail(Failure.Bounds);
     checkTime();
     const digest = hash(canonicalBytes);
-    if (exposure && exposure.storageBytes + canonicalBytes.length > input.limits.maxManifestBytes) fail(Failure.Bounds);
+    if (exposure && exposure.storageBytes + canonicalBytes.length > input.limits.maxManifestBytes) physicalBounds();
     checkTime();
     return { status: Status.Complete, workspace, tree: identity(root.before), mountId: root.mountId,
       entries, identities, canonicalBytes, digest, totalBytes: String(totalBytes),

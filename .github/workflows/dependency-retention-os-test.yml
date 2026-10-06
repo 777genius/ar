@@ -47,7 +47,7 @@ jobs:
       - name: Test closed control diagnostic protocol
         run: |
           TEST_NODE="$(readlink -f "$(command -v node)")"
-          "$TEST_NODE" --experimental-strip-types --test "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/io-uring.test.ts"
+          "$TEST_NODE" --experimental-strip-types --test "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/io-uring.test.ts" "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/transient-start-diagnostic.test.ts"
       - name: Run one fresh owned OS qualification
         env:
           TEST_SOURCE_SHA: ${{ github.sha }}
