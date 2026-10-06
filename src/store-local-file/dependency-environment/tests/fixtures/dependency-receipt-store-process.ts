@@ -1,4 +1,4 @@
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DependencyReceipt, DependencyWorkspaceIdentity } from "../../../../worker-core/dependency-environment/domain/dependency-receipt";
@@ -11,17 +11,30 @@ const store = api.LocalDependencyReceiptStore.open({ rootPath, maxRecordBytes: 1
 try {
   if (mode === "root-churn") {
     process.stdout.write("READY\n");
-    let request = "";
-    for await (const chunk of process.stdin) {
-      request += String(chunk);
-      if (request.length > 32) throw new Error("TEST invalid churn request");
-    }
-    if (request !== "GO\n") throw new Error("TEST invalid churn request");
+    let pending = "", received = 0, rounds = 0, stopped = false;
     const temporary = join(rootPath, "TEST-root-metadata-churn");
-    for (let i = 0; i < 4000; i++) {
-      writeFileSync(temporary, "TEST", { flag: "wx", mode: 0o600 });
-      unlinkSync(temporary);
+    for await (const chunk of process.stdin) {
+      const bytes = String(chunk); received += Buffer.byteLength(bytes);
+      if (received > 1024) throw new Error("TEST invalid churn request");
+      pending += bytes;
+      if (pending.length > 32) throw new Error("TEST invalid churn frame");
+      while (pending.includes("\n")) {
+        const end = pending.indexOf("\n"), command = pending.slice(0, end);
+        pending = pending.slice(end + 1);
+        if (stopped) throw new Error("TEST unexpected churn command");
+        if (command === "MUTATE" && rounds < 100) {
+          for (let i = 0; i < 40; i++) {
+            writeFileSync(temporary, "TEST", { flag: "wx", mode: 0o600 });
+            unlinkSync(temporary);
+          }
+          // Real bounded metadata actuation: coarse automatic timestamps may repeat.
+          utimesSync(rootPath, 946684800, 946684800 + (rounds + 1) * 2);
+          rounds++; process.stdout.write("CHANGED\n");
+        } else if (command === "STOP" && rounds === 100) stopped = true;
+        else throw new Error("TEST unexpected churn command");
+      }
     }
+    if (!stopped || pending) throw new Error("TEST incomplete churn request");
     process.stdout.write(JSON.stringify({ status: "churned", mutations: 4000 }));
   } else {
     const workspace = JSON.parse(workspaceJson) as DependencyWorkspaceIdentity;
