@@ -46,8 +46,13 @@ const names = ['physical allocation deduplicates regular AND long symlink inodes
 type Name = (typeof names)[number];
 const summaryKeys = ['tests', 'pass', 'fail', 'cancelled', 'skipped', 'todo'] as const;
 type Summary = Record<(typeof summaryKeys)[number], number | null>;
+const nativeStages = ['Unknown', 'FixtureGuards', 'FixtureSetup', 'AliasMount', 'DetachedMount', 'DetachedSourceRemoval', 'PythonSetup', 'CohortCapture', 'FirstReaderLaunch', 'FirstReaderReady', 'FirstObservation', 'InheritedReaderLaunch', 'InheritedReaderReady', 'ChrootRootPin', 'ChrootMountViews', 'ChrootProcessClose', 'SecondObservation', 'ResultShape', 'ResultKinds', 'ResultChildExternal', 'ResultOwnTracked', 'ResultInheritedKinds', 'ResultInheritedExternal', 'ResultChildRootPinned', 'ResultCollectorRendered', 'ResultViewsDiffer', 'ResultDetachedPrefix', 'ResultDirectBindings', 'ResultDetachedUnknown', 'PythonTeardown', 'DetachedUnmount', 'AliasUnmount', 'FixtureCleanup'] as const;
+type NativeStage = (typeof nativeStages)[number];
+type NativeReason = 'Assertion' | 'SystemError' | 'Unknown';
+type NativeFailure = { stage: NativeStage; reason: NativeReason };
+const nativePrefix = 'AUDIT_NATIVE_FAILURE ';
 type Row = { ordinal: number; test: Name; outcome: 'Passed' | 'Failed' | 'Unknown' };
-type Tap = { status: 'Complete' | 'Unknown'; plan: number | null; summary: Summary; rows: Row[]; unknownRows: number; truncated: boolean };
+type Tap = { status: 'Complete' | 'Unknown'; plan: number | null; summary: Summary; rows: Row[]; unknownRows: number; truncated: boolean; namespaceFailure: NativeFailure | null };
 const codes = ['None', 'EACCES', 'EPERM', 'ENOENT', 'EINVAL', 'ETIMEDOUT', 'ENOBUFS', 'EIO', 'Other'] as const;
 type Code = (typeof codes)[number];
 type ProcessFacts = { status: number | null; signal: 'None' | 'SIGKILL' | 'SIGTERM' | 'Other'; error: Code };
@@ -70,11 +75,11 @@ function observedProcess(value: { status: number | null; signal: string | null; 
   return { status: bounded(value.status, 255) ? value.status : null,
     signal: value.signal === null ? 'None' : value.signal === 'SIGKILL' || value.signal === 'SIGTERM' ? value.signal : 'Other', error: code(value.error) };
 }
-function emptyTap(): Tap { return { status: 'Unknown', plan: null, summary: { tests: null, pass: null, fail: null, cancelled: null, skipped: null, todo: null }, rows: [], unknownRows: 0, truncated: false }; }
+function emptyTap(): Tap { return { status: 'Unknown', plan: null, summary: { tests: null, pass: null, fail: null, cancelled: null, skipped: null, todo: null }, rows: [], unknownRows: 0, truncated: false, namespaceFailure: null }; }
 function parseTap(text: unknown): Tap {
   const facts = emptyTap(); if (typeof text !== 'string') return facts;
   if (Buffer.byteLength(text) > 1024 * 1024) { facts.truncated = true; return facts; }
-  let plan: number | null = null, invalid = false, lines = 0;
+  let plan: number | null = null, invalid = false, lines = 0, nativeMarkers = 0;
   const seenSummary = new Set<keyof Summary>();
   if (!text.startsWith('TAP version 13\n')) return facts;
   for (let offset = 0; offset < text.length;) {
@@ -82,6 +87,12 @@ function parseTap(text: unknown): Tap {
     if (++lines > 4096 || end - offset > 4096) { facts.truncated = true; break; }
     const line = text.slice(offset, end); offset = next < 0 ? end : end + 1;
     if (Buffer.byteLength(line) > 4096) { facts.truncated = true; break; }
+    if (line.startsWith('# AUDIT_NATIVE_FAILURE')) {
+      const parts = line.slice(2 + nativePrefix.length).split(' '), stage = nativeStages.find(s => s === parts[0]), reason = parts[1];
+      if (++nativeMarkers !== 1 || !line.startsWith('# ' + nativePrefix) || parts.length !== 2 || !stage || reason !== 'Assertion' && reason !== 'SystemError' && reason !== 'Unknown') facts.namespaceFailure = null;
+      else facts.namespaceFailure = { stage, reason };
+      invalid = true; continue;
+    }
     const planned = /^1\.\.(0|[1-9][0-9]?)$/.exec(line);
     if (planned) { const count = Number(planned[1]); if (plan !== null || count > 32) invalid = true; else plan = count; continue; }
     const row = /^(ok|not ok) ([1-9][0-9]?) - (.+)$/.exec(line);
@@ -111,6 +122,7 @@ function parseTap(text: unknown): Tap {
     }
   }
   facts.plan = plan;
+  if (facts.truncated || nativeMarkers !== 1 || !facts.rows.some(r => r.test === names[6] && r.outcome === 'Failed')) facts.namespaceFailure = null;
   const summary = facts.summary;
   if (!invalid && !facts.truncated && plan === 8 && facts.rows.length === 8 &&
       facts.rows.every((r, i) => r.ordinal === i + 1 && r.test === names[i] && r.outcome !== 'Unknown') &&
@@ -120,7 +132,7 @@ function parseTap(text: unknown): Tap {
   return facts;
 }
 function closedTap(value: unknown): Tap | null {
-  if (!object(value) || !exact(value, ['status', 'plan', 'summary', 'rows', 'unknownRows', 'truncated']) ||
+  if (!object(value) || !exact(value, ['status', 'plan', 'summary', 'rows', 'unknownRows', 'truncated', 'namespaceFailure']) ||
       value.status !== 'Complete' && value.status !== 'Unknown' || value.plan !== null && !bounded(value.plan, 32) || !object(value.summary) || !exact(value.summary, summaryKeys) ||
       !Array.isArray(value.rows) || value.rows.length > 8 || !bounded(value.unknownRows, 4096) || typeof value.truncated !== 'boolean') return null;
   const result = emptyTap(); result.status = value.status; result.plan = value.plan; result.unknownRows = value.unknownRows; result.truncated = value.truncated;
@@ -130,6 +142,14 @@ function closedTap(value: unknown): Tap | null {
         entry.outcome !== 'Passed' && entry.outcome !== 'Failed' && entry.outcome !== 'Unknown') return null;
     const test = names.find(name => name === entry.test); if (!test || result.rows.some(r => r.ordinal === entry.ordinal || r.test === test)) return null;
     result.rows.push({ ordinal: entry.ordinal, test, outcome: entry.outcome });
+  }
+  if (value.namespaceFailure !== null) {
+    const failure = value.namespaceFailure;
+    if (!object(failure) || !exact(failure, ['stage', 'reason']) || result.truncated || result.status !== 'Unknown' ||
+        !result.rows.some(r => r.test === names[6] && r.outcome === 'Failed')) return null;
+    const stage = nativeStages.find(s => s === failure.stage), reason = failure.reason;
+    if (!stage || reason !== 'Assertion' && reason !== 'SystemError' && reason !== 'Unknown') return null;
+    result.namespaceFailure = { stage, reason };
   }
   const counts = result.summary;
   if (result.status === 'Complete' && (result.plan !== 8 || result.truncated || result.unknownRows !== 0 || result.rows.length !== 8 ||
