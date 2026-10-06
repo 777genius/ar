@@ -64,7 +64,7 @@ export function command(file: string, args: readonly string[], timeout = 30000, 
 export function directory(path: string, mode = 0o700): void {
   mkdirSync(path, { recursive: true, mode });
   assert.equal(realpathSync(path), path);
-  const stat = lstatSync(path); assert.equal(stat.uid, 0); assert.equal(stat.mode & 0o777, mode);
+  const stat = lstatSync(path); assert.equal(stat.uid, 0); assert.equal(stat.mode & 0o7777, mode);
 }
 export function json(path: string, value: unknown, mode = 0o600): void {
   const temporary = path + "." + randomUUID() + ".tmp";
