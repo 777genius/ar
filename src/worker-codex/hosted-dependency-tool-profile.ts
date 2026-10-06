@@ -390,7 +390,11 @@ function fail(reason = DependencyAdmissionFailure.Unsupported): never { throw ne
 
 /** B root-purpose preparation reads only this actual completed qualifier, before
  * Running. No path/config/entry setter or caller-shaped scope can register it. */
-export function readCurrentHostedDependencyRootQualification(fence: HostedActivationFence) {
+export function readCurrentHostedDependencyRootQualification(fence: HostedActivationFence): Readonly<{
+  context: CurrentHostedDependencyOrigin; binding: HostedDependencyBinding; attempt: DependencyAttempt;
+  inputs: HostedDependencyKeyInputs; receipt: Ready; readonlySources: readonly DependencyToolSourceRoot[];
+  phase: DependencyOwnerPhase.ExclusiveMutation | DependencyOwnerPhase.Running;
+}> {
   if (!currentQualifiedEntry) fail(DependencyAdmissionFailure.StaleAttempt);
   const state = entryState(currentQualifiedEntry);
   assertHostedDependencyQualifiedToolEntry(currentQualifiedEntry,fence,state.phase);

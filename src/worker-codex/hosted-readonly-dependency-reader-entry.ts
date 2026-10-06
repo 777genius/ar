@@ -103,7 +103,8 @@ export function readHostedReadonlyDependencyPreclaim(context: CurrentHostedDepen
     const entry = readHostedPrivateBytes(`${entries}/${facts.start.startId}.json`,4096);
     if (!entry || !entry.equals(encode({version:1,producer:pin.reference,attempt}))) invalid();
   }
-  return Object.freeze({...actual,producer:pin.reference});
+  return Object.freeze({...actual,producer:pin.reference,preclaim:Object.freeze({version:1 as const,
+    workspace:value.workspace,attempt:value.attempt,ownerRevision:value.ownerRevision,ownerSha256:value.ownerSha256})});
 }
 /** One O_EXCL entry consumes only the producer's actual current exclusive claim.
  * Replay/copy/stale owner fails before package/config/Git/provider work. */
@@ -112,7 +113,8 @@ export function consumeHostedReadonlyDependencyPreclaim(context: CurrentHostedDe
   const store = LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
   let attempt: DependencyAttempt;
   try {
-    attempt = assertDependencyPreclaimedConsumer(store,actual.binding.workspace,actual.attempt.launch,actual.attempt);
+    const held = assertDependencyPreclaimedConsumer(store,actual.binding.workspace,actual.preclaim);
+    if (!isDependencyConsumerOwner(held.owner)) invalid(); attempt = held.owner.attempt;
     ensureHostedDependencyDirectory(entries);
     createReadonlyPrivateRecord(`${entries}/${attempt.launch.startId}.json`,encode({version:1,producer:actual.producer,attempt}));
   } finally { store.close(); }

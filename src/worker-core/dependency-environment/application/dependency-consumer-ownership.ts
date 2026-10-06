@@ -51,12 +51,3 @@ export function fenceDependencyConsumer(store: DependencyOwnerStore, workspace: 
     owner: { ...(current.version !== 1 ? { kind: DependencyOwnerKind.Consumer } : {}), phase: DependencyOwnerPhase.Fenced, attempt } });
 }
 function fail(reason: Failure): never { throw new DependencyAdmissionError(reason); }
-
-/** Consume the actual producer's existing exclusive claim, never claim again.
- * Trusted adapter authenticates immutable producer reference and one-shot entry. */
-export function assertDependencyPreclaimedConsumer(store: DependencyOwnerStore, workspace: DependencyWorkspaceIdentity,
-  actualLaunch: DependencyLaunchBinding, retainedAttempt: DependencyAttempt): DependencyAttempt {
-  if (!sameDependencyAttempt(retainedAttempt,{...retainedAttempt,launch:actualLaunch})) fail(Failure.StaleAttempt);
-  const current = assertDependencyConsumer(store,workspace,retainedAttempt,DependencyOwnerPhase.ExclusiveMutation);
-  if (!isDependencyConsumerOwner(current.owner)) fail(Failure.StaleAttempt); return current.owner.attempt;
-}
