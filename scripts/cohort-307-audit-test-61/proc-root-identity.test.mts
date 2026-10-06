@@ -32,11 +32,12 @@ def refused(value):
     return False
 
 try:
-    parent=os.open('/proc/self',p['O_DIR'])
+    verified=chain('/proc')
+    parent=os.open('self',os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC,dir_fd=verified.fd)
     try:rows,_=p['mount_table'](parent,budget)
     finally:os.close(parent)
     mount,_=p['filesystem_path']('/proc',rows)
-    verified=chain('/proc');verified._bind_proc_root(mount)
+    verified._bind_proc_root(mount)
     ordinary_proc=chain('/proc');before=os.fstat(verified.fd).st_nlink
     for _ in range(32):
         child=subprocess.Popen(['/usr/bin/python3','-B','-c','import sys;sys.stdin.buffer.read()'],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
