@@ -54,7 +54,8 @@ type DependencyOwnerFields = {
   };
 };
 export type DependencyOwnerRecord = DependencyOwnerFields & (
-  { readonly version: 1 | 2 } | { readonly version: 3; readonly custodyBinding: DependencyProtectedReference;
+  { readonly version: 1 } | { readonly version: 2; readonly generationContinuity?: DependencyGenerationContinuityInvalidation } |
+  { readonly version: 3; readonly custodyBinding: DependencyProtectedReference;
     readonly generationContinuity?: DependencyGenerationContinuityInvalidation }
 );
 
@@ -82,10 +83,11 @@ export function parseDependencyOwner(value: unknown): DependencyOwnerRecord {
   const versionDescriptor = typeof value === "object" && value !== null ? Object.getOwnPropertyDescriptor(value, "version") : undefined;
   if (versionDescriptor && !Object.hasOwn(versionDescriptor, "value")) invalid();
   const custody = versionDescriptor?.value === 3;
-  const hasContinuity = custody && typeof value === "object" && value !== null && Object.hasOwn(value, "generationContinuity");
+  const hasContinuity = (versionDescriptor?.value === 2 || custody) && typeof value === "object" && value !== null && Object.hasOwn(value, "generationContinuity");
+  const protectedRecord = custody || hasContinuity;
   const keys = (hasActivity ? "activity," : "") + (custody ? "custodyBinding," : "") +
     "epoch," + (hasContinuity ? "generationContinuity," : "") + "owner,revision,version,workspace";
-  if (!object(value, keys) || (custody && !isDependencyCustodyObject(value, keys)) ||
+  if (!object(value, keys) || (protectedRecord && !isDependencyCustodyObject(value, keys)) ||
       ("activity" in value && !hasActivity) || (value.version !== 1 && value.version !== 2 && value.version !== 3) ||
       !positive(value.revision) || !positive(value.epoch)) invalid();
   if (custody && !isDependencyProtectedReference(value.custodyBinding)) invalid();
@@ -95,19 +97,19 @@ export function parseDependencyOwner(value: unknown): DependencyOwnerRecord {
   if (hasActivity) {
     const activity = value.activity, epoch = value.epoch;
     const closed = (v: unknown, keys: string): v is Record<string, unknown> =>
-      object(v, keys) && Reflect.ownKeys(v).length === keys.split(",").length && (!custody || isDependencyCustodyObject(v, keys));
+      object(v, keys) && Reflect.ownKeys(v).length === keys.split(",").length && (!protectedRecord || isDependencyCustodyObject(v, keys));
     const event = (v: unknown): v is { epoch: number; atMs: string | null } =>
       closed(v, "atMs,epoch") && positive(v.epoch) && v.epoch <= epoch &&
       (v.atMs === null || (typeof v.atMs === "string" && /^(?:0|[1-9][0-9]{0,127})$/.test(v.atMs)));
     if ((value.version !== 2 && value.version !== 3) || !closed(activity, "lastEntry,lastRelease") ||
         (activity.lastEntry !== null && !event(activity.lastEntry)) ||
         (activity.lastRelease !== null && !event(activity.lastRelease))) invalid();
-    if (custody && ((activity.lastEntry !== null && !isDependencyCustodyObject(activity.lastEntry, "atMs,epoch")) ||
+    if (protectedRecord && ((activity.lastEntry !== null && !isDependencyCustodyObject(activity.lastEntry, "atMs,epoch")) ||
         (activity.lastRelease !== null && !isDependencyCustodyObject(activity.lastRelease, "atMs,epoch")))) invalid();
     if (activity.lastRelease !== null && (activity.lastEntry === null ||
         activity.lastRelease.epoch > activity.lastEntry.epoch)) invalid();
   }
-  if (custody && (!isDependencyCustodyObject(value.workspace, "canonicalPath,dev,ino") ||
+  if (protectedRecord && (!isDependencyCustodyObject(value.workspace, "canonicalPath,dev,ino") ||
       (hasActivity && !isDependencyCustodyObject(value.activity, "lastEntry,lastRelease")))) invalid();
   const workspace = value.workspace;
   if (!object(workspace, "canonicalPath,dev,ino") || typeof workspace.canonicalPath !== "string" ||
@@ -118,14 +120,14 @@ export function parseDependencyOwner(value: unknown): DependencyOwnerRecord {
   if (value.owner !== null) {
     const owner = value.owner;
     if (!object(owner, value.version === 1 ? "attempt,phase" : "attempt,kind,phase") ||
-        (custody && !isDependencyCustodyObject(owner, "attempt,kind,phase")) || !Object.values(DependencyOwnerPhase).includes(owner.phase as DependencyOwnerPhase)) invalid();
+        (protectedRecord && !isDependencyCustodyObject(owner, "attempt,kind,phase")) || !Object.values(DependencyOwnerPhase).includes(owner.phase as DependencyOwnerPhase)) invalid();
     const attempt = owner.attempt;
     if ((value.version === 2 || value.version === 3) && owner.kind === DependencyOwnerKind.Maintenance) {
       if (owner.phase === DependencyOwnerPhase.Running || !object(attempt, "epoch,host,operationId") ||
-          (custody && !isDependencyCustodyObject(attempt, "epoch,host,operationId")) ||
+          (protectedRecord && !isDependencyCustodyObject(attempt, "epoch,host,operationId")) ||
           typeof attempt.operationId !== "string" || !uuid.test(attempt.operationId) || attempt.epoch !== value.epoch) invalid();
       const host = attempt.host;
-      if (custody && !isDependencyCustodyObject(host, "bootId,grantDigest,installationId,inventoryDigest,runtimeSha,supervisorId")) invalid();
+      if (protectedRecord && !isDependencyCustodyObject(host, "bootId,grantDigest,installationId,inventoryDigest,runtimeSha,supervisorId")) invalid();
       if (!object(host, "bootId,grantDigest,installationId,inventoryDigest,runtimeSha,supervisorId") ||
           ![host.installationId, host.bootId].every(v => typeof v === "string" && uuid.test(v)) ||
           typeof host.runtimeSha !== "string" || !/^[a-f0-9]{40}$/.test(host.runtimeSha) ||
@@ -133,13 +135,13 @@ export function parseDependencyOwner(value: unknown): DependencyOwnerRecord {
           typeof host.supervisorId !== "string" || !/^[1-9][0-9]{0,19}:[0-9]{1,20}$/.test(host.supervisorId)) invalid();
     } else {
       if ((value.version === 2 || value.version === 3) && owner.kind !== DependencyOwnerKind.Consumer) invalid();
-      if (!object(attempt, "attemptId,epoch,launch") || (custody && !isDependencyCustodyObject(attempt, "attemptId,epoch,launch")) ||
+      if (!object(attempt, "attemptId,epoch,launch") || (protectedRecord && !isDependencyCustodyObject(attempt, "attemptId,epoch,launch")) ||
           typeof attempt.attemptId !== "string" ||
           !uuid.test(attempt.attemptId) || attempt.epoch !== value.epoch) invalid();
       const launch = attempt.launch;
       const launchKeys = custody ? "association,bootId,grantDigest,installationId,kind,origin,runtimeSha,startId,unit" :
         "bootId,grantDigest,installationId,runtimeSha,startId,unit";
-      if (!object(launch, launchKeys) || (custody && !isDependencyCustodyObject(launch, launchKeys)) ||
+      if (!object(launch, launchKeys) || (protectedRecord && !isDependencyCustodyObject(launch, launchKeys)) ||
           ![launch.installationId, launch.bootId, launch.startId].every(v => typeof v === "string" && uuid.test(v)) ||
           typeof launch.runtimeSha !== "string" || !/^[a-f0-9]{40}$/.test(launch.runtimeSha) ||
           typeof launch.grantDigest !== "string" || !digest.test(launch.grantDigest)) invalid();
@@ -158,7 +160,7 @@ export function parseDependencyOwner(value: unknown): DependencyOwnerRecord {
   }
   // Roundtrip detaches caller-owned nested values before protected persistence.
   const bytes = JSON.stringify(value);
-  if (custody && new TextEncoder().encode(bytes).length > 16384) invalid();
+  if (protectedRecord && new TextEncoder().encode(bytes).length > 16384) invalid();
   return JSON.parse(bytes) as DependencyOwnerRecord;
 }
 

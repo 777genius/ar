@@ -19,8 +19,8 @@ export interface DependencyGenerationReceiptVerifier {
 // must not recursively call a public reader of this same owner store.
 export interface DependencyGenerationRetirementVerifier {
   assertGenerationRetirement(input: {
-    readonly previousOwner: Extract<DependencyOwnerRecord, { version: 3 }>;
-    readonly proposedOwner: Extract<DependencyOwnerRecord, { version: 3 }>;
+    readonly previousOwner: Extract<DependencyOwnerRecord, { version: 2 | 3 }>;
+    readonly proposedOwner: Extract<DependencyOwnerRecord, { version: 2 | 3 }>;
     readonly invalidation: DependencyGenerationContinuityInvalidation;
   }): void;
 }

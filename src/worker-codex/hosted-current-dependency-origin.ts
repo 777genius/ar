@@ -1,3 +1,4 @@
+import { assertHostedDependencyRetirementOwnerFacts, assertHostedDependencyRetirementSuccessorFacts } from "./hosted-dependency-retirement-facts";
 import { createOriginalHostedSessionRuntimeComposition, type OriginalHostedSessionRuntimeCompositionInput } from "./hosted-managed-dependency-runtime-composition";
 import { OriginalHostedOrdinaryProviderTerminal } from "./hosted-ordinary-provider-terminal-view";
 import { publishOriginalHostedOrdinaryProviderCompletion, assertOriginalHostedOrdinaryProviderCompletion } from "./hosted-ordinary-provider-completion-record";
@@ -523,7 +524,8 @@ export function openCurrentHostedDependencyRootDescriptor(context: HostedDepende
 }
 export function assertCurrentHostedDependencyRetiredReady(context: HostedDependencyRootPurposeContext, fence: HostedActivationFence): HostedDependencyRootScope {
   const held = rootScope(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,fence,DependencyOwnerPhase.ExclusiveMutation);
-  if (held.owner.version !== 3 || !held.owner.generationContinuity) invalid();
+  assertHostedDependencyRetirementOwnerFacts(held.state.record,held.owner);
+  if (held.owner.version === 1 || !held.owner.generationContinuity) invalid();
   const slot = parseDependencyGenerationContinuityInvalidation(held.owner.generationContinuity), ready = held.state.ready;
   const store = LocalDependencyReceiptStore.open({rootPath:hostedDependencyReceiptHistoryRoot,maxRecordBytes:16384,maxHistorySteps:2048});
   try {
@@ -543,7 +545,7 @@ export function retireCurrentHostedDependencySourceCleanup(context: HostedDepend
   resolveRootPurpose(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,rootInternalAccess);
   withHostedActivationFence(fence => {
     const held = rootScope(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,fence,DependencyOwnerPhase.ExclusiveMutation);
-    if (held.state.record.version !== 2 || held.owner.version !== 3) invalid();
+    assertHostedDependencyRetirementOwnerFacts(held.state.record,held.owner);
     if ((reason !== DependencyUnverifiedReason.TreeChanged && reason !== DependencyUnverifiedReason.InputsChanged) ||
         !encode(currentRootReady(held.origin,fence,DependencyOwnerPhase.ExclusiveMutation)).equals(encode(held.state.ready))) invalid();
     // No collectors run with store FDs open. The same genuine fence brackets publication/readback; owner verifier uses its own CAS predecessor.
@@ -568,12 +570,9 @@ export function retireCurrentHostedDependencySourceCleanup(context: HostedDepend
       owners = LocalDependencyOwnerStore.open({rootPath:root+"/dependency-owners",maxRecordBytes:16384,
         generationRetirementVerifier:{assertGenerationRetirement({previousOwner,proposedOwner,invalidation}) {
           assertRetained();
-          if (!encode(previousOwner).equals(encode(held.owner)) || proposedOwner.revision !== previousOwner.revision+1 ||
-              !encode(proposedOwner.owner).equals(encode(previousOwner.owner)) || proposedOwner.epoch !== previousOwner.epoch ||
-              !sameDependencyProtectedReference(proposedOwner.custodyBinding,held.state.record.custodyReference) ||
-              invalidation.operationId !== held.actual.attempt.attemptId || invalidation.readyRevision !== held.state.ready.receipt.revision ||
-              invalidation.unverifiedRevision !== held.state.ready.receipt.revision+1 || invalidation.generation !== held.state.ready.receipt.generation ||
-              !sameDependencyProtectedReference(invalidation.previousReady,held.state.ready.reference)) invalid();
+          if (!encode(previousOwner).equals(encode(held.owner))) invalid();
+          assertHostedDependencyRetirementSuccessorFacts(held.state.record,previousOwner,proposedOwner,invalidation,
+            held.actual.attempt.attemptId,held.state.ready);
           const current = receipts.read(held.actual.binding.workspace);
           if (!current || current.state !== DependencyReceiptState.Unverified || current.revision !== invalidation.unverifiedRevision ||
               current.generation !== invalidation.generation || current.reason !== reason) invalid();

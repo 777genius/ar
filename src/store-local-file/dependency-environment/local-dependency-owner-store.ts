@@ -114,14 +114,14 @@ export class LocalDependencyOwnerStore implements DependencyOwnerStore {
       if (record.owner && !current?.owner && record.epoch !== (current?.epoch ?? 0) + 1) {
         admissionFailure(AdmissionFailure.StaleAttempt);
       }
-      if (record.version === 3 && record.generationContinuity && current?.version !== 3) admissionFailure(AdmissionFailure.InvalidRecord);
-      if (current?.version === 3 && record.version === 3) {
+      if (record.version !== 1 && record.generationContinuity && (!current || current.version === 1)) admissionFailure(AdmissionFailure.InvalidRecord);
+      if (current && current.version !== 1 && record.version !== 1) {
         const before = current.generationContinuity, after = record.generationContinuity;
         if (before && !after) admissionFailure(AdmissionFailure.InvalidRecord);
         if (JSON.stringify(before) !== JSON.stringify(after)) {
           // Retirement cannot release/change the held actual owner in this CAS.
           // The immutable receipt successor must already have been read back.
-          if (!after || !current.owner || !record.owner || current.epoch !== record.epoch ||
+          if (!after || current.version !== record.version || !current.owner || !record.owner || current.epoch !== record.epoch ||
               current.owner.phase !== DependencyOwnerPhase.ExclusiveMutation ||
               record.owner.phase !== DependencyOwnerPhase.ExclusiveMutation ||
               !sameDependencyOwnerIdentity(current.owner, record.owner) ||

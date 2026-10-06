@@ -17,11 +17,11 @@ export function invalidateDependencyGeneration(input: {
   readonly workspace: DependencyWorkspaceIdentity; readonly expectedOwnerRevision: number;
   readonly expectedReceiptRevision: number;
   readonly reason: DependencyUnverifiedReason.TreeChanged | DependencyUnverifiedReason.InputsChanged;
-}): { readonly owner: Extract<DependencyOwnerRecord, { version: 3 }>; readonly retired: DependencyCommittedUnverifiedReceipt } {
+}): { readonly owner: Extract<DependencyOwnerRecord, { version: 2 | 3 }>; readonly retired: DependencyCommittedUnverifiedReceipt } {
   const raw = input.owners.read(input.workspace);
   if (!raw) fail();
   const current = parseDependencyOwner(raw);
-  if (current.version !== 3 || current.revision !== input.expectedOwnerRevision || !sameDependencyWorkspace(current.workspace, input.workspace) ||
+  if ((current.version !== 2 && current.version !== 3) || current.revision !== input.expectedOwnerRevision || !sameDependencyWorkspace(current.workspace, input.workspace) ||
       !current.owner || current.owner.phase !== DependencyOwnerPhase.ExclusiveMutation ||
       (input.reason !== DependencyUnverifiedReason.TreeChanged && input.reason !== DependencyUnverifiedReason.InputsChanged)) fail();
   const receipt = input.receipts.read(input.workspace);
@@ -37,9 +37,9 @@ export function invalidateDependencyGeneration(input: {
     readyRevision: ready.receipt.revision, unverifiedRevision: retired.receipt.revision,
     previousReady: ready.reference, retiredUnverified: retired.reference });
   const next = parseDependencyOwner({ ...current, revision: current.revision + 1, generationContinuity });
-  if (next.version !== 3) fail();
+  if (next.version === 1 || next.version !== current.version) fail();
   const published = input.owners.compareAndSwap(input.workspace, current.revision, next);
-  if (published.version !== 3) fail();
+  if (published.version === 1 || published.version !== current.version) fail();
   return { owner: published, retired };
 }
 function fail(): never { throw new DependencyAdmissionError(Failure.StaleAttempt); }
