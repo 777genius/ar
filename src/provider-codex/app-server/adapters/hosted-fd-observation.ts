@@ -2,12 +2,15 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, rea
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { parseFdCollectorProfile, parseFdCollectorRows, readFdCollectorProfileField,
+import { parseFdCollectorProfile, parseFdCollectorRows, readFdCollectorProfileField, readSystemBusInfrastructureField,
   type FdCollectorProfile, type FdFilePin, type FdCollectorProfilePin } from "@vioxen/subscription-runtime/core";
 import { assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes } from "./hosted-process-activation";
 import { hostedFdUnsetEnvironment } from "./hosted-fd-prelude";
 import { hostedFdTable, type HostedFdFact } from "./hosted-fd-table";
 export { hostedFdTable, type HostedFdFact } from "./hosted-fd-table";
+import { observeSystemBusFdEmptyArrays } from "./system-bus-infrastructure";
+import { SystemdArrayProperty, SystemdArraySignature, type SystemdEmptyArrayFact,
+  type SystemdObservationRemaining } from "./systemd-service-arrays";
 
 export type HostedFdProcess = Readonly<{ pid: number; parentPid: number; birth: string; argv: readonly string[]; exe: string; group: string;
   net: string; user: string; mount: string; pidNamespace: string; uidMap: string; gidMap: string; status: string;
@@ -17,60 +20,84 @@ const cleanEnv = { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", SYSTEMD_COLORS
 function invalid(): never { throw new Error("hosted_fd_boundary_unresolved"); }
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
-function protectedBytes(pin: FdFilePin, privateFile = false, prefix = ""): Buffer {
+function observationTimeout(cap: number, remaining?: SystemdObservationRemaining): number {
+  const available = remaining ? remaining() : cap;
+  if (!Number.isSafeInteger(available) || available < 1) invalid();
+  return Math.min(cap, available);
+}
+function protectedBytes(pin: FdFilePin, privateFile = false, prefix = "", remaining?: SystemdObservationRemaining): Buffer {
+  observationTimeout(5000, remaining);
   for (let path = dirname(pin.path);; path = dirname(path)) {
+    observationTimeout(5000, remaining);
     const info = lstatSync(prefix + path);
     if (!info.isDirectory() || info.uid !== 0 || (info.mode & 0o022) ||
         (privateFile && path === dirname(pin.path) && (info.mode & 0o077))) invalid();
     if (path === "/") break;
   }
   const path = prefix + pin.path, entry = lstatSync(path);
+  observationTimeout(5000, remaining);
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = fstatSync(fd);
     if (!before.isFile() || before.uid !== 0 || before.nlink !== 1 ||
         (before.mode & (privateFile ? 0o077 : 0o022)) || before.size <= 0 ||
         before.size > (privateFile ? 64 * 1024 : 256 * 1024 * 1024)) invalid();
-    const bytes = readFileSync(fd), after = fstatSync(fd), current = lstatSync(path);
+    observationTimeout(5000, remaining);
+    const bytes = readFileSync(fd);
+    observationTimeout(5000, remaining);
+    const after = fstatSync(fd), current = lstatSync(path);
     if (!before.isFile() || before.uid !== 0 || before.nlink !== 1 ||
         (before.mode & (privateFile ? 0o077 : 0o022)) || before.size > 256 * 1024 * 1024 ||
         before.dev !== entry.dev || before.ino !== entry.ino || before.dev !== current.dev || before.ino !== current.ino ||
         before.size !== after.size || before.ctimeMs !== after.ctimeMs || before.mtimeMs !== after.mtimeMs ||
         current.ctimeMs !== after.ctimeMs || current.mtimeMs !== after.mtimeMs ||
         bytes.length !== before.size || hash(bytes) !== pin.sha256) invalid();
+    observationTimeout(5000, remaining);
     return bytes;
   } finally { closeSync(fd); }
 }
 
-export function readHostedFdProfile(): FdCollectorProfile | undefined {
+function readInstalledFdInventory(remaining?: SystemdObservationRemaining) {
+  observationTimeout(5000, remaining);
   try { lstatSync("/var/lib/subscription-runtime-host-policy/readonly-inventory.json"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
   assertHostedActivationOperator();
+  observationTimeout(5000, remaining);
   const inventoryBytes = readHostedActivationBytes("readonly-inventory.json");
+  observationTimeout(5000, remaining);
   if (!inventoryBytes) invalid();
   const inventory = decodeHostedActivationBytes(inventoryBytes) as Record<string, unknown>;
   const pin = readFdCollectorProfileField(inventory);
   if (!pin) return undefined;
   if (Object.keys(inventory).sort().join(",") !==
       "collectorProfile,disabledCreators,hostId,ordinaryCreators,runtimeLaunch,schemaVersion,supervisorUnit,systemBusInfrastructure,units") invalid();
+  observationTimeout(5000, remaining);
   const installationBytes = readHostedActivationBytes("host-installation.json");
+  observationTimeout(5000, remaining);
   if (!installationBytes) invalid();
   const installation = decodeHostedActivationBytes(installationBytes) as Record<string, unknown>;
   if (installation.inventorySha256 !== hash(inventoryBytes)) invalid();
-  return verifyPinnedFdCollectorProfile(pin);
+  observationTimeout(5000, remaining);
+  return { inventory, inventoryBytes, installationBytes, pin };
+}
+
+export function readHostedFdProfile(remaining?: SystemdObservationRemaining): FdCollectorProfile | undefined {
+  const installed = readInstalledFdInventory(remaining);
+  return installed ? verifyPinnedFdCollectorProfile(installed.pin, remaining) : undefined;
 }
 
 /** Cold inventory inspection may precede publication of host-installation.
  * These are actual facts about the fixed authenticated inventory input, never
  * admission or a profile chosen by a workload. Runtime still binds installation. */
-export function verifyPinnedFdCollectorProfile(input: FdCollectorProfilePin): FdCollectorProfile {
+export function verifyPinnedFdCollectorProfile(input: FdCollectorProfilePin, remaining?: SystemdObservationRemaining): FdCollectorProfile {
   assertHostedActivationOperator();
   const pin = readFdCollectorProfileField({ schemaVersion: 4, collectorProfile: input });
   if (!pin) invalid();
-  const bytes = protectedBytes(pin, true);
+  const bytes = protectedBytes(pin, true, "", remaining);
   const profile = parseFdCollectorProfile(decodeHostedActivationBytes(bytes));
   const environment = spawnSync("/usr/bin/systemctl", ["show-environment"], { env: cleanEnv, encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"], timeout: 5000, maxBuffer: 1024 * 1024 });
+    stdio: ["ignore", "pipe", "pipe"], timeout: observationTimeout(5000, remaining), maxBuffer: 1024 * 1024 });
+  observationTimeout(5000, remaining);
   if (environment.error || environment.signal || environment.status !== 0 || environment.stderr) invalid();
   for (const line of environment.stdout.trim().split("\n").filter(Boolean)) {
     const key = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(line)?.[1];
@@ -80,13 +107,13 @@ export function verifyPinnedFdCollectorProfile(input: FdCollectorProfilePin): Fd
   }
   for (const executable of [profile.ss, profile.node, ...profile.wrappers]) {
     for (const file of executable.elfFiles) {
-      const elf = protectedBytes(file);
+      const elf = protectedBytes(file, false, "", remaining);
       if (elf.length < 64 || !elf.subarray(0, 7).equals(Buffer.from([127, 69, 76, 70, 2, 1, 1])) ||
           elf.readUInt16LE(18) !== 62) invalid();
     }
   }
-  for (const file of profile.bootstraps) protectedBytes(file);
-  if (!protectedBytes(pin, true).equals(bytes)) invalid();
+  for (const file of profile.bootstraps) protectedBytes(file, false, "", remaining);
+  if (!protectedBytes(pin, true, "", remaining).equals(bytes)) invalid();
   return profile;
 }
 
@@ -113,17 +140,57 @@ export function observeHostedFdProcess(pid: number): HostedFdProcess {
   return observed;
 }
 
-export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[]): HostedFdUnit {
-  if (!/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider)-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
-  const result = spawnSync("/usr/bin/systemctl", ["show", "--property=Id,InvocationID,ControlGroup,MainPID,ActiveState,FileDescriptorStoreMax,NFileDescriptorStore,TriggeredBy,UnsetEnvironment,PassEnvironment,EnvironmentFiles,ExecStart,ExecCondition,ExecStartPre,ExecStartPost,ExecReload,ExecStop,ExecStopPost,RootDirectory", "--", unit],
-    { env: cleanEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5000, maxBuffer: 65536 });
-  if (result.error || result.signal || result.status !== 0 || result.stderr) invalid();
+const unitProperties = ["Id", "InvocationID", "ControlGroup", "MainPID", "ActiveState", "FileDescriptorStoreMax",
+  "NFileDescriptorStore", "TriggeredBy", "UnsetEnvironment", "PassEnvironment", "EnvironmentFiles", "ExecStart",
+  "ExecCondition", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "RootDirectory"] as const;
+const unitArrays = [SystemdArrayProperty.ExecCondition, SystemdArrayProperty.ExecStartPre, SystemdArrayProperty.ExecStartPost,
+  SystemdArrayProperty.ExecReload, SystemdArrayProperty.ExecStop, SystemdArrayProperty.ExecStopPost, SystemdArrayProperty.EnvironmentFiles] as const;
+
+/** Decode observation data only. Missing structured text stays unresolved until
+ * every selected array has its independently measured typed zero; this helper
+ * does not authenticate a manager, installation, service or launch. */
+export function decodeHostedFdUnitFields(text: string, facts?: readonly SystemdEmptyArrayFact[]): ReadonlyMap<string, string> {
+  if (!text || Buffer.byteLength(text) > 65536 || text.includes("\r")) invalid();
+  const lines = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
   const rows = new Map<string, string>();
-  for (const line of result.stdout.trim().split("\n")) {
+  for (const line of lines) {
     const at = line.indexOf("=");
-    if (at < 1 || rows.has(line.slice(0, at))) invalid();
-    rows.set(line.slice(0, at), line.slice(at + 1));
+    const key = line.slice(0, at), value = line.slice(at + 1);
+    if (at < 1 || rows.has(key) || !unitProperties.some(property => property === key) ||
+        (unitArrays.some(property => property === key) && value !== "")) invalid();
+    rows.set(key, value);
   }
+  if (unitProperties.some(key => !unitArrays.some(property => property === key) && !rows.has(key))) invalid();
+  if (facts !== undefined) {
+    if (facts.length !== unitArrays.length) invalid();
+    for (let index = 0; index < unitArrays.length; index++) {
+      const property = unitArrays[index]!, fact = facts[index];
+      const signature = property === SystemdArrayProperty.EnvironmentFiles ?
+        SystemdArraySignature.EnvironmentFiles : SystemdArraySignature.ExecCommandList;
+      if (!fact || Object.keys(fact).sort().join(",") !== "count,property,signature" ||
+          fact.property !== property || fact.signature !== signature || fact.count !== 0) invalid();
+      rows.set(property, "");
+    }
+  }
+  return rows;
+}
+
+export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[], remaining: SystemdObservationRemaining): HostedFdUnit {
+  if (!/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider)-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
+  const installed = readInstalledFdInventory(remaining);
+  if (!installed) invalid();
+  const bus = readSystemBusInfrastructureField(installed.inventory);
+  if (!bus || bus.version !== 2) invalid();
+  const result = spawnSync("/usr/bin/systemctl", ["show", `--property=${unitProperties.join(",")}`, "--", unit],
+    { env: cleanEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      timeout: observationTimeout(5000, remaining), maxBuffer: 65536 });
+  observationTimeout(5000, remaining);
+  if (result.error || result.signal || result.status !== 0 || result.stderr) invalid();
+  // Reject conflicting/unknown text before any structured query. These are
+  // provisional fields, not a permission derived from systemctl omission.
+  decodeHostedFdUnitFields(result.stdout);
+  const facts = observeSystemBusFdEmptyArrays(bus, unit, remaining);
+  const rows = decodeHostedFdUnitFields(result.stdout, facts);
   if (rows.size !== 19 || rows.get("Id") !== unit || !/^[a-f0-9]{32}$/.test(rows.get("InvocationID") ?? "") ||
       rows.get("ActiveState") !== "active" || rows.get("FileDescriptorStoreMax") !== "0" ||
       rows.get("NFileDescriptorStore") !== "0" || rows.get("TriggeredBy") !== "" || rows.get("PassEnvironment") !== "" ||
@@ -137,19 +204,24 @@ export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[
   const group = rows.get("ControlGroup")!;
   if (group !== `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${unit}` &&
       group !== `/system.slice/${unit}`) invalid();
+  const current = readInstalledFdInventory(remaining);
+  if (!current || !current.inventoryBytes.equals(installed.inventoryBytes) ||
+      !current.installationBytes.equals(installed.installationBytes)) invalid();
+  observationTimeout(5000, remaining);
   return Object.freeze({ unit, invocation: rows.get("InvocationID")!, group, mainPid: Number(rows.get("MainPID")), root: rows.get("RootDirectory")! });
 }
 
-export function collectHostedFdPeers(profile: FdCollectorProfile): ReadonlyMap<string, string> {
+export function collectHostedFdPeers(profile: FdCollectorProfile, remaining?: SystemdObservationRemaining): ReadonlyMap<string, string> {
   const pin = profile.ss;
-  for (const file of pin.elfFiles) protectedBytes(file);
+  for (const file of pin.elfFiles) protectedBytes(file, false, "", remaining);
   const result = spawnSync(pin.path, ["-H", "-n", "-A", "unix_stream", "state", "established", "src", "unix:"],
     { env: cleanEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-      timeout: profile.limits.collectorTimeoutMs, maxBuffer: profile.limits.maxOutputBytes });
+      timeout: observationTimeout(profile.limits.collectorTimeoutMs, remaining), maxBuffer: profile.limits.maxOutputBytes });
+  observationTimeout(profile.limits.collectorTimeoutMs, remaining);
   if (result.error || result.signal || result.status !== 0 || result.stderr ||
       Buffer.byteLength(result.stdout) > profile.limits.maxOutputBytes) invalid();
   const rows = parseFdCollectorRows(result.stdout, profile.limits.maxRows);
-  for (const file of pin.elfFiles) protectedBytes(file);
+  for (const file of pin.elfFiles) protectedBytes(file, false, "", remaining);
   return rows;
 }
 
@@ -167,7 +239,7 @@ export function assertHostedFdInternals(process: HostedFdProcess, profile: FdCol
       count.pipe > profile.limits.maxPipeEndpoints || count.devNull > profile.limits.maxDevNullReserves) invalid();
 }
 
-export function assertHostedFdBootstrap(process: HostedFdProcess, profile: FdCollectorProfile): void {
+export function assertHostedFdBootstrap(process: HostedFdProcess, profile: FdCollectorProfile, remaining?: SystemdObservationRemaining): void {
   const installer = process.argv[1] === "/runtime/bootstrap.js";
   const script = profile.bootstraps.find(pin => installer ?
     pin.path.endsWith("/hosted-dependency-installer-bootstrap.js") : pin.path === process.argv[1]);
@@ -176,10 +248,11 @@ export function assertHostedFdBootstrap(process: HostedFdProcess, profile: FdCol
       !(process.argv.length === 2 || (process.argv.length === 3 &&
         (process.argv[2] === "ordinary-bootstrap" || process.argv[2] === "--research-ready-v1" || process.argv[2] === "--fd-ready-v1"))) ||
       process.net !== readlinkSync("/proc/self/ns/net")) invalid();
-  for (const pin of profile.node.elfFiles) protectedBytes(pin, false, `/proc/${process.pid}/root`);
-  protectedBytes(installer ? { ...script, path: "/runtime/bootstrap.js" } : script, false, `/proc/${process.pid}/root`);
+  for (const pin of profile.node.elfFiles) protectedBytes(pin, false, `/proc/${process.pid}/root`, remaining);
+  protectedBytes(installer ? { ...script, path: "/runtime/bootstrap.js" } : script, false, `/proc/${process.pid}/root`, remaining);
   assertHostedFdNodeMaps(process, profile);
   assertHostedFdInternals(process, profile);
+  observationTimeout(5000, remaining);
 }
 
 function assertHostedFdNodeMaps(process: HostedFdProcess, profile: FdCollectorProfile): void {
@@ -194,17 +267,19 @@ function assertHostedFdNodeMaps(process: HostedFdProcess, profile: FdCollectorPr
   if (!mapped.has(profile.node.path)) invalid();
 }
 
-export function assertHostedFdManagedGuard(process: HostedFdProcess, profile: FdCollectorProfile, jobId: string): void {
+export function assertHostedFdManagedGuard(process: HostedFdProcess, profile: FdCollectorProfile, jobId: string,
+  remaining?: SystemdObservationRemaining): void {
   const path = "/opt/subscription-runtime/managed-launcher/payload-guard.mjs";
   const pin = profile.bootstraps.find(pin => pin.path === path);
   if (!pin || process.exe !== profile.node.path || process.argv.length !== 8 || process.argv[0] !== profile.node.path ||
       process.argv[1] !== path || process.argv[2] !== "--job-id" || process.argv[3] !== jobId || process.argv[4] !== "--" ||
       process.argv[5] !== profile.node.path || !process.argv[6]?.endsWith("/hosted-app-server-launcher.js") ||
       process.argv[7] !== "--fd-ready-v1" || process.net !== readlinkSync("/proc/self/ns/net")) invalid();
-  protectedBytes(pin, false, `/proc/${process.pid}/root`);
-  for (const file of profile.node.elfFiles) protectedBytes(file, false, `/proc/${process.pid}/root`);
+  protectedBytes(pin, false, `/proc/${process.pid}/root`, remaining);
+  for (const file of profile.node.elfFiles) protectedBytes(file, false, `/proc/${process.pid}/root`, remaining);
   assertHostedFdNodeMaps(process, profile);
   assertHostedFdInternals(process, profile);
+  observationTimeout(5000, remaining);
 }
 
 /** Actual kernel namespaces/privileges are checked against the closed fixed
