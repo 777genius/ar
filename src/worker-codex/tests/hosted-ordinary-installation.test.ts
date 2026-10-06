@@ -61,7 +61,8 @@ function local(path: string): string {
 vi.mock("node:fs", async original => {
   const real = await original<typeof import("node:fs")>();
   return { ...real,
-    readFileSync: (path: string, options: Parameters<typeof real.readFileSync>[1]) => {
+    readFileSync: (path: Parameters<typeof real.readFileSync>[0], options: Parameters<typeof real.readFileSync>[1]) => {
+      if (typeof path !== "string") return real.readFileSync(path, options);
       if (path === "/proc/self/uid_map") return "0 0 4294967295\n";
       if (path === "/proc/sys/kernel/random/boot_id") return fixture.boot;
       if (path === "/etc/machine-id") return "a".repeat(32);
