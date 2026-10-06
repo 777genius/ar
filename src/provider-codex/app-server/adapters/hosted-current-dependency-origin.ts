@@ -237,6 +237,43 @@ export function isCurrentHostedDependencyManagedReadonlyOrigin(fence: HostedActi
   return isHostedDependencyWorkspace(epoch.identity.workspacePath);
 }
 
+/** Routing only, before any caller workspace/context-based fallback. The
+ * actual C/R unit selects its protected dependency branch; no origin is issued.
+ * Inconsistent protected state throws, so omission cannot select legacy IO. */
+export function requiresCurrentHostedDependencyRootPurpose(): boolean {
+  if (process.platform !== "linux") return false;
+  const group = readFileSync("/proc/self/cgroup","utf8");
+  if (group.length > 4096) invalid();
+  const current = group.trim();
+  const outer = /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-outer-[a-f0-9-]{36}\.service$/.exec(current);
+  const ordinary = /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-[a-f0-9-]{36}\.service$/.exec(current);
+  if ((!outer || outer[0] !== current) && (!ordinary || ordinary[0] !== current)) return false;
+  return withHostedActivationFence(fence => {
+    if (outer) {
+      assertHostedActivationOperator();
+      if (readHostedActivationBytes("readonly-epoch.next")) invalid();
+      const before = fixed("readonly-epoch.json"), epoch = parseHostedCustodyEpoch(decodeHostedActivationBytes(before.bytes));
+      const row = epoch.outerRuntime, unit = current.slice(current.lastIndexOf("/")+1);
+      if (epoch.phase !== HostedCustodyPhase.Ready || epoch.revoked || !row || row.state !== HostedCustodyReservationState.Reserved ||
+          row.generation !== epoch.generation || row.unit !== unit || row.unit !== `subscription-runtime-outer-${row.startId}.service` ||
+          row.creatorId !== row.startId || epoch.bootId !== readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim() ||
+          readHostedActivationBytes(`scoped-terminating/${row.startId}.json`)) invalid();
+      const birth = fixed(`readonly-outer-start-${row.startId}.json`,4096);
+      if (!birth.bytes.equals(encode({schemaVersion:1,hostId:epoch.hostId,bootId:epoch.bootId,jobId:epoch.identity.jobId,
+          generation:epoch.generation,startId:row.startId,creatorId:row.creatorId,unit:row.unit}))) invalid();
+      const after = fixed("readonly-epoch.json");
+      if (!before.bytes.equals(after.bytes) || !sameDependencyProtectedReference(before.reference,after.reference)) invalid();
+      return isHostedDependencyWorkspace(epoch.identity.workspacePath);
+    }
+    const actual = readHostedOrdinaryProcessOrigin(fence), binding = readHostedDependencyBinding(String(actual.start.jobId));
+    if (!binding) { if (isHostedDependencyWorkspace(String(actual.start.workspacePath))) invalid(); return false; }
+    if (binding.jobRootDir !== actual.start.jobRootDir || binding.workspace.canonicalPath !== actual.start.workspacePath ||
+        binding.installationId !== actual.start.installationId || binding.grantDigest !== actual.start.grantSha256) invalid();
+    if (binding.version === 3) invalid(); // Protected reference has no helper/provider purpose.
+    return binding.version === 2;
+  });
+}
+
 /** Actual latest owner read AFTER the expensive current-origin collection.
  * A factual returned attempt is not an enqueue permit; final frame reasserts. */
 export function assertCurrentHostedDependencyAttempt(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence,
