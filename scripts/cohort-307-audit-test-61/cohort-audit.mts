@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const cohortSha256 = '8b0467e9cdf7d83bace82df97893ed77e9f311dcd83110a18cbfcd0fc01a7da4';
-const payloadSha256 = 'c1a9164cac5bda5901d3c661364c154233bad07d93e9a19b2bf59e44d15733e9';
+const payloadSha256 = '7fa5349bf51b53d42f7c0343158f5f213877359caca0ac609bd59ecd712d8150';
 const machineId = 'd856d40da5ad4e23b4f67773e5942842';
 const Mode = { ProcReferences: 'ProcReferences', AllocatedMetadata: 'AllocatedMetadata' } as const;
 type Mode = (typeof Mode)[keyof typeof Mode];

@@ -27,5 +27,7 @@ jobs:
           node_modules/.bin/tsc --noEmit -p scripts/cohort-307-audit-test-61/tsconfig.helper.json
       - name: Verify separate finite mount table text bound
         run: node --experimental-strip-types --test scripts/cohort-307-audit-test-61/mount-table-text-bound.test.mts
+      - name: Verify native procfs root identity boundary
+        run: sudo -n "$(command -v node)" --experimental-strip-types --test scripts/cohort-307-audit-test-61/proc-root-identity.test.mts
       - name: Require eight genuine owned namespace TESTs with no skips
         run: sudo -n --preserve-env=CI,GITHUB_ACTIONS "$(command -v node)" --experimental-strip-types scripts/cohort-307-audit-test-61/run-owned-ci-test.mts

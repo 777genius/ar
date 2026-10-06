@@ -121,6 +121,7 @@ class DirectoryChain:
         if not path.startswith('/') or any(x in ('.', '..') for x in path.split('/')):
             raise Refusal('PathShape')
         self.budget, self.links = budget, []
+        self._proc_root_mount_id = None
         fd = budget.own(os.open('/', O_DIR)); self.links.append((None, '', fd, pin(os.fstat(fd))))
         try:
             for name in filter(None, path.split('/')):
@@ -130,11 +131,31 @@ class DirectoryChain:
             self.close(); raise
         self.fd = fd
 
+    def _bind_proc_root(self, mount):
+        # Only preflight's physically joined procfs root may have a volatile link count.
+        if len(self.links) != 2 or self.links[-1][1] != 'proc' or mount['point'] != '/proc' or mount['root'] != '/' or mount['type'] != b'proc':
+            raise Refusal('HostProcViewUnknown')
+        actual = os.fstat(self.fd)
+        if mount['dev'] != (os.major(actual.st_dev), os.minor(actual.st_dev)) or mount['id'] != mount_id(self.fd, self.budget):
+            raise Refusal('HostProcViewUnknown')
+        self._proc_root_mount_id = mount['id']
+
     def current(self):
         for parent, name, fd, expected in self.links:
             self.budget.check()
             actual = os.fstat(fd) if parent is None else os.stat(name, dir_fd=parent, follow_symlinks=False)
-            if pin(actual) != expected or pin(os.fstat(fd)) != expected: raise Refusal('AncestorDrift')
+            if self._proc_root_mount_id is not None and fd == self.fd:
+                # Keep every other pin field and both named/retained mount identities strict.
+                held = pin(os.fstat(fd)); named = pin(actual)
+                if named[:6] + named[7:] != expected[:6] + expected[7:] or held[:6] + held[7:] != expected[:6] + expected[7:]:
+                    raise Refusal('AncestorDrift')
+                fresh = self.budget.own(os.open(name, O_DIR, dir_fd=parent))
+                try:
+                    opened = pin(os.fstat(fresh))
+                    if opened[:6] + opened[7:] != expected[:6] + expected[7:] or mount_id(fd, self.budget) != self._proc_root_mount_id or mount_id(fresh, self.budget) != self._proc_root_mount_id:
+                        raise Refusal('AncestorDrift')
+                finally: self.budget.close(fresh)
+            elif pin(actual) != expected or pin(os.fstat(fd)) != expected: raise Refusal('AncestorDrift')
 
     def close(self):
         for _, _, fd, _ in reversed(self.links): self.budget.close(fd)
@@ -256,6 +277,7 @@ def preflight(budget):
         rows, digest = mount_table(self_fd, budget)
         m, _ = filesystem_path('/proc', rows)
         if m['type'] != b'proc' or m['id'] != mount_id(proc.fd, budget): raise Refusal('HostProcViewUnknown')
+        proc._bind_proc_root(m)
         if any(x.startswith(b'hidepid=') and x != b'hidepid=0' for x in m['options'].split(b',')):
             budget.issue('ProcVisibility', Refusal('ProcHiddenView'))
         effective = None
