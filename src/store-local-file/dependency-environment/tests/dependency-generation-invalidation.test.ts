@@ -38,7 +38,7 @@ async function fixture() {
   const owners = Owners.open({ rootPath: ownerRoot, maxRecordBytes: 16384 });
   const receipts = Receipts.open({ rootPath: receiptRoot, maxRecordBytes: 16384, maxHistorySteps: 16 });
   return { root, ownerRoot, receiptRoot, workspace, tree, owners, receipts,
-    async close() { owners.close(); receipts.close(); await rm(root, { recursive: true, force: true }); } };
+    async close() { this.owners.close(); this.receipts.close(); await rm(root, { recursive: true, force: true }); } };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 function publishLogicalReady(f: Fixture) {
