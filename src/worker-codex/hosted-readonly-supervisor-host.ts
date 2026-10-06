@@ -1,6 +1,6 @@
 import { preclaimHostedReadonlyDependencyReader } from "./hosted-readonly-dependency-reader-entry";
 import { publishCurrentHostedManagedDependencyProvider, readCurrentHostedManagedDependencyProviderParent, spawnCurrentHostedManagedDependencyProvider, readCurrentHostedManagedDependencyProviderFrame, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
-import type { CodexAppServerChildProcess } from "../provider-codex/app-server/adapters/node-app-server-process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { hostedFdLaunch } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import { retryHostedFenceAcquisition } from "../provider-codex/app-server/adapters/hosted-fd-fence";
 import { assertHostedManagedDependencyToolRelease, assertHostedManagedDependencyToolParentFrame } from "./hosted-managed-dependency-tool-plan";
@@ -191,7 +191,7 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
     const identity = {jobId:current.facts.start.readonlyJobId,jobRootDir:current.binding.jobRootDir,workspacePath:current.binding.workspace.canonicalPath};
     this.assertManagedAdmission(identity,CodexProviderEgressProfileId.TestManagedQualification);
     this.publishDependencyProviderStart(context,unit);
-    let child: CodexAppServerChildProcess;
+    let child: ChildProcessWithoutNullStreams;
     try { child = spawnCurrentHostedManagedDependencyProvider(context,fence,unit,input); }
     catch (error) {
       const record = this.readEpoch().reservations.find(row => row.unit === unit && row.state === HostedCustodyReservationState.Reserved);

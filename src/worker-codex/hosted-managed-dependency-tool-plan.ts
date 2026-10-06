@@ -8,8 +8,8 @@ import type { ChildProcess } from "node:child_process";
 import { closeSync, constants, fstatSync, fsyncSync, mkdirSync, symlinkSync, writeFileSync, lstatSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DependencyAdmissionError, DependencyAdmissionFailure, sameDependencyAttempt, parseDependencyOwner,
-  isDependencyConsumerOwner, DependencyOwnerPhase, DependencyConsumerLaunchKind } from "../core/dependency-environment/dependency-owner";
-import { sameDependencyProtectedReference, isDependencyProtectedReference } from "../core/dependency-environment/dependency-custody-evidence";
+  isDependencyConsumerOwner, DependencyOwnerPhase } from "../core/dependency-environment/dependency-owner";
+import { DependencyConsumerLaunchKind, sameDependencyProtectedReference, isDependencyProtectedReference } from "../core/dependency-environment/dependency-custody-evidence";
 import { HostedCustodyPhase, HostedCustodyReservationState, parseHostedCustodyEpoch } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
 import { parseHostedReadonlyHostInventory } from "../worker-core/hosted-custody/domain/hosted-readonly-inventory";
 import { readHostedReadonlyDependencyStart, readHostedReadonlyDependencyAssociation } from "../provider-codex/app-server/adapters/hosted-dependency-origin";

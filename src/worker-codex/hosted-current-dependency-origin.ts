@@ -1,8 +1,7 @@
 import { hostedManagedDependencyProviderInvocation, bindHostedDependencyToolChild, abandonHostedDependencyToolInvocation } from "./hosted-managed-dependency-tool-plan";
 import { spawnHostedFdChild, hostedFdLaunch } from "../provider-codex/app-server/adapters/hosted-fd-launch";
-import type { CodexAppServerChildProcess } from "../provider-codex/app-server/adapters/node-app-server-process";
 import { createHash } from "node:crypto";
-import { spawnSync, type ChildProcess } from "node:child_process";
+import { spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, statSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -324,7 +323,7 @@ export function prepareCurrentHostedManagedDependencyProviderTools(context: Curr
         !readManagedProviderDescriptor(record.fd).equals(qualification.bytes) || !readManagedProviderDescriptor(capsule.fd).equals(bytes)) invalid();
     state.provider = {unit,reference:selected.reference,root:rootPin,qualification:freezeFacts(q),ready:state.record.providerReady,record,capsule,capsulePath};
     return readCurrentHostedManagedDependencyProviderTools(context,fence,unit);
-  } catch (error) { state.provider = undefined; for (const resource of opened.reverse()) resource.close(); throw error; }
+  } catch (error) { delete state.provider; for (const resource of opened.reverse()) resource.close(); throw error; }
 }
 
 /** Facts for the fixed finite-root consumer, independently joined before and
@@ -351,14 +350,14 @@ export function readCurrentHostedManagedDependencyProviderTools(context: Current
  * can mutate the original entry; Plan and FDA both derive this actual spawn. */
 export function spawnCurrentHostedManagedDependencyProvider(context: CurrentHostedDependencyOrigin,
   fence: HostedActivationFence, unit: string,
-  input: Readonly<{command:string;args:readonly string[];cwd:string;env:Readonly<Record<string,string>>}>): CodexAppServerChildProcess {
+  input: Readonly<{command:string;args:readonly string[];cwd:string;env:Readonly<Record<string,string>>}>): ChildProcessWithoutNullStreams {
   readCurrentHostedManagedDependencyProviderParent(context,fence);
   const invocation = hostedManagedDependencyProviderInvocation(fence,unit,input,context);
   if (!invocation || invocation.systemdUnit !== unit || invocation.stdinBootstrap === undefined) invalid();
-  let child: CodexAppServerChildProcess | undefined;
+  let child: ChildProcessWithoutNullStreams | undefined;
   try {
     retainCurrentHostedManagedDependencyProviderInvocation(context,fence,invocation);
-    child = spawnHostedFdChild(invocation.command,invocation.args,{cwd:input.cwd,detached:true},unit,HostedFdLaunchKind.Provider) as CodexAppServerChildProcess;
+    child = spawnHostedFdChild(invocation.command,invocation.args,{cwd:input.cwd,detached:true},unit,HostedFdLaunchKind.Provider);
     bindCurrentHostedManagedDependencyProviderChild(context,invocation,child); bindHostedDependencyToolChild(invocation,child);
     return child;
   } catch (error) {
@@ -393,7 +392,7 @@ function bindCurrentHostedManagedDependencyProviderChild(context: CurrentHostedD
 export function closeCurrentHostedManagedDependencyProviderTools(context: CurrentHostedDependencyOrigin, unit: string): void {
   const state = contexts.get(context)?.rootPurpose, provider = state?.provider;
   if (!state || !provider) return; if (provider.unit !== unit) invalid();
-  provider.capsule.close(); provider.record.close(); state.provider = undefined;
+  provider.capsule.close(); provider.record.close(); delete state.provider;
 }
 export function assertCurrentHostedManagedDependencyCapsuleCopy(context: CurrentHostedDependencyOrigin,
   fence: HostedActivationFence, unit: string, fd: number): void {

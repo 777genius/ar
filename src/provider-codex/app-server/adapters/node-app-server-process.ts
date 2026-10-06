@@ -200,7 +200,7 @@ function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<R
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawnHostedFdChild(invocation.command, args, { cwd: input.cwd, detached: process.platform !== "win32" },
-        invocation.systemdUnit, HostedFdLaunchKind.Provider) as ChildProcessWithoutNullStreams;
+        invocation.systemdUnit, HostedFdLaunchKind.Provider);
       bindHostedDependencyToolChild(invocation, child);
     } catch (error) { abandonHostedDependencyToolInvocation(invocation); throw error; }
     hostedSystemdUnits.set(child, invocation.systemdUnit);
@@ -285,7 +285,7 @@ export function signalCodexAppServerChildGroup(
   signal: NodeJS.Signals,
 ): void {
   let fdUnit: string | undefined;
-  try { const guard = hostedFdLaunch(child); assertHostedFdProcess(child,guard.unit,guard.kind); fdUnit = guard.unit; } catch { /* Existing generic route below. */ }
+  try { const guard = hostedFdLaunch(child); assertHostedFdProcess(guard.child,guard.unit,guard.kind); fdUnit = guard.unit; } catch { /* Existing generic route below. */ }
   invalidateHostedOrdinaryWait(child);
   const researchSignal = researchSignals.get(child);
   if (researchSignal) { researchSignal(signal); return; }

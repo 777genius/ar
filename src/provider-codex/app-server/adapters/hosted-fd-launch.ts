@@ -1,4 +1,4 @@
-import { type ChildProcess, type SpawnOptions } from "node:child_process";
+import { ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
 import { spawnHostedFdProcess, invalidateHostedFdProcess, HostedFdLaunchKind } from "./hosted-fd-child";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -14,7 +14,7 @@ import { revokeHostedToolFilesForChild } from "./hosted-retained-tool-files";
 
 export { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
 export { HostedFdLaunchKind } from "./hosted-fd-child";
-const launches = new WeakMap<ChildProcess, HostedFdLaunch>();
+const launches = new WeakMap<object, HostedFdLaunch>();
 export enum HostedForegroundArtifactKind { Stdout = "hosted_foreground_stdout", Stderr = "hosted_foreground_stderr" }
 export type HostedForegroundResult = Readonly<{ exitCode: number; unit: string; startId: string;
   artifacts: readonly Readonly<{ kind: HostedForegroundArtifactKind; path: string; dev: string; ino: string; byteLength: number; sha256: string }>[] }>;
@@ -371,12 +371,18 @@ export class HostedFdLaunch {
 
 /** Only this fixed three-channel constructor can register a launch. */
 export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
+  unit: string, kind: HostedFdLaunchKind.Provider | HostedFdLaunchKind.Foreground): ChildProcessWithoutNullStreams;
+export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
+  unit: string, kind: HostedFdLaunchKind): ChildProcess;
+export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
   unit: string, kind: HostedFdLaunchKind): ChildProcess {
   return HostedFdLaunch.spawn(command, args, options, unit, kind);
 }
-export function hostedFdLaunch(child: ChildProcess): HostedFdLaunch {
+export function hostedFdLaunch(child: object): HostedFdLaunch {
   const launch = launches.get(child);
-  if (!launch) invalid(); return launch;
+  if (!launch) invalid();
+  if (!(child instanceof ChildProcess) || launch.child !== child) invalid();
+  return launch;
 }
 export function hostedFdInvocationUnit(args: readonly string[]): string {
   const units = args.filter(arg => arg.startsWith("--unit="));
