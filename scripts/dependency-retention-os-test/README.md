@@ -251,8 +251,10 @@ facts; initial-root UID or a child-provided list is insufficient.
 
 The positive acceptance remains the real fresh/hot pinned goal CLI and its
 existing installer/provider/drain paths. A genuine post-drop waiting child gets
-an extra connected fd3 with CLOEXEC actually cleared. The production classifier
-must deny it before release; an accepted regression sends real data to the child's
+an extra connected fd3. A fixed signed Python3.12 TEST child clears CLOEXEC after
+startup and remains idle for the trusted parent's actual UID/exe/argv/fdinfo check;
+Node startup would set it again. Positive Node IO qualification stays unchanged.
+The production classifier must deny this actual non-CLOEXEC socket before release; an accepted regression sends real data to the child's
 bounded TEST payload marker and makes the scenario fail. The real research entry
 must deny the installed shared host before reading a deliberately missing request,
 with unchanged installation, authority absence, jobs and transient-unit files.

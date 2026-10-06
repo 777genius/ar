@@ -700,6 +700,7 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>, bus: Syst
     return { ...first, elfFiles: [first, ...libraries] };
   };
   const ss = executable("/usr/bin/ss"), nodePin = executable(node);
+  const pythonPin = executable("/usr/bin/python3.12"); // Negative TEST fixture only; never a profile bootstrap.
   const wrappers = ["/usr/bin/setpriv", hostedDependencySystemdRunExecutable, "/usr/bin/tini", "/usr/bin/unshare"].map(executable);
   assert.equal(command(ss.path, ["--version"]).trim(), "ss utility, iproute2-6.1.0");
   const bootstraps = ["provider-codex/app-server/adapters/hosted-app-server-launcher.js",
@@ -828,11 +829,14 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>, bus: Syst
   }
   delete progress.internalsInput; progress.uid = null;
   progress.phase = NativeFdQualificationPhase.ExtraSocket;
-  const extraDescriptorDenial = await qualifyExtraSocketDenial(profile);
+  for (const file of pythonPin.elfFiles) assert.deepEqual(pin(file.path), file);
+  const extraDescriptorDenial = await qualifyExtraSocketDenial(profile, pythonPin);
+  for (const file of pythonPin.elfFiles) assert.deepEqual(pin(file.path), file);
   progress.phase = NativeFdQualificationPhase.DirectBusSocket;
-  const directBusDescriptorDenial = await qualifyExtraSocketDenial(profile, SYSTEM_BUS_ENDPOINT);
+  const directBusDescriptorDenial = await qualifyExtraSocketDenial(profile, pythonPin, SYSTEM_BUS_ENDPOINT);
+  for (const file of pythonPin.elfFiles) assert.deepEqual(pin(file.path), file);
   progress.phase = NativeFdQualificationPhase.FinalPins;
-  for (const executable of [ss, nodePin, ...wrappers]) for (const file of executable.elfFiles) assert.equal(pin(file.path).sha256, file.sha256);
+  for (const executable of [ss, nodePin, ...wrappers, pythonPin]) for (const file of executable.elfFiles) assert.equal(pin(file.path).sha256, file.sha256);
   progress.phase = NativeFdQualificationPhase.Publication;
   assert(!existsSync(fdCollectorProfilePath)); json(fdCollectorProfilePath, profile);
   const profilePin = { path: fdCollectorProfilePath, sha256: fileDigest(fdCollectorProfilePath) };
@@ -900,7 +904,36 @@ function nativeFdRowsInputFacts(text: string) {
     nonPrintableAscii: !/^[\x09\x0a\x20-\x7e]*$/.test(text) };
 }
 
-async function qualifyExtraSocketDenial(profile: FdCollectorProfile, directEndpoint?: typeof SYSTEM_BUS_ENDPOINT) {
+async function qualifyExtraSocketDenial(profile: FdCollectorProfile, python: FdExecutablePin, directEndpoint?: typeof SYSTEM_BUS_ENDPOINT) {
+  assert.equal(python.path, "/usr/bin/python3.12");
+  // Node startup reinstates CLOEXEC. This finite child clears fd3 after its own
+  // startup and stays idle for the trusted parent's actual proc observation.
+  const program = `import os
+if os.__spec__.origin != "frozen" or any(getattr(os, name).__module__ != "posix" for name in ("fstat", "set_inheritable", "get_inheritable", "read", "write")):
+    os._exit(70)
+if os.fstat(3).st_mode & 0o170000 != 0o140000:
+    os._exit(70)
+os.set_inheritable(3, True)
+if not os.get_inheritable(3):
+    os._exit(70)
+ready = b"TEST_fd_waiting\\n"
+if os.write(1, ready) != len(ready):
+    os._exit(70)
+data = b""
+while True:
+    chunk = os.read(0, 33 - len(data))
+    if not chunk:
+        break
+    data += chunk
+    if len(data) > 32:
+        os._exit(70)
+if data:
+    if data != b"TEST_fd_release\\n":
+        os._exit(70)
+    marker = b"TEST_fd_payload_executed\\n"
+    if os.write(1, marker) != len(marker):
+        os._exit(70)
+`;
   const socketPath = "/run/TEST-fd-extra-" + randomUUID(), server = createServer();
   let client: Socket | undefined, accepted: Socket | undefined;
   try {
@@ -914,7 +947,7 @@ async function qualifyExtraSocketDenial(profile: FdCollectorProfile, directEndpo
     }
     await boundedWait(client.readyState === "open" ? Promise.resolve() : once(client, "connect").then(() => {}), 2000);
     const child = spawn("/usr/bin/setpriv", ["--reuid=65532", "--regid=65532", "--clear-groups", "--inh-caps=-all", "--ambient-caps=-all",
-      "--bounding-set=-all", "--no-new-privs", node, "--experimental-strip-types", runtime + "/scripts/dependency-retention-os-test/common.ts", "fd-qualification"],
+      "--bounding-set=-all", "--no-new-privs", python.path, "-I", "-S", "-c", program],
       { env: cleanEnv, stdio: ["pipe", "pipe", "pipe", client] });
     assert(child.stdin && child.stdout && child.stderr);
     const exited = once(child, "close"); let output = "", birth: string | undefined;
@@ -926,6 +959,7 @@ async function qualifyExtraSocketDenial(profile: FdCollectorProfile, directEndpo
         child.once("error", reject); child.once("exit", () => reject(new Error("TEST extra fd child exited")));
       }), 10000);
       assert(child.pid); const actual = observeHostedFdProcess(child.pid); birth = actual.birth;
+      assert.equal(actual.exe, python.path); assert.deepEqual(actual.argv, [python.path, "-I", "-S", "-c", program]);
       assert.match(boundedProc("/proc/" + child.pid + "/status", 16384), /^Uid:\s+65532\s+65532\s+65532\s+65532$/m);
       const inherited = actual.descriptors.find(fd => fd.fd === 3); assert(inherited?.socket);
       assert.equal(inherited.flags & 0o2000000, 0, "TEST must actually clear inherited CLOEXEC");
@@ -1000,7 +1034,7 @@ async function issueActualSystemBusInfrastructure(evidence: Record<string, unkno
   const extraction = JSON.parse(pinBytes.toString("utf8")) as { schemaVersion: number; pins: SystemBusFilePin[] };
   assert.equal(extraction.schemaVersion, 1); assert(Array.isArray(extraction.pins) && extraction.pins.length <= 1024);
   const signed = new Map(extraction.pins.map(pin => {
-    assert(([SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", hostedDependencySystemdRunExecutable, "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/systemctl", "/usr/bin/busctl"].includes(pin.path) || pin.path.startsWith("/usr/lib/")) && /^[a-f0-9]{64}$/.test(pin.sha256));
+    assert(([SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", hostedDependencySystemdRunExecutable, "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/systemctl", "/usr/bin/busctl", "/usr/bin/python3.12"].includes(pin.path) || pin.path.startsWith("/usr/lib/")) && /^[a-f0-9]{64}$/.test(pin.sha256));
     return [pin.path, pin.sha256] as const;
   }));
   assert.equal(signed.size, extraction.pins.length);
