@@ -75,3 +75,16 @@ project-scoped coordinators and explicit full-access escape hatches.
 See `docs/runtime-ddd-feature-architecture.md` for the balanced strict DDD,
 Clean Architecture and feature-slice rules for complex runtime features such as
 project-scoped control and policy-controlled integration rights.
+
+### Approved output archive disposition
+
+Project Control exposes a narrow root-admin adapter for recoverable archival of an obsolete approved output through its existing terminal ledger and evidence custody. Original approval and source remain intact; archived does not mean integrated or rejected. See [the owning operation documentation](published-output-reconciliation.md#retain-an-obsolete-approved-output). No new module boundary, shared contract, graph node, schema migration or runtime routing is introduced.
+
+The native terminal writer retains ledger/items descriptors through no-follow
+publication and invokes its existing mutation guard after staging/fsync. The
+archive adapter binds full first-consumption validation to that guard under the
+source workspace lease. Result and progress observations use canonical custody
+reads. The immutable decision note anchors receipt digest and archive identity;
+a separate immutable checkpoint under the pinned evidence root binds interrupted
+preparation. These are local IO and archive checks in the existing owners, with
+no changes to shared terminal semantics or orchestrator policy.
