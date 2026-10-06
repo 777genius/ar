@@ -839,6 +839,14 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<
 
 /** Detached numeric TEST inputs only; no release/classification decision or IO. */
 function nativeFdInternalsInputFacts(snapshot: ReturnType<typeof observeHostedFdProcess>) {
+  const KnownAnonymousKind = {
+    Unknown: 0, EventPoll: 1, EventFd: 2, IoUring: 3,
+  } as const;
+  type KnownAnonymousKind = (typeof KnownAnonymousKind)[keyof typeof KnownAnonymousKind];
+  const knownAnonymousKind = (target: string): KnownAnonymousKind =>
+    target === "anon_inode:[eventpoll]" ? KnownAnonymousKind.EventPoll :
+    target === "anon_inode:[eventfd]" ? KnownAnonymousKind.EventFd :
+    target === "anon_inode:[io_uring]" ? KnownAnonymousKind.IoUring : KnownAnonymousKind.Unknown;
   const inspected = snapshot.descriptors.filter(fd => fd.fd > 2);
   return { inspectedCount: inspected.length, omittedCount: Math.max(0, inspected.length - 256),
     complete: inspected.length <= 256,
@@ -848,6 +856,7 @@ function nativeFdInternalsInputFacts(snapshot: ReturnType<typeof observeHostedFd
       character: fd.character ? 1 : 0, file: fd.file ? 1 : 0, directory: fd.directory ? 1 : 0,
       eventPollTarget: fd.target === "anon_inode:[eventpoll]" ? 1 : 0,
       eventFdTarget: fd.target === "anon_inode:[eventfd]" ? 1 : 0,
+      knownAnonymousKind: knownAnonymousKind(fd.target),
       pipeTarget: /^pipe:\[[1-9][0-9]*\]$/.test(fd.target) ? 1 : 0,
       devNullDevice: fd.rdev === "259" ? 1 : 0 })) };
 }
