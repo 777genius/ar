@@ -455,6 +455,10 @@ def refused(call,reason):
 cases=[
     (['/','/a','/a/b'],'/a/b/file',2,'/r2/file'),
     (['/','/a'],'/ab/file',0,'/r0/ab/file'),
+    (['/','/a','/a.'],'/a/b',1,'/r1/b'),
+    (['/','/a','/a/x'],'/a/y/file',1,'/r1/y/file'),
+    (['/','///','/a'],'/a/f',1,'/r1/f'),
+    (['/','/a//','/a/'],'/a/',1,'/r1'),
     (['/','/a/'],'/a',0,'/r0/a'),
     (['/','/a/'],'/a/file',1,'/r1/file'),
     (['/','/a','/a/'],'/a/file',2,'/r2/file'),
@@ -489,6 +493,45 @@ finally:
     os.close(parent)
     while mounted:
         assert lib.umount2(os.fsencode(r+'/tie'),0)==0;mounted-=1
+# A real deep mount spelling is interpreted repeatedly, but each object join is fresh.
+# Original substring allocation exhausts the unchanged64MiB budget on these4096 refs.
+import mmap
+os.mkdir(r+'/deep-source');open(r+'/deep-source/dep','wb').write(b'TEST')
+alias=r+'/'+('/'.join(['d'*31]*32));os.makedirs(alias)
+b=B(35);table=None;root_fd=None;known=None;mapped=None;parent=os.open('/proc/self',os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC);deep_mounted=False
+try:
+    assert lib.mount(os.fsencode(r+'/deep-source'),os.fsencode(alias),None,4096,None)==0;deep_mounted=True
+    table,_=p['mount_table'](parent,b)
+    root_fd=os.open(r+'/deep-source',p['O_DIR']);known=os.open(alias+'/dep',os.O_RDONLY)
+    mapped=mmap.mmap(known,0,access=mmap.ACCESS_READ);raw=os.readlink('/proc/self/fd/'+str(known))
+    assert raw==alias+'/dep' and len(raw)>1024
+    target=p['object_pin'](os.fstat(known));st=os.fstat(root_fd)
+    source_mount,source_physical=p['filesystem_path'](r+'/deep-source',table)
+    assert source_mount['dev']==(os.major(st.st_dev),os.minor(st.st_dev))
+    item={'status':'ObservedRoot','fd':root_fd,'pin':p['pin'](st),'physical':source_physical,'dev':source_mount['dev']}
+    map_target=None
+    for line in p['lines_at'](parent,'maps',b):
+        fields=line.split(None,5)
+        if len(fields)==6 and os.fsdecode(fields[5])==raw:
+            major,minor=(int(value,16) for value in fields[3].split(b':'))
+            map_target=(os.makedev(major,minor),int(fields[4]));break
+    assert map_target==target
+    for query in range(4096):
+        actual=target if query%2==0 else map_target
+        matches,issues=p['classify_path'](raw,actual,table,[item],b,table)
+        assert not issues and len(matches)==1 and matches[0][1:] == ('NamespacePathAndObject','Dependencies')
+    os.rename(r+'/deep-source/dep',r+'/deep-source/old-dep');open(r+'/deep-source/dep','wb').write(b'NEW')
+    for actual in (target,map_target):
+        matches,issues=p['classify_path'](raw,actual,table,[item],b,table)
+        assert not matches and len(issues)==1 and isinstance(issues[0],R) and str(issues[0])=='ReferenceObjectMismatch'
+finally:
+    if mapped is not None:mapped.close()
+    if known is not None:os.close(known)
+    if root_fd is not None:os.close(root_fd)
+    if table is not None:b.release_mounts(table)
+    os.close(parent)
+    if deep_mounted:assert lib.umount2(os.fsencode(alias),0)==0
+assert b.view_heap==0 and not b.owned and not b.mount_indexes and not b.mount_allocations
 # Real native DIR buffers coexist with a valid table, forcing index heap failure.
 # No budget counters, cap mutation or injected production hooks.
 os.mkdir(r+'/table');directory=os.open(r+'/table',p['O_DIR']);held=[];parsed=None;b=B(35)
@@ -510,7 +553,7 @@ finally:
     for inventory in reversed(held):inventory.close()
     os.close(directory)
 assert b.view_heap==0 and not b.owned and not b.mount_indexes and not b.mount_allocations
-print(json.dumps({'literalSemantics':True,'nativeStackRefused':True,'indexCapRollback':True}))
+print(json.dumps({'literalSemantics':True,'nativeStackRefused':True,'indexCapRollback':True,'deepFreshJoins':True}))
 `;
 test('mount lookup preserves literal aliases and native capacity rollback', { timeout: 60_000 }, () => {
   assert.equal(process.platform, 'linux'); assert.equal(process.getuid?.(), 0);
@@ -523,7 +566,7 @@ test('mount lookup preserves literal aliases and native capacity rollback', { ti
         { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 55_000, maxBuffer: 4096 });
       result = JSON.parse(output);
     } catch { throw new Error('Native mount lookup boundary failed'); }
-    assert.deepEqual(result, { literalSemantics: true, nativeStackRefused: true, indexCapRollback: true });
+    assert.deepEqual(result, { literalSemantics: true, nativeStackRefused: true, indexCapRollback: true, deepFreshJoins: true });
   } finally {
     try { rmSync(root, { recursive: true, force: true }); }
     catch { throw new Error('Native mount lookup cleanup failed'); }

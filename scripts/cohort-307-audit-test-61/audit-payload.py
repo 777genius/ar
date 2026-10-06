@@ -380,75 +380,107 @@ class MountRows(list):
     def lookup(self, path): return self.index.lookup(path)
 
 class MountLookup:
-    # Borrow table rows only. Never cache a source/target physical object join.
+    # Borrow rows; retain textual slash patterns, never physical object joins.
     def __init__(self, rows, budget):
         self.budget, self.exact, self.prefix, self.allocated = budget, None, None, 0
         self.entries = 0
+        ordered, scratch = None, 0
         try:
-            self.reserve(1024)
-            self.exact, self.prefix = {}, {}
-            for row in rows:
+            self.reserve(1024); self.exact, self.prefix = [], []
+            # One pointer copy, borrowed string sort keys, merge scratch and slack.
+            workspace = 48 * len(rows) + 4096
+            self.reserve(workspace); scratch = workspace
+            ordered = list(rows); ordered.sort(key=lambda row: row['point'])
+            previous = None
+            for row in ordered:
                 budget.check(); point = row['point']
-                existing = self.exact.get(point)
-                self.add(self.exact, point, row)
-                # Ordinary prefix keys equal raw exact keys: reuse that bucket.
-                # Only trailing-slash spellings need a separate trimmed bucket.
-                if not point.endswith('/'): continue
-                if existing is not None:
-                    self.add(self.prefix, existing[3], row); continue
+                if previous is not None and point == previous[0]:
+                    if row is not previous[2] and previous[3] is None: previous[3] = row
+                    continue
+                if self.entries >= 524288: raise Refusal('ByteLimit')
+                self.reserve(512); self.entries += 1
                 end = len(point)
                 while end and point[end - 1] == '/':
                     budget.check(); end -= 1
-                self.reserve(256 + 4 * end); prefix = point[:end]
-                self.exact[point].append(prefix)
-                self.add(self.prefix, prefix, row)
+                if not end: pattern = '/'
+                elif end == len(point):
+                    self.reserve(128 + 4 * (end + 1)); pattern = point + '/'
+                elif end + 1 == len(point): pattern = point
+                else:
+                    self.reserve(128 + 4 * (end + 1)); pattern = point[:end + 1]
+                # Raw point/length, two distinct rows, slash pattern, parent index.
+                previous = [point, len(point), row, None, pattern, -1]
+                self.exact.append(previous)
+            ordered = None; self.release(scratch); scratch = 0
+            workspace = 48 * len(self.exact) + 4096
+            self.reserve(workspace); scratch = workspace
+            ordered = list(self.exact); ordered.sort(key=lambda record: record[4])
+            previous, exceptional = None, False
+            for record in ordered:
+                budget.check()
+                if previous is not None and record[4] != previous[4]:
+                    self.prefix.append(previous)
+                    if exceptional: self.entries += 1
+                    if self.entries > 524288: raise Refusal('ByteLimit')
+                    previous, exceptional = None, False
+                exceptional = exceptional or record[0].endswith('/')
+                if previous is None or record[1] > previous[1]: previous = record
+            if previous is not None:
+                self.prefix.append(previous)
+                if exceptional: self.entries += 1
+                if self.entries > 524288: raise Refusal('ByteLimit')
+            # Sorted-prefix predecessor ancestry, without an additional stack.
+            for index, record in enumerate(self.prefix):
+                budget.check(); parent = index - 1
+                while parent >= 0 and not record[4].startswith(self.prefix[parent][4]):
+                    budget.check(); parent = self.prefix[parent][5]
+                record[5] = parent
         except BaseException:
+            ordered = None
+            if scratch: self.release(scratch)
             self.close(); raise
+        else:
+            ordered = None; self.release(scratch)
 
     def reserve(self, size):
         self.budget.charge(size); self.budget.heap_reserve(size); self.allocated += size
 
-    def add(self, table, key, row):
-        bucket = table.get(key)
-        if bucket is None:
-            if self.entries >= 524288: raise Refusal('ByteLimit')
-            # Dict slack, borrowed key pointer, mutable bucket and two row links.
-            self.reserve(512); self.entries += 1
-            table[key] = [len(row['point']), row, None]
-        elif len(row['point']) > bucket[0]:
-            bucket[0], bucket[1], bucket[2] = len(row['point']), row, None
-        elif len(row['point']) == bucket[0] and row is not bucket[1] and bucket[2] is None:
-            bucket[2] = row
+    def release(self, size):
+        self.allocated -= size; self.budget.heap_release(size)
+
+    def search(self, records, path, field, right):
+        low, high = 0, len(records)
+        while low < high:
+            self.budget.check(); middle = (low + high) // 2; key = records[middle][field]
+            if key < path or right and key == path: low = middle + 1
+            else: high = middle
+        return low
 
     def lookup(self, path):
-        budget = self.budget; size = 512 + 4 * len(path)
         if len(path) > 8192: raise Refusal('ByteLimit')
-        budget.charge(size); budget.heap_reserve(size)
+        budget = self.budget; budget.charge(512); budget.heap_reserve(512)
         try:
             best, second, length = None, None, -1
-            buckets = (self.exact.get(path), None)
-            # At most one exact hit plus8192 literal prefixes, no retained prefix list.
-            for position in range(-1, len(path)):
+            exact = self.search(self.exact, path, 0, False)
+            candidate = self.exact[exact] if exact < len(self.exact) and self.exact[exact][0] == path else None
+            parent = self.search(self.prefix, path, 4, True) - 1
+            # A matching slash-pattern interval contains its sorted predecessor.
+            # Visit all matching ancestors: raw trailing spellings can be longer.
+            while candidate is not None or parent >= 0:
                 budget.check()
-                if position >= 0:
-                    if path[position] != '/': continue
-                    temporary = 128 + 4 * position
-                    budget.charge(temporary); budget.heap_reserve(temporary)
-                    try:
-                        prefix = path[:position]
-                        buckets = (self.exact.get(prefix), self.prefix.get(prefix))
-                        del prefix
-                    finally: budget.heap_release(temporary)
-                for bucket in buckets:
-                    if bucket is None or bucket[0] < length: continue
-                    if bucket[0] > length: best, second, length = None, None, bucket[0]
-                    for row in (bucket[1], bucket[2]):
+                if candidate is None:
+                    candidate = self.prefix[parent]; parent = candidate[5]
+                    if not path.startswith(candidate[4]): candidate = None; continue
+                if candidate[1] >= length:
+                    if candidate[1] > length: best, second, length = None, None, candidate[1]
+                    for row in (candidate[2], candidate[3]):
                         if row is None or row is best or row is second: continue
                         if best is None: best = row
                         else: second = row
+                candidate = None
             if best is None or second is not None: raise Refusal('MountJoinUnknown')
             return best
-        finally: budget.heap_release(size)
+        finally: budget.heap_release(512)
 
     def close(self):
         if self.exact is not None: self.exact.clear()
