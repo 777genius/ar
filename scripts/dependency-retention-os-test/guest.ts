@@ -628,7 +628,21 @@ async function qualifyLateRelease(commandPath: string, args: readonly string[], 
 /** Native trusted TEST issuance, before any managed start exists. Parsed profile
  * bytes alone never qualify a binary: live retained endpoints and observations
  * below must succeed before create-only publication. Real routes reprove peers. */
+const NativeFdQualificationPhase = { Pins: "pins", UidObservation: "uid_observation", NamedSockets: "named_sockets",
+  Profile: "profile", Internals: "internals", ExtraSocket: "extra_socket", DirectBusSocket: "direct_bus_socket",
+  FinalPins: "final_pins", Publication: "publication", Complete: "complete" } as const;
+type NativeFdQualificationPhase = typeof NativeFdQualificationPhase[keyof typeof NativeFdQualificationPhase];
+const NativeFdQualificationParser = { None: "none", Rows: "rows", Profile: "profile" } as const;
+type NativeFdQualificationParser = typeof NativeFdQualificationParser[keyof typeof NativeFdQualificationParser];
 async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<{ path: typeof fdCollectorProfilePath; sha256: string }> {
+  const measured = { setupMs: 0, collectorMs: 0, outputBytes: 0, rows: 0, eventPoll: 0, eventFd: 0, pipes: 0, devNull: 0 };
+  const progress: { purpose: string; phase: NativeFdQualificationPhase; parser: NativeFdQualificationParser;
+    uid: 0 | 65532 | null; completedUidObservations: number; rowParseCalls: number; measured: typeof measured;
+    rowsInput?: ReturnType<typeof nativeFdRowsInputFacts>; profileInput?: { ssElfFiles: number; nodeElfFiles: number;
+      wrapperElfFiles: readonly number[]; bootstrapCount: number; limits: FdCollectorProfile["limits"] } } = {
+    purpose: "TEST_partial_fd_qualification_facts_not_profile_authority", phase: NativeFdQualificationPhase.Pins,
+    parser: NativeFdQualificationParser.None, uid: null, completedUidObservations: 0, rowParseCalls: 0, measured };
+  evidence.fdCollectorProgress = progress;
   const observerStatus = boundedProc("/proc/self/status", 16384);
   const capabilitySets = Object.fromEntries(["Inh", "Prm", "Eff", "Bnd", "Amb"].map(name => {
     const value = new RegExp(`^Cap${name}:\\s+([a-f0-9]{1,16})$`, "m").exec(observerStatus)?.[1]; assert(value);
@@ -688,13 +702,17 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<
     for (const path of ["managed-launcher/launch.mjs", "managed-launcher/payload-guard.mjs", "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs"])
       bootstraps.push(pin("/opt/subscription-runtime/" + path));
   }
-  const measured = { setupMs: 0, collectorMs: 0, outputBytes: 0, rows: 0, eventPoll: 0, eventFd: 0, pipes: 0, devNull: 0 };
   const query = (): ReadonlyMap<string, string> => {
     const began = performance.now();
+    delete progress.rowsInput;
     const result = spawnSync(ss.path, ["-H", "-n", "-A", "unix_stream", "state", "established", "src", "unix:"],
       { env: cleanEnv, encoding: "utf8", timeout: 5000, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
     assert(!result.error && result.signal === null && result.status === 0 && result.stderr === "");
+    // Bounded existing stdout only; numeric shape facts never repair the reply.
+    progress.rowsInput = nativeFdRowsInputFacts(result.stdout); progress.rowParseCalls++;
+    progress.parser = NativeFdQualificationParser.Rows;
     const rows = parseFdCollectorRows(result.stdout, 65536);
+    progress.parser = NativeFdQualificationParser.None;
     measured.collectorMs = Math.max(measured.collectorMs, Math.ceil(performance.now() - began));
     measured.outputBytes = Math.max(measured.outputBytes, Buffer.byteLength(result.stdout)); measured.rows = Math.max(measured.rows, rows.size);
     assert.equal(pin(ss.path).sha256, ss.sha256); return rows;
@@ -703,7 +721,8 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<
     const match = /^socket:\[([1-9][0-9]*)\]$/.exec(target); assert(match && BigInt(match[1]!) <= 4294967295n); return match[1]!;
   };
   const observations: unknown[] = [], snapshots: ReturnType<typeof observeHostedFdProcess>[] = [];
-  for (const uid of [0, 65532]) {
+  for (const uid of [0, 65532] as const) {
+    progress.phase = NativeFdQualificationPhase.UidObservation; progress.uid = uid;
     const began = performance.now(), before = new Set(hostedFdTable(process.pid).filter(row => row.socket).map(row => sock(row.target)));
     const args = ["--experimental-strip-types", runtime + "/scripts/dependency-retention-os-test/common.ts", "fd-qualification"];
     const child = uid === 0 ? spawn(node, args, { env: cleanEnv, stdio: ["pipe", "pipe", "pipe"] }) :
@@ -756,6 +775,7 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<
         droppedCapabilitiesAndNoNewPrivsObserved: uid === 65532,
         descriptors: actual.descriptors.map(row => ({ fd: row.fd, target: row.target, flags: row.flags, rdev: row.rdev })) });
       snapshots.push(actual);
+      progress.phase = NativeFdQualificationPhase.NamedSockets;
       await qualifyNamedSockets(query, pairs[0]!.parent, pairs[0]!.child, sock);
     } finally {
       child.stdin.end();
@@ -767,7 +787,9 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<
         throw error;
       }
     }
+    progress.completedUidObservations++;
   }
+  progress.uid = null; progress.phase = NativeFdQualificationPhase.Profile;
   // Include actual immutable toolchain discovery and both native observations,
   // rather than projecting a complete manager setup from one cheap Node spawn.
   measured.setupMs = Math.max(measured.setupMs, Math.ceil(performance.now() - qualificationBegan));
@@ -776,27 +798,68 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<
     return Math.min(maximum, Math.max(floor, value * 4 + 2));
   };
   const collectorTimeoutMs = headroom(measured.collectorMs, 5000, 250);
-  const profile = parseFdCollectorProfile({ schemaVersion: 1, renderer: FdCollectorRenderer.SsV61Signed, ss, node: nodePin, wrappers, bootstraps,
+  const profileInput = { schemaVersion: 1, renderer: FdCollectorRenderer.SsV61Signed, ss, node: nodePin, wrappers, bootstraps,
     limits: { setupTimeoutMs: Math.max(collectorTimeoutMs, headroom(measured.setupMs, 60000, 1000)), collectorTimeoutMs,
       maxOutputBytes: headroom(measured.outputBytes, 4 * 1024 * 1024, 4096), maxRows: headroom(measured.rows, 65536, 16),
       maxBufferedInputBytes: headroom(Buffer.byteLength(JSON.stringify({ schemaVersion: 1, env: cleanEnv })), 4 * 1024 * 1024, 4096),
       maxEventPoll: headroom(measured.eventPoll, 8), maxEventFd: headroom(measured.eventFd, 8),
-      maxPipeEndpoints: headroom(measured.pipes, 32), maxDevNullReserves: headroom(measured.devNull, 8) } });
+      maxPipeEndpoints: headroom(measured.pipes, 32), maxDevNullReserves: headroom(measured.devNull, 8) } };
+  progress.profileInput = { ssElfFiles: ss.elfFiles.length, nodeElfFiles: nodePin.elfFiles.length,
+    wrapperElfFiles: wrappers.map(pin => pin.elfFiles.length), bootstrapCount: bootstraps.length, limits: { ...profileInput.limits } };
+  progress.parser = NativeFdQualificationParser.Profile;
+  const profile = parseFdCollectorProfile(profileInput);
+  progress.parser = NativeFdQualificationParser.None; progress.phase = NativeFdQualificationPhase.Internals;
   for (const snapshot of snapshots) {
     // Positive classification uses the real production contract, not a copied
     // fixture decision. Processes have drained, so retain their actual snapshots.
     assertHostedFdInternals(snapshot, profile);
   }
+  progress.phase = NativeFdQualificationPhase.ExtraSocket;
   const extraDescriptorDenial = await qualifyExtraSocketDenial(profile);
+  progress.phase = NativeFdQualificationPhase.DirectBusSocket;
   const directBusDescriptorDenial = await qualifyExtraSocketDenial(profile, SYSTEM_BUS_ENDPOINT);
+  progress.phase = NativeFdQualificationPhase.FinalPins;
   for (const executable of [ss, nodePin, ...wrappers]) for (const file of executable.elfFiles) assert.equal(pin(file.path).sha256, file.sha256);
+  progress.phase = NativeFdQualificationPhase.Publication;
   assert(!existsSync(fdCollectorProfilePath)); json(fdCollectorProfilePath, profile);
   const profilePin = { path: fdCollectorProfilePath, sha256: fileDigest(fdCollectorProfilePath) };
   evidence.fdCollectorQualification = { package: ssPackages[0], profilePin, profile, measured, observations, extraDescriptorDenial, directBusDescriptorDenial,
     observer: { net: readlinkSync("/proc/self/ns/net"), user: readlinkSync("/proc/self/ns/user"),
       effectiveCapabilities: /^CapEff:\s+([a-f0-9]+)$/m.exec(boundedProc("/proc/self/status", 16384))?.[1] },
     scope: "actual retained native pairs and cross UID proc access; each production route must reprove before payload" };
+  progress.phase = NativeFdQualificationPhase.Complete;
   return profilePin;
+}
+
+/** Only numeric classifications of an already bounded TEST collector output.
+ * No raw row, token, name, inode, address or hash leaves this summary. */
+function nativeFdRowsInputFacts(text: string) {
+  const columns = Array<number>(8).fill(0), inodeShapes = { positive: 0, negative: 0, zero: 0, nonCanonical: 0, outOfRange: 0 };
+  let rows = 0, start = 0, blankRows = 0, localNotStar = 0, peerNotStar = 0, nonCanonicalQueues = 0;
+  const end = text.endsWith("\n") ? text.length - 1 : text.length;
+  for (let at = 0; text.length > 0 && at <= end; at++) {
+    if (at < end && text[at] !== "\n") continue;
+    rows++; const rowStart = start; start = at + 1;
+    if (rows > 65536) continue; // Detailed row classification stays within the original row bound.
+    const row = text.slice(rowStart, at);
+    if (!row.trim()) { blankRows++; continue; }
+    const fields = row.trim().split(/[\t ]+/), bucket = Math.min(fields.length, 7);
+    columns[bucket] = (columns[bucket] ?? 0) + 1;
+    if (fields.length !== 6) continue;
+    if (fields[2] !== "*") localNotStar++; if (fields[4] !== "*") peerNotStar++;
+    if (!fields.slice(0, 2).every(token => /^(?:0|[1-9][0-9]{0,9})$/.test(token) && Number(token) <= 4294967295)) nonCanonicalQueues++;
+    for (const token of [fields[3]!, fields[5]!]) {
+      if (!/^(?:0|[1-9][0-9]*|-[1-9][0-9]*)$/.test(token)) inodeShapes.nonCanonical++;
+      else { const value = Number(token);
+        if (!Number.isSafeInteger(value) || value < -2147483648 || value > 2147483647) inodeShapes.outOfRange++;
+        else if (value === 0) inodeShapes.zero++;
+        else if (value < 0) inodeShapes.negative++; else inodeShapes.positive++;
+      }
+    }
+  }
+  return { bytes: Buffer.byteLength(text), rows, classifiedRows: Math.min(rows, 65536), omittedRows: Math.max(0, rows - 65536),
+    blankRows, columns, localNotStar, peerNotStar, nonCanonicalQueues, inodeShapes,
+    nonPrintableAscii: !/^[\x09\x0a\x20-\x7e]*$/.test(text) };
 }
 
 async function qualifyExtraSocketDenial(profile: FdCollectorProfile, directEndpoint?: typeof SYSTEM_BUS_ENDPOINT) {
@@ -1167,7 +1230,7 @@ function observeOwnedCliFailure(jobId: string, root: string, workspace: string, 
 function failureLocations(error: Error) {
   // Fixed production source locations only, never raw stack paths or names.
   const files = ["hosted-readonly-host-kernel", "hosted-readonly-linux-collector", "hosted-readonly-observations",
-    "hosted-readonly-inputs", "hosted-installation-activation", "hosted-test-egress-files", "system-bus-infrastructure"];
+    "hosted-readonly-inputs", "hosted-installation-activation", "hosted-test-egress-files", "system-bus-infrastructure", "fd-collector-profile"];
   return (error.stack ?? "").split("\n").slice(0, 16).flatMap(line => files.flatMap(file => {
     const match = new RegExp(`/(${file}\\.js):(\\d+):(\\d+)\\)?$`).exec(line.trim());
     return match ? [{ file: match[1], line: Number(match[2]), column: Number(match[3]) }] : [];
