@@ -9,7 +9,7 @@ const association = reference("association"), origin = reference("actual-start")
 const ordinary = { installationId: id, bootId: id, runtimeSha: "b".repeat(40), grantDigest: "c".repeat(64), startId: id,
   unit: "subscription-runtime-ordinary-" + id + ".service" };
 const managed = { ...ordinary, kind: LaunchKind.ManagedReadonlyLocalV1, association, origin,
-  unit: "subscription-runtime-hosted-" + id + ".service" };
+  unit: "subscription-runtime-outer-" + id + ".service" };
 const base = { workspace: { canonicalPath: "/TEST/workspace", dev: "1", ino: "3" }, revision: 1, epoch: 1 };
 const attempt = { attemptId: id, epoch: 1, launch: managed };
 const record = { ...base, version: 3, custodyBinding: association, owner: { kind: Kind.Consumer, phase: Phase.ExclusiveMutation, attempt } };
@@ -29,7 +29,7 @@ describe("closed dependency owner custody wire", () => {
     const successor = { ...record, custodyBinding: transfer,
       owner: { ...record.owner, attempt: { ...attempt, launch: { ...managed, kind: LaunchKind.OrdinaryReadonlySuccessorV1, unit: ordinary.unit } } } };
     expect(parseDependencyOwner(successor)).toEqual(successor);
-    const invalidLaunches = [ { ...managed, kind: "other" }, { ...managed, unit: ordinary.unit },
+    const invalidLaunches = [ { ...managed, unit: "subscription-runtime-hosted-" + id + ".service" }, { ...managed, kind: "other" }, { ...managed, unit: ordinary.unit },
       { ...managed, startId: "00000000-0000-4000-8000-000000000002" }, { ...managed, origin: true },
       { ...managed, origin: { ...origin, authority: true } }, { ...managed, association: transfer },
       { ...managed, kind: LaunchKind.OrdinaryReadonlySuccessorV1, unit: ordinary.unit } ];

@@ -35,3 +35,5 @@ export * from "./host-infrastructure/system-bus-infrastructure";
 export * from "./host-infrastructure/fd-collector-profile";
 
 export * from "./dependency-environment/dependency-custody-evidence";
+
+export * from "./dependency-environment/dependency-generation-continuity";

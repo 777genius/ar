@@ -45,3 +45,7 @@ export * from "./dependency-environment/domain/dependency-tree-manifest";
 
 export * from "./dependency-environment/domain/dependency-legacy-comparison";
 export * from "./dependency-environment/ports/dependency-legacy-comparison";
+
+export * from "./dependency-environment/ports/dependency-generation-continuity";
+export * from "./dependency-environment/application/preclaimed-dependency-consumer";
+export * from "./dependency-environment/application/invalidate-dependency-generation";

@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryDependencyNotAdopted } from "./hosted-dependency-origin";
 import { readHostedDependencyBinding, readHostedDependencyAttempt } from "./hosted-dependency-workspace";
 import { parseScopedActorChain, bindScopedActorChain, type ScopedActorChain, type ScopedEnqueueActor, parseScopedSubmitter, parseScopedStartCorrelation, parseScopedInvocation, scopedDigest, ScopedTerminationKind,
   type ScopedStartCorrelation } from "@vioxen/subscription-runtime/core";
@@ -24,7 +25,7 @@ export function isHostedActivationFenceBusy(error: unknown): boolean {
   return !!error && typeof error === "object" && acquisitionBusy.has(error);
 }
 // Not a configurable policy root or a public arbitrary filesystem reader.
-const recordName = /^(?:dependency-owners\/[0-9]{1,20}-[0-9]{1,20}\.(?:json|lock)|dependency-bindings\/[a-f0-9]{64}\.json|dependency-provider-attempts\/[a-f0-9-]{36}\.json|dependency-attempt-fences\/[a-f0-9-]{36}\.json|readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed|correlations|invocations|submitters|submitter-exits|actor-chains)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|scoped-(?:terminating|operations|observations|receipts)\/[a-f0-9-]{36}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
+const recordName = /^(?:readonly-dependency-bindings\/[0-9]{1,20}-[0-9]{1,20}\.json|readonly-dependency-starts\/[a-f0-9-]{36}\.json|dependency-owners\/[0-9]{1,20}-[0-9]{1,20}\.(?:json|lock)|dependency-bindings\/[a-f0-9]{64}\.json|dependency-provider-attempts\/[a-f0-9-]{36}\.json|dependency-attempt-fences\/[a-f0-9-]{36}\.json|readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed|correlations|invocations|submitters|submitter-exits|actor-chains)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|scoped-(?:terminating|operations|observations|receipts)\/[a-f0-9-]{36}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
 export type HostedActivationFence = Readonly<{ readonly held: true }>;
 
 /** Initial host root is trusted; namespace-local root is not that principal. */
@@ -206,6 +207,7 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence, de
   const origin = origins.find(row => row.jobId === start.jobId);
   if (!origin || origin.birthSha256 !== start.originSha256) invalid();
   same(start, origin, "jobId,jobRootDir,workspacePath");
+  assertHostedOrdinaryDependencyNotAdopted(fence, str(start.workspacePath));
   const jobName = sha256(str(start.jobId)) + ".json";
   const birth = requiredWire("ordinary-origins/" + jobName, "schemaVersion,installationId,jobId,jobRootDir,workspacePath,origin");
   jobFields(birth.value); same(start, birth.value, "installationId,jobId,jobRootDir,workspacePath");

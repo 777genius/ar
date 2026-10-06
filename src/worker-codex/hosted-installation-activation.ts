@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryDependencyNotAdopted } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
 import { dependencyOwnedReservations, releaseHostedDependencyConsumer } from "./hosted-dependency-release";
 import { assertHostedLegacyReferenceReservationPrepared, sealHostedLegacyReferenceStart,
   retainHostedLegacyReferenceRelease } from "./hosted-dependency-legacy-reference";
@@ -43,6 +44,7 @@ export class HostedInstallationActivationStore {
       const kernel = new HostedReadonlyHostKernel(), session = kernel.operatorSession();
       const origin = readHostedOrdinaryBirth(jobId);
       assertInspectedInstallation(origin.installation); assertActivationSession(origin.activation, session);
+      assertHostedOrdinaryDependencyNotAdopted(fence, origin.birth.workspacePath);
       const binding = readHostedDependencyBinding(jobId);
       if (!binding || binding.installationId !== origin.installation.installationId || binding.runtimeSha !== origin.installation.runtimeSha ||
           binding.workspace.canonicalPath !== origin.birth.workspacePath || binding.jobRootDir !== origin.birth.jobRootDir ||
@@ -243,6 +245,7 @@ export class HostedInstallationActivationStore {
       kernel.verifyExclusiveInventory(); kernel.verifyDescriptorBoundary();
       const creator = readHostedReadonlyHostInventory().ordinaryCreators.find(row => row.creatorId === creatorId);
       if (!creator) invalid();
+      assertHostedOrdinaryDependencyNotAdopted(fence, creator.workspacePath);
       readHostedChildSlot(creator);
       const birth = parseHostedOrdinaryBirth({ schemaVersion: 1, installationId: installation.installationId,
         jobId: creator.jobId, jobRootDir: creator.jobRootDir, workspacePath: creator.workspacePath, origin: HostedOriginKind.Ordinary });
@@ -309,6 +312,7 @@ export class HostedInstallationActivationStore {
       row.launch.command === command && row.launch.cwd === cwd && JSON.stringify(row.launch.args) === JSON.stringify(args));
     if (candidates.length !== 1) invalid();
     const creator = candidates[0]!;
+    assertHostedOrdinaryDependencyNotAdopted(fence, creator.workspacePath);
     const childSlot = readHostedChildSlot(creator);
     if (correlation && !childSlot) invalid();
     const childBudget = childSlot ? new ChildExecutionBudget(childSlot.lifetime) : undefined;
@@ -387,6 +391,7 @@ export class HostedInstallationActivationStore {
       const revalidate = () => {
       const launch = this.ordinaryLaunch;
       if (!launch) invalid();
+      assertHostedOrdinaryDependencyNotAdopted(fence, launch.start.workspacePath);
       const { installation, activation, birth, originSha256 } = readHostedOrdinaryBirth(launch.start.jobId);
       assertInspectedInstallation(installation);
       assertActivationSession(activation, new HostedReadonlyHostKernel().operatorSession());

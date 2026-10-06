@@ -2,6 +2,8 @@ import type { DependencyWorkspaceIdentity } from "./dependency-workspace";
 import { DependencyConsumerLaunchKind, isDependencyCustodyObject, isDependencyProtectedReference, sameDependencyProtectedReference,
   type DependencyProtectedReference } from "./dependency-custody-evidence";
 
+import { parseDependencyGenerationContinuityInvalidation, type DependencyGenerationContinuityInvalidation } from "./dependency-generation-continuity";
+
 export enum DependencyOwnerPhase {
   ExclusiveMutation = "exclusive_mutation",
   Running = "running",
@@ -52,7 +54,8 @@ type DependencyOwnerFields = {
   };
 };
 export type DependencyOwnerRecord = DependencyOwnerFields & (
-  { readonly version: 1 | 2 } | { readonly version: 3; readonly custodyBinding: DependencyProtectedReference }
+  { readonly version: 1 | 2 } | { readonly version: 3; readonly custodyBinding: DependencyProtectedReference;
+    readonly generationContinuity?: DependencyGenerationContinuityInvalidation }
 );
 
 export enum DependencyAdmissionFailure {
@@ -79,11 +82,16 @@ export function parseDependencyOwner(value: unknown): DependencyOwnerRecord {
   const versionDescriptor = typeof value === "object" && value !== null ? Object.getOwnPropertyDescriptor(value, "version") : undefined;
   if (versionDescriptor && !Object.hasOwn(versionDescriptor, "value")) invalid();
   const custody = versionDescriptor?.value === 3;
-  const keys = (hasActivity ? "activity," : "") + (custody ? "custodyBinding," : "") + "epoch,owner,revision,version,workspace";
+  const hasContinuity = custody && typeof value === "object" && value !== null && Object.hasOwn(value, "generationContinuity");
+  const keys = (hasActivity ? "activity," : "") + (custody ? "custodyBinding," : "") +
+    "epoch," + (hasContinuity ? "generationContinuity," : "") + "owner,revision,version,workspace";
   if (!object(value, keys) || (custody && !isDependencyCustodyObject(value, keys)) ||
       ("activity" in value && !hasActivity) || (value.version !== 1 && value.version !== 2 && value.version !== 3) ||
       !positive(value.revision) || !positive(value.epoch)) invalid();
   if (custody && !isDependencyProtectedReference(value.custodyBinding)) invalid();
+  if (hasContinuity) {
+    try { parseDependencyGenerationContinuityInvalidation(value.generationContinuity); } catch { invalid(); }
+  }
   if (hasActivity) {
     const activity = value.activity, epoch = value.epoch;
     const closed = (v: unknown, keys: string): v is Record<string, unknown> =>
@@ -139,7 +147,7 @@ export function parseDependencyOwner(value: unknown): DependencyOwnerRecord {
         if (!isDependencyProtectedReference(launch.association) || !isDependencyProtectedReference(launch.origin) ||
             !isDependencyProtectedReference(value.custodyBinding)) invalid();
         if (launch.kind === DependencyConsumerLaunchKind.ManagedReadonlyLocalV1) {
-          if (launch.unit !== `subscription-runtime-hosted-${launch.startId}.service` ||
+          if (launch.unit !== `subscription-runtime-outer-${launch.startId}.service` ||
               !sameDependencyProtectedReference(launch.association, value.custodyBinding)) invalid();
         } else if (launch.kind === DependencyConsumerLaunchKind.OrdinaryReadonlySuccessorV1) {
           if (launch.unit !== `subscription-runtime-ordinary-${launch.startId}.service` ||
