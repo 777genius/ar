@@ -135,7 +135,7 @@ try:
     shared=reader(r+'/w/node_modules/dep',threads=32)
     stable=reader(r+'/w2/node_modules/dep',private=True,threads=32)
     assert lib.mount(os.fsencode(r+'/w/node_modules/descendant'),os.fsencode(r+'/descendant-alias'),None,4096,None)==0;descendant_mounted=True
-    assert lib.mount(os.fsencode(spec['source']),os.fsencode(r+'/extra'),None,4096,None)==0;extra_mounted=True
+    assert lib.mount(os.fsencode(spec['source']),os.fsencode(r+'/extra-parent/extra'),None,4096,None)==0;extra_mounted=True
     plain=reader(r+'/w2/node_modules/dep',jail=r+'/jail');bound=reader(r+'/w2/node_modules/dep',jail=r+'/jail-bind')
     stage='SupervisorRootPins'
     roots=[]
@@ -173,7 +173,7 @@ finally:
         if child.poll() is None:child.kill()
         child.communicate(timeout=5)
     if extra_mounted:
-        target=r+'/extra-renamed' if os.path.exists(r+'/extra-renamed') else r+'/extra'
+        target=r+'/extra-parent-renamed/extra' if os.path.exists(r+'/extra-parent-renamed') else r+'/extra-parent/extra'
         assert lib.umount2(os.fsencode(target),0)==0
     if descendant_mounted:assert lib.umount2(os.fsencode(r+'/descendant-alias'),0)==0
     if proc_mounted:assert lib.umount2(b'/proc',0)==0
@@ -238,7 +238,7 @@ try:
     children=[]
     p['close_cohort'](items,budget);items=[];budget.release_mounts(table);table=None;parent.close();parent=None;proc.close();proc=None;os.close(self_fd);self_fd=None
     stage='MutationSetup'
-    os.mkdir(r+'/jail');os.mkdir(r+'/jail-bind');mount(r+'/jail',r+'/jail-bind');os.mkdir(r+'/extra');os.mkdir(r+'/aba');os.mkdir(r+'/descendant-alias');os.mkdir(r+'/w/node_modules/descendant')
+    os.mkdir(r+'/jail');os.mkdir(r+'/jail-bind');mount(r+'/jail',r+'/jail-bind');os.mkdir(r+'/extra-parent');os.mkdir(r+'/extra-parent/extra');os.mkdir(r+'/aba');os.mkdir(r+'/descendant-alias');os.mkdir(r+'/w/node_modules/descendant')
     def observe(mode):
         global stage,first_failure
         phases={'aba':('AbaSpawn','AbaHeader','AbaWindow','AbaRestore','AbaResult','AbaCleanup'),'rename':('RenameSpawn','RenameHeader','RenameWindow','RenameRestore','RenameResult','RenameCleanup'),'physical':('PhysicalSpawn','PhysicalHeader','PhysicalWindow','PhysicalRestore','PhysicalResult','PhysicalCleanup')}[mode]
@@ -288,7 +288,7 @@ try:
                     ready=bool(main_rewound and 0<main_pos<first_main_end-65536) if mode=='rename' else bool(main_final_end and 0<stable_pos<first_stable_end-65536)
                 if ready:
                     if mode=='aba':mount(source,r+'/aba');unmount(r+'/aba')
-                    elif mode=='rename':os.rename(r+'/extra',r+'/extra-renamed')
+                    elif mode=='rename':os.rename(r+'/extra-parent',r+'/extra-parent-renamed')
                     else:os.rename(r+'/w/node_modules/descendant',r+'/w/node_modules/descendant-parked');os.mkdir(r+'/w/node_modules/descendant')
                     mutated=True
                     if mode!='physical':break
@@ -308,7 +308,7 @@ try:
         finally:
             stage=phases[5]
             if supervisor.poll() is None:supervisor.kill();supervisor.communicate(timeout=5)
-            if os.path.exists(r+'/extra-renamed'):os.rename(r+'/extra-renamed',r+'/extra')
+            if os.path.exists(r+'/extra-parent-renamed'):os.rename(r+'/extra-parent-renamed',r+'/extra-parent')
             if os.path.exists(r+'/w/node_modules/descendant-parked'):
                 os.rmdir(r+'/w/node_modules/descendant');os.rename(r+'/w/node_modules/descendant-parked',r+'/w/node_modules/descendant')
     aba,aba_stable,aba_roots=observe('aba')
