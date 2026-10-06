@@ -4,7 +4,7 @@ import datetime, errno, hashlib, json, os, re, stat, sys, time
 MACHINE = 'd856d40da5ad4e23b4f67773e5942842'
 TARGET = '/srv/workers/jobs/subscription-runtime/mimo-orchestrator-v1/workspaces'
 COHORT_DIGEST = '8b0467e9cdf7d83bace82df97893ed77e9f311dcd83110a18cbfcd0fc01a7da4'
-MAX_TEXT, MAX_BYTES, MAX_OUTPUT = 2 * 1024**2, 64 * 1024**2, 2 * 1024**2
+MAX_TEXT, MAX_MOUNT_TEXT, MAX_BYTES, MAX_OUTPUT = 2 * 1024**2, 8 * 1024**2, 64 * 1024**2, 2 * 1024**2
 NAME = re.compile(r'^[A-Za-z0-9_.-]{1,200}$')
 DECIMAL = re.compile(r'^(0|[1-9][0-9]*)$')
 ERRNO_NAMES = set('EACCES EPERM ENOENT ESRCH ENOTDIR ELOOP EINVAL EMFILE ENFILE EIO ENOMEM ESTALE EBADF ENOSYS ENOTSUP EOVERFLOW EAGAIN EINTR ETIMEDOUT'.split())
@@ -85,7 +85,7 @@ def read_bytes_at(parent, name, limit, budget):
             if len(result) > limit: raise Refusal('TextLimit')
     finally: os.close(fd)
 
-def lines_at(parent, name, budget):
+def lines_at(parent, name, budget, max_bytes=MAX_TEXT):
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
     digest, total, carry = hashlib.sha256(), 0, b''
     try:
@@ -93,7 +93,7 @@ def lines_at(parent, name, budget):
             budget.check(); chunk = os.read(fd, 65536)
             if not chunk: break
             total += len(chunk); budget.read_charge(len(chunk))
-            if total > MAX_TEXT: raise Refusal('TextLimit')
+            if total > max_bytes: raise Refusal('TextLimit')
             digest.update(chunk); carry += chunk
             while b'\n' in carry:
                 line, carry = carry.split(b'\n', 1)
@@ -158,7 +158,7 @@ def unescape_mount(value):
 
 def mount_table(parent, budget):
     rows, digest = [], hashlib.sha256()
-    for line in lines_at(parent, 'mountinfo', budget):
+    for line in lines_at(parent, 'mountinfo', budget, max_bytes=MAX_MOUNT_TEXT):
         digest.update(line + b'\n'); fields = line.split(b' ')
         if len(fields) < 10 or b'-' not in fields or not fields[0].isdigit(): raise Refusal('MountShape')
         split = fields.index(b'-')
@@ -697,7 +697,7 @@ def main(request):
         report['cohortRootsUnobserved'] = 307 - len(items)
         report['bounds'] = {'seconds': 35 if mode == 'ProcReferences' else 40, 'identities': 4096,
                             'fdEntriesPerTask': 1024, 'fdEntriesTotal': 32768, 'textBytes': MAX_TEXT,
-                            'aggregateBytes': MAX_BYTES, 'namespaceRootViews': 256, 'matches': 4096,
+                            'mountTableBytes': MAX_MOUNT_TEXT, 'aggregateBytes': MAX_BYTES, 'namespaceRootViews': 256, 'matches': 4096,
                             'allocationEntries': 262144, 'crosslinks': 16384, 'outputBytes': MAX_OUTPUT}
         if report['allocation'] is not None:
             complete = final_binding and not report['allocation']['crosslinksOmitted'] and all(row['status'] == 'ObservedMetadata' and states.get(row['cohortIndex']) == 'ObservedRoot'

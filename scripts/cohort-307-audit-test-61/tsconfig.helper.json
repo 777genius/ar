@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["cohort-audit.mts", "audit-helper.test.mts", "audit-helper.namespace.test.mts", "run-owned-ci-test.mts"]
+  "include": ["cohort-audit.mts", "audit-helper.test.mts", "audit-helper.namespace.test.mts", "run-owned-ci-test.mts", "mount-table-text-bound.test.mts"]
 }

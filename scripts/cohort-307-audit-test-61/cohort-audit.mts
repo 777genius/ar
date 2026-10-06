@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const cohortSha256 = '8b0467e9cdf7d83bace82df97893ed77e9f311dcd83110a18cbfcd0fc01a7da4';
-const payloadSha256 = 'd9eb2396fbdd50b846820cd136b0eb78d23ef4afa67a8e51e2b62942fcf1133d';
+const payloadSha256 = 'c1a9164cac5bda5901d3c661364c154233bad07d93e9a19b2bf59e44d15733e9';
 const machineId = 'd856d40da5ad4e23b4f67773e5942842';
 const Mode = { ProcReferences: 'ProcReferences', AllocatedMetadata: 'AllocatedMetadata' } as const;
 type Mode = (typeof Mode)[keyof typeof Mode];
@@ -35,7 +35,7 @@ auditOwnedReferences ancestorExposures fdEntries mapEntries matchesOmitted obser
 auditCreatedHandle join cohortFinalJoin partition partitions trees crosslinks crosslinksOmitted aggregation crosslinksStatus measurement
 allocatedUniqueWithinPartitionBytes apparentUniqueWithinPartitionBytes uniqueInodes entryKindsObserved Directory Regular Symlink
 allocatedBytes nlink size ctimeNs mtimeNs members observedLinks seconds identities fdEntriesPerTask fdEntriesTotal textBytes
-aggregateBytes namespaceRootViews allocationEntries outputBytes`.split(/\s+/));
+aggregateBytes mountTableBytes namespaceRootViews allocationEntries outputBytes`.split(/\s+/));
 const labels = new Set(`ProcReferences AllocatedMetadata Unknown NotEstablished Incomplete ObservedWindow NotRequested
 ObservedRoot Unmeasured ObservedMetadata Pending Joined TargetObject NamespacePathAndObject NamespaceMountRoot
 Workspace Dependencies Cwd Root Exe Fd Map DirectMountBinding AncestorExposure AuditOwned ExternalCurrentReference
@@ -90,6 +90,7 @@ export function validateReport(value: unknown, expectedMode: Mode, cohortJson: s
     if (object(item)) {
       for (const [childKey, child] of Object.entries(item)) {
         if (!keys.has(childKey)) throw new Error('Unknown sanitized result field');
+        if (childKey === 'mountTableBytes' && child !== 8 * 1024 ** 2) throw new Error('Invalid mount table bound');
         inspect(child, childKey);
       }
       return;
