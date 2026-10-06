@@ -20,10 +20,10 @@ import { dependencySourceLinkProof, openCapturedDependencySourceLinks, closeDepe
 import { encodeDependencySourceBindingOutputBody } from "../worker-core/dependency-environment/domain/dependency-source-binding-record";
 import { encodeDependencyTreeManifest } from "../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import { HostedDependencyInstallerRecipe } from "./hosted-dependency-installer-inputs";
-import { readHostedDependencyEstablishedReceipt } from "./hosted-dependency-receipts";
+import { readHostedDependencyCommittedReady, readHostedDependencyEstablishedReceipt } from "./hosted-dependency-receipts";
 import { openHostedDependencyManifestPlacement } from "./hosted-dependency-manifest-placement";
 import { readHostedDependencyKeyInputs, readHostedDependencyReceipt, assertHostedDependencyKeyInputsCurrent, sameHostedDependencyKeyInputs,
-  hostedDependencyObservationLimits, matchesHostedDependencyReady } from "./hosted-dependency-materialization";
+  hostedDependencyObservationLimits, matchesHostedDependencyReady, consumeHostedDependencyColdHandoff, assertHostedDependencyConsumedColdHandoff, type HostedDependencyColdHandoff } from "./hosted-dependency-materialization";
 import { isHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import type { HostedDependencyKeyInputs } from "./hosted-dependency-materialization-context";
 
@@ -41,6 +41,7 @@ type EntryState = {
   binding: HostedDependencyBinding; attempt: DependencyAttempt; inputs: HostedDependencyKeyInputs; receipt: Ready;
   origin: ReturnType<typeof readHostedOrdinaryProcessOrigin>; startBytes: Buffer; qualification: QualificationPin;
   readonlySources: readonly DependencyToolSourceRoot[]; exposure?: DependencySourceExposure;
+  coldReference?: ReturnType<typeof readHostedDependencyCommittedReady>["reference"];
   placement: Awaited<ReturnType<typeof openHostedDependencyManifestPlacement>>;
   phase: DependencyOwnerPhase.ExclusiveMutation | DependencyOwnerPhase.Running; closed: boolean;
 };
@@ -67,7 +68,7 @@ export function hostedDependencyToolProfile(binding: HostedDependencyBinding): D
 /** N3-only current byte qualification, not generic Ready hot attestation.
  * All awaits are bracketed by actual ExclusiveMutation owner/fence checks.
  */
-export async function qualifyHostedDependencyToolClosure(binding: HostedDependencyBinding, attempt: DependencyAttempt): Promise<HostedDependencyQualifiedToolEntry | undefined> {
+export async function qualifyHostedDependencyToolClosure(binding: HostedDependencyBinding, attempt: DependencyAttempt, coldHandoff?: HostedDependencyColdHandoff): Promise<HostedDependencyQualifiedToolEntry | undefined> {
   const profile = hostedDependencyToolProfile(binding); if (!profile) return;
   const assertExclusive = () => withHostedActivationFence(fence => {
     const origin = readHostedOrdinaryProcessOrigin(fence);
@@ -87,6 +88,7 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   const source = openHostedDependencyReadySourceLinks(receipt);
   let exposure: DependencySourceExposure | undefined, nodeModulesExposure: DependencySourceExposure | undefined;
   let capturedSource: ReturnType<typeof openCapturedDependencySourceLinks> | undefined;
+  let coldReference: ReturnType<typeof readHostedDependencyCommittedReady>["reference"] | undefined;
   try {
   const readonlySources = currentSources(before, receipt);
   const deadline = performance.now() + hostedDependencyObservationLimits.maxDurationMs;
@@ -97,12 +99,18 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   const observationInput = { workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
     expectedWorkspace: binding.workspace, expectedTree: receipt.tree, limits: { ...hostedDependencyObservationLimits, maxDurationMs: Math.floor(deadline - performance.now()) },
     ...(source ? { sourceLinkSession: source } : {}) } as const;
-  if (local) {
+  if (local && !coldHandoff) {
     if (before.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1 || !source) fail();
     capturedSource = openCapturedDependencySourceLinks(before.capture);
   }
   let observed: Awaited<ReturnType<typeof observeDependencyTree>>;
-  if (capturedSource && source) {
+  if (coldHandoff) {
+    const final = consumeHostedDependencyColdHandoff(coldHandoff, binding, attempt, before, receipt);
+    coldReference = final.reference;
+    observed = final.observed; capturedSource = final.source; nodeModulesExposure = final.exposure;
+    if (local && (!capturedSource || !nodeModulesExposure || !source)) fail(DependencyAdmissionFailure.UnsafeTree);
+    if (!nodeModulesExposure || (!local && capturedSource)) fail(DependencyAdmissionFailure.UnsafeTree);
+  } else if (capturedSource && source) {
     const localObserved = await observeDependencyTreeWithLocalRegistrySelection({ ...observationInput,
       sourceLinkSession: capturedSource, protectedSourceLinkSession: source });
     if (localObserved.status === DependencyTreeObservationStatus.Complete) nodeModulesExposure = localObserved.exposure;
@@ -139,11 +147,14 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
     if (!sameDependencyAttempt(readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId), DependencyOwnerPhase.ExclusiveMutation), attempt) ||
         !encode(readHostedDependencyBinding(binding.jobId)).equals(encode(binding)) || !encode(readHostedDependencyReceipt(binding)).equals(encode(receipt))) fail();
     assertHostedDependencyKeyInputsCurrent(binding, before); placement.assertCurrent(fence);
+    if (coldHandoff) assertHostedDependencyConsumedColdHandoff(coldHandoff, fence);
+    if (coldReference && !encode(readHostedDependencyCommittedReady(binding, receipt.revision).reference).equals(encode(coldReference))) fail(DependencyAdmissionFailure.StaleAttempt);
     if (!encode(currentSources(before, receipt)).equals(encode(readonlySources))) fail();
     if (exposure) assertDependencySourceExposureCurrent(exposure);
     if (local && (!nodeModulesExposure || !capturedSource)) fail(DependencyAdmissionFailure.UnsafeTree);
     if (nodeModulesExposure && capturedSource) assertDependencyLocalRegistrySelectionAbsent(nodeModulesExposure, capturedSource,
       binding.workspace, observed.tree, Math.floor(deadline - performance.now()));
+    else if (nodeModulesExposure) assertDependencySourceExposureCurrent(nodeModulesExposure, Math.floor(deadline - performance.now()));
     assertProfileFiles(profile, binding.jobRootDir);
     const current = lstatSync(`${binding.workspace.canonicalPath}/node_modules`, { bigint: true });
     if (!current.isDirectory() || String(current.dev) !== observed.tree.dev || String(current.ino) !== observed.tree.ino) fail();
@@ -158,7 +169,7 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   if (!encode(pin.qualification).equals(encode(qualification))) fail();
   const entry = Object.freeze({ startId: attempt.launch.startId });
   entries.set(entry, { binding, attempt, inputs: before, receipt, origin, startBytes, qualification: pin,
-    readonlySources, placement, ...(exposure ? { exposure } : {}), phase: DependencyOwnerPhase.ExclusiveMutation, closed: false });
+    readonlySources, placement, ...(coldReference ? { coldReference } : {}), ...(exposure ? { exposure } : {}), phase: DependencyOwnerPhase.ExclusiveMutation, closed: false });
   exposure = undefined; // The one private entry now owns the logical baseline.
   return entry;
   } finally {
@@ -232,6 +243,7 @@ function currentEntry(state: EntryState, phase: DependencyOwnerPhase.ExclusiveMu
       !sameDependencyAttempt(readHostedDependencyAttempt(binding, state.origin.start, attempt.launch.startId, phase), attempt) ||
       !encode(readHostedDependencyEstablishedReceipt(binding)).equals(encode(receipt))) fail(DependencyAdmissionFailure.StaleAttempt);
   assertHostedDependencyKeyInputsCurrent(binding, inputs);
+  if (state.coldReference && !encode(readHostedDependencyCommittedReady(binding, receipt.revision).reference).equals(encode(state.coldReference))) fail(DependencyAdmissionFailure.StaleAttempt);
   state.placement.assertClosedCurrent();
   if (!encode(currentSources(inputs, receipt)).equals(encode(state.readonlySources))) fail(DependencyAdmissionFailure.UnsafeTree);
   if (state.exposure) assertDependencySourceExposureCurrent(state.exposure);

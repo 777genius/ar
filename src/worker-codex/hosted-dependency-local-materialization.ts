@@ -113,7 +113,7 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
   const prepared = await beginHostedDependencyInstallation(binding, attempt), { inputs, installing } = prepared;
   // Registry continues its existing recipe with this same actual capture and
   // legal Installing transition. Local retains its initial physical pins.
-  if (inputs.recipe === Recipe.NpmRegistryNoScriptsV1) return { inputs, installing };
+  if (inputs.recipe === Recipe.NpmRegistryNoScriptsV1) return { inputs, installing, cold: undefined };
   const current = () => {
     assertHostedDependencyKeyInputsCurrent(binding, inputs);
     const stored = readHostedDependencyReceipt(binding); if (!stored || !encode(stored).equals(encode(installing))) fail();
@@ -160,7 +160,7 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
     try { if (await blobs.put(final.canonicalBytes) !== final.digest) fail(); } finally { await blobs.close(); }
     // All observer/placement descriptors have joined close before FDA origin
     // inspection. Source sessions retain logical pins, not leaked scan FDs.
-    withHostedActivationFence(fence => {
+    const ready = withHostedActivationFence(fence => {
       assertOwnerUnderFence(fence, binding, attempt); current(); currentChain(chain, attempt); assertRoot(binding.workspace, final.tree);
       readDependencySourceLinkSession(originalSession, binding.workspace, "node_modules"); blobs.assertCurrent(fence);
       assertDependencyLocalRegistrySelectionAbsent(final.exposure, originalSession, binding.workspace, final.tree);
@@ -184,11 +184,16 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
       readDependencySourceLinkSession(originalSession, binding.workspace, "node_modules"); blobs.assertCurrent(fence);
       assertDependencyLocalRegistrySelectionAbsent(final.exposure, originalSession, binding.workspace, final.tree);
       publishHostedDependencyReceipt(binding, installing.revision, ready);
+      return ready;
     });
+    // Transfer only after actual protected Ready publication. These are genuine
+    // logical selection/source pins; scan FDs and placement already joined close.
+    const cold = { ready, observed: final, source: originalSession, exposure: final.exposure };
+    finalExposure = undefined; ownedOriginalSession = undefined;
+    return { inputs, installing, cold };
   } finally {
     if (stagedExposure) closeDependencySourceExposure(stagedExposure);
     if (finalExposure) closeDependencySourceExposure(finalExposure);
     closeDependencySourceLinkSession(stagedSession); if (ownedOriginalSession) closeDependencySourceLinkSession(ownedOriginalSession);
   }
-  return null;
 }
