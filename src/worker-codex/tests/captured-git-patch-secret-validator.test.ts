@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { deflateSync } from "node:zlib";
+import { OpaqueSecretDetectionPolicy } from "../../worker-core/secret-detection";
 import { assertCapturedGitPatchBlobsSecretSafe } from "../git-patch-secret-validator";
 
 const patch = (before: string, after: string): string =>
@@ -51,12 +52,21 @@ function base85(bytes: Buffer): string {
 // without proving the actual compressed payload direction and expansion bounds.
 it("binds literal binary payload bytes and rejects mismatches and declared expansion", () => {
   const bytes = Buffer.from([0, 1, 2, 3]);
-  const binaryPatch = "diff --git a/authored.bin b/authored.bin\nnew file mode 100644\nGIT binary patch\nliteral 4\n" + base85(deflateSync(bytes)) + "\n\n";
-  const captured = { patch: binaryPatch, changedPaths: ["authored.bin"], appliedPaths: ["authored.bin"],
+  const binaryPatch = (content: Buffer): string =>
+    "diff --git a/authored.bin b/authored.bin\nnew file mode 100644\nGIT binary patch\nliteral " +
+    content.length + "\n" + base85(deflateSync(content)) + "\n\n";
+  const captured = { patch: binaryPatch(bytes), changedPaths: ["authored.bin"], appliedPaths: ["authored.bin"],
     baseBlobs: new Map<string, Buffer>(), postBlobs: new Map([["authored.bin", bytes]]),
     intermediates: new Map<number, ReadonlyMap<string, Buffer>>() };
-  expect(assertCapturedGitPatchBlobsSecretSafe(captured)).toBe(4);
-  expect(() => assertCapturedGitPatchBlobsSecretSafe({ ...captured,
+  expect(() => assertCapturedGitPatchBlobsSecretSafe(captured)).toThrow("git_patch_secret_like_content:authored.bin");
+  // This existing policy still scans signatures; it does not prove all opaque bytes secret-free.
+  const scanned = { ...captured, opaqueContentPolicy: OpaqueSecretDetectionPolicy.ScanKnownSignatures };
+  expect(assertCapturedGitPatchBlobsSecretSafe(scanned)).toBe(4);
+  expect(() => assertCapturedGitPatchBlobsSecretSafe({ ...scanned,
     postBlobs: new Map([["authored.bin", Buffer.from([0, 1, 2, 4])]]) })).toThrow("git_patch_secret_binary_direction_mismatch");
-  expect(() => assertCapturedGitPatchBlobsSecretSafe({ ...captured, maxFileBytes: 3 })).toThrow("git_patch_secret_file_limit_exceeded");
+  expect(() => assertCapturedGitPatchBlobsSecretSafe({ ...scanned, maxFileBytes: 3 })).toThrow("git_patch_secret_file_limit_exceeded");
+  const signature = Buffer.concat([Buffer.from([0]),
+    Buffer.from(["s", "k", "-"].join("") + "z".repeat(24)), Buffer.from([255])]);
+  expect(() => assertCapturedGitPatchBlobsSecretSafe({ ...scanned, patch: binaryPatch(signature),
+    postBlobs: new Map([["authored.bin", signature]]) })).toThrow("git_patch_secret_like_content:authored.bin");
 });
