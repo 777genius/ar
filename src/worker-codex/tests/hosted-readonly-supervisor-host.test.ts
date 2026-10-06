@@ -14,8 +14,8 @@ const facts = vi.hoisted(() => ({ epoch: null as HostedCustodyEpoch | null, lock
   order: [] as string[], launch: vi.fn(), inventory: vi.fn(), descriptors: vi.fn(), stop: vi.fn(), birth: vi.fn(), fence: vi.fn(), drain: vi.fn(), terminal: vi.fn() }));
 // Preserve the actual scheduling gate; only fixed private record bytes are
 // substituted alongside this suite's existing epoch/kernel port observations.
-vi.mock("@vioxen/subscription-runtime/provider-codex", async original => ({
-  ...await original<typeof import("@vioxen/subscription-runtime/provider-codex")>(),
+vi.mock("../../provider-codex/app-server/adapters/hosted-process-activation", async original => ({
+  ...await original<typeof import("../../provider-codex/app-server/adapters/hosted-process-activation")>(),
   readHostedActivationBytes: (name: string) => {
     const epoch = facts.epoch!;
     const birth = { ...epoch, generation: 1, phase: "closed", revoked: false, reservations: [], outerRuntime: null };

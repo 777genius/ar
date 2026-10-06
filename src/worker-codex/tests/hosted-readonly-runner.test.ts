@@ -26,8 +26,8 @@ const facts = vi.hoisted(() => ({
   epoch: null as HostedCustodyEpoch | null, activationPhase: "EXCLUSIVE", records: new Map<string, Buffer>(),
   snapshot: vi.fn(), reserve: vi.fn(), spawn: vi.fn(), stop: vi.fn(),
 }));
-vi.mock("@vioxen/subscription-runtime/provider-codex", async original => ({
-  ...await original<typeof import("@vioxen/subscription-runtime/provider-codex")>(),
+vi.mock("../../provider-codex/app-server/adapters/hosted-process-activation", async original => ({
+  ...await original<typeof import("../../provider-codex/app-server/adapters/hosted-process-activation")>(),
   readHostedActivationBytes: (name: string) => {
     const epoch = facts.epoch!;
     const birth = Buffer.from(JSON.stringify({ ...epoch, generation: 1, phase: "closed", revoked: false, reservations: [], outerRuntime: null }));
