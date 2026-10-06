@@ -207,7 +207,7 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence, de
   const origin = origins.find(row => row.jobId === start.jobId);
   if (!origin || origin.birthSha256 !== start.originSha256) invalid();
   same(start, origin, "jobId,jobRootDir,workspacePath");
-  assertHostedOrdinaryDependencyNotAdopted(fence, str(start.workspacePath));
+  assertHostedOrdinaryDependencyNotAdopted(fence, canonical(start.workspacePath));
   const jobName = sha256(str(start.jobId)) + ".json";
   const birth = requiredWire("ordinary-origins/" + jobName, "schemaVersion,installationId,jobId,jobRootDir,workspacePath,origin");
   jobFields(birth.value); same(start, birth.value, "installationId,jobId,jobRootDir,workspacePath");
