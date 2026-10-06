@@ -12,7 +12,7 @@ const bus = { version: 1, role: SystemBusInfrastructureRole.SystemBus,
   socket: { name: "dbus.socket", endpoint: "/run/dbus/system_bus_socket", fragmentPath: "/etc/systemd/test-units/dbus.socket", fragmentSha256: sha },
   config: { path: "/etc/subscription-runtime/system-bus/bus.conf", sha256: sha },
   executable: { path: "/usr/bin/dbus-daemon", sha256: sha }, elfClosure: [
-    { path: "/usr/bin/dbus-daemon", sha256: sha }, { path: "/usr/lib/ld-linux-x86-64.so.2", sha256: sha }] };
+    { path: "/usr/bin/dbus-daemon", sha256: sha }, { path: "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", sha256: sha }] };
 function wire(version: number) {
   return { schemaVersion: version, hostId: "b".repeat(32), supervisorUnit: units[0]?.name, units, runtimeLaunch: launch,
     ...(version >= 2 ? { ordinaryCreators: [creator], disabledCreators: ["test-timer.timer"] } : {}),
