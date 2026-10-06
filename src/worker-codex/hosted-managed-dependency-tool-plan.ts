@@ -9,7 +9,8 @@ import { closeSync, constants, fstatSync, fsyncSync, mkdirSync, symlinkSync, wri
 import { dirname, join } from "node:path";
 import { DependencyAdmissionError, DependencyAdmissionFailure, sameDependencyAttempt, parseDependencyOwner,
   isDependencyConsumerOwner, DependencyOwnerPhase } from "../core/dependency-environment/dependency-owner";
-import { DependencyConsumerLaunchKind, sameDependencyProtectedReference, isDependencyProtectedReference } from "../core/dependency-environment/dependency-custody-evidence";
+import { DependencyConsumerLaunchKind } from "../core/dependency-environment/dependency-custody-evidence";
+import { sameDependencyProtectedReference, isDependencyProtectedReference } from "../core/dependency-environment/dependency-custody-evidence";
 import { HostedCustodyPhase, HostedCustodyReservationState, parseHostedCustodyEpoch } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
 import { parseHostedReadonlyHostInventory } from "../worker-core/hosted-custody/domain/hosted-readonly-inventory";
 import { readHostedReadonlyDependencyStart, readHostedReadonlyDependencyAssociation } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
@@ -27,9 +28,10 @@ import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRe
 import { isHostedManagedReadonlyOuterRuntime, assertCurrentHostedDependencyAttempt, readCurrentHostedManagedDependencyProvider,
   prepareCurrentHostedManagedDependencyProviderTools, readCurrentHostedManagedDependencyProviderTools,
   closeCurrentHostedManagedDependencyProviderTools, assertCurrentHostedManagedDependencyCapsuleCopy,
+  readCurrentHostedDependencyProviderSessionHome,
   type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 
-type Plan = { readonly unit: string; readonly root: string; readonly binding: HostedDependencyBinding;
+type Plan = { readonly refresh: boolean; readonly writable: readonly Readonly<{path:string;dev:string;ino:string}>[]; readonly unit: string; readonly root: string; readonly binding: HostedDependencyBinding;
   readonly managedOrigin: CurrentHostedDependencyOrigin; invocation?: CodexAppServerProcessInvocation;
   readonly provenance: DependencyToolReadyFacts["provenance"];
   readonly sourceAncestors: readonly Readonly<{ canonicalPath: string; dev: string; ino: string }>[];
@@ -181,10 +183,12 @@ function prepareHostedDependencyToolPlan(fence: HostedActivationFence, unit: str
   const actualManaged = assertCurrentHostedDependencyAttempt(managedOrigin,fence);
   if (!encode(actualManaged.binding).equals(encode(binding)) || binding.version !== 2 || pending.has(unit)) fail();
   const attempt = actualManaged.attempt;
+  const session = readCurrentHostedDependencyProviderSessionHome(managedOrigin,fence,writable[1],writable[2]);
+  if (writable[0] !== (session.refresh ? session.emptyWorkdir : binding.workspace.canonicalPath)) fail();
   const profile = readHostedFdProfile();
   if (!profile || profile.node.path !== binding.toolProfile.node.path || profile.node.sha256 !== binding.toolProfile.node.sha256 ||
       root !== `${hostedDependencyPolicyRoot}/dependency-provider-roots/${providerId(unit)}` || writable.length !== 3 ||
-      writable[0] !== binding.workspace.canonicalPath || sources.some(path => path === "/" || path === hostedDependencyPolicyRoot)) fail();
+      !writable[0] || sources.some(path => path === "/" || path === hostedDependencyPolicyRoot)) fail();
   assertHostedDependencyToolProfileFiles(binding.toolProfile, binding.jobRootDir);
   const managedTools = prepareCurrentHostedManagedDependencyProviderTools(managedOrigin,fence,unit);
   try {
@@ -198,13 +202,14 @@ function prepareHostedDependencyToolPlan(fence: HostedActivationFence, unit: str
     const q = managedTools.qualification, path = managedTools.capsulePath;
     const parentProcess = observeHostedFdProcess(process.pid);
     const rootStat = lstatSync(root, { bigint: true });
-    const plan: Plan = { unit, root, binding, managedOrigin, provenance: initial.facts.provenance, sourceAncestors,
+    const plan: Plan = { refresh:session.refresh,writable:Object.freeze(writable.map(path => { const stat = lstatSync(path,{bigint:true});
+        return Object.freeze({path,dev:String(stat.dev),ino:String(stat.ino)}); })),unit, root, binding, managedOrigin, provenance: initial.facts.provenance, sourceAncestors,
       qualification: q, attempt, parentBirth: parentProcess.birth,
-      files: Object.freeze([...q.profile.readonlyFiles, q.profile.node].map(pin => {
+      files: Object.freeze([...q.profile.readonlyFiles, q.profile.node,...managedDependencyHookFiles()].map(pin => {
         const s = lstatSync(pin.path, { bigint: true }); return Object.freeze({ pin, dev: s.dev, ino: s.ino });
       })),
       rootIdentity: Object.freeze({ dev: rootStat.dev, ino: rootStat.ino }),
-      parentGroup: parentProcess.group, sources: Object.freeze([...sources, ...writable, `${binding.workspace.canonicalPath}/.git`,
+      parentGroup: parentProcess.group, sources: Object.freeze([...sources, ...writable, binding.workspace.canonicalPath, `${binding.workspace.canonicalPath}/.git`,
         `${binding.workspace.canonicalPath}/node_modules`, ...binding.toolProfile.readonlyFiles.map(f => f.path),
         binding.toolProfile.node.path, binding.toolProfile.cache.canonicalPath, dependencyToolGuestConfigPath,
         ...localRoots.map(source => source.canonicalPath), ...sourceAncestors.map(ancestor => ancestor.canonicalPath)]), closed: false };
@@ -217,7 +222,7 @@ function prepareHostedDependencyToolPlan(fence: HostedActivationFence, unit: str
       `BindReadOnlyPaths=${tree}:${tree}:norbind`,
       // Each ancestor is a RW mountpoint: rename/replacement cannot redirect a
       // source link around the RO leaf, while ordinary sibling writes remain.
-      ...sourceAncestors.map(ancestor => `BindPaths=${ancestor.canonicalPath}:${ancestor.canonicalPath}:norbind`),
+      ...sourceAncestors.map(ancestor => `${session.refresh ? "BindReadOnlyPaths" : "BindPaths"}=${ancestor.canonicalPath}:${ancestor.canonicalPath}:norbind`),
       ...localRoots.map(source => `BindReadOnlyPaths=${source.canonicalPath}:${source.canonicalPath}:norbind`),
       ...binding.toolProfile.readonlyFiles.map(f => `BindReadOnlyPaths=${f.path}:${f.path}:norbind`),
       ...(sources.includes(binding.toolProfile.node.path) ? [] : [`BindReadOnlyPaths=${binding.toolProfile.node.path}:${binding.toolProfile.node.path}:norbind`]),
@@ -256,7 +261,9 @@ export function bindHostedDependencyToolChild(invocation: CodexAppServerProcessI
   if (plan.closed || !child.pid || children.has(child)) fail();
   invocations.delete(invocation); children.set(child, plan);
   const close = () => {
-    children.delete(child); closePlan(plan);
+    children.delete(child); plan.closed = true;
+    // Native events fence future Plan use; only the original-owned awaited
+    // manager/queue/cgroup/FD collector can discharge its physical resources.
   };
   child.once("close", close); child.once("error", close);
 }
@@ -288,6 +295,8 @@ function validatePlan(fence: HostedActivationFence, plan: Plan): void {
   assertHostedActivationFence(fence);
   if (plan.closed) fail();
   const managed = readCurrentHostedManagedDependencyProviderTools(plan.managedOrigin,fence,plan.unit);
+  const session = readCurrentHostedDependencyProviderSessionHome(plan.managedOrigin,fence,plan.writable[1]?.path,plan.writable[2]?.path);
+  if (session.refresh !== plan.refresh) fail();
   const q = plan.qualification, binding = plan.binding;
   const root = lstatSync(plan.root, { bigint: true }), parentDirectory = lstatSync(dirname(plan.root), { bigint: true });
   if (!root.isDirectory() || root.uid !== 0n || root.gid !== 0n || (root.mode & 0o777n) !== 0o700n ||
@@ -416,12 +425,15 @@ function assertNamespaceMounts(plan: Plan, process: HostedFdProcess) {
     if (!s.isDirectory() || String(s.dev) !== expected.dev || String(s.ino) !== expected.ino) fail();
   };
   directory(plan.binding.workspace.canonicalPath, plan.binding.workspace); directory(tree, q.tree); directory(cache, q.profile.cache);
+  for (const pin of plan.writable) { exact(pin.path,false); directory(pin.path,pin);
+    const named = lstatSync(pin.path,{bigint:true}), guest = statSync(prefix+pin.path,{bigint:true});
+    if (named.uid !== 0n || named.gid !== 0n || (pin.path.startsWith(plan.binding.jobRootDir+"/home/") ? (named.mode & 0o7777n) !== 0o700n : !!(named.mode & 0o022n)) || guest.mode !== named.mode) fail(); }
   const localRoots = (plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted || plan.provenance.kind === DependencyToolReadyProvenanceKind.LocalCompared) ? plan.provenance.readonlySources : [];
-  const workspaceMount = exact(plan.binding.workspace.canonicalPath, false);
+  const workspaceMount = exact(plan.binding.workspace.canonicalPath, plan.refresh);
   const physicalRoot = (path: string) => workspaceMount.root.replace(/\/$/, "") + path.slice(plan.binding.workspace.canonicalPath.length);
   const ancestorMounts = plan.sourceAncestors.map(ancestor => {
     directory(ancestor.canonicalPath, ancestor);
-    const mount = exact(ancestor.canonicalPath, false);
+    const mount = exact(ancestor.canonicalPath, plan.refresh);
     if (mount.device !== workspaceMount.device || mount.root !== physicalRoot(ancestor.canonicalPath)) fail();
     return mount;
   });
@@ -594,7 +606,9 @@ export function hostedManagedDependencyProviderInvocation(fence: HostedActivatio
   assertHostedActivationFence(fence);
   if (!isHostedManagedReadonlyOuterRuntime()) invalid();
   const fdProfile = readHostedFdProfile(), actual = assertCurrentHostedDependencyAttempt(managedOrigin,fence), binding = actual.binding;
-  if (binding.version !== 2 || !fdProfile || input.cwd !== binding.workspace.canonicalPath ||
+  const session = readCurrentHostedDependencyProviderSessionHome(managedOrigin,fence,input.env.HOME,input.env.CODEX_HOME);
+  const workspace = session.refresh ? session.emptyWorkdir : binding.workspace.canonicalPath;
+  if (binding.version !== 2 || !fdProfile || input.cwd !== workspace ||
       !/^subscription-runtime-hosted-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
   const providerId = unit.slice("subscription-runtime-hosted-".length,-".service".length);
   readCurrentHostedManagedDependencyProvider(managedOrigin,fence,unit);
@@ -609,9 +623,10 @@ export function hostedManagedDependencyProviderInvocation(fence: HostedActivatio
   // Each provider reservation gets a fresh finite root. Existing roots are
   // unresolved effects, not reusable descriptions or silently cleaned state.
   mkdirSync(root, { mode: 0o700 });
+  const hookSupport = managedDependencyHookFiles().map(pin => pin.path);
   const launcherSupport = ["hosted-process-descriptors.js", "hosted-app-server-launch-frame.js", "hosted-fd-prelude.js"]
     .map(name => trusted(`${dirname(launcher)}/${name}`));
-  const readOnly = new Set<string>(["/usr", packageRoot, executable, node, launcher, ...launcherSupport]);
+  const readOnly = new Set<string>(["/usr", packageRoot, executable, node, launcher, ...launcherSupport,...hookSupport]);
   for (const alias of ["/bin", "/sbin", "/lib", "/lib64"]) {
     let info;
     try { info = lstatSync(alias); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") continue; throw e; }
@@ -628,9 +643,14 @@ export function hostedManagedDependencyProviderInvocation(fence: HostedActivatio
     placeholder(root, source, lstatSync(source).isDirectory());
     mounts.push(`BindReadOnlyPaths=${source}:${source}:norbind`);
   }
+  for (const source of hookSupport) {
+    placeholder(root,source,false);
+    if (!mounted.includes(source)) mounts.push(`BindReadOnlyPaths=${source}:${source}:norbind`);
+  }
   // This is a finite ESM closure, not a bind of the installed runtime tree.
   // Package resolution must not depend on a host package.json outside the root.
   writeFileSync(join(root, dirname(launcher), "package.json"), '{"type":"module"}\n', { flag: "wx", mode: 0o644 });
+  writeFileSync(join(root,dirname(dirname(dirname(dirname(launcher)))),"package.json"), '{"type":"module"}\n', {flag:"wx",mode:0o644});
   // The finite skeleton supplies only parent directories. Host job metadata,
   // encryption keys/state/results are absent, not shared via a broad job bind.
   // ProtectSystem makes these skeleton parents read-only; only leaves write.
@@ -638,10 +658,14 @@ export function hostedManagedDependencyProviderInvocation(fence: HostedActivatio
   const home = input.env.HOME, codexHome = input.env.CODEX_HOME;
   if (!home || !codexHome || !home.startsWith(binding.jobRootDir + "/home/") ||
       home !== `${dirname(home)}/home` || codexHome !== `${dirname(home)}/codex-home`) invalid();
-  for (const writable of [binding.workspace.canonicalPath, home, codexHome]) {
+  for (const writable of [workspace, home, codexHome]) {
     trustedDirectory(writable);
     placeholder(root, writable, true);
     mounts.push(`BindPaths=${writable}:${writable}:norbind`);
+  }
+  if (session.refresh) {
+    placeholder(root,binding.workspace.canonicalPath,true);
+    mounts.push(`BindReadOnlyPaths=${binding.workspace.canonicalPath}:${binding.workspace.canonicalPath}:norbind`);
   }
   const git = `${binding.workspace.canonicalPath}/.git`;
   placeholder(root, git, true);
@@ -663,7 +687,7 @@ export function hostedManagedDependencyProviderInvocation(fence: HostedActivatio
   try {
   if (binding.version === 2) {
     const tools = prepareHostedDependencyToolPlan(fence, unit, binding, root,
-      [binding.workspace.canonicalPath, home, codexHome], mounted, managedOrigin);
+      [workspace, home, codexHome], mounted, managedOrigin);
     if (!tools) invalid();
     // These are construction data from the actual retained plan, never caller
     // selected source paths. Release independently verifies each actual mount.
@@ -680,10 +704,10 @@ export function hostedManagedDependencyProviderInvocation(fence: HostedActivatio
     "RuntimeMaxSec=8h", "TasksMax=512", "MemoryMax=4G", "CPUQuota=200%", `RootDirectory=${root}`,
     ...(fdProfile ? hostedFdSystemdProperties : []),
     "MountAPIVFS=yes", ...mounts,
-    `ReadWritePaths=${binding.workspace.canonicalPath} ${home} ${codexHome}${toolCache ? " " + toolCache : ""}`,
+    `ReadWritePaths=${workspace} ${home} ${codexHome}${toolCache ? " " + toolCache : ""}`,
     "TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M"];
   const invocation: CodexAppServerProcessInvocation = { command: hostedDependencySystemdRunExecutable, systemdUnit: unit,
-    args: ["--quiet", "--wait", "--pipe", "--collect", `--unit=${unit}`, "--service-type=exec",
+    args: ["--quiet", "--wait", "--pipe", `--unit=${unit}`, "--service-type=exec",
       "--expand-environment=no", `--working-directory=${input.cwd}`, ...properties.map(p => `--property=${p}`), "--",
       "/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
       "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs",
@@ -743,3 +767,8 @@ function syncDirectory(path: string): void {
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 function invalid(): never { throw new DependencyAdmissionError(DependencyAdmissionFailure.Unsupported); }
+
+function managedDependencyHookFiles(): readonly DependencyToolFile[] {
+  return ["./hosted-global-scan-pre-tool-hook.js","./hosted-global-scan-hook-policy.js","./code-mode-exec-command-parser.js",
+    "../worker-core/host-command/global-filesystem-scan-policy.js"].map(name => trustedFile(trusted(fileURLToPath(new URL(name,import.meta.url)))));
+}

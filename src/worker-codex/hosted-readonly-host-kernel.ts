@@ -1,3 +1,5 @@
+import { assertHostedManagedProviderFailureCreator } from "./hosted-managed-provider-failure-recovery";
+import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { parseHostedReadonlyHostInventory, type HostedReadonlyHostInventory } from "@vioxen/subscription-runtime/worker-core";
 import { ScopedTerminationRecords, scopedFenceIdentity } from "./hosted-controller/scoped-termination-records";
 import { assertHostedActivationOperator, observeHostedScopedActorChildren } from "@vioxen/subscription-runtime/provider-codex";
@@ -181,12 +183,17 @@ export class HostedReadonlyHostKernel {
   /** A same-boot reservation needs the trusted --wait completion receipt. PID
    * absence or a killed proxy is deliberately insufficient. Failed/ambiguous
    * starts stay held; this adapter does not fabricate a terminal receipt. */
-  fenceCreator(reservation: HostedCustodyReservation, recordedBootId: string): void {
+  fenceCreator(reservation: HostedCustodyReservation, recordedBootId: string, recoveryFence?: HostedActivationFence): void {
     if (recordedBootId !== this.session().bootId) return;
     const bytes = readHostedPrivateBytes(completionPath(reservation), 4096);
-    if (!bytes || !bytes.equals(completionBytes(reservation, 0))) {
+    if (bytes?.equals(completionBytes(reservation, 0))) return;
+    // Outer remains status0-only. A token-less legacy call still fails closed;
+    // only the trusted recovery owner can pass its already-held genuine fence.
+    assertUnitReservation(reservation);
+    if (!recoveryFence || reservation.unit !== `subscription-runtime-hosted-${reservation.startId}.service`) {
       throw new Error("hosted_custody_creator_not_fenced");
     }
+    assertHostedManagedProviderFailureCreator(recoveryFence,reservation.startId);
   }
   drainQueuedStart(reservation: HostedCustodyReservation): void {
     assertUnitReservation(reservation);

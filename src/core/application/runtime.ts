@@ -175,6 +175,8 @@ class RuntimeKernel {
       });
     }
 
+    const sessionExecutionUse = await this.deps.sessionExecutionLifecycle?.begin();
+    try {
     const leaseStartedAt = this.deps.clock.monotonicMs();
     this.emit("lease.acquire.started", input.runContext.runId, {
       generation: String(session.generation),
@@ -265,6 +267,7 @@ class RuntimeKernel {
           runner: this.deps.runner,
           redactor: this.deps.redactor,
           abortSignal: input.runContext.abortSignal,
+          ...(sessionExecutionUse ? { sessionExecutionUse } : {}),
         });
         this.emit(
           "provider.refresh.completed",
@@ -408,6 +411,7 @@ class RuntimeKernel {
         });
       }
     }
+    } finally { await sessionExecutionUse?.complete(); }
   }
 
   async runTask(input: {
@@ -662,6 +666,8 @@ class RuntimeKernel {
       this.deps.redactor.registerSecret(input.session.bytes, "session");
     }
 
+    const sessionExecutionUse = await this.deps.sessionExecutionLifecycle?.begin();
+    try {
     const workspace = await this.deps.workspace.create({
       purpose: "run-task",
       isolation: "temp-dir",
@@ -676,6 +682,7 @@ class RuntimeKernel {
         runner: this.deps.runner,
         redactor: this.deps.redactor,
         abortSignal: input.runContext.abortSignal,
+        ...(sessionExecutionUse ? { sessionExecutionUse } : {}),
         onTaskStarted: async () => {
           await input.runContext.onProviderTaskStarted?.();
           this.emit("provider.task.started", input.runContext.runId, {
@@ -702,7 +709,7 @@ class RuntimeKernel {
         "subscription_runtime.provider_task_ms",
         this.deps.clock.monotonicMs() - taskStartedAt,
       );
-      return this.maybeWritebackTaskSessionUpdate({
+      return await this.maybeWritebackTaskSessionUpdate({
         result,
         ...(input.sessionEnvelope
           ? { sessionEnvelope: input.sessionEnvelope }
@@ -712,6 +719,7 @@ class RuntimeKernel {
     } finally {
       await workspace.dispose?.();
     }
+    } finally { await sessionExecutionUse?.complete(); }
   }
 
   private async maybeWritebackTaskSessionUpdate(input: {

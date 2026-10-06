@@ -1,3 +1,4 @@
+import { computeSessionGenerationHash } from "@vioxen/subscription-runtime/core";
 import { CodexAppServerExecutionEngine, type AppServerExecutionLifetime } from "./codex-app-server-execution-engine";
 import { join } from "node:path";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -14,6 +15,7 @@ import {
   type RedactorPort,
   type RuntimeWarning,
   type SessionArtifact,
+  type SessionExecutionUse,
   type WorkspaceHandle,
 } from "@vioxen/subscription-runtime/core";
 import {
@@ -98,33 +100,36 @@ export class CodexJsonAgentDriver implements AgentDriver {
   readonly agentId = codexJsonAgentId;
   readonly providerId = codexProviderId;
   readonly capabilities: AgentCapabilities;
-  private readonly executionLifetime: AppServerExecutionLifetime | undefined;
-  private readonly retainedSessions = new Set<CodexMaterializedSession>();
-  private readonly unusedSessions = new Set<CodexMaterializedSession>();
-  private readonly pendingReleases = new Map<CodexMaterializedSession, Promise<void>>();
-  private readonly materializations = new Set<Promise<CodexMaterializedSession>>();
-  private readonly activeRuns = new Set<Promise<ProviderTaskResult>>();
-  private disposed = false;
-  private resourcesDisposed = false;
-  private disposing: Promise<void> | undefined;
-  private readonly engine: CodexExecutionEngine;
-  private readonly model: string;
-  private readonly reasoningEffort: CodexReasoningEffort;
-  private readonly serviceTier: CodexServiceTier | undefined;
-  private readonly outputSchemas: Readonly<Record<string, unknown>>;
-  private readonly sessionMaterializer: CodexSessionMaterializer;
+  readonly #executionLifetime: AppServerExecutionLifetime | undefined;
+  readonly #retainedSessions = new Set<CodexMaterializedSession>();
+  readonly #unusedSessions = new Set<CodexMaterializedSession>();
+  readonly #pendingReleases = new Map<CodexMaterializedSession, Promise<void>>();
+  readonly #materializations = new Set<Promise<CodexMaterializedSession>>();
+  readonly #activeRuns = new Set<Promise<ProviderTaskResult>>();
+  #disposed = false;
+  #sessionExecutionOutcome: {readonly use:SessionExecutionUse;readonly needsWriteback:boolean}|undefined;
+  #resourcesDisposed = false;
+  #disposing: Promise<void> | undefined;
+  readonly #engine: CodexExecutionEngine;
+  readonly #model: string;
+  readonly #reasoningEffort: CodexReasoningEffort;
+  readonly #serviceTier: CodexServiceTier | undefined;
+  readonly #outputSchemas: Readonly<Record<string, unknown>>;
+  readonly #sessionMaterializer: CodexSessionMaterializer;
   readonly modelBackend: CodexModelBackend;
-  private readonly mimoApiKeyEnvVarName: string;
-  private readonly mimoConfigToml: string | undefined;
-  private readonly sourceEnv: Readonly<Record<string, string | undefined>> | undefined;
-  private readonly managedRunSessions = new Map<
+  readonly #mimoApiKeyEnvVarName: string;
+  readonly #mimoConfigToml: string | undefined;
+  readonly #sourceEnv: Readonly<Record<string, string | undefined>> | undefined;
+  readonly #managedRunSessions = new Map<
     string,
     CodexMaterializedSession
   >();
 
-  constructor(private readonly options: CodexJsonAgentDriverOptions) {
+  readonly #options: CodexJsonAgentDriverOptions;
+  constructor(options: CodexJsonAgentDriverOptions) {
+    this.#options = Object.freeze({ ...options });
     const modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
-    this.engine =
+    this.#engine =
       "engine" in options
         ? options.engine
         : new PackagedCodexJsonExecutionEngine({
@@ -136,23 +141,23 @@ export class CodexJsonAgentDriver implements AgentDriver {
             ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
             ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
           });
-    this.executionLifetime = options.executionLifetime ??
-      (this.engine instanceof CodexAppServerExecutionEngine ? this.engine.executionLifetime : undefined);
-    if (options.executionLifetime && (!(this.engine instanceof CodexAppServerExecutionEngine) ||
-        this.engine.executionLifetime !== options.executionLifetime)) throw new Error("codex_driver_lifetime_engine_conflict");
+    this.#executionLifetime = options.executionLifetime ??
+      (this.#engine instanceof CodexAppServerExecutionEngine ? this.#engine.executionLifetime : undefined);
+    if (options.executionLifetime && (!(this.#engine instanceof CodexAppServerExecutionEngine) ||
+        this.#engine.executionLifetime !== options.executionLifetime)) throw new Error("codex_driver_lifetime_engine_conflict");
     if (
       modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
-      this.engine.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan
+      this.#engine.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan
     ) {
       throw new Error("codex_json_mimo_engine_incompatible");
     }
     if (
-      this.engine.modelBackend !== undefined &&
-      this.engine.modelBackend !== modelBackend
+      this.#engine.modelBackend !== undefined &&
+      this.#engine.modelBackend !== modelBackend
     ) {
       throw new Error("codex_json_model_backend_engine_mismatch");
     }
-    const engineCapabilities = this.engine.capabilities;
+    const engineCapabilities = this.#engine.capabilities;
     this.capabilities =
       !engineCapabilities.budgetCapabilities &&
         !engineCapabilities.taskExecutionCapabilities &&
@@ -177,26 +182,27 @@ export class CodexJsonAgentDriver implements AgentDriver {
               : {}),
           };
     this.modelBackend = modelBackend;
-    this.model =
+    this.#model =
       options.model ?? codexModelBackendDefaultModel(this.modelBackend, defaultCodexModel);
-    this.reasoningEffort = options.reasoningEffort ?? "low";
-    this.serviceTier = options.serviceTier;
-    this.outputSchemas = options.outputSchemas ?? {};
-    this.sessionMaterializer =
+    this.#reasoningEffort = options.reasoningEffort ?? "low";
+    this.#serviceTier = options.serviceTier;
+    this.#outputSchemas = options.outputSchemas ?? {};
+    this.#sessionMaterializer =
       options.sessionMaterializer ?? new CodexEphemeralSessionMaterializer();
-    this.mimoApiKeyEnvVarName =
+    this.#mimoApiKeyEnvVarName =
       options.mimoApiKeyEnvVarName ?? codexMimoApiKeyEnvVarDefault;
-    this.mimoConfigToml = options.mimoConfigToml;
-    this.sourceEnv = options.sourceEnv;
+    this.#mimoConfigToml = options.mimoConfigToml;
+    this.#sourceEnv = options.sourceEnv;
   }
 
   async runTask(input: Parameters<AgentDriver["runTask"]>[0]): Promise<ProviderTaskResult> {
-    const pending = this.runTaskInvocation(input);
-    this.activeRuns.add(pending);
-    try { return await pending; } finally { this.activeRuns.delete(pending); }
+    const pending = this.#runTaskInvocation(input);
+    this.#activeRuns.add(pending);
+    try { return await pending; } finally { this.#activeRuns.delete(pending); }
   }
 
-  private async runTaskInvocation(input: {
+  async #runTaskInvocation(input: {
+    readonly sessionExecutionUse?: SessionExecutionUse;
     readonly session: SessionArtifact | null;
     readonly task: ProviderTask;
     readonly workspace: WorkspaceHandle;
@@ -207,7 +213,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
     readonly onTextDelta?: (text: string) => void;
     readonly logicalThread?: ProviderLogicalThreadExecution;
   }): Promise<ProviderTaskResult> {
-    this.options.assertProviderAdmission?.();
+    this.#options.assertProviderAdmission?.();
     assertProviderTaskSystemPrompt(input.task.systemPrompt, "task.systemPrompt");
 
     const startedAt = Date.now();
@@ -234,16 +240,17 @@ export class CodexJsonAgentDriver implements AgentDriver {
     const outputAbortSignal = AbortSignal.any([
       input.abortSignal,
       outputAbortController.signal,
-      ...(this.executionLifetime ? [this.executionLifetime.signal] : []),
+      ...(this.#executionLifetime ? [this.#executionLifetime.signal] : []),
     ]);
     let textDeltaRedactor: ReturnType<typeof createCodexTextDeltaRedactor> | undefined;
     try {
-      if (this.executionLifetime && this.disposed) throw new Error("codex_driver_disposed");
-      this.executionLifetime?.enterMaterialization(outputAbortSignal);
-      if (input.logicalThread && this.executionLifetime) throw new Error("child_continuation_denied");
+      if (this.#executionLifetime && this.#disposed) throw new Error("codex_driver_disposed");
+      if (input.sessionExecutionUse && input.task.controls?.model !== undefined && input.task.controls.model !== this.#model) throw new Error("codex_managed_model_mismatch");
+      this.#executionLifetime?.enterMaterialization(outputAbortSignal);
+      if (input.logicalThread && this.#executionLifetime) throw new Error("child_continuation_denied");
       if (this.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
         try {
-          materialized = await this.awaitMaterialization(this.materializeMimoSession({
+          materialized = await this.#awaitMaterialization(this.#materializeMimoSession({
             redactor: input.redactor,
           }), outputAbortSignal);
         } catch (error) {
@@ -266,13 +273,14 @@ export class CodexJsonAgentDriver implements AgentDriver {
           throw error;
         }
       } else {
-        this.options.assertProviderAdmission?.();
-        materialized = await this.awaitMaterialization(this.sessionMaterializer.materialize({
+        this.#options.assertProviderAdmission?.();
+        materialized = await this.#awaitMaterialization(this.#sessionMaterializer.materialize({
           session: input.session!,
           redactor: input.redactor,
+          ...(input.sessionExecutionUse ? { sessionExecutionUse: input.sessionExecutionUse } : {}),
         }), outputAbortSignal);
       }
-      this.executionLifetime?.assertActive(outputAbortSignal);
+      this.#executionLifetime?.assertActive(outputAbortSignal);
       textDeltaRedactor = input.onTextDelta === undefined
         ? undefined
         : createCodexTextDeltaRedactor({
@@ -292,16 +300,16 @@ export class CodexJsonAgentDriver implements AgentDriver {
         ...(input.task.systemPrompt !== undefined
           ? { systemPrompt: input.task.systemPrompt }
           : {}),
-        outputSchema: this.outputSchemaRequest(outputSchemaName),
+        outputSchema: this.#outputSchemaRequest(outputSchemaName),
         session: materialized,
         workspacePath: input.workspace.path,
         runner: input.runner,
         redactor: input.redactor,
-        model: input.task.controls?.model ?? this.model,
-        reasoningEffort: this.reasoningEffort,
-        ...(this.serviceTier === undefined
+        model: input.task.controls?.model ?? this.#model,
+        reasoningEffort: this.#reasoningEffort,
+        ...(this.#serviceTier === undefined
           ? {}
-          : { serviceTier: this.serviceTier }),
+          : { serviceTier: this.#serviceTier }),
         sandboxMode: codexSandboxModeForControls(input.task.controls),
         abortSignal: outputAbortSignal,
         ...(activeTextDeltaRedactor === undefined
@@ -312,26 +320,26 @@ export class CodexJsonAgentDriver implements AgentDriver {
               },
             }),
       };
-      this.executionLifetime?.assertActive(outputAbortSignal);
+      this.#executionLifetime?.assertActive(outputAbortSignal);
       const started = Promise.resolve(input.onTaskStarted?.());
-      if (this.executionLifetime) await this.executionLifetime.wait(started, outputAbortSignal); else await started;
-      this.executionLifetime?.assertActive(outputAbortSignal);
+      if (this.#executionLifetime) await this.#executionLifetime.wait(started, outputAbortSignal); else await started;
+      this.#executionLifetime?.assertActive(outputAbortSignal);
       engineEntered = true;
       const logicalThreadResult =
         input.logicalThread === undefined
           ? undefined
-          : await this.runLogicalThread({
+          : await this.#runLogicalThread({
               engineInput,
               logicalThread: input.logicalThread,
             });
       const result =
         logicalThreadResult === undefined
-          ? await this.engine.run(engineInput)
+          ? await this.#engine.run(engineInput)
           : logicalThreadResult;
-      this.executionLifetime?.assertActive(outputAbortSignal);
+      this.#executionLifetime?.assertActive(outputAbortSignal);
       textDeltaRedactor?.flush();
       if (result.status === "waiting_for_input") {
-        this.managedRunSessions.set(result.runId, materialized);
+        this.#managedRunSessions.set(result.runId, materialized);
         materialized = null;
         return {
           status: "waiting_for_input",
@@ -352,13 +360,15 @@ export class CodexJsonAgentDriver implements AgentDriver {
       }
       const snapshotPending: Promise<Awaited<ReturnType<typeof snapshotSessionUpdate>>> = input.session
         ? snapshotSessionUpdate({ materialized, previousSession: input.session, redactor: input.redactor,
-            ...(this.executionLifetime ? { executionLifetime: this.executionLifetime } : {}) })
+            ...(this.#executionLifetime ? { executionLifetime: this.#executionLifetime } : {}) })
         : Promise.resolve({ warnings: [] as const });
-      const snapshot = this.executionLifetime
-        ? await this.executionLifetime.wait(snapshotPending, outputAbortSignal)
+      const snapshot = this.#executionLifetime
+        ? await this.#executionLifetime.wait(snapshotPending, outputAbortSignal)
         : await snapshotPending;
 
-      this.executionLifetime?.assertActive(outputAbortSignal);
+      this.#executionLifetime?.assertActive(outputAbortSignal);
+      if (materialized.sessionExecutionUse && input.session) this.#sessionExecutionOutcome = {use:materialized.sessionExecutionUse,
+        needsWriteback:!!snapshot.sessionUpdate && computeSessionGenerationHash({artifact:snapshot.sessionUpdate}) !== computeSessionGenerationHash({artifact:input.session})};
       return {
         status: "completed",
         outputText: result.outputText,
@@ -392,9 +402,13 @@ export class CodexJsonAgentDriver implements AgentDriver {
       };
     } finally {
       if (materialized) {
-        if (this.executionLifetime) {
-          if (engineEntered) this.retainedSessions.add(materialized);
-          else void this.releaseUnusedSession(materialized).catch(() => undefined);
+        if (materialized.sessionExecutionUse) {
+          if (this.#sessionExecutionOutcome?.use !== materialized.sessionExecutionUse) this.#sessionExecutionOutcome = {use:materialized.sessionExecutionUse,needsWriteback:false};
+          await materialized.release();
+        }
+        else if (this.#executionLifetime) {
+          if (engineEntered) this.#retainedSessions.add(materialized);
+          else void this.#releaseUnusedSession(materialized).catch(() => undefined);
         } else await materialized.release();
       }
     }
@@ -408,28 +422,28 @@ export class CodexJsonAgentDriver implements AgentDriver {
    * never cached, snapshotted, or persisted (`snapshotSession` is omitted,
    * so this session is never eligible for a `sessionUpdate`).
    */
-  private async materializeMimoSession(input: {
+  async #materializeMimoSession(input: {
     readonly redactor: RedactorPort;
   }): Promise<CodexMaterializedSession> {
-    this.executionLifetime?.assertActive();
-    const hosted = (this.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+    this.#executionLifetime?.assertActive();
+    const hosted = (this.#sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
     const credential = hosted ? undefined : loadCodexApiKeyCredential({
           backend: CodexModelBackend.XiaomiMimoTokenPlan,
-          envVarName: this.mimoApiKeyEnvVarName,
-          ...(this.sourceEnv === undefined ? {} : { sourceEnv: this.sourceEnv }),
+          envVarName: this.#mimoApiKeyEnvVarName,
+          ...(this.#sourceEnv === undefined ? {} : { sourceEnv: this.#sourceEnv }),
           redactor: input.redactor,
         });
     const egressPolicy = codexMimoTokenPlanEgressPolicy();
     const tempRoot = await createCodexRuntimeTempRoot({
       prefix: "subscription-runtime-codex-mimo-",
-      ...(this.sourceEnv === undefined ? {} : { sourceEnv: this.sourceEnv }),
+      ...(this.#sourceEnv === undefined ? {} : { sourceEnv: this.#sourceEnv }),
     });
     const home = join(tempRoot, "home");
     const codexHome = join(tempRoot, "codex-home");
     const localSession: CodexMaterializedSession = {
       home, codexHome, env: {},
       release: once(async () => {
-        if (this.executionLifetime) {
+        if (this.#executionLifetime) {
           // Bounded custody ends only after removal succeeds. The ordinary
           // helper may tolerate cleanup failures after scrubbing credentials.
           await rm(tempRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
@@ -441,22 +455,22 @@ export class CodexJsonAgentDriver implements AgentDriver {
     };
     // Until transferred, this continuation owns its unused temporary root.
     try {
-      this.executionLifetime?.assertActive();
+      this.#executionLifetime?.assertActive();
       await mkdir(home, { recursive: true, mode: 0o700 });
-      this.executionLifetime?.assertActive();
+      this.#executionLifetime?.assertActive();
       await mkdir(codexHome, { recursive: true, mode: 0o700 });
-      this.executionLifetime?.assertActive();
+      this.#executionLifetime?.assertActive();
       await writeFile(
         join(codexHome, "config.toml"),
-        this.mimoConfigToml ??
+        this.#mimoConfigToml ??
           codexJsonHomeConfigToml({
             modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
-            mimoApiKeyEnvVarName: this.mimoApiKeyEnvVarName,
+            mimoApiKeyEnvVarName: this.#mimoApiKeyEnvVarName,
             providerEgressPolicy: egressPolicy,
           }),
         { mode: 0o600 },
       );
-      this.executionLifetime?.assertActive();
+      this.#executionLifetime?.assertActive();
       const env: Record<string, string> = {
         HOME: home,
         CODEX_HOME: codexHome,
@@ -467,12 +481,12 @@ export class CodexJsonAgentDriver implements AgentDriver {
         // AppServerClient spreads session.env for each new child. The accessor
         // resolves and redacts the current key at that boundary, including a
         // restart within this one materialized session.
-        Object.defineProperty(env, this.mimoApiKeyEnvVarName, {
+        Object.defineProperty(env, this.#mimoApiKeyEnvVarName, {
           enumerable: true,
           get: () => {
-            this.executionLifetime?.assertActive();
+            this.#executionLifetime?.assertActive();
             const credential = resolveAuthorizedHostedMimoCredential(input.redactor);
-            this.executionLifetime?.assertActive();
+            this.#executionLifetime?.assertActive();
             return credential;
           },
         });
@@ -485,17 +499,17 @@ export class CodexJsonAgentDriver implements AgentDriver {
         // credential from a completed run.
       };
     } catch (error) {
-      if (this.executionLifetime) await this.releaseUnusedSession(localSession);
+      if (this.#executionLifetime) await this.#releaseUnusedSession(localSession);
       else await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome: codexHome });
       throw error;
     }
   }
 
-  private async runLogicalThread(input: {
+  async #runLogicalThread(input: {
     readonly engineInput: Parameters<CodexExecutionEngine["run"]>[0];
     readonly logicalThread: ProviderLogicalThreadExecution;
   }) {
-    if (!this.engine.runLogicalThread) {
+    if (!this.#engine.runLogicalThread) {
       throw new Error("codex_logical_thread_unsupported");
     }
     if (input.logicalThread.previousCheckpoint !== undefined) {
@@ -504,7 +518,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
         "codex-provider-checkpoint",
       );
     }
-    const result = await this.engine.runLogicalThread({
+    const result = await this.#engine.runLogicalThread({
       ...input.engineInput,
       ...(input.logicalThread.previousCheckpoint === undefined
         ? {}
@@ -529,9 +543,9 @@ export class CodexJsonAgentDriver implements AgentDriver {
     readonly redactor: RedactorPort;
     readonly abortSignal: AbortSignal;
   }): Promise<ProviderTaskResult> {
-    this.options.assertProviderAdmission?.();
-    if (this.executionLifetime) throw new Error("child_continuation_denied");
-    if (!this.engine.resume) {
+    this.#options.assertProviderAdmission?.();
+    if (this.#executionLifetime) throw new Error("child_continuation_denied");
+    if (!this.#engine.resume) {
       return {
         status: "failed",
         failure: {
@@ -546,12 +560,12 @@ export class CodexJsonAgentDriver implements AgentDriver {
     }
 
     const startedAt = Date.now();
-    let materialized = this.managedRunSessions.get(input.runId) ?? null;
+    let materialized = this.#managedRunSessions.get(input.runId) ?? null;
     let ownsMaterialized = false;
     if (!materialized) {
       materialized = this.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan
-        ? await this.materializeMimoSession({ redactor: input.redactor })
-        : await this.materializeChatGptSession({
+        ? await this.#materializeMimoSession({ redactor: input.redactor })
+        : await this.#materializeChatGptSession({
             session: input.session,
             redactor: input.redactor,
           });
@@ -559,9 +573,10 @@ export class CodexJsonAgentDriver implements AgentDriver {
     }
 
     try {
+      if (materialized.sessionExecutionUse && input.task?.controls?.model !== undefined && input.task.controls.model !== this.#model) throw new Error("codex_managed_model_mismatch");
       const outputSchemaName =
         input.task?.controls?.outputSchemaName ?? input.task?.outputSchemaName;
-      const result = await this.engine.resume({
+      const result = await this.#engine.resume({
         runId: input.runId,
         requestId: input.requestId,
         answer: input.answer,
@@ -570,20 +585,20 @@ export class CodexJsonAgentDriver implements AgentDriver {
         workspacePath: input.workspace.path,
         runner: input.runner,
         redactor: input.redactor,
-        model: input.task?.controls?.model ?? this.model,
-        reasoningEffort: this.reasoningEffort,
-        ...(this.serviceTier === undefined
+        model: input.task?.controls?.model ?? this.#model,
+        reasoningEffort: this.#reasoningEffort,
+        ...(this.#serviceTier === undefined
           ? {}
-          : { serviceTier: this.serviceTier }),
+          : { serviceTier: this.#serviceTier }),
         sandboxMode: codexSandboxModeForControls(input.task?.controls),
-        outputSchema: this.outputSchemaRequest(outputSchemaName),
+        outputSchema: this.#outputSchemaRequest(outputSchemaName),
         abortSignal: input.abortSignal,
       });
       if (result.status === "waiting_for_input") {
         if (result.runId !== input.runId) {
-          this.managedRunSessions.delete(input.runId);
+          this.#managedRunSessions.delete(input.runId);
         }
-        this.managedRunSessions.set(result.runId, materialized);
+        this.#managedRunSessions.set(result.runId, materialized);
         ownsMaterialized = false;
         return {
           status: "waiting_for_input",
@@ -603,7 +618,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
         };
       }
 
-      this.managedRunSessions.delete(input.runId);
+      this.#managedRunSessions.delete(input.runId);
       ownsMaterialized = true;
       const snapshot = input.session
         ? await snapshotSessionUpdate({
@@ -612,6 +627,8 @@ export class CodexJsonAgentDriver implements AgentDriver {
             redactor: input.redactor,
           })
         : { warnings: [] as const };
+      if (materialized.sessionExecutionUse && input.session) this.#sessionExecutionOutcome = {use:materialized.sessionExecutionUse,
+        needsWriteback:!!snapshot.sessionUpdate && computeSessionGenerationHash({artifact:snapshot.sessionUpdate}) !== computeSessionGenerationHash({artifact:input.session})};
       return {
         status: "completed",
         outputText: result.outputText,
@@ -627,7 +644,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
         warnings: [...result.warnings, ...snapshot.warnings],
       };
     } catch (error) {
-      this.managedRunSessions.delete(input.runId);
+      this.#managedRunSessions.delete(input.runId);
       ownsMaterialized = true;
       const failure = codexExecutionFailure(error, input.redactor);
       return {
@@ -642,13 +659,24 @@ export class CodexJsonAgentDriver implements AgentDriver {
       };
     } finally {
       if (ownsMaterialized) {
+        if (materialized.sessionExecutionUse && this.#sessionExecutionOutcome?.use !== materialized.sessionExecutionUse) this.#sessionExecutionOutcome = {use:materialized.sessionExecutionUse,needsWriteback:false};
         await materialized.release();
       }
     }
   }
 
+  sessionExecutionNeedsWriteback(use:SessionExecutionUse):boolean|undefined {
+    return this.#sessionExecutionOutcome?.use === use ? this.#sessionExecutionOutcome.needsWriteback : undefined;
+  }
+  retainedSessionExecutionUse(runId: string): SessionExecutionUse | undefined {
+    return this.#managedRunSessions.get(runId)?.sessionExecutionUse;
+  }
+  retainsSessionExecutionUse(use: SessionExecutionUse): boolean {
+    return [...this.#managedRunSessions.values()].some(session => session.sessionExecutionUse === use);
+  }
+
   hasManagedRunSession(runId: string): boolean {
-    return this.managedRunSessions.has(runId);
+    return this.#managedRunSessions.has(runId);
   }
 
   classifyRunFailure(error: unknown): ProviderFailure {
@@ -662,12 +690,12 @@ export class CodexJsonAgentDriver implements AgentDriver {
     readonly runner?: Parameters<AgentDriver["runTask"]>[0]["runner"];
     readonly abortSignal?: AbortSignal;
   }): Promise<CodexSessionPrewarmResult> {
-    this.options.assertProviderAdmission?.();
-    if (this.executionLifetime) throw new Error("child_prewarm_denied");
+    this.#options.assertProviderAdmission?.();
+    if (this.#executionLifetime) throw new Error("child_prewarm_denied");
     let mimoMaterialized: CodexMaterializedSession | null = null;
     let sessionPrewarm: CodexSessionPrewarmResult;
     if (this.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) {
-      mimoMaterialized = await this.materializeMimoSession({
+      mimoMaterialized = await this.#materializeMimoSession({
         redactor: input.redactor,
       });
       sessionPrewarm = {
@@ -679,12 +707,12 @@ export class CodexJsonAgentDriver implements AgentDriver {
         warmedAt: new Date(),
       };
     } else {
-      sessionPrewarm = this.sessionMaterializer.prewarm
-        ? await this.sessionMaterializer.prewarm({
+      sessionPrewarm = this.#sessionMaterializer.prewarm
+        ? await this.#sessionMaterializer.prewarm({
             session: input.session!,
             redactor: input.redactor,
           })
-        : await this.prewarmMaterializerFallback({
+        : await this.#prewarmMaterializerFallback({
             session: input.session!,
             redactor: input.redactor,
           });
@@ -692,30 +720,30 @@ export class CodexJsonAgentDriver implements AgentDriver {
 
     if (
       !sessionPrewarm.reusable ||
-      !this.engine.prewarm ||
+      !this.#engine.prewarm ||
       !input.workspacePath ||
       !input.runner
     ) {
       return sessionPrewarm;
     }
 
-    const materialized = mimoMaterialized ?? await this.materializeChatGptSession({
+    const materialized = mimoMaterialized ?? await this.#materializeChatGptSession({
       session: input.session,
       redactor: input.redactor,
     });
     try {
-      const enginePrewarm = await this.engine.prewarm({
+      const enginePrewarm = await this.#engine.prewarm({
         session: materialized,
         workspacePath: input.workspacePath,
         runner: input.runner,
         redactor: input.redactor,
-        model: this.model,
-        reasoningEffort: this.reasoningEffort,
-        ...(this.serviceTier === undefined
+        model: this.#model,
+        reasoningEffort: this.#reasoningEffort,
+        ...(this.#serviceTier === undefined
           ? {}
-          : { serviceTier: this.serviceTier }),
-        ...(this.options.warmupPrompt
-          ? { warmupPrompt: this.options.warmupPrompt }
+          : { serviceTier: this.#serviceTier }),
+        ...(this.#options.warmupPrompt
+          ? { warmupPrompt: this.#options.warmupPrompt }
           : {}),
         abortSignal: input.abortSignal ?? new AbortController().signal,
       });
@@ -733,15 +761,15 @@ export class CodexJsonAgentDriver implements AgentDriver {
     }
   }
 
-  private async prewarmMaterializerFallback(input: {
+  async #prewarmMaterializerFallback(input: {
     readonly session: SessionArtifact;
     readonly redactor: RedactorPort;
   }): Promise<CodexSessionPrewarmResult> {
-    this.options.assertProviderAdmission?.();
-    const materialized = await this.sessionMaterializer.materialize(input);
+    this.#options.assertProviderAdmission?.();
+    const materialized = await this.#sessionMaterializer.materialize(input);
     try {
       return {
-        mode: this.sessionMaterializer.mode,
+        mode: this.#sessionMaterializer.mode,
         home: materialized.home,
         codexHome: materialized.codexHome,
         sessionHash: sessionArtifactHash(input.session),
@@ -753,95 +781,97 @@ export class CodexJsonAgentDriver implements AgentDriver {
     }
   }
 
-  private async materializeChatGptSession(input: {
+  async #materializeChatGptSession(input: {
     readonly session: SessionArtifact | null;
     readonly redactor: RedactorPort;
   }): Promise<CodexMaterializedSession> {
-    this.options.assertProviderAdmission?.();
+    this.#options.assertProviderAdmission?.();
     if (!input.session) {
       throw new Error("codex_json_agent_driver_missing_session_invariant");
     }
-    return this.sessionMaterializer.materialize({
+    return this.#sessionMaterializer.materialize({
       session: input.session,
       redactor: input.redactor,
     });
   }
 
-  private async awaitMaterialization(pending: Promise<CodexMaterializedSession>, signal: AbortSignal): Promise<CodexMaterializedSession> {
-    if (!this.executionLifetime) return await pending;
-    this.materializations.add(pending);
+  async #awaitMaterialization(pending: Promise<CodexMaterializedSession>, signal: AbortSignal): Promise<CodexMaterializedSession> {
+    if (!this.#executionLifetime) return await pending;
+    this.#materializations.add(pending);
     let resolved: CodexMaterializedSession | undefined;
     const observed = pending.then(async session => {
       resolved = session;
-      if (signal.aborted || this.executionLifetime!.signal.aborted || this.disposed) {
-        try { await this.releaseUnusedSession(session); } catch { /* retain for disposal */ }
+      if (signal.aborted || this.#executionLifetime!.signal.aborted || this.#disposed) {
+        try { await this.#releaseUnusedSession(session); } catch { /* retain for disposal */ }
       }
       return session;
     });
-    void observed.finally(() => this.materializations.delete(pending)).catch(() => undefined);
-    try { return await this.executionLifetime.wait(observed, signal); }
+    void observed.finally(() => this.#materializations.delete(pending)).catch(() => undefined);
+    try { return await this.#executionLifetime.wait(observed, signal); }
     catch (error) {
-      if (resolved) void this.releaseUnusedSession(resolved).catch(() => undefined);
+      if (resolved) void this.#releaseUnusedSession(resolved).catch(() => undefined);
       throw error;
     }
   }
 
-  private releaseUnusedSession(session: CodexMaterializedSession): Promise<void> {
-    const existing = this.pendingReleases.get(session);
+  #releaseUnusedSession(session: CodexMaterializedSession): Promise<void> {
+    const existing = this.#pendingReleases.get(session);
     if (existing) return existing;
-    this.retainedSessions.add(session);
-    this.unusedSessions.add(session);
+    this.#retainedSessions.add(session);
+    this.#unusedSessions.add(session);
     const pending = Promise.resolve().then(() => session.release()).then(() => {
-      this.retainedSessions.delete(session);
-      this.unusedSessions.delete(session);
+      this.#retainedSessions.delete(session);
+      this.#unusedSessions.delete(session);
     });
-    this.pendingReleases.set(session, pending);
-    void pending.finally(() => this.pendingReleases.delete(session)).catch(() => undefined);
+    this.#pendingReleases.set(session, pending);
+    void pending.finally(() => this.#pendingReleases.delete(session)).catch(() => undefined);
     return pending;
   }
 
   async dispose(): Promise<void> {
-    this.disposed = true;
-    this.executionLifetime?.close();
-    if (this.executionLifetime && this.resourcesDisposed) return;
-    if (this.disposing) return await this.disposing;
-    const pending = this.disposeResources();
-    this.disposing = pending;
-    try { await pending; } finally { if (this.disposing === pending) this.disposing = undefined; }
+    this.#disposed = true;
+    this.#executionLifetime?.close();
+    if (this.#executionLifetime && this.#resourcesDisposed) return;
+    if (this.#disposing) return await this.#disposing;
+    const pending = this.#disposeResources();
+    this.#disposing = pending;
+    try { await pending; } finally { if (this.#disposing === pending) this.#disposing = undefined; }
   }
 
-  private async disposeResources(): Promise<void> {
-    if (!this.executionLifetime) return await this.disposeOrdinary();
+  async #disposeResources(): Promise<void> {
+    if (!this.#executionLifetime) return await this.#disposeOrdinary();
     // The engine owns startup flights and failed process cleanup. Never erase
     // their configuration/home before its disposal succeeds.
-    await this.engine.dispose?.();
-    if (this.materializations.size || this.pendingReleases.size || (this.executionLifetime && this.activeRuns.size)) throw new Error("codex_driver_materialization_pending");
-    if (this.executionLifetime && (!this.executionLifetime.childBudget ||
-        (this.sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job") &&
-        ([...this.retainedSessions].some(session => !this.unusedSessions.has(session)) || this.managedRunSessions.size)) {
+    await this.#engine.dispose?.();
+    if (this.#materializations.size || this.#pendingReleases.size || (this.#executionLifetime && this.#activeRuns.size)) throw new Error("codex_driver_materialization_pending");
+    if (this.#executionLifetime && (!this.#executionLifetime.childBudget ||
+        (this.#sourceEnv ?? process.env).SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job") &&
+        ([...this.#retainedSessions].some(session => !this.#unusedSessions.has(session)) || this.#managedRunSessions.size)) {
       // This slice has no accepted controller cleanup binding. Local transport
       // disposal supplies no scoped proof, so these resources stay owned.
       throw new Error("codex_driver_hosted_cleanup_unresolved");
     }
-    for (const session of new Set([...this.retainedSessions, ...this.managedRunSessions.values()])) {
+    for (const session of new Set([...this.#retainedSessions, ...this.#managedRunSessions.values()])) {
       await session.release();
-      this.retainedSessions.delete(session);
-      this.unusedSessions.delete(session);
-      for (const [key, value] of this.managedRunSessions) if (value === session) this.managedRunSessions.delete(key);
+      this.#retainedSessions.delete(session);
+      this.#unusedSessions.delete(session);
+      for (const [key, value] of this.#managedRunSessions) if (value === session) this.#managedRunSessions.delete(key);
+      if (session.sessionExecutionUse) this.#sessionExecutionOutcome = {use:session.sessionExecutionUse,needsWriteback:false};
+      await session.sessionExecutionUse?.complete();
     }
-    await this.sessionMaterializer.dispose?.();
-    this.resourcesDisposed = true;
+    await this.#sessionMaterializer.dispose?.();
+    this.#resourcesDisposed = true;
   }
 
-  private async disposeOrdinary(): Promise<void> {
-    const managedSessions = [...this.managedRunSessions.values()];
-    this.managedRunSessions.clear();
+  async #disposeOrdinary(): Promise<void> {
+    const managedSessions = [...this.#managedRunSessions.values()];
+    this.#managedRunSessions.clear();
     const results = await Promise.allSettled([
       ...managedSessions.map((session) =>
-        Promise.resolve().then(() => session.release()),
+        Promise.resolve().then(async () => { await session.release(); if (session.sessionExecutionUse) this.#sessionExecutionOutcome = {use:session.sessionExecutionUse,needsWriteback:false}; await session.sessionExecutionUse?.complete(); }),
       ),
-      Promise.resolve().then(() => this.engine.dispose?.()),
-      Promise.resolve().then(() => this.sessionMaterializer.dispose?.()),
+      Promise.resolve().then(() => this.#engine.dispose?.()),
+      Promise.resolve().then(() => this.#sessionMaterializer.dispose?.()),
     ]);
     const errors = results
       .filter(
@@ -859,17 +889,20 @@ export class CodexJsonAgentDriver implements AgentDriver {
     }
   }
 
-  private outputSchemaRequest(
+  #outputSchemaRequest(
     outputSchemaName: string | undefined,
   ): CodexOutputSchemaRequest | undefined {
     if (!outputSchemaName) return undefined;
-    const schema = this.outputSchemas[outputSchemaName];
+    const schema = this.#outputSchemas[outputSchemaName];
     return {
       name: outputSchemaName,
       ...(schema === undefined ? {} : { schema }),
     };
   }
 }
+
+Object.freeze(CodexJsonAgentDriver);
+Object.freeze(CodexJsonAgentDriver.prototype);
 
 function once<T>(fn: () => Promise<T>): () => Promise<T> {
   let pending: Promise<T> | undefined;

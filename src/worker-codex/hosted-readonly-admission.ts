@@ -20,7 +20,7 @@ import { captureHostedDependencyToolReadyReader } from "./hosted-dependency-tool
 import type { HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 import { readCurrentHostedDependencyRootQualification } from "./hosted-dependency-tool-profile";
 import { isHostedManagedReadonlyOuterRuntime, requiresCurrentHostedDependencyRootPurpose,
-  readCurrentHostedManagedDependencyProviderParent, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+  readCurrentHostedManagedDependencyProviderParent, createCurrentHostedDependencySessionRuntime, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 
 const guardedFactories = new WeakMap<CodexAppServerProcessFactory, string>();
 const toolFactories = new WeakMap<CodexAppServerProcessFactory, Readonly<{
@@ -63,6 +63,15 @@ export function readHostedDependencyToolFactoryEntry(factory: CodexAppServerProc
   return factory ? toolFactories.get(factory)?.entry : undefined;
 }
 
+/** Fixed materializer selection from the same actual admitted factory brand.
+ * Returned scheduling adapter issues no home/path authority of its own. */
+export function createHostedDependencyToolSessionRuntime(factory:CodexAppServerProcessFactory|undefined,
+  workspacePath:string|undefined,input:Parameters<typeof createCurrentHostedDependencySessionRuntime>[1]) {
+  assertHostedDependencyToolAdmittedFactory(factory,workspacePath);
+  const actual = factory && toolFactories.get(factory);
+  return actual?.origin ? createCurrentHostedDependencySessionRuntime(actual.origin,input) : undefined;
+}
+
 export function assertReadonlyAdmittedFactory(factory: CodexAppServerProcessFactory | undefined, workspacePath: string | undefined): void {
   if (!factory || guardedFactories.get(factory) !== workspacePath || workspacePath === undefined) throw new Error("hosted_readonly_admitted_factory_required");
 }
@@ -100,9 +109,9 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
         const reservation = {startId,unit,creatorId:startId};
         return supervisor.start(HostedCustodyLaunchKind.ManagedProvider,admitted.identity,admitted.generation,reservation,() => {
           const child = host.spawnDependencyProvider(retained.origin,unit,launch);
-          child.on("exit",(code,signal) => { if (signal === null && code === 0) {
-            try { host.recordWaitCompletion(reservation,code); } catch { /* Actual reservation stays unresolved. */ }
-          } }); return child;
+          // Numeric provider completion is collected from the privately retained
+          // actual wait child, never the public SDK event view.
+          return child;
         });
       });
       guardedFactories.set(factory,identity.workspacePath);

@@ -1,3 +1,4 @@
+import type { SessionExecutionUse } from "@vioxen/subscription-runtime/core";
 import type {
   AgentRuntimeTaskExecutionCapability,
   AgentRuntimeTurnLimitEnforcementCode,
@@ -54,6 +55,7 @@ export type CodexSandboxMode =
   | "danger-full-access";
 
 export type CodexMaterializedSession = {
+  readonly sessionExecutionUse?: SessionExecutionUse;
   readonly home: string;
   readonly codexHome: string;
   readonly sessionHash?: string;

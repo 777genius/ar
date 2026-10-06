@@ -166,7 +166,9 @@ export class FileBackendCodexManagedRunCoordinator {
     if (!agentDriver.hasManagedRunSession(input.runId)) {
       return await this.recoverManagedRun({ input, record: durableRecord });
     }
+    const sessionExecutionUse = agentDriver.retainedSessionExecutionUse(input.runId);
     const workspace: WorkspaceHandle = { path: input.resumeHandle.workspacePath };
+    let restartAfterCompletion = false;
     try {
       const result = await agentDriver.resumeManagedRun({
         session: session?.artifact ?? null,
@@ -190,18 +192,20 @@ export class FileBackendCodexManagedRunCoordinator {
         session,
         runId: input.runId,
       });
-      if (persisted.status === "failed" && canRecoverManagedRun(input, durableRecord)) {
-        return await this.recoverManagedRun({ input, record: durableRecord });
-      }
-      return await this.taskResultToOutput(persisted, {
+      restartAfterCompletion = persisted.status === "failed" && canRecoverManagedRun(input,durableRecord);
+      if (!restartAfterCompletion) return await this.taskResultToOutput(persisted, {
         kind: "resume",
         input,
         previousRecord: durableRecord,
       });
     } finally {
-      await workspace.dispose?.();
-      if (!isMimo) await this.options.exportAuthJsonFileQuietly("run");
+      try {
+        await workspace.dispose?.();
+        if (!isMimo) await this.options.exportAuthJsonFileQuietly("run");
+      } finally { await sessionExecutionUse?.complete(); }
     }
+    if (!restartAfterCompletion || !canRecoverManagedRun(input,durableRecord)) throw new Error("managed_resume_restart_unresolved");
+    return await this.recoverManagedRun({input,record:durableRecord});
   }
 
   async taskResultToOutput(
