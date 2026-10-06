@@ -17,7 +17,7 @@ function barrier() {
 // Real driver private waiting cache + coordinator/domain ports. This creates NO original-origin/home authority.
 async function fixture(mode:"failed"|"completed"|"waiting",rejectCompletion=false) {
   const root = await mkdtemp(join(tmpdir(),"managed-use-order-")), events:string[] = [], write = barrier(), persist = barrier(), exported = barrier(), complete = barrier();
-  const redactor = new DefaultRedactor(), runner = new StaticRunner(), clock = {now:() => new Date("2026-10-06T00:00:00Z"),monotonicMs:() => performance.now()};
+  const redactor = new DefaultRedactor(), runner = new StaticRunner({exitCode:0,stdout:"",stderr:""}), clock = {now:() => new Date("2026-10-06T00:00:00Z"),monotonicMs:() => performance.now()};
   const first = sessionArtifactFromCodexAuthJson(codexAuthJson("SYNTHETIC_INITIAL_TOKEN")), next = sessionArtifactFromCodexAuthJson(codexAuthJson("SYNTHETIC_NEXT_TOKEN"));
   const waiting:CodexExecutionWaitingForInputResult = {status:"waiting_for_input",runId:"test-run",outputText:"blocked",warnings:[],
     request:{id:"request-1",kind:"missing_context",audience:"orchestrator",question:"continue"},

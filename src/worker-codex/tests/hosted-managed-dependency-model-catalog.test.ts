@@ -11,9 +11,9 @@ describe("bounded observed session model catalog", () => {
     expect(() => readBoundedObservedSessionModelPage({data},0)).toThrow(); expect(touched).toBe(0);
   });
   it.each([
-    [{model:"gpt-6.1-sol"},{}],
-    [{model:"gpt-6.1-sol",supportedReasoningEfforts:Array(17).fill({reasoningEffort:"high"})}],
-  ])("refuses partial or oversized entry parsing", data => {
+    {data:[{model:"gpt-6.1-sol"},{}]},
+    {data:[{model:"gpt-6.1-sol",supportedReasoningEfforts:Array.from({length:17},() => ({reasoningEffort:"high"}))}]},
+  ])("refuses partial or oversized entry parsing", ({data}) => {
     expect(() => readBoundedObservedSessionModelPage({data},0)).toThrow();
   });
   it("applies total budget before parsing further entries and bounds the cursor", () => {

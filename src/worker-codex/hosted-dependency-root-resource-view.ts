@@ -11,7 +11,7 @@ export class OriginalHostedDependencyRootDescriptor {
   constructor(origin: CurrentHostedDependencyOrigin, material: HostedDependencyRootDescriptorMaterial, access: symbol) {
     this.#origin = origin; this.#material = material; this.#access = access;
   }
-  static resolve(resource: OriginalHostedDependencyRootDescriptor, access: symbol) {
+  static resolve(resource: OriginalHostedDependencyRootDescriptor, access: symbol): Readonly<{origin:CurrentHostedDependencyOrigin;material:HostedDependencyRootDescriptorMaterial}> {
     if (resource.#access !== access) throw new Error("hosted_dependency_current_origin_unresolved");
     return {origin:resource.#origin,material:resource.#material};
   }

@@ -46,8 +46,8 @@ import { collectUnitInvocation } from "./hosted-readonly-linux-collector";
 import { type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
-import { DependencyOwnerPhase, isDependencyConsumerOwner, parseDependencyOwner, sameDependencyProtectedReference, sameDependencyWorkspace, sameDependencyAttempt, parseDependencyGenerationContinuityInvalidation, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
-import { terminalHostedCustodyStart, HostedCustodyReservationState, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
+import { DependencyToolReadyProvenanceKind, DependencyOwnerPhase, isDependencyConsumerOwner, parseDependencyOwner, sameDependencyProtectedReference, sameDependencyWorkspace, sameDependencyAttempt, parseDependencyGenerationContinuityInvalidation, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
+import { terminalHostedCustodyStart, HostedCustodyReservationState } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
 import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes, readHostedOrdinaryProcessOrigin, withHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
@@ -59,7 +59,7 @@ import { hostedDependencySystemdRunExecutable } from "../provider-codex/app-serv
 import { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { invalidateDependencyGeneration } from "../worker-core/dependency-environment/application/invalidate-dependency-generation";
-import { DependencyUnverifiedReason } from "../worker-core/dependency-environment/domain/dependency-receipt";
+import { DependencyUnverifiedReason, DependencyReceiptState } from "../worker-core/dependency-environment/domain/dependency-receipt";
 import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
 import { dependencyToolQualificationRecordName, dependencyToolGuestConfig, dependencyToolGuestConfigPath, parseDependencyToolQualification } from "../core/dependency-environment/dependency-tool-profile";
 import { assertHostedDependencyRootGitProfile } from "../provider-codex/app-server/adapters/hosted-dependency-root-git-profile";
@@ -306,8 +306,8 @@ function bindCurrentHostedManagedDependencyProviderChild(context: CurrentHostedD
   const provider = contexts.get(context)?.rootPurpose?.provider;
   if (!provider || provider.invocation !== invocation || provider.child || !provider.command || !provider.args) invalid();
   assertHostedFdProcess(child,provider.unit,HostedFdLaunchKind.Provider,provider.command,provider.args);
-  if (!Number.isSafeInteger(child.pid) || child.pid! <= 0) invalid();
-  provider.child = child; provider.proxyPid = child.pid; provider.proxyBirth = observeHostedFdProcess(child.pid!).birth; provider.proxyClosed = false;
+  const proxyPid = child.pid; if (typeof proxyPid !== "number" || !Number.isSafeInteger(proxyPid) || proxyPid <= 0) invalid();
+  provider.child = child; provider.proxyPid = proxyPid; provider.proxyBirth = observeHostedFdProcess(proxyPid).birth; provider.proxyClosed = false;
   // The source PID is captured by the fixed producer before the child escapes.
   // Close events alone grant nothing: discharge also requires actual PID absence,
   // creator receipt, owned terminal reservation, queue and recursive cgroup facts.
@@ -441,7 +441,7 @@ function assertRootPhysicalRecord(record: HostedDependencyRootPreparationRecord,
   assertHostedDependencyRootDirectoryFacts(record,binding,identity.durable,attempt.launch.startId);
   const qualification = material(record.qualification,`${root}/${dependencyToolQualificationRecordName(attempt.launch.startId)}`,16384), q = parseDependencyToolQualification(decodeHostedActivationBytes(qualification.bytes));
   assertRootQualificationFacts(record,binding,attempt,q,currentRootReady(binding).receipt);
-  const sourceBinding = record.providerReady.provenance.sourceBinding;
+  if (record.providerReady.provenance.kind === DependencyToolReadyProvenanceKind.RegistryCompleted) invalid(); const sourceBinding = record.providerReady.provenance.sourceBinding;
   material({path:sourceBinding.path,identity:sourceBinding.identity,sha256:sourceBinding.sha256},sourceBinding.path,262144);
   const profile = material(record.protectedProfile,`${root}/dependency-installer-profile.json`,16384);
   const decoded = decodeHostedActivationBytes(profile.bytes) as Record<string,unknown>;
@@ -652,7 +652,7 @@ export function createCurrentHostedDependencySessionRuntime(context: CurrentHost
         leaseId !== undefined && selected.use.lease?.leaseId !== leaseId) invalid(); return selected; };
   const checked = (selected:ReturnType<typeof currentSessionExecutionUse>) => {
     const now = currentSessionExecutionUse(context); if (now.runtime !== selected.runtime || now.use !== selected.use) invalid(); return now; };
-  const leaseStore:LeaseStorePort = Object.freeze({leaseStoreId:physical.leaseStore.leaseStoreId,capabilities:physical.leaseStore.capabilities,
+  const leaseStore:LeaseStorePort = Object.freeze<LeaseStorePort>({leaseStoreId:physical.leaseStore.leaseStoreId,capabilities:physical.leaseStore.capabilities,
     acquire:async input => { input = Object.freeze({...input}); const selected = owned(); if (selected.use.lease || selected.use.account && selected.use.account !== input.providerInstanceId || selected.use.restoredHash && selected.use.restoredHash !== input.restoredGenerationHash) invalid(); selected.use.acquiring = true;
       try { const result = await acquire(input); checked(selected); delete selected.use.acquiring;
         if (result.status === "granted") selected.use.lease = {leaseId:result.leaseId,providerInstanceId:input.providerInstanceId,restoredHash:input.restoredGenerationHash,terminal:false};
@@ -672,7 +672,7 @@ export function createCurrentHostedDependencySessionRuntime(context: CurrentHost
       try { await release(input); checked(selected); selected.use.lease!.terminal = true; }
       catch (error) { selected.use.credentialUnknown = true; throw error; } },
   });
-  const sessionStore:SessionStorePort = Object.freeze({storeId:physical.sessionStore.storeId,custody:physical.sessionStore.custody,capabilities:physical.sessionStore.capabilities,
+  const sessionStore:SessionStorePort = Object.freeze<SessionStorePort>({storeId:physical.sessionStore.storeId,custody:physical.sessionStore.custody,capabilities:physical.sessionStore.capabilities,
     read:async input => { input = Object.freeze({...input}); const selected = sessionRuntime(context), result = await read(input);
       if (sessionRuntime(context).runtime !== selected.runtime) invalid();
       if (result) { const captured = captureManagedSessionArtifactFacts(result.artifact); if (result.providerInstanceId !== input.providerInstanceId || result.generationHash !== captured.hash) invalid(); selected.runtime.sessionReads.set(result.artifact,{account:input.providerInstanceId,hash:captured.hash}); } return result; },
@@ -748,7 +748,7 @@ export function materializeCurrentHostedDependencySession(context:CurrentHostedD
     release:() => use.release ??= (async () => { const before = currentSessionExecutionUse(context,use.handle);
       if (before.use !== use || use.materialized !== materialized || use.phase !== ManagedSessionUsePhase.Active) invalid();
       await releaseCurrentHostedDependencySessionHome(home); const after = currentSessionExecutionUse(context,use.handle);
-      if (after.use !== use || use.phase !== ManagedSessionUsePhase.Released) invalid(); })(),
+      if (after.use !== use || after.use.phase !== ManagedSessionUsePhase.Released) invalid(); })(),
   });
   use.materialized = materialized; use.phase = ManagedSessionUsePhase.Active; return materialized;
 }
@@ -846,7 +846,7 @@ function leaseCurrentHostedDependencySessionHome(home: CurrentHostedDependencySe
   return withHostedActivationFence(fence => {
     const held = sessionHome(home,fence);
     if (held.state.sessionCache !== held.home || held.state.sessionHome?.leased || held.state.provider) invalid();
-    const facade = Object.freeze(new ManagedSessionHomeFacade(held.context,rootInternalAccess));
+    const facade = new ManagedSessionHomeFacade(held.context,rootInternalAccess); Object.freeze(facade);
     held.state.sessionHome = {...held.home,facade,leased:true,purpose:HostedDependencyRootPurpose.ManagedGitReadV1};
     return facade;
   });
@@ -955,7 +955,7 @@ export function spawnCurrentHostedDependencySessionRefresh(home: CurrentHostedDe
     tempCodexHome:paths.codexHome,emptyWorkingDirectory:paths.emptyWorkdir,authJsonPath:paths.codexHome+"/auth.json",model:use.runtime.model});
   publishCurrentHostedManagedDependencyProvider(held.context,fence,unit);
   const view = spawnManagedProvider(held.context,fence,unit,Object.freeze({...plan,env:Object.freeze({PATH:process.env.PATH ?? "/usr/bin:/bin",HOME:plan.env.HOME!,CODEX_HOME:plan.env.CODEX_HOME!,REVIEWROUTER_CODEX_AUTH_PATH:plan.env.REVIEWROUTER_CODEX_AUTH_PATH!,CI:"1",SUBSCRIPTION_RUNTIME_SANDBOX_KIND:"hosted-codex-job"})}));
-  const child = held.state.provider?.child; if (!child?.stdout || !child.stderr) invalid();
+  const child = originalSessionProvider(home,unit).provider.child; if (!child?.stdout || !child.stderr) invalid();
   child.stdout.on("data",() => {}); child.stderr.on("data",() => {}); return view;
 }
 function originalSessionProvider(home:CurrentHostedDependencySessionHome,unit:string) {

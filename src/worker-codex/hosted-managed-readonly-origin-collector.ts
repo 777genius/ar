@@ -70,6 +70,7 @@ export function collectActualHostedManagedReadonlyOrigin(fence: HostedActivation
   const epoch = parseHostedCustodyEpoch(decodeHostedActivationBytes(epochPin.bytes)), enrollment = parseHostedCustodyEpoch(decodeHostedActivationBytes(enrollmentPin.bytes));
   const inventory = parseHostedReadonlyHostInventory(decodeHostedActivationBytes(inventoryPin.bytes));
   assertManagedReadonlyInstallationFacts(installation,activation,epoch,enrollment,inventory,hash(enrollmentPin.bytes),hash(inventoryPin.bytes));
+  const busInfrastructure = inventory.systemBusInfrastructure; if (!busInfrastructure) invalid();
   const outer = epoch.outerRuntime;
   if (!outer || outer.state !== HostedCustodyReservationState.Reserved || outer.generation !== epoch.generation || outer.unit !== match[1] ||
       outer.startId !== match[2] || outer.creatorId !== outer.startId || readHostedActivationBytes(`scoped-terminating/${outer.startId}.json`)) invalid();
@@ -131,7 +132,7 @@ export function collectActualHostedManagedReadonlyOrigin(fence: HostedActivation
   const supervisorProcess = observeHostedFdProcess(supervisorPid);
   if (supervisorProcess.birth !== start.supervisorId || supervisorProcess.group !== `0::${supervisor.controlGroup}` ||
       readFileSync("/etc/machine-id","utf8").trim() !== start.hostId || readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim() !== start.bootId) invalid();
-  verifySystemBusInfrastructure(inventory.systemBusInfrastructure,remaining);
+  verifySystemBusInfrastructure(busInfrastructure,remaining);
   const freshSelf = observeHostedFdProcess(process.pid), freshParent = observeHostedFdProcess(unit.mainPid), freshSupervisor = observeHostedFdProcess(supervisorPid);
   if (freshSelf.birth !== self.birth || freshSelf.parentPid !== self.parentPid || freshSelf.group !== self.group ||
       JSON.stringify(freshSelf.argv) !== JSON.stringify(self.argv) || freshSelf.exe !== self.exe || freshSelf.user !== self.user || freshSelf.mount !== self.mount ||

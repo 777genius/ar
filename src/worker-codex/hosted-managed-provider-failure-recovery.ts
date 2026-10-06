@@ -146,7 +146,8 @@ export function assertHostedManagedProviderFailureCreator(fence: HostedActivatio
       !encode(claim.attempt).equals(encode(attempt)) || !encode(claim.workspace).equals(encode(binding.workspace))) held();
   referenced(claim.origin,parent.reference.path); referenced(claim.custody,material.reference.path);
   referenced(claim.binding,`${root}/${hostedDependencyBindingName(binding.jobId)}`);
-  if (!sameDependencyProtectedReference(claim.origin,parent.reference) || !sameDependencyProtectedReference(claim.custody,material.reference)) held();
+  if (!isDependencyProtectedReference(claim.origin) || !isDependencyProtectedReference(claim.custody) ||
+      !sameDependencyProtectedReference(claim.origin,parent.reference) || !sameDependencyProtectedReference(claim.custody,material.reference)) held();
   const entry = fixedPin(`${root}/dependency-reader-entries/${outer.startId}.json`,4096);
   if (!entry.bytes.equals(encode({version:1,producer:preclaim.reference,attempt}))) held();
   const preparation = fixedPin(`${root}/dependency-root-preparations/${outer.startId}.json`,65536), prepared = wire(preparation);
