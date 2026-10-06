@@ -7,34 +7,34 @@ import { DependencyOwnerKind, DependencyOwnerPhase, DependencyConsumerLaunchKind
   type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { HostedActivationPhase, HostedCustodyPhase, HostedCustodyReservationState, parseHostedActivation, parseHostedInstallation,
   parseHostedCustodyEpoch, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
-import { parseHostedReadonlyHostInventory } from "../../../worker-core/hosted-custody/domain/hosted-readonly-inventory";
-import { CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
+import { parseHostedReadonlyHostInventory } from "../worker-core/hosted-custody/domain/hosted-readonly-inventory";
+import { CodexProviderEgressProfileId } from "../provider-codex/codex-provider-egress-policy";
 import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes,
-  readHostedOrdinaryProcessOrigin, withHostedActivationFence, type HostedActivationFence } from "./hosted-process-activation";
-import { readHostedReadonlyDependencyAssociation, readHostedReadonlyDependencyStart } from "./hosted-dependency-origin";
-import { assertHostedDependencyPhysicalWorkspace, hostedDependencyBindingName, readHostedDependencyBinding, readHostedDependencyAttempt, assertHostedDependencyStartAllowed, isHostedDependencyWorkspace, type HostedDependencyBinding } from "./hosted-dependency-workspace";
-import { assertHostedProcessDescriptors } from "./hosted-process-descriptors";
-import { assertHostedRetainedToolDescriptors, type HostedRetainedToolFiles } from "./hosted-retained-tool-files";
-import { assertHostedFdBootstrap, observeHostedFdProcess, observeHostedFdUnit, readHostedFdProfile } from "./hosted-fd-observation";
-import { systemdObservationBudget } from "./systemd-service-arrays";
-import { verifySystemBusInfrastructure } from "./system-bus-infrastructure";
-import { assertHostedFdFrameEnvironment } from "./hosted-fd-prelude";
+  readHostedOrdinaryProcessOrigin, withHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { readHostedReadonlyDependencyAssociation, readHostedReadonlyDependencyStart } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
+import { assertHostedDependencyPhysicalWorkspace, hostedDependencyBindingName, readHostedDependencyBinding, readHostedDependencyAttempt, assertHostedDependencyStartAllowed, isHostedDependencyWorkspace, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
+import { assertHostedRetainedToolDescriptors, type HostedRetainedToolFiles } from "../provider-codex/app-server/adapters/hosted-retained-tool-files";
+import { assertHostedFdBootstrap, observeHostedFdProcess, observeHostedFdUnit, readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
+import { systemdObservationBudget } from "../provider-codex/app-server/adapters/systemd-service-arrays";
+import { verifySystemBusInfrastructure } from "../provider-codex/app-server/adapters/system-bus-infrastructure";
+import { assertHostedFdFrameEnvironment } from "../provider-codex/app-server/adapters/hosted-fd-prelude";
 
-import { LocalDependencyReceiptStore } from "../../../store-local-file/dependency-environment/local-dependency-receipt-store";
-import { LocalDependencyOwnerStore } from "../../../store-local-file/dependency-environment/local-dependency-owner-store";
-import { invalidateDependencyGeneration } from "../../../worker-core/dependency-environment/application/invalidate-dependency-generation";
-import { DependencyUnverifiedReason } from "../../../worker-core/dependency-environment/domain/dependency-receipt";
-import { hostedDependencyReceiptHistoryRoot } from "./hosted-dependency-history-path";
-import { dependencyToolQualificationRecordName, parseDependencyToolQualification } from "../../../core/dependency-environment/dependency-tool-profile";
-import { assertHostedDependencyRootGitProfile } from "./hosted-dependency-root-git-profile";
-import { assertHostedDependencyRootGitConfigBytes } from "./hosted-dependency-root-git-config";
+import { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
+import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
+import { invalidateDependencyGeneration } from "../worker-core/dependency-environment/application/invalidate-dependency-generation";
+import { DependencyUnverifiedReason } from "../worker-core/dependency-environment/domain/dependency-receipt";
+import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
+import { dependencyToolQualificationRecordName, parseDependencyToolQualification } from "../core/dependency-environment/dependency-tool-profile";
+import { assertHostedDependencyRootGitProfile } from "../provider-codex/app-server/adapters/hosted-dependency-root-git-profile";
+import { assertHostedDependencyRootGitConfigBytes } from "../provider-codex/app-server/adapters/hosted-dependency-root-git-config";
 import { HostedDependencyRootDescriptorRecipe, type HostedDependencyRootDescriptorAnchor,
-  type HostedDependencyRootDescriptorMaterial } from "./hosted-dependency-root-descriptor-material";
-export { HostedDependencyRootDescriptorRecipe } from "./hosted-dependency-root-descriptor-material";
+  type HostedDependencyRootDescriptorMaterial } from "../provider-codex/app-server/adapters/hosted-dependency-root-descriptor-material";
+export { HostedDependencyRootDescriptorRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-root-descriptor-material";
 import { HostedDependencyRootPurpose, isHostedDependencySignedTaskId, type HostedDependencyManagedGitScope, type HostedDependencyRootScope,
-  type HostedDependencyRootDirectoryPin, type HostedDependencyRootPreparationRecord } from "./hosted-dependency-root-purpose-record";
-export { HostedDependencyRootPurpose, isHostedDependencySignedTaskId } from "./hosted-dependency-root-purpose-record";
-export type { HostedDependencyManagedGitScope, HostedDependencyRootScope, HostedDependencyRootDirectoryPin } from "./hosted-dependency-root-purpose-record";
+  type HostedDependencyRootDirectoryPin, type HostedDependencyRootPreparationRecord } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
+export { HostedDependencyRootPurpose, isHostedDependencySignedTaskId } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
+export type { HostedDependencyManagedGitScope, HostedDependencyRootScope, HostedDependencyRootDirectoryPin } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
 
 const root = "/var/lib/subscription-runtime-host-policy", transport = "/run/user/0/subscription-runtime-host-policy";
 const brand: unique symbol = Symbol("hosted.current.dependency.origin");
@@ -143,7 +143,7 @@ function selectedSnapshot(fence: HostedActivationFence, scope?: HostedRetainedTo
       owner.owner.attempt.launch.startId !== start.startId || owner.owner.attempt.launch.unit !== start.unit ||
       !("association" in owner.owner.attempt.launch) || !sameDependencyProtectedReference(owner.owner.attempt.launch.association,association.reference))) invalid();
   const profile = readHostedFdProfile(remaining); if (!profile) invalid();
-  const directory = fileURLToPath(new URL("../../../../",import.meta.url)).replace(/\/$/,"");
+  const directory = fileURLToPath(new URL("../../",import.meta.url)).replace(/\/$/,"");
   const bootstrap = `${directory}/dist/worker-codex/hosted-readonly-runtime-bootstrap.js`, cli = `${directory}/dist/worker-codex/codex-goal-cli.js`;
   if (installation.runtimeDirectory !== directory || inventory.runtimeLaunch.command !== profile.node.path || inventory.runtimeLaunch.args[0] !== cli ||
       inventory.runtimeLaunch.cwd !== binding.workspace.canonicalPath) invalid();

@@ -4,7 +4,7 @@ import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, Depend
   sameDependencyTree, DependencyPreservationKind, DependencyReceiptState, type DependencyReceipt, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt } from "../provider-codex/app-server/adapters/hosted-current-dependency-origin";
+import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt } from "./hosted-current-dependency-origin";
 import { type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { buildTestNpmDependencyInstallKey, buildTestNpmLocalDependencyInstallKey } from "../worker-local/dependency-environment/build-test-npm-dependency-install-key";
 import { captureNpmInstallInputs, revalidateNpmInstallInputs, NpmInputCaptureStatus as Status, NpmInputCaptureReason as Reason,

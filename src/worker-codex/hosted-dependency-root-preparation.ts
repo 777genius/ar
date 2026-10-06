@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DependencyOwnerPhase, sameDependencyAttempt, sameDependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { dependencyToolQualificationRecordName } from "../core/dependency-environment/dependency-tool-profile";
 import { assertCurrentHostedDependencyAttempt, prepareCurrentHostedDependencyRootPurpose,
-  readHostedDependencyRootDirectoryPin, readHostedDependencyRootGitConfigPin, CurrentHostedDependencyOriginKind } from "../provider-codex/app-server/adapters/hosted-current-dependency-origin";
+  readHostedDependencyRootDirectoryPin, readHostedDependencyRootGitConfigPin, CurrentHostedDependencyOriginKind } from "./hosted-current-dependency-origin";
 import type { HostedDependencyRootPreparationRecord } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
 import { assertHostedDependencyRootGitConfigBytes } from "../provider-codex/app-server/adapters/hosted-dependency-root-git-config";
 import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";

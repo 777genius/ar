@@ -14,7 +14,7 @@ import { assertHostedActivationFence, readHostedActivationBytes, decodeHostedAct
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt,
   readRetainedHostedDependencyAttemptFacts, invalidateCurrentHostedDependencyOrigin, CurrentHostedDependencyOriginKind, isHostedManagedReadonlyOuterRuntime,
-  type CurrentHostedDependencyOrigin, type CurrentHostedDependencyOriginFacts } from "../provider-codex/app-server/adapters/hosted-current-dependency-origin";
+  type CurrentHostedDependencyOrigin, type CurrentHostedDependencyOriginFacts } from "./hosted-current-dependency-origin";
 import { readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { observeDependencyTree, observeDependencyTreeWithLocalRegistrySelection, assertDependencyLocalRegistrySelectionAbsent, captureDependencyLocalRootOnlySourceExposure, assertDependencySourceExposureCurrent,
   closeDependencySourceExposure, type DependencySourceExposure } from "../worker-local/dependency-environment/observe-dependency-tree";

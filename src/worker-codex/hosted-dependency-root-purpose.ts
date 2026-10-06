@@ -6,4 +6,4 @@ export { requiresCurrentHostedDependencyRootPurpose, HostedDependencyRootPurpose
   assertCurrentHostedDependencyRootPurpose, assertCurrentHostedDependencyRetiredReady, retireCurrentHostedDependencySourceCleanup,
   type HostedDependencyRootPurposeContext, type HostedDependencyManagedGitScope,
   type HostedDependencyRootScope, type HostedDependencyRootDirectoryPin,
-} from "../provider-codex/app-server/adapters/hosted-current-dependency-origin";
+} from "./hosted-current-dependency-origin";

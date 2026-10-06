@@ -10,7 +10,7 @@ import { assertHostedDependencyQualifiedToolEntry, readHostedDependencyQualified
 
 import { assertHostedDependencyLegacyComparedReady } from "./hosted-dependency-legacy-comparison-record";
 
-import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt, readRetainedHostedDependencyAttemptFacts, CurrentHostedDependencyOriginKind } from "../provider-codex/app-server/adapters/hosted-current-dependency-origin";
+import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt, readRetainedHostedDependencyAttemptFacts, CurrentHostedDependencyOriginKind } from "./hosted-current-dependency-origin";
 
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value) + "\n");
 const unknown: DependencyToolReadyRead = Object.freeze({ status: DependencyToolReadyReadStatus.Unknown });
@@ -20,7 +20,7 @@ function fail(): never { throw new Error("hosted_dependency_tool_reader_changed"
  * No writable store, root selector or local-verification callback escapes. */
 export function captureHostedDependencyToolReadyReader(fence: HostedActivationFence, identity: {
   readonly jobId: string; readonly jobRootDir: string; readonly workspacePath: string;
-}, entry?: HostedDependencyQualifiedToolEntry): Readonly<{ reader: DependencyToolReadyReader; assertCurrent: (fence: HostedActivationFence) => void; origin: import("../provider-codex/app-server/adapters/hosted-current-dependency-origin").CurrentHostedDependencyOrigin }> | undefined {
+}, entry?: HostedDependencyQualifiedToolEntry): Readonly<{ reader: DependencyToolReadyReader; assertCurrent: (fence: HostedActivationFence) => void; origin: import("./hosted-current-dependency-origin").CurrentHostedDependencyOrigin }> | undefined {
   assertHostedActivationFence(fence);
   const context = entry ? readCurrentHostedDependencyRootQualification(fence).context : readCurrentHostedDependencyOrigin(fence), actual = assertCurrentHostedDependencyAttempt(context,fence);
   const {binding,attempt,facts:origin} = actual;

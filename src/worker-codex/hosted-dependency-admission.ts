@@ -6,7 +6,7 @@ import { claimDependencyConsumer, markDependencyConsumerRunning, DependencyAdmis
 import { sameDependencyAttempt } from "@vioxen/subscription-runtime/core";
 import { withHostedActivationFence, CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt,
-  isCurrentHostedDependencyManagedReadonlyOrigin, isHostedManagedReadonlyOuterRuntime, readHostedDependencyRootGitConfigPin, CurrentHostedDependencyOriginKind } from "../provider-codex/app-server/adapters/hosted-current-dependency-origin";
+  isCurrentHostedDependencyManagedReadonlyOrigin, isHostedManagedReadonlyOuterRuntime, readHostedDependencyRootGitConfigPin, CurrentHostedDependencyOriginKind } from "./hosted-current-dependency-origin";
 import { consumeHostedReadonlyDependencyPreclaim, readHostedReadonlyDependencyPreclaim, publishHostedReadonlyDependencyReaderReady } from "./hosted-readonly-dependency-reader-entry";
 import { readHostedDependencyEstablishedReceipt } from "./hosted-dependency-receipts";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";

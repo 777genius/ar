@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { assertHostedDependencyRootGitConfigBytes } from "../hosted-dependency-root-git-config";
+import { assertHostedDependencyRootGitConfigBytes } from "../../provider-codex/app-server/adapters/hosted-dependency-root-git-config";
 import { HostedDependencyRootPurpose, assertCurrentHostedDependencyRootPurpose, assertCurrentHostedDependencyRetiredReady,
   HostedDependencyRootDescriptorRecipe, openCurrentHostedDependencyRootDescriptor,
   retireCurrentHostedDependencySourceCleanup, type HostedDependencyRootPurposeContext } from "../hosted-current-dependency-origin";
-import type { HostedActivationFence } from "../hosted-process-activation";
-import { DependencyUnverifiedReason } from "../../../../worker-core/dependency-environment/domain/dependency-receipt";
+import type { HostedActivationFence } from "../../provider-codex/app-server/adapters/hosted-process-activation";
+import { DependencyUnverifiedReason } from "../../worker-core/dependency-environment/domain/dependency-receipt";
 
 // Regression boundary: enabling an executable config directive or accepting a
 // caller-shaped root facade would violate the protected root submission scope.
