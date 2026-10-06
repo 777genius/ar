@@ -1,7 +1,11 @@
+import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt, assertOriginalHostedDependencyColdProducer, readOriginalHostedDependencyColdSelection, materializeCurrentHostedDependencyColdTree, installCurrentHostedDependencyColdTree,
+  consumeCurrentHostedDependencyColdHandoff, assertCurrentHostedDependencyConsumedColdHandoff, closeCurrentHostedDependencyColdHandoff,
+  type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import type { HostedDependencyColdResult } from "./hosted-dependency-cold-materialization-state";
 import { lstatSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
 import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, DependencyInstallProofKind, DependencyReceiptState,
-  DependencyTreeObservationStatus, sameDependencyTree,
+  DependencyTreeObservationStatus, DependencyOwnerPhase, sameDependencyTree,
   sameDependencyAttempt, type DependencyAttempt, type DependencyReceipt } from "@vioxen/subscription-runtime/worker-core";
 import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
@@ -48,43 +52,58 @@ export async function materializeHostedDependencyAbsence(binding: HostedDependen
   closeHostedDependencyColdHandoff(await materializeHostedDependencyAbsenceForToolEntry(binding, attempt));
 }
 /** Only this genuine closed install flow can mint the private same-attempt handoff. */
-export async function materializeHostedDependencyAbsenceForToolEntry(binding: HostedDependencyBinding, attempt: DependencyAttempt): Promise<HostedDependencyColdHandoff | undefined> {
-  const prepared = await materializeHostedDependencyLocalAbsence(binding, attempt);
+export async function materializeHostedDependencyAbsenceForToolEntry(binding: HostedDependencyBinding, attempt: DependencyAttempt,capturedOrigin?:CurrentHostedDependencyOrigin): Promise<HostedDependencyColdHandoff | undefined> {
+  const context=capturedOrigin ?? withHostedActivationFence(fence=>readCurrentHostedDependencyOrigin(fence));
+  withHostedActivationFence(fence=>{
+    const actual=assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+    if(!sameDependencyAttempt(actual.attempt,attempt) || !encode(actual.binding).equals(encode(binding)))fail(Failure.StaleAttempt);
+  });
+  return materializeCurrentHostedDependencyColdTree(context);
+}
+/** Fixed physical producer called only by the original-map issuer. The internal
+ * symbol is never exported, and successful return cannot register provenance. */
+export async function produceOriginalHostedDependencyColdTree(context:CurrentHostedDependencyOrigin,access:symbol):Promise<HostedDependencyColdResult|undefined> {
+  const {binding,attempt}=withHostedActivationFence(fence=>assertOriginalHostedDependencyColdProducer(context,fence,access));
+  const prepared = await materializeHostedDependencyLocalAbsence(binding, attempt,context,access);
   if (prepared.cold) {
     const { ready, observed, source, exposure } = prepared.cold;
-    try { return retainCold(binding, attempt, prepared.inputs, ready, observed, source, exposure); }
+    try { return retainPhysicalCold(binding, attempt, prepared.inputs, ready, observed, source, exposure,context,access); }
     catch (error) { closeDependencySourceExposure(exposure); closeDependencySourceLinkSession(source); throw error; }
   }
   const { inputs, installing } = prepared, generation = installing.generation;
   const base = { version: installing.version, revision: installing.revision, generation, workspace: installing.workspace, coverageRevision: installing.coverageRevision };
   const expectedInstallerInputs = qualifyHostedDependencyInstallerInputs(Buffer.from(inputs.capture.packageBytes),
     Buffer.from(inputs.capture.lockBytes), inputs.lockName);
-  const completed = await new HostedDependencyInstaller().install({ workspace: binding.workspace, attempt,
-    lockName: inputs.lockName, packageBytes: inputs.packageBytes, lockBytes: inputs.lockBytes });
-  assertOwner(binding, attempt); assertHostedDependencyInstallerAttemptDrained(attempt);
+  const completed=await installCurrentHostedDependencyColdTree(context,access);
+  assertOwner(binding, attempt,context); assertHostedDependencyInstallerAttemptDrained(attempt);
   if (completed.lockName !== inputs.lockName || completed.inputSha256 !== expectedInstallerInputs.sha256) fail();
   const staged = await observeDependencyTree({ workspacePath: dirname(completed.output.canonicalPath), treeName: "node_modules",
     expectedTree: completed.output, limits: hostedDependencyObservationLimits });
   if (staged.status !== DependencyTreeObservationStatus.Complete) fail(Failure.UnsafeTree);
-  normalizeCapturedDependencyOutput(staged, 0);
+  withHostedActivationFence(fence=>{assertOriginalHostedDependencyColdProducer(context,fence,access);normalizeCapturedDependencyOutput(staged,0);});
   const normalized = await observeDependencyTree({ workspacePath: staged.workspace.canonicalPath, treeName: "node_modules",
     expectedWorkspace: staged.workspace, expectedTree: staged.tree, limits: hostedDependencyObservationLimits });
   if (normalized.status !== DependencyTreeObservationStatus.Complete || normalized.digest !== staged.digest) fail(Failure.UnsafeTree);
   if (!sameHostedDependencyKeyInputs(inputs, await readHostedDependencyKeyInputs(binding))) fail();
   withHostedActivationFence(fence => {
-    assertOwnerUnderFence(fence, binding, attempt);
+    assertOriginalHostedDependencyColdProducer(context,fence,access); assertOwnerUnderFence(fence, binding, attempt,context);
     assertHostedDependencyInstallerAttemptDrained(attempt);
     assertHostedDependencyKeyInputsCurrent(binding, inputs);
     publishCapturedDependencyOutput(normalized, binding.workspace);
   });
+  withHostedActivationFence(fence=>assertOriginalHostedDependencyColdProducer(context,fence,access));
   const final = await observeDependencyTreeWithPhysicalExposure({ workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
     expectedWorkspace: binding.workspace, expectedTree: normalized.tree, limits: hostedDependencyObservationLimits });
   let ownedFinalExposure = final.status === DependencyTreeObservationStatus.Complete ? final.exposure : undefined;
   try {
   if (final.status !== DependencyTreeObservationStatus.Complete || final.digest !== normalized.digest ||
       !sameHostedDependencyKeyInputs(inputs, await readHostedDependencyKeyInputs(binding))) fail(Failure.UnsafeTree);
+  withHostedActivationFence(fence=>assertOriginalHostedDependencyColdProducer(context,fence,access));
   const blobs = await openHostedDependencyManifestPlacement();
-  try { if (await blobs.put(final.canonicalBytes) !== final.digest) fail(); } finally { await blobs.close(); }
+  try {withHostedActivationFence(fence=>assertOriginalHostedDependencyColdProducer(context,fence,access));
+    if (await blobs.put(final.canonicalBytes) !== final.digest) fail();
+  } finally { await blobs.close(); }
+  withHostedActivationFence(fence=>assertOriginalHostedDependencyColdProducer(context,fence,access));
   const proofBinding = { generation, workspace: binding.workspace, coverageRevision: base.coverageRevision,
     installKey: inputs.key.installKey, tree: final.tree, manifestDigest: final.digest };
   const ready: DependencyReceipt = { ...base, revision: base.revision + 1, state: DependencyReceiptState.Ready, ...proofBinding,
@@ -92,7 +111,7 @@ export async function materializeHostedDependencyAbsenceForToolEntry(binding: Ho
     provenance: { ...proofBinding, kind: DependencyInstallProofKind.CompletedInstall, operationId: generation,
       verificationEvidenceId: final.digest, installerDrainEvidenceId: completed.completionSha256 } };
   withHostedActivationFence(fence => {
-    assertOwnerUnderFence(fence, binding, attempt);
+    assertOriginalHostedDependencyColdProducer(context,fence,access); assertOwnerUnderFence(fence, binding, attempt,context);
     assertHostedDependencyInstallerAttemptDrained(attempt);
     assertHostedDependencyKeyInputsCurrent(binding, inputs);
     if (!matchesHostedDependencyReady(binding, ready, inputs)) fail();
@@ -100,7 +119,7 @@ export async function materializeHostedDependencyAbsenceForToolEntry(binding: Ho
     publishHostedDependencyReceipt(binding, installing.revision, ready);
   });
   if (!final.exposure) return undefined; // Optional retention bounds preserve the original fourth scan.
-  const handoff = retainCold(binding, attempt, inputs, ready, final, undefined, final.exposure);
+  const handoff = retainPhysicalCold(binding, attempt, inputs, ready, final, undefined, final.exposure,context,access);
   ownedFinalExposure = undefined; return handoff;
   } finally { if (ownedFinalExposure) closeDependencySourceExposure(ownedFinalExposure); }
 }
@@ -108,15 +127,8 @@ export async function materializeHostedDependencyAbsenceForToolEntry(binding: Ho
 
 type Ready = Extract<DependencyReceipt, { state: DependencyReceiptState.Ready }>;
 type FinalObservation = Extract<Awaited<ReturnType<typeof observeDependencyTree>>, { status: DependencyTreeObservationStatus.Complete }>;
-/** Label copies and serialized DTOs have no authority: only publisher WeakMap. */
-export type HostedDependencyColdHandoff = Readonly<{ startId: string }>;
-type ColdState = {
-  binding: HostedDependencyBinding; attempt: DependencyAttempt; inputs: HostedDependencyKeyInputs; ready: Ready;
-  reference: ReturnType<typeof readHostedDependencyCommittedReady>["reference"]; observed: FinalObservation;
-  installerMapping: Buffer; consumed: boolean;
-  source?: DependencySourceLinkSession; exposure?: DependencySourceExposure;
-};
-const cold = new WeakMap<HostedDependencyColdHandoff, ColdState>();
+/** Copies/serialized labels carry no original-map association. */
+export type HostedDependencyColdHandoff = Readonly<{startId:string}>;
 function installerMapping(attempt: DependencyAttempt): Buffer {
   const path = `${hostedDependencyInstallerRoot}/attempt-${attempt.attemptId}.json`, bytes = readHostedPrivateBytes(path, 4096);
   if (!bytes) fail();
@@ -128,10 +140,19 @@ function installerMapping(attempt: DependencyAttempt): Buffer {
   if (!readHostedPrivateBytes(path, 4096)?.equals(bytes)) fail();
   return bytes;
 }
-function retainCold(binding: HostedDependencyBinding, attempt: DependencyAttempt, inputs: HostedDependencyKeyInputs,
-  ready: Ready, observed: FinalObservation, source?: DependencySourceLinkSession, exposure?: DependencySourceExposure): HostedDependencyColdHandoff {
+/** Fixed actual installer mapping read; returned bytes are factual only. The
+ * lexical original access is required before the first protected record IO. */
+export function readOriginalHostedDependencyColdInstallerMapping(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol):Buffer {
+  const actual=readOriginalHostedDependencyColdSelection(context,fence,access);
+  const bytes=installerMapping(actual.attempt);
+  readOriginalHostedDependencyColdSelection(context,fence,access);
+  return bytes;
+}
+function retainPhysicalCold(binding: HostedDependencyBinding, attempt: DependencyAttempt, inputs: HostedDependencyKeyInputs,
+  ready: Ready, observed: FinalObservation, source: DependencySourceLinkSession|undefined, exposure: DependencySourceExposure|undefined,
+  context:CurrentHostedDependencyOrigin,access:symbol):HostedDependencyColdResult {
   const { committed, mapping } = withHostedActivationFence(fence => {
-    assertOwnerUnderFence(fence, binding, attempt); assertHostedDependencyKeyInputsCurrent(binding, inputs);
+    assertOriginalHostedDependencyColdProducer(context,fence,access); assertOwnerUnderFence(fence, binding, attempt,context); assertHostedDependencyKeyInputsCurrent(binding, inputs);
     if (!encode(readHostedDependencyBinding(binding.jobId)).equals(encode(binding))) fail();
     const committed = readHostedDependencyCommittedReady(binding, ready.revision);
     if (ready.generation !== attempt.attemptId || !encode(ready.treeMeasurement).equals(encode(observed.measurement)) ||
@@ -142,44 +163,17 @@ function retainCold(binding: HostedDependencyBinding, attempt: DependencyAttempt
     else assertDependencySourceExposureCurrent(exposure);
     return { committed, mapping: installerMapping(attempt) };
   });
-  const handoff = Object.freeze({ startId: attempt.launch.startId });
-  cold.set(handoff, { binding, attempt, inputs, ready, reference: committed.reference, observed, installerMapping: mapping, consumed: false, ...(source ? { source } : {}), ...(exposure ? { exposure } : {}) });
-  return handoff;
+  if(!exposure) fail(Failure.UnsafeTree);
+  return {inputs,ready,reference:committed.reference,observed,installerMapping:mapping,exposure,...(source?{source}:{})};
 }
-/** One consumption; fresh protected reference and current exclusion must join.
- * Refusal never downgrades to an unproven scan shortcut or releases owner. */
-export function consumeHostedDependencyColdHandoff(handoff: HostedDependencyColdHandoff, binding: HostedDependencyBinding,
-  attempt: DependencyAttempt, inputs: HostedDependencyKeyInputs, ready: Ready): Pick<ColdState, "observed" | "source" | "exposure" | "reference"> {
-  const state = cold.get(handoff); if (!state || state.consumed) fail(Failure.StaleAttempt);
-  try {
-    withHostedActivationFence(fence => {
-      assertOwnerUnderFence(fence, binding, attempt);
-      if (!installerMapping(attempt).equals(state.installerMapping)) fail(Failure.StaleAttempt);
-      if (!sameDependencyAttempt(state.attempt, attempt) || !encode(readHostedDependencyBinding(binding.jobId)).equals(encode(binding)) || !encode(state.binding).equals(encode(binding)) ||
-          !encode(state.ready).equals(encode(ready)) || !sameHostedDependencyKeyInputs(state.inputs, inputs) ||
-          !encode(readHostedDependencyCommittedReady(binding, ready.revision).reference).equals(encode(state.reference))) fail(Failure.StaleAttempt);
-      assertHostedDependencyKeyInputsCurrent(binding, state.inputs);
-      if (!matchesHostedDependencyReady(binding, ready, inputs)) fail(Failure.UnsafeTree);
-      if (!state.exposure) fail(Failure.UnsafeTree);
-      if (state.source) assertDependencyLocalRegistrySelectionAbsent(state.exposure, state.source, binding.workspace, ready.tree);
-      else assertDependencySourceExposureCurrent(state.exposure);
-    });
-    state.consumed = true;
-    return { observed: state.observed, reference: state.reference, ...(state.source ? { source: state.source } : {}), ...(state.exposure ? { exposure: state.exposure } : {}) };
-  } catch (error) { closeHostedDependencyColdHandoff(handoff); throw error; }
+/** Every dispatch resolves the facade through the SAME original map. */
+export function consumeHostedDependencyColdHandoff(handoff:HostedDependencyColdHandoff,binding:HostedDependencyBinding,
+  attempt:DependencyAttempt,inputs:HostedDependencyKeyInputs,ready:Ready) {
+  return consumeCurrentHostedDependencyColdHandoff(handoff,binding,attempt,inputs,ready);
 }
-/** Rejoin the same consumed relation after qualifier awaits, before publication. */
-export function assertHostedDependencyConsumedColdHandoff(handoff: HostedDependencyColdHandoff, fence: HostedActivationFence): void {
-  const state = cold.get(handoff); if (!state?.consumed) fail(Failure.StaleAttempt);
-  assertOwnerUnderFence(fence, state.binding, state.attempt);
-  if (!installerMapping(state.attempt).equals(state.installerMapping) ||
-      !encode(readHostedDependencyCommittedReady(state.binding, state.ready.revision).reference).equals(encode(state.reference))) fail(Failure.StaleAttempt);
+export function assertHostedDependencyConsumedColdHandoff(handoff:HostedDependencyColdHandoff,fence:HostedActivationFence):void {
+  assertCurrentHostedDependencyConsumedColdHandoff(handoff,fence);
 }
-export function closeHostedDependencyColdHandoff(handoff: HostedDependencyColdHandoff | undefined): void {
-  if (!handoff) return;
-  const state = cold.get(handoff); if (!state) return;
-  cold.delete(handoff);
-  if (state.consumed) return; // Qualifier owns and closes the transferred logical resources.
-  if (state.exposure) closeDependencySourceExposure(state.exposure);
-  if (state.source) closeDependencySourceLinkSession(state.source);
+export function closeHostedDependencyColdHandoff(handoff:HostedDependencyColdHandoff|undefined):void {
+  closeCurrentHostedDependencyColdHandoff(handoff);
 }

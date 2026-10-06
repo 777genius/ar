@@ -1,3 +1,7 @@
+import { openOriginalHostedDependencyRootDescriptorMaterial, openOriginalHostedManagedProviderDescriptorMaterial } from "./hosted-dependency-root-descriptor-opener";
+import { finishOriginalHostedDependencyColdTree, revokeOriginalHostedDependencyColdState } from "./hosted-dependency-cold-controller";
+import { HostedDependencyColdPhase, HostedDependencyColdInstallerPhase, type HostedDependencyColdState } from "./hosted-dependency-cold-materialization-state";
+import { DependencyAdmissionError, DependencyAdmissionFailure } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedDependencyRetirementOwnerFacts, assertHostedDependencyRetirementSuccessorFacts } from "./hosted-dependency-retirement-facts";
 import { createOriginalHostedSessionRuntimeComposition, type OriginalHostedSessionRuntimeCompositionInput } from "./hosted-managed-dependency-runtime-composition";
 import { OriginalHostedOrdinaryProviderTerminal } from "./hosted-ordinary-provider-terminal-view";
@@ -27,11 +31,10 @@ import { freezeFacts } from "./hosted-dependency-immutable-facts";
 import { OriginalHostedDependencyRootDescriptor as RootDescriptor } from "./hosted-dependency-root-resource-view";
 import { awaitPrivateManagedProviderClose, HostedManagedProviderWaitDeadline } from "./hosted-managed-provider-wait-deadline";
 import { preparePhysicalOriginalHostedDependencySessionHome } from "./hosted-managed-dependency-home-preparation";
-import { sameRootDescriptorStat as sameStat, readHostedDependencyRootDirectoryPin, rootDescriptorPhysicalInfo as info, sameRootDescriptorDirectory as sameDirectory, sameRootDescriptorFile as sameFile, assertHostedDependencyRootDescriptorMaterial, closePhysicalHostedDependencyRootDescriptor } from "./hosted-dependency-root-physical-facts";
+import { sameRootDescriptorStat as sameStat, readHostedDependencyRootDirectoryPin, assertHostedDependencyRootDescriptorMaterial, closePhysicalHostedDependencyRootDescriptor } from "./hosted-dependency-root-physical-facts";
 export { readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-physical-facts";
 import { collectActualHostedManagedReadonlyOrigin } from "./hosted-managed-readonly-origin-collector";
 import { createHostedManagedDependencySdkView } from "./hosted-managed-dependency-sdk-view";
-import { selectHostedDependencyRootDescriptorPath } from "./hosted-dependency-root-descriptor-selection";
 import { hostedManagedDependencyProviderInvocation, bindHostedDependencyToolChild, abandonHostedDependencyToolInvocation, assertHostedManagedDependencyToolRelease } from "./hosted-managed-dependency-tool-plan";
 import { spawnHostedFdChild, hostedFdLaunch } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import { retryHostedFenceAcquisition } from "../provider-codex/app-server/adapters/hosted-fd-fence";
@@ -41,7 +44,7 @@ import { createHash } from "node:crypto";
 import { codexProviderEgressEnv, codexProviderEgressPolicy, CodexProviderEgressProfileId } from "../provider-codex/codex-provider-egress-policy";
 import { collectUnitInvocation } from "./hosted-readonly-linux-collector";
 import { type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, writeFileSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readSync, readdirSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
 import { DependencyToolReadyProvenanceKind, DependencyOwnerPhase, isDependencyConsumerOwner, parseDependencyOwner, sameDependencyProtectedReference, sameDependencyWorkspace, sameDependencyAttempt, parseDependencyGenerationContinuityInvalidation, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { HostedCustodyReservationState } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
@@ -59,7 +62,7 @@ import { invalidateDependencyGeneration } from "../worker-core/dependency-enviro
 import { DependencyUnverifiedReason, DependencyReceiptState } from "../worker-core/dependency-environment/domain/dependency-receipt";
 import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
 import { dependencyToolQualificationRecordName, dependencyToolGuestConfig, dependencyToolGuestConfigPath, parseDependencyToolQualification } from "../core/dependency-environment/dependency-tool-profile";
-import { HostedDependencyRootDescriptorRecipe, type HostedDependencyRootDescriptorAnchor, type HostedDependencyRootDescriptorMaterial } from "../provider-codex/app-server/adapters/hosted-dependency-root-descriptor-material";
+import { HostedDependencyRootDescriptorRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-root-descriptor-material";
 export { HostedDependencyRootDescriptorRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-root-descriptor-material";
 import { HostedDependencyRootOriginKind, HostedDependencyRootPurpose, isHostedDependencySignedTaskId, type HostedDependencyManagedGitScope, type HostedDependencyRootScope, type HostedDependencyManagedProviderFacts, type HostedDependencyRootDirectoryPin, type HostedDependencyRootPreparationRecord } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
 export { HostedDependencyRootPurpose, isHostedDependencySignedTaskId } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
@@ -70,7 +73,7 @@ export type CurrentHostedDependencyOrigin = Readonly<{ [brand]: true }>;
 export enum CurrentHostedDependencyOriginKind { Ordinary = "ordinary", ManagedReadonlyLocal = "managed_readonly_local" }
 const hash = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 function invalid(): never { throw new Error("hosted_dependency_current_origin_unresolved"); }
-const contexts = new WeakMap<CurrentHostedDependencyOrigin, { digest: string; facts: CurrentHostedDependencyOriginFacts; scope?: HostedRetainedToolFiles; rootPurpose?: RootPurposeState; ordinaryEntry?: Readonly<{attempt: ReturnType<typeof attemptFromFacts>["attempt"]; producer:DependencyProtectedReference; entry:DependencyProtectedReference}>; ordinaryAdmitted?:boolean }>();
+const contexts = new WeakMap<CurrentHostedDependencyOrigin, { digest: string; facts: CurrentHostedDependencyOriginFacts; scope?: HostedRetainedToolFiles; rootPurpose?: RootPurposeState; ordinaryEntry?: Readonly<{attempt: ReturnType<typeof attemptFromFacts>["attempt"]; producer:DependencyProtectedReference; entry:DependencyProtectedReference}>; ordinaryAdmitted?:boolean; cold?:HostedDependencyColdState }>();
 let currentEntryOrigin:CurrentHostedDependencyOrigin|undefined;
 /** PRIVATE selected-path reader. Only names derived below from independently pinned start/installation are used; no exported arbitrary-path read port. */
 function selectedFile(path: string, maximum: number, privateFile = true) {
@@ -106,8 +109,13 @@ function assertSelectedDescriptors(scope:HostedRetainedToolFiles|undefined, purp
   if (purpose?.descriptors.size) { if (scope !== undefined) invalid(); assertRootPurposeDescriptors(purpose); }
   else if (scope === undefined) assertHostedProcessDescriptors(); else assertHostedRetainedToolDescriptors(scope);
 }
-function selectedSnapshot(fence: HostedActivationFence, scope?: HostedRetainedToolFiles, rootPurpose?: RootPurposeState) {
+function selectedSnapshot(fence: HostedActivationFence, scope?: HostedRetainedToolFiles, rootPurpose?: RootPurposeState,cold?:HostedDependencyColdState) {
   assertHostedActivationFence(fence); assertHostedActivationOperator();
+  // Only the same privately retained actual FDA Installer role participates.
+  // Generic/regular FD census is unchanged; no supplied descriptor exemptions.
+  if(cold?.installerFrame && cold.installerPhase!==HostedDependencyColdInstallerPhase.Waited) {
+    const frame=cold.installerFrame;assertHostedFdProcess(frame.child,frame.unit,HostedFdLaunchKind.Installer,frame.command,frame.args);
+  }
   const group = readFileSync("/proc/self/cgroup","utf8").trim();
   if (/^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-[a-f0-9-]{36}\.service$/.test(group)) {
     assertSelectedDescriptors(scope,rootPurpose);
@@ -133,7 +141,7 @@ export function readCurrentHostedDependencyOrigin(fence: HostedActivationFence, 
 }
 export function assertCurrentHostedDependencyOrigin(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence): CurrentHostedDependencyOriginFacts {
   const retained = contexts.get(context); if (!retained) invalid();
-  const current = selectedSnapshot(fence,retained.scope,retained.rootPurpose); if (current.digest !== retained.digest) invalid(); return current.facts;
+  const current = selectedSnapshot(fence,retained.scope,retained.rootPurpose,retained.cold); if (current.digest !== retained.digest) invalid(); return current.facts;
 }
 /** Classification after preparation uses the SAME original authority and FD
  * associations, rather than falling back to the generic strict descriptor view. */
@@ -174,6 +182,7 @@ export function consumeCurrentHostedOrdinaryDependencyExecution(fence:HostedActi
 }
 export function invalidateCurrentHostedDependencyOrigin(context: CurrentHostedDependencyOrigin): void {
   const retained = contexts.get(context); let failure: unknown;
+  try {revokeOriginalHostedDependencyColdState(context,rootInternalAccess);}catch(error){failure=error;}
   const provider = retained?.rootPurpose?.provider;
   if (provider?.child) { provider.stopping = true;
     try { hostedFdLaunch(provider.child).invalidate(); } catch (error) { failure = error; }
@@ -217,11 +226,36 @@ export function readCurrentHostedManagedDependencyProvider(context: CurrentHoste
   const after = managedProviderBirth(context,fence,unit); if (!encode(after).equals(pin.bytes)) invalid();
   return Object.freeze({value:current,reference:pin.reference});
 }
+/** The original-map entry owns the fixed cold invocation before any final
+ * observation. No caller observation/Ready setter or second provenance map. */
+export async function materializeCurrentHostedDependencyColdTree(context:CurrentHostedDependencyOrigin):Promise<Readonly<{startId:string}>|undefined> {
+  if(!contexts.has(context))coldInvalid();
+  withHostedActivationFence(fence=>{
+    const actual=assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation),retained=contexts.get(context);
+    if(!retained || retained.cold) coldInvalid();
+    retained.cold={phase:HostedDependencyColdPhase.Producing,binding:actual.binding,attempt:actual.attempt};
+  });
+  return finishOriginalHostedDependencyColdTree(context,rootInternalAccess);
+}
+export { assertOriginalHostedDependencyColdProducer, readOriginalHostedDependencyColdSelection } from "./hosted-dependency-cold-controller";
+/** Internal association access only; no caller can create/replace a capture,
+ * Plan or child through this function or obtain the lexical access symbol. */
+export function findOriginalHostedDependencyColdState(context:CurrentHostedDependencyOrigin,access:symbol):HostedDependencyColdState|undefined {
+  if(access!==rootInternalAccess)coldInvalid();return contexts.get(context)?.cold;
+}
+export function readOriginalHostedDependencyColdInstallerState(context:CurrentHostedDependencyOrigin,access:symbol):HostedDependencyColdState {
+  if(access!==rootInternalAccess)coldInvalid();const state=contexts.get(context)?.cold;if(!state)coldInvalid();return state;
+}
+export { finishOriginalHostedDependencyColdInstaller as installCurrentHostedDependencyColdTree } from "./hosted-dependency-cold-controller";
+export { consumeCurrentHostedDependencyColdHandoff, assertCurrentHostedDependencyConsumedColdHandoff,
+  closeCurrentHostedDependencyColdHandoff } from "./hosted-dependency-cold-handoff-view";
+function coldInvalid():never {throw new DependencyAdmissionError(DependencyAdmissionFailure.StaleAttempt);}
+
 /** Fixed provider resources belong solely to the original-origin entry. */
 export function prepareCurrentHostedManagedDependencyProviderTools(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence, unit: string) {
   const selected = readCurrentHostedManagedDependencyProvider(context,fence,unit), state = contexts.get(context)?.rootPurpose;
   if (!state || state.provider) invalid();
-  const scope = assertCurrentHostedDependencyRootPurpose(state.managed,HostedDependencyRootPurpose.ManagedGitReadV1,fence);
+  assertCurrentHostedDependencyRootPurpose(state.managed,HostedDependencyRootPurpose.ManagedGitReadV1,fence);
   const providerRoot = `${root}/dependency-provider-roots/${selected.value.providerStartId}`;
   const rootPin = readHostedDependencyRootDirectoryPin(providerRoot), stat = lstatSync(providerRoot);
   if (stat.uid !== 0 || stat.gid !== 0 || (stat.mode & 0o7777) !== 0o700) invalid();
@@ -236,14 +270,13 @@ export function prepareCurrentHostedManagedDependencyProviderTools(context: Curr
   try { fsyncSync(parentFd); } finally { closeSync(parentFd); }
   const opened: RootDescriptor[] = [];
   try {
-    const associate = (path: string, pin: HostedDependencyRootDirectoryPin) => {
-      const physical = openHostedDependencyRootDescriptorMaterial(scope,HostedDependencyRootDescriptorRecipe.DurableFileV1,path,
-        {directory:false,maximum:16384,root:pin});
+    const associate = (path: string) => {
+      const physical = openOriginalHostedManagedProviderDescriptorMaterial(context,fence,unit,path,rootInternalAccess);
       const resource = new RootDescriptor(context,physical,rootInternalAccess); state.descriptors.set(resource,physical);
       opened.push(resource); Object.freeze(resource); return resource;
     };
-    const record = associate(state.record.qualification.path,readHostedDependencyRootDirectoryPin(dirname(state.record.qualification.path)));
-    const capsule = associate(capsulePath,rootPin);
+    const record = associate(state.record.qualification.path);
+    const capsule = associate(capsulePath);
     if ((fstatSync(record.fd).mode & 0o7777) !== 0o600 || (fstatSync(capsule.fd).mode & 0o7777) !== 0o600 ||
         !readManagedProviderDescriptor(record.fd).equals(qualification.bytes) || !readManagedProviderDescriptor(capsule.fd).equals(bytes)) invalid();
     state.provider = {unit,reference:selected.reference,root:rootPin,qualification:freezeFacts(q),ready:state.record.providerReady,record,capsule,capsulePath};
@@ -514,9 +547,9 @@ export function assertCurrentHostedDependencyRootPurpose(context: HostedDependen
 /** Sole original-map descriptor association; no supplied FD/pins. */
 export function openCurrentHostedDependencyRootDescriptor(context: HostedDependencyRootPurposeContext, fence: HostedActivationFence, recipe: HostedDependencyRootDescriptorRecipe, path: string): HostedDependencyRootDescriptor {
   const {origin,state} = resolveRootPurpose(context,HostedDependencyRootPurpose.ManagedGitReadV1,rootInternalAccess);
-  const scope = assertCurrentHostedDependencyRootPurpose(context,HostedDependencyRootPurpose.ManagedGitReadV1,fence);
+  assertCurrentHostedDependencyRootPurpose(context,HostedDependencyRootPurpose.ManagedGitReadV1,fence);
   if (state.descriptors.size >= 256) invalid();
-  const material = openHostedDependencyRootDescriptorMaterial(scope,recipe,path), descriptor = new RootDescriptor(origin,material,rootInternalAccess);
+  const material = openOriginalHostedDependencyRootDescriptorMaterial(origin,fence,recipe,path,rootInternalAccess), descriptor = new RootDescriptor(origin,material,rootInternalAccess);
   Object.freeze(descriptor);
   state.descriptors.set(descriptor,material);
   try { assertCurrentHostedDependencyRootPurpose(context,HostedDependencyRootPurpose.ManagedGitReadV1,fence); return descriptor; }
@@ -587,50 +620,11 @@ export function retireCurrentHostedDependencySourceCleanup(context: HostedDepend
 }
 /** Protected config facts only, bounded retained FD and root ancestry. Actual issuer/admission selects workspace first; this function cannot mint a purpose. */
 export { readHostedDependencyRootGitConfigPin } from "./hosted-dependency-current-facts";
-function denied(): never { throw new Error("hosted_dependency_root_descriptor_denied"); }
-function openHostedDependencyRootDescriptorMaterial(scope: HostedDependencyManagedGitScope, recipe: HostedDependencyRootDescriptorRecipe, path: string,
-  fixedSelection?: Readonly<{directory:false;maximum:number;root:HostedDependencyRootDirectoryPin}>): HostedDependencyRootDescriptorMaterial {
-  const selection = fixedSelection ?? selectHostedDependencyRootDescriptorPath(scope,recipe,path), descriptors: number[] = [], ancestors: HostedDependencyRootDescriptorAnchor[] = [], dependencies: HostedDependencyRootDescriptorAnchor[] = [];
-  let retained = false;
-  try {
-    let parent = openSync("/",constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW); descriptors.push(parent);
-    let physical = "/", actual = fstatSync(parent,{bigint:true});
-    if (!sameDirectory(actual,lstatSync("/",{bigint:true})) || actual.uid !== 0n || actual.gid !== 0n || (actual.mode & 0o022n)) denied();
-    const segments = path === "/" ? [] : path.slice(1).split("/");
-    for (let index = 0; index < segments.length; index++) {
-      ancestors.push(Object.freeze({fd:parent,path:physical,stat:actual,...info(parent)}));
-      const last = index === segments.length-1, directory = !last || selection.directory;
-      const named = `/proc/self/fd/${parent}/${segments[index]!}`, before = lstatSync(named,{bigint:true});
-      const fd = openSync(named,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK|(directory ? constants.O_DIRECTORY:0));
-      descriptors.push(fd); physical = physical === "/" ? "/"+segments[index]! : physical+"/"+segments[index]!;
-      actual = fstatSync(fd,{bigint:true});
-      if (!(directory ? sameDirectory(actual,before):sameFile(actual,before)) || actual.uid !== 0n || actual.gid !== 0n ||
-          (actual.mode & 0o022n) || realpathSync(`/proc/self/fd/${fd}`) !== physical ||
-          !(directory ? sameDirectory(actual,lstatSync(named,{bigint:true})):sameFile(actual,lstatSync(named,{bigint:true})))) denied();
-      parent = fd;
-    }
-    const fd = parent, openedInfo = info(fd);
-    if (!selection.directory && (!actual.isFile() || actual.nlink !== 1n || actual.size < 0n || actual.size > BigInt(selection.maximum))) denied();
-    if (selection.root) {
-      const rootPath = recipe === HostedDependencyRootDescriptorRecipe.TaskEventsV1 ? scope.jobRootDir : selection.root.canonicalPath;
-      const anchor = path === rootPath ? {stat:actual,mountId:openedInfo.mountId} : ancestors.find(pin => pin.path === rootPath);
-      if (!anchor || anchor.stat.dev.toString() !== selection.root.dev ||
-        anchor.mountId !== selection.root.mountId || actual.dev.toString() !== selection.root.dev || openedInfo.mountId !== selection.root.mountId) denied();
-      if (recipe !== HostedDependencyRootDescriptorRecipe.TaskEventsV1 && anchor.stat.ino.toString() !== selection.root.ino) denied();
-      if (selection.directory && ((path === scope.scratchParent.canonicalPath || path.startsWith(scope.scratchParent.canonicalPath+"/")) || (path === scope.durableHandoffRoot.canonicalPath || path.startsWith(scope.durableHandoffRoot.canonicalPath+"/"))) &&
-          (actual.mode & 0o7777n) !== 0o700n) denied();
-      if (recipe === HostedDependencyRootDescriptorRecipe.TaskEventsV1) {
-        const child = openSync(`/proc/self/fd/${descriptors[ancestors.findIndex(pin => pin.path === rootPath)]!}/durable-handoffs`,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
-        descriptors.push(child); const durable = fstatSync(child,{bigint:true}), childInfo = info(child);
-        if (durable.dev.toString() !== selection.root.dev || durable.ino.toString() !== selection.root.ino || childInfo.mountId !== selection.root.mountId ||
-            durable.uid !== 0n || durable.gid !== 0n || (durable.mode & 0o7777n) !== 0o700n ||
-            !sameDirectory(durable,lstatSync(selection.root.canonicalPath,{bigint:true})) || realpathSync(`/proc/self/fd/${child}`) !== selection.root.canonicalPath) denied();
-        dependencies.push(Object.freeze({fd:child,path:selection.root.canonicalPath,stat:durable,...childInfo}));
-      }
-    }
-    const result = {fd,path,directory:selection.directory,stat:actual,...openedInfo,ancestors:Object.freeze(ancestors),dependencies:Object.freeze(dependencies),closed:false};
-    assertHostedDependencyRootDescriptorMaterial(result); retained = true; return result;
-  } finally { if (!retained) for (const fd of descriptors.reverse()) closeSync(fd); }
+/** Fixed factual IO selector; only the original lexical access can select its
+ * record. It neither opens a descriptor nor registers supplied physical facts. */
+export function readOriginalHostedDependencyDescriptorOpening(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol) {
+  if(access!==rootInternalAccess)invalid();const state=contexts.get(context)?.rootPurpose;if(!state)invalid();
+  return {scope:assertCurrentHostedDependencyRootPurpose(state.managed,HostedDependencyRootPurpose.ManagedGitReadV1,fence),record:state.record};
 }
 export function assertOriginalHostedSessionRuntimeCompositionAccess(context:CurrentHostedDependencyOrigin,access:symbol):void { if (access!==rootInternalAccess || !contexts.get(context)?.rootPurpose || contexts.get(context)!.rootPurpose!.sessionRuntime) invalid(); }
 /** Fixed actual stores and driver. No supplied StorePort, constructor or terminal DTO. */

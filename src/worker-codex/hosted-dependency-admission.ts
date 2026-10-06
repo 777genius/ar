@@ -93,7 +93,7 @@ export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Pr
   const readyInputs = admission.binding.version === 1 && !admission.absent && admission.receipt?.state === DependencyReceiptState.Ready
     ? await readHostedDependencyKeyInputs(admission.binding) : undefined;
   let coldHandoff: HostedDependencyColdHandoff | undefined;
-  if (admission.absent) coldHandoff = await materializeHostedDependencyAbsenceForToolEntry(admission.binding, admission.attempt);
+  if (admission.absent) coldHandoff = await materializeHostedDependencyAbsenceForToolEntry(admission.binding, admission.attempt,context);
   else if (admission.binding.version === 1 && (!readyInputs || admission.receipt?.state !== DependencyReceiptState.Ready ||
       !matchesHostedDependencyReady(admission.binding, admission.receipt, readyInputs))) {
     const observation = await observeDependencyTree({ workspacePath: admission.binding.workspace.canonicalPath,

@@ -1,3 +1,4 @@
+import { assertOriginalHostedDependencyColdProducer, requiresCurrentHostedDependencyRootPurpose, installCurrentHostedDependencyColdTree, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, writeFileSync } from "node:fs";
 import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, DependencyInstallProofKind, DependencyReceiptState,
@@ -124,8 +125,10 @@ export type HostedDependencyLocalMaterializationResult = {
  * durable ExclusiveMutation span every await; each boundary reauthenticates
  * owner, physical source, actual profile/key and real installer drain. Unknown
  * failure retains Installing, output/evidence and owner for reconciliation. */
-export async function materializeHostedDependencyLocalAbsence(binding: HostedDependencyBinding, attempt: DependencyAttempt): Promise<HostedDependencyLocalMaterializationResult> {
-  const prepared = await beginHostedDependencyInstallation(binding, attempt), { inputs, installing } = prepared;
+export async function materializeHostedDependencyLocalAbsence(binding: HostedDependencyBinding, attempt: DependencyAttempt,capturedOrigin?:CurrentHostedDependencyOrigin,internalAccess?:symbol): Promise<HostedDependencyLocalMaterializationResult> {
+  if(capturedOrigin) {if(internalAccess===undefined)fail();withHostedActivationFence(fence=>assertOriginalHostedDependencyColdProducer(capturedOrigin,fence,internalAccess));}
+  else if(requiresCurrentHostedDependencyRootPurpose())fail();
+  const prepared = await beginHostedDependencyInstallation(binding, attempt,capturedOrigin), { inputs, installing } = prepared;
   // Registry continues its existing recipe with this same actual capture and
   // legal Installing transition. Local retains its initial physical pins.
   if (inputs.recipe === Recipe.NpmRegistryNoScriptsV1) return { inputs, installing, cold: undefined };
@@ -133,11 +136,12 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
     assertHostedDependencyKeyInputsCurrent(binding, inputs);
     const stored = readHostedDependencyReceipt(binding); if (!stored || !encode(stored).equals(encode(installing))) fail();
   };
-  withHostedActivationFence(fence => { assertOwnerUnderFence(fence, binding, attempt); current(); });
-  const completed = await new HostedDependencyInstaller().install({ recipe: Recipe.NpmLocalNoLifecycleV1, workspace: binding.workspace, attempt });
-  assertOwner(binding, attempt);
+  withHostedActivationFence(fence => { assertOwnerUnderFence(fence, binding, attempt,capturedOrigin); current(); });
+  const completed=capturedOrigin ? await installCurrentHostedDependencyColdTree(capturedOrigin,internalAccess ?? fail()) :
+    await new HostedDependencyInstaller().install({recipe:Recipe.NpmLocalNoLifecycleV1,workspace:binding.workspace,attempt});
+  assertOwner(binding, attempt,capturedOrigin);
   const chain = withHostedActivationFence(fence => {
-    assertOwnerUnderFence(fence, binding, attempt); current(); return installerChain(binding, attempt, inputs);
+    assertOwnerUnderFence(fence, binding, attempt,capturedOrigin); current(); return installerChain(binding, attempt, inputs);
   });
   const stagePath = `${chain.directory}/staging`, stageStat = lstatSync(stagePath, { bigint: true });
   const stageWorkspace = { canonicalPath: stagePath, dev: String(stageStat.dev), ino: String(stageStat.ino) };
@@ -155,7 +159,7 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
       expectedTree: chain.tree, sourceLinkSession: stagedSession, limits: hostedDependencyObservationLimits });
     if (staged.status !== DependencyTreeObservationStatus.Complete) fail(Failure.UnsafeTree);
     stagedExposure = staged.exposure;
-    withHostedActivationFence(fence => { assertOwnerUnderFence(fence, binding, attempt); current(); currentChain(chain, attempt);
+    withHostedActivationFence(fence => { assertOwnerUnderFence(fence, binding, attempt,capturedOrigin); current(); currentChain(chain, attempt);
       assertDependencyLocalRegistrySelectionAbsent(staged.exposure, stagedSession, stageWorkspace, chain.tree);
       normalizeCapturedDependencyOutput(staged, 0, stagedSession); });
     closeDependencySourceExposure(staged.exposure); stagedExposure = undefined;
@@ -163,20 +167,22 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
       expectedTree: chain.tree, sourceLinkSession: stagedSession, limits: hostedDependencyObservationLimits });
     if (normalized.status !== DependencyTreeObservationStatus.Complete || !Buffer.from(normalized.canonicalBytes).equals(Buffer.from(staged.canonicalBytes)) ||
         !sameHostedDependencyKeyInputs(inputs, await readHostedDependencyKeyInputs(binding))) fail(Failure.UnsafeTree);
-    withHostedActivationFence(fence => { assertOwnerUnderFence(fence, binding, attempt); current(); currentChain(chain, attempt);
+    withHostedActivationFence(fence => { assertOwnerUnderFence(fence, binding, attempt,capturedOrigin); current(); currentChain(chain, attempt);
       publishCapturedDependencyOutput(normalized, binding.workspace, { staged: stagedSession, original: originalSession }); });
+    assertOwner(binding,attempt,capturedOrigin);
     const final = await observeDependencyTreeWithLocalRegistrySelection({ workspacePath: binding.workspace.canonicalPath, expectedWorkspace: binding.workspace,
       treeName: "node_modules", expectedTree: chain.tree, sourceLinkSession: originalSession, limits: hostedDependencyObservationLimits });
     if (final.status === DependencyTreeObservationStatus.Complete) finalExposure = final.exposure;
     if (final.status !== DependencyTreeObservationStatus.Complete || !Buffer.from(final.canonicalBytes).equals(Buffer.from(normalized.canonicalBytes)) ||
         !sameHostedDependencyKeyInputs(inputs, await readHostedDependencyKeyInputs(binding))) fail(Failure.UnsafeTree);
-    assertOwner(binding, attempt);
+    assertOwner(binding, attempt,capturedOrigin);
     const blobs = await openHostedDependencyManifestPlacement();
-    try { if (await blobs.put(final.canonicalBytes) !== final.digest) fail(); } finally { await blobs.close(); }
+    try {assertOwner(binding,attempt,capturedOrigin);if (await blobs.put(final.canonicalBytes) !== final.digest) fail();} finally {await blobs.close();}
+    assertOwner(binding,attempt,capturedOrigin);
     // All observer/placement descriptors have joined close before FDA origin
     // inspection. Source sessions retain logical pins, not leaked scan FDs.
     const ready = withHostedActivationFence(fence => {
-      assertOwnerUnderFence(fence, binding, attempt); current(); currentChain(chain, attempt); assertRoot(binding.workspace, final.tree);
+      assertOwnerUnderFence(fence, binding, attempt,capturedOrigin); current(); currentChain(chain, attempt); assertRoot(binding.workspace, final.tree);
       readDependencySourceLinkSession(originalSession, binding.workspace, "node_modules"); blobs.assertCurrent(fence);
       assertDependencyLocalRegistrySelectionAbsent(final.exposure, originalSession, binding.workspace, final.tree);
       const proofBinding = { generation: installing.generation, workspace: binding.workspace, coverageRevision: installing.coverageRevision,
@@ -195,7 +201,7 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
         provenance: { ...proofBinding, kind: DependencyInstallProofKind.CompletedLocalInstallV1, operationId: installing.operationId,
           verificationEvidenceId: final.digest, installerDrainEvidenceId: chain.completion.reference.sha256, sourceBinding } };
       const protectedSession = openHostedDependencySourceLinks(ready); closeDependencySourceLinkSession(protectedSession);
-      assertOwnerUnderFence(fence, binding, attempt); current(); currentChain(chain, attempt); assertRoot(binding.workspace, final.tree);
+      assertOwnerUnderFence(fence, binding, attempt,capturedOrigin); current(); currentChain(chain, attempt); assertRoot(binding.workspace, final.tree);
       readDependencySourceLinkSession(originalSession, binding.workspace, "node_modules"); blobs.assertCurrent(fence);
       assertDependencyLocalRegistrySelectionAbsent(final.exposure, originalSession, binding.workspace, final.tree);
       publishHostedDependencyReceipt(binding, installing.revision, ready);
