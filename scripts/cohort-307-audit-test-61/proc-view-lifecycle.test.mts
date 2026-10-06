@@ -70,6 +70,14 @@ def closed_failure(_kind,_error,_trace):
 sys.excepthook=closed_failure
 `;
 
+const baselineFactKeys = ['budgetComplete', 'memberCountExact', 'membersJoined', 'fdMatched', 'mapMatched', 'ioWithinBound', 'legacyWouldExceed', 'baselineSelfFdMissing'] as const;
+const baselineIssueCodes = ['None', 'Deadline', 'ByteLimit', 'EntryLimit', 'FdLimit', 'TextLimit', 'LineLimit', 'ProcessIdentityDrift', 'FdMembershipDrift', 'TaskMembershipDrift', 'MountDrift', 'MountJoinUnknown', 'UnclassifiedSelfOrigin', 'ReferenceObjectMismatch', 'ENOENT', 'Unknown'] as const;
+const lifecycleResultKeys = ['sharedViewBounded', 'descendantReplacementUnknown', 'sameInodeDistinctRootReported', 'lateAbaPublicationUnknown', 'lateRenamePublicationUnknown', 'independentViewJoined', 'lowFdRefused', 'globalIoSticky', 'heapCapAndRollback'] as const;
+function closedRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+}
+
 const readerScript = String.raw`
 import ctypes,mmap,os,sys,threading
 private=int(sys.argv[2]);lib=ctypes.CDLL(None,use_errno=True)
@@ -231,6 +239,7 @@ try:
     shared_rows=[row for row in first['matches'] if row['pid']==shared and row['bucket']=='ExternalCurrentReference']
     shared_obs=[row for row in first['observations'] if row['pid']==shared]
     reuse=not budget.incomplete and len(shared_obs)==33 and all(row['join']=='Joined' for row in shared_obs) and {'Fd','Map'}<=set(row['kind'] for row in shared_rows) and charged<6*table_bytes and 4*table_bytes*len(shared_obs)>64*1024**2
+    baseline={'facts':{'budgetComplete':not budget.incomplete,'memberCountExact':len(shared_obs)==33,'membersJoined':all(row['join']=='Joined' for row in shared_obs),'fdMatched':any(row['kind']=='Fd' for row in shared_rows),'mapMatched':any(row['kind']=='Map' for row in shared_rows),'ioWithinBound':charged<6*table_bytes,'legacyWouldExceed':4*table_bytes*len(shared_obs)>64*1024**2,'baselineSelfFdMissing':any(row['phase']=='FdEntry' and row['reason']=='ENOENT' and row.get('pid')==facts['ownPid'] for row in budget.errors)},'firstIssue':next((code for code in ('None', 'Deadline', 'ByteLimit', 'EntryLimit', 'FdLimit', 'TextLimit', 'LineLimit', 'ProcessIdentityDrift', 'FdMembershipDrift', 'TaskMembershipDrift', 'MountDrift', 'MountJoinUnknown', 'UnclassifiedSelfOrigin', 'ReferenceObjectMismatch', 'ENOENT', 'Unknown') if code==budget.errors[0]['reason']),'Unknown') if budget.errors else 'None'}
     stage='BaselineClose'
     for child in children:
         if child.poll() is None:child.kill()
@@ -350,7 +359,7 @@ try:
         if held is not None:heap_budget.release_mounts(held)
         if last is not None:heap_budget.release_mounts(last)
         os.close(heap_fd)
-    print(json.dumps({'sharedViewBounded':reuse,'descendantReplacementUnknown':physical,'sameInodeDistinctRootReported':physical_roots,'lateAbaPublicationUnknown':aba,'lateRenamePublicationUnknown':renamed,'independentViewJoined':aba_stable and rename_stable and physical_stable,'lowFdRefused':low_fd,'globalIoSticky':sticky,'heapCapAndRollback':heap_recovered}))
+    print(json.dumps({'result':{'sharedViewBounded':reuse,'descendantReplacementUnknown':physical,'sameInodeDistinctRootReported':physical_roots,'lateAbaPublicationUnknown':aba,'lateRenamePublicationUnknown':renamed,'independentViewJoined':aba_stable and rename_stable and physical_stable,'lowFdRefused':low_fd,'globalIoSticky':sticky,'heapCapAndRollback':heap_recovered},'baseline':baseline}))
 except BaseException:
     first_failure=first_failure or stage
     raise
@@ -368,20 +377,21 @@ finally:
     for target in reversed(mounted):
         if lib.umount2(os.fsencode(target),0):raise OSError(ctypes.get_errno())
 `;
-test('finite joined mount views preserve actual member publication and allocation faults', { timeout: 120_000 }, () => {
+test('finite joined mount views preserve actual member publication and allocation faults', { timeout: 120_000 }, (t) => {
   assert.equal(process.platform, 'linux'); assert.equal(process.getuid?.(), 0);
   const root = mkdtempSync(join(tmpdir(), 'TEST-view-lifecycle-'));
   try {
     const encoded = Buffer.from(JSON.stringify({ root, payload: join(artifact, 'audit-payload.py'),
       reader: readerScript, auditor: failureScript + auditorScript, supervisor: failureScript + supervisorScript })).toString('base64');
     let result: unknown;
+    let envelope: unknown;
     let failure: FixtureFailure = FixtureFailure.Unknown;
     try {
       const output = execFileSync('/usr/bin/unshare', ['--mount', '--pid', '--fork', '--kill-child=SIGKILL', '--propagation', 'private',
         '/usr/bin/python3', '-B', '-c', (failureScript + driverScript).replace('__SPEC__', encoded)],
         { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 110_000, maxBuffer: 4096 });
       failure = FixtureFailure.OutputDecode;
-      result = JSON.parse(output);
+      envelope = JSON.parse(output);
     } catch (error: unknown) {
       if (failure !== FixtureFailure.OutputDecode && typeof error === 'object' && error !== null && 'stderr' in error) {
         const captured = typeof error.stderr === 'string' ? error.stderr : Buffer.isBuffer(error.stderr) ? error.stderr.toString('utf8') : '';
@@ -389,6 +399,16 @@ test('finite joined mount views preserve actual member publication and allocatio
       }
       throw new Error(`Finite mount view lifecycle fixture failed: ${failure}`);
     }
+    if (!closedRecord(envelope, ['result', 'baseline'])) throw new Error('Finite mount view fixture result shape invalid');
+    const checks = envelope.result;
+    const baseline = envelope.baseline;
+    if (!closedRecord(checks, lifecycleResultKeys) || !lifecycleResultKeys.every(key => typeof checks[key] === 'boolean')
+      || !closedRecord(baseline, ['facts', 'firstIssue'])) throw new Error('Finite mount view fixture result shape invalid');
+    const facts = baseline.facts;
+    if (!closedRecord(facts, baselineFactKeys) || !baselineFactKeys.every(key => typeof facts[key] === 'boolean')
+      || !baselineIssueCodes.some(code => code === baseline.firstIssue)) throw new Error('Finite mount view baseline shape invalid');
+    result = checks;
+    if (checks.sharedViewBounded === false) t.diagnostic('Baseline invariant facts: ' + JSON.stringify({ facts, firstIssue: baseline.firstIssue }));
     assert.deepEqual(result, { sharedViewBounded: true, descendantReplacementUnknown: true, sameInodeDistinctRootReported: true,
       lateAbaPublicationUnknown: true, lateRenamePublicationUnknown: true, independentViewJoined: true,
       lowFdRefused: true, globalIoSticky: true, heapCapAndRollback: true });
