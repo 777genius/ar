@@ -31,8 +31,8 @@ import { HostedDependencyInstallerNetworkInput, hostedDependencyInstallerNetwork
 import { readHostedDependencyBinding } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
 import { LocalDependencyOwnerStore } from "../../dist/store-local-file/dependency-environment/local-dependency-owner-store.js";
 import { readHostedDependencyReceipt } from "../../dist/worker-codex/hosted-dependency-materialization.js";
-import { fdCollectorProfilePath, FdCollectorRenderer, parseFdCollectorProfile, parseFdCollectorRows,
-  type FdCollectorProfile, type FdExecutablePin, type FdFilePin } from "../../dist/core/host-infrastructure/fd-collector-profile.js";
+import { fdCollectorProfilePath, FdCollectorRenderer, parseFdCollectorProfile, parseFdCollectorRows, knownFdCollectorPeer,
+  type FdCollectorProfile, type FdExecutablePin, type FdFilePin, type FdCollectorPeer } from "../../dist/core/host-infrastructure/fd-collector-profile.js";
 import { assertHostedFdInternals, observeHostedFdProcess, hostedFdTable } from "../../dist/provider-codex/app-server/adapters/hosted-fd-observation.js";
 import { hostedFdLaunch, hostedFdInvocationUnit, spawnHostedFdChild, HostedFdLaunchKind, HostedForegroundArtifactKind, type HostedForegroundResult } from "../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js";
 import { hostedDependencySystemdRunExecutable } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-systemd-command.js";
@@ -703,7 +703,7 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<
     for (const path of ["managed-launcher/launch.mjs", "managed-launcher/payload-guard.mjs", "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs"])
       bootstraps.push(pin("/opt/subscription-runtime/" + path));
   }
-  const query = (): ReadonlyMap<string, string> => {
+  const query = (): ReadonlyMap<string, FdCollectorPeer> => {
     const began = performance.now();
     delete progress.rowsInput;
     const result = spawnSync(ss.path, ["-H", "-n", "-A", "unix_stream", "state", "established", "src", "unix:"],
@@ -758,8 +758,8 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<
       const peerRows = query(), parent = hostedFdTable(process.pid), pairs: { fd: number; parent: string; child: string }[] = [];
       for (const fd of [0, 1, 2]) {
         const target = actual.descriptors.find(row => row.fd === fd); assert(target?.socket);
-        const remote = sock(target.target), local = peerRows.get(remote); assert(local && !before.has(local));
-        assert.equal(peerRows.get(local), remote);
+        const remote = sock(target.target), local = knownFdCollectorPeer(peerRows, remote); assert(local && !before.has(local));
+        assert.equal(knownFdCollectorPeer(peerRows, local), remote);
         assert.equal(parent.filter(row => row.socket && sock(row.target) === local).length, 1); pairs.push({ fd, parent: local, child: remote });
       }
       assert.equal(new Set(pairs.flatMap(row => [row.parent, row.child])).size, 6);
@@ -771,7 +771,7 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<
       measured.setupMs = Math.max(measured.setupMs, Math.ceil(performance.now() - began));
       const next = observeHostedFdProcess(child.pid); assert.equal(next.birth, birth);
       assert.deepEqual(next.descriptors, actual.descriptors);
-      const nextRows = query(); for (const pair of pairs) { assert.equal(nextRows.get(pair.parent), pair.child); assert.equal(nextRows.get(pair.child), pair.parent); }
+      const nextRows = query(); for (const pair of pairs) { assert.equal(knownFdCollectorPeer(nextRows, pair.parent), pair.child); assert.equal(knownFdCollectorPeer(nextRows, pair.child), pair.parent); }
       observations.push({ uid, pid: child.pid, birth, namespaces, group: actual.group, pairs,
         droppedCapabilitiesAndNoNewPrivsObserved: uid === 65532,
         descriptors: actual.descriptors.map(row => ({ fd: row.fd, target: row.target, flags: row.flags, rdev: row.rdev })) });
@@ -836,7 +836,7 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<
  * No raw row, token, name, inode, address or hash leaves this summary. */
 function nativeFdRowsInputFacts(text: string) {
   const columns = Array<number>(8).fill(0), inodeShapes = { positive: 0, negative: 0, zero: 0, nonCanonical: 0, outOfRange: 0 };
-  let rows = 0, start = 0, blankRows = 0, localNotStar = 0, peerNotStar = 0, nonCanonicalQueues = 0;
+  let rows = 0, start = 0, blankRows = 0, localNotStar = 0, peerNotStar = 0, nonCanonicalQueues = 0, localZero = 0, peerZero = 0;
   const end = text.endsWith("\n") ? text.length - 1 : text.length;
   for (let at = 0; text.length > 0 && at <= end; at++) {
     if (at < end && text[at] !== "\n") continue;
@@ -849,6 +849,7 @@ function nativeFdRowsInputFacts(text: string) {
     if (fields.length !== 6) continue;
     if (fields[2] !== "*") localNotStar++; if (fields[4] !== "*") peerNotStar++;
     if (!fields.slice(0, 2).every(token => /^(?:0|[1-9][0-9]{0,9})$/.test(token) && Number(token) <= 4294967295)) nonCanonicalQueues++;
+    if (fields[3] === "0") localZero++; if (fields[5] === "0") peerZero++;
     for (const token of [fields[3]!, fields[5]!]) {
       if (!/^(?:0|[1-9][0-9]*|-[1-9][0-9]*)$/.test(token)) inodeShapes.nonCanonical++;
       else { const value = Number(token);
@@ -859,7 +860,7 @@ function nativeFdRowsInputFacts(text: string) {
     }
   }
   return { bytes: Buffer.byteLength(text), rows, classifiedRows: Math.min(rows, 65536), omittedRows: Math.max(0, rows - 65536),
-    blankRows, columns, localNotStar, peerNotStar, nonCanonicalQueues, inodeShapes,
+    blankRows, columns, localNotStar, peerNotStar, nonCanonicalQueues, inodeShapes, localZero, peerZero,
     nonPrintableAscii: !/^[\x09\x0a\x20-\x7e]*$/.test(text) };
 }
 
@@ -922,7 +923,7 @@ async function boundedWait<T>(promise: Promise<T>, milliseconds: number): Promis
   })]); } finally { clearTimeout(timer); }
 }
 
-async function qualifyNamedSockets(query: () => ReadonlyMap<string, string>, local: string, peer: string, sock: (target: string) => string): Promise<void> {
+async function qualifyNamedSockets(query: () => ReadonlyMap<string, FdCollectorPeer>, local: string, peer: string, sock: (target: string) => string): Promise<void> {
   const directoryPath = "/run/TEST-fd-" + randomUUID(); directory(directoryPath);
   for (const name of [directoryPath + "/named\n0 0 * " + local + " * " + peer,
     "\0TEST-fd-" + randomUUID() + "\n0 0 * " + local + " * " + peer, directoryPath + "/*"]) {
@@ -935,9 +936,9 @@ async function qualifyNamedSockets(query: () => ReadonlyMap<string, string>, loc
       await boundedWait(client.readyState === "open" ? Promise.resolve() : once(client, "connect").then(() => {}), 2000);
       const created = hostedFdTable(process.pid).filter(row => row.socket && !previous.has(sock(row.target))).map(row => sock(row.target));
       assert.equal(created.length, 2);
-      const rows = query(); assert.equal(rows.get(local), peer); assert.equal(rows.get(peer), local);
+      const rows = query(); assert.equal(knownFdCollectorPeer(rows, local), peer); assert.equal(knownFdCollectorPeer(rows, peer), local);
       assert(created.some(inode => !rows.has(inode)), "TEST named local socket bypassed empty-address filter");
-      assert(!created.some(inode => rows.get(rows.get(inode) ?? "") === inode), "TEST named peer gained reciprocal authority");
+      assert(!created.some(inode => knownFdCollectorPeer(rows, knownFdCollectorPeer(rows, inode) ?? "") === inode), "TEST named peer gained reciprocal authority");
     } finally {
       client?.destroy(); accepted?.destroy();
       if (server.listening) await boundedWait(new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())), 2000);
