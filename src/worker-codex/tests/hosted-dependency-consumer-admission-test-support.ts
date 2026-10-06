@@ -20,7 +20,7 @@ import type { EventEmitter } from "node:events";
 import type { CodexAppServerChildProcess } from "../../provider-codex/app-server/application/app-server-process-port";
 import { dependencyCoverageRevision, readHostedDependencyReceipt } from "../hosted-dependency-materialization";
 import { publishHostedDependencyReceipt, hostedDependencyReceiptHistoryRoot } from "../hosted-dependency-receipts";
-import { dependencyToolPins, DependencyToolProfileId, DependencyToolTransformCache } from "@vioxen/subscription-runtime/core";
+import { dependencyToolPins, DependencyToolProfileId, DependencyToolTransformCache } from "../../core/dependency-environment/dependency-tool-profile";
 import { captureManagedDependencyGitContext, isLinkedGitWorktree } from "../managed-dependency-git";
 import { readLocalGitHeadCommit } from "../codex-goal-git-revision";
 import { withHandoffLiveIndexSnapshot, withHandoffWorktreeIndex } from "../codex-goal-handoff-worktree-index";
