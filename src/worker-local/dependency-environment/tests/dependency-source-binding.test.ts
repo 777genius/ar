@@ -328,8 +328,10 @@ describe.skipIf(process.platform !== "linux")("compared-local mapping is separat
       // Shape-valid bytes below are history-reader data, never install or Ready authority.
       const path = join(f.sourceRoot, `${f.binding.workspace.dev}-${f.binding.workspace.ino}`, `${f.binding.generation}.${operationId}.compared-local.json`);
       const bytes = encode(record); await writeFile(path, bytes, { mode: 0o600, flag: "wx" });
-      const reference = { path, identity: await identity(path), sha256: hash(bytes) };
+      const fileIdentity = await identity(path);
+      const reference = { path, identity: { dev: fileIdentity.dev, ino: fileIdentity.ino }, sha256: hash(bytes) };
       await rm(join(f.workspacePath, "packages"), { recursive: true });
+      expect(() => f.sourceStore.readLegacyLocalCompared({ ...reference, identity: fileIdentity })).toThrow();
       expect(f.sourceStore.readLegacyLocalCompared(reference)).toEqual(record);
       expect(f.sourceStore.readInstalledHistory(f.reference)).toEqual(f.record);
       expect(() => f.sourceStore.readLegacyLocalCompared({ ...reference, sha256: "e".repeat(64) })).toThrow();
