@@ -3,14 +3,14 @@ import { DependencyToolReadyReadStatus, DependencyToolReadyProvenanceKind, Depen
 import { DependencyInstallProofKind, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, readHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { isHostedDependencyWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { readHostedDependencyCommittedHistory, HostedDependencyHistoryStatus } from "./hosted-dependency-committed-history";
 import { assertHostedDependencyQualifiedToolEntry, readHostedDependencyQualifiedToolEntry, readCurrentHostedDependencyRootQualification,
   type HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 
 import { assertHostedDependencyLegacyComparedReady } from "./hosted-dependency-legacy-comparison-record";
 
-import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt, readRetainedHostedDependencyAttemptFacts, CurrentHostedDependencyOriginKind } from "./hosted-current-dependency-origin";
+import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt, readRetainedHostedDependencyAttemptFacts, assertCurrentHostedDependencyOrigin, CurrentHostedDependencyOriginKind } from "./hosted-current-dependency-origin";
 
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value) + "\n");
 const unknown: DependencyToolReadyRead = Object.freeze({ status: DependencyToolReadyReadStatus.Unknown });
@@ -22,9 +22,24 @@ export function captureHostedDependencyToolReadyReader(fence: HostedActivationFe
   readonly jobId: string; readonly jobRootDir: string; readonly workspacePath: string;
 }, entry?: HostedDependencyQualifiedToolEntry): Readonly<{ reader: DependencyToolReadyReader; assertCurrent: (fence: HostedActivationFence) => void; origin: import("./hosted-current-dependency-origin").CurrentHostedDependencyOrigin }> | undefined {
   assertHostedActivationFence(fence);
-  const context = entry ? readCurrentHostedDependencyRootQualification(fence).context : readCurrentHostedDependencyOrigin(fence), actual = assertCurrentHostedDependencyAttempt(context,fence);
+  const context = entry ? readCurrentHostedDependencyRootQualification(fence).context : readCurrentHostedDependencyOrigin(fence);
+  const current = assertCurrentHostedDependencyOrigin(context,fence);
+  if (current.kind === CurrentHostedDependencyOriginKind.Ordinary) {
+    const start = current.ordinary.start;
+    if (start.jobId !== identity.jobId || start.jobRootDir !== identity.jobRootDir || start.workspacePath !== identity.workspacePath) fail();
+    const selected = readHostedDependencyBinding(String(start.jobId));
+    if (!selected) {
+      if (entry || isHostedDependencyWorkspace(String(start.workspacePath))) fail();
+      return undefined; // Genuine ordinary Internet/research has no dependency owner.
+    }
+    if (selected.jobRootDir !== start.jobRootDir || selected.workspace.canonicalPath !== start.workspacePath ||
+        selected.installationId !== start.installationId || selected.runtimeSha !== current.ordinary.installation.runtimeSha ||
+        selected.grantDigest !== start.grantSha256 || selected.version === 3) fail();
+    if (selected.version === 1) { if (entry) fail(); return undefined; }
+  }
+  const actual = assertCurrentHostedDependencyAttempt(context,fence);
   const {binding,attempt,facts:origin} = actual;
-  if (binding.version === 1) return undefined;
+  if (binding.version !== 2) fail();
   if (binding.jobId !== identity.jobId || binding.jobRootDir !== identity.jobRootDir ||
       binding.workspace.canonicalPath !== identity.workspacePath ||
       (origin.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal && !entry)) fail();

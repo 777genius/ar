@@ -34,7 +34,7 @@ import { HostedInstallationActivationStore, readHostedOrdinaryBirth, readHostedO
 // synthetic /proc, systemd and private filesystem facts replace the actual host.
 const fixture = vi.hoisted(() => ({ root: "", boot: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", group: "/system.slice/trusted.service",
   spawn: vi.fn(), child: null as unknown, creatorBirth: "789", creatorGroup: "/system.slice/trusted.service", runtimeUnit: "",
-  failRename: "", unsafeDescriptor: false, enabled: "trusted.service enabled enabled\n", jobs: "", stopFailed: false, populated: false, manifestMountInfo: "", stops: [] as string[], onStop: undefined as (() => void) | undefined }));
+  failRename: "", unsafeDescriptor: false, enabled: "trusted.service enabled enabled\n", jobs: "", stopFailed: false, populated: false, manifestMountInfo: "", captureAncestry: false, captureDirectories: new Map<number, string>(), stops: [] as string[], onStop: undefined as (() => void) | undefined }));
 const root = "/var/lib/subscription-runtime-host-policy";
 const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages";
 const manifestScratch = "/mnt/TEST-private-manifests";
@@ -95,9 +95,9 @@ vi.mock("node:fs", async original => {
     statfsSync: (path: string, options?: { bigint?: boolean }) => path === "/proc/self/fd"
       ? real.statfsSync(path, options?.bigint ? { bigint: true } : undefined)
       : { type: options?.bigint ? 0xef53n : 0xef53 },
-    lstatSync: (path: string, options?: { bigint?: boolean }) => Object.assign(real.lstatSync(local(path), options as { bigint: true }), { uid: options?.bigint ? 0n : 0 }),
+    lstatSync: (path: string, options?: { bigint?: boolean }) => Object.assign(real.lstatSync(local(path), options as { bigint: true }), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
     fstatSync: (fd: number, options?: { bigint?: boolean }) => fd <= 2 ? { isFIFO: () => true, isSocket: () => false } : fd === 99 ?
-      { isFile: () => true, isDirectory: () => false } : Object.assign(real.fstatSync(fd, options as { bigint: true }), { uid: options?.bigint ? 0n : 0 }),
+      { isFile: () => true, isDirectory: () => false } : Object.assign(real.fstatSync(fd, options as { bigint: true }), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
     openSync: (path: string, flags: number, mode: number) => real.openSync(local(path), flags, mode),
     mkdirSync: (path: string, options: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), options),
     rmdirSync: (path: string) => real.rmdirSync(local(path)),
@@ -107,12 +107,11 @@ vi.mock("node:fs", async original => {
     },
   };
 });
-// Only the scratch namespace is projected; blob contents and retained FD I/O
-// remain actual private TEST files. No operator/fence result is replaced here.
+// Project scratch and explicit capture ancestry into actual private TEST files; no operator/fence result is replaced.
 vi.mock("node:fs/promises", async original => {
   const real = await original<typeof import("node:fs/promises")>();
-  const projected = (path: Parameters<typeof real.open>[0]) =>
-    typeof path === "string" && (path === manifestScratch || path.startsWith(manifestScratch + "/")) ? local(path) : path;
+  const captureProjection = await import("./hosted-materialization-capture-test-projection");
+  const projected = (path: Parameters<typeof real.open>[0]) => captureProjection.projectCapturePath(path,fixture,local,manifestScratch);
   return { ...real,
     realpath: async (path: Parameters<typeof real.realpath>[0], options?: Parameters<typeof real.realpath>[1]) => {
       const physical = projected(path), actual = await real.realpath(physical, options);
@@ -122,7 +121,11 @@ vi.mock("node:fs/promises", async original => {
       return physical === actual ? path : actual;
     },
     lstat: (path: Parameters<typeof real.lstat>[0], options?: Parameters<typeof real.lstat>[1]) => real.lstat(projected(path), options),
-    open: (path: Parameters<typeof real.open>[0], flags: Parameters<typeof real.open>[1], mode?: number) => real.open(projected(path), flags, mode),
+    open: async (path: Parameters<typeof real.open>[0], flags: Parameters<typeof real.open>[1], mode?: number) => {
+      const handle = await real.open(projected(path), flags, mode);
+      captureProjection.retainCapturePath(handle.fd,path,fixture);
+      return handle;
+    },
   };
 });
 vi.mock("node:child_process", () => ({ execFile: () => { throw new Error("unexpected external command"); },
@@ -154,7 +157,7 @@ beforeEach(() => {
   fixture.root = mkdtempSync(join(tmpdir(), "ordinary-installation-")); fixture.group = "/system.slice/trusted.service";
   fixture.failRename = ""; fixture.unsafeDescriptor = false; fixture.enabled = "trusted.service enabled enabled\n"; fixture.jobs = ""; fixture.stopFailed = false; fixture.populated = false; fixture.manifestMountInfo = ""; fixture.stops = []; fixture.onStop = undefined;
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-  fixture.spawn.mockReset();
+  fixture.spawn.mockReset(); fixture.captureAncestry = false; fixture.captureDirectories.clear();
   const child = Object.assign(new EventEmitter(), { stdin: Object.assign(new EventEmitter(), { write: vi.fn(() => true), end: vi.fn() }),
     stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(() => true) });
   fixture.child = child; fixture.spawn.mockReturnValue(child);
