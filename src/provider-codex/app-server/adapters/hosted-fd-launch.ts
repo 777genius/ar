@@ -6,7 +6,7 @@ import { Writable, PassThrough } from "node:stream";
 import { assertHostedActivationFence, type HostedActivationFence } from "./hosted-process-activation";
 import { assertHostedFdBootstrap, assertHostedFdConfinement, assertHostedFdManagedGuard, collectHostedFdPeers, hostedFdGroupPids, hostedFdTable, observeHostedFdProcess,
   observeHostedFdUnit, readHostedFdProfile, type HostedFdFact, type HostedFdProcess, type HostedFdUnit } from "./hosted-fd-observation";
-import type { FdCollectorProfile } from "@vioxen/subscription-runtime/core";
+import { knownFdCollectorPeer, type FdCollectorProfile } from "@vioxen/subscription-runtime/core";
 import { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
 import { assertHostedDependencyToolParentFrame, assertHostedDependencyToolRelease } from "./hosted-dependency-tool-plan";
 import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-provider-launch";
@@ -290,8 +290,8 @@ export class HostedFdLaunch {
     for (const n of this.kind === HostedFdLaunchKind.Installer ? [0] : [0, 1, 2]) {
       const b = bootstrap.descriptors.find(fd => fd.fd === n), transferred = proxy.descriptors.find(fd => fd.fd === n);
       if (!b || !transferred || socket(b) !== socket(transferred)) invalid();
-      const remote = socket(b), local = peers.get(remote);
-      if (!local || peers.get(local) !== remote || this.originalParentSockets.has(local) ||
+      const remote = socket(b), local = knownFdCollectorPeer(peers, remote);
+      if (!local || knownFdCollectorPeer(peers, local) !== remote || this.originalParentSockets.has(local) ||
           parent.filter(fd => fd.socket && socket(fd) === local).length !== 1) invalid();
       endpoints.push(local, remote);
     }
