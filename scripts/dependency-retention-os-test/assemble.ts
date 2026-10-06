@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
   readdirSync, readlinkSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, join } from "node:path";
+import { hostedDependencySystemdRunExecutable } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-systemd-command.js";
 import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
   SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/core/host-infrastructure/system-bus-infrastructure.js";
 import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, command as runCommand, directory, elfPackages, fileDigest, json, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, type OwnedOsFixtureScenario } from "./common.ts";
@@ -100,7 +101,7 @@ export function assemble(root: string, state: string, source: string, toolchain:
     signedElfPins.push({ path: path.slice(root.length), sha256: fileDigest(path) });
   };
   captureElf(root + "/usr/lib");
-  for (const path of [SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", "/usr/bin/systemd-run", "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/systemctl", "/usr/bin/busctl"])
+  for (const path of [SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", hostedDependencySystemdRunExecutable, "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/systemctl", "/usr/bin/busctl"])
     captureElf(root + path);
   for (const tool of usrLayout.tools) {
     const stat = lstatSync(root + tool.path, { bigint: true });
@@ -243,7 +244,7 @@ function normalizeSignedUsrLayout(root: string, checkBudget: () => number) {
     assert.equal(readlinkSync(source), "usr/" + name); assert.equal(realpathSync(source), target);
     return { alias: "/" + name, target: "/usr/" + name, priorKind: before.isSymbolicLink() ? "symlink" : "directory", movedEntries: moved - priorMoved };
   });
-  const tools = [SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", "/usr/bin/systemd-run", "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/busctl"].map(path => {
+  const tools = [SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", hostedDependencySystemdRunExecutable, "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/busctl"].map(path => {
     protectedDirectory(root + dirname(path)); const actual = root + path, stat = lstatSync(actual, { bigint: true });
     assert.equal(realpathSync(actual), actual);
     assert(stat.isFile() && stat.uid === 0n && stat.gid === 0n && stat.dev === device && stat.nlink === 1n && !(stat.mode & 0o022n) && (stat.mode & 0o111n));

@@ -35,6 +35,7 @@ import { fdCollectorProfilePath, FdCollectorRenderer, parseFdCollectorProfile, p
   type FdCollectorProfile, type FdExecutablePin, type FdFilePin } from "../../dist/core/host-infrastructure/fd-collector-profile.js";
 import { assertHostedFdInternals, observeHostedFdProcess, hostedFdTable } from "../../dist/provider-codex/app-server/adapters/hosted-fd-observation.js";
 import { hostedFdLaunch, hostedFdInvocationUnit, spawnHostedFdChild, HostedFdLaunchKind, HostedForegroundArtifactKind, type HostedForegroundResult } from "../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js";
+import { hostedDependencySystemdRunExecutable } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-systemd-command.js";
 import { startResearchLaunch } from "../../dist/worker-codex/research-launch-owner.js";
 import { assertResearchInitialRoot } from "../../dist/worker-codex/research-launch-host.js";
 import { cleanEnv, command, ControlSinkPhase, digest, directory, directoryIdentity, fileDigest, installedArtifactDigest, json, node, OwnedOsScenario,
@@ -628,13 +629,13 @@ async function qualifyLateRelease(commandPath: string, args: readonly string[], 
 /** Native trusted TEST issuance, before any managed start exists. Parsed profile
  * bytes alone never qualify a binary: live retained endpoints and observations
  * below must succeed before create-only publication. Real routes reprove peers. */
-const NativeFdQualificationPhase = { Pins: "pins", UidObservation: "uid_observation", NamedSockets: "named_sockets",
-  Profile: "profile", Internals: "internals", ExtraSocket: "extra_socket", DirectBusSocket: "direct_bus_socket",
-  FinalPins: "final_pins", Publication: "publication", Complete: "complete" } as const;
-type NativeFdQualificationPhase = typeof NativeFdQualificationPhase[keyof typeof NativeFdQualificationPhase];
-const NativeFdQualificationParser = { None: "none", Rows: "rows", Profile: "profile" } as const;
-type NativeFdQualificationParser = typeof NativeFdQualificationParser[keyof typeof NativeFdQualificationParser];
 async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<{ path: typeof fdCollectorProfilePath; sha256: string }> {
+  const NativeFdQualificationPhase = { Pins: "pins", UidObservation: "uid_observation", NamedSockets: "named_sockets",
+    Profile: "profile", Internals: "internals", ExtraSocket: "extra_socket", DirectBusSocket: "direct_bus_socket",
+    FinalPins: "final_pins", Publication: "publication", Complete: "complete" } as const;
+  type NativeFdQualificationPhase = typeof NativeFdQualificationPhase[keyof typeof NativeFdQualificationPhase];
+  const NativeFdQualificationParser = { None: "none", Rows: "rows", Profile: "profile" } as const;
+  type NativeFdQualificationParser = typeof NativeFdQualificationParser[keyof typeof NativeFdQualificationParser];
   const measured = { setupMs: 0, collectorMs: 0, outputBytes: 0, rows: 0, eventPoll: 0, eventFd: 0, pipes: 0, devNull: 0 };
   const progress: { purpose: string; phase: NativeFdQualificationPhase; parser: NativeFdQualificationParser;
     uid: 0 | 65532 | null; completedUidObservations: number; rowParseCalls: number; measured: typeof measured;
@@ -692,7 +693,7 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<
     return { ...first, elfFiles: [first, ...libraries] };
   };
   const ss = executable("/usr/bin/ss"), nodePin = executable(node);
-  const wrappers = ["/usr/bin/setpriv", "/usr/bin/systemd-run", "/usr/bin/tini", "/usr/bin/unshare"].map(executable);
+  const wrappers = ["/usr/bin/setpriv", hostedDependencySystemdRunExecutable, "/usr/bin/tini", "/usr/bin/unshare"].map(executable);
   assert.equal(command(ss.path, ["--version"]).trim(), "ss utility, iproute2-6.1.0");
   const bootstraps = ["provider-codex/app-server/adapters/hosted-app-server-launcher.js",
     "worker-codex/hosted-dependency-installer-bootstrap.js", "worker-codex/hosted-readonly-host-launch-cli.js",
@@ -962,7 +963,7 @@ async function issueActualSystemBusInfrastructure(evidence: Record<string, unkno
   const extraction = JSON.parse(pinBytes.toString("utf8")) as { schemaVersion: number; pins: SystemBusFilePin[] };
   assert.equal(extraction.schemaVersion, 1); assert(Array.isArray(extraction.pins) && extraction.pins.length <= 1024);
   const signed = new Map(extraction.pins.map(pin => {
-    assert(([SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", "/usr/bin/systemd-run", "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/systemctl", "/usr/bin/busctl"].includes(pin.path) || pin.path.startsWith("/usr/lib/")) && /^[a-f0-9]{64}$/.test(pin.sha256));
+    assert(([SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", hostedDependencySystemdRunExecutable, "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/systemctl", "/usr/bin/busctl"].includes(pin.path) || pin.path.startsWith("/usr/lib/")) && /^[a-f0-9]{64}$/.test(pin.sha256));
     return [pin.path, pin.sha256] as const;
   }));
   assert.equal(signed.size, extraction.pins.length);

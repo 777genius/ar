@@ -12,7 +12,8 @@ import type { CodexAppServerProcessInvocation } from "./node-app-server-process"
 import { readHostedFdProfile } from "./hosted-fd-observation";
 import { hostedFdSystemdProperties } from "./hosted-fd-prelude";
 
-export const hostedDependencySystemdRunExecutable = "/usr/bin/systemd-run";
+import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
+export { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
 
 /** Called inside the real private provider reservation fence, before enclosure.
  * The guest never reads host authority. No payload-selected mounts or root dirs.
