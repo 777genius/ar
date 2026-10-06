@@ -7,7 +7,6 @@ import type {
   RefreshThenRunResult,
   RunContext,
   RuntimeHealthCheckResult,
-  RuntimeEvent,
   RuntimeExecutionPlan,
   RuntimeWarning,
   SessionArtifact,
@@ -15,6 +14,7 @@ import type {
 } from "../domain/types";
 import type { RuntimeDeps } from "../ports";
 import { runtimeHealthCheck } from "./runtime-health";
+import { buildRuntimeEvent } from "./runtime-events";
 import {
   blocked,
   failedTask,
@@ -916,15 +916,7 @@ class RuntimeKernel {
     metadata: Readonly<Record<string, string>> = {},
     durationMs?: number,
   ): void {
-    const event: RuntimeEvent = {
-      name,
-      providerId: this.deps.sessionDriver.providerId,
-      agentId: this.deps.agentDriver.agentId,
-      storeId: this.deps.sessionStore?.storeId ?? "none",
-      metadata,
-      ...(runId === undefined ? {} : { runId }),
-      ...(durationMs === undefined ? {} : { durationMs }),
-    };
+    const event = buildRuntimeEvent(this.deps, name, runId, metadata, durationMs);
     this.deps.observability.emit(event);
   }
 
