@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const cohortSha256 = '8b0467e9cdf7d83bace82df97893ed77e9f311dcd83110a18cbfcd0fc01a7da4';
-const payloadSha256 = '28d5d6e56d13f61b29db013607299aed854a21ae3ae55b131bbd43cf69e66bce';
+const payloadSha256 = '37022555f4f6a491ab4845be2abfc946ee3cad82ea8fa3e70105c56790890cca';
 const machineId = 'd856d40da5ad4e23b4f67773e5942842';
 const Mode = { ProcReferences: 'ProcReferences', AllocatedMetadata: 'AllocatedMetadata' } as const;
 type Mode = (typeof Mode)[keyof typeof Mode];
@@ -57,11 +57,73 @@ EACCES EPERM ENOENT ESRCH ENOTDIR ELOOP EINVAL EMFILE ENFILE EIO ENOMEM ESTALE E
 const exactBounds: Readonly<Record<string, number>> = { mountTableBytes: 8 * 1024 ** 2, mountIoBytes: 1024 ** 3,
   viewHeapBytes: 64 * 1024 ** 2, viewGroupFds: 768, mountCandidatePairs: 16384 };
 
+const pinFacets = ['Device', 'Inode', 'Mode', 'Uid', 'Gid', 'Size', 'LinkCount', 'Blocks', 'Mtime', 'Ctime'] as const;
+const identityFacets = ['TaskProcPin', 'StartTicks', 'MountNamespacePin', 'PidNamespacePin', 'UserNamespacePin', 'PhysicalRootPin', 'RootMountIdentity'] as const;
+const failureFacets = { DiscoveryCompare: identityFacets, RetainedMountAnchor: identityFacets, FinalMemberCompare: identityFacets,
+  AncestorNamed: pinFacets, AncestorHeld: pinFacets, AncestorReopened: [...pinFacets, 'RootMountIdentity'],
+  FinalMountDigest: ['DigestMismatch'], MountPoll: ['PollEvent'], OwnFdEnvelope: ['DescriptorRoster'] } as const;
+type FailureGate = keyof typeof failureFacets;
+const resourceKeys = ['status', 'softBefore', 'hardBefore', 'softAfter', 'hardAfter', 'ownDescriptorCount', 'floor', 'reason'] as const;
+for (const key of ['failureFacts', 'gate', 'facet', 'resourceQualification', 'fdEnvelopeFailure', ...resourceKeys]) keys.add(key);
+for (const [gate, facets] of Object.entries(failureFacets)) { labels.add(gate); for (const facet of facets) labels.add(facet); }
+labels.add('Qualified'); labels.add('Infinity');
+function exactKeys(value: RecordValue, expected: readonly string[]): boolean {
+  const actual = Object.keys(value); return actual.length === expected.length && expected.every(key => Object.hasOwn(value, key));
+}
+function finiteLimit(value: unknown): value is string {
+  return typeof value === 'string' && (value === 'Infinity' || /^(0|[1-9][0-9]{0,19})$/.test(value) && BigInt(value) <= 18446744073709551615n);
+}
+function limitAtLeast(left: string, right: string): boolean {
+  return left === 'Infinity' || right !== 'Infinity' && BigInt(left) >= BigInt(right);
+}
+function validateFailureEvidence(value: RecordValue): void {
+  if (Object.hasOwn(value, 'failureFacts')) {
+    if (!Array.isArray(value.failureFacts) || value.failureFacts.length > Object.keys(failureFacets).length) throw new Error('Invalid closed failure facts');
+    if (value.failureFacts.length && value.status !== 'Incomplete') throw new Error('Failure facts cannot establish complete coverage');
+    const gates = new Set<FailureGate>();
+    for (const fact of value.failureFacts) {
+      if (!object(fact) || !exactKeys(fact, ['gate', 'facet']) || typeof fact.gate !== 'string' || !Object.hasOwn(failureFacets, fact.gate)) throw new Error('Invalid closed failure fact');
+      const gate = fact.gate as FailureGate;
+      if (gates.has(gate) || typeof fact.facet !== 'string' || !(failureFacets[gate] as readonly string[]).includes(fact.facet)) throw new Error('Invalid closed failure facet');
+      gates.add(gate);
+    }
+  }
+  if (Object.hasOwn(value, 'fdEnvelopeFailure') && value.fdEnvelopeFailure !== null) {
+    if (value.status !== 'Incomplete') throw new Error('Descriptor refusal cannot establish complete coverage');
+    const failure = value.fdEnvelopeFailure;
+    if (!object(failure) || !exactKeys(failure, ['ownDescriptorCount', 'reason']) || failure.reason !== 'FdLimit' ||
+        !Number.isSafeInteger(failure.ownDescriptorCount) || typeof failure.ownDescriptorCount !== 'number' ||
+        failure.ownDescriptorCount < 0 || failure.ownDescriptorCount > 4096 || failure.ownDescriptorCount + 3 + 7 <= 1024) throw new Error('Invalid owned descriptor envelope failure');
+  }
+  if (!Object.hasOwn(value, 'resourceQualification')) return;
+  const q = value.resourceQualification;
+  if (!object(q) || !exactKeys(q, resourceKeys) || q.floor !== 4096 || typeof q.status !== 'string' || !['Qualified', 'Unknown', 'NotRequested'].includes(q.status) ||
+      q.reason !== null && q.reason !== 'FdLimit' && q.reason !== 'Unknown') throw new Error('Invalid resource qualification');
+  if (value.mode !== 'ProcReferences' && q.status !== 'NotRequested') throw new Error('Resource qualification mode mismatch');
+  if (q.status === 'Unknown' && value.status !== 'Incomplete') throw new Error('Unknown resource qualification cannot establish complete coverage');
+  for (const key of ['softBefore', 'hardBefore', 'softAfter', 'hardAfter'] as const) {
+    if (q[key] !== null && !finiteLimit(q[key])) throw new Error('Invalid resource limit');
+  }
+  if (q.ownDescriptorCount !== null && (typeof q.ownDescriptorCount !== 'number' || !Number.isSafeInteger(q.ownDescriptorCount) || q.ownDescriptorCount < 0 || q.ownDescriptorCount > 4096)) throw new Error('Invalid owned descriptor count');
+  if (typeof q.softBefore === 'string' && typeof q.hardBefore === 'string' && !limitAtLeast(q.hardBefore, q.softBefore) ||
+      typeof q.softAfter === 'string' && typeof q.hardAfter === 'string' && !limitAtLeast(q.hardAfter, q.softAfter)) throw new Error('Invalid soft/hard relation');
+  if (typeof q.hardBefore === 'string' && typeof q.hardAfter === 'string' && q.hardBefore !== q.hardAfter) throw new Error('Resource qualification changed hard limit');
+  if (q.status === 'NotRequested') {
+    if (value.mode === 'ProcReferences' && value.status !== 'Incomplete') throw new Error('Unqualified process resource coverage');
+    if (resourceKeys.some(key => key !== 'status' && key !== 'floor' && q[key] !== null)) throw new Error('Unexpected unrequested resource evidence');
+  } else if (q.status === 'Qualified') {
+    if (typeof q.softBefore !== 'string' || typeof q.hardBefore !== 'string' || typeof q.softAfter !== 'string' || typeof q.hardAfter !== 'string' ||
+        typeof q.ownDescriptorCount !== 'number' || q.reason !== null || q.hardAfter !== q.hardBefore || !limitAtLeast(q.softAfter, '4096') ||
+        q.softAfter !== (limitAtLeast(q.softBefore, '4096') ? q.softBefore : '4096') || !limitAtLeast(q.softAfter, String(q.ownDescriptorCount + 614 + 768 + 300))) throw new Error('Unproved resource qualification');
+  } else if (q.reason !== 'FdLimit' && q.reason !== 'Unknown') throw new Error('Unknown resource qualification lacks closed reason');
+}
+
 export function validateReport(value: unknown, expectedMode: Mode, cohortJson: string): asserts value is RecordValue {
   if (!object(value) || value.schemaVersion !== 1 || value.mode !== expectedMode || value.cohortSha256 !== cohortSha256 ||
       value.necessaryBytes !== 'Unknown' || value.futureAdmissionCoverage !== 'Unknown' || value.cleanupEligibility !== 'NotEstablished') {
     throw new Error('Invalid sanitized observation envelope');
   }
+  validateFailureEvidence(value);
   const cohort: unknown = JSON.parse(cohortJson);
   if (!object(cohort) || !Array.isArray(cohort.cohort)) throw new Error('Invalid frozen cohort');
   const names = new Set<string>();
@@ -120,6 +182,7 @@ export function main(args: readonly string[]): void {
   const raw = execFileSync('ssh', sshArgs, { input: program, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 45_000, maxBuffer: 2 * 1024 * 1024 });
   const result: unknown = JSON.parse(raw);
   validateReport(result, selection.mode, cohortJson);
+  if (!['failureFacts', 'resourceQualification', 'fdEnvelopeFailure'].every(key => Object.hasOwn(result, key))) throw new Error('Missing pinned failure evidence');
   const out = join(root, 'observations'); mkdirSync(out, { recursive: true, mode: 0o700 });
   const filename = `${selection.mode}-${selection.partition ?? 'all'}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
   const saved = `${JSON.stringify(result)}\n`;

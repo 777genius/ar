@@ -34,6 +34,10 @@ class Budget:
         self.owned = {}
         self.mount_io, self.mount_io_exhausted, self.view_heap, self.view_heap_peak, self.group_fds = 0, False, 0, 0, 0
         self.mount_allocations = {}
+        self.failure_facts, self.failure_gates = [], set()
+        self.fd_envelope_failure = None
+        self.resource_qualification = {'status': 'NotRequested', 'softBefore': None, 'hardBefore': None,
+                                       'softAfter': None, 'hardAfter': None, 'ownDescriptorCount': None, 'floor': 4096, 'reason': None}
 
     def check(self):
         if time.monotonic() >= self.deadline:
@@ -89,6 +93,45 @@ class Budget:
         if tid is not None: row['tid'] = tid
         if index is not None: row['cohortIndex'] = index
         if len(self.errors) < 256: self.errors.append(row)
+
+    def note_failure(self, gate, facet):
+        # One first closed failure fact per fixed gate, no process/path/pin values.
+        if gate not in self.failure_gates:
+            self.failure_gates.add(gate); self.failure_facts.append({'gate': gate, 'facet': facet})
+
+    def note_identity(self, gate, actual, expected):
+        for facet, left, right in zip(('TaskProcPin', 'StartTicks', 'MountNamespacePin', 'PidNamespacePin', 'UserNamespacePin', 'PhysicalRootPin'), actual, expected):
+            if left != right: self.note_failure(gate, facet); break
+
+    def note_pin(self, gate, actual, expected, ignore_nlink=False):
+        for index, facet in enumerate(('Device', 'Inode', 'Mode', 'Uid', 'Gid', 'Size', 'LinkCount', 'Blocks', 'Mtime', 'Ctime')):
+            if (not ignore_nlink or index != 6) and actual[index] != expected[index]:
+                self.note_failure(gate, facet); break
+
+def qualify_proc_resources(self_fd, budget):
+    q = budget.resource_qualification; q['status'] = 'Unknown'
+    def encode(value): return 'Infinity' if value == resource.RLIM_INFINITY else str(value)
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        q['softBefore'], q['hardBefore'] = encode(soft), encode(hard)
+        required = soft if soft == resource.RLIM_INFINITY or soft >= 4096 else 4096
+        if hard != resource.RLIM_INFINITY and (required == resource.RLIM_INFINITY or required > hard): raise Refusal('FdLimit')
+        census = os.open('fd', O_DIR, dir_fd=self_fd)
+        try: q['ownDescriptorCount'] = len(bounded_names(census, 4096, budget, True))
+        finally: os.close(census)
+        if required != resource.RLIM_INFINITY and q['ownDescriptorCount'] + 614 + 768 + 300 > required: raise Refusal('FdLimit')
+        if soft != required: resource.setrlimit(resource.RLIMIT_NOFILE, (required, hard))
+        after_soft, after_hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        q['softAfter'], q['hardAfter'] = encode(after_soft), encode(after_hard)
+        if after_soft != required or after_hard != hard: raise Refusal('FdLimit')
+        q['status'] = 'Qualified'; return q
+    except Exception as error:
+        q['reason'] = 'FdLimit' if isinstance(error, Refusal) and str(error) == 'FdLimit' else 'Unknown'
+        try:
+            after_soft, after_hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            q['softAfter'], q['hardAfter'] = encode(after_soft), encode(after_hard)
+        except Exception: pass
+        raise
 
 def read_bytes_at(parent, name, limit, budget):
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
@@ -228,14 +271,21 @@ class DirectoryChain:
                 # Keep every other pin field and both named/retained mount identities strict.
                 held = pin(os.fstat(fd)); named = pin(actual)
                 if named[:6] + named[7:] != expected[:6] + expected[7:] or held[:6] + held[7:] != expected[:6] + expected[7:]:
+                    if named[:6] + named[7:] != expected[:6] + expected[7:]: self.budget.note_pin('AncestorNamed', named, expected, True)
+                    else: self.budget.note_pin('AncestorHeld', held, expected, True)
                     raise Refusal('AncestorDrift')
                 fresh = self.budget.own(os.open(name, O_DIR, dir_fd=parent))
                 try:
                     opened = pin(os.fstat(fresh))
                     if opened[:6] + opened[7:] != expected[:6] + expected[7:] or mount_id(fd, self.budget) != self._proc_root_mount_id or mount_id(fresh, self.budget) != self._proc_root_mount_id:
+                        if opened[:6] + opened[7:] != expected[:6] + expected[7:]: self.budget.note_pin('AncestorReopened', opened, expected, True)
+                        else: self.budget.note_failure('AncestorReopened', 'RootMountIdentity')
                         raise Refusal('AncestorDrift')
                 finally: self.budget.close(fresh)
-            elif pin(actual) != expected or pin(os.fstat(fd)) != expected: raise Refusal('AncestorDrift')
+            elif pin(actual) != expected:
+                self.budget.note_pin('AncestorNamed', pin(actual), expected); raise Refusal('AncestorDrift')
+            elif (held := pin(os.fstat(fd))) != expected:
+                self.budget.note_pin('AncestorHeld', held, expected); raise Refusal('AncestorDrift')
 
     def close(self):
         for _, _, fd, _ in reversed(self.links): self.budget.close(fd)
@@ -433,7 +483,8 @@ def finish_preflight(p, budget):
     if identity(p['oneFd'], budget) != p['oneIdentity']: raise Refusal('HostProcViewUnknown')
     if tuple(object_pin(os.fstat(fd)) for fd in p['namespaceFiles']) != p['ownIdentity'][2:5]: raise Refusal('OwnNamespaceDrift')
     p['proc'].current(); p['etc'].current()
-    if mount_digest(p['selfFd'], budget) != p['mountDigest']: raise Refusal('MountDrift')
+    if mount_digest(p['selfFd'], budget) != p['mountDigest']:
+        budget.note_failure('FinalMountDigest', 'DigestMismatch'); raise Refusal('MountDrift')
 
 def close_preflight(p):
     p['proc'].budget.release_mounts(p['mounts'])
@@ -555,12 +606,22 @@ class MountView:
             soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
             if budget.group_fds + 3 > 768 or soft != resource.RLIM_INFINITY and len(current) + 3 + 300 > soft:
                 raise Refusal('FdLimit')
+            if len(current) + 3 + 7 > 1024:
+                if budget.fd_envelope_failure is None: budget.fd_envelope_failure = {'ownDescriptorCount': len(current), 'reason': 'FdLimit'}
+                budget.note_failure('OwnFdEnvelope', 'DescriptorRoster'); raise Refusal('FdLimit')
             for name, flags in (('ns/mnt', os.O_RDONLY | os.O_CLOEXEC), ('root', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC), ('mountinfo', os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)):
                 held = budget.own(os.open(name, flags, dir_fd=task)); self.fds.append(held); budget.group_fds += 1
             self.poller = select.poll(); self.poller.register(self.fds[2], select.POLLPRI | select.POLLERR | select.POLLHUP | select.POLLNVAL)
             self.poll()
-            if object_pin(os.fstat(self.fds[0])) != before[2] or object_pin(os.fstat(self.fds[1])) != before[5] or mount_id(self.fds[1], budget) != self.key[2] or identity(task, budget) != before:
-                raise Refusal('ProcessIdentityDrift')
+            if object_pin(os.fstat(self.fds[0])) != before[2]:
+                budget.note_failure('RetainedMountAnchor', 'MountNamespacePin'); raise Refusal('ProcessIdentityDrift')
+            if object_pin(os.fstat(self.fds[1])) != before[5]:
+                budget.note_failure('RetainedMountAnchor', 'PhysicalRootPin'); raise Refusal('ProcessIdentityDrift')
+            if mount_id(self.fds[1], budget) != self.key[2]:
+                budget.note_failure('RetainedMountAnchor', 'RootMountIdentity'); raise Refusal('ProcessIdentityDrift')
+            observed = identity(task, budget)
+            if observed != before:
+                budget.note_identity('RetainedMountAnchor', observed, before); raise Refusal('ProcessIdentityDrift')
         except BaseException:
             self.close(); raise
 
@@ -568,18 +629,26 @@ class MountView:
         self.budget.check()
         if self.poll_drift: raise Refusal('MountDrift')
         if any(mask & (select.POLLPRI | select.POLLERR | select.POLLHUP | select.POLLNVAL) for _, mask in self.poller.poll(0)):
-            self.invalid = self.poll_drift = True; raise Refusal('MountDrift')
+            self.invalid = self.poll_drift = True; self.budget.note_failure('MountPoll', 'PollEvent'); raise Refusal('MountDrift')
 
     def validate(self, proc):
         self.poll()
-        if object_pin(os.fstat(self.fds[0])) != self.key[0] or object_pin(os.fstat(self.fds[1])) != self.key[1] or mount_id(self.fds[1], self.budget) != self.key[2]:
-            raise Refusal('ProcessIdentityDrift')
+        if object_pin(os.fstat(self.fds[0])) != self.key[0]:
+            self.budget.note_failure('RetainedMountAnchor', 'MountNamespacePin'); raise Refusal('ProcessIdentityDrift')
+        if object_pin(os.fstat(self.fds[1])) != self.key[1]:
+            self.budget.note_failure('RetainedMountAnchor', 'PhysicalRootPin'); raise Refusal('ProcessIdentityDrift')
+        if mount_id(self.fds[1], self.budget) != self.key[2]:
+            self.budget.note_failure('RetainedMountAnchor', 'RootMountIdentity'); raise Refusal('ProcessIdentityDrift')
         for pid, tid, expected in self.members:
             self.budget.check(); task = os.open(str(pid) + '/task/' + str(tid), O_DIR, dir_fd=proc)
             try:
                 root = os.open('root', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=task)
                 try:
-                    if identity(task, self.budget) != expected or mount_id(root, self.budget) != self.key[2]: raise Refusal('ProcessIdentityDrift')
+                    observed = identity(task, self.budget)
+                    if observed != expected:
+                        self.budget.note_identity('FinalMemberCompare', observed, expected); raise Refusal('ProcessIdentityDrift')
+                    if mount_id(root, self.budget) != self.key[2]:
+                        self.budget.note_failure('FinalMemberCompare', 'RootMountIdentity'); raise Refusal('ProcessIdentityDrift')
                 finally: os.close(root)
             finally: os.close(task)
         self.poll()
@@ -601,7 +670,8 @@ def discover_views(proc, start_ids, budget):
             try:
                 budget.check(); task = os.open(str(pid) + '/task/' + str(tid), O_DIR, dir_fd=proc)
                 before = identity(task, budget); root = os.open('root', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=task)
-                if object_pin(os.fstat(root)) != before[5]: raise Refusal('ProcessIdentityDrift')
+                if object_pin(os.fstat(root)) != before[5]:
+                    budget.note_failure('RetainedMountAnchor', 'PhysicalRootPin'); raise Refusal('ProcessIdentityDrift')
                 key = (before[2], before[5], mount_id(root, budget))
                 if key not in groups:
                     if len(groups) >= 256: raise Refusal('NamespaceViewLimit')
@@ -677,11 +747,19 @@ def proc_observation(p, items, budget):
                     try:
                         group.poll()
                         fd = os.open(base, O_DIR, dir_fd=p['proc'].fd); before = identity(fd, budget); ticks = before[1]
-                        if before != expected_identity: raise Refusal('ProcessIdentityDrift')
+                        if before != expected_identity:
+                            budget.note_identity('DiscoveryCompare', before, expected_identity); raise Refusal('ProcessIdentityDrift')
                         root_fd = budget.own(os.open('root', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=fd))
-                        if object_pin(os.fstat(root_fd)) != before[5] or mount_id(root_fd, budget) != group.key[2]: raise Refusal('ProcessIdentityDrift')
+                        if object_pin(os.fstat(root_fd)) != before[5]:
+                            budget.note_failure('DiscoveryCompare', 'PhysicalRootPin'); raise Refusal('ProcessIdentityDrift')
+                        if mount_id(root_fd, budget) != group.key[2]:
+                            budget.note_failure('DiscoveryCompare', 'RootMountIdentity'); raise Refusal('ProcessIdentityDrift')
                         ns_files = retain_namespaces(fd, budget)
-                        if tuple(object_pin(os.fstat(n)) for n in ns_files) != before[2:5]: raise Refusal('ProcessIdentityDrift')
+                        observed_ns = tuple(object_pin(os.fstat(n)) for n in ns_files)
+                        if observed_ns != before[2:5]:
+                            for facet, actual, expected in zip(('MountNamespacePin', 'PidNamespacePin', 'UserNamespacePin'), observed_ns, before[2:5]):
+                                if actual != expected: budget.note_failure('DiscoveryCompare', facet); break
+                            raise Refusal('ProcessIdentityDrift')
                         own = pid == p['ownPid'] and ticks == p['ownTasks'].get(tid)
                         if pid == p['ownPid'] and not own: budget.issue('SelfOrigin', Refusal('UnclassifiedSelfOrigin'), pid, tid)
                         ob['startTicks'] = ticks
@@ -753,10 +831,15 @@ def proc_observation(p, items, budget):
                                     emit(item, 'DirectMountBinding', 'NamespaceMountRoot', scope, pid, tid, ticks, begin, own)
                                 except Exception as error:
                                     group.invalid = True; budget.issue('ProcessView', error, pid, tid)
-                        if object_pin(os.fstat(root_fd)) != before[5]: raise Refusal('ProcessIdentityDrift')
-                        if identity(fd, budget) != before or object_pin(os.stat(base, dir_fd=p['proc'].fd)) != before[0]:
-                            raise Refusal('ProcessIdentityDrift')
-                        if mount_id(root_fd, budget) != group.key[2]: raise Refusal('ProcessIdentityDrift')
+                        if object_pin(os.fstat(root_fd)) != before[5]:
+                            budget.note_failure('FinalMemberCompare', 'PhysicalRootPin'); raise Refusal('ProcessIdentityDrift')
+                        observed_identity = identity(fd, budget)
+                        if observed_identity != before:
+                            budget.note_identity('FinalMemberCompare', observed_identity, before); raise Refusal('ProcessIdentityDrift')
+                        if object_pin(os.stat(base, dir_fd=p['proc'].fd)) != before[0]:
+                            budget.note_failure('FinalMemberCompare', 'TaskProcPin'); raise Refusal('ProcessIdentityDrift')
+                        if mount_id(root_fd, budget) != group.key[2]:
+                            budget.note_failure('FinalMemberCompare', 'RootMountIdentity'); raise Refusal('ProcessIdentityDrift')
                         group.poll(); ob['join'] = 'Pending'
                     except Exception as error:
                         group.invalid = True; budget.issue('ProcessView', error, pid, tid)
@@ -784,7 +867,8 @@ def proc_observation(p, items, budget):
         for group in groups:
             try:
                 group.validate(p['proc'].fd)
-                if mount_digest_fd(group.fds[2], budget) != group.digest: raise Refusal('MountDrift')
+                if mount_digest_fd(group.fds[2], budget) != group.digest:
+                    budget.note_failure('FinalMountDigest', 'DigestMismatch'); raise Refusal('MountDrift')
                 group.poll()
             except Exception as error:
                 group.invalid = True; budget.issue('ProcessView', error)
@@ -942,6 +1026,7 @@ def main(request):
         rows = request_rows(request); p = preflight(budget); parent = DirectoryChain(TARGET, budget)
         report['machineId'], report['bootId'] = p['machineId'], p['bootId']
         report['hostProcProvenance'] = 'ExistingOwnerRouteExpectedMachinePid1Consistent'
+        if request['mode'] == 'ProcReferences': qualify_proc_resources(p['selfFd'], budget)
         items = capture_cohort(rows, parent, p['mounts'], budget)
         report['capacityBefore'] = capacity(parent.fd)
         if request['mode'] == 'ProcReferences': report['proc'] = proc_observation(p, items, budget)
@@ -972,6 +1057,7 @@ def main(request):
         if p is not None: close_preflight(p)
         report['finishedAt'], report['errors'] = stamp(), budget.errors
         report['errorRecordsOmitted'] = max(0, budget.error_total - len(budget.errors))
+        report['failureFacts'], report['resourceQualification'], report['fdEnvelopeFailure'] = budget.failure_facts, budget.resource_qualification, budget.fd_envelope_failure
         report['coverageIssues'] = [{'reason': k, 'count': v} for k, v in sorted(budget.error_counts.items())]
         report['metadataBytesRead'], report['accountedBytes'], report['enumeratedEntries'] = str(budget.text_bytes), str(budget.bytes), str(budget.entries)
         report['mountBytesRead'], report['viewHeapPeakBytes'] = str(budget.mount_io), str(budget.view_heap_peak)
