@@ -282,9 +282,11 @@ describe("closed logical local registry selection", () => {
   // Red if either cause is ignored wholesale, or the caller selects absence paths.
   it("requires context for both independent metadata causes and derives their exact coordinates", () => {
     const input = logicalSelectionInput();
-    expect(() => qualifyDependencyNpmLocalClosure({ ...input, selectionToolchain: undefined })).toThrow(DependencyInstallKeyError);
+    const { selectionToolchain: _inputContext, ...withoutContext } = input;
+    expect(() => qualifyDependencyNpmLocalClosure(withoutContext)).toThrow(DependencyInstallKeyError);
     const peerOnly = changedRecords(input, records => { records["node_modules/fsevents"] = { ...fseventsMetadata, hasInstallScript: false }; });
-    expect(() => qualifyDependencyNpmLocalClosure({ ...peerOnly, selectionToolchain: undefined })).toThrow(DependencyInstallKeyError);
+    const { selectionToolchain: _peerContext, ...withoutPeerContext } = peerOnly;
+    expect(() => qualifyDependencyNpmLocalClosure(withoutPeerContext)).toThrow(DependencyInstallKeyError);
     const closure = qualifyDependencyNpmLocalClosure(input);
     expect(closure.version).toBe(2); if (closure.version !== 2) throw new Error("TEST selection missing");
     expect(closure.registrySelection.excludedScriptPackages).toEqual(["node_modules/fsevents"]);
@@ -346,7 +348,8 @@ describe("closed logical local registry selection", () => {
     const input = changedRecords(logicalSelectionInput({ peerDependencies: { esbuild: "1.x.0" }, peerDependenciesMeta: { irrelevant: { future: true } } }), records => {
       records["node_modules/esbuild"] = registryMetadata("esbuild"); records["node_modules/fsevents"] = { ...fseventsMetadata, hasInstallScript: false };
     });
-    const old = qualifyDependencyNpmLocalClosure({ ...input, selectionToolchain: undefined }), current = qualifyDependencyNpmLocalClosure(input);
+    const { selectionToolchain: _oldContext, ...originalInput } = input;
+    const old = qualifyDependencyNpmLocalClosure(originalInput), current = qualifyDependencyNpmLocalClosure(input);
     expect(current.version).toBe(1); expect(current).toEqual(old);
     const keyed = { packageBytes: input.packageBytes, lockBytes: input.lockBytes, lockName: DependencyNpmLockName.PackageLock, toolchain,
       maxInputBytes: 1048576, maxCanonicalBytes: 1048576 };

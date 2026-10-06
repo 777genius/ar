@@ -101,9 +101,13 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
     if (before.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1 || !source) fail();
     capturedSource = openCapturedDependencySourceLinks(before.capture);
   }
-  const observed = capturedSource && source ? await observeDependencyTreeWithLocalRegistrySelection({ ...observationInput,
-    sourceLinkSession: capturedSource, protectedSourceLinkSession: source }) : await observeDependencyTree(observationInput);
-  if (observed.status === DependencyTreeObservationStatus.Complete && "exposure" in observed) nodeModulesExposure = observed.exposure;
+  let observed: Awaited<ReturnType<typeof observeDependencyTree>>;
+  if (capturedSource && source) {
+    const localObserved = await observeDependencyTreeWithLocalRegistrySelection({ ...observationInput,
+      sourceLinkSession: capturedSource, protectedSourceLinkSession: source });
+    if (localObserved.status === DependencyTreeObservationStatus.Complete) nodeModulesExposure = localObserved.exposure;
+    observed = localObserved;
+  } else observed = await observeDependencyTree(observationInput);
   assertExclusive();
   if (observed.status !== DependencyTreeObservationStatus.Complete || observed.digest !== receipt.manifestDigest ||
       !Buffer.from(manifest).equals(observed.canonicalBytes)) fail(DependencyAdmissionFailure.UnsafeTree);

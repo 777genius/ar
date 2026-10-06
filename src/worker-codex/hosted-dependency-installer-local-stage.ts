@@ -131,7 +131,7 @@ export function observeHostedDependencyLocalStage(root: string, stage: HostedDep
         if (!peer || Object.keys(peer).sort().join(",") !== "declaringPath,name,resolutionSearchPaths,spec" ||
             typeof peer.declaringPath !== "string" || typeof peer.name !== "string" || typeof peer.spec !== "string" || peer.spec.length > 4096 ||
             !Array.isArray(peer.resolutionSearchPaths) || peer.resolutionSearchPaths.length > 128 ||
-            peer.resolutionSearchPaths.some(path => typeof path !== "string" || path.length > 4096 || !path.startsWith("node_modules/"))) fail();
+            peer.resolutionSearchPaths.some((path: unknown) => typeof path !== "string" || path.length > 4096 || !path.startsWith("node_modules/"))) fail();
       }
     }
     const actual = { version: c.version, lockName: c.lockName, root: file("package.json").sha256, lock: file(c.lockName).sha256,
