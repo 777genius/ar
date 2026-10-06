@@ -1,3 +1,4 @@
+import { assertOuterIoUringPins, controlIoUringFixture } from "./io-uring.ts";
 /** The runner only operates one newly registered service/root. Guest creation
  * is not authority: all positive gates execute inside its actual kernel view. */
 import assert from "node:assert/strict";
@@ -99,6 +100,7 @@ try {
   const packageStat = lstatSync(packagePath); assert(packageStat.isFile() && packageStat.uid === 0 && packageStat.size < 65536);
   evidence.osPackageFacts = JSON.parse(readFileSync(packagePath, "utf8"));
   if (!diagnostic) {
+  evidence.ioUringControl = controlIoUringFixture(root, () => remaining(deadline));
   assert.equal(fileDigest(root + node), fileDigest(process.execPath));
   // This trusted startup probe runs only in the newly extracted CI guest root,
   // before jobs, auth fixtures or systemd units. It cannot mount host libraries.
@@ -197,6 +199,7 @@ try {
     evidence.guestOutputObservation = output;
   } else evidence.guestOutputObservationUnavailable = true;
   assert.equal(guest.status, "partial_pass", "actual unchanged guest gate did not qualify");
+  assertOuterIoUringPins(root);
   remaining(deadline);
 } catch (error) {
   evidence.status = diagnostic ? "unqualified" : "failed";
@@ -242,6 +245,10 @@ try {
     } catch { evidence.status = "failed"; evidence.ownedOsStopped = false; process.exitCode = 1; }
   }
   if (sink) { try { closeSync(sink.fd); } catch { evidence.status = "failed"; evidence.sinkCloseFailed = true; process.exitCode = 1; } }
+  if (!diagnostic && existsSync(root + runtime + "/TEST-io-uring-probe.json")) {
+    try { assertOuterIoUringPins(root); }
+    catch { evidence.status = "failed"; evidence.ioUringPinBracketFailed = true; process.exitCode = 1; }
+  }
   // No guest registry/root is deleted. VM disposal retains uncertain state until
   // the platform ends the owned job; export bounded sanitized facts only.
   if (process.hrtime.bigint() >= outerDeadline) {

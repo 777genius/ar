@@ -234,6 +234,12 @@ export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[
   const group = rows.get("ControlGroup")!;
   if (group !== `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${unit}` &&
       group !== `/system.slice/${unit}`) invalid();
+  // Bind the policy bracket to the same launch instance, not merely its name.
+  const after = spawnSync("/usr/bin/systemctl", ["show", `--property=${unitProperties.join(",")}`, "--", unit],
+    { env: cleanEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      timeout: observationTimeout(5000, remaining), maxBuffer: 65536 });
+  observationTimeout(5000, remaining);
+  if (after.error || after.signal || after.status !== 0 || after.stderr || after.stdout !== result.stdout) invalid();
   const current = readInstalledFdInventory(remaining);
   if (!current || !current.inventoryBytes.equals(installed.inventoryBytes) ||
       !current.installationBytes.equals(installed.installationBytes)) invalid();
@@ -319,6 +325,7 @@ export function assertHostedFdConfinement(child: HostedFdProcess, serviceArgv: r
   if (child.net !== host.net) invalid();
   const provider = serviceArgv[0] === "/usr/bin/unshare", installer = serviceArgv[0] === "/usr/bin/setpriv";
   const status = (name: string) => new RegExp(`^${name}:[\\t ]*([^\\n]*)$`, "m").exec(child.status)?.[1]?.trim().replace(/\s+/g, " ");
+  if (status("NoNewPrivs") !== "1" || status("Seccomp") !== "2") invalid();
   if (provider || installer) {
     if (status("NoNewPrivs") !== "1" || ["Inh", "Prm", "Eff", "Bnd", "Amb"].some(set =>
       !/^0+$/.test(status("Cap" + set) ?? ""))) invalid();

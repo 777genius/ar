@@ -1,3 +1,4 @@
+import { compileIoUringFixture } from "./io-uring.ts";
 /** Signed Ubuntu indexes and downloaded .deb extraction only. No dpkg install,
  * maintainer script, chroot command, or outer apt state mutation is permitted. */
 import assert from "node:assert/strict";
@@ -173,11 +174,13 @@ export function assemble(root: string, state: string, source: string, toolchain:
     writeFileSync(units + "/TEST-retention-bus-diagnostic.target", "[Unit]\nDescription=Unqualified TEST daemon stderr observation\nDefaultDependencies=no\nRequires=dbus.service\nAfter=dbus.service\n", { flag: "wx", mode: 0o644 });
   } else {
   writeFileSync(units + "/TEST-retention.target", "[Unit]\nDescription=Owned dependency TEST OS\nDefaultDependencies=no\nRequires=dbus.service TEST-retention-supervisor.service\nAfter=dbus.service TEST-retention-supervisor.service\n", { mode: 0o644 });
-  writeFileSync(units + "/TEST-retention-supervisor.service", `[Unit]\nDescription=Owned TEST issuer and retained supervisor\nDefaultDependencies=no\nRequires=dbus.service\nAfter=dbus.service\n[Service]\nType=exec\nExecStart=${runtime}/toolchain/bin/node --experimental-strip-types ${runtime}/scripts/dependency-retention-os-test/common.ts supervisor\nEnvironment=TEST_SOURCE_SHA=${sourceSha}\nEnvironment=TEST_OS_SCENARIO=${scenario}\nEnvironment=PATH=${runtime}/toolchain/bin:/usr/bin:/bin LANG=C LC_ALL=C\nRestart=no\nKillMode=control-group\nRuntimeMaxSec=25min\nTimeoutStopSec=20s\nStandardOutput=null\nStandardError=null\n`, { mode: 0o644 });
+  writeFileSync(units + "/TEST-retention-supervisor.service", `[Unit]\nDescription=Owned TEST issuer and retained supervisor\nDefaultDependencies=no\nRequires=dbus.service\nAfter=dbus.service\n[Service]\nType=exec\nSystemCallFilter=~io_uring_setup:ENOSYS io_uring_enter:ENOSYS io_uring_register:ENOSYS\nSystemCallArchitectures=native\nNoNewPrivileges=yes\nExecStart=${runtime}/toolchain/bin/node --experimental-strip-types ${runtime}/scripts/dependency-retention-os-test/common.ts supervisor\nEnvironment=TEST_SOURCE_SHA=${sourceSha}\nEnvironment=TEST_OS_SCENARIO=${scenario}\nEnvironment=PATH=${runtime}/toolchain/bin:/usr/bin:/bin LANG=C LC_ALL=C\nRestart=no\nKillMode=control-group\nRuntimeMaxSec=25min\nTimeoutStopSec=20s\nStandardOutput=null\nStandardError=null\n`, { mode: 0o644 });
   }
+  if (scenario !== OwnedOsMode.BusDiagnostic) directory(root + "/tmp", 0o1777);
   // Recursively copied CI checkout files become root-owned immutable artifacts.
   command("/usr/bin/chown", ["-R", "0:0", root + runtime]);
   command("/usr/bin/chmod", ["-R", "go-w", root + runtime]);
+  if (scenario !== OwnedOsMode.BusDiagnostic) compileIoUringFixture(root, state, command);
   json(root + runtime + "/os-packages.json", { schemaVersion: 1, release: "ubuntu-noble",
     releases: releases.map(name => ({ name, sha256: fileDigest(state + "/lists/" + name) })), packages, usrLayout,
     pinnedNode: { sha256: pinnedSha, version: process.version, requirements: requirements.map(row => ({ soname: row.soname,

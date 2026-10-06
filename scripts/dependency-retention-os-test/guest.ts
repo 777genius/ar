@@ -1,3 +1,4 @@
+import { qualifyIoUringEffects } from "./io-uring.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -142,7 +143,7 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
     linkRootOwned: true, linkTargetMatches: true, fragmentSha256: fileDigest(fragment) };
   const controlGroup = command("/usr/bin/systemctl", ["show", supervisorUnit, "--property=ControlGroup", "--value"]).trim();
   evidence.kernelGatePhase = "native_fd_collector_qualification";
-  const collectorProfile = await issueNativeFdProfile(evidence);
+  const collectorProfile = await issueNativeFdProfile(evidence, systemBusInfrastructure);
   json(policy + "/readonly-inventory.json", { schemaVersion: 4, hostId: evidence.machineId, supervisorUnit, systemBusInfrastructure, collectorProfile,
     units: [{ name: supervisorUnit, controlGroup, fragmentSha256: fileDigest("/etc/systemd/test-units/" + supervisorUnit) },
       { name: "dbus.service", controlGroup: SYSTEM_BUS_CONTROL_GROUP, fragmentSha256: systemBusInfrastructure.service.fragmentSha256 }],
@@ -411,7 +412,7 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
   const supervisorUnit = "TEST-retention-supervisor.service", fragment = "/etc/systemd/test-units/" + supervisorUnit;
   directory("/run/systemd/system", 0o755); directory("/run/systemd/system/TEST-retention.target.wants", 0o755);
   symlinkSync(fragment, "/run/systemd/system/TEST-retention.target.wants/" + supervisorUnit);
-  const collectorProfile = await issueNativeFdProfile(evidence);
+  const collectorProfile = await issueNativeFdProfile(evidence, systemBusInfrastructure);
   const launch = { command: node, args, cwd: workspace };
   json(policy + "/readonly-inventory.json", { schemaVersion: 4, hostId: evidence.machineId, supervisorUnit, systemBusInfrastructure, collectorProfile,
     units: [{ name: supervisorUnit, controlGroup: command("/usr/bin/systemctl", ["show", supervisorUnit, "--property=ControlGroup", "--value"]).trim(), fragmentSha256: fileDigest(fragment) },
@@ -629,7 +630,7 @@ async function qualifyLateRelease(commandPath: string, args: readonly string[], 
 /** Native trusted TEST issuance, before any managed start exists. Parsed profile
  * bytes alone never qualify a binary: live retained endpoints and observations
  * below must succeed before create-only publication. Real routes reprove peers. */
-async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<{ path: typeof fdCollectorProfilePath; sha256: string }> {
+async function issueNativeFdProfile(evidence: Record<string, unknown>, bus: SystemBusInfrastructure): Promise<{ path: typeof fdCollectorProfilePath; sha256: string }> {
   const NativeFdQualificationPhase = { Pins: "pins", UidObservation: "uid_observation", NamedSockets: "named_sockets",
     Profile: "profile", Internals: "internals", ExtraSocket: "extra_socket", DirectBusSocket: "direct_bus_socket",
     FinalPins: "final_pins", Publication: "publication", Complete: "complete" } as const;
@@ -661,6 +662,10 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<
     namespaces: { user: readlinkSync("/proc/self/ns/user"), pid: readlinkSync("/proc/self/ns/pid"), mount: readlinkSync("/proc/self/ns/mnt") },
     scope: "trusted root observer in private owned TEST OS proc; no runner proc or consumer privilege" };
   const qualificationBegan = performance.now();
+  const effectDeadline = process.hrtime.bigint() + 20_000_000_000n;
+  evidence.ioUringEffects = await qualifyIoUringEffects(bus, () => {
+    const left = Number((effectDeadline - process.hrtime.bigint()) / 1_000_000n); assert(left > 0); return left;
+  });
   const signedBytes = boundedProc(runtime + "/os-signed-elf-pins.json", 256 * 1024);
   const signedValue = JSON.parse(signedBytes) as { schemaVersion: number; pins: FdFilePin[] };
   assert.equal(signedValue.schemaVersion, 1); assert(Array.isArray(signedValue.pins) && signedValue.pins.length <= 1024);
@@ -745,6 +750,8 @@ async function issueNativeFdProfile(evidence: Record<string, unknown>): Promise<
       const status = boundedProc("/proc/" + child.pid + "/status", 16384);
       assert.match(status, new RegExp(`^Uid:\\s+${uid}\\s+${uid}\\s+${uid}\\s+${uid}$`, "m"));
       assert.match(status, new RegExp(`^Gid:\\s+${uid}\\s+${uid}\\s+${uid}\\s+${uid}$`, "m"));
+      assert.match(status, /^NoNewPrivs:\s+1$/m); assert.match(status, /^Seccomp:\s+2$/m);
+      assert(!actual.descriptors.some(row => row.target === "anon_inode:[io_uring]"));
       if (uid === 65532) {
         for (const kind of ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]) assert.match(status, new RegExp(`^${kind}:\\s+0+$`, "m"));
         assert.match(status, /^NoNewPrivs:\s+1$/m);

@@ -1,3 +1,5 @@
+import { mkdtemp, open, readFile, rename, rm } from "node:fs/promises";
+import { once } from "node:events";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -145,10 +147,38 @@ if (process.argv[2] === "control-sink" && process.argv[1] === runtime + "/script
     process.exitCode = 70; process.disconnect();
   } finally { clearTimeout(timeout); }
 }
-if (process.argv[2] === "fd-qualification" && process.argv[1] === runtime + "/scripts/dependency-retention-os-test/common.ts") {
-  // Waiting fixture only: no job, provider, authority import or payload. Its real
-  // retained stdio endpoints qualify kernel collection before profile issuance.
+if (process.argv[2] === "fd-io-child" && process.argv[1] === runtime + "/scripts/dependency-retention-os-test/common.ts") {
   assert.equal(process.argv.length, 3); assert.equal(realpathSync(process.execPath), node);
+  let input = ""; const timer = setTimeout(() => process.exit(70), 5000);
+  process.stdin.setEncoding("utf8"); process.stdin.on("data", chunk => {
+    input += String(chunk); if (input.length > 32) process.exit(70);
+  });
+  process.stdin.once("end", () => { assert.equal(input, "TEST_pipe_fallback\n");
+    process.stdout.end(input, () => clearTimeout(timer)); });
+}
+if (process.argv[2] === "fd-qualification" && process.argv[1] === runtime + "/scripts/dependency-retention-os-test/common.ts") {
+  assert.equal(process.argv.length, 3); assert.equal(realpathSync(process.execPath), node);
+  // Genuine async FS/threadpool and pipe/child IO under the pre-exec recipe.
+  // Only newly owned TEST data; fixed pinned child, no job/account/dependency.
+  const ioTimer = setTimeout(() => process.exit(70), 10000);
+  const scratch = await mkdtemp("/tmp/TEST-fd-io-");
+  try {
+    const file = await open(scratch + "/before", "wx", 0o600);
+    try { await file.writeFile("TEST_async_fsync_rename_readback\n"); await file.sync(); }
+    finally { await file.close(); }
+    await rename(scratch + "/before", scratch + "/after");
+    assert.equal(await readFile(scratch + "/after", "utf8"), "TEST_async_fsync_rename_readback\n");
+    const child = spawn(node, ["--experimental-strip-types", runtime + "/scripts/dependency-retention-os-test/common.ts", "fd-io-child"],
+      { env: cleanEnv, stdio: ["pipe", "pipe", "pipe"] });
+    const closed = once(child, "close"); let output = "", errors = "";
+    child.stdout.on("data", chunk => { output += String(chunk); assert(output.length <= 32); });
+    child.stderr.on("data", chunk => { errors += String(chunk); assert(errors.length <= 1024); });
+    child.stdin.end("TEST_pipe_fallback\n");
+    const [code, signal] = await closed; assert.equal(code, 0); assert.equal(signal, null);
+    assert.equal(errors, ""); assert.equal(output, "TEST_pipe_fallback\n");
+  } finally { await rm(scratch, { recursive: true }); clearTimeout(ioTimer); }
+  // The unchanged waiting marker now follows measured fallback effects. Real
+  // retained stdio endpoints qualify collection before profile issuance.
   process.stdin.on("error", () => process.exit(70));
   process.stdout.on("error", () => process.exit(70));
   process.stdin.once("data", () => process.stdout.write("TEST_fd_payload_executed\n"));
