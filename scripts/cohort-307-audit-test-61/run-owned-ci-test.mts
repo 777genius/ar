@@ -208,7 +208,7 @@ try {
       const before = fds.map(pin), mounts = targetMounts(root);
       phase = Phase.ParentNamespaceLaunch;
       const result = spawnSync('/usr/bin/unshare', ['--user', '--map-root-user', '--mount', '--pid', '--fork', '--mount-proc',
-        '--propagation', 'private', '--kill-child=SIGKILL', '--', process.execPath, '--experimental-strip-types',
+        '--propagation', 'private', '--kill-child=SIGKILL', '--', process.execPath, '--experimental-transform-types',
         join(staged, 'run-owned-ci-test.mts'), '--inside', root], { cwd: staged, uid: 0, gid: 0,
         env: { PATH: '/usr/bin:/bin', CI: 'true', GITHUB_ACTIONS: 'true', TMPDIR: join(staged, 'tmp') },
         stdio: ['ignore', 'pipe', 'pipe', ...fds], encoding: 'utf8', timeout: 90_000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 });
@@ -256,7 +256,7 @@ try {
       assert.ok(!fields.slice(6, separator).some(x => /^(shared|master|propagate_from):/.test(x)), 'TEST propagation not private');
     }
     phase = Phase.ChildSuiteLaunch;
-    const result = spawnSync(process.execPath, ['--experimental-strip-types', '--test',
+    const result = spawnSync(process.execPath, ['--experimental-transform-types', '--test',
       join(source, 'audit-helper.test.mts'), join(source, 'audit-helper.namespace.test.mts')], { cwd: source,
       env: { PATH: '/usr/bin:/bin', CI: 'true', GITHUB_ACTIONS: 'true', TMPDIR: join(source, 'tmp'), TEST_AUDIT_OWNED_NAMESPACE: '1' },
       stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 });

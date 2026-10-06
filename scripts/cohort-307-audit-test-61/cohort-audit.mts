@@ -12,6 +12,18 @@ const Mode = { ProcReferences: 'ProcReferences', AllocatedMetadata: 'AllocatedMe
 type Mode = (typeof Mode)[keyof typeof Mode];
 type RecordValue = Record<string, unknown>;
 
+enum RequestStage {
+  Unknown = 'Unknown', Selection = 'Selection', FrozenInputs = 'FrozenInputs', RequestEncode = 'RequestEncode',
+  Transport = 'Transport', Decode = 'Decode', Validation = 'Validation', RequiredEvidence = 'RequiredEvidence',
+  SavePrepare = 'SavePrepare', SaveWrite = 'SaveWrite', SavedNotice = 'SavedNotice',
+}
+// A closed diagnostic carrier has no raw error, cause, stdout, stderr or trace.
+class RequestFailure {
+  readonly stage: RequestStage;
+  constructor(stage: RequestStage) { this.stage = stage; }
+}
+
+
 export function parseMode(args: readonly string[]): { mode: Mode; partition: number | null } {
   if (args.length === 1 && args[0] === 'proc') return { mode: Mode.ProcReferences, partition: null };
   if (args.length === 2 && args[0] === 'allocated' && /^(0|[1-9][0-9]?)$/.test(args[1] ?? '')) {
@@ -166,33 +178,51 @@ export function validateReport(value: unknown, expectedMode: Mode, cohortJson: s
 }
 
 export function main(args: readonly string[]): void {
-  const selection = parseMode(args);
-  const cohortBytes = readFileSync(join(root, 'input/fixed-cohort.json'));
-  const payload = readFileSync(join(root, 'audit-payload.py'));
-  if (createHash('sha256').update(cohortBytes).digest('hex') !== cohortSha256 ||
-      createHash('sha256').update(payload).digest('hex') !== payloadSha256) throw new Error('Frozen input digest mismatch');
-  const cohortJson = cohortBytes.toString('utf8');
-  const request = { version: 1, ...selection, cohortSha256, cohortJson };
-  const encoded = Buffer.from(JSON.stringify(request)).toString('base64');
-  const program = `import base64, json\nREQUEST=json.loads(base64.b64decode('${encoded}'))\n${payload.toString('utf8')}`;
-  const sshArgs = ['-o', 'BatchMode=yes', '-o', 'ConnectionAttempts=1', '-o', 'ConnectTimeout=8',
-    '-o', 'StrictHostKeyChecking=yes', '-o', 'ControlMaster=auto', '-o', 'ControlPersist=5m',
-    '-o', 'ControlPath=/Users/belief/.ssh/controlmasters/a-%C', 'workers-fsn1-01', 'sudo -n /usr/bin/python3 -B -'];
-  // One foreground read-only request. Transport failure is not an empty observation.
-  const raw = execFileSync('ssh', sshArgs, { input: program, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 45_000, maxBuffer: 2 * 1024 * 1024 });
-  const result: unknown = JSON.parse(raw);
-  validateReport(result, selection.mode, cohortJson);
-  if (!['failureFacts', 'resourceQualification', 'fdEnvelopeFailure'].every(key => Object.hasOwn(result, key))) throw new Error('Missing pinned failure evidence');
-  const out = join(root, 'observations'); mkdirSync(out, { recursive: true, mode: 0o700 });
-  const filename = `${selection.mode}-${selection.partition ?? 'all'}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-  const saved = `${JSON.stringify(result)}\n`;
-  if (Buffer.byteLength(saved) > 2 * 1024 * 1024) throw new Error('Sanitized output byte bound exceeded');
-  writeFileSync(join(out, filename), saved, { flag: 'wx', mode: 0o600 });
-  console.log(`Saved sanitized ${selection.mode} observation; needed bytes remain Unknown and cleanup NotEstablished.`);
-  if (result.status === 'Incomplete') process.exitCode = 1;
+  let stage: RequestStage = RequestStage.Unknown;
+  try {
+    stage = RequestStage.Selection;
+    const selection = parseMode(args);
+    stage = RequestStage.FrozenInputs;
+    const cohortBytes = readFileSync(join(root, 'input/fixed-cohort.json'));
+    const payload = readFileSync(join(root, 'audit-payload.py'));
+    if (createHash('sha256').update(cohortBytes).digest('hex') !== cohortSha256 ||
+        createHash('sha256').update(payload).digest('hex') !== payloadSha256) throw new Error('Frozen input digest mismatch');
+    stage = RequestStage.RequestEncode;
+    const cohortJson = cohortBytes.toString('utf8');
+    const request = { version: 1, ...selection, cohortSha256, cohortJson };
+    const encoded = Buffer.from(JSON.stringify(request)).toString('base64');
+    const program = `import base64, json\nREQUEST=json.loads(base64.b64decode('${encoded}'))\n${payload.toString('utf8')}`;
+    const sshArgs = ['-o', 'BatchMode=yes', '-o', 'ConnectionAttempts=1', '-o', 'ConnectTimeout=8',
+      '-o', 'StrictHostKeyChecking=yes', '-o', 'ControlMaster=auto', '-o', 'ControlPersist=5m',
+      '-o', 'ControlPath=/Users/belief/.ssh/controlmasters/a-%C', 'workers-fsn1-01', 'sudo -n /usr/bin/python3 -B -'];
+    // One foreground read-only request. Transport failure is not an empty observation.
+    stage = RequestStage.Transport;
+    const raw = execFileSync('ssh', sshArgs, { input: program, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 45_000, maxBuffer: 2 * 1024 * 1024 });
+    stage = RequestStage.Decode;
+    const result: unknown = JSON.parse(raw);
+    stage = RequestStage.Validation;
+    validateReport(result, selection.mode, cohortJson);
+    stage = RequestStage.RequiredEvidence;
+    if (!['failureFacts', 'resourceQualification', 'fdEnvelopeFailure'].every(key => Object.hasOwn(result, key))) throw new Error('Missing pinned failure evidence');
+    stage = RequestStage.SavePrepare;
+    const out = join(root, 'observations'); mkdirSync(out, { recursive: true, mode: 0o700 });
+    const filename = `${selection.mode}-${selection.partition ?? 'all'}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    const saved = `${JSON.stringify(result)}\n`;
+    if (Buffer.byteLength(saved) > 2 * 1024 * 1024) throw new Error('Sanitized output byte bound exceeded');
+    stage = RequestStage.SaveWrite;
+    writeFileSync(join(out, filename), saved, { flag: 'wx', mode: 0o600 });
+    stage = RequestStage.SavedNotice;
+    console.log(`Saved sanitized ${selection.mode} observation; needed bytes remain Unknown and cleanup NotEstablished.`);
+    if (result.status === 'Incomplete') process.exitCode = 1;
+  } catch { throw new RequestFailure(stage); }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try { main(process.argv.slice(2)); }
-  catch { console.error('Bounded read-only request failed or returned invalid data; no empty-result or cleanup inference.'); process.exitCode = 1; }
+  catch (error: unknown) {
+    const stage = error instanceof RequestFailure && Object.values(RequestStage).some(value => value === error.stage)
+      ? error.stage : RequestStage.Unknown;
+    console.error(`Bounded read-only request failed at ${stage}; needed bytes remain Unknown; no empty-result or cleanup inference.`);
+    process.exitCode = 1;
+  }
 }
