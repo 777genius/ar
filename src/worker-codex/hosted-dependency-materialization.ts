@@ -168,7 +168,7 @@ function retainPhysicalCold(binding: HostedDependencyBinding, attempt: Dependenc
 }
 /** Every dispatch resolves the facade through the SAME original map. */
 export function consumeHostedDependencyColdHandoff(handoff:HostedDependencyColdHandoff,binding:HostedDependencyBinding,
-  attempt:DependencyAttempt,inputs:HostedDependencyKeyInputs,ready:Ready) {
+  attempt:DependencyAttempt,inputs:HostedDependencyKeyInputs,ready:Ready):Pick<HostedDependencyColdResult,"observed"|"reference"|"exposure"|"source"> {
   return consumeCurrentHostedDependencyColdHandoff(handoff,binding,attempt,inputs,ready);
 }
 export function assertHostedDependencyConsumedColdHandoff(handoff:HostedDependencyColdHandoff,fence:HostedActivationFence):void {

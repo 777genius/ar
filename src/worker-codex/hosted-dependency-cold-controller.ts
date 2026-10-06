@@ -3,7 +3,7 @@ import { captureOriginalHostedDependencyColdInstaller, prepareOriginalHostedDepe
 import { produceOriginalHostedDependencyColdTree, readOriginalHostedDependencyColdInstallerMapping } from "./hosted-dependency-materialization";
 import { assertCurrentHostedDependencyAttempt, findOriginalHostedDependencyColdState,
   readOriginalHostedDependencyColdInstallerState, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
-import { HostedDependencyColdPhase, HostedDependencyColdInstallerPhase, type HostedDependencyColdReady } from "./hosted-dependency-cold-materialization-state";
+import { HostedDependencyColdPhase, HostedDependencyColdInstallerPhase, type HostedDependencyColdReady, type HostedDependencyColdResult } from "./hosted-dependency-cold-materialization-state";
 import { OriginalHostedDependencyColdHandoff } from "./hosted-dependency-cold-handoff-view";
 import { assertHostedDependencyKeyInputsCurrent, sameHostedDependencyKeyInputs, type HostedDependencyKeyInputs } from "./hosted-dependency-materialization-context";
 import { readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
@@ -109,7 +109,7 @@ function assertColdState(handle:unknown,fence:HostedActivationFence,access:symbo
   return held;
 }
 export function consumeOriginalHostedDependencyColdHandoff(handle:Readonly<{startId:string}>,binding:HostedDependencyBinding,
-  attempt:DependencyAttempt,inputs:HostedDependencyKeyInputs,ready:HostedDependencyColdReady,access:symbol) {
+  attempt:DependencyAttempt,inputs:HostedDependencyKeyInputs,ready:HostedDependencyColdReady,access:symbol):Pick<HostedDependencyColdResult,"observed"|"reference"|"exposure"|"source"> {
   coldState(handle,access); // Counterfeit/unissued view refuses before fence/record IO.
   return withHostedActivationFence(fence=>{
     const held=assertColdState(handle,fence,access);

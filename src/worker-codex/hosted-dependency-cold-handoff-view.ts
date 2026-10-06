@@ -3,7 +3,7 @@ import { consumeOriginalHostedDependencyColdHandoff, assertOriginalHostedDepende
 import type { DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
 import type { HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import type { HostedDependencyKeyInputs } from "./hosted-dependency-materialization-context";
-import type { HostedDependencyColdReady } from "./hosted-dependency-cold-materialization-state";
+import type { HostedDependencyColdReady, HostedDependencyColdResult } from "./hosted-dependency-cold-materialization-state";
 import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { DependencyAdmissionError, DependencyAdmissionFailure } from "@vioxen/subscription-runtime/worker-core";
 import type { CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
@@ -20,7 +20,7 @@ export class OriginalHostedDependencyColdHandoff {
     if (!value || typeof value!=="object" || !(#access in value) || value.#access!==access) return undefined;
     return value.#origin;
   }
-  static consume(value:unknown,binding:HostedDependencyBinding,attempt:DependencyAttempt,inputs:HostedDependencyKeyInputs,ready:HostedDependencyColdReady) {
+  static consume(value:unknown,binding:HostedDependencyBinding,attempt:DependencyAttempt,inputs:HostedDependencyKeyInputs,ready:HostedDependencyColdReady):Pick<HostedDependencyColdResult,"observed"|"reference"|"exposure"|"source"> {
     if(!value || typeof value!=="object" || !(#access in value))throw new DependencyAdmissionError(DependencyAdmissionFailure.StaleAttempt);
     return consumeOriginalHostedDependencyColdHandoff(value,binding,attempt,inputs,ready,value.#access);
   }
@@ -41,7 +41,7 @@ export class OriginalHostedDependencyColdHandoff {
 Object.freeze(OriginalHostedDependencyColdHandoff.prototype);
 Object.freeze(OriginalHostedDependencyColdHandoff);
 export function consumeCurrentHostedDependencyColdHandoff(handle:Readonly<{startId:string}>,binding:HostedDependencyBinding,
-  attempt:DependencyAttempt,inputs:HostedDependencyKeyInputs,ready:HostedDependencyColdReady) {
+  attempt:DependencyAttempt,inputs:HostedDependencyKeyInputs,ready:HostedDependencyColdReady):Pick<HostedDependencyColdResult,"observed"|"reference"|"exposure"|"source"> {
   return OriginalHostedDependencyColdHandoff.consume(handle,binding,attempt,inputs,ready);
 }
 export function assertCurrentHostedDependencyConsumedColdHandoff(handle:Readonly<{startId:string}>,fence:HostedActivationFence):void {
