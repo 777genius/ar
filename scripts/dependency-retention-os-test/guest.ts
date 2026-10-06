@@ -20,7 +20,10 @@ import { writeHostedTestEgressGrant } from "../../dist/worker-codex/hosted-test-
 import { CodexProviderEgressProfileId, verifySystemBusInfrastructure } from "../../dist/provider-codex/index.js";
 import { parseSystemBusInfrastructure, SystemBusInfrastructureRole, SYSTEM_BUS_ARGUMENTS, SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH,
   SYSTEM_BUS_CONTROL_GROUP, SYSTEM_BUS_ENDPOINT, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
-  SYSTEM_BUS_SOCKET_FRAGMENT, type SystemBusFilePin, type SystemBusInfrastructure } from "../../dist/core/index.js";
+  SYSTEM_BUS_SOCKET_FRAGMENT, SystemBusQueryRenderer, type SystemBusQueryTool, type SystemBusFilePin, type SystemBusInfrastructure } from "../../dist/core/index.js";
+import { observeSystemBusFdEmptyArrays } from "../../dist/provider-codex/app-server/adapters/system-bus-infrastructure.js";
+import { assertPinnedSystemBusQueryTool, observeSystemdServiceEmptyArrays, SystemdServiceArrayKind,
+  type SystemdEmptyArrayFact } from "../../dist/provider-codex/app-server/adapters/systemd-service-arrays.js";
 import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRootKind, HostedCustodyPhase, HostedCustodyReservationState, parseHostedOrdinaryStart } from "../../dist/worker-core/index.js";
 import { HostedDependencyInstallerNetworkInput, hostedDependencyInstallerNetworkRoot, hostedDependencyInstallerNpmRootSha256,
   HostedDependencyInstallerRevision, hostedDependencyInstallerDropperSha256,
@@ -260,7 +263,7 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   try { assert.equal(afterSinkOwner.read(binding.workspace)?.owner, null); } finally { afterSinkOwner.close(); }
   evidence.pendingNativeCases = ["direct_daemon_socket_sent_byte_capture", "noop_and_stale_same_inode_result", "unauthorized_destination_no_preread"];
   evidence.kernelGatePhase = "actual_final_release_deadline_denial";
-  results.push(await qualifyLateRelease(node, args, workspace, env));
+  results.push(await qualifyLateRelease(node, args, workspace, env, systemBusInfrastructure));
   const afterLateReceipt = readHostedDependencyReceipt(binding); assert(afterLateReceipt);
   assert.equal(digest(JSON.stringify(afterLateReceipt)), readyDigest);
   assert.equal(readdirSync(policy + "/dependency-installers").filter(name => /^[a-f0-9-]{36}$/.test(name)).length, 1);
@@ -563,17 +566,27 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
   evidence.pendingNativeCases = ["direct_daemon_socket_sent_byte_capture", "noop_and_stale_same_inode_result", "unauthorized_destination_no_preread"];
 }
 
-async function qualifyLateRelease(commandPath: string, args: readonly string[], workspace: string, env: Record<string, string>) {
+async function qualifyLateRelease(commandPath: string, args: readonly string[], workspace: string, env: Record<string, string>,
+  systemBusInfrastructure: SystemBusInfrastructure) {
   const store = new HostedInstallationActivationStore();
   const previousStarts = new Set(readHostedInstallationActivation().activation.ordinaryStarts.map(row => row.startId));
   const previousProbes = readdirSync(workspace).filter(name => /^TEST-provider-probe-[123]\.json$/.test(name)).sort();
-  const child = store.runOrdinaryRuntimeLaunch(commandPath, args, workspace, launch =>
-    spawnHostedFdChild(launch.command, launch.args, { cwd: workspace }, hostedFdInvocationUnit(launch.args), HostedFdLaunchKind.Foreground));
+  let actualUnit: string | undefined;
+  const child = store.runOrdinaryRuntimeLaunch(commandPath, args, workspace, launch => {
+    actualUnit = hostedFdInvocationUnit(launch.args);
+    return spawnHostedFdChild(launch.command, launch.args, { cwd: workspace }, actualUnit, HostedFdLaunchKind.Foreground);
+  });
   const closed = once(child, "close"), guard = hostedFdLaunch(child);
   child.stdin?.on("error", () => {});
   let pausedMs = 0, requestedMs = 0, denied = false;
+  let typedEmptyArrays: readonly SystemdEmptyArrayFact[] | undefined;
   try {
     await guard.observe(); // Actual peer/unit/birth proof outside the fence.
+    assert(actualUnit);
+    // Actual existing waiting unit, never a caller-chosen unit or admission
+    // receipt. These provisional facts cannot release the frame below.
+    typedEmptyArrays = observeSystemBusFdEmptyArrays(systemBusInfrastructure, actualUnit, () => guard.remainingSetupMs());
+    assertTypedEmptyArrays(typedEmptyArrays, true);
     try {
       store.releaseOrdinaryRuntimeFrame((fence, revalidateOwner) => {
         guard.release(fence, Buffer.from(JSON.stringify({ schemaVersion: 1, env })), true, () => {
@@ -601,14 +614,15 @@ async function qualifyLateRelease(commandPath: string, args: readonly string[], 
   assert.deepEqual(readdirSync(workspace).filter(name => /^TEST-provider-probe-[123]\.json$/.test(name)).sort(), previousProbes);
   const current = readHostedInstallationActivation(), added = current.activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
   assert.equal(added.length, 1); const row = added[0]!;
-  assert.equal(row.state, HostedCustodyReservationState.Reserved);
+  assert.equal(row.state, HostedCustodyReservationState.Reserved); assert.equal(row.unit, actualUnit);
   assert.equal(readHostedPrivateBytes(policy + "/ordinary-completed/" + row.startId + ".json", 4096), null);
   const stdout = guard.outputPaths[0]; assert(stdout); assert.equal(stdout, policy + "/foreground-output/" + row.unit + ".stdout");
   const stat = lstatSync(stdout); assert(stat.isFile() && stat.uid === 0 && stat.nlink === 1 && !(stat.mode & 0o077));
   assert.equal(stat.size, 0, "TEST late release forwarded payload bytes");
   return { scenario: "actual_final_release_deadline", outcome: "denied_before_enqueue_and_payload",
     requestedMs, pausedMs, startId: row.startId, unit: row.unit, reservationState: row.state,
-    completionPresent: false, stdoutBytes: stat.size };
+    completionPresent: false, stdoutBytes: stat.size, typedEmptyArrays,
+    typedObservationPurpose: "TEST_current_waiting_unit_facts_not_release_authority" };
 }
 
 /** Native trusted TEST issuance, before any managed start exists. Parsed profile
@@ -868,6 +882,14 @@ async function qualifyNamedSockets(query: () => ReadonlyMap<string, string>, loc
 }
 
 async function issueActualSystemBusInfrastructure(evidence: Record<string, unknown>): Promise<SystemBusInfrastructure> {
+  // The original 20-second acquisition allowance now covers signed pin IO,
+  // linkage discovery, every query and final observation, without child resets.
+  const deadline = process.hrtime.bigint() + 20_000_000_000n;
+  const remainingMs = () => {
+    const remaining = Number((deadline - process.hrtime.bigint()) / 1_000_000n);
+    assert(Number.isSafeInteger(remaining) && remaining > 0, "TEST genuine system bus setup allowance exhausted"); return remaining;
+  };
+  remainingMs();
   const pinPath = runtime + "/os-signed-elf-pins.json", beforePins = lstatSync(pinPath);
   assert(beforePins.isFile() && !beforePins.isSymbolicLink() && beforePins.uid === 0 && beforePins.nlink === 1 && (beforePins.mode & 0o777) === 0o600);
   const pinBytes = Buffer.from(boundedProc(pinPath, 256 * 1024));
@@ -877,22 +899,70 @@ async function issueActualSystemBusInfrastructure(evidence: Record<string, unkno
   const extraction = JSON.parse(pinBytes.toString("utf8")) as { schemaVersion: number; pins: SystemBusFilePin[] };
   assert.equal(extraction.schemaVersion, 1); assert(Array.isArray(extraction.pins) && extraction.pins.length <= 1024);
   const signed = new Map(extraction.pins.map(pin => {
-    assert(([SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", "/usr/bin/systemd-run", "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/systemctl"].includes(pin.path) || pin.path.startsWith("/usr/lib/")) && /^[a-f0-9]{64}$/.test(pin.sha256));
+    assert(([SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", "/usr/bin/systemd-run", "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/systemctl", "/usr/bin/busctl"].includes(pin.path) || pin.path.startsWith("/usr/lib/")) && /^[a-f0-9]{64}$/.test(pin.sha256));
     return [pin.path, pin.sha256] as const;
   }));
   assert.equal(signed.size, extraction.pins.length);
-  const deadline = Date.now() + 20000; let registered = false;
-  // PID1 must own the actual manager name on the genuine socket-activated bus.
-  // Bounded reads can retry name registration; no launch or state is retried.
-  while (Date.now() < deadline) {
-    const read = spawnSync("/usr/bin/busctl", ["--system", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus",
+  remainingMs();
+  let queryBytes = 0;
+  const queryPin = (path: string, executable = false): SystemBusFilePin => {
+    remainingMs(); assert.equal(realpathSync(path), path);
+    for (let parent = dirname(path);; parent = dirname(parent)) {
+      const stat = lstatSync(parent); remainingMs();
+      assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && stat.gid === 0 && !(stat.mode & 0o022));
+      if (parent === "/") break;
+    }
+    const expected = signed.get(path); assert(expected);
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const before = fstatSync(fd), entry = lstatSync(path);
+      assert(before.isFile() && before.uid === 0 && before.gid === 0 && before.nlink === 1 && !(before.mode & 0o022) &&
+        (!executable || (before.mode & 0o111)) && before.size >= 20 && before.size <= 32 * 1024 * 1024 &&
+        (queryBytes += before.size) <= 256 * 1024 * 1024 && entry.dev === before.dev && entry.ino === before.ino);
+      const bytes = Buffer.alloc(before.size + 1); let length = 0;
+      while (length < bytes.length) { remainingMs(); const count = readSync(fd, bytes, length, bytes.length - length, null);
+        if (!count) break; length += count; remainingMs(); }
+      assert.equal(length, before.size);
+      assert(bytes[0] === 127 && bytes.subarray(1, 4).toString() === "ELF" && bytes[4] === 2 && bytes[5] === 1 && bytes.readUInt16LE(18) === 62);
+      const sha256 = digest(bytes.subarray(0, length)); assert.equal(sha256, expected);
+      for (const stat of [fstatSync(fd), lstatSync(path)]) assert(stat.isFile() && stat.uid === 0 && stat.gid === 0 &&
+        stat.nlink === 1 && stat.dev === before.dev && stat.ino === before.ino && stat.mode === before.mode &&
+        stat.size === before.size && stat.ctimeMs === before.ctimeMs && stat.mtimeMs === before.mtimeMs);
+      remainingMs(); return { path, sha256 };
+    } finally { closeSync(fd); }
+  };
+  // Same trusted signed-ELF -> OS ldd procedure as the existing FD issuer.
+  // No busctl execution (including --version) precedes the complete closure.
+  const queryExecutable = queryPin("/usr/bin/busctl", true);
+  const linkage = spawnSync("/usr/bin/ldd", [queryExecutable.path], { env: cleanEnv, encoding: "utf8",
+    timeout: Math.min(2000, remainingMs()), maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"] });
+  remainingMs(); assert(!linkage.error && linkage.signal === null && linkage.status === 0 && linkage.stderr === "" && !linkage.stdout.includes("not found"));
+  const libraries = [...new Set([...linkage.stdout.matchAll(/(?:=>\s+)?(\/[A-Za-z0-9_./+-]+)\s+\(/g)].map(row => realpathSync(row[1]!)))].sort();
+  assert(libraries.length > 0 && libraries.length <= 32 && libraries.every(path => path.startsWith("/usr/lib/")));
+  const queryTool: SystemBusQueryTool = { path: "/usr/bin/busctl", sha256: queryExecutable.sha256,
+    renderer: SystemBusQueryRenderer.Systemd255Terse, elfClosure: [queryExecutable, ...libraries.map(path => queryPin(path))] };
+  assertPinnedSystemBusQueryTool(queryTool, remainingMs);
+  const version = spawnSync(queryTool.path, ["--version"], { env: cleanEnv, encoding: "utf8",
+    timeout: Math.min(2000, remainingMs()), maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"] });
+  remainingMs(); assert(!version.error && version.signal === null && version.status === 0 && version.stderr === "" && /^systemd 255(?:[ .(]|$)/.test(version.stdout));
+  assertPinnedSystemBusQueryTool(queryTool, remainingMs);
+  let registered = false;
+  // Preserve the existing bounded name-registration wait, on the fixed bus.
+  // Every query uses the SAME remaining allowance and enrolled signed closure.
+  while (!registered) {
+    assertPinnedSystemBusQueryTool(queryTool, remainingMs);
+    const read = spawnSync(queryTool.path, ["--address=unix:path=/run/dbus/system_bus_socket", "--no-pager",
+      "--auto-start=no", "--allow-interactive-authorization=no", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus",
       "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"],
-      { env: cleanEnv, encoding: "utf8", timeout: 2000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"] });
-    if (!read.error && read.status === 0 && read.stdout.trim() === "u 1") { registered = true; break; }
-    await new Promise(resolve => setTimeout(resolve, 100));
+      { env: cleanEnv, encoding: "utf8", timeout: Math.min(2000, remainingMs()), maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"] });
+    remainingMs(); assertPinnedSystemBusQueryTool(queryTool, remainingMs);
+    assert(!read.error && read.signal === null, "TEST genuine PID1 system bus registration query uncertain");
+    if (read.status === 0) { assert(read.stderr === "" && (read.stdout === "u 1" || read.stdout === "u 1\n")); registered = true; }
+    else await new Promise(resolve => setTimeout(resolve, Math.min(100, remainingMs())));
   }
-  assert(registered, "TEST genuine PID1 system bus registration unavailable");
-  const pid = command("/usr/bin/systemctl", ["show", "--property=MainPID", "--value", "--", "dbus.service"]).trim();
+  remainingMs();
+  const pid = command("/usr/bin/systemctl", ["show", "--property=MainPID", "--value", "--", "dbus.service"], Math.min(2000, remainingMs())).trim();
+  remainingMs();
   assert(/^[1-9][0-9]{0,9}$/.test(pid));
   const processBirth = () => {
     const stat = boundedProc("/proc/" + pid + "/stat", 4096), at = stat.lastIndexOf(") ");
@@ -916,11 +986,12 @@ async function issueActualSystemBusInfrastructure(evidence: Record<string, unkno
   const serviceFragment = "/etc/systemd/test-units/dbus.service", socketFragment = "/etc/systemd/test-units/dbus.socket";
   assert.equal(readFileSync(serviceFragment, "utf8"), SYSTEM_BUS_SERVICE_FRAGMENT);
   assert.equal(readFileSync(socketFragment, "utf8"), SYSTEM_BUS_SOCKET_FRAGMENT);
-  const descriptor = parseSystemBusInfrastructure({ version: 1, role: SystemBusInfrastructureRole.SystemBus,
+  remainingMs();
+  const descriptor = parseSystemBusInfrastructure({ version: 2, role: SystemBusInfrastructureRole.SystemBus,
     service: { name: "dbus.service", controlGroup: SYSTEM_BUS_CONTROL_GROUP, fragmentPath: serviceFragment, fragmentSha256: fileDigest(serviceFragment) },
     socket: { name: "dbus.socket", endpoint: SYSTEM_BUS_ENDPOINT, fragmentPath: socketFragment, fragmentSha256: fileDigest(socketFragment) },
     config: { path: SYSTEM_BUS_CONFIG_PATH, sha256: fileDigest(SYSTEM_BUS_CONFIG_PATH) },
-    executable: { path: SYSTEM_BUS_EXECUTABLE, sha256: signed.get(SYSTEM_BUS_EXECUTABLE) }, elfClosure });
+    executable: { path: SYSTEM_BUS_EXECUTABLE, sha256: signed.get(SYSTEM_BUS_EXECUTABLE) }, elfClosure, queryTool });
   const endpoint = lstatSync(SYSTEM_BUS_ENDPOINT); assert(endpoint.isSocket() && endpoint.uid === 0 && (endpoint.mode & 0o777) === 0o600);
   const socketInodes = (processId: string) => {
     const entries = readdirSync("/proc/" + processId + "/fd"); assert(entries.length <= 4096);
@@ -942,15 +1013,15 @@ async function issueActualSystemBusInfrastructure(evidence: Record<string, unkno
     mode: endpoint.mode & 0o777, listenerInode: listener }, observedManagerPid: 1, extractionPinsSha256: digest(pinBytes) };
   // Execute the real production verifier before issuing any inventory. Its
   // return is not serialized as authority; every later gate verifies again.
-  try { verifySystemBusInfrastructure(descriptor); }
+  try { verifySystemBusInfrastructure(descriptor, remainingMs); }
   catch (error) {
     const observation: Record<string, unknown> = { purpose: "TEST_post_failure_current_bus_predicates_only", unavailable: true };
     evidence.systemBusRejectedCurrentObservation = observation;
     try {
       // Reuse the existing manager acquisition deadline; telemetry gets no
       // extra budget and never reconstructs the original failing query.
-      const until = process.hrtime.bigint() + BigInt(Math.min(deadline - Date.now(), 5000)) * 1000000n;
-      const remainingMs = () => Number((until - process.hrtime.bigint()) / 1000000n);
+      const until = process.hrtime.bigint() + BigInt(Math.min(remainingMs(), 5000)) * 1000000n;
+      const telemetryRemainingMs = () => Number((until - process.hrtime.bigint()) / 1000000n);
       const systemctl = "/usr/bin/systemctl", tool = lstatSync(systemctl);
       assert(tool.isFile() && tool.uid === 0 && tool.nlink === 1 && !(tool.mode & 0o022) && tool.size <= 32 * 1024 * 1024);
       const expectedTool = signed.get(systemctl); assert(expectedTool);
@@ -960,7 +1031,7 @@ async function issueActualSystemBusInfrastructure(evidence: Record<string, unkno
       }
       assert.equal(realpathSync(systemctl), systemctl); assert.equal(fileDigest(systemctl), expectedTool);
       const current = () => {
-        assert(remainingMs() > 0); assert.equal(processBirth(), birth);
+        assert(telemetryRemainingMs() > 0); assert.equal(processBirth(), birth);
         for (const name of ["user", "mnt", "pid", "net"] as const)
           assert.equal(readlinkSync(`/proc/self/ns/${name}`), readlinkSync(`/proc/1/ns/${name}`));
         const now = lstatSync(systemctl), socket = lstatSync(SYSTEM_BUS_ENDPOINT);
@@ -968,7 +1039,7 @@ async function issueActualSystemBusInfrastructure(evidence: Record<string, unkno
           now.dev === tool.dev && now.ino === tool.ino && now.size === tool.size && now.ctimeMs === tool.ctimeMs && now.mtimeMs === tool.mtimeMs);
         assert.equal(fileDigest(systemctl), expectedTool);
         assert(socket.isSocket() && socket.uid === 0 && (socket.mode & 0o777) === 0o600 && socket.dev === endpoint.dev && socket.ino === endpoint.ino);
-        assert(remainingMs() > 0);
+        assert(telemetryRemainingMs() > 0);
       };
       const common = ["Id", "Names", "LoadState", "ActiveState", "SubState", "FragmentPath", "DropInPaths", "Job"] as const;
       const queries = [
@@ -977,7 +1048,7 @@ async function issueActualSystemBusInfrastructure(evidence: Record<string, unkno
       ] as const;
       const facts = [];
       for (const query of queries) {
-        current(); const allowance = remainingMs(); assert(allowance > 0);
+        current(); const allowance = telemetryRemainingMs(); assert(allowance > 0);
         const read = spawnSync(systemctl, ["show", `--property=${query.keys.join(",")}`, "--", query.unit],
           { env: cleanEnv, encoding: "utf8", timeout: Math.min(2000, allowance), maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"] });
         assert(!read.error && read.status === 0 && read.signal === null); current();
@@ -1008,8 +1079,22 @@ async function issueActualSystemBusInfrastructure(evidence: Record<string, unkno
     } catch { /* Only closed unavailable telemetry; preserve the real rejection. */ }
     throw error;
   }
+  remainingMs(); assert.equal(processBirth(), birth);
+  const typedEmptyArrays = observeSystemdServiceEmptyArrays(queryTool, "dbus.service", SystemdServiceArrayKind.Infrastructure, remainingMs);
+  assertTypedEmptyArrays(typedEmptyArrays, false);
   assert.equal(processBirth(), birth);
+  const currentEndpoint = lstatSync(SYSTEM_BUS_ENDPOINT);
+  assert(currentEndpoint.isSocket() && currentEndpoint.uid === 0 && (currentEndpoint.mode & 0o777) === 0o600 &&
+    currentEndpoint.dev === endpoint.dev && currentEndpoint.ino === endpoint.ino);
+  remainingMs();
+  evidence.systemBusTypedEmptyArrays = { purpose: "TEST_actual_fixed_bus_service_facts_not_inventory_authority", facts: typedEmptyArrays };
   return descriptor;
+}
+function assertTypedEmptyArrays(facts: readonly SystemdEmptyArrayFact[], managed: boolean): void {
+  // Independent expected native contract; never create or fill measured facts.
+  const names = managed ? ["ExecCondition", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "EnvironmentFiles"] :
+    ["ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "EnvironmentFiles"];
+  assert.deepEqual(facts, names.map(property => ({ property, signature: property === "EnvironmentFiles" ? "a(sb)" : "a(sasbttttuii)", count: 0 })));
 }
 function boundedProc(path: string, max: number): string {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
