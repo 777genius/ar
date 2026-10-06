@@ -247,9 +247,12 @@ export class HostedFdLaunch {
   }
   private collect(): Proof {
     this.remaining();
-    const profile = readHostedFdProfile();
+    // This closure measures this actual spawn's original monotonic allowance;
+    // it is not a caller timeout, admission token or new budget per child query.
+    const remaining = () => this.remaining();
+    const profile = readHostedFdProfile(remaining);
     if (!profile || JSON.stringify(profile) !== JSON.stringify(this.profile) || !this.child.pid) invalid();
-    const unit = observeHostedFdUnit(this.unit, this.serviceArgv), proxy = observeHostedFdProcess(this.child.pid);
+    const unit = observeHostedFdUnit(this.unit, this.serviceArgv, remaining), proxy = observeHostedFdProcess(this.child.pid);
     if (unit.root !== this.root) invalid();
     if (proxy.birth !== this.proxyBirth || proxy.net !== observeHostedFdProcess(process.pid).net) invalid();
     if (proxy.exe !== profile.node.path && !profile.wrappers.some(pin => pin.path === proxy.exe)) invalid();
@@ -265,7 +268,7 @@ export class HostedFdLaunch {
           const at = this.serviceArgv.indexOf(p.exe);
           if (at < 0 || JSON.stringify(p.argv) !== JSON.stringify(this.serviceArgv.slice(at))) invalid();
         } else {
-          if (!this.managedJobId) invalid(); assertHostedFdManagedGuard(p, profile, this.managedJobId);
+          if (!this.managedJobId) invalid(); assertHostedFdManagedGuard(p, profile, this.managedJobId, remaining);
           assertHostedFdConfinement(p, this.serviceArgv, unit.root);
         }
       }
@@ -276,9 +279,9 @@ export class HostedFdLaunch {
       }
     }
     const bootstrap = bootstraps[0]!;
-    assertHostedFdBootstrap(bootstrap, profile);
+    assertHostedFdBootstrap(bootstrap, profile, remaining);
     assertHostedFdConfinement(bootstrap, this.serviceArgv, unit.root);
-    const peers = collectHostedFdPeers(profile), parent = hostedFdTable(process.pid), endpoints: string[] = [];
+    const peers = collectHostedFdPeers(profile, remaining), parent = hostedFdTable(process.pid), endpoints: string[] = [];
     for (const n of this.kind === HostedFdLaunchKind.Installer ? [0] : [0, 1, 2]) {
       const b = bootstrap.descriptors.find(fd => fd.fd === n), transferred = proxy.descriptors.find(fd => fd.fd === n);
       if (!b || !transferred || socket(b) !== socket(transferred)) invalid();
@@ -292,7 +295,7 @@ export class HostedFdLaunch {
       const fd = bootstrap.descriptors.find(fd => fd.fd === n);
       return !fd || !fd.character || fd.rdev !== "259" || (fd.flags & 3) !== 1;
     })) invalid();
-    const after = observeHostedFdProcess(bootstrap.pid), nextUnit = observeHostedFdUnit(this.unit, this.serviceArgv);
+    const after = observeHostedFdProcess(bootstrap.pid), nextUnit = observeHostedFdUnit(this.unit, this.serviceArgv, remaining);
     assertHostedFdConfinement(after, this.serviceArgv, nextUnit.root);
     if (after.birth !== bootstrap.birth || after.exe !== bootstrap.exe || after.group !== bootstrap.group ||
         after.net !== bootstrap.net || JSON.stringify(after.argv) !== JSON.stringify(bootstrap.argv) ||
@@ -308,7 +311,14 @@ export class HostedFdLaunch {
     if (this.released || !this.proof) invalid();
     const current = this.collect(), old = this.proof;
     if (current.unit.invocation !== old.unit.invocation || current.unit.group !== old.unit.group ||
+        current.unit.mainPid !== old.unit.mainPid || current.unit.root !== old.unit.root ||
         current.bootstrap.birth !== old.bootstrap.birth || current.proxy.birth !== old.proxy.birth ||
+        current.bootstrap.exe !== old.bootstrap.exe || current.bootstrap.group !== old.bootstrap.group ||
+        current.bootstrap.net !== old.bootstrap.net || current.bootstrap.user !== old.bootstrap.user ||
+        current.bootstrap.mount !== old.bootstrap.mount || current.bootstrap.pidNamespace !== old.bootstrap.pidNamespace ||
+        current.bootstrap.uidMap !== old.bootstrap.uidMap || current.bootstrap.gidMap !== old.bootstrap.gidMap ||
+        JSON.stringify(current.bootstrap.argv) !== JSON.stringify(old.bootstrap.argv) ||
+        JSON.stringify(current.bootstrap.descriptors) !== JSON.stringify(old.bootstrap.descriptors) ||
         current.endpoints.join(",") !== old.endpoints.join(",")) invalid();
     if (Buffer.byteLength(frame) > 4 * 1024 * 1024) invalid();
     // Synchronous observations can outlast a deadline while JS timers cannot
