@@ -1,7 +1,7 @@
 import { readFileSync, lstatSync } from "node:fs";
 import { DependencyUnverifiedReason } from "../../../worker-core/dependency-environment/domain/dependency-receipt";
 import type { DependencyLegacyComparisonVerifier, DependencyLegacyComparedReady } from "../../../worker-core/dependency-environment/ports/dependency-legacy-comparison";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -135,6 +135,56 @@ describe.skipIf(process.platform !== "linux")("protected dependency receipts", (
       expect(await readFile(old.reference.path)).toEqual(bytes);
     } finally { await f.cleanup(); }
   });
+
+  it("opens retained private roots during genuine cross-process directory metadata churn", async () => {
+    const f = await fixture();
+    const helper = fileURLToPath(new URL("./fixtures/dependency-receipt-store-process.ts", import.meta.url));
+    const writer = spawn(process.execPath, ["--experimental-strip-types", helper,
+      resolve("dist/store-local-file/dependency-environment/local-dependency-receipt-store.js"), f.rootPath,
+      JSON.stringify(f.workspace), "root-churn"], { stdio: ["pipe", "pipe", "pipe"] });
+    let output = "", stderrBytes = 0, invalid = false;
+    let ready: (() => void) | undefined;
+    const readyPromise = new Promise<void>(resolveReady => { ready = resolveReady; });
+    const ended = new Promise<boolean>(resolveEnded => {
+      writer.once("error", () => { invalid = true; ready?.(); resolveEnded(false); });
+      writer.once("close", (code, signal) => { ready?.(); resolveEnded(code === 0 && signal === null); });
+    });
+    const deadline = setTimeout(() => { invalid = true; writer.kill("SIGKILL"); }, 10_000);
+    writer.stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+      if (output.length > 4096) { invalid = true; writer.kill("SIGKILL"); }
+      if (output === "READY\n") ready?.();
+    });
+    writer.stderr.on("data", (chunk: Buffer) => {
+      stderrBytes += chunk.length;
+      if (stderrBytes > 4096) { invalid = true; writer.kill("SIGKILL"); }
+    });
+    try {
+      await readyPromise;
+      expect(invalid).toBe(false); expect(output).toBe("READY\n");
+      const before = await lstat(f.rootPath, { bigint: true });
+      writer.stdin.end("GO\n");
+      let overlap = false, previous: typeof before | undefined;
+      for (let i = 0; i < 1000; i++) {
+        const opened = Store.open({ rootPath: f.rootPath, maxRecordBytes: 16384, maxHistorySteps: 16 });
+        try { expect(opened.read(f.workspace)).toBeNull(); } finally { opened.close(); }
+        const current = lstatSync(f.rootPath, { bigint: true });
+        expect([current.dev, current.ino, current.uid, current.mode]).toEqual([before.dev, before.ino, before.uid, before.mode]);
+        if (previous) overlap ||= current.mtimeNs !== previous.mtimeNs || current.ctimeNs !== previous.ctimeNs;
+        previous = current;
+      }
+      expect(await ended).toBe(true); expect(invalid).toBe(false); expect(stderrBytes).toBe(0);
+      expect(output).toBe('READY\n{"status":"churned","mutations":4000}');
+      expect(overlap).toBe(true);
+      const after = await lstat(f.rootPath, { bigint: true });
+      expect([after.dev, after.ino, after.uid, after.mode]).toEqual([before.dev, before.ino, before.uid, before.mode]);
+      expect(await readdir(f.rootPath)).toEqual([]);
+    } finally {
+      clearTimeout(deadline);
+      if (writer.exitCode === null && writer.signalCode === null) writer.kill("SIGKILL");
+      await ended; await f.cleanup();
+    }
+  }, 15_000);
 
   it("vetoes reads/history and CAS under a retained interrupted intent without reaping", async () => {
     const f = await fixture();
