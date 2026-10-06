@@ -7,6 +7,7 @@ export const TransientStartMessage = {
   InvalidArgument: "invalid_argument", OperationNotPermitted: "operation_not_permitted",
   PermissionDenied: "permission_denied", TimedOut: "timed_out", NotSupported: "not_supported",
   ConnectionRefused: "connection_refused", MissingFile: "missing_file",
+  SocketOperationOnNonSocket: "socket_operation_on_non_socket",
 } as const;
 export type TransientStartMessage = typeof TransientStartMessage[keyof typeof TransientStartMessage];
 const prefix = "Failed to start transient service unit: ";
@@ -22,6 +23,7 @@ const known = new Map<string, TransientStartMessage>([
   ["Permission denied", TransientStartMessage.PermissionDenied],
   ["Timed out", TransientStartMessage.TimedOut], ["Not supported", TransientStartMessage.NotSupported],
   ["Connection refused", TransientStartMessage.ConnectionRefused], ["No such file or directory", TransientStartMessage.MissingFile],
+  ["Socket operation on non-socket", TransientStartMessage.SocketOperationOnNonSocket],
 ]);
 export interface TransientStartSample { fullBytes: number; offset: number; initialBytes: number; currentBytes: number }
 export interface TransientStartFacts {

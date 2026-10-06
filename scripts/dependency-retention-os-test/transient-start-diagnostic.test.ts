@@ -47,3 +47,14 @@ test("malformed, expanded and incomplete input never becomes a known message", (
   assert.equal(sample("x".repeat(4097)).state, "oversize");
   assert.equal(sample("Failed to start transient service unit: Access denied 123\n").numericTokenCount, 1);
 });
+
+test("exact socket-operation text yields a category without errno or raw body", () => {
+  const text = "Failed to start transient service unit: Socket operation on non-socket\n";
+  assert.equal(Buffer.byteLength(text), 71);
+  const facts = sample(text); assert.equal(facts.message, "socket_operation_on_non_socket");
+  assert.equal(facts.state, "complete"); assert.equal(facts.suffixBytes, 30);
+  for (const key of ["errno", "errnoName", "errorName", "code", "cause", "property", "syscall", "fd"]) assert(!(key in facts));
+  assert(!JSON.stringify(facts).includes("Socket operation on non-socket"));
+  for (const near of [text.replace("non-socket", "non-socket."), text.replace("Socket", "socket"),
+    text.replace("non-socket", "non-socket 88"), text.slice(0, -1)]) assert.equal(sample(near).message, "unknown");
+});
