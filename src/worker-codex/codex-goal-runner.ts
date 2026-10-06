@@ -2,7 +2,7 @@ import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapte
 import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
-import { admitHostedDependencyEntry } from "./hosted-dependency-admission";
+import { admitHostedDependencyEntry, assertHostedDependencyExecutionWorkspace } from "./hosted-dependency-admission";
 import { readAdmittedHostedDependencyToolConfig, hostedDependencyToolInstruction,
   invalidateHostedDependencyQualifiedToolEntry, type HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 import type { DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
@@ -230,6 +230,8 @@ export async function runCodexGoal(
   config: CodexGoalRunConfig,
   deps: CodexGoalRunDeps = {},
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+  // Reference purpose is a separate closed CLI entry, never a fabricated task.
+  assertHostedDependencyExecutionWorkspace(undefined);
   config = mapManagedGoalLayout({ config }).config;
   assertCodexGoalRunConfig(config);
   const admission = await admitHostedDependencyEntry(config), toolEntry = admission?.toolEntry;

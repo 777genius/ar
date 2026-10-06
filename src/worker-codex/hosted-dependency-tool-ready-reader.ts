@@ -8,6 +8,8 @@ import { readHostedDependencyCommittedHistory, HostedDependencyHistoryStatus } f
 import { assertHostedDependencyQualifiedToolEntry, readHostedDependencyQualifiedToolEntry,
   type HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 
+import { assertHostedDependencyLegacyComparedReady } from "./hosted-dependency-legacy-comparison-record";
+
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value) + "\n");
 const unknown: DependencyToolReadyRead = Object.freeze({ status: DependencyToolReadyReadStatus.Unknown });
 function fail(): never { throw new Error("hosted_dependency_tool_reader_changed"); }
@@ -44,7 +46,10 @@ export function captureHostedDependencyToolReadyReader(fence: HostedActivationFe
       const history = readHostedDependencyCommittedHistory(identity.jobId);
       if (history.status !== HostedDependencyHistoryStatus.Known || !encode(history.binding).equals(encode(binding))) return unknown;
       const receipt = history.receipt;
-      if (receipt.state !== DependencyReceiptState.Ready || receipt.provenance.kind !== DependencyInstallProofKind.CompletedInstall) return unknown;
+      if (receipt.state !== DependencyReceiptState.Ready) return unknown;
+      if (receipt.provenance.kind === DependencyInstallProofKind.LegacyCompared) {
+        assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance });
+      } else if (receipt.provenance.kind !== DependencyInstallProofKind.CompletedInstall) return unknown;
       assertAttempt();
       return Object.freeze({ status: DependencyToolReadyReadStatus.Ready, facts: Object.freeze({
         workspace: receipt.workspace, coverageRevision: receipt.coverageRevision, revision: receipt.revision,
