@@ -44,7 +44,7 @@ export function releaseHostedDependencyConsumer(fence: HostedActivationFence,
   for (const row of owned) {
     const bytes = readHostedActivationBytes(`ordinary-starts/${row.startId}.json`);
     if (!bytes) invalid();
-    kernel.fenceOrdinaryCreator(row, activation.bootId, createHash("sha256").update(bytes).digest("hex"));
+    kernel.fenceOrdinaryCreator(row, activation.bootId, createHash("sha256").update(bytes).digest("hex"), fence);
     kernel.drainOrdinaryQueue(row);
     kernel.confirmOrdinaryDescendants(row);
   }

@@ -1,3 +1,4 @@
+import { assertHostedOrdinaryProviderFailureCreator } from "./hosted-ordinary-provider-failure-recovery";
 import { assertHostedManagedProviderFailureCreator } from "./hosted-managed-provider-failure-recovery";
 import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { parseHostedReadonlyHostInventory, type HostedReadonlyHostInventory } from "@vioxen/subscription-runtime/worker-core";
@@ -236,11 +237,14 @@ export class HostedReadonlyHostKernel {
     }
     if (failed) throw new Error("hosted_custody_stop_incomplete");
   }
-  fenceOrdinaryCreator(reservation: HostedOrdinaryReservation, recordedBoot: string, startSha256: string): void {
+  fenceOrdinaryCreator(reservation: HostedOrdinaryReservation, recordedBoot: string, startSha256: string, fence?: HostedActivationFence): void {
     assertOrdinaryReservation(reservation);
     if (recordedBoot !== this.operatorSession().bootId) return;
     const bytes = readHostedPrivateBytes(ordinaryCompletionPath(reservation.startId), 4096);
     if (!bytes || !bytes.equals(ordinaryCompletionBytes(reservation.startId, startSha256))) {
+      if (!bytes && fence && reservation.unit === `subscription-runtime-hosted-${reservation.startId}.service`) {
+        assertHostedOrdinaryProviderFailureCreator(fence,reservation.startId,startSha256); return;
+      }
       throw new Error("hosted_custody_creator_not_fenced");
     }
   }

@@ -1,3 +1,5 @@
+import { assertHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-physical-facts";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
@@ -36,6 +38,9 @@ export function ensureHostedDependencyDirectory(path: string): void {
 }
 function openStore(): LocalDependencyReceiptStore {
   ensureHostedDependencyDirectory(hostedDependencyReceiptHistoryRoot);
+  return openExistingStore();
+}
+function openExistingStore(): LocalDependencyReceiptStore {
   return LocalDependencyReceiptStore.open({ rootPath: hostedDependencyReceiptHistoryRoot, maxRecordBytes: 16384, maxHistorySteps: 2048,
     localInstallVerifier: { assertCompletedLocalInstall(receipt) { sourceStore().assertCompletedLocalInstall(receipt); } },
     legacyComparisonVerifier: { assertLegacyComparison: assertHostedDependencyLegacyComparisonTransition } });
@@ -178,6 +183,23 @@ export function readHostedDependencyCommittedReady(binding: HostedDependencyBind
     validateBinding(result.receipt, binding);
     return result;
   } finally { store.close(); }
+}
+/** Fixed recovery read only. An absent/unsafe history root is refused without
+ * mkdir, fsync, migration or publication; the SAME existing configured proof
+ * validators still authenticate committed Ready after every retained FD closes.
+ */
+export function readHostedDependencyExistingCommittedReady(fence:HostedActivationFence,
+  binding:HostedDependencyBinding,revision:number):DependencyCommittedReadyReceipt {
+  assertHostedActivationFence(fence); assertReadonlyHostOperator();
+  const before=readHostedDependencyRootDirectoryPin(hostedDependencyReceiptHistoryRoot),stat=lstatSync(hostedDependencyReceiptHistoryRoot);
+  if (stat.uid!==0 || stat.gid!==0 || (stat.mode & 0o7777)!==0o700) fail();
+  const store=openExistingStore(); let result:DependencyCommittedReadyReceipt;
+  try {result=store.getCommittedReady(binding.workspace,revision);} finally {store.close();}
+  assertHostedActivationFence(fence);
+  if (JSON.stringify(readHostedDependencyRootDirectoryPin(hostedDependencyReceiptHistoryRoot))!==JSON.stringify(before)) fail();
+  validateBinding(result.receipt,binding); assertHostedActivationFence(fence);
+  if (JSON.stringify(readHostedDependencyRootDirectoryPin(hostedDependencyReceiptHistoryRoot))!==JSON.stringify(before)) fail();
+  return result;
 }
 /** Issuer receives immutable facts only; CAS captures its own predecessor again. */
 export function readHostedDependencyCommittedUnverified(binding: HostedDependencyBinding, revision: number): DependencyCommittedUnverifiedReceipt {

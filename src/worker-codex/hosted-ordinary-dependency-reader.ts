@@ -63,7 +63,7 @@ export function assertHostedOrdinaryDependencyWriterBoundary(fence:HostedActivat
     if (start.installationId !== binding.installationId || start.bootId !== actual.activation.bootId || start.unit !== row.unit ||
         start.originSha256 !== row.originSha256 || start.activationGeneration !== row.generation ||
         row.state !== HostedCustodyReservationState.Terminal) invalid();
-    kernel.fenceOrdinaryCreator(row,actual.activation.bootId,prior.reference.sha256);
+    kernel.fenceOrdinaryCreator(row,actual.activation.bootId,prior.reference.sha256,fence);
     kernel.drainOrdinaryQueue(row); kernel.confirmOrdinaryDescendants(row);
     if (row.unit.startsWith("subscription-runtime-ordinary-")) {
       const reader = readHostedPrivateBytes(`${root}/dependency-reader-starts/${row.startId}.json`,16384);
