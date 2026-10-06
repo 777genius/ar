@@ -11,6 +11,9 @@ import { readHostedDependencyBinding, readHostedDependencyAttempt } from "./host
 import type { CodexAppServerProcessInvocation } from "./node-app-server-process";
 import { readHostedFdProfile } from "./hosted-fd-observation";
 import { hostedFdSystemdProperties } from "./hosted-fd-prelude";
+import { dependencyToolGuestConfigPath } from "../../../core/dependency-environment/dependency-tool-profile";
+import type { DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
+import { abandonHostedDependencyToolPlan, prepareHostedDependencyToolPlan, retainHostedDependencyToolInvocation } from "./hosted-dependency-tool-plan";
 
 import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
 export { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
@@ -20,13 +23,17 @@ export { hostedDependencySystemdRunExecutable } from "./hosted-dependency-system
  */
 export function hostedDependencyProviderInvocation(fence: HostedActivationFence, unit: string,
   input: { readonly command: string; readonly args: readonly string[]; readonly cwd: string;
-    readonly env: Readonly<Record<string, string>> }): CodexAppServerProcessInvocation | undefined {
+    readonly env: Readonly<Record<string, string>> }, readyReader?: DependencyToolReadyReader): CodexAppServerProcessInvocation | undefined {
   assertHostedActivationFence(fence);
   const fdProfile = readHostedFdProfile();
   const { start, reservation } = readHostedOrdinaryProcessOrigin(fence);
   const binding = readHostedDependencyBinding(String(start.jobId));
   if (!binding) return undefined;
+  // Refuse the v2 default/injected route before any dependency read or root
+  // construction. Only the worker-branded factory retains the genuine reader.
+  if (binding.version === 2 && !readyReader) invalid();
   readHostedDependencyAttempt(binding, start, String(reservation.startId));
+  if (binding.version === 2 && !fdProfile) invalid();
   if (start.workspacePath !== binding.workspace.canonicalPath || start.jobRootDir !== binding.jobRootDir ||
       !/^subscription-runtime-hosted-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
   const providerId = unit.slice("subscription-runtime-hosted-".length, -".service".length);
@@ -83,11 +90,30 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
   const git = `${binding.workspace.canonicalPath}/.git`;
   placeholder(root, git, true);
   mounts.push(`BindReadOnlyPaths=${git}:${git}:norbind`);
+  let toolCache: string | undefined;
+  if (binding.version === 2) {
+    for (const file of binding.toolProfile.readonlyFiles) placeholder(root, file.path, false);
+    placeholder(root, `${binding.workspace.canonicalPath}/node_modules`, true);
+    placeholder(root, binding.toolProfile.cache.canonicalPath, true);
+    // The protected capsule is created exclusively by the plan producer, not
+    // supplied by payload env or the provider launch frame.
+    mkdirSync(join(root, dirname(dependencyToolGuestConfigPath)), { recursive: true, mode: 0o700 });
+  }
   for (const name of ["resolv.conf", "hosts", "nsswitch.conf", "services"]) {
     publicSnapshot(root, `/etc/${name}`);
   }
   publicSnapshot(root, "/etc/ssl/certs/ca-certificates.crt", 1024 * 1024);
   placeholder(root, "/proc", true); placeholder(root, "/tmp", true); placeholder(root, "/var/tmp", true);
+  try {
+  if (binding.version === 2) {
+    const tools = prepareHostedDependencyToolPlan(fence, unit, binding, root,
+      [binding.workspace.canonicalPath, home, codexHome], mounted, readyReader);
+    if (!tools) invalid();
+    // These are construction data from the actual retained plan, never caller
+    // selected source paths. Release independently verifies each actual mount.
+    for (const source of tools.sourcePaths) placeholder(root, source, true);
+    toolCache = tools.cache; mounts.push(...tools.mounts);
+  }
   syncDirectory(root);
   // The old launcher profiles hide this backing prefix wholesale. This finite
   // root exposes only the exact admitted job; host policy siblings do not exist.
@@ -98,15 +124,18 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
     "RuntimeMaxSec=8h", "TasksMax=512", "MemoryMax=4G", "CPUQuota=200%", `RootDirectory=${root}`,
     ...(fdProfile ? hostedFdSystemdProperties : []),
     "MountAPIVFS=yes", ...mounts,
-    `ReadWritePaths=${binding.workspace.canonicalPath} ${home} ${codexHome}`,
+    `ReadWritePaths=${binding.workspace.canonicalPath} ${home} ${codexHome}${toolCache ? " " + toolCache : ""}`,
     "TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M"];
-  return { command: hostedDependencySystemdRunExecutable, systemdUnit: unit,
+  const invocation: CodexAppServerProcessInvocation = { command: hostedDependencySystemdRunExecutable, systemdUnit: unit,
     args: ["--quiet", "--wait", "--pipe", "--collect", `--unit=${unit}`, "--service-type=exec",
       "--expand-environment=no", `--working-directory=${input.cwd}`, ...properties.map(p => `--property=${p}`), "--",
       "/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
       "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs",
       "/usr/bin/tini", "--", node, launcher, ...(fdProfile ? ["--fd-ready-v1"] : [])],
     stdinBootstrap: encodeHostedAppServerLaunchFrame({ schemaVersion: 1, ...input, command: executable, args: [...input.args] }) };
+  retainHostedDependencyToolInvocation(fence, invocation);
+  return invocation;
+  } catch (error) { abandonHostedDependencyToolPlan(unit); throw error; }
 }
 function resolveExecutable(command: string, path: string | undefined): string {
   for (const candidate of command.startsWith("/") ? [command] : (path ?? "").split(":").filter(Boolean).map(p => `${p}/${command}`)) {

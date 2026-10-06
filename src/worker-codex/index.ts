@@ -38,3 +38,5 @@ export {
   type WorkerLaunchSpec,
   type WorkerLaunchState,
 } from "./application/project-control/worker-launch-spec";
+export * from "./source-worker-request-codec";
+export * from "./source-worker-request-store";

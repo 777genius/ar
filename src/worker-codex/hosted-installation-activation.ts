@@ -1,4 +1,6 @@
 import { dependencyOwnedReservations, releaseHostedDependencyConsumer } from "./hosted-dependency-release";
+import { assertHostedLegacyReferenceReservationPrepared, sealHostedLegacyReferenceStart,
+  retainHostedLegacyReferenceRelease } from "./hosted-dependency-legacy-reference";
 import { evictHostedDependencyCandidate, recoverHostedDependencyEviction, removeHostedDependencyCommittedTrash,
   type HostedDependencyEvictionCandidate } from "./hosted-dependency-transactions";
 import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysicalWorkspace, hostedDependencyOwnerRoot, isHostedDependencyWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
@@ -51,9 +53,31 @@ export class HostedInstallationActivationStore {
       assertHostedDependencyPhysicalWorkspace(binding);
       return { ...origin, binding, session };
   }
+  /** Finite authenticated read model only; does not enroll, claim or recover. */
+  dependencyReportOrigins(fence: HostedActivationFence) {
+    assertHostedActivationFence(fence);
+    const { installation, activation } = readHostedInstallationActivation();
+    assertInspectedInstallation(installation);
+    assertActivationSession(activation, new HostedReadonlyHostKernel().operatorSession());
+    if (activation.phase !== HostedActivationPhase.Ordinary) invalid();
+    assertHostedDependencyQualifiedInventory();
+    const catalog = readOrdinaryCatalog(installation, activation.ordinaryOriginsSha256);
+    return Object.freeze({ revision: catalog.revision, sha256: activation.ordinaryOriginsSha256,
+      jobIds: Object.freeze(catalog.origins.map(row => row.jobId)) });
+  }
+  /** Lazy adapter boundary avoids importing the report back into lifecycle initialization. */
+  async reportDependencyRetention(jobId?: string) {
+    const { collectHostedDependencyRetentionFacts } = await import("./hosted-dependency-retention-facts");
+    return collectHostedDependencyRetentionFacts(jobId);
+  }
   evictDependencyCandidate(candidate: HostedDependencyEvictionCandidate) { return evictHostedDependencyCandidate(candidate); }
   recoverDependencyEviction(jobId: string) { return recoverHostedDependencyEviction(jobId); }
   removeDependencyCommittedTrash(jobId: string, revision: number) { return removeHostedDependencyCommittedTrash(jobId, revision); }
+  /** Closed TEST reference operation; selection remains operator policy. */
+  async compareLegacyDependency(input: { readonly candidateJobId: string; readonly referenceJobId: string; readonly expectedRevision: number | null }) {
+    const { compareHostedLegacyDependency } = await import("./hosted-dependency-legacy-comparison");
+    return compareHostedLegacyDependency(input);
+  }
 
   serialized<T>(action: (fence: HostedActivationFence) => T): T {
     return withHostedActivationFence(fence => {
@@ -296,6 +320,7 @@ export class HostedInstallationActivationStore {
       const binding = readHostedDependencyBinding(creator.jobId);
       if (!binding || binding.installationId !== installation.installationId ||
           binding.jobRootDir !== creator.jobRootDir || binding.workspace.canonicalPath !== creator.workspacePath) invalid();
+      assertHostedLegacyReferenceReservationPrepared(fence, binding);
     }
     if (childSlot && activation.ordinaryStarts.some(row => row.creatorId === creator.creatorId)) throw new Error("child_invocation_consumed");
     if (birth.jobRootDir !== creator.jobRootDir || birth.workspacePath !== creator.workspacePath) invalid();
@@ -311,6 +336,8 @@ export class HostedInstallationActivationStore {
       originSha256, unit: row.unit, controlGroup: ordinaryUnitGroup(row), creatorId: row.creatorId, creatorPidBirth, grantSha256 });
     this.publish(fence, { ...activation, generation: row.generation, ordinaryStarts: [...activation.ordinaryStarts, row] });
     createReadonlyPrivateRecord(join(readonlySupervisorRoot, "ordinary-starts", startId + ".json"), encoded(start));
+    const dependencyBinding = readHostedDependencyBinding(birth.jobId);
+    if (dependencyBinding?.version === 3) sealHostedLegacyReferenceStart(fence, dependencyBinding, start, row);
     if (correlation?.identity) {
       const identity = correlation.identity;
       if (identity.parentStartId !== startId || identity.installationId !== installation.installationId ||
@@ -381,7 +408,9 @@ export class HostedInstallationActivationStore {
     return this.serialized(fence => {
       const launch = this.ordinaryLaunch;
       if (!launch) invalid();
-      return releaseHostedDependencyConsumer(fence, this.read(), launch.start, launch.reservation);
+      const released = releaseHostedDependencyConsumer(fence, this.read(), launch.start, launch.reservation);
+      if (released) retainHostedLegacyReferenceRelease(fence, launch.start, launch.reservation);
+      return released;
     });
   }
   requestOrdinaryDependencyCleanup(): boolean {

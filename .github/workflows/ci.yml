@@ -53,6 +53,37 @@ jobs:
           restic version
       - run: npm test
 
+  observer-mount-tests:
+    # Fresh disposable VM: namespace capabilities on the shared ARC runner are
+    # not assumed. Only the fixed TEST helper receives sudo here.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Fetch locked TEST dependencies
+        run: for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+      - name: Typecheck the focused namespace helper
+        run: node node_modules/typescript/bin/tsc -p scripts/test-dependency-observer-mount-namespace.tsconfig.json
+      - name: Require actual observer mount negatives and FD-close oracle
+        env:
+          TEST_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          sudo -n --preserve-env=CI,GITHUB_ACTIONS,GITHUB_WORKSPACE,RUNNER_TEMP,TEST_SOURCE_SHA \
+            "$(command -v node)" --experimental-strip-types scripts/test-dependency-observer-mount-namespace.ts
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: observer-mount-evidence
+          path: observer-mount-evidence/result.json
+          if-no-files-found: error
+          retention-days: 7
+
   package:
     runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
@@ -118,18 +149,20 @@ jobs:
 
   test:
     if: ${{ always() }}
-    needs: [quality, unit-tests, package, crash-boundary-shards-complete]
+    needs: [quality, unit-tests, observer-mount-tests, package, crash-boundary-shards-complete]
     runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
       - name: Verify all CI gates passed
         env:
           QUALITY_RESULT: ${{ needs.quality.result }}
           UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
+          OBSERVER_MOUNT_RESULT: ${{ needs.observer-mount-tests.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
           CRASH_BOUNDARY_SHARDS_RESULT: ${{ needs.crash-boundary-shards-complete.result }}
         run: |
           if [ "$QUALITY_RESULT" = "success" ] && \
              [ "$UNIT_TESTS_RESULT" = "success" ] && \
+             [ "$OBSERVER_MOUNT_RESULT" = "success" ] && \
              [ "$PACKAGE_RESULT" = "success" ] && \
              [ "$CRASH_BOUNDARY_SHARDS_RESULT" = "success" ]; then
             exit 0
@@ -137,6 +170,7 @@ jobs:
 
           echo "quality: $QUALITY_RESULT"
           echo "unit-tests: $UNIT_TESTS_RESULT"
+          echo "observer-mount-tests: $OBSERVER_MOUNT_RESULT"
           echo "package: $PACKAGE_RESULT"
           echo "crash-boundary-shards-complete: $CRASH_BOUNDARY_SHARDS_RESULT"
           exit 1

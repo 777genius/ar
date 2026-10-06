@@ -9,6 +9,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { assertHostedProcessDescriptors } from "./hosted-process-descriptors";
+import { hostedToolFilesForChild, revokeHostedToolFilesForChild, assertHostedRetainedToolDescriptors, type HostedRetainedToolFiles } from "./hosted-retained-tool-files";
 import { CodexProviderEgressProfileId, codexProviderEgressProfileEnvVar } from "../../codex-provider-egress-policy";
 import { CodexModelBackend } from "../../codex-model-backend";
 import { HostedMimoProfile } from "../../hosted-mimo-profile";
@@ -159,7 +160,7 @@ const installationKeys = "schemaVersion,installationId,hostId,runtimeDirectory,r
 
 /** No caller identity, environment or profile can select the private start.
  * Every use rereads the same-artifact stage, grant and retained managed history. */
-export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence) {
+export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence, descriptorScope?: HostedRetainedToolFiles) {
   assertHostedActivationFence(fence); assertHostedActivationOperator();
   const group = readFileSync("/proc/self/cgroup", "utf8").trim();
   const match = new RegExp(`^0::${unitGroup(`subscription-runtime-ordinary-(${uuid}).service`).replace(/\./g, "\\.")}$`).exec(group);
@@ -248,11 +249,12 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence) {
         slot.creatorId !== creator.creatorId || slot.launch.command !== (creator.launch as Wire).command || slot.launch.cwd !== (creator.launch as Wire).cwd || JSON.stringify(slot.launch.args) !== JSON.stringify((creator.launch as Wire).args) ||
         slot.lifetime.deadlineEpochMs <= Date.now()) invalid();
   } else if (grantBytes && (decodeHostedActivationBytes(grantBytes) as Wire).schemaVersion === 3) invalid();
-  assertHostedProcessDescriptors();
+  if (descriptorScope === undefined) assertHostedProcessDescriptors();
+  else assertHostedRetainedToolDescriptors(descriptorScope);
   // PR1 prepares the independent reader; later lifecycle PRs must supply
   // bounded controller/child authority before activation can open.
   if (profileId === CodexProviderEgressProfileId.MimoTokenPlan) throw new Error("hosted_mimo_activation_closed");
-  return { activation, start, reservation, profileId, childBound: creator.childSlotSha256 !== undefined };
+  return { installation, activation, start, reservation, profileId, childBound: creator.childSlotSha256 !== undefined };
 }
 
 /** Same fixed private-file reader as production, with a path seam for synthetic
@@ -399,7 +401,9 @@ function pidBirth(pid: string): string {
 
 const failedOrdinaryWaits = new WeakSet<object>();
 const ordinaryReleases = new WeakMap<object, { released: boolean; revalidate: (fence: HostedActivationFence) => void }>();
-export function invalidateHostedOrdinaryWait(child: CodexAppServerChildProcess): void { failedOrdinaryWaits.add(child); }
+export function invalidateHostedOrdinaryWait(child: CodexAppServerChildProcess): void {
+  failedOrdinaryWaits.add(child); revokeHostedToolFilesForChild(child);
+}
 
 /** A retained real submission is rechecked under the same mutex immediately
  * before its one frame. No caller context or stored receipt can reconstruct it. */
@@ -486,8 +490,9 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
       }
       assertHostedScopedAdmission(fence, parentId);
       const child = submit(unit, { jobId: str(start.jobId), workspacePath }, fence);
+      const descriptorScope = hostedToolFilesForChild(child);
       ordinaryReleases.set(child, { released: false, revalidate: held => {
-        const fresh = readHostedOrdinaryProcessOrigin(held);
+        const fresh = readHostedOrdinaryProcessOrigin(held, descriptorScope);
         if (JSON.stringify(fresh.start) !== JSON.stringify(start) ||
             JSON.stringify(fresh.reservation) !== JSON.stringify(parentReservation) ||
             fresh.activation.installationId !== activation.installationId || fresh.activation.bootId !== activation.bootId ||

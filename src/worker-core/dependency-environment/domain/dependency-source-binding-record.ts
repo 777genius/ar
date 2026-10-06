@@ -1,6 +1,8 @@
 import { DependencyInstallProfile } from "./dependency-install-key";
-import type { DependencySourceBindingReference } from "./dependency-receipt";
-import type { DependencyLocalOutputEvidence, DependencySourceBindingFields, DependencySourceBindingRecord, DependencySourceBindingOutputBody } from "../ports/dependency-source-binding";
+import { DependencyReceiptState, sameDependencyWorkspace, sameDependencyTree, type DependencySourceBindingReference } from "./dependency-receipt";
+import { DependencyLegacyLocalSourceBindingKind, type DependencyLegacyLocalSourceBindingRecord, type DependencyLocalOutputEvidence, type DependencySourceBindingFields, type DependencySourceBindingRecord, type DependencySourceBindingOutputBody } from "../ports/dependency-source-binding";
+
+import { DependencyReceiptParseStatus, parseDependencyReceipt } from "./parse-dependency-receipt";
 
 export class DependencySourceBindingRecordError extends Error {
   constructor() { super("dependency_source_binding_record_invalid"); }
@@ -31,8 +33,11 @@ function fields(value: unknown, expected: readonly string[], version: 1 | 2): as
       ![value.installKey, value.manifestDigest, value.installerCompletionSha256, value.closureDigest].every(digest) ||
       !Array.isArray(value.sourceLinks) || !Array.isArray(value.directories) || !Array.isArray(value.ancestors) ||
       value.sourceLinks.length > 128 || value.directories.length > 512 || value.ancestors.length > 512) fail();
-  const ancestors = value.ancestors;
   if (version === 2 && (BigInt(String(value.workspace.ino)) === 0n || BigInt(String(value.tree.ino)) === 0n)) fail();
+  sourceFields(value as unknown as DependencySourceBindingFields);
+}
+function sourceFields(value: Pick<DependencyLegacyLocalSourceBindingRecord, "closureDigest" | "sourceLinks" | "directories" | "ancestors"> & { workspace: DependencySourceBindingFields["workspace"] }): void {
+  const ancestors = value.ancestors;
   const pins: unknown[] = [...value.ancestors, ...value.directories];
   for (const pin of pins) if (!exact(pin, ["path", "dev", "ino", "mode", "mountId"]) ||
       ![pin.dev, pin.ino, pin.mode, pin.mountId].every(decimal) || (BigInt(String(pin.mode)) & 0o170000n) !== 0o40000n ||
@@ -99,4 +104,29 @@ export function assertDependencyLocalOutputEvidence(value: unknown): asserts val
       ![value.installKey, value.closureDigest, value.inputSha256, value.profileSha256, value.manifestDigest, value.manifestPlacementRevision, value.verifiedBindingSha256].every(digest)) fail();
   if (BigInt(String(value.workspace.ino)) === 0n || BigInt(String(value.tree.ino)) === 0n) fail();
   for (const reference of [value.start, value.creator, value.completion, value.terminal]) assertDependencyOutputReference(reference);
+}
+
+/** Closed shape validation only, never comparison or admission authority. */
+export function assertDependencyLegacyLocalSourceBindingRecord(value: unknown): asserts value is DependencyLegacyLocalSourceBindingRecord {
+  if (!exact(value, ["version", "kind", "profile", "operationId", "candidate", "original", "referenceOutput", "closureDigest", "sourceLinks", "directories", "ancestors"]) ||
+      value.version !== 1 || value.kind !== DependencyLegacyLocalSourceBindingKind.LegacyLocalComparedSourceV1 ||
+      value.profile !== DependencyInstallProfile.TestNpmLocalNoLifecycleV1 || typeof value.operationId !== "string" ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.operationId) || !digest(value.closureDigest) ||
+      !Array.isArray(value.sourceLinks) || value.sourceLinks.length > 128 || !Array.isArray(value.directories) || value.directories.length > 512 ||
+      !Array.isArray(value.ancestors) || value.ancestors.length > 512 ||
+      !exact(value.candidate, ["generation", "workspace", "coverageRevision", "installKey", "tree", "manifestDigest"]) ||
+      !exact(value.candidate.workspace, ["canonicalPath", "dev", "ino"]) || !canonical(value.candidate.workspace.canonicalPath) || value.candidate.workspace.canonicalPath === "/" ||
+      !exact(value.candidate.tree, ["dev", "ino"]) || ![value.candidate.workspace.dev, value.candidate.workspace.ino, value.candidate.tree.dev, value.candidate.tree.ino].every(decimal) ||
+      BigInt(String(value.candidate.workspace.ino)) === 0n || BigInt(String(value.candidate.tree.ino)) === 0n ||
+      typeof value.candidate.generation !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.candidate.generation) ||
+      typeof value.candidate.coverageRevision !== "string" || !value.candidate.coverageRevision.length || value.candidate.coverageRevision.length > 1024 ||
+      value.candidate.coverageRevision.trim() !== value.candidate.coverageRevision || /[\x00-\x1f\x7f]|sk-[A-Za-z0-9_-]{12,}|Bearer\s/i.test(value.candidate.coverageRevision) ||
+      ![value.candidate.installKey, value.candidate.manifestDigest].every(digest) || !exact(value.original, ["receipt", "reference"])) fail();
+  assertDependencyOutputReference(value.original.reference); assertDependencyOutputReference(value.referenceOutput);
+  const parsed = parseDependencyReceipt(value.original.receipt);
+  if (parsed.status !== DependencyReceiptParseStatus.Valid || parsed.receipt.state !== DependencyReceiptState.Unverified ||
+      !sameDependencyWorkspace(parsed.receipt.workspace, value.candidate.workspace as DependencySourceBindingFields["workspace"]) ||
+      parsed.receipt.generation !== value.candidate.generation || parsed.receipt.coverageRevision !== value.candidate.coverageRevision ||
+      !sameDependencyTree(parsed.receipt.tree, value.candidate.tree as DependencySourceBindingFields["tree"])) fail();
+  sourceFields({ ...(value as unknown as DependencyLegacyLocalSourceBindingRecord), workspace: value.candidate.workspace as DependencySourceBindingFields["workspace"] });
 }

@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 
 const helper = new URL("../app-server/adapters/hosted-process-descriptors.ts", import.meta.url).href;
+// Standard test script builds first; exercise the actual compiled lower adapter
+// without adding a source loader or changing the contained helper closure.
+const retainedHelper = new URL("../../../dist/provider-codex/app-server/adapters/hosted-retained-tool-files.js", import.meta.url).href;
 const probe = `import { assertHostedProcessDescriptors } from ${JSON.stringify(helper)};
 try { assertHostedProcessDescriptors(); process.stdout.write("accepted"); }
 catch (error) { process.stdout.write(error.message); process.exitCode = 70; }`;
@@ -41,3 +44,25 @@ it("checks descriptors in the actual provider launcher before spawning its frame
   expect(source.indexOf("assertHostedProcessDescriptors();")).toBeGreaterThan(0);
   expect(source.indexOf("assertHostedProcessDescriptors();")).toBeLessThan(source.indexOf("spawn(frame.command"));
 });
+
+it.each(["readonly", "opath", "directory", "state-journal", "alias"] as const)(
+  "a copied retained scope cannot exempt an actual %s FD", kind => {
+    const root = mkdtempSync(join(tmpdir(), "retained-fd-"));
+    const target = join(root, kind === "state-journal" ? "state-journal" : "protected");
+    writeFileSync(target, "unchanged");
+    const fd = openSync(kind === "directory" ? root : target, kind === "opath" ? 0x200000 : constants.O_RDONLY);
+    const alias = kind === "alias" ? openSync(target, constants.O_RDONLY) : undefined;
+    const scopedProbe = `import { assertHostedRetainedToolDescriptors } from ${JSON.stringify(retainedHelper)};
+try { assertHostedRetainedToolDescriptors({ unit: "subscription-runtime-hosted-01234567-89ab-cdef-0123-456789abcdef.service", fd: 3,
+  path: ${JSON.stringify(target)} }); process.stdout.write("accepted"); }
+catch (error) { process.stdout.write(error.message); process.exitCode = 70; }`;
+    try {
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", scopedProbe], {
+        encoding: "utf8", stdio: ["pipe", "pipe", "pipe", fd, ...(alias === undefined ? [] : [alias])],
+      });
+      expect(result.status).toBe(70);
+      expect(result.stdout).toBe("hosted_retained_tool_files_denied");
+      expect(readFileSync(target, "utf8")).toBe("unchanged");
+    } finally { if (alias !== undefined) closeSync(alias); closeSync(fd); rmSync(root, { recursive: true, force: true }); }
+  },
+);
