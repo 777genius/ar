@@ -1,10 +1,11 @@
-import datetime, errno, hashlib, json, os, re, stat, sys, time
+import datetime, errno, hashlib, json, os, re, resource, select, stat, sys, time
 
 # Finite read-only operator payload. No tool calls, setns, file contents or writes.
 MACHINE = 'd856d40da5ad4e23b4f67773e5942842'
 TARGET = '/srv/workers/jobs/subscription-runtime/mimo-orchestrator-v1/workspaces'
 COHORT_DIGEST = '8b0467e9cdf7d83bace82df97893ed77e9f311dcd83110a18cbfcd0fc01a7da4'
 MAX_TEXT, MAX_MOUNT_TEXT, MAX_BYTES, MAX_OUTPUT = 2 * 1024**2, 8 * 1024**2, 64 * 1024**2, 2 * 1024**2
+MAX_MOUNT_IO, MAX_VIEW_HEAP = 1024**3, 64 * 1024**2
 NAME = re.compile(r'^[A-Za-z0-9_.-]{1,200}$')
 DECIMAL = re.compile(r'^(0|[1-9][0-9]*)$')
 ERRNO_NAMES = set('EACCES EPERM ENOENT ESRCH ENOTDIR ELOOP EINVAL EMFILE ENFILE EIO ENOMEM ESTALE EBADF ENOSYS ENOTSUP EOVERFLOW EAGAIN EINTR ETIMEDOUT'.split())
@@ -31,6 +32,8 @@ class Budget:
         self.hardlink_limit, self.fd_entries = hardlinks, 0
         self.incomplete, self.errors, self.error_total, self.error_counts = False, [], 0, {}
         self.owned = {}
+        self.mount_io, self.mount_io_exhausted, self.view_heap, self.view_heap_peak, self.group_fds = 0, False, 0, 0, 0
+        self.mount_allocations = {}
 
     def check(self):
         if time.monotonic() >= self.deadline:
@@ -49,9 +52,21 @@ class Budget:
         if self.bytes > MAX_BYTES:
             raise Refusal('ByteLimit')
 
+    def heap_reserve(self, size):
+        self.check()
+        if size < 0 or self.view_heap + size > MAX_VIEW_HEAP: raise Refusal('ByteLimit')
+        self.view_heap += size; self.view_heap_peak = max(self.view_heap_peak, self.view_heap)
+
+    def heap_release(self, size):
+        if size < 0 or size > self.view_heap: raise Refusal('ByteLimit')
+        self.view_heap -= size
+
+    def release_mounts(self, rows):
+        size = self.mount_allocations.pop(id(rows)); rows.clear(); self.heap_release(size)
+
     def own(self, fd):
         try:
-            self.charge(512); self.owned[fd] = object_pin(os.fstat(fd)); return fd
+            self.charge(512); observed = object_pin(os.fstat(fd)); self.heap_reserve(512); self.owned[fd] = observed; return fd
         except BaseException:
             os.close(fd); raise
 
@@ -59,7 +74,7 @@ class Budget:
         self.text_bytes += size; self.charge(size)
 
     def close(self, fd):
-        self.owned.pop(fd, None)
+        if fd in self.owned: self.owned.pop(fd); self.heap_release(512)
         os.close(fd)
 
     def issue(self, phase, error, pid=None, tid=None, index=None):
@@ -177,20 +192,65 @@ def unescape_mount(value):
     if b'\x00' in value or b'\n' in value or b'\r' in value: raise Refusal('AmbiguousMountPath')
     return os.fsdecode(value)
 
+def mount_lines(fd, budget):
+    carry, total = b'', 0
+    budget.heap_reserve(65536 + 8192)
+    try:
+        while True:
+            budget.check()
+            if budget.mount_io_exhausted: raise Refusal('ByteLimit')
+            chunk = os.read(fd, 65536)
+            if not chunk: break
+            budget.mount_io += len(chunk); budget.text_bytes += len(chunk); total += len(chunk)
+            if budget.mount_io > MAX_MOUNT_IO:
+                budget.mount_io_exhausted = True; raise Refusal('ByteLimit')
+            if total > MAX_MOUNT_TEXT: raise Refusal('TextLimit')
+            carry += chunk
+            while b'\n' in carry:
+                line, carry = carry.split(b'\n', 1)
+                if len(line) > 8192: raise Refusal('LineLimit')
+                yield line
+            if len(carry) > 8192: raise Refusal('LineLimit')
+        if carry: yield carry
+    finally: budget.heap_release(65536 + 8192)
+
+def mount_digest_fd(fd, budget):
+    os.lseek(fd, 0, os.SEEK_SET); digest = hashlib.sha256(); lines = mount_lines(fd, budget)
+    try:
+        for line in lines: digest.update(line + b'\n')
+        return digest.hexdigest()
+    finally: lines.close()
+
+def mount_table_fd(fd, budget):
+    rows, digest, allocated = [], hashlib.sha256(), 0
+    lines = mount_lines(fd, budget)
+    try:
+        for line in lines:
+            digest.update(line + b'\n'); fields = line.split(b' ')
+            if len(fields) < 10 or b'-' not in fields or not fields[0].isdigit(): raise Refusal('MountShape')
+            split = fields.index(b'-')
+            if split < 6 or len(fields) < split + 4: raise Refusal('MountShape')
+            dev = fields[2].split(b':')
+            if len(dev) != 2 or not all(x.isdigit() for x in dev): raise Refusal('MountShape')
+            size = 128 + len(line); budget.heap_reserve(size); allocated += size
+            rows.append({'id': int(fields[0]), 'dev': (int(dev[0]), int(dev[1])),
+                         'root': unescape_mount(fields[3]), 'point': unescape_mount(fields[4]),
+                         'type': fields[split + 1], 'options': fields[5] + b',' + fields[split + 3]})
+        budget.mount_allocations[id(rows)] = allocated
+        return rows, digest.hexdigest()
+    except BaseException:
+        rows.clear(); budget.heap_release(allocated); raise
+    finally: lines.close()
+
 def mount_table(parent, budget):
-    rows, digest = [], hashlib.sha256()
-    for line in lines_at(parent, 'mountinfo', budget, max_bytes=MAX_MOUNT_TEXT):
-        digest.update(line + b'\n'); fields = line.split(b' ')
-        if len(fields) < 10 or b'-' not in fields or not fields[0].isdigit(): raise Refusal('MountShape')
-        split = fields.index(b'-')
-        if split < 6 or len(fields) < split + 4: raise Refusal('MountShape')
-        dev = fields[2].split(b':')
-        if len(dev) != 2 or not all(x.isdigit() for x in dev): raise Refusal('MountShape')
-        budget.charge(128 + len(line))  # Bound retained parsed mount records before append.
-        rows.append({'id': int(fields[0]), 'dev': (int(dev[0]), int(dev[1])),
-                     'root': unescape_mount(fields[3]), 'point': unescape_mount(fields[4]),
-                     'type': fields[split + 1], 'options': fields[5] + b',' + fields[split + 3]})
-    return rows, digest.hexdigest()
+    fd = os.open('mountinfo', os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+    try: return mount_table_fd(fd, budget)
+    finally: os.close(fd)
+
+def mount_digest(parent, budget):
+    fd = os.open('mountinfo', os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+    try: return mount_digest_fd(fd, budget)
+    finally: os.close(fd)
 
 def beneath(path, root):
     return path == root or path.startswith(root.rstrip('/') + '/')
@@ -253,7 +313,7 @@ def identity(proc_fd, budget):
 
 def preflight(budget):
     if os.geteuid() != 0 or not getattr(os, 'O_PATH', 0): raise Refusal('PrivilegeOrPlatformUnknown')
-    etc, proc, self_fd, one_fd, ns_files = None, None, None, None, []
+    etc, proc, self_fd, one_fd, ns_files, rows = None, None, None, None, [], None
     try:
         etc, proc = DirectoryChain('/etc', budget), DirectoryChain('/proc', budget)
         self_fd = os.open('self', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=proc.fd)
@@ -292,6 +352,7 @@ def preflight(budget):
                 'ownIdentity': own, 'oneIdentity': one, 'ownTasks': own_tasks, 'proc': proc, 'etc': etc, 'selfFd': self_fd, 'oneFd': one_fd,
                 'mounts': rows, 'mountDigest': digest, 'namespaceFiles': ns_files}
     except BaseException:
+        if rows is not None: budget.release_mounts(rows)
         for fd in reversed(ns_files): budget.close(fd)
         if one_fd is not None: os.close(one_fd)
         if self_fd is not None: os.close(self_fd)
@@ -307,9 +368,10 @@ def finish_preflight(p, budget):
     if identity(p['oneFd'], budget) != p['oneIdentity']: raise Refusal('HostProcViewUnknown')
     if tuple(object_pin(os.fstat(fd)) for fd in p['namespaceFiles']) != p['ownIdentity'][2:5]: raise Refusal('OwnNamespaceDrift')
     p['proc'].current(); p['etc'].current()
-    if mount_table(p['selfFd'], budget)[1] != p['mountDigest']: raise Refusal('MountDrift')
+    if mount_digest(p['selfFd'], budget) != p['mountDigest']: raise Refusal('MountDrift')
 
 def close_preflight(p):
+    p['proc'].budget.release_mounts(p['mounts'])
     for fd in reversed(p['namespaceFiles']): p['proc'].budget.close(fd)
     os.close(p['oneFd']); os.close(p['selfFd']); p['proc'].close(); p['etc'].close()
 
@@ -415,6 +477,98 @@ def reference_origin(pid, tid, ticks, audit, budget, fd_number, target):
     if fd_number is not None and budget.owned.get(fd_number) == target: return 'AuditCreated'
     return 'UnclassifiedSelf'
 
+class MountView:
+    def __init__(self, task, before, root, budget):
+        self.budget, self.key = budget, (before[2], before[5], mount_id(root, budget))
+        self.fds, self.members, self.invalid, self.digest = [], [], False, None
+        self.matches, self.observations, self.poll_drift = [], [], False
+        budget.heap_reserve(1024)
+        try:
+            census = os.open('/proc/self/fd', O_DIR)
+            try: current = bounded_names(census, 4096, budget, True)
+            finally: os.close(census)
+            soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+            if budget.group_fds + 3 > 768 or soft != resource.RLIM_INFINITY and len(current) + 3 + 300 > soft:
+                raise Refusal('FdLimit')
+            for name, flags in (('ns/mnt', os.O_RDONLY | os.O_CLOEXEC), ('root', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC), ('mountinfo', os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)):
+                held = budget.own(os.open(name, flags, dir_fd=task)); self.fds.append(held); budget.group_fds += 1
+            self.poller = select.poll(); self.poller.register(self.fds[2], select.POLLPRI | select.POLLERR | select.POLLHUP | select.POLLNVAL)
+            self.poll()
+            if object_pin(os.fstat(self.fds[0])) != before[2] or object_pin(os.fstat(self.fds[1])) != before[5] or mount_id(self.fds[1], budget) != self.key[2] or identity(task, budget) != before:
+                raise Refusal('ProcessIdentityDrift')
+        except BaseException:
+            self.close(); raise
+
+    def poll(self):
+        self.budget.check()
+        if self.poll_drift: raise Refusal('MountDrift')
+        if any(mask & (select.POLLPRI | select.POLLERR | select.POLLHUP | select.POLLNVAL) for _, mask in self.poller.poll(0)):
+            self.invalid = self.poll_drift = True; raise Refusal('MountDrift')
+
+    def validate(self, proc):
+        self.poll()
+        if object_pin(os.fstat(self.fds[0])) != self.key[0] or object_pin(os.fstat(self.fds[1])) != self.key[1] or mount_id(self.fds[1], self.budget) != self.key[2]:
+            raise Refusal('ProcessIdentityDrift')
+        for pid, tid, expected in self.members:
+            self.budget.check(); task = os.open(str(pid) + '/task/' + str(tid), O_DIR, dir_fd=proc)
+            try:
+                root = os.open('root', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=task)
+                try:
+                    if identity(task, self.budget) != expected or mount_id(root, self.budget) != self.key[2]: raise Refusal('ProcessIdentityDrift')
+                finally: os.close(root)
+            finally: os.close(task)
+        self.poll()
+
+    def close(self):
+        failed = None
+        for fd in reversed(self.fds):
+            try: self.budget.close(fd)
+            except Exception as error: failed = error
+            finally: self.budget.group_fds -= 1
+        self.fds = []; self.budget.heap_release(1024 + len(self.members) * 512); self.members.clear()
+        if failed is not None: raise failed
+
+def discover_views(proc, start_ids, budget):
+    groups = {}
+    try:
+        for pid, tid in sorted(start_ids):
+            task, root = None, None
+            try:
+                budget.check(); task = os.open(str(pid) + '/task/' + str(tid), O_DIR, dir_fd=proc)
+                before = identity(task, budget); root = os.open('root', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=task)
+                if object_pin(os.fstat(root)) != before[5]: raise Refusal('ProcessIdentityDrift')
+                key = (before[2], before[5], mount_id(root, budget))
+                if key not in groups:
+                    if len(groups) >= 256: raise Refusal('NamespaceViewLimit')
+                    groups[key] = MountView(task, before, root, budget)
+                group = groups[key]; group.poll(); budget.heap_reserve(512); group.members.append((pid, tid, before))
+            except Exception as error: budget.issue('ProcessView', error, pid, tid)
+            finally:
+                if root is not None: os.close(root)
+                if task is not None: os.close(task)
+        return list(groups.values())
+    except BaseException:
+        for group in groups.values(): group.close()
+        raise
+
+def mount_candidates(mounts, items, budget):
+    pairs = []
+    try:
+        for m in mounts:
+            for item in items:
+                budget.check(); scope, ancestor = None, False
+                if item['status'] == 'ObservedRoot' and item['dev'] == m['dev'] and beneath(m['root'], item['physical']):
+                    physical, source, scope = item['physical'], item['fd'], 'Dependencies'
+                elif 'workspacePhysical' in item and item['workspaceDev'] == m['dev'] and beneath(m['root'], item['workspacePhysical']):
+                    physical, source, scope = item['workspacePhysical'], item['workspaceFd'], 'Workspace'
+                elif item['status'] == 'ObservedRoot' and item['dev'] == m['dev'] and beneath(item['physical'], m['root']): ancestor = True
+                if scope or ancestor:
+                    if len(pairs) >= 16384: raise Refusal('ByteLimit')
+                    budget.heap_reserve(256); pairs.append((m, item, scope, None if ancestor else physical, None if ancestor else source))
+        return pairs
+    except BaseException:
+        budget.heap_release(len(pairs) * 256); pairs.clear(); raise
+
 def proc_observation(p, items, budget):
     start_ids, leader_count = process_ids(p['proc'].fd, budget)
     matches, observations, views, namespace_fds = [], [], set(), set()
@@ -439,115 +593,155 @@ def proc_observation(p, items, budget):
         size = len(json.dumps(row, separators=(',', ':')).encode()) + 64
         if len(matches) == 4096 or match_bytes + size > 768 * 1024:
             counts['matchesOmitted'] += 1; budget.incomplete = True; return
-        match_bytes += size; matches.append(row)
-    for pid, tid in sorted(start_ids):
-        try: budget.check()
-        except Refusal as error:
-            budget.issue('ProcessScan', error); break
-        base = str(pid) + '/task/' + str(tid); fd, root_fd, ns_files = None, None, []
-        begin, mark = stamp(), len(matches)
-        ob = {'pid': pid, 'tid': tid, 'startedAt': begin, 'join': 'Unknown'}
-        tasks_observed += 1
-        try:
-            fd = os.open(base, O_DIR, dir_fd=p['proc'].fd); before = identity(fd, budget); ticks = before[1]
-            root_fd = budget.own(os.open('root', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=fd))
-            if object_pin(os.fstat(root_fd)) != before[5]: raise Refusal('ProcessIdentityDrift')
-            ns_files = retain_namespaces(fd, budget)
-            if tuple(object_pin(os.fstat(n)) for n in ns_files) != before[2:5]: raise Refusal('ProcessIdentityDrift')
-            own = pid == p['ownPid'] and ticks == p['ownTasks'].get(tid)
-            if pid == p['ownPid'] and not own: budget.issue('SelfOrigin', Refusal('UnclassifiedSelfOrigin'), pid, tid)
-            ob['startTicks'] = ticks
-            view = (before[2], before[5]); views.add(view)
-            if len(views) > 256: raise Refusal('NamespaceViewLimit')
-            mounts, mount_digest = mount_table(fd, budget)
-            for name, kind in (('cwd', 'Cwd'), ('root', 'Root'), ('exe', 'Exe')):
-                try:
-                    raw = link_at(fd, name, budget); target = object_pin(os.stat(name, dir_fd=fd))
-                    found, issues = classify_path(raw, target, mounts, items, budget, p['mounts'])
-                    for error in issues: budget.issue('ProcessLink', error, pid, tid)
-                    for item, basis, scope in found:
-                        emit(item, kind, basis, scope, pid, tid, ticks, begin, own)
-                        if own: budget.issue('SelfOrigin', Refusal('UnclassifiedSelfOrigin'), pid, tid)
-                except Exception as error: budget.issue('ProcessLink', error, pid, tid)
-            fds = os.open('fd', O_DIR, dir_fd=fd)
+        match_bytes += size; matches.append(row); group.matches.append(row)
+    groups = discover_views(p['proc'].fd, start_ids, budget)
+    try:
+        for group in groups:
+            mounts, pairs = None, []
             try:
-                names = bounded_names(fds, 1024, budget, True)
-                for name in names:
-                    budget.fd_entries += 1; counts['fdEntries'] += 1
-                    if budget.fd_entries > 32768: raise Refusal('FdLimit')
+                group.poll(); mounts, group.digest = mount_table_fd(group.fds[2], budget); group.poll()
+                pairs = mount_candidates(mounts, items, budget)
+                for pid, tid, expected_identity in group.members:
+                    try: budget.check()
+                    except Refusal as error:
+                        budget.issue('ProcessScan', error); break
+                    base = str(pid) + '/task/' + str(tid); fd, root_fd, ns_files = None, None, []
+                    begin, mark = stamp(), len(matches)
+                    ob = {'pid': pid, 'tid': tid, 'startedAt': begin, 'join': 'Unknown'}
+                    tasks_observed += 1
                     try:
-                        raw = link_at(fds, name, budget)
-                        namespace = re.fullmatch(r'mnt:\[([0-9]{1,32})\]', raw)
-                        if namespace: namespace_fds.add(int(namespace.group(1)))
-                        if not raw.startswith('/'): continue
-                        target = object_pin(os.stat(name, dir_fd=fds))
-                        tracked = reference_origin(pid, tid, ticks, p, budget, int(name), target) == 'AuditCreated'
-                        found, issues = classify_path(raw, target, mounts, items, budget, p['mounts'])
-                        for error in issues: budget.issue('FdEntry', error, pid, tid)
-                        for item, basis, scope in found:
-                            emit(item, 'Fd', basis, scope, pid, tid, ticks, begin, own, tracked)
-                            if own and not tracked: budget.issue('SelfOrigin', Refusal('UnclassifiedSelfOrigin'), pid, tid)
-                    except Exception as error: budget.issue('FdEntry', error, pid, tid)
-                if names != bounded_names(fds, 1024, budget, True): raise Refusal('FdMembershipDrift')
-            finally: os.close(fds)
-            for line in lines_at(fd, 'maps', budget):
-                try:
-                    counts['mapEntries'] += 1; fields = line.split(None, 5)
-                    if len(fields) < 5: raise Refusal('MapShape')
-                    dev, inode = fields[3].split(b':'), fields[4]
-                    if len(dev) != 2 or not inode.isdigit(): raise Refusal('MapShape')
-                    if len(fields) == 5 or not fields[5].startswith(b'/') or inode == b'0': continue
-                    if b'\\' in fields[5]: raise Refusal('AmbiguousReference')
-                    target = (os.makedev(int(dev[0], 16), int(dev[1], 16)), int(inode))
-                    found, issues = classify_path(os.fsdecode(fields[5]), target, mounts, items, budget, p['mounts'])
-                    for error in issues: budget.issue('MapEntry', error, pid, tid)
-                    for item, basis, scope in found:
-                        emit(item, 'Map', basis, scope, pid, tid, ticks, begin, own)
-                        if own: budget.issue('SelfOrigin', Refusal('UnclassifiedSelfOrigin'), pid, tid)
-                except Exception as error: budget.issue('MapEntry', error, pid, tid)
-            for m in mounts:
-                for item in items:
-                    scope = None
-                    if item['status'] == 'ObservedRoot' and item['dev'] == m['dev'] and beneath(m['root'], item['physical']):
-                        physical, source, scope = item['physical'], item['fd'], 'Dependencies'
-                    elif 'workspacePhysical' in item and item['workspaceDev'] == m['dev'] and beneath(m['root'], item['workspacePhysical']):
-                        physical, source, scope = item['workspacePhysical'], item['workspaceFd'], 'Workspace'
-                    elif item['status'] == 'ObservedRoot' and item['dev'] == m['dev'] and beneath(item['physical'], m['root']):
-                        emit(item, 'AncestorExposure', 'NamespaceMountRoot', 'Dependencies', pid, tid, ticks, begin, own)
-                    if scope:
+                        group.poll()
+                        fd = os.open(base, O_DIR, dir_fd=p['proc'].fd); before = identity(fd, budget); ticks = before[1]
+                        if before != expected_identity: raise Refusal('ProcessIdentityDrift')
+                        root_fd = budget.own(os.open('root', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=fd))
+                        if object_pin(os.fstat(root_fd)) != before[5] or mount_id(root_fd, budget) != group.key[2]: raise Refusal('ProcessIdentityDrift')
+                        ns_files = retain_namespaces(fd, budget)
+                        if tuple(object_pin(os.fstat(n)) for n in ns_files) != before[2:5]: raise Refusal('ProcessIdentityDrift')
+                        own = pid == p['ownPid'] and ticks == p['ownTasks'].get(tid)
+                        if pid == p['ownPid'] and not own: budget.issue('SelfOrigin', Refusal('UnclassifiedSelfOrigin'), pid, tid)
+                        ob['startTicks'] = ticks
+                        view = group.key; views.add(view)
+                        if len(views) > 256: raise Refusal('NamespaceViewLimit')
+                        for name, kind in (('cwd', 'Cwd'), ('root', 'Root'), ('exe', 'Exe')):
+                            try:
+                                raw = link_at(fd, name, budget); target = object_pin(os.stat(name, dir_fd=fd))
+                                found, issues = classify_path(raw, target, mounts, items, budget, p['mounts'])
+                                for error in issues:
+                                    if isinstance(error, OSError) or isinstance(error, Refusal) and str(error) in ('ReferenceObjectMismatch', 'SymlinkJoinUnknown', 'AmbiguousReference'): group.invalid = True
+                                    budget.issue('ProcessLink', error, pid, tid)
+                                for item, basis, scope in found:
+                                    emit(item, kind, basis, scope, pid, tid, ticks, begin, own)
+                                    if own: budget.issue('SelfOrigin', Refusal('UnclassifiedSelfOrigin'), pid, tid)
+                            except Exception as error: budget.issue('ProcessLink', error, pid, tid)
+                        fds = os.open('fd', O_DIR, dir_fd=fd)
                         try:
-                            actual = source_leaf(root_fd, m['point'].lstrip('/'), budget)
-                            expected = source_leaf(source, m['root'][len(physical):].lstrip('/'), budget)
-                            if object_pin(actual) != object_pin(expected): raise Refusal('ReferenceObjectMismatch')
-                            emit(item, 'DirectMountBinding', 'NamespaceMountRoot', scope, pid, tid, ticks, begin, own)
-                        except Exception as error: budget.issue('ProcessView', error, pid, tid)
-            if object_pin(os.fstat(root_fd)) != before[5]: raise Refusal('ProcessIdentityDrift')
-            if identity(fd, budget) != before or object_pin(os.stat(base, dir_fd=p['proc'].fd)) != before[0]:
-                raise Refusal('ProcessIdentityDrift')
-            if mount_table(fd, budget)[1] != mount_digest: raise Refusal('MountDrift')
-            ob['join'] = 'Joined'
-        except Exception as error:
-            budget.issue('ProcessView', error, pid, tid)
-        finally:
-            for n in reversed(ns_files):
-                try: budget.close(n)
-                except Exception as error: budget.issue('ProcessView', error, pid, tid); ob['join'] = 'Unknown'
-            if root_fd is not None:
-                try: budget.close(root_fd)
-                except Exception as error: budget.issue('ProcessView', error, pid, tid); ob['join'] = 'Unknown'
-            if fd is not None:
-                try: os.close(fd)
-                except Exception as error: budget.issue('ProcessView', error, pid, tid); ob['join'] = 'Unknown'
-            ob['finishedAt'] = stamp()
-            for row in matches[mark:]: row['join'] = ob['join']
-            size = len(json.dumps(ob, separators=(',', ':')).encode())
-            if observation_bytes + size <= 512 * 1024:
-                observation_bytes += size; observations.append(ob)
-            else: counts['observationsOmitted'] += 1; budget.incomplete = True
+                            names = bounded_names(fds, 1024, budget, True)
+                            for name in names:
+                                budget.fd_entries += 1; counts['fdEntries'] += 1
+                                if budget.fd_entries > 32768: raise Refusal('FdLimit')
+                                try:
+                                    raw = link_at(fds, name, budget)
+                                    namespace = re.fullmatch(r'mnt:\[([0-9]{1,32})\]', raw)
+                                    if namespace: namespace_fds.add(int(namespace.group(1)))
+                                    if not raw.startswith('/'): continue
+                                    target = object_pin(os.stat(name, dir_fd=fds))
+                                    tracked = reference_origin(pid, tid, ticks, p, budget, int(name), target) == 'AuditCreated'
+                                    found, issues = classify_path(raw, target, mounts, items, budget, p['mounts'])
+                                    for error in issues:
+                                        if isinstance(error, OSError) or isinstance(error, Refusal) and str(error) in ('ReferenceObjectMismatch', 'SymlinkJoinUnknown', 'AmbiguousReference'): group.invalid = True
+                                        budget.issue('FdEntry', error, pid, tid)
+                                    for item, basis, scope in found:
+                                        emit(item, 'Fd', basis, scope, pid, tid, ticks, begin, own, tracked)
+                                        if own and not tracked: budget.issue('SelfOrigin', Refusal('UnclassifiedSelfOrigin'), pid, tid)
+                                except Exception as error: budget.issue('FdEntry', error, pid, tid)
+                            if names != bounded_names(fds, 1024, budget, True): raise Refusal('FdMembershipDrift')
+                        finally: os.close(fds)
+                        for line in lines_at(fd, 'maps', budget):
+                            try:
+                                counts['mapEntries'] += 1; fields = line.split(None, 5)
+                                if len(fields) < 5: raise Refusal('MapShape')
+                                dev, inode = fields[3].split(b':'), fields[4]
+                                if len(dev) != 2 or not inode.isdigit(): raise Refusal('MapShape')
+                                if len(fields) == 5 or not fields[5].startswith(b'/') or inode == b'0': continue
+                                if b'\\' in fields[5]: raise Refusal('AmbiguousReference')
+                                target = (os.makedev(int(dev[0], 16), int(dev[1], 16)), int(inode))
+                                found, issues = classify_path(os.fsdecode(fields[5]), target, mounts, items, budget, p['mounts'])
+                                for error in issues:
+                                    if isinstance(error, OSError) or isinstance(error, Refusal) and str(error) in ('ReferenceObjectMismatch', 'SymlinkJoinUnknown', 'AmbiguousReference'): group.invalid = True
+                                    budget.issue('MapEntry', error, pid, tid)
+                                for item, basis, scope in found:
+                                    emit(item, 'Map', basis, scope, pid, tid, ticks, begin, own)
+                                    if own: budget.issue('SelfOrigin', Refusal('UnclassifiedSelfOrigin'), pid, tid)
+                            except Exception as error: budget.issue('MapEntry', error, pid, tid)
+                        for m, item, scope, physical, source in pairs:
+                            budget.check()
+                            if scope is None:
+                                emit(item, 'AncestorExposure', 'NamespaceMountRoot', 'Dependencies', pid, tid, ticks, begin, own)
+                            else:
+                                try:
+                                    actual = source_leaf(root_fd, m['point'].lstrip('/'), budget)
+                                    joined = source_leaf(source, m['root'][len(physical):].lstrip('/'), budget)
+                                    if object_pin(actual) != object_pin(joined): raise Refusal('ReferenceObjectMismatch')
+                                    emit(item, 'DirectMountBinding', 'NamespaceMountRoot', scope, pid, tid, ticks, begin, own)
+                                except Exception as error:
+                                    group.invalid = True; budget.issue('ProcessView', error, pid, tid)
+                        if object_pin(os.fstat(root_fd)) != before[5]: raise Refusal('ProcessIdentityDrift')
+                        if identity(fd, budget) != before or object_pin(os.stat(base, dir_fd=p['proc'].fd)) != before[0]:
+                            raise Refusal('ProcessIdentityDrift')
+                        if mount_id(root_fd, budget) != group.key[2]: raise Refusal('ProcessIdentityDrift')
+                        group.poll(); ob['join'] = 'Pending'
+                    except Exception as error:
+                        group.invalid = True; budget.issue('ProcessView', error, pid, tid)
+                    finally:
+                        for n in reversed(ns_files):
+                            try: budget.close(n)
+                            except Exception as error: group.invalid = True; budget.issue('ProcessView', error, pid, tid); ob['join'] = 'Unknown'
+                        if root_fd is not None:
+                            try: budget.close(root_fd)
+                            except Exception as error: group.invalid = True; budget.issue('ProcessView', error, pid, tid); ob['join'] = 'Unknown'
+                        if fd is not None:
+                            try: os.close(fd)
+                            except Exception as error: group.invalid = True; budget.issue('ProcessView', error, pid, tid); ob['join'] = 'Unknown'
+                        ob['finishedAt'] = stamp(); group.observations.append(ob)
+                        for row in matches[mark:]: row['join'] = ob['join']
+                        size = len(json.dumps(ob, separators=(',', ':')).encode())
+                        if observation_bytes + size <= 512 * 1024:
+                            observation_bytes += size; observations.append(ob)
+                        else: counts['observationsOmitted'] += 1; budget.incomplete = True
+            except Exception as error:
+                group.invalid = True; budget.issue('ProcessView', error)
+            finally:
+                budget.heap_release(len(pairs) * 256); pairs.clear()
+                if mounts is not None: budget.release_mounts(mounts)
+        for group in groups:
+            try:
+                group.validate(p['proc'].fd)
+                if mount_digest_fd(group.fds[2], budget) != group.digest: raise Refusal('MountDrift')
+                group.poll()
+            except Exception as error:
+                group.invalid = True; budget.issue('ProcessView', error)
+        # Global barrier: all groups stay Pending until every final check and close completes.
+        for group in groups:
+            try: group.validate(p['proc'].fd)
+            except Exception as error: group.invalid = True; budget.issue('ProcessView', error)
+    finally:
+        for group in groups:
+            try: group.poll()
+            except Exception as error: group.invalid = True; budget.issue('ProcessView', error)
+        for group in groups:
+            try: group.close()
+            except Exception as error: group.invalid = True; budget.issue('ProcessView', error)
+    for group in groups:
+        for row in group.matches + group.observations:
+            row['join'] = 'Unknown' if group.invalid or row['join'] != 'Pending' else 'Joined'
     try:
         end_ids, _ = process_ids(p['proc'].fd, budget)
-        if start_ids != end_ids: budget.issue('FinalTaskDiscovery', Refusal('TaskMembershipDrift'))
-    except Exception as error: budget.issue('FinalTaskDiscovery', error)
+        if start_ids != end_ids:
+            budget.issue('FinalTaskDiscovery', Refusal('TaskMembershipDrift'))
+            for row in matches + observations: row['join'] = 'Unknown'
+    except Exception as error:
+        budget.issue('FinalTaskDiscovery', error)
+        for row in matches + observations: row['join'] = 'Unknown'
     unobserved = namespace_fds - {view[0][1] for view in views}
     counts['namespaceFdTargetsUnobserved'] = len(unobserved)
     if unobserved: budget.issue('NamespaceCoverage', Refusal('UnobservedMountNamespace'))
@@ -712,6 +906,7 @@ def main(request):
         report['errorRecordsOmitted'] = max(0, budget.error_total - len(budget.errors))
         report['coverageIssues'] = [{'reason': k, 'count': v} for k, v in sorted(budget.error_counts.items())]
         report['metadataBytesRead'], report['accountedBytes'], report['enumeratedEntries'] = str(budget.text_bytes), str(budget.bytes), str(budget.entries)
+        report['mountBytesRead'], report['viewHeapPeakBytes'] = str(budget.mount_io), str(budget.view_heap_peak)
         report['status'] = 'Incomplete' if budget.incomplete else 'ObservedWindow'
         report['cohortRootObservations'] = [{'cohortIndex': i['row']['index'], 'status': i['status'],
                                             'dev': str(i['pin'][0]) if i['status'] == 'ObservedRoot' else None,
@@ -719,7 +914,7 @@ def main(request):
         report['cohortRootsUnobserved'] = 307 - len(items)
         report['bounds'] = {'seconds': 35 if mode == 'ProcReferences' else 40, 'identities': 4096,
                             'fdEntriesPerTask': 1024, 'fdEntriesTotal': 32768, 'textBytes': MAX_TEXT,
-                            'mountTableBytes': MAX_MOUNT_TEXT, 'aggregateBytes': MAX_BYTES, 'namespaceRootViews': 256, 'matches': 4096,
+                            'mountTableBytes': MAX_MOUNT_TEXT, 'mountIoBytes': MAX_MOUNT_IO, 'viewHeapBytes': MAX_VIEW_HEAP, 'viewGroupFds': 768, 'mountCandidatePairs': 16384, 'aggregateBytes': MAX_BYTES, 'namespaceRootViews': 256, 'matches': 4096,
                             'allocationEntries': 262144, 'crosslinks': 16384, 'outputBytes': MAX_OUTPUT}
         if report['allocation'] is not None:
             complete = final_binding and not report['allocation']['crosslinksOmitted'] and all(row['status'] == 'ObservedMetadata' and states.get(row['cohortIndex']) == 'ObservedRoot'

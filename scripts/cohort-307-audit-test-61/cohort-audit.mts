@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const cohortSha256 = '8b0467e9cdf7d83bace82df97893ed77e9f311dcd83110a18cbfcd0fc01a7da4';
-const payloadSha256 = '7fa5349bf51b53d42f7c0343158f5f213877359caca0ac609bd59ecd712d8150';
+const payloadSha256 = 'acd7ba86293601dad9e5435f1359ced36fc661dbb93189943d83044f328fde6f';
 const machineId = 'd856d40da5ad4e23b4f67773e5942842';
 const Mode = { ProcReferences: 'ProcReferences', AllocatedMetadata: 'AllocatedMetadata' } as const;
 type Mode = (typeof Mode)[keyof typeof Mode];
@@ -35,7 +35,7 @@ auditOwnedReferences ancestorExposures fdEntries mapEntries matchesOmitted obser
 auditCreatedHandle join cohortFinalJoin partition partitions trees crosslinks crosslinksOmitted aggregation crosslinksStatus measurement
 allocatedUniqueWithinPartitionBytes apparentUniqueWithinPartitionBytes uniqueInodes entryKindsObserved Directory Regular Symlink
 allocatedBytes nlink size ctimeNs mtimeNs members observedLinks seconds identities fdEntriesPerTask fdEntriesTotal textBytes
-aggregateBytes mountTableBytes namespaceRootViews allocationEntries outputBytes`.split(/\s+/));
+aggregateBytes mountTableBytes mountIoBytes viewHeapBytes viewGroupFds mountCandidatePairs mountBytesRead viewHeapPeakBytes namespaceRootViews allocationEntries outputBytes`.split(/\s+/));
 const labels = new Set(`ProcReferences AllocatedMetadata Unknown NotEstablished Incomplete ObservedWindow NotRequested
 ObservedRoot Unmeasured ObservedMetadata Pending Joined TargetObject NamespacePathAndObject NamespaceMountRoot
 Workspace Dependencies Cwd Root Exe Fd Map DirectMountBinding AncestorExposure AuditOwned ExternalCurrentReference
@@ -53,6 +53,9 @@ TaskMembershipDrift UnexpectedEntryKind NegativeMetadata HardlinkConflict Hardli
 EntryIdentityOrMountDrift EntryDrift DirectoryMembershipDrift RootUnmeasured RequestShape PartitionShape
 CohortDigestMismatch CohortShape CapacityDeviceDrift CapacityShape OutputLimit ProcHiddenView ProcCapabilitiesIncomplete UnobservedMountNamespace UnknownError OtherErrno
 EACCES EPERM ENOENT ESRCH ENOTDIR ELOOP EINVAL EMFILE ENFILE EIO ENOMEM ESTALE EBADF ENOSYS ENOTSUP EOVERFLOW EAGAIN EINTR ETIMEDOUT`.split(/\s+/));
+
+const exactBounds: Readonly<Record<string, number>> = { mountTableBytes: 8 * 1024 ** 2, mountIoBytes: 1024 ** 3,
+  viewHeapBytes: 64 * 1024 ** 2, viewGroupFds: 768, mountCandidatePairs: 16384 };
 
 export function validateReport(value: unknown, expectedMode: Mode, cohortJson: string): asserts value is RecordValue {
   if (!object(value) || value.schemaVersion !== 1 || value.mode !== expectedMode || value.cohortSha256 !== cohortSha256 ||
@@ -90,7 +93,7 @@ export function validateReport(value: unknown, expectedMode: Mode, cohortJson: s
     if (object(item)) {
       for (const [childKey, child] of Object.entries(item)) {
         if (!keys.has(childKey)) throw new Error('Unknown sanitized result field');
-        if (childKey === 'mountTableBytes' && child !== 8 * 1024 ** 2) throw new Error('Invalid mount table bound');
+        if (Object.hasOwn(exactBounds, childKey) && child !== exactBounds[childKey]) throw new Error('Invalid mount view bound');
         inspect(child, childKey);
       }
       return;
