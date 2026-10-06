@@ -4,6 +4,8 @@ export enum SystemBusInfrastructureRole { SystemBus = "system-bus" }
 export const SYSTEM_BUS_ENDPOINT = "/run/dbus/system_bus_socket";
 export const SYSTEM_BUS_CONFIG_PATH = "/etc/subscription-runtime/system-bus/bus.conf";
 export const SYSTEM_BUS_EXECUTABLE = "/usr/bin/dbus-daemon";
+export const SYSTEM_BUS_QUERY_EXECUTABLE = "/usr/bin/busctl";
+export enum SystemBusQueryRenderer { Systemd255Terse = "systemd-v255-terse" }
 export const SYSTEM_BUS_CONTROL_GROUP = "/system.slice/dbus.service";
 export const SYSTEM_BUS_ARGUMENTS: readonly string[] = Object.freeze([
   `--config-file=${SYSTEM_BUS_CONFIG_PATH}`, "--address=systemd:", "--nofork", "--nopidfile", "--nosyslog",
@@ -60,12 +62,16 @@ ${handshakeMembers.map(member => `    <allow send_destination="org.freedesktop.D
 </busconfig>
 `;
 export type SystemBusFilePin = Readonly<{ path: string; sha256: string }>;
-export type SystemBusInfrastructure = Readonly<{
-  version: 1; role: SystemBusInfrastructureRole.SystemBus;
+type SystemBusInfrastructureBody = Readonly<{
+  role: SystemBusInfrastructureRole.SystemBus;
   service: Readonly<{ name: "dbus.service"; controlGroup: typeof SYSTEM_BUS_CONTROL_GROUP; fragmentPath: string; fragmentSha256: string }>;
   socket: Readonly<{ name: "dbus.socket"; endpoint: typeof SYSTEM_BUS_ENDPOINT; fragmentPath: string; fragmentSha256: string }>;
   config: SystemBusFilePin; executable: SystemBusFilePin; elfClosure: readonly SystemBusFilePin[];
 }>;
+export type SystemBusQueryTool = Readonly<{ renderer: SystemBusQueryRenderer.Systemd255Terse;
+  path: typeof SYSTEM_BUS_QUERY_EXECUTABLE; sha256: string; elfClosure: readonly SystemBusFilePin[] }>;
+export type SystemBusInfrastructure = SystemBusInfrastructureBody & (
+  Readonly<{ version: 1 }> | Readonly<{ version: 2; queryTool: SystemBusQueryTool }>);
 function failure(): never { throw new Error("system_bus_infrastructure_invalid"); }
 function record(value: unknown, keys: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== keys) failure();
@@ -85,8 +91,10 @@ function pin(value: unknown): SystemBusFilePin {
   return Object.freeze({ path: path(row.path), sha256: hash(row.sha256) });
 }
 export function parseSystemBusInfrastructure(value: unknown): SystemBusInfrastructure {
-  const row = record(value, "config,elfClosure,executable,role,service,socket,version");
-  if (row.version !== 1 || row.role !== SystemBusInfrastructureRole.SystemBus) failure();
+  const version = value && typeof value === "object" && "version" in value ? value.version : undefined;
+  const row = record(value, version === 2 ? "config,elfClosure,executable,queryTool,role,service,socket,version" :
+    "config,elfClosure,executable,role,service,socket,version");
+  if ((version !== 1 && version !== 2) || row.role !== SystemBusInfrastructureRole.SystemBus) failure();
   const service = record(row.service, "controlGroup,fragmentPath,fragmentSha256,name");
   const socket = record(row.socket, "endpoint,fragmentPath,fragmentSha256,name");
   if (service.name !== "dbus.service" || service.controlGroup !== SYSTEM_BUS_CONTROL_GROUP ||
@@ -100,18 +108,30 @@ export function parseSystemBusInfrastructure(value: unknown): SystemBusInfrastru
       !closure.some(file => /^\/usr\/lib\/[^/]+\/ld-linux-x86-64\.so\.2$/.test(file.path))) failure();
   const fragmentPaths = [path(service.fragmentPath), path(socket.fragmentPath)];
   if (new Set([...fragmentPaths, config.path, ...closure.map(file => file.path)]).size !== 3 + closure.length) failure();
-  return Object.freeze({ version: 1, role: SystemBusInfrastructureRole.SystemBus,
+  const body: SystemBusInfrastructureBody = Object.freeze({ role: SystemBusInfrastructureRole.SystemBus,
     service: Object.freeze({ name: "dbus.service", controlGroup: SYSTEM_BUS_CONTROL_GROUP,
       fragmentPath: fragmentPaths[0]!, fragmentSha256: hash(service.fragmentSha256) }),
     socket: Object.freeze({ name: "dbus.socket", endpoint: SYSTEM_BUS_ENDPOINT,
       fragmentPath: fragmentPaths[1]!, fragmentSha256: hash(socket.fragmentSha256) }),
     config, executable, elfClosure: Object.freeze(closure) });
+  if (version === 1) return Object.freeze({ ...body, version: 1 });
+  const query = record(row.queryTool, "elfClosure,path,renderer,sha256");
+  if (query.renderer !== SystemBusQueryRenderer.Systemd255Terse || query.path !== SYSTEM_BUS_QUERY_EXECUTABLE ||
+      !Array.isArray(query.elfClosure) || query.elfClosure.length < 2 || query.elfClosure.length > 64) failure();
+  const queryHash = hash(query.sha256), queryClosure = query.elfClosure.map(pin);
+  if (new Set(queryClosure.map(file => file.path)).size !== queryClosure.length ||
+      !queryClosure.some(file => file.path === SYSTEM_BUS_QUERY_EXECUTABLE && file.sha256 === queryHash) ||
+      !queryClosure.some(file => /^\/usr\/lib\/[^/]+\/ld-linux-x86-64\.so\.2$/.test(file.path)) ||
+      queryClosure.some(file => fragmentPaths.includes(file.path) || file.path === config.path ||
+        closure.some(prior => prior.path === file.path && prior.sha256 !== file.sha256))) failure();
+  return Object.freeze({ ...body, version: 2, queryTool: Object.freeze({ path: SYSTEM_BUS_QUERY_EXECUTABLE,
+    sha256: queryHash, renderer: SystemBusQueryRenderer.Systemd255Terse, elfClosure: Object.freeze(queryClosure) }) });
 }
 
-/** Inventory revision 3 requires exactly this role; old revisions cannot carry
+/** Inventory revisions 3/4 require exactly this role; old revisions cannot carry
  * an ignored field. Callers retain their own independent full inventory parser. */
 export function readSystemBusInfrastructureField(inventory: Readonly<Record<string, unknown>>): SystemBusInfrastructure | undefined {
-  if (inventory.schemaVersion === 3) return parseSystemBusInfrastructure(inventory.systemBusInfrastructure);
+  if (inventory.schemaVersion === 3 || inventory.schemaVersion === 4) return parseSystemBusInfrastructure(inventory.systemBusInfrastructure);
   if ((inventory.schemaVersion !== 1 && inventory.schemaVersion !== 2) || "systemBusInfrastructure" in inventory) failure();
   return undefined;
 }
