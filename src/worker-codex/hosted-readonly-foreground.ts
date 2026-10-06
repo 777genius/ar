@@ -56,7 +56,7 @@ async function runHostedReadonlyCompletion(command: string, args: readonly strin
   try { child = host.runRuntimeLaunch(command, args, cwd, launch => {
     if (fdProfile) return spawnHostedFdChild(launch.command, launch.args, { cwd }, hostedFdInvocationUnit(launch.args), HostedFdLaunchKind.Foreground);
     const child = spawn(launch.command, [...launch.args], { cwd, env, stdio: ["pipe", "inherit", "inherit"] });
-    store.assertOrdinaryDependencyFrame(frame); child.stdin.end(frame);
+    child.stdin.end(frame);
     return child;
   }); } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }
   return await new Promise<Readonly<{ result: number | HostedForegroundResult; signal: NodeJS.Signals | null }>>((resolve) => {

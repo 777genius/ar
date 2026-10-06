@@ -39,6 +39,7 @@ function pin(name:string,maximum=16384) {
 }
 function receiptPin(binding:HostedDependencyBinding):ReceiptPin {
   const receipt = readHostedDependencyEstablishedReceipt(binding); if (!receipt) return null;
+  if (receipt.state!==DependencyReceiptState.Ready && receipt.state!==DependencyReceiptState.Absent && receipt.state!==DependencyReceiptState.Unverified) invalid();
   const committed = receipt.state === DependencyReceiptState.Ready ? readHostedDependencyCommittedReady(binding,receipt.revision) :
     receipt.state === DependencyReceiptState.Absent ? readHostedDependencyCommittedAbsent(binding,receipt.revision) :
     receipt.state === DependencyReceiptState.Unverified ? readHostedDependencyCommittedUnverified(binding,receipt.revision) : invalid();

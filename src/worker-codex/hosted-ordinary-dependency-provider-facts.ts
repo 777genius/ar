@@ -21,5 +21,5 @@ export function readOriginalHostedOrdinaryProviderBirthFacts(context:CurrentHost
       !sameDependencyProtectedReference(entry.origin,record.originReference) || !sameDependencyProtectedReference(entry.producer,record.readerProducer) ||
       !sameDependencyProtectedReference(entry.entry,record.readerEntry)) invalid();
   readCurrentHostedManagedDependencyProviderParent(context,fence);
-  return formOrdinaryDependencyProviderStartFacts(actual,selected,providerPin.reference,record,prepared.ready);
+  return formOrdinaryDependencyProviderStartFacts({...actual,facts:actual.facts},selected,providerPin.reference,record,prepared.ready);
 }

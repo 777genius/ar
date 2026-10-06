@@ -61,14 +61,15 @@ export function assertOriginalHostedOrdinaryProviderCompletion(context:CurrentHo
   receipt:ScopedProviderOnlyReceipt,phase:HostedOrdinaryProviderReadPhase):void {
   const facts=collected(context,fence,unit,phase),{selected,birth,ordinary,terminal}=facts;
   const parent=selected.parent.facts; if (parent.kind!==CurrentHostedDependencyOriginKind.Ordinary) invalid();
+  const generation=parent.ordinary.activation.generation; if (typeof generation!=="number" || !Number.isSafeInteger(generation) || generation<1) invalid();
   const exact=(row:Readonly<Record<string,unknown>>,member:ScopedProviderOnlyReceipt["parent"])=>
     row.startId===member.startId && row.unit===member.unit && row.creatorId===member.creatorId && row.originSha256===member.originSha256 && row.generation===member.generation;
   if (!exact(parent.ordinary.reservation,receipt.parent) || !exact(ordinary.reservation,receipt.provider) ||
       receipt.identity.installationId!==birth.installationId || receipt.identity.hostId!==birth.hostId || receipt.identity.bootId!==birth.bootId ||
       receipt.identity.supervisorId!==birth.supervisorId || receipt.identity.runtimeSha!==birth.runtimeSha || receipt.provider.unit!==unit ||
       receipt.attempt.grantDigest!==selected.parent.attempt.launch.grantDigest ||
-      (phase===HostedOrdinaryProviderReadPhase.Reserved ? receipt.publicationGeneration!==parent.ordinary.activation.generation+1 :
-        receipt.publicationGeneration>parent.ordinary.activation.generation)) invalid();
+      (phase===HostedOrdinaryProviderReadPhase.Reserved ? receipt.publicationGeneration!==generation+1 :
+        receipt.publicationGeneration>generation)) invalid();
   const completion=pinReferenceFile(`${root}/dependency-ordinary-provider-completions/${birth.providerStartId}.json`,16384);
   if (!sameDependencyProtectedReference(completion.reference,receipt.completion) || !completion.bytes.equals(encode({schemaVersion:2,parentAttempt:selected.parent.attempt,
       unit,providerStartId:birth.providerStartId,providerReference:selected.reference,ordinaryProviderReference:birth.ordinaryProviderReference,parentReference:birth.originReference,

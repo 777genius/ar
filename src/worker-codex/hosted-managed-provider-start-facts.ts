@@ -1,6 +1,6 @@
 import { HostedCustodyReservationState } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
 import { CurrentHostedDependencyOriginKind, type assertCurrentHostedDependencyAttempt } from "./hosted-current-dependency-origin";
-import { HostedDependencyRootOriginKind, type HostedDependencyRootPreparationRecord } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
+import { HostedDependencyRootOriginKind, type HostedDependencyRootPreparationRecord, type HostedDependencyManagedProviderFacts } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
 import type { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
 import { freezeFacts } from "./hosted-dependency-immutable-facts";
 // Immutable serialization facts only; no context, map, admission, native child or registration.
@@ -26,7 +26,7 @@ export function formManagedDependencyProviderStartFacts(actual:ReturnType<typeof
 export function formOrdinaryDependencyProviderStartFacts(actual:ReturnType<typeof assertCurrentHostedDependencyAttempt>,
   selected:ReturnType<typeof import("../provider-codex/app-server/adapters/hosted-process-activation").readHostedOrdinaryProviderFacts>,
   ordinaryProviderReference:import("@vioxen/subscription-runtime/core").DependencyProtectedReference,
-  record:Extract<HostedDependencyRootPreparationRecord,{version:3}>,ready:ReturnType<LocalDependencyReceiptStore["getCommittedReady"]>) {
+  record:Extract<HostedDependencyRootPreparationRecord,{version:3}>,ready:ReturnType<LocalDependencyReceiptStore["getCommittedReady"]>):Extract<HostedDependencyManagedProviderFacts,{version:2}> {
   if (actual.facts.kind!==CurrentHostedDependencyOriginKind.Ordinary || !selected.relation) throw new Error("hosted_dependency_current_origin_unresolved");
   const {ordinary}=actual.facts;
   return freezeFacts({version:2 as const,originKind:HostedDependencyRootOriginKind.OrdinaryDependencyReaderV1,
