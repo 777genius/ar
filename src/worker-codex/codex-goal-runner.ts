@@ -1,3 +1,4 @@
+import { codexRuntimeResultInput, codexExceptionRuntimeResultInput } from "./codex-goal-runtime-result-collection";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
@@ -46,19 +47,8 @@ import {
   type TaskEffectMode,
   WorkerControlService,
   type RuntimeRecommendedAction,
-  type RuntimeResultEnvelopeInput,
-  type RuntimeResultStatus,
-  type WorkerReport,
 } from "@vioxen/subscription-runtime/worker-core";
-import {
-  codexRunnerExceptionFailure,
-  runtimeActionFromSafeExecutionResult,
-  runtimeBlockersFromSafeExecutionResult,
-  runtimeEvidenceFromSafeExecutionResult,
-  runtimeResultDetails,
-  runtimeStatusFromSafeExecutionResult,
-  workerReportFromSafeExecutionResult,
-} from "./codex-goal-run-result";
+import { codexRunnerExceptionFailure } from "./codex-goal-run-result";
 import type {
   CodexAppServerProcessFactory,
   CodexReasoningEffort,
@@ -94,20 +84,9 @@ import { assertCodexGoalTurnCheckpointHistory, createCodexGoalTurnCheckpoint, co
 import { createCodexGoalResultRecorder } from "./codex-goal-runtime-result-io";
 import { writeCodexGoalProgress } from "./codex-goal-progress-io";
 import {
-  assertDirtyTerminalHandoffAvailable,
-  terminalCodexGoalHandoffEvidence,
-  terminalCodexGoalHandoffResultDetails,
-  tryMaterializeTerminalCodexGoalHandoff,
-} from "./codex-goal-terminal-handoff-materialization";
-import {
   codexGoalRuntimeEventObservability,
   createCodexGoalRuntimeEventWriter,
 } from "./codex-goal-runtime-events";
-import {
-  changedFilesFromSafeExecutionResult,
-  changedFilesFromWorkspace,
-  uniqueStrings,
-} from "./codex-goal-workspace-changes";
 import { resolveCodexGoalObjective } from "./codex-goal-objective";
 import { readOrCreateCodexGoalEncryptionKey } from "./codex-goal-encryption-key";
 export { readOrCreateCodexGoalEncryptionKey } from "./codex-goal-encryption-key";
@@ -889,123 +868,4 @@ function progressStatusFromResult(status: string): CodexGoalProgressStatus {
   if (status === "failed") return "failed";
   if (status === "aborted") return "aborted";
   return "failed";
-}
-
-async function codexRuntimeResultInput(input: {
-  readonly config: CodexGoalRunConfig;
-  readonly result: SafeExecutionRunResult<FileBackendCodexWorkerResult>;
-  readonly executionGeneration: string;
-  readonly baseCommit?: string;
-}): Promise<RuntimeResultEnvelopeInput> {
-  const reportedChangedFiles = changedFilesFromSafeExecutionResult(input.result);
-  const workspace = await changedFilesFromWorkspace(input.config.workspacePath);
-  const changedFiles = uniqueStrings([
-    ...reportedChangedFiles,
-    ...workspace.changedFiles,
-  ]);
-  const workerReport = workerReportFromSafeExecutionResult(input.result);
-  const reason = "reason" in input.result ? input.result.reason : undefined;
-  const status = runtimeStatusFromSafeExecutionResult({
-    resultStatus: input.result.status,
-    changedFilesCount: changedFiles.length,
-  });
-  const handoff = workspace.changedFiles.length === 0
-    ? null
-    : await tryMaterializeTerminalCodexGoalHandoff({
-        ...input.config,
-        ...(input.baseCommit === undefined
-          ? {}
-          : { expectedBaseCommit: input.baseCommit }),
-      });
-  const artifacts = handoff?.artifacts ?? [];
-  assertDirtyTerminalHandoffAvailable(workspace.changedFiles, handoff, artifacts);
-  const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
-  const details = runtimeResultDetails({
-    ...("failureDetails" in input.result && input.result.failureDetails
-      ? { failureDetails: input.result.failureDetails }
-      : {}),
-    ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
-    handoffDetails: terminalCodexGoalHandoffResultDetails(handoff),
-  });
-  return {
-    status,
-    provider: "codex",
-    runId: input.config.jobId ?? input.config.taskId,
-    taskId: input.config.taskId,
-    reason,
-    changedFiles: exactChangedFiles,
-    evidence: [
-      ...runtimeEvidenceFromSafeExecutionResult(input.result),
-      ...(workspace.warning ? [workspace.warning] : []),
-      ...artifacts.map((artifact) => `patch_preserved:${artifact.path ?? ""}`),
-      ...terminalCodexGoalHandoffEvidence(handoff),
-      ...(changedFiles.length > 0 && artifacts.length === 0
-        ? ["patch_preserve_unavailable"]
-        : []),
-    ],
-    blockers: runtimeBlockersFromSafeExecutionResult(input.result),
-    nextAction: runtimeActionFromSafeExecutionResult({
-      status,
-      resultStatus: input.result.status,
-      reason,
-      changedFilesCount: changedFiles.length,
-    }),
-    ...(workerReport === undefined ? {} : { workerReport }),
-    ...(artifacts.length === 0 ? {} : { artifacts }),
-    details: { ...(details ?? {}), executionGeneration: input.executionGeneration,
-      attemptNumber: String(input.result.attempts.at(-1)?.attemptNumber ?? 0) },
-  };
-}
-
-async function codexExceptionRuntimeResultInput(input: {
-  readonly config: CodexGoalRunConfig;
-  readonly error: unknown;
-  readonly executionGeneration: string;
-  readonly baseCommit?: string;
-}): Promise<RuntimeResultEnvelopeInput> {
-  const failure = codexRunnerExceptionFailure(input.error);
-  const workspace = await changedFilesFromWorkspace(input.config.workspacePath);
-  const changedFiles = workspace.changedFiles;
-  const handoff = changedFiles.length === 0
-    ? null
-    : await tryMaterializeTerminalCodexGoalHandoff({
-        ...input.config,
-        ...(input.baseCommit === undefined
-          ? {}
-          : { expectedBaseCommit: input.baseCommit }),
-      });
-  const artifacts = handoff?.artifacts ?? [];
-  assertDirtyTerminalHandoffAvailable(changedFiles, handoff, artifacts);
-  const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
-  const details = runtimeResultDetails({
-    failureDetails: {
-      errorName: input.error instanceof Error ? input.error.name : "unknown",
-      ...(failure.errorCode === undefined
-        ? {}
-        : { errorCode: failure.errorCode }),
-    },
-    ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
-    handoffDetails: terminalCodexGoalHandoffResultDetails(handoff),
-  });
-  return {
-    status: changedFiles.length > 0 ? "partial" : "failed",
-    provider: "codex",
-    runId: input.config.jobId ?? input.config.taskId,
-    taskId: input.config.taskId,
-    reason: failure.reason,
-    changedFiles: exactChangedFiles,
-    evidence: [
-      failure.evidence,
-      ...(workspace.warning ? [workspace.warning] : []),
-      ...artifacts.map((artifact) => `patch_preserved:${artifact.path ?? ""}`),
-      ...terminalCodexGoalHandoffEvidence(handoff),
-      ...(changedFiles.length > 0 && artifacts.length === 0
-        ? ["patch_preserve_unavailable"]
-        : []),
-    ],
-    blockers: [failure.reason],
-    nextAction: changedFiles.length > 0 ? "preserve_patch" : "recover",
-    ...(artifacts.length === 0 ? {} : { artifacts }),
-    details: { ...(details ?? {}), executionGeneration: input.executionGeneration },
-  };
 }
