@@ -359,9 +359,9 @@ describe("closed logical local registry selection", () => {
   // Red if the new logical key aliases old keys, loses metadata, or trusts a supplied selection list.
   it("binds every derived selection field and unchanged original bytes in new key and commitment domains", () => {
     const input = logicalSelectionInput(), closure = qualifyDependencyNpmLocalClosure(input);
-    const keyed = { ...input, closure, lockName: DependencyNpmLockName.PackageLock, toolchain, maxInputBytes: 1048576, maxCanonicalBytes: 1048576 };
-    const { selectionToolchain: _context, ...buildInput } = keyed;
-    const result = build(buildInput), commitment = encodeDependencyLocalInputCommitment({ ...input, closure, lockName: keyed.lockName });
+    const buildInput = { packageBytes: input.packageBytes, lockBytes: input.lockBytes, closure,
+      lockName: DependencyNpmLockName.PackageLock, toolchain, maxInputBytes: 1048576, maxCanonicalBytes: 1048576 };
+    const result = build(buildInput), commitment = encodeDependencyLocalInputCommitment({ ...input, closure, lockName: buildInput.lockName });
     expect(JSON.parse(Buffer.from(result.canonicalBytes).toString()).version).toBe(3);
     const verificationArgv = ["ls", "--all", "--json", "--ignore-scripts", "--package-lock-only=false", "--install-strategy=hoisted", "--install-links=true",
       "--include=dev", "--include=optional", "--include=peer", "--strict-peer-deps=false", "--legacy-peer-deps=false", "--workspaces=true", "--include-workspace-root=true"];
