@@ -112,7 +112,11 @@ try:
     inherited=[m for m in second['matches'] if m['pid']==chroot_pid and m['scope']=='Dependencies' and m['kind'] in ('Fd','Map')]
     detached_prefix=any(p['beneath'](m['root'],items[0]['physical']) and m['point']==r+'/detached' for m in mounts)
     direct=[m for m in matches if m['kind']=='DirectMountBinding']
-    print(json.dumps({'kinds':sorted(set(m['kind'] for m in matches)),'childExternal':all(m['bucket']=='ExternalCurrentReference' for m in matches),'ownTracked':any(m['bucket']=='AuditOwned' and m['auditCreatedHandle'] is True for m in observed['matches']),'inheritedKinds':sorted(set(m['kind'] for m in inherited)),'inheritedExternal':all(m['bucket']=='ExternalCurrentReference' for m in inherited),'childRootPinned':root_pinned,'collectorRendered':raw==r+'/w/node_modules/dep','viewsDiffer':views_differ,'detachedPrefixExercised':detached_prefix,'directBindings':len(direct),'detachedUnknown':any(x['phase']=='ProcessView' and x['reason']=='ENOENT' for x in budget.errors)}))
+    detached_mounts=[m for m in mounts if m['point']==r+'/detached' and m['dev']==items[0]['dev']]
+    detached_root=detached_mounts[0]['root'] if len(detached_mounts)==1 else None
+    detached_reason='PathShape' if detached_root==items[0]['physical']+'/gone//deleted' else 'ENOENT' if detached_root==items[0]['physical']+'/gone' else None
+    detached_unknown=len(direct)==1 and budget.incomplete and detached_reason is not None and any(x['phase']=='ProcessView' and x.get('pid')==child_pid and x['reason']==detached_reason for x in budget.errors)
+    print(json.dumps({'kinds':sorted(set(m['kind'] for m in matches)),'childExternal':all(m['bucket']=='ExternalCurrentReference' for m in matches),'ownTracked':any(m['bucket']=='AuditOwned' and m['auditCreatedHandle'] is True for m in observed['matches']),'inheritedKinds':sorted(set(m['kind'] for m in inherited)),'inheritedExternal':all(m['bucket']=='ExternalCurrentReference' for m in inherited),'childRootPinned':root_pinned,'collectorRendered':raw==r+'/w/node_modules/dep','viewsDiffer':views_differ,'detachedPrefixExercised':detached_prefix,'directBindings':len(direct),'detachedUnknown':detached_unknown}))
 except BaseException as error:
     if native_failed_stage is None:
         native_failed_stage=native_stage
