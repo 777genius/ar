@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { assertHostedDependencyRootGitConfigBytes } from "../../provider-codex/app-server/adapters/hosted-dependency-root-git-config";
 import { HostedDependencyRootPurpose, assertCurrentHostedDependencyRootPurpose, assertCurrentHostedDependencyRetiredReady,
   HostedDependencyRootDescriptorRecipe, openCurrentHostedDependencyRootDescriptor,
-  retireCurrentHostedDependencySourceCleanup, type HostedDependencyRootPurposeContext } from "../hosted-current-dependency-origin";
+  retireCurrentHostedDependencySourceCleanup, publishCurrentHostedManagedDependencyProvider, prepareCurrentHostedManagedDependencyProviderTools, spawnCurrentHostedManagedDependencyProvider,
+  type CurrentHostedDependencyOrigin, type HostedDependencyRootPurposeContext } from "../hosted-current-dependency-origin";
 import type { HostedActivationFence } from "../../provider-codex/app-server/adapters/hosted-process-activation";
 import { DependencyUnverifiedReason } from "../../worker-core/dependency-environment/domain/dependency-receipt";
 
@@ -41,6 +42,21 @@ describe("root purpose cannot be reconstructed from caller data", () => {
     // before resolving the original opaque purpose. No positive permit is made.
     expect(() => openCurrentHostedDependencyRootDescriptor(counterfeit as HostedDependencyRootPurposeContext,
       fence as HostedActivationFence,HostedDependencyRootDescriptorRecipe.AuthoredFileV1,"/caller/scope/file")).toThrow("hosted_dependency_current_origin_unresolved");
+    expect(reads).toBe(0);
+  });
+  it("managed provider publication and resources require the original issuer entry before caller data", () => {
+    let reads = 0;
+    const counterfeit = Object.defineProperty({},"rootPurpose",{get() { reads++; throw new Error("caller origin"); }});
+    const fence = Object.defineProperty({},"held",{get() { reads++; throw new Error("caller fence"); }});
+    const unit = "subscription-runtime-hosted-00000000-0000-0000-0000-000000000001.service";
+    expect(() => publishCurrentHostedManagedDependencyProvider(counterfeit as CurrentHostedDependencyOrigin,
+      fence as HostedActivationFence,unit)).toThrow("hosted_dependency_current_origin_unresolved");
+    expect(() => prepareCurrentHostedManagedDependencyProviderTools(counterfeit as CurrentHostedDependencyOrigin,
+      fence as HostedActivationFence,unit)).toThrow("hosted_dependency_current_origin_unresolved");
+    const input = Object.defineProperty({},"command",{get() { reads++; throw new Error("caller command"); }});
+    expect(() => spawnCurrentHostedManagedDependencyProvider(counterfeit as CurrentHostedDependencyOrigin,
+      fence as HostedActivationFence,unit,input as Parameters<typeof spawnCurrentHostedManagedDependencyProvider>[3]))
+      .toThrow("hosted_dependency_current_origin_unresolved");
     expect(reads).toBe(0);
   });
   it("a copied historical Ready/retirement tuple cannot enter the actual producer", () => {

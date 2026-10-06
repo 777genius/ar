@@ -28,6 +28,8 @@ import {
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { randomUUID } from "node:crypto";
+import { types as nodeUtilTypes } from "node:util";
+import { requiresCurrentHostedDependencyRootPurpose } from "./hosted-dependency-root-purpose";
 import { lstat, mkdir, readFile } from "node:fs/promises";
 import { mapManagedGoalLayout, usesManagedJobLayout } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
@@ -230,6 +232,15 @@ export async function runCodexGoal(
   config: CodexGoalRunConfig,
   deps: CodexGoalRunDeps = {},
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+  if (requiresCurrentHostedDependencyRootPurpose()) {
+    // Before layout/config IO or any optional adapter callback. The actual
+    // protected route uses only fixed composition, including inherited ports.
+    if (!deps || typeof deps !== "object" || nodeUtilTypes.isProxy(deps) ||
+        ![Object.prototype,null].includes(Object.getPrototypeOf(deps)) || Reflect.ownKeys(deps).length !== 0) {
+      throw new Error("hosted_dependency_fixed_goal_composition_required");
+    }
+    deps = Object.freeze(Object.create(null)) as CodexGoalRunDeps;
+  }
   // Reference purpose is a separate closed CLI entry, never a fabricated task.
   assertHostedDependencyExecutionWorkspace(undefined);
   config = mapManagedGoalLayout({ config }).config;

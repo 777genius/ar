@@ -1,3 +1,4 @@
+import { assertHostedFdProcess } from "./hosted-fd-child";
 import { hostedDependencyProviderInvocation } from "./hosted-dependency-provider-launch";
 import type { DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -283,11 +284,13 @@ export function signalCodexAppServerChildGroup(
   child: CodexAppServerChildProcess,
   signal: NodeJS.Signals,
 ): void {
+  let fdUnit: string | undefined;
+  try { const guard = hostedFdLaunch(child); assertHostedFdProcess(child,guard.unit,guard.kind); fdUnit = guard.unit; } catch { /* Existing generic route below. */ }
   invalidateHostedOrdinaryWait(child);
   const researchSignal = researchSignals.get(child);
   if (researchSignal) { researchSignal(signal); return; }
   try {
-    const systemdUnit = hostedSystemdUnits.get(child);
+    const systemdUnit = fdUnit ?? hostedSystemdUnits.get(child);
     if (systemdUnit !== undefined) {
       signalHostedSystemdUnit(systemdUnit, signal);
       // Never kill only the systemd-run proxy: the bounded service would leak.
