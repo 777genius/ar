@@ -7,6 +7,7 @@ import { dependencyToolGuestConfig, dependencyToolGuestConfigPath, dependencyToo
 import { fdCollectorProfilePath } from "../../../core/host-infrastructure/fd-collector-profile";
 import { hostedFdTable } from "./hosted-fd-table";
 import { assertHostedFdProcess, HostedFdLaunchKind } from "./hosted-fd-child";
+import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
 
 const root = "/var/lib/subscription-runtime-host-policy";
 const encode = (v: unknown) => Buffer.from(JSON.stringify(v) + "\n");
@@ -186,7 +187,7 @@ export function retainHostedToolFilesInvocation(scope: HostedRetainedToolFiles, 
   command: string; args: readonly string[]; systemdUnit?: string;
 }>): void {
   const s = state(scope);
-  if (s.invocation || invocation.systemdUnit !== s.unit || invocation.command !== "/usr/bin/systemd-run" ||
+  if (s.invocation || invocation.systemdUnit !== s.unit || invocation.command !== hostedDependencySystemdRunExecutable ||
       !invocation.args.includes(`--unit=${s.unit}`) || !invocation.args.includes(`--property=RootDirectory=${s.root}`)) fail();
   assertHostedRetainedToolDescriptors(scope);
   s.invocation = invocation; s.command = invocation.command; s.args = Object.freeze([...invocation.args]);

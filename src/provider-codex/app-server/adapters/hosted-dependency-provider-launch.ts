@@ -15,7 +15,8 @@ import { dependencyToolGuestConfigPath } from "../../../core/dependency-environm
 import type { DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import { abandonHostedDependencyToolPlan, prepareHostedDependencyToolPlan, retainHostedDependencyToolInvocation } from "./hosted-dependency-tool-plan";
 
-export const hostedDependencySystemdRunExecutable = "/usr/bin/systemd-run";
+import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
+export { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
 
 /** Called inside the real private provider reservation fence, before enclosure.
  * The guest never reads host authority. No payload-selected mounts or root dirs.
