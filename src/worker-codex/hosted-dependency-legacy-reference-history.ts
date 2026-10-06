@@ -17,7 +17,8 @@ export function readHostedDependencyLegacyReferenceHistory(op: string) {
   const result = readFixedReference(resultPin.reference,referencePath(op,"reference-result"),parseReferenceResult);
   const releasePin = pinReferenceFile(referencePath(op,"reference-release"));
   const release = readFixedReference(releasePin.reference,referencePath(op,"reference-release"),v => parseReferenceRelease(v,relation.reference.binding.workspace));
-  if (![relation.operationId,seal.operationId,entry.operationId,result.operationId,release.operationId].every(id => id === op) ||
+  if (relation.version!==result.version || result.version===2 && (relation.version!==2 || relation.recipe!==result.recipe || relation.profile!==result.profile || relation.inputs.closureDigest!==result.closureDigest) ||
+      ![relation.operationId,seal.operationId,entry.operationId,result.operationId,release.operationId].every(id => id === op) ||
       !sameDependencyWorkspace(relation.reference.binding.workspace,result.reference.workspace) ||
       !encode(seal.relation).equals(encode(relationPin.reference)) || !encode(entry.relation).equals(encode(relationPin.reference)) ||
       !encode(entry.referenceStart).equals(encode(sealPin.reference)) ||
@@ -53,7 +54,8 @@ export function readHostedDependencyLegacyReferenceHistory(op: string) {
  * current issuer/evictor separately retains and rechecks those live facts. */
 export function assertHostedDependencyLegacyReferenceHistory(input: DependencyLegacyComparisonRecord): void {
   const record = parseDependencyLegacyComparisonRecord(input), history = readHostedDependencyLegacyReferenceHistory(record.operationId);
-  if (record.comparisonEvidenceId !== record.operationId ||
+  if (record.version!==history.result.version || record.version===2 && (history.result.version!==2 || record.closureDigest!==history.result.closureDigest || record.recipe!==history.result.recipe || record.profile!==history.result.profile) ||
+      record.comparisonEvidenceId !== record.operationId ||
       !encode(history.relation.candidate.original).equals(encode(record.original)) ||
       !encode(history.result.reference).equals(encode(record.reference)) ||
       history.result.reference.installationId !== record.referenceInstallationId ||

@@ -5,7 +5,7 @@ import { DependencyOwnerKind, DependencyOwnerPhase, DependencyReceiptState as St
   type DependencyAttempt, type HostedOrdinaryStart, type HostedOrdinaryReservation } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, withHostedActivationFence, type HostedActivationFence, CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { readHostedOrdinaryProcessOrigin } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { readHostedDependencyBinding, readHostedDependencyAttempt, assertHostedDependencyQualifiedInventory,
+import { HostedDependencyReferenceKind, readHostedDependencyBinding, readHostedDependencyAttempt, assertHostedDependencyQualifiedInventory,
   assertHostedDependencyPhysicalWorkspace, hostedDependencyOwnerRoot, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { hostedDependencyInstallerRoot, readHostedDependencyInstallerProfile } from "./hosted-dependency-installer-recipe";
@@ -23,7 +23,16 @@ import { referenceFailure as fail, referencePath, encodeReference as encode, ref
   pinReferenceFile, readFixedReference, writeReferenceOnce, readReferenceRelation, parseReferenceStart, parseReferenceEntry, parseReferenceResult,
   type ReferenceRelation, type ReferenceStart, type ReferenceEntry, type ReferenceResult, type ReferenceRelease } from "./hosted-dependency-legacy-reference-records";
 
-type Prepared = { readonly relation: ReferenceRelation; readonly candidateInputs: HostedDependencyKeyInputs;
+import { DependencyInstallProfile } from "../worker-core/dependency-environment/domain/dependency-install-key";
+import { DependencyLegacyComparisonRecipe } from "../worker-core/dependency-environment/domain/dependency-legacy-comparison";
+import { openCapturedDependencySourceLinks } from "../worker-local/dependency-environment/dependency-source-binding";
+import { copyHostedLegacyLocalReferenceInputs } from "./hosted-dependency-legacy-reference-inputs";
+
+import { assertDependencySourceExposureCurrent, type DependencySourceExposure } from "../worker-local/dependency-environment/observe-dependency-tree";
+import { LocalDependencySourceBindingStore } from "../worker-local/dependency-environment/dependency-source-binding";
+import { assertHostedDependencyLocalOutputProof } from "./hosted-dependency-output-proof";
+
+type Prepared = { readonly candidateBaseline:DependencySourceExposure; readonly relation: ReferenceRelation; readonly candidateInputs: HostedDependencyKeyInputs;
   readonly referenceInputs: HostedDependencyKeyInputs; sealed: boolean };
 // Only own actual captures under the two current Maintenance exclusions create
 // this process-private reservation relation. A protected DTO cannot register it.
@@ -34,8 +43,10 @@ function profileSha(): string { return hash(encode(readHostedDependencyInstaller
 function absent(path: string): boolean {
   try {lstatSync(path);return false;} catch(e) {if ((e as NodeJS.ErrnoException).code === "ENOENT") return true;throw e;}
 }
-function registry(inputs: HostedDependencyKeyInputs) {
-  if (inputs.recipe !== Recipe.NpmRegistryNoScriptsV1) fail();
+function semanticInputs(inputs: HostedDependencyKeyInputs) {
+  if (inputs.recipe===Recipe.NpmLocalNoLifecycleV1) return {lockName:inputs.lockName,installKey:inputs.key.installKey,
+    inputSha256:inputs.capture.closureDigest,profileSha256:inputs.profileSha256,closureDigest:inputs.capture.closureDigest,
+    packageSha256:hash(inputs.packageBytes),lockSha256:hash(inputs.lockBytes)};
   const qualified = qualifyHostedDependencyInstallerInputs(inputs.packageBytes,inputs.lockBytes,inputs.lockName);
   return {lockName:inputs.lockName,installKey:inputs.key.installKey,inputSha256:qualified.sha256,profileSha256:profileSha(),
     closureDigest:inputs.capture.closureDigest,packageSha256:hash(inputs.packageBytes),lockSha256:hash(inputs.lockBytes)};
@@ -71,8 +82,10 @@ function copyRegistryInputs(binding: HostedDependencyBinding, inputs: HostedDepe
   } finally {closeSync(fd);}
 }
 /** Operator preparation owns fresh captures and exclusions. Public identifiers
- * select enrolled roots; no second binding, Complete, key or callback is accepted. */
-export async function prepareHostedLegacyReference(candidateJobId: string, referenceJobId: string, operationId: string) {
+ * select enrolled roots; the genuine opaque original baseline is deny-only.
+ * No second binding, Complete, key or callback is accepted. */
+export async function prepareHostedLegacyReference(candidateJobId: string, referenceJobId: string, operationId: string, candidateBaseline:DependencySourceExposure) {
+  assertDependencySourceExposureCurrent(candidateBaseline);
   referencePath(operationId,"reference"); if (prepared.has(operationId) || prepared.size>=128) fail();
   const actual = withHostedActivationFence(fence => {
     const candidate = assertHostedDependencyComparisonMaintenanceUnderFence(fence,candidateJobId,readMaintenance(candidateJobId,operationId));
@@ -89,24 +102,34 @@ export async function prepareHostedLegacyReference(candidateJobId: string, refer
   });
   const cm=readMaintenance(candidateJobId,operationId),rm=readMaintenance(referenceJobId,operationId);
   assertHostedDependencyComparisonQuiescent(candidateJobId,cm); assertHostedDependencyComparisonQuiescent(referenceJobId,rm);
-  const candidateInputs=await readHostedDependencyKeyInputs(actual.candidate.binding),inputs=registry(candidateInputs);
+  const candidateInputs=await readHostedDependencyKeyInputs(actual.candidate.binding);assertDependencySourceExposureCurrent(candidateBaseline);
+  const inputs=semanticInputs(candidateInputs);
   withHostedActivationFence(fence => {
     assertHostedDependencyComparisonMaintenanceUnderFence(fence,candidateJobId,cm);assertHostedDependencyComparisonMaintenanceUnderFence(fence,referenceJobId,rm);
     assertHostedDependencyKeyInputsCurrent(actual.candidate.binding,candidateInputs);
-    copyRegistryInputs(actual.reference.binding,candidateInputs);
+    const kind=actual.reference.binding.version===3?actual.reference.binding.reference.kind:fail();
+    if (candidateInputs.recipe===Recipe.NpmLocalNoLifecycleV1) {
+      if (kind!==HostedDependencyReferenceKind.LegacyLocalNoLifecycleV1) fail();
+      copyHostedLegacyLocalReferenceInputs(actual.reference.binding,candidateInputs);
+    } else {if (kind!==HostedDependencyReferenceKind.LegacyRegistryV1) fail();copyRegistryInputs(actual.reference.binding,candidateInputs);}
+    assertHostedDependencyKeyInputsCurrent(actual.candidate.binding,candidateInputs);
   });
-  const referenceInputs=await readHostedDependencyKeyInputs(actual.reference.binding);
-  if (!same(registry(referenceInputs),inputs)) fail();
+  const referenceInputs=await readHostedDependencyKeyInputs(actual.reference.binding);assertDependencySourceExposureCurrent(candidateBaseline);
+  assertHostedDependencyKeyInputsCurrent(actual.candidate.binding,candidateInputs);
+  if (!same(semanticInputs(referenceInputs),inputs)) fail();
   const receipt=readHostedDependencyReceipt(actual.candidate.binding); if (receipt?.state!==State.Unverified) fail();
   const original=readHostedDependencyCommittedUnverified(actual.candidate.binding,receipt.revision);
   const referenceBinding=actual.reference.binding;if (referenceBinding.version!==3) fail();
-  const relation:ReferenceRelation={version:1,operationId,candidate:{binding:actual.candidate.binding,maintenance:cm,original},
+  const fields={operationId,candidate:{binding:actual.candidate.binding,maintenance:cm,original},
     reference:{binding:referenceBinding,staging:rm},inputs};
+  const relation:ReferenceRelation=candidateInputs.recipe===Recipe.NpmLocalNoLifecycleV1?
+    {...fields,version:2,recipe:DependencyLegacyComparisonRecipe.NpmLocalNoLifecycleV1,profile:DependencyInstallProfile.TestNpmLocalNoLifecycleV1}:{...fields,version:1};
   withHostedActivationFence(fence => {
     assertHostedDependencyComparisonMaintenanceUnderFence(fence,candidateJobId,cm);assertHostedDependencyComparisonMaintenanceUnderFence(fence,referenceJobId,rm);
     assertHostedDependencyKeyInputsCurrent(actual.candidate.binding,candidateInputs);assertHostedDependencyKeyInputsCurrent(actual.reference.binding,referenceInputs);
     ensureHostedDependencyDirectory(legacyComparisonRoot); writeReferenceOnce(referencePath(operationId,"reference"),relation);
-    prepared.set(operationId,{relation,candidateInputs,referenceInputs,sealed:false});
+    assertDependencySourceExposureCurrent(candidateBaseline);
+    prepared.set(operationId,{candidateBaseline,relation,candidateInputs,referenceInputs,sealed:false});
   });
   return readReferenceRelation(operationId).reference;
 }
@@ -122,20 +145,27 @@ export function assertHostedLegacyReferenceReservationPrepared(fence:HostedActiv
   const own=prepared.get(binding.reference.operationId);if (!own || own.sealed) fail();
   const protectedRelation=readReferenceRelation(binding.reference.operationId);
   if (!same(protectedRelation.value,own.relation) || !same(binding,own.relation.reference.binding)) fail();
-  assertBindings(own.relation);assertCandidate(own.relation);
+  assertBindings(own.relation);assertCandidate(own.relation);assertDependencySourceExposureCurrent(own.candidateBaseline);
   const store=owners();try {assertDependencyMaintenance(store,binding.workspace,own.relation.reference.staging);} finally {store.close();}
   assertHostedDependencyKeyInputsCurrent(own.relation.candidate.binding,own.candidateInputs);assertHostedDependencyKeyInputsCurrent(binding,own.referenceInputs);
-  if (!same(registry(own.referenceInputs),own.relation.inputs) || !absent(binding.workspace.canonicalPath+"/node_modules") ||
+  if (!same(semanticInputs(own.referenceInputs),own.relation.inputs) || !absent(binding.workspace.canonicalPath+"/node_modules") ||
       readHostedDependencyReceipt(binding) || !hasHostedDependencyFreshAbsence(binding)) fail();
 }
 /** Same own original copy/candidate physical sessions, retained through the
  * real foreground wait. No late capture or claimed DTO resets the baseline. */
 export function assertHostedLegacyReferenceSourcesCurrent(fence:HostedActivationFence,operationId:string):void {
   assertHostedActivationFence(fence);const own=prepared.get(operationId);if (!own || !own.sealed) fail();
-  if (!same(readReferenceRelation(operationId).value,own.relation)) fail();assertBindings(own.relation);assertCandidate(own.relation);
+  if (!same(readReferenceRelation(operationId).value,own.relation)) fail();assertBindings(own.relation);assertCandidate(own.relation);assertDependencySourceExposureCurrent(own.candidateBaseline);
   assertHostedDependencyKeyInputsCurrent(own.relation.candidate.binding,own.candidateInputs);
   assertHostedDependencyKeyInputsCurrent(own.relation.reference.binding,own.referenceInputs);
-  if (!same(registry(own.referenceInputs),own.relation.inputs)) fail();
+  if (!same(semanticInputs(own.referenceInputs),own.relation.inputs)) fail();
+}
+/** Returns only a genuine independently captured reference source session.
+ * Operation selects the private relation; no DTO or candidate tree is accepted. */
+export function openHostedLegacyReferenceSourceLinks(operationId:string) {
+  const own=prepared.get(operationId);if (!own || !own.sealed || own.referenceInputs.recipe!==Recipe.NpmLocalNoLifecycleV1 || own.relation.version!==2) fail();
+  assertHostedDependencyKeyInputsCurrent(own.relation.reference.binding,own.referenceInputs);
+  return openCapturedDependencySourceLinks(own.referenceInputs.capture);
 }
 /** Logical invalidation only; never releases a durable owner or a kernel gate. */
 export function closeHostedLegacyReferencePreparation(operationId:string):void {prepared.delete(operationId);}
@@ -185,7 +215,7 @@ export async function tryRunHostedLegacyReference(config:CodexGoalRunConfig) {
     } finally {store.close();}
   });
   if (!selected) return undefined;
-  const inputs=await readHostedDependencyKeyInputs(selected.binding);if (!same(registry(inputs),selected.relation.value.inputs)) fail();
+  const inputs=await readHostedDependencyKeyInputs(selected.binding);if (!same(semanticInputs(inputs),selected.relation.value.inputs)) fail();
   withHostedActivationFence(fence => {
     const actual=actualEntry(fence,config);if (!actual || !same(actual.sealRef,selected.sealRef)) fail();
     const entry=readFixedReference(selected.entryRef,referencePath(selected.relation.value.operationId,"reference-entry"),v => parseReferenceEntry(v,selected.binding.workspace));
@@ -197,9 +227,10 @@ export async function tryRunHostedLegacyReference(config:CodexGoalRunConfig) {
   const result=withHostedActivationFence(fence => {
     const actual=actualEntry(fence,config);if (!actual || !same(actual.sealRef,selected.sealRef)) fail();
     if (!sameDependencyAttempt(readHostedDependencyAttempt(selected.binding,actual.origin.start,actual.seal.startId,DependencyOwnerPhase.ExclusiveMutation),selected.attempt)) fail();
-    assertHostedDependencyKeyInputsCurrent(selected.binding,inputs);if (!same(registry(inputs),selected.relation.value.inputs)) fail();
+    assertHostedDependencyKeyInputsCurrent(selected.binding,inputs);if (!same(semanticInputs(inputs),selected.relation.value.inputs)) fail();
     const ready=readHostedDependencyReceipt(selected.binding);
-    if (ready?.state!==State.Ready || ready.provenance.kind!==Proof.CompletedInstall || ready.generation!==selected.attempt.attemptId || ready.installKey!==inputs.key.installKey) fail();
+    if (ready?.state!==State.Ready || (selected.relation.value.version===2?ready.provenance.kind!==Proof.CompletedLocalInstallV1:ready.provenance.kind!==Proof.CompletedInstall) || ready.generation!==selected.attempt.attemptId || ready.installKey!==inputs.key.installKey) fail();
+    if (ready.provenance.kind!==Proof.CompletedInstall && ready.provenance.kind!==Proof.CompletedLocalInstallV1) fail();
     const output=readHostedDependencyCommittedReady(selected.binding,ready.revision),mapping=pinReferenceFile(`${hostedDependencyInstallerRoot}/attempt-${selected.attempt.attemptId}.json`,4096);
     const mapped:unknown=JSON.parse(mapping.bytes.toString("utf8"));
     if (!mapped || typeof mapped!=="object" || Array.isArray(mapped) || !('startId' in mapped) || typeof mapped.startId!=="string" ||
@@ -208,15 +239,27 @@ export async function tryRunHostedLegacyReference(config:CodexGoalRunConfig) {
     const directory=`${hostedDependencyInstallerRoot}/${mapped.startId}`,start=pinReferenceFile(directory+"/start.json"),creator=pinReferenceFile(directory+"/creator.json"),
       completion=pinReferenceFile(directory+"/creator-completion.json"),terminal=pinReferenceFile(directory+"/terminal.json");
     const retained=JSON.parse(start.bytes.toString("utf8")),finished=JSON.parse(terminal.bytes.toString("utf8"));
-    if (retained.schemaVersion!==1 || retained.recipe!==Recipe.NpmRegistryNoScriptsV1 || retained.inputSha256!==selected.relation.value.inputs.inputSha256 ||
+    if ((selected.relation.value.version===2?retained.schemaVersion!==2 || retained.recipe!==Recipe.NpmLocalNoLifecycleV1 || retained.installKey!==inputs.key.installKey || retained.closureDigest!==inputs.capture.closureDigest:retained.schemaVersion!==1 || retained.recipe!==Recipe.NpmRegistryNoScriptsV1) || retained.inputSha256!==selected.relation.value.inputs.inputSha256 ||
         retained.profileSha256!==selected.relation.value.inputs.profileSha256 || !same(retained.attempt,selected.attempt) ||
         !same(retained.workspace,selected.binding.workspace) || finished.startId!==mapped.startId || !same(finished.output,ready.tree) ||
         ready.provenance.installerDrainEvidenceId!==completion.reference.sha256 || ready.provenance.verificationEvidenceId!==ready.manifestDigest) fail();
-    const reference:ReferenceResult["reference"]={workspace:ready.workspace,generation:ready.generation,coverageRevision:ready.coverageRevision,tree:ready.tree,
-      manifestVersion:1,manifestDigest:ready.manifestDigest,installationId:mapped.startId,output:output.reference,mapping:mapping.reference,
+    const common={workspace:ready.workspace,generation:ready.generation,coverageRevision:ready.coverageRevision,tree:ready.tree,
+      manifestDigest:ready.manifestDigest,installationId:mapped.startId,output:output.reference,mapping:mapping.reference,
       start:start.reference,creator:creator.reference,completion:completion.reference,terminal:terminal.reference};
-    const body:ReferenceResult={version:1,operationId:selected.relation.value.operationId,relation:selected.relation.reference,referenceStart:selected.sealRef,
-      referenceEntry:selected.entryRef,reference,installKey:inputs.key.installKey,inputSha256:retained.inputSha256,profileSha256:retained.profileSha256};
+    const fields={operationId:selected.relation.value.operationId,relation:selected.relation.reference,referenceStart:selected.sealRef,
+      referenceEntry:selected.entryRef,installKey:inputs.key.installKey,inputSha256:retained.inputSha256 as string,profileSha256:retained.profileSha256 as string};
+    let body:ReferenceResult;
+    if (selected.relation.value.version===2) {
+      if (inputs.recipe!==Recipe.NpmLocalNoLifecycleV1 || ready.provenance.kind!==Proof.CompletedLocalInstallV1) fail();
+      const source=new LocalDependencySourceBindingStore("/var/lib/subscription-runtime-host-policy/dependency-source-bindings",{assertInstallerCompletion:fail})
+        .readInstalledHistory(ready.provenance.sourceBinding);
+      if (source.version!==2 || source.closureDigest!==inputs.capture.closureDigest || source.generation!==ready.generation ||
+          source.coverageRevision!==ready.coverageRevision || source.installKey!==ready.installKey || source.manifestDigest!==ready.manifestDigest ||
+          !same(source.workspace,ready.workspace) || !same(source.tree,ready.tree) || source.installerCompletionSha256!==completion.reference.sha256) fail();
+      assertHostedDependencyLocalOutputProof(source);
+      body={...fields,version:2,recipe:DependencyLegacyComparisonRecipe.NpmLocalNoLifecycleV1,profile:DependencyInstallProfile.TestNpmLocalNoLifecycleV1,
+        closureDigest:inputs.capture.closureDigest,reference:{...common,manifestVersion:2,sourceBinding:ready.provenance.sourceBinding}};
+    } else {body={...fields,version:1,reference:{...common,manifestVersion:1}};}
     const proof=writeReferenceOnce(referencePath(body.operationId,"reference-result"),body);
     return {operationId:body.operationId,proof};
   });
