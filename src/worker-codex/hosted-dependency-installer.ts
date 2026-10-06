@@ -25,6 +25,7 @@ import { retryHostedFenceAcquisition } from "../provider-codex/app-server/adapte
 import { qualifyHostedDependencyInstallerInputs, qualifyHostedDependencyLocalInstallerInputs, HostedDependencyInstallerRecipe,
   type HostedDependencyInstallerQualifiedInputs } from "./hosted-dependency-installer-inputs";
 import { createHostedDependencyInstallerPlan, assertHostedDependencyInstallerPlan, hostedDependencyInstallerRoot, readHostedDependencyInstallerProfile, type HostedDependencyInstallerPlan } from "./hosted-dependency-installer-recipe";
+import { projectHostedDependencySelectionToolchain } from "./hosted-dependency-installer-inputs";
 import { captureNpmLocalClosure } from "../worker-local/dependency-environment/capture-npm-local-closure";
 import { NpmInputCaptureStatus } from "../worker-local/dependency-environment/capture-npm-install-inputs";
 
@@ -155,11 +156,15 @@ export class HostedDependencyInstaller {
       // Own the real capture; no caller DTO, installKey, digest or argv supplies
       // local installation authority. Durable ExclusiveMutation spans awaits.
       withHostedActivationFence(fence => assertOwner(fence, request));
-      const captured = await captureNpmLocalClosure({ workspacePath: request.workspace.canonicalPath, expectedWorkspace: request.workspace,
+      const protectedProfile = readHostedDependencyInstallerProfile(), protectedProfileBytes = encode(protectedProfile);
+      const captured = await captureNpmLocalClosure({ selectionToolchain: projectHostedDependencySelectionToolchain(protectedProfile), workspacePath: request.workspace.canonicalPath, expectedWorkspace: request.workspace,
         maxInputBytes: 64 * 1024 * 1024, maxEntries: 16384, maxPackages: 128, maxDurationMs: 10000 });
       if (captured.status !== NpmInputCaptureStatus.Qualified) fail();
       inputs = withHostedActivationFence(fence => {
-        assertOwner(fence, request); return qualifyHostedDependencyLocalInstallerInputs(captured, readHostedDependencyInstallerProfile());
+        assertOwner(fence, request);
+        const currentProfile = readHostedDependencyInstallerProfile();
+        if (!encode(currentProfile).equals(protectedProfileBytes)) fail();
+        return qualifyHostedDependencyLocalInstallerInputs(captured, currentProfile);
       });
     } else {
       if (request.recipe !== undefined && request.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1 ||

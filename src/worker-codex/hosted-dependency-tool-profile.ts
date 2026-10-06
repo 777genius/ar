@@ -13,7 +13,7 @@ export { createHostedDependencyToolProfile } from "./hosted-dependency-tool-prof
 import { assertHostedActivationFence, readHostedOrdinaryProcessOrigin, readHostedActivationBytes, decodeHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readHostedDependencyAttempt, readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { observeDependencyTree, captureDependencySourceExposure, assertDependencySourceExposureCurrent,
+import { observeDependencyTree, observeDependencyTreeWithLocalRegistrySelection, assertDependencyLocalRegistrySelectionAbsent, captureDependencyLocalRootOnlySourceExposure, assertDependencySourceExposureCurrent,
   closeDependencySourceExposure, type DependencySourceExposure } from "../worker-local/dependency-environment/observe-dependency-tree";
 import { dependencySourceLinkProof, openCapturedDependencySourceLinks, closeDependencySourceLinkSession,
   readDependencySourceLinkSession, capturedDependencySourceBindingOutputBody, capturedDependencyLegacyLocalSourceFields } from "../worker-local/dependency-environment/dependency-source-binding";
@@ -85,7 +85,8 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   if (local ? before.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1 :
       !verifiedRegistry(receipt) || before.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1) fail();
   const source = openHostedDependencyReadySourceLinks(receipt);
-  let exposure: DependencySourceExposure | undefined;
+  let exposure: DependencySourceExposure | undefined, nodeModulesExposure: DependencySourceExposure | undefined;
+  let capturedSource: ReturnType<typeof openCapturedDependencySourceLinks> | undefined;
   try {
   const readonlySources = currentSources(before, receipt);
   const deadline = performance.now() + hostedDependencyObservationLimits.maxDurationMs;
@@ -93,9 +94,16 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   let manifest: Uint8Array;
   try { assertExclusive(); manifest = await placement.get(receipt.manifestDigest); assertExclusive(); }
   finally { await placement.close(); assertExclusive(); }
-  const observed = await observeDependencyTree({ workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
-    expectedWorkspace: binding.workspace, expectedTree: receipt.tree, limits: hostedDependencyObservationLimits,
-    ...(source ? { sourceLinkSession: source } : {}) });
+  const observationInput = { workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
+    expectedWorkspace: binding.workspace, expectedTree: receipt.tree, limits: { ...hostedDependencyObservationLimits, maxDurationMs: Math.floor(deadline - performance.now()) },
+    ...(source ? { sourceLinkSession: source } : {}) } as const;
+  if (local) {
+    if (before.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1 || !source) fail();
+    capturedSource = openCapturedDependencySourceLinks(before.capture);
+  }
+  const observed = capturedSource && source ? await observeDependencyTreeWithLocalRegistrySelection({ ...observationInput,
+    sourceLinkSession: capturedSource, protectedSourceLinkSession: source }) : await observeDependencyTree(observationInput);
+  if (observed.status === DependencyTreeObservationStatus.Complete && "exposure" in observed) nodeModulesExposure = observed.exposure;
   assertExclusive();
   if (observed.status !== DependencyTreeObservationStatus.Complete || observed.digest !== receipt.manifestDigest ||
       !Buffer.from(manifest).equals(observed.canonicalBytes)) fail(DependencyAdmissionFailure.UnsafeTree);
@@ -108,7 +116,7 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
       maxDurationMs: Math.floor(deadline - performance.now()) };
     if ([remaining.maxEntries, remaining.maxTotalBytes, remaining.maxManifestBytes, remaining.maxDurationMs]
         .some(value => !Number.isSafeInteger(value) || value <= 0)) fail(DependencyAdmissionFailure.UnsafeTree);
-    const captured = await captureDependencySourceExposure({ roots: readonlySources.map(root => ({
+    const captured = await captureDependencyLocalRootOnlySourceExposure({ roots: readonlySources.map(root => ({
       parentPath: dirname(root.canonicalPath), name: root.canonicalPath.slice(dirname(root.canonicalPath).length + 1), expectedTree: root.identity })), limits: remaining });
     assertExclusive();
     if (captured.status !== DependencyTreeObservationStatus.Complete) fail(DependencyAdmissionFailure.UnsafeTree);
@@ -129,6 +137,9 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
     assertHostedDependencyKeyInputsCurrent(binding, before); placement.assertCurrent(fence);
     if (!encode(currentSources(before, receipt)).equals(encode(readonlySources))) fail();
     if (exposure) assertDependencySourceExposureCurrent(exposure);
+    if (local && (!nodeModulesExposure || !capturedSource)) fail(DependencyAdmissionFailure.UnsafeTree);
+    if (nodeModulesExposure && capturedSource) assertDependencyLocalRegistrySelectionAbsent(nodeModulesExposure, capturedSource,
+      binding.workspace, observed.tree, Math.floor(deadline - performance.now()));
     assertProfileFiles(profile, binding.jobRootDir);
     const current = lstatSync(`${binding.workspace.canonicalPath}/node_modules`, { bigint: true });
     if (!current.isDirectory() || String(current.dev) !== observed.tree.dev || String(current.ino) !== observed.tree.ino) fail();
@@ -147,6 +158,8 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   exposure = undefined; // The one private entry now owns the logical baseline.
   return entry;
   } finally {
+    if (nodeModulesExposure) closeDependencySourceExposure(nodeModulesExposure);
+    if (capturedSource) closeDependencySourceLinkSession(capturedSource);
     if (source) closeDependencySourceLinkSession(source);
     if (exposure) closeDependencySourceExposure(exposure);
   }

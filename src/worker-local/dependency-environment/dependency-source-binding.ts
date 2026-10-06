@@ -1,9 +1,10 @@
+import { encodeDependencyLocalInputCommitment } from "./build-test-npm-dependency-install-key";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync,
   statfsSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, isAbsolute, posix, resolve } from "node:path";
 import { DependencyInstallProfile } from "../../worker-core/dependency-environment/domain/dependency-install-key";
-import { DependencyLocalClosureKind, qualifyDependencyNpmLocalClosure } from "../../worker-core/dependency-environment/domain/dependency-local-closure";
+import { DependencyLocalClosureKind, qualifyDependencyNpmLocalClosure, type DependencyLocalRegistrySelection } from "../../worker-core/dependency-environment/domain/dependency-local-closure";
 import { DependencyInstallProofKind, sameDependencyTree, sameDependencyWorkspace,
   type DependencySourceBindingReference, type DependencyWorkspaceIdentity, type DependencyProofBinding } from "../../worker-core/dependency-environment/domain/dependency-receipt";
 import type { DependencyLogicalSourceLink } from "../../worker-core/dependency-environment/domain/dependency-tree-manifest";
@@ -84,14 +85,10 @@ function directoryPins(capture: QualifiedNpmLocalInputs): DependencySourceDirect
     .map(({ path, dev, ino, mode, mountId }) => ({ path, dev, ino, mode, mountId })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 }
 function links(capture: QualifiedNpmLocalInputs): DependencyLogicalSourceLink[] {
-  const closure = qualifyDependencyNpmLocalClosure({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes, packages: capture.closure.packages });
+  const closure = qualifyDependencyNpmLocalClosure({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes, packages: capture.closure.packages, ...(capture.selectionToolchain ? { selectionToolchain: capture.selectionToolchain } : {}) });
   if (JSON.stringify(closure) !== JSON.stringify(capture.closure)) fail();
-  // Independently recompute the existing frozen capture v1 digest contract.
-  // This checks actual reconstructed inputs, not the caller's digest label.
-  const closureDigest = sha(encode({ version: 1, lockName: capture.lockName, root: sha(capture.packageBytes), lock: sha(capture.lockBytes),
-    layout: closure.layout, packages: closure.packages.map(pkg => ({ path: pkg.path, kind: pkg.kind, package: sha(pkg.packageBytes),
-      directories: pkg.directories, files: pkg.files.map(file => ({ path: file.path, mode: file.mode, bytes: file.bytes.length, sha256: sha(file.bytes) })) })),
-    edges: closure.edges }));
+  const closureDigest = encodeDependencyLocalInputCommitment({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes,
+    lockName: capture.lockName, closure, ...(capture.selectionToolchain ? { selectionToolchain: capture.selectionToolchain } : {}) }).sha256;
   if (capture.closureDigest !== closureDigest) fail();
   const result = new Map<string, DependencyLogicalSourceLink>();
   for (const edge of closure.edges) if (edge.kind === DependencyLocalClosureKind.PureWorkspaceLink) {
@@ -135,6 +132,10 @@ function sourceDirectories(workspace: DependencyWorkspaceIdentity, pins: readonl
       }
       if (!observe) pinMatches(parent, pin); if (parent.mountId !== root.mountId) fail(DependencySourceBindingFailure.Changed);
       observed.push({ path: pin.path, dev: String(parent.before.dev), ino: String(parent.before.ino), mode: String(parent.before.mode), mountId: parent.mountId });
+    }
+    for (const [path, target] of held) if (path) {
+      try { lstatSync(at(target.fd, "node_modules")); fail(DependencySourceBindingFailure.Changed); }
+      catch (error) { if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error; }
     }
     for (const entry of manifests ?? []) {
       const target = held.get(entry.sourcePath); if (!target) fail();
@@ -189,6 +190,17 @@ export function dependencyComparedSourceLinkProof(value: DependencySourceLinkSes
   const state = sessions.get(value);
   if (!state || state.closed || !state.compared || !state.reference) fail(); state.current();
   return { record: state.compared, reference: state.reference };
+}
+/** Logical facts reconstructed from an authentic retained capture session only. */
+export function readDependencySourceRegistrySelection(value: DependencySourceLinkSession, workspace: DependencyWorkspaceIdentity): DependencyLocalRegistrySelection | undefined {
+  const state = sessions.get(value);
+  if (!state || state.closed || !state.capture || !sameDependencyWorkspace(state.workspace, workspace) || state.name !== "node_modules") fail();
+  state.current();
+  const capture = state.capture;
+  const closure = qualifyDependencyNpmLocalClosure({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes,
+    packages: capture.closure.packages, ...(capture.selectionToolchain ? { selectionToolchain: capture.selectionToolchain } : {}) });
+  if (JSON.stringify(closure) !== JSON.stringify(capture.closure)) fail();
+  return closure.version === 2 ? structuredClone(closure.registrySelection) : undefined;
 }
 export function dependencySourceLinkAllowsSubset(value: DependencySourceLinkSession): boolean {
   const state = sessions.get(value); if (!state || state.closed) fail(); return !!(state.record || state.compared) && state.name !== "node_modules";
