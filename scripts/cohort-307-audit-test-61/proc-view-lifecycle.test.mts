@@ -457,6 +457,8 @@ cases=[
     (['/','/a'],'/ab/file',0,'/r0/ab/file'),
     (['/','/a/'],'/a',0,'/r0/a'),
     (['/','/a/'],'/a/file',1,'/r1/file'),
+    (['/','/a','/a/'],'/a/file',2,'/r2/file'),
+    (['/','/a/','/a/'],'/a/file',None,'MountJoinUnknown'),
     (['/','/a//'],'/a///file',1,'/r1/file'),
     (['/','///'],'/',1,'/r1'),
     (['/','/é'],'/é/f',1,'/r1/f'),
@@ -493,7 +495,7 @@ os.mkdir(r+'/table');directory=os.open(r+'/table',p['O_DIR']);held=[];parsed=Non
 with open(r+'/table/mountinfo','wb') as output:
     for i in range(10000):output.write((str(i+1)+' 1 0:1 / /point'+str(i)+' rw - x x rw\n').encode())
 try:
-    for i in range(55):held.append(p['FdInventory'](directory,b))
+    for i in range(59):held.append(p['FdInventory'](directory,b))
     before=b.view_heap
     assert refused(lambda:p['mount_table'](directory,b),'ByteLimit')
     assert b.view_heap==before and not b.mount_allocations and not b.mount_indexes

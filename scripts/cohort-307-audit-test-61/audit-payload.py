@@ -390,19 +390,16 @@ class MountLookup:
             for row in rows:
                 budget.check(); point = row['point']
                 existing = self.exact.get(point)
+                self.add(self.exact, point, row)
+                # Ordinary prefix keys equal raw exact keys: reuse that bucket.
+                # Only trailing-slash spellings need a separate trimmed bucket.
+                if not point.endswith('/'): continue
                 if existing is not None:
-                    self.add(self.exact, point, row)
-                    self.add(self.prefix, existing[3], row)
-                    continue
-                # Prefix membership is startswith(trimmedPoint + '/'). Common
-                # non-trailing spellings borrow the exact immutable point string.
+                    self.add(self.prefix, existing[3], row); continue
                 end = len(point)
                 while end and point[end - 1] == '/':
                     budget.check(); end -= 1
-                if end == len(point): prefix = point
-                else:
-                    self.reserve(256 + 4 * end); prefix = point[:end]
-                self.add(self.exact, point, row)
+                self.reserve(256 + 4 * end); prefix = point[:end]
                 self.exact[point].append(prefix)
                 self.add(self.prefix, prefix, row)
         except BaseException:
@@ -429,7 +426,7 @@ class MountLookup:
         budget.charge(size); budget.heap_reserve(size)
         try:
             best, second, length = None, None, -1
-            bucket = self.exact.get(path)
+            buckets = (self.exact.get(path), None)
             # At most one exact hit plus8192 literal prefixes, no retained prefix list.
             for position in range(-1, len(path)):
                 budget.check()
@@ -437,14 +434,18 @@ class MountLookup:
                     if path[position] != '/': continue
                     temporary = 128 + 4 * position
                     budget.charge(temporary); budget.heap_reserve(temporary)
-                    try: bucket = self.prefix.get(path[:position])
+                    try:
+                        prefix = path[:position]
+                        buckets = (self.exact.get(prefix), self.prefix.get(prefix))
+                        del prefix
                     finally: budget.heap_release(temporary)
-                if bucket is None or bucket[0] < length: continue
-                if bucket[0] > length: best, second, length = None, None, bucket[0]
-                for row in (bucket[1], bucket[2]):
-                    if row is None or row is best or row is second: continue
-                    if best is None: best = row
-                    else: second = row
+                for bucket in buckets:
+                    if bucket is None or bucket[0] < length: continue
+                    if bucket[0] > length: best, second, length = None, None, bucket[0]
+                    for row in (bucket[1], bucket[2]):
+                        if row is None or row is best or row is second: continue
+                        if best is None: best = row
+                        else: second = row
             if best is None or second is not None: raise Refusal('MountJoinUnknown')
             return best
         finally: budget.heap_release(size)
