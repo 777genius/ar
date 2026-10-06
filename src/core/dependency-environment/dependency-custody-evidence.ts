@@ -99,9 +99,13 @@ function referenceFields(value: Record<string, unknown>, names: readonly string[
   return names.every(name => isDependencyProtectedReference(value[name]));
 }
 function fail(): never { throw new DependencyCustodyEvidenceError(); }
-export function parseDependencyCustodyEvidence(value: unknown): DependencyCustodyEvidence {
-  if (typeof value !== "object" || value === null || !("kind" in value)) fail();
-  const kindDescriptor = Object.getOwnPropertyDescriptor(value, "kind");
+function requireCustodyObject(value: unknown, keys: string): Record<string, unknown> {
+  if (!isDependencyCustodyObject(value, keys)) fail();
+  return value;
+}
+export function parseDependencyCustodyEvidence(input: unknown): DependencyCustodyEvidence {
+  if (typeof input !== "object" || input === null || !("kind" in input)) fail();
+  const kindDescriptor = Object.getOwnPropertyDescriptor(input, "kind");
   if (!kindDescriptor || !Object.hasOwn(kindDescriptor, "value")) fail();
   const kind = kindDescriptor.value;
   const common = "installation,kind,operationId,version,workspace";
@@ -109,7 +113,9 @@ export function parseDependencyCustodyEvidence(value: unknown): DependencyCustod
     kind === DependencyCustodyEvidenceKind.ReadonlyLocalSuccessorIntentV1 ? "addresses,candidateJobId," + common + ",priorAssociation,priorReady" :
     kind === DependencyCustodyEvidenceKind.ReadonlyLocalSuccessorOutputV1 ?
       "binding,closureDigest,coverageRevision,generation,grant,installKey,installation,intent,kind,manifest,manifestDigest,operationId,priorAssociation,priorReady,sourceBody,terminalProof,toolProfile,tree,version,workspace" : "";
-  if (!keys || !isDependencyCustodyObject(value, keys.split(",").sort().join(",")) || value.version !== 1 ||
+  if (!keys) fail();
+  const value = requireCustodyObject(input, keys.split(",").sort().join(","));
+  if (value.version !== 1 ||
       typeof value.operationId !== "string" || !uuid.test(value.operationId) || !workspace(value.workspace) || !installation(value.installation)) fail();
   if (kind === DependencyCustodyEvidenceKind.ReadonlyLocalAdoptionV1) {
     const candidate = value.candidate, custody = value.readonlyCustody;
