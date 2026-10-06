@@ -92,7 +92,14 @@ try:
         raw=os.readlink('/proc/'+str(chroot_pid)+'/fd/'+str(held));target_mounts,_=p['mount_table'](chroot_proc,budget)
         root_pinned=p['object_pin'](os.stat('root',dir_fd=chroot_proc))==p['object_pin'](os.lstat(r+'/jail'))
         native_stage='ChrootMountViews'
-        views_differ=p['filesystem_path'](raw,target_mounts)[1]!=p['filesystem_path'](raw,mounts)[1]
+        collector_physical=p['filesystem_path'](raw,mounts)[1]
+        try:
+            target_physical=p['filesystem_path'](raw,target_mounts)[1]
+        except p['Refusal'] as error:
+            if str(error)!='MountJoinUnknown' or any(p['beneath'](raw,m['point']) for m in target_mounts):raise
+            views_differ=True
+        else:
+            views_differ=target_physical!=collector_physical
     except BaseException as error:
         native_failed_stage=native_stage
         native_failed_reason='Assertion' if isinstance(error,AssertionError) else 'SystemError' if isinstance(error,OSError) else 'Unknown'
