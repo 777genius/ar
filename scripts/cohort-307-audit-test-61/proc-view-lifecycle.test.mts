@@ -442,3 +442,88 @@ test('finite joined mount views preserve actual member publication and allocatio
     catch { throw new Error('Finite mount view lifecycle fixture cleanup failed'); }
   }
 });
+
+
+// Red on changed longest-prefix/tie semantics or unreleased partial index reservations.
+const lookupBoundaryScript = String.raw`
+import ctypes, json, os, runpy, sys
+p=runpy.run_path(sys.argv[1]);r=sys.argv[2];B=p['Budget'];R=p['Refusal']
+def refused(call,reason):
+    try:call()
+    except R as error:return str(error)==reason
+    return False
+cases=[
+    (['/','/a','/a/b'],'/a/b/file',2,'/r2/file'),
+    (['/','/a'],'/ab/file',0,'/r0/ab/file'),
+    (['/','/a/'],'/a',0,'/r0/a'),
+    (['/','/a/'],'/a/file',1,'/r1/file'),
+    (['/','/a//'],'/a///file',1,'/r1/file'),
+    (['/','///'],'/',1,'/r1'),
+    (['/','/é'],'/é/f',1,'/r1/f'),
+    (['/','/a','/a'],'/a/f',None,'MountJoinUnknown'),
+    (['/a'],'/else',None,'MountJoinUnknown'),
+    (['/'],'/a/../b',None,'PathShape'),
+    (['/'],'relative',None,'PathShape'),
+]
+for points,path,wanted,physical in cases:
+    b=B(35);rows=p['MountRows']([{'id':7,'point':point,'root':'/r'+str(i)} for i,point in enumerate(points)])
+    rows.index=p['MountLookup'](rows,b)
+    try:
+        if wanted is None:assert refused(lambda:p['filesystem_path'](path,rows),physical)
+        else:
+            row,actual=p['filesystem_path'](path,rows);assert row is rows[wanted] and actual==physical
+    finally:rows.index.close()
+    assert b.view_heap==0
+# Genuine stacked equal-prefix mount aliases must remain ambiguous.
+lib=ctypes.CDLL(None,use_errno=True);lib.mount.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,ctypes.c_ulong,ctypes.c_char_p];lib.umount2.argtypes=[ctypes.c_char_p,ctypes.c_int]
+os.mkdir(r+'/source');os.mkdir(r+'/tie');mounted=0;table=None;b=B(35);parent=os.open('/proc/self',os.O_RDONLY|os.O_DIRECTORY)
+try:
+    for i in range(2):
+        assert lib.mount(os.fsencode(r+'/source'),os.fsencode(r+'/tie'),None,4096,None)==0;mounted+=1
+    table,_=p['mount_table'](parent,b)
+    assert refused(lambda:p['filesystem_path'](r+'/tie/child',table),'MountJoinUnknown')
+finally:
+    if table is not None:b.release_mounts(table)
+    os.close(parent)
+    while mounted:
+        assert lib.umount2(os.fsencode(r+'/tie'),0)==0;mounted-=1
+# Real native DIR buffers coexist with a valid table, forcing index heap failure.
+# No budget counters, cap mutation or injected production hooks.
+os.mkdir(r+'/table');directory=os.open(r+'/table',p['O_DIR']);held=[];parsed=None;b=B(35)
+with open(r+'/table/mountinfo','wb') as output:
+    for i in range(10000):output.write((str(i+1)+' 1 0:1 / /point'+str(i)+' rw - x x rw\n').encode())
+try:
+    for i in range(55):held.append(p['FdInventory'](directory,b))
+    before=b.view_heap
+    assert refused(lambda:p['mount_table'](directory,b),'ByteLimit')
+    assert b.view_heap==before and not b.mount_allocations and not b.mount_indexes
+    for inventory in reversed(held):inventory.close()
+    held=[]
+    parsed,_=p['mount_table'](directory,b)
+    assert len(parsed)==10000
+    row,physical=p['filesystem_path']('/point9999/file',parsed)
+    assert row['id']==10000 and physical=='/file'
+finally:
+    if parsed is not None:b.release_mounts(parsed)
+    for inventory in reversed(held):inventory.close()
+    os.close(directory)
+assert b.view_heap==0 and not b.owned and not b.mount_indexes and not b.mount_allocations
+print(json.dumps({'literalSemantics':True,'nativeStackRefused':True,'indexCapRollback':True}))
+`;
+test('mount lookup preserves literal aliases and native capacity rollback', { timeout: 60_000 }, () => {
+  assert.equal(process.platform, 'linux'); assert.equal(process.getuid?.(), 0);
+  const root = mkdtempSync(join(tmpdir(), 'TEST-mount-lookup-'));
+  try {
+    let result: unknown;
+    try {
+      const output = execFileSync('/usr/bin/unshare', ['--mount', '--propagation', 'private',
+        '/usr/bin/python3', '-B', '-c', lookupBoundaryScript, join(artifact, 'audit-payload.py'), root],
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 55_000, maxBuffer: 4096 });
+      result = JSON.parse(output);
+    } catch { throw new Error('Native mount lookup boundary failed'); }
+    assert.deepEqual(result, { literalSemantics: true, nativeStackRefused: true, indexCapRollback: true });
+  } finally {
+    try { rmSync(root, { recursive: true, force: true }); }
+    catch { throw new Error('Native mount lookup cleanup failed'); }
+  }
+});

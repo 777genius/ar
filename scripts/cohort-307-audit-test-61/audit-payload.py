@@ -33,7 +33,7 @@ class Budget:
         self.incomplete, self.errors, self.error_total, self.error_counts = False, [], 0, {}
         self.owned = {}
         self.mount_io, self.mount_io_exhausted, self.view_heap, self.view_heap_peak, self.group_fds = 0, False, 0, 0, 0
-        self.mount_allocations = {}
+        self.mount_allocations, self.mount_indexes = {}, {}
         self.failure_facts, self.failure_gates = [], set()
         self.fd_envelope_failure = None
         self.resource_qualification = {'status': 'NotRequested', 'softBefore': None, 'hardBefore': None,
@@ -66,6 +66,8 @@ class Budget:
         self.view_heap -= size
 
     def release_mounts(self, rows):
+        index = self.mount_indexes.pop(id(rows), None)
+        if index is not None: index.close(); rows.index = None
         size = self.mount_allocations.pop(id(rows)); rows.clear(); self.heap_release(size)
 
     def own(self, fd):
@@ -337,7 +339,7 @@ def mount_digest_fd(fd, budget):
     finally: lines.close()
 
 def mount_table_fd(fd, budget):
-    rows, digest, allocated = [], hashlib.sha256(), 0
+    rows, digest, allocated, index = MountRows(), hashlib.sha256(), 0, None
     lines = mount_lines(fd, budget)
     try:
         for line in lines:
@@ -351,9 +353,13 @@ def mount_table_fd(fd, budget):
             rows.append({'id': int(fields[0]), 'dev': (int(dev[0]), int(dev[1])),
                          'root': unescape_mount(fields[3]), 'point': unescape_mount(fields[4]),
                          'type': fields[split + 1], 'options': fields[5] + b',' + fields[split + 3]})
+        index = MountLookup(rows, budget); rows.index = index
+        budget.mount_indexes[id(rows)] = index
         budget.mount_allocations[id(rows)] = allocated
         return rows, digest.hexdigest()
     except BaseException:
+        budget.mount_indexes.pop(id(rows), None); budget.mount_allocations.pop(id(rows), None)
+        if index is not None: index.close(); rows.index = None
         rows.clear(); budget.heap_release(allocated); raise
     finally: lines.close()
 
@@ -370,15 +376,99 @@ def mount_digest(parent, budget):
 def beneath(path, root):
     return path == root or path.startswith(root.rstrip('/') + '/')
 
+class MountRows(list):
+    def lookup(self, path): return self.index.lookup(path)
+
+class MountLookup:
+    # Borrow table rows only. Never cache a source/target physical object join.
+    def __init__(self, rows, budget):
+        self.budget, self.exact, self.prefix, self.allocated = budget, None, None, 0
+        self.entries = 0
+        try:
+            self.reserve(1024)
+            self.exact, self.prefix = {}, {}
+            for row in rows:
+                budget.check(); point = row['point']
+                existing = self.exact.get(point)
+                if existing is not None:
+                    self.add(self.exact, point, row)
+                    self.add(self.prefix, existing[3], row)
+                    continue
+                # Prefix membership is startswith(trimmedPoint + '/'). Common
+                # non-trailing spellings borrow the exact immutable point string.
+                end = len(point)
+                while end and point[end - 1] == '/':
+                    budget.check(); end -= 1
+                if end == len(point): prefix = point
+                else:
+                    self.reserve(256 + 4 * end); prefix = point[:end]
+                self.add(self.exact, point, row)
+                self.exact[point].append(prefix)
+                self.add(self.prefix, prefix, row)
+        except BaseException:
+            self.close(); raise
+
+    def reserve(self, size):
+        self.budget.charge(size); self.budget.heap_reserve(size); self.allocated += size
+
+    def add(self, table, key, row):
+        bucket = table.get(key)
+        if bucket is None:
+            if self.entries >= 524288: raise Refusal('ByteLimit')
+            # Dict slack, borrowed key pointer, mutable bucket and two row links.
+            self.reserve(512); self.entries += 1
+            table[key] = [len(row['point']), row, None]
+        elif len(row['point']) > bucket[0]:
+            bucket[0], bucket[1], bucket[2] = len(row['point']), row, None
+        elif len(row['point']) == bucket[0] and row is not bucket[1] and bucket[2] is None:
+            bucket[2] = row
+
+    def lookup(self, path):
+        budget = self.budget; size = 512 + 4 * len(path)
+        if len(path) > 8192: raise Refusal('ByteLimit')
+        budget.charge(size); budget.heap_reserve(size)
+        try:
+            best, second, length = None, None, -1
+            bucket = self.exact.get(path)
+            # At most one exact hit plus8192 literal prefixes, no retained prefix list.
+            for position in range(-1, len(path)):
+                budget.check()
+                if position >= 0:
+                    if path[position] != '/': continue
+                    temporary = 128 + 4 * position
+                    budget.charge(temporary); budget.heap_reserve(temporary)
+                    try: bucket = self.prefix.get(path[:position])
+                    finally: budget.heap_release(temporary)
+                if bucket is None or bucket[0] < length: continue
+                if bucket[0] > length: best, second, length = None, None, bucket[0]
+                for row in (bucket[1], bucket[2]):
+                    if row is None or row is best or row is second: continue
+                    if best is None: best = row
+                    else: second = row
+            if best is None or second is not None: raise Refusal('MountJoinUnknown')
+            return best
+        finally: budget.heap_release(size)
+
+    def close(self):
+        if self.exact is not None: self.exact.clear()
+        if self.prefix is not None: self.prefix.clear()
+        size, self.allocated = self.allocated, 0
+        self.budget.heap_release(size)
+
 def filesystem_path(path, mounts):
     if not path.startswith('/') or any(x in ('.', '..') for x in path.split('/')):
         raise Refusal('PathShape')
-    candidates = [m for m in mounts if beneath(path, m['point'])]
-    if not candidates: raise Refusal('MountJoinUnknown')
-    length = max(len(m['point']) for m in candidates)
-    selected = [m for m in candidates if len(m['point']) == length]
-    if len(selected) != 1: raise Refusal('MountJoinUnknown')
-    m = selected[0]; suffix = path[len(m['point']):].lstrip('/')
+    index = getattr(mounts, 'lookup', None)
+    if index is not None:
+        m = index(path)
+    else:
+        candidates = [m for m in mounts if beneath(path, m['point'])]
+        if not candidates: raise Refusal('MountJoinUnknown')
+        length = max(len(m['point']) for m in candidates)
+        selected = [m for m in candidates if len(m['point']) == length]
+        if len(selected) != 1: raise Refusal('MountJoinUnknown')
+        m = selected[0]
+    suffix = path[len(m['point']):].lstrip('/')
     return m, m['root'].rstrip('/') + ('/' + suffix if suffix else '') or '/'
 
 def source_leaf(root_fd, relative, budget):
