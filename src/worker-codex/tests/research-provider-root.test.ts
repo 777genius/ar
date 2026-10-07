@@ -108,6 +108,61 @@ function expectNoRootEffects(f: ReturnType<typeof captured>, observed: ReturnTyp
 }
 
 describe("closed provider root graph (native adapter over disposable TEST files)", () => {
+  // Regression: Linux emits unrelated NSFS descriptors and deleted roots in
+  // mountinfo. Rejecting the entire table prevents every admitted root plan.
+  it("retains unrelated opaque kernel mount roots without importing them", () => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(
+      "900 1 0:44 net:[4026533000] /TEST-opaque-net rw - nsfs nsfs rw",
+      "901 1 8:2 /TEST-retired//deleted /TEST-opaque-deleted rw - ext4 /dev/TEST-other rw",
+    );
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    assertResearchProviderRoot(plan, f.spec, unit, f.home);
+    expect(plan.bindings.some(bind => bind.source.startsWith("/TEST-opaque") || bind.target.startsWith("/TEST-opaque"))).toBe(false);
+    expect(fs.existsSync(join(plan.fixedRootDirectory, "TEST-opaque-net"))).toBe(false);
+    expect(fs.existsSync(join(plan.fixedRootDirectory, "TEST-opaque-deleted"))).toBe(false);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    // Revalidation must still see an opaque child; dropping opaque rows would
+    // conceal it from the unchanged nonrecursive bind topology checks.
+    observed.extraMounts.push(`902 1 0:45 net:[4026533001] ${f.spec.request.workspacePath}/TEST-opaque rw - nsfs nsfs rw`);
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).toThrow("hosted_research_launch_denied");
+  });
+  it.each([
+    ["namespace-pin", "net:[4026533000]", "nsfs", "pin-ancestor"],
+    ["namespace-protected", "net:[4026533000]", "nsfs", "protected"],
+    ["deleted-pin", "/TEST-retired//deleted", "ext4", "pin-ancestor"],
+    ["deleted-protected", "/TEST-retired//deleted", "ext4", "protected"],
+  ] as const)("denies %s opaque ancestry before all effects", (_kind, root, filesystem, selected) => {
+    const f = captured(), observed = observingHost();
+    // A different-device opaque ancestor remains forbidden even beneath an
+    // intentional pin mount with a normal selected root and matching inode.
+    const point = selected === "pin-ancestor" ? join(f.directory, "pins") : f.spec.request.authRootDir;
+    observed.extraMounts.push(`900 1 8:2 ${root} ${point} rw - ${filesystem} /dev/TEST-other rw`);
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+  });
+  it.each([
+    ["namespace", "net:[4026533000]", "nsfs"], ["deleted", "/TEST-retired//deleted", "ext4"],
+  ] as const)("keeps nested %s opaque mounts visible to RO and RW vetoes", (_kind, root, filesystem) => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(`900 1 8:2 ${root} /usr/TEST-opaque rw - ${filesystem} /dev/TEST-other rw`);
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+    observed.extraMounts[0] = `900 1 8:2 ${root} ${f.spec.request.workspacePath}/TEST-opaque rw - ${filesystem} /dev/TEST-other rw`;
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+  });
+  it.each([
+    ["net:[4026533000]", "ext4"], ["mnt:[4026533000]", "nsfs"], ["net:[0]", "nsfs"],
+    ["net:[04026533000]", "nsfs"], ["net:[-1]", "nsfs"], ["net:[1]/extra", "nsfs"],
+    ["/TEST/../retired//deleted", "ext4"], ["/TEST-retired///deleted", "ext4"],
+    ["/TEST-retired//deleted/extra", "ext4"], ["/TEST-retired//deleted", "nsfs"],
+  ] as const)("rejects unknown or malformed opaque root %s on %s", (root, filesystem) => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(`900 1 8:2 ${root} /TEST-unrelated rw - ${filesystem} /dev/TEST-other rw`);
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+  });
   // Regression: an admitted writable equal, child or ancestor path would make
   // an immutable dependency writable or hide it, before systemd ordering helps.
   it.each([
