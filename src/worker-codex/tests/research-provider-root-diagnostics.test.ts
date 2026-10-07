@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { researchHash, researchRead } from "../research-launch-files";
 import * as files from "../research-launch-files";
+import { signalResearchProvider } from "../research-launch-lifecycle";
 import { runResearchProviderService } from "../research-provider-service";
 import * as roots from "../research-provider-root";
 import { prepareHelper } from "./research-provider-service-fixture";
@@ -138,6 +139,19 @@ describe("private synchronous root timing", () => {
     });
     let observed: unknown; try { await runResearchProviderService(current.jobId, current.provider, current.home); } catch (failure) { observed = failure; }
     expect(observed === error).toBe(true); expect(attempts).toHaveLength(1); expect(host.spawn).toHaveBeenCalledTimes(1); expect(host.authReads).toBe(0);
+  });
+  it("honors a cancellation fence written during the private timing publication", async () => {
+    const current = prepareHelper(), publish = files.researchPublish, attempts = vi.fn();
+    vi.spyOn(files, "researchPublish").mockImplementation((path, value, exclusive) => {
+      publish(path, value, exclusive);
+      if (path.endsWith("/provider-root-timing.json")) { attempts(); signalResearchProvider(current.directory, current.provider); }
+    });
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow("hosted_research_launch_denied");
+    const receipt = JSON.parse(researchRead(join(current.directory, "provider-root-timing.json")).toString());
+    expect(receipt.scopes.map((scope: { scope: string; outcome: string }) => [scope.scope, scope.outcome])).toEqual([
+      ["prepare", "completed"], ["initial-launch", "completed"], ["submission-assert", "completed"]]);
+    expect(attempts).toHaveBeenCalledTimes(1); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(current.forward).not.toHaveBeenCalled();
   });
   it("attempts a failed receipt only once and preserves the service's original refusal", async () => {
     const current = prepareHelper(), error = Object.freeze(Error("TEST-private-original-error")), publish = files.researchPublish, attempts = vi.fn();

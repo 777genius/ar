@@ -175,6 +175,7 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
     capture(RootTimingScope.SubmissionAssert, () => assertResearchProviderRoot(rootPlan, spec, unit, selectedCodexHome));
     phase("systemd-submission");
     publishTiming();
+    assertForwardPermission();
     const proxy = spawn(launch.command, launch.args, { env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdio: ["pipe", "pipe", "pipe"] });
     child = proxy;
     // Hold the provider bootstrap frame until the actual service PID/birth/boot is
