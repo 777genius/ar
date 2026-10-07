@@ -18,10 +18,13 @@ import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 import { assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependency-installer";
 import { hostedDependencyInstallerRoot } from "./hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRecipe } from "./hosted-dependency-installer-inputs";
+import { DependencyInstallProofKind } from "../worker-core/dependency-environment/domain/dependency-receipt";
+import type { DependencyCompletedLocalReady } from "../worker-core/dependency-environment/ports/dependency-source-binding";
+import { closeDependencySourceLinkSession, type DependencySourceLinkSession } from "../worker-local/dependency-environment/dependency-source-binding";
 import { hostedDependencyObservationLimits as limits, readHostedDependencyKeyInputs,
   assertHostedDependencyKeyInputsCurrent, sameHostedDependencyKeyInputs } from "./hosted-dependency-materialization";
 import { ensureHostedDependencyDirectory, readHostedDependencyReceipt, publishHostedDependencyReceipt,
-  readHostedDependencyCommittedAbsent } from "./hosted-dependency-receipts";
+  readHostedDependencyCommittedAbsent, openHostedDependencySourceLinks } from "./hosted-dependency-receipts";
 import { assertHostedDependencyReferenceVeto, DependencyReferenceEffect } from "./hosted-dependency-reference-veto";
 
 export type HostedDependencyEvictionCandidate = { readonly jobId: string; readonly revision: number;
@@ -107,9 +110,15 @@ function covered(a: Authority, effect = DependencyReferenceEffect.Eviction): str
     const start = readHostedPrivateBytes(`${hostedDependencyInstallerRoot}/${value.startId}/start.json`, 65536);
     if (!start) fail();
     const retained = decodeHostedActivationBytes(start) as { schemaVersion: number; startId: string; unit: string; attempt: DependencyAttempt;
-      workspace: { canonicalPath: string; dev: string; ino: string }; recipe: unknown; inputSha256: unknown; profileSha256: unknown };
-    if (!retained || Object.keys(retained).sort().join(",") !== "attempt,inputSha256,profileSha256,recipe,schemaVersion,startId,unit,workspace" ||
-        retained.schemaVersion !== 1 || retained.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1 ||
+      workspace: { canonicalPath: string; dev: string; ino: string }; recipe: unknown; inputSha256: unknown; profileSha256: unknown;
+      installKey?: unknown; closureDigest?: unknown };
+    const registry = retained?.schemaVersion === 1 && retained.recipe === HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1 &&
+      Object.keys(retained).sort().join(",") === "attempt,inputSha256,profileSha256,recipe,schemaVersion,startId,unit,workspace";
+    const local = retained?.schemaVersion === 2 && retained.recipe === HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1 &&
+      Object.keys(retained).sort().join(",") === "attempt,closureDigest,inputSha256,installKey,profileSha256,recipe,schemaVersion,startId,unit,workspace" &&
+      typeof retained.installKey === "string" && /^[a-f0-9]{64}$/.test(retained.installKey) &&
+      typeof retained.closureDigest === "string" && /^[a-f0-9]{64}$/.test(retained.closureDigest);
+    if (!retained || (!registry && !local) ||
         retained.startId !== value.startId || retained.unit !== value.unit ||
         !retained.workspace || typeof retained.workspace.canonicalPath !== "string" ||
         typeof retained.inputSha256 !== "string" || !/^[a-f0-9]{64}$/.test(retained.inputSha256) ||
@@ -130,8 +139,40 @@ async function baseline(ready: Pick<Ready, "manifestDigest">) {
   const placement = await openHostedDependencyManifestPlacement();
   try { return { bytes: await placement.get(ready.manifestDigest), placement }; } finally { await placement.close(); }
 }
-function input(binding: HostedDependencyBinding, header: Header, bytes: Uint8Array): DependencyTreeEffectInput {
-  return { workspace: binding.workspace, trash: header.trash, manifestCanonicalBytes: bytes, manifestDigest: header.ready.manifestDigest, limits };
+function sourceLinks(header: Header, detached = false): DependencySourceLinkSession | undefined {
+  if (header.ready.provenance.kind !== DependencyInstallProofKind.CompletedLocalInstallV1) return undefined;
+  const ready: DependencyCompletedLocalReady = { ...header.ready, provenance: header.ready.provenance };
+  return openHostedDependencySourceLinks(ready, detached ? { workspace: header.trash.destinationParent, name: header.trash.destinationName } : undefined);
+}
+function input(binding: HostedDependencyBinding, header: Header, bytes: Uint8Array, sourceLinkSession?: DependencySourceLinkSession): DependencyTreeEffectInput {
+  return { workspace: binding.workspace, trash: header.trash, manifestCanonicalBytes: bytes, manifestDigest: header.ready.manifestDigest, limits,
+    ...(sourceLinkSession ? { sourceLinkSession } : {}) };
+}
+function renamedEvidence(header: Header): Buffer {
+  const body = { version: 1, operationId: header.attempt.operationId, workspace: header.ready.workspace,
+    epoch: header.attempt.epoch, tree: header.ready.tree, trash: header.trash, manifestDigest: header.ready.manifestDigest };
+  // Registry v1 bytes remain exact. A local commit also binds the original
+  // protected Ready/header, independently of future Ready or Absent revisions.
+  return header.ready.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1
+    ? encode({ ...body, version: 2, headerSha256: hash(encode(header)), sourceBinding: header.ready.provenance.sourceBinding }) : encode(body);
+}
+function historicalHeader(receipt: Extract<DependencyReceipt, { state: State.Absent }>): Header {
+  const proof = receipt.evictionCommit, bytes = readHostedPrivateBytes(`${operations}/${proof.operationId}.json`, 32768);
+  if (!bytes) fail();
+  const header = decodeHostedActivationBytes(bytes) as Header, parsed = parseDependencyReceipt(header?.ready);
+  if (!header || Object.keys(header).sort().join(",") !== "attempt,ready,trash,version" || header.version !== 1 ||
+      parsed.status !== DependencyReceiptParseStatus.Valid || parsed.receipt.state !== State.Ready || !encode(header).equals(bytes)) fail();
+  const owner = parseDependencyOwner({ version: 2, workspace: receipt.workspace, revision: 1, epoch: header.attempt?.epoch,
+    owner: { kind: DependencyOwnerKind.Maintenance, phase: DependencyOwnerPhase.ExclusiveMutation, attempt: header.attempt } });
+  if (owner.owner?.kind !== DependencyOwnerKind.Maintenance || header.attempt.operationId !== proof.operationId ||
+      !encode(header.trash).equals(encode(proof.trash)) || header.ready.revision + 2 !== receipt.revision ||
+      header.ready.generation !== receipt.generation || header.ready.coverageRevision !== receipt.coverageRevision ||
+      !encode(header.ready.workspace).equals(encode(receipt.workspace)) || header.ready.installKey !== receipt.installKey ||
+      !sameDependencyTree(header.ready.tree, proof.tree) || header.ready.manifestDigest !== proof.manifestDigest) fail();
+  validateTrash(header.trash, proof.operationId);
+  const evidence = readHostedPrivateBytes(`${operations}/${proof.operationId}.renamed.json`, 16384);
+  if (!evidence || !evidence.equals(renamedEvidence(header)) || hash(evidence) !== proof.commitEvidenceId) fail();
+  return header;
 }
 function headerPath(attempt: DependencyMaintenanceAttempt): string { return `${operations}/${attempt.operationId}.json`; }
 function validateTrash(trash: DependencyTrashIntent, operationId: string): void {
@@ -147,13 +188,15 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
   validateTrash(header.trash, header.attempt.operationId);
   let a = guard(jobId, header.attempt), receipt = readHostedDependencyReceipt(a.binding);
   const { bytes, placement } = await baseline(header.ready), destination = header.trash.destinationParent.canonicalPath + "/" + header.trash.destinationName;
+  const originalLinks = sourceLinks(header), detachedLinks = sourceLinks(header, true);
+  try {
   if (!receipt) fail();
   if (receipt.state === State.Absent && receipt.operationId === header.attempt.operationId) {
     const proof = receipt.evictionCommit, evidence = readHostedPrivateBytes(`${operations}/${header.attempt.operationId}.renamed.json`, 16384);
     if (receipt.generation !== header.ready.generation || receipt.revision !== header.ready.revision + 2 ||
         receipt.installKey !== header.ready.installKey || proof.manifestDigest !== header.ready.manifestDigest ||
         !sameDependencyTree(proof.tree, header.ready.tree) || !encode(proof.trash).equals(encode(header.trash)) ||
-        !evidence || hash(evidence) !== proof.commitEvidenceId) fail();
+        !evidence || !evidence.equals(renamedEvidence(header)) || hash(evidence) !== proof.commitEvidenceId) fail();
     readHostedDependencyCommittedAbsent(a.binding, receipt.revision); release(jobId, header.attempt);
     return { outcome: HostedDependencyTransactionOutcome.Evicted, revision: receipt.revision };
   }
@@ -171,11 +214,12 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
   if (!sourceAbsent) {
     a = guard(jobId, header.attempt, true);
     const observed = await observeDependencyTree({ workspacePath: a.binding.workspace.canonicalPath, treeName: "node_modules",
-      expectedWorkspace: a.binding.workspace, expectedTree: header.ready.tree, limits });
+      expectedWorkspace: a.binding.workspace, expectedTree: header.ready.tree, limits,
+      ...(originalLinks ? { sourceLinkSession: originalLinks } : {}) });
     if (observed.status !== Observed.Complete || observed.digest !== header.ready.manifestDigest ||
         !sameHostedDependencyKeyInputs(keyInputs, await readHostedDependencyKeyInputs(a.binding))) fail();
     a = guard(jobId, header.attempt, true);
-    const operation = await openDependencyTreeRename(input(a.binding, header, bytes));
+    const operation = await openDependencyTreeRename(input(a.binding, header, bytes, originalLinks));
     let closeFailures = 0;
     try {
       a = guard(jobId, header.attempt, true);
@@ -211,7 +255,8 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
   } else {
     if (receipt.state !== State.Evicting) fail();
     const observed = await observeDependencyDirectoryRoot({ parentPath: header.trash.destinationParent.canonicalPath,
-      name: header.trash.destinationName, expectedTree: header.ready.tree, limits });
+      name: header.trash.destinationName, expectedTree: header.ready.tree, limits,
+      ...(detachedLinks ? { sourceLinkSession: detachedLinks } : {}) });
     if (observed.status !== Observed.Complete || observed.digest !== header.ready.manifestDigest) fail();
     a = guard(jobId, header.attempt);
     assertHostedDependencyReferenceVeto(a.binding.workspace, destination, covered(a), DependencyReferenceEffect.Eviction);
@@ -219,8 +264,7 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
   if (receipt.state !== State.Evicting || !absent(a.binding.workspace.canonicalPath + "/node_modules") ||
       !sameHostedDependencyKeyInputs(keyInputs, await readHostedDependencyKeyInputs(a.binding))) fail();
   a = guard(jobId, header.attempt);
-  const evidence = encode({ version: 1, operationId: header.attempt.operationId, workspace: a.binding.workspace,
-    epoch: header.attempt.epoch, tree: header.ready.tree, trash: header.trash, manifestDigest: header.ready.manifestDigest });
+  const evidence = renamedEvidence(header);
   const evidencePath = `${operations}/${header.attempt.operationId}.renamed.json`, retainedEvidence = readHostedPrivateBytes(evidencePath, 16384);
   if (retainedEvidence) { if (!retainedEvidence.equals(evidence)) fail(); }
   else createReadonlyPrivateRecord(evidencePath, evidence);
@@ -238,6 +282,7 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
   readHostedDependencyCommittedAbsent(a.binding, committed.revision);
   release(jobId, header.attempt);
   return { outcome: HostedDependencyTransactionOutcome.Evicted, revision: committed.revision };
+  } finally { if (originalLinks) closeDependencySourceLinkSession(originalLinks); if (detachedLinks) closeDependencySourceLinkSession(detachedLinks); }
 }
 
 export async function evictHostedDependencyCandidate(candidate: HostedDependencyEvictionCandidate) {
@@ -301,6 +346,7 @@ export async function removeHostedDependencyCommittedTrash(jobId: string, revisi
   if (!enabled()) return { outcome: HostedDependencyTransactionOutcome.Skipped };
   const committed = readHostedDependencyCommittedAbsent(a.binding, revision), proof = committed.receipt.evictionCommit;
   validateTrash(proof.trash, proof.operationId);
+  const header = historicalHeader(committed.receipt);
   const { bytes, placement } = await baseline(proof);
   const parent = openSync(operations, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW), parentIdentity = fstatSync(parent, { bigint: true });
   if (parentIdentity.uid !== 0n || (parentIdentity.mode & 0o7777n) !== 0o700n) { closeSync(parent); fail(); }
@@ -310,6 +356,7 @@ export async function removeHostedDependencyCommittedTrash(jobId: string, revisi
   catch (error) { closeSync(parent); throw error; }
   const identity = fstatSync(lock, { bigint: true });
   let releasable = false;
+  let detachedLinks: DependencySourceLinkSession | undefined;
   try {
     writeFileSync(lock, encode({ version: 1, operationId: proof.operationId, commitSha256: committed.reference.sha256,
       bootId: a.session.bootId, supervisorId: a.session.supervisorId })); fsyncSync(lock); fsyncSync(parent);
@@ -317,8 +364,9 @@ export async function removeHostedDependencyCommittedTrash(jobId: string, revisi
     withHostedActivationFence(fence => placement.assertCurrent(fence));
     const destination = proof.trash.destinationParent.canonicalPath + "/" + proof.trash.destinationName;
     assertHostedDependencyReferenceVeto(current.binding.workspace, destination, covered(current, DependencyReferenceEffect.TrashRemoval), DependencyReferenceEffect.TrashRemoval);
-    const operation = await openCommittedDependencyTrashRemoval({ workspace: a.binding.workspace, trash: proof.trash,
-      manifestCanonicalBytes: bytes, manifestDigest: proof.manifestDigest, limits, commit: committed.reference, maxRemovals: 10000 });
+    detachedLinks = sourceLinks(header, true);
+    const operation = await openCommittedDependencyTrashRemoval({ ...input(a.binding, header, bytes, detachedLinks),
+      commit: committed.reference, maxRemovals: 10000 });
     try {
       if (!enabled()) fail();
       const removed = await operation.remove(); releasable = true;
@@ -328,6 +376,7 @@ export async function removeHostedDependencyCommittedTrash(jobId: string, revisi
       throw error;
     } finally { const closed = await operation.close(); if (closed.closeFailures) { releasable = false; process.stderr.write("dependency_effect_close_unresolved\n"); } }
   } finally {
+    if (detachedLinks) closeDependencySourceLinkSession(detachedLinks);
     closeSync(lock);
     try { if (releasable) {
       const directory = lstatSync(operations, { bigint: true });

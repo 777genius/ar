@@ -17,6 +17,16 @@ export type DependencyManifestEntry = {
   | { readonly kind: DependencyManifestEntryKind.Symlink; readonly target: string }
 );
 
+// Logical local-link identity only. Raw target text remains in the ordinary
+// symlink entry; physical original/stage identities belong to protected custody.
+export type DependencyLogicalSourceLink = {
+  readonly path: readonly string[];
+  readonly target: string;
+  readonly sourcePath: string;
+  readonly packageManifestSha256: string;
+  readonly closureDigest: string;
+};
+
 export type DependencyTreeObservationLimits = {
   readonly maxEntries: number;
   readonly maxTotalBytes: number;
@@ -38,6 +48,7 @@ export enum DependencyTreeObservationFailure {
   SpecialFile = "special_file",
   Hardlink = "hardlink",
   ExternalSymlink = "external_symlink",
+  SourceBinding = "source_binding",
   InvalidAllocation = "invalid_allocation",
   AllocationChanged = "allocation_changed",
   Unstable = "unstable",
@@ -84,7 +95,15 @@ export type DependencyCapturedTreeObservation =
   | { readonly status: DependencyTreeObservationStatus.Incomplete;
       readonly reason: DependencyTreeObservationFailure };
 
-export function encodeDependencyTreeManifest(entries: readonly DependencyManifestEntry[]): string {
+export function encodeDependencyTreeManifest(entries: readonly DependencyManifestEntry[],
+  sourceLinks?: readonly DependencyLogicalSourceLink[]): string {
+  if (sourceLinks !== undefined) {
+    const original = JSON.parse(encodeDependencyTreeManifest(entries)) as { entries: unknown[] };
+    return JSON.stringify({ version: 2, entries: original.entries, sourceLinks: sourceLinks.map(link => ({
+      path: link.path, target: link.target, sourcePath: link.sourcePath,
+      packageManifestSha256: link.packageManifestSha256, closureDigest: link.closureDigest,
+    })) }) + "\n";
+  }
   return JSON.stringify({ version: 1, entries: entries.map((entry) => {
     const base = { path: entry.path, kind: entry.kind, mode: entry.mode };
     switch (entry.kind) {

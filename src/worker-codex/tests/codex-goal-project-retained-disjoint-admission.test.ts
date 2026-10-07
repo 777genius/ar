@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ProjectControlAuditEventType, ProjectDebtReason, ProjectOperation, type ProjectControlBrokerPorts } from "@vioxen/subscription-runtime/worker-core";
+import { ProjectControlAuditEventType, ProjectDebtReason, ProjectOperation, recordTerminalOutputDecision, type ProjectControlBrokerPorts } from "@vioxen/subscription-runtime/worker-core";
 import { RunEventProjectionService, RunEventProviderKind, type RunObservationSnapshot } from "@vioxen/subscription-runtime/worker-core";
 import { LocalFileRunEventStore, LocalFileRunEventProjectionStateStore } from "@vioxen/subscription-runtime/store-local-file";
 import { runEventRootFromArgs } from "../codex-goal-mcp-inputs";
+import { LocalConsumedOutputLedgerWriter } from "@vioxen/subscription-runtime/worker-local";
 import * as goalOps from "../codex-goal-ops";
 import { authorizeProjectPreStartAdmissionLaunch } from "../application/project-control/codex-goal-project-pre-start-launch-authorization";
 import { resolveProjectControlledRuntimeInPlaceContinuation } from "../application/project-control/codex-goal-project-in-place-continuation";
@@ -128,6 +129,15 @@ describe("retained terminal output path-disjoint admission", () => {
         custodyRoot: f.root, jobId: manifest.jobId, jobRootDir: manifest.jobRootDir,
         workspacePath: manifest.workspacePath, closedAt: "2026-10-02T00:00:00.000Z", reason: "TEST rejected output" }));
     }
+    // Publish the native job.json collision through the original ledger writer
+    // in the SECOND root, so its item exception cannot accidentally use root one.
+    const { attemptId, ...nativeDecision } = receipts[1]!.decision;
+    void attemptId;
+    const native = await recordTerminalOutputDecision({
+      writer: new LocalConsumedOutputLedgerWriter(undefined, f.root, [evidenceRoot]),
+    }, { allowedLedgerRoots: [secondRoot], ledgerRoot: secondRoot,
+      decision: { ...nativeDecision, jobId: "job" } });
+    expect(native.ledgerPath).toBe(join(secondRoot, "items", "job.json"));
     const summaries = await listCodexGoalJobs({ registryRootDir: f.input.registryRootDir });
     const before = await Promise.all(receipts.map((receipt) => readFile(receipt.ledgerPath)));
     for (const roots of [[firstRoot, secondRoot], [secondRoot, firstRoot]]) {
@@ -136,13 +146,14 @@ describe("retained terminal output path-disjoint admission", () => {
       const ledger = await readCodexGoalConsumedOutputLedgers({ roots, evidenceRoots: [evidenceRoot] });
       expect(ledger.byJobId.get(f.manifest.jobId)?.valid).toBe(true);
       expect(ledger.byJobId.get(second.jobId)?.valid).toBe(true);
+      expect(ledger.byJobId.get("job")?.valid).toBe(true);
       await expect(assertAdmissionRegistryComplete({ ...f.input, scope, summaries })).resolves.toBeUndefined();
     }
     expect(await Promise.all(receipts.map((receipt) => readFile(receipt.ledgerPath)))).toEqual(before);
     await mkdir(join(container, "unknown-third-job"));
     for (const roots of [[firstRoot, secondRoot], [secondRoot, firstRoot]]) {
       await expect(assertAdmissionRegistryComplete({ ...f.input, summaries,
-        scope: { ...f.input.scope, consumedOutputLedgerRoots: roots, consumedOutputEvidenceRoots: [evidenceRoot] } })).rejects.toThrow("unregistered registry directory");
+        scope: { ...f.input.scope, consumedOutputLedgerRoots: roots, consumedOutputEvidenceRoots: [evidenceRoot] } })).rejects.toThrow("unregistered consumed-output entry");
     }
   });
 
@@ -175,6 +186,13 @@ describe("retained terminal output path-disjoint admission", () => {
       await expect(codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" }).evaluate(f.request)).resolves.toMatchObject({ allowed: false });
       await rm(unknown);
     }
+    const hidden = join(ledgerRoot, "nested-unregistered-job");
+    await mkdir(hidden);
+    await writeFile(join(hidden, "job.json"), "{}");
+    await expect(assertAdmissionRegistryComplete({ ...input,
+      summaries: await listCodexGoalJobs({ registryRootDir: input.registryRootDir }) }))
+      .rejects.toThrow("unregistered job inside consumed-output");
+    await rm(hidden, { recursive: true });
     // Recognition of the container must never waive the original record parser.
     await writeFile(receipt.ledgerPath, "{malformed TEST record");
     await expect(codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" }).evaluate(f.request)).resolves.toMatchObject({ allowed: false });

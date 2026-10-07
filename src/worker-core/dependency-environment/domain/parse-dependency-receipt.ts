@@ -107,6 +107,17 @@ function installProof(value: unknown, receipt: RecordValue): boolean {
     case DependencyInstallProofKind.CompletedInstall:
       return exact(value, [...bindingFields, "kind", "operationId", "verificationEvidenceId", "installerDrainEvidenceId"])
         && id(value.operationId) && id(value.verificationEvidenceId) && id(value.installerDrainEvidenceId);
+    case DependencyInstallProofKind.CompletedLocalInstallV1: {
+      const reference = value.sourceBinding;
+      return exact(value, [...bindingFields, "kind", "operationId", "verificationEvidenceId", "installerDrainEvidenceId", "sourceBinding"])
+        && value.operationId === value.generation && typeof value.generation === "string"
+        && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.generation)
+        && value.verificationEvidenceId === value.manifestDigest && digest(value.installerDrainEvidenceId)
+        && record(reference) && exact(reference, ["path", "identity", "sha256"])
+        && path(reference.path) && tree(reference.identity) && digest(reference.sha256)
+        && workspace(value.workspace) && !reference.path.startsWith(value.workspace.canonicalPath + "/")
+        && reference.path.endsWith(`/dependency-source-bindings/${value.workspace.dev}-${value.workspace.ino}/${value.generation}.json`);
+    }
     case DependencyInstallProofKind.LegacyCompared:
       return exact(value, [...bindingFields, "kind", "referenceInstallationId", "comparisonEvidenceId"])
         && id(value.referenceInstallationId) && id(value.comparisonEvidenceId);
