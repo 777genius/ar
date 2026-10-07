@@ -142,6 +142,7 @@ export async function materializeHostedDependencyAbsence(binding: HostedDependen
   const proofBinding = { generation, workspace: binding.workspace, coverageRevision: base.coverageRevision,
     installKey: inputs.key.installKey, tree: final.tree, manifestDigest: final.digest };
   const ready: DependencyReceipt = { ...base, revision: base.revision + 1, state: DependencyReceiptState.Ready, ...proofBinding,
+    treeMeasurement: final.measurement,
     provenance: { ...proofBinding, kind: DependencyInstallProofKind.CompletedInstall, operationId: generation,
       verificationEvidenceId: final.digest, installerDrainEvidenceId: completed.completionSha256 } };
   withHostedActivationFence(fence => {

@@ -91,7 +91,11 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
 
   compareAndSwap(workspace: DependencyWorkspaceIdentity, expectedRevision: number | null, next: DependencyReceipt): DependencyReceipt {
     const key = this.key(workspace); let receipt: DependencyReceipt;
-    try { receipt = parsed(JSON.parse(encode(next).toString("utf8"))); } catch { return fail(Failure.InvalidReceipt); }
+    try {
+      // Validate measurement presence before JSON can omit undefined or hidden fields.
+      parsed(next);
+      receipt = parsed(JSON.parse(encode(next).toString("utf8")));
+    } catch { return fail(Failure.InvalidReceipt); }
     if (!sameDependencyWorkspace(receipt.workspace, workspace)) fail(Failure.WorkspaceChanged);
     if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) fail(Failure.InvalidReceipt);
     const bytes = encode(receipt);
