@@ -18,7 +18,7 @@ function collected(context:CurrentHostedDependencyOrigin,fence:HostedActivationF
   const selected=readOriginalHostedManagedProviderWaitFacts(context,fence,unit),parent=selected.parent;
   if (parent.facts.kind!==CurrentHostedDependencyOriginKind.Ordinary) invalid();
   const birth=readOriginalHostedOrdinaryProviderBirthFacts(context,fence,unit,phase);
-  if (birth.version!==2) invalid();
+  if (birth.version!==2 && birth.version!==4) invalid();
   const start=pinReferenceFile(`${root}/dependency-managed-provider-starts/${birth.providerStartId}.json`,16384);
   if (!sameDependencyProtectedReference(start.reference,selected.reference) || !start.bytes.equals(encode(birth))) invalid();
   try {lstatSync(`/proc/${selected.pid}`);invalid();} catch(error) {if ((error as NodeJS.ErrnoException).code!=="ENOENT") throw error;}

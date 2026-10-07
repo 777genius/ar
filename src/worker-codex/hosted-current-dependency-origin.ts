@@ -1,3 +1,6 @@
+import { DependencyToolReadyReadStatus } from "../core/dependency-environment/dependency-tool-ready-reader";
+import { parseDependencyToolAdmissionQualification, dependencyToolAdmittedGuestConfig } from "../core/dependency-environment/dependency-tool-execution";
+import { readHostedDependencyUsableReceipt } from "./hosted-dependency-usable-receipt";
 import { retireOriginalHostedDependencyWarmReady } from "./hosted-dependency-generation-retirement";
 import { HostedDependencyWarmRetirementPhase, type HostedDependencyWarmRetirementState } from "./hosted-dependency-warm-retirement-state";
 import { readHostedDependencyEstablishedReceipt, readHostedDependencyExistingCommittedReady } from "./hosted-dependency-receipts";
@@ -64,7 +67,7 @@ import { LocalDependencyReceiptStore } from "../store-local-file/dependency-envi
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { DependencyUnverifiedReason, DependencyReceiptState } from "../worker-core/dependency-environment/domain/dependency-receipt";
 import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
-import { dependencyToolQualificationRecordName, dependencyToolGuestConfig, dependencyToolGuestConfigPath, parseDependencyToolQualification } from "../core/dependency-environment/dependency-tool-profile";
+import { dependencyToolQualificationRecordName, dependencyToolGuestConfigPath } from "../core/dependency-environment/dependency-tool-profile";
 import { HostedDependencyRootDescriptorRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-root-descriptor-material";
 export { HostedDependencyRootDescriptorRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-root-descriptor-material";
 import { HostedDependencyRootOriginKind, HostedDependencyRootPurpose, isHostedDependencySignedTaskId, type HostedDependencyManagedGitScope, type HostedDependencyRootScope, type HostedDependencyManagedProviderFacts, type HostedDependencyRootDirectoryPin, type HostedDependencyRootPreparationRecord } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
@@ -206,10 +209,9 @@ function managedProviderBirth(context: CurrentHostedDependencyOrigin, fence: Hos
   const match = /^subscription-runtime-hosted-([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\.service$/.exec(unit);
   if (!match || match[0] !== unit) invalid(); const providerStartId = match[1]!;
   if (actual.facts.kind===CurrentHostedDependencyOriginKind.Ordinary) return readOriginalHostedOrdinaryProviderBirthFacts(context,fence,unit);
-  const ready = currentRootReady(context,fence);
-  if (!encode(ready).equals(encode(retained.rootPurpose.ready))) invalid();
-  const record = retained.rootPurpose.record;
-  return formManagedDependencyProviderStartFacts(actual,providerStartId,record,ready);
+  const state=retained.rootPurpose,committed=currentRootCommitted(context,fence,state,DependencyOwnerPhase.Running);
+  const record=state.record;
+  return formManagedDependencyProviderStartFacts(actual,providerStartId,record,committed);
 }
 export function readCurrentHostedManagedDependencyProviderParent(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence) {
   const state = contexts.get(context)?.rootPurpose; if (!state) invalid();
@@ -263,8 +265,8 @@ export function prepareCurrentHostedManagedDependencyProviderTools(context: Curr
   const rootPin = readHostedDependencyRootDirectoryPin(providerRoot), stat = lstatSync(providerRoot);
   if (stat.uid !== 0 || stat.gid !== 0 || (stat.mode & 0o7777) !== 0o700) invalid();
   const qualification = material(state.record.qualification,`${root}/${dependencyToolQualificationRecordName(selected.value.parentStartId)}`,16384);
-  const q = parseDependencyToolQualification(decodeHostedActivationBytes(qualification.bytes));
-  const capsulePath = providerRoot+dependencyToolGuestConfigPath, bytes = encode(dependencyToolGuestConfig(q));
+  const q = parseDependencyToolAdmissionQualification(decodeHostedActivationBytes(qualification.bytes));
+  const capsulePath = providerRoot+dependencyToolGuestConfigPath, bytes = encode(dependencyToolAdmittedGuestConfig(q));
   const parentPin = readHostedDependencyRootDirectoryPin(dirname(capsulePath));
   if (!dirname(capsulePath).startsWith(providerRoot+"/") || parentPin.dev !== rootPin.dev || parentPin.mountId !== rootPin.mountId) invalid();
   const fd = openSync(capsulePath,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
@@ -282,7 +284,8 @@ export function prepareCurrentHostedManagedDependencyProviderTools(context: Curr
     const capsule = associate(capsulePath);
     if ((fstatSync(record.fd).mode & 0o7777) !== 0o600 || (fstatSync(capsule.fd).mode & 0o7777) !== 0o600 ||
         !readManagedProviderDescriptor(record.fd).equals(qualification.bytes) || !readManagedProviderDescriptor(capsule.fd).equals(bytes)) invalid();
-    state.provider = {unit,reference:selected.reference,root:rootPin,qualification:freezeFacts(q),ready:state.record.providerReady,record,capsule,capsulePath};
+    state.provider = {unit,reference:selected.reference,root:rootPin,qualification:freezeFacts(q),admission:state.admission===DependencyToolReadyReadStatus.Ready ?
+      {status:DependencyToolReadyReadStatus.Ready,facts:state.record.providerReady} : {status:DependencyToolReadyReadStatus.Usable,execution:state.record.execution},record,capsule,capsulePath};
     return readCurrentHostedManagedDependencyProviderTools(context,fence,unit);
   } catch (error) { delete state.provider; for (const resource of opened.reverse()) resource.close(); throw error; }
 }
@@ -294,14 +297,14 @@ export function readCurrentHostedManagedDependencyProviderTools(context: Current
       !encode(readHostedDependencyRootDirectoryPin(provider.root.canonicalPath)).equals(encode(provider.root))) invalid();
   const qualification = material(state.record.qualification,`${root}/${dependencyToolQualificationRecordName(selected.value.parentStartId)}`,16384);
   if (!readManagedProviderDescriptor(provider.record.fd).equals(qualification.bytes) || !encode(provider.qualification).equals(qualification.bytes) ||
-      !readManagedProviderDescriptor(provider.capsule.fd).equals(encode(dependencyToolGuestConfig(provider.qualification)))) invalid();
+      !readManagedProviderDescriptor(provider.capsule.fd).equals(encode(dependencyToolAdmittedGuestConfig(provider.qualification)))) invalid();
   if (provider.child) {
     if (!provider.command || !provider.args) invalid();
     assertHostedFdProcess(provider.child,unit,HostedFdLaunchKind.Provider,provider.command,provider.args);
   }
   const after = readCurrentHostedManagedDependencyProvider(context,fence,unit);
   if (!sameDependencyProtectedReference(after.reference,provider.reference)) invalid();
-  return Object.freeze({qualification:provider.qualification,ready:provider.ready,capsulePath:provider.capsulePath,
+  return Object.freeze({qualification:provider.qualification,admission:provider.admission,capsulePath:provider.capsulePath,
     provider:selected.value,reference:selected.reference});
 }
 /** Original-map fixed spawn owns the Plan/FDA child; no registration DTO. */
@@ -441,7 +444,7 @@ export function assertCurrentHostedManagedDependencyCapsuleCopy(context: Current
   const provider = contexts.get(context)?.rootPurpose?.provider; if (!provider) invalid();
   if (provider.unit !== unit) invalid();
   const retained = fstatSync(provider.capsule.fd,{bigint:true}), actual = fstatSync(fd,{bigint:true});
-  if (!sameStat(retained,actual) || !readManagedProviderDescriptor(fd).equals(encode(dependencyToolGuestConfig(provider.qualification)))) invalid();
+  if (!sameStat(retained,actual) || !readManagedProviderDescriptor(fd).equals(encode(dependencyToolAdmittedGuestConfig(provider.qualification)))) invalid();
 }
 function readManagedProviderDescriptor(fd: number): Buffer {
   const before = fstatSync(fd,{bigint:true}); if (!before.isFile() || before.size < 1n || before.size > 16384n) invalid();
@@ -503,7 +506,7 @@ function currentOwnerForRoot(binding: HostedDependencyBinding) {
   if (readHostedActivationBytes(name+".lock")) invalid(); const owner = parseDependencyOwner(decodeHostedActivationBytes(fixed(name+".json",16384).bytes));
   if (readHostedActivationBytes(name+".lock") || !sameDependencyWorkspace(owner.workspace,binding.workspace)) invalid(); return owner;
 }
-/** No DTO inputs. Loads the sole trusted qualifier's fixed protected record and actual Ready before Running; provenance lives in the original origin map. */
+/** No DTO inputs. Loads the sole trusted qualifier's fixed protected Ready or Unverified record before Running; provenance lives in the original origin map. */
 export function prepareCurrentHostedDependencyRootPurpose(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence): void {
   const retained = contexts.get(context); if (!retained || retained.rootPurpose) invalid();
   const preparation = readOriginalHostedDependencyRootPreparation(context,fence,DependencyOwnerPhase.ExclusiveMutation), managed = new RootPurposeFacade(context,HostedDependencyRootPurpose.ManagedGitReadV1,rootInternalAccess);
@@ -519,13 +522,18 @@ export function captureCurrentHostedDependencyRootPurpose(purpose: HostedDepende
       return state.refresh ??= new RootPurposeFacade(origin,purpose,rootInternalAccess);
     });
   }
-  if (purpose !== HostedDependencyRootPurpose.DependencySourceCleanupV1 || state.cleanup) invalid();
+  if (purpose !== HostedDependencyRootPurpose.DependencySourceCleanupV1 || state.cleanup || state.admission!==DependencyToolReadyReadStatus.Ready) invalid();
   // Source hygiene captures current Ready while genuinely exclusive; a historical pointer cannot resurrect a retired baseline.
   return withHostedActivationFence(fence => {
     const current = assertCurrentHostedDependencyAttempt(origin,fence,DependencyOwnerPhase.ExclusiveMutation);
     if (!sameDependencyAttempt(current.attempt,state.record.attempt) || !encode(currentRootReady(origin,fence,DependencyOwnerPhase.ExclusiveMutation)).equals(encode(state.ready))) invalid();
     state.cleanup = new RootPurposeFacade(origin,purpose,rootInternalAccess); return state.cleanup;
   });
+}
+function currentRootCommitted(origin:CurrentHostedDependencyOrigin,fence:HostedActivationFence,state:RootPurposeState,
+  phase:DependencyOwnerPhase.ExclusiveMutation|DependencyOwnerPhase.Running) {
+  const current=state.admission===DependencyToolReadyReadStatus.Ready ? currentRootReady(origin,fence,phase) : readHostedDependencyUsableReceipt(origin,fence,phase).receipt;
+  if(!encode(current).equals(encode(state.admission===DependencyToolReadyReadStatus.Ready ? state.ready : state.unverified)))invalid();return current;
 }
 function rootScope(context: RootPurposeFacade, purpose: HostedDependencyRootPurpose, fence: HostedActivationFence, phase: DependencyOwnerPhase) {
   const {origin,state} = resolveRootPurpose(context,purpose,rootInternalAccess), actual = assertCurrentHostedDependencyAttempt(origin,fence,phase);
@@ -537,12 +545,13 @@ function rootScope(context: RootPurposeFacade, purpose: HostedDependencyRootPurp
 }
 export function assertCurrentHostedDependencyRootPurpose(context: HostedDependencyRootPurposeContext, purpose: HostedDependencyRootPurpose.ManagedGitReadV1 | HostedDependencyRootPurpose.SessionRefreshV1, fence: HostedActivationFence): HostedDependencyManagedGitScope {
   const remaining = systemdObservationBudget(), held = rootScope(context,purpose,fence,DependencyOwnerPhase.Running);
-  if (!encode(currentRootReady(held.origin,fence)).equals(encode(held.state.ready))) invalid();
+  currentRootCommitted(held.origin,fence,held.state,DependencyOwnerPhase.Running);
   const physical = readOriginalHostedDependencyRootPreparation(held.origin,fence,DependencyOwnerPhase.Running);
   if (!encode(physical.record).equals(encode(held.state.record)) || !sameDependencyProtectedReference(physical.reference,held.state.reference)) invalid();
   const after = assertCurrentHostedDependencyAttempt(held.origin,fence,DependencyOwnerPhase.Running);
   if (!sameDependencyAttempt(after.attempt,held.actual.attempt) || !encode(currentOwnerForRoot(after.binding)).equals(encode(held.owner)) ||
-      !encode(currentRootReady(held.origin,fence)).equals(encode(held.state.ready)) || remaining() <= 0) invalid();
+      remaining() <= 0) invalid();
+  currentRootCommitted(held.origin,fence,held.state,DependencyOwnerPhase.Running);
   const record = held.state.record;
   return Object.freeze({...held.scope,rootGit:physical.rootGit,protectedProfile:record.protectedProfile,durableHandoffRoot:record.durableHandoffRoot,
     scratchParent:record.scratchParent,authoredRoots:record.authoredRoots,generatedRoots:record.generatedRoots,sourceLookupAncestors:record.sourceLookupAncestors});
@@ -560,6 +569,7 @@ export function openCurrentHostedDependencyRootDescriptor(context: HostedDepende
 }
 export function assertCurrentHostedDependencyRetiredReady(context: HostedDependencyRootPurposeContext, fence: HostedActivationFence): HostedDependencyRootScope {
   const held = rootScope(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,fence,DependencyOwnerPhase.ExclusiveMutation);
+  if(held.state.admission!==DependencyToolReadyReadStatus.Ready)invalid();
   assertHostedDependencyRetirementOwnerFacts(held.state.record,held.owner);
   if (held.owner.version === 1 || !held.owner.generationContinuity) invalid();
   const slot = parseDependencyGenerationContinuityInvalidation(held.owner.generationContinuity), ready = held.state.ready;
@@ -582,10 +592,12 @@ export function retireCurrentHostedDependencySourceCleanup(context:HostedDepende
 }
 /** Private fixed composition only; access is checked before caller/context IO. */
 export function readOriginalHostedDependencySourceCleanupAssociation(context:HostedDependencyRootPurposeContext,access:symbol) {
-  if(access!==rootInternalAccess)invalid();return resolveRootPurpose(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,access);
+  if(access!==rootInternalAccess)invalid();const selected=resolveRootPurpose(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,access);
+  if(selected.state.admission!==DependencyToolReadyReadStatus.Ready)invalid();return {...selected,state:selected.state};
 }
 export function readOriginalHostedDependencySourceCleanupScope(context:HostedDependencyRootPurposeContext,fence:HostedActivationFence,access:symbol) {
-  if(access!==rootInternalAccess)invalid();return rootScope(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,fence,DependencyOwnerPhase.ExclusiveMutation);
+  if(access!==rootInternalAccess)invalid();const selected=rootScope(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,fence,DependencyOwnerPhase.ExclusiveMutation);
+  if(selected.state.admission!==DependencyToolReadyReadStatus.Ready)invalid();return {...selected,state:selected.state};
 }
 export function readOriginalHostedDependencyRetirementOwner(binding:HostedDependencyBinding,access:symbol) {
   if(access!==rootInternalAccess)invalid();return currentOwnerForRoot(binding);

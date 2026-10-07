@@ -31,6 +31,7 @@ export * from "./scoped-retained-resource-validation";
 export * from "./dependency-environment/dependency-owner";
 export * from "./dependency-environment/dependency-workspace";
 export * from "./dependency-environment/dependency-tool-ready-reader";
+export * from "./dependency-environment/dependency-tool-execution";
 export * from "./host-infrastructure/system-bus-infrastructure";
 export * from "./host-infrastructure/fd-collector-profile";
 

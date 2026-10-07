@@ -13,10 +13,11 @@ import { HostedDependencyRootOriginKind } from "../provider-codex/app-server/ada
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
 import { hostedDependencyBindingName, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { assertHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
-import { dependencyToolQualificationRecordName, parseDependencyToolQualification } from "../core/dependency-environment/dependency-tool-profile";
+import { dependencyToolQualificationRecordName } from "../core/dependency-environment/dependency-tool-profile";
 import { readHostedOrdinaryBirth } from "./hosted-installation-activation";
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
-import { readHostedDependencyExistingCommittedReady } from "./hosted-dependency-receipts";
+import { parseOrdinaryRootPreparationFacts } from "./hosted-dependency-root-provenance-facts";
+import { readHostedDependencyRecoveryAdmissionFacts } from "./hosted-dependency-recovery-admission-facts";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { readHostedDependencyRootDirectoryPin, rootDescriptorPhysicalInfo } from "./hosted-dependency-root-physical-facts";
 import { collectUnitNotFound } from "./hosted-readonly-linux-collector";
@@ -202,31 +203,22 @@ function readCompletionForFinal(fence:HostedActivationFence,startId:string,start
       !isDependencyProtectedReference(claim.binding) || !sameDependencyProtectedReference(claim.binding,bindingPin.reference)) held();
   const entry=fixedPin(`${root}/dependency-reader-entries/${parentId}.json`,4096);
   if (!entry.bytes.equals(encode({version:1,producer:producer.reference,attempt}))) held();
-  const preparation=fixedPin(`${root}/dependency-root-preparations/${parentId}.json`,65536),prepared=wire(preparation);
-  if (!isDependencyCustodyObject(prepared,"attempt,authoredRoots,config,configAncestors,durableHandoffRoot,generatedRoots,originReference,protectedProfile,providerReady,qualification,readerEntry,readerProducer,ready,readyRevision,scratchParent,sourceLookupAncestors,version") ||
-      prepared.version!==3 || !encode(prepared.attempt).equals(encode(attempt)) ||
-      !isDependencyProtectedReference(prepared.originReference) || !sameDependencyProtectedReference(prepared.originReference,parentPin.reference) ||
-      !isDependencyProtectedReference(prepared.readerProducer) || !sameDependencyProtectedReference(prepared.readerProducer,producer.reference) ||
-      !isDependencyProtectedReference(prepared.readerEntry) || !sameDependencyProtectedReference(prepared.readerEntry,entry.reference) ||
-      typeof prepared.readyRevision!=="number" || !Number.isSafeInteger(prepared.readyRevision) || prepared.readyRevision<1) held();
-  const ready=readHostedDependencyExistingCommittedReady(fence,binding,prepared.readyRevision);
-  if (!isDependencyProtectedReference(prepared.ready) || !sameDependencyProtectedReference(prepared.ready,ready.reference)) held();
-  const qualification=referenced(prepared.qualification,`${root}/${dependencyToolQualificationRecordName(parentId)}`),q=parseDependencyToolQualification(wire(qualification));
-  if (q.installationId!==binding.installationId || q.runtimeSha!==binding.runtimeSha || q.grantDigest!==binding.grantDigest ||
-      q.attemptId!==attempt.attemptId || q.epoch!==attempt.epoch || q.startId!==parentId || q.readyRevision!==ready.receipt.revision ||
-      !sameDependencyWorkspace(q.workspace,binding.workspace) || q.installKey!==ready.receipt.installKey || q.manifestDigest!==ready.receipt.manifestDigest ||
-      q.tree.dev!==ready.receipt.tree.dev || q.tree.ino!==ready.receipt.tree.ino) held();
+  const preparation=fixedPin(`${root}/dependency-root-preparations/${parentId}.json`,65536);
+  const prepared=parseOrdinaryRootPreparationFacts(preparation.bytes,attempt,{origin:parentPin.reference,producer:producer.reference,entry:entry.reference});
+  const qualification=referenced(prepared.qualification,`${root}/${dependencyToolQualificationRecordName(parentId)}`);
+  const admitted=readHostedDependencyRecoveryAdmissionFacts(fence,binding,attempt,prepared,qualification.bytes);
   const profile=referenced(prepared.protectedProfile,`${root}/dependency-installer-profile.json`),profileValue=wire(profile);
   if (!profileValue || typeof profileValue!=="object" || !("schemaVersion" in profileValue) || profileValue.schemaVersion!==2) held();
   const relation=fixedPin(`${root}/dependency-provider-attempts/${startId}.json`,4096);
   if (!relation.bytes.equals(encode(receipt.relation))) held();
   const birth=referenced(receipt.providerReference,`${root}/dependency-managed-provider-starts/${startId}.json`);
-  const expectedBirth={version:2,originKind:HostedDependencyRootOriginKind.OrdinaryDependencyReaderV1,installationId:binding.installationId,runtimeSha:binding.runtimeSha,
+  const birthAdmission=admitted.version===1 ? {ready:admitted.ready,readyRevision:admitted.readyRevision} :
+    {execution:admitted.execution,unverified:admitted.unverified,unverifiedRevision:admitted.unverifiedRevision};
+  const expectedBirth={version:admitted.version===1?2:4,originKind:HostedDependencyRootOriginKind.OrdinaryDependencyReaderV1,installationId:binding.installationId,runtimeSha:binding.runtimeSha,
     hostId:activation.hostId,bootId:activation.bootId,supervisorId:activation.supervisorId,generation:row.generation,parentGeneration:parentRow.generation,
     unit:row.unit,providerStartId:startId,parentStartId:parentId,logicalJobId:binding.jobId,executionJobId:binding.jobId,jobRootDir:binding.jobRootDir,
     workspace:binding.workspace,attempt,originReference:parentPin.reference,ordinaryProviderReference:providerPin.reference,
-    readerProducer:producer.reference,readerEntry:entry.reference,ordinaryRelation:receipt.relation,ready:ready.reference,
-    readyRevision:ready.receipt.revision,qualification:qualification.reference,protectedProfile:profile.reference};
+    readerProducer:producer.reference,readerEntry:entry.reference,ordinaryRelation:receipt.relation,...birthAdmission,qualification:qualification.reference,protectedProfile:profile.reference};
   if (!birth.bytes.equals(encode(expectedBirth)) || !isDependencyCustodyObject(receipt.home,"canonicalPath,dev,ino,mountId") ||
       receipt.home.canonicalPath!==`${binding.jobRootDir}/home/codex-session-cache/dependency-${attempt.attemptId}`) held();
   const pid=receipt.proxyBirth.slice(0,receipt.proxyBirth.indexOf(":"));

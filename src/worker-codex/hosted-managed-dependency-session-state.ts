@@ -1,3 +1,5 @@
+import type { DependencyToolAdmissionQualification } from "../core/dependency-environment/dependency-tool-execution";
+import type { DependencyToolReadyRead, DependencyToolReadyReadStatus } from "../core/dependency-environment/dependency-tool-ready-reader";
 import type { HostedDependencyRootPreparationRecord } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
 import type { HostedDependencyRootDescriptorMaterial } from "../provider-codex/app-server/adapters/hosted-dependency-root-descriptor-material";
 import type { OriginalHostedDependencyRootPurpose as RootPurposeFacade } from "./hosted-dependency-root-purpose-view";
@@ -12,15 +14,13 @@ import type { HostedManagedDependencySessionMaterializer } from "./hosted-manage
 import type { ChildProcess } from "node:child_process";
 import type { CodexAppServerChildProcess } from "../provider-codex/app-server/application/app-server-process-port";
 import type { DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
-import type { DependencyToolQualification } from "../core/dependency-environment/dependency-tool-profile";
-import type { DependencyToolReadyFacts } from "../core/dependency-environment/dependency-tool-ready-reader";
 import type { HostedDependencyRootDirectoryPin } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
 import type { HostedDependencyRootPurpose } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
 import type { HostedDependencyRootDescriptor, CurrentHostedDependencySessionHome } from "./hosted-current-dependency-origin";
 /** Types only, no constructors, map, state lookup, mutation, callbacks or grants. */
 export type ManagedProviderState = {
   readonly unit: string; readonly reference: DependencyProtectedReference; readonly root: HostedDependencyRootDirectoryPin;
-  readonly qualification: DependencyToolQualification; readonly ready: DependencyToolReadyFacts;
+  readonly qualification: DependencyToolAdmissionQualification; readonly admission: Exclude<DependencyToolReadyRead,{status:DependencyToolReadyReadStatus.Unknown}>;
   readonly record: HostedDependencyRootDescriptor; readonly capsule: HostedDependencyRootDescriptor; readonly capsulePath: string;
   invocation?: object; child?: ChildProcess; command?: string; args?: readonly string[];
   proxyPid?: number; proxyBirth?: string; proxyClosed?: boolean; proxyCode?: number | null; proxySignal?: NodeJS.Signals | null;
@@ -55,10 +55,16 @@ export type ManagedSessionRuntimeState = {
   readonly sessionReads:WeakMap<SessionArtifact,{readonly account:string;readonly hash:string}>; tail: Promise<void>; use?: ManagedSessionUseState; retired?: ManagedSessionUseState;
 };
 
-export type RootPurposeState = {
-  readonly record: HostedDependencyRootPreparationRecord; readonly reference: DependencyProtectedReference;
-  readonly ready: ReturnType<LocalDependencyReceiptStore["getCommittedReady"]>;
+type RootPurposeCommon = {
+  readonly reference: DependencyProtectedReference;
   readonly managed: RootPurposeFacade; cleanup?: RootPurposeFacade; refresh?: RootPurposeFacade;
   readonly descriptors: Map<RootDescriptor, HostedDependencyRootDescriptorMaterial>;
   provider?: ManagedProviderState; sessionHome?: ManagedSessionHomeState; sessionCache?: ManagedSessionHomeState; preparingHome?: ManagedSessionHomeFacade; sessionRuntime?: ManagedSessionRuntimeState;
 };
+
+export type RootPurposeState=RootPurposeCommon & (
+  Readonly<{admission:DependencyToolReadyReadStatus.Ready;record:Extract<HostedDependencyRootPreparationRecord,{version:2|3}>;
+    ready:ReturnType<LocalDependencyReceiptStore["getCommittedReady"]>}> |
+  Readonly<{admission:DependencyToolReadyReadStatus.Usable;record:Extract<HostedDependencyRootPreparationRecord,{version:4|5}>;
+    unverified:ReturnType<LocalDependencyReceiptStore["getCommittedUnverified"]>}>
+);

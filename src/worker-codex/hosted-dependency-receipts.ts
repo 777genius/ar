@@ -201,6 +201,23 @@ export function readHostedDependencyExistingCommittedReady(fence:HostedActivatio
   if (JSON.stringify(readHostedDependencyRootDirectoryPin(hostedDependencyReceiptHistoryRoot))!==JSON.stringify(before)) fail();
   return result;
 }
+/** Historical Unverified read only. It proves the original committed record,
+ * never current bytes, execution permission or eviction eligibility. Existing
+ * ancestry/physical pin and held-fence checks mirror the Ready recovery reader.
+ */
+export function readHostedDependencyExistingCommittedUnverified(fence:HostedActivationFence,
+  binding:HostedDependencyBinding,revision:number):DependencyCommittedUnverifiedReceipt {
+  assertHostedActivationFence(fence); assertReadonlyHostOperator();
+  const before=readHostedDependencyRootDirectoryPin(hostedDependencyReceiptHistoryRoot),stat=lstatSync(hostedDependencyReceiptHistoryRoot);
+  if (stat.uid!==0 || stat.gid!==0 || (stat.mode & 0o7777)!==0o700) fail();
+  const store=openExistingStore(); let result:DependencyCommittedUnverifiedReceipt;
+  try {result=store.getCommittedUnverified(binding.workspace,revision);} finally {store.close();}
+  assertHostedActivationFence(fence);
+  if (JSON.stringify(readHostedDependencyRootDirectoryPin(hostedDependencyReceiptHistoryRoot))!==JSON.stringify(before)) fail();
+  validateBinding(result.receipt,binding); assertHostedActivationFence(fence);
+  if (JSON.stringify(readHostedDependencyRootDirectoryPin(hostedDependencyReceiptHistoryRoot))!==JSON.stringify(before)) fail();
+  return result;
+}
 /** Issuer receives immutable facts only; CAS captures its own predecessor again. */
 export function readHostedDependencyCommittedUnverified(binding: HostedDependencyBinding, revision: number): DependencyCommittedUnverifiedReceipt {
   const store = openStore();

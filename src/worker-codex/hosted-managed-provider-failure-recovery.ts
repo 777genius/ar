@@ -11,9 +11,10 @@ import { assertHostedActivationFence, assertHostedActivationOperator, decodeHost
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
 import { readHostedReadonlyDependencyStart } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
 import { readHostedDependencyBinding, hostedDependencyBindingName } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { dependencyToolQualificationRecordName, parseDependencyToolQualification } from "../core/dependency-environment/dependency-tool-profile";
+import { dependencyToolQualificationRecordName } from "../core/dependency-environment/dependency-tool-profile";
 import { readHostedReadonlyDependencyMaterial } from "./hosted-readonly-dependency-records";
-import { readHostedDependencyCommittedReady } from "./hosted-dependency-receipts";
+import { parseRootPreparationFacts } from "./hosted-dependency-root-provenance-facts";
+import { readHostedDependencyRecoveryAdmissionFacts } from "./hosted-dependency-recovery-admission-facts";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { collectBootId, collectUnitNotFound } from "./hosted-readonly-linux-collector";
 import { matchesManagedProviderProxyWait, parseHostedManagedProviderTerminalFacts,
@@ -150,26 +151,19 @@ export function assertHostedManagedProviderFailureCreator(fence: HostedActivatio
       !sameDependencyProtectedReference(claim.origin,parent.reference) || !sameDependencyProtectedReference(claim.custody,material.reference)) held();
   const entry = fixedPin(`${root}/dependency-reader-entries/${outer.startId}.json`,4096);
   if (!entry.bytes.equals(encode({version:1,producer:preclaim.reference,attempt}))) held();
-  const preparation = fixedPin(`${root}/dependency-root-preparations/${outer.startId}.json`,65536), prepared = wire(preparation);
-  if (!isDependencyCustodyObject(prepared,"attempt,authoredRoots,config,configAncestors,custodyReference,durableHandoffRoot,generatedRoots,protectedProfile,providerReady,qualification,ready,readyRevision,scratchParent,sourceLookupAncestors,version") ||
-      prepared.version !== 2 || !encode(prepared.attempt).equals(encode(attempt)) ||
-      !isDependencyProtectedReference(prepared.custodyReference) || !sameDependencyProtectedReference(prepared.custodyReference,material.reference) ||
-      typeof prepared.readyRevision !== "number" || !Number.isSafeInteger(prepared.readyRevision) || prepared.readyRevision < 1) held();
-  const ready = readHostedDependencyCommittedReady(binding,prepared.readyRevision);
-  if (!isDependencyProtectedReference(prepared.ready) || !sameDependencyProtectedReference(prepared.ready,ready.reference)) held();
-  const qualification = referenced(prepared.qualification,`${root}/${dependencyToolQualificationRecordName(outer.startId)}`);
-  const q = parseDependencyToolQualification(wire(qualification));
-  if (q.attemptId !== attempt.attemptId || q.epoch !== attempt.epoch || q.startId !== outer.startId ||
-      q.readyRevision !== ready.receipt.revision || !sameDependencyWorkspace(q.workspace,binding.workspace) ||
-      q.tree.dev !== ready.receipt.tree.dev || q.tree.ino !== ready.receipt.tree.ino) held();
+  const preparation = fixedPin(`${root}/dependency-root-preparations/${outer.startId}.json`,65536);
+  const prepared=parseRootPreparationFacts(preparation.bytes,attempt,material.reference);
+  const qualification=referenced(prepared.qualification,`${root}/${dependencyToolQualificationRecordName(outer.startId)}`);
+  const admitted=readHostedDependencyRecoveryAdmissionFacts(fence,binding,attempt,prepared,qualification.bytes);
   const profile = referenced(prepared.protectedProfile,`${root}/dependency-installer-profile.json`), decodedProfile = wire(profile);
   if (!decodedProfile || typeof decodedProfile !== "object" || !("schemaVersion" in decodedProfile) || decodedProfile.schemaVersion !== 2) held();
   const birth = fixedPin(`${root}/dependency-managed-provider-starts/${startId}.json`);
-  const expectedBirth = {version:1,installationId:binding.installationId,runtimeSha:binding.runtimeSha,
+  const birthAdmission=admitted.version===1 ? {ready:admitted.ready,readyRevision:admitted.readyRevision} :
+    {execution:admitted.execution,unverified:admitted.unverified,unverifiedRevision:admitted.unverifiedRevision};
+  const expectedBirth = {version:admitted.version===1?1:3,installationId:binding.installationId,runtimeSha:binding.runtimeSha,
     hostId:epoch.hostId,bootId:epoch.bootId,supervisorId:epoch.supervisorId,generation:outer.generation,unit:row.unit,providerStartId:startId,
     parentStartId:attempt.launch.startId,logicalJobId:binding.jobId,executionJobId:start.readonlyJobId,jobRootDir:binding.jobRootDir,
-    workspace:binding.workspace,attempt,custodyReference:material.reference,originReference:parent.reference,ready:ready.reference,
-    readyRevision:ready.receipt.revision,qualification:qualification.reference,protectedProfile:profile.reference};
+    workspace:binding.workspace,attempt,custodyReference:material.reference,originReference:parent.reference,...birthAdmission,qualification:qualification.reference,protectedProfile:profile.reference};
   if (!birth.bytes.equals(encode(expectedBirth))) held();
   const receiptPin = fixedPin(`${root}/dependency-managed-provider-completions/${startId}.json`), receipt = parseHostedManagedProviderFailureReceipt(receiptPin.bytes);
   if (!sameDependencyProtectedReference(receipt.providerReference,birth.reference) || !encode(receipt.parentAttempt).equals(encode(attempt)) || receipt.unit !== row.unit) held();

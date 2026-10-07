@@ -1,3 +1,7 @@
+import { DependencyToolReadyReadStatus } from "../core/dependency-environment/dependency-tool-ready-reader";
+import { parseDependencyToolAdmissionQualification } from "../core/dependency-environment/dependency-tool-execution";
+import { readHostedDependencyUsableReceipt } from "./hosted-dependency-usable-receipt";
+import { readCurrentHostedDependencyRootQualification } from "./hosted-dependency-tool-profile";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
@@ -7,7 +11,7 @@ import { LocalDependencyReceiptStore } from "../store-local-file/dependency-envi
 import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
 import { DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
 import { DependencyToolReadyProvenanceKind } from "../core/dependency-environment/dependency-tool-ready-reader";
-import { dependencyToolQualificationRecordName, parseDependencyToolQualification } from "../core/dependency-environment/dependency-tool-profile";
+import { dependencyToolQualificationRecordName } from "../core/dependency-environment/dependency-tool-profile";
 import { assertHostedDependencyRootGitProfile } from "../provider-codex/app-server/adapters/hosted-dependency-root-git-profile";
 import { assertHostedDependencyRootGitConfigBytes } from "../provider-codex/app-server/adapters/hosted-dependency-root-git-config";
 import { systemdObservationBudget } from "../provider-codex/app-server/adapters/systemd-service-arrays";
@@ -71,21 +75,44 @@ export function readOriginalHostedDependencyRootPreparation(context:CurrentHoste
   if (binding.version !== 2) invalid(); const selected = fixed(`dependency-root-preparations/${attempt.launch.startId}.json`,65536);
   const record = facts.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal ? parseRootPreparationFacts(selected.bytes,attempt,facts.association.reference) :
     parseOrdinaryRootPreparationFacts(selected.bytes,attempt,readCurrentHostedOrdinaryDependencyReaderEntry(context,fence,phase));
-  const ready=readOriginalHostedDependencyRootReady(context,fence,phase);
-  if (record.readyRevision !== ready.receipt.revision || !sameDependencyProtectedReference(record.ready,ready.reference)) invalid();
+  const qualified=record.version===4 || record.version===5 ? readCurrentHostedDependencyRootQualification(fence) : undefined;
+  if(record.version===4 || record.version===5) {
+    if(!qualified || qualified.status!==DependencyToolReadyReadStatus.Usable || qualified.context!==context || qualified.phase!==phase ||
+      !sameDependencyAttempt(qualified.attempt,attempt) || !encode(qualified.binding).equals(encode(binding)) ||
+      !encode(qualified.execution).equals(encode(record.execution)))invalid();
+  }
+  const committed=record.version===2 || record.version===3 ? readOriginalHostedDependencyRootReady(context,fence,phase) :
+    readHostedDependencyUsableReceipt(context,fence,phase).receipt;
+  if(qualified && !encode(qualified.receipt).equals(encode(committed.receipt)))invalid();
+  const selectedReference=record.version===2 || record.version===3 ? record.ready : record.unverified;
+  const selectedRevision=record.version===2 || record.version===3 ? record.readyRevision : record.unverifiedRevision;
+  if(selectedRevision!==committed.receipt.revision || !sameDependencyProtectedReference(selectedReference,committed.reference))invalid();
   const identity = rootIdentity(facts,binding); assertHostedDependencyRootDirectoryFacts(record,binding,identity.durable,attempt.launch.startId);
   const qualification = material(record.qualification,`${root}/${dependencyToolQualificationRecordName(attempt.launch.startId)}`,16384);
-  const q = parseDependencyToolQualification(decodeHostedActivationBytes(qualification.bytes)); assertRootQualificationFacts(record,binding,attempt,q,ready.receipt);
-  if (record.providerReady.provenance.kind !== DependencyToolReadyProvenanceKind.RegistryCompleted) {
+  const q = parseDependencyToolAdmissionQualification(decodeHostedActivationBytes(qualification.bytes)); assertRootQualificationFacts(record,binding,attempt,q,committed.receipt);
+  if((record.version===2 || record.version===3) && record.providerReady.provenance.kind!==DependencyToolReadyProvenanceKind.RegistryCompleted) {
     const source = record.providerReady.provenance.sourceBinding;
     material({path:source.path,identity:source.identity,sha256:source.sha256},source.path,262144);
-  } else if (record.version !== 3 || facts.kind !== CurrentHostedDependencyOriginKind.Ordinary) invalid();
+  } else if((record.version===2 || record.version===3) && (record.version!==3 || facts.kind!==CurrentHostedDependencyOriginKind.Ordinary))invalid();
   const profile = material(record.protectedProfile,`${root}/dependency-installer-profile.json`,16384);
   const decoded = decodeHostedActivationBytes(profile.bytes) as Record<string,unknown>;
   if (decoded.schemaVersion !== 2) invalid(); const rootGit = assertHostedDependencyRootGitProfile(decoded.rootGit,remaining);
   assertHostedDependencyRootGitConfigBytes(material(record.config,`${binding.workspace.canonicalPath}/.git/config`,65536,false).bytes);
   assertRootConfigAncestorFacts(record,binding);
   const after = assertCurrentHostedDependencyAttempt(context,fence,phase);
-  if (!sameDependencyAttempt(after.attempt,attempt) || !encode(readOriginalHostedDependencyRootReady(context,fence,phase)).equals(encode(ready)) || !fixed(`dependency-root-preparations/${attempt.launch.startId}.json`,65536).bytes.equals(selected.bytes) || remaining() <= 0) invalid();
-  return {record,reference:selected.reference,ready,identity,rootGit};
+  const rechecked=record.version===2 || record.version===3 ? readOriginalHostedDependencyRootReady(context,fence,phase) : readHostedDependencyUsableReceipt(context,fence,phase).receipt;
+  if(!sameDependencyAttempt(after.attempt,attempt) || !encode(rechecked).equals(encode(committed)) ||
+    !fixed(`dependency-root-preparations/${attempt.launch.startId}.json`,65536).bytes.equals(selected.bytes) || remaining()<=0)invalid();
+  const common={reference:selected.reference,identity,rootGit};
+  if(record.version===2 || record.version===3) {
+    if(committed.receipt.state!==DependencyReceiptState.Ready)invalid();
+    const ready=readOriginalHostedDependencyRootReady(context,fence,phase);
+    return {...common,admission:DependencyToolReadyReadStatus.Ready as const,record,ready};
+  }
+  const latest=readCurrentHostedDependencyRootQualification(fence);
+  if(latest.status!==DependencyToolReadyReadStatus.Usable || latest.context!==context || latest.phase!==phase ||
+    !sameDependencyAttempt(latest.attempt,attempt) || !encode(latest.binding).equals(encode(binding)) ||
+    !encode(latest.receipt).equals(encode(committed.receipt)) || !encode(latest.execution).equals(encode(record.execution)))invalid();
+  const unverified=readHostedDependencyUsableReceipt(context,fence,phase).receipt;
+  return {...common,admission:DependencyToolReadyReadStatus.Usable as const,record,unverified};
 }

@@ -1,3 +1,6 @@
+import { DependencyToolReadyReadStatus } from "../core/dependency-environment/dependency-tool-ready-reader";
+import { readCurrentHostedDependencyRootQualification } from "./hosted-dependency-tool-profile";
+import { readHostedDependencyUsableReceipt } from "./hosted-dependency-usable-receipt";
 import { createHash, randomUUID } from "node:crypto";
 import { DependencyConsumerLaunchKind, DependencyOwnerPhase, isDependencyConsumerOwner, parseDependencyOwner,
   sameDependencyAttempt, sameDependencyProtectedReference, sameDependencyWorkspace, type DependencyAttempt,
@@ -128,10 +131,11 @@ function readReadyReceipt(attempt: DependencyAttempt, producer: DependencyProtec
   const record = JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes));
   if (!record || Object.keys(record).sort().join(",") !== "attempt,producer,receipt,version" || record.version !== 1 ||
       !encode(record).equals(bytes) || !sameDependencyAttempt(record.attempt,attempt) || !sameDependencyProtectedReference(record.producer,producer) ||
-      record.receipt?.state !== DependencyReceiptState.Ready) invalid();
+      (record.receipt?.state!==DependencyReceiptState.Ready && record.receipt?.state!==DependencyReceiptState.Unverified)) invalid();
   return record.receipt;
 }
-/** Actual completed Ready producer before Running, including cold entries.
+/** Actual completed tool entry producer before Running, including cold Ready
+ * and truthful warm Usable. Unverified does not gain a Ready attestation.
  * The immutable initial producer stays untouched. No receipt/reference argument.
  */
 export function publishHostedReadonlyDependencyReaderReady(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence): void {
@@ -143,9 +147,13 @@ export function publishHostedReadonlyDependencyReaderReady(context: CurrentHoste
       !sameDependencyProtectedReference(original.custody,facts.association.reference) || !sameDependencyWorkspace(original.workspace,binding.workspace)) invalid();
   const consumed = readHostedPrivateBytes(`${entries}/${attempt.launch.startId}.json`,4096);
   if (!consumed?.equals(encode({version:1,producer:producer.reference,attempt}))) invalid();
-  const receipt = readHostedDependencyEstablishedReceipt(binding); if (!receipt || receipt.state !== DependencyReceiptState.Ready) invalid();
-  const committed = readHostedDependencyCommittedReady(binding,receipt.revision);
-  if (!encode(committed.receipt).equals(encode(receipt))) invalid();
+  const qualified=readCurrentHostedDependencyRootQualification(fence);
+  if(qualified.context!==context || !sameDependencyAttempt(qualified.attempt,attempt))invalid();
+  const receipt=readHostedDependencyEstablishedReceipt(binding);
+  if(!receipt || !encode(receipt).equals(encode(qualified.receipt)))invalid();
+  const committed=qualified.status===DependencyToolReadyReadStatus.Ready ? readHostedDependencyCommittedReady(binding,qualified.receipt.revision) :
+    readHostedDependencyUsableReceipt(context,fence,DependencyOwnerPhase.ExclusiveMutation).receipt;
+  if(!encode(committed.receipt).equals(encode(receipt)))invalid();
   ensureHostedDependencyDirectory(ready);
   const record = {version:1,producer:producer.reference,attempt,receipt:{state:receipt.state,revision:receipt.revision,reference:committed.reference}};
   createReadonlyPrivateRecord(`${ready}/${attempt.launch.startId}.json`,encode(record));
