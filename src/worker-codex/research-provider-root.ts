@@ -85,7 +85,7 @@ const nativeHost: ResearchProviderRootHost = {
   },
   publish: (path, value) => researchPublish(path, value, true), record: path => researchRead(path).toString("utf8"),
 };
-enum MountRootKind { Filesystem = "filesystem", Namespace = "namespace" }
+enum MountRootKind { Filesystem = "filesystem", Namespace = "namespace", Unlinked = "unlinked" }
 type Mount = { point: string; root: string; rootKind: MountRootKind; device: string; id: string; parent: string };
 type Backing = { device: string; path: string; mount: Mount; ancestors: Mount[] };
 type Binding = { source: string; target: string; access: ResearchRootMountAccess; identity: readonly [number, number]; backing: Backing; file: boolean };
@@ -154,11 +154,14 @@ function mountTable(host: ResearchProviderRootHost): Mount[] {
         !/^\d+$/.test(fields[0] ?? "") || !/^\d+$/.test(fields[1] ?? "")) researchInvalid();
     const point = decode(fields[4]!), root = decode(fields[3]!);
     if (!point.startsWith("/") || resolve(point) !== point) researchInvalid();
-    // nsfs show_path emits namespace objects, not filesystem paths. Retain
-    // their mountpoints for topology checks, without granting backing identity.
+    // Kernel roots may describe namespace objects or unlinked dentries. Retain
+    // these opaque tokens for topology checks, without granting backing identity.
+    const unlinkedPrefix = root.endsWith("//deleted") ? root.slice(0, -"//deleted".length) : "";
     const rootKind = root.startsWith("/") && resolve(root) === root ? MountRootKind.Filesystem :
       fields[separator + 1] === "nsfs" && /^(?:net|mnt|uts|ipc|user|pid|time|cgroup):\[[1-9]\d*\]$/.test(root)
-        ? MountRootKind.Namespace : undefined;
+        ? MountRootKind.Namespace :
+      fields[separator + 1] !== "nsfs" && unlinkedPrefix.startsWith("/") && unlinkedPrefix !== "/" &&
+        resolve(unlinkedPrefix) === unlinkedPrefix ? MountRootKind.Unlinked : undefined;
     if (rootKind === undefined) researchInvalid();
     return { point, root, rootKind, device: fields[2]!, id: fields[0]!, parent: fields[1]! };
   });
@@ -168,7 +171,7 @@ function backing(path: string, mounts: Mount[], intentionalAlias = false): Backi
   return observeRootFailure(ResearchProviderRootCheck.Backing, () => {
   const ancestors = mounts.filter(m => contains(m.point, path)).sort((a, b) => b.point.length - a.point.length);
   if (!ancestors.length || new Set(ancestors.map(m => m.point)).size !== ancestors.length ||
-      ancestors.some(m => m.rootKind === MountRootKind.Namespace)) researchInvalid();
+      ancestors.some(m => m.rootKind !== MountRootKind.Filesystem)) researchInvalid();
   const mount = ancestors[0]!;
   const result = { device: mount.device, path: join(mount.root, relative(mount.point, path)), mount, ancestors };
   if (!intentionalAlias) {

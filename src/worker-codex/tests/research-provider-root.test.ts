@@ -159,6 +159,57 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.Backing);
     expectNoRootEffects(f, observed);
   });
+  // dentry_path emits an opaque //deleted suffix after an unlinked dentry.
+  // Its former path must never become backing identity for a live binding.
+  it("admits unrelated kernel unlinked roots without importing or revoking on them", () => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push("900 1 8:1 /TEST-retired//deleted /TEST-unrelated rw - ext4 /dev/TEST rw");
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    expect(plan.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite).map(bind => bind.target)).toEqual([
+      f.spec.request.jobRootDir, f.spec.request.workspacePath,
+    ]);
+    expect(plan.bindings.some(bind => bind.target === "/TEST-unrelated")).toBe(false);
+    observed.extraMounts[0] = "900 1 8:1 /TEST-other-retired//deleted /TEST-unrelated rw - ext4 /dev/TEST rw";
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).not.toThrow();
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  it("retains an unlinked child mount as a denial before root effects", () => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push("900 1 8:1 /TEST-retired//deleted /usr/TEST-unlinked rw - ext4 /dev/TEST rw");
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+  });
+  it.each([
+    ["/TEST/a//b", "ext4"], ["/TEST/a/../b//deleted", "ext4"], ["relative//deleted", "ext4"],
+    ["/TEST-retired//deleted/tail", "ext4"], ["//deleted", "ext4"], ["///deleted", "ext4"],
+    ["/TEST-retired//deleted//deleted", "ext4"], ["/TEST-retired//deleted", "nsfs"],
+  ])("rejects malformed unlinked root %s with filesystem %s before effects", (root, filesystem) => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(`900 1 8:1 ${root} /TEST-unrelated rw - ${filesystem} TEST rw`);
+    let error: unknown;
+    try { prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter); } catch (caught) { error = caught; }
+    expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.MountTable);
+    expectNoRootEffects(f, observed);
+  });
+  it("rejects unlinked selected backing before root effects", () => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push("900 1 8:1 /TEST-retired//deleted /TEST-artifact rw - ext4 /dev/TEST rw");
+    let error: unknown;
+    try { prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter); } catch (caught) { error = caught; }
+    expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.Backing);
+    expectNoRootEffects(f, observed);
+  });
+  it.each(["nominal", "pin"] as const)("rejects an unlinked ancestor of ordinary %s backing", location => {
+    const f = captured(), observed = observingHost();
+    if (location === "nominal") {
+      observed.extraMounts.push("900 1 8:9 /TEST-retired//deleted /TEST-project rw - ext4 /dev/TEST rw");
+      observed.extraMounts.push("901 900 8:1 /TEST-project/disjoint-workspace /TEST-project/disjoint-workspace rw - ext4 /dev/TEST rw");
+    } else observed.extraMounts.push(`900 1 8:1 /TEST-retired//deleted ${join(f.directory, "pins")} rw - ext4 /dev/TEST rw`);
+    let error: unknown;
+    try { prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter); } catch (caught) { error = caught; }
+    expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.Backing);
+    expectNoRootEffects(f, observed);
+  });
   // Regression: an admitted writable equal, child or ancestor path would make
   // an immutable dependency writable or hide it, before systemd ordering helps.
   it.each([
