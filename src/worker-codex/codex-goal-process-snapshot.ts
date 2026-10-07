@@ -41,7 +41,11 @@ export async function readCodexGoalProcessSnapshotRows(): Promise<
     ["-axo", "pid=,ppid=,stat=,%cpu=,lstart=,command="],
     { timeout: 1_000 },
   );
-  return parseProcessSnapshotRows(stdout);
+  const rows = parseProcessSnapshotRows(stdout);
+  if (!rows.some((row) => row.pid === process.pid)) {
+    throw new Error("codex_goal_process_table_observer_missing");
+  }
+  return rows;
 }
 
 export function inspectCodexGoalProcessSnapshotRows(
