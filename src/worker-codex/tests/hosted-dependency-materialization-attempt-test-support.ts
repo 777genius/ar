@@ -11,7 +11,7 @@ import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider
 import * as workspace from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import * as capture from "../../worker-local/dependency-environment/capture-npm-install-inputs";
 import { NpmInputCaptureStatus } from "../../worker-local/dependency-environment/capture-npm-install-inputs";
-import { materializeHostedDependencyAbsence } from "../hosted-dependency-materialization";
+import { beginHostedDependencyInstallation } from "../hosted-dependency-materialization-context";
 import { HostedDependencyInstaller } from "../hosted-dependency-installer";
 import * as installerRecipe from "../hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRevision, type HostedDependencyInstallerProfile } from "../hosted-dependency-installer-recipe";
@@ -83,7 +83,7 @@ export function registerMaterializationAttemptTest(input: {
       const observed = vi.spyOn(workspace,"readHostedDependencyAttempt");
       const publish = vi.spyOn(receipts,"publishHostedDependencyReceipt");
       const install = vi.spyOn(HostedDependencyInstaller.prototype,"install").mockRejectedValue(new Error("TEST unexpected installer launch"));
-      const materialization = materializeHostedDependencyAbsence(binding,attempt);
+      const materialization = beginHostedDependencyInstallation(binding,attempt);
       await expect(materialization).rejects.toBeInstanceOf(DependencyAdmissionError);
       await expect(materialization).rejects.toMatchObject({reason:DependencyAdmissionFailure.StaleAttempt});
       expect(statuses).toEqual([NpmInputCaptureStatus.Qualified]);

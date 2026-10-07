@@ -11,7 +11,7 @@ import { HostedInstallationActivationStore } from "./hosted-installation-activat
 import { readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
 import { readHostedInstallationActivation } from "./hosted-installation-origin-facts";
 import { assertInspectedInstallation, assertActivationSession } from "./hosted-installation-physical-facts";
-import { HostedReadonlyHostKernel, HostedReadonlyRuntimeRole } from "./hosted-readonly-host-kernel";
+import { HostedReadonlyHostKernel } from "./hosted-readonly-host-kernel";
 import { HostedReadonlyEpochStore } from "./hosted-readonly-epoch-store";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { readHostedReadonlyDependencyMaterial } from "./hosted-readonly-dependency-records";
@@ -32,7 +32,7 @@ function held():never{throw new Error("hosted_dependency_active_maintenance_held
 function equal(a:unknown,b:unknown):boolean{return encode(a).equals(encode(b));}
 function boundary(fence:HostedActivationFence,access:symbol,closedDescriptors=true):void {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);assertHostedActivationOperator();
-  if(new HostedReadonlyHostKernel().runtimeRole()!==HostedReadonlyRuntimeRole.Supervisor)held();
+  new HostedReadonlyHostKernel().operatorSession();
   if(closedDescriptors)assertOriginalHostedDependencyOperatorDescriptors(fence,access);
 }
 /** Actual R controller selection is separate from ordinary birth. It never

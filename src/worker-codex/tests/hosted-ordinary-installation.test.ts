@@ -1,3 +1,4 @@
+import { hostedDependencyJobsRoot } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { registerManagedInstallationAdmissionTests } from "./hosted-managed-installation-admission-test-support";
 import { registerDependencyConsumerAdmissionTests } from "./hosted-dependency-consumer-admission-test-support";
 import { registerManifestPlacementInstallationTests } from "./hosted-manifest-placement-installation-test-support";
@@ -475,6 +476,12 @@ describe("ordinary dispatcher births and actual process origin", () => {
     fixture.runtimeUnit = unit;
     fixture.group = `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${unit}`;
   }
+  it("holds an unconfigured protected workspace before a genuine generic reservation", () => {
+    const { store, launch } = prepared(), before = read("host-activation.json");
+    mkdirSync(local(`${hostedDependencyJobsRoot}/TEST-unconfigured/workspace`), { recursive: true, mode: 0o700 });
+    expect(() => reserve(store, launch)).toThrow("hosted_dependency_parent_writer_ingress_held");
+    expect(read("host-activation.json")).toEqual(before); expect(fixture.spawn).not.toHaveBeenCalled();
+  });
   it.each([false, true])("binds actual creator PID birth and private scope; npm=%s", npm => {
     const { store, launch } = prepared(npm), first = reserve(store, launch);
     // A subsequent sibling reservation changes activation generation, not the

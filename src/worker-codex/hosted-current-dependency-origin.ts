@@ -223,8 +223,8 @@ export function readCurrentHostedManagedDependencyProvider(context: CurrentHoste
 }
 /** The original-map entry owns the fixed cold invocation before any final
  * observation. No caller observation/Ready setter or second provenance map. */
-export function materializeCurrentHostedDependencyColdTree(context:CurrentHostedDependencyOrigin):Promise<Readonly<{startId:string}>|undefined> {
-  return materializeOriginalHostedDependencyColdTree(context,rootInternalAccess);
+export async function materializeCurrentHostedDependencyColdTree(context:CurrentHostedDependencyOrigin):Promise<Readonly<{startId:string}>|undefined> {
+  if(!consumerEntry(context))coldInvalid();return materializeOriginalHostedDependencyColdTree(context,rootInternalAccess);
 }
 /** The same original map arms exclusion before initial source/input reads. No
  * request DTO can install state, coverage, an observation or a baseline. */
