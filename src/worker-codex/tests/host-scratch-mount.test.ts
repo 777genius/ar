@@ -5,6 +5,11 @@ import * as fs from "node:fs";
 import * as child from "node:child_process";
 import { inspectVisibleScratchMount, readKernelMountTable, selectVisibleScratchMount } from "../host-scratch-mount";
 
+// Builtin ESM namespace exports are nonconfigurable; expose mutable TEST exports
+// while retaining the native functions for all unoverridden FD/anonymous-file work.
+vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>() }));
+vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>() }));
+
 afterEach(() => vi.restoreAllMocks());
 
 const target = "/jobs/NEWTEST/tmp", uuid = "d0f2cac1-2009-4e9d-a710-e156f417938f";
