@@ -1,0 +1,60 @@
+name: Dependency retention CLOSED registration TEST
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/dependency-retention-os-test/**'
+      - '.github/workflows/dependency-retention-os-registration-test.yml'
+      - 'src/**/dependency-environment/**'
+      - 'src/**/hosted-dependency-*.ts'
+      - 'src/worker-codex/hosted-installation-*.ts'
+      - 'src/worker-codex/hosted-readonly-*.ts'
+      - 'src/worker-codex/hosted-test-egress-*.ts'
+      - 'src/provider-codex/app-server/adapters/hosted-*.ts'
+      - 'src/provider-codex/app-server/adapters/system-bus-infrastructure.ts'
+      - 'src/core/host-infrastructure/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig*.json'
+
+permissions:
+  contents: read
+
+jobs:
+  owned-closed-registration:
+    # One fresh disposable GitHub VM. No worker/user host or existing service.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Typecheck the retained handwritten OS fixture closure
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.json
+      - name: Emit finite TEST catalog before composition, copy and digest
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.catalog-emit.json
+      - name: Emit finite registration closure before owned root copy and digest
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.registration-emit.json
+      - name: Run one original CLOSED registration in a private PID1 OS
+        env:
+          TEST_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          TEST_NODE="$(readlink -f "$(command -v node)")"
+          TEST_TOOLCHAIN="$(dirname "$(dirname "$TEST_NODE")")"
+          sudo env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C GITHUB_ACTIONS=true \
+            TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
+            "$TEST_NODE" --experimental-strip-types \
+            "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/registration-outer.ts" \
+            "$GITHUB_WORKSPACE" "$TEST_TOOLCHAIN" qualification
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-retention-closed-registration-${{ github.sha }}
+          path: dependency-retention-os-evidence.json
+          if-no-files-found: error
