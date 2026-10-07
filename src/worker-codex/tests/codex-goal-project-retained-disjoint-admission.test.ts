@@ -559,7 +559,7 @@ describe("operation-bound retained output admission", () => {
     expect(snapshot.debt).toEqual(expect.arrayContaining([expect.objectContaining({ reason: ProjectDebtReason.UnreadableRoot })]));
   });
 
-  it.each([".project-authority", ".project-control", "durable-handoffs", "consumed-output-ledger", ".consumed-output-ledger-mutation-locks", "archives", "state"])("allows native container %s but never ignores its malformed job manifest", async (name) => {
+  it.each([".project-authority", ".project-control", "durable-handoffs", "consumed-output-ledger", ".consumed-output-ledger-mutation-locks", ".run-events", "archives", "state"])("allows native container %s but never ignores its malformed job manifest", async (name) => {
     const f = await fixture();
     const root = join(f.input.registryRootDir, name); await mkdir(root);
     await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
@@ -567,7 +567,7 @@ describe("operation-bound retained output admission", () => {
     await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
   });
 
-  it.each(["unknown-directory", ".unknown-directory", "state-symlink", ".project-control-symlink"])("denies unknown or symlink registry container %s", async (name) => {
+  it.each(["unknown-directory", ".unknown-directory", "state-symlink", ".project-control-symlink", ".run-events-symlink"])("denies unknown or symlink registry container %s", async (name) => {
     const f = await fixture();
     if (name.endsWith("-symlink")) await symlink(f.request.workspacePath, join(f.input.registryRootDir, name.slice(0, -"-symlink".length)));
     else await mkdir(join(f.input.registryRootDir, name));
