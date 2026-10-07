@@ -40,3 +40,4 @@ export {
 } from "./application/project-control/worker-launch-spec";
 export * from "./source-worker-request-codec";
 export * from "./source-worker-request-store";
+export { readHostedDependencyContentObservationReport } from "./hosted-dependency-content-observation-reader";

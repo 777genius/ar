@@ -1,3 +1,5 @@
+import { DependencyContentObservationStage as ContentStage } from "../core/dependency-environment/dependency-content-observation";
+import { startOriginalHostedDependencyContentObservation, finishOriginalHostedDependencyContentObservation, markOriginalHostedDependencyContentObservationUnknown } from "./hosted-dependency-content-observation";
 import { startOriginalHostedDependencyFinalObservation } from "./hosted-dependency-generation-controller";
 import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt, assertOriginalHostedDependencyColdProducer, readOriginalHostedDependencyColdSelection, materializeCurrentHostedDependencyColdTree, installCurrentHostedDependencyColdTree,
   consumeCurrentHostedDependencyColdHandoff, assertCurrentHostedDependencyConsumedColdHandoff, closeCurrentHostedDependencyColdHandoff,
@@ -78,12 +80,16 @@ export async function produceOriginalHostedDependencyColdTree(context:CurrentHos
   const completed=await installCurrentHostedDependencyColdTree(context,access);
   assertOwner(binding, attempt,context); assertHostedDependencyInstallerAttemptDrained(attempt);
   if (completed.lockName !== inputs.lockName || completed.inputSha256 !== expectedInstallerInputs.sha256) fail();
+  const stagedOrdinal=withHostedActivationFence(fence=>startOriginalHostedDependencyContentObservation(context,fence,access,ContentStage.Staged));
   const staged = await observeDependencyTree({ workspacePath: dirname(completed.output.canonicalPath), treeName: "node_modules",
     expectedTree: completed.output, limits: hostedDependencyObservationLimits });
+  withHostedActivationFence(fence=>finishOriginalHostedDependencyContentObservation(context,fence,access,stagedOrdinal,staged.status===DependencyTreeObservationStatus.Complete));
   if (staged.status !== DependencyTreeObservationStatus.Complete) fail(Failure.UnsafeTree);
   withHostedActivationFence(fence=>{assertOriginalHostedDependencyColdProducer(context,fence,access);normalizeCapturedDependencyOutput(staged,0);});
+  const normalizedOrdinal=withHostedActivationFence(fence=>startOriginalHostedDependencyContentObservation(context,fence,access,ContentStage.Normalized));
   const normalized = await observeDependencyTree({ workspacePath: staged.workspace.canonicalPath, treeName: "node_modules",
     expectedWorkspace: staged.workspace, expectedTree: staged.tree, limits: hostedDependencyObservationLimits });
+  withHostedActivationFence(fence=>finishOriginalHostedDependencyContentObservation(context,fence,access,normalizedOrdinal,normalized.status===DependencyTreeObservationStatus.Complete));
   if (normalized.status !== DependencyTreeObservationStatus.Complete || normalized.digest !== staged.digest) fail(Failure.UnsafeTree);
   if (!sameHostedDependencyKeyInputs(inputs, await readHostedDependencyKeyInputs(binding))) fail();
   withHostedActivationFence(fence => {
@@ -93,10 +99,12 @@ export async function produceOriginalHostedDependencyColdTree(context:CurrentHos
     publishCapturedDependencyOutput(normalized, binding.workspace);
   });
   withHostedActivationFence(fence=>{assertOriginalHostedDependencyColdProducer(context,fence,access);startOriginalHostedDependencyFinalObservation(context,fence,access);});
+  const finalOrdinal=withHostedActivationFence(fence=>startOriginalHostedDependencyContentObservation(context,fence,access,ContentStage.FinalRoot));
   const final = await observeDependencyTreeWithPhysicalExposure({ workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
     expectedWorkspace: binding.workspace, expectedTree: normalized.tree, limits: hostedDependencyObservationLimits });
   let ownedFinalExposure = final.status === DependencyTreeObservationStatus.Complete ? final.exposure : undefined;
   try {
+  withHostedActivationFence(fence=>finishOriginalHostedDependencyContentObservation(context,fence,access,finalOrdinal,final.status===DependencyTreeObservationStatus.Complete));
   if (final.status !== DependencyTreeObservationStatus.Complete || final.digest !== normalized.digest ||
       !sameHostedDependencyKeyInputs(inputs, await readHostedDependencyKeyInputs(binding))) fail(Failure.UnsafeTree);
   withHostedActivationFence(fence=>assertOriginalHostedDependencyColdProducer(context,fence,access));
@@ -119,7 +127,9 @@ export async function produceOriginalHostedDependencyColdTree(context:CurrentHos
     blobs.assertCurrent(fence);
     publishHostedDependencyReceipt(binding, installing.revision, ready);
   });
-  if (!final.exposure) return undefined; // Optional retention bounds preserve the original fourth scan.
+  if (!final.exposure) { // The uninstrumented fallback qualifier may perform a fourth scan.
+    withHostedActivationFence(fence=>markOriginalHostedDependencyContentObservationUnknown(context,fence,access));return undefined;
+  }
   const handoff = retainPhysicalCold(binding, attempt, inputs, ready, final, undefined, final.exposure,context,access);
   ownedFinalExposure = undefined; return handoff;
   } finally { if (ownedFinalExposure) closeDependencySourceExposure(ownedFinalExposure); }

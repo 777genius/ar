@@ -1,3 +1,5 @@
+import { DependencyContentObservationStage as ContentStage } from "../core/dependency-environment/dependency-content-observation";
+import { startOriginalHostedDependencyContentObservation, finishOriginalHostedDependencyContentObservation } from "./hosted-dependency-content-observation";
 import { startOriginalHostedDependencyFinalObservation } from "./hosted-dependency-generation-controller";
 import { assertOriginalHostedDependencyColdProducer, requiresCurrentHostedDependencyRootPurpose, installCurrentHostedDependencyColdTree, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { createHash } from "node:crypto";
@@ -156,25 +158,31 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
   let stagedExposure: DependencySourceExposure | undefined, finalExposure: DependencySourceExposure | undefined;
   try {
     const originalSession = openCapturedDependencySourceLinks(inputs.capture); ownedOriginalSession = originalSession;
+    const stagedOrdinal=capturedOrigin ? withHostedActivationFence(fence=>startOriginalHostedDependencyContentObservation(capturedOrigin,fence,internalAccess ?? fail(),ContentStage.Staged)) : undefined;
     const staged = await observeDependencyTreeWithLocalRegistrySelection({ workspacePath: stagePath, expectedWorkspace: stageWorkspace, treeName: "node_modules",
       expectedTree: chain.tree, sourceLinkSession: stagedSession, limits: hostedDependencyObservationLimits });
+    if (staged.status === DependencyTreeObservationStatus.Complete) stagedExposure = staged.exposure;
+    if(capturedOrigin && stagedOrdinal!==undefined)withHostedActivationFence(fence=>finishOriginalHostedDependencyContentObservation(capturedOrigin,fence,internalAccess ?? fail(),stagedOrdinal,staged.status===DependencyTreeObservationStatus.Complete));
     if (staged.status !== DependencyTreeObservationStatus.Complete) fail(Failure.UnsafeTree);
-    stagedExposure = staged.exposure;
     withHostedActivationFence(fence => { assertOwnerUnderFence(fence, binding, attempt,capturedOrigin); current(); currentChain(chain, attempt);
       assertDependencyLocalRegistrySelectionAbsent(staged.exposure, stagedSession, stageWorkspace, chain.tree);
       normalizeCapturedDependencyOutput(staged, 0, stagedSession); });
     closeDependencySourceExposure(staged.exposure); stagedExposure = undefined;
+    const normalizedOrdinal=capturedOrigin ? withHostedActivationFence(fence=>startOriginalHostedDependencyContentObservation(capturedOrigin,fence,internalAccess ?? fail(),ContentStage.Normalized)) : undefined;
     const normalized = await observeDependencyTree({ workspacePath: stagePath, expectedWorkspace: stageWorkspace, treeName: "node_modules",
       expectedTree: chain.tree, sourceLinkSession: stagedSession, limits: hostedDependencyObservationLimits });
+    if(capturedOrigin && normalizedOrdinal!==undefined)withHostedActivationFence(fence=>finishOriginalHostedDependencyContentObservation(capturedOrigin,fence,internalAccess ?? fail(),normalizedOrdinal,normalized.status===DependencyTreeObservationStatus.Complete));
     if (normalized.status !== DependencyTreeObservationStatus.Complete || !Buffer.from(normalized.canonicalBytes).equals(Buffer.from(staged.canonicalBytes)) ||
         !sameHostedDependencyKeyInputs(inputs, await readHostedDependencyKeyInputs(binding))) fail(Failure.UnsafeTree);
     withHostedActivationFence(fence => { assertOwnerUnderFence(fence, binding, attempt,capturedOrigin); current(); currentChain(chain, attempt);
       publishCapturedDependencyOutput(normalized, binding.workspace, { staged: stagedSession, original: originalSession }); });
     assertOwner(binding,attempt,capturedOrigin);
     if(capturedOrigin)withHostedActivationFence(fence=>startOriginalHostedDependencyFinalObservation(capturedOrigin,fence,internalAccess ?? fail()));
+    const finalOrdinal=capturedOrigin ? withHostedActivationFence(fence=>startOriginalHostedDependencyContentObservation(capturedOrigin,fence,internalAccess ?? fail(),ContentStage.FinalRoot)) : undefined;
     const final = await observeDependencyTreeWithLocalRegistrySelection({ workspacePath: binding.workspace.canonicalPath, expectedWorkspace: binding.workspace,
       treeName: "node_modules", expectedTree: chain.tree, sourceLinkSession: originalSession, limits: hostedDependencyObservationLimits });
     if (final.status === DependencyTreeObservationStatus.Complete) finalExposure = final.exposure;
+    if(capturedOrigin && finalOrdinal!==undefined)withHostedActivationFence(fence=>finishOriginalHostedDependencyContentObservation(capturedOrigin,fence,internalAccess ?? fail(),finalOrdinal,final.status===DependencyTreeObservationStatus.Complete));
     if (final.status !== DependencyTreeObservationStatus.Complete || !Buffer.from(final.canonicalBytes).equals(Buffer.from(normalized.canonicalBytes)) ||
         !sameHostedDependencyKeyInputs(inputs, await readHostedDependencyKeyInputs(binding))) fail(Failure.UnsafeTree);
     assertOwner(binding, attempt,capturedOrigin);

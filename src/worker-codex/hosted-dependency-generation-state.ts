@@ -1,3 +1,4 @@
+import type { OriginalHostedDependencyContentObservation } from "./hosted-dependency-content-observation";
 import type { HostedDependencyKeyInputs } from "./hosted-dependency-materialization-context";
 import type { DependencyOwnerPhase, DependencyAttempt, DependencyGenerationBaseline, DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import type { HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
@@ -12,6 +13,7 @@ export enum HostedDependencySourceRuntimeClosureKind { RuntimeNeverConfigured="r
  * and phases are not an issuer and are never accepted as registration input. */
 export type HostedDependencyGenerationState = {
   phase:HostedDependencyGenerationBarrierPhase;
+  contentObservation?:OriginalHostedDependencyContentObservation;
   binding:HostedDependencyBinding;attempt:DependencyAttempt;ownerPhase:DependencyOwnerPhase.ExclusiveMutation|DependencyOwnerPhase.Running;
   actors?:NonNullable<ReturnType<typeof readHostedDependencyActiveActorFacts>>;
   inputs?:HostedDependencyKeyInputs;

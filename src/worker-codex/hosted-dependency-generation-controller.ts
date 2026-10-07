@@ -1,3 +1,4 @@
+import { closeOriginalHostedDependencyContentObservation, openOriginalHostedDependencyContentObservation } from "./hosted-dependency-content-observation";
 import { DependencyToolExecutionBasis } from "../core/dependency-environment/dependency-tool-execution";
 import { readOriginalHostedDependencyQualifiedColdSourceUse, readOriginalHostedDependencyQualifiedBaselineSourceUse } from "./hosted-dependency-tool-profile";
 import { withHostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
@@ -36,6 +37,7 @@ export function beginOriginalHostedDependencyGenerationBarrier(context:CurrentHo
   if(retained.generation){assertOriginalHostedDependencyGenerationBarrier(context,fence,access);return;}
   retained.generation={phase:BarrierPhase.Pending,binding:actual.binding,attempt:actual.attempt,ownerPhase:DependencyOwnerPhase.ExclusiveMutation,
     sourceUse:{phase:HostedDependencySourceUsePhase.Capturing}};
+  openOriginalHostedDependencyContentObservation(context,fence,access);
   armOriginalHostedDependencyGenerationBarrier(context,fence,access);
 }
 export function armOriginalHostedDependencyGenerationBarrier(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol):void {
@@ -212,6 +214,7 @@ export function markOriginalHostedDependencyGenerationRunning(context:CurrentHos
   assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.Running);state.ownerPhase=DependencyOwnerPhase.Running;
   if(findOriginalHostedDependencyGenerationState(context,access)!==state ||
       (state.phase!==BarrierPhase.Unavailable && !readOriginalHostedDependencyGenerationNativeCensus(context,fence,access)))invalid();
+  closeOriginalHostedDependencyContentObservation(context,fence,access);
 }
 
 /** Actual original-context input capture across the await. Callers cannot
