@@ -7,6 +7,18 @@ import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host"
 import { requiresHostedProcessAdmission, withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedActivationPhase } from "@vioxen/subscription-runtime/worker-core";
 import { HostedInstallationActivationStore, readHostedInstallationActivation, isHostedOrdinaryRuntime, readHostedOrdinaryRuntime } from "./hosted-installation-activation";
+import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+
+/** Opted TEST frames are request data, not authority to load code into the
+ * initial-host launcher/CLI or redirect its pre-admission Git/registry reads. */
+function assertDependencyHostFrameEnvironment(env: Readonly<Record<string, string | undefined>>): void {
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (["NODE_OPTIONS", "NODE_PATH", "NODE_V8_COVERAGE", "OPENSSL_CONF", "OPENSSL_MODULES",
+      "SUBSCRIPTION_RUNTIME_CODEX_GOAL_REGISTRY_ROOT", "CODEX_GOAL_REGISTRY_ROOT"].includes(key) ||
+        /^(?:LD_|DYLD_|GIT_)/.test(key)) throw new Error("dependency_host_environment_unsupported");
+  }
+}
 
 /** Exact root-inventory command, foreground service lifetime. The caller never
  * supplies a host implementation or a completion receipt. */
@@ -70,6 +82,7 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
     return runHostedReadonlyForeground(command, args, cwd, env);
   }
   const store = new HostedInstallationActivationStore();
+  if (isHostedDependencyWorkspace(cwd)) assertDependencyHostFrameEnvironment(env);
   const frame = Buffer.from(JSON.stringify({ schemaVersion: 1, env }));
   if (frame.length > 4 * 1024 * 1024) throw new Error("hosted_custody_launch_frame_invalid");
   const child = store.runOrdinaryRuntimeLaunch(command, args, cwd, launch => {
@@ -79,7 +92,7 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
   });
   return new Promise<number>(resolve => {
     let failed = false;
-    const close = () => { try { if (!store.requestOrdinaryChildCleanup()) store.closeOrdinaryRuntimeLaunch(); } catch { failed = true; } };
+    const close = () => { try { if (!store.requestOrdinaryDependencyCleanup() && !store.requestOrdinaryChildCleanup()) store.closeOrdinaryRuntimeLaunch(); } catch { failed = true; } };
     const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
     const handlers = signals.map(signal => {
       const handler = () => { failed = true; close(); child.kill(signal); };
@@ -92,6 +105,15 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
     child.once("exit", (code, signal) => {
       if (!failed && code === 0 && signal === null) {
         try { store.recordOrdinaryRuntimeWaitCompletion(); } catch { failed = true; }
+        if (!failed) {
+          try { store.releaseOrdinaryDependencyConsumer(); }
+          catch {
+            // A successful job remains successful. Durable owner/intent stay
+            // held; cleanup uncertainty must not rewrite its completed result.
+            process.stderr.write("dependency_cleanup_unresolved\n");
+            try { store.requestOrdinaryDependencyCleanup(); } catch { /* Recovery stays held. */ }
+          }
+        }
       }
       if (failed || signal !== null || code !== 0) close();
       detach(); resolve(failed || signal !== null ? 70 : code ?? 70);
@@ -136,6 +158,9 @@ export async function runHostedOrdinaryBootstrap(): Promise<number> {
         typeof value === "string" && !value.includes("\0"))) throw new Error("hosted_custody_launch_frame_invalid");
   const child = withHostedActivationFence(fence => {
     const { launch, creator } = readHostedOrdinaryRuntime(fence);
+    if (isHostedDependencyWorkspace(creator.workspacePath)) {
+      assertDependencyHostFrameEnvironment(frame.env as Record<string, string>);
+    }
     const slot = readHostedChildSlot(creator);
     if (slot) { if (!budget) throw new Error("hosted_child_slot_binding_invalid"); budget.remainingMs(); }
     const child = spawn(launch.command, [...launch.args], { cwd: launch.cwd,

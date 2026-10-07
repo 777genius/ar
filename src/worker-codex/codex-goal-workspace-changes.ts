@@ -1,3 +1,5 @@
+import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { managedDependencyGitEnvironment, managedDependencyGitFlags } from "./managed-dependency-git";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { SafeExecutionRunResult } from "@vioxen/subscription-runtime/worker-core";
@@ -19,13 +21,14 @@ export async function changedFilesFromWorkspace(
   readonly warning?: string;
 }> {
   try {
-    const { stdout } = await execFileAsync("git", [
+    const { stdout } = await execFileAsync(isHostedDependencyWorkspace(workspacePath) ? "/usr/bin/git" : "git", [
+      ...(isHostedDependencyWorkspace(workspacePath) ? managedDependencyGitFlags : []),
       "-C",
       workspacePath,
       "status",
       "--porcelain",
       "--untracked-files=all",
-    ], { timeout: gitStatusTimeoutMs });
+    ], { timeout: gitStatusTimeoutMs, ...(isHostedDependencyWorkspace(workspacePath) ? { env: managedDependencyGitEnvironment() } : {}) });
     const changedFiles = stdout
       .split(/\r?\n/)
       .filter((line) => line.trim().length > 0)

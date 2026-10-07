@@ -29,8 +29,15 @@ describe("restricted TEST npm installation key", () => {
     expect(build({ ...input(), packageBytes: Buffer.from(JSON.stringify(pkg, null, 2)) }).installKey).not.toBe(before.installKey);
     expect(build({ ...input(), lockName: DependencyNpmLockName.Shrinkwrap }).installKey).not.toBe(before.installKey);
     const canonical = JSON.parse(Buffer.from(before.canonicalBytes).toString());
+    // Old launcher qualification cannot collide with a Ready from numeric-drop v2.
+    expect(canonical.profile).toBe("test_npm_qualification_v2");
+    expect(createHash("sha256").update(JSON.stringify({ ...canonical, profile: "test_npm_qualification_v1" }) + "\n").digest("hex"))
+      .not.toBe(before.installKey);
     expect(canonical.argv).toContain("--ignore-scripts");
     expect(canonical.environment.npm_config_userconfig).toBe("/runtime/npmrc");
+    expect(canonical.environment.npm_config_globalconfig).not.toBe(canonical.environment.npm_config_userconfig);
+    expect(createHash("sha256").update(JSON.stringify({ ...canonical, environment: { ...canonical.environment,
+      npm_config_globalconfig: canonical.environment.npm_config_userconfig } }) + "\n").digest("hex")).not.toBe(before.installKey);
     expect(canonical.effectiveConfig).toMatchObject({ registry: "https://registry.npmjs.org/", workspaces: false, installLinks: true });
   });
 

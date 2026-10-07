@@ -4,17 +4,27 @@ import { parseResearchStartSpec, researchProviderSetupTimeoutMs, type ResearchSt
 import { researchDescription, researchProviderUnitPattern } from "./research-launch-host";
 import { researchInvalid, researchName, researchPath } from "./research-launch-files";
 import { assertResearchProviderRoot, researchProviderProtectedPaths, ResearchRootMountAccess, type ResearchProviderRootPlan } from "./research-provider-root";
+import { hostedDependencyInstallerProperties, hostedDependencyInstallerBootstrapCommand, type HostedDependencyInstallerPlan } from "./hosted-dependency-installer-recipe";
 
-export enum TrustedCustodyLaunchRole { Outer = "outer", Ordinary = "ordinary" }
+export enum TrustedCustodyLaunchRole { Outer = "outer", Ordinary = "ordinary", Installer = "installer" }
 
 /** Custody services retain their independent authority/cgroup contract. This
  * adapter accepts no executable, payload, environment or systemd properties. */
-export function trustedCustodySystemdLaunch(role: TrustedCustodyLaunchRole, startId: string, cwd: string):
+export function trustedCustodySystemdLaunch(role: TrustedCustodyLaunchRole, startId: string, cwd: string, installer?: HostedDependencyInstallerPlan):
   { command: string; args: readonly string[] } {
   if (!/^[a-f0-9-]{36}$/.test(startId) || !/^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(cwd)) {
     throw new Error("hosted_custody_kernel_evidence_invalid");
   }
   let bootstrap: readonly string[];
+  if (role === TrustedCustodyLaunchRole.Installer) {
+    if (!installer || installer.startId !== startId || cwd !== installer.stagingDirectory) throw new Error("hosted_custody_kernel_evidence_invalid");
+    const properties = hostedDependencyInstallerProperties(installer);
+    return { command: "/usr/bin/systemd-run", args: ["--quiet", "--wait", "--pipe", `--unit=subscription-runtime-installer-${startId}.service`,
+      "--service-type=exec", "--expand-environment=no", "--property=Slice=subscription-runtime-hosted.slice", "--property=KillMode=control-group",
+      "--property=SendSIGKILL=yes", "--property=Delegate=no", "--working-directory=/", ...properties.map(p => "--property=" + p),
+      "--", ...hostedDependencyInstallerBootstrapCommand(installer)] };
+  }
+  if (installer) throw new Error("hosted_custody_kernel_evidence_invalid");
   switch (role) {
     case TrustedCustodyLaunchRole.Outer:
       bootstrap = [fileURLToPath(new URL("./hosted-readonly-runtime-bootstrap.js", import.meta.url))];

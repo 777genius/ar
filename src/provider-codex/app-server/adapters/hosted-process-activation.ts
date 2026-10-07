@@ -1,3 +1,4 @@
+import { readHostedDependencyBinding, readHostedDependencyAttempt } from "./hosted-dependency-workspace";
 import { parseScopedActorChain, bindScopedActorChain, type ScopedActorChain, type ScopedEnqueueActor, parseScopedSubmitter, parseScopedStartCorrelation, parseScopedInvocation, scopedDigest, ScopedTerminationKind,
   type ScopedStartCorrelation } from "@vioxen/subscription-runtime/core";
 import { parseImmutableChildSlot } from "@vioxen/subscription-runtime/core";
@@ -17,7 +18,7 @@ import type { CodexAppServerChildProcess } from "../application/app-server-proce
 const root = "/var/lib/subscription-runtime-host-policy";
 const activeFences = new WeakSet<object>();
 // Not a configurable policy root or a public arbitrary filesystem reader.
-const recordName = /^(?:readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed|correlations|invocations|submitters|submitter-exits|actor-chains)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|scoped-(?:terminating|operations|observations|receipts)\/[a-f0-9-]{36}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
+const recordName = /^(?:dependency-owners\/[0-9]{1,20}-[0-9]{1,20}\.(?:json|lock)|dependency-bindings\/[a-f0-9]{64}\.json|dependency-provider-attempts\/[a-f0-9-]{36}\.json|dependency-attempt-fences\/[a-f0-9-]{36}\.json|readonly-inventory\.json|host-installation\.json|host-activation\.(?:json|next)|ordinary-origins\.json|ordinary-origins\.next|readonly-(?:enrollment\.json|epoch\.(?:json|next|lock))|ordinary-origins\/[a-f0-9]{64}\.json|ordinary-(?:starts|completed|correlations|invocations|submitters|submitter-exits|actor-chains)\/[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,255}\.json|scoped-(?:terminating|operations|observations|receipts)\/[a-f0-9-]{36}\.json|child-slots\/[a-f0-9]{64}\.json|codex-readonly-(?:custody|revoked)\/[a-f0-9]{64}\.json)$/;
 export type HostedActivationFence = Readonly<{ readonly held: true }>;
 
 /** Initial host root is trusted; namespace-local root is not that principal. */
@@ -380,11 +381,16 @@ export function invalidateHostedOrdinaryWait(child: CodexAppServerChildProcess):
 /** Production default primitive calls this with its private synchronous spawn.
  * It never receives worker factory injection, mount options or a managed ticket. */
 export function submitHostedOrdinaryProcess(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
-  submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string }) => CodexAppServerChildProcess): CodexAppServerChildProcess {
+  submit: (unit: string, identity: { readonly jobId: string; readonly workspacePath: string }, fence: HostedActivationFence) => CodexAppServerChildProcess): CodexAppServerChildProcess {
   return withHostedActivationFence(fence => {
     const { activation, start, reservation: parentReservation, profileId, childBound } = readHostedOrdinaryProcessOrigin(fence);
     const jobRoot = canonical(start.jobRootDir);
     const workspacePath = canonical(start.workspacePath);
+    const dependency = readHostedDependencyBinding(str(start.jobId));
+    if (dependency) {
+      if (dependency.jobRootDir !== jobRoot || dependency.workspace.canonicalPath !== workspacePath) invalid();
+      readHostedDependencyAttempt(dependency, start, str(parentReservation.startId));
+    }
     if (!jobRoot.endsWith(`/jobs/${str(start.jobId)}`) ||
         workspacePath !== `${jobRoot}/workspace`) invalid();
     // The real app-server client starts in its materialized account HOME;
@@ -433,8 +439,15 @@ export function submitHostedOrdinaryProcess(input: { readonly cwd: string; reado
     try {
       createActivationRecord(`ordinary-starts/${startId}.json`, bytes);
       if (companion) createActivationRecord(`ordinary-correlations/${startId}.json`, Buffer.from(JSON.stringify(companion) + "\n"));
+      if (dependency) {
+        const attempt = readHostedDependencyAttempt(dependency, start, parentId);
+        createActivationRecord(`dependency-provider-attempts/${startId}.json`, Buffer.from(JSON.stringify({
+          version: 1, parentStartId: parentId, attemptId: attempt.attemptId, epoch: attempt.epoch,
+          providerStartId: startId, startDigest: sha256(bytes), unit,
+        }) + "\n"));
+      }
       assertHostedScopedAdmission(fence, parentId);
-      const child = submit(unit, { jobId: str(start.jobId), workspacePath });
+      const child = submit(unit, { jobId: str(start.jobId), workspacePath }, fence);
       if (companion) retainHostedScopedSubmitter(fence, companion, child);
       child.on("error", () => invalidateHostedOrdinaryWait(child));
       child.stdin.on?.("error", () => invalidateHostedOrdinaryWait(child));

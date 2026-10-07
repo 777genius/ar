@@ -1,4 +1,5 @@
 import { registerManagedInstallationAdmissionTests } from "./hosted-managed-installation-admission-test-support";
+import { registerDependencyConsumerAdmissionTests } from "./hosted-dependency-consumer-admission-test-support";
 import { registerKeyedCorrelationTests, registerChildForegroundDeadlineTests } from "./hosted-child-foreground-deadline-test-support";
 import { routeHostedGoalLaunch, stopHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import { codexGoalAccountSlots, runCodexGoal } from "../codex-goal-runner";
@@ -76,11 +77,15 @@ vi.mock("node:fs", async original => {
       return real.readdirSync(local(path), options);
     },
     readlinkSync: (path: string) => path.startsWith("/proc/") ? "host" : real.readlinkSync(local(path)),
-    realpathSync: (path: string) => path === "/etc/systemd/system/trusted.service" ? path : real.realpathSync(path),
+    realpathSync: (path: string) => {
+      if (path === "/etc/systemd/system/trusted.service") return path;
+      if (path.startsWith(root + "/")) { real.realpathSync(local(path)); return path; }
+      return real.realpathSync(path);
+    },
     statfsSync: () => ({ type: 0xef53 }),
-    lstatSync: (path: string) => Object.assign(real.lstatSync(local(path)), { uid: 0 }),
-    fstatSync: (fd: number) => fd <= 2 ? { isFIFO: () => true, isSocket: () => false } : fd === 99 ?
-      { isFile: () => true, isDirectory: () => false } : Object.assign(real.fstatSync(fd), { uid: 0 }),
+    lstatSync: (path: string, options?: { bigint?: boolean }) => Object.assign(real.lstatSync(local(path), options as { bigint: true }), { uid: options?.bigint ? 0n : 0 }),
+    fstatSync: (fd: number, options?: { bigint?: boolean }) => fd <= 2 ? { isFIFO: () => true, isSocket: () => false } : fd === 99 ?
+      { isFile: () => true, isDirectory: () => false } : Object.assign(real.fstatSync(fd, options as { bigint: true }), { uid: options?.bigint ? 0n : 0 }),
     openSync: (path: string, flags: number, mode: number) => real.openSync(local(path), flags, mode),
     mkdirSync: (path: string, options: Parameters<typeof real.mkdirSync>[1]) => real.mkdirSync(local(path), options),
     rmdirSync: (path: string) => real.rmdirSync(local(path)),
@@ -133,6 +138,8 @@ beforeEach(() => {
   put(stageName, { schemaVersion: 1, runtimeDirectory, runtimeSha: "a".repeat(40), runtimeManifestSha256: "b".repeat(64) });
 });
 afterEach(() => { rmSync(fixture.root, { recursive: true, force: true }); vi.restoreAllMocks(); });
+
+registerDependencyConsumerAdmissionTests({ fixture, stageName, runtimeDirectory, local, put, read });
 
 describe("trusted same-artifact installation and ordinary origin enrollment", () => {
   it("derives installation from reviewed stage/inventory, enrolls configured identity and explicitly resumes", () => {

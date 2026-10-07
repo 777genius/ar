@@ -1,3 +1,8 @@
+import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
+import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
+import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
+import { admitHostedDependencyConsumer } from "./hosted-dependency-admission";
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { researchProviderAdmissionGuard } from "./research-launch-admission";
 import { prepareHostScratchTemp } from "./host-scratch-temp";
@@ -19,12 +24,10 @@ import {
   createPublicResearchSourceReader,
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile } from "node:fs/promises";
 import { mapManagedGoalLayout, usesManagedJobLayout } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
-import { promisify } from "node:util";
 import type { ObservabilityPort } from "@vioxen/subscription-runtime/core";
 import type { ProviderTaskControls } from "@vioxen/subscription-runtime/core";
 import {
@@ -109,8 +112,6 @@ export type {
   CodexGoalRuntimeEventLevel,
 } from "./codex-goal-runtime-events";
 
-const execFileAsync = promisify(execFile);
-const gitMetadataTimeoutMs = 5_000;
 
 export type CodexGoalAccountSlot = {
   readonly name: string;
@@ -228,6 +229,7 @@ export async function runCodexGoal(
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   config = mapManagedGoalLayout({ config }).config;
   assertCodexGoalRunConfig(config);
+  await admitHostedDependencyConsumer(config);
   assertHostedMimoGoalConfinement(config);
   assertCodexGoalAccessLaunchAllowed(config);
   const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
@@ -486,6 +488,8 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
 }): FileBackendCodexSafeExecutorOptions {
   const { config } = input;
+  const dependencyGit = isHostedDependencyWorkspace(config.workspacePath) ? new ManagedDependencyGitRunner() : undefined;
+  const runtimeHomeRootDir = dependencyGit ? join(config.jobRootDir, "home") : config.runtimeHomeRootDir;
   const assertProviderAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
   assertProviderAdmission?.();
   const publicSourceReader = input.providerEgressPolicy && codexProviderHasPublicSources(input.providerEgressPolicy)
@@ -517,6 +521,10 @@ export function buildCodexGoalExecutorOptions(input: {
     sourceEnv: config.sourceEnv,
   });
   return {
+    ...(dependencyGit ? {
+      snapshotter: new DefaultWorkspaceSnapshotter({ commandRunner: dependencyGit, gitBinaryPath: "/usr/bin/git" }),
+      workspaceAccess: new NodeSafeExecutionWorkspaceAccess({ commandRunner: dependencyGit, gitBinaryPath: "/usr/bin/git" }),
+    } : {}),
     ...(assertProviderAdmission ? { assertProviderAdmission } : {}),
     ...(config.executorId ? { executorId: config.executorId } : {}),
     ...(childBudget ? { childBudget } : {}),
@@ -531,7 +539,7 @@ export function buildCodexGoalExecutorOptions(input: {
     terminalCheckpointJobRootDir: config.jobRootDir,
     ...(completedTurnCheckpoint ? { completedTurnCheckpoint } : {}),
     ...(input.executionGeneration === undefined ? {} : { executionGeneration: input.executionGeneration }),
-    ...(config.runtimeHomeRootDir === undefined ? {} : { runtimeHomeRootDir: config.runtimeHomeRootDir }),
+    ...(runtimeHomeRootDir === undefined ? {} : { runtimeHomeRootDir }),
     accountCapacityStore: isMimo
       ? codexAccountCapacityStore(config.authRootDir, {
           ...(input.observability ? { observability: input.observability } : {}),
@@ -741,26 +749,6 @@ async function codexGoalLinkedWorktreeHandoffPreflight(input: {
     enabled: true,
     commitRequested: promptRequestsWorkerGitCommit(input.prompt),
   };
-}
-
-async function isLinkedGitWorktree(workspacePath: string): Promise<boolean> {
-  try {
-    const { stdout } = await execFileAsync("git", [
-      "-C",
-      workspacePath,
-      "rev-parse",
-      "--path-format=absolute",
-      "--git-dir",
-      "--git-common-dir",
-    ], { timeout: gitMetadataTimeoutMs });
-    const [gitDir, gitCommonDir] = stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    return Boolean(gitDir && gitCommonDir && gitDir !== gitCommonDir);
-  } catch {
-    return false;
-  }
 }
 
 function promptRequestsWorkerGitCommit(prompt: string): boolean {

@@ -1,3 +1,7 @@
+import { dependencyOwnedReservations, releaseHostedDependencyConsumer } from "./hosted-dependency-release";
+import { assertHostedDependencyQualifiedInventory, hostedDependencyOwnerRoot, isHostedDependencyWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
+import { fenceDependencyConsumer } from "@vioxen/subscription-runtime/worker-core";
 import { scopedOrdinaryAuthority } from "./hosted-controller/scoped-termination-validation";
 import { ScopedTerminationRecords } from "./hosted-controller/scoped-termination-records";
 import { ScopedTerminationKind, type RuntimeValidatedOrdinaryTermination } from "../worker-core/hosted-custody/domain/scoped-termination";
@@ -261,6 +265,12 @@ export class HostedInstallationActivationStore {
     childBudget?.remainingMs();
     const { installation, activation, birth, originSha256 } = readHostedOrdinaryBirth(creator.jobId);
     assertInspectedInstallation(installation); assertActivationSession(activation, session);
+    if (isHostedDependencyWorkspace(creator.workspacePath)) {
+      assertHostedDependencyQualifiedInventory();
+      const binding = readHostedDependencyBinding(creator.jobId);
+      if (!binding || binding.installationId !== installation.installationId ||
+          binding.jobRootDir !== creator.jobRootDir || binding.workspace.canonicalPath !== creator.workspacePath) invalid();
+    }
     if (childSlot && activation.ordinaryStarts.some(row => row.creatorId === creator.creatorId)) throw new Error("child_invocation_consumed");
     if (birth.jobRootDir !== creator.jobRootDir || birth.workspacePath !== creator.workspacePath) invalid();
     const grantSha256 = assertNoManagedOrigin(birth); kernel.verifyDescriptorBoundary();
@@ -318,6 +328,45 @@ export class HostedInstallationActivationStore {
       if (this.ordinaryChildLifetime()) { try { this.requestOrdinaryChildCleanup(); } catch { /* Retain uncertain ownership. */ } }
       throw error;
     }
+  }
+  /** Dependency attempt release is per retained invocation, never global phase
+   * closure. Called by the host --wait owner after successful completion. */
+  releaseOrdinaryDependencyConsumer(): boolean {
+    return this.serialized(fence => {
+      const launch = this.ordinaryLaunch;
+      if (!launch) invalid();
+      return releaseHostedDependencyConsumer(fence, this.read(), launch.start, launch.reservation);
+    });
+  }
+  requestOrdinaryDependencyCleanup(): boolean {
+    const retained = this.serialized(() => {
+      const launch = this.ordinaryLaunch;
+      if (!launch) invalid();
+      const binding = readHostedDependencyBinding(launch.start.jobId);
+      if (!binding) return undefined;
+      if (binding.workspace.canonicalPath !== launch.start.workspacePath || binding.grantDigest !== launch.start.grantSha256) invalid();
+      const activation = this.read(), kernel = new HostedReadonlyHostKernel();
+      assertActivationSession(activation, kernel.operatorSession());
+      const runtime = activation.ordinaryStarts.find(r => r.startId === launch.reservation.startId);
+      if (!runtime || JSON.stringify(runtime) !== JSON.stringify(launch.reservation)) invalid();
+      const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
+      try {
+        const owner = store.read(binding.workspace), attempt = owner?.owner?.attempt;
+        if (attempt) {
+          if (attempt.launch.startId !== runtime.startId || attempt.launch.grantDigest !== binding.grantDigest ||
+              attempt.launch.installationId !== binding.installationId) invalid();
+          fenceDependencyConsumer(store, binding.workspace, attempt);
+          createReadonlyPrivateRecord(`${readonlySupervisorRoot}/dependency-attempt-fences/${runtime.startId}.json`,
+            Buffer.from(JSON.stringify({ version: 1, startId: runtime.startId, attemptId: attempt.attemptId, epoch: attempt.epoch }) + "\n"));
+        }
+        // The owner fence persists before this snapshot and unlocked stops,
+        // so a delayed provider enqueue cannot grow the selected namespace.
+        return dependencyOwnedReservations(activation, runtime, attempt);
+      } finally { store.close(); }
+    });
+    if (!retained) return false;
+    this.requestStops(retained, undefined, new HostedReadonlyHostKernel());
+    return true;
   }
   ordinaryChildLifetime() { return this.ordinaryLaunch?.childLifetime; }
   ordinaryChildBudget() { return this.ordinaryLaunch?.childBudget; }

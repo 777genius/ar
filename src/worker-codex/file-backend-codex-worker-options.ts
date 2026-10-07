@@ -1,7 +1,7 @@
 import { ChildExecutionBudget } from "@vioxen/subscription-runtime/core";
 import type { AgentRuntimeToolName, ClockPort, ObservabilityPort, RuntimeDeps } from "@vioxen/subscription-runtime/core";
 import { CodexModelBackend, type AppServerCompletedTurnCheckpoint, type AppServerExecutionLifetime, type PublicResearchSourceReader, type CodexExecutionProfile, type CodexProviderEgressPolicy, type CodexAppServerProcessFactory, type CodexAppServerRateLimitsSnapshotHandler, type CodexReasoningEffort, type CodexServiceTier } from "@vioxen/subscription-runtime/provider-codex";
-import type { CommandPolicy, WorkerCapacitySnapshot } from "@vioxen/subscription-runtime/worker-core";
+import { SubscriptionWorkerError, type SubscriptionWorkerState, type CommandPolicy, type WorkerCapacitySnapshot } from "@vioxen/subscription-runtime/worker-core";
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 import type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
 import {
@@ -182,4 +182,20 @@ export function assertWorkerOptions(options: FileBackendCodexWorkerOptions): voi
 function assertPositiveInteger(value: number | undefined, code: string): void {
   if (value === undefined) return;
   if (!Number.isInteger(value) || value <= 0) throw new Error(code);
+}
+
+/** Pure lifecycle precondition for public and retained-binding operations. */
+export function assertCodexWorkerStarted(state: SubscriptionWorkerState): void {
+  if (state === "disposed") {
+    throw new SubscriptionWorkerError(
+      "subscription_worker_disposed",
+      "Codex worker has been disposed.",
+    );
+  }
+  if (state === "created") {
+    throw new SubscriptionWorkerError(
+      "subscription_worker_not_started",
+      "Codex worker has not been started.",
+    );
+  }
 }

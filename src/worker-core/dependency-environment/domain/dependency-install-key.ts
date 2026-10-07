@@ -1,6 +1,8 @@
 import { detectSecretLikeContent } from "../../secret-detection";
 
-export enum DependencyInstallProfile { TestNpmQualification = "test_npm_qualification_v1" }
+// v2 requires the qualified numeric UID-drop launcher. Older launch profiles
+// cannot share a Ready install key even when npm inputs and toolchain match.
+export enum DependencyInstallProfile { TestNpmQualification = "test_npm_qualification_v2" }
 export enum DependencyNpmLockName { PackageLock = "package-lock.json", Shrinkwrap = "npm-shrinkwrap.json" }
 export enum DependencyToolRootKind { File = "file", Directory = "directory" }
 export enum DependencyLibcFamily { Glibc = "glibc", Musl = "musl" }
@@ -15,7 +17,7 @@ export const dependencyTestNpmArgv: readonly string[] = Object.freeze([
 ]);
 export const dependencyTestNpmEnvironment: Readonly<Record<string, string>> = Object.freeze({
   PATH: "/usr/local/bin:/usr/bin:/bin", HOME: "/home/installer", LANG: "C", LC_ALL: "C",
-  npm_config_cache: "/cache", npm_config_userconfig: "/runtime/npmrc", npm_config_globalconfig: "/runtime/npmrc",
+  npm_config_cache: "/cache", npm_config_userconfig: "/runtime/npmrc", npm_config_globalconfig: "/runtime/global-npmrc",
   npm_config_registry: "https://registry.npmjs.org/", npm_config_ignore_scripts: "true",
   npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false",
 });
