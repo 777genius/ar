@@ -38,7 +38,7 @@ function publish(state:OriginalHostedDependencyContentObservation,name:string,ro
  * record physical work; neither an event nor a returned ordinal is a grant. */
 export function openOriginalHostedDependencyContentObservation(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol):void {
   const owner=current(context,fence,access);if(owner.contentObservation)return;
-  const identity={attemptId:owner.attempt.attemptId,startId:owner.attempt.launch.startId,epoch:owner.attempt.epoch,
+  const identity={attemptId:owner.attempt.attemptId,startId:owner.attempt.launch.startId,epoch:String(owner.attempt.epoch),
     scopeSha256:createHash("sha256").update(encode({attempt:owner.attempt,binding:owner.binding})).digest("hex")};
   const state:OriginalHostedDependencyContentObservation={identity,count:0,pairs:new Map(),uncertain:false,closed:false};owner.contentObservation=state;
   const opened=publish(state,"opened",{version:1,identity,kind:Kind.Opened});if(opened)state.opened=opened;

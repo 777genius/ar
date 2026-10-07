@@ -19,7 +19,8 @@ const close = (count: number, stages: readonly Stage[] = [Stage.Staged]): Depend
   })),
 });
 const read = (expected: unknown, values: readonly DependencyContentObservationRecord[] | undefined) => readFacts(expected, values, values?.map(ref));
-const pair = (ordinal: number, stage: Stage): DependencyContentObservationRecord[] => [
+const pair = (ordinal: number, stage: Stage): [Extract<DependencyContentObservationRecord, { kind: Kind.Started }>,
+  Extract<DependencyContentObservationRecord, { kind: Kind.Returned }>] => [
   { version: 1, identity, kind: Kind.Started, ordinal, stage },
   { version: 1, identity, kind: Kind.Returned, ordinal, stage, outcome: Outcome.Complete },
 ];
