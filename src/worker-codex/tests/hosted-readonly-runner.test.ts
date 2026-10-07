@@ -70,6 +70,19 @@ vi.mock("../hosted-readonly-epoch-store", () => ({
     publishEpoch(epoch: HostedCustodyEpoch) { facts.epoch = parseHostedCustodyEpoch(epoch); }
   },
 }));
+// Legacy readonly fixtures do not exercise protected managed-provider history.
+// Its new kernel back-edge re-enters a pending partial importOriginal mock.
+// Refuse this unrelated lane rather than simulate its native/origin evidence.
+vi.mock("../hosted-managed-provider-failure-recovery", () => {
+  const unexpectedHistoryCall = (): never => { throw new Error("unexpected managed-provider history in readonly fixture"); };
+  return {
+    parseHostedManagedProviderFailureReceipt: unexpectedHistoryCall,
+    assertHostedManagedProviderFailureCreator: unexpectedHistoryCall,
+    readOriginalHostedManagedProviderCreator: unexpectedHistoryCall,
+    readOriginalHostedManagedProviderDischargedReceipt: unexpectedHistoryCall,
+    readOriginalHostedManagedConsumerProviderDischargedReceipt: unexpectedHistoryCall,
+  } satisfies Record<keyof typeof import("../hosted-managed-provider-failure-recovery"), typeof unexpectedHistoryCall>;
+});
 // These legacy readonly fixtures must never execute the dependency cold protocol.
 // Its new import cycle reenters the kernel while the partial kernel mock awaits
 // importOriginal. Keep the real kernel helpers; refuse every cold call instead.
