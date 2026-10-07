@@ -150,10 +150,10 @@ export function assertCurrentHostedDependencyOrigin(context: CurrentHostedDepend
 }
 /** Classification after preparation uses the SAME original authority and FD
  * associations, rather than falling back to the generic strict descriptor view. */
-export function requiresCurrentHostedDependencyRootPurpose():boolean {
-  if (!currentEntryOrigin) return classifyCurrentHostedDependencyRootPurpose();
-  return withHostedActivationFence(fence => { const retained = consumerEntry(currentEntryOrigin!); if (!retained?.ordinaryEntry) invalid();
-    const actual = assertCurrentHostedDependencyOrigin(currentEntryOrigin!,fence); if (actual.kind !== CurrentHostedDependencyOriginKind.Ordinary) invalid(); return true; });
+export function requiresCurrentHostedDependencyRootPurpose(fence?:HostedActivationFence):boolean {
+  if (!currentEntryOrigin) return classifyCurrentHostedDependencyRootPurpose(fence);
+  if(fence!==undefined) { assertHostedActivationFence(fence); const retained=consumerEntry(currentEntryOrigin); if(!retained?.ordinaryEntry)invalid();const actual=assertCurrentHostedDependencyOrigin(currentEntryOrigin,fence);if(actual.kind!==CurrentHostedDependencyOriginKind.Ordinary)invalid();return true; }
+  return withHostedActivationFence(held=>requiresCurrentHostedDependencyRootPurpose(held));
 }
 export function readCurrentHostedOrdinaryDependencyReaderEntry(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,phase:DependencyOwnerPhase) {
   const retained = consumerEntry(context); if (!retained?.ordinaryEntry || currentEntryOrigin !== context) invalid();
