@@ -3,26 +3,30 @@ import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeResearchLaunchFailure, ResearchLaunchCause as C, ResearchLaunchDiagnostic as D } from "../research-launch-diagnostics";
-import { prepareHostScratchTemp } from "../host-scratch-temp";
+import { annotateScratchMountInspectionFailure, normalizeResearchLaunchFailure, ResearchLaunchCause as C, ResearchLaunchDiagnostic as D } from "../research-launch-diagnostics";
+import { prepareHostScratchCaches, prepareHostScratchTemp, resolvePreparedHostScratchCacheBinds } from "../host-scratch-temp";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
+import { classifyCodexFailure } from "../../provider-codex/failure-classifier";
 
 let temporaryRoot: string | undefined;
 afterEach(() => { if (temporaryRoot) rmSync(temporaryRoot, { recursive: true, force: true }); temporaryRoot = undefined; });
 
 describe("finite startup diagnostics", () => {
   it("preserves every deployed numeric code and cause while adding a finite diagnosis", () => {
-    const known = ["hosted_research_launch_denied", "checkpoint_publisher_required",
-      "terminal_checkpoint_mutex_busy_owner_unproven", "terminal_checkpoint_job_fenced",
-      "Refusing to hide nonempty legacy scratch directory", "Scratch bind target busy",
-      "Unknown mount at scratch target", "Prepared scratch source identity changed"];
-    for (const [index, message] of known.entries()) {
+    const known = [["hosted_research_launch_denied", D.ResearchAdmission], ["checkpoint_publisher_required", D.CheckpointAdmission],
+      ["terminal_checkpoint_mutex_busy_owner_unproven", D.CheckpointAdmission], ["terminal_checkpoint_job_fenced", D.CheckpointAdmission],
+      ["Refusing to hide nonempty legacy scratch directory", D.ScratchNonempty], ["Scratch bind target busy", D.ScratchBusy],
+      ["Unknown mount at scratch target", D.ScratchUnknownMount], ["Prepared scratch source identity changed", D.ScratchSourceChanged]] as const;
+    for (const [index, [message, diagnostic]] of known.entries()) {
       for (const cause of Object.values(C)) {
         const observation = normalizeResearchLaunchFailure(new Error(message, { cause }));
         expect(observation.legacyCode).toBe(index);
         expect(observation.cause).toBe(cause);
-        expect(observation.diagnostic).not.toBe(D.Unknown);
+        expect(observation.diagnostic).toBe(diagnostic);
       }
+      // RED: annotation changes a deployed code or loses its finite diagnosis.
+      const annotated = normalizeResearchLaunchFailure(annotateScratchMountInspectionFailure(new Error(message), C.ScratchTmp));
+      expect(annotated).toEqual({ legacyCode: index, cause: C.ScratchTmp, diagnostic });
     }
   });
 
@@ -40,6 +44,76 @@ describe("finite startup diagnostics", () => {
     for (const code of ["EEXIST", "EIO", "ENOTDIR", "ENOENT:TEST-secret", {}, 1]) {
       expect(normalizeResearchLaunchFailure({ code, cause: { code: "ENOENT" } }).diagnostic).toBe(D.Unknown);
     }
+  });
+
+  // RED: an inspection is attributed to the wrong scratch role, its failure is
+  // swallowed, or an unsupported errno/message escapes the closed observation.
+  it.each([
+    ["root", C.ScratchRoot, D.ETIMEDOUT], ["tmp", C.ScratchTmp, D.ScratchMountInspection],
+    ["cache", C.ScratchCache, D.Unknown], ["cache observer", C.ScratchCache, D.ETIMEDOUT],
+  ] as const)("identifies the actual %s mount inspection failure without replacing it", async (scenario, cause, diagnostic) => {
+    const job = "/TEST-job", home = "/TEST-home", f = await preparedResearchScratch(job, home);
+    const target = scenario === "root" ? f.root : scenario === "tmp" ? `${job}/tmp` : `${home}/plugins/cache`;
+    const original = Object.assign(new Error(scenario === "tmp" ? "Ambiguous scratch mount inspection" : "TEST-secret /private/TEST-path"), {
+      code: scenario === "cache" ? "EIO" : "ETIMEDOUT", stderr: "TEST-secret stderr", env: "TEST-secret env",
+    });
+    const inspect = f.host.inspectMount;
+    f.host.inspectMount = path => { if (path === target) throw original; return inspect(path); };
+    let failure: unknown;
+    try {
+      if (scenario === "cache observer") resolvePreparedHostScratchCacheBinds(home, f.host);
+      else if (scenario === "cache") await prepareHostScratchCaches(home, {}, f.host);
+      else await prepareHostScratchTemp(job, {}, f.host);
+    } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toBe(original);
+    const observation = normalizeResearchLaunchFailure(failure);
+    expect(observation).toEqual({ legacyCode: "unclassified", cause, diagnostic });
+    expect(JSON.stringify(observation)).not.toContain("TEST-");
+    expect(f.mutations).toEqual([]);
+  });
+
+  // RED: post-bind inspection bypasses phase annotation or leaves its owned lock.
+  it("retains a post-bind inspection failure while removing only its own lock", async () => {
+    const job = "/TEST-job", f = await preparedResearchScratch(job, "/TEST-home"), target = `${job}/tmp`;
+    const source = f.prepared.find(bind => bind.target === target)!.source;
+    f.mounts.delete(target); f.nodes.delete(target); f.nodes.delete(source);
+    const original = Object.assign(new Error("TEST-private post-bind failure"), { code: "ETIMEDOUT" });
+    const inspect = f.host.inspectMount;
+    f.host.inspectMount = path => { if (path === target && f.mounts.has(target)) throw original; return inspect(path); };
+    let failure: unknown;
+    try { await prepareHostScratchTemp(job, {}, f.host); } catch (error) { failure = error; }
+    expect(failure).toBe(original);
+    expect(normalizeResearchLaunchFailure(failure)).toEqual({ legacyCode: "unclassified", cause: C.ScratchTmp, diagnostic: D.ETIMEDOUT });
+    expect(f.prepared.filter(bind => bind.target === target)).toHaveLength(2);
+    expect(f.nodes.has(`${source}.lock`)).toBe(false);
+  });
+
+  // RED: annotation masks EACCES and turns a denied cache inspection into retryable recovery.
+  it("preserves nonretryable permission recovery for a frozen cache inspection error", async () => {
+    const home = "/TEST-home", f = await preparedResearchScratch("/TEST-job", home);
+    const original = Object.freeze(Object.assign(new Error("EACCES: permission denied", { cause: "TEST-original cause" }), {
+      code: "EACCES", stderr: "EACCES: permission denied", status: 1, syscall: "TEST-inspect", path: "/private/TEST-cache",
+    }));
+    const descriptors = Object.getOwnPropertyDescriptors(original), inspect = f.host.inspectMount;
+    f.host.inspectMount = path => { if (path === `${home}/plugins/cache`) throw original; return inspect(path); };
+    let failure: unknown;
+    try { await prepareHostScratchCaches(home, {}, f.host); } catch (error) { failure = error; }
+    expect(failure).toBe(original);
+    expect(Object.getOwnPropertyDescriptors(original)).toEqual(descriptors);
+    expect(classifyCodexFailure(failure)).toMatchObject({ code: "permission_required", retryable: false, reconnectRequired: false });
+    expect(normalizeResearchLaunchFailure(failure)).toEqual({ legacyCode: "unclassified", cause: C.ScratchCache, diagnostic: D.EACCES });
+    expect(f.mutations).toEqual([]);
+  });
+
+  // RED: a neighboring filesystem failure is mislabeled as mount inspection.
+  it("preserves an error thrown outside mount inspection without phase annotation", async () => {
+    const f = await preparedResearchScratch("/TEST-job", "/TEST-home");
+    const original = Object.assign(new Error("TEST-statfs failure"), { code: "ETIMEDOUT" });
+    f.host.statfs = () => { throw original; };
+    await expect(prepareHostScratchTemp("/TEST-job", {}, f.host)).rejects.toBe(original);
+    expect(normalizeResearchLaunchFailure(original)).toEqual({ legacyCode: "unclassified", cause: C.None, diagnostic: D.ETIMEDOUT });
+    expect(f.mutations).toEqual([]);
   });
 
   it.each([

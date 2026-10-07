@@ -182,3 +182,25 @@ test("failed bind verification removes only its own mutex", async () => {
   await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host), /verification failed/);
   assert.ok(!f.nodes.has(`${layout.source}.lock`));
 });
+
+// RED: preparation claims success for an old bind whose physical source was replaced.
+test("preparation denies replaced source without rebinding the existing target", async () => {
+  const f = fixture(), layout = resolveHostScratchTempRoot("/jobs/a", f.host)!;
+  await prepareHostScratchTemp("/jobs/a", {}, f.host);
+  f.nodes.set(layout.source, { ...f.nodes.get(layout.source)!, ino: 99 });
+  const before = [...f.mutations];
+  await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host), /Prepared scratch source identity changed/);
+  assert.deepEqual(f.mutations, before);
+});
+
+// RED: a tuple-only post-bind check accepts a mount that names another directory.
+test("new bind must establish physical source identity before preparation succeeds", async () => {
+  const f = fixture(), bind = f.host.bind;
+  f.host.bind = (source, target) => {
+    bind(source, target);
+    f.nodes.set(target, { ...f.nodes.get(target)!, ino: 99 });
+  };
+  await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host), /Prepared scratch source identity changed/);
+  assert.equal(f.mutations.filter(action => action.startsWith("bind ")).length, 1);
+  assert.ok(![...f.nodes.keys()].some(path => path.endsWith(".lock")));
+});
