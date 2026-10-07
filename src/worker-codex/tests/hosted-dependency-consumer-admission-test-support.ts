@@ -1,3 +1,7 @@
+import { sessionArtifactFromCodexAuthJson } from "@vioxen/subscription-runtime/provider-codex";
+import { FileBackendCodexWorker } from "../file-backend-codex-worker";
+import * as runtimeFactory from "../file-backend-codex-runtime-factory";
+import { validAuthJson } from "./file-backend-codex-worker-test-support";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -212,6 +216,67 @@ export function registerDependencyConsumerAdmissionTests(input: {
       expect(() => submitHostedOrdinaryProcess(providerInput(), submit)).toThrow();
       expect(submit).toHaveBeenCalledOnce(); expect(input.read("host-activation.json").ordinaryStarts).toHaveLength(startsBefore);
       expect(readFileSync(input.local(workspacePath + "/dirty-source"), "utf8")).toBe("original dirty TEST bytes\n");
+    });
+    it("fenced owner after durable recovery reads denies private callback before session reread or runtime effects", async () => {
+      const p = prepared(), attempt = running(p), providerInstanceId = "codex:TEST-managed-recovery";
+      const captured: runtimeFactory.FileBackendCodexWorkerRuntimeParts[] = [];
+      const createRuntime = runtimeFactory.createFileBackendCodexWorkerRuntime;
+      vi.spyOn(runtimeFactory, "createFileBackendCodexWorkerRuntime").mockImplementation(args => {
+        const parts = createRuntime(args); captured.push(parts); return parts;
+      });
+      const worker = new FileBackendCodexWorker({ providerInstanceId,
+        stateRootDir: join(input.fixture.root, "recovery-state"), workspacePath,
+        codexBinaryPath: "codex", encryptionKey: new Uint8Array(32).fill(17),
+        executionEngine: "app-server-goal", sourceEnv: {},
+      });
+      const parts = captured[0]; if (!parts) throw new Error("actual worker runtime missing");
+      const runId = "TEST-recovery-admission", requestId = "TEST-recovery-request";
+      const resumeHandle = { runId, providerId: "codex", providerInstanceId, workerId: worker.workerId, workspacePath };
+      await parts.sessionStore.write({ providerInstanceId, expectedGeneration: 0,
+        nextArtifact: sessionArtifactFromCodexAuthJson(validAuthJson),
+        idempotencyKey: "TEST-recovery-session", leaseId: "TEST-recovery-seed" });
+      await parts.managedRunStore.saveWaitingInput({ runId,
+        request: { id: requestId, kind: "missing_context", question: "TEST context?", audience: "orchestrator" },
+        resumeHandle, recoveryPacket: { originalPrompt: "TEST recover", lastOutput: "TEST waiting", blockerQuestion: "TEST context?" },
+        now: new Date("2026-10-07T00:00:00.000Z") });
+      expect(await parts.sessionStore.read({ providerInstanceId, expectedProviderId: "codex", purpose: "run" })).not.toBeNull();
+      let allowRecord!: () => void, recordRead!: () => void;
+      const recordGate = new Promise<void>(resolve => { allowRecord = resolve; });
+      const enteredRecord = new Promise<void>(resolve => { recordRead = resolve; });
+      const get = parts.managedRunStore.get.bind(parts.managedRunStore);
+      const recordReads = vi.spyOn(parts.managedRunStore, "get").mockImplementationOnce(async args => {
+        const record = await get(args); recordRead(); await recordGate; return record;
+      });
+      let allowSession!: () => void, sessionRead!: () => void;
+      const sessionGate = new Promise<void>(resolve => { allowSession = resolve; });
+      const enteredSession = new Promise<void>(resolve => { sessionRead = resolve; });
+      const read = parts.sessionStore.read.bind(parts.sessionStore);
+      const reads = vi.spyOn(parts.sessionStore, "read").mockImplementation(async args => {
+        const session = await read(args);
+        if (args.purpose === "run") { sessionRead(); await sessionGate; }
+        return session;
+      });
+      // Fail closed if the old callback crosses either effect seam. Neither
+      // sentinel grants admission; the real retained owner is checked below.
+      const refresh = vi.spyOn(parts.runtime, "refreshThenRunTask").mockRejectedValue(new Error("unexpected recovery runtime effect"));
+      const workspace = vi.spyOn(parts.workspace, "create").mockRejectedValue(new Error("unexpected recovery workspace effect"));
+      try {
+        await worker.start();
+        const resumed = worker.resumeManagedRun({ runId, requestId, answer: "TEST answer", resumeHandle });
+        const refused = expect(resumed).rejects.toThrow("dependency_admission:stale_attempt");
+        await enteredRecord;
+        expect(recordReads).toHaveBeenCalledOnce(); expect(reads).not.toHaveBeenCalled();
+        allowRecord(); await enteredSession;
+        const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
+        try { fenceDependencyConsumer(store, p.binding.workspace, attempt); } finally { store.close(); }
+        allowSession(); await refused;
+        expect(reads.mock.calls.map(([args]) => args.purpose)).toEqual(["run"]);
+        expect(refresh).not.toHaveBeenCalled(); expect(workspace).not.toHaveBeenCalled();
+        expect(input.fixture.spawn).not.toHaveBeenCalled();
+        expect(readFileSync(input.local(workspacePath + "/dirty-source"), "utf8")).toBe("original dirty TEST bytes\n");
+        const retained = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
+        try { expect(retained.read(p.binding.workspace)?.owner?.phase).toBe("fenced"); } finally { retained.close(); }
+      } finally { allowRecord(); allowSession(); await worker.dispose(); }
     });
     it("profile environment cannot borrow the trusted sibling's workspace", () => {
       const p = prepared(); running(p);

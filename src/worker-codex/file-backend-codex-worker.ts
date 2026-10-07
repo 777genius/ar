@@ -51,7 +51,7 @@ export type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker-
 export type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 export type { CodexWorkerCapacityPolicy } from "./file-backend-codex-capacity";
 export type { FileBackendCodexManagedRunResumeInput } from "./file-backend-codex-managed-run-recovery";
-import { assertWorkerOptions } from "./file-backend-codex-worker-options";
+import { assertWorkerOptions, assertCodexWorkerStarted } from "./file-backend-codex-worker-options";
 export type FileBackendCodexWorkerJob = {
   readonly runId?: string;
   readonly prompt: string;
@@ -231,7 +231,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
 
   async prewarm(): Promise<SubscriptionWorkerPrewarmResult> {
     assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
-    this.assertStarted();
+    assertCodexWorkerStarted(this.workerState);
     return await this.sessionBinding.reserve(() => this.prewarmWithSessionBinding());
   }
 
@@ -252,7 +252,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     options: SubscriptionWorkerRunOptions = {},
   ): Promise<FileBackendCodexWorkerResult> {
     assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
-    this.assertStarted();
+    assertCodexWorkerStarted(this.workerState);
     return await this.sessionBinding.reserve(() => this.runWithSessionBinding(job, options));
   }
 
@@ -261,6 +261,8 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     options: SubscriptionWorkerRunOptions = {},
     importSource = true,
   ): Promise<FileBackendCodexWorkerResult> {
+    assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
+    assertCodexWorkerStarted(this.workerState);
     assertProviderTaskSystemPrompt(job.systemPrompt, "job.systemPrompt");
     if (importSource) await this.sessionSeeder.importAuthJsonFileIfChanged("run");
     await this.rememberStoredQuotaGroup();
@@ -367,7 +369,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     input: FileBackendCodexManagedRunResumeInput,
   ): Promise<FileBackendCodexWorkerResult> {
     assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
-    this.assertStarted();
+    assertCodexWorkerStarted(this.workerState);
     return await this.sessionBinding.reserveResume(input.runId,
       () => this.sessionSeeder.importAuthJsonFileIfChanged("run"),
       () => this.managedRuns.resume(input));
@@ -500,21 +502,6 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
 
   private rememberQuotaGroup(session: SessionArtifact): void {
     this.capacityTracker.rememberQuotaGroup(session);
-  }
-
-  private assertStarted(): void {
-    if (this.workerState === "disposed") {
-      throw new SubscriptionWorkerError(
-        "subscription_worker_disposed",
-        "Codex worker has been disposed.",
-      );
-    }
-    if (this.workerState === "created") {
-      throw new SubscriptionWorkerError(
-        "subscription_worker_not_started",
-        "Codex worker has not been started.",
-      );
-    }
   }
 }
 
