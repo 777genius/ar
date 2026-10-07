@@ -30,6 +30,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -43,7 +44,7 @@ jobs:
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.registration-emit.json
       - name: Run one original CLOSED registration in a private PID1 OS
         env:
-          TEST_SOURCE_SHA: ${{ github.sha }}
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           TEST_NODE="$(readlink -f "$(command -v node)")"
           TEST_TOOLCHAIN="$(dirname "$(dirname "$TEST_NODE")")"
@@ -55,6 +56,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: dependency-retention-closed-registration-${{ github.sha }}
+          name: dependency-retention-closed-registration-${{ github.event.pull_request.head.sha || github.sha }}
           path: dependency-retention-os-evidence.json
           if-no-files-found: error

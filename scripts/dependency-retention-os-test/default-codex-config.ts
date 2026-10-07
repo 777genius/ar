@@ -90,7 +90,7 @@ function canonicalDefaultAliasPin(): string {
     const before = lstatSync(alias);
     assert(before.isSymbolicLink() && before.uid === 0 && before.gid === 0 && before.nlink === 1);
     assert.equal(readlinkSync(alias),target); assert.equal(realpathSync(alias),executable);
-    const providerSha256 = "1378bc13983533f293585f9a17265a08dabecc991afc6651e385a7cc99234e1d";
+    const providerSha256 = "43baba6382bbeb22c3fd253563dbf0005f3bc7bfbf02049b98c5c9251bc8df02";
     assert.equal(lstatSync(executable).mode & 0o7777,0o555);
     assert.equal(hash(fixedFileBytes(executable,32768)),providerSha256);
     const recordPath = packageRoot + "/TEST-default-alias.json";
