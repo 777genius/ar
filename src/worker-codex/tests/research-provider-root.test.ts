@@ -381,6 +381,19 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
   // Regression: a forged receipt or changed skeleton cannot authorize a later launch.
+  it("predeclares an empty /root anchor without importing Host /root and rejects later contents", () => {
+    const f = captured(), observed = observingHost(), plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    const anchor = join(plan.fixedRootDirectory, "root"), info = fs.lstatSync(anchor);
+    expect(info.isDirectory()).toBe(true); expect(info.uid).toBe(0); expect(info.mode & 0o777).toBe(0o755);
+    expect(fs.readdirSync(anchor)).toEqual([]);
+    expect(plan.bindings.some(bind => [bind.source, bind.target].some(path => path === "/root" || path.startsWith("/root/")))).toBe(false);
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).not.toThrow();
+    const foreign = join(anchor, "TEST-unexpected"); fs.writeFileSync(foreign, "TEST", { mode: 0o644 });
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).toThrow("hosted_research_launch_denied");
+    fs.unlinkSync(foreign);
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).not.toThrow();
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
   it.each(["record", "foreign-root", "writable-parent", "extra-entry", "mounted-root", "source-inode"])("rejects retained %s changes before submission", fault => {
     const f = captured(), observed = observingHost(), plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
     if (fault === "record") researchPublish(join(dirname(plan.fixedRootDirectory), "plan.json"), { schemaVersion: 1 });

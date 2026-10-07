@@ -441,7 +441,8 @@ function skeletonEntries(root: string, snapshot: Snapshot): Map<string, "directo
       entries.set(parent, "directory"); if (parent === root) break;
     }
   };
-  for (const path of ["/run", "/proc", "/sys", "/dev", "/tmp", "/var/tmp"]) add(path, "directory");
+  // ProtectSystem=strict prepares this empty anchor; it never binds Host /root.
+  for (const path of ["/run", "/proc", "/sys", "/dev", "/root", "/tmp", "/var/tmp"]) add(path, "directory");
   for (const bind of snapshot.bindings) add(bind.target, bind.file ? "file" : "directory");
   for (const [path, target] of snapshot.aliases) add(path, target.slice(1));
   for (const [path, link] of snapshot.fileLinks) add(path, link);
