@@ -140,10 +140,15 @@ describe("closed installed research launch owner (real TEST files; proc, mounts 
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
   it("launches an individually owned pinned service and admits its actual retained origin before provider effects", async () => {
+    const processes = await import("node:child_process"), submit = vi.spyOn(processes, "spawnSync");
     const current = admitted();
     const submitted = host.calls.find(c => c.command === "/usr/bin/systemd-run")!;
     expect(submitted.args).toContain("--property=KillMode=control-group");
     expect(submitted.args).toContain("--property=Restart=no");
+    // Regression: inherited systemd90s and operator60s deadlines terminate
+    // namespace setup before exec, despite the admitted finite300s setup bound.
+    expect(submitted.args).toContain("--property=TimeoutStartSec=300s");
+    expect(submit.mock.calls.find(([command]) => command === "/usr/bin/systemd-run")?.[2]).toMatchObject({ timeout: 330_000 });
     expect(submitted.args).toContain("--expand-environment=no");
     expect(submitted.args.at(-3)).toBe("/TEST-artifact/host-integration/research-runtime-launch.mjs");
     expect(host.pins.size).toBe(2);

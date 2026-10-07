@@ -7,6 +7,7 @@ import { annotateScratchMountInspectionFailure, normalizeResearchLaunchFailure, 
 import { prepareHostScratchCaches, prepareHostScratchTemp, resolvePreparedHostScratchCacheBinds } from "../host-scratch-temp";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import { classifyCodexFailure } from "../../provider-codex/failure-classifier";
+import { SubscriptionWorkerError } from "@vioxen/subscription-runtime/worker-core";
 
 let temporaryRoot: string | undefined;
 afterEach(() => { if (temporaryRoot) rmSync(temporaryRoot, { recursive: true, force: true }); temporaryRoot = undefined; });
@@ -37,13 +38,64 @@ describe("finite startup diagnostics", () => {
     expect(normalizeResearchLaunchFailure(failure)).toEqual({ legacyCode: "unclassified", cause: C.None, diagnostic: D.ENOENT });
   });
 
-  it("whitelists only the requested Node errnos, without coercion or recursive cause parsing", () => {
+  it("whitelists only the requested Node errnos without coercion", () => {
     for (const code of [D.ENOENT, D.EACCES, D.EPERM, D.EAGAIN, D.ENOSPC, D.EMFILE, D.ETIMEDOUT]) {
       expect(normalizeResearchLaunchFailure(Object.assign(new Error("TEST opaque operation"), { code })).diagnostic).toBe(code);
     }
     for (const code of ["EEXIST", "EIO", "ENOTDIR", "ENOENT:TEST-secret", {}, 1]) {
-      expect(normalizeResearchLaunchFailure({ code, cause: { code: "ENOENT" } }).diagnostic).toBe(D.Unknown);
+      expect(normalizeResearchLaunchFailure({ code, cause: { code: "ENOENT:TEST-secret" } }).diagnostic).toBe(D.Unknown);
     }
+  });
+
+  // RED: the pool's prewarm envelope hides a retained scratch observation.
+  it("observes a real cache inspection failure through the worker prewarm envelope", async () => {
+    const home = "/TEST-home", f = await preparedResearchScratch("/TEST-job", home);
+    const original = Object.assign(new Error("TEST-secret /private/path"), { code: "ETIMEDOUT", stderr: "TEST-secret" });
+    const inspect = f.host.inspectMount;
+    f.host.inspectMount = path => { if (path === `${home}/plugins/cache`) throw original; return inspect(path); };
+    let failure: unknown;
+    try { await prepareHostScratchCaches(home, {}, f.host); } catch (error) { failure = error; }
+    expect(failure).toBe(original);
+    const wrapped = new SubscriptionWorkerError("subscription_worker_prewarm_failed", "TEST-secret envelope", { cause: failure });
+    const observation = normalizeResearchLaunchFailure(wrapped);
+    expect(observation).toEqual({ legacyCode: "unclassified", cause: C.ScratchCache, diagnostic: D.ETIMEDOUT });
+    expect(JSON.stringify(observation)).not.toContain("TEST-secret");
+    expect(wrapped.cause).toBe(original);
+    expect(f.mutations).toEqual([]);
+  });
+
+  it("retains wrapped guard observations and independently preserves recognized outer fields", () => {
+    const guard = new Error("hosted_research_launch_denied", { cause: C.ArtifactDeadline });
+    expect(normalizeResearchLaunchFailure(new Error("TEST-private wrapper", { cause: guard })))
+      .toEqual({ legacyCode: "unclassified", cause: C.ArtifactDeadline, diagnostic: D.ResearchAdmission });
+    const leaf = annotateScratchMountInspectionFailure(new Error("Ambiguous scratch mount inspection"), C.ScratchTmp);
+    expect(normalizeResearchLaunchFailure(new Error("checkpoint_publisher_required", { cause: leaf })))
+      .toEqual({ legacyCode: 1, cause: C.ScratchTmp, diagnostic: D.CheckpointAdmission });
+    const outer = annotateScratchMountInspectionFailure(new Error("TEST-secret", { cause: guard }), C.ScratchCache);
+    expect(normalizeResearchLaunchFailure(outer))
+      .toEqual({ legacyCode: "unclassified", cause: C.ScratchCache, diagnostic: D.ResearchAdmission });
+  });
+
+  // RED: diagnostics execute accessors, traverse inherited/deep causes, coerce
+  // secrets or loop forever instead of returning a finite unknown observation.
+  it("closes getter, inherited, cyclic and over-depth causes without exposing private data", () => {
+    const unknown = { legacyCode: "unclassified", cause: C.None, diagnostic: D.Unknown };
+    const known = new Error("hosted_research_launch_denied", { cause: C.FileDeadline });
+    let reads = 0;
+    const accessors = Object.defineProperties({}, Object.fromEntries(["message", "code", "cause"].map(key =>
+      [key, { get: () => { reads += 1; throw new Error("TEST-secret getter"); } }])));
+    expect(normalizeResearchLaunchFailure(accessors)).toEqual(unknown);
+    expect(reads).toBe(0);
+    expect(normalizeResearchLaunchFailure(Object.create({ cause: known }))).toEqual(unknown);
+    const cycle: { cause?: unknown; message: string } = { message: "TEST-secret cycle" }; cycle.cause = cycle;
+    expect(normalizeResearchLaunchFailure(cycle)).toEqual(unknown);
+    let chain: unknown = known;
+    for (let depth = 0; depth < 7; depth += 1) chain = new Error("TEST-secret wrapper", { cause: chain });
+    expect(normalizeResearchLaunchFailure(chain)).toEqual({ ...unknown, cause: C.FileDeadline, diagnostic: D.ResearchAdmission });
+    expect(normalizeResearchLaunchFailure(new Error("TEST-secret eighth wrapper", { cause: chain }))).toEqual(unknown);
+    expect(normalizeResearchLaunchFailure({ message: { toString: () => { reads += 1; return "hosted_research_launch_denied"; } },
+      code: "ENOENT:TEST-secret", cause: "artifact-deadline:TEST-secret" })).toEqual(unknown);
+    expect(reads).toBe(0);
   });
 
   // RED: an inspection is attributed to the wrong scratch role, its failure is

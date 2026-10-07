@@ -66,14 +66,18 @@ const exact = new Map<string, ResearchLaunchDiagnostic>([
 const prefixes = [["Scratch launch requires at least 5 GiB available on ", D.ScratchSpace],
   ["Unsafe scratch directory: ", D.ScratchDirectoryUnsafe], ["Unsafe scratch source permissions: ", D.ScratchSourceUnsafe]] as const;
 const errno = [D.ENOENT, D.EACCES, D.EPERM, D.EAGAIN, D.ENOSPC, D.EMFILE, D.ETIMEDOUT] as const;
-function ownString(error: unknown, key: string): string | undefined {
+function ownData(error: unknown, key: string): unknown {
   try {
     if (!error || typeof error !== "object") return undefined;
     const descriptor = Object.getOwnPropertyDescriptor(error, key);
-    return descriptor && "value" in descriptor && typeof descriptor.value === "string" ? descriptor.value : undefined;
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
   } catch { return undefined; }
 }
-export function normalizeResearchLaunchFailure(error: unknown): Readonly<{
+function ownString(error: unknown, key: string): string | undefined {
+  const value = ownData(error, key);
+  return typeof value === "string" ? value : undefined;
+}
+function normalizeOwnFailure(error: unknown): Readonly<{
   legacyCode: number | "unclassified"; cause: ResearchLaunchCause; diagnostic: ResearchLaunchDiagnostic;
 }> {
   const inspectionCause = error && typeof error === "object" ? scratchInspectionCauses.get(error) : undefined;
@@ -86,4 +90,21 @@ export function normalizeResearchLaunchFailure(error: unknown): Readonly<{
     diagnostic: exact.get(message ?? "") ?? prefixes.find(([prefix]) => message?.startsWith(prefix))?.[1]
       ?? errno.find(known => known === code) ?? D.Unknown,
   };
+}
+/** Fill only unknown observations from bounded own-data causes. The deployed
+ * numeric code always describes the outer error, never a nested provider error. */
+export function normalizeResearchLaunchFailure(error: unknown): ReturnType<typeof normalizeOwnFailure> {
+  const outer = normalizeOwnFailure(error);
+  let { cause, diagnostic } = outer;
+  let current = error;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 8 && current && typeof current === "object" && !seen.has(current); depth += 1) {
+    seen.add(current);
+    const observation = depth === 0 ? outer : normalizeOwnFailure(current);
+    if (cause === ResearchLaunchCause.None) cause = observation.cause;
+    if (diagnostic === D.Unknown) diagnostic = observation.diagnostic;
+    if (cause !== ResearchLaunchCause.None && diagnostic !== D.Unknown) break;
+    current = ownData(current, "cause");
+  }
+  return { ...outer, cause, diagnostic };
 }
