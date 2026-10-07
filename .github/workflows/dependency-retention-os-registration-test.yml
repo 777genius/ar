@@ -44,6 +44,10 @@ jobs:
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.registration-emit.json
       - name: Check bounded TEST failure-observation privacy before OS launch
         run: node --experimental-strip-types --test scripts/dependency-retention-os-test/registration-failure-observation.node-test.ts
+      - name: Check independent legacy manifest comparison on synthetic TEST trees
+        run: |
+          node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.legacy-comparison-emit.json
+          node --test scripts/dependency-retention-os-test/legacy-manifest-comparison.node-test.js
       - name: Run one original CLOSED registration in a private PID1 OS
         env:
           TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

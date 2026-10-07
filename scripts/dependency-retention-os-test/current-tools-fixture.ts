@@ -24,6 +24,7 @@ import { readHostedReadonlyDependencyMaterial } from "../../dist/worker-codex/ho
 import { readDefaultTestRequestedModel } from "./default-codex-config.ts";
 import { cleanEnv, command, directory, fileDigest, json, node, runtime } from "./common.ts";
 import { observeTestNpmLockResult, type TestNpmLockObservation } from "./registration-failure-observation.js";
+import { observePinnedTestNpmFrame, verifyPinnedTestNpmFrameSources, type TestNpmFrameObservation } from "./registration-npm-frame-observation.js";
 const testFile = "TEST-current-local.test.ts";
 function ownWorkspace(jobId: string): string {
   assert.equal(process.platform,"linux"); assert.equal(process.getuid!(),0); assert.equal(process.geteuid!(),0);
@@ -36,7 +37,7 @@ function ownWorkspace(jobId: string): string {
 }
 /** Initial fixture input writer only; no node_modules, receipt or binding is
  * authored. Actual lock selection uses the SAME fixed installed npm CLI. */
-export function prepareCurrentLocalInputs(jobId: string, observeLock?: (value: TestNpmLockObservation) => void): void {
+export function prepareCurrentLocalInputs(jobId: string, observeLock?: (value: TestNpmLockObservation, frame: TestNpmFrameObservation) => void): void {
   const workspace = ownWorkspace(jobId), npm = runtime + "/toolchain/lib/node_modules/npm/bin/npm-cli.js";
   const cache = hostedDependencyJobRoot(jobId) + "/TEST-npm-input-cache"; directory(cache);
   const userConfig = hostedDependencyJobRoot(jobId) + "/TEST-npm-user.rc", globalConfig = hostedDependencyJobRoot(jobId) + "/TEST-npm-global.rc";
@@ -58,12 +59,13 @@ export function prepareCurrentLocalInputs(jobId: string, observeLock?: (value: T
     "is-number":"7.0.0",vite:dependencyToolPins.vite,vitest:dependencyToolPins.vitest,
     "test-native-live":"file:packages/live","test-native-packed":"file:packages/packed/test-native-packed-1.0.0.tgz"}},0o644);
   try {
-    const args = [npm,"install","--package-lock-only","--ignore-scripts","--no-audit","--no-fund",...fixedConfig,
+    verifyPinnedTestNpmFrameSources();
+    const args = [npm,"install","--loglevel=verbose","--package-lock-only","--ignore-scripts","--no-audit","--no-fund",...fixedConfig,
       "--install-strategy=hoisted","--install-links=true","--include=dev","--include=optional","--include=peer",
       "--strict-peer-deps=false","--legacy-peer-deps=false","--workspaces=false"];
     const result = spawnSync(node,[...args],{cwd:workspace,env:cleanEnv,encoding:"utf8",timeout:120000,
       maxBuffer:4*1024*1024,stdio:["ignore","pipe","pipe"]});
-    observeLock?.(observeTestNpmLockResult(result));
+    observeLock?.(observeTestNpmLockResult(result), observePinnedTestNpmFrame(result.stderr));
     assert(!result.error && result.status === 0 && result.signal === null,
       `TEST command failed: ${node}, status=${result.status}, signal=${result.signal}`);
   }

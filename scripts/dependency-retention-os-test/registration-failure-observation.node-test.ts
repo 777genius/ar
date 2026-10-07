@@ -2,6 +2,7 @@
  * and finite; the positive literals describe source failure text, never authority. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { observePinnedTestNpmFrame } from "./registration-npm-frame-observation.js";
 import { observeRegistrationFailure, observeTestNpmLockResult } from "./registration-failure-observation.js";
 
 test("closed observations drop arbitrary text and non-native counterfeits", () => {
@@ -132,4 +133,42 @@ test("only one exact pinned exit-handler line has a fixed-text observation", () 
     "npm error 'Exit handler never called!'\n"])
     assert.equal(observeTestNpmLockResult({ ...result, stderr }).fixedTextLiteral, "unknown");
   assert.equal(observeTestNpmLockResult({ ...result, stdout: literal, stderr: "" }).fixedTextLiteral, "unknown");
+});
+
+
+test("one first pinned vendor frame narrows source without disclosing its message or function", () => {
+  const secret = "TEST-private-token-path", root = "/opt/subscription-runtime-dependency-os-TEST/toolchain/lib/node_modules/npm/";
+  const stderr = "npm verbose stack TypeError: " + secret + "\n" +
+    "npm verbose stack     at secretFunction (" + root + "node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:731:12)\n";
+  const observed = observePinnedTestNpmFrame(stderr);
+  assert.deepEqual(observed, { channel: "npm_verbose_stack", errorClass: "type_error_header", module: "arborist_ideal_tree", line: 731 });
+  const serialized = JSON.stringify(observed);
+  for (const text of [secret, "secretFunction", root, "build-ideal-tree.js"])
+    assert(!serialized.includes(text));
+  assert(Object.isFrozen(observed));
+  assert.equal(observePinnedTestNpmFrame("TypeError: " + secret + "\n    at " + root + "lib/npm.js:301:4\n").channel, "unprefixed_stack");
+});
+
+test("unknown first frames are never skipped and ambiguous or unsafe stacks remain opaque", () => {
+  const root = "/opt/subscription-runtime-dependency-os-TEST/toolchain/lib/node_modules/npm/";
+  const header = "npm verbose stack Error: TEST-secret\n", known = "npm verbose stack     at " + root + "lib/npm.js:301:4\n";
+  const unknown = observePinnedTestNpmFrame(header + "npm verbose stack     at /TEST-private.js:1:1\n" + known);
+  assert.equal(unknown.module, "unknown"); assert.equal(unknown.line, null);
+  for (const stderr of [header + known + header + known, header + "not a frame\n" + known,
+    "npm verbose stack CustomError: TEST-secret\n" + known,
+    "npm verbose stack CustomError: TEST-secret\n" + known + header + known,
+    "npm verbose stack " + "X".repeat(65) + ": TEST-secret\n" + known + header + known,
+    "npm verbose stack Odd Class!: TEST-secret\n" + known + header + known,
+    "npm verbose stackCustomError: TEST-secret\n" + known + header + known,
+    "X".repeat(65) + ": TEST-secret\n    at /TEST-private.js:1:1\n" + header + known, "x".repeat(4 * 1024 * 1024 + 1)])
+    assert.deepEqual(observePinnedTestNpmFrame(stderr), { channel: "unknown", errorClass: "unknown", module: "unknown", line: null });
+  for (const frame of ["/TEST-private/lib/npm.js:301:4", root + "lib/npm.js:9999:4",
+    root + "lib/npm.js:301:9999", root + "lib/npm.js:0301:4", root + "lib/npm.js:301:4 trailing"])
+    assert.equal(observePinnedTestNpmFrame(header + "npm verbose stack     at " + frame + "\n").module, "unknown");
+  let calls = 0;
+  const proxy = new Proxy({}, { get() { ++calls; throw new Error("TEST-trap"); } });
+  const revoked = Proxy.revocable({}, {}); revoked.revoke();
+  for (const input of [proxy, revoked.proxy, null, 3, { toString() { ++calls; throw new Error("TEST-trap"); } }])
+    assert.equal(observePinnedTestNpmFrame(input).module, "unknown");
+  assert.equal(calls, 0);
 });
