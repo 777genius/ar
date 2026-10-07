@@ -1,6 +1,7 @@
 /** Owned TEST source preparation and genuine registration only. Planned recipe
  * data never grants factory/home/use, model availability or R association. */
 import assert from "node:assert/strict";
+import { DependencyCustodyEvidenceKind } from "../../dist/core/dependency-environment/dependency-custody-evidence.js";
 import { testPublicLockSeedSha256, testPublicLockSeedMaxBytes, testPublicLockSeedRelative } from "./current-tools-lock-seed.ts";
 import { spawnSync } from "node:child_process";
 import { constants, openSync, closeSync, fstatSync, readSync, lstatSync, writeFileSync } from "node:fs";
@@ -217,6 +218,7 @@ export function completeCurrentReadonlyFromProtectedInputs(candidateJobId: strin
   return withHostedActivationFence(fence => {
     const epoch = new HostedReadonlySupervisorHost().readEpoch();
     const material = readHostedReadonlyDependencyMaterial(fence,epoch.identity).evidence;
+    assert(material.kind===DependencyCustodyEvidenceKind.ReadonlyLocalAdoptionV1,"TEST legacy comparison adoption evidence required");
     assert.equal(material.candidate.jobId,candidateJobId);
     assert.equal(material.readonlyCustody.jobRootDir,before.binding.jobRootDir);
     assert.equal(material.readonlyCustody.workspacePath,before.binding.workspace.canonicalPath);
