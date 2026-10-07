@@ -7,9 +7,11 @@ import {
   DependencyManifestEntryKind as Kind, DependencyTreeObservationFailure as Failure,
   DependencyTreeObservationStatus as Status, DependencyTreeAllocationBasis as AllocationBasis, encodeDependencyTreeManifest,
   type DependencyManifestEntry, type DependencyObservedEntryIdentity,
-  type DependencyCapturedTreeObservation, type DependencyTreeObservationLimits,
+  type DependencyCapturedTreeObservation, type DependencyTreeObservationLimits, type DependencyLogicalSourceLink,
 } from "../../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import type { DependencyTreeIdentity, DependencyWorkspaceIdentity } from "../../worker-core/dependency-environment/domain/dependency-receipt";
+import { DependencySourceBindingError, readDependencySourceLinkSession, dependencySourceLinkAllowsSubset,
+  type DependencySourceLinkSession } from "./dependency-source-binding";
 
 const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 // Linux O_PATH retains even a symlink inode without following it or opening a
@@ -43,6 +45,7 @@ export async function observeDependencyTree(input: {
   readonly workspacePath: string; readonly treeName: "node_modules";
   readonly expectedWorkspace?: DependencyWorkspaceIdentity;
   readonly expectedTree?: DependencyTreeIdentity;
+  readonly sourceLinkSession?: DependencySourceLinkSession;
   readonly limits: DependencyTreeObservationLimits;
 }): Promise<DependencyCapturedTreeObservation> {
   return observeNamedRoot(input);
@@ -52,8 +55,10 @@ export async function observeDependencyTree(input: {
 export async function observeDependencyDirectoryRoot(input: {
   readonly parentPath: string; readonly name: string; readonly limits: DependencyTreeObservationLimits;
   readonly expectedTree?: DependencyTreeIdentity;
+  readonly sourceLinkSession?: DependencySourceLinkSession;
 }): Promise<DependencyCapturedTreeObservation> {
   return observeNamedRoot({ workspacePath: input.parentPath, treeName: input.name, limits: input.limits,
+    ...(input.sourceLinkSession ? { sourceLinkSession: input.sourceLinkSession } : {}),
     ...(input.expectedTree ? { expectedTree: input.expectedTree } : {}) });
 }
 
@@ -61,6 +66,7 @@ async function observeNamedRoot(input: {
   readonly workspacePath: string; readonly treeName: string;
   readonly expectedWorkspace?: DependencyWorkspaceIdentity; readonly expectedTree?: DependencyTreeIdentity;
   readonly limits: DependencyTreeObservationLimits;
+  readonly sourceLinkSession?: DependencySourceLinkSession;
 }): Promise<DependencyCapturedTreeObservation> {
   const anchors: Anchor[] = [];
   try {
@@ -104,6 +110,7 @@ async function observeNamedRoot(input: {
     const root = await retainDirectory(anchored(workspaceAnchor.handle, treeName), workspaceAnchor.handle, treeName, true);
     if (root.mountId !== workspaceAnchor.mountId) fail(Failure.MountCrossing);
     if (input.expectedTree && !expected(root.before, input.expectedTree)) fail(Failure.IdentityChanged);
+    const sourceLinks = input.sourceLinkSession ? readDependencySourceLinkSession(input.sourceLinkSession, workspace, input.treeName) : undefined;
     const entries: DependencyManifestEntry[] = [];
     const identities: DependencyObservedEntryIdentity[] = [];
     const checked: CheckedEntry[] = [];
@@ -198,7 +205,8 @@ async function observeNamedRoot(input: {
           !same(dir.before, after)) fail(Failure.Unstable);
     };
     await walk(root, []);
-    validateSymlinks(entries);
+    const presentSourceLinks = validateSymlinks(entries, sourceLinks,
+      input.sourceLinkSession ? dependencySourceLinkAllowsSubset(input.sourceLinkSession) : false);
     // Re-open every leaf through its retained directory. A same-device bind
     // substitution is observable in fdinfo even when dev/ino remain identical.
     for (const item of checked) {
@@ -228,7 +236,8 @@ async function observeNamedRoot(input: {
         } finally { await handle.close(); }
       }
     }
-    const canonicalBytes = Buffer.from(encodeDependencyTreeManifest(entries));
+    if (input.sourceLinkSession) readDependencySourceLinkSession(input.sourceLinkSession, workspace, input.treeName);
+    const canonicalBytes = Buffer.from(encodeDependencyTreeManifest(entries, presentSourceLinks));
     if (canonicalBytes.length > input.limits.maxManifestBytes) fail(Failure.Bounds);
     checkTime();
     const digest = hash(canonicalBytes);
@@ -243,7 +252,8 @@ async function observeNamedRoot(input: {
           [Kind.Symlink]: { inodeCount: String(inodeCounts[Kind.Symlink]), allocatedBytesEstimate: String(allocated[Kind.Symlink]) },
         }, observedScanDurationMs: String(Math.ceil(performance.now() - start)) } };
   } catch (error) {
-    return { status: Status.Incomplete, reason: error instanceof ObservationError ? error.reason : Failure.Access };
+    return { status: Status.Incomplete, reason: error instanceof ObservationError ? error.reason :
+      error instanceof DependencySourceBindingError ? Failure.SourceBinding : Failure.Access };
   } finally {
     let closeFailed = false;
     for (const item of anchors.reverse()) {
@@ -264,11 +274,20 @@ async function mount(handle: FileHandle): Promise<string> {
   return id;
 }
 
-function validateSymlinks(entries: readonly DependencyManifestEntry[]): void {
+function validateSymlinks(entries: readonly DependencyManifestEntry[], sourceLinks?: readonly DependencyLogicalSourceLink[],
+  subset = false): readonly DependencyLogicalSourceLink[] | undefined {
   // Base64 filename components can themselves contain '/'. Preserve component
   // boundaries in the lookup key so a raw root name cannot alias a deep path.
   const links = new Map(entries.filter((entry) => entry.kind === Kind.Symlink).map((entry) => [JSON.stringify(entry.path), entry]));
+  const permitted = new Map(sourceLinks?.map(link => [JSON.stringify(link.path), link]));
+  const present: DependencyLogicalSourceLink[] = [];
+  for (const [path, link] of permitted) {
+    const entry = links.get(path);
+    if (!entry) { if (!subset) fail(Failure.SourceBinding); continue; }
+    if (entry.target !== link.target) fail(Failure.SourceBinding); present.push(link);
+  }
   for (const entry of links.values()) {
+    if (permitted.has(JSON.stringify(entry.path))) continue;
     let pending = Buffer.from(entry.target, "base64").toString("latin1").split("/");
     let resolved = entry.path.slice(0, -1);
     let hops = 0;
@@ -292,4 +311,5 @@ function validateSymlinks(entries: readonly DependencyManifestEntry[]): void {
       }
     }
   }
+  return sourceLinks === undefined ? undefined : present;
 }

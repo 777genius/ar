@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { DependencyNpmLockName, dependencyTestNpmArgv, validateDependencyTestNpmInputs } from "../worker-core/dependency-environment/domain/dependency-install-key";
 
-export enum HostedDependencyInstallerRecipe { NpmRegistryNoScriptsV1 = "npm_registry_no_scripts_v1" }
+export enum HostedDependencyInstallerRecipe { NpmRegistryNoScriptsV1 = "npm_registry_no_scripts_v1", NpmLocalNoLifecycleV1 = "npm_local_no_lifecycle_v1" }
 export const hostedDependencyInstallerArgv = dependencyTestNpmArgv;
 export type HostedDependencyInstallerInputs = {
   readonly lockName: DependencyNpmLockName; readonly packageBytes: Buffer; readonly lockBytes: Buffer; readonly sha256: string;
