@@ -37,7 +37,9 @@ function ownWorkspace(jobId: string): string {
 export function prepareCurrentLocalInputs(jobId: string): void {
   const workspace = ownWorkspace(jobId), npm = runtime + "/toolchain/lib/node_modules/npm/bin/npm-cli.js";
   const cache = hostedDependencyJobRoot(jobId) + "/TEST-npm-input-cache"; directory(cache);
-  const fixedConfig = ["--userconfig=/dev/null","--globalconfig=/dev/null","--cache=" + cache];
+  const userConfig = hostedDependencyJobRoot(jobId) + "/TEST-npm-user.rc", globalConfig = hostedDependencyJobRoot(jobId) + "/TEST-npm-global.rc";
+  for (const path of [userConfig,globalConfig]) writeFileSync(path,"",{flag:"wx",mode:0o600});
+  const fixedConfig = ["--userconfig=" + userConfig,"--globalconfig=" + globalConfig,"--cache=" + cache];
   try { assert.equal(command(node,[npm,"--version",...fixedConfig]).trim(),"10.9.9"); }
   catch { throw new Error("TEST_current_input_npm_version_failed"); }
   for (const path of ["packages/live","packages/pack-input","packages/packed","TEST-readonly-local-custody"])
