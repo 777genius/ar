@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-const BASE='/Volumes/Transcend/Codex-artifacts/dependency-retention-execution/native-9ca-public-stage-transport-proposal-75';
+const BASE='/Volumes/Transcend/Codex-artifacts/dependency-retention-execution/native-public-private-route-successor-78';
 const NODE='/opt/nodejs/node-v24.21.0-linux-x64/bin/node';
 const freeze:unknown=JSON.parse(fs.readFileSync(`${BASE}/FREEZE.json`,'utf8'));
 function fact(ok:unknown,why:string):asserts ok {if(!ok)throw new Error(`PUBLIC sender HOLD: ${why}`);}
@@ -17,7 +17,7 @@ function sealed(name:string):Buffer {
 if(process.argv.length===3&&process.argv[2]==='--status'){
  const remote=['/usr/bin/sudo','-n','--','/usr/bin/env','-i','--chdir=/','PATH=/usr/bin:/bin','LANG=C','LC_ALL=C','HOME=/srv/workers','TMPDIR=/srv/workers',
   NODE,'--input-type=module-typescript','--eval',sealed('inspect-public-stage-9ca.mts').toString('utf8')].map(quote).join(' ');
- const child=spawn('/usr/bin/ssh',['-T','-o','BatchMode=yes','workers-fsn1-01-public',remote],{shell:false,stdio:['ignore','inherit','inherit'],timeout:30000});
+ const child=spawn('/usr/bin/ssh',['-T','-o','BatchMode=yes','workers-fsn1-01',remote],{shell:false,stdio:['ignore','inherit','inherit'],timeout:30000});
  const [code,signal]=await once(child,'close');process.exit(code===0&&!signal?0:1);
 }
 const rootReview=process.argv[2];fact(process.argv.length===3&&rootReview&&/^[a-f0-9]{64}$/.test(rootReview),'exact independently accepted ROOT boundary review digest');
@@ -45,7 +45,7 @@ try {
  // Fixed existing multiplex alias; sudo is the existing authorized installation/bootstrap exception.
  const remote=['/usr/bin/sudo','-n','--','/usr/bin/env','-i','--chdir=/','PATH=/usr/bin:/bin','LANG=C','LC_ALL=C','HOME=/srv/workers','TMPDIR=/srv/workers',
   NODE,'--input-type=module-typescript','--eval',source,rootReview].map(quote).join(' ');
- const ssh=spawn('/usr/bin/ssh',['-T','-o','BatchMode=yes','workers-fsn1-01-public',remote],
+ const ssh=spawn('/usr/bin/ssh',['-T','-o','BatchMode=yes','workers-fsn1-01',remote],
   {shell:false,stdio:['pipe','inherit','inherit'],timeout:600000});
  const completion=once(ssh,'close');ssh.stdin.on('error',()=>{/* close/error completion records uncertain transport */});
  try {for(const input of inputs){check(input);for await(const chunk of fs.createReadStream(input.path,{fd:input.fd,autoClose:false,start:0,highWaterMark:1024*1024})){
