@@ -41,7 +41,7 @@ type TargetInput = {
 // project integration archive custody, native retirement receipts, and runtime state.
 const registryInfrastructure = new Set([
   ".project-authority", ".project-control", "durable-handoffs", "consumed-output-ledger",
-  ".consumed-output-ledger-mutation-locks", "archives", "state",
+  ".consumed-output-ledger-mutation-locks", ".run-events", "archives", "state",
 ]);
 
 function sameOwnedPaths(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
