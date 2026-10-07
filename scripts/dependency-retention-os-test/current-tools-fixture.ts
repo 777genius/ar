@@ -1,6 +1,7 @@
 /** Owned TEST source preparation and genuine registration only. Planned recipe
  * data never grants factory/home/use, model availability or R association. */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { lstatSync, writeFileSync } from "node:fs";
 import { CodexProviderEgressProfileId } from "../../dist/provider-codex/index.js";
 import { dependencyToolPins, DependencyToolTransformCache, parseDependencyToolRegistration }
@@ -21,7 +22,8 @@ import { parseHostedReadonlyPolicy, readHostedPrivateBytes } from "../../dist/wo
 import { HostedReadonlySupervisorHost } from "../../dist/worker-codex/hosted-readonly-supervisor-host.js";
 import { readHostedReadonlyDependencyMaterial } from "../../dist/worker-codex/hosted-readonly-dependency-records.js";
 import { readDefaultTestRequestedModel } from "./default-codex-config.ts";
-import { command, directory, fileDigest, json, node, runtime } from "./common.ts";
+import { cleanEnv, command, directory, fileDigest, json, node, runtime } from "./common.ts";
+import { observeTestNpmLockResult, type TestNpmLockObservation } from "./registration-failure-observation.js";
 const testFile = "TEST-current-local.test.ts";
 function ownWorkspace(jobId: string): string {
   assert.equal(process.platform,"linux"); assert.equal(process.getuid!(),0); assert.equal(process.geteuid!(),0);
@@ -34,7 +36,7 @@ function ownWorkspace(jobId: string): string {
 }
 /** Initial fixture input writer only; no node_modules, receipt or binding is
  * authored. Actual lock selection uses the SAME fixed installed npm CLI. */
-export function prepareCurrentLocalInputs(jobId: string): void {
+export function prepareCurrentLocalInputs(jobId: string, observeLock?: (value: TestNpmLockObservation) => void): void {
   const workspace = ownWorkspace(jobId), npm = runtime + "/toolchain/lib/node_modules/npm/bin/npm-cli.js";
   const cache = hostedDependencyJobRoot(jobId) + "/TEST-npm-input-cache"; directory(cache);
   const userConfig = hostedDependencyJobRoot(jobId) + "/TEST-npm-user.rc", globalConfig = hostedDependencyJobRoot(jobId) + "/TEST-npm-global.rc";
@@ -55,9 +57,16 @@ export function prepareCurrentLocalInputs(jobId: string): void {
   json(workspace + "/package.json",{name:"test-current-native-local",version:"1.0.0",private:true,dependencies:{
     "is-number":"7.0.0",vite:dependencyToolPins.vite,vitest:dependencyToolPins.vitest,
     "test-native-live":"file:packages/live","test-native-packed":"file:packages/packed/test-native-packed-1.0.0.tgz"}},0o644);
-  try { command(node,[npm,"install","--package-lock-only","--ignore-scripts","--no-audit","--no-fund",...fixedConfig,
-    "--install-strategy=hoisted","--install-links=true","--include=dev","--include=optional","--include=peer",
-    "--strict-peer-deps=false","--legacy-peer-deps=false","--workspaces=false"],120000,workspace); }
+  try {
+    const args = [npm,"install","--package-lock-only","--ignore-scripts","--no-audit","--no-fund",...fixedConfig,
+      "--install-strategy=hoisted","--install-links=true","--include=dev","--include=optional","--include=peer",
+      "--strict-peer-deps=false","--legacy-peer-deps=false","--workspaces=false"];
+    const result = spawnSync(node,[...args],{cwd:workspace,env:cleanEnv,encoding:"utf8",timeout:120000,
+      maxBuffer:4*1024*1024,stdio:["ignore","pipe","pipe"]});
+    observeLock?.(observeTestNpmLockResult(result));
+    assert(!result.error && result.status === 0 && result.signal === null,
+      `TEST command failed: ${node}, status=${result.status}, signal=${result.signal}`);
+  }
   catch { throw new Error("TEST_current_input_lock_selection_failed"); }
   assert.throws(() => lstatSync(workspace + "/node_modules"),(error:unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
   const lock = lstatSync(workspace + "/package-lock.json");

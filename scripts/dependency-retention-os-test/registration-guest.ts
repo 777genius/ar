@@ -66,7 +66,7 @@ async function register(): Promise<void> {
   assert.notDeepEqual(directoryIdentity(candidateWorkspace), directoryIdentity(referenceWorkspace));
   evidence.phase = RegistrationPhase.Inputs;
   inputStep = RegistrationInputStep.Prepare;
-  prepareCurrentLocalInputs(candidateJobId);
+  prepareCurrentLocalInputs(candidateJobId, observation => { evidence.lockSelectionObservation = observation; });
   inputStep = RegistrationInputStep.Sentinel;
   writeFileSync(candidateWorkspace + "/source-sentinel", "TEST initial owned C source\n", { flag: "wx", mode: 0o600 });
   inputStep = RegistrationInputStep.GitIgnore;

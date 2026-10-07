@@ -40,3 +40,63 @@ export function observeRegistrationFailure(error: unknown): RegistrationFailureO
     fixedLiteral = FailureLiteral.Assertion;
   return freeze({ errorClass: FailureClass.NativeError, fixedLiteral });
 }
+
+enum LockSignal { Unknown = "unknown", None = "none", Term = "sigterm", Kill = "sigkill", Abort = "sigabrt" }
+enum LockSpawnClass { Unknown = "unknown", None = "none", NativeError = "native_error", TimeoutLiteral = "timeout_code_literal" }
+enum LockCodeLiteral {
+  Unknown = "unknown", Resolution = "resolution_code_literal", Connection = "connection_code_literal",
+  Certificate = "certificate_code_literal", RegistryHttp = "registry_http_code_literal",
+  Selection = "selection_code_literal", Input = "input_code_literal", Filesystem = "filesystem_code_literal",
+}
+export type TestNpmLockObservation = Readonly<{
+  status: number | null; signal: LockSignal; spawnClass: LockSpawnClass; npmCodeLiteral: LockCodeLiteral;
+}>;
+const unknownLock: TestNpmLockObservation = freeze({ status: null, signal: LockSignal.Unknown,
+  spawnClass: LockSpawnClass.Unknown, npmCodeLiteral: LockCodeLiteral.Unknown });
+/** At most 4MiB scanned, at most two candidate lines examined. Unknown,
+ * malformed or duplicate code lines remain Unknown, including identical ones. */
+function lockCodeLiteral(stderr: string): LockCodeLiteral {
+  const lines = /^npm (?:error|ERR!) code[^\r\n]*\r?$/gm;
+  const first = lines.exec(stderr);
+  if (!first || lines.exec(stderr)) return LockCodeLiteral.Unknown;
+  const code = /^npm (?:error|ERR!) code ([A-Z0-9_]{1,40})\r?$/.exec(first[0])?.[1];
+  switch (code) {
+    case "EAI_AGAIN": case "ENOTFOUND": return LockCodeLiteral.Resolution;
+    case "ECONNREFUSED": case "ECONNRESET": case "ETIMEDOUT": return LockCodeLiteral.Connection;
+    case "CERT_HAS_EXPIRED": case "UNABLE_TO_VERIFY_LEAF_SIGNATURE":
+    case "UNABLE_TO_GET_ISSUER_CERT_LOCALLY": case "SELF_SIGNED_CERT_IN_CHAIN":
+    case "DEPTH_ZERO_SELF_SIGNED_CERT": return LockCodeLiteral.Certificate;
+    case "E401": case "E403": case "E404": case "E429": case "E500": case "E502": case "E503":
+      return LockCodeLiteral.RegistryHttp;
+    case "ETARGET": case "ERESOLVE": case "EBADENGINE": return LockCodeLiteral.Selection;
+    case "EJSONPARSE": case "EINVALIDPACKAGENAME": case "EINVALIDTAGNAME": case "EUNSUPPORTEDPROTOCOL":
+      return LockCodeLiteral.Input;
+    case "ENOENT": case "EACCES": case "EPERM": case "ENOSPC": return LockCodeLiteral.Filesystem;
+    default: return LockCodeLiteral.Unknown;
+  }
+}
+/** Closed child-result DATA only. No raw output, pathname, errno object, env,
+ * source authority, cause or retry permission is returned. */
+export function observeTestNpmLockResult(result: unknown): TestNpmLockObservation {
+  if (result === null || typeof result !== "object" || isProxy(result)) return unknownLock;
+  const fields: unknown[] = [];
+  for (const key of ["status", "signal", "stdout", "stderr", "error"] as const) {
+    const own = descriptor(result, key);
+    if (!own && key === "error") { fields.push(undefined); continue; }
+    if (!own || !hasOwn(own, "value")) return unknownLock;
+    fields.push(own.value);
+  }
+  const [status, signal, stdout, stderr, error] = fields;
+  if (!(status === null || typeof status === "number" && Number.isSafeInteger(status) && status >= 0 && status <= 255) ||
+      !(signal === null || typeof signal === "string" && signal.length <= 16) ||
+      !(stdout === null || stdout === undefined || typeof stdout === "string") ||
+      !(stderr === null || stderr === undefined || typeof stderr === "string") ||
+      typeof stdout === "string" && stdout.length > 4 * 1024 * 1024 ||
+      typeof stderr === "string" && stderr.length > 4 * 1024 * 1024) return unknownLock;
+  let spawnClass: LockSpawnClass = error === undefined ? LockSpawnClass.None : LockSpawnClass.Unknown;
+  if (error !== null && typeof error === "object" && !isProxy(error) && isNativeError(error))
+    spawnClass = ownString(error, "code") === "ETIMEDOUT" ? LockSpawnClass.TimeoutLiteral : LockSpawnClass.NativeError;
+  const signalClass = signal === null ? LockSignal.None : signal === "SIGTERM" ? LockSignal.Term :
+    signal === "SIGKILL" ? LockSignal.Kill : signal === "SIGABRT" ? LockSignal.Abort : LockSignal.Unknown;
+  return freeze({ status, signal: signalClass, spawnClass, npmCodeLiteral: typeof stderr === "string" ? lockCodeLiteral(stderr) : LockCodeLiteral.Unknown });
+}
