@@ -1,6 +1,7 @@
 import { publicTestCa, publicTestLeaf, host, local, request, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
+import { createServer, type Server } from "node:net";
 import { dirname, join } from "node:path";
 import { grantResearchLaunch, startResearchLaunch } from "../research-launch-owner";
 import { researchCurrentStart } from "../research-launch-admission";
@@ -70,6 +71,33 @@ function resolvedFixture(observed: ReturnType<typeof observingHost>) {
   fs.writeFileSync(target, "nameserver 192.0.2.1\n", { mode: 0o644 });
   for (const path of ["/run/systemd/resolve", target]) observed.overrides.set(path, Object.assign(Object.create(fs.lstatSync(path)), { uid: 992, gid: 992 }));
   return target;
+}
+async function resolvedSocketFixture(observed: ReturnType<typeof observingHost>) {
+  resolvedFixture(observed);
+  const conf = "/run/systemd/resolve/resolv.conf";
+  fs.writeFileSync(conf, "nameserver 192.0.2.2\n", { mode: 0o644 });
+  observed.overrides.set(conf, Object.assign(Object.create(fs.lstatSync(conf)), { uid: 992, gid: 992 }));
+  // Real TEST sockets; the directory fd keeps long scratch paths below sun_path.
+  const fd = fs.openSync(local("/run/systemd/resolve"), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+  const servers: Server[] = [];
+  const close = async () => {
+    try { await Promise.all(servers.map(server => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())))); }
+    finally { fs.closeSync(fd); }
+  };
+  const paths = ["/run/systemd/resolve/io.systemd.Resolve", "/run/systemd/resolve/io.systemd.Resolve.Monitor"] as const;
+  try {
+    for (const [index, path] of paths.entries()) {
+      const server = createServer();
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(`/proc/self/fd/${fd}/${path.slice(path.lastIndexOf("/") + 1)}`, resolve);
+      });
+      servers.push(server);
+      fs.chmodSync(local(path), index === 0 ? 0o666 : 0o600);
+      observed.overrides.set(path, Object.assign(Object.create(fs.lstatSync(path)), { uid: 992, gid: 992 }));
+    }
+    return { paths, close };
+  } catch (error) { await close(); throw error; }
 }
 function expectNoRootEffects(f: ReturnType<typeof captured>, observed: ReturnType<typeof observingHost>) {
   expect(observed.effects).toEqual([]);
@@ -333,6 +361,51 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).toThrow();
     expect(fs.readFileSync(binding.source, "utf8")).toBe("nameserver 192.0.2.1\n");
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  // Regression: resolved's native control sockets reject an otherwise valid
+  // Host. They must remain absent from bindings and the confined filesystem.
+  it("snapshots both DNS files while authenticating and omitting real resolved sockets", async () => {
+    const f = captured(), observed = observingHost(), sockets = await resolvedSocketFixture(observed);
+    try {
+      for (const path of sockets.paths) expect(fs.lstatSync(path).isSocket()).toBe(true);
+      const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+      expect(plan.bindings.filter(binding => binding.target.startsWith("/run/systemd/resolve/")).map(binding => binding.target)).toEqual([
+        "/run/systemd/resolve/resolv.conf", "/run/systemd/resolve/stub-resolv.conf",
+      ]);
+      expect(fs.readdirSync(join(plan.fixedRootDirectory, "run/systemd/resolve")).sort()).toEqual(["resolv.conf", "stub-resolv.conf"]);
+      expect(plan.bindings.some(binding => binding.source === "/run/systemd/resolve" || sockets.paths.some(path => binding.source === path || binding.target === path))).toBe(false);
+      expect(observed.effects.some(effect => sockets.paths.some(path => effect.endsWith(path)))).toBe(false);
+      assertResearchProviderRoot(plan, f.spec, unit, f.home);
+      expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    } finally { await sockets.close(); }
+  });
+  it.each(["unknown-name", "wrong-owner", "wrong-group", "wrong-mode", "monitor-mode", "file", "symlink", "hardlink", "backing"])(
+    "denies a known resolver socket with %s before root effects", async fault => {
+      const f = captured(), observed = observingHost(), sockets = await resolvedSocketFixture(observed);
+      try {
+        const path = fault === "monitor-mode" ? sockets.paths[1] : sockets.paths[0];
+        const original = observed.overrides.get(path)!;
+        if (fault === "unknown-name") fs.writeFileSync("/run/systemd/resolve/io.systemd.Resolve.Unknown", "TEST", { mode: 0o644 });
+        if (fault === "wrong-owner") observed.overrides.set(path, Object.assign(Object.create(original), { uid: 999 }));
+        if (fault === "wrong-group") observed.overrides.set(path, Object.assign(Object.create(original), { gid: 999 }));
+        if (fault === "wrong-mode" || fault === "monitor-mode") observed.overrides.set(path, Object.assign(Object.create(original), { mode: 0o140644 }));
+        if (fault === "file") observed.overrides.set(path, Object.assign(Object.create(original), { mode: 0o100666 }));
+        if (fault === "symlink") observed.overrides.set(path, Object.assign(Object.create(original), { mode: 0o120666 }));
+        if (fault === "hardlink") observed.overrides.set(path, Object.assign(Object.create(original), { nlink: 2 }));
+        if (fault === "backing") observed.extraMounts.push(`900 1 0:44 / ${path} rw - tmpfs tmpfs rw`);
+        expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow();
+        expectNoRootEffects(f, observed);
+      } finally { await sockets.close(); }
+    });
+  it("invalidates retained socket omission after its inode changes", async () => {
+    const f = captured(), observed = observingHost(), sockets = await resolvedSocketFixture(observed);
+    try {
+      const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter), path = sockets.paths[0];
+      const original = observed.overrides.get(path)!;
+      observed.overrides.set(path, Object.assign(Object.create(original), { ino: original.ino + 1 }));
+      expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).toThrow();
+      expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    } finally { await sockets.close(); }
   });
   // Regression: a replacement immediately after a checked stat must not
   // supply a fresh unchecked descriptor tuple, then fail only after effects.

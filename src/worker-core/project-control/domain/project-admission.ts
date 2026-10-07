@@ -52,9 +52,10 @@ export type ProjectDebtItem = {
   readonly evidence: readonly string[];
   readonly affectedPaths?: readonly string[];
   /**
-   * Runtime proof that this is one healthy live producer whose complete
-   * declared ownership is available in `affectedPaths`. Unsafe/unknown writer
-   * debt deliberately omits this marker and therefore remains fail-closed.
+   * Runtime proof of complete paths for a healthy live producer, or stopped
+   * terminal output whose retained bytes still match its workspace and whose
+   * requested workspace is isolated. Unsafe/unknown writer debt omits this
+   * marker and therefore remains fail-closed.
    */
   readonly pathDisjointProducerEligible?: true;
   readonly severity?: "info" | "warning" | "blocking";
