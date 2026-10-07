@@ -88,7 +88,7 @@ export async function admitHostedDependencyConsumer(config: CodexGoalRunConfig):
     if (!current || JSON.stringify(current) !== JSON.stringify(admission.binding)) fail(Failure.Unsupported);
     if (readyInputs) assertHostedDependencyKeyInputsCurrent(admission.binding, readyInputs);
     const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
-    try { markDependencyConsumerRunning(store, admission.binding.workspace, admission.attempt); }
+    try { markDependencyConsumerRunning(store, admission.binding.workspace, admission.attempt, String(Date.now())); }
     finally { store.close(); }
   });
   return admission.attempt;
