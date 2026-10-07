@@ -167,6 +167,32 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow();
     expectNoRootEffects(f, observed);
   });
+  // Regression: ordinary Docker network namespace mounts must not deny an
+  // unrelated provider root, or become filesystem backing for an admitted path.
+  it("retains unrelated Linux network namespaces without importing them", () => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push("900 1 0:44 net:[4026531840] /run/docker/netns/TEST rw - nsfs nsfs rw");
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    assertResearchProviderRoot(plan, f.spec, unit, f.home);
+    expect(plan.bindings.some(binding => binding.source.startsWith("/run/docker/netns/") || binding.target.startsWith("/run/docker/netns/"))).toBe(false);
+    expect(host.spawn).not.toHaveBeenCalled();
+    expect(host.authReads).toBe(0);
+  });
+  it("denies network namespace backing at the workspace before effects", () => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(`900 1 0:44 net:[4026531840] ${f.spec.request.workspacePath} rw - nsfs nsfs rw`);
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow();
+    expectNoRootEffects(f, observed);
+  });
+  it.each([
+    ["/", "nsfs"], ["net:[0]", "nsfs"], ["net:[18446744073709551616]", "nsfs"],
+    ["net:[4026531840]", "tmpfs"], ["net:[invalid]", "nsfs"],
+  ])("rejects invalid namespace marker %s on %s", (root, filesystem) => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(`900 1 0:44 ${root} /run/docker/netns/TEST rw - ${filesystem} TEST rw`);
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow();
+    expectNoRootEffects(f, observed);
+  });
   it("preserves independently classified RO dependencies, exact RW destinations and skeleton custody", () => {
     const f = captured(), observed = observingHost(), plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
     expect(plan.bindings.filter(b => b.access === ResearchRootMountAccess.ReadOnly).map(b => b.target)).toEqual([

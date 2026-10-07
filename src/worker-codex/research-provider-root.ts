@@ -85,7 +85,8 @@ const nativeHost: ResearchProviderRootHost = {
   },
   publish: (path, value) => researchPublish(path, value, true), record: path => researchRead(path).toString("utf8"),
 };
-type Mount = { point: string; root: string; device: string; id: string; parent: string };
+enum ResearchMountKind { FileSystem = "filesystem", NetworkNamespace = "network-namespace" }
+type Mount = { kind: ResearchMountKind; point: string; root: string; device: string; id: string; parent: string };
 type Backing = { device: string; path: string; mount: Mount; ancestors: Mount[] };
 type Binding = { source: string; target: string; access: ResearchRootMountAccess; identity: readonly [number, number]; backing: Backing; file: boolean };
 type OmittedCache = { source: string; target: string; identity: readonly [number, number]; backing: Backing; mounted: Backing; base: Backing };
@@ -152,15 +153,18 @@ function mountTable(host: ResearchProviderRootHost): Mount[] {
     if (separator < 6 || fields.length !== separator + 4 || !/^\d+:\d+$/.test(fields[2] ?? "") ||
         !/^\d+$/.test(fields[0] ?? "") || !/^\d+$/.test(fields[1] ?? "")) researchInvalid();
     const point = decode(fields[4]!), root = decode(fields[3]!);
-    if (!point.startsWith("/") || resolve(point) !== point || !root.startsWith("/") || resolve(root) !== root) researchInvalid();
-    return { point, root, device: fields[2]!, id: fields[0]!, parent: fields[1]! };
+    if (!point.startsWith("/") || resolve(point) !== point) researchInvalid();
+    // Linux nsfs_show_path emits a namespace marker, not a filesystem path.
+    const namespace = fields[separator + 1] === "nsfs" && /^net:\[[1-9][0-9]{0,19}\]$/.test(root);
+    if (namespace ? BigInt(root.slice(5, -1)) > 0xffffffffffffffffn : fields[separator + 1] === "nsfs" || !root.startsWith("/") || resolve(root) !== root) researchInvalid();
+    return { kind: namespace ? ResearchMountKind.NetworkNamespace : ResearchMountKind.FileSystem, point, root, device: fields[2]!, id: fields[0]!, parent: fields[1]! };
   });
   });
 }
 function backing(path: string, mounts: Mount[], intentionalAlias = false): Backing {
   return observeRootFailure(ResearchProviderRootCheck.Backing, () => {
   const ancestors = mounts.filter(m => contains(m.point, path)).sort((a, b) => b.point.length - a.point.length);
-  if (!ancestors.length || new Set(ancestors.map(m => m.point)).size !== ancestors.length) researchInvalid();
+  if (!ancestors.length || ancestors.some(m => m.kind !== ResearchMountKind.FileSystem) || new Set(ancestors.map(m => m.point)).size !== ancestors.length) researchInvalid();
   const mount = ancestors[0]!;
   const result = { device: mount.device, path: join(mount.root, relative(mount.point, path)), mount, ancestors };
   if (!intentionalAlias) {
