@@ -95,6 +95,16 @@ test("kernel reader accepts exact-cap EOF, rejects cap+1 and closes on failure",
 // Synthetic kernel bytes run through the real FD ownership/anonymous-input adapter.
 // A reconstructed row, dropped duplicate, stale record or lost held FD must reject.
 test.runIf(process.platform === "linux")("adapter queries the untouched original row and retains full-table refusals", () => {
+  // Test the actual anonymous-file capability before installing synthetic kernel/query observations.
+  let snapshot: number;
+  try { snapshot = openSync("/tmp", 0x410000 | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_EXCL, 0o600); }
+  catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOTSUP" ||
+        !("syscall" in error) || error.syscall !== "open" || !("path" in error) || error.path !== "/tmp") throw error;
+    assert.throws(() => inspectVisibleScratchMount("/"), { code: "ENOTSUP", syscall: "open", path: "/tmp" });
+    return;
+  }
+  closeSync(snapshot);
   const probe = openSync("/", 0x200000 | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   const id = Number(fs.readFileSync(`/proc/self/fdinfo/${probe}`, "utf8").match(/^mnt_id:\s+(\d+)$/m)![1]); closeSync(probe);
   const original = `${id} 1 8:1 /TEST\\040root / rw shared:7 master:3 - ext4 /dev/NEWTEST rw`, unrelated = row(id + 1, "/NEWTEST-unrelated");
