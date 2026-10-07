@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.registration-emit.json",
+  "files": [
+    "./compose-current-real-codex.ts",
+    "./prepare-current-real-codex-capsule.ts",
+    "./current-codex-layout.node-test.ts"
+  ]
+}

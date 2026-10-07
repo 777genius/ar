@@ -52,6 +52,10 @@ jobs:
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-cold-hot-emit.json
       - name: Check exact current idle source closure reconciliation
         run: node --test scripts/dependency-retention-os-test/current-closed-entry.node-test.js
+      - name: Emit finite reviewed public Codex TEST input helpers
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-real-codex-emit.json
+      - name: Check official platform resolution inside the existing readonly package root
+        run: node --test scripts/dependency-retention-os-test/current-codex-layout.node-test.js
       - name: Check original FDA result boundary for content observations
         run: node --test scripts/dependency-retention-os-test/current-entry-observations.node-test.js
       - name: Check bounded TEST failure-observation privacy before OS launch
