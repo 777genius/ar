@@ -120,6 +120,12 @@ export class FakeAppServerProcess extends EventEmitter {
     super();
   }
 
+  completeHeldTurn(threadId = "thread-1", turnId = "turn-1"): void {
+    this.markGoalAfterCompletedTurn(threadId);
+    this.notify("item/agentMessage/delta", { turnId, delta: "OK" });
+    this.notify("turn/completed", { turn: { id: turnId, status: { type: "completed" } } });
+  }
+
   kill(): boolean {
     queueMicrotask(() => this.emit("exit", null, "SIGTERM"));
     return true;
