@@ -1,5 +1,5 @@
 import { isDependencyCustodyObject, isDependencyProtectedReference,
-  type DependencyProtectedReference } from "./dependency-custody-evidence";
+  type DependencyProtectedReference } from "./dependency-protected-reference";
 
 // Closed continuity records are facts only. Their parser and epoch do not
 // authorize reuse; current fixed physical composition authenticates exclusion.

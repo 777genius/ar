@@ -1,14 +1,19 @@
 import type { DependencyTreeIdentity, DependencyWorkspaceIdentity } from "./dependency-workspace";
+import { isDependencyCustodyObject, isDependencyCustodyCanonicalPath as canonical,
+  isDependencyCustodyTreeIdentity as identity, isDependencyProtectedReference,
+  type DependencyProtectedReference } from "./dependency-protected-reference";
+import { DependencyGenerationContinuityKind } from "./dependency-generation-continuity";
+import { parseDependencyGenerationContinuity, type DependencyGenerationBaseline } from "./dependency-generation-baseline";
+export { isDependencyCustodyObject, isDependencyProtectedReference, sameDependencyProtectedReference,
+  type DependencyProtectedReference } from "./dependency-protected-reference";
 
 export enum DependencyConsumerLaunchKind {
   ManagedReadonlyLocalV1 = "managed_readonly_local_v1",
   OrdinaryReadonlySuccessorV1 = "ordinary_readonly_successor_v1",
 }
-export type DependencyProtectedReference = {
-  readonly path: string; readonly identity: DependencyTreeIdentity; readonly sha256: string;
-};
 export enum DependencyCustodyEvidenceKind {
   ReadonlyLocalAdoptionV1 = "readonly_local_adoption_v1",
+  ReadonlyColdBaselineAdoptionV2 = "readonly_cold_baseline_adoption_v2",
   ReadonlyLocalSuccessorIntentV1 = "readonly_local_successor_intent_v1",
   ReadonlyLocalSuccessorOutputV1 = "readonly_local_successor_output_v1",
 }
@@ -23,6 +28,20 @@ export type DependencyReadonlyAdoptionEvidence = {
   readonly readonlyCustody: { readonly jobId: string; readonly jobRootDir: string; readonly workspacePath: string;
     readonly grant: DependencyProtectedReference; readonly policy: DependencyProtectedReference;
     readonly review: DependencyProtectedReference; readonly stage: DependencyProtectedReference; readonly lease: DependencyProtectedReference };
+  readonly installation: DependencyCustodyInstallation;
+};
+/** Data-only transfer of an already published genuine cold baseline. The
+ * closed C start can follow later HOT uses; it is not the baseline operation.
+ * Only the fixed adapter authenticates completed-local provenance, discharged
+ * source/idle closure and the new R custody. No comparison is asserted here. */
+export type DependencyReadonlyColdBaselineAdoptionEvidence = {
+  readonly version: 2; readonly kind: DependencyCustodyEvidenceKind.ReadonlyColdBaselineAdoptionV2;
+  readonly operationId: string; readonly workspace: DependencyWorkspaceIdentity;
+  readonly candidate: { readonly jobId: string; readonly binding: DependencyProtectedReference;
+    readonly closedStartId: string; readonly generationBaseline: DependencyGenerationBaseline;
+    readonly sourceClosed: DependencyProtectedReference; readonly idle: DependencyProtectedReference;
+    readonly sourceMapping: DependencyProtectedReference };
+  readonly readonlyCustody: DependencyReadonlyAdoptionEvidence["readonlyCustody"];
   readonly installation: DependencyCustodyInstallation;
 };
 /** Future names are addresses, never references to nonexistent future proof. */
@@ -49,7 +68,8 @@ export type DependencyReadonlySuccessorOutput = {
   readonly installKey: string; readonly closureDigest: string; readonly manifestDigest: string;
   readonly generation: string; readonly coverageRevision: string;
 };
-export type DependencyCustodyEvidence = DependencyReadonlyAdoptionEvidence | DependencyReadonlySuccessorIntent | DependencyReadonlySuccessorOutput;
+export type DependencyCustodyEvidence = DependencyReadonlyAdoptionEvidence | DependencyReadonlyColdBaselineAdoptionEvidence |
+  DependencyReadonlySuccessorIntent | DependencyReadonlySuccessorOutput;
 export class DependencyCustodyEvidenceError extends Error {
   constructor() { super("dependency_custody_evidence:invalid_record"); }
 }
@@ -57,35 +77,9 @@ const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const digest = /^[a-f0-9]{64}$/;
 const decimal = /^(?:0|[1-9][0-9]{0,19})$/;
 
-/** Syntax/data validation only. No filesystem read, authenticated origin,
- * grant, currentness, drain, Ready or release authority is minted here. The
- * fixed host adapter MUST select its protected namespaces before reading. */
-export function isDependencyCustodyObject(value: unknown, keys: string): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) return false;
-  if (Reflect.ownKeys(value).length !== keys.split(",").length || Object.keys(value).sort().join(",") !== keys) return false;
-  return Object.values(Object.getOwnPropertyDescriptors(value)).every(d => Object.hasOwn(d, "value") && d.enumerable);
-}
-function canonical(value: unknown): value is string {
-  return typeof value === "string" && value.length <= 4096 && value.startsWith("/") && value !== "/" &&
-    !/[\x00-\x1f\x7f]|sk-[A-Za-z0-9_-]{12,}|Bearer\s/i.test(value) &&
-    value.split("/").slice(1).every(p => p.length > 0 && p !== "." && p !== "..");
-}
-function identity(value: unknown): value is DependencyTreeIdentity {
-  return isDependencyCustodyObject(value, "dev,ino") && typeof value.dev === "string" && decimal.test(value.dev) &&
-    typeof value.ino === "string" && /^[1-9][0-9]{0,19}$/.test(value.ino);
-}
 function workspace(value: unknown): value is DependencyWorkspaceIdentity {
   return isDependencyCustodyObject(value, "canonicalPath,dev,ino") && canonical(value.canonicalPath) &&
     typeof value.dev === "string" && decimal.test(value.dev) && typeof value.ino === "string" && /^[1-9][0-9]{0,19}$/.test(value.ino);
-}
-export function isDependencyProtectedReference(value: unknown): value is DependencyProtectedReference {
-  return isDependencyCustodyObject(value, "identity,path,sha256") && canonical(value.path) && identity(value.identity) &&
-    typeof value.sha256 === "string" && digest.test(value.sha256);
-}
-export function sameDependencyProtectedReference(a: DependencyProtectedReference, b: DependencyProtectedReference): boolean {
-  return a.path === b.path && a.identity.dev === b.identity.dev && a.identity.ino === b.identity.ino && a.sha256 === b.sha256;
 }
 function installation(value: unknown): value is DependencyCustodyInstallation {
   return isDependencyCustodyObject(value, "installationId,inventoryDigest,runtimeSha") && typeof value.installationId === "string" &&
@@ -103,19 +97,23 @@ function requireCustodyObject(value: unknown, keys: string): Record<string, unkn
   if (!isDependencyCustodyObject(value, keys)) fail();
   return value;
 }
+/** Syntax/data validation only. No filesystem read, authenticated origin,
+ * grant, currentness, drain, Ready or release authority is minted here. The
+ * fixed host adapter MUST select its protected namespaces before reading. */
 export function parseDependencyCustodyEvidence(input: unknown): DependencyCustodyEvidence {
   if (typeof input !== "object" || input === null || !("kind" in input)) fail();
   const kindDescriptor = Object.getOwnPropertyDescriptor(input, "kind");
   if (!kindDescriptor || !Object.hasOwn(kindDescriptor, "value")) fail();
   const kind = kindDescriptor.value;
   const common = "installation,kind,operationId,version,workspace";
-  const keys = kind === DependencyCustodyEvidenceKind.ReadonlyLocalAdoptionV1 ? "candidate," + common + ",readonlyCustody" :
+  const coldBaseline = kind === DependencyCustodyEvidenceKind.ReadonlyColdBaselineAdoptionV2;
+  const keys = kind === DependencyCustodyEvidenceKind.ReadonlyLocalAdoptionV1 || coldBaseline ? "candidate," + common + ",readonlyCustody" :
     kind === DependencyCustodyEvidenceKind.ReadonlyLocalSuccessorIntentV1 ? "addresses,candidateJobId," + common + ",priorAssociation,priorReady" :
     kind === DependencyCustodyEvidenceKind.ReadonlyLocalSuccessorOutputV1 ?
       "binding,closureDigest,coverageRevision,generation,grant,installKey,installation,intent,kind,manifest,manifestDigest,operationId,priorAssociation,priorReady,sourceBody,terminalProof,toolProfile,tree,version,workspace" : "";
   if (!keys) fail();
   const value = requireCustodyObject(input, keys.split(",").sort().join(","));
-  if (value.version !== 1 ||
+  if (value.version !== (coldBaseline ? 2 : 1) ||
       typeof value.operationId !== "string" || !uuid.test(value.operationId) || !workspace(value.workspace) || !installation(value.installation)) fail();
   if (kind === DependencyCustodyEvidenceKind.ReadonlyLocalAdoptionV1) {
     const candidate = value.candidate, custody = value.readonlyCustody;
@@ -125,6 +123,18 @@ export function parseDependencyCustodyEvidence(input: unknown): DependencyCustod
         !job(custody.jobId) || custody.jobId === candidate.jobId || !canonical(custody.jobRootDir) ||
         custody.workspacePath !== value.workspace.canonicalPath || custody.workspacePath !== custody.jobRootDir + "/workspace" ||
         !referenceFields(custody, ["grant", "policy", "review", "stage", "lease"])) fail();
+  } else if (coldBaseline) {
+    const candidate = value.candidate, custody = value.readonlyCustody;
+    if (!isDependencyCustodyObject(candidate, "binding,closedStartId,generationBaseline,idle,jobId,sourceClosed,sourceMapping") ||
+        !job(candidate.jobId) || typeof candidate.closedStartId !== "string" || !uuid.test(candidate.closedStartId) ||
+        !referenceFields(candidate, ["binding", "sourceClosed", "idle", "sourceMapping"]) ||
+        !isDependencyCustodyObject(custody, "grant,jobId,jobRootDir,lease,policy,review,stage,workspacePath") ||
+        !job(custody.jobId) || custody.jobId === candidate.jobId || !canonical(custody.jobRootDir) ||
+        custody.workspacePath !== value.workspace.canonicalPath || custody.workspacePath !== custody.jobRootDir + "/workspace" ||
+        !referenceFields(custody, ["grant", "policy", "review", "stage", "lease"])) fail();
+    try {
+      if (parseDependencyGenerationContinuity(candidate.generationBaseline).kind !== DependencyGenerationContinuityKind.BaselineAuthenticatedV1) fail();
+    } catch { fail(); }
   } else if (kind === DependencyCustodyEvidenceKind.ReadonlyLocalSuccessorIntentV1) {
     const addresses = value.addresses;
     if (!job(value.candidateJobId) || !referenceFields(value, ["priorAssociation", "priorReady"]) ||

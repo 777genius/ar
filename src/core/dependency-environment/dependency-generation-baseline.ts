@@ -1,5 +1,5 @@
 import { isDependencyCustodyObject, isDependencyProtectedReference,
-  type DependencyProtectedReference } from "./dependency-custody-evidence";
+  type DependencyProtectedReference } from "./dependency-protected-reference";
 import { DependencyGenerationContinuityKind, parseDependencyGenerationContinuityInvalidation,
   type DependencyGenerationContinuityInvalidation } from "./dependency-generation-continuity";
 
