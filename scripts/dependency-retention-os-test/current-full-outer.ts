@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, statSync, statfsSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { assembleCurrentFull as assemble } from "./assemble-current-full.js";
-import { retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { fullNativeOsBase, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { readCurrentFullOuterInput } from "./current-full-outer-input.js";
 import { configuredAuthNspawnBinding } from "./current-configured-auth-mount.js";
 import { prepareCurrentRealCodexCapsule } from "./prepare-current-real-codex-capsule.js";
@@ -44,9 +44,8 @@ if(inheritedHostJobId!==undefined)assert(/^TEST-[A-Za-z0-9_.-]{1,123}$/.test(inh
 const inheritedHostMarker=inheritedHostJobId===undefined?"":`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${inheritedHostJobId} `;
 const authBinding=configuredAuthNspawnBinding(fullInput.accountName);
 await prepareCurrentRealCodexCapsule(fullInput.sourceSha);
-const base="/var/lib/subscription-runtime-os-TEST";
-if(!existsSync(base))directory(base); // Other owned TEST units/roots are preserved.
-const namespace=lstatSync(base);assert(namespace.isDirectory() && !namespace.isSymbolicLink() && namespace.uid===0 && namespace.gid===0 && !(namespace.mode&0o022));
+const base=fullNativeOsBase; // Must already be independently provisioned and pinned.
+const namespace=lstatSync(base);assert(namespace.isDirectory() && !namespace.isSymbolicLink() && namespace.uid===0 && namespace.gid===0 && (namespace.mode&0o7777)===0o700);
 assert.equal(realpathSync(base),base);
 const defaultEvidence = await runOwnedOs(OwnedOsScenario.CurrentDependency);
 if (defaultEvidence.status !== "partial_pass") process.exitCode = 1;

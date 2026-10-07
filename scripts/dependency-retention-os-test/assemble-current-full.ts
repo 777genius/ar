@@ -9,7 +9,8 @@ import { testPublicLockSeedSha256, testPublicLockSeedMaxBytes, testPublicLockSee
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
   readdirSync, readlinkSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync, type BigIntStats } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { fullNativeOsBase, fullNativeGuestRoot } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { hostedDependencySystemdRunExecutable } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-systemd-command.js";
 import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
   SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/core/host-infrastructure/system-bus-infrastructure.js";
@@ -28,7 +29,7 @@ export function assembleCurrentFull(root: string, state: string, source: string,
     const output = runCommand(file, args, Math.min(timeout, checkBudget())); checkBudget(); return output;
   };
   checkBudget();
-  assert(root.startsWith("/var/lib/subscription-runtime-os-TEST/"));
+  assert(fullNativeGuestRoot(basename(dirname(root)),root));
   assert(!existsSync(root)); directory(root, 0o755); directory(state);
   for (const name of ["lists/partial", "archives/partial", "etc"]) directory(join(state, name));
   const sources = join(state, "etc/sources.list");
@@ -307,7 +308,7 @@ function snapshotPublicFile(alias: string, target: string, maxBytes: number): vo
   assert.equal(realpathSync(dirname(target)), dirname(target));
   // Only an exact fresh guest destination is replaced. This also removes a
   // dangling extracted symlink without following its target into the runner.
-  assert(target.startsWith("/var/lib/subscription-runtime-os-TEST/") && target.includes("/root/etc/"));
+  assert(target.startsWith(fullNativeOsBase+"/") && target.includes("/root/etc/"));
   rmSync(target, { force: true });
   const output = openSync(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644);
   try { writeFileSync(output, bytes); fsyncSync(output); } finally { closeSync(output); }

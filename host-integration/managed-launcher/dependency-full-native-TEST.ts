@@ -7,6 +7,11 @@ import { constants, closeSync, fsyncSync, writeFileSync, fstatSync, lstatSync, o
 import { basename, dirname } from "node:path";
 import { types } from "node:util";
 export const fullNativeJob="TEST-dependency-full-native-20261007-r1";
+export const fullNativeOsBase="/srv/workers/jobs/TEST-dependency-full-native-20261007-r1/os-TEST";
+/** DATA path contract only; physical root custody is checked separately. */
+export function fullNativeGuestRoot(id:unknown,root:unknown):boolean {
+  return typeof id==="string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id) && root===fullNativeOsBase+"/"+id+"/root";
+}
 const integration="/opt/subscription-runtime", reviewRoot="/srv/worker-state/protected-storage-test/dependency-full-native-activation";
 const reviewPath=reviewRoot+"/review.json", sourceBase="28511fec3a4796db3b86ac57f376d64c4b9b8d29";
 const hash=(value: string|Buffer)=>createHash("sha256").update(value).digest("hex");
@@ -116,7 +121,7 @@ function acquire(context:RootContext=RootContext.Launcher){
     for(const path of ["scripts/dependency-retention-os-test/current-full-outer.js","scripts/dependency-retention-os-test/current-full-guest.js","dist/worker-codex/codex-goal-cli.js"])check(paths.has(path));
     for(const [path,key] of [["/run/TEST-full-outer-review/input.json","outerReviewSha256"],["/run/TEST-real-codex-public-review/input.json","publicReviewSha256"]] as const){pins.hold(dirname(path),true,0o700);pins.publicFile(path,requireDigest(r[key]));pins.hold(path,false,0o600);}
     pins.hold("/srv/worker-state/account-pools/live-codex-auth/account-u",true);
-    pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);pins.hold("/srv/workers/jobs/"+fullNativeJob+"/tmp",true,0o700);
+    pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);pins.hold("/srv/workers/jobs/"+fullNativeJob+"/tmp",true,0o700);pins.hold(fullNativeOsBase,true,0o700);
     const git=spawnSync("/usr/bin/git",["-C",source,"rev-parse","--verify","HEAD^{tree}"],{env:{PATH:"/usr/bin:/bin",LANG:"C",GIT_CONFIG_NOSYSTEM:"1",GIT_CONFIG_GLOBAL:"/dev/null"},encoding:"utf8",timeout:5000,maxBuffer:4096});
     check(!git.error && git.status===0 && git.signal===null && git.stdout.trim()===r.sourceTree);
     const tuple=Object.freeze({sourceSha,source,root,node,parent,machineId:r.machineId,bootId:r.bootId,accountName:r.accountName});
@@ -151,7 +156,7 @@ export function captureFullNativeRequest(value:unknown){
 export function retainFullNativeLaunch(request:unknown){
   const data=captureFullNativeRequest(request),c=acquire();let closed=false;
   try{check(data.fingerprint===fingerprint(c.tuple.machineId,argvFor(c)) && data.payload[0]===c.tuple.node && data.payload[1]===c.tuple.parent);
-    const revalidate=()=>{try{check(!closed);c.validate();record(c,false);preflightCapacity();}catch{refuse();}};revalidate();
+    const revalidate=()=>{try{check(!closed);c.validate();record(c,false);preflightCapacity(c.pins.hold(fullNativeOsBase,true,0o700));c.validate();}catch{refuse();}};revalidate();
     return Object.freeze({node:c.tuple.node,parent:c.tuple.parent,source:c.tuple.source,sourceSha:c.tuple.sourceSha,fingerprint:data.fingerprint,revalidate,close(){if(closed)return;closed=true;c.pins.close();}});
   }catch{c.pins.close();refuse();}
 }
@@ -168,7 +173,7 @@ export function fullNativeArguments(request:unknown){
   const custody=retainFullNativeLaunch(request);try{
     const properties=["Slice=subscription-runtime-hosted.slice","KillMode=control-group","SendSIGKILL=yes","Delegate=no","Restart=no","RemainAfterExit=no","ProtectSystem=strict","NoNewPrivileges=yes","MemorySwapMax=0","LimitCORE=0","AmbientCapabilities=","PassEnvironment=","UnsetEnvironment="+erasedEnvironment,"CapabilityBoundingSet="+parentCapabilities,
       "CPUQuota=100%","CPUQuotaPeriodSec=100ms","MemoryMax=2G","TasksMax=128","RuntimeMaxSec=1800","TimeoutStopSec=180","StandardOutput=null","StandardError=null",
-      "ReadWritePaths=/var/lib/subscription-runtime-os-TEST /var/lib/subscription-runtime-full-TEST-output /run/TEST-real-codex-public-download /run/TEST-real-codex-public-input /run/systemd/system /srv/workers/jobs/"+fullNativeJob,
+      "ReadWritePaths="+fullNativeOsBase+" /var/lib/subscription-runtime-full-TEST-output /run/TEST-real-codex-public-download /run/TEST-real-codex-public-input /run/systemd/system /srv/workers/jobs/"+fullNativeJob,
       "BindReadOnlyPaths="+custody.source+":"+custody.source+":norbind","BindReadOnlyPaths=/run/TEST-full-outer-review:/run/TEST-full-outer-review:norbind","BindReadOnlyPaths=/run/TEST-real-codex-public-review:/run/TEST-real-codex-public-review:norbind","BindReadOnlyPaths="+reviewRoot+":"+reviewRoot+":norbind","BindReadOnlyPaths=/srv/worker-state/account-pools/live-codex-auth/account-u:/srv/worker-state/account-pools/live-codex-auth/account-u:norbind"];
     const args=Object.freeze(["--description=subscription-job:"+custody.fingerprint,"--unit="+fullNativeUnit,"--working-directory="+custody.source,"--service-type=exec","--expand-environment=no","--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID="+fullNativeJob,"--setenv=TEST_SOURCE_SHA="+custody.sourceSha,"--setenv=HOME=/srv/workers/jobs/"+fullNativeJob,"--setenv=TMPDIR=/srv/workers/jobs/"+fullNativeJob+"/tmp","--setenv=PATH=/usr/bin:/bin","--setenv=LANG=C.UTF-8",...properties.map(p=>"--property="+p),"--",custody.node,custody.parent]);
     custody.revalidate();return {args,custody};
@@ -199,8 +204,8 @@ export function retainCurrentFullParent(){
   }
   try{revalidate();return Object.freeze({unit:fullNativeUnit,revalidate,
     registerGuest(id:string,root:string,fragmentSha256:string){
-      revalidate();check(!guestId && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id) && digest(fragmentSha256));
-      check(root==="/var/lib/subscription-runtime-os-TEST/"+id+"/root");c.pins.hold(dirname(root),true,0o700);const rootFd=c.pins.hold(root,true,0o755),rootStat=fstatSync(rootFd),unit="TEST-retention-os-"+id+".service";
+      revalidate();check(!guestId && fullNativeGuestRoot(id,root) && digest(fragmentSha256));
+      c.pins.hold(dirname(root),true,0o700);const rootFd=c.pins.hold(root,true,0o755),rootStat=fstatSync(rootFd),unit="TEST-retention-os-"+id+".service";
       c.pins.publicFile("/run/systemd/system/"+unit,fragmentSha256);
       const data={schemaVersion:1,jobId:fullNativeJob,parentUnit:fullNativeUnit,parentInvocationId:invocation,unit,fragmentSha256,root,rootDev:String(rootStat.dev),rootIno:String(rootStat.ino),machineId:c.tuple.machineId,bootId:c.tuple.bootId,sourceSha:c.tuple.sourceSha};
       guestHash=hash(JSON.stringify(data)+"\n");seal("current-full-pair.json",data);guestId=id;
@@ -259,13 +264,13 @@ function assertReadonlyMounts(pins:Pins,paths:readonly string[]){
 
 /** One fixed demand: 8GiB summed caps plus 1GiB host reserve, 14GiB real OS
  * fixture backing. This measures availability, not a reservation or permit. */
-function preflightCapacity(){
+function preflightCapacity(baseFd:number){
   const text=readFileSync("/proc/meminfo","utf8");check(Buffer.byteLength(text)<=65536);
   const available=[...text.matchAll(/^MemAvailable:\s+(\d+) kB$/gm)],swap=[...text.matchAll(/^SwapFree:\s+(\d+) kB$/gm)];
   check(available.length===1 && swap.length===1 && available[0]?.[1] && swap[0]?.[1]);
   check(BigInt(available[0][1])*1024n>=9n*1024n*1024n*1024n);check(BigInt(swap[0][1])>=0n);
-  const path="/var/lib/subscription-runtime-os-TEST",s=lstatSync(path);check(s.isDirectory() && !s.isSymbolicLink() && s.uid===0 && s.gid===0 && (s.mode&0o7777)===0o700);
-  const fs=statfsSync(path,{bigint:true});check(fs.bavail*fs.bsize>=14n*1024n*1024n*1024n && fs.ffree>=100000n);
+  const s=fstatSync(baseFd);check(s.isDirectory() && s.uid===0 && s.gid===0 && (s.mode&0o7777)===0o700);
+  const fs=statfsSync(`/proc/self/fd/${baseFd}`,{bigint:true});check(fs.bavail*fs.bsize>=14n*1024n*1024n*1024n && fs.ffree>=100000n);
 }
 
 /** Actual kernel caps/cgroup values, not a systemd-owned label. Linux UAPI

@@ -1,7 +1,7 @@
 /** DATA-only regressions. No ROOT, filesystem, launch or account probe. */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { captureFullNativeRequest,fullNativeJob,fullNativeUnit,fullNativeLimits,fullData,fullDataArray,fullNativeIntended,fullPublicRelative,fullReadonlyMountData } from "./dependency-full-native-TEST.js";
+import { captureFullNativeRequest,fullNativeJob,fullNativeUnit,fullNativeLimits,fullData,fullDataArray,fullNativeIntended,fullPublicRelative,fullReadonlyMountData,fullNativeGuestRoot } from "./dependency-full-native-TEST.js";
 test("counterfeit accessors and proxies cannot execute during request capture",()=>{
   let calls=0;const getter={get jobId(){calls++;return "TEST-dependency-full-native-20261007-r1";}};
   const proxy=new Proxy({}, {get(){calls++;throw Error("TEST-private");},getPrototypeOf(){calls++;throw Error("TEST-private");},ownKeys(){calls++;throw Error("TEST-private");},getOwnPropertyDescriptor(){calls++;throw Error("TEST-private");}});
@@ -36,4 +36,13 @@ test("readonly mount DATA refuses stacked/writable/foreign physical observations
   assert.doesNotThrow(()=>fullReadonlyMountData(root+own,"/TEST-input","2","8:1"));
   for(const raw of [root+own+"3 1 8:1 /input /TEST-input rw - ext4 /dev/root rw\n",root+own+"3 2 8:1 /child /TEST-input/sub rw - ext4 /dev/root rw\n",root+own+own,root+own.replace(" ro "," rw ")])assert.throws(()=>fullReadonlyMountData(raw,"/TEST-input","2","8:1"));
   assert.throws(()=>fullReadonlyMountData(root+own,"/TEST-input","1","8:1"));assert.throws(()=>fullReadonlyMountData(root+own,"/TEST-input","2","8:2"));
+});
+
+test("FULL guest roots refuse global and foreign staging prefixes",()=>{
+  const id="a1234567-89ab-cdef-0123-456789abcdef",root="/srv/workers/jobs/TEST-dependency-full-native-20261007-r1/os-TEST/"+id+"/root";
+  assert.equal(fullNativeGuestRoot(id,root),true);
+  for(const value of ["/var/lib/subscription-runtime-os-TEST/"+id+"/root","/srv/workers/jobs/TEST-other/os-TEST/"+id+"/root",root+"/extra",root.replace("/os-TEST/","/os-TEST//"),root.replace("/os-TEST/","/os-TEST/../os-TEST/"),null])
+    assert.equal(fullNativeGuestRoot(id,value),false);
+  assert.equal(fullNativeGuestRoot("../"+id,root),false);
+  assert.equal(fullNativeGuestRoot(id.toUpperCase(),root),false);
 });
