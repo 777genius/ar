@@ -91,7 +91,8 @@ export function assertSameRootFinalGateRestore(roots:CurrentColdHotRoots,old:Ret
   const start=pinReferenceFile(policyRoot+"/ordinary-starts/"+native.startId+".json",65536);
   const actual=parseHostedOrdinaryStart(JSON.parse(start.bytes.toString("utf8")));
   assert.equal(actual.jobId,roots.candidateJobId);assert.equal(actual.workspacePath,roots.workspace);
-  assert.equal(actual.jobRootDir,roots.jobRoot);assert.equal(actual.startId,native.startId);assert.equal(actual.unit,native.unit);
+  assert.equal(actual.jobRootDir,roots.jobRoot);
+  assert.equal(actual.unit,"subscription-runtime-ordinary-"+native.startId+".service");assert.equal(actual.unit,native.unit);
   const record=pinReferenceFile(policyRoot+"/dependency-reader-starts/"+native.startId+".json",16384);
   assert.deepEqual(record.reference,entry.observation.preclaim);
   const row:unknown=JSON.parse(record.bytes.toString("utf8"));
