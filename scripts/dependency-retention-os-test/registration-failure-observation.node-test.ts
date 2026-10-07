@@ -57,7 +57,8 @@ test("lock observation distinguishes finite child facts without copying output",
   const result = { status: 1, signal: null, stdout: secret,
     stderr: "npm error code EAI_AGAIN\nnpm error request " + secret + " failed\n" };
   const observed = observeTestNpmLockResult(result);
-  assert.deepEqual(observed, { status: 1, signal: "none", spawnClass: "none", npmCodeLiteral: "resolution_code_literal" });
+  assert.deepEqual(observed, { status: 1, signal: "none", spawnClass: "none", npmCodeLiteral: "resolution_code_literal",
+    codeLineShape: "single_known", stderrShape: "present", fixedTextLiteral: "unknown" });
   assert(!JSON.stringify(observed).includes(secret)); assert(Object.isFrozen(observed));
   for (const [code, literal] of [["ECONNRESET", "connection_code_literal"], ["CERT_HAS_EXPIRED", "certificate_code_literal"],
     ["E403", "registry_http_code_literal"], ["ERESOLVE", "selection_code_literal"], ["EJSONPARSE", "input_code_literal"],
@@ -65,10 +66,12 @@ test("lock observation distinguishes finite child facts without copying output",
     assert.equal(observeTestNpmLockResult({ ...result, stderr: "npm error code " + code + "\n" }).npmCodeLiteral, literal);
   const timeout = new Error(secret); Object.defineProperty(timeout, "code", { value: "ETIMEDOUT" });
   assert.deepEqual(observeTestNpmLockResult({ ...result, status: null, signal: "SIGTERM", stderr: "", error: timeout }),
-    { status: null, signal: "sigterm", spawnClass: "timeout_code_literal", npmCodeLiteral: "unknown" });
+    { status: null, signal: "sigterm", spawnClass: "timeout_code_literal", npmCodeLiteral: "unknown",
+      codeLineShape: "missing", stderrShape: "empty", fixedTextLiteral: "unknown" });
   for (const absent of [null, undefined])
     assert.deepEqual(observeTestNpmLockResult({ ...result, status: null, signal: null, stdout: absent, stderr: absent, error: timeout }),
-      { status: null, signal: "none", spawnClass: "timeout_code_literal", npmCodeLiteral: "unknown" });
+      { status: null, signal: "none", spawnClass: "timeout_code_literal", npmCodeLiteral: "unknown",
+        codeLineShape: "unknown", stderrShape: "unavailable", fixedTextLiteral: "unknown" });
 });
 
 test("lock code lines are single, exact, bounded and never causal proof", () => {
@@ -78,7 +81,8 @@ test("lock code lines are single, exact, bounded and never causal proof", () => 
     "npm error code EAI_AGAIN\nnpm error code UNKNOWN\n", "npm error code EAI_AGAIN\nnpm error code malformed value\n"])
     assert.equal(observeTestNpmLockResult({ ...result, stderr }).npmCodeLiteral, "unknown");
   const oversized = observeTestNpmLockResult({ ...result, stderr: "x".repeat(4 * 1024 * 1024 + 1) });
-  assert.deepEqual(oversized, { status: null, signal: "unknown", spawnClass: "unknown", npmCodeLiteral: "unknown" });
+  assert.deepEqual(oversized, { status: null, signal: "unknown", spawnClass: "unknown", npmCodeLiteral: "unknown",
+      codeLineShape: "unknown", stderrShape: "unknown", fixedTextLiteral: "unknown" });
   for (const status of [-1, 256, NaN, Infinity]) assert.equal(observeTestNpmLockResult({ ...result, status }).status, null);
 });
 
@@ -89,13 +93,43 @@ test("lock-result accessors and Proxy values cause zero caller calls", () => {
   const proxy = new Proxy(result, { get: trap, getOwnPropertyDescriptor: trap, ownKeys: trap, getPrototypeOf: trap });
   const revoked = Proxy.revocable(result, {}); revoked.revoke();
   for (const input of [proxy, revoked.proxy, null, {}, Object.create(result)])
-    assert.deepEqual(observeTestNpmLockResult(input), { status: null, signal: "unknown", spawnClass: "unknown", npmCodeLiteral: "unknown" });
+    assert.deepEqual(observeTestNpmLockResult(input), { status: null, signal: "unknown", spawnClass: "unknown", npmCodeLiteral: "unknown",
+      codeLineShape: "unknown", stderrShape: "unknown", fixedTextLiteral: "unknown" });
   for (const key of ["status", "signal", "stdout", "stderr", "error"]) {
     const accessor = { ...result }; Object.defineProperty(accessor, key, { get: trap });
-    assert.deepEqual(observeTestNpmLockResult(accessor), { status: null, signal: "unknown", spawnClass: "unknown", npmCodeLiteral: "unknown" });
+    assert.deepEqual(observeTestNpmLockResult(accessor), { status: null, signal: "unknown", spawnClass: "unknown", npmCodeLiteral: "unknown",
+      codeLineShape: "unknown", stderrShape: "unknown", fixedTextLiteral: "unknown" });
   }
   const error = new Error(); Object.defineProperty(error, "code", { get: trap });
   assert.equal(observeTestNpmLockResult({ ...result, error }).spawnClass, "native_error");
   assert.equal(observeTestNpmLockResult({ ...result, error: new Proxy(error, { get: trap, getOwnPropertyDescriptor: trap }) }).spawnClass, "unknown");
   assert.equal(calls, 0);
+});
+
+test("stderr distinguishes missing, unknown, malformed and duplicate code-line shapes", () => {
+  const result = { status: 1, signal: null, stdout: "", stderr: "" };
+  const cases = [["", "missing"], ["npm error code EAI_AGAIN\n", "single_known"],
+    ["npm error code TEST_SECRET\n", "single_unknown"], ["npm error code EAI_AGAIN trailing\n", "malformed"],
+    ["npm error code EAI_AGAIN\nnpm error code EAI_AGAIN\n", "duplicate"],
+    ["npm error code EAI_AGAIN\nnpm error code malformed value\n", "duplicate"]] as const;
+  for (const [stderr, codeLineShape] of cases) {
+    const observed = observeTestNpmLockResult({ ...result, stderr });
+    assert.equal(observed.codeLineShape, codeLineShape);
+    assert(!JSON.stringify(observed).includes("TEST_SECRET"));
+  }
+  assert.equal(observeTestNpmLockResult(result).stderrShape, "empty");
+  assert.equal(observeTestNpmLockResult({ ...result, stderr: "TEST-private" }).stderrShape, "present");
+});
+
+test("only one exact pinned exit-handler line has a fixed-text observation", () => {
+  const literal = "npm error Exit handler never called!\n", secret = "TEST-private-registry-path";
+  const result = { status: 1, signal: null, stdout: secret, stderr: literal + "npm error " + secret + "\n" };
+  const observed = observeTestNpmLockResult(result);
+  assert.equal(observed.fixedTextLiteral, "exit_handler_not_called_literal");
+  assert.equal(observed.codeLineShape, "missing");
+  assert(!JSON.stringify(observed).includes(secret)); assert(Object.isFrozen(observed));
+  for (const stderr of ["", "prefix " + literal, literal.trimEnd() + " trailing\n", literal + literal,
+    "npm error 'Exit handler never called!'\n"])
+    assert.equal(observeTestNpmLockResult({ ...result, stderr }).fixedTextLiteral, "unknown");
+  assert.equal(observeTestNpmLockResult({ ...result, stdout: literal, stderr: "" }).fixedTextLiteral, "unknown");
 });

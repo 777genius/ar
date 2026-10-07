@@ -48,18 +48,20 @@ enum LockCodeLiteral {
   Certificate = "certificate_code_literal", RegistryHttp = "registry_http_code_literal",
   Selection = "selection_code_literal", Input = "input_code_literal", Filesystem = "filesystem_code_literal",
 }
+enum LockCodeLineShape { Unknown = "unknown", Missing = "missing", SingleKnown = "single_known",
+  SingleUnknown = "single_unknown", Malformed = "malformed", Duplicate = "duplicate" }
+enum LockStderrShape { Unknown = "unknown", Unavailable = "unavailable", Empty = "empty", Present = "present" }
+enum LockFixedText { Unknown = "unknown", ExitHandlerNotCalled = "exit_handler_not_called_literal" }
 export type TestNpmLockObservation = Readonly<{
   status: number | null; signal: LockSignal; spawnClass: LockSpawnClass; npmCodeLiteral: LockCodeLiteral;
+  codeLineShape: LockCodeLineShape; stderrShape: LockStderrShape; fixedTextLiteral: LockFixedText;
 }>;
 const unknownLock: TestNpmLockObservation = freeze({ status: null, signal: LockSignal.Unknown,
-  spawnClass: LockSpawnClass.Unknown, npmCodeLiteral: LockCodeLiteral.Unknown });
+  spawnClass: LockSpawnClass.Unknown, npmCodeLiteral: LockCodeLiteral.Unknown,
+  codeLineShape: LockCodeLineShape.Unknown, stderrShape: LockStderrShape.Unknown, fixedTextLiteral: LockFixedText.Unknown });
 /** At most 4MiB scanned, at most two candidate lines examined. Unknown,
  * malformed or duplicate code lines remain Unknown, including identical ones. */
-function lockCodeLiteral(stderr: string): LockCodeLiteral {
-  const lines = /^npm (?:error|ERR!) code[^\r\n]*\r?$/gm;
-  const first = lines.exec(stderr);
-  if (!first || lines.exec(stderr)) return LockCodeLiteral.Unknown;
-  const code = /^npm (?:error|ERR!) code ([A-Z0-9_]{1,40})\r?$/.exec(first[0])?.[1];
+function lockCodeLiteral(code: string | undefined): LockCodeLiteral {
   switch (code) {
     case "EAI_AGAIN": case "ENOTFOUND": return LockCodeLiteral.Resolution;
     case "ECONNREFUSED": case "ECONNRESET": case "ETIMEDOUT": return LockCodeLiteral.Connection;
@@ -74,6 +76,22 @@ function lockCodeLiteral(stderr: string): LockCodeLiteral {
     case "ENOENT": case "EACCES": case "EPERM": case "ENOSPC": return LockCodeLiteral.Filesystem;
     default: return LockCodeLiteral.Unknown;
   }
+}
+function observeLockCodeLine(stderr: string): Readonly<{ npmCodeLiteral: LockCodeLiteral; codeLineShape: LockCodeLineShape }> {
+  const lines = /^npm (?:error|ERR!) code[^\r\n]*\r?$/gm, first = lines.exec(stderr);
+  if (!first) return { npmCodeLiteral: LockCodeLiteral.Unknown, codeLineShape: LockCodeLineShape.Missing };
+  if (lines.exec(stderr)) return { npmCodeLiteral: LockCodeLiteral.Unknown, codeLineShape: LockCodeLineShape.Duplicate };
+  const code = /^npm (?:error|ERR!) code ([A-Z0-9_]{1,40})\r?$/.exec(first[0])?.[1];
+  if (code === undefined) return { npmCodeLiteral: LockCodeLiteral.Unknown, codeLineShape: LockCodeLineShape.Malformed };
+  const npmCodeLiteral = lockCodeLiteral(code);
+  return { npmCodeLiteral, codeLineShape: npmCodeLiteral === LockCodeLiteral.Unknown ?
+    LockCodeLineShape.SingleUnknown : LockCodeLineShape.SingleKnown };
+}
+/** Exact npm10.9.9 exit-handler source literal, not its cause. Duplicate or
+ * embedded/trailing/quoted text is not accepted; arbitrary stderr stays private. */
+function lockFixedText(stderr: string): LockFixedText {
+  const lines = /^npm (?:error|ERR!) Exit handler never called!\r?$/gm;
+  return lines.exec(stderr) && !lines.exec(stderr) ? LockFixedText.ExitHandlerNotCalled : LockFixedText.Unknown;
 }
 /** Closed child-result DATA only. No raw output, pathname, errno object, env,
  * source authority, cause or retry permission is returned. */
@@ -98,5 +116,9 @@ export function observeTestNpmLockResult(result: unknown): TestNpmLockObservatio
     spawnClass = ownString(error, "code") === "ETIMEDOUT" ? LockSpawnClass.TimeoutLiteral : LockSpawnClass.NativeError;
   const signalClass = signal === null ? LockSignal.None : signal === "SIGTERM" ? LockSignal.Term :
     signal === "SIGKILL" ? LockSignal.Kill : signal === "SIGABRT" ? LockSignal.Abort : LockSignal.Unknown;
-  return freeze({ status, signal: signalClass, spawnClass, npmCodeLiteral: typeof stderr === "string" ? lockCodeLiteral(stderr) : LockCodeLiteral.Unknown });
+  const codeFacts = typeof stderr === "string" ? observeLockCodeLine(stderr) :
+    { npmCodeLiteral: LockCodeLiteral.Unknown, codeLineShape: LockCodeLineShape.Unknown };
+  const stderrShape = typeof stderr === "string" ? (stderr.length === 0 ? LockStderrShape.Empty : LockStderrShape.Present) : LockStderrShape.Unavailable;
+  return freeze({ status, signal: signalClass, spawnClass, ...codeFacts, stderrShape,
+    fixedTextLiteral: typeof stderr === "string" ? lockFixedText(stderr) : LockFixedText.Unknown });
 }
