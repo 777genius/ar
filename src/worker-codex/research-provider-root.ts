@@ -154,13 +154,24 @@ function mountTable(host: ResearchProviderRootHost): Mount[] {
     if (separator < 6 || fields.length !== separator + 4 || !/^\d+:\d+$/.test(fields[2] ?? "") ||
         !/^\d+$/.test(fields[0] ?? "") || !/^\d+$/.test(fields[1] ?? "")) researchInvalid();
     const point = decode(fields[4]!), root = decode(fields[3]!);
-    // These kernel roots are visible topology, not filesystem path authority.
-    // Retain their raw representation; never normalize a deleted root alias.
-    const namespaceRoot = fields[separator + 1] === "nsfs" && /^net:\[[1-9]\d*\]$/.test(root);
-    const deletedRoot = fields[separator + 1] !== "nsfs" && root.endsWith("//deleted") && normalizedAbsolute(root.slice(0, -9));
-    const rootKind = namespaceRoot || deletedRoot ? MountRootKind.Opaque : MountRootKind.Path;
-    if (!normalizedAbsolute(point) || rootKind === MountRootKind.Path && !normalizedAbsolute(root)) researchInvalid();
-    return { point, root, rootKind, device: fields[2]!, id: fields[0]!, parent: fields[1]! };
+    if (!normalizedAbsolute(point)) researchInvalid();
+    const mount: Mount = { point, root, rootKind: MountRootKind.Path, device: fields[2]!, id: fields[0]!, parent: fields[1]! };
+    if (normalizedAbsolute(root)) return mount;
+    // Linux's generic show_path -> seq_dentry -> dentry_path appends exactly
+    // "//deleted" to an unlinked non-root dentry. ext4 has no show_path override.
+    // Retain this opaque ROOT in the graph; never normalize it into path backing.
+    const deletedPrefix = root.endsWith("//deleted") ? root.slice(0, -9) : undefined;
+    if (fields[separator + 1] === "ext4" && deletedPrefix !== undefined && deletedPrefix !== "/" &&
+        normalizedAbsolute(deletedPrefix) &&
+        /^(?:[^\\\x00 \t\n]|\\(?:040|011|012|134))+$/.test(fields[3]!)) return { ...mount, rootKind: MountRootKind.Opaque };
+    // Linux nsfs show_path emits namespace type:[unsigned namespace inode],
+    // on its anonymous major-zero device and the kern_mount source "nsfs".
+    // Keep these rows in the graph; their handles can never be path backing.
+    const handle = /^(?:cgroup|ipc|mnt|net|pid|time|user|uts):\[([1-9]\d{0,9})\]$/.exec(root);
+    const device = /^0:([1-9]\d{0,6})$/.exec(mount.device);
+    if (fields[separator + 1] !== "nsfs" || fields[separator + 2] !== "nsfs" || !handle ||
+        Number(handle[1]) > 0xffffffff || !device || Number(device[1]) > 0xfffff) researchInvalid();
+    return { ...mount, rootKind: MountRootKind.Opaque };
   });
   });
 }

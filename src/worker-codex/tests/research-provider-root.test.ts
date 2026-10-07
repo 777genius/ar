@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { grantResearchLaunch, startResearchLaunch } from "../research-launch-owner";
 import { researchCurrentStart } from "../research-launch-admission";
 import { researchHash, researchPublish, researchRead } from "../research-launch-files";
-import { prepareResearchProviderRoot, assertResearchProviderRoot, ResearchRootMountAccess, ResearchRootReadRole, type ResearchProviderRootHost } from "../research-provider-root";
+import { prepareResearchProviderRoot, assertResearchProviderRoot, researchProviderRootFailureCheck, ResearchProviderRootCheck, ResearchRootMountAccess, ResearchRootReadRole, type ResearchProviderRootHost } from "../research-provider-root";
 import { trustedResearchProviderLaunch } from "../trusted-custody-systemd-launch";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import type { ResearchStartSpec } from "../research-launch-contract";
@@ -106,6 +106,10 @@ function expectNoRootEffects(f: ReturnType<typeof captured>, observed: ReturnTyp
   expect(fs.existsSync(local(join(f.directory, "providers", unit + ".submission.json")))).toBe(false);
   expect(host.authReads).toBe(0);
 }
+const namespaceMount = (point: string, root = "net:[4026531840]", device = "0:4", filesystem = "nsfs", source = "nsfs") =>
+  `900 1 ${device} ${root} ${point} rw - ${filesystem} ${source} rw`;
+const deletedMount = (point: string, root = "/jobs/TEST-foreign/.research/.cache/toolchain//deleted", filesystem = "ext4") =>
+  `900 1 8:1 ${root} ${point} rw - ${filesystem} /dev/TEST rw`;
 
 describe("closed provider root graph (native adapter over disposable TEST files)", () => {
   // Regression: Linux emits unrelated NSFS descriptors and deleted roots in
@@ -137,7 +141,8 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     // A different-device opaque ancestor remains forbidden even beneath an
     // intentional pin mount with a normal selected root and matching inode.
     const point = selected === "pin-ancestor" ? join(f.directory, "pins") : f.spec.request.authRootDir;
-    observed.extraMounts.push(`900 1 8:2 ${root} ${point} rw - ${filesystem} /dev/TEST-other rw`);
+    const device = filesystem === "nsfs" ? "0:44" : "8:2", source = filesystem === "nsfs" ? "nsfs" : "/dev/TEST-other";
+    observed.extraMounts.push(`900 1 ${device} ${root} ${point} rw - ${filesystem} ${source} rw`);
     expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
     expectNoRootEffects(f, observed);
   });
@@ -145,23 +150,155 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     ["namespace", "net:[4026533000]", "nsfs"], ["deleted", "/TEST-retired//deleted", "ext4"],
   ] as const)("keeps nested %s opaque mounts visible to RO and RW vetoes", (_kind, root, filesystem) => {
     const f = captured(), observed = observingHost();
-    observed.extraMounts.push(`900 1 8:2 ${root} /usr/TEST-opaque rw - ${filesystem} /dev/TEST-other rw`);
+    const device = filesystem === "nsfs" ? "0:44" : "8:2", source = filesystem === "nsfs" ? "nsfs" : "/dev/TEST-other";
+    observed.extraMounts.push(`900 1 ${device} ${root} /usr/TEST-opaque rw - ${filesystem} ${source} rw`);
     expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
     expectNoRootEffects(f, observed);
-    observed.extraMounts[0] = `900 1 8:2 ${root} ${f.spec.request.workspacePath}/TEST-opaque rw - ${filesystem} /dev/TEST-other rw`;
+    observed.extraMounts[0] = `900 1 ${device} ${root} ${f.spec.request.workspacePath}/TEST-opaque rw - ${filesystem} ${source} rw`;
     expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
     expectNoRootEffects(f, observed);
   });
   it.each([
-    ["net:[4026533000]", "ext4"], ["mnt:[4026533000]", "nsfs"], ["net:[0]", "nsfs"],
-    ["net:[04026533000]", "nsfs"], ["net:[-1]", "nsfs"], ["net:[1]/extra", "nsfs"],
-    ["/TEST/../retired//deleted", "ext4"], ["/TEST-retired///deleted", "ext4"],
-    ["/TEST-retired//deleted/extra", "ext4"], ["/TEST-retired//deleted", "nsfs"],
-  ] as const)("rejects unknown or malformed opaque root %s on %s", (root, filesystem) => {
+    ["net:[4026533000]", "ext4", "8:2", "/dev/TEST-other"],
+    // mnt is a native namespace type; this row spoofs nsfs's major-zero device.
+    ["mnt:[4026533000]", "nsfs", "8:2", "nsfs"], ["net:[0]", "nsfs", "0:44", "nsfs"],
+    ["net:[04026533000]", "nsfs", "0:44", "nsfs"], ["net:[-1]", "nsfs", "0:44", "nsfs"],
+    ["net:[1]/extra", "nsfs", "0:44", "nsfs"],
+    ["/TEST/../retired//deleted", "ext4", "8:2", "/dev/TEST-other"],
+    ["/TEST-retired///deleted", "ext4", "8:2", "/dev/TEST-other"],
+    ["/TEST-retired//deleted/extra", "ext4", "8:2", "/dev/TEST-other"],
+    ["/TEST-retired//deleted", "nsfs", "0:44", "nsfs"],
+  ] as const)("rejects unknown or malformed opaque root %s on %s", (root, filesystem, device, source) => {
     const f = captured(), observed = observingHost();
-    observed.extraMounts.push(`900 1 8:2 ${root} /TEST-unrelated rw - ${filesystem} /dev/TEST-other rw`);
+    observed.extraMounts.push(`900 1 ${device} ${root} /TEST-unrelated rw - ${filesystem} ${source} rw`);
     expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
     expectNoRootEffects(f, observed);
+  });
+  // Regression: Linux's deleted dentry ROOT is opaque, but an unrelated cache
+  // mount must not prevent a plan. Dropping it would lose graph/reassert vetoes.
+  it.each([
+    "/jobs/TEST-foreign/.research/.cache/toolchain//deleted",
+    "/jobs/TEST-foreign/.research/.cache/go-modcache//deleted",
+    "/jobs/TEST\\040foreign/TEST\\011cache/TEST\\012line/TEST\\134name//deleted",
+  ])("accepts unrelated native ext4 deleted ROOT %s with an assertable plan", root => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(deletedMount("/jobs/TEST-foreign/home/cache", root));
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    assertResearchProviderRoot(plan, f.spec, unit, f.home);
+    expect(plan.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite).map(bind => bind.target))
+      .toEqual([f.spec.request.jobRootDir, f.spec.request.workspacePath]);
+    expect(fs.lstatSync(plan.fixedRootDirectory).isDirectory()).toBe(true);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  it.each(["grant", "workspace", "job-pin", "workspace-pin", "pin-ancestor", "dependency", "ancestor"])(
+    "rejects opaque deleted %s backing before effects", kind => {
+      const f = captured(), observed = observingHost();
+      const point = kind === "grant" ? f.spec.request.jobRootDir : kind === "workspace" ? f.spec.request.workspacePath :
+        kind === "job-pin" ? join(f.directory, "pins/job") : kind === "workspace-pin" ? join(f.directory, "pins/workspace") :
+        kind === "pin-ancestor" ? join(f.directory, "pins") : kind === "dependency" ? "/usr" : "/";
+      observed.transform(table => table.split("\n").filter(line => line.split(" ")[0] === "900" || line.split(" ")[4] !== point).join("\n"));
+      observed.extraMounts.push(deletedMount(point));
+      // Rejection must happen before join() can erase the kernel marker, even
+      // for a pin alias whose ordinary canonical ROOT is intentionally allowed.
+      try { prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter); throw new Error("TEST expected denial"); }
+      catch (error) { expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.Backing); }
+      expectNoRootEffects(f, observed);
+    });
+  it.each(["dependency-child", "pin-child", "grant-child", "skeleton"])("retains opaque deleted %s vetoes before effects", kind => {
+    const f = captured(), observed = observingHost();
+    const point = kind === "dependency-child" ? "/usr/bin/TEST-deleted" : kind === "pin-child" ? join(f.directory, "pins/job/TEST-deleted") :
+      kind === "grant-child" ? join(f.spec.request.jobRootDir, "TEST-deleted") : join(f.directory, "provider-roots", unit, "root/TEST-deleted");
+    observed.extraMounts.push(deletedMount(point));
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+  });
+  it.each([
+    ["relative//deleted", "ext4"], ["//deleted", "ext4"], ["///deleted", "ext4"],
+    ["/jobs/TEST-foreign///deleted", "ext4"], ["/jobs/../TEST-foreign//deleted", "ext4"],
+    ["/jobs/./TEST-foreign//deleted", "ext4"], ["/jobs//TEST-foreign//deleted", "ext4"],
+    ["/jobs/TEST-foreign//deleted/child", "ext4"], ["/jobs/TEST-foreign//deleted//deleted", "ext4"],
+    ["/jobs/TEST\\000foreign//deleted", "ext4"], ["/jobs/TEST\\041foreign//deleted", "ext4"],
+    ["/jobs/TEST\u0000foreign//deleted", "ext4"], ["/jobs/TEST\tforeign//deleted", "ext4"],
+    ["/jobs/TEST-foreign//deleted", "nsfs"], ["/jobs/TEST-foreign//deleted", "tmpfs"],
+    ["net:[4026531840]//deleted", "ext4"],
+  ])("rejects malformed or unsupported deleted ROOT %s (%s)", (root, filesystem) => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(deletedMount("/jobs/TEST-foreign/home/cache", root, filesystem));
+    try { prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter); throw new Error("TEST expected denial"); }
+    catch (error) { expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.MountTable); }
+    expectNoRootEffects(f, observed);
+  });
+  it.each(["dependency", "grant-child", "skeleton"])("denies a newly relevant retained deleted %s without new effects", kind => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(deletedMount("/jobs/TEST-foreign/home/cache"));
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter), effects = [...observed.effects];
+    assertResearchProviderRoot(plan, f.spec, unit, f.home);
+    const point = kind === "dependency" ? "/usr" : kind === "grant-child" ? join(f.spec.request.jobRootDir, "TEST-deleted") : plan.fixedRootDirectory;
+    observed.extraMounts[0] = deletedMount(point);
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).toThrow("hosted_research_launch_denied");
+    expect(observed.effects).toEqual(effects); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  // Regression: unrelated native nsfs handles must not prevent preparation;
+  // removing the rows instead would lose descendant and revalidation vetoes.
+  it("accepts unrelated native namespace handles while retaining an assertable root", () => {
+    const f = captured(), observed = observingHost();
+    for (const [index, type] of ["cgroup", "ipc", "mnt", "net", "pid", "time", "user", "uts"].entries()) {
+      observed.extraMounts.push(namespaceMount(`/run/docker/netns/TEST-${type}`, `${type}:[${4026531840 + index}]`).replace(/^900 /, `${900 + index} `));
+    }
+    observed.extraMounts.push(namespaceMount("/run/docker/netns/TEST-upper-bound", "net:[4294967295]", "0:1048575").replace(/^900 /, "908 "));
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    assertResearchProviderRoot(plan, f.spec, unit, f.home);
+    expect(plan.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite).map(bind => bind.target))
+      .toEqual([f.spec.request.jobRootDir, f.spec.request.workspacePath]);
+    expect(fs.lstatSync(plan.fixedRootDirectory).isDirectory()).toBe(true);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  it.each(["grant", "workspace", "job-pin", "workspace-pin", "dependency", "ancestor"])(
+    "rejects namespace-handle %s backing before effects", kind => {
+      const f = captured(), observed = observingHost();
+      const point = kind === "grant" ? f.spec.request.jobRootDir : kind === "workspace" ? f.spec.request.workspacePath :
+        kind === "job-pin" ? join(f.directory, "pins/job") : kind === "workspace-pin" ? join(f.directory, "pins/workspace") :
+        kind === "dependency" ? "/usr" : "/";
+      observed.transform(table => table.split("\n").filter(line => line.split(" ")[0] === "900" || line.split(" ")[4] !== point).join("\n"));
+      observed.extraMounts.push(namespaceMount(point));
+      // The row must reach backing(), which rejects it before path joining,
+      // irrespective of the fixture's real leaf device/inode observations.
+      try { prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter); throw new Error("TEST expected denial"); }
+      catch (error) { expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.Backing); }
+      expectNoRootEffects(f, observed);
+    });
+  it.each(["dependency-child", "pin-child", "grant-child", "skeleton"])("retains namespace %s vetoes before effects", kind => {
+    const f = captured(), observed = observingHost();
+    const point = kind === "dependency-child" ? "/usr/TEST-namespace" : kind === "pin-child" ? join(f.directory, "pins/job/TEST-namespace") :
+      kind === "grant-child" ? join(f.spec.request.jobRootDir, "TEST-namespace") : join(f.directory, "provider-roots", unit, "root/TEST-namespace");
+    observed.extraMounts.push(namespaceMount(point));
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+  });
+  it.each([
+    ["net:[4026531840]", "0:4", "ext4", "nsfs"], ["net:[4026531840]", "0:4", "nsfs", "/dev/TEST"],
+    ["net:[4026531840]", "8:1", "nsfs", "nsfs"], ["net:[4026531840]", "0:0", "nsfs", "nsfs"],
+    ["net:[4026531840]", "0:1048576", "nsfs", "nsfs"], ["net:[4026531840]", "0:04", "nsfs", "nsfs"],
+    ["unknown:[4026531840]", "0:4", "nsfs", "nsfs"], ["pid_for_children:[4026531840]", "0:4", "nsfs", "nsfs"],
+    ["net:[0]", "0:4", "nsfs", "nsfs"], ["net:[04026531840]", "0:4", "nsfs", "nsfs"],
+    ["net:[4294967296]", "0:4", "nsfs", "nsfs"], ["net:[4026531840]/child", "0:4", "nsfs", "nsfs"],
+    ["net:[-1]", "0:4", "nsfs", "nsfs"], ["relative/root", "0:4", "nsfs", "nsfs"],
+  ])("rejects malformed or spoofed namespace ROOT %s (%s %s %s)", (root, device, filesystem, source) => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(namespaceMount("/run/docker/netns/TEST-unrelated", root, device, filesystem, source));
+    try { prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter); throw new Error("TEST expected denial"); }
+    catch (error) { expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.MountTable); }
+    expectNoRootEffects(f, observed);
+  });
+  it.each(["dependency", "grant-child", "skeleton"])("denies a newly relevant retained namespace %s without new effects", kind => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(namespaceMount("/run/docker/netns/TEST-unrelated"));
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter), effects = [...observed.effects];
+    assertResearchProviderRoot(plan, f.spec, unit, f.home);
+    const point = kind === "dependency" ? "/usr" : kind === "grant-child" ? join(f.spec.request.jobRootDir, "TEST-namespace") : plan.fixedRootDirectory;
+    observed.extraMounts[0] = namespaceMount(point);
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).toThrow("hosted_research_launch_denied");
+    expect(observed.effects).toEqual(effects); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
   // Regression: an admitted writable equal, child or ancestor path would make
   // an immutable dependency writable or hide it, before systemd ordering helps.
