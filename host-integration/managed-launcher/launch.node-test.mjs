@@ -26,6 +26,7 @@ test('job and provider mask journal IPC without replacing provider pipes', async
 });
 test('explicit job builds fixed confinement and preserves bounded limits and ownership', async () => {
   const invocation = await build(job);
+  assert.equal(invocation.command, '/usr/bin/systemd-run');
   assert.equal(invocation.args.includes('--user'), false);
   for (const property of ['ProtectSystem=strict', 'RequiresMountsFor=/TEST', 'NoNewPrivileges=yes', 'MemorySwapMax=0', 'LimitCORE=0',
     `CapabilityBoundingSet=${bootstrapCaps}`, 'AmbientCapabilities=', 'PrivateDevices=yes', `InaccessiblePaths=${socketFence}`, 'MemoryMax=256M', 'RuntimeMaxSec=90']) {

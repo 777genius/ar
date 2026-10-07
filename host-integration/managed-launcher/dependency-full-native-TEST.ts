@@ -1,3 +1,4 @@
+import { managedSystemdRunExecutable } from "./launch.mjs";
 /** One exceptional ROOT TEST profile. No ordinary profile or caller may select
  * capabilities, roots or commands. Protected reviews are independently issued. */
 import { createHash } from "node:crypto";
@@ -85,7 +86,7 @@ function acquire(context:RootContext=RootContext.Launcher){
     const modules=fullData(r.installedModules,["manager","contract","endpoint","storagePolicy","profiles","payloadGuard"]);
     for(const [path,key] of [["host-jobs/manager.mjs","manager"],["host-jobs/contract.mjs","contract"],["host-jobs/endpoint.mjs","endpoint"],["host-jobs/storage-policy.mjs","storagePolicy"],["managed-launcher/profiles.mjs","profiles"],["managed-launcher/payload-guard.mjs","payloadGuard"]] as const)pins.publicFile(integration+"/"+path,requireDigest(modules[key]));
     const tools=fullData(r.hostTools,["git","systemctl","systemdRun"]);
-    for(const [path,key] of [["/usr/bin/git","git"],["/usr/bin/systemctl","systemctl"],["/usr/bin/systemd-run","systemdRun"]] as const)pins.publicFile(path,requireDigest(tools[key]));
+    for(const [path,key] of [["/usr/bin/git","git"],["/usr/bin/systemctl","systemctl"],[managedSystemdRunExecutable,"systemdRun"]] as const)pins.publicFile(path,requireDigest(tools[key]));
     const systemdVersion=spawnSync("/usr/bin/systemctl",["--version"],{env:{PATH:"/usr/bin:/bin",LANG:"C"},encoding:"utf8",timeout:5000,maxBuffer:4096});
     check(!systemdVersion.error && systemdVersion.status===0 && systemdVersion.signal===null && systemdVersion.stdout.split("\n")[0]===r.systemdVersion);
     pins.publicFile(node,requireDigest(r.nodeSha256));pins.hold(node,false,0o755);pins.publicFile(integration+"/managed-launcher/launch.mjs",requireDigest(r.launcherSha256));
@@ -163,14 +164,14 @@ export function fullDataArray(value:unknown):readonly [string,string]{
 }
 const erasedEnvironment=["NODE_OPTIONS","NODE_PATH","LD_PRELOAD","LD_LIBRARY_PATH","LD_AUDIT","LD_PROFILE","OPENAI_API_KEY","ANTHROPIC_API_KEY","CODEX_HOME"].join(" ");
 const parentCapabilities="CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_KILL CAP_SETGID CAP_SETUID CAP_SETPCAP CAP_SYS_CHROOT CAP_SYS_PTRACE CAP_SYS_ADMIN CAP_MKNOD CAP_AUDIT_WRITE CAP_SETFCAP";
-export function fullNativeInvocation(request:unknown){
+export function fullNativeArguments(request:unknown){
   const custody=retainFullNativeLaunch(request);try{
     const properties=["Slice=subscription-runtime-hosted.slice","KillMode=control-group","SendSIGKILL=yes","Delegate=no","Restart=no","RemainAfterExit=no","ProtectSystem=strict","NoNewPrivileges=yes","MemorySwapMax=0","LimitCORE=0","AmbientCapabilities=","PassEnvironment=","UnsetEnvironment="+erasedEnvironment,"CapabilityBoundingSet="+parentCapabilities,
       "CPUQuota=100%","CPUQuotaPeriodSec=100ms","MemoryMax=2G","TasksMax=128","RuntimeMaxSec=1800","TimeoutStopSec=180","StandardOutput=null","StandardError=null",
       "ReadWritePaths=/var/lib/subscription-runtime-os-TEST /var/lib/subscription-runtime-full-TEST-output /run/TEST-real-codex-public-download /run/TEST-real-codex-public-input /run/systemd/system /srv/workers/jobs/"+fullNativeJob,
       "BindReadOnlyPaths="+custody.source+":"+custody.source+":norbind","BindReadOnlyPaths=/run/TEST-full-outer-review:/run/TEST-full-outer-review:norbind","BindReadOnlyPaths=/run/TEST-real-codex-public-review:/run/TEST-real-codex-public-review:norbind","BindReadOnlyPaths="+reviewRoot+":"+reviewRoot+":norbind","BindReadOnlyPaths=/srv/worker-state/account-pools/live-codex-auth/account-u:/srv/worker-state/account-pools/live-codex-auth/account-u:norbind"];
-    const invocation=Object.freeze({command:"/usr/bin/systemd-run",args:Object.freeze(["--description=subscription-job:"+custody.fingerprint,"--unit="+fullNativeUnit,"--working-directory="+custody.source,"--service-type=exec","--expand-environment=no","--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID="+fullNativeJob,"--setenv=TEST_SOURCE_SHA="+custody.sourceSha,"--setenv=HOME=/srv/workers/jobs/"+fullNativeJob,"--setenv=TMPDIR=/srv/workers/jobs/"+fullNativeJob+"/tmp","--setenv=PATH=/usr/bin:/bin","--setenv=LANG=C.UTF-8",...properties.map(p=>"--property="+p),"--",custody.node,custody.parent])});
-    custody.revalidate();return {invocation,custody};
+    const args=Object.freeze(["--description=subscription-job:"+custody.fingerprint,"--unit="+fullNativeUnit,"--working-directory="+custody.source,"--service-type=exec","--expand-environment=no","--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID="+fullNativeJob,"--setenv=TEST_SOURCE_SHA="+custody.sourceSha,"--setenv=HOME=/srv/workers/jobs/"+fullNativeJob,"--setenv=TMPDIR=/srv/workers/jobs/"+fullNativeJob+"/tmp","--setenv=PATH=/usr/bin:/bin","--setenv=LANG=C.UTF-8",...properties.map(p=>"--property="+p),"--",custody.node,custody.parent]);
+    custody.revalidate();return {args,custody};
   }catch{custody.close();refuse();}
 }
 /** SAME original protected manager + actual service reader, no admission DTO. */

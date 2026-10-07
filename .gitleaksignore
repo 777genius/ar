@@ -1,0 +1,4 @@
+# One immutable historical finding: fixed PUBLIC systemd environment variable names.
+# No values or credentials occur on this line; future commits and working-tree findings remain scanned.
+# The identical runtime name list was source-corrected in ef2aee7c1ee560a0bd8a1633298f7cca55f9244e.
+926f070e0e751db79c0ffed17f90277a1a3e0d95:host-integration/managed-launcher/dependency-full-native-TEST.ts:generic-api-key:167

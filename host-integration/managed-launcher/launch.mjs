@@ -9,6 +9,7 @@ import { PAYLOAD_GUARD_PATH } from './payload-guard.mjs';
 import { requireTrustedExecutable, profileProperties } from './profiles.mjs';
 
 export const MANAGED_LAUNCHER_PATH = '/opt/subscription-runtime/managed-launcher/launch.mjs';
+export const managedSystemdRunExecutable = '/usr/bin/systemd-run';
 const denied = () => { throw new Error('managed launcher: unsupported invocation'); };
 const fdUnsetEnvironment = 'NODE_OPTIONS NODE_PATH NODE_V8_COVERAGE NODE_EXTRA_CA_CERTS NODE_REDIRECT_WARNINGS OPENSSL_CONF OPENSSL_MODULES LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES';
 function governedFdProfile() {
@@ -109,7 +110,7 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
     'NoNewPrivileges=yes', 'MemorySwapMax=0', 'LimitCORE=0',
     ...readonlyPaths.map(path => `BindReadOnlyPaths=${path}:${path}:norbind`),
   ];
-  return { command: '/usr/bin/systemd-run', args: [
+  return { command: managedSystemdRunExecutable, args: [
     ...(operation === 'job' ? [`--description=subscription-job:${request.fingerprint}`] : ['--quiet', '--wait', '--pipe', '--collect']),
     `--unit=${unit}`, `--working-directory=${cwd}`, '--service-type=exec', '--expand-environment=no',
     `--setenv=HOME=${policy.home}`, `--setenv=TMPDIR=${policy.tmp}`,
