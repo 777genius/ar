@@ -61,8 +61,8 @@ export async function runCurrentReadonlyEntry(roots:CurrentColdHotRoots) {
       assert(isDependencyCustodyObject(p.row,"creatorId,startId,state,unit"));assert.equal(p.row.state,HostedCustodyReservationState.Terminal);
       assert(typeof p.row.startId==="string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(p.row.startId));
       assert(encode(p.attempt).equals(encode(v.attempt)));assert(ready.reservations.some(row=>encode(row).equals(encode(p.row))));
-      for(const key of ["birth","completion"] as const){const reference=p[key];assert(isDependencyProtectedReference(reference));
-        const path=`${root}/dependency-managed-provider-${key==="birth"?"starts":"completions"}/${p.row.startId}.json`;
+      for(const key of ["birth","completion"] as const){const reference:unknown=p[key];assert(isDependencyProtectedReference(reference));
+        const path:string=`${root}/dependency-managed-provider-${key==="birth"?"starts":"completions"}/${p.row.startId}.json`;
         assert.equal(reference.path,path);assert(sameDependencyProtectedReference(pinReferenceFile(path,16384).reference,reference));}
       assert(isDependencyProtectedReference(p.birth) && isDependencyProtectedReference(p.completion));
       return Object.freeze({startId:p.row.startId,completionSha256:p.completion.sha256,relationSha256:p.birth.sha256});
