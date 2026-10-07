@@ -60,6 +60,8 @@ jobs:
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-real-codex-emit.json
       - name: Emit finite future FULL TEST caller without auth or activation
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-full-emit.json
+      - name: Strict emit reviewed eviction and restore TEST closure without effects
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-evict-restore-emit.json
       - name: Compile finite uninstalled ROOT profile and check refusal DATA only
         run: |
           node node_modules/typescript/bin/tsc -p host-integration/managed-launcher/tsconfig.dependency-full-native-test.json
@@ -85,9 +87,13 @@ jobs:
             scripts/dependency-retention-os-test/current-full-entry.js
             scripts/dependency-retention-os-test/current-full-env.js
             scripts/dependency-retention-os-test/current-full-flow.js
+            scripts/dependency-retention-os-test/current-full-evict-restore-flow.js
+            scripts/dependency-retention-os-test/current-evict-restore-readback.js
+            scripts/dependency-retention-os-test/current-evict-restore-sentinels.js
             scripts/dependency-retention-os-test/current-full-guest.js
             scripts/dependency-retention-os-test/current-full-outer-input.js
             scripts/dependency-retention-os-test/current-full-r-entry.js
+            scripts/dependency-retention-os-test/current-full-r-continuation.js
             scripts/dependency-retention-os-test/current-full-supervisor.js
             scripts/dependency-retention-os-test/current-full-warm-edit.js
             scripts/dependency-retention-os-test/current-real-codex-input.js
@@ -114,10 +120,15 @@ jobs:
             scripts/dependency-retention-os-test/current-full-entry.ts
             scripts/dependency-retention-os-test/current-full-env.ts
             scripts/dependency-retention-os-test/current-full-flow.ts
+            scripts/dependency-retention-os-test/current-full-evict-restore-flow.ts
+            scripts/dependency-retention-os-test/current-evict-restore-readback.ts
+            scripts/dependency-retention-os-test/current-evict-restore-sentinels.ts
             scripts/dependency-retention-os-test/current-full-guest.ts
             scripts/dependency-retention-os-test/current-full-outer-input.ts
             scripts/dependency-retention-os-test/current-full-outer.ts
             scripts/dependency-retention-os-test/current-full-r-entry.ts
+            scripts/dependency-retention-os-test/current-full-r-continuation.ts
+            scripts/dependency-retention-os-test/tsconfig.current-evict-restore-emit.json
             scripts/dependency-retention-os-test/current-full-supervisor.ts
             scripts/dependency-retention-os-test/current-full-warm-edit.ts
             scripts/dependency-retention-os-test/current-real-codex-input.ts

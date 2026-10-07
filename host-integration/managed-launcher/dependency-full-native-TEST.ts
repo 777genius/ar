@@ -3,7 +3,7 @@ import { managedSystemdRunExecutable } from "./launch.mjs";
  * capabilities, roots or commands. Protected reviews are independently issued. */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { constants, closeSync, fsyncSync, writeFileSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, statfsSync, type Stats } from "node:fs";
+import { constants, closeSync, fsyncSync, writeFileSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, statfsSync, type Stats } from "node:fs";
 import { basename, dirname } from "node:path";
 import { types } from "node:util";
 export const fullNativeJob="TEST-dependency-full-native-20261007-r1";
@@ -56,14 +56,33 @@ function initialRoot(context:RootContext){
   check(/^NSpid:\s+1$/m.test(readFileSync("/proc/1/status","utf8")));
 }
 const identity=(s:Stats)=>[s.dev,s.ino,s.uid,s.gid,s.mode,...(s.isDirectory()?[]:[s.nlink,s.size,s.mtimeMs,s.ctimeMs])].map(String).join(":");
+const sharedAncestor="/srv/worker-state";
+function ancestorMountId(fd:number):string {
+  const raw=readFileSync(`/proc/self/fdinfo/${fd}`,"utf8");check(Buffer.byteLength(raw)<=4096);
+  const rows=[...raw.matchAll(/^mnt_id:\s+([1-9][0-9]{0,19})$/gm)],id=rows[0]?.[1];check(rows.length===1 && id);return id;
+}
+/** One measured existing directory, never an alternate owner policy for roots/leaves. */
+function assertSharedAncestor(fd:number,parent:number) {
+  const held=fstatSync(fd),named=lstatSync(sharedAncestor),srv=fstatSync(parent);
+  check(held.isDirectory() && held.uid===0 && held.gid===987 && (held.mode&0o7777)===0o751
+    && !(held.mode&0o022) && held.dev===2306 && held.ino===13631491 && held.dev===srv.dev
+    && !named.isSymbolicLink() && identity(named)===identity(held) && realpathSync(`/proc/self/fd/${fd}`)===sharedAncestor);
+  const fresh=openSync(sharedAncestor,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK|constants.O_DIRECTORY);
+  try{check(identity(fstatSync(fresh))===identity(held) && ancestorMountId(fresh)===ancestorMountId(fd)
+    && ancestorMountId(fd)===ancestorMountId(parent));}finally{closeSync(fresh);}
+}
 class Pins {
   private readonly held=new Map<string,{fd:number;identity:string;sha256:string|null}>();private closed=false;private readonly namespaces:number[]=[];
   mountNamespace(){const fd=openSync("/proc/self/ns/mnt",constants.O_RDONLY);this.namespaces.push(fd);return fd;}
   hold(path:string,directory=false,mode?:number):number{
-    check(!this.closed);const found=this.held.get(path);if(found){if(mode!==undefined)check((fstatSync(found.fd).mode&0o7777)===mode);return found.fd;}
+    check(!this.closed);const found=this.held.get(path);if(found){
+      if(path===sharedAncestor){check(directory);const parent=this.held.get("/srv");check(parent);assertSharedAncestor(found.fd,parent.fd);}
+      if(mode!==undefined)check((fstatSync(found.fd).mode&0o7777)===mode);return found.fd;}
     const parent=path==="/"?null:this.hold(dirname(path),true);
     const fd=openSync(parent===null?"/":`/proc/self/fd/${parent}/${basename(path)}`,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK|(directory?constants.O_DIRECTORY:0));
-    try{const s=fstatSync(fd);check(s.uid===0 && s.gid===0 && !(s.mode&0o022) && (directory?s.isDirectory():s.isFile() && s.nlink===1));
+    try{const s=fstatSync(fd),shared=directory && path===sharedAncestor;
+      if(shared){check(parent!==null);assertSharedAncestor(fd,parent);}
+      check(s.uid===0 && (s.gid===0 || shared) && !(s.mode&0o022) && (directory?s.isDirectory():s.isFile() && s.nlink===1));
       if(mode!==undefined)check((s.mode&0o7777)===mode);
       check(directory || s.size<=128*1024*1024);
       this.held.set(path,{fd,identity:identity(s),sha256:directory?null:hash(readFd(fd))});return fd;
@@ -71,7 +90,9 @@ class Pins {
   }
   publicFile(path:string,expected:string){check(digest(expected));const fd=this.hold(path);check(this.held.get(path)?.sha256===expected);return fd;}
   json(path:string,maximum:number){const fd=this.hold(path,false,0o600);check(fstatSync(fd).size<=maximum);const bytes=readFd(fd),v:unknown=JSON.parse(bytes.toString("utf8"));check(bytes.equals(Buffer.from(JSON.stringify(v)+"\n")));return v;}
-  validate(){check(!this.closed);for(const [path,e] of this.held){const named=lstatSync(path),held=fstatSync(e.fd);check(!named.isSymbolicLink() && identity(named)===e.identity && identity(held)===e.identity);if(e.sha256)check(hash(readFd(e.fd))===e.sha256);}}
+  validate(){check(!this.closed);for(const [path,e] of this.held){const named=lstatSync(path),held=fstatSync(e.fd);check(!named.isSymbolicLink() && identity(named)===e.identity && identity(held)===e.identity);
+    if(path===sharedAncestor){const parent=this.held.get("/srv");check(parent);assertSharedAncestor(e.fd,parent.fd);}
+    if(e.sha256)check(hash(readFd(e.fd))===e.sha256);}}
   close(){if(this.closed)return;this.closed=true;for(const e of [...this.held.values()].reverse())closeSync(e.fd);this.held.clear();for(const fd of this.namespaces)closeSync(fd);this.namespaces.length=0;}
 }
 /** A catalog is independently reviewed PUBLIC installation data, not path input.

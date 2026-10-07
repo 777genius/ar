@@ -15,8 +15,8 @@ import { codexGoalStateRootDir, codexGoalWorkerControlService, codexGoalWorkerCo
 import { EntryObservationState, readCurrentEntryContentObservation } from "./current-entry-observations.js";
 import { assertRootScope, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
 import { currentFullEnvironment } from "./current-full-env.js";
-export enum FullEntryKind { Cold = "cold", Hot = "hot" }
-export enum FullRequestPhase { CurrentHot = "current_hot", ReadonlyFirst = "readonly_first", ReadonlyHot = "readonly_hot" }
+export enum FullEntryKind { Cold = "cold", Hot = "hot", Restored = "restored" }
+export enum FullRequestPhase { CurrentHot = "current_hot", ReadonlyFirst = "readonly_first", ReadonlyHot = "readonly_hot", ColdRestore = "cold_restore" }
 /** A real registered job defines the inbox/state/workspace. Guidance requests
  * genuinely new disposable work; neither a journal deletion nor a run hook. */
 export async function requestCurrentNextWork(roots: CurrentColdHotRoots, phase: FullRequestPhase) {
@@ -49,25 +49,30 @@ export async function runCurrentOrdinaryEntry(roots: CurrentColdHotRoots, kind: 
   const content = readCurrentEntryContentObservation(roots.candidateJobId, result);
   assert.equal(content.state, EntryObservationState.Measured); assert(content.state === EntryObservationState.Measured);
   assert.equal(content.startId, native.startId); assert.equal(content.invocationId, native.invocationId);
-  assert.equal(content.attempted, kind === FullEntryKind.Cold ? 3 : 0);
-  assert.equal(content.completed, kind === FullEntryKind.Cold ? 3 : 0);
-  assert.equal(content.finalRoot, kind === FullEntryKind.Cold ? 1 : 0);
-  const providers = withHostedActivationFence(fence => {
+  const cold = kind === FullEntryKind.Cold || kind === FullEntryKind.Restored;
+  assert.equal(content.attempted, cold ? 3 : 0);
+  assert.equal(content.completed, cold ? 3 : 0);
+  assert.equal(content.finalRoot, cold ? 1 : 0);
+  const final = withHostedActivationFence(fence => {
     const actual = readHostedOrdinaryReaderFinalFacts(fence, native.startId);
     assert.equal(actual.reader.startId, native.startId); assert.equal(actual.reader.unit, native.unit);
     assert.equal(actual.attempt.attemptId, content.attemptId); assert.equal(String(actual.attempt.epoch), content.epoch);
     assert(actual.providers.length > 0);
     // The original final reader already revalidates SAME native/provider/HOME/use
     // completion and drain. Export bounded public identity/digests only.
-    return actual.providers.map(provider => Object.freeze({startId:provider.member.startId,
-      completionSha256:provider.completion.sha256,relationSha256:provider.relation.sha256}));
+    return Object.freeze({preclaim:actual.preclaim,providers:actual.providers.map(provider => Object.freeze({startId:provider.member.startId,
+      completionSha256:provider.completion.sha256,relationSha256:provider.relation.sha256}))});
   });
   return Object.freeze({ result, observation: Object.freeze({kind,startId:native.startId,attemptId:content.attemptId,
-    invocationId:native.invocationId,scopeSha256:content.scopeSha256,sourceClosedSha256:content.sourceClosedSha256,
-    attempted:content.attempted,completed:content.completed,finalRoot:content.finalRoot,providers:Object.freeze(providers)}) });
+    invocationId:native.invocationId,epoch:content.epoch,scopeSha256:content.scopeSha256,sourceClosedSha256:content.sourceClosedSha256,
+    attempted:content.attempted,completed:content.completed,finalRoot:content.finalRoot,
+    preclaim:final.preclaim,providers:Object.freeze(final.providers)}) });
 }
-/** Diagnostic distinctness only, not lifecycle or model availability authority. */
-export function assertDistinctCurrentEntries(entries: readonly Awaited<ReturnType<typeof runCurrentOrdinaryEntry>>[]) {
+/** Common C/R identity facts only. Actual proof/epoch contracts remain with
+ * each original reader; this diagnostic neither consumes nor grants them. */
+type CurrentEntryIdentity = Readonly<{observation:Readonly<{startId:string;attemptId:string;invocationId:string;
+  providers:readonly Readonly<{startId:string}>[]}>}>;
+export function assertDistinctCurrentEntries(entries: readonly CurrentEntryIdentity[]) {
   assert(entries.length >= 2 && entries.length <= 8);
   for (const select of [(entry: (typeof entries)[number]) => entry.observation.startId,
     (entry: (typeof entries)[number]) => entry.observation.attemptId,

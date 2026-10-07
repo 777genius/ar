@@ -4,16 +4,29 @@ import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 const BASE='/srv/workers/public-intake/TEST-dependency-full-native-20261007-r1';
 const UNIT='subscription-runtime-installer-73000000-0000-4000-8000-9ca302fabd07.service';
+function absentTree(path:string):boolean {
+ const flags=fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW,parents:number[]=[];
+ let parent=fs.openSync('/',flags);parents.push(parent);const parts=path.slice(1).split('/');
+ try{for(let i=0;i<parts.length;i++){const leaf=`/proc/self/fd/${parent}/${parts[i]!}`;let s:fs.BigIntStats;
+  try{s=fs.lstatSync(leaf,{bigint:true});}catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')return true;throw e;}
+  if(i===parts.length-1)return false;
+  parent=fs.openSync(leaf,flags);parents.push(parent);const held=fs.fstatSync(parent,{bigint:true});
+  if(!held.isDirectory()||held.uid!==0n||held.gid!==0n||(held.mode&0o022n)!==0n||held.dev!==s.dev||held.ino!==s.ino)throw new Error('not-prepared ancestry HOLD');
+  const canonical='/'+parts.slice(0,i+1).join('/');
+  if(canonical==='/srv/workers'&&(held.dev!==66305n||held.ino!==2n||(held.mode&0o7777n)!==0o755n))throw new Error('not-prepared scratch identity HOLD');
+ }return false;}finally{for(const fd of parents.reverse())fs.closeSync(fd);}
+}
 function read(path:string,max:number):Buffer {
  const parents:number[]=[];let parent=fs.openSync('/',fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW);parents.push(parent);
- const parts=path.slice(1).split('/');
+ const parts=path.slice(1).split('/');let fd:number|undefined;
+ try{
  for(const part of parts.slice(0,-1)){parent=fs.openSync(`/proc/self/fd/${parent}/${part}`,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW);
   parents.push(parent);const s=fs.fstatSync(parent,{bigint:true});if(s.uid!==0n||s.gid!==0n||(s.mode&0o022n)!==0n)throw new Error('recovery ancestry HOLD');}
- const leaf=`/proc/self/fd/${parent}/${parts.at(-1)!}`,fd=fs.openSync(leaf,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
- try{const s=fs.fstatSync(fd,{bigint:true}),n=fs.lstatSync(path,{bigint:true});
+ const leaf=`/proc/self/fd/${parent}/${parts.at(-1)!}`;fd=fs.openSync(leaf,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+ const s=fs.fstatSync(fd,{bigint:true}),n=fs.lstatSync(path,{bigint:true});
   if(!s.isFile()||s.nlink!==1n||s.uid!==0n||s.gid!==0n||(s.mode&0o7777n)!==0o400n||s.size>BigInt(max)
    ||s.dev!==66305n||s.dev!==n.dev||s.ino!==n.ino)throw new Error('fixed PUBLIC recovery custody HOLD');return fs.readFileSync(fd);
- }finally{fs.closeSync(fd);for(const p of parents.reverse())fs.closeSync(p);}
+ }finally{if(fd!==undefined)fs.closeSync(fd);for(const p of parents.reverse())fs.closeSync(p);}
 }
 if(fs.readFileSync('/etc/machine-id','utf8').trim()!=='d856d40da5ad4e23b4f67773e5942842'
  ||fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim()!=='f12bc43a-9252-42d4-919d-85b846a176a8')throw new Error('recovery host/boot HOLD');
@@ -21,6 +34,13 @@ const status=spawnSync('/usr/bin/systemctl',['show',UNIT,'--property=Id,LoadStat
  {shell:false,cwd:'/',encoding:'utf8',timeout:5000,maxBuffer:8192,env:{PATH:'/usr/bin:/bin',LANG:'C',LC_ALL:'C',HOME:BASE,TMPDIR:`${BASE}/bootstrap-tmp`},stdio:['ignore','pipe','pipe']});
 if(status.error||status.signal||status.status!==0)throw new Error('same-unit status uncertain; preserve; never resubmit');
 const facts=Object.fromEntries(status.stdout.trimEnd().split('\n').map(s=>{const p=s.indexOf('=');if(p<1)throw new Error('unit properties HOLD');return [s.slice(0,p),s.slice(p+1)];}));
+const notPrepared=facts.Id===UNIT&&facts.LoadState==='not-found'&&facts.ActiveState==='inactive'&&facts.SubState==='dead'&&facts.MainPID==='0'
+ &&['/srv/workers/public-intake','/srv/workers/jobs/TEST-dependency-full-native-20261007-r1',
+  '/root/.local/state/subscription-runtime/host-jobs/subscription-job-23c9a46219542abcbf6025cdbf5c4b1f400e653c9d7da5c0aee721ef7148b2a3.service.json',
+  `/run/systemd/transient/${UNIT}`,`/run/systemd/system/${UNIT}`,`/etc/systemd/system/${UNIT}`].every(absentTree);
+if(notPrepared){process.stdout.write(JSON.stringify({kind:'PUBLIC_NOT_PREPARED_OBSERVED',unit:UNIT,facts,physicalIntakeJobLedgerAbsent:true,
+ newAttemptAuthorization:'NOT_ISSUED',retry:'HOLD',fullEightAcceptance:'UNPROVEN'})+'\n');process.exit(0);}
+try {
 const owner=read(`${BASE}/control/intake-owner-receipt.json`,8192),pin=read(`${BASE}/control/intake-owner-receipt.sha256`,65);
 const digest=createHash('sha256').update(owner).digest('hex');if(!pin.equals(Buffer.from(`${digest}\n`)))throw new Error('owner digest HOLD');
 const submitted:unknown=JSON.parse(read(`${BASE}/results/PUBLIC-submit-once.json`,128*1024).toString('utf8'));
@@ -36,3 +56,5 @@ const start=journal[0],success=terminal&&facts.LoadState==='loaded'&&facts.Id===
  &&start.invocationId===facts.InvocationID&&journal.at(-1)?.kind==='PUBLIC_DATA_ONLY';
 process.stdout.write(JSON.stringify({kind:'FIXED_PUBLIC_STATUS',unit:UNIT,ownerReceiptSha256:digest,facts,journalKinds:journal.map(r=>r.kind),
  terminal,publicStageObservedSuccess:success,retry:'HOLD',fullEightAcceptance:'UNPROVEN'})+'\n');
+}catch{process.stdout.write(JSON.stringify({kind:'PUBLIC_STATUS_PARTIAL_OR_UNCERTAIN',unit:UNIT,facts,
+ reason:'PUBLIC_RECOVERY_READ_OR_VALIDATION_FAILED',retry:'HOLD',newAttemptAuthorization:'NOT_ISSUED',fullEightAcceptance:'UNPROVEN'})+'\n');process.exitCode=1;}

@@ -1,7 +1,7 @@
 /** TEST-only opaque seed attachment. Never reads, hashes, copies or prints credentials. */
 import assert from "node:assert/strict";
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-readonly-authority.js";
 import { assertCurrentClosedEntry } from "./current-closed-entry.js";
 import { withHostedActivationFence } from "../../dist/provider-codex/app-server/adapters/hosted-process-activation.js";
@@ -22,12 +22,47 @@ function fileIdentity(path: string) {
     return `${s.dev}:${s.ino}:${s.size}:${s.ctimeNs}:${s.mtimeNs}`;
   } finally { closeSync(fd); }
 }
-function safeAncestry(path: string): void {
-  for (let p = dirname(path);; p = dirname(p)) {
-    const s = lstatSync(p); assert(s.isDirectory() && !s.isSymbolicLink() && s.uid === 0 && s.gid === 0 && !(s.mode & 0o022));
-    if (p === "/") break;
+function ancestorMountId(fd: number): string {
+  const raw = readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"); assert(Buffer.byteLength(raw) <= 4096);
+  const rows = [...raw.matchAll(/^mnt_id:\s+([1-9][0-9]{0,19})$/gm)], id = rows[0]?.[1];
+  assert(rows.length === 1 && id); return id;
+}
+function safeAncestry(path: string) {
+  const held: { path: string; fd: number; identity: string; mountId: string; parent: number | null }[] = [];
+  const identity = (fd: number) => { const s = fstatSync(fd); return [s.dev, s.ino, s.uid, s.gid, s.mode].join(":"); };
+  let closed = false;
+  const close = () => { if (closed) return; closed = true; for (const e of held.reverse()) closeSync(e.fd); };
+  function validate() {
+    assert(!closed);
+    for (const e of held) {
+      const fresh = openSync(e.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | constants.O_DIRECTORY);
+      try {
+        assert.equal(identity(fresh), e.identity); assert.equal(identity(e.fd), e.identity);
+        assert.equal(ancestorMountId(fresh), e.mountId); assert.equal(ancestorMountId(e.fd), e.mountId);
+        assert.equal(realpathSync(`/proc/self/fd/${e.fd}`), e.path);
+        if (e.path === "/srv/worker-state") { assert(e.parent !== null); assert.equal(e.mountId, ancestorMountId(e.parent)); }
+      } finally { closeSync(fresh); }
+    }
+    assert.equal(realpathSync(path), path);
   }
-  assert.equal(realpathSync(path), path);
+  try {
+    const paths: string[] = []; for (let p = dirname(path);; p = dirname(p)) { paths.unshift(p); if (p === "/") break; }
+    for (const p of paths) {
+      const parent = held.at(-1)?.fd ?? null;
+      const fd = openSync(parent === null ? "/" : `/proc/self/fd/${parent}/${basename(p)}`,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | constants.O_DIRECTORY);
+      try {
+        const s = fstatSync(fd), shared = p === "/srv/worker-state";
+        assert(s.isDirectory() && s.uid === 0 && !(s.mode & 0o022));
+        if (shared) {
+          assert(parent !== null && s.gid === 987 && (s.mode & 0o7777) === 0o751 && s.dev === 2306 && s.ino === 13631491);
+          assert.equal(s.dev, fstatSync(parent).dev); assert.equal(ancestorMountId(fd), ancestorMountId(parent));
+        } else assert.equal(s.gid, 0);
+        held.push({ path: p, fd, identity: identity(fd), mountId: ancestorMountId(fd), parent });
+      } catch (error) { closeSync(fd); throw error; }
+    }
+    validate(); return { validate, close };
+  } catch (error) { close(); throw error; }
 }
 /** Called by the trusted owned-OS ROOT setup after actual runtime slot discovery.
  * The exact configured name is preserved, never account-u <-> u inferred.
@@ -35,9 +70,12 @@ function safeAncestry(path: string): void {
 export function configuredAuthNspawnBinding(accountName: string): string {
   assertReadonlyHostOperator(); assertConfiguredAccountName(accountName);
   const source = `${configuredPool}/${accountName}/auth.json`, target = `${guestSeedRoot}/${accountName}/auth.json`;
-  safeAncestry(source); fileIdentity(source);
-  // All names are closed path atoms; no shell interpolation, options or env origin.
-  return `--bind-ro=${source}:${target}`;
+  const ancestry = safeAncestry(source);
+  try {
+    fileIdentity(source); ancestry.validate();
+    // All names are closed path atoms; no shell interpolation, options or env origin.
+    return `--bind-ro=${source}:${target}`;
+  } finally { ancestry.close(); }
 }
 function mounts() {
   const bytes = readFileSync("/proc/self/mountinfo", "utf8"); assert(Buffer.byteLength(bytes) <= 1024 * 1024);
@@ -53,7 +91,9 @@ export function mountCurrentConfiguredAuth(jobRoot: string, accountName: string)
   assertReadonlyHostOperator(); assertConfiguredAccountName(accountName);
   assert(/^\/var\/lib\/subscription-runtime-host-policy\/dependency-test-jobs\/jobs\/TEST-os-[a-f0-9-]{36}$/.test(jobRoot));
   const source = `${guestSeedRoot}/${accountName}/auth.json`, target = `${jobRoot}/auth/${accountName}/auth.json`;
-  safeAncestry(source); const sourceIdentity = fileIdentity(source);
+  const ancestry = safeAncestry(source);
+  try {
+  const sourceIdentity = fileIdentity(source); ancestry.validate();
   const initial = mounts().filter(row => row.target === source); assert.equal(initial.length, 1); assert(initial[0]!.options.includes("ro"));
   directory(jobRoot + "/auth"); directory(jobRoot + "/auth/" + accountName);
   const fd = openSync(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
@@ -65,6 +105,7 @@ export function mountCurrentConfiguredAuth(jobRoot: string, accountName: string)
   command("/usr/bin/mount", ["-o", "remount,bind,ro,nosuid,nodev,noexec", target]);
   const attached = mounts().filter(row => row.target === target); assert.equal(attached.length, 1);
   const record = attached[0]!; assert(record.options.includes("ro") && record.options.includes("nosuid") && record.options.includes("nodev") && record.options.includes("noexec"));
+  ancestry.validate();
   assert.equal(fileIdentity(source), sourceIdentity); assert.equal(fileIdentity(target), sourceIdentity);
   let closed = false;
   return Object.freeze({
@@ -83,4 +124,5 @@ export function mountCurrentConfiguredAuth(jobRoot: string, accountName: string)
       });
     },
   });
+  } finally { ancestry.close(); }
 }

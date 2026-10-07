@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-const BASE='/Volumes/Transcend/Codex-artifacts/dependency-retention-execution/native-public-private-route-successor-78';
+const BASE='/Volumes/Transcend/Codex-artifacts/dependency-retention-execution/native-bootstrap-first-failure-diagnosis-r2-80';
 const NODE='/opt/nodejs/node-v24.21.0-linux-x64/bin/node';
 const freeze:unknown=JSON.parse(fs.readFileSync(`${BASE}/FREEZE.json`,'utf8'));
 function fact(ok:unknown,why:string):asserts ok {if(!ok)throw new Error(`PUBLIC sender HOLD: ${why}`);}
@@ -25,6 +25,7 @@ const source=sealed('bootstrap-public-stage-9ca.mts').toString('utf8');
 const roster:unknown=JSON.parse(sealed('input-roster.json').toString('utf8'));fact(Array.isArray(roster)&&roster.length===15,'fixed15 roster');
 type Input=Pin&{name:string;fd:number;ino:bigint;dev:bigint;mtime:bigint;ctime:bigint};
 const inputs:Input[]=[];
+let primaryFailure:unknown;
 function check(input:Input):void {
  const held=fs.fstatSync(input.fd,{bigint:true}),named=fs.lstatSync(input.path,{bigint:true});
  fact([held,named].every(s=>s.isFile()&&s.nlink===1n&&s.size===BigInt(input.bytes)&&s.dev===input.dev&&s.ino===input.ino
@@ -48,9 +49,13 @@ try {
  const ssh=spawn('/usr/bin/ssh',['-T','-o','BatchMode=yes','workers-fsn1-01',remote],
   {shell:false,stdio:['pipe','inherit','inherit'],timeout:600000});
  const completion=once(ssh,'close');ssh.stdin.on('error',()=>{/* close/error completion records uncertain transport */});
- try {for(const input of inputs){check(input);for await(const chunk of fs.createReadStream(input.path,{fd:input.fd,autoClose:false,start:0,highWaterMark:1024*1024})){
-   const b=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);await new Promise<void>((resolve,reject)=>ssh.stdin.write(b,error=>error?reject(error):resolve()));
+ try {const buffer=Buffer.alloc(1024*1024);for(const input of inputs){check(input);let position=0;while(position<input.bytes){
+   const n=fs.readSync(input.fd,buffer,0,Math.min(buffer.length,input.bytes-position),position);fact(n>0,'owned input short read');
+   await new Promise<void>((resolve,reject)=>ssh.stdin.write(buffer.subarray(0,n),error=>error?reject(error):resolve()));position+=n;
   }check(input);}ssh.stdin.end();const [code,signal]=await completion;
   fact(code===0&&!signal,'transport uncertain/failed; inspect same fixed unit and preserved attempt, never rerun');
  }catch(error){ssh.stdin.destroy();ssh.kill('SIGTERM');await completion.catch(()=>undefined);throw error;}
-}finally{for(const input of inputs)fs.closeSync(input.fd);}
+}catch(error){primaryFailure=error;throw error;}
+finally{const cleanupFailures:string[]=[];for(const input of inputs){try{fs.closeSync(input.fd);}catch(error){cleanupFailures.push((error as NodeJS.ErrnoException).code??'UNKNOWN');}}
+ if(cleanupFailures.length){process.stderr.write(JSON.stringify({kind:'PUBLIC_LOCAL_FD_CLEANUP_FAILED',cleanupFailures,primaryOutcomePreserved:primaryFailure!==undefined,retry:'HOLD'})+'\n');
+  if(primaryFailure===undefined)throw new Error('PUBLIC sender HOLD: owned FD cleanup failed after transport; inspect same unit, never resubmit');}}

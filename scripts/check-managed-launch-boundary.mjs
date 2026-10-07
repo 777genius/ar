@@ -15,11 +15,11 @@ const trustedDependencyProviderLauncher = 'src/provider-codex/app-server/adapter
 const trustedDependencyCommandLeaf = 'src/provider-codex/app-server/adapters/hosted-dependency-systemd-command.ts';
 const trustedDependencyCommandDeclaration = 'export const hostedDependencySystemdRunExecutable = "/usr/bin/systemd-run";\n';
 // Separate finite ROOT PUBLIC installation TCB, never a provider/job launch API.
-// Exact accepted39aa SOURCE and independent review bb1c09ce bind this one file.
+// Exact repair80 SOURCE requires independent review before publication/execution.
 // Every byte edit requires fresh review and an explicit seal update; no directory exemption.
 const trustedPublicBootstrap = 'scripts/dependency-retention-os-test/bootstrap-public-stage-9ca.mts';
-const trustedPublicBootstrapBytes = 19090;
-const trustedPublicBootstrapSha256 = 'e0512bcc9ed4897e3f089f5d4b5ccf71433819b8bbdd498cb4c800b66d6d4fb1';
+const trustedPublicBootstrapBytes = 20023;
+const trustedPublicBootstrapSha256 = '0ab57833736041a9aefa336c5f1d1221d82c061426f7f7c9f667d296035e259e';
 const excludedDirectories = new Set(['node_modules', 'dist', '.git', 'docs', 'tests', '__tests__', 'fixtures', '__fixtures__', 'coverage']);
 const sourceExtension = /\.(?:[cm]?[jt]sx?|sh|bash|py)$/;
 const testFile = /(?:\.test\.|\.spec\.|\.node-test\.|-self-test\.)/;

@@ -44,7 +44,7 @@ const protectedAbsent=[
  '/srv/worker-state/protected-storage-test/dependency-full-native-activation/public-installation.json',
  '/run/TEST-full-outer-review/input.json', '/run/TEST-real-codex-public-review/input.json',
 ];
-type Held={fd:number;path:string;directory:boolean;dev:bigint;ino:bigint;mode:number;mnt:string};
+type Held={fd:number;path:string;canonical:string;directory:boolean;dev:bigint;ino:bigint;mode:number;gid:bigint;mnt:string};
 const held:Held[]=[], immutable:{path:string;h:Held;hash:string;size:bigint;mtime:bigint;ctime:bigint}[]=[], missing:string[]=[];
 const namespaceFd=fs.openSync('/proc/self/ns/mnt',C.O_RDONLY),namespace=fs.fstatSync(namespaceFd,{bigint:true});
 function fact(ok:unknown,why:string):asserts ok {if(!ok)throw new Error(`PUBLIC bootstrap HOLD: ${why}`);}
@@ -55,13 +55,19 @@ function absent(path:string):void {
 function mount(fd:number):string {const m=/^mnt_id:\s+(\d+)$/m.exec(fs.readFileSync(`/proc/self/fdinfo/${fd}`,'utf8'))?.[1];fact(m,'FD mount');return m;}
 function check(h:Held):void {
  const fresh=fs.openSync(h.path,C.O_RDONLY|C.O_NOFOLLOW|(h.directory?C.O_DIRECTORY:0));
- try{for(const fd of [h.fd,fresh]){const s=fs.fstatSync(fd,{bigint:true});fact(s.dev===h.dev&&s.ino===h.ino
-  &&s.uid===0n&&s.gid===0n&&Number(s.mode&0o7777n)===h.mode&&mount(fd)===h.mnt
-  &&(h.directory?s.isDirectory():s.isFile()&&s.nlink===1n),'held/named ROOT identity');}}finally{fs.closeSync(fresh);}
+ try{for(const fd of [h.fd,fresh]){const s=fs.fstatSync(fd,{bigint:true}),mnt=mount(fd);fact(s.dev===h.dev&&s.ino===h.ino
+  &&s.uid===0n&&s.gid===h.gid&&Number(s.mode&0o7777n)===h.mode&&mnt===h.mnt
+  &&(h.directory?s.isDirectory():s.isFile()&&s.nlink===1n),'held/named ROOT identity '+JSON.stringify({path:h.canonical,
+   descriptor:fd===h.fd?'retained':'named',expected:{uid:0,gid:String(h.gid),dev:String(h.dev),ino:String(h.ino),mode:h.mode.toString(8),mnt:h.mnt},
+   actual:{uid:String(s.uid),gid:String(s.gid),dev:String(s.dev),ino:String(s.ino),mode:Number(s.mode&0o7777n).toString(8),mnt}}));}}finally{fs.closeSync(fresh);}
 }
 function open(path:string,directory:boolean,mode?:number):Held {
  const fd=fs.openSync(path,C.O_RDONLY|C.O_NOFOLLOW|(directory?C.O_DIRECTORY:0)),s=fs.fstatSync(fd,{bigint:true});
- const h={fd,path,directory,dev:s.dev,ino:s.ino,mode:Number(s.mode&0o7777n),mnt:mount(fd)};held.push(h);check(h);
+ const canonical=fs.realpathSync(`/proc/self/fd/${fd}`),shared=directory&&canonical==='/srv/worker-state';
+ const h={fd,path,canonical,directory,dev:s.dev,ino:s.ino,mode:Number(s.mode&0o7777n),gid:shared?987n:0n,mnt:mount(fd)};held.push(h);
+ if(shared){const srv=held.find(p=>p.directory&&p.canonical==='/srv');fact(srv&&s.uid===0n&&s.gid===987n&&s.dev===2306n
+  &&s.ino===13631491n&&h.mode===0o751&&h.mnt===srv.mnt,'exact shared /srv/worker-state physical/mount pin');}
+ check(h);
  fact((h.mode&0o022)===0&&(mode===undefined||h.mode===mode),'protected mode');return h;
 }
 function dir(path:string,mode?:number):Held {
@@ -180,7 +186,9 @@ try {
  seal(control,'PUBLIC-purpose.json',Buffer.from(JSON.stringify({kind:'FIXED_PUBLIC_BOOTSTRAP_PURPOSE',head:HEAD,unit:UNIT,
   controlGroup:CGROUP,rootBoundaryReviewSha256,pid:process.pid,boot:'f12bc43a-9252-42d4-919d-85b846a176a8',
   targets:[BASE,JOB],protected:immutable.map(x=>({path:x.path,dev:String(x.h.dev),ino:String(x.h.ino),
-   mode:x.h.mode,uid:0,gid:0,mntId:x.h.mnt,bytes:String(x.size),mtimeNs:String(x.mtime),ctimeNs:String(x.ctime),sha256:x.hash})),
+   mode:x.h.mode,uid:0,gid:Number(x.h.gid),mntId:x.h.mnt,bytes:String(x.size),mtimeNs:String(x.mtime),ctimeNs:String(x.ctime),sha256:x.hash})),
+  sharedAncestor:held.filter(h=>h.directory&&h.canonical==='/srv/worker-state').map(h=>({path:h.canonical,uid:0,gid:Number(h.gid),
+   mode:h.mode,dev:String(h.dev),ino:String(h.ino),mntId:h.mnt})),
   protectedAbsent,missingCount:missing.length,bootstrapSha256:createHash('sha256').update(process.execArgv[2]!).digest('hex'),fullEightAcceptance:'UNPROVEN'})+'\n'));
  const buffer=Buffer.alloc(1024*1024);
  for(let index=0;index<pins.length;index++){

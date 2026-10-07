@@ -38,7 +38,7 @@ const managedParent=retainCurrentFullParent();
 const fullInput=readCurrentFullOuterInput(),{source,toolchain}=fullInput;
 assert.equal(boundedCommand("/usr/bin/lsb_release",["--codename","--short"],workDeadline).trim(),"noble");
 const diagnostic=false,geometry=CurrentBackingGeometry.Adoptable;
-const qualification="native_actual_c_cold_hot_coldv2_r_entries_only";
+const qualification="native_actual_c_cold_hot_committed_absent_restore_coldv2_r_entries_only";
 const inheritedHostJobId=process.env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID;
 if(inheritedHostJobId!==undefined)assert(/^TEST-[A-Za-z0-9_.-]{1,123}$/.test(inheritedHostJobId));
 const inheritedHostMarker=inheritedHostJobId===undefined?"":`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${inheritedHostJobId} `;
@@ -73,7 +73,9 @@ const root = owned + "/root", outbox=owned+"/policy-request-outbox", reviewed=ow
 const machineId = randomUUID().replaceAll("-", ""), outerMachineId = readFileSync("/etc/machine-id", "utf8").trim();
 const evidence: Record<string, unknown> = { schemaVersion: 1, qualification,
   sourceSha: process.env.TEST_SOURCE_SHA, scenario, unit, machineId, outerMachineId, status: "failed", results: [],
-  unsupported: ["committed_absent_cold_restore", "dangerous_or_incompatible_mutations", "derived_next_cleanup", "active_exclusion_and_contained_remover", "uncertain_failure_preservation", "full_30_scenario_partition", "full_eight_acceptance_criteria"] };
+  fullPlanQualification:"pending",sourcePathDeliveryQualification:"pending",
+  unsupported: ["dangerous_or_incompatible_mutations", "derived_next_cleanup", "active_exclusion", "uncertain_failure_preservation",
+    "legacy_clean_mutated_mode_unknown_bounds", "compressed_manifest_quarantine", "mount_toctou_crash_table", "original_30_source_path_delivery", "full_eight_acceptance_criteria"] };
 let registered: ReturnType<typeof directoryIdentity> | undefined;
 let invocationId: string | undefined;
 let fragmentSha256: string | undefined;
