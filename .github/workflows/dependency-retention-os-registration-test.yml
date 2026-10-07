@@ -42,7 +42,7 @@ jobs:
           node-version: 22
       - run: npm ci --ignore-scripts
       - name: Typecheck fixed current9ca PUBLIC stage proposal without execution
-        run: node node_modules/typescript/bin/tsc --project scripts/dependency-retention-os-test/tsconfig.public-stage-9ca.json
+        run: node node_modules/typescript/bin/tsc --project scripts/dependency-retention-os-test/tsconfig.public-stage-caller-9ca.json
       - run: npm run build
       - name: Typecheck the retained handwritten OS fixture closure
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.json

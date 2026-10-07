@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.public-stage-9ca.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": ["stage-public-9ca.mts", "run-public-stage-9ca.mts"]
+}
