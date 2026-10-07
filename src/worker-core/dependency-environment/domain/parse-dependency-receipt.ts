@@ -3,6 +3,7 @@ import {
   DependencyUnverifiedReason, sameDependencyTree, sameDependencyWorkspace,
   type DependencyReceipt, type DependencyTreeIdentity, type DependencyWorkspaceIdentity,
 } from "./dependency-receipt";
+import { DependencyTreeMeasurementParseStatus, parseDependencyTreeMeasurement } from "./parse-dependency-tree-measurement";
 
 export enum DependencyReceiptParseStatus { Valid = "valid", Invalid = "invalid" }
 export type DependencyReceiptParseResult =
@@ -136,7 +137,11 @@ function valid(value: unknown): value is DependencyReceipt {
       return exact(value, [...baseFields, "operationId", "requestedKey", "preservation"])
         && id(value.operationId) && digest(value.requestedKey) && preservation(value.preservation, value);
     case DependencyReceiptState.Ready:
-      return exact(value, [...baseFields, "installKey", "tree", "manifestDigest", "provenance"])
+      return exact(value, [...baseFields, "installKey", "tree", "manifestDigest", "provenance",
+        ...(Object.hasOwn(value, "treeMeasurement") ? ["treeMeasurement"] : [])])
+        && (!("treeMeasurement" in value) || Object.hasOwn(value, "treeMeasurement"))
+        && (!Object.hasOwn(value, "treeMeasurement") ||
+          parseDependencyTreeMeasurement(value.treeMeasurement).status === DependencyTreeMeasurementParseStatus.Valid)
         && digest(value.installKey) && tree(value.tree) && digest(value.manifestDigest) && installProof(value.provenance, value);
     case DependencyReceiptState.Evicting:
       return exact(value, [...baseFields, "operationId", "installKey", "tree", "manifestDigest", "trash"])
@@ -158,7 +163,11 @@ function valid(value: unknown): value is DependencyReceipt {
 // Shape validation is not authentication. Only the protected store supplies trusted receipts/evidence.
 // Never echo rejected payloads: they may contain credentials or unrelated caller data.
 export function parseDependencyReceipt(value: unknown): DependencyReceiptParseResult {
-  return valid(value)
-    ? { status: DependencyReceiptParseStatus.Valid, receipt: value }
-    : { status: DependencyReceiptParseStatus.Invalid };
+  if (!valid(value)) return { status: DependencyReceiptParseStatus.Invalid };
+  if (value.state === DependencyReceiptState.Ready && Object.hasOwn(value, "treeMeasurement")) {
+    const measurement = parseDependencyTreeMeasurement(value.treeMeasurement);
+    if (measurement.status !== DependencyTreeMeasurementParseStatus.Valid) return { status: DependencyReceiptParseStatus.Invalid };
+    return { status: DependencyReceiptParseStatus.Valid, receipt: { ...value, treeMeasurement: measurement.measurement } };
+  }
+  return { status: DependencyReceiptParseStatus.Valid, receipt: value };
 }
