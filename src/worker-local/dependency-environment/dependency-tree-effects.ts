@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants, closeSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, readSync, rmdirSync, unlinkSync, type BigIntStats } from "node:fs";
+import { constants, closeSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, renameSync, rmdirSync, unlinkSync, type BigIntStats } from "node:fs";
 import { lstat, open, readFile, rename, rmdir, statfs, unlink, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { DependencyReceiptState, sameDependencyTree, sameDependencyWorkspace,
@@ -227,10 +227,11 @@ async function absent(parent: Anchor, name: Buffer): Promise<void> {
 export async function openDependencyTreeRename(request: DependencyTreeEffectInput): Promise<{
   readonly referenceSession: DependencyTreeEffectReferenceSession;
   rename(): Promise<{ readonly tree: DependencyTreeIdentity; readonly manifestDigest: string }>;
+  prepareSynchronousRename(): Promise<Readonly<{ referenceSession:DependencyTreeEffectReferenceSession; commit(): { readonly tree: DependencyTreeIdentity; readonly manifestDigest: string } }>>;
   close(): Promise<{ readonly closeFailures: number }>;
 }> {
   const input = detach(request); validate(input); const original = manifest(input), anchors = new Anchors(input.limits);
-  let finished = false, running: Promise<void> | undefined;
+  let finished = false, closed = false, preparationFailed = false, running: Promise<void> | undefined, preparing: Promise<Readonly<{referenceSession:DependencyTreeEffectReferenceSession;commit():{tree:DependencyTreeIdentity;manifestDigest:string}}>> | undefined;
   try {
     if ((await statfs("/proc/self/fd", { bigint: true })).type !== 0x9fa0n) fail(DependencyTreeEffectFailure.Unsupported);
     const source = await anchors.path(input.workspace.canonicalPath, input.workspace), destination = await anchors.path(input.trash.destinationParent.canonicalPath, input.trash.destinationParent);
@@ -241,7 +242,81 @@ export async function openDependencyTreeRename(request: DependencyTreeEffectInpu
     if (!sameDependencyTree(identity(tree.before), input.trash.originalTree) || tree.mountId !== source.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
     const target = Buffer.from(input.trash.destinationName);
     await absent(destination, target); await anchors.verify();
-    return { referenceSession: referenceSession(anchors, input), async rename() {
+    const prepare = async () => {
+      if(finished || closed || preparationFailed || !anchors.retained.length)fail(DependencyTreeEffectFailure.Closed);
+      finished=true; // Preparation owns this exact one-use physical session.
+      preparing=(async()=>{
+        await anchors.verify();const current=await observe(input,source,"node_modules",original,false);
+        await anchors.verify();await absent(destination,target);
+        const captured=new Map(current.identities.map(item=>[key(item.path),item])),directories=new Map<string,Anchor>([["[]",tree]]);
+        for(const entry of current.entries.filter(item=>item.kind===Kind.Directory && item.path.length)) {
+          const parent=directories.get(key(entry.path.slice(0,-1)));if(!parent)fail(DependencyTreeEffectFailure.ManifestMismatch);
+          const name=component(entry.path[entry.path.length-1]!),dir=await anchors.retain(anchored(parent,name),parent,name);
+          if(!sameDependencyTree(identity(dir.before),captured.get(key(entry.path))!.identity) || dir.mountId!==tree.mountId)fail(DependencyTreeEffectFailure.IdentityChanged);
+          directories.set(key(entry.path),dir);
+        }
+        await anchors.verify();let submitted=false;
+        return Object.freeze({referenceSession:referenceSession(anchors,input),commit() {
+          if(closed || preparationFailed || submitted || !anchors.retained.length)fail(DependencyTreeEffectFailure.Closed);
+          submitted=true; // Failure/uncertain publication cannot be replayed.
+          try {
+            anchors.verifySync();if(input.sourceLinkSession)sourceProof(input);
+            for(const entry of current.entries) {
+              anchors.check();const parent=entry.path.length ? directories.get(key(entry.path.slice(0,-1)))! : source,
+                name=entry.path.length ? component(entry.path[entry.path.length-1]!) : Buffer.from("node_modules"),path=anchored(parent,name);
+              const fd=openSync(path,pathFlags);let failed=false;
+              try {
+                const info=fstatSync(fd,{bigint:true});
+                if(!sameDependencyTree(identity(info),captured.get(key(entry.path))!.identity) || (info.mode&0o7777n)!==BigInt(entry.mode) ||
+                    mountSync(fd)!==tree.mountId || !info.isDirectory() && info.nlink!==1n)fail(DependencyTreeEffectFailure.IdentityChanged);
+                if(entry.kind===Kind.File) {
+                  if(!info.isFile() || info.size!==BigInt(entry.size) || info.size>BigInt(input.limits.maxTotalBytes))fail(DependencyTreeEffectFailure.ManifestMismatch);
+                  const file=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);let fileFailed=false;
+                  try {
+                    const before=fstatSync(file,{bigint:true});
+                    if(!stable(info,before) || before.size!==info.size || mountSync(file)!==tree.mountId)fail(DependencyTreeEffectFailure.IdentityChanged);
+                    const bytes=Buffer.alloc(65536),hash=createHash("sha256");let length=0;
+                    while(length<=Number(before.size)) {
+                      anchors.check();const count=readSync(file,bytes,0,Math.min(bytes.length,Number(before.size)-length+1),length);
+                      if(!count)break;hash.update(bytes.subarray(0,count));length+=count;
+                      if(BigInt(length)>before.size)fail(DependencyTreeEffectFailure.ManifestMismatch);
+                    }
+                    const after=fstatSync(file,{bigint:true});
+                    if(BigInt(length)!==before.size || hash.digest("hex")!==entry.sha256 || !stable(before,after) ||
+                        before.size!==after.size || before.mtimeNs!==after.mtimeNs || before.ctimeNs!==after.ctimeNs)fail(DependencyTreeEffectFailure.ManifestMismatch);
+                  }catch(error){fileFailed=true;throw error;}finally{anchors.closeTemporary(file,fileFailed);}
+                }else if(entry.kind===Kind.Symlink) {
+                  if(!info.isSymbolicLink() || readlinkSync(path,{encoding:"buffer"}).toString("base64")!==entry.target)fail(DependencyTreeEffectFailure.ManifestMismatch);
+                }else {
+                  if(!info.isDirectory())fail(DependencyTreeEffectFailure.ManifestMismatch);
+                  const names=readdirSync(path,{encoding:"buffer"}).map(v=>v.toString("base64")).sort(),
+                    expected=current.entries.filter(v=>v.path.length===entry.path.length+1 && key(v.path.slice(0,-1))===key(entry.path)).map(v=>v.path[v.path.length-1]!).sort();
+                  if(JSON.stringify(names)!==JSON.stringify(expected))fail(DependencyTreeEffectFailure.ManifestMismatch);
+                }
+                const after=lstatSync(path,{bigint:true});
+                if(!stable(info,after) || info.nlink!==after.nlink || info.size!==after.size || info.mtimeNs!==after.mtimeNs || info.ctimeNs!==after.ctimeNs)fail(DependencyTreeEffectFailure.IdentityChanged);
+              }catch(error){failed=true;throw error;}finally{anchors.closeTemporary(fd,failed);}
+            }
+            anchors.verifySync();if(input.sourceLinkSession)sourceProof(input);
+            try{lstatSync(anchored(destination,target));fail(DependencyTreeEffectFailure.Conflict);}
+            catch(error){if(!(error instanceof Error) || !("code" in error) || error.code!=="ENOENT")throw error;}
+            renameSync(anchored(source,Buffer.from("node_modules")),anchored(destination,target));
+            const moved=openSync(anchored(destination,target),directoryFlags|constants.O_NONBLOCK);let failed=false;
+            try{if(!stable(tree.before,fstatSync(moved,{bigint:true})) || mountSync(moved)!==destination.mountId)fail(DependencyTreeEffectFailure.IdentityChanged);}
+            catch(error){failed=true;throw error;}finally{anchors.closeTemporary(moved,failed);}
+            try{lstatSync(anchored(source,Buffer.from("node_modules")));fail(DependencyTreeEffectFailure.Conflict);}
+            catch(error){if(!(error instanceof Error) || !("code" in error) || error.code!=="ENOENT")throw error;}
+            // Retained descendant FDs remain the same tree under its new name;
+            // named checks now run relative to the relocated actual tree FD.
+            anchors.verifySync(anchors.retained.filter(item=>item!==tree));
+            fsyncSync(source.handle.fd);fsyncSync(destination.handle.fd);
+            return {tree:identity(tree.before),manifestDigest:input.manifestDigest};
+          }catch(error){preparationFailed=true;throw error;}
+        }});
+      })();
+      try{return await preparing;}catch(error){preparationFailed=true;await anchors.close();throw error;}finally{preparing=undefined;}
+    };
+    return { referenceSession: referenceSession(anchors, input), prepareSynchronousRename:prepare, async rename() {
       if (finished || anchors.retained.length === 0) fail(DependencyTreeEffectFailure.Closed);
       finished = true; // Single-use, including an uncertain or failed publication.
       let settle!: () => void; running = new Promise<void>(done => { settle = done; });
@@ -257,7 +332,7 @@ export async function openDependencyTreeRename(request: DependencyTreeEffectInpu
       await source.handle.sync(); await destination.handle.sync();
       return { tree: identity(tree.before), manifestDigest: input.manifestDigest };
       } finally { settle(); }
-    }, async close() { finished = true; await running; return anchors.close(); } };
+    }, async close() { closed=true;finished = true; await preparing?.then(()=>undefined,()=>undefined);await running; return anchors.close(); } };
   } catch (error) { await anchors.close(); throw error; }
 }
 

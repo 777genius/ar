@@ -1,3 +1,5 @@
+import { readOriginalHostedDependencyMaintenanceIdle } from "./hosted-dependency-active-maintenance";
+import { readOriginalHostedDependencyColdCustodyTransfer } from "./hosted-dependency-cold-custody-transfer";
 import { randomUUID } from "node:crypto";
 import { DependencyConsumerLaunchKind, DependencyGenerationContinuityKind, DependencyOwnerKind, DependencyOwnerPhase,
   parseDependencyOwner, sameDependencyProtectedReference } from "@vioxen/subscription-runtime/core";
@@ -28,7 +30,8 @@ export function claimOriginalHostedDependencyRGeneration(fence:HostedActivationF
   let previous:ReturnType<LocalDependencyOwnerStore["read"]>;
   try{previous=reader.read(workspace);}finally{reader.close();}
   if(!previous || previous.version===1 || previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1)return undefined;
-  const proof=readOriginalHostedDependencyRIdleGeneration(fence,access),actors=readHostedDependencyActiveActorFacts(fence,access);
+  const proof=readOriginalHostedDependencyMaintenanceIdle(fence,workspace,access) ?? readOriginalHostedDependencyColdCustodyTransfer(fence,material,previous,access) ??
+    readOriginalHostedDependencyRIdleGeneration(fence,access),actors=readHostedDependencyActiveActorFacts(fence,access);
   if(previous.version!==3 || !encode(proof.previous).equals(encode(previous)) || !actors || !readOriginalHostedDependencyOperatorNativeCensus(fence,access))held();
   const launch={installationId:start.value.installationId,bootId:start.value.bootId,runtimeSha:start.value.runtimeSha,
     grantDigest:start.value.grantDigest,startId,unit:outer.unit,kind:DependencyConsumerLaunchKind.ManagedReadonlyLocalV1,

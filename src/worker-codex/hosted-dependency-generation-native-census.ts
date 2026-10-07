@@ -1,4 +1,5 @@
 import { readOriginalHostedDependencyPriorRSourceClosure, readOriginalHostedDependencyConsumerPriorRSourceClosure } from "./hosted-dependency-generation-r-source-closure";
+import { readHostedDependencyActiveReferenceUnits } from "./hosted-dependency-active-actor-facts";
 import { readOriginalHostedDependencyPriorCSourceClosure, readOriginalHostedDependencyOperatorPriorCSourceClosure } from "./hosted-dependency-generation-prior-closure";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -10,7 +11,7 @@ import { verifyPinnedFdCollectorProfile } from "../provider-codex/app-server/ada
 import { verifySystemBusInfrastructure } from "../provider-codex/app-server/adapters/system-bus-infrastructure";
 import { readHostedReadonlyHostInventory, HostedReadonlyHostKernel } from "./hosted-readonly-host-kernel";
 import { readOriginalHostedDependencyGenerationNativeScope } from "./hosted-dependency-generation-native-scope";
-import { assertOriginalHostedDependencyPhysicalRecordAccess, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { assertOriginalHostedDependencyOperatorDescriptors, assertOriginalHostedDependencyPhysicalRecordAccess, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { collectCgroupProcesses, collectFutureCreatorShow, collectJobs, collectUnitShow } from "./hosted-readonly-linux-collector";
 import { assertExactUnitGroup, observedJobUnits } from "./hosted-readonly-observations";
 
@@ -27,7 +28,7 @@ export function readOriginalHostedDependencyOperatorNativeCensus(fence:HostedAct
 function scope(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,access:symbol) {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
   if(context)return readOriginalHostedDependencyGenerationNativeScope(context,fence,access);
-  assertHostedActivationOperator();assertHostedProcessDescriptors();
+  assertHostedActivationOperator();assertOriginalHostedDependencyOperatorDescriptors(fence,access);
   const units:readonly string[]=[];
   return {units,operator:new HostedReadonlyHostKernel().operatorSession()};
 }
@@ -48,7 +49,7 @@ function census(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActi
     if(line.trim().split(/\s+/)[0]!=="dbus.socket")invalid();
   }
   const observed=lines(systemctl(["list-units","--all","--type=service,scope","--state=active,activating,reloading,deactivating,failed","--no-legend","--plain","--no-pager"]));
-  let eligible=true;const discharged=new Set<string>();
+  let eligible=true;const discharged=new Set<string>(readHostedDependencyActiveReferenceUnits(fence,access));
   for(const line of observed) {
     const name=line.trim().split(/\s+/)[0];if(name==="init.scope")continue;
     if(!unit(name))invalid();

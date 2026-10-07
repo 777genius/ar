@@ -1,6 +1,6 @@
 import { readOriginalHostedDependencyGenerationNativeScope } from "./hosted-dependency-generation-native-scope";
 import { HostedReadonlyHostKernel } from "./hosted-readonly-host-kernel";
-import { assertOriginalHostedDependencyPhysicalRecordAccess, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { assertOriginalHostedDependencyOperatorDescriptors, assertOriginalHostedDependencyPhysicalRecordAccess, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
@@ -191,9 +191,10 @@ function readFailureCreator(fence:HostedActivationFence,startId:string,terminalR
   const profile = referenced(prepared.protectedProfile,`${root}/dependency-installer-profile.json`), decodedProfile = wire(profile);
   if (!decodedProfile || typeof decodedProfile !== "object" || !("schemaVersion" in decodedProfile) || decodedProfile.schemaVersion !== 2) held();
   const birth = fixedPin(`${root}/dependency-managed-provider-starts/${startId}.json`);
-  const birthAdmission=admitted.version===1 ? {ready:admitted.ready,readyRevision:admitted.readyRevision} :
+  const birthAdmission=admitted.version===1 ? {ready:admitted.ready,readyRevision:admitted.readyRevision} : admitted.version===3 ?
+    {execution:admitted.execution,baselineReady:admitted.baselineReady,baselineReadyRevision:admitted.baselineReadyRevision} :
     {execution:admitted.execution,unverified:admitted.unverified,unverifiedRevision:admitted.unverifiedRevision};
-  const expectedBirth = {version:admitted.version===1?1:3,installationId:binding.installationId,runtimeSha:binding.runtimeSha,
+  const expectedBirth = {version:admitted.version===1?1:admitted.version===3?5:3,installationId:binding.installationId,runtimeSha:binding.runtimeSha,
     hostId:epoch.hostId,bootId:epoch.bootId,supervisorId:epoch.supervisorId,generation:outer.generation,unit:row.unit,providerStartId:startId,
     parentStartId:attempt.launch.startId,logicalJobId:binding.jobId,executionJobId:start.readonlyJobId,jobRootDir:binding.jobRootDir,
     workspace:binding.workspace,attempt,custodyReference:material.reference,originReference:parent.reference,...birthAdmission,qualification:qualification.reference,protectedProfile:profile.reference};
@@ -240,7 +241,7 @@ export function readOriginalHostedManagedConsumerProviderDischargedReceipt(conte
 }
 function dischargedBoundary(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,access:symbol):void {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
-  if(context)readOriginalHostedDependencyGenerationNativeScope(context,fence,access);else boundary(fence);
+  if(context)readOriginalHostedDependencyGenerationNativeScope(context,fence,access);else {assertHostedActivationOperator();assertOriginalHostedDependencyOperatorDescriptors(fence,access);}
 }
 function dischargedReceipt(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,startId:string,access:symbol) {
   dischargedBoundary(context,fence,access);if(!uuid(startId))held();

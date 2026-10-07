@@ -1,3 +1,18 @@
+import { readOriginalHostedManagedProviderTools, assertOriginalHostedManagedCapsuleCopy } from "./hosted-managed-provider-descriptor-validation";
+import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
+import { HostedDependencyMaintenanceOriginKind, selectOriginalHostedDependencyMaintenanceRename, runOriginalHostedDependencyMaintenanceRename, assertOriginalHostedDependencyMaintenanceRenameDescriptors, type OriginalHostedDependencyMaintenanceRenameState } from "./hosted-dependency-maintenance-rename";
+import { assertOriginalHostedDependencyRootDescriptorCensus } from "./hosted-dependency-root-descriptor-census";
+import { readOriginalHostedDependencyMaintenanceAuthority, claimOriginalHostedDependencyMaintenance, assertOriginalHostedDependencyMaintenance,
+  retireOriginalHostedDependencyEviction, releaseOriginalHostedDependencyMaintenance } from "./hosted-dependency-active-maintenance";
+import { readOriginalHostedManagedProviderDescriptor } from "./hosted-managed-provider-descriptor-reader";
+import { prepareOriginalHostedDependencyColdCustody, completeOriginalHostedDependencyColdCustody } from "./hosted-dependency-cold-custody";
+import { assertOriginalHostedDependencyExecutionAdmission, materializeOriginalHostedDependencyColdTree } from "./hosted-dependency-entry-effects";
+import { editOriginalHostedDependencyWarmSourceLeaf } from "./hosted-dependency-warm-source-leaf";
+import { assertOriginalHostedDependencyCurrentGenerationEffect } from "./hosted-dependency-generation-controller";
+import { assertOriginalHostedDependencyParentWriterIngress } from "./hosted-dependency-parent-writer-ingress";
+import { captureOriginalHostedDependencyWarmRetirementFacts } from "./hosted-dependency-warm-retirement-selection";
+import { readOriginalHostedDependencyWarmBaseline } from "./hosted-dependency-generation-baseline-reader";
+import { assertOriginalHostedDependencyRetiredReady } from "./hosted-dependency-retired-ready-reader";
 import { claimOriginalHostedDependencyRGeneration } from "./hosted-dependency-generation-r-claim";
 import { fenceOriginalHostedDependencyRSourceOwner, releaseOriginalHostedDependencyRSourceOwner } from "./hosted-dependency-generation-r-source-closure";
 import { revokeOriginalHostedDependencyOriginResources } from "./hosted-dependency-original-revocation";
@@ -6,19 +21,17 @@ import { claimOriginalHostedDependencyCGeneration } from "./hosted-dependency-ge
 import { collectOriginalHostedDependencySnapshot } from "./hosted-dependency-original-snapshot";
 import type { OriginalHostedDependencyOriginEntry } from "./hosted-dependency-origin-entry";
 import { retireOriginalHostedDependencyGenerationSourceUse } from "./hosted-dependency-generation-source-retirement";
-import { readOriginalHostedDependencyPinnedRecord } from "./hosted-dependency-original-record-reader";
-import { beginOriginalHostedDependencyGenerationBarrier, assertOriginalHostedDependencyGenerationBarrier, markOriginalHostedDependencyGenerationRunning } from "./hosted-dependency-generation-controller";
+import { readOriginalHostedDependencyPinnedRecord, readOriginalHostedDependencyMaterialRecord } from "./hosted-dependency-original-record-reader";
+import { bindOriginalHostedDependencyGenerationQualifier, captureOriginalHostedDependencyGenerationInputs, beginOriginalHostedDependencyGenerationBarrier, assertOriginalHostedDependencyGenerationBarrier, markOriginalHostedDependencyGenerationRunning } from "./hosted-dependency-generation-controller";
 import { HostedDependencyGenerationBarrierPhase, HostedDependencySourceUsePhase, type HostedDependencyGenerationState } from "./hosted-dependency-generation-state";
 import { DependencyToolReadyReadStatus } from "../core/dependency-environment/dependency-tool-ready-reader";
 import { parseDependencyToolAdmissionQualification, dependencyToolAdmittedGuestConfig } from "../core/dependency-environment/dependency-tool-execution";
 import { readHostedDependencyUsableReceipt } from "./hosted-dependency-usable-receipt";
 import { retireOriginalHostedDependencyWarmReady } from "./hosted-dependency-generation-retirement";
-import { HostedDependencyWarmRetirementPhase, type HostedDependencyWarmRetirementState } from "./hosted-dependency-warm-retirement-state";
 import { readHostedDependencyEstablishedReceipt, readHostedDependencyExistingCommittedReady } from "./hosted-dependency-receipts";
 import { retireOriginalHostedDependencySourceCleanup } from "./hosted-dependency-generation-retirement";
 import { openOriginalHostedDependencyRootDescriptorMaterial, openOriginalHostedManagedProviderDescriptorMaterial } from "./hosted-dependency-root-descriptor-opener";
-import { finishOriginalHostedDependencyColdTree } from "./hosted-dependency-cold-controller";
-import { HostedDependencyColdPhase, HostedDependencyColdInstallerPhase, type HostedDependencyColdState } from "./hosted-dependency-cold-materialization-state";
+import { HostedDependencyColdInstallerPhase, type HostedDependencyColdState } from "./hosted-dependency-cold-materialization-state";
 import { DependencyAdmissionError, DependencyAdmissionFailure } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedDependencyRetirementOwnerFacts } from "./hosted-dependency-retirement-facts";
 import { createOriginalHostedSessionRuntimeComposition, type OriginalHostedSessionRuntimeCompositionInput } from "./hosted-managed-dependency-runtime-composition";
@@ -63,7 +76,7 @@ import { collectUnitInvocation } from "./hosted-readonly-linux-collector";
 import { type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readSync, readdirSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
-import { DependencyToolReadyProvenanceKind, DependencyOwnerPhase, isDependencyConsumerOwner, parseDependencyOwner, sameDependencyProtectedReference, sameDependencyWorkspace, sameDependencyAttempt, parseDependencyGenerationContinuityInvalidation, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
+import { DependencyGenerationContinuityKind, DependencyToolReadyProvenanceKind, DependencyOwnerPhase, isDependencyConsumerOwner, parseDependencyOwner, sameDependencyProtectedReference, sameDependencyWorkspace, sameDependencyAttempt, parseDependencyGenerationContinuityInvalidation, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { HostedCustodyReservationState } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
 import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes, readHostedOrdinaryProcessOrigin, withHostedActivationFence, readHostedOrdinaryProviderFacts, HostedOrdinaryProviderReadPhase, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
@@ -100,7 +113,11 @@ export function releaseCurrentHostedReadonlyDependencySourceOwner(fence:HostedAc
 export function claimCurrentHostedOrdinaryDependencyGeneration(fence:HostedActivationFence,startId:string) {
   return claimOriginalHostedDependencyCGeneration(fence,startId,rootInternalAccess);
 }
-const contexts = new WeakMap<CurrentHostedDependencyOrigin, OriginalHostedDependencyOriginEntry>();
+const contexts = new WeakMap<CurrentHostedDependencyOrigin, OriginalHostedDependencyOriginEntry | OriginalHostedDependencyMaintenanceRenameState>();
+let currentMaintenanceOrigin:CurrentHostedDependencyOrigin|undefined;
+function consumerEntry(context:CurrentHostedDependencyOrigin):OriginalHostedDependencyOriginEntry|undefined {
+  const entry=contexts.get(context);if(entry && "kind" in entry)invalid();return entry;
+}
 let currentEntryOrigin:CurrentHostedDependencyOrigin|undefined;
 /** PRIVATE selected-path reader. Only names derived below from independently pinned start/installation are used; no exported arbitrary-path read port. */
 function selectedFile(path:string,maximum:number,privateFile=true) {
@@ -108,8 +125,7 @@ function selectedFile(path:string,maximum:number,privateFile=true) {
 }
 function fixed(name: string, maximum = 65536) { return selectedFile(`${root}/${name}`,maximum); }
 function material(expected: DependencyProtectedReference, path: string, maximum = 262144, privateFile = true) {
-  if (expected.path !== path) invalid(); const pin = selectedFile(path,maximum,privateFile);
-  if (!sameDependencyProtectedReference(pin.reference,expected)) invalid(); return pin;
+  return readOriginalHostedDependencyMaterialRecord(rootInternalAccess,expected,path,maximum,privateFile);
 }
 function selectedSnapshot(fence: HostedActivationFence, scope?: HostedRetainedToolFiles, rootPurpose?: RootPurposeState,cold?:HostedDependencyColdState) {
   return collectOriginalHostedDependencySnapshot(rootInternalAccess,fence,scope,rootPurpose,cold);
@@ -120,14 +136,14 @@ export function assertOriginalHostedDependencyRootPurposeDescriptorState(state:R
 export type CurrentHostedDependencyOriginFacts = ReturnType<typeof selectedSnapshot>["facts"];
 /** Fixed process/history identity only; consumers still join actual owner. */
 export function readCurrentHostedDependencyOrigin(fence: HostedActivationFence, scope?: HostedRetainedToolFiles): CurrentHostedDependencyOrigin {
-  if (currentEntryOrigin) { const retained = contexts.get(currentEntryOrigin);
+  if (currentEntryOrigin) { const retained = consumerEntry(currentEntryOrigin);
     if (!retained?.ordinaryEntry || scope !== undefined) invalid();
     assertCurrentHostedDependencyOrigin(currentEntryOrigin,fence); return currentEntryOrigin; }
   const selected = selectedSnapshot(fence,scope), context = Object.freeze({[brand]:true as const});
   contexts.set(context,{digest:selected.digest,facts:freezeFacts(selected.facts),...(scope ? {scope}: {})}); return context;
 }
 export function assertCurrentHostedDependencyOrigin(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence): CurrentHostedDependencyOriginFacts {
-  const retained = contexts.get(context); if (!retained) invalid();
+  const retained = consumerEntry(context); if (!retained) invalid();
   if(retained.generation && (retained.generation.phase===HostedDependencyGenerationBarrierPhase.Retiring ||
       retained.generation.phase===HostedDependencyGenerationBarrierPhase.Held))invalid();
   const current = selectedSnapshot(fence,retained.scope,retained.rootPurpose,retained.cold); if (current.digest !== retained.digest) invalid(); return current.facts;
@@ -136,11 +152,11 @@ export function assertCurrentHostedDependencyOrigin(context: CurrentHostedDepend
  * associations, rather than falling back to the generic strict descriptor view. */
 export function requiresCurrentHostedDependencyRootPurpose():boolean {
   if (!currentEntryOrigin) return classifyCurrentHostedDependencyRootPurpose();
-  return withHostedActivationFence(fence => { const retained = contexts.get(currentEntryOrigin!); if (!retained?.ordinaryEntry) invalid();
+  return withHostedActivationFence(fence => { const retained = consumerEntry(currentEntryOrigin!); if (!retained?.ordinaryEntry) invalid();
     const actual = assertCurrentHostedDependencyOrigin(currentEntryOrigin!,fence); if (actual.kind !== CurrentHostedDependencyOriginKind.Ordinary) invalid(); return true; });
 }
 export function readCurrentHostedOrdinaryDependencyReaderEntry(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,phase:DependencyOwnerPhase) {
-  const retained = contexts.get(context); if (!retained?.ordinaryEntry || currentEntryOrigin !== context) invalid();
+  const retained = consumerEntry(context); if (!retained?.ordinaryEntry || currentEntryOrigin !== context) invalid();
   const actual = readHostedOrdinaryDependencyReaderEntry(context,fence,phase);
   if (!sameDependencyAttempt(actual.attempt,retained.ordinaryEntry.attempt) || !sameDependencyProtectedReference(actual.producer,retained.ordinaryEntry.producer) ||
       !sameDependencyProtectedReference(actual.entry,retained.ordinaryEntry.entry)) invalid(); return actual;
@@ -150,18 +166,19 @@ export function readCurrentHostedOrdinaryDependencyReaderEntry(context:CurrentHo
 export function enterCurrentHostedOrdinaryDependencyReader():void {
   if (isHostedManagedReadonlyOuterRuntime() || !requiresCurrentHostedDependencyRootPurpose()) return;
   withHostedActivationFence(fence => {
-    if (currentEntryOrigin) { const retained = contexts.get(currentEntryOrigin);
+    if (currentEntryOrigin) { const retained = consumerEntry(currentEntryOrigin);
       if (!retained?.ordinaryEntry) invalid(); assertCurrentHostedDependencyOrigin(currentEntryOrigin,fence); return; }
     const context = readCurrentHostedDependencyOrigin(fence), facts = assertCurrentHostedDependencyOrigin(context,fence);
     if (facts.kind !== CurrentHostedDependencyOriginKind.Ordinary) invalid();
-    const entry = consumeHostedOrdinaryDependencyPreclaim(context,fence), retained = contexts.get(context); if (!retained) invalid();
+    const entry = consumeHostedOrdinaryDependencyPreclaim(context,fence), retained = consumerEntry(context); if (!retained) invalid();
     retained.ordinaryEntry = freezeFacts(entry); currentEntryOrigin = context;
+    armCurrentHostedDependencyGenerationBarrier(context,fence);
   });
 }
 /** Once actual execution admission, distinct from idempotent internal layout
  * calls. A second task entry cannot reuse the first reader's claim. */
 export function consumeCurrentHostedOrdinaryDependencyExecution(fence:HostedActivationFence) {
-  const context = currentEntryOrigin, retained = context && contexts.get(context);
+  const context = currentEntryOrigin, retained = context && consumerEntry(context);
   if (!context || !retained?.ordinaryEntry || retained.ordinaryAdmitted) invalid();
   const actual = readHostedOrdinaryDependencyPreclaim(context,fence);
   if (!sameDependencyAttempt(actual.attempt,retained.ordinaryEntry.attempt) ||
@@ -170,12 +187,12 @@ export function consumeCurrentHostedOrdinaryDependencyExecution(fence:HostedActi
   retained.ordinaryAdmitted = true; return actual.attempt;
 }
 export function invalidateCurrentHostedDependencyOrigin(context: CurrentHostedDependencyOrigin): void {
-  try {revokeOriginalHostedDependencyOriginResources(context,contexts.get(context),rootInternalAccess);}
+  try {revokeOriginalHostedDependencyOriginResources(context,consumerEntry(context),rootInternalAccess);}
   finally {contexts.delete(context);if(currentEntryOrigin===context)currentEntryOrigin=undefined;if(currentRootOrigin===context)currentRootOrigin=undefined;}
 }
 export type CurrentHostedManagedDependencyProvider = HostedDependencyManagedProviderFacts;
 function managedProviderBirth(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence, unit: string): CurrentHostedManagedDependencyProvider {
-  const retained = contexts.get(context); if (!retained?.rootPurpose) invalid();
+  const retained = consumerEntry(context); if (!retained?.rootPurpose) invalid();
   assertCurrentHostedDependencyRootPurpose(retained.rootPurpose.managed,HostedDependencyRootPurpose.ManagedGitReadV1,fence);
   const actual = assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.Running);
   if (!sameDependencyAttempt(actual.attempt,retained.rootPurpose.record.attempt)) invalid();
@@ -187,7 +204,7 @@ function managedProviderBirth(context: CurrentHostedDependencyOrigin, fence: Hos
   return formManagedDependencyProviderStartFacts(actual,providerStartId,record,committed);
 }
 export function readCurrentHostedManagedDependencyProviderParent(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence) {
-  const state = contexts.get(context)?.rootPurpose; if (!state) invalid();
+  const state = consumerEntry(context)?.rootPurpose; if (!state) invalid();
   assertCurrentHostedDependencyRootPurpose(state.managed,HostedDependencyRootPurpose.ManagedGitReadV1,fence);
   const actual = assertCurrentHostedDependencyAttempt(context,fence);
   if (actual.facts.kind === CurrentHostedDependencyOriginKind.Ordinary) readCurrentHostedOrdinaryDependencyReaderEntry(context,fence,DependencyOwnerPhase.Running);
@@ -206,17 +223,21 @@ export function readCurrentHostedManagedDependencyProvider(context: CurrentHoste
 }
 /** The original-map entry owns the fixed cold invocation before any final
  * observation. No caller observation/Ready setter or second provenance map. */
-export async function materializeCurrentHostedDependencyColdTree(context:CurrentHostedDependencyOrigin):Promise<Readonly<{startId:string}>|undefined> {
-  if(!contexts.has(context))coldInvalid();
-  withHostedActivationFence(fence=>{
-    const actual=assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation),retained=contexts.get(context);
-    if(!retained || retained.cold) coldInvalid();
-    retained.cold={phase:HostedDependencyColdPhase.Producing,binding:actual.binding,attempt:actual.attempt};
-  });
-  return finishOriginalHostedDependencyColdTree(context,rootInternalAccess);
+export function materializeCurrentHostedDependencyColdTree(context:CurrentHostedDependencyOrigin):Promise<Readonly<{startId:string}>|undefined> {
+  return materializeOriginalHostedDependencyColdTree(context,rootInternalAccess);
 }
 /** The same original map arms exclusion before initial source/input reads. No
  * request DTO can install state, coverage, an observation or a baseline. */
+export function bindCurrentHostedDependencyGenerationQualifier(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence):void {
+  bindOriginalHostedDependencyGenerationQualifier(context,fence,rootInternalAccess);
+}
+export function captureCurrentHostedDependencyGenerationInputs(context:CurrentHostedDependencyOrigin) {
+  withHostedActivationFence(fence=>assertCurrentHostedDependencyExecutionAdmission(context,fence));
+  return captureOriginalHostedDependencyGenerationInputs(context,rootInternalAccess);
+}
+export function readCurrentHostedDependencyGenerationBaseline(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence) {
+  return readOriginalHostedDependencyWarmBaseline(context,fence,rootInternalAccess);
+}
 export function armCurrentHostedDependencyGenerationBarrier(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence):void {
   beginOriginalHostedDependencyGenerationBarrier(context,fence,rootInternalAccess);
 }
@@ -224,16 +245,16 @@ export function markCurrentHostedDependencyGenerationRunning(context:CurrentHost
   markOriginalHostedDependencyGenerationRunning(context,fence,rootInternalAccess);
 }
 export function findOriginalHostedDependencyGenerationEntry(context:CurrentHostedDependencyOrigin,access:symbol):OriginalHostedDependencyOriginEntry {
-  if(access!==rootInternalAccess)invalid();const retained=contexts.get(context);if(!retained)invalid();return retained;
+  if(access!==rootInternalAccess)invalid();const retained=consumerEntry(context);if(!retained)invalid();return retained;
 }
 export function findOriginalHostedDependencyGenerationState(context:CurrentHostedDependencyOrigin,access:symbol):HostedDependencyGenerationState|undefined {
-  if(access!==rootInternalAccess)invalid();return contexts.get(context)?.generation;
+  if(access!==rootInternalAccess)invalid();return consumerEntry(context)?.generation;
 }
 export function prepareCurrentHostedDependencyGenerationSourceRetirement(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence):void {
   retireOriginalHostedDependencyGenerationSourceUse(context,fence,rootInternalAccess);
 }
 export function holdCurrentHostedDependencyGenerationSourceUse(context:CurrentHostedDependencyOrigin):void {
-  const state=contexts.get(context)?.generation;if(state && state.phase!==HostedDependencyGenerationBarrierPhase.Unavailable){state.phase=HostedDependencyGenerationBarrierPhase.Held;state.sourceUse.phase=HostedDependencySourceUsePhase.Held;}
+  const state=consumerEntry(context)?.generation;if(state){state.phase=HostedDependencyGenerationBarrierPhase.Held;state.sourceUse.phase=HostedDependencySourceUsePhase.Held;}
 }
 /** Internal actual-child selection only. Authenticate lexical access and the
  * SAME original context before inspecting any retained native association. */
@@ -244,10 +265,10 @@ export { assertOriginalHostedDependencyColdProducer, readOriginalHostedDependenc
 /** Internal association access only; no caller can create/replace a capture,
  * Plan or child through this function or obtain the lexical access symbol. */
 export function findOriginalHostedDependencyColdState(context:CurrentHostedDependencyOrigin,access:symbol):HostedDependencyColdState|undefined {
-  if(access!==rootInternalAccess)coldInvalid();return contexts.get(context)?.cold;
+  if(access!==rootInternalAccess)coldInvalid();return consumerEntry(context)?.cold;
 }
 export function readOriginalHostedDependencyColdInstallerState(context:CurrentHostedDependencyOrigin,access:symbol):HostedDependencyColdState {
-  if(access!==rootInternalAccess)coldInvalid();const state=contexts.get(context)?.cold;if(!state)coldInvalid();return state;
+  if(access!==rootInternalAccess)coldInvalid();const state=consumerEntry(context)?.cold;if(!state)coldInvalid();return state;
 }
 export { finishOriginalHostedDependencyColdInstaller as installCurrentHostedDependencyColdTree } from "./hosted-dependency-cold-controller";
 export { consumeCurrentHostedDependencyColdHandoff, assertCurrentHostedDependencyConsumedColdHandoff,
@@ -256,7 +277,7 @@ function coldInvalid():never {throw new DependencyAdmissionError(DependencyAdmis
 
 /** Fixed provider resources belong solely to the original-origin entry. */
 export function prepareCurrentHostedManagedDependencyProviderTools(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence, unit: string) {
-  const selected = readCurrentHostedManagedDependencyProvider(context,fence,unit), state = contexts.get(context)?.rootPurpose;
+  const selected = readCurrentHostedManagedDependencyProvider(context,fence,unit), state = consumerEntry(context)?.rootPurpose;
   if (!state || state.provider) invalid();
   assertCurrentHostedDependencyRootPurpose(state.managed,HostedDependencyRootPurpose.ManagedGitReadV1,fence);
   const providerRoot = `${root}/dependency-provider-roots/${selected.value.providerStartId}`;
@@ -281,34 +302,21 @@ export function prepareCurrentHostedManagedDependencyProviderTools(context: Curr
     const record = associate(state.record.qualification.path);
     const capsule = associate(capsulePath);
     if ((fstatSync(record.fd).mode & 0o7777) !== 0o600 || (fstatSync(capsule.fd).mode & 0o7777) !== 0o600 ||
-        !readManagedProviderDescriptor(record.fd).equals(qualification.bytes) || !readManagedProviderDescriptor(capsule.fd).equals(bytes)) invalid();
+        !readOriginalHostedManagedProviderDescriptor(record.fd,rootInternalAccess).equals(qualification.bytes) || !readOriginalHostedManagedProviderDescriptor(capsule.fd,rootInternalAccess).equals(bytes)) invalid();
     state.provider = {unit,reference:selected.reference,root:rootPin,qualification:freezeFacts(q),admission:state.admission===DependencyToolReadyReadStatus.Ready ?
-      {status:DependencyToolReadyReadStatus.Ready,facts:state.record.providerReady} : {status:DependencyToolReadyReadStatus.Usable,execution:state.record.execution},record,capsule,capsulePath};
+      {status:DependencyToolReadyReadStatus.Ready,facts:state.record.providerReady} : state.admission===DependencyToolReadyReadStatus.Baseline ?
+      {status:DependencyToolReadyReadStatus.Baseline,execution:state.record.execution} : {status:DependencyToolReadyReadStatus.Usable,execution:state.record.execution},record,capsule,capsulePath};
     return readCurrentHostedManagedDependencyProviderTools(context,fence,unit);
   } catch (error) { delete state.provider; for (const resource of opened.reverse()) resource.close(); throw error; }
 }
 /** Finite-root facts rejoin before/after use; no caller ReadyReader. */
-export function readCurrentHostedManagedDependencyProviderTools(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence, unit: string) {
-  const selected = readCurrentHostedManagedDependencyProvider(context,fence,unit), state = contexts.get(context)?.rootPurpose;
-  const provider = state?.provider;
-  if (!state || !provider || provider.unit !== unit || !sameDependencyProtectedReference(provider.reference,selected.reference) ||
-      !encode(readHostedDependencyRootDirectoryPin(provider.root.canonicalPath)).equals(encode(provider.root))) invalid();
-  const qualification = material(state.record.qualification,`${root}/${dependencyToolQualificationRecordName(selected.value.parentStartId)}`,16384);
-  if (!readManagedProviderDescriptor(provider.record.fd).equals(qualification.bytes) || !encode(provider.qualification).equals(qualification.bytes) ||
-      !readManagedProviderDescriptor(provider.capsule.fd).equals(encode(dependencyToolAdmittedGuestConfig(provider.qualification)))) invalid();
-  if (provider.child) {
-    if (!provider.command || !provider.args) invalid();
-    assertHostedFdProcess(provider.child,unit,HostedFdLaunchKind.Provider,provider.command,provider.args);
-  }
-  const after = readCurrentHostedManagedDependencyProvider(context,fence,unit);
-  if (!sameDependencyProtectedReference(after.reference,provider.reference)) invalid();
-  return Object.freeze({qualification:provider.qualification,admission:provider.admission,capsulePath:provider.capsulePath,
-    provider:selected.value,reference:selected.reference});
+export function readCurrentHostedManagedDependencyProviderTools(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,unit:string) {
+  return readOriginalHostedManagedProviderTools(context,fence,unit,rootInternalAccess);
 }
 /** Original-map fixed spawn owns the Plan/FDA child; no registration DTO. */
 export function spawnCurrentHostedManagedDependencyProvider(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence, unit: string,
   input: Readonly<{command:string;args:readonly string[];cwd:string;env:Readonly<Record<string,string>>}>): CodexAppServerChildProcess {
-  const session = contexts.get(context)?.rootPurpose?.sessionHome;
+  const session = consumerEntry(context)?.rootPurpose?.sessionHome;
   if (!session || session.purpose !== HostedDependencyRootPurpose.ManagedGitReadV1) invalid();
   return spawnManagedProvider(context,fence,unit,input);
 }
@@ -321,7 +329,7 @@ function spawnManagedProvider(context: CurrentHostedDependencyOrigin, fence: Hos
   let child: ChildProcessWithoutNullStreams | undefined;
   try {
     retainCurrentHostedManagedDependencyProviderInvocation(context,fence,invocation);
-    const retained = contexts.get(context)!.rootPurpose!;
+    const retained = consumerEntry(context)!.rootPurpose!;
     if (!retained.sessionHome?.leased || !retained.provider || retained.provider.home) invalid();
     retained.provider.home = retained.sessionHome; retained.provider.executionUse=currentSessionExecutionUse(context,undefined,fence).use;
     if (retained.provider.executionUse.home!==retained.sessionHome.facade) invalid();
@@ -335,27 +343,27 @@ function spawnManagedProvider(context: CurrentHostedDependencyOrigin, fence: Hos
   }
 }
 export function observeCurrentHostedManagedDependencyProviderFrame(context: CurrentHostedDependencyOrigin, unit: string): Promise<void> {
-  const provider = contexts.get(context)?.rootPurpose?.provider;
+  const provider = consumerEntry(context)?.rootPurpose?.provider;
   if (!provider || provider.unit !== unit || !provider.child || provider.stopping) invalid();
   return hostedFdLaunch(provider.child).observe().then(() => {
     // Manager birth is captured before any provider byte is released.
     const invocationId = collectUnitInvocation(unit);
-    if (contexts.get(context)?.rootPurpose?.provider !== provider || provider.invocationId || provider.stopping) invalid();
+    if (consumerEntry(context)?.rootPurpose?.provider !== provider || provider.invocationId || provider.stopping) invalid();
     provider.invocationId = invocationId;
   });
 }
 export function remainingCurrentHostedManagedDependencyProviderSetup(context: CurrentHostedDependencyOrigin, unit: string): number {
-  const provider = contexts.get(context)?.rootPurpose?.provider;
+  const provider = consumerEntry(context)?.rootPurpose?.provider;
   if (!provider || provider.unit !== unit || !provider.child) invalid();
   return hostedFdLaunch(provider.child).remainingSetupMs();
 }
 export function releaseCurrentHostedManagedDependencyProviderFrame(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence, unit: string): void {
-  const selected = readCurrentHostedManagedDependencyProviderTools(context,fence,unit), provider = contexts.get(context)?.rootPurpose?.provider;
+  const selected = readCurrentHostedManagedDependencyProviderTools(context,fence,unit), provider = consumerEntry(context)?.rootPurpose?.provider;
   if (!provider || !provider.child || provider.stopping || !provider.invocationId || collectUnitInvocation(unit) !== provider.invocationId ||
       !provider.invocation || !("stdinBootstrap" in provider.invocation) || typeof provider.invocation.stdinBootstrap !== "string") invalid();
   const child = provider.child, assertCurrent = () => {
     readCurrentHostedManagedDependencyProviderTools(context,fence,unit);
-    if (contexts.get(context)?.rootPurpose?.provider !== provider || collectUnitInvocation(unit) !== provider.invocationId) invalid();
+    if (consumerEntry(context)?.rootPurpose?.provider !== provider || collectUnitInvocation(unit) !== provider.invocationId) invalid();
     assertHostedManagedDependencyToolRelease(child,fence);
     readCurrentHostedManagedDependencyProviderTools(context,fence,unit);
   };
@@ -363,19 +371,19 @@ export function releaseCurrentHostedManagedDependencyProviderFrame(context: Curr
   if (!sameDependencyProtectedReference(selected.reference,provider.reference)) invalid();
 }
 export function invalidateCurrentHostedManagedDependencyProvider(context: CurrentHostedDependencyOrigin, unit: string): void {
-  const provider = contexts.get(context)?.rootPurpose?.provider;
+  const provider = consumerEntry(context)?.rootPurpose?.provider;
   if (!provider || provider.unit !== unit || !provider.child) invalid();
   provider.stopping=true; hostedFdLaunch(provider.child).invalidate();
 }
 function retainCurrentHostedManagedDependencyProviderInvocation(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence, invocation: Readonly<{command:string;args:readonly string[];systemdUnit?:string}>): void {
   const unit = invocation.systemdUnit; if (!unit) invalid(); readCurrentHostedManagedDependencyProviderTools(context,fence,unit);
-  const provider = contexts.get(context)?.rootPurpose?.provider;
+  const provider = consumerEntry(context)?.rootPurpose?.provider;
   if (!provider || provider.invocation || invocation.command !== hostedDependencySystemdRunExecutable ||
       !invocation.args.includes(`--unit=${unit}`) || !invocation.args.includes(`--property=RootDirectory=${provider.root.canonicalPath}`)) invalid();
   provider.invocation = invocation; provider.command = invocation.command; provider.args = Object.freeze([...invocation.args]);
 }
 function bindCurrentHostedManagedDependencyProviderChild(context: CurrentHostedDependencyOrigin, invocation: object, child: ChildProcess): void {
-  const provider = contexts.get(context)?.rootPurpose?.provider;
+  const provider = consumerEntry(context)?.rootPurpose?.provider;
   if (!provider || provider.invocation !== invocation || provider.child || !provider.command || !provider.args) invalid();
   assertHostedFdProcess(child,provider.unit,HostedFdLaunchKind.Provider,provider.command,provider.args);
   const proxyPid = child.pid; if (typeof proxyPid !== "number" || !Number.isSafeInteger(proxyPid) || proxyPid <= 0) invalid();
@@ -389,12 +397,12 @@ function bindCurrentHostedManagedDependencyProviderChild(context: CurrentHostedD
 }
 /** Immutable facts from the exact original private native child. No status DTO or completion grant enters. */
 export function readOriginalHostedManagedProviderWaitFacts(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,unit:string) {
-  const parent = readCurrentHostedManagedDependencyProviderParent(context,fence), state = contexts.get(context)?.rootPurpose, provider = state?.provider;
+  const parent = readCurrentHostedManagedDependencyProviderParent(context,fence), state = consumerEntry(context)?.rootPurpose, provider = state?.provider;
   if (!state || !provider || provider.unit !== unit || !provider.child) invalid();
   return formManagedProviderWaitFacts(parent,provider,state.sessionHome,currentSessionExecutionUse(context,undefined,fence).use);
 }
 export function closeCurrentHostedManagedDependencyProviderTools(context: CurrentHostedDependencyOrigin, unit: string): void {
-  const state = contexts.get(context)?.rootPurpose, provider = state?.provider;
+  const state = consumerEntry(context)?.rootPurpose, provider = state?.provider;
   if (!state || !provider) return; if (provider.unit !== unit) invalid();
   if (!provider.child) {
     if (provider.spawnAttempted) invalid();
@@ -412,21 +420,21 @@ export function closeCurrentHostedManagedDependencyProviderTools(context: Curren
       new HostedInstallationActivationStore().publishScopedTerminal(fence,provider.ordinaryTerminal);
       readOriginalHostedOrdinaryProviderTerminal(provider.ordinaryTerminal,fence);
       provider.capsule.close(); provider.record.close();
-      if (contexts.get(context)?.rootPurpose!==state || state.provider!==provider) invalid();
+      if (consumerEntry(context)?.rootPurpose!==state || state.provider!==provider) invalid();
       delete state.provider; readCurrentHostedManagedDependencyProviderParent(context,fence);
     }); return;
   }
   withHostedActivationFence(fence=>{
     provider.stopping=true; hostedFdLaunch(provider.child!).invalidate();
     publishOriginalHostedManagedProviderTerminal(context,fence,unit);
-    if (contexts.get(context)?.rootPurpose!==state || state.provider!==provider) invalid();
+    if (consumerEntry(context)?.rootPurpose!==state || state.provider!==provider) invalid();
     provider.capsule.close();provider.record.close();delete state.provider;
     readCurrentHostedManagedDependencyProviderParent(context,fence);
   });
 }
 export function readOriginalHostedOrdinaryProviderTerminal(token:OriginalHostedOrdinaryProviderTerminal,fence:HostedActivationFence) {
   assertHostedActivationFence(fence); const context=OriginalHostedOrdinaryProviderTerminal.resolve(token,rootInternalAccess);
-  const state=contexts.get(context)?.rootPurpose,provider=state?.provider,receipt=provider?.ordinaryCompletion;
+  const state=consumerEntry(context)?.rootPurpose,provider=state?.provider,receipt=provider?.ordinaryCompletion;
   if (!provider || provider.ordinaryTerminal!==token || !receipt || !provider.stopping || !provider.child || !provider.proxyClosed ||
       !provider.executionUse || currentSessionExecutionUse(context,undefined,fence).use!==provider.executionUse) invalid();
   const actual=readCurrentHostedManagedDependencyProviderParent(context,fence); if (actual.facts.kind!==CurrentHostedDependencyOriginKind.Ordinary) invalid();
@@ -436,20 +444,10 @@ export function readOriginalHostedOrdinaryProviderTerminal(token:OriginalHostedO
     row.state===HostedCustodyReservationState.Terminal ? HostedOrdinaryProviderReadPhase.OwnTerminal : invalid();
   assertOriginalHostedOrdinaryProviderCompletion(context,fence,provider.unit,receipt,phase); return receipt;
 }
-export function assertCurrentHostedManagedDependencyCapsuleCopy(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence, unit: string, fd: number): void {
-  // The fixed FDA reader owns a temporary contained FD; no collector runs until it closes. This comparison registers no descriptor.
-  assertHostedActivationFence(fence); readRetainedHostedDependencyAttemptFacts(context,DependencyOwnerPhase.Running);
-  const provider = contexts.get(context)?.rootPurpose?.provider; if (!provider) invalid();
-  if (provider.unit !== unit) invalid();
-  const retained = fstatSync(provider.capsule.fd,{bigint:true}), actual = fstatSync(fd,{bigint:true});
-  if (!sameStat(retained,actual) || !readManagedProviderDescriptor(fd).equals(encode(dependencyToolAdmittedGuestConfig(provider.qualification)))) invalid();
+export function assertCurrentHostedManagedDependencyCapsuleCopy(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,unit:string,fd:number):void {
+  assertOriginalHostedManagedCapsuleCopy(context,fence,unit,fd,rootInternalAccess);
 }
-function readManagedProviderDescriptor(fd: number): Buffer {
-  const before = fstatSync(fd,{bigint:true}); if (!before.isFile() || before.size < 1n || before.size > 16384n) invalid();
-  const bytes = Buffer.alloc(Number(before.size)+1); let length = 0;
-  while (length < bytes.length) { const count = readSync(fd,bytes,length,bytes.length-length,length); if (!count) break; length += count; }
-  if (BigInt(length) !== before.size || !sameStat(before,fstatSync(fd,{bigint:true}))) invalid(); return bytes.subarray(0,length);
-}
+
 export { isHostedManagedReadonlyOuterRuntime, isCurrentHostedDependencyManagedReadonlyOrigin } from "./hosted-dependency-current-facts";
 /** Actual latest owner read AFTER the expensive current-origin collection. A factual returned attempt is not an enqueue permit; final frame reasserts. */
 export function assertCurrentHostedDependencyAttempt(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence, phase: DependencyOwnerPhase = DependencyOwnerPhase.Running) {
@@ -457,12 +455,12 @@ export function assertCurrentHostedDependencyAttempt(context: CurrentHostedDepen
 }
 /** Metadata-only current owner fact for an already private-qualified read model. It cannot mint an origin/qualifier or authorize effects: every submission uses assertCurrentHostedDependencyAttempt under the actual fresh fence/collector. */
 export function readRetainedHostedDependencyAttemptFacts(context: CurrentHostedDependencyOrigin, phase: DependencyOwnerPhase = DependencyOwnerPhase.Running) {
-  const retained = contexts.get(context); if (!retained) invalid(); return attemptFromFacts(retained.facts,phase);
+  const retained = consumerEntry(context); if (!retained) invalid(); return attemptFromFacts(retained.facts,phase);
 }
 const rootInternalAccess = Symbol("hosted.root.internal.access");
 function resolveRootPurpose(context:RootPurposeFacade,purpose:HostedDependencyRootPurpose,access:symbol) {
   if (access !== rootInternalAccess) invalid(); const origin = RootPurposeFacade.origin(context,purpose,access);
-  const retained = contexts.get(origin), state = retained?.rootPurpose;
+  const retained = consumerEntry(origin), state = retained?.rootPurpose;
   if (!retained || !state || (purpose === HostedDependencyRootPurpose.ManagedGitReadV1 ? state.managed : purpose === HostedDependencyRootPurpose.SessionRefreshV1 ? state.refresh : state.cleanup) !== context) invalid();
   return {origin,state};
 }
@@ -470,33 +468,19 @@ export type HostedDependencyRootPurposeContext = RootPurposeFacade;
 
 export type HostedDependencyRootDescriptor = RootDescriptor;
 export function readOriginalHostedDependencyRootDescriptor(resource: RootDescriptor): number {
-  const {origin,material} = RootDescriptor.resolve(resource,rootInternalAccess), state = contexts.get(origin)?.rootPurpose;
+  const {origin,material} = RootDescriptor.resolve(resource,rootInternalAccess), state = consumerEntry(origin)?.rootPurpose;
   if (!state || state.descriptors.get(resource) !== material || material.closed) invalid();
   if (!sameDependencyAttempt(readRetainedHostedDependencyAttemptFacts(origin,DependencyOwnerPhase.Running).attempt,state.record.attempt)) invalid();
   return material.fd;
 }
 export function closeOriginalHostedDependencyRootDescriptor(resource: RootDescriptor): void {
   const {origin,material} = RootDescriptor.resolve(resource,rootInternalAccess); if (material.closed) return;
-  const state = contexts.get(origin)?.rootPurpose;
+  const state = consumerEntry(origin)?.rootPurpose;
   if (state && state.descriptors.get(resource) !== material) invalid();
   try { closePhysicalHostedDependencyRootDescriptor(material); material.closed = true; state?.descriptors.delete(resource); }
   catch (error) { contexts.delete(origin); if (currentRootOrigin === origin) currentRootOrigin = undefined; throw error; }
 }
-function assertRootPurposeDescriptors(state: RootPurposeState): void {
-  if (state.descriptors.size > 256) invalid();
-  for (const material of state.descriptors.values()) assertHostedDependencyRootDescriptorMaterial(material);
-  for (const fd of [0,1,2]) { const stat = fstatSync(fd); if (!stat.isFIFO() && !stat.isSocket()) invalid(); }
-  const names = readdirSync("/proc/self/fd"); if (names.length > 512) invalid();
-  for (const name of names) {
-    if (!/^(?:0|[1-9][0-9]{0,5})$/.test(name)) invalid(); const fd = Number(name); if (fd <= 2) continue;
-    try {
-      const stat = fstatSync(fd); if (!stat.isFile() && !stat.isDirectory()) continue;
-      const associated = [...state.descriptors.values()].find(material => material.fd === fd ||
-        [...material.ancestors,...material.dependencies].some(anchor => anchor.fd === fd));
-      if (!associated) invalid(); assertHostedDependencyRootDescriptorMaterial(associated);
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EBADF") throw error; }
-  }
-}
+function assertRootPurposeDescriptors(state:RootPurposeState):void {assertOriginalHostedDependencyRootDescriptorCensus(state,rootInternalAccess);}
 let currentRootOrigin: CurrentHostedDependencyOrigin | undefined;
 const encode = (value: unknown): Buffer => Buffer.from(JSON.stringify(value)+"\n");
 function currentOwnerForRoot(binding: HostedDependencyBinding) {
@@ -506,12 +490,12 @@ function currentOwnerForRoot(binding: HostedDependencyBinding) {
 }
 /** No DTO inputs. Loads the sole trusted qualifier's fixed protected Ready or Unverified record before Running; provenance lives in the original origin map. */
 export function prepareCurrentHostedDependencyRootPurpose(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence): void {
-  const retained = contexts.get(context); if (!retained || retained.rootPurpose) invalid();
+  const retained = consumerEntry(context); if (!retained || retained.rootPurpose) invalid();
   const preparation = readOriginalHostedDependencyRootPreparation(context,fence,DependencyOwnerPhase.ExclusiveMutation), managed = new RootPurposeFacade(context,HostedDependencyRootPurpose.ManagedGitReadV1,rootInternalAccess);
   retained.rootPurpose = {...preparation,managed,descriptors:new Map()}; currentRootOrigin = context;
 }
 export function captureCurrentHostedDependencyRootPurpose(purpose: HostedDependencyRootPurpose): HostedDependencyRootPurposeContext {
-  if (!currentRootOrigin) invalid(); const origin = currentRootOrigin, state = contexts.get(origin)?.rootPurpose; if (!state) invalid();
+  if (!currentRootOrigin) invalid(); const origin = currentRootOrigin, state = consumerEntry(origin)?.rootPurpose; if (!state) invalid();
   if (purpose === HostedDependencyRootPurpose.ManagedGitReadV1) return state.managed;
   if (purpose === HostedDependencyRootPurpose.SessionRefreshV1) {
     return withHostedActivationFence(fence => {
@@ -530,12 +514,15 @@ export function captureCurrentHostedDependencyRootPurpose(purpose: HostedDepende
 }
 function currentRootCommitted(origin:CurrentHostedDependencyOrigin,fence:HostedActivationFence,state:RootPurposeState,
   phase:DependencyOwnerPhase.ExclusiveMutation|DependencyOwnerPhase.Running) {
-  const current=state.admission===DependencyToolReadyReadStatus.Ready ? currentRootReady(origin,fence,phase) : readHostedDependencyUsableReceipt(origin,fence,phase).receipt;
-  if(!encode(current).equals(encode(state.admission===DependencyToolReadyReadStatus.Ready ? state.ready : state.unverified)))invalid();return current;
+  const current=state.admission===DependencyToolReadyReadStatus.Ready ? currentRootReady(origin,fence,phase) :
+    state.admission===DependencyToolReadyReadStatus.Baseline ? readCurrentHostedDependencyGenerationBaseline(origin,fence)?.ready : readHostedDependencyUsableReceipt(origin,fence,phase).receipt;
+  const expected=state.admission===DependencyToolReadyReadStatus.Ready ? state.ready : state.admission===DependencyToolReadyReadStatus.Baseline ? state.baselineReady : state.unverified;
+  if(!current || !encode(current).equals(encode(expected)))invalid();return current;
 }
 function rootScope(context: RootPurposeFacade, purpose: HostedDependencyRootPurpose, fence: HostedActivationFence, phase: DependencyOwnerPhase) {
   const {origin,state} = resolveRootPurpose(context,purpose,rootInternalAccess), actual = assertCurrentHostedDependencyAttempt(origin,fence,phase);
   const {binding,attempt,facts} = actual, owner = currentOwnerForRoot(binding);
+  assertOriginalHostedDependencyCurrentGenerationEffect(origin,fence,phase,rootInternalAccess);
   const entry=facts.kind===CurrentHostedDependencyOriginKind.Ordinary ? readCurrentHostedOrdinaryDependencyReaderEntry(origin,fence,phase) : undefined;
   material(state.reference,`${root}/dependency-root-preparations/${attempt.launch.startId}.json`,65536);
   const scope=formHostedDependencyRootScopeFacts(actual,owner,state.record,phase,rootIdentity(facts,binding),entry);
@@ -565,24 +552,8 @@ export function openCurrentHostedDependencyRootDescriptor(context: HostedDepende
   try { assertCurrentHostedDependencyRootPurpose(context,HostedDependencyRootPurpose.ManagedGitReadV1,fence); return descriptor; }
   catch (error) { descriptor.close(); throw error; }
 }
-export function assertCurrentHostedDependencyRetiredReady(context: HostedDependencyRootPurposeContext, fence: HostedActivationFence): HostedDependencyRootScope {
-  const held = rootScope(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,fence,DependencyOwnerPhase.ExclusiveMutation);
-  if(held.state.admission!==DependencyToolReadyReadStatus.Ready)invalid();
-  assertHostedDependencyRetirementOwnerFacts(held.state.record,held.owner);
-  if (held.owner.version === 1 || !held.owner.generationContinuity) invalid();
-  const slot = parseDependencyGenerationContinuityInvalidation(held.owner.generationContinuity), ready = held.state.ready;
-  const store = LocalDependencyReceiptStore.open({rootPath:hostedDependencyReceiptHistoryRoot,maxRecordBytes:16384,maxHistorySteps:2048});
-  try {
-    const current = store.read(held.actual.binding.workspace);
-    if (!current || current.state !== DependencyReceiptState.Unverified || current.revision !== ready.receipt.revision+1 || current.generation !== ready.receipt.generation ||
-        slot.operationId !== held.actual.attempt.attemptId || slot.readyRevision !== ready.receipt.revision || slot.unverifiedRevision !== current.revision ||
-        slot.generation !== ready.receipt.generation || !sameDependencyProtectedReference(slot.previousReady,ready.reference)) invalid();
-    const previous = store.getCommittedReady(held.actual.binding.workspace,ready.receipt.revision), retired = store.getCommittedUnverified(held.actual.binding.workspace,current.revision);
-    if (!encode(previous).equals(encode(ready)) || !encode(retired.receipt).equals(encode(current)) || !sameDependencyProtectedReference(retired.reference,slot.retiredUnverified)) invalid();
-  } finally { store.close(); }
-  const after = assertCurrentHostedDependencyAttempt(held.origin,fence,DependencyOwnerPhase.ExclusiveMutation);
-  if (!sameDependencyAttempt(after.attempt,held.actual.attempt) || !encode(currentOwnerForRoot(after.binding)).equals(encode(held.owner))) invalid();
-  return held.scope;
+export function assertCurrentHostedDependencyRetiredReady(context:HostedDependencyRootPurposeContext,fence:HostedActivationFence):HostedDependencyRootScope {
+  return assertOriginalHostedDependencyRetiredReady(context,fence,rootInternalAccess);
 }
 /** One concrete retirement producer under the actual synchronous host fence. Store verifier inputs are the stores' own captured predecessor facts. Neither callbacks, baseline records nor expected revisions arrive from the caller. An uncertain receipt/CAS is held, never released or implicitly retried. */
 export function retireCurrentHostedDependencySourceCleanup(context:HostedDependencyRootPurposeContext,reason:DependencyUnverifiedReason.TreeChanged|DependencyUnverifiedReason.InputsChanged):void {
@@ -603,41 +574,28 @@ export function readOriginalHostedDependencyRetirementOwner(binding:HostedDepend
 /** Factual revocation only: no current Ready, purpose or writer permit is issued. */
 export function retireCurrentHostedDependencyWarmReady(context:CurrentHostedDependencyOrigin):void {retireOriginalHostedDependencyWarmReady(context,rootInternalAccess);}
 export function readOriginalHostedDependencyWarmRetirement(context:CurrentHostedDependencyOrigin,access:symbol) {
-  if(access!==rootInternalAccess)invalid();const retained=contexts.get(context);if(!retained)invalid();return retained.warmRetirement;
+  if(access!==rootInternalAccess)invalid();const retained=consumerEntry(context);if(!retained)invalid();return retained.warmRetirement;
 }
-/** SAME original map captures genuine Ready BEFORE retirement; unsupported
- * continuity stays held, never interpreted as missing baseline authority. */
+/** Fixed genuine historical selection; no caller reason/record/owner facts. */
 export function captureOriginalHostedDependencyWarmRetirement(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol) {
-  if(access!==rootInternalAccess)invalid();const retained=contexts.get(context);if(!retained)invalid();
-  if(retained.warmRetirement)return retained.warmRetirement;
-  const actual=assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation),{binding,attempt}=actual;
-  if(binding.version!==2 || retained.cold || retained.rootPurpose || actual.facts.kind===CurrentHostedDependencyOriginKind.Ordinary && !retained.ordinaryAdmitted)invalid();
-  const owner=currentOwnerForRoot(binding);if(owner.version===1 || !isDependencyConsumerOwner(owner.owner) || !sameDependencyAttempt(owner.owner.attempt,attempt))invalid();
-  const receipt=readHostedDependencyEstablishedReceipt(binding);if(!receipt || receipt.state!==DependencyReceiptState.Ready)invalid();
-  if(owner.generationContinuity){const slot=parseDependencyGenerationContinuityInvalidation(owner.generationContinuity);if(slot.readyRevision>=receipt.revision)invalid();}
-  const ready=readHostedDependencyExistingCommittedReady(fence,binding,receipt.revision),tree=lstatSync(binding.workspace.canonicalPath+"/node_modules",{bigint:true});
-  if(!encode(ready.receipt).equals(encode(receipt)) || !tree.isDirectory() || tree.uid!==0n || tree.gid!==0n || (tree.mode&0o700n)!==0o700n ||
-    tree.dev.toString()!==receipt.tree.dev || tree.ino.toString()!==receipt.tree.ino)invalid();
-  const after=assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
-  if(!sameDependencyAttempt(after.attempt,attempt) || !encode(currentOwnerForRoot(binding)).equals(encode(owner)))invalid();
-  return retained.warmRetirement={phase:HostedDependencyWarmRetirementPhase.Captured,binding,attempt:freezeFacts(attempt),owner:freezeFacts(owner),ready:freezeFacts(ready)};
+  return captureOriginalHostedDependencyWarmRetirementFacts(context,fence,access);
 }
 /** Protected config facts only, bounded retained FD and root ancestry. Actual issuer/admission selects workspace first; this function cannot mint a purpose. */
 export { readHostedDependencyRootGitConfigPin } from "./hosted-dependency-current-facts";
 /** Fixed factual IO selector; only the original lexical access can select its
  * record. It neither opens a descriptor nor registers supplied physical facts. */
 export function readOriginalHostedDependencyDescriptorOpening(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol) {
-  if(access!==rootInternalAccess)invalid();const state=contexts.get(context)?.rootPurpose;if(!state)invalid();
+  if(access!==rootInternalAccess)invalid();const state=consumerEntry(context)?.rootPurpose;if(!state)invalid();
   return {scope:assertCurrentHostedDependencyRootPurpose(state.managed,HostedDependencyRootPurpose.ManagedGitReadV1,fence),record:state.record};
 }
-export function assertOriginalHostedSessionRuntimeCompositionAccess(context:CurrentHostedDependencyOrigin,access:symbol):void { if (access!==rootInternalAccess || !contexts.get(context)?.rootPurpose || contexts.get(context)!.rootPurpose!.sessionRuntime) invalid(); }
+export function assertOriginalHostedSessionRuntimeCompositionAccess(context:CurrentHostedDependencyOrigin,access:symbol):void { if (access!==rootInternalAccess || !consumerEntry(context)?.rootPurpose || consumerEntry(context)!.rootPurpose!.sessionRuntime) invalid(); }
 /** Fixed actual stores and driver. No supplied StorePort, constructor or terminal DTO. */
 export function createCurrentHostedDependencySessionRuntime(context: CurrentHostedDependencyOrigin, input: OriginalHostedSessionRuntimeCompositionInput) {
-  if (!contexts.get(context)?.rootPurpose) invalid();
+  if (!consumerEntry(context)?.rootPurpose) invalid();
   input = Object.freeze({...input,options:Object.freeze({...input.options})});
-  const retained=contexts.get(context)?.rootPurpose; if (!retained || retained.sessionRuntime) invalid();
+  const retained=consumerEntry(context)?.rootPurpose; if (!retained || retained.sessionRuntime) invalid();
   const composition=createOriginalHostedSessionRuntimeComposition(context,input,rootInternalAccess);
-  if (contexts.get(context)?.rootPurpose!==retained || retained.sessionRuntime) invalid();
+  if (consumerEntry(context)?.rootPurpose!==retained || retained.sessionRuntime) invalid();
   const state={state:retained,...composition}, {physical,managedRunStore,materializer,driver}=composition;
   const lifecycle: SessionExecutionLifecyclePort = Object.freeze({begin:async () => {
     const selected = sessionRuntime(context), previous = selected.runtime.tail; let unlock!: () => void;
@@ -696,7 +654,7 @@ export function createCurrentHostedDependencySessionRuntime(context: CurrentHost
   sessionRuntime(context); return Object.freeze({sessionStore,leaseStore,managedRunStore,agentDriver:driver,materializer,sessionExecutionLifecycle:lifecycle});
 }
 function sessionRuntime(context:CurrentHostedDependencyOrigin, heldFence?:HostedActivationFence) {
-  const read = (fence:HostedActivationFence) => { const state = contexts.get(context)?.rootPurpose;
+  const read = (fence:HostedActivationFence) => { const state = consumerEntry(context)?.rootPurpose;
     if (!state?.sessionRuntime) invalid(); readCurrentHostedManagedDependencyProviderParent(context,fence);
     for (const pin of [state.sessionRuntime.stateRoot,state.sessionRuntime.sessionRoot]) {
       assertDirectory(pin); const stat = lstatSync(pin.canonicalPath);
@@ -706,7 +664,7 @@ function sessionRuntime(context:CurrentHostedDependencyOrigin, heldFence?:Hosted
   return heldFence ? read(heldFence) : withHostedActivationFence(read);
 }
 function currentSessionExecutionUse(context:CurrentHostedDependencyOrigin, handle?:SessionExecutionUse, fence?:HostedActivationFence) {
-  const retained = contexts.get(context)?.rootPurpose?.sessionRuntime, use = retained?.use;
+  const retained = consumerEntry(context)?.rootPurpose?.sessionRuntime, use = retained?.use;
   if (!retained || !use || use.phase === ManagedSessionUsePhase.Complete || handle !== undefined && use.handle !== handle) invalid();
   const selected = sessionRuntime(context,fence); if (selected.runtime !== retained || selected.runtime.use !== use) invalid(); return {...selected,use};
 }
@@ -730,7 +688,7 @@ async function completeSessionExecutionUse(context:CurrentHostedDependencyOrigin
 }
 /** Only the original fixed composition can admit its exact materialization. */
 export function materializeCurrentHostedDependencySession(context:CurrentHostedDependencyOrigin, input:Readonly<{session:SessionArtifact;redactor:RedactorPort;sessionExecutionUse?:SessionExecutionUse}>) {
-  if (!contexts.get(context)?.rootPurpose) invalid();
+  if (!consumerEntry(context)?.rootPurpose) invalid();
   input = captureManagedSessionMaterializationInput(input); const selected = currentSessionExecutionUse(context,input.sessionExecutionUse), {use} = selected;
   if (use.phase !== ManagedSessionUsePhase.Begun || use.home || use.materialized) invalid();
   const artifact = input.session, provenance = selected.runtime.sessionReads.get(artifact); if (!provenance) invalid();
@@ -760,15 +718,15 @@ export function readCurrentHostedDependencyExecutionUseHome(context:CurrentHoste
   if (!selected.use.home || selected.use.phase !== ManagedSessionUsePhase.Active) invalid(); return selected.use.home;
 }
 export function prepareCurrentHostedDependencySessionCache(context:CurrentHostedDependencyOrigin):void {
-  if (!contexts.get(context)?.rootPurpose) invalid(); withHostedActivationFence(fence => createCurrentHostedDependencySessionHome(context,fence));
+  if (!consumerEntry(context)?.rootPurpose) invalid(); withHostedActivationFence(fence => createCurrentHostedDependencySessionHome(context,fence));
 }
 export type CurrentHostedDependencySessionHome = ManagedSessionHomeFacade;
 export function assertOriginalHostedDependencySessionHomeIdentity(home: CurrentHostedDependencySessionHome): void {
-  const context = ManagedSessionHomeFacade.origin(home,rootInternalAccess), state = contexts.get(context)?.rootPurpose;
+  const context = ManagedSessionHomeFacade.origin(home,rootInternalAccess), state = consumerEntry(context)?.rootPurpose;
   if (!state || state.sessionHome?.facade !== home && state.sessionCache?.facade !== home) invalid();
 }
 function sessionHome(home: CurrentHostedDependencySessionHome, fence: HostedActivationFence) {
-  const context = ManagedSessionHomeFacade.origin(home,rootInternalAccess), state = contexts.get(context)?.rootPurpose;
+  const context = ManagedSessionHomeFacade.origin(home,rootInternalAccess), state = consumerEntry(context)?.rootPurpose;
   if (!state || state.sessionHome?.facade !== home && state.sessionCache?.facade !== home) invalid();
   const selected = state.sessionHome?.facade === home ? state.sessionHome : state.sessionCache; if (!selected) invalid();
   const actual = readCurrentHostedManagedDependencyProviderParent(context,fence);
@@ -781,20 +739,20 @@ function sessionHome(home: CurrentHostedDependencySessionHome, fence: HostedActi
 }
 /** Fixed current R/C selection BEFORE any auth writer or session bootstrap. */
 export function createCurrentHostedDependencySessionHome(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence): CurrentHostedDependencySessionHome {
-  const actual = readCurrentHostedManagedDependencyProviderParent(context,fence), state = contexts.get(context)?.rootPurpose;
+  const actual = readCurrentHostedManagedDependencyProviderParent(context,fence), state = consumerEntry(context)?.rootPurpose;
   if (!state || state.provider) invalid();
   if (state.sessionCache) { sessionHome(state.sessionCache.facade,fence); return state.sessionCache.facade; }
   if (state.preparingHome) invalid();
   const facade = new ManagedSessionHomeFacade(context,rootInternalAccess); state.preparingHome = facade;
   const physical = preparePhysicalOriginalHostedDependencySessionHome(facade,fence);
   const after = readCurrentHostedDependencyHomePreparation(facade,fence);
-  if (!sameDependencyAttempt(after.attempt,actual.attempt) || contexts.get(context)?.rootPurpose !== state) invalid();
+  if (!sameDependencyAttempt(after.attempt,actual.attempt) || consumerEntry(context)?.rootPurpose !== state) invalid();
   state.sessionCache = {facade,...physical,leased:false,purpose:HostedDependencyRootPurpose.ManagedGitReadV1}; delete state.preparingHome; Object.freeze(facade);
   sessionHome(facade,fence); return facade;
 }
 /** Fixed pending-home recipe, available only to the original issuer's unescaped facade. It accepts no path, pins, state, flags, callback or config override. */
 export function readCurrentHostedDependencyHomePreparation(home: CurrentHostedDependencySessionHome, fence: HostedActivationFence) {
-  const context = ManagedSessionHomeFacade.origin(home,rootInternalAccess), state = contexts.get(context)?.rootPurpose;
+  const context = ManagedSessionHomeFacade.origin(home,rootInternalAccess), state = consumerEntry(context)?.rootPurpose;
   if (!state || state.preparingHome !== home || state.sessionCache || state.provider) invalid();
   const actual = readCurrentHostedManagedDependencyProviderParent(context,fence);
   const qualification = material(state.record.qualification,`/var/lib/subscription-runtime-host-policy/${dependencyToolQualificationRecordName(actual.attempt.launch.startId)}`,16384);
@@ -812,7 +770,7 @@ export function assertCurrentHostedDependencySessionAuthWritable(home: CurrentHo
 export { writeOriginalHostedDependencySessionAuth as writeCurrentHostedDependencySessionAuth,
   snapshotOriginalHostedDependencySessionAuth as snapshotCurrentHostedDependencySessionAuth } from "./hosted-managed-dependency-session-auth";
 export function readCurrentHostedDependencyProviderSessionHome(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence, home: string | undefined, codexHome: string | undefined) {
-  const state = contexts.get(context)?.rootPurpose;
+  const state = consumerEntry(context)?.rootPurpose;
   if (!state?.sessionHome) invalid();
   const selected = sessionHome(state.sessionHome.facade,fence);
   if (!selected.home.leased || home !== selected.home.home.canonicalPath || codexHome !== selected.home.codexHome.canonicalPath) invalid();
@@ -855,14 +813,14 @@ function leaseCurrentHostedDependencySessionHome(home: CurrentHostedDependencySe
   });
 }
 function managedProviderProcessFacade(context: CurrentHostedDependencyOrigin, child: ChildProcessWithoutNullStreams): CodexAppServerChildProcess {
-  const provider = contexts.get(context)?.rootPurpose?.provider;
+  const provider = consumerEntry(context)?.rootPurpose?.provider;
   if (!provider || provider.child !== child || provider.facade) invalid();
   const facade = createHostedManagedDependencySdkView(context,child); provider.facade = facade; return facade;
 }
 /** Both enqueue and deferred physical IO resolve the same original entry. */
 export function writeCurrentHostedManagedDependencyProviderView(context: CurrentHostedDependencyOrigin, view: CodexAppServerChildProcess, chunk?: string | Uint8Array): boolean { return enqueueManagedProviderInput(context,view,chunk); }
 function enqueueManagedProviderInput(context:CurrentHostedDependencyOrigin,view:CodexAppServerChildProcess,chunk?:string|Uint8Array,fence?:HostedActivationFence):boolean {
-  const provider = contexts.get(context)?.rootPurpose?.provider;
+  const provider = consumerEntry(context)?.rootPurpose?.provider;
   if (!provider?.child || provider.facade !== view || provider.inputEnding) invalid();
   if (fence) assertManagedProviderInput(context,view,fence); else withHostedActivationFence(held => assertManagedProviderInput(context,view,held));
   const launch = hostedFdLaunch(provider.child), limit = launch.providerInputByteLimit(), remaining = limit-(provider.inputBytes ?? 0);
@@ -885,23 +843,23 @@ function enqueueManagedProviderInput(context:CurrentHostedDependencyOrigin,view:
   return provider.inputBytes < limit;
 }
 function assertManagedProviderInput(context: CurrentHostedDependencyOrigin, view: CodexAppServerChildProcess, fence: HostedActivationFence): void {
-  const state = contexts.get(context)?.rootPurpose, provider = state?.provider, home = state?.sessionHome;
+  const state = consumerEntry(context)?.rootPurpose, provider = state?.provider, home = state?.sessionHome;
   if (!state || !provider?.child || provider.facade !== view || provider.stopping || provider.proxyClosed ||
       !home?.leased || provider.home !== home) invalid();
   const selected = home.purpose === HostedDependencyRootPurpose.SessionRefreshV1 ? state.refresh : state.managed;
   if (!selected) invalid(); assertCurrentHostedDependencyRootPurpose(selected,home.purpose,fence);
   readCurrentHostedManagedDependencyProviderTools(context,fence,provider.unit);
-  if (contexts.get(context)?.rootPurpose !== state || state.provider !== provider || provider.stopping || provider.proxyClosed) invalid();
+  if (consumerEntry(context)?.rootPurpose !== state || state.provider !== provider || provider.stopping || provider.proxyClosed) invalid();
 }
 /** Fixed original-map dispatch refuses counterfeit SDK views. */
 export function signalCurrentHostedManagedDependencyProviderView(context: CurrentHostedDependencyOrigin, view: CodexAppServerChildProcess, signal: NodeJS.Signals): void {
-  const provider = contexts.get(context)?.rootPurpose?.provider;
+  const provider = consumerEntry(context)?.rootPurpose?.provider;
   if (!provider?.child || provider.facade !== view) invalid();
   provider.stopping = true; hostedFdLaunch(provider.child).invalidate(); if (provider.proxyClosed) return;
   withHostedActivationFence(fence => {
     const actual = readCurrentHostedManagedDependencyProviderParent(context,fence), reservation = actual.facts.kind===CurrentHostedDependencyOriginKind.Ordinary ?
       actual.facts.ordinary.activation.ordinaryStarts.find(row=>row.unit===provider.unit) : actual.facts.epoch.reservations.find(row=>row.unit===provider.unit);
-    if (contexts.get(context)?.rootPurpose?.provider !== provider || !reservation || reservation.state !== HostedCustodyReservationState.Reserved ||
+    if (consumerEntry(context)?.rootPurpose?.provider !== provider || !reservation || reservation.state !== HostedCustodyReservationState.Reserved ||
         provider.invocationId && collectUnitInvocation(provider.unit) !== provider.invocationId) invalid();
     signalHostedSystemdUnit(provider.unit,signal); // Fixed owned unit request, never PID-only completion proof.
   });
@@ -957,7 +915,7 @@ export function spawnCurrentHostedDependencySessionRefresh(home: CurrentHostedDe
 }
 function originalSessionProvider(home:CurrentHostedDependencySessionHome,unit:string) {
   assertOriginalHostedDependencySessionHomeIdentity(home); const context = ManagedSessionHomeFacade.origin(home,rootInternalAccess);
-  const state = contexts.get(context)?.rootPurpose, provider = state?.provider;
+  const state = consumerEntry(context)?.rootPurpose, provider = state?.provider;
   if (!state?.sessionHome || state.sessionHome.facade !== home || !provider || provider.home !== state.sessionHome || provider.unit !== unit) invalid(); return {context,provider};
 }
 export function observeCurrentHostedDependencySessionRefreshFrame(home:CurrentHostedDependencySessionHome,unit:string):Promise<void> {
@@ -994,4 +952,49 @@ export function requestStopCurrentHostedDependencySessionRefresh(home: CurrentHo
     if (!provider.facade) invalid(); return {context:held.context,facade:provider.facade};
   });
   signalCurrentHostedManagedDependencyProviderView(selected.context,selected.facade,"SIGTERM");
+}
+
+/** Fixed actual operator selection only; never returns writer authority. */
+export function assertCurrentHostedDependencyParentWriterIngress(fence:HostedActivationFence,jobId:string):void {
+  assertOriginalHostedDependencyParentWriterIngress(fence,jobId,rootInternalAccess);
+}
+
+/** Actual execution admission is distinct from denial-only once-entry enrollment. */
+export function assertCurrentHostedDependencyExecutionAdmission(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence):ReturnType<typeof assertCurrentHostedDependencyAttempt> {
+  return assertOriginalHostedDependencyExecutionAdmission(context,fence,rootInternalAccess);
+}
+
+/** Request data selects one existing authored leaf; it supplies no writer authority. */
+export function editCurrentHostedDependencyWarmSourceLeaf(context:CurrentHostedDependencyOrigin,request:unknown):Promise<void> {
+  return editOriginalHostedDependencyWarmSourceLeaf(context,request,rootInternalAccess);
+}
+export function prepareCurrentHostedDependencyColdCustody(policy:unknown) {
+  return prepareOriginalHostedDependencyColdCustody(policy,rootInternalAccess);
+}
+export function completeCurrentHostedDependencyColdCustody(jobId:string):void {
+  completeOriginalHostedDependencyColdCustody(jobId,rootInternalAccess);
+}
+export function readCurrentHostedDependencyMaintenanceAuthority(fence:HostedActivationFence,jobId:string) {return readOriginalHostedDependencyMaintenanceAuthority(fence,jobId,rootInternalAccess);}
+export function claimCurrentHostedDependencyMaintenance(fence:HostedActivationFence,jobId:string,operationId:string) {return claimOriginalHostedDependencyMaintenance(fence,jobId,operationId,rootInternalAccess);}
+export function assertCurrentHostedDependencyMaintenance(fence:HostedActivationFence,jobId:string,attempt:import("@vioxen/subscription-runtime/core").DependencyMaintenanceAttempt) {return assertOriginalHostedDependencyMaintenance(fence,jobId,attempt,rootInternalAccess);}
+export function retireCurrentHostedDependencyEviction(fence:HostedActivationFence,jobId:string,attempt:import("@vioxen/subscription-runtime/core").DependencyMaintenanceAttempt):void {retireOriginalHostedDependencyEviction(fence,jobId,attempt,rootInternalAccess);}
+export function releaseCurrentHostedDependencyMaintenance(fence:HostedActivationFence,jobId:string,attempt:import("@vioxen/subscription-runtime/core").DependencyMaintenanceAttempt):void {releaseOriginalHostedDependencyMaintenance(fence,jobId,attempt,rootInternalAccess);}
+
+/** Fixed physical producer; comparisons cannot register anchors or state. */
+export async function renameCurrentHostedDependencyMaintenanceTree(jobId:string,attempt:import("@vioxen/subscription-runtime/core").DependencyMaintenanceAttempt) {
+  const context=withHostedActivationFence(fence=>{
+    if(currentMaintenanceOrigin)invalid();const state=selectOriginalHostedDependencyMaintenanceRename(fence,jobId,attempt,rootInternalAccess);if(!state)return undefined;
+    const context=Object.freeze({[brand]:true as const});contexts.set(context,state);currentMaintenanceOrigin=context;return context;
+  });
+  if(!context)return undefined;
+  try{return await runOriginalHostedDependencyMaintenanceRename(context,rootInternalAccess);}
+  finally {contexts.delete(context);if(currentMaintenanceOrigin===context)currentMaintenanceOrigin=undefined;}
+}
+export function readOriginalHostedDependencyMaintenanceRenameState(context:CurrentHostedDependencyOrigin,access:symbol):OriginalHostedDependencyMaintenanceRenameState {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);const state=contexts.get(context);
+  if(context!==currentMaintenanceOrigin || !state || !("kind" in state) || state.kind!==HostedDependencyMaintenanceOriginKind.OperatorMaintenance)invalid();return state;
+}
+export function assertOriginalHostedDependencyOperatorDescriptors(fence:HostedActivationFence,access:symbol):void {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
+  if(currentMaintenanceOrigin)assertOriginalHostedDependencyMaintenanceRenameDescriptors(currentMaintenanceOrigin,fence,access);else assertHostedProcessDescriptors();
 }

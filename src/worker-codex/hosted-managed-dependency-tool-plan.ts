@@ -326,7 +326,7 @@ function validatePlan(fence: HostedActivationFence, plan: Plan): void {
         (ready.facts.provenance.kind===DependencyToolReadyProvenanceKind.LocalCompleted || ready.facts.provenance.kind===DependencyToolReadyProvenanceKind.LocalCompared) && matchesDependencyToolReadyIdentity(expected,ready.facts)))fail();
     assertLocalSources(binding,ready.facts.provenance);
   } else {
-    if(ready.status!==DependencyToolReadyReadStatus.Usable || !matchesDependencyToolExecution(qualification.execution,ready.execution))fail();
+    if((ready.status!==DependencyToolReadyReadStatus.Usable && ready.status!==DependencyToolReadyReadStatus.Baseline) || !matchesDependencyToolExecution(qualification.execution,ready.execution))fail();
     assertUsableSources(binding,ready.execution.sourceRoots);
   }
   if(q.installationId!==binding.installationId || q.runtimeSha!==binding.runtimeSha || q.grantDigest!==binding.grantDigest ||
@@ -354,7 +354,7 @@ function providerId(unit: string): string {
 }
 
 function admissionSourceRoots(admission:Plan["admission"]):readonly DependencyToolSourceRoot[] {
-  if(admission.status===DependencyToolReadyReadStatus.Usable)return admission.execution.sourceRoots;
+  if(admission.status===DependencyToolReadyReadStatus.Usable || admission.status===DependencyToolReadyReadStatus.Baseline)return admission.execution.sourceRoots;
   const provenance=admission.facts.provenance;
   return provenance.kind===DependencyToolReadyProvenanceKind.RegistryCompleted?[]:provenance.readonlySources;
 }
@@ -542,7 +542,7 @@ function assertNamespace(plan: Plan, process: HostedFdProcess, unit: HostedFdUni
     const after = fstatSync(fd, { bigint: true }), current = statSync(prefix + dependencyToolGuestConfigPath, { bigint: true });
     if (after.ctimeNs !== capsule.ctimeNs || after.mtimeNs !== capsule.mtimeNs || current.dev !== capsule.dev || current.ino !== capsule.ino) fail();
   } finally { closeSync(fd); }
-  if(plan.admission.status===DependencyToolReadyReadStatus.Usable || plan.admission.facts.provenance.kind===DependencyToolReadyProvenanceKind.LocalCompleted || plan.admission.facts.provenance.kind===DependencyToolReadyProvenanceKind.LocalCompared) {
+  if(plan.admission.status===DependencyToolReadyReadStatus.Usable || plan.admission.status===DependencyToolReadyReadStatus.Baseline || plan.admission.facts.provenance.kind===DependencyToolReadyProvenanceKind.LocalCompleted || plan.admission.facts.provenance.kind===DependencyToolReadyProvenanceKind.LocalCompared) {
     assertLocalLinkRoutes(prefix,tree,admissionSourceRoots(plan.admission).map(source=>source.canonicalPath));
     assertLocalProcessDescriptors(plan, process, unit);
   }

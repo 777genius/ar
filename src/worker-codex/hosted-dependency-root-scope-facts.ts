@@ -15,10 +15,10 @@ export function formHostedDependencyRootScopeFacts(actual:ReturnType<typeof asse
   const common={logicalJobId:binding.jobId,logicalTaskId:identity.logicalTaskId,executionJobId:identity.executionJobId,
     jobRootDir:binding.jobRootDir,workspace:binding.workspace,attempt,ownerRevision:owner.revision};
   if (facts.kind===CurrentHostedDependencyOriginKind.ManagedReadonlyLocal) {
-    if (owner.version!==3 || (record.version!==2 && record.version!==4) || !sameDependencyProtectedReference(owner.custodyBinding,record.custodyReference)) invalid();
+    if (owner.version!==3 || (record.version!==2 && record.version!==4 && record.version!==6) || !sameDependencyProtectedReference(owner.custodyBinding,record.custodyReference)) invalid();
     return freezeFacts({...common,originKind:HostedDependencyRootOriginKind.ManagedReadonlyLocalV1,custodyReference:owner.custodyBinding});
   }
-  if (owner.version!==2 || (record.version!==3 && record.version!==5) || !entry || !sameDependencyProtectedReference(entry.origin,record.originReference) ||
+  if (owner.version!==2 || (record.version!==3 && record.version!==5 && record.version!==7) || !entry || !sameDependencyProtectedReference(entry.origin,record.originReference) ||
       !sameDependencyProtectedReference(entry.producer,record.readerProducer) || !sameDependencyProtectedReference(entry.entry,record.readerEntry)) invalid();
   return freezeFacts({...common,originKind:HostedDependencyRootOriginKind.OrdinaryDependencyReaderV1,originReference:entry.origin,readerProducer:entry.producer,readerEntry:entry.entry});
 }

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
-import type { DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
+import { sameDependencyProtectedReference, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { assertOriginalHostedDependencyPhysicalRecordAccess } from "./hosted-current-dependency-origin";
 import { sameRootDescriptorStat as sameStat } from "./hosted-dependency-root-physical-facts";
 const hash=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
@@ -33,4 +33,11 @@ export function readOriginalHostedDependencyPinnedRecord(access:symbol,path: str
       identity:{dev:String(before.dev),ino:String(before.ino)},sha256:hash(data) };
     return { bytes:data, reference };
   } finally { closeSync(fd); }
+}
+
+/** Same fixed reference comparison as the original lexical material reader. */
+export function readOriginalHostedDependencyMaterialRecord(access:symbol,expected:DependencyProtectedReference,path:string,maximum:number,privateFile:boolean) {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);
+  if(expected.path!==path)invalid();const pin=readOriginalHostedDependencyPinnedRecord(access,path,maximum,privateFile);
+  if(!sameDependencyProtectedReference(pin.reference,expected))invalid();return pin;
 }

@@ -32,7 +32,9 @@ export function releaseHostedDependencyConsumer(fence: HostedActivationFence,
   let attempt,active=false,alreadyReleased=false;
   try {
     const owner = store.read(binding.workspace);
-    active=!!owner && owner.version!==1 && owner.generationContinuity?.kind===DependencyGenerationContinuityKind.BaselineAuthenticatedV1;
+    active=!!owner && owner.version!==1 && (owner.generationContinuity?.kind===DependencyGenerationContinuityKind.BaselineAuthenticatedV1 ||
+      owner.generationContinuity?.kind===DependencyGenerationContinuityKind.RetiredReadyV1 &&
+      !!readHostedActivationBytes(`dependency-generation-retired-intervals/${reservation.startId}.json`));
     if(!owner?.owner) {if(!active)return true;alreadyReleased=true;}
     else {
       if (!isDependencyConsumerOwner(owner.owner)) invalid();

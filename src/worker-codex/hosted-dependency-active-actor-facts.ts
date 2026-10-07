@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { assertHostedActivationFence, readHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysicalWorkspace,
@@ -24,6 +24,14 @@ export function readHostedDependencyActiveActorFacts(fence:HostedActivationFence
   // operator publication supplies its independent actual operator boundary.
   // This fixed factual reader cannot manufacture either principal.
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
+  // A pre-existing async removal lock has no authenticated future-effect
+  // lifetime. Missing current PID/Terminal is not a discharge proof.
+  const operations="/var/lib/subscription-runtime-host-policy/dependency-transactions";
+  try {
+    const before=lstatSync(operations,{bigint:true});if(!before.isDirectory() || before.uid!==0n || (before.mode&0o7777n)!==0o700n)invalid();
+    const names=readdirSync(operations);if(names.length>4096)invalid();if(names.some(name=>name.endsWith(".remove.lock")))return undefined;
+    const after=lstatSync(operations,{bigint:true});if(before.dev!==after.dev || before.ino!==after.ino || before.mtimeNs!==after.mtimeNs || before.ctimeNs!==after.ctimeNs)invalid();
+  }catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
   assertHostedDependencyQualifiedInventory();
   const {installation,activation} = readHostedInstallationActivation();
   assertInspectedInstallation(installation);
@@ -66,6 +74,21 @@ export function readHostedDependencyActiveActorFacts(fence:HostedActivationFence
 /** A v3 reference is finite and once-only. Its immutable seal is issued by the
  * existing private prepared copy; all later reserve attempts independently
  * refuse that consumed operation. A current empty scan is insufficient. */
+export function readHostedDependencyActiveReferenceUnits(fence:HostedActivationFence,access:symbol):readonly string[] {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
+  const initial=readHostedInstallationActivation(),inventory=readHostedReadonlyHostInventory(),units:string[]=[];
+  if(inventory.ordinaryCreators.length>128)invalid();
+  for(const creator of inventory.ordinaryCreators) {
+    const binding=readHostedDependencyBinding(creator.jobId);if(binding?.version!==3)continue;
+    if(binding.installationId!==initial.installation.installationId || binding.runtimeSha!==initial.installation.runtimeSha ||
+        binding.jobRootDir!==creator.jobRootDir || binding.workspace.canonicalPath!==creator.workspacePath)invalid();
+    assertClosedReferenceCreator(fence,binding.reference.operationId,binding.workspace,initial.activation);
+    const start=parseReferenceStart(JSON.parse(pinReferenceFile(referencePath(binding.reference.operationId,"reference-start")).bytes.toString("utf8")));
+    units.push(start.reservation.unit);
+  }
+  if(new Set(units).size!==units.length || JSON.stringify(readHostedInstallationActivation())!==JSON.stringify(initial))invalid();
+  assertHostedActivationFence(fence);return Object.freeze(units);
+}
 function assertClosedReferenceCreator(fence:HostedActivationFence,operationId:string,
   workspace:{canonicalPath:string;dev:string;ino:string},activation:ReturnType<typeof readHostedInstallationActivation>["activation"]):void {
   const relation=readReferenceRelation(operationId), startPin=pinReferenceFile(referencePath(operationId,"reference-start")),

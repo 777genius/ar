@@ -1,3 +1,5 @@
+import { readHostedOrdinaryCatalog as readOrdinaryCatalog, validateHostedOrdinaryCatalogBirths as validateCatalogBirths } from "./hosted-installation-origin-facts";
+import { assertCurrentHostedDependencyParentWriterIngress } from "./hosted-current-dependency-origin";
 import { readHostedOrdinaryReaderFinalFacts } from "./hosted-ordinary-reader-final-facts";
 import { collectHostedOrdinaryReaderParentCompletion, readHostedOrdinaryReaderParentCompletion, fenceHostedOrdinaryReaderOwner } from "./hosted-ordinary-reader-parent-completion";
 import { readHostedOrdinaryProviderCompletionForFinal } from "./hosted-ordinary-provider-failure-recovery";
@@ -346,6 +348,7 @@ export class HostedInstallationActivationStore {
       row.launch.command === command && row.launch.cwd === cwd && JSON.stringify(row.launch.args) === JSON.stringify(args));
     if (candidates.length !== 1) invalid();
     const creator = candidates[0]!;
+    assertCurrentHostedDependencyParentWriterIngress(fence,creator.jobId);
     assertHostedOrdinaryDependencyNotAdopted(fence, creator.workspacePath);
     assertHostedOrdinaryDependencyWriterBoundary(fence,creator.jobId);
     const childSlot = readHostedChildSlot(creator);
@@ -933,20 +936,6 @@ function digest(bytes: Buffer): string { return createHash("sha256").update(byte
 function invalid(): never { throw new Error("hosted_activation_evidence_invalid"); }
 
 function encoded(value: unknown): Buffer { return Buffer.from(JSON.stringify(value) + "\n"); }
-function readOrdinaryCatalog(installation: HostedInstallation, expected: string): HostedOrdinaryOrigins {
-  const bytes = required("ordinary-origins.json"), catalog = parseHostedOrdinaryOrigins(decodeHostedActivationBytes(bytes));
-  if (digest(bytes) !== expected || catalog.installationId !== installation.installationId) invalid();
-  validateCatalogBirths(catalog);
-  return catalog;
-}
-function validateCatalogBirths(catalog: HostedOrdinaryOrigins): void {
-  for (const row of catalog.origins) {
-    const bytes = required("ordinary-origins/" + digest(Buffer.from(row.jobId)) + ".json");
-    const birth = parseHostedOrdinaryBirth(decodeHostedActivationBytes(bytes));
-    if (digest(bytes) !== row.birthSha256 || birth.installationId !== catalog.installationId || birth.jobId !== row.jobId ||
-        birth.jobRootDir !== row.jobRootDir || birth.workspacePath !== row.workspacePath) invalid();
-  }
-}
 function assertNoManagedOrigin(birth: HostedOrdinaryBirth): string | null {
   const jobId = birth.jobId;
   const name = digest(Buffer.from(jobId)) + ".json";

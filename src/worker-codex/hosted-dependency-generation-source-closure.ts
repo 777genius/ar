@@ -1,3 +1,4 @@
+import { readOriginalHostedDependencyRetiredInterval } from "./hosted-dependency-retired-interval-facts";
 import { readOriginalHostedDependencyOperatorNativeCensus } from "./hosted-dependency-generation-native-census";
 import { HostedDependencySourceRuntimeClosureKind as ClosureKind } from "./hosted-dependency-generation-state";
 import { createHash } from "node:crypto";
@@ -54,8 +55,9 @@ function completedC(fence:HostedActivationFence,startId:string,access:symbol,all
   if(!previous || previous.version===1 || previous.epoch!==parent.attempt.epoch ||
       (previous.owner===null ? !allowReleased :
         !isDependencyConsumerOwner(previous.owner) || previous.owner.phase!==DependencyOwnerPhase.Fenced || !sameDependencyAttempt(previous.owner.attempt,parent.attempt)) ||
-      previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1)invalid();
-  const slot=previous.generationContinuity,pins=baselinePins(parent.attempt,binding,slot),
+      (previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1 && previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.RetiredReadyV1))invalid();
+  const slot=previous.generationContinuity.kind===DependencyGenerationContinuityKind.BaselineAuthenticatedV1 ? previous.generationContinuity :
+      readOriginalHostedDependencyRetiredInterval(fence,parent.attempt,binding,previous,access).slot,pins=baselinePins(parent.attempt,binding,slot),
     retirement=pinReferenceFile(`${root}/dependency-generation-source-retirements/${startId}.json`,16384),r:unknown=JSON.parse(retirement.bytes.toString("utf8"));
   if(!isDependencyCustodyObject(r,"attempt,barrier,baseline,binding,lifecycle,pending,qualification,version") || r.version!==1 ||
       !encode(r.attempt).equals(encode(parent.attempt)) || !encode(r.binding).equals(encode(binding)) || !encode(r.pending).equals(encode(pins.pending.reference)) ||
@@ -199,5 +201,5 @@ export function readOriginalHostedDependencyCIdleGeneration(fence:HostedActivati
   const proof=closeC(fence,v.attempt.launch.startId,access,true);
   if(!encode(proof.selected.previous).equals(encode(previous)) || !encode(proof.selected.parent.attempt).equals(encode(v.attempt)) ||
       !sameDependencyProtectedReference(proof.closure,v.sourceClosed) || !sameDependencyProtectedReference(pinReferenceFile(pin.reference.path,16384).reference,pin.reference))invalid();
-  boundary(fence,access);return Object.freeze({binding,previous,idle:pin.reference,sourceClosed:proof.closure});
+  boundary(fence,access);return Object.freeze({binding,previous,idle:pin.reference,sourceClosed:proof.closure,attempt:proof.selected.parent.attempt,slot:proof.selected.slot});
 }

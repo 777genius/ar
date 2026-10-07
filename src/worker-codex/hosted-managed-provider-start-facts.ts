@@ -13,8 +13,8 @@ export function formManagedDependencyProviderStartFacts(actual:ReturnType<typeof
       reservation.state !== HostedCustodyReservationState.Reserved || epoch.generation !== facts.start.generation ||
       epoch.identity.jobId !== facts.start.readonlyJobId || epoch.identity.workspacePath !== actual.binding.workspace.canonicalPath ||
       epoch.identity.jobRootDir !== actual.binding.jobRootDir) throw new Error("hosted_dependency_current_origin_unresolved");
-  if(record.version!==2 && record.version!==4)throw new Error("hosted_dependency_current_origin_unresolved");
-  if(JSON.stringify(committed.reference)!==JSON.stringify(record.version===2?record.ready:record.unverified))throw new Error("hosted_dependency_current_origin_unresolved");
+  if(record.version!==2 && record.version!==4 && record.version!==6)throw new Error("hosted_dependency_current_origin_unresolved");
+  if(JSON.stringify(committed.reference)!==JSON.stringify(record.version===2?record.ready:record.version===6?record.baselineReady:record.unverified))throw new Error("hosted_dependency_current_origin_unresolved");
   const common={installationId:actual.binding.installationId,runtimeSha:actual.binding.runtimeSha,
     hostId:epoch.hostId,bootId:epoch.bootId,supervisorId:epoch.supervisorId,generation:epoch.generation,unit,providerStartId,
     parentStartId:actual.attempt.launch.startId,logicalJobId:actual.binding.jobId,executionJobId:facts.start.readonlyJobId,
@@ -22,6 +22,7 @@ export function formManagedDependencyProviderStartFacts(actual:ReturnType<typeof
     custodyReference:facts.association.reference,originReference:facts.originReference};
   const tail={qualification:record.qualification,protectedProfile:record.protectedProfile};
   if(record.version===2)return freezeFacts({version:1 as const,...common,ready:record.ready,readyRevision:record.readyRevision,...tail});
+  if(record.version===6)return freezeFacts({version:5 as const,...common,execution:record.execution,baselineReady:record.baselineReady,baselineReadyRevision:record.baselineReadyRevision,...tail});
   return freezeFacts({version:3 as const,...common,execution:record.execution,unverified:record.unverified,unverifiedRevision:record.unverifiedRevision,...tail});
 }
 
@@ -30,10 +31,10 @@ export function formManagedDependencyProviderStartFacts(actual:ReturnType<typeof
 export function formOrdinaryDependencyProviderStartFacts(actual:ReturnType<typeof assertCurrentHostedDependencyAttempt>,
   selected:ReturnType<typeof import("../provider-codex/app-server/adapters/hosted-process-activation").readHostedOrdinaryProviderFacts>,
   ordinaryProviderReference:import("@vioxen/subscription-runtime/core").DependencyProtectedReference,
-  record:Extract<HostedDependencyRootPreparationRecord,{version:3|5}>,committed:ReturnType<LocalDependencyReceiptStore["getCommittedReady"]>|ReturnType<LocalDependencyReceiptStore["getCommittedUnverified"]>):Extract<HostedDependencyManagedProviderFacts,{version:2|4}> {
+  record:Extract<HostedDependencyRootPreparationRecord,{version:3|5|7}>,committed:ReturnType<LocalDependencyReceiptStore["getCommittedReady"]>|ReturnType<LocalDependencyReceiptStore["getCommittedUnverified"]>):Extract<HostedDependencyManagedProviderFacts,{version:2|4|6}> {
   if (actual.facts.kind!==CurrentHostedDependencyOriginKind.Ordinary || !selected.relation) throw new Error("hosted_dependency_current_origin_unresolved");
   const {ordinary}=actual.facts;
-  if(JSON.stringify(committed.reference)!==JSON.stringify(record.version===3?record.ready:record.unverified))throw new Error("hosted_dependency_current_origin_unresolved");
+  if(JSON.stringify(committed.reference)!==JSON.stringify(record.version===3?record.ready:record.version===7?record.baselineReady:record.unverified))throw new Error("hosted_dependency_current_origin_unresolved");
   const common={originKind:HostedDependencyRootOriginKind.OrdinaryDependencyReaderV1 as const,
     installationId:actual.binding.installationId,runtimeSha:actual.binding.runtimeSha,
     hostId:String(ordinary.activation.hostId),bootId:String(ordinary.activation.bootId),supervisorId:String(ordinary.activation.supervisorId),
@@ -45,5 +46,6 @@ export function formOrdinaryDependencyProviderStartFacts(actual:ReturnType<typeo
       providerStartId:selected.startId,startDigest:selected.startSha256,unit:selected.unit}};
   const tail={qualification:record.qualification,protectedProfile:record.protectedProfile};
   if(record.version===3)return freezeFacts({version:2 as const,...common,ready:record.ready,readyRevision:record.readyRevision,...tail});
+  if(record.version===7)return freezeFacts({version:6 as const,...common,execution:record.execution,baselineReady:record.baselineReady,baselineReadyRevision:record.baselineReadyRevision,...tail});
   return freezeFacts({version:4 as const,...common,execution:record.execution,unverified:record.unverified,unverifiedRevision:record.unverifiedRevision,...tail});
 }

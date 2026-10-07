@@ -1,7 +1,7 @@
-import type { DependencyToolUsableExecution } from "./dependency-tool-execution";
+import type { DependencyToolUsableExecution, DependencyToolBaselineExecution } from "./dependency-tool-execution";
 import { sameDependencyTree, sameDependencyWorkspace, type DependencyTreeIdentity, type DependencyWorkspaceIdentity } from "./dependency-workspace";
 
-export enum DependencyToolReadyReadStatus { Unknown = "unknown", Ready = "ready", Usable = "usable" }
+export enum DependencyToolReadyReadStatus { Unknown = "unknown", Ready = "ready", Usable = "usable", Baseline = "baseline" }
 export enum DependencyToolReadyProvenanceKind { RegistryCompleted = "registry_completed", LocalCompleted = "local_completed", LocalCompared = "local_compared" }
 export type DependencyToolSourceRoot = Readonly<{ canonicalPath: string; identity: DependencyTreeIdentity }>;
 export type DependencyToolReadyIdentity = Readonly<{
@@ -21,7 +21,8 @@ export type DependencyToolReadyFacts = DependencyToolReadyIdentity & Readonly<{
 export type DependencyToolReadyRead =
   | Readonly<{ status: DependencyToolReadyReadStatus.Unknown }>
   | Readonly<{ status: DependencyToolReadyReadStatus.Ready; facts: DependencyToolReadyFacts }>
-  | Readonly<{ status: DependencyToolReadyReadStatus.Usable; execution: DependencyToolUsableExecution }>;
+  | Readonly<{ status: DependencyToolReadyReadStatus.Usable; execution: DependencyToolUsableExecution }>
+  | Readonly<{status:DependencyToolReadyReadStatus.Baseline;execution:DependencyToolBaselineExecution}>;
 
 /** Fresh facts from the trusted composition's established history reader.
  * Neither a serialized result nor this interface is an admission permit. */

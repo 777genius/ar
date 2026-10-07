@@ -1,7 +1,8 @@
+import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { constants, closeSync, lstatSync, openSync, readSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { types } from "node:util";
-import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyGenerationContinuityKind, isDependencyConsumerOwner, isDependencyCustodyObject, parseDependencyOwner } from "@vioxen/subscription-runtime/core";
+import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyGenerationContinuityKind, DependencyOwnerKind, isDependencyConsumerOwner, isDependencyCustodyObject, parseDependencyOwner } from "@vioxen/subscription-runtime/core";
 import { requiresCurrentHostedDependencyRootPurpose } from "./hosted-current-dependency-origin";
 import { readHostedActivationBytes, decodeHostedActivationBytes } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { hostedDependencyJobsRoot, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
@@ -71,9 +72,10 @@ export function assertLegacyDependencyWriterWorkspace(path:string):string {
     if (readHostedActivationBytes(name+".lock")) denied();
     const bytes=readHostedActivationBytes(name+".json");
     if (bytes) { const owner=parseDependencyOwner(decodeHostedActivationBytes(bytes));
+      if(owner.owner?.kind===DependencyOwnerKind.Maintenance)denied();
       if (owner.version!==1 && owner.generationContinuity?.kind===DependencyGenerationContinuityKind.BaselineAuthenticatedV1) denied();
       if(owner.owner && isDependencyConsumerOwner(owner.owner)) {
-        const pending=readHostedActivationBytes(`dependency-generation-barriers/pending/${owner.owner.attempt.attemptId}.json`);
+        const pending=readHostedPrivateBytes(`/var/lib/subscription-runtime-host-policy/dependency-generation-barriers/pending/${owner.owner.attempt.attemptId}.json`,16384);
         if(pending) { const record=decodeHostedActivationBytes(pending);
           if(!isDependencyCustodyObject(record,"actors,attempt,bindingSha256,version") || record.version!==1 ||
               JSON.stringify(record.attempt)!==JSON.stringify(owner.owner.attempt))denied();

@@ -1,3 +1,4 @@
+import { readCurrentHostedDependencyGenerationBaseline } from "./hosted-current-dependency-origin";
 import { DependencyToolReadyReadStatus } from "../core/dependency-environment/dependency-tool-ready-reader";
 import { readHostedDependencyUsableReceipt } from "./hosted-dependency-usable-receipt";
 import { createHash } from "node:crypto";
@@ -97,6 +98,14 @@ export function prepareHostedDependencyRootHelpers(fence: HostedActivationFence)
     if(current.facts.kind===CurrentHostedDependencyOriginKind.ManagedReadonlyLocal)
       record={...fields,version:2,custodyReference:current.facts.association.reference};
     else {if(!ordinary)invalid();record={...fields,version:3,originReference:ordinary.origin,readerProducer:ordinary.producer,readerEntry:ordinary.entry};}
+  } else if(qualified.status===DependencyToolReadyReadStatus.Baseline) {
+    const baseline=readCurrentHostedDependencyGenerationBaseline(context,fence);
+    if(!baseline || !encode(baseline.ready.receipt).equals(encode(qualified.receipt)) ||
+        !sameDependencyProtectedReference(baseline.ready.reference,qualified.execution.receipt))invalid();
+    const fields={...resources,execution:qualified.execution,baselineReady:baseline.ready.reference,baselineReadyRevision:qualified.receipt.revision};
+    if(current.facts.kind===CurrentHostedDependencyOriginKind.ManagedReadonlyLocal)
+      record={...fields,version:6,custodyReference:current.facts.association.reference};
+    else {if(!ordinary)invalid();record={...fields,version:7,originReference:ordinary.origin,readerProducer:ordinary.producer,readerEntry:ordinary.entry};}
   } else {
     const committed=readHostedDependencyUsableReceipt(context,fence,DependencyOwnerPhase.ExclusiveMutation).receipt;
     if(!encode(committed.receipt).equals(encode(qualified.receipt)) || !sameDependencyProtectedReference(committed.reference,qualified.execution.receipt))invalid();
@@ -111,7 +120,7 @@ export function prepareHostedDependencyRootHelpers(fence: HostedActivationFence)
   if (!privatePin(recordPath,65536).bytes.equals(encode(record))) invalid();
   const after = assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
   if (!sameDependencyAttempt(after.attempt,attempt) || !encode(readHostedDependencyEstablishedReceipt(binding)).equals(encode(receipt))) invalid();
-  if (record.version === 2 || record.version===4) {
+  if (record.version === 2 || record.version===4 || record.version===6) {
     if (after.facts.kind !== CurrentHostedDependencyOriginKind.ManagedReadonlyLocal || !sameDependencyProtectedReference(after.facts.association.reference,record.custodyReference)) invalid();
   } else { const entry = readCurrentHostedOrdinaryDependencyReaderEntry(context,fence,DependencyOwnerPhase.ExclusiveMutation);
     if (after.facts.kind !== CurrentHostedDependencyOriginKind.Ordinary || !sameDependencyProtectedReference(entry.origin,record.originReference) ||

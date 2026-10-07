@@ -1,4 +1,4 @@
-import { DependencyOwnerPhase } from "@vioxen/subscription-runtime/core";
+import { DependencyOwnerPhase, sameDependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { assertHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 import { ensureHostedDependencyDirectory } from "./hosted-dependency-receipts";
@@ -16,25 +16,28 @@ function invalid():never {throw new Error("hosted_dependency_source_retirement_h
 export function retireOriginalHostedDependencyGenerationSourceUse(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol):void {
   const state=findOriginalHostedDependencyGenerationState(context,access);if(!state || state.phase===BarrierPhase.Unavailable)return;
   assertOriginalHostedDependencyGenerationBarrier(context,fence,access);
-  const selected=findOriginalHostedDependencyGenerationEntry(context,access),purpose=selected.rootPurpose;if(!purpose)invalid();const runtime=purpose.sessionRuntime;
+  const selected=findOriginalHostedDependencyGenerationEntry(context,access),purpose=selected.rootPurpose,runtime=purpose?.sessionRuntime,qualification=state.sourceUse.qualification;
+  if(!qualification || purpose && !sameDependencyProtectedReference(qualification,purpose.record.qualification))invalid();
+  // Absence of purpose in THIS retained map proves runtime/home was never
+  // configured; a fresh process cannot reconstruct this from missing records.
   // A completed cold baseline may be revoked before Running. Only the actual
   // private no-runtime state is closable in this phase; unprepared/capturing
   // or credential/home debt is never reconstructed from later process absence.
-  if(state.ownerPhase===DependencyOwnerPhase.ExclusiveMutation && (runtime || purpose.sessionHome))invalid();
-  if(selected.generation!==state || state.phase!==BarrierPhase.Published || !state.baseline || !state.pending ||
-      state.sourceUse.phase!==HostedDependencySourceUsePhase.Live || purpose.provider || purpose.preparingHome || purpose.sessionHome?.leased ||
+  if(state.ownerPhase===DependencyOwnerPhase.ExclusiveMutation && (runtime || purpose?.sessionHome))invalid();
+  if(selected.generation!==state || (state.phase!==BarrierPhase.Published && state.phase!==BarrierPhase.Retired) || !state.baseline || !state.pending ||
+      state.sourceUse.phase!==HostedDependencySourceUsePhase.Live || purpose?.provider || purpose?.preparingHome || purpose?.sessionHome?.leased ||
       runtime && (runtime.use || runtime.idleWrites || runtime.retired && (runtime.retired.phase!==ManagedSessionUsePhase.Complete ||
         runtime.retired.credentialUnknown || runtime.retired.acquiring || runtime.retired.writing || runtime.retired.lease && !runtime.retired.lease.terminal)))invalid();
   const actual=assertCurrentHostedDependencyAttempt(context,fence,state.ownerPhase);
   const bytes=encode({version:1,attempt:actual.attempt,binding:actual.binding,pending:state.pending,
-    baseline:state.baseline.baseline,barrier:state.baseline.writerBarrier,qualification:purpose.record.qualification,
+    baseline:state.baseline.baseline,barrier:state.baseline.writerBarrier,qualification,
     lifecycle:runtime?ClosureKind.ConfiguredRuntimeDischarged:ClosureKind.RuntimeNeverConfigured});
   if(bytes.length>16384)invalid();ensureHostedDependencyDirectory(root);
   const path=`${root}/${actual.attempt.launch.startId}.json`;createReadonlyPrivateRecord(path,bytes);
   if(!pinReferenceFile(path,16384).bytes.equals(bytes))invalid();
   assertOriginalHostedDependencyGenerationBarrier(context,fence,access);
   const after=findOriginalHostedDependencyGenerationEntry(context,access);
-  if(after.generation!==state || after.rootPurpose!==purpose || purpose.sessionRuntime!==runtime || purpose.provider || purpose.preparingHome || purpose.sessionHome?.leased ||
+  if(after.generation!==state || after.rootPurpose!==purpose || purpose?.sessionRuntime!==runtime || purpose?.provider || purpose?.preparingHome || purpose?.sessionHome?.leased ||
       runtime && (runtime.use || runtime.idleWrites))invalid();
   assertHostedActivationFence(fence);
   // Synchronous transition blocks this use. The qualifier immediately revokes

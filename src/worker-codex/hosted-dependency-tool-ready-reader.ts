@@ -60,7 +60,7 @@ export function captureHostedDependencyToolReadyReader(fence: HostedActivationFe
       if (entry) {
         const admitted = readHostedDependencyQualifiedToolAdmission(entry);
         const workspace=admitted.status===DependencyToolReadyReadStatus.Ready ? admitted.facts.workspace :
-          admitted.status===DependencyToolReadyReadStatus.Usable ? admitted.execution.workspace : fail();
+          (admitted.status===DependencyToolReadyReadStatus.Usable || admitted.status===DependencyToolReadyReadStatus.Baseline) ? admitted.execution.workspace : fail();
         if (!encode(workspace).equals(encode(binding.workspace))) fail();
         assertAttempt();return admitted;
       }
@@ -86,7 +86,7 @@ export function captureHostedDependencyToolReadyReader(fence: HostedActivationFe
     assertAttempt();
     if (entry) assertHostedDependencyQualifiedToolEntry(entry, held, DependencyOwnerPhase.Running);
     const read=reader.readCurrent();
-    if(read.status!==DependencyToolReadyReadStatus.Ready && !(entry && read.status===DependencyToolReadyReadStatus.Usable))fail();
+    if(read.status!==DependencyToolReadyReadStatus.Ready && !(entry && (read.status===DependencyToolReadyReadStatus.Usable || read.status===DependencyToolReadyReadStatus.Baseline)))fail();
   };
   assertCurrent(fence);
   return Object.freeze({ reader, assertCurrent, origin:context });

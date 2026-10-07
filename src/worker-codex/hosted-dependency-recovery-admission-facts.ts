@@ -29,6 +29,13 @@ export function readHostedDependencyRecoveryAdmissionFacts(fence:HostedActivatio
     assertHostedActivationFence(fence);
     return {version:1 as const,ready:committed.reference,readyRevision:committed.receipt.revision};
   }
+  if(record.version===6 || record.version===7) {
+    const committed=readHostedDependencyExistingCommittedReady(fence,binding,record.baselineReadyRevision);
+    if(q.version!==3 || !sameDependencyProtectedReference(record.baselineReady,committed.reference) ||
+        q.execution.bindingSha256!==createHash("sha256").update(encode(binding)).digest("hex"))held();
+    assertRootQualificationFacts(record,binding,attempt,q,committed.receipt);assertHostedActivationFence(fence);
+    return {version:3 as const,execution:q.execution,baselineReady:committed.reference,baselineReadyRevision:committed.receipt.revision};
+  }
   const committed=readHostedDependencyExistingCommittedUnverified(fence,binding,record.unverifiedRevision);
   if(q.version!==2 || committed.receipt.state!==DependencyReceiptState.Unverified ||
     !sameDependencyProtectedReference(record.unverified,committed.reference) ||

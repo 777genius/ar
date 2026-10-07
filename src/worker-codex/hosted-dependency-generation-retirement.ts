@@ -1,6 +1,7 @@
+import { retireOriginalHostedDependencyActiveInputs } from "./hosted-dependency-active-input-retirement";
 import { HostedDependencyWarmRetirementPhase } from "./hosted-dependency-warm-retirement-state";
 import { captureOriginalHostedDependencyWarmRetirement, readOriginalHostedDependencyWarmRetirement, assertCurrentHostedDependencyAttempt, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
-import { parseDependencyGenerationContinuityInvalidation, sameDependencyAttempt, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/core";
+import { DependencyGenerationContinuityKind, parseDependencyGenerationContinuityInvalidation, sameDependencyAttempt, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/core";
 import { readHostedDependencyEstablishedReceipt } from "./hosted-dependency-receipts";
 import { DependencyUnverifiedReason, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
 import { DependencyOwnerPhase, sameDependencyProtectedReference, sameDependencyWorkspace } from "@vioxen/subscription-runtime/core";
@@ -22,6 +23,7 @@ export function retireOriginalHostedDependencySourceCleanup(context: HostedDepen
   readOriginalHostedDependencySourceCleanupAssociation(context,access);
   withHostedActivationFence(fence => {
     const held = readOriginalHostedDependencySourceCleanupScope(context,fence,access);
+    if(held.owner.version!==1 && held.owner.generationContinuity?.kind===DependencyGenerationContinuityKind.BaselineAuthenticatedV1)invalid();
     assertHostedDependencyRetirementOwnerFacts(held.state.record,held.owner);
     if ((reason !== DependencyUnverifiedReason.TreeChanged && reason !== DependencyUnverifiedReason.InputsChanged) ||
         !encode(currentRootReady(held.origin,fence,DependencyOwnerPhase.ExclusiveMutation)).equals(encode(held.state.ready))) invalid();
@@ -71,6 +73,9 @@ export function retireOriginalHostedDependencyWarmReady(context:CurrentHostedDep
   readOriginalHostedDependencyWarmRetirement(context,access);
   withHostedActivationFence(fence=>{
     const state=captureOriginalHostedDependencyWarmRetirement(context,fence,access);
+    if(state.owner.generationContinuity?.kind===DependencyGenerationContinuityKind.BaselineAuthenticatedV1) {
+      retireOriginalHostedDependencyActiveInputs(context,fence,access);return;
+    }
     const assertRetained=()=>{assertHostedActivationFence(fence);if(readOriginalHostedDependencyWarmRetirement(context,access)!==state)invalid();};
     const assertReadback=()=>{
       assertRetained();const actual=assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);

@@ -139,6 +139,27 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
     });
   }
 
+  getCommittedEvicting(workspace: DependencyWorkspaceIdentity, revision: number): { receipt: Extract<DependencyReceipt, { state: State.Evicting }>; reference: DependencyCommittedReadyReceipt["reference"] } {
+    if (!Number.isSafeInteger(revision) || revision < 1) fail(Failure.InvalidReceipt);
+    return this.publicRead(workspace, key => {
+      const current = this.capture(workspace, key);
+      if (!current || revision > current.receipt.revision) fail(Failure.StaleRevision);
+      let ref = current.head.commit, expected = current.receipt.revision;
+      for (let step = 0; step < this.maxHistorySteps; step++) {
+        const commit = this.readCommit(workspace, key, expected, ref);
+        const receipt = this.readReceipt(workspace, key, expected, commit.receipt);
+        if (expected === revision) {
+          if (receipt.state !== State.Evicting) fail(Failure.InvalidReceipt);
+          return { receipt, reference: { path: join(this.rootPath, commit.receipt.name),
+            identity: { ...commit.receipt.identity }, sha256: commit.receipt.sha256 } };
+        }
+        if (!commit.previous) fail(Failure.Corrupt);
+        ref = commit.previous; expected--;
+      }
+      return fail(Failure.Bounds);
+    });
+  }
+
   retireReady(workspace: DependencyWorkspaceIdentity, expectedRevision: number,
     expectedReference: DependencyCommittedReceiptReference,
     next: Extract<DependencyReceipt, { state: State.Unverified }>): DependencyCommittedUnverifiedReceipt {

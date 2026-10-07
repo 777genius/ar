@@ -66,5 +66,7 @@ export type RootPurposeState=RootPurposeCommon & (
   Readonly<{admission:DependencyToolReadyReadStatus.Ready;record:Extract<HostedDependencyRootPreparationRecord,{version:2|3}>;
     ready:ReturnType<LocalDependencyReceiptStore["getCommittedReady"]>}> |
   Readonly<{admission:DependencyToolReadyReadStatus.Usable;record:Extract<HostedDependencyRootPreparationRecord,{version:4|5}>;
-    unverified:ReturnType<LocalDependencyReceiptStore["getCommittedUnverified"]>}>
+    unverified:ReturnType<LocalDependencyReceiptStore["getCommittedUnverified"]>}> |
+  Readonly<{admission:DependencyToolReadyReadStatus.Baseline;record:Extract<HostedDependencyRootPreparationRecord,{version:6|7}>;
+    baselineReady:ReturnType<LocalDependencyReceiptStore["getCommittedReady"]>}>
 );

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { HostedActivationPhase, HostedCustodyPhase, HostedCustodyReservationState, parseHostedActivation, parseHostedInstallation, parseHostedCustodyEpoch,
-  parseHostedOrdinaryBirth, parseHostedOrdinaryOrigins, type HostedInstallation, type HostedActivation, type HostedOrdinaryBirth, type HostedOrdinaryReservation } from "@vioxen/subscription-runtime/worker-core";
+  parseHostedOrdinaryBirth, parseHostedOrdinaryOrigins, type HostedInstallation, type HostedActivation, type HostedOrdinaryBirth, type HostedOrdinaryReservation, type HostedOrdinaryOrigins } from "@vioxen/subscription-runtime/worker-core";
 import { readHostedActivationBytes, decodeHostedActivationBytes } from "../provider-codex/app-server/adapters/hosted-process-activation";
 function required(name:string):Buffer {const bytes=readHostedActivationBytes(name);if (!bytes) throw new Error("hosted_activation_authority_required");return bytes;}
 const digest=(bytes:Buffer)=>createHash("sha256").update(bytes).digest("hex");
@@ -82,4 +82,19 @@ export function ordinaryUnitGroup(row: HostedOrdinaryReservation): string {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(row.startId) ||
       ![`subscription-runtime-ordinary-${row.startId}.service`, `subscription-runtime-hosted-${row.startId}.service`].includes(row.unit)) invalid();
   return `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${row.unit}`;
+}
+
+export function readHostedOrdinaryCatalog(installation: HostedInstallation, expected: string): HostedOrdinaryOrigins {
+  const bytes = required("ordinary-origins.json"), catalog = parseHostedOrdinaryOrigins(decodeHostedActivationBytes(bytes));
+  if (digest(bytes) !== expected || catalog.installationId !== installation.installationId) invalid();
+  validateHostedOrdinaryCatalogBirths(catalog);
+  return catalog;
+}
+export function validateHostedOrdinaryCatalogBirths(catalog: HostedOrdinaryOrigins): void {
+  for (const row of catalog.origins) {
+    const bytes = required("ordinary-origins/" + digest(Buffer.from(row.jobId)) + ".json");
+    const birth = parseHostedOrdinaryBirth(decodeHostedActivationBytes(bytes));
+    if (digest(bytes) !== row.birthSha256 || birth.installationId !== catalog.installationId || birth.jobId !== row.jobId ||
+        birth.jobRootDir !== row.jobRootDir || birth.workspacePath !== row.workspacePath) invalid();
+  }
 }

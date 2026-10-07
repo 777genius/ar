@@ -1,3 +1,4 @@
+import { startOriginalHostedDependencyFinalObservation } from "./hosted-dependency-generation-controller";
 import { assertOriginalHostedDependencyColdProducer, requiresCurrentHostedDependencyRootPurpose, installCurrentHostedDependencyColdTree, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, writeFileSync } from "node:fs";
@@ -170,6 +171,7 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
     withHostedActivationFence(fence => { assertOwnerUnderFence(fence, binding, attempt,capturedOrigin); current(); currentChain(chain, attempt);
       publishCapturedDependencyOutput(normalized, binding.workspace, { staged: stagedSession, original: originalSession }); });
     assertOwner(binding,attempt,capturedOrigin);
+    if(capturedOrigin)withHostedActivationFence(fence=>startOriginalHostedDependencyFinalObservation(capturedOrigin,fence,internalAccess ?? fail()));
     const final = await observeDependencyTreeWithLocalRegistrySelection({ workspacePath: binding.workspace.canonicalPath, expectedWorkspace: binding.workspace,
       treeName: "node_modules", expectedTree: chain.tree, sourceLinkSession: originalSession, limits: hostedDependencyObservationLimits });
     if (final.status === DependencyTreeObservationStatus.Complete) finalExposure = final.exposure;

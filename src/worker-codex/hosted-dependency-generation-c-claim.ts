@@ -1,3 +1,4 @@
+import { readOriginalHostedDependencyMaintenanceIdle } from "./hosted-dependency-active-maintenance";
 import { randomUUID } from "node:crypto";
 import { DependencyGenerationContinuityKind, DependencyOwnerKind, DependencyOwnerPhase, parseDependencyOwner } from "@vioxen/subscription-runtime/core";
 import { claimDependencyConsumer, captureDependencyConsumerPreclaim } from "@vioxen/subscription-runtime/worker-core";
@@ -22,7 +23,7 @@ export function claimOriginalHostedDependencyCGeneration(fence:HostedActivationF
   try{previous=reader.read(selected.binding.workspace);}finally{reader.close();}
   if(!previous || previous.version===1 || previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1)return undefined;
   if(previous.version!==2 || previous.owner)held();
-  const proof=readOriginalHostedDependencyCIdleGeneration(fence,selected.binding.jobId,access),actors=readHostedDependencyActiveActorFacts(fence,access);
+  const proof=readOriginalHostedDependencyMaintenanceIdle(fence,selected.binding.workspace,access) ?? readOriginalHostedDependencyCIdleGeneration(fence,selected.binding.jobId,access),actors=readHostedDependencyActiveActorFacts(fence,access);
   if(!encode(proof.previous).equals(encode(previous)) || !actors || !readOriginalHostedDependencyOperatorNativeCensus(fence,access))held();
   const launch={installationId:selected.binding.installationId,bootId:selected.start.bootId,runtimeSha:selected.binding.runtimeSha,
     grantDigest:selected.binding.grantDigest,startId,unit:selected.start.unit},attemptId=randomUUID(),attempt={attemptId,epoch:previous.epoch+1,launch},

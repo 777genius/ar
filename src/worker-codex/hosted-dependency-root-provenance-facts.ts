@@ -17,10 +17,12 @@ function assertDirectory(pin:HostedDependencyRootDirectoryPin):void {
 // Validators return no root authority and own no context, resource or producer registration.
 export function assertRootQualificationFacts(record:HostedDependencyRootPreparationRecord,binding:HostedDependencyBinding,
   attempt:DependencyAttempt,q:DependencyToolAdmissionQualification,ready:ReturnType<LocalDependencyReceiptStore["getCommittedReady"]>["receipt"]|ReturnType<LocalDependencyReceiptStore["getCommittedUnverified"]>["receipt"]):void {
-  if(record.version===4 || record.version===5) {
-    if(q.version!==2 || ready.state!==DependencyReceiptState.Unverified || q.execution.basis!==DependencyToolExecutionBasis.UsableUnverified ||
-      !encode(q.execution).equals(encode(record.execution)) || q.execution.receiptRevision!==record.unverifiedRevision ||
-      ready.revision!==record.unverifiedRevision || !sameDependencyProtectedReference(q.execution.receipt,record.unverified) ||
+  if(record.version===4 || record.version===5 || record.version===6 || record.version===7) {
+    const baseline=record.version===6 || record.version===7,revision=record.version===6 || record.version===7 ? record.baselineReadyRevision : record.unverifiedRevision,
+      reference=record.version===6 || record.version===7 ? record.baselineReady : record.unverified;
+    if(q.version!==(baseline?3:2) || q.version===1 || ready.state!==(baseline?DependencyReceiptState.Ready:DependencyReceiptState.Unverified) || q.execution.basis!==(baseline?DependencyToolExecutionBasis.BaselineAuthenticated:DependencyToolExecutionBasis.UsableUnverified) ||
+      !encode(q.execution).equals(encode(record.execution)) || q.execution.receiptRevision!==revision ||
+      ready.revision!==revision || !sameDependencyProtectedReference(q.execution.receipt,reference) ||
       q.execution.installationId!==binding.installationId || q.execution.runtimeSha!==binding.runtimeSha || q.execution.grantDigest!==binding.grantDigest ||
       q.execution.attemptId!==attempt.attemptId || q.execution.startId!==attempt.launch.startId || q.execution.epoch!==attempt.epoch ||
       !sameDependencyWorkspace(q.execution.workspace,binding.workspace) || ready.tree.dev!==q.execution.tree.dev || ready.tree.ino!==q.execution.tree.ino ||
@@ -55,21 +57,21 @@ export function assertRootConfigAncestorFacts(record:HostedDependencyRootPrepara
   if (record.configAncestors.at(-1)?.canonicalPath !== "/") invalid();
 }
 
-export function parseRootPreparationFacts(bytes:Buffer,attempt:DependencyAttempt,custody:DependencyProtectedReference):Extract<HostedDependencyRootPreparationRecord,{version:2|4}> {
-  const record=decodeHostedActivationBytes(bytes) as Extract<HostedDependencyRootPreparationRecord,{version:2|4}>;
+export function parseRootPreparationFacts(bytes:Buffer,attempt:DependencyAttempt,custody:DependencyProtectedReference):Extract<HostedDependencyRootPreparationRecord,{version:2|4|6}> {
+  const record=decodeHostedActivationBytes(bytes) as Extract<HostedDependencyRootPreparationRecord,{version:2|4|6}>;
   const common="attempt,authoredRoots,config,configAncestors,custodyReference,durableHandoffRoot,generatedRoots,protectedProfile,qualification,scratchParent,sourceLookupAncestors,version";
-  if(!record || (record.version!==2 && record.version!==4) || !encode(record).equals(bytes) ||
-    Object.keys(record).sort().join(",")!==[...common.split(","),...(record.version===2?["providerReady","ready","readyRevision"]:["execution","unverified","unverifiedRevision"])].sort().join(",") ||
+  if(!record || (record.version!==2 && record.version!==4 && record.version!==6) || !encode(record).equals(bytes) ||
+    Object.keys(record).sort().join(",")!==[...common.split(","),...(record.version===2?["providerReady","ready","readyRevision"]:record.version===6?["execution","baselineReady","baselineReadyRevision"]:["execution","unverified","unverifiedRevision"])].sort().join(",") ||
     !sameDependencyAttempt(record.attempt,attempt) || !sameDependencyProtectedReference(record.custodyReference,custody))invalid();
   return record;
 }
 /** Genuine C lineage remains distinct from permanent R custody. */
 export function parseOrdinaryRootPreparationFacts(bytes:Buffer,attempt:DependencyAttempt,
-  expected:Readonly<{origin:DependencyProtectedReference;producer:DependencyProtectedReference;entry:DependencyProtectedReference}>):Extract<HostedDependencyRootPreparationRecord,{version:3|5}> {
-  const record=decodeHostedActivationBytes(bytes) as Extract<HostedDependencyRootPreparationRecord,{version:3|5}>;
+  expected:Readonly<{origin:DependencyProtectedReference;producer:DependencyProtectedReference;entry:DependencyProtectedReference}>):Extract<HostedDependencyRootPreparationRecord,{version:3|5|7}> {
+  const record=decodeHostedActivationBytes(bytes) as Extract<HostedDependencyRootPreparationRecord,{version:3|5|7}>;
   const common="attempt,authoredRoots,config,configAncestors,durableHandoffRoot,generatedRoots,originReference,protectedProfile,qualification,readerEntry,readerProducer,scratchParent,sourceLookupAncestors,version";
-  if(!record || (record.version!==3 && record.version!==5) || !encode(record).equals(bytes) ||
-    Object.keys(record).sort().join(",")!==[...common.split(","),...(record.version===3?["providerReady","ready","readyRevision"]:["execution","unverified","unverifiedRevision"])].sort().join(",") ||
+  if(!record || (record.version!==3 && record.version!==5 && record.version!==7) || !encode(record).equals(bytes) ||
+    Object.keys(record).sort().join(",")!==[...common.split(","),...(record.version===3?["providerReady","ready","readyRevision"]:record.version===7?["execution","baselineReady","baselineReadyRevision"]:["execution","unverified","unverifiedRevision"])].sort().join(",") ||
     !sameDependencyAttempt(record.attempt,attempt) || !sameDependencyProtectedReference(record.originReference,expected.origin) ||
     !sameDependencyProtectedReference(record.readerProducer,expected.producer) || !sameDependencyProtectedReference(record.readerEntry,expected.entry))invalid();
   return record;

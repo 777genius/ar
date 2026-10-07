@@ -1,6 +1,7 @@
+import { DependencyToolReadyProvenanceKind } from "./dependency-tool-ready-reader";
 import { describe, it, expect } from "vitest";
 import { DependencyToolExecutionBasis, DependencyToolQualificationKind, parseDependencyToolAdmissionQualification,
-  parseDependencyToolUsableExecution, matchesDependencyToolExecution, dependencyToolAdmittedGuestConfig } from "./dependency-tool-execution";
+  parseDependencyToolBaselineExecution, parseDependencyToolUsableExecution, matchesDependencyToolExecution, dependencyToolAdmittedGuestConfig } from "./dependency-tool-execution";
 import { DependencyToolOperation, DependencyToolProfileId, DependencyToolTransformCache, dependencyToolPins } from "./dependency-tool-profile";
 const id="11111111-1111-1111-1111-111111111111";
 function fixture() {
@@ -51,5 +52,40 @@ describe("truthful usable tool facts",()=>{
     const array=fixture();Object.defineProperty(array.capabilities,"0",{enumerable:true,get(){calls++;return DependencyToolOperation.Optimize;}});
     expect(()=>parseDependencyToolUsableExecution(array)).toThrow();
     expect(calls).toBe(0);
+  });
+});
+
+/** A regression would accept an unrelated historical Ready/reference/key as
+ * the same current baseline, or invoke a baseline accessor while decoding. */
+describe("separate historical baseline tool facts",()=>{
+  const baseline=()=>{
+    const current=fixture(),readyReference={...current.receipt,path:"/protected/ready.json"};
+    return {...current,basis:DependencyToolExecutionBasis.BaselineAuthenticated,receipt:readyReference,baseline:{
+      ready:{workspace:current.workspace,coverageRevision:"coverage-v1",revision:current.receiptRevision,
+        installKey:current.currentInstallKey,tree:current.tree,manifestDigest:"a".repeat(64),
+        provenance:{kind:DependencyToolReadyProvenanceKind.RegistryCompleted}},readyReference,
+      continuity:{path:"/protected/baseline.json",identity:{dev:"1",ino:"9"},sha256:"a".repeat(64)},
+      measurement:{entries:12,bytes:"321",durationMs:8}}};
+  };
+  it("retains historical measurement independently from the current execution and guest projection",()=>{
+    const execution=parseDependencyToolBaselineExecution(baseline()),q=parseDependencyToolAdmissionQualification({
+      version:3,kind:DependencyToolQualificationKind.BaselineAuthenticatedV3,execution});
+    expect(q.version).toBe(3);expect(execution.baseline.measurement).toEqual({entries:12,bytes:"321",durationMs:8});
+    expect(dependencyToolAdmittedGuestConfig(q)).toEqual({version:1,workspace:execution.workspace,tree:execution.tree,profile:execution.profile});
+    const other=parseDependencyToolBaselineExecution({...baseline(),baseline:{...baseline().baseline,
+      continuity:{...baseline().baseline.continuity,sha256:"0".repeat(64)}}});
+    expect(matchesDependencyToolExecution(execution,other)).toBe(false);
+    expect(()=>parseDependencyToolUsableExecution(baseline())).toThrow();
+  });
+  it("refuses mismatched Ready history and baseline accessors before guest projection",()=>{
+    const original=baseline();
+    for(const candidate of [{...original,currentInstallKey:"0".repeat(64)},
+      {...original,receiptRevision:3},{...original,tree:{dev:"1",ino:"99"}},
+      {...original,baseline:{...original.baseline,readyReference:{...original.receipt,sha256:"0".repeat(64)}}}])
+      expect(()=>parseDependencyToolBaselineExecution(candidate)).toThrow("dependency_tool_execution_invalid");
+    let calls=0;const accessor=baseline();Object.defineProperty(accessor.baseline,"ready",{enumerable:true,get(){calls++;return {};}});
+    expect(()=>parseDependencyToolBaselineExecution(accessor)).toThrow();expect(calls).toBe(0);
+    expect(()=>parseDependencyToolAdmissionQualification({version:2,kind:DependencyToolQualificationKind.UsableUnverifiedV2,
+      execution:original})).toThrow();
   });
 });

@@ -212,9 +212,10 @@ function readCompletionForFinal(fence:HostedActivationFence,startId:string,start
   const relation=fixedPin(`${root}/dependency-provider-attempts/${startId}.json`,4096);
   if (!relation.bytes.equals(encode(receipt.relation))) held();
   const birth=referenced(receipt.providerReference,`${root}/dependency-managed-provider-starts/${startId}.json`);
-  const birthAdmission=admitted.version===1 ? {ready:admitted.ready,readyRevision:admitted.readyRevision} :
+  const birthAdmission=admitted.version===1 ? {ready:admitted.ready,readyRevision:admitted.readyRevision} : admitted.version===3 ?
+    {execution:admitted.execution,baselineReady:admitted.baselineReady,baselineReadyRevision:admitted.baselineReadyRevision} :
     {execution:admitted.execution,unverified:admitted.unverified,unverifiedRevision:admitted.unverifiedRevision};
-  const expectedBirth={version:admitted.version===1?2:4,originKind:HostedDependencyRootOriginKind.OrdinaryDependencyReaderV1,installationId:binding.installationId,runtimeSha:binding.runtimeSha,
+  const expectedBirth={version:admitted.version===1?2:admitted.version===3?6:4,originKind:HostedDependencyRootOriginKind.OrdinaryDependencyReaderV1,installationId:binding.installationId,runtimeSha:binding.runtimeSha,
     hostId:activation.hostId,bootId:activation.bootId,supervisorId:activation.supervisorId,generation:row.generation,parentGeneration:parentRow.generation,
     unit:row.unit,providerStartId:startId,parentStartId:parentId,logicalJobId:binding.jobId,executionJobId:binding.jobId,jobRootDir:binding.jobRootDir,
     workspace:binding.workspace,attempt,originReference:parentPin.reference,ordinaryProviderReference:providerPin.reference,

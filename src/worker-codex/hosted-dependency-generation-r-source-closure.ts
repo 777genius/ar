@@ -1,3 +1,5 @@
+import { readOriginalHostedDependencyColdCustodyTransfer } from "./hosted-dependency-cold-custody-transfer";
+import { readOriginalHostedDependencyRetiredInterval } from "./hosted-dependency-retired-interval-facts";
 import { readOriginalHostedDependencyOperatorNativeCensus } from "./hosted-dependency-generation-native-census";
 import { readHostedDependencyActiveActorFacts } from "./hosted-dependency-active-actor-facts";
 import { readOriginalHostedDependencyGenerationNativeScope } from "./hosted-dependency-generation-native-scope";
@@ -13,7 +15,7 @@ import { hostedDependencyOwnerRoot, readHostedDependencyBinding } from "../provi
 import { readHostedReadonlyDependencyStart } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { dependencyToolQualificationRecordName } from "../core/dependency-environment/dependency-tool-profile";
-import { assertOriginalHostedDependencyPhysicalRecordAccess, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { assertOriginalHostedDependencyOperatorDescriptors, assertOriginalHostedDependencyPhysicalRecordAccess, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { HostedDependencySourceRuntimeClosureKind as ClosureKind } from "./hosted-dependency-generation-state";
 import { readOriginalHostedDependencyGenerationBaselinePins } from "./hosted-dependency-generation-source-closure";
 import { readOriginalHostedManagedProviderCreator, readOriginalHostedManagedProviderDischargedReceipt, readOriginalHostedManagedConsumerProviderDischargedReceipt } from "./hosted-managed-provider-failure-recovery";
@@ -38,7 +40,9 @@ function hasActiveOwner(fence:HostedActivationFence,access:symbol):boolean {
   boundary(fence,access);const epoch=new HostedReadonlyEpochStore().readEpoch(),material=readHostedReadonlyDependencyMaterial(fence,epoch.identity),
     binding=readHostedDependencyBinding(material.evidence.candidate.jobId);if(!binding || binding.version!==2)held();
   const store=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
-  try{const owner=store.read(binding.workspace);return !!owner && owner.version===3 && owner.generationContinuity?.kind===DependencyGenerationContinuityKind.BaselineAuthenticatedV1;}
+  try{const owner=store.read(binding.workspace);return !!owner && owner.version===3 && (owner.generationContinuity?.kind===DependencyGenerationContinuityKind.BaselineAuthenticatedV1 ||
+    owner.generationContinuity?.kind===DependencyGenerationContinuityKind.RetiredReadyV1 && !!epoch.outerRuntime &&
+    !!readHostedPrivateBytes(`${root}/dependency-generation-retired-intervals/${epoch.outerRuntime.startId}.json`,16384));}
   finally{store.close();}
 }
 function selected(fence:HostedActivationFence,access:symbol,startId?:string) {
@@ -69,7 +73,7 @@ function selected(fence:HostedActivationFence,access:symbol,startId?:string) {
   let previous:ReturnType<LocalDependencyOwnerStore["read"]>;
   try{previous=store.read(binding.workspace);}finally{store.close();}
   if(!previous || previous.version!==3 || !sameDependencyProtectedReference(previous.custodyBinding,material.reference) ||
-      previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1)held();
+      (previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1 && previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.RetiredReadyV1))held();
   const decoded=parseDependencyOwner({...previous,owner:{kind:DependencyOwnerKind.Consumer,phase:DependencyOwnerPhase.Fenced,attempt:claim.attempt}});
   if(!isDependencyConsumerOwner(decoded.owner))held();const attempt=decoded.owner.attempt;
   if(attempt.epoch!==previous.epoch || attempt.launch.startId!==outer.startId || attempt.launch.unit!==outer.unit ||
@@ -112,9 +116,10 @@ function providerRows(fence:HostedActivationFence,access:symbol,epoch:HostedCust
     const pin=pinReferenceFile(`${root}/dependency-managed-provider-starts/${row.startId}.json`,16384),birth:unknown=JSON.parse(pin.bytes.toString("utf8"));
     const common="attempt,bootId,custodyReference,executionJobId,generation,hostId,installationId,jobRootDir,logicalJobId,originReference,parentStartId,protectedProfile,providerStartId,qualification,runtimeSha,supervisorId,unit,version,workspace";
     if(!isDependencyCustodyObject(birth,(common+",ready,readyRevision").split(",").sort().join(",")) &&
-        !isDependencyCustodyObject(birth,(common+",execution,unverified,unverifiedRevision").split(",").sort().join(",")))held();
-    if((birth.version!==1 && birth.version!==3) ||
-        !isDependencyCustodyObject(birth,(common+(birth.version===1?",ready,readyRevision":",execution,unverified,unverifiedRevision")).split(",").sort().join(",")) || !pin.bytes.equals(encode(birth)) || birth.providerStartId!==row.startId || birth.unit!==row.unit ||
+        !isDependencyCustodyObject(birth,(common+",execution,unverified,unverifiedRevision").split(",").sort().join(",")) &&
+        !isDependencyCustodyObject(birth,(common+",baselineReady,baselineReadyRevision,execution").split(",").sort().join(",")))held();
+    if((birth.version!==1 && birth.version!==3 && birth.version!==5) ||
+        !isDependencyCustodyObject(birth,(common+(birth.version===1?",ready,readyRevision":birth.version===5?",baselineReady,baselineReadyRevision,execution":",execution,unverified,unverifiedRevision")).split(",").sort().join(",")) || !pin.bytes.equals(encode(birth)) || birth.providerStartId!==row.startId || birth.unit!==row.unit ||
         row.creatorId!==row.startId || birth.hostId!==epoch.hostId || birth.bootId!==epoch.bootId || birth.supervisorId!==epoch.supervisorId ||
         typeof birth.generation!=="number" || !Number.isSafeInteger(birth.generation) || birth.generation<1 || birth.generation>epoch.generation ||
         typeof birth.parentStartId!=="string" || /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.exec(birth.parentStartId)?.[0]!==birth.parentStartId)held();
@@ -146,15 +151,42 @@ function oldProviders(fence:HostedActivationFence,access:symbol,value:unknown,fa
   }
   return value;
 }
+/** Initial Closed->Ready and Ready/null preflight are not releases of an R use. Only the exact
+ * once-migrated ColdV2 predecessor may take this branch; later epochs owe
+ * their independently authenticated real R SourceClosed/native chain. */
+function authenticateOriginalColdTransferBeforeFirstR(fence:HostedActivationFence,access:symbol):boolean {
+  boundary(fence,access);const epoch=new HostedReadonlyEpochStore().readEpoch();
+  if((epoch.phase!==HostedCustodyPhase.Closed && epoch.phase!==HostedCustodyPhase.Ready) ||
+      epoch.revoked || epoch.outerRuntime || epoch.reservations.length)return false;
+  const material=readHostedReadonlyDependencyMaterial(fence,epoch.identity),binding=readHostedDependencyBinding(material.evidence.candidate.jobId);
+  if(!binding || binding.version!==2)held();
+  const owners=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+  let previous:ReturnType<LocalDependencyOwnerStore["read"]>;
+  try{previous=owners.read(binding.workspace);}finally{owners.close();}
+  if(!previous || previous.version!==3 || previous.owner ||
+      previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1 ||
+      !sameDependencyProtectedReference(previous.custodyBinding,material.reference))return false;
+  const transfer=readOriginalHostedDependencyColdCustodyTransfer(fence,material,previous,access);if(!transfer)return false;
+  const after=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+  try{if(!encode(after.read(binding.workspace)).equals(encode(transfer.previous)))held();}finally{after.close();}
+  boundary(fence,access);
+  if(!encode(new HostedReadonlyEpochStore().readEpoch()).equals(encode(epoch)) ||
+      !encode(readHostedReadonlyDependencyMaterial(fence,epoch.identity)).equals(encode(material)) ||
+      !sameDependencyProtectedReference(pinReferenceFile(transfer.reference.path,65536).reference,transfer.reference))held();
+  boundary(fence,access);return true;
+}
 /** Capture this real R release chain while its exact Fenced Consumer still
  * exists. Historical discharge is never reconstructed from Terminal/absence. */
 export function releaseOriginalHostedDependencyRSourceOwner(fence:HostedActivationFence,access:symbol):void {
+  if(authenticateOriginalColdTransferBeforeFirstR(fence,access))return;
   if(!hasActiveOwner(fence,access))return;const before=selected(fence,access),previous=before.previous;
   if(!previous.owner){readOriginalHostedDependencyRIdleGeneration(fence,access);if(!readOriginalHostedDependencyOperatorNativeCensus(fence,access))held();return;}
   if(before.epoch.phase!==HostedCustodyPhase.Closed || before.epoch.generation<=before.outer.generation ||
       before.epoch.reservations.some(row=>row.state!==HostedCustodyReservationState.Terminal) ||
       previous.owner && (!isDependencyConsumerOwner(previous.owner) || previous.owner.phase!==DependencyOwnerPhase.Fenced))held();
-  const slot=previous.generationContinuity;if(slot?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1)held();
+  const continuity=previous.generationContinuity;if(!continuity)held();
+  const slot=continuity.kind===DependencyGenerationContinuityKind.BaselineAuthenticatedV1 ? continuity :
+    readOriginalHostedDependencyRetiredInterval(fence,before.attempt,before.binding,previous,access).slot;
   const fencePin=pinReferenceFile(`${root}/dependency-attempt-fences/${before.outer.startId}.json`,4096);
   if(!fencePin.bytes.equals(encode({version:1,startId:before.outer.startId,attemptId:before.attempt.attemptId,epoch:before.attempt.epoch})))held();
   const baseline=readOriginalHostedDependencyGenerationBaselinePins(before.attempt,before.binding,slot,access),
@@ -232,7 +264,7 @@ export function readOriginalHostedDependencyRIdleGeneration(fence:HostedActivati
   const store=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
   let previous:ReturnType<LocalDependencyOwnerStore["read"]>;
   try{previous=store.read(binding.workspace);}finally{store.close();}
-  if(!previous || previous.version!==3 || previous.owner || previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1 ||
+  if(!previous || previous.version!==3 || previous.owner || (previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1 && previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.RetiredReadyV1) ||
       !sameDependencyProtectedReference(previous.custodyBinding,material.reference))held();
   const path=`${root}/dependency-generation-idle-closures/${binding.workspace.dev}-${binding.workspace.ino}/${previous.revision}.json`,pin=pinReferenceFile(path,16384),
     v:unknown=JSON.parse(pin.bytes.toString("utf8"));
@@ -248,9 +280,11 @@ export function readOriginalHostedDependencyRIdleGeneration(fence:HostedActivati
       !encode(c.binding).equals(encode(binding)) || !encode(c.identity).equals(encode(epoch.identity)) || !encode(c.outer).equals(encode(selectedOld.outer)) ||
       !encode(c.parent).equals(encode(selectedOld.parent.reference)) || !encode(selectedOld.previous).equals(encode(previous)))held();
   oldProviders(fence,access,c.providers,selectedOld);assertHostedDependencyInstallerAttemptDrained(selectedOld.attempt);
-  const baseline=readOriginalHostedDependencyGenerationBaselinePins(selectedOld.attempt,binding,previous.generationContinuity,access);
-  if(!encode(c.pending).equals(encode(baseline.pending.reference)) || !encode(c.barrier).equals(encode(previous.generationContinuity.writerBarrier)) ||
-      !encode(c.baseline).equals(encode(previous.generationContinuity.baseline)) || !isDependencyProtectedReference(c.retirement) ||
+  const slot=previous.generationContinuity.kind===DependencyGenerationContinuityKind.BaselineAuthenticatedV1 ? previous.generationContinuity :
+    readOriginalHostedDependencyRetiredInterval(fence,selectedOld.attempt,binding,previous,access).slot;
+  const baseline=readOriginalHostedDependencyGenerationBaselinePins(selectedOld.attempt,binding,slot,access);
+  if(!encode(c.pending).equals(encode(baseline.pending.reference)) || !encode(c.barrier).equals(encode(slot.writerBarrier)) ||
+      !encode(c.baseline).equals(encode(slot.baseline)) || !isDependencyProtectedReference(c.retirement) ||
       c.retirement.path!==`${root}/dependency-generation-source-retirements/${selectedOld.outer.startId}.json` ||
       !sameDependencyProtectedReference(pinReferenceFile(c.retirement.path,16384).reference,c.retirement))held();
   if(!sameDependencyProtectedReference(pinReferenceFile(path,16384).reference,pin.reference) ||
@@ -268,7 +302,7 @@ export function readOriginalHostedDependencyConsumerPriorRSourceClosure(context:
 }
 function historicalBoundary(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,access:symbol):void {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
-  if(context)readOriginalHostedDependencyGenerationNativeScope(context,fence,access);else boundary(fence,access);
+  if(context)readOriginalHostedDependencyGenerationNativeScope(context,fence,access);else {assertHostedActivationOperator();assertOriginalHostedDependencyOperatorDescriptors(fence,access);new HostedReadonlyHostKernel().operatorSession();}
 }
 function priorR(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,unit:string,access:symbol):readonly string[]|undefined {
   historicalBoundary(context,fence,access);const match=/^subscription-runtime-(?:outer|hosted)-([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\.service$/.exec(unit);

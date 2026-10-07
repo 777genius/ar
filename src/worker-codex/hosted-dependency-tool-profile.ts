@@ -1,15 +1,17 @@
+import { assertCurrentHostedDependencyExecutionAdmission } from "./hosted-current-dependency-origin";
+import { prepareCurrentHostedDependencyGenerationSourceRetirement, holdCurrentHostedDependencyGenerationSourceUse, readCurrentHostedDependencyGenerationBaseline, captureCurrentHostedDependencyGenerationInputs, bindCurrentHostedDependencyGenerationQualifier, findOriginalHostedDependencyGenerationState } from "./hosted-current-dependency-origin";
 import { types } from "node:util";
 import { createHash } from "node:crypto";
-import { DependencyToolExecutionBasis, DependencyToolQualificationKind, parseDependencyToolUsableExecution,
+import { DependencyToolExecutionBasis, DependencyToolQualificationKind, parseDependencyToolUsableExecution, parseDependencyToolBaselineExecution,
   parseDependencyToolAdmissionQualification, dependencyToolAdmittedGuestConfig, type DependencyToolUsableExecution,
-  type DependencyToolAdmissionQualification } from "../core/dependency-environment/dependency-tool-execution";
+  type DependencyToolBaselineExecution, type DependencyToolAdmissionQualification } from "../core/dependency-environment/dependency-tool-execution";
 import { DependencyToolOperation } from "../core/dependency-environment/dependency-tool-profile";
 import { DependencyToolReadyReadStatus, type DependencyToolReadyRead } from "../core/dependency-environment/dependency-tool-ready-reader";
 import { readHostedDependencyUsableReceipt } from "./hosted-dependency-usable-receipt";
 import { closeSync, constants, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyOwnerPhase, sameDependencyAttempt,
+import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyOwnerPhase, sameDependencyAttempt, sameDependencyProtectedReference,
   DependencyToolReadyProvenanceKind, type DependencyToolReadyFacts, type DependencyToolSourceRoot, type DependencyWorkspaceIdentity, type DependencyAttempt } from "@vioxen/subscription-runtime/core";
 import { DependencyInstallProofKind, DependencyReceiptState, DependencyTreeObservationStatus, type DependencyReceipt } from "@vioxen/subscription-runtime/worker-core";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
@@ -60,7 +62,8 @@ type ReadyEntryState=EntryCommon & {kind:DependencyToolReadyReadStatus.Ready;rec
 type UsableEntryState=EntryCommon & {kind:DependencyToolReadyReadStatus.Usable;
   receipt:ReturnType<typeof readHostedDependencyUsableReceipt>["receipt"]["receipt"];
   execution:DependencyToolUsableExecution};
-type EntryState=ReadyEntryState|UsableEntryState;
+type BaselineEntryState=EntryCommon & {kind:DependencyToolReadyReadStatus.Baseline;receipt:Ready;execution:DependencyToolBaselineExecution};
+type EntryState=ReadyEntryState|UsableEntryState|BaselineEntryState;
 const entries = new WeakMap<HostedDependencyQualifiedToolEntry, EntryState>();
 let currentQualifiedEntry: HostedDependencyQualifiedToolEntry | undefined;
 function selectedStart(facts: CurrentHostedDependencyOriginFacts) {
@@ -121,28 +124,33 @@ function captureQualificationData(value:unknown):unknown {
 export async function qualifyHostedDependencyToolClosure(binding: HostedDependencyBinding, attempt: DependencyAttempt, coldHandoff?: HostedDependencyColdHandoff, capturedOrigin?: CurrentHostedDependencyOrigin): Promise<HostedDependencyQualifiedToolEntry | undefined> {
   const context = capturedOrigin ?? withHostedActivationFence(fence => readCurrentHostedDependencyOrigin(fence));
   // Actual origin first; caller binding/profile fields never select physical IO.
-  const original=withHostedActivationFence(fence=>assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation));
+  const original=withHostedActivationFence(fence=>assertCurrentHostedDependencyExecutionAdmission(context,fence));
   if(!encode(captureQualificationData(binding)).equals(encode(original.binding)) ||
     !encode(captureQualificationData(attempt)).equals(encode(original.attempt)))fail(DependencyAdmissionFailure.StaleAttempt);
-  withHostedActivationFence(fence=>assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation));
+  withHostedActivationFence(fence=>assertCurrentHostedDependencyExecutionAdmission(context,fence));
   binding=original.binding;attempt=original.attempt;
   const profile=hostedDependencyToolProfile(binding);if(!profile)return;
   const assertExclusive = () => withHostedActivationFence(fence => {
-    const actual = assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+    const actual = assertCurrentHostedDependencyExecutionAdmission(context,fence);
     if (!sameDependencyAttempt(actual.attempt,attempt) || !encode(actual.binding).equals(encode(binding))) fail(); return actual.facts;
   });
   const origin = assertExclusive(), selected = selectedStart(origin), startName = selected.name;
   const startBytes = readHostedActivationBytes(startName);
   if (!startBytes || !selected.bytes.equals(startBytes)) fail();
   assertProfileFiles(profile, binding.jobRootDir);
-  const before = await readHostedDependencyKeyInputs(binding); assertExclusive();
+  const before = await captureCurrentHostedDependencyGenerationInputs(context); assertExclusive();
   let receipt = readHostedDependencyReceipt(binding);
   if (binding.version===2 && !coldHandoff) {
-    if(receipt?.state===DependencyReceiptState.Ready) retireCurrentHostedDependencyWarmReady(context);
+    if(receipt?.state===DependencyReceiptState.Ready) {
+      const baseline=withHostedActivationFence(fence=>readCurrentHostedDependencyGenerationBaseline(context,fence));
+      if(baseline && before.key.installKey===baseline.ready.receipt.installKey &&
+          before.capture.closureDigest===baseline.pins.baseline.inputClosureDigest)return qualifyWarmToolClosure(binding,attempt,context,startName,startBytes,profile,before);
+      retireCurrentHostedDependencyWarmReady(context);
+    }
     receipt=withHostedActivationFence(fence=>{assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
       return readHostedDependencyEstablishedReceipt(binding);});
     if(receipt?.state===DependencyReceiptState.Unverified)
-      return qualifyUsableToolClosure(binding,attempt,context,startName,startBytes,profile,before);
+      return qualifyWarmToolClosure(binding,attempt,context,startName,startBytes,profile,before);
   }
   if (!receipt || receipt.state !== DependencyReceiptState.Ready || !matchesHostedDependencyReady(binding, receipt, before)) fail(DependencyAdmissionFailure.NeedsInstall);
   const local = receipt.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1 || verifiedLocalComparison(receipt);
@@ -234,6 +242,9 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   entries.set(entry, { kind:DependencyToolReadyReadStatus.Ready, binding, attempt, inputs: before, receipt, context, startName, startBytes, qualification: pin,
     readonlySources, placement, ...(coldReference ? { coldReference } : {}), ...(exposure ? { exposure } : {}), phase: DependencyOwnerPhase.ExclusiveMutation, closed: false });
   currentQualifiedEntry = entry;
+  try{withHostedActivationFence(fence=>bindCurrentHostedDependencyGenerationQualifier(context,fence));}
+  catch(error){entries.delete(entry);if(currentQualifiedEntry===entry)currentQualifiedEntry=undefined;
+    holdCurrentHostedDependencyGenerationSourceUse(context);throw error;}
   exposure = undefined; // The one private entry now owns the logical baseline.
   return entry;
   } finally {
@@ -260,9 +271,17 @@ function usableSources(inputs:HostedDependencyKeyInputs,workspace:DependencyWork
  * finite capability identities and Unverified history, never NM content bytes.
  * The unchanged global Plan metadata/link guards still run before every launch.
  */
-async function qualifyUsableToolClosure(binding:HostedDependencyBinding,attempt:DependencyAttempt,context:CurrentHostedDependencyOrigin,
+async function qualifyWarmToolClosure(binding:HostedDependencyBinding,attempt:DependencyAttempt,context:CurrentHostedDependencyOrigin,
   startName:string,startBytes:Buffer,profile:DependencyToolProfile,before:HostedDependencyKeyInputs):Promise<HostedDependencyQualifiedToolEntry> {
-  const first=withHostedActivationFence(fence=>readHostedDependencyUsableReceipt(context,fence,DependencyOwnerPhase.ExclusiveMutation));
+  const baseline=withHostedActivationFence(fence=>readCurrentHostedDependencyGenerationBaseline(context,fence));
+  const readCurrent=(fence:HostedActivationFence,phase:DependencyOwnerPhase.ExclusiveMutation|DependencyOwnerPhase.Running)=>{
+    if(!baseline)return readHostedDependencyUsableReceipt(context,fence,phase);
+    const current=readCurrentHostedDependencyGenerationBaseline(context,fence);
+    if(!current || !encode(current.slot).equals(encode(baseline.slot)) || !encode(current.ready).equals(encode(baseline.ready)) ||
+        current.pins.baseline.inputClosureDigest!==before.capture.closureDigest || current.ready.receipt.installKey!==before.key.installKey)fail();
+    return {binding:current.binding,attempt:current.attempt,receipt:current.ready,tree:current.tree};
+  };
+  const first=withHostedActivationFence(fence=>readCurrent(fence,DependencyOwnerPhase.ExclusiveMutation));
   if(!sameDependencyAttempt(first.attempt,attempt) || !encode(first.binding).equals(encode(binding)))fail();
   const source=usableSources(before,binding.workspace);
   let exposure:DependencySourceExposure|undefined;
@@ -277,24 +296,31 @@ async function qualifyUsableToolClosure(binding:HostedDependencyBinding,attempt:
     assertInstalledPins(binding.workspace.canonicalPath,profile,before.lockBytes);
     const after=await readHostedDependencyKeyInputs(binding);
     const execution=withHostedActivationFence(fence=>{
-      const current=readHostedDependencyUsableReceipt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+      const current=readCurrent(fence,DependencyOwnerPhase.ExclusiveMutation);
       if(!sameDependencyAttempt(current.attempt,attempt) || !encode(current.receipt).equals(encode(first.receipt)) ||
         !sameHostedDependencyKeyInputs(before,after) || !encode(usableSources(before,binding.workspace)).equals(encode(source)) ||
         !readHostedActivationBytes(startName)?.equals(startBytes))fail();
       assertHostedDependencyKeyInputsCurrent(binding,before);assertProfileFiles(profile,binding.jobRootDir);
       assertInstalledPins(binding.workspace.canonicalPath,profile,before.lockBytes);
       if(exposure)assertDependencySourceExposureCurrent(exposure);
-      return parseDependencyToolUsableExecution({version:2,basis:DependencyToolExecutionBasis.UsableUnverified,
+      const common={version:2 as const,basis:DependencyToolExecutionBasis.UsableUnverified,
         workspace:binding.workspace,tree:{dev:current.tree.dev,ino:current.tree.ino},installationId:binding.installationId,
         runtimeSha:binding.runtimeSha,grantDigest:binding.grantDigest,bindingSha256:createHash("sha256").update(encode(binding)).digest("hex"),
         startId:attempt.launch.startId,attemptId:attempt.attemptId,epoch:attempt.epoch,receipt:current.receipt.reference,
         receiptRevision:current.receipt.receipt.revision,currentInstallKey:before.key.installKey,inputClosureDigest:before.capture.closureDigest,
-        profile,capabilities:[DependencyToolOperation.Optimize,DependencyToolOperation.Test],sourceRoots:source.roots,sourceLookupAncestors:source.ancestors});
+        profile,capabilities:[DependencyToolOperation.Optimize,DependencyToolOperation.Test],sourceRoots:source.roots,sourceLookupAncestors:source.ancestors};
+      if(!baseline)return parseDependencyToolUsableExecution(common);
+      if(current.receipt.receipt.state!==DependencyReceiptState.Ready)fail();
+      return parseDependencyToolBaselineExecution({...common,basis:DependencyToolExecutionBasis.BaselineAuthenticated,
+        baseline:{ready:readyFacts(current.receipt.receipt,source.roots),readyReference:current.receipt.reference,
+          continuity:baseline.slot.baseline,measurement:baseline.qualification.measurement}});
     });
-    const qualification=parseDependencyToolAdmissionQualification({version:2,kind:DependencyToolQualificationKind.UsableUnverifiedV2,execution});
+    const qualification=parseDependencyToolAdmissionQualification(execution.basis===DependencyToolExecutionBasis.BaselineAuthenticated ?
+      {version:3,kind:DependencyToolQualificationKind.BaselineAuthenticatedV3,execution} :
+      {version:2,kind:DependencyToolQualificationKind.UsableUnverifiedV2,execution});
     const qualificationBytes=encode(qualification);if(qualificationBytes.length>16384)fail();
     withHostedActivationFence(fence=>{
-      const current=readHostedDependencyUsableReceipt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+      const current=readCurrent(fence,DependencyOwnerPhase.ExclusiveMutation);
       if(!encode(current.receipt).equals(encode(first.receipt)))fail();assertHostedDependencyKeyInputsCurrent(binding,before);
       if(exposure)assertDependencySourceExposureCurrent(exposure);assertProfileFiles(profile,binding.jobRootDir);
       assertInstalledPins(binding.workspace.canonicalPath,profile,before.lockBytes);
@@ -303,21 +329,37 @@ async function qualifyUsableToolClosure(binding:HostedDependencyBinding,attempt:
       try{writeFileSync(fd,qualificationBytes);fsyncSync(fd);}finally{closeSync(fd);}
       const parent=openSync(dirname(path),constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
       try{fsyncSync(parent);}finally{closeSync(parent);}
-      readHostedDependencyUsableReceipt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+      readCurrent(fence,DependencyOwnerPhase.ExclusiveMutation);
     });
     const pin=readQualification(attempt);if(!encode(pin.qualification).equals(encode(qualification)))fail();
     const entry=Object.freeze({startId:attempt.launch.startId});
-    entries.set(entry,{kind:DependencyToolReadyReadStatus.Usable,binding,attempt,context,startName,startBytes,qualification:pin,
-      inputs:before,receipt:first.receipt.receipt,execution,readonlySources:source.roots,...(exposure?{exposure}:{}),
-      phase:DependencyOwnerPhase.ExclusiveMutation,closed:false});
-    currentQualifiedEntry=entry;exposure=undefined;return entry;
+    const common={binding,attempt,context,startName,startBytes,qualification:pin,inputs:before,readonlySources:source.roots,
+      ...(exposure?{exposure}:{}),phase:DependencyOwnerPhase.ExclusiveMutation as const,closed:false};
+    if(execution.basis===DependencyToolExecutionBasis.BaselineAuthenticated) {
+      if(first.receipt.receipt.state!==DependencyReceiptState.Ready)fail();
+      entries.set(entry,{...common,kind:DependencyToolReadyReadStatus.Baseline,receipt:first.receipt.receipt,execution});
+    } else {
+      if(first.receipt.receipt.state!==DependencyReceiptState.Unverified)fail();
+      entries.set(entry,{...common,kind:DependencyToolReadyReadStatus.Usable,receipt:first.receipt.receipt,execution});
+    }
+    currentQualifiedEntry=entry;
+    try{withHostedActivationFence(fence=>bindCurrentHostedDependencyGenerationQualifier(context,fence));}
+    catch(error){entries.delete(entry);if(currentQualifiedEntry===entry)currentQualifiedEntry=undefined;
+      holdCurrentHostedDependencyGenerationSourceUse(context);throw error;}
+    exposure=undefined;return entry;
   }finally{if(exposure)closeDependencySourceExposure(exposure);}
 }
 function currentAdmission(state:EntryState,fence:HostedActivationFence|undefined,
   phase:DependencyOwnerPhase.ExclusiveMutation|DependencyOwnerPhase.Running):DependencyToolReadyRead {
   if(state.kind===DependencyToolReadyReadStatus.Ready)return Object.freeze({status:DependencyToolReadyReadStatus.Ready,facts:currentReadyEntry(state,phase)});
   const e=state.execution;
-  const current=fence ? readHostedDependencyUsableReceipt(state.context,fence,phase) : currentUsableReadModel(state,phase);
+  const baseline=state.kind===DependencyToolReadyReadStatus.Baseline ? (fence ? readCurrentHostedDependencyGenerationBaseline(state.context,fence) :
+    withHostedActivationFence(current=>readCurrentHostedDependencyGenerationBaseline(state.context,current))) : undefined;
+  if(state.kind===DependencyToolReadyReadStatus.Baseline && (!baseline ||
+      !sameDependencyProtectedReference(baseline.slot.baseline,state.execution.baseline.continuity) ||
+      baseline.pins.baseline.inputClosureDigest!==state.inputs.capture.closureDigest))fail();
+  const current=state.kind===DependencyToolReadyReadStatus.Baseline ? (()=>{if(!baseline)fail();return {binding:baseline.binding,attempt:baseline.attempt,receipt:baseline.ready,tree:baseline.tree};})() :
+    fence ? readHostedDependencyUsableReceipt(state.context,fence,phase) : currentUsableReadModel(state,phase);
   if(!sameDependencyAttempt(current.attempt,state.attempt) || !encode(current.binding).equals(encode(state.binding)) ||
     !encode(current.receipt.receipt).equals(encode(state.receipt)) || !encode(current.receipt.reference).equals(encode(e.receipt)) ||
     current.tree.dev!==e.tree.dev || current.tree.ino!==e.tree.ino || !readHostedActivationBytes(state.startName)?.equals(state.startBytes))fail();
@@ -327,12 +369,16 @@ function currentAdmission(state:EntryState,fence:HostedActivationFence|undefined
   if(state.exposure)assertDependencySourceExposureCurrent(state.exposure);
   const q=readQualification(state.attempt);
   if(!q.bytes.equals(state.qualification.bytes) || q.dev!==state.qualification.dev || q.ino!==state.qualification.ino ||
-    q.ctimeNs!==state.qualification.ctimeNs || q.mtimeNs!==state.qualification.mtimeNs || q.qualification.version!==2 ||
+    q.ctimeNs!==state.qualification.ctimeNs || q.mtimeNs!==state.qualification.mtimeNs || q.qualification.version!== (state.kind===DependencyToolReadyReadStatus.Baseline?3:2) || q.qualification.version===1 ||
     !encode(q.qualification.execution).equals(encode(e)))fail();
   assertProfileFiles(e.profile,state.binding.jobRootDir);
   assertInstalledPins(state.binding.workspace.canonicalPath,e.profile,state.inputs.lockBytes);
+  if(state.kind===DependencyToolReadyReadStatus.Baseline) {
+    if(fence)readCurrentHostedDependencyGenerationBaseline(state.context,fence);
+    return Object.freeze({status:DependencyToolReadyReadStatus.Baseline,execution:state.execution});
+  }
   if(fence)readHostedDependencyUsableReceipt(state.context,fence,phase);
-  return Object.freeze({status:DependencyToolReadyReadStatus.Usable,execution:e});
+  return Object.freeze({status:DependencyToolReadyReadStatus.Usable,execution:state.execution});
 }
 /** This metadata read model starts with the retained ORIGINAL context. It
  * cannot grant execution; every physical effect uses the actual fenced assert.
@@ -425,15 +471,18 @@ function currentReadyEntry(state: ReadyEntryState, phase: DependencyOwnerPhase.E
       !tree.isDirectory() || String(tree.dev) !== receipt.tree.dev || String(tree.ino) !== receipt.tree.ino) fail();
   if(pin.qualification.version!==1)fail();
   assertProfileFiles(pin.qualification.profile, binding.jobRootDir);
+  return readyFacts(receipt,state.readonlySources);
+}
+function readyFacts(receipt:Ready,readonlySources:readonly DependencyToolSourceRoot[]):DependencyToolReadyFacts {
   const identity = { workspace: receipt.workspace, coverageRevision: receipt.coverageRevision, revision: receipt.revision,
     installKey: receipt.installKey, tree: receipt.tree, manifestDigest: receipt.manifestDigest };
   if (receipt.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1) return Object.freeze({ ...identity,
-    provenance: Object.freeze({ kind: DependencyToolReadyProvenanceKind.LocalCompleted, sourceBinding: receipt.provenance.sourceBinding, readonlySources: state.readonlySources }) });
+    provenance: Object.freeze({ kind: DependencyToolReadyProvenanceKind.LocalCompleted, sourceBinding: receipt.provenance.sourceBinding, readonlySources: readonlySources }) });
   if (receipt.provenance.kind === DependencyInstallProofKind.LegacyCompared) {
     const comparison = assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance });
     if (comparison.version === 2) return Object.freeze({ ...identity, provenance: Object.freeze({
       kind: DependencyToolReadyProvenanceKind.LocalCompared, comparisonEvidenceId: receipt.provenance.comparisonEvidenceId,
-      sourceBinding: comparison.candidateSourceBinding, readonlySources: state.readonlySources }) });
+      sourceBinding: comparison.candidateSourceBinding, readonlySources: readonlySources }) });
   }
   if (!verifiedRegistry(receipt)) fail();
   return Object.freeze({ ...identity, provenance: Object.freeze({ kind: DependencyToolReadyProvenanceKind.RegistryCompleted }) });
@@ -466,6 +515,10 @@ export function markHostedDependencyQualifiedToolEntryRunning(entry: HostedDepen
 export function invalidateHostedDependencyQualifiedToolEntry(entry: HostedDependencyQualifiedToolEntry | undefined): void {
   if (!entry) return;
   const state = entries.get(entry); if (!state || state.closed) return;
+  if(state.phase===DependencyOwnerPhase.Running || state.phase===DependencyOwnerPhase.ExclusiveMutation) {
+    try { withHostedActivationFence(fence=>{currentAdmission(state,fence,state.phase);prepareCurrentHostedDependencyGenerationSourceRetirement(state.context,fence);}); }
+    catch { holdCurrentHostedDependencyGenerationSourceUse(state.context); }
+  }
   state.closed = true; if (currentQualifiedEntry === entry) currentQualifiedEntry = undefined;
   // Revocation of the genuine qualifier also revokes every facade of its SAME
   // origin. A legal Ready retirement does not pass through this invalidator.
@@ -494,7 +547,7 @@ export function readAdmittedHostedDependencyToolConfig(workspacePath: string | u
     if (entry) assertHostedDependencyQualifiedToolEntry(entry, fence, DependencyOwnerPhase.Running);
     if(q.version===1)assertQualification(q,binding,attempt,entry);
     else {
-      if(!entry)fail();const state=entryState(entry);if(state.kind!==DependencyToolReadyReadStatus.Usable)fail();
+      if(!entry)fail();const state=entryState(entry);if(state.kind!==DependencyToolReadyReadStatus.Usable && state.kind!==DependencyToolReadyReadStatus.Baseline)fail();
       currentAdmission(state,fence,DependencyOwnerPhase.Running);
       if(!encode(q.execution).equals(encode(state.execution)))fail();
     }
@@ -505,7 +558,7 @@ export function hostedDependencyToolInstruction(config: DependencyToolGuestConfi
   const quote = (v: string) => `'${v.replaceAll("'", `'\\''`)}'`;
   const command = `${quote(config.profile.node.path)} ${quote(config.profile.helper.path)}`;
   const admitted=entry ? readHostedDependencyQualifiedToolAdmission(entry) : undefined;
-  const local=admitted?.status===DependencyToolReadyReadStatus.Usable ? admitted.execution.sourceRoots.length>0 :
+  const local=(admitted?.status===DependencyToolReadyReadStatus.Usable || admitted?.status===DependencyToolReadyReadStatus.Baseline) ? admitted.execution.sourceRoots.length>0 :
     admitted?.status===DependencyToolReadyReadStatus.Ready && [DependencyToolReadyProvenanceKind.LocalCompleted,DependencyToolReadyProvenanceKind.LocalCompared].includes(admitted.facts.provenance.kind);
   return ["This admitted task supports config-free Node checks and dependency optimization.",
     `Run ${command} optimize or ${command} test using the native exec tool.`,
@@ -564,7 +617,8 @@ export type HostedDependencyRootQualification=Readonly<{
   context:CurrentHostedDependencyOrigin;binding:HostedDependencyBinding;attempt:DependencyAttempt;inputs:HostedDependencyKeyInputs;
   readonlySources:readonly DependencyToolSourceRoot[];phase:DependencyOwnerPhase.ExclusiveMutation|DependencyOwnerPhase.Running;
 }> & (Readonly<{status:DependencyToolReadyReadStatus.Ready;receipt:Ready;providerReady:DependencyToolReadyFacts}> |
-  Readonly<{status:DependencyToolReadyReadStatus.Usable;receipt:UsableEntryState["receipt"];execution:DependencyToolUsableExecution}>);
+  Readonly<{status:DependencyToolReadyReadStatus.Usable;receipt:UsableEntryState["receipt"];execution:DependencyToolUsableExecution}> |
+  Readonly<{status:DependencyToolReadyReadStatus.Baseline;receipt:Ready;execution:DependencyToolBaselineExecution}>);
 export function readCurrentHostedDependencyRootQualification(fence:HostedActivationFence):HostedDependencyRootQualification {
   if(!currentQualifiedEntry)fail(DependencyAdmissionFailure.StaleAttempt);
   const state=entryState(currentQualifiedEntry);assertHostedDependencyQualifiedToolEntry(currentQualifiedEntry,fence,state.phase);
@@ -572,5 +626,28 @@ export function readCurrentHostedDependencyRootQualification(fence:HostedActivat
   if(state.kind===DependencyToolReadyReadStatus.Ready)return Object.freeze({...common,status:DependencyToolReadyReadStatus.Ready,
     receipt:state.receipt,providerReady:currentReadyEntry(state,state.phase)});
   currentAdmission(state,fence,state.phase);
+  if(state.kind===DependencyToolReadyReadStatus.Baseline)return Object.freeze({...common,status:DependencyToolReadyReadStatus.Baseline,receipt:state.receipt,execution:state.execution});
   return Object.freeze({...common,status:DependencyToolReadyReadStatus.Usable,receipt:state.receipt,execution:state.execution});
+}
+
+/** Internal fixed original-map association. No entry/exposure/input/ref DTO can
+ * register a warm use; only this module's actual completed private entry counts. */
+export function readOriginalHostedDependencyQualifiedBaselineSourceUse(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol) {
+  const generation=findOriginalHostedDependencyGenerationState(context,access);if(!generation || !currentQualifiedEntry)fail();
+  const state=entryState(currentQualifiedEntry);if(state.context!==context || (state.kind!==DependencyToolReadyReadStatus.Baseline && state.kind!==DependencyToolReadyReadStatus.Usable) || state.phase!==DependencyOwnerPhase.ExclusiveMutation)fail();
+  currentAdmission(state,fence,state.phase);
+  const pin=state.qualification;
+  return {inputs:state.inputs,execution:state.execution,...(state.exposure?{exposure:state.exposure}:{}),
+    qualification:{path:join(policyRoot,dependencyToolQualificationRecordName(state.attempt.launch.startId)),identity:{dev:String(pin.dev),ino:String(pin.ino)},sha256:createHash("sha256").update(pin.bytes).digest("hex")}};
+}
+
+/** Actual completed cold qualifier only. Its authored-source exposure is owned
+ * by this private entry; the consumed NM observation is never a live-use grant. */
+export function readOriginalHostedDependencyQualifiedColdSourceUse(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol) {
+  const generation=findOriginalHostedDependencyGenerationState(context,access);if(!generation || !currentQualifiedEntry)fail();
+  const state=entryState(currentQualifiedEntry);if(state.context!==context || state.kind!==DependencyToolReadyReadStatus.Ready || state.phase!==DependencyOwnerPhase.ExclusiveMutation)fail();
+  assertCurrentHostedDependencyAttempt(context,fence,state.phase);currentReadyEntry(state,state.phase);
+  const pin=state.qualification;
+  return {inputs:state.inputs,...(state.exposure?{exposure:state.exposure}:{}),
+    qualification:{path:join(policyRoot,dependencyToolQualificationRecordName(state.attempt.launch.startId)),identity:{dev:String(pin.dev),ino:String(pin.ino)},sha256:createHash("sha256").update(pin.bytes).digest("hex")}};
 }

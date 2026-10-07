@@ -1,4 +1,4 @@
-import type { DependencyToolUsableExecution } from "../../../core/dependency-environment/dependency-tool-execution";
+import type { DependencyToolUsableExecution, DependencyToolBaselineExecution } from "../../../core/dependency-environment/dependency-tool-execution";
 import type { DependencyAttempt, DependencyProtectedReference, DependencyWorkspaceIdentity } from "@vioxen/subscription-runtime/core";
 import type { HostedDependencyRootGitProfile } from "./hosted-dependency-root-git-profile";
 import type { DependencyToolReadyFacts } from "../../../core/dependency-environment/dependency-tool-ready-reader";
@@ -49,7 +49,11 @@ export type HostedDependencyUsableRootPreparation = HostedDependencyRootPreparat
   execution:DependencyToolUsableExecution;unverified:DependencyProtectedReference;unverifiedRevision:number;
 }> & (Readonly<{version:4;custodyReference:DependencyProtectedReference}> |
   Readonly<{version:5}>&HostedDependencyOrdinaryPreparationLineage);
-export type HostedDependencyRootPreparationRecord=HostedDependencyReadyRootPreparation|HostedDependencyUsableRootPreparation;
+export type HostedDependencyBaselineRootPreparation=HostedDependencyRootPreparationCommon & Readonly<{
+  execution:DependencyToolBaselineExecution;baselineReady:DependencyProtectedReference;baselineReadyRevision:number;
+}> & (Readonly<{version:6;custodyReference:DependencyProtectedReference}> |
+  Readonly<{version:7}>&HostedDependencyOrdinaryPreparationLineage);
+export type HostedDependencyRootPreparationRecord=HostedDependencyReadyRootPreparation|HostedDependencyUsableRootPreparation|HostedDependencyBaselineRootPreparation;
 
 /** Fixed actual provider birth readback; factual data is not a registration permit. */
 type HostedDependencyProviderBirthCommon=Readonly<{
@@ -68,4 +72,6 @@ export type HostedDependencyManagedProviderFacts=HostedDependencyProviderBirthCo
     (Readonly<{version:1;custodyReference:DependencyProtectedReference}>|Readonly<{version:2}>&HostedDependencyOrdinaryProviderLineage)
   | Readonly<{execution:DependencyToolUsableExecution;unverified:DependencyProtectedReference;unverifiedRevision:number}> &
     (Readonly<{version:3;custodyReference:DependencyProtectedReference}>|Readonly<{version:4}>&HostedDependencyOrdinaryProviderLineage)
+  | Readonly<{execution:DependencyToolBaselineExecution;baselineReady:DependencyProtectedReference;baselineReadyRevision:number}> &
+    (Readonly<{version:5;custodyReference:DependencyProtectedReference}>|Readonly<{version:6}>&HostedDependencyOrdinaryProviderLineage)
 );

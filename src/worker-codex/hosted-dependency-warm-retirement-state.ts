@@ -1,3 +1,4 @@
+import type { DependencyUnverifiedReason } from "../worker-core/dependency-environment/domain/dependency-receipt";
 import type { DependencyOwnerRecord } from "@vioxen/subscription-runtime/core";
 import type { HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import type { DependencyAttempt } from "@vioxen/subscription-runtime/core";
@@ -10,5 +11,6 @@ export type HostedDependencyWarmRetirementState={
   readonly binding:HostedDependencyBinding;readonly attempt:DependencyAttempt;
   readonly owner:Extract<DependencyOwnerRecord,{version:2|3}>;
   readonly ready:DependencyCommittedReadyReceipt;
+  readonly reason:DependencyUnverifiedReason.BaselineMissing|DependencyUnverifiedReason.InputsChanged;
   retired?:DependencyCommittedUnverifiedReceipt;
 };

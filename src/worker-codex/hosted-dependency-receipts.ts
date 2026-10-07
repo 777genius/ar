@@ -175,6 +175,16 @@ export function readHostedDependencyCommittedAbsent(binding: HostedDependencyBin
     return result;
   } finally { store.close(); }
 }
+/** Fixed current eviction history read. No missing history is created. */
+export function readHostedDependencyExistingCommittedEvicting(fence:HostedActivationFence,binding:HostedDependencyBinding,revision:number) {
+  assertHostedActivationFence(fence);assertReadonlyHostOperator();
+  const before=readHostedDependencyRootDirectoryPin(hostedDependencyReceiptHistoryRoot),store=openExistingStore();
+  let result:ReturnType<LocalDependencyReceiptStore["getCommittedEvicting"]>;
+  try{result=store.getCommittedEvicting(binding.workspace,revision);}
+  finally{store.close();}
+  validateBinding(result.receipt,binding);assertHostedActivationFence(fence);
+  if(JSON.stringify(readHostedDependencyRootDirectoryPin(hostedDependencyReceiptHistoryRoot))!==JSON.stringify(before))fail();return result;
+}
 /** Reference producer seals the actual store-captured committed output. */
 export function readHostedDependencyCommittedReady(binding: HostedDependencyBinding, revision: number): DependencyCommittedReadyReceipt {
   const store = openStore();

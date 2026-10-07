@@ -1,8 +1,10 @@
+import { HostedDependencySourceUsePhase } from "./hosted-dependency-generation-state";
+import { assertOriginalHostedDependencyGenerationBarrier, publishOriginalHostedDependencyGenerationBaseline } from "./hosted-dependency-generation-controller";
 import { captureOriginalHostedDependencyColdInstaller, prepareOriginalHostedDependencyColdInstaller, releaseOriginalHostedDependencyColdInstaller,
   completeOriginalHostedDependencyColdInstaller, type HostedDependencyInstallerCompletion } from "./hosted-dependency-installer";
 import { produceOriginalHostedDependencyColdTree, readOriginalHostedDependencyColdInstallerMapping } from "./hosted-dependency-materialization";
 import { assertCurrentHostedDependencyAttempt, findOriginalHostedDependencyColdState,
-  readOriginalHostedDependencyColdInstallerState, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+  findOriginalHostedDependencyGenerationState, readOriginalHostedDependencyColdInstallerState, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { HostedDependencyColdPhase, HostedDependencyColdInstallerPhase, type HostedDependencyColdReady, type HostedDependencyColdResult } from "./hosted-dependency-cold-materialization-state";
 import { OriginalHostedDependencyColdHandoff } from "./hosted-dependency-cold-handoff-view";
 import { assertHostedDependencyKeyInputsCurrent, sameHostedDependencyKeyInputs, type HostedDependencyKeyInputs } from "./hosted-dependency-materialization-context";
@@ -31,7 +33,8 @@ export function readOriginalHostedDependencyColdSelection(context:CurrentHostedD
   const state=findOriginalHostedDependencyColdState(context,access);
   if(!state || ![HostedDependencyColdPhase.Producing,HostedDependencyColdPhase.Published,HostedDependencyColdPhase.Consumed].includes(state.phase))coldInvalid();
   const actual=assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
-  if(!sameDependencyAttempt(actual.attempt,state.attempt) || !encode(actual.binding).equals(encode(state.binding))) coldInvalid();return actual;
+  if(!sameDependencyAttempt(actual.attempt,state.attempt) || !encode(actual.binding).equals(encode(state.binding))) coldInvalid();
+  assertOriginalHostedDependencyGenerationBarrier(context,fence,access);return actual;
 }
 export async function finishOriginalHostedDependencyColdTree(context:CurrentHostedDependencyOrigin,access:symbol):Promise<Readonly<{startId:string}>|undefined> {
   readOriginalHostedDependencyColdInstallerState(context,access);
@@ -41,6 +44,8 @@ export async function finishOriginalHostedDependencyColdTree(context:CurrentHost
     if(!state) {if(result){closeDependencySourceExposure(result.exposure);if(result.source)closeDependencySourceLinkSession(result.source);}coldInvalid();}
     if(result)state.result={...result,ready:freezeFacts(result.ready),reference:freezeFacts(result.reference),installerMapping:Buffer.from(result.installerMapping),
       observed:{...result.observed,entries:freezeFacts(result.observed.entries),canonicalBytes:Buffer.from(result.observed.canonicalBytes),measurement:freezeFacts(result.observed.measurement)}};
+    const generation=findOriginalHostedDependencyGenerationState(context,access);
+    if(result && generation && state.result) {generation.sourceUse.exposure=state.result.exposure;generation.sourceUse.phase=HostedDependencySourceUsePhase.Live;}
     return withHostedActivationFence(fence=>{
       const actual=assertOriginalHostedDependencyColdProducer(context,fence,access),state=readOriginalHostedDependencyColdInstallerState(context,access);
       if(!result) {state.phase=HostedDependencyColdPhase.Closed;return undefined;}
@@ -51,6 +56,7 @@ export async function finishOriginalHostedDependencyColdTree(context:CurrentHost
       if(!readOriginalHostedDependencyColdInstallerMapping(context,fence,access).equals(result.installerMapping))coldInvalid();
       if(result.source)assertDependencyLocalRegistrySelectionAbsent(result.exposure,result.source,actual.binding.workspace,result.ready.tree);
       else assertDependencySourceExposureCurrent(result.exposure);
+      publishOriginalHostedDependencyGenerationBaseline(context,fence,access);
       const handle=new OriginalHostedDependencyColdHandoff(actual.attempt.launch.startId,context,access);
       state.handle=handle;Object.freeze(handle);state.phase=HostedDependencyColdPhase.Published;
       return state.handle;

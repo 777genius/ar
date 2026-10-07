@@ -1,7 +1,7 @@
 import { isDependencyProtectedReference, type DependencyProtectedReference } from "./dependency-custody-evidence";
 import { parseDependencyToolProfile, DependencyToolOperation, type DependencyToolProfile, type DependencyToolQualification, type DependencyToolGuestConfig, dependencyToolGuestConfig, parseDependencyToolQualification } from "./dependency-tool-profile";
 import { sameDependencyTree, sameDependencyWorkspace, type DependencyTreeIdentity, type DependencyWorkspaceIdentity } from "./dependency-workspace";
-import type { DependencyToolSourceRoot, DependencyToolReadyFacts } from "./dependency-tool-ready-reader";
+import { DependencyToolReadyProvenanceKind, type DependencyToolSourceRoot, type DependencyToolReadyFacts } from "./dependency-tool-ready-reader";
 
 /** Execution basis reports current admission facts. It never creates a permit,
  * generated provenance, immutable bytes, or eligibility for eviction. */
@@ -27,12 +27,14 @@ export type DependencyToolExecutionFacts = DependencyToolExecutionCommon & (
   | Readonly<{ basis: DependencyToolExecutionBasis.UsableUnverified }>
 );
 
-export enum DependencyToolQualificationKind { UsableUnverifiedV2 = "usable_unverified_tool_closure_v2" }
+export enum DependencyToolQualificationKind { UsableUnverifiedV2 = "usable_unverified_tool_closure_v2", BaselineAuthenticatedV3 = "baseline_authenticated_tool_closure_v3" }
 export type DependencyToolUsableExecution = Extract<DependencyToolExecutionFacts,{basis:DependencyToolExecutionBasis.UsableUnverified}>;
 export type DependencyToolUsableQualification = Readonly<{
   version:2; kind:DependencyToolQualificationKind.UsableUnverifiedV2; execution:DependencyToolUsableExecution;
 }>;
-export type DependencyToolAdmissionQualification = DependencyToolQualification | DependencyToolUsableQualification;
+export type DependencyToolBaselineExecution = Extract<DependencyToolExecutionFacts,{basis:DependencyToolExecutionBasis.BaselineAuthenticated}>;
+export type DependencyToolBaselineQualification = Readonly<{version:3;kind:DependencyToolQualificationKind.BaselineAuthenticatedV3;execution:DependencyToolBaselineExecution}>;
+export type DependencyToolAdmissionQualification = DependencyToolQualification | DependencyToolUsableQualification | DependencyToolBaselineQualification;
 /** Schema decoding/equality never supplies the protected original-map admission. */
 export function parseDependencyToolAdmissionQualification(value:unknown):DependencyToolAdmissionQualification {
   if (!value || typeof value!=="object" || Array.isArray(value)) invalid();
@@ -40,6 +42,7 @@ export function parseDependencyToolAdmissionQualification(value:unknown):Depende
   if (!descriptor || !("value" in descriptor)) invalid();
   if (descriptor.value===1) return parseDependencyToolQualification(value);
   const v=data(value,["version","kind","execution"]);
+  if(v.version===3 && v.kind===DependencyToolQualificationKind.BaselineAuthenticatedV3) return Object.freeze({version:3,kind:DependencyToolQualificationKind.BaselineAuthenticatedV3,execution:parseDependencyToolBaselineExecution(v.execution)});
   if(v.version!==2 || v.kind!==DependencyToolQualificationKind.UsableUnverifiedV2) invalid();
   return Object.freeze({version:2,kind:DependencyToolQualificationKind.UsableUnverifiedV2,
     execution:parseDependencyToolUsableExecution(v.execution)});
@@ -90,6 +93,47 @@ export function parseDependencyToolUsableExecution(value: unknown): Extract<Depe
     capabilities:Object.freeze([DependencyToolOperation.Optimize,DependencyToolOperation.Test]),
     sourceRoots:roots(v.sourceRoots,128),sourceLookupAncestors:roots(v.sourceLookupAncestors,128)});
 }
+/** Historical baseline metadata remains separate from fresh Usable facts.
+ * Decoding validates a closed shape only; it cannot authenticate continuity. */
+export function parseDependencyToolBaselineExecution(value:unknown):DependencyToolBaselineExecution {
+  const v=data(value,["version","basis","workspace","tree","installationId","runtimeSha","grantDigest","bindingSha256",
+    "startId","attemptId","epoch","receipt","receiptRevision","currentInstallKey","inputClosureDigest","profile",
+    "capabilities","sourceRoots","sourceLookupAncestors","baseline"]);
+  if(v.basis!==DependencyToolExecutionBasis.BaselineAuthenticated)invalid();
+  const {baseline,...common}=v;
+  const parsed=parseDependencyToolUsableExecution({...common,basis:DependencyToolExecutionBasis.UsableUnverified});
+  const b=data(baseline,["ready","readyReference","continuity","measurement"]),m=data(b.measurement,["entries","bytes","durationMs"]);
+  if(typeof m.entries!=="number" || !Number.isSafeInteger(m.entries) || m.entries<0 || !decimal(m.bytes,false) ||
+      typeof m.durationMs!=="number" || !Number.isFinite(m.durationMs) || m.durationMs<0)invalid();
+  const ready=readyFacts(b.ready),readyReference=reference(b.readyReference);
+  if(!sameDependencyWorkspace(parsed.workspace,ready.workspace) || !sameDependencyTree(parsed.tree,ready.tree) ||
+      parsed.receiptRevision!==ready.revision || parsed.currentInstallKey!==ready.installKey || !sameReference(parsed.receipt,readyReference))invalid();
+  return Object.freeze({...parsed,basis:DependencyToolExecutionBasis.BaselineAuthenticated,baseline:Object.freeze({ready,
+    readyReference,continuity:reference(b.continuity),measurement:Object.freeze({entries:m.entries,bytes:m.bytes,durationMs:m.durationMs})})});
+}
+function readyFacts(value:unknown):DependencyToolReadyFacts {
+  const r=data(value,["workspace","coverageRevision","revision","installKey","tree","manifestDigest","provenance"]);
+  if(!identifier(r.coverageRevision) || !positive(r.revision) || !hex(r.installKey,64) || !hex(r.manifestDigest,64))invalid();
+  const identity={workspace:directory(r.workspace),coverageRevision:r.coverageRevision,revision:r.revision,installKey:r.installKey,tree:tree(r.tree),manifestDigest:r.manifestDigest};
+  if(!r.provenance || typeof r.provenance!=="object")invalid();
+  const kind=Object.getOwnPropertyDescriptor(r.provenance,"kind");if(!kind || !("value" in kind))invalid();
+  if(kind.value===DependencyToolReadyProvenanceKind.RegistryCompleted) {
+    data(r.provenance,["kind"]);return Object.freeze({...identity,provenance:Object.freeze({kind:DependencyToolReadyProvenanceKind.RegistryCompleted})});
+  }
+  if(kind.value===DependencyToolReadyProvenanceKind.LocalCompleted) {
+    const p=data(r.provenance,["kind","sourceBinding","readonlySources"]);
+    return Object.freeze({...identity,provenance:Object.freeze({kind:DependencyToolReadyProvenanceKind.LocalCompleted,
+      sourceBinding:reference(p.sourceBinding),readonlySources:roots(p.readonlySources,128)})});
+  }
+  if(kind.value===DependencyToolReadyProvenanceKind.LocalCompared) {
+    const p=data(r.provenance,["kind","comparisonEvidenceId","sourceBinding","readonlySources"]);
+    if(!identifier(p.comparisonEvidenceId))invalid();
+    return Object.freeze({...identity,provenance:Object.freeze({kind:DependencyToolReadyProvenanceKind.LocalCompared,
+      comparisonEvidenceId:p.comparisonEvidenceId,sourceBinding:reference(p.sourceBinding),readonlySources:roots(p.readonlySources,128)})});
+  }
+  invalid();
+}
+
 /** Snapshot the fixed profile schema before its legacy parser reads it. No
  * caller file/path/array accessor or iterator reaches that parser. */
 function profileFacts(value:unknown):DependencyToolProfile {
@@ -149,6 +193,7 @@ function absolute(value:unknown):value is string {
   return typeof value==="string" && value.length<=4096 && /^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.exec(value)?.[0]===value &&
     !value.split("/").some(part=>part==="."||part==="..");
 }
+function identifier(value:unknown):value is string { return typeof value==="string" && value.length>0 && value.length<=1024 && value.trim()===value && !/[\x00-\x1f\x7f]/.test(value); }
 function uuid(value:unknown):value is string { return typeof value==="string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.exec(value)?.[0]===value; }
 function hex(value:unknown,length:number):value is string { return typeof value==="string" && value.length===length && /^[a-f0-9]+$/.exec(value)?.[0]===value; }
 function decimal(value:unknown,positiveOnly:boolean):value is string { return typeof value==="string" && (positiveOnly ? /^[1-9][0-9]{0,19}$/ : /^(?:0|[1-9][0-9]{0,19})$/).exec(value)?.[0]===value; }

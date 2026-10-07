@@ -15,7 +15,7 @@ import { dependencyToolQualificationRecordName } from "../core/dependency-enviro
 import { assertHostedDependencyRootGitProfile } from "../provider-codex/app-server/adapters/hosted-dependency-root-git-profile";
 import { assertHostedDependencyRootGitConfigBytes } from "../provider-codex/app-server/adapters/hosted-dependency-root-git-config";
 import { systemdObservationBudget } from "../provider-codex/app-server/adapters/systemd-service-arrays";
-import { assertCurrentHostedDependencyAttempt, readCurrentHostedOrdinaryDependencyReaderEntry, CurrentHostedDependencyOriginKind,
+import { assertCurrentHostedDependencyAttempt, readCurrentHostedDependencyGenerationBaseline, readCurrentHostedOrdinaryDependencyReaderEntry, CurrentHostedDependencyOriginKind,
   type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { assertHostedDependencyRootDirectoryFacts } from "./hosted-dependency-root-record-facts";
 import { rootIdentity } from "./hosted-dependency-current-facts";
@@ -75,17 +75,19 @@ export function readOriginalHostedDependencyRootPreparation(context:CurrentHoste
   if (binding.version !== 2) invalid(); const selected = fixed(`dependency-root-preparations/${attempt.launch.startId}.json`,65536);
   const record = facts.kind === CurrentHostedDependencyOriginKind.ManagedReadonlyLocal ? parseRootPreparationFacts(selected.bytes,attempt,facts.association.reference) :
     parseOrdinaryRootPreparationFacts(selected.bytes,attempt,readCurrentHostedOrdinaryDependencyReaderEntry(context,fence,phase));
-  const qualified=record.version===4 || record.version===5 ? readCurrentHostedDependencyRootQualification(fence) : undefined;
-  if(record.version===4 || record.version===5) {
-    if(!qualified || qualified.status!==DependencyToolReadyReadStatus.Usable || qualified.context!==context || qualified.phase!==phase ||
-      !sameDependencyAttempt(qualified.attempt,attempt) || !encode(qualified.binding).equals(encode(binding)) ||
-      !encode(qualified.execution).equals(encode(record.execution)))invalid();
+  const qualified=record.version===2 || record.version===3 ? undefined : readCurrentHostedDependencyRootQualification(fence);
+  if(record.version!==2 && record.version!==3) {
+    const status=record.version===6 || record.version===7 ? DependencyToolReadyReadStatus.Baseline : DependencyToolReadyReadStatus.Usable;
+    if(!qualified || qualified.status!==status || qualified.status===DependencyToolReadyReadStatus.Ready ||
+      qualified.context!==context || qualified.phase!==phase || !sameDependencyAttempt(qualified.attempt,attempt) ||
+      !encode(qualified.binding).equals(encode(binding)) || !encode(qualified.execution).equals(encode(record.execution)))invalid();
   }
-  const committed=record.version===2 || record.version===3 ? readOriginalHostedDependencyRootReady(context,fence,phase) :
-    readHostedDependencyUsableReceipt(context,fence,phase).receipt;
+  const committed=currentPreparationReceipt(context,fence,phase,record);
   if(qualified && !encode(qualified.receipt).equals(encode(committed.receipt)))invalid();
-  const selectedReference=record.version===2 || record.version===3 ? record.ready : record.unverified;
-  const selectedRevision=record.version===2 || record.version===3 ? record.readyRevision : record.unverifiedRevision;
+  const selectedReference=record.version===2 || record.version===3 ? record.ready :
+    record.version===6 || record.version===7 ? record.baselineReady : record.unverified;
+  const selectedRevision=record.version===2 || record.version===3 ? record.readyRevision :
+    record.version===6 || record.version===7 ? record.baselineReadyRevision : record.unverifiedRevision;
   if(selectedRevision!==committed.receipt.revision || !sameDependencyProtectedReference(selectedReference,committed.reference))invalid();
   const identity = rootIdentity(facts,binding); assertHostedDependencyRootDirectoryFacts(record,binding,identity.durable,attempt.launch.startId);
   const qualification = material(record.qualification,`${root}/${dependencyToolQualificationRecordName(attempt.launch.startId)}`,16384);
@@ -100,7 +102,7 @@ export function readOriginalHostedDependencyRootPreparation(context:CurrentHoste
   assertHostedDependencyRootGitConfigBytes(material(record.config,`${binding.workspace.canonicalPath}/.git/config`,65536,false).bytes);
   assertRootConfigAncestorFacts(record,binding);
   const after = assertCurrentHostedDependencyAttempt(context,fence,phase);
-  const rechecked=record.version===2 || record.version===3 ? readOriginalHostedDependencyRootReady(context,fence,phase) : readHostedDependencyUsableReceipt(context,fence,phase).receipt;
+  const rechecked=currentPreparationReceipt(context,fence,phase,record);
   if(!sameDependencyAttempt(after.attempt,attempt) || !encode(rechecked).equals(encode(committed)) ||
     !fixed(`dependency-root-preparations/${attempt.launch.startId}.json`,65536).bytes.equals(selected.bytes) || remaining()<=0)invalid();
   const common={reference:selected.reference,identity,rootGit};
@@ -110,9 +112,23 @@ export function readOriginalHostedDependencyRootPreparation(context:CurrentHoste
     return {...common,admission:DependencyToolReadyReadStatus.Ready as const,record,ready};
   }
   const latest=readCurrentHostedDependencyRootQualification(fence);
-  if(latest.status!==DependencyToolReadyReadStatus.Usable || latest.context!==context || latest.phase!==phase ||
+  if((record.version===6 || record.version===7 ? latest.status!==DependencyToolReadyReadStatus.Baseline : latest.status!==DependencyToolReadyReadStatus.Usable) ||
+    latest.status===DependencyToolReadyReadStatus.Ready || latest.context!==context || latest.phase!==phase ||
     !sameDependencyAttempt(latest.attempt,attempt) || !encode(latest.binding).equals(encode(binding)) ||
     !encode(latest.receipt).equals(encode(committed.receipt)) || !encode(latest.execution).equals(encode(record.execution)))invalid();
+  if(record.version===6 || record.version===7) {
+    const baseline=readCurrentHostedDependencyGenerationBaseline(context,fence);if(!baseline)invalid();
+    return {...common,admission:DependencyToolReadyReadStatus.Baseline as const,record,baselineReady:baseline.ready};
+  }
   const unverified=readHostedDependencyUsableReceipt(context,fence,phase).receipt;
   return {...common,admission:DependencyToolReadyReadStatus.Usable as const,record,unverified};
+}
+function currentPreparationReceipt(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,
+  phase:DependencyOwnerPhase.ExclusiveMutation|DependencyOwnerPhase.Running,
+  record:import("../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record").HostedDependencyRootPreparationRecord) {
+  if(record.version===2 || record.version===3)return readOriginalHostedDependencyRootReady(context,fence,phase);
+  if(record.version===6 || record.version===7) {
+    const baseline=readCurrentHostedDependencyGenerationBaseline(context,fence);if(!baseline)invalid();return baseline.ready;
+  }
+  return readHostedDependencyUsableReceipt(context,fence,phase).receipt;
 }

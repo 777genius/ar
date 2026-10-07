@@ -1,3 +1,8 @@
+import { readHostedDependencyEvictionEnabled as enabled } from "./hosted-dependency-eviction-enabled-policy";
+import { readCurrentHostedDependencyMaintenanceAuthority, claimCurrentHostedDependencyMaintenance,
+  assertCurrentHostedDependencyMaintenance, retireCurrentHostedDependencyEviction, releaseCurrentHostedDependencyMaintenance,
+  renameCurrentHostedDependencyMaintenanceTree } from "./hosted-current-dependency-origin";
+import { assertLegacyDependencyWriterWorkspace } from "./hosted-dependency-legacy-writer-boundary";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { DependencyOwnerKind, DependencyOwnerPhase, DependencyReceiptState as State, DependencyTreeObservationStatus as Observed,
@@ -40,15 +45,14 @@ const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const encode = (v: unknown): Buffer => Buffer.from(JSON.stringify(v) + "\n");
 const hash = (v: Uint8Array): string => createHash("sha256").update(v).digest("hex");
 const owns = () => LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
-type Authority = ReturnType<HostedInstallationActivationStore["dependencyMaintenanceAuthority"]>;
+type Authority = ReturnType<typeof readCurrentHostedDependencyMaintenanceAuthority>;
 /** Concrete N5 reuse of the existing actual operator/controller exclusion.
  * These methods reread protected authority; no supplied owner predicate grants
  * mutation rights. Caller owns this exact durable Maintenance across awaits. */
 export function claimHostedDependencyComparisonMaintenance(jobId: string, operationId: string): DependencyMaintenanceAttempt {
   if (!uuid.test(operationId)) fail();
   return withHostedActivationFence(fence => {
-    const a = new HostedInstallationActivationStore().dependencyMaintenanceAuthority(fence, jobId), store = owns();
-    try { return claimDependencyMaintenance(store, a.binding.workspace, host(a), operationId); } finally { store.close(); }
+    return claimCurrentHostedDependencyMaintenance(fence,jobId,operationId);
   });
 }
 export function assertHostedDependencyComparisonMaintenanceUnderFence(fence: import("../provider-codex/app-server/adapters/hosted-process-activation").HostedActivationFence,
@@ -59,15 +63,10 @@ export function assertHostedDependencyComparisonQuiescent(jobId: string, attempt
   return guard(jobId, attempt);
 }
 function authority(jobId: string): Authority {
-  return withHostedActivationFence(fence => new HostedInstallationActivationStore().dependencyMaintenanceAuthority(fence, jobId));
-}
-function enabled(): boolean {
-  const bytes = readHostedPrivateBytes(root + "/dependency-retention-policy.json", 4096);
-  if (!bytes) return false;
-  const value = decodeHostedActivationBytes(bytes) as Record<string, unknown>;
-  if (!value || Object.keys(value).sort().join(",") !== "evictionEnabled,managedReadyRequired,version" ||
-      value.version !== 1 || value.managedReadyRequired !== true || typeof value.evictionEnabled !== "boolean") fail();
-  return value.evictionEnabled;
+  // The old async remover has no authenticated physical lifetime. It cannot
+  // run beside Active/pending/retiring roots through a nominal trash cwd.
+  assertLegacyDependencyWriterWorkspace(trashRoot);
+  return withHostedActivationFence(fence => new HostedInstallationActivationStore().dependencyMaintenanceAuthority(fence,jobId));
 }
 function host(a: Authority): DependencyMaintenanceAttempt["host"] {
   return { installationId: a.installation.installationId, bootId: a.session.bootId, supervisorId: a.session.supervisorId,
@@ -78,20 +77,14 @@ function guard(jobId: string, attempt: DependencyMaintenanceAttempt, requireEnab
 }
 function maintenanceUnderFence(fence: import("../provider-codex/app-server/adapters/hosted-process-activation").HostedActivationFence,
   jobId: string, attempt: DependencyMaintenanceAttempt, requireEnabled = false): Authority {
-    const a = new HostedInstallationActivationStore().dependencyMaintenanceAuthority(fence, jobId);
+    const a = readCurrentHostedDependencyMaintenanceAuthority(fence,jobId);
     if (!sameDependencyMaintenanceAttempt(attempt, { ...attempt, host: host(a) }) || (requireEnabled && !enabled()) ||
         readHostedPrivateBytes(`${operations}/${attempt.operationId}.close-unresolved.json`, 4096)) fail();
-    const store = owns();
-    try { assertDependencyMaintenance(store, a.binding.workspace, attempt); } finally { store.close(); }
+    assertCurrentHostedDependencyMaintenance(fence,jobId,attempt);
     return a;
 }
-function release(jobId: string, attempt: DependencyMaintenanceAttempt): void {
-  withHostedActivationFence(fence => {
-    const a = new HostedInstallationActivationStore().dependencyMaintenanceAuthority(fence, jobId);
-    if (!sameDependencyMaintenanceAttempt(attempt, { ...attempt, host: host(a) })) fail();
-    const store = owns();
-    try { releaseDependencyMaintenance(store, a.binding.workspace, attempt); } finally { store.close(); }
-  });
+function release(jobId:string,attempt:DependencyMaintenanceAttempt):void {
+  withHostedActivationFence(fence=>releaseCurrentHostedDependencyMaintenance(fence,jobId,attempt));
 }
 
 /** Exact selected old starts are fenced and drained. Other live workspaces are
@@ -263,13 +256,7 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
     if (observed.status !== Observed.Complete || observed.digest !== header.ready.manifestDigest ||
         !sameHostedDependencyKeyInputs(keyInputs, await readHostedDependencyKeyInputs(a.binding))) fail();
     a = guard(jobId, header.attempt, true);
-    const operation = await openDependencyTreeRename(input(a.binding, header, bytes, originalLinks));
-    let closeFailures = 0;
-    try {
-      a = guard(jobId, header.attempt, true);
-      assertHostedDependencyReferenceVeto(a.binding.workspace, destination, covered(a), DependencyReferenceEffect.Eviction,
-        { session: operation.referenceSession, operationId: header.attempt.operationId });
-      if (receipt.state === State.Ready) {
+    if (receipt.state === State.Ready) {
         a = guard(jobId, header.attempt, true);
         const evicting: DependencyReceipt = { version: 1, revision: receipt.revision + 1, generation: receipt.generation,
           workspace: receipt.workspace, coverageRevision: receipt.coverageRevision, state: State.Evicting,
@@ -278,15 +265,28 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
         withHostedActivationFence(fence => {
           assertHostedDependencyKeyInputsCurrent(a.binding, keyInputs);
           placement.assertCurrent(fence);
+          assertCurrentHostedDependencyMaintenance(fence,jobId,header.attempt);
           publishHostedDependencyReceipt(a.binding, evicting.revision - 1, evicting);
+          retireCurrentHostedDependencyEviction(fence,jobId,header.attempt);
         });
         receipt = evicting;
       }
-      a = guard(jobId, header.attempt, true);
-      assertHostedDependencyReferenceVeto(a.binding.workspace, destination, covered(a), DependencyReferenceEffect.Eviction,
-        { session: operation.referenceSession, operationId: header.attempt.operationId });
-      withHostedActivationFence(() => assertHostedDependencyKeyInputsCurrent(a.binding, keyInputs));
-      const moved = await operation.rename();
+    withHostedActivationFence(fence=>retireCurrentHostedDependencyEviction(fence,jobId,header.attempt));
+    const fixedMoved=await renameCurrentHostedDependencyMaintenanceTree(jobId,header.attempt);
+    if(fixedMoved) {
+      if(!sameDependencyTree(fixedMoved.tree,header.ready.tree) || fixedMoved.manifestDigest!==header.ready.manifestDigest)fail();
+    }else {
+    const operation = await openDependencyTreeRename(input(a.binding, header, bytes, originalLinks));
+    let closeFailures = 0;
+    try {
+      const prepared=await operation.prepareSynchronousRename();
+      const moved=withHostedActivationFence(fence=>{
+        a=maintenanceUnderFence(fence,jobId,header.attempt,true);
+        assertHostedDependencyKeyInputsCurrent(a.binding,keyInputs);
+        assertHostedDependencyReferenceVeto(a.binding.workspace,destination,covered(a),DependencyReferenceEffect.Eviction,
+          {session:prepared.referenceSession,operationId:header.attempt.operationId});
+        return prepared.commit(); // Synchronous effect, no thenable crosses the host fence.
+      });
       if (!sameDependencyTree(moved.tree, header.ready.tree) || moved.manifestDigest !== header.ready.manifestDigest) fail();
     } finally {
       closeFailures = (await operation.close()).closeFailures;
@@ -296,6 +296,7 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
       }
     }
     if (closeFailures) fail();
+    }
   } else {
     if (receipt.state !== State.Evicting) fail();
     const observed = await observeDependencyDirectoryRoot({ parentPath: header.trash.destinationParent.canonicalPath,
@@ -331,7 +332,7 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
 
 export async function evictHostedDependencyCandidate(candidate: HostedDependencyEvictionCandidate) {
   const selected = withHostedActivationFence(fence => {
-    const a = new HostedInstallationActivationStore().dependencyMaintenanceAuthority(fence, candidate.jobId);
+    const a = readCurrentHostedDependencyMaintenanceAuthority(fence,candidate.jobId);
     if (!enabled()) return null;
     const receipt = readHostedDependencyReceipt(a.binding);
     if (receipt?.state !== State.Ready || receipt.revision !== candidate.revision || receipt.generation !== candidate.generation ||
@@ -339,15 +340,14 @@ export async function evictHostedDependencyCandidate(candidate: HostedDependency
     ensureHostedDependencyDirectory(operations); ensureHostedDependencyDirectory(trashRoot);
     const parent = lstatSync(trashRoot, { bigint: true });
     if (String(parent.dev) !== a.binding.workspace.dev) fail();
-    const store = owns();
-    try {
-      const attempt = claimDependencyMaintenance(store, a.binding.workspace, host(a), randomUUID());
+    {
+      const attempt = claimCurrentHostedDependencyMaintenance(fence,candidate.jobId,randomUUID());
       const header: Header = { version: 1, attempt, ready: receipt, trash: { operationId: attempt.operationId,
         originalTree: receipt.tree, destinationParent: { canonicalPath: trashRoot, dev: String(parent.dev), ino: String(parent.ino) },
         destinationName: "dependency-" + attempt.operationId } };
       createReadonlyPrivateRecord(headerPath(attempt), encode(header));
       return header;
-    } finally { store.close(); }
+    }
   });
   if (!selected) return { outcome: HostedDependencyTransactionOutcome.Skipped };
   try { covered(guard(candidate.jobId, selected.attempt)); return await finish(candidate.jobId, selected); }
@@ -365,7 +365,7 @@ export async function evictHostedDependencyCandidate(candidate: HostedDependency
   }
 }
 export async function recoverHostedDependencyEviction(jobId: string) {
-  const a = authority(jobId), store = owns();
+  const a = withHostedActivationFence(fence=>readCurrentHostedDependencyMaintenanceAuthority(fence,jobId)), store = owns();
   let attempt: DependencyMaintenanceAttempt;
   try {
     const owner = store.read(a.binding.workspace);

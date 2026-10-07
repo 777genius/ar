@@ -6,9 +6,9 @@ function invalid():never { throw new Error("hosted_dependency_current_origin_unr
 /** Pure consistency only. The sole original-map producer independently holds
  * its current context/fence and compares the stores' captured actual owner. */
 export function assertHostedDependencyRetirementOwnerFacts(record:HostedDependencyRootPreparationRecord,owner:DependencyOwnerRecord):void {
-  if (record.version===2) {
+  if (record.version===2 || record.version===6) {
     if (owner.version!==3 || !sameDependencyProtectedReference(owner.custodyBinding,record.custodyReference)) invalid();
-  } else if (record.version!==3 || owner.version!==2) invalid();
+  } else if ((record.version!==3 && record.version!==7) || owner.version!==2) invalid();
 }
 export function assertHostedDependencyRetirementSuccessorFacts(record:HostedDependencyRootPreparationRecord,
   previousOwner:Extract<DependencyOwnerRecord,{version:2|3}>,proposedOwner:Extract<DependencyOwnerRecord,{version:2|3}>,

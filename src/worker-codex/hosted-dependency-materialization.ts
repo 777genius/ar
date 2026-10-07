@@ -1,3 +1,4 @@
+import { startOriginalHostedDependencyFinalObservation } from "./hosted-dependency-generation-controller";
 import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt, assertOriginalHostedDependencyColdProducer, readOriginalHostedDependencyColdSelection, materializeCurrentHostedDependencyColdTree, installCurrentHostedDependencyColdTree,
   consumeCurrentHostedDependencyColdHandoff, assertCurrentHostedDependencyConsumedColdHandoff, closeCurrentHostedDependencyColdHandoff,
   type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
@@ -91,7 +92,7 @@ export async function produceOriginalHostedDependencyColdTree(context:CurrentHos
     assertHostedDependencyKeyInputsCurrent(binding, inputs);
     publishCapturedDependencyOutput(normalized, binding.workspace);
   });
-  withHostedActivationFence(fence=>assertOriginalHostedDependencyColdProducer(context,fence,access));
+  withHostedActivationFence(fence=>{assertOriginalHostedDependencyColdProducer(context,fence,access);startOriginalHostedDependencyFinalObservation(context,fence,access);});
   const final = await observeDependencyTreeWithPhysicalExposure({ workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
     expectedWorkspace: binding.workspace, expectedTree: normalized.tree, limits: hostedDependencyObservationLimits });
   let ownedFinalExposure = final.status === DependencyTreeObservationStatus.Complete ? final.exposure : undefined;

@@ -6,7 +6,7 @@ import { HostedCustodyReservationState, parseHostedOrdinaryStart } from "@vioxen
 import { assertHostedActivationFence, assertHostedActivationOperator, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
 import { readOriginalHostedDependencyGenerationNativeScope } from "./hosted-dependency-generation-native-scope";
-import { assertOriginalHostedDependencyPhysicalRecordAccess, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { assertOriginalHostedDependencyOperatorDescriptors, assertOriginalHostedDependencyPhysicalRecordAccess, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { pinReferenceFile } from "./hosted-dependency-legacy-reference-records";
 import { readHostedInstallationActivation } from "./hosted-installation-origin-facts";
@@ -22,7 +22,7 @@ function invalid():never {throw new Error("hosted_dependency_prior_source_closur
 function boundary(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,access:symbol):void {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
   if(context)readOriginalHostedDependencyGenerationNativeScope(context,fence,access);
-  else {assertHostedActivationOperator();assertHostedProcessDescriptors();}
+  else {assertHostedActivationOperator();assertOriginalHostedDependencyOperatorDescriptors(fence,access);}
 }
 /** A listed historical unit is not excluded by Terminal/PID absence. Only the
  * original successful per-attempt discharge chain can establish this factual
