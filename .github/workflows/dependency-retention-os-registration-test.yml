@@ -60,6 +60,10 @@ jobs:
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-real-codex-emit.json
       - name: Emit finite future FULL TEST caller without auth or activation
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-full-emit.json
+      - name: Check retained image descriptor and backing mount observation contracts
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: node --test scripts/dependency-retention-os-test/current-full-backing-collector.node-test.js
       - name: Strict emit reviewed eviction and restore TEST closure without effects
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-evict-restore-emit.json
       - name: Compile finite uninstalled ROOT profile and check refusal DATA only
@@ -74,6 +78,7 @@ jobs:
             host-integration/managed-launcher/dependency-full-native-TEST.js
             host-integration/managed-launcher/dependency-full-native-parent-TEST.js
             scripts/dependency-retention-os-test/current-full-outer.js
+            scripts/dependency-retention-os-test/current-full-backing-collector.js
             host-integration/managed-launcher/launch.mjs
             scripts/dependency-retention-os-test/assemble-current-full.js
             scripts/dependency-retention-os-test/common.js
@@ -126,6 +131,7 @@ jobs:
             scripts/dependency-retention-os-test/current-full-guest.ts
             scripts/dependency-retention-os-test/current-full-outer-input.ts
             scripts/dependency-retention-os-test/current-full-outer.ts
+            scripts/dependency-retention-os-test/current-full-backing-collector.ts
             scripts/dependency-retention-os-test/current-full-r-entry.ts
             scripts/dependency-retention-os-test/current-full-r-continuation.ts
             scripts/dependency-retention-os-test/tsconfig.current-evict-restore-emit.json

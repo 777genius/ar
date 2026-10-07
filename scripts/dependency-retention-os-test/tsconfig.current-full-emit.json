@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.current-cold-hot-emit.json",
   "compilerOptions": {"rootDir":"../.."},
-  "files": ["./current-full-outer.ts", "./current-full-supervisor.ts", "./current-full-guest.ts"]
+  "files": ["./current-full-outer.ts", "./current-full-supervisor.ts", "./current-full-guest.ts", "./current-full-backing-collector.node-test.ts"]
 }

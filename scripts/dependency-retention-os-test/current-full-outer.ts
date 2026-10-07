@@ -2,6 +2,7 @@ import { assertOuterIoUringPins, controlIoUringFixture, IoUringControlFailure } 
 /** The runner only operates one newly registered service/root. Guest creation
  * is not authority: all positive gates execute inside its actual kernel view. */
 import assert from "node:assert/strict";
+import { retainFullBackingBirth, type FullGuestSelection } from "./current-full-backing-collector.js";
 import { CurrentBackingGeometry, CurrentGeometryQualification, currentBackingStorage } from "./current-backing-geometry.js";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -80,6 +81,7 @@ let registered: ReturnType<typeof directoryIdentity> | undefined;
 let invocationId: string | undefined;
 let fragmentSha256: string | undefined;
 let sink: DiagnosticSink | undefined;
+let backing: ReturnType<typeof retainFullBackingBirth> | undefined;
 const scenarioStarted = process.hrtime.bigint();
 let deadline = earlier(workDeadline, scenarioStarted + milliseconds(22 * 60 * 1000));
 const command = (file: string, args: readonly string[], timeout = 30000): string => boundedCommand(file, args, deadline, timeout);
@@ -110,13 +112,16 @@ try {
   const storage = geometry === CurrentBackingGeometry.Adoptable ? currentBackingStorage : readonlyStorage;
   if (scenario === OwnedOsScenario.Readonly || geometry === CurrentBackingGeometry.Adoptable) {
     // Reserve real backing bytes before formatting, never a sparse capacity
-    // claim. systemd owns the loop/mount solely in this exact service namespace.
+    // claim. Retain the born image before formatting or service exposure; the
+    // collector measures actual loop/mount joins without granting authority.
     const bytes = 6n * 1024n * 1024n * 1024n, free = statfsSync(owned, { bigint: true });
     assert(free.bavail * free.bsize >= bytes && free.ffree >= 100000n, "TEST readonly scratch capacity unavailable");
     dataImage = owned + "/readonly-data.ext4";
     const fd = openSync(dataImage, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     let inode: ReturnType<typeof fstatSync>;
-    try { inode = fstatSync(fd); assert(inode.isFile() && inode.uid === 0 && inode.nlink === 1); }
+    try { inode = fstatSync(fd); assert(inode.isFile() && inode.uid === 0 && inode.nlink === 1);
+      backing = retainFullBackingBirth(id, fd, () => remaining(deadline), managedParent);
+    }
     finally { closeSync(fd); }
     command("/usr/bin/fallocate", ["--length", String(bytes), dataImage], 60000);
     command("/usr/sbin/mkfs.ext4", ["-F", "-m", "0", "-N", "100000", dataImage], 60000);
@@ -176,6 +181,19 @@ try {
   // A queued start may not yet have its invocation. Poll only this registered unit.
   const bootStarted = process.hrtime.bigint();
   const bootDeadline = earlier(deadline, bootStarted + milliseconds(90000));
+  if (!diagnostic) {
+    while (!invocationId) {
+      remaining(bootDeadline, "owned TEST invocation readiness deadline exhausted");
+      assert(["active", "activating"].includes(command("/usr/bin/systemctl", ["show", unit, "--property=ActiveState", "--value"], Math.min(2000, remaining(bootDeadline))).trim()));
+      invocationId = command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"], Math.min(2000, remaining(bootDeadline))).trim();
+      if (!invocationId) await new Promise(resolve => setTimeout(resolve, Math.min(1000, remaining(bootDeadline))));
+    }
+    assert.match(invocationId, /^[a-f0-9]{32}$/);
+    // Original once-only seal validates actual current systemctl invocation.
+    // It must precede the pending ColdV2 request, not wait for guest evidence.
+    managedParent.observeGuestInvocation(id, invocationId);
+    evidence.invocationId = invocationId;
+  }
   if (diagnostic) {
     evidence.observation = { purpose: "TEST_daemon_stderr_only", outcome: "unqualified", limitBytes: 65536, totalStartsLimit: 1 };
     const bootRemaining = () => remaining(bootDeadline, "owned TEST diagnostic boot deadline exhausted");
@@ -198,6 +216,18 @@ try {
       const bytes=readFileSync(requestPath),request:unknown=JSON.parse(bytes.toString("utf8"));
       assert(isDependencyCustodyObject(request,"candidateJobId,jobRoot,readonlyJobId,readonlyPaths,runtimeLaunch,runtimeManifestSha256,runtimeSha,schemaVersion,workspace") && request.schemaVersion===1);
       assert(Buffer.from(JSON.stringify(request)+"\n").equals(bytes));assert.equal(request.runtimeSha,fullInput.sourceSha);
+      assert(backing && registered && invocationId);
+      managedParent.revalidate();
+      observeGuestBoot(root, registered, unit, invocationId, deadline, undefined,
+        (selection, handles) => backing!.select(selection, handles));
+      assert.equal(command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"], 2000).trim(), invocationId);
+      const facts = backing.observe();
+      assert.equal(command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"], 2000).trim(), invocationId);
+      backing.revalidate(); managedParent.revalidate();
+      const factsPath = owned + "/cold-policy-backing-facts.json";
+      json(factsPath, facts, 0o600);
+      backing.revalidate(); managedParent.revalidate();
+      evidence.independentBackingFacts = { purpose: "TEST_backing_facts_only_no_exclusion_authority", path: factsPath, sha256: fileDigest(factsPath) };
       // Factual request, not a positive REVIEW or generated issuer. ROOT's
       // independent reviewer installs exact protected bytes into this own inbox.
       evidence.independentPolicyRequest={purpose:"TEST_factual_policy_review_request_only",request,reviewedInputDirectory:reviewed};
@@ -230,7 +260,6 @@ try {
   }
   assert.match(invocationId ?? "", /^[a-f0-9]{32}$/);
   evidence.invocationId = invocationId;
-  managedParent.observeGuestInvocation(id,invocationId);
   const stat = lstatSync(path); assert(stat.isFile() && stat.uid === 0 && stat.size < 65536);
   const guest = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
   assert.equal(guest.sourceSha, process.env.TEST_SOURCE_SHA); assert.equal(guest.machineId, machineId);
@@ -291,10 +320,13 @@ try {
           assert.equal(command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"], 2000).trim(), invocationId);
         } catch { delete evidence.guestBootFailure; evidence.guestBootDiagnosticUnavailable = true; }
       }
+      if (backing) { try { backing.revalidate(); } catch { evidence.backingFinalObservationUncertain = true; } }
       command("/usr/bin/systemctl", ["stop", unit], 45000);
       evidence.ownedOsStopped = true;
     } catch { evidence.status = "failed"; evidence.ownedOsStopped = false; process.exitCode = 1; }
   }
+  if (backing && evidence.ownedOsStopped === true) backing.close();
+  else if (backing) evidence.backingRetentionTerminalUnproven = true;
   if (sink) { try { closeSync(sink.fd); } catch { evidence.status = "failed"; evidence.sinkCloseFailed = true; process.exitCode = 1; } }
   if (!diagnostic && existsSync(root + runtime + "/TEST-io-uring-probe.json")) {
     try { assertOuterIoUringPins(root); }
@@ -370,9 +402,10 @@ function classifyBusStderr(bytes: Uint8Array) {
 }
 
 // No result here can authorize a launch. Every query addresses only the
-// already-failed owned guest's PID1 private socket, never a system-bus fallback.
+// registered owned guest's PID1 private socket, never a system-bus fallback.
 function observeGuestBoot(root: string, registered: ReturnType<typeof directoryIdentity>, unit: string,
-  invocationId: string, deadline: bigint, sink?: DiagnosticSink): Record<string, unknown> {
+  invocationId: string, deadline: bigint, sink?: DiagnosticSink,
+  backingObservation?: (selection: FullGuestSelection, handles: readonly number[]) => void): Record<string, unknown> {
   function proc(path: string, bound: number): string {
     remaining(deadline, "owned TEST boot diagnostic allowance exhausted");
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -447,7 +480,7 @@ function observeGuestBoot(root: string, registered: ReturnType<typeof directoryI
     const listeners = rows.map(row => row.trim().split(/\s+/)).filter(row => row.length === 8 && row[7] === "/run/systemd/private" &&
       row[4] === "0001" && (Number.parseInt(row[3]!, 16) & 0x10000) !== 0 && held.has(row[6]!));
     assert.equal(listeners.length, 1);
-    return { pid, birth: fields[19]!, group: cg, rootDev: registered.dev, rootIno: registered.ino,
+    return { pid, birth: fields[19]!, invocationId, group: cg, rootDev: registered.dev, rootIno: registered.ino,
       mnt, pidNamespace, listenerInode: listeners[0]![6]!, socketDev: String(socket.dev), socketIno: String(socket.ino) };
   }
   const before = identity(); const observations: unknown[] = [], retained: number[] = [];
@@ -461,6 +494,7 @@ function observeGuestBoot(root: string, registered: ReturnType<typeof directoryI
   const retainedRoot = fstatSync(retained[2]!, { bigint: true }); assert(retainedRoot.isDirectory() &&
     String(retainedRoot.dev) === registered.dev && String(retainedRoot.ino) === registered.ino);
   assert.deepEqual(identity(), before);
+  if (backingObservation) { backingObservation(before, retained); assert.deepEqual(identity(), before); }
   function query(name: "dbus.socket" | "dbus.service" | "TEST-retention-supervisor.service" | "TEST-retention.target") {
       assert.deepEqual(identity(), before);
       const keys = ["Id", "LoadState", "ActiveState", "SubState", "Job", "Result", "MainPID", "ExecMainCode", "ExecMainStatus", "TimeoutStartUSec"];
