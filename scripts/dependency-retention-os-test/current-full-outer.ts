@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, statSync, statfsSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { assembleCurrentFull as assemble } from "./assemble-current-full.js";
+import { retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { readCurrentFullOuterInput } from "./current-full-outer-input.js";
 import { configuredAuthNspawnBinding } from "./current-configured-auth-mount.js";
 import { prepareCurrentRealCodexCapsule } from "./prepare-current-real-codex-capsule.js";
@@ -33,6 +34,7 @@ function boundedCommand(file: string, args: readonly string[], deadline: bigint,
 // This NEW route consumes fixed ROOT-staged TEST inputs. Historical GitHub
 // assertions/dispatch in registration-outer remain byte-for-byte unchanged.
 assert.equal(process.argv.length,2);
+const managedParent=retainCurrentFullParent();
 const fullInput=readCurrentFullOuterInput(),{source,toolchain}=fullInput;
 assert.equal(boundedCommand("/usr/bin/lsb_release",["--codename","--short"],workDeadline).trim(),"noble");
 const diagnostic=false,geometry=CurrentBackingGeometry.Adoptable;
@@ -63,10 +65,11 @@ if(!existsSync(outputRoot))directory(outputRoot);
 const outputRootStat=lstatSync(outputRoot);assert(outputRootStat.isDirectory() && !outputRootStat.isSymbolicLink() && outputRootStat.uid===0 && outputRootStat.gid===0 && (outputRootStat.mode&0o7777)===0o700);
 assert.equal(realpathSync(outputRoot),outputRoot);
 json(outputRoot + "/dependency-retention-os-evidence.json", defaultEvidence, 0o600);
+managedParent.revalidate();managedParent.close();
 
 async function runOwnedOs(scenario: OwnedOsFixtureScenario): Promise<Record<string, unknown>> {
 const diagnostic = scenario === OwnedOsMode.BusDiagnostic;
-const id = randomUUID(), owned = base + "/" + id; directory(owned);
+const id = randomUUID(), owned = base + "/" + id; assert(!existsSync(owned));directory(owned);
 const root = owned + "/root", outbox=owned+"/policy-request-outbox", reviewed=owned+"/independently-reviewed-inputs", fullReviewed=owned+"/full-reviewed-input", publicReviewed=owned+"/public-reviewed-input", unit = `TEST-retention-os-${id}.service`;
 const machineId = randomUUID().replaceAll("-", ""), outerMachineId = readFileSync("/etc/machine-id", "utf8").trim();
 const evidence: Record<string, unknown> = { schemaVersion: 1, qualification,
@@ -157,13 +160,16 @@ try {
   evidence.launchRegistration = launch;
   const runtimeSeconds = Math.ceil(remaining(deadline) / 1000) + 90;
   const target = diagnostic ? "TEST-retention-bus-diagnostic.target" : "TEST-retention.target";
-  const fragment = `[Unit]\nDescription=Owned disposable dependency TEST OS ${id}\n[Service]\nType=exec\nDelegate=yes\nKillMode=control-group\nRestart=no\nRuntimeMaxSec=${runtimeSeconds}s\nTimeoutStopSec=30s\n${dataImage ? `MountImages=${dataImage}:${storage}\n` : ""}Environment=SYSTEMD_NSPAWN_USE_CGNS=1\nExecStart=${nspawn} --directory=${root} --machine=TEST-retention-${id} --register=no --keep-unit --private-users=no --boot --console=pipe --resolv-conf=off --capability=CAP_SYS_ADMIN,CAP_MKNOD,CAP_SETPCAP,CAP_SETFCAP,CAP_SYS_PTRACE ${dataImage ? `--bind=${storage} ` : ""}${inheritedHostMarker}${authBinding} --bind-ro=${fullReviewed}:/run/TEST-full-flow-input --bind-ro=${publicReviewed}:/run/TEST-real-codex-review --bind=${outbox}:/run/TEST-full-flow-outbox --bind-ro=${reviewed}:/run/user/0/subscription-runtime-host-policy/codex-readonly-reviewed --setenv=SYSTEMD_UNIT_PATH=/etc/systemd/test-units:/run/systemd/system -- --unit=${target} --log-target=console\n`;
+  managedParent.revalidate();
+  const fragment = `[Unit]\nBindsTo=${managedParent.unit}\nAfter=${managedParent.unit}\nPartOf=${managedParent.unit}\nDescription=Owned disposable dependency TEST OS ${id}\n[Service]\nType=exec\nMemoryMax=6G\nMemorySwapMax=0\nTasksMax=1024\nCPUQuota=400%\nCPUQuotaPeriodSec=100ms\nDelegate=yes\nKillMode=control-group\nRestart=no\nRuntimeMaxSec=${runtimeSeconds}s\nTimeoutStopSec=30s\n${dataImage ? `MountImages=${dataImage}:${storage}\n` : ""}Environment=SYSTEMD_NSPAWN_USE_CGNS=1\nExecStart=${nspawn} --directory=${root} --machine=TEST-retention-${id} --register=no --keep-unit --private-users=no --boot --console=pipe --resolv-conf=off --capability=CAP_SYS_ADMIN,CAP_MKNOD,CAP_SETPCAP,CAP_SETFCAP,CAP_SYS_PTRACE ${dataImage ? `--bind=${storage} ` : ""}${inheritedHostMarker}${authBinding} --bind-ro=${fullReviewed}:/run/TEST-full-flow-input --bind-ro=${publicReviewed}:/run/TEST-real-codex-review --bind=${outbox}:/run/TEST-full-flow-outbox --bind-ro=${reviewed}:/run/user/0/subscription-runtime-host-policy/codex-readonly-reviewed --setenv=SYSTEMD_UNIT_PATH=/etc/systemd/test-units:/run/systemd/system -- --unit=${target} --log-target=console\n`;
   const unitPath = "/run/systemd/system/" + unit;
   assert(!existsSync(unitPath)); writeFileSync(unitPath, fragment, { flag: "wx", mode: 0o644 });
   fragmentSha256 = fileDigest(unitPath);
   json(owned + "/unit-registration.json", { unit, fragmentSha256, sourceSha: process.env.TEST_SOURCE_SHA, root: registered, outerMachineId });
   evidence.fragmentSha256 = fragmentSha256;
+  managedParent.registerGuest(id,root,fragmentSha256);
   command("/usr/bin/systemctl", ["daemon-reload"]);
+  managedParent.revalidate();
   command("/usr/bin/systemctl", ["start", "--no-block", unit]);
   invocationId = command("/usr/bin/systemctl", ["show", unit, "--property=InvocationID", "--value"]).trim();
   // A queued start may not yet have its invocation. Poll only this registered unit.
@@ -223,6 +229,7 @@ try {
   }
   assert.match(invocationId ?? "", /^[a-f0-9]{32}$/);
   evidence.invocationId = invocationId;
+  managedParent.observeGuestInvocation(id,invocationId);
   const stat = lstatSync(path); assert(stat.isFile() && stat.uid === 0 && stat.size < 65536);
   const guest = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
   assert.equal(guest.sourceSha, process.env.TEST_SOURCE_SHA); assert.equal(guest.machineId, machineId);

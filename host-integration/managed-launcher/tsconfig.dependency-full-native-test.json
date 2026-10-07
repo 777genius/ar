@@ -1,0 +1,4 @@
+{
+  "compilerOptions": {"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"noUncheckedIndexedAccess":true,"exactOptionalPropertyTypes":true,"skipLibCheck":true,"noEmitOnError":true,"types":["node"]},
+  "files": ["./dependency-full-native-TEST.ts","./dependency-full-native-parent-TEST.ts","./dependency-full-native-TEST.node-test.ts"]
+}

@@ -56,6 +56,10 @@ jobs:
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-real-codex-emit.json
       - name: Emit finite future FULL TEST caller without auth or activation
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.current-full-emit.json
+      - name: Compile finite uninstalled ROOT profile and check refusal DATA only
+        run: |
+          node node_modules/typescript/bin/tsc -p host-integration/managed-launcher/tsconfig.dependency-full-native-test.json
+          node --test host-integration/managed-launcher/dependency-full-native-TEST.node-test.js
       - name: Check official platform resolution inside the existing readonly package root
         run: node --test scripts/dependency-retention-os-test/current-codex-layout.node-test.js
       - name: Check original FDA result boundary for content observations
