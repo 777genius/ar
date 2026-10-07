@@ -632,7 +632,7 @@ export function readCurrentHostedDependencyRootQualification(fence:HostedActivat
 
 /** Internal fixed original-map association. No entry/exposure/input/ref DTO can
  * register a warm use; only this module's actual completed private entry counts. */
-export function readOriginalHostedDependencyQualifiedBaselineSourceUse(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol) {
+export function readOriginalHostedDependencyQualifiedBaselineSourceUse(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol): {inputs:HostedDependencyKeyInputs;execution:DependencyToolUsableExecution|DependencyToolBaselineExecution;exposure?:DependencySourceExposure;qualification:ReturnType<typeof readHostedDependencyCommittedReady>["reference"]} {
   const generation=findOriginalHostedDependencyGenerationState(context,access);if(!generation || !currentQualifiedEntry)fail();
   const state=entryState(currentQualifiedEntry);if(state.context!==context || (state.kind!==DependencyToolReadyReadStatus.Baseline && state.kind!==DependencyToolReadyReadStatus.Usable) || state.phase!==DependencyOwnerPhase.ExclusiveMutation)fail();
   currentAdmission(state,fence,state.phase);
@@ -643,7 +643,7 @@ export function readOriginalHostedDependencyQualifiedBaselineSourceUse(context:C
 
 /** Actual completed cold qualifier only. Its authored-source exposure is owned
  * by this private entry; the consumed NM observation is never a live-use grant. */
-export function readOriginalHostedDependencyQualifiedColdSourceUse(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol) {
+export function readOriginalHostedDependencyQualifiedColdSourceUse(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol): {inputs:HostedDependencyKeyInputs;exposure?:DependencySourceExposure;qualification:ReturnType<typeof readHostedDependencyCommittedReady>["reference"]} {
   const generation=findOriginalHostedDependencyGenerationState(context,access);if(!generation || !currentQualifiedEntry)fail();
   const state=entryState(currentQualifiedEntry);if(state.context!==context || state.kind!==DependencyToolReadyReadStatus.Ready || state.phase!==DependencyOwnerPhase.ExclusiveMutation)fail();
   assertCurrentHostedDependencyAttempt(context,fence,state.phase);currentReadyEntry(state,state.phase);
