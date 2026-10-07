@@ -13,6 +13,7 @@ import {
 } from "@vioxen/subscription-runtime/provider-codex";
 import type { WorkerCapacitySnapshot } from "@vioxen/subscription-runtime/worker-core";
 import type { SubscriptionWorkerState } from "@vioxen/subscription-runtime/worker-core";
+import { codexSessionCapacityAccountId } from "./codex-session-capacity-identity";
 
 export type CodexWorkerCapacityPolicy = {
   readonly softMaxRunsPerWindow?: number;
@@ -29,6 +30,7 @@ export class FileBackendCodexCapacityState {
   private consecutiveReconnectFailures = 0;
   private quotaGroup: string | null = null;
   private capacityAccountId: string | null;
+  private capacitySessionId: string | null = null;
 
   constructor(
     private readonly options: {
@@ -49,6 +51,10 @@ export class FileBackendCodexCapacityState {
     return this.capacityAccountId;
   }
 
+  get sessionInvalid(): boolean {
+    return this.capacityState.reason === "provider_session_invalid";
+  }
+
   hasKnownAccountIdentity(): boolean {
     return Boolean(this.quotaGroup || this.capacityAccountId);
   }
@@ -57,6 +63,9 @@ export class FileBackendCodexCapacityState {
     readonly workerState: SubscriptionWorkerState;
     readonly authSourceChanged: boolean;
   }): WorkerCapacitySnapshot {
+    if (this.sessionInvalid && !input.authSourceChanged) {
+      return this.withCapacityDetails(this.capacityState);
+    }
     if (input.workerState === "created" || input.workerState === "starting") {
       return this.withCapacityDetails({
         availability: "disabled",
@@ -154,6 +163,7 @@ export class FileBackendCodexCapacityState {
       this.capacityState = {
         availability: "disabled",
         reason: failure.code,
+        lastLimitSignalAt: this.options.clock.now(),
       };
       return;
     }
@@ -195,6 +205,7 @@ export class FileBackendCodexCapacityState {
     try {
       const authJsonBytes = codexAuthJsonFromArtifact(session);
       const validation = validateCodexAuthJsonBytes({ authJsonBytes });
+      this.capacitySessionId = codexSessionCapacityAccountId(validation.parsed);
       this.quotaGroup = `codex-chatgpt:${hashText(
         validation.parsed.tokens.refresh_token,
       ).slice(0, 16)}`;
@@ -250,7 +261,7 @@ export class FileBackendCodexCapacityState {
     if (nowMs - this.windowStartedAtMs < windowMs) return;
     this.windowStartedAtMs = nowMs;
     this.runsInWindow = 0;
-    if (this.capacityState.availability === "cooldown") {
+    if (this.capacityState.availability === "cooldown" && !this.sessionInvalid) {
       this.capacityState = { availability: "available" };
     }
   }
@@ -267,6 +278,7 @@ export class FileBackendCodexCapacityState {
           ? { accountId: this.capacityAccountId }
           : {}),
         ...(this.quotaGroup ? { quotaGroup: this.quotaGroup } : {}),
+        ...(this.capacitySessionId ? { capacitySessionId: this.capacitySessionId } : {}),
         capacityProvider: "codex",
         capacityModel: this.options.model ?? CODEX_WORKER_DEFAULT_MODEL,
         capacityReasoningEffort: this.options.reasoningEffort ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT,
@@ -324,6 +336,7 @@ export function isAuthReseedableCapacity(capacity: WorkerCapacitySnapshot): bool
 }
 
 function isResettableCapacity(capacity: WorkerCapacitySnapshot): boolean {
+  if (capacity.reason === "provider_session_invalid") return false;
   return (
     capacity.availability === "cooldown" ||
     capacity.availability === "quota_exhausted"

@@ -53,8 +53,14 @@ export class LocalDependencyReceiptStore implements DependencyReceiptStore {
     const root = openSync(input.rootPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try {
       const stat = fstatSync(root, { bigint: true });
-      if (!stat.isDirectory() || !privateMode(stat, 0o700n) || !same(stat, lstatSync(input.rootPath, { bigint: true }))) fail(Failure.UnsafeRoot);
-      return new LocalDependencyReceiptStore(input.rootPath, root, stat, mount(root), input.maxRecordBytes, input.maxHistorySteps, input.localInstallVerifier);
+      const named = lstatSync(input.rootPath, { bigint: true });
+      // Directory entries may change during a legitimate concurrent publication.
+      // Authenticate root custody separately from immutable receipt bytes.
+      if (!stat.isDirectory() || !named.isDirectory() || !privateMode(stat, 0o700n) || !privateMode(named, 0o700n) ||
+        !sameDependencyTree(identity(stat), identity(named))) fail(Failure.UnsafeRoot);
+      const store = new LocalDependencyReceiptStore(input.rootPath, root, stat, mount(root), input.maxRecordBytes, input.maxHistorySteps, input.localInstallVerifier);
+      store.assertRoot();
+      return store;
     } catch (error) { closeSync(root); throw error; }
   }
 
