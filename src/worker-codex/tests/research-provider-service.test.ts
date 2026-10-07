@@ -556,7 +556,7 @@ describe("owned research provider cancellation (real files and streams; systemd/
 });
 
 /** Model a three-second artifact traversal on slow Host I/O, still inside its
- * unchanged four-second bound. All retained bytes/digests remain real; only the
+ * finite thirty-second bound. All retained bytes/digests remain real; only the
  * Host clock and directory-observation latency are substituted. */
 function slowBoundedMaterial() {
   vi.useFakeTimers();
@@ -602,7 +602,7 @@ describe("slow bounded material at research effect boundaries", () => {
     for (const part of [readyFrame.slice(0, 7), readyFrame.slice(7, 28), readyFrame.slice(28)]) proxy.stdout.write(part);
     await vi.advanceTimersByTimeAsync(0);
     const success = await outcome;
-    console.info(`TEST substituted Host: success=${success}, ready-to-bootstrap=${releasedAt ? releasedAt - readyAt : "held"}ms; artifact walk=3000ms (bound=4000ms)`);
+    console.info(`TEST substituted Host: success=${success}, ready-to-bootstrap=${releasedAt ? releasedAt - readyAt : "held"}ms; artifact walk=3000ms (bound=30000ms)`);
     expect(success).toBe(true);
     expect(releasedAt - readyAt).toBeLessThan(10_000);
     expect(forwarded.length).toBeGreaterThan(0); expect(current.forward).toHaveBeenCalledOnce();
@@ -618,7 +618,7 @@ describe("slow bounded material at research effect boundaries", () => {
     readyAt = now(); proxy.stdout.write(readyFrame);
     await vi.advanceTimersByTimeAsync(0);
     const success = await outcome;
-    console.info(`TEST substituted Host: success=${success}, ready-to-bootstrap=${releasedAt ? releasedAt - readyAt : "held"}ms; artifact walk=3000ms (bound=4000ms)`);
+    console.info(`TEST substituted Host: success=${success}, ready-to-bootstrap=${releasedAt ? releasedAt - readyAt : "held"}ms; artifact walk=3000ms (bound=30000ms)`);
     expect(success).toBe(true);
     expect(releasedAt - readyAt).toBeLessThan(10_000);
     expect(forwarded.length).toBeGreaterThan(0);
@@ -686,11 +686,11 @@ describe("slow bounded material at research effect boundaries", () => {
     vi.spyOn(fs, "fsyncSync").mockImplementation(fd => { sync(fd); if (host.fdPaths.get(fd)?.endsWith(current.provider + ".owner.json")) ownerPublished = true; });
     const readDirectory = fs.readdirSync, stat = fs.lstatSync;
     vi.spyOn(fs, "readdirSync").mockImplementation(((path: string, options: never) => {
-      if (ownerPublished && observation === "artifact-deadline" && path === "/TEST-artifact/dist") elapsed += 4_001;
+      if (ownerPublished && observation === "artifact-deadline" && path === "/TEST-artifact/dist") elapsed += 31_000;
       return readDirectory(path, options);
     }) as typeof fs.readdirSync);
     vi.spyOn(fs, "lstatSync").mockImplementation(((path: string) => {
-      if (ownerPublished && observation === "file-deadline" && path === process.execPath) elapsed += 4_001;
+      if (ownerPublished && observation === "file-deadline" && path === process.execPath) elapsed += 31_000;
       return stat(path);
     }) as typeof fs.lstatSync);
     const error = await runResearchProviderService(current.jobId, current.provider, current.home).then(() => undefined, error => error as Error);
