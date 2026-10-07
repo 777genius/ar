@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { materializeCodexEffectiveSeed, readCodexEffectiveSeed } from "./codex-effective-seed";
 import type { Dirent } from "node:fs";
 import {
   mkdir,
@@ -149,18 +150,20 @@ export function createCodexAccountHealthProbe(input: {
         codexBinaryPath:
           probeInput.account.codexBinaryPath ?? input.codexBinaryPath ?? "codex",
       });
+      let successful = false;
       try {
         const result = await runner({
           ...plan,
           ...(probeInput.timeoutMs ? { timeoutMs: probeInput.timeoutMs } : {}),
         });
+        successful = result.exitCode === 0 && result.timedOut !== true;
         return codexDiagnosticSignalFromProcessResult({
           result,
           now: probeInput.now,
           source: probeInput.mode === "health" ? "health" : "live_probe",
         });
       } finally {
-        await plan.cleanup?.();
+        await plan.cleanup?.(successful);
       }
     },
   };
@@ -232,7 +235,7 @@ async function readCodexIdentity(
 ): Promise<ProviderAccountIdentityReadResult> {
   let authJsonBytes: string;
   try {
-    authJsonBytes = await readFile(account.authJsonPath, "utf8");
+    authJsonBytes = (await readCodexEffectiveSeed(account.authJsonPath)).bytes;
   } catch {
     return {
       identity: {
@@ -331,13 +334,14 @@ async function buildCodexProbePlan(input: {
   readonly account: CodexDiagnosticAccount;
   readonly mode: "health" | "live_probe";
   readonly codexBinaryPath: string;
-}): Promise<CodexDiagnosticCommandRunnerInput & { cleanup?: () => Promise<void> }> {
-  const codexHome = input.account.codexHome ?? dirname(input.account.authJsonPath);
+}): Promise<CodexDiagnosticCommandRunnerInput & { cleanup?: (successful: boolean) => Promise<void> }> {
+  const effective = await materializeCodexEffectiveSeed(input.account.authJsonPath);
+  const codexHome = effective.home;
   const baseEnv = {
     PATH: process.env.PATH ?? "",
     HOME: dirname(codexHome),
     CODEX_HOME: codexHome,
-    REVIEWROUTER_CODEX_AUTH_PATH: input.account.authJsonPath,
+    REVIEWROUTER_CODEX_AUTH_PATH: effective.authJsonPath,
   };
   if (input.mode === "health") {
     return {
@@ -345,6 +349,7 @@ async function buildCodexProbePlan(input: {
       args: ["login", "status"],
       cwd: codexHome,
       env: baseEnv,
+      cleanup: effective.finish,
     };
   }
 
@@ -366,8 +371,9 @@ async function buildCodexProbePlan(input: {
     cwd,
     env: baseEnv,
     stdin: "Reply with exactly: OK",
-    cleanup: async () => {
-      await rm(cwd, { recursive: true, force: true });
+    cleanup: async successful => {
+      try { await effective.finish(successful); }
+      finally { await rm(cwd, { recursive: true, force: true }); }
     },
   };
 }
