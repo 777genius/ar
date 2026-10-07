@@ -19,6 +19,8 @@
     "./native-registration-profile.ts",
     "./reference-enrollment-assertions.ts",
     "./native-installer-observations.ts",
-    "./native-installer-observations.node-test.ts"
+    "./native-installer-observations.node-test.ts",
+    "./current-entry-observations.ts",
+    "./current-entry-observations.node-test.ts"
   ]
 }
