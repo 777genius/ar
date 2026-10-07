@@ -372,7 +372,7 @@ export function retainFullBackingBirth(id:string,bornFd:number,budget:()=>number
               let taskAnchor:FullProcTaskAnchor|undefined;
               try {
                 taskAnchor=processAnchor.retainTask(tid);
-                const start=taskAnchor.birth,prefix=taskAnchor.path,status=text(prefix+"/status",16384,scanBudget),mnt=readlinkSync(prefix+"/ns/mnt"),user=readlinkSync(prefix+"/ns/user");
+                const start=taskAnchor.birth,prefix:string=taskAnchor.path,status=text(prefix+"/status",16384,scanBudget),mnt:string=readlinkSync(prefix+"/ns/mnt"),user=readlinkSync(prefix+"/ns/user");
                 const exposures=new Set<FullBackingExposure>(),fdJoins:Record<string,unknown>[]=[],fds=readdirSync(prefix+"/fd");
                 assert(fds.length<=4096);
                 for(const fd of fds){assert(/^[0-9]+$/.test(fd) && ++descriptors<=131072);
