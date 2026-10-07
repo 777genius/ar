@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { grantResearchLaunch, startResearchLaunch, revokeResearchLaunch } from "../research-launch-owner";
-import { admitResearchProcessFactory, bindResearchRuntime, researchCurrentStart } from "../research-launch-admission";
+import { bindResearchRuntime, researchCurrentStart } from "../research-launch-admission";
 import { researchHash, researchPublish, researchRead } from "../research-launch-files";
 import { researchProcessIdentity, researchServiceIdentity } from "../research-launch-host";
 import { cancelResearchLaunch, signalResearchProvider, statusResearchLaunch } from "../research-launch-lifecycle";
@@ -16,31 +16,12 @@ import * as scratch from "../host-scratch-temp";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import { trustedResearchProviderLaunch, trustedResearchRuntimeLaunch } from "../trusted-custody-systemd-launch";
 import { prepareResearchProviderRoot, type ResearchProviderRootPlan } from "../research-provider-root";
+import { prepareHelper } from "./research-provider-service-fixture";
 
 let previousExitCode: typeof process.exitCode;
 const streams = new Set<PassThrough>();
 beforeEach(() => { previousExitCode = process.exitCode; setupResearchFixture(); });
 afterEach(() => { for (const stream of streams) { stream.unpipe(); stream.destroy(); } streams.clear(); vi.useRealTimers(); process.exitCode = previousExitCode; cleanupResearchFixture(); });
-function prepareHelper(homeLeaf = "TEST-a") {
-  const req = request(); grantResearchLaunch(req.jobId, req.jobRootDir, req.workspacePath);
-  const start = startResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")));
-  host.group = `/system.slice/${start.unit}`; bindResearchRuntime(start.jobId, start.startId);
-  const current = researchCurrentStart(start.jobId);
-  const home = join(req.jobRootDir, "home", homeLeaf);
-  fs.mkdirSync(local(home), { recursive: true, mode: 0o700 });
-  const helper = admitResearchProcessFactory(req)({ command: req.codexBinaryPath, args: ["app-server"], cwd: req.workspacePath,
-    env: { HOME: join(req.jobRootDir, "home"), CODEX_HOME: home } });
-  const unit = fs.readdirSync(local(join(current.directory, "providers")))[0]!.slice(0, -5);
-  // Substitute the runtime parent observation, while invoking the real helper
-  // and retained-file protocol in this TEST process.
-  host.units.get(start.unit)!.pid = process.ppid;
-  researchPublish(join(current.directory, "binding.json"), { schemaVersion: 1, specSha256: researchHash(current.bytes),
-    process: researchProcessIdentity(process.ppid), service: researchServiceIdentity(start.unit) });
-  host.spawn.mockClear();
-  const held = helper.stdin as PassThrough;
-  const forward = vi.spyOn(process.stdin, "pipe").mockImplementation(destination => held.pipe(destination));
-  return { ...current, ...start, provider: unit, helper, forward, home };
-}
 const rootPlans = new WeakMap<ReturnType<typeof prepareHelper>, ResearchProviderRootPlan>();
 function providerLaunch(current: ReturnType<typeof prepareHelper>, home = current.home, scratchHost?: scratch.ScratchTempHost) {
   let root = rootPlans.get(current);
@@ -76,7 +57,7 @@ describe("private finite launch diagnostics", () => {
     const current = prepareHelper(), secretHome = "/TEST-never-log-this-home";
     await expect(runResearchProviderService(current.jobId, current.provider, secretHome)).rejects.toThrow();
     const bytes = researchRead(join(current.directory, "provider-failure.json")).toString();
-    expect(JSON.parse(bytes)).toEqual({ schemaVersion: 1, unit: current.provider, phase: "service-plan" });
+    expect(JSON.parse(bytes)).toEqual({ schemaVersion: 1, unit: current.provider, phase: "service-plan", check: "research-provider-root:snapshot" });
     expect(bytes).not.toContain(secretHome);
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
     expect(() => record(current, ".submission")).toThrow();
@@ -100,6 +81,13 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     const plan = providerLaunch(current, current.home, f.host);
     expect(plan.args).toContain("--property=TimeoutStartSec=300s");
     const runtime = trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes));
+    expect(runtime.args).toContain("--property=MountFlags=private");
+    expect(plan.args).toContain("--property=MountFlags=private");
+    // Propagation is installed policy; caller input cannot replace it or append properties.
+    for (const injected of [{ ...current.spec, mountFlags: "shared" }, { ...current.spec, systemdProperties: ["MountFlags=shared"] }]) {
+      expect(() => trustedResearchRuntimeLaunch(injected, researchHash(current.bytes))).toThrow("hosted_research_launch_denied");
+      expect(() => trustedResearchProviderLaunch(injected, current.provider, current.home, rootPlans.get(current)!)).toThrow("hosted_research_launch_denied");
+    }
     const pinBinds = runtime.args.filter(arg => arg.startsWith("--property=BindPaths="));
     const selected = [
       { source: "/TEST-nvme/runtime-tmp/8794cd8e3d7d92468efc8cef6960bd97fd9e40dd0460e297c3004b12a3ec7a5c", target: join(current.spec.request.jobRootDir, "tmp") },
@@ -391,6 +379,10 @@ describe("owned research provider cancellation (real files and streams; systemd/
     await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
     expect(host.spawn).not.toHaveBeenCalled(); expect(current.forward).not.toHaveBeenCalled();
     expect(record(current, ".submission").state).toBe("settled");
+    const timing = JSON.parse(researchRead(join(current.directory, "provider-root-timing.json")).toString());
+    expect(timing.scopes.map((scope: { scope: string; outcome: string }) => [scope.scope, scope.outcome])).toEqual([
+      ["prepare", "completed"], ["initial-launch", "completed"]]);
+    expect(timing.phase).toBe("submission-custody");
   });
   it("attempts stop after pending/no-MainPID kill failure and cancels the creator first", () => {
     const current = prepareHelper(), { submit } = providerProxy(current); submit();
@@ -825,7 +817,7 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
     expect(record(current, ".cancel").unit).toBe(current.provider);
     expect(host.calls.filter(c => ["kill", "stop"].includes(c.args[0]!))).toHaveLength(0);
   });
-  it.each(["native-output", "oversize", "extra-output", "eof", "close", "stdout-error", "stderr-error", "stdin-error", "stdin-epipe", "spawn-error", "exit", "signal", "timeout", "cancel"])(
+  it.each(["native-output", "oversize", "extra-output", "eof", "close", "stdout-error", "stderr-error", "stdin-error", "stdin-epipe", "stdin-destroyed", "spawn-error", "exit", "signal", "timeout", "cancel"])(
     "fails closed before owner/bootstrap/auth on readiness %s", async fault => {
       if (fault === "timeout") vi.useFakeTimers();
       const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
@@ -841,6 +833,7 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
           if (fault === "stderr-error") proxy.stderr.emit("error", new Error("TEST stderr failure"));
           if (fault === "stdin-error") proxy.stdin.emit("error", new Error("TEST stdin failure"));
           if (fault === "stdin-epipe") proxy.stdin.emit("error", Object.assign(new Error("TEST closed stdin"), { code: "EPIPE" }));
+          if (fault === "stdin-destroyed") proxy.stdin.destroy();
           if (fault === "spawn-error") proxy.emit("error", new Error("TEST transport failure"));
           if (fault === "exit") { proxy.exitCode = 0; proxy.emit("exit", 0, null); }
           if (fault === "signal") { proxy.signalCode = "SIGTERM"; proxy.emit("exit", null, "SIGTERM"); }
@@ -855,7 +848,32 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
       expect(() => record(current, ".owner")).toThrow(); expect(record(current, ".cancel").unit).toBe(current.provider);
       expect(proxy.kill).toHaveBeenCalledWith("SIGTERM");
       expect(record(current, ".submission").state).toBe(["exit", "signal"].includes(fault) ? "settled" : "pending");
+      const checks: Record<string, string> = {
+        eof: "research-provider-transport:stdout-ended", close: "research-provider-transport:stdout-destroyed",
+        "stdout-error": "research-provider-transport:transport-failed", "stderr-error": "research-provider-transport:transport-failed",
+        "stdin-error": "research-provider-transport:transport-failed", "stdin-epipe": "research-provider-transport:transport-failed",
+        "stdin-destroyed": "research-provider-transport:stdin-destroyed", "spawn-error": "research-provider-transport:transport-failed",
+        exit: "research-provider-transport:proxy-exited", signal: "research-provider-transport:proxy-exited",
+        timeout: "research-provider-transport:setup-deadline", cancel: "assertResearchProviderNotCancelled",
+      };
+      if (checks[fault]) expect(JSON.parse(researchRead(join(current.directory, "provider-failure.json")).toString()))
+        .toEqual({ schemaVersion: 1, unit: current.provider, phase: "ready-and-owner", check: checks[fault] });
     });
+  it("does not trust adapter error text, stack or cause as a finite transport observation", async () => {
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
+    const error = new Error("TEST private adapter payload", { cause: "artifact-deadline" });
+    error.stack = "Error: TEST private adapter payload\n    at research-provider-transport:setup-deadline (TEST)";
+    host.spawn.mockImplementation(() => {
+      const result = submit(); queueMicrotask(() => proxy.emit("error", error)); return result;
+    });
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow("hosted_research_launch_denied");
+    const bytes = researchRead(join(current.directory, "provider-failure.json")).toString();
+    expect(JSON.parse(bytes)).toEqual({ schemaVersion: 1, unit: current.provider, phase: "ready-and-owner",
+      check: "research-provider-transport:transport-failed" });
+    expect(bytes).not.toContain("private adapter"); expect(bytes).not.toContain("artifact-deadline");
+    expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(() => record(current, ".owner")).toThrow();
+  });
   it("refuses an errored stream after owner publication before releasing any input", async () => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current); host.spawn.mockImplementation(submit);
     const sync = fs.fsyncSync;
