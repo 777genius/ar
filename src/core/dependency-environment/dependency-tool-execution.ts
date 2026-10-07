@@ -129,7 +129,7 @@ function roots(value:unknown,maximum:number):readonly DependencyToolSourceRoot[]
 }
 function array(value:unknown,maximum:number):readonly unknown[] {
   if (!Array.isArray(value) || Object.getPrototypeOf(value)!==Array.prototype) invalid();
-  const descriptors=Object.getOwnPropertyDescriptors(value),length=descriptors.length;
+  const descriptors=Object.getOwnPropertyDescriptors<object>(value),length=descriptors.length;
   if (!length || !("value" in length) || !Number.isSafeInteger(length.value) || length.value<0 || length.value>maximum ||
       Reflect.ownKeys(descriptors).length!==length.value+1) invalid();
   const result:unknown[]=[];
