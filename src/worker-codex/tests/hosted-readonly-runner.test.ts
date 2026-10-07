@@ -70,6 +70,22 @@ vi.mock("../hosted-readonly-epoch-store", () => ({
     publishEpoch(epoch: HostedCustodyEpoch) { facts.epoch = parseHostedCustodyEpoch(epoch); }
   },
 }));
+// These legacy readonly fixtures must never execute the dependency cold protocol.
+// Its new import cycle reenters the kernel while the partial kernel mock awaits
+// importOriginal. Keep the real kernel helpers; refuse every cold call instead.
+vi.mock("../hosted-dependency-cold-controller", () => {
+  const unexpectedColdCall = (): never => { throw new Error("unexpected dependency cold protocol in readonly fixture"); };
+  return {
+    assertOriginalHostedDependencyColdProducer: unexpectedColdCall,
+    readOriginalHostedDependencyColdSelection: unexpectedColdCall,
+    finishOriginalHostedDependencyColdTree: unexpectedColdCall,
+    finishOriginalHostedDependencyColdInstaller: unexpectedColdCall,
+    consumeOriginalHostedDependencyColdHandoff: unexpectedColdCall,
+    assertOriginalHostedDependencyConsumedColdHandoff: unexpectedColdCall,
+    closeOriginalHostedDependencyColdHandoff: unexpectedColdCall,
+    revokeOriginalHostedDependencyColdState: unexpectedColdCall,
+  } satisfies Record<keyof typeof import("../hosted-dependency-cold-controller"), typeof unexpectedColdCall>;
+});
 vi.mock("../hosted-readonly-host-kernel", async original => ({
   ...await original<typeof import("../hosted-readonly-host-kernel")>(),
   readHostedReadonlyHostInventory: () => JSON.parse(inventoryBytes().toString()),
