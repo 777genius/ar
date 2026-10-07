@@ -248,26 +248,37 @@ async function trustedUnpublishedStage(input: TargetInput, jobId: string): Promi
 }
 
 async function consumedOutputInfrastructure(input: TargetInput, path: string): Promise<boolean> {
-  if (basename(path) !== "consumed-output") return false;
-  const ledger = join(path, "ledger");
+  const ledgers = (input.scope.consumedOutputLedgerRoots ?? []).map((root) => resolve(root))
+    .filter((root) => root === path || (basename(path) === "consumed-output" && pathInsideOrEqual(root, path)));
+  const evidenceRoots = input.scope.consumedOutputEvidenceRoots ?? [];
+  if (ledgers.length === 0 || evidenceRoots.length === 0) return false;
   const archives = join(path, "archives");
-  if (!input.scope.consumedOutputLedgerRoots?.some((root) => resolve(root) === ledger) ||
-    !input.scope.consumedOutputEvidenceRoots?.some((root) => resolve(root) === archives)) return false;
-  const configured = [...(input.scope.consumedOutputLedgerRoots ?? []),
-    ...(input.scope.consumedOutputEvidenceRoots ?? [])]
-    .map((root) => resolve(root)).filter((root) => root !== path && pathInsideOrEqual(root, path));
+  const configured = [...ledgers, ...evidenceRoots.map((root) => resolve(root))
+    .filter((root) => root !== path && pathInsideOrEqual(root, path))];
   if (await realpath(path) !== path || (input.scope.deniedRoots ?? []).some((denied) =>
     [path, ...configured].some((root) => pathInsideOrEqual(resolve(denied), root) || pathInsideOrEqual(root, resolve(denied))))) return false;
   for (const root of configured) {
     const status = await lstat(root).catch((error: unknown) => {
-      // Native archive creation is lazy; no other missing configured root qualifies.
-      if (root === archives && (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      // Preserve the original lazy native archives case, never a missing ledger.
+      if (root === archives && !ledgers.includes(root) && (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     });
     if (status && (!status.isDirectory() || status.isSymbolicLink() || await realpath(root) !== root)) return false;
   }
-  // The native writer places mutation locks beside its scoped ledger root.
-  const nativeChildren = new Set(["ledger", "archives", ".consumed-output-ledger-mutation-locks"]);
+  for (const ledger of ledgers) {
+    const items = join(ledger, "items"), status = await lstat(items);
+    if (!status.isDirectory() || status.isSymbolicLink() || await realpath(items) !== items) return false;
+  }
+  // Only true parent branches need a configured-child census. Data interiors
+  // still receive the full bounded hidden-manifest/type/alias scan below.
+  const nativeParents = new Set<string>();
+  if (!ledgers.includes(path)) nativeParents.add(path);
+  for (const root of configured.filter((root) => root !== path)) {
+    for (let parent = dirname(root); parent !== path; parent = dirname(parent)) {
+      if (configured.some((dataRoot) => pathInsideOrEqual(parent, dataRoot))) break;
+      nativeParents.add(parent);
+    }
+  }
   // Ledger validation owns records; it does not discover nested job manifests.
   // Inspect names, refusing aliases/cycles; only the exact native item uses its reader.
   const pending = [path];
@@ -280,14 +291,18 @@ async function consumedOutputInfrastructure(input: TargetInput, path: string): P
     const identity = `${before.dev}:${before.ino}`;
     if (visited.has(identity)) throw new Error("consumed-output directory alias");
     visited.add(identity);
+    const nativeChildren = new Set(configured.filter((root) => root !== directory && pathInsideOrEqual(root, directory))
+      .map((root) => root.slice(directory.length + 1).split("/")[0]!));
+    if (ledgers.some((ledger) => dirname(ledger) === directory)) nativeChildren.add(".consumed-output-ledger-mutation-locks");
     for await (const entry of await opendir(directory)) {
       if (++inspected > 100_000) throw new Error("consumed-output inspection bound exceeded");
-      if (directory === path && (!nativeChildren.has(entry.name) || !entry.isDirectory() || entry.isSymbolicLink())) {
+      if (nativeParents.has(directory) && (!nativeChildren.has(entry.name) || !entry.isDirectory() || entry.isSymbolicLink())) {
         throw new Error(`unregistered consumed-output entry: ${entry.name}`);
       }
       if (entry.isSymbolicLink()) throw new Error("consumed-output entry symlink");
       if (entry.name === "job.json") {
-        if (directory !== join(ledger, "items") || !entry.isFile()) throw new Error("unregistered job inside consumed-output");
+        const ledger = ledgers.find((root) => directory === join(root, "items"));
+        if (!ledger || !entry.isFile()) throw new Error("unregistered job inside consumed-output");
         const ledgerPath = join(directory, entry.name);
         const source = new LocalConsumedOutputLedgerSource(input.scope.consumedOutputEvidenceRoots ?? []);
         const loaded = await source.readEntries({ roots: [ledger] });
