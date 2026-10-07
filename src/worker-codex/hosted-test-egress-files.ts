@@ -8,6 +8,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, lstatSync, mkdirSync, unlinkSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { lstat, mkdir, open, readFile, readlink, link, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { parseDependencyToolRegistration, type DependencyToolRegistration } from "../core/dependency-environment/dependency-tool-profile";
+import { createHostedDependencyToolProfile } from "./hosted-dependency-tool-profile-files";
 import {
   assertHostedTestEgressIdentity,
   parseHostedTestEgressGrant,
@@ -124,10 +126,14 @@ export async function readHostedTestEgressGrantFile(
 
 export async function writeHostedTestEgressGrant(
   grant: HostedTestEgressGrant,
+  toolRegistration?: DependencyToolRegistration,
 ): Promise<void> {
   await assertHostedTestEgressOperator();
   const validated = parseHostedTestEgressGrant(grant);
   await canonicalHostedTestIdentity(validated);
+  const tools = toolRegistration === undefined ? undefined : parseDependencyToolRegistration(toolRegistration);
+  if (tools && (!isHostedDependencyWorkspace(validated.workspacePath) || validated.schemaVersion !== 1 ||
+      validated.profileId !== CodexProviderEgressProfileId.TestNpmQualification)) throw new Error("hosted_dependency_tool_profile_unsupported");
   if (isHostedDependencyWorkspace(validated.workspacePath) &&
       (validated.schemaVersion !== 1 || validated.profileId !== CodexProviderEgressProfileId.TestNpmQualification ||
        validated.jobRootDir !== hostedDependencyJobRoot(validated.jobId) ||
@@ -154,14 +160,18 @@ export async function writeHostedTestEgressGrant(
     const { readHostedInstallationActivation } = await import("./hosted-installation-activation");
     const { createReadonlyPrivateRecord } = await import("./hosted-readonly-custody");
     withHostedActivationFence(() => {
-      const { installation } = readHostedInstallationActivation();
+      const { installation, activation } = readHostedInstallationActivation();
+      if (tools && (activation.phase !== HostedActivationPhase.Closed || readHostedDependencyBinding(validated.jobId))) {
+        throw new Error("hosted_dependency_tool_fresh_closed_enrollment_required");
+      }
       assertHostedDependencyQualifiedInventory();
       const stat = lstatSync(validated.workspacePath, { bigint: true });
-      const binding = parseHostedDependencyBinding({ version: 1, jobId: validated.jobId,
+      const binding = parseHostedDependencyBinding({ version: tools ? 2 : 1, jobId: validated.jobId,
         jobRootDir: validated.jobRootDir, workspace: { canonicalPath: validated.workspacePath,
           dev: stat.dev.toString(), ino: stat.ino.toString() }, installationId: installation.installationId,
         runtimeSha: installation.runtimeSha,
-        grantDigest: createHash("sha256").update(Buffer.from(JSON.stringify(validated) + "\n")).digest("hex") });
+        grantDigest: createHash("sha256").update(Buffer.from(JSON.stringify(validated) + "\n")).digest("hex"),
+        ...(tools ? { toolProfile: createHostedDependencyToolProfile(validated.jobRootDir, tools) } : {}) });
       assertHostedDependencyPhysicalWorkspace(binding);
       // This namespace is a fresh TEST backing, not a flag on an arbitrary user
       // path. Old managed profiles already hide the entire policy prefix.
