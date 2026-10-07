@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.current-cold-hot-emit.json",
+  "files": ["./current-full-outer.ts", "./current-full-supervisor.ts", "./current-full-guest.ts"]
+}
