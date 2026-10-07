@@ -2,9 +2,24 @@ import { describe, expect, it } from "vitest";
 import { annotateScratchMountInspectionFailure, normalizeResearchLaunchFailure, ResearchLaunchCause as C, ResearchLaunchDiagnostic as D } from "../research-launch-diagnostics";
 import { prepareHostScratchTemp } from "../host-scratch-temp";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
+import { annotateResearchLaunchStage, normalizeResearchOperatorFailure, ResearchLaunchStage as S } from "../research-launch-diagnostics";
 
 describe("startup diagnostic privacy", () => {
   const sensitive = "TEST-FAKE-api-key=/private/TEST-home/auth.json\nTEST-FAKE-cookie=secret";
+  // RED: outer annotation observes opaque properties, replaces errors or leaks dynamic data.
+  it("retains opaque start errors and closed stage output without coercion", () => {
+    let reads = 0;
+    const accessor = Object.defineProperty({}, "message", { get() { reads++; throw new Error(sensitive); } });
+    const proxy = new Proxy({}, { getOwnPropertyDescriptor() { throw new Error(sensitive); } });
+    const revoked = Proxy.revocable({}, {}); revoked.revoke();
+    for (const error of [Object.freeze(new Error(sensitive)), accessor, proxy, revoked.proxy, sensitive, undefined, null, 42]) {
+      expect(annotateResearchLaunchStage(error, S.StartReadback)).toBe(error);
+      expect(normalizeResearchOperatorFailure(error)).toEqual({ stage: error && typeof error === "object" ? S.StartReadback : S.Unknown,
+        legacyCode: "unclassified", cause: C.None, diagnostic: D.Unknown });
+      expect(JSON.stringify(normalizeResearchOperatorFailure(error))).not.toContain("TEST-");
+    }
+    expect(reads).toBe(0);
+  });
   it.each([
     ["Unsafe scratch directory: ", D.ScratchDirectoryUnsafe],
     ["Unsafe scratch source permissions: ", D.ScratchSourceUnsafe],

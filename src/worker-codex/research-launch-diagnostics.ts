@@ -19,6 +19,21 @@ export enum ResearchLaunchCause {
   HostCommandTimeout = "host-command-timeout", HostCommandFailed = "host-command-failed",
   ScratchRoot = "scratch-root", ScratchTmp = "scratch-tmp", ScratchCache = "scratch-cache",
 }
+export enum ResearchLaunchStage {
+  Unknown = "unknown", PinPreparation = "pin-preparation", InputPreparation = "input-preparation",
+  LaunchPlan = "launch-plan", HostSubmission = "host-submission", StartReadback = "start-readback",
+}
+const operatorStartStages = new WeakMap<object, ResearchLaunchStage>();
+/** Observe the same failed attempt without changing its error or recovery ownership. */
+export function annotateResearchLaunchStage(error: unknown, stage: ResearchLaunchStage): unknown {
+  if (error && typeof error === "object") operatorStartStages.set(error, stage);
+  return error;
+}
+export function normalizeResearchOperatorFailure(error: unknown) {
+  return { stage: error && typeof error === "object"
+    ? operatorStartStages.get(error) ?? ResearchLaunchStage.Unknown : ResearchLaunchStage.Unknown,
+  ...normalizeResearchLaunchFailure(error) };
+}
 type ScratchMountInspectionCause = ResearchLaunchCause.ScratchRoot | ResearchLaunchCause.ScratchTmp | ResearchLaunchCause.ScratchCache;
 const scratchInspectionCauses = new WeakMap<object, ScratchMountInspectionCause>();
 /** Internal observation only; preserve the thrown value and all existing recovery facts. */
