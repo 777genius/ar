@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { grantResearchLaunch, startResearchLaunch } from "../research-launch-owner";
 import { researchCurrentStart } from "../research-launch-admission";
 import { researchHash, researchPublish, researchRead } from "../research-launch-files";
-import { prepareResearchProviderRoot, assertResearchProviderRoot, ResearchRootMountAccess, ResearchRootReadRole, type ResearchProviderRootHost } from "../research-provider-root";
+import { prepareResearchProviderRoot, assertResearchProviderRoot, researchProviderRootFailureCheck, ResearchProviderRootCheck, ResearchRootMountAccess, ResearchRootReadRole, type ResearchProviderRootHost } from "../research-provider-root";
 import { trustedResearchProviderLaunch } from "../trusted-custody-systemd-launch";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import type { ResearchStartSpec } from "../research-launch-contract";
@@ -106,8 +106,103 @@ function expectNoRootEffects(f: ReturnType<typeof captured>, observed: ReturnTyp
   expect(fs.existsSync(local(join(f.directory, "providers", unit + ".submission.json")))).toBe(false);
   expect(host.authReads).toBe(0);
 }
+const namespaceMount = (point: string, root = "net:[4026531840]", device = "0:4", filesystem = "nsfs", source = "nsfs") =>
+  `900 1 ${device} ${root} ${point} rw - ${filesystem} ${source} rw`;
 
 describe("closed provider root graph (native adapter over disposable TEST files)", () => {
+  // Regression: unrelated native nsfs handles must not prevent preparation;
+  // removing the rows instead would lose descendant and revalidation vetoes.
+  it("accepts unrelated native namespace handles while retaining an assertable root", () => {
+    const f = captured(), observed = observingHost();
+    for (const [index, type] of ["cgroup", "ipc", "mnt", "net", "pid", "time", "user", "uts"].entries()) {
+      observed.extraMounts.push(namespaceMount(`/run/docker/netns/TEST-${type}`, `${type}:[${4026531840 + index}]`).replace(/^900 /, `${900 + index} `));
+    }
+    observed.extraMounts.push(namespaceMount("/run/docker/netns/TEST-upper-bound", "net:[4294967295]", "0:1048575").replace(/^900 /, "908 "));
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    assertResearchProviderRoot(plan, f.spec, unit, f.home);
+    expect(plan.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite).map(bind => bind.target))
+      .toEqual([f.spec.request.jobRootDir, f.spec.request.workspacePath]);
+    expect(fs.lstatSync(plan.fixedRootDirectory).isDirectory()).toBe(true);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  it.each(["grant", "workspace", "job-pin", "workspace-pin", "dependency", "ancestor"])(
+    "rejects namespace-handle %s backing before effects", kind => {
+      const f = captured(), observed = observingHost();
+      const point = kind === "grant" ? f.spec.request.jobRootDir : kind === "workspace" ? f.spec.request.workspacePath :
+        kind === "job-pin" ? join(f.directory, "pins/job") : kind === "workspace-pin" ? join(f.directory, "pins/workspace") :
+        kind === "dependency" ? "/usr" : "/";
+      observed.transform(table => table.split("\n").filter(line => line.split(" ")[0] === "900" || line.split(" ")[4] !== point).join("\n"));
+      observed.extraMounts.push(namespaceMount(point));
+      // The row must reach backing(), which rejects it before path joining,
+      // irrespective of the fixture's real leaf device/inode observations.
+      try { prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter); throw new Error("TEST expected denial"); }
+      catch (error) { expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.Backing); }
+      expectNoRootEffects(f, observed);
+    });
+  it.each(["dependency-child", "pin-child", "grant-child", "skeleton"])("retains namespace %s vetoes before effects", kind => {
+    const f = captured(), observed = observingHost();
+    const point = kind === "dependency-child" ? "/usr/TEST-namespace" : kind === "pin-child" ? join(f.directory, "pins/job/TEST-namespace") :
+      kind === "grant-child" ? join(f.spec.request.jobRootDir, "TEST-namespace") : join(f.directory, "provider-roots", unit, "root/TEST-namespace");
+    observed.extraMounts.push(namespaceMount(point));
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+  });
+  it.each([
+    ["net:[4026531840]", "0:4", "ext4", "nsfs"], ["net:[4026531840]", "0:4", "nsfs", "/dev/TEST"],
+    ["net:[4026531840]", "8:1", "nsfs", "nsfs"], ["net:[4026531840]", "0:0", "nsfs", "nsfs"],
+    ["net:[4026531840]", "0:1048576", "nsfs", "nsfs"], ["net:[4026531840]", "0:04", "nsfs", "nsfs"],
+    ["unknown:[4026531840]", "0:4", "nsfs", "nsfs"], ["pid_for_children:[4026531840]", "0:4", "nsfs", "nsfs"],
+    ["net:[0]", "0:4", "nsfs", "nsfs"], ["net:[04026531840]", "0:4", "nsfs", "nsfs"],
+    ["net:[4294967296]", "0:4", "nsfs", "nsfs"], ["net:[4026531840]/child", "0:4", "nsfs", "nsfs"],
+    ["net:[-1]", "0:4", "nsfs", "nsfs"], ["relative/root", "0:4", "nsfs", "nsfs"],
+  ])("rejects malformed or spoofed namespace ROOT %s (%s %s %s)", (root, device, filesystem, source) => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(namespaceMount("/run/docker/netns/TEST-unrelated", root, device, filesystem, source));
+    try { prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter); throw new Error("TEST expected denial"); }
+    catch (error) { expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.MountTable); }
+    expectNoRootEffects(f, observed);
+  });
+  it.each(["dependency", "grant-child", "skeleton"])("denies a newly relevant retained namespace %s without new effects", kind => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(namespaceMount("/run/docker/netns/TEST-unrelated"));
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter), effects = [...observed.effects];
+    assertResearchProviderRoot(plan, f.spec, unit, f.home);
+    const point = kind === "dependency" ? "/usr" : kind === "grant-child" ? join(f.spec.request.jobRootDir, "TEST-namespace") : plan.fixedRootDirectory;
+    observed.extraMounts[0] = namespaceMount(point);
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).toThrow("hosted_research_launch_denied");
+    expect(observed.effects).toEqual(effects); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  // Regression: an unrelated, still-mounted unlinked root must not deny
+  // launch; retaining it must still veto selected backing and child mounts.
+  it("accepts unrelated deleted mount roots without importing their former paths", () => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push("900 1 8:1 /TEST-unlinked//deleted /TEST-stale-mount rw - ext4 /dev/TEST rw");
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    assertResearchProviderRoot(plan, f.spec, unit, f.home);
+    expect(plan.bindings.some(binding => binding.source.startsWith("/TEST-stale-mount") || binding.target.startsWith("/TEST-stale-mount"))).toBe(false);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  it("rejects deleted workspace backing at the backing guard before effects", () => {
+    const f = captured(), observed = observingHost(), point = f.spec.request.workspacePath;
+    observed.transform(table => table.split("\n").filter(line => line.split(" ")[0] === "900" || line.split(" ")[4] !== point).join("\n"));
+    observed.extraMounts.push(`900 1 8:1 /TEST-unlinked//deleted ${point} rw - ext4 /dev/TEST rw`);
+    try { prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter); throw new Error("TEST expected denial"); }
+    catch (error) { expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.Backing); }
+    expectNoRootEffects(f, observed);
+  });
+  it("retains a deleted dependency child mount veto before effects", () => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push("900 1 8:1 /TEST-unlinked//deleted /usr/TEST-stale-mount rw - ext4 /dev/TEST rw");
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+  });
+  it.each(["/TEST//former//deleted", "/TEST/../former//deleted", "/TEST//deleted/child"])(
+    "rejects a noncanonical former root %s before effects", root => {
+      const f = captured(), observed = observingHost();
+      observed.extraMounts.push(`900 1 8:1 ${root} /TEST-stale-mount rw - ext4 /dev/TEST rw`);
+      expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
+      expectNoRootEffects(f, observed);
+    });
   // Regression: an admitted writable equal, child or ancestor path would make
   // an immutable dependency writable or hide it, before systemd ordering helps.
   it.each([
@@ -164,32 +259,6 @@ describe("closed provider root graph (native adapter over disposable TEST files)
   it("rejects a foreign child mount of /usr without importing it", () => {
     const f = captured(), observed = observingHost();
     observed.extraMounts.push("900 1 0:44 / /usr/TEST-foreign rw - tmpfs tmpfs rw");
-    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow();
-    expectNoRootEffects(f, observed);
-  });
-  // Regression: ordinary Docker network namespace mounts must not deny an
-  // unrelated provider root, or become filesystem backing for an admitted path.
-  it("retains unrelated Linux network namespaces without importing them", () => {
-    const f = captured(), observed = observingHost();
-    observed.extraMounts.push("900 1 0:44 net:[4026531840] /run/docker/netns/TEST rw - nsfs nsfs rw");
-    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
-    assertResearchProviderRoot(plan, f.spec, unit, f.home);
-    expect(plan.bindings.some(binding => binding.source.startsWith("/run/docker/netns/") || binding.target.startsWith("/run/docker/netns/"))).toBe(false);
-    expect(host.spawn).not.toHaveBeenCalled();
-    expect(host.authReads).toBe(0);
-  });
-  it("denies network namespace backing at the workspace before effects", () => {
-    const f = captured(), observed = observingHost();
-    observed.extraMounts.push(`900 1 0:44 net:[4026531840] ${f.spec.request.workspacePath} rw - nsfs nsfs rw`);
-    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow();
-    expectNoRootEffects(f, observed);
-  });
-  it.each([
-    ["/", "nsfs"], ["net:[0]", "nsfs"], ["net:[18446744073709551616]", "nsfs"],
-    ["net:[4026531840]", "tmpfs"], ["net:[invalid]", "nsfs"],
-  ])("rejects invalid namespace marker %s on %s", (root, filesystem) => {
-    const f = captured(), observed = observingHost();
-    observed.extraMounts.push(`900 1 0:44 ${root} /run/docker/netns/TEST rw - ${filesystem} TEST rw`);
     expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow();
     expectNoRootEffects(f, observed);
   });
