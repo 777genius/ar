@@ -15,7 +15,7 @@ export const fullNativeLimits=Object.freeze({runtimeSeconds:1800,stopSeconds:180
 export enum FullParentPhase {Starting="starting",Started="started"}
 enum FullKernelState {Active="active",Activating="activating",Running="running",Loaded="loaded"}
 enum FullOperation {Start="start",Job="job"}
-const refuse=():never=>{throw new Error("TEST full managed ingress Held");};
+function refuse():never{throw new Error("TEST full managed ingress Held");}
 function check(value:unknown):asserts value {if(!value)refuse();}
 const digest=(v:unknown):v is string=>typeof v==="string" && /^[a-f0-9]{64}$/.test(v);
 function requireDigest(value:unknown):string{check(digest(value));return value;}
@@ -157,14 +157,15 @@ export function retainFullNativeLaunch(request:unknown){
 /** Two primitive command cells, copied from own descriptors with no getters. */
 export function fullDataArray(value:unknown):readonly [string,string]{
   check(value!==null && typeof value==="object" && !types.isProxy(value) && Array.isArray(value) && Object.getPrototypeOf(value)===Array.prototype);
-  const d=Object.getOwnPropertyDescriptors(value);check(Reflect.ownKeys(d).sort().join(",")==="0,1,length");
+  const object:object=value;const d=Object.getOwnPropertyDescriptors(object);check(Reflect.ownKeys(d).sort().join(",")==="0,1,length");
   for(const key of ["0","1","length"]){const v=d[key];check(v && Object.hasOwn(v,"value"));}
   check(d.length?.value===2 && typeof d["0"]?.value==="string" && typeof d["1"]?.value==="string");return [d["0"].value,d["1"].value];
 }
+const erasedEnvironment=["NODE_OPTIONS","NODE_PATH","LD_PRELOAD","LD_LIBRARY_PATH","LD_AUDIT","LD_PROFILE","OPENAI_API_KEY","ANTHROPIC_API_KEY","CODEX_HOME"].join(" ");
 const parentCapabilities="CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_KILL CAP_SETGID CAP_SETUID CAP_SETPCAP CAP_SYS_CHROOT CAP_SYS_PTRACE CAP_SYS_ADMIN CAP_MKNOD CAP_AUDIT_WRITE CAP_SETFCAP";
 export function fullNativeInvocation(request:unknown){
   const custody=retainFullNativeLaunch(request);try{
-    const properties=["Slice=subscription-runtime-hosted.slice","KillMode=control-group","SendSIGKILL=yes","Delegate=no","Restart=no","RemainAfterExit=no","ProtectSystem=strict","NoNewPrivileges=yes","MemorySwapMax=0","LimitCORE=0","AmbientCapabilities=","PassEnvironment=","UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_PROFILE OPENAI_API_KEY ANTHROPIC_API_KEY CODEX_HOME","CapabilityBoundingSet="+parentCapabilities,
+    const properties=["Slice=subscription-runtime-hosted.slice","KillMode=control-group","SendSIGKILL=yes","Delegate=no","Restart=no","RemainAfterExit=no","ProtectSystem=strict","NoNewPrivileges=yes","MemorySwapMax=0","LimitCORE=0","AmbientCapabilities=","PassEnvironment=","UnsetEnvironment="+erasedEnvironment,"CapabilityBoundingSet="+parentCapabilities,
       "CPUQuota=100%","CPUQuotaPeriodSec=100ms","MemoryMax=2G","TasksMax=128","RuntimeMaxSec=1800","TimeoutStopSec=180","StandardOutput=null","StandardError=null",
       "ReadWritePaths=/var/lib/subscription-runtime-os-TEST /var/lib/subscription-runtime-full-TEST-output /run/TEST-real-codex-public-download /run/TEST-real-codex-public-input /run/systemd/system /srv/workers/jobs/"+fullNativeJob,
       "BindReadOnlyPaths="+custody.source+":"+custody.source+":norbind","BindReadOnlyPaths=/run/TEST-full-outer-review:/run/TEST-full-outer-review:norbind","BindReadOnlyPaths=/run/TEST-real-codex-public-review:/run/TEST-real-codex-public-review:norbind","BindReadOnlyPaths="+reviewRoot+":"+reviewRoot+":norbind","BindReadOnlyPaths=/srv/worker-state/account-pools/live-codex-auth/account-u:/srv/worker-state/account-pools/live-codex-auth/account-u:norbind"];
