@@ -174,6 +174,19 @@ test('mount table rejects foreign nested binds below the admitted job and ignore
   }
 });
 
+test('busy-host mount tables remain fully validated within a bounded eight MiB read', async () => {
+  const { probe } = fakeStorage();
+  const base = await probe.readMountInfo();
+  const unrelated = '3 1 0:1 / /unrelated rw - ext4 root rw\n';
+  const large = base + unrelated.repeat(Math.ceil(5 * 1024 * 1024 / unrelated.length));
+  probe.readMountInfo = async () => large;
+  await requireHostStorage('/volume/job/workspace', '/policy.json', probe);
+  probe.readMountInfo = async () => large + '4 2 0:1 /root /volume/job/workspace/cache rw - ext4 root rw\n';
+  await assert.rejects(requireHostStorage('/volume/job/workspace', '/policy.json', probe), /nested filesystem forbidden/);
+  probe.readMountInfo = async () => base + unrelated.repeat(Math.ceil(8 * 1024 * 1024 / unrelated.length));
+  await assert.rejects(loadManagedStorageRoot('/policy.json', probe), /invalid mount table/);
+});
+
 test('trusted policy export returns frozen configuration only after root admission', async () => {
   const { probe, policy, calls } = fakeStorage();
   const loaded = await loadManagedStorageRoot('/policy.json', probe);

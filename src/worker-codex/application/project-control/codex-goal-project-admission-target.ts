@@ -41,8 +41,51 @@ type TargetInput = {
 // project integration archive custody, native retirement receipts, and runtime state.
 const registryInfrastructure = new Set([
   ".project-authority", ".project-control", "durable-handoffs", "consumed-output-ledger",
-  ".consumed-output-ledger-mutation-locks", ".run-events", "archives", "state",
+  ".consumed-output-ledger-mutation-locks", "archives", "state", ".run-events",
 ]);
+
+// Exact configured ledger roots are native data. Only the legacy named parent
+// also admits configured descendants; all other registry directories stay jobs.
+async function scopedConsumedOutputContainer(input: TargetInput, name: string): Promise<boolean> {
+  const root = resolve(input.registryRootDir, name);
+  const ledgers = (input.scope.consumedOutputLedgerRoots ?? []).map((path) => resolve(path))
+    .filter((path) => path === root || (name === "consumed-output" && pathInsideOrEqual(path, root)));
+  if (ledgers.length === 0) return false;
+  const configured = [...ledgers, ...(input.scope.consumedOutputEvidenceRoots ?? [])
+    .map((path) => resolve(path)).filter((path) => path !== root && pathInsideOrEqual(path, root))];
+  if ((input.scope.deniedRoots ?? []).some((denied) => [root, ...configured]
+    .some((path) => pathInsideOrEqual(resolve(denied), path) || pathInsideOrEqual(path, resolve(denied))))) return false;
+  const directory = async (path: string): Promise<boolean> => {
+    const status = await lstat(path);
+    return status.isDirectory() && !status.isSymbolicLink() && await realpath(path) === path;
+  };
+  if (!await directory(root)) return false;
+  for (const path of configured) if (!await directory(path)) return false;
+  for (const ledger of ledgers) if (!await directory(join(ledger, "items"))) return false;
+  // The original ledger reader validates records inside an exact configured
+  // root. Parent recognition must not conceal unregistered sibling job dirs.
+  if (ledgers.includes(root)) return true;
+  const containers = new Set([root]);
+  for (const path of configured) {
+    for (let parent = dirname(path); parent !== root; parent = dirname(parent)) {
+      // Ledger/evidence interiors belong to their original data readers, not
+      // the registry's unregistered-job directory census.
+      if (configured.some((dataRoot) => pathInsideOrEqual(parent, dataRoot))) break;
+      containers.add(parent);
+    }
+  }
+  for (const container of containers) {
+    if (!await directory(container)) return false;
+    const allowed = new Set(configured.filter((path) => path !== container && pathInsideOrEqual(path, container))
+      .map((path) => path.slice(container.length + 1).split("/")[0]!));
+    if (ledgers.some((ledger) => dirname(ledger) === container)) allowed.add(".consumed-output-ledger-mutation-locks");
+    for (const entry of await readdir(container, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !allowed.has(entry.name) ||
+        !await directory(join(container, entry.name))) return false;
+    }
+  }
+  return true;
+}
 
 function sameOwnedPaths(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
   return Boolean(left?.length && right?.length && isDeepStrictEqual([...left].sort(), [...right].sort()) &&
@@ -246,35 +289,6 @@ async function trustedUnpublishedStage(input: TargetInput, jobId: string): Promi
   return true;
 }
 
-async function configuredLedgerContainer(input: TargetInput, path: string): Promise<boolean> {
-  // mark_reviewed publishes to a trusted configured root, not a fixed basename.
-  // The admission snapshot still validates its records/evidence and reports debt.
-  path = resolve(path);
-  const ledgerRoots = (input.scope.consumedOutputLedgerRoots ?? []).map((root) => resolve(root))
-    .filter((root) => root === path || dirname(root) === path);
-  if (ledgerRoots.length === 0) return false;
-  const directory = async (name: string): Promise<boolean> => {
-    const stat = await lstat(name);
-    return stat.isDirectory() && !stat.isSymbolicLink() && await realpath(name) === name;
-  };
-  if (!await directory(path)) return false;
-  for (const root of ledgerRoots) {
-    if (!await directory(root) || !await directory(join(root, "items"))) return false;
-  }
-  if (!ledgerRoots.includes(path)) {
-    // One native container level only. Configured evidence roots and the
-    // original writer's lock sibling are not jobs; unknown siblings remain debt.
-    const allowed = new Set([...ledgerRoots.map((root) => basename(root)), ".consumed-output-ledger-mutation-locks",
-      ...(input.scope.consumedOutputEvidenceRoots ?? []).map((root) => resolve(root))
-        .filter((root) => dirname(root) === path).map((root) => basename(root))]);
-    for (const entry of await readdir(path, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.isSymbolicLink() || !allowed.has(entry.name) ||
-        !await directory(join(path, entry.name))) return false;
-    }
-  }
-  return true;
-}
-
 export async function assertAdmissionRegistryComplete(input: TargetInput & {
   readonly summaries: readonly CodexGoalJobSummary[];
 }): Promise<void> {
@@ -292,8 +306,7 @@ export async function assertAdmissionRegistryComplete(input: TargetInput & {
     if (!entry.isDirectory()) continue;
     const manifestPath = join(input.registryRootDir, entry.name, "job.json");
     if (await absent(manifestPath)) {
-      if (registryInfrastructure.has(entry.name) ||
-        await configuredLedgerContainer(input, join(input.registryRootDir, entry.name)) ||
+      if (registryInfrastructure.has(entry.name) || await scopedConsumedOutputContainer(input, entry.name) ||
         await trustedUnpublishedStage(input, entry.name)) continue;
       throw new Error(`unregistered registry directory: ${entry.name}`);
     }

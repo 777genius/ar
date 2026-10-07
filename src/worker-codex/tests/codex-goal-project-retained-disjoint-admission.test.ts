@@ -6,6 +6,9 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectControlAuditEventType, ProjectDebtReason, ProjectOperation, type ProjectControlBrokerPorts } from "@vioxen/subscription-runtime/worker-core";
+import { RunEventProjectionService, RunEventProviderKind, type RunObservationSnapshot } from "@vioxen/subscription-runtime/worker-core";
+import { LocalFileRunEventStore, LocalFileRunEventProjectionStateStore } from "@vioxen/subscription-runtime/store-local-file";
+import { runEventRootFromArgs } from "../codex-goal-mcp-inputs";
 import * as goalOps from "../codex-goal-ops";
 import { authorizeProjectPreStartAdmissionLaunch } from "../application/project-control/codex-goal-project-pre-start-launch-authorization";
 import { resolveProjectControlledRuntimeInPlaceContinuation } from "../application/project-control/codex-goal-project-in-place-continuation";
@@ -18,6 +21,7 @@ import { projectControlWorkspaceLocks, withValidatedProjectWorkspaceLock } from 
 import { assertAdmissionRegistryComplete, revalidateAdmissionCreatedWorktree } from "../application/project-control/codex-goal-project-admission-target";
 import { recordRejectedUncapturedOutput } from "../codex-goal-mcp-project-control-reviewed-rejection";
 import { readCodexGoalConsumedOutputLedgers } from "../application/project-control/codex-goal-consumed-output-ledger-io";
+import { assertProjectControlCustodyScopeCanonical } from "../codex-goal-mcp-project-scope";
 import { assertProjectPreStartAdmissionLaunchBinding, planProjectPreStartAdmission, prepareProjectPreStartAdmission } from "../application/project-control/codex-goal-project-pre-start-admission";
 import { validateProjectRefillPreStartAdmission } from "../application/project-control/codex-goal-project-refill-admission";
 import { cleanupProjectPreStartAdmissionFixtures, createBuiltinFixture, declarativeContract } from "./codex-goal-project-pre-start-admission-fixture";
@@ -103,11 +107,12 @@ async function fixture(options: {
 }
 
 describe("retained terminal output path-disjoint admission", () => {
-  it("recognizes both officially published configured sibling ledgers in either root order", async () => {
+  it.each(["siblings", "nested"] as const)("recognizes both officially published configured ledgers in either root order (layout=%s)", async (layout) => {
     const f = await fixture();
     const container = join(f.input.registryRootDir, "consumed-output");
     const evidenceRoot = join(container, "archives");
-    const firstRoot = join(container, "ledger-one"), secondRoot = join(container, "ledger-two");
+    const firstRoot = join(container, "ledger-one");
+    const secondRoot = layout === "nested" ? join(firstRoot, "second-ledger") : join(container, "ledger-two");
     for (const root of [firstRoot, secondRoot]) await mkdir(join(root, "items"), { recursive: true, mode: 0o700 });
     await mkdir(evidenceRoot, { recursive: true, mode: 0o700 });
     const secondJobRoot = join(f.input.registryRootDir, "project-second-consumed");
@@ -126,7 +131,8 @@ describe("retained terminal output path-disjoint admission", () => {
     const summaries = await listCodexGoalJobs({ registryRootDir: f.input.registryRootDir });
     const before = await Promise.all(receipts.map((receipt) => readFile(receipt.ledgerPath)));
     for (const roots of [[firstRoot, secondRoot], [secondRoot, firstRoot]]) {
-      const scope = { ...f.input.scope, consumedOutputLedgerRoots: roots, consumedOutputEvidenceRoots: [evidenceRoot] };
+      const scope = { ...f.input.scope, registryRoot: f.input.registryRootDir, readRoots: [f.root], consumedOutputLedgerRoots: roots, consumedOutputEvidenceRoots: [evidenceRoot] };
+      await assertProjectControlCustodyScopeCanonical(scope);
       const ledger = await readCodexGoalConsumedOutputLedgers({ roots, evidenceRoots: [evidenceRoot] });
       expect(ledger.byJobId.get(f.manifest.jobId)?.valid).toBe(true);
       expect(ledger.byJobId.get(second.jobId)?.valid).toBe(true);
@@ -140,15 +146,17 @@ describe("retained terminal output path-disjoint admission", () => {
     }
   });
 
-  it.each([false, true])("admits the configured registry ledger produced by the official mark_reviewed writer (nested=%s)", async (nested) => {
+  it.each(["direct", "direct-custom", "nested", "deep", "nested-evidence"] as const)("admits the configured registry ledger produced by the official mark_reviewed writer (layout=%s)", async (layout) => {
     const f = await fixture();
-    const container = join(f.input.registryRootDir, "consumed-output");
-    const ledgerRoot = nested ? join(container, "ledger") : container;
-    const evidenceRoot = nested ? join(container, "archives") : join(f.root, "review-backups");
+    const container = join(f.input.registryRootDir, layout === "direct-custom" ? "configured-review-ledger" : "consumed-output");
+    const direct = layout === "direct" || layout === "direct-custom";
+    const ledgerRoot = direct ? container : layout === "deep" ? join(container, "retained", "ledger") : join(container, "ledger");
+    const evidenceRoot = direct ? join(f.root, "archives") : layout === "nested-evidence" ? join(ledgerRoot, "archives") : layout === "deep" ? join(container, "retained", "archives") : join(container, "archives");
     await mkdir(join(ledgerRoot, "items"), { recursive: true, mode: 0o700 });
     await mkdir(evidenceRoot, { recursive: true, mode: 0o700 });
-    const scope = { ...f.input.scope,
+    const scope = { ...f.input.scope, registryRoot: f.input.registryRootDir, readRoots: [f.root],
       consumedOutputLedgerRoots: [ledgerRoot], consumedOutputEvidenceRoots: [evidenceRoot] };
+    await assertProjectControlCustodyScopeCanonical(scope);
     // The production mark_reviewed path invokes this producer for uncaptured
     // rejected output. Use its real retained backup and ledger publication.
     const receipt = await recordRejectedUncapturedOutput({ scope, custodyRoot: f.root,
@@ -161,6 +169,12 @@ describe("retained terminal output path-disjoint admission", () => {
     expect(snapshot.debt.some((debt) => debt.reason === ProjectDebtReason.UnreadableRoot)).toBe(false);
     await expect(codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" }).evaluate(f.request)).resolves.toMatchObject({ allowed: true });
     expect(await readFile(receipt.ledgerPath)).toEqual(before);
+    if (layout === "deep") {
+      const unknown = join(container, "retained", "unknown-worker");
+      await mkdir(unknown);
+      await expect(codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" }).evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+      await rm(unknown);
+    }
     // Recognition of the container must never waive the original record parser.
     await writeFile(receipt.ledgerPath, "{malformed TEST record");
     await expect(codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" }).evaluate(f.request)).resolves.toMatchObject({ allowed: false });
@@ -645,7 +659,30 @@ describe("operation-bound retained output admission", () => {
     expect(snapshot.debt).toEqual(expect.arrayContaining([expect.objectContaining({ reason: ProjectDebtReason.UnreadableRoot })]));
   });
 
-  it.each([".project-authority", ".project-control", "durable-handoffs", "consumed-output-ledger", ".consumed-output-ledger-mutation-locks", ".run-events", "archives", "state"])("allows native container %s but never ignores its malformed job manifest", async (name) => {
+  it("admits a native default event projection without treating its observed liveness as authority", async () => {
+    const f = await fixture();
+    const rootDir = runEventRootFromArgs({}, f.input.registryRootDir);
+    const service = new RunEventProjectionService({
+      registryRootDir: f.input.registryRootDir, providerKind: RunEventProviderKind.Codex,
+      eventStore: new LocalFileRunEventStore({ rootDir }),
+      stateStore: new LocalFileRunEventProjectionStateStore({ rootDir }),
+      observationPort: { observeRun: async (): Promise<RunObservationSnapshot> => ({
+        runId: "synthetic-observation", providerKind: RunEventProviderKind.Codex,
+        observedAt: "2026-10-07T00:00:00Z", status: "running", liveness: "alive", warnings: [],
+        readOnlyDecision: { kind: "keep_watching", reason: "worker_observable", safeMessage: "watch" },
+      }) },
+    });
+    await service.projectRun({ runId: "synthetic-observation" });
+    const path = join(rootDir, "run-events", "events.ndjson");
+    const before = await readFile(path, "utf8");
+    expect(before.length).toBeGreaterThan(0);
+    await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
+    expect(await readFile(path, "utf8")).toBe(before);
+    f.item.workerAlive = true;
+    await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+  });
+
+  it.each([".project-authority", ".project-control", "durable-handoffs", "consumed-output-ledger", ".consumed-output-ledger-mutation-locks", "archives", "state", ".run-events"])("allows native container %s but never ignores its malformed job manifest", async (name) => {
     const f = await fixture();
     const root = join(f.input.registryRootDir, name); await mkdir(root);
     await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
@@ -653,7 +690,43 @@ describe("operation-bound retained output admission", () => {
     await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
   });
 
-  it.each(["unknown-directory", ".unknown-directory", "state-symlink", ".project-control-symlink", ".run-events-symlink"])("denies unknown or symlink registry container %s", async (name) => {
+  it("admits a configured native consumed-output parent while retaining manifest and liveness fences", async () => {
+    const f = await fixture();
+    const root = join(f.input.registryRootDir, "consumed-output");
+    const ledger = join(root, "ledger");
+    const archives = join(root, "archives");
+    await mkdir(join(ledger, "items"), { recursive: true });
+    await mkdir(archives);
+    await mkdir(join(root, ".consumed-output-ledger-mutation-locks"));
+    await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+    const input = { ...f.input, scope: { ...f.input.scope,
+      consumedOutputLedgerRoots: [ledger], consumedOutputEvidenceRoots: [archives] } };
+    const gate = codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" });
+    await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
+    f.item.workerAlive = true;
+    await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+    f.item.workerAlive = false;
+    await writeFile(join(root, "job.json"), "{");
+    await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+  });
+
+  it.each(["alias", "file", "denied ancestor", "denied descendant", "other name", "ancestor ledger", "sibling ledger"])("denies unsafe configured consumption container: %s", async (mutation) => {
+    const f = await fixture();
+    const root = join(f.input.registryRootDir, mutation === "other name" ? "arbitrary" : "consumed-output");
+    const ledger = mutation === "ancestor ledger" ? f.root : mutation === "sibling ledger" ? join(f.root, "consumed-output-other", "ledger") : join(root, "ledger");
+    const archives = join(root, "archives");
+    await mkdir(root);
+    await mkdir(join(ledger, "items"), { recursive: true });
+    if (mutation === "alias") await symlink(f.request.workspacePath, archives);
+    else if (mutation === "file") await writeFile(archives, "not a directory");
+    else await mkdir(archives);
+    const input = { ...f.input, scope: { ...f.input.scope, consumedOutputLedgerRoots: [ledger], consumedOutputEvidenceRoots: [archives],
+      ...(mutation === "denied ancestor" ? { deniedRoots: [f.input.registryRootDir] } : {}),
+      ...(mutation === "denied descendant" ? { deniedRoots: [join(root, "private")] } : {}) } };
+    await expect(codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" }).evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+  });
+
+  it.each(["unknown-directory", ".unknown-directory", "state-symlink", ".project-control-symlink", ".run-events-symlink", "consumed-output-symlink"])("denies unknown or symlink registry container %s", async (name) => {
     const f = await fixture();
     if (name.endsWith("-symlink")) await symlink(f.request.workspacePath, join(f.input.registryRootDir, name.slice(0, -"-symlink".length)));
     else await mkdir(join(f.input.registryRootDir, name));
