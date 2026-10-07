@@ -246,6 +246,35 @@ async function trustedUnpublishedStage(input: TargetInput, jobId: string): Promi
   return true;
 }
 
+async function configuredLedgerContainer(input: TargetInput, path: string): Promise<boolean> {
+  // mark_reviewed publishes to a trusted configured root, not a fixed basename.
+  // The admission snapshot still validates its records/evidence and reports debt.
+  path = resolve(path);
+  const ledgerRoots = (input.scope.consumedOutputLedgerRoots ?? []).map((root) => resolve(root))
+    .filter((root) => root === path || dirname(root) === path);
+  if (ledgerRoots.length === 0) return false;
+  const directory = async (name: string): Promise<boolean> => {
+    const stat = await lstat(name);
+    return stat.isDirectory() && !stat.isSymbolicLink() && await realpath(name) === name;
+  };
+  if (!await directory(path)) return false;
+  for (const root of ledgerRoots) {
+    if (!await directory(root) || !await directory(join(root, "items"))) return false;
+  }
+  if (!ledgerRoots.includes(path)) {
+    // One native container level only. Configured evidence roots and the
+    // original writer's lock sibling are not jobs; unknown siblings remain debt.
+    const allowed = new Set([...ledgerRoots.map((root) => basename(root)), ".consumed-output-ledger-mutation-locks",
+      ...(input.scope.consumedOutputEvidenceRoots ?? []).map((root) => resolve(root))
+        .filter((root) => dirname(root) === path).map((root) => basename(root))]);
+    for (const entry of await readdir(path, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !allowed.has(entry.name) ||
+        !await directory(join(path, entry.name))) return false;
+    }
+  }
+  return true;
+}
+
 export async function assertAdmissionRegistryComplete(input: TargetInput & {
   readonly summaries: readonly CodexGoalJobSummary[];
 }): Promise<void> {
@@ -264,6 +293,7 @@ export async function assertAdmissionRegistryComplete(input: TargetInput & {
     const manifestPath = join(input.registryRootDir, entry.name, "job.json");
     if (await absent(manifestPath)) {
       if (registryInfrastructure.has(entry.name) ||
+        await configuredLedgerContainer(input, join(input.registryRootDir, entry.name)) ||
         await trustedUnpublishedStage(input, entry.name)) continue;
       throw new Error(`unregistered registry directory: ${entry.name}`);
     }

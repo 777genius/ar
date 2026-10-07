@@ -15,7 +15,9 @@ import { codexGoalJobToArgs, createCodexGoalJob, listCodexGoalJobs, readCodexGoa
 import { createCodexProjectControlBroker } from "../codex-goal-mcp-project-broker";
 import { goalLaunchInput } from "../application/codex-goal-launch-input";
 import { projectControlWorkspaceLocks, withValidatedProjectWorkspaceLock } from "../codex-goal-project-workspace-lock";
-import { revalidateAdmissionCreatedWorktree } from "../application/project-control/codex-goal-project-admission-target";
+import { assertAdmissionRegistryComplete, revalidateAdmissionCreatedWorktree } from "../application/project-control/codex-goal-project-admission-target";
+import { recordRejectedUncapturedOutput } from "../codex-goal-mcp-project-control-reviewed-rejection";
+import { readCodexGoalConsumedOutputLedgers } from "../application/project-control/codex-goal-consumed-output-ledger-io";
 import { assertProjectPreStartAdmissionLaunchBinding, planProjectPreStartAdmission, prepareProjectPreStartAdmission } from "../application/project-control/codex-goal-project-pre-start-admission";
 import { validateProjectRefillPreStartAdmission } from "../application/project-control/codex-goal-project-refill-admission";
 import { cleanupProjectPreStartAdmissionFixtures, createBuiltinFixture, declarativeContract } from "./codex-goal-project-pre-start-admission-fixture";
@@ -101,6 +103,90 @@ async function fixture(options: {
 }
 
 describe("retained terminal output path-disjoint admission", () => {
+  it("recognizes both officially published configured sibling ledgers in either root order", async () => {
+    const f = await fixture();
+    const container = join(f.input.registryRootDir, "consumed-output");
+    const evidenceRoot = join(container, "archives");
+    const firstRoot = join(container, "ledger-one"), secondRoot = join(container, "ledger-two");
+    for (const root of [firstRoot, secondRoot]) await mkdir(join(root, "items"), { recursive: true, mode: 0o700 });
+    await mkdir(evidenceRoot, { recursive: true, mode: 0o700 });
+    const secondJobRoot = join(f.input.registryRootDir, "project-second-consumed");
+    const second = await createCodexGoalJob({ registryRootDir: f.input.registryRootDir,
+      manifest: { ...f.manifest, jobId: "project-second-consumed", taskId: "task-second-consumed",
+        jobRootDir: secondJobRoot, promptPath: join(secondJobRoot, "prompt.md") } });
+    const receipts = [];
+    for (const [ledgerRoot, manifest] of [[firstRoot, f.manifest], [secondRoot, second]] as const) {
+      // Each official producer requires one root; only the subsequent original
+      // reader/admission combines the independently published distinct job IDs.
+      receipts.push(await recordRejectedUncapturedOutput({
+        scope: { ...f.input.scope, consumedOutputLedgerRoots: [ledgerRoot], consumedOutputEvidenceRoots: [evidenceRoot] },
+        custodyRoot: f.root, jobId: manifest.jobId, jobRootDir: manifest.jobRootDir,
+        workspacePath: manifest.workspacePath, closedAt: "2026-10-02T00:00:00.000Z", reason: "TEST rejected output" }));
+    }
+    const summaries = await listCodexGoalJobs({ registryRootDir: f.input.registryRootDir });
+    const before = await Promise.all(receipts.map((receipt) => readFile(receipt.ledgerPath)));
+    for (const roots of [[firstRoot, secondRoot], [secondRoot, firstRoot]]) {
+      const scope = { ...f.input.scope, consumedOutputLedgerRoots: roots, consumedOutputEvidenceRoots: [evidenceRoot] };
+      const ledger = await readCodexGoalConsumedOutputLedgers({ roots, evidenceRoots: [evidenceRoot] });
+      expect(ledger.byJobId.get(f.manifest.jobId)?.valid).toBe(true);
+      expect(ledger.byJobId.get(second.jobId)?.valid).toBe(true);
+      await expect(assertAdmissionRegistryComplete({ ...f.input, scope, summaries })).resolves.toBeUndefined();
+    }
+    expect(await Promise.all(receipts.map((receipt) => readFile(receipt.ledgerPath)))).toEqual(before);
+    await mkdir(join(container, "unknown-third-job"));
+    for (const roots of [[firstRoot, secondRoot], [secondRoot, firstRoot]]) {
+      await expect(assertAdmissionRegistryComplete({ ...f.input, summaries,
+        scope: { ...f.input.scope, consumedOutputLedgerRoots: roots, consumedOutputEvidenceRoots: [evidenceRoot] } })).rejects.toThrow("unregistered registry directory");
+    }
+  });
+
+  it.each([false, true])("admits the configured registry ledger produced by the official mark_reviewed writer (nested=%s)", async (nested) => {
+    const f = await fixture();
+    const container = join(f.input.registryRootDir, "consumed-output");
+    const ledgerRoot = nested ? join(container, "ledger") : container;
+    const evidenceRoot = nested ? join(container, "archives") : join(f.root, "review-backups");
+    await mkdir(join(ledgerRoot, "items"), { recursive: true, mode: 0o700 });
+    await mkdir(evidenceRoot, { recursive: true, mode: 0o700 });
+    const scope = { ...f.input.scope,
+      consumedOutputLedgerRoots: [ledgerRoot], consumedOutputEvidenceRoots: [evidenceRoot] };
+    // The production mark_reviewed path invokes this producer for uncaptured
+    // rejected output. Use its real retained backup and ledger publication.
+    const receipt = await recordRejectedUncapturedOutput({ scope, custodyRoot: f.root,
+      jobId: f.manifest.jobId, jobRootDir: f.manifest.jobRootDir,
+      workspacePath: f.workspacePath, closedAt: "2026-10-02T00:00:00.000Z", reason: "TEST rejected output" });
+    const before = await readFile(receipt.ledgerPath);
+    expect(JSON.parse(before.toString())).toMatchObject({ schemaVersion: 1, jobId: f.manifest.jobId, status: "rejected" });
+    const input = { ...f.input, scope };
+    const snapshot = await buildCodexProjectAdmissionSnapshot({ ...input, requestedWorkspacePath: f.request.workspacePath });
+    expect(snapshot.debt.some((debt) => debt.reason === ProjectDebtReason.UnreadableRoot)).toBe(false);
+    await expect(codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" }).evaluate(f.request)).resolves.toMatchObject({ allowed: true });
+    expect(await readFile(receipt.ledgerPath)).toEqual(before);
+    // Recognition of the container must never waive the original record parser.
+    await writeFile(receipt.ledgerPath, "{malformed TEST record");
+    await expect(codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" }).evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+  });
+
+  it.each(["wrong-scope", "root-symlink", "items-symlink", "unknown-directory", "unknown-sibling", "unconfigured-archive", "archive-symlink"] as const)("denies an untrusted registry ledger container: %s", async (fault) => {
+    const f = await fixture();
+    const container = join(f.input.registryRootDir, fault === "unknown-directory" ? "unknown-ledger" : "consumed-output");
+    const ledgerRoot = join(container, "ledger");
+    const outside = join(f.root, "outside-ledger");
+    await mkdir(join(outside, "items"), { recursive: true });
+    if (fault === "root-symlink") await symlink(outside, container);
+    else {
+      await mkdir(ledgerRoot, { recursive: true });
+      if (fault === "items-symlink") await symlink(join(outside, "items"), join(ledgerRoot, "items"));
+      else await mkdir(join(ledgerRoot, "items"));
+      if (fault === "unknown-sibling") await mkdir(join(container, "unknown-job"));
+      if (fault === "unconfigured-archive") await mkdir(join(container, "archives"));
+      if (fault === "archive-symlink") await symlink(outside, join(container, "archives"));
+    }
+    const input = { ...f.input, scope: { ...f.input.scope,
+      consumedOutputLedgerRoots: [fault === "wrong-scope" || fault === "unknown-directory" ? outside : ledgerRoot],
+      ...(fault === "archive-symlink" ? { consumedOutputEvidenceRoots: [join(container, "archives")] } : {}) } };
+    await expect(codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" }).evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+  });
+
   it.each([false, true])("admits an isolated producer and preserves retained output/debt (historical duplicates=%s)", async (duplicate) => {
     const f = await fixture();
     if (duplicate) {
