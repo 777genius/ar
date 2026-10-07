@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { grantResearchLaunch, startResearchLaunch } from "../research-launch-owner";
 import { researchCurrentStart } from "../research-launch-admission";
 import { researchHash, researchPublish, researchRead } from "../research-launch-files";
-import { prepareResearchProviderRoot, assertResearchProviderRoot, ResearchRootMountAccess, ResearchRootReadRole, type ResearchProviderRootHost } from "../research-provider-root";
+import { prepareResearchProviderRoot, assertResearchProviderRoot, ResearchProviderRootCheck, researchProviderRootFailureCheck, ResearchRootMountAccess, ResearchRootReadRole, type ResearchProviderRootHost } from "../research-provider-root";
 import { trustedResearchProviderLaunch } from "../trusted-custody-systemd-launch";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import type { ResearchStartSpec } from "../research-launch-contract";
@@ -108,6 +108,57 @@ function expectNoRootEffects(f: ReturnType<typeof captured>, observed: ReturnTyp
 }
 
 describe("closed provider root graph (native adapter over disposable TEST files)", () => {
+  // Linux nsfs emits namespace-object roots. Unrelated namespace mounts must
+  // not prevent this graph, while every namespace mountpoint remains guarded.
+  it("admits unrelated nsfs namespace roots without importing or revoking on them", () => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push("900 1 0:44 net:[4026532440] /run/netns/TEST-namespace rw - nsfs nsfs rw");
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    expect(plan.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite).map(bind => bind.target)).toEqual([
+      f.spec.request.jobRootDir, f.spec.request.workspacePath,
+    ]);
+    expect(plan.bindings.some(bind => bind.target === "/run/netns/TEST-namespace")).toBe(false);
+    observed.extraMounts[0] = "900 1 0:44 net:[4026532441] /run/netns/TEST-namespace rw - nsfs nsfs rw";
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).not.toThrow();
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+  it("retains an nsfs child mount as a denial before all root effects", () => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push("900 1 0:44 net:[4026532440] /usr/TEST-namespace rw - nsfs nsfs rw");
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
+    expectNoRootEffects(f, observed);
+  });
+  it.each([
+    ["net:[0]", "nsfs"], ["net:[01]", "nsfs"], ["unknown:[1]", "nsfs"],
+    ["net:[4026532440]/tail", "nsfs"], ["relative", "nsfs"], ["net:[4026532440]", "ext4"],
+  ])("rejects opaque root %s with filesystem %s before effects", (root, filesystem) => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push(`900 1 0:44 ${root} /run/netns/TEST-namespace rw - ${filesystem} TEST rw`);
+    let error: unknown;
+    try { prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(Error);
+    expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.MountTable);
+    expectNoRootEffects(f, observed);
+  });
+  it("rejects an opaque selected backing before root effects", () => {
+    const f = captured(), observed = observingHost();
+    observed.extraMounts.push("900 1 0:44 net:[4026532440] /TEST-artifact rw - nsfs nsfs rw");
+    let error: unknown;
+    try { prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter); } catch (caught) { error = caught; }
+    expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.Backing);
+    expectNoRootEffects(f, observed);
+  });
+  it.each(["nominal", "pin"] as const)("rejects an opaque ancestor of ordinary %s backing", location => {
+    const f = captured(), observed = observingHost();
+    if (location === "nominal") {
+      observed.extraMounts.push("900 1 0:44 net:[4026532440] /TEST-project rw - nsfs nsfs rw");
+      observed.extraMounts.push("901 900 8:1 /TEST-project/disjoint-workspace /TEST-project/disjoint-workspace rw - ext4 /dev/TEST rw");
+    } else observed.extraMounts.push(`900 1 0:44 net:[4026532440] ${join(f.directory, "pins")} rw - nsfs nsfs rw`);
+    let error: unknown;
+    try { prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter); } catch (caught) { error = caught; }
+    expect(researchProviderRootFailureCheck(error)).toBe(ResearchProviderRootCheck.Backing);
+    expectNoRootEffects(f, observed);
+  });
   // Regression: an admitted writable equal, child or ancestor path would make
   // an immutable dependency writable or hide it, before systemd ordering helps.
   it.each([
