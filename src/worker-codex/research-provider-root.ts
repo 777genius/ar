@@ -19,15 +19,40 @@ export enum ResearchProviderRootCheck {
   Custody = "research-provider-root:rootCustody", Prepare = "research-provider-root:prepareResearchProviderRoot",
   Assert = "research-provider-root:assertResearchProviderRoot",
 }
+export type ResearchProviderRootTiming = Readonly<{ check: ResearchProviderRootCheck; count: number; inclusiveElapsedMs: number }>;
+let rootTimings: Map<ResearchProviderRootCheck, { count: number; inclusiveElapsedMs: number }> | undefined;
+/** Synchronous private observations; neither the callback nor timing failures affect the root operation. */
+export function captureResearchProviderRootTiming<T>(operation: () => T,
+  receive: (checks: readonly ResearchProviderRootTiming[]) => void): T {
+  const previous = rootTimings;
+  const timings = new Map(Object.values(ResearchProviderRootCheck).map(check => [check, { count: 0, inclusiveElapsedMs: 0 }] as const));
+  rootTimings = timings;
+  try { return operation(); }
+  finally {
+    rootTimings = previous;
+    try { receive([...timings].map(([check, value]) => ({ check, ...value }))); } catch { /* Observation only. */ }
+  }
+}
 const rootFailureChecks = new WeakMap<object, ResearchProviderRootCheck>();
 export function researchProviderRootFailureCheck(error: unknown): ResearchProviderRootCheck | undefined {
   return error && typeof error === "object" ? rootFailureChecks.get(error) : undefined;
 }
 function observeRootFailure<T>(check: ResearchProviderRootCheck, operation: () => T): T {
+  const timings = rootTimings; let started: number | undefined;
+  try { if (timings) started = performance.now(); } catch { /* Observation only. */ }
   try { return operation(); }
   catch (error) {
     if (error && typeof error === "object" && !rootFailureChecks.has(error)) rootFailureChecks.set(error, check);
     throw error;
+  } finally {
+    try {
+      const value = timings?.get(check), elapsed = started === undefined ? 0 : performance.now() - started;
+      if (value) {
+        if (Number.isSafeInteger(value.count + 1)) value.count++;
+        const total = value.inclusiveElapsedMs + (Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0);
+        if (Number.isFinite(total)) value.inclusiveElapsedMs = total;
+      }
+    } catch { /* Observation only; preserve the original return or thrown identity. */ }
   }
 }
 

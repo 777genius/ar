@@ -372,6 +372,10 @@ describe("owned research provider cancellation (real files and streams; systemd/
     await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
     expect(host.spawn).not.toHaveBeenCalled(); expect(current.forward).not.toHaveBeenCalled();
     expect(record(current, ".submission").state).toBe("settled");
+    const timing = JSON.parse(researchRead(join(current.directory, "provider-root-timing.json")).toString());
+    expect(timing.scopes.map((scope: { scope: string; outcome: string }) => [scope.scope, scope.outcome])).toEqual([
+      ["prepare", "completed"], ["initial-launch", "completed"]]);
+    expect(timing.phase).toBe("submission-custody");
   });
   it("attempts stop after pending/no-MainPID kill failure and cancels the creator first", () => {
     const current = prepareHelper(), { submit } = providerProxy(current); submit();
