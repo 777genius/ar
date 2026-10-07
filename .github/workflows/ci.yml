@@ -88,6 +88,8 @@ jobs:
     runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -96,7 +98,14 @@ jobs:
       # egress to the registry mirrors is intermittently flaky. Gates are never
       # retried — only this fetch.
       - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
-      - run: npm run check:packed-consumer
+      - run: npm run check:packed-consumer -- --retain-validated-tarball
+      - name: Upload the same validated public runtime package
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-test-runtime-package-${{ github.event.pull_request.head.sha || github.sha }}
+          path: vioxen-subscription-runtime-*.tgz
+          if-no-files-found: error
+          retention-days: 7
 
   crash-boundary-shards:
     permissions:
