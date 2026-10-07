@@ -1,8 +1,9 @@
 /** Owned TEST source preparation and genuine registration only. Planned recipe
  * data never grants factory/home/use, model availability or R association. */
 import assert from "node:assert/strict";
+import { testPublicLockSeedSha256, testPublicLockSeedMaxBytes, testPublicLockSeedRelative } from "./current-tools-lock-seed.ts";
 import { spawnSync } from "node:child_process";
-import { lstatSync, writeFileSync } from "node:fs";
+import { constants, openSync, closeSync, fstatSync, readSync, lstatSync, writeFileSync } from "node:fs";
 import { CodexProviderEgressProfileId } from "../../dist/provider-codex/index.js";
 import { dependencyToolPins, DependencyToolTransformCache, parseDependencyToolRegistration }
   from "../../dist/core/dependency-environment/dependency-tool-profile.js";
@@ -22,7 +23,7 @@ import { parseHostedReadonlyPolicy, readHostedPrivateBytes } from "../../dist/wo
 import { HostedReadonlySupervisorHost } from "../../dist/worker-codex/hosted-readonly-supervisor-host.js";
 import { readHostedReadonlyDependencyMaterial } from "../../dist/worker-codex/hosted-readonly-dependency-records.js";
 import { readDefaultTestRequestedModel } from "./default-codex-config.ts";
-import { cleanEnv, command, directory, fileDigest, json, node, runtime } from "./common.ts";
+import { cleanEnv, command, digest, directory, fileDigest, json, node, runtime } from "./common.ts";
 import { observeTestNpmLockResult, type TestNpmLockObservation } from "./registration-failure-observation.js";
 import { observePinnedTestNpmFrame, observePublicTestNpmFrame, verifyPinnedTestNpmFrameSources, type TestNpmFrameObservation, type TestNpmPublicFrameObservation } from "./registration-npm-frame-observation.js";
 const testFile = "TEST-current-local.test.ts";
@@ -59,6 +60,11 @@ export function prepareCurrentLocalInputs(jobId: string, observeLock?: (value: T
     "is-number":"7.0.0",vite:dependencyToolPins.vite,vitest:dependencyToolPins.vitest,
     "test-native-live":"file:packages/live","test-native-packed":"file:packages/packed/test-native-packed-1.0.0.tgz"}},0o644);
   try {
+    // Documented lock-driven selection avoids npm10's known fresh optional-peer
+    // detach bug. Seed bytes are never an installed tree or completion proof.
+    const seed = readHostedPrivateBytes(runtime + "/" + testPublicLockSeedRelative, testPublicLockSeedMaxBytes);
+    assert(seed && digest(seed) === testPublicLockSeedSha256);
+    writeFileSync(workspace + "/package-lock.json", seed, { flag: "wx", mode: 0o644 });
     verifyPinnedTestNpmFrameSources();
     const args = [npm,"install","--loglevel=verbose","--package-lock-only","--ignore-scripts","--no-audit","--no-fund",...fixedConfig,
       "--install-strategy=hoisted","--install-links=true","--include=dev","--include=optional","--include=peer",
@@ -73,6 +79,33 @@ export function prepareCurrentLocalInputs(jobId: string, observeLock?: (value: T
   assert.throws(() => lstatSync(workspace + "/node_modules"),(error:unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
   const lock = lstatSync(workspace + "/package-lock.json");
   assert(lock.isFile() && !lock.isSymbolicLink() && lock.uid===0 && lock.nlink===1 && lock.size>0 && lock.size<=8*1024*1024);
+  // The real npm output must reconcile the COMPLETE final TEST graph and prune
+  // the donor workspace. A successful child or copied seed alone is insufficient.
+  const lockPath = workspace + "/package-lock.json";
+  const fd = openSync(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const bytes = Buffer.alloc(lock.size); assert.equal(readSync(fd, bytes, 0, bytes.length, 0), bytes.length);
+    for (const stat of [fstatSync(fd), lstatSync(lockPath)])
+      assert(stat.isFile() && stat.uid===0 && stat.nlink===1 && stat.dev===lock.dev && stat.ino===lock.ino &&
+        stat.size===lock.size && stat.mtimeMs===lock.mtimeMs && stat.ctimeMs===lock.ctimeMs);
+    const selected: unknown = JSON.parse(bytes.toString("utf8"));
+    assert(selected !== null && typeof selected === "object" && "lockfileVersion" in selected && selected.lockfileVersion===3 && "packages" in selected);
+    const packages = selected.packages;
+    assert(packages !== null && typeof packages === "object" && "" in packages);
+    const root = packages[""];
+    assert(root !== null && typeof root === "object" && "dependencies" in root);
+    assert.deepEqual(root.dependencies,{"is-number":"7.0.0",vite:dependencyToolPins.vite,vitest:dependencyToolPins.vitest,
+      "test-native-live":"file:packages/live","test-native-packed":"file:packages/packed/test-native-packed-1.0.0.tgz"});
+    for (const [path, version] of [["node_modules/vite",dependencyToolPins.vite],["node_modules/vitest",dependencyToolPins.vitest],
+      ["node_modules/is-number","7.0.0"],["node_modules/test-native-live","1.0.0"],["node_modules/test-native-packed","1.0.0"]] as const) {
+      const entry: unknown = Reflect.get(packages,path);
+      assert(entry !== null && typeof entry === "object" && "version" in entry && entry.version===version);
+    }
+    assert(!("node_modules/@vioxen/agent-account-observability" in packages));
+    assert(!("packages/agent-account-observability" in packages));
+    assert.notEqual(digest(bytes),testPublicLockSeedSha256);
+  } finally { closeSync(fd); }
+
   writeFileSync(workspace + "/" + testFile,
     "import { expect, test } from 'vitest';\nimport { liveValue } from 'test-native-live';\nimport { packedValue } from 'test-native-packed';\ntest('real live and packed inputs', () => { expect(liveValue).toBe(6); expect(packedValue).toBe(7); });\n",{flag:"wx",mode:0o644});
   writeFileSync(workspace + "/TEST-readonly-local-custody/input.txt","TEST actual same-workspace readonly local input\n",{flag:"wx",mode:0o644});

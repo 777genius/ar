@@ -4,6 +4,7 @@ import { compileIoUringFixture } from "./io-uring.ts";
 /** Signed Ubuntu indexes and downloaded .deb extraction only. No dpkg install,
  * maintainer script, chroot command, or outer apt state mutation is permitted. */
 import assert from "node:assert/strict";
+import { testPublicLockSeedSha256, testPublicLockSeedMaxBytes, testPublicLockSeedRelative } from "./current-tools-lock-seed.ts";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
   readdirSync, readlinkSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync, type BigIntStats } from "node:fs";
@@ -121,6 +122,22 @@ export function assemble(root: string, state: string, source: string, toolchain:
     checkBudget();
     cpSync(source + "/" + name, root + runtime + "/" + name, { recursive: true, dereference: false, verbatimSymlinks: true });
     checkBudget();
+  }
+  if (scenario === OwnedOsScenario.CurrentDependency) {
+    // Exact owned source input, never an installed tree or admission witness.
+    const path = source + "/package-lock.json", before = lstatSync(path, { bigint: true });
+    assert(before.isFile() && !before.isSymbolicLink() && before.nlink === 1n &&
+      before.size > 0n && before.size <= BigInt(testPublicLockSeedMaxBytes));
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const bytes = Buffer.alloc(Number(before.size)); assert.equal(readSync(fd, bytes, 0, bytes.length, 0), bytes.length);
+      for (const stat of [fstatSync(fd, { bigint: true }), lstatSync(path, { bigint: true })])
+        assert(stat.isFile() && stat.dev === before.dev && stat.ino === before.ino && stat.nlink === 1n &&
+          stat.size === before.size && stat.mtimeNs === before.mtimeNs && stat.ctimeNs === before.ctimeNs);
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), testPublicLockSeedSha256);
+      const target = root + runtime + "/" + testPublicLockSeedRelative;
+      directory(dirname(target), 0o700); writeFileSync(target, bytes, { flag: "wx", mode: 0o600 });
+    } finally { closeSync(fd); }
   }
   checkBudget();
   if (scenario !== OwnedOsMode.BusDiagnostic)
