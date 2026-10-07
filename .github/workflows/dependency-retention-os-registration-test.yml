@@ -60,6 +60,16 @@ jobs:
         run: |
           node node_modules/typescript/bin/tsc -p host-integration/managed-launcher/tsconfig.dependency-full-native-test.json
           node --test host-integration/managed-launcher/dependency-full-native-TEST.node-test.js
+      - name: Retain finite public compiled profile delivery inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-full-profile-public-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            host-integration/managed-launcher/dependency-full-native-TEST.js
+            host-integration/managed-launcher/dependency-full-native-parent-TEST.js
+            scripts/dependency-retention-os-test/current-full-outer.js
+            host-integration/managed-launcher/launch.mjs
+          if-no-files-found: error
       - name: Check official platform resolution inside the existing readonly package root
         run: node --test scripts/dependency-retention-os-test/current-codex-layout.node-test.js
       - name: Check original FDA result boundary for content observations
