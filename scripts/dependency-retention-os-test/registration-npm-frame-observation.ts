@@ -3,6 +3,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { constants, openSync, closeSync, fstatSync, lstatSync, readSync, realpathSync } from "node:fs";
+import { lookupNpmPublicSourcePart0, type NpmPublicSourceRecord } from "./registration-npm-public-catalog-0.js";
+import { lookupNpmPublicSourcePart1 } from "./registration-npm-public-catalog-1.js";
 const freeze = Object.freeze;
 const npmRoot = "/opt/subscription-runtime-dependency-os-TEST/toolchain/lib/node_modules/npm";
 enum NpmFrameModule { Unknown = "unknown", Dispatch = "npm_dispatch", Install = "npm_install",
@@ -63,17 +65,19 @@ export function verifyPinnedTestNpmFrameSources(): void {
 }
 /** One header and its immediate FIRST frame only, at most4MiB. This is lexical
  * membership. No message/function/path/column/errno/cause is returned. */
-export function observePinnedTestNpmFrame(stderr: unknown): TestNpmFrameObservation {
-  if (typeof stderr !== "string" || stderr.length > 4 * 1024 * 1024) return unknownFrame;
+type FirstNpmFrame = Readonly<{ channel: NpmStackChannel; errorClass: NpmStackError;
+  path?: string; line?: number; column?: number }>;
+function firstNpmFrame(stderr: unknown): FirstNpmFrame | undefined {
+  if (typeof stderr !== "string" || stderr.length > 4 * 1024 * 1024) return undefined;
   // Select the FIRST complete stack/raw record before validating its class.
   // No malformed, oversized or arbitrary first header can be skipped.
   const records = /^(?:npm verbose stack[^\r\n]*|(?!(?:npm |[ \t\r\n]))[^\r\n]+)\r?$/gm;
-  const selected = records.exec(stderr); if (!selected) return unknownFrame;
+  const selected = records.exec(stderr); if (!selected) return undefined;
   const first = /^(npm verbose stack )?(Error|TypeError|RangeError|SyntaxError|ReferenceError):[^\r\n]*\r?$/.exec(selected[0]);
-  if (!first) return unknownFrame;
+  if (!first) return undefined;
   const later = /^(?:npm verbose stack(?!     at )[^\r\n]*|(?!(?:npm |[ \t\r\n]))[^\r\n]+)\r?$/gm;
   later.lastIndex = selected.index + selected[0].length;
-  if (later.exec(stderr)) return unknownFrame;
+  if (later.exec(stderr)) return undefined;
   const channel = first[1] ? NpmStackChannel.Verbose : NpmStackChannel.Uncaught;
   let errorClass = NpmStackError.Unknown;
   switch (first[2]) {
@@ -82,21 +86,86 @@ export function observePinnedTestNpmFrame(stderr: unknown): TestNpmFrameObservat
     case "RangeError": errorClass = NpmStackError.Range; break;
     case "SyntaxError": errorClass = NpmStackError.Syntax; break;
     case "ReferenceError": errorClass = NpmStackError.Reference; break;
-    default: return unknownFrame;
+    default: return undefined;
   }
   const start = selected.index + selected[0].length;
-  if (stderr[start] !== "\n") return unknownFrame;
+  if (stderr[start] !== "\n") return undefined;
   const end = stderr.indexOf("\n", start + 1), line = stderr.slice(start + 1, end < 0 ? undefined : end).replace(/\r$/, "");
   const prefix = first[1] ?? "";
-  if (!line.startsWith(prefix + "    at ")) return unknownFrame;
+  if (!line.startsWith(prefix + "    at ")) return undefined;
   const frame = line.slice(prefix.length + 7);
   // The function label is examined only for syntax and is never persisted.
-  const match = /^(?:[A-Za-z0-9_$.[\]<> ]{1,96} \()?([^()\r\n]{1,256}):([1-9][0-9]{0,3}):([1-9][0-9]{0,3})(\))?$/.exec(frame);
-  if (!match || frame.includes("(") !== (match[4] === ")"))
-    return freeze({ channel, errorClass, module: NpmFrameModule.Unknown, line: null });
+  const match = /^(?:[^()\r\n]{1,128} \()?([^()\r\n]{1,256}):([1-9][0-9]{0,3}):([1-9][0-9]{0,3})(\))?$/.exec(frame);
+  if (!match || typeof match[1] !== "string" || frame.includes("(") !== (match[4] === ")"))
+    return { channel, errorClass };
+  return { channel, errorClass, path: match[1], line: Number(match[2]), column: Number(match[3]) };
+}
+export function observePinnedTestNpmFrame(stderr: unknown): TestNpmFrameObservation {
+  const first = firstNpmFrame(stderr); if (!first) return unknownFrame;
+  const { channel, errorClass } = first;
   for (const [module, relative, , maximumLine] of pins) {
-    if (match[1] === npmRoot + "/" + relative && Number(match[2]) <= maximumLine && Number(match[3]) <= 4096)
-      return freeze({ channel, errorClass, module, line: Number(match[2]) });
+    if (first.path === npmRoot + "/" + relative && first.line !== undefined && first.line <= maximumLine &&
+        first.column !== undefined && first.column <= 4096)
+      return freeze({ channel, errorClass, module, line: first.line });
   }
   return freeze({ channel, errorClass, module: NpmFrameModule.Unknown, line: null });
+}
+
+
+enum PublicNpmFrameKind { Unknown = "unknown", PinnedVendorSource = "pinned_public_vendor_source" }
+export type TestNpmPublicFrameObservation = Readonly<{ sourceKind: PublicNpmFrameKind;
+  catalogId: number | null; sourceSha256: string | null; line: number | null;
+  channel: NpmStackChannel; errorClass: NpmStackError }>;
+const unknownPublicFrame: TestNpmPublicFrameObservation = freeze({ sourceKind: PublicNpmFrameKind.Unknown,
+  catalogId: null, sourceSha256: null, line: null, channel: NpmStackChannel.Unknown, errorClass: NpmStackError.Unknown });
+/** Reads only a generated PUBLIC catalog entry after exact lexical membership.
+ * Never opens a path from stderr. Credential/config/non-JS/unlisted files have
+ * no catalog membership. Exact public Git blob is required before SHA256 emits. */
+function readPublicNpmSource(entry: NpmPublicSourceRecord): Buffer {
+  const path = npmRoot + "/" + entry.path;
+  let parent = "/";
+  for (const component of path.split("/").slice(1, -1)) {
+    parent += (parent === "/" ? "" : "/") + component;
+    const stat = lstatSync(parent); assert(stat.isDirectory() && !stat.isSymbolicLink() &&
+      stat.uid === 0 && stat.gid === 0 && !(stat.mode & 0o022));
+  }
+  assert.equal(realpathSync(path), path);
+  const named = lstatSync(path, { bigint: true });
+  assert(named.isFile() && !named.isSymbolicLink() && named.uid === 0n && named.gid === 0n &&
+    named.nlink === 1n && !(named.mode & 0o022n) && named.size === BigInt(entry.bytes) &&
+    named.size > 0n && named.size <= 147869n);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = fstatSync(fd, { bigint: true });
+    for (const stat of [before]) assert(stat.isFile() && stat.dev === named.dev && stat.ino === named.ino &&
+      stat.size === named.size && stat.mode === named.mode && stat.uid === named.uid && stat.gid === named.gid &&
+      stat.nlink === named.nlink && stat.mtimeNs === named.mtimeNs && stat.ctimeNs === named.ctimeNs);
+    const bytes = Buffer.alloc(entry.bytes); assert.equal(readSync(fd, bytes, 0, bytes.length, 0), bytes.length);
+    for (const stat of [fstatSync(fd, { bigint: true }), lstatSync(path, { bigint: true })])
+      assert(stat.isFile() && stat.dev === before.dev && stat.ino === before.ino && stat.size === before.size &&
+        stat.mode === before.mode && stat.uid === before.uid && stat.gid === before.gid &&
+        stat.nlink === before.nlink && stat.mtimeNs === before.mtimeNs && stat.ctimeNs === before.ctimeNs);
+    assert.equal(createHash("sha1").update("blob " + entry.bytes + "\0").update(bytes).digest("hex"), entry.gitBlob);
+    return bytes;
+  } finally { closeSync(fd); }
+}
+/** Public source identity only. A hash cannot grant custody, permission, retry,
+ * model availability, success, cause or general runtime attestation. Mutation,
+ * unknown/builtin/malformed FIRST frame or any pin/IO failure stays Unknown. */
+export function observePublicTestNpmFrame(stderr: unknown): TestNpmPublicFrameObservation {
+  const first = firstNpmFrame(stderr);
+  if (!first || typeof first.path !== "string" || !first.path.startsWith(npmRoot + "/") ||
+      first.line === undefined || first.column === undefined || first.column > 4096) return unknownPublicFrame;
+  const relative = first.path.slice(npmRoot.length + 1);
+  const entry = lookupNpmPublicSourcePart0(relative) ?? lookupNpmPublicSourcePart1(relative);
+  if (!entry) return unknownPublicFrame;
+  try {
+    const bytes = readPublicNpmSource(entry);
+    let lines = bytes[bytes.length - 1] === 10 ? 0 : 1;
+    for (const byte of bytes) if (byte === 10) ++lines;
+    if (first.line > lines) return unknownPublicFrame;
+    return freeze({ sourceKind: PublicNpmFrameKind.PinnedVendorSource, catalogId: entry.id,
+      sourceSha256: createHash("sha256").update(bytes).digest("hex"), line: first.line,
+      channel: first.channel, errorClass: first.errorClass });
+  } catch { return unknownPublicFrame; }
 }

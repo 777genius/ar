@@ -2,7 +2,9 @@
  * and finite; the positive literals describe source failure text, never authority. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { observePinnedTestNpmFrame } from "./registration-npm-frame-observation.js";
+import { lookupNpmPublicSourcePart0 } from "./registration-npm-public-catalog-0.js";
+import { lookupNpmPublicSourcePart1 } from "./registration-npm-public-catalog-1.js";
+import { observePinnedTestNpmFrame, observePublicTestNpmFrame } from "./registration-npm-frame-observation.js";
 import { observeRegistrationFailure, observeTestNpmLockResult } from "./registration-failure-observation.js";
 
 test("closed observations drop arbitrary text and non-native counterfeits", () => {
@@ -171,4 +173,45 @@ test("unknown first frames are never skipped and ambiguous or unsafe stacks rema
   for (const input of [proxy, revoked.proxy, null, 3, { toString() { ++calls; throw new Error("TEST-trap"); } }])
     assert.equal(observePinnedTestNpmFrame(input).module, "unknown");
   assert.equal(calls, 0);
+});
+
+
+test("complete public catalog covers nested vendor source but refuses paths before IO", () => {
+  const source = lookupNpmPublicSourcePart0("node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js") ??
+    lookupNpmPublicSourcePart1("node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js");
+  assert(source && Object.isFrozen(source));
+  assert.equal(source.gitBlob, "54f86dea0f65c02b49acc2fc4f7bb596f3b3cd76");
+  // Independent official-tree anchors are executable regular JS, not symlinks.
+  // The previous100644-only inventory wrongly excluded BOTH actual entrypoints.
+  for (const [path, gitBlob, bytes] of [["bin/npm-cli.js", "577abe03e7b8e9099840c1f17ba8875804f1e74b", 54],
+    ["node_modules/wrap-ansi/index.js", "d80c74c19ca3fb3288b18ab199e842f9b71b9d23", 5778]] as const) {
+    const entry = lookupNpmPublicSourcePart0(path) ?? lookupNpmPublicSourcePart1(path);
+    assert(entry && Object.isFrozen(entry)); assert.equal(entry.gitBlob, gitBlob); assert.equal(entry.bytes, bytes);
+  }
+  const unknown = { sourceKind: "unknown", catalogId: null, sourceSha256: null, line: null, channel: "unknown", errorClass: "unknown" };
+  const root = "/opt/subscription-runtime-dependency-os-TEST/toolchain/lib/node_modules/npm/";
+  for (const path of ["../auth.json", "auth.json", "package.json", "/root/.npmrc", "lib/../npm.js", "lib/TEST-secret.js"])
+    assert.equal(lookupNpmPublicSourcePart0(path) ?? lookupNpmPublicSourcePart1(path), undefined);
+  for (const path of ["node:internal/TEST-secret", "/root/.npmrc", root + "../auth.json", root + "lib/TEST-secret.js"])
+    assert.deepEqual(observePublicTestNpmFrame("npm verbose stack TypeError: TEST-secret\n" +
+      "npm verbose stack     at " + path + ":1:1\n"), unknown);
+  const later = "npm verbose stack Error: TEST-secret\nnpm verbose stack     at " + root + "lib/npm.js:301:4\n";
+  assert.deepEqual(observePublicTestNpmFrame("npm verbose stack " + "X".repeat(65) + ": TEST-secret\n" + later), unknown);
+  let calls = 0;
+  const proxy = new Proxy({}, { get() { ++calls; throw new Error("TEST-trap"); } });
+  assert.deepEqual(observePublicTestNpmFrame(proxy), unknown); assert.equal(calls, 0);
+});
+
+
+test("private-method and symbol labels never block or escape a known exact frame", () => {
+  const path = "/opt/subscription-runtime-dependency-os-TEST/toolchain/lib/node_modules/npm/lib/npm.js";
+  for (const label of ["#TEST_private", "Arborist.#TEST_private", "[Symbol(TEST_private)]", "async Object.TEST_private"]) {
+    const observed = observePinnedTestNpmFrame("npm verbose stack TypeError: TEST_secret\n" +
+      "npm verbose stack     at " + label + " (" + path + ":301:4)\n");
+    // Parentheses inside a function label are deliberately refused as ambiguous.
+    if (label.includes("(")) assert.equal(observed.module, "unknown");
+    else assert.deepEqual(observed, { channel: "npm_verbose_stack", errorClass: "type_error_header", module: "npm_dispatch", line: 301 });
+    assert(!JSON.stringify(observed).includes("TEST_private"));
+    assert(!JSON.stringify(observed).includes("TEST_secret"));
+  }
 });
