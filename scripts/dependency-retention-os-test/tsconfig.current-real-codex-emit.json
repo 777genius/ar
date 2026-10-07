@@ -1,5 +1,6 @@
 {
   "extends": "./tsconfig.registration-emit.json",
+  "compilerOptions": {"rootDir":"../.."},
   "files": [
     "./compose-current-real-codex.ts",
     "./prepare-current-real-codex-capsule.ts",
