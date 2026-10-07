@@ -12,6 +12,7 @@ import { assertResearchInitialRoot, assertResearchServiceOwner, assertResearchSh
   researchDescription, researchExecutableDigest, researchProcessIdentity, researchServiceIdentity,
   researchUnitFromCurrentProcess } from "./research-launch-host";
 import { researchProviderUnits, signalResearchProvider } from "./research-launch-lifecycle";
+import { annotateResearchMaterialFailure, ResearchMaterialRole } from "./research-launch-diagnostics";
 
 const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => void>();
 export const installedResearchRuntimeDirectory = (): string => fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
@@ -50,10 +51,14 @@ function assertResearchStartAuthority(spec: ResearchStartSpec): void {
   assertResearchDirectory(spec.workspaceDirectory, join(pins, "workspace"));
 }
 function assertResearchMaterialBytes(spec: ResearchStartSpec): void {
-  if (spec.runtimeDirectory !== installedResearchRuntimeDirectory() ||
-      researchArtifactDigest(spec.runtimeDirectory) !== spec.artifactSha256 ||
-      researchExecutableDigest(process.execPath) !== spec.nodeSha256 ||
-      researchExecutableDigest(spec.request.codexBinaryPath) !== spec.codexSha256) researchInvalid();
+  if (spec.runtimeDirectory !== installedResearchRuntimeDirectory()) researchInvalid();
+  const assertDigest = (role: Exclude<ResearchMaterialRole, ResearchMaterialRole.Unknown>, read: () => string, expected: string): void => {
+    try { if (read() !== expected) researchInvalid(); }
+    catch (error) { throw annotateResearchMaterialFailure(error, role); }
+  };
+  assertDigest(ResearchMaterialRole.RuntimeArtifact, () => researchArtifactDigest(spec.runtimeDirectory), spec.artifactSha256);
+  assertDigest(ResearchMaterialRole.NodeExecutable, () => researchExecutableDigest(process.execPath), spec.nodeSha256);
+  assertDigest(ResearchMaterialRole.CodexExecutable, () => researchExecutableDigest(spec.request.codexBinaryPath), spec.codexSha256);
 }
 export function assertResearchStartMaterial(spec: ResearchStartSpec): void {
   assertResearchStartAuthority(spec);

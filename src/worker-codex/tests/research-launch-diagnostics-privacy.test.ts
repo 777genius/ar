@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { annotateScratchMountInspectionFailure, normalizeResearchLaunchFailure, ResearchLaunchCause as C, ResearchLaunchDiagnostic as D } from "../research-launch-diagnostics";
+import { annotateResearchMaterialFailure, normalizeResearchMaterialFailure, ResearchMaterialRole as R, annotateScratchMountInspectionFailure, normalizeResearchLaunchFailure, ResearchLaunchCause as C, ResearchLaunchDiagnostic as D } from "../research-launch-diagnostics";
 import { prepareHostScratchTemp } from "../host-scratch-temp";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import { annotateResearchLaunchStage, normalizeResearchOperatorFailure, ResearchLaunchStage as S } from "../research-launch-diagnostics";
@@ -85,5 +85,43 @@ describe("startup diagnostic privacy", () => {
   it("preserves a known cause independently of an opaque error without printing payloads", () => {
     expect(normalizeResearchLaunchFailure(new Error(sensitive, { cause: "host-command-timeout" })))
       .toEqual({ legacyCode: "unclassified", cause: C.HostCommandTimeout, diagnostic: D.Unknown });
+  });
+});
+
+describe("identity-bound material role privacy", () => {
+  it("keeps old normalized fields, original opaque identities and first trusted role", () => {
+    let reads = 0;
+    const getter = Object.defineProperty({}, "cause", { get() { reads++; throw Error("TEST-private-getter"); } });
+    const proxy = new Proxy({}, { get() { reads++; throw Error("TEST-private-proxy"); }, getOwnPropertyDescriptor() { throw Error("TEST-private-descriptor"); } });
+    const revoked = Proxy.revocable({}, {}); revoked.revoke();
+    const secret = "TEST-private-path=/home/TEST/auth.json TEST-token";
+    for (const error of [Object.freeze(Error(secret)), getter, proxy, revoked.proxy, secret, undefined, null, 42]) {
+      expect(annotateResearchMaterialFailure(error, R.NodeExecutable)).toBe(error);
+      annotateResearchMaterialFailure(error, R.CodexExecutable);
+      const observation = normalizeResearchMaterialFailure(error);
+      expect(observation).toEqual({ ...normalizeResearchLaunchFailure(error), materialRole: error && typeof error === "object" ? R.NodeExecutable : R.Unknown });
+      expect(JSON.stringify(observation)).not.toContain("TEST-");
+    }
+    expect(reads).toBe(0);
+    expect(normalizeResearchMaterialFailure({ materialRole: R.RuntimeArtifact }).materialRole).toBe(R.Unknown);
+  });
+  it("does not traverse an unannotated proxy's forged own-data cause", () => {
+    const leaf = annotateResearchMaterialFailure(new Error("hosted_research_launch_denied", { cause: C.FileDeadline }), R.RuntimeArtifact);
+    const proxy = new Proxy({}, { getOwnPropertyDescriptor: (_target, key) => key === "cause"
+      ? { configurable: true, enumerable: true, writable: true, value: leaf } : undefined });
+    const unchanged = normalizeResearchLaunchFailure(proxy);
+    expect(normalizeResearchMaterialFailure(proxy)).toEqual({ ...unchanged, materialRole: R.Unknown });
+  });
+  it("selects only the nearest trusted own-data role within eight objects", () => {
+    const leaf = annotateResearchMaterialFailure(Error("TEST-private-leaf", { cause: C.FileDeadline }), R.RuntimeArtifact);
+    const wrap = (cause: unknown) => ({ message: "TEST-private-wrapper", cause });
+    let chain: unknown = leaf; for (let depth = 0; depth < 7; depth++) chain = wrap(chain);
+    expect(normalizeResearchMaterialFailure(chain).materialRole).toBe(R.RuntimeArtifact);
+    expect(normalizeResearchMaterialFailure(wrap(chain)).materialRole).toBe(R.Unknown);
+    expect(normalizeResearchMaterialFailure(Object.create({ cause: leaf })).materialRole).toBe(R.Unknown);
+    const nearest = annotateResearchMaterialFailure(wrap(leaf), R.CodexExecutable);
+    expect(normalizeResearchMaterialFailure(nearest).materialRole).toBe(R.CodexExecutable);
+    const cycle: { cause?: unknown } = {}; cycle.cause = cycle;
+    expect(normalizeResearchMaterialFailure(cycle).materialRole).toBe(R.Unknown);
   });
 });
