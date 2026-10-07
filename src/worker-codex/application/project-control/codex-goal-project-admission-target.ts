@@ -41,8 +41,26 @@ type TargetInput = {
 // project integration archive custody, native retirement receipts, and runtime state.
 const registryInfrastructure = new Set([
   ".project-authority", ".project-control", "durable-handoffs", "consumed-output-ledger",
-  ".consumed-output-ledger-mutation-locks", ".run-events", "archives", "state",
+  ".consumed-output-ledger-mutation-locks", "archives", "state", ".run-events",
 ]);
+
+// This legacy native parent is configured by the operator, not a generic
+// registry-name exemption. Ledger/epoch adapters still validate its contents.
+async function scopedConsumedOutputContainer(input: TargetInput, name: string): Promise<boolean> {
+  if (name !== "consumed-output") return false;
+  const root = resolve(input.registryRootDir, name);
+  const ledgers = input.scope.consumedOutputLedgerRoots ?? [];
+  const configured = [...ledgers, ...(input.scope.consumedOutputEvidenceRoots ?? [])]
+    .map((path) => resolve(path)).filter((path) => path !== root && pathInsideOrEqual(path, root));
+  if (!ledgers.some((path) => resolve(path) !== root && pathInsideOrEqual(resolve(path), root))) return false;
+  if (await realpath(root) !== root || (input.scope.deniedRoots ?? []).some((denied) =>
+    [root, ...configured].some((path) => pathInsideOrEqual(resolve(denied), path) || pathInsideOrEqual(path, resolve(denied))))) return false;
+  for (const path of configured) {
+    const status = await lstat(path);
+    if (!status.isDirectory() || status.isSymbolicLink() || await realpath(path) !== path) return false;
+  }
+  return true;
+}
 
 function sameOwnedPaths(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
   return Boolean(left?.length && right?.length && isDeepStrictEqual([...left].sort(), [...right].sort()) &&
@@ -263,7 +281,7 @@ export async function assertAdmissionRegistryComplete(input: TargetInput & {
     if (!entry.isDirectory()) continue;
     const manifestPath = join(input.registryRootDir, entry.name, "job.json");
     if (await absent(manifestPath)) {
-      if (registryInfrastructure.has(entry.name) ||
+      if (registryInfrastructure.has(entry.name) || await scopedConsumedOutputContainer(input, entry.name) ||
         await trustedUnpublishedStage(input, entry.name)) continue;
       throw new Error(`unregistered registry directory: ${entry.name}`);
     }

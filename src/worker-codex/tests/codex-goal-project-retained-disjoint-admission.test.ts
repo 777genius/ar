@@ -6,6 +6,9 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectControlAuditEventType, ProjectDebtReason, ProjectOperation, type ProjectControlBrokerPorts } from "@vioxen/subscription-runtime/worker-core";
+import { RunEventProjectionService, RunEventProviderKind, type RunObservationSnapshot } from "@vioxen/subscription-runtime/worker-core";
+import { LocalFileRunEventStore, LocalFileRunEventProjectionStateStore } from "@vioxen/subscription-runtime/store-local-file";
+import { runEventRootFromArgs } from "../codex-goal-mcp-inputs";
 import * as goalOps from "../codex-goal-ops";
 import { authorizeProjectPreStartAdmissionLaunch } from "../application/project-control/codex-goal-project-pre-start-launch-authorization";
 import { resolveProjectControlledRuntimeInPlaceContinuation } from "../application/project-control/codex-goal-project-in-place-continuation";
@@ -559,7 +562,30 @@ describe("operation-bound retained output admission", () => {
     expect(snapshot.debt).toEqual(expect.arrayContaining([expect.objectContaining({ reason: ProjectDebtReason.UnreadableRoot })]));
   });
 
-  it.each([".project-authority", ".project-control", "durable-handoffs", "consumed-output-ledger", ".consumed-output-ledger-mutation-locks", ".run-events", "archives", "state"])("allows native container %s but never ignores its malformed job manifest", async (name) => {
+  it("admits a native default event projection without treating its observed liveness as authority", async () => {
+    const f = await fixture();
+    const rootDir = runEventRootFromArgs({}, f.input.registryRootDir);
+    const service = new RunEventProjectionService({
+      registryRootDir: f.input.registryRootDir, providerKind: RunEventProviderKind.Codex,
+      eventStore: new LocalFileRunEventStore({ rootDir }),
+      stateStore: new LocalFileRunEventProjectionStateStore({ rootDir }),
+      observationPort: { observeRun: async (): Promise<RunObservationSnapshot> => ({
+        runId: "synthetic-observation", providerKind: RunEventProviderKind.Codex,
+        observedAt: "2026-10-07T00:00:00Z", status: "running", liveness: "alive", warnings: [],
+        readOnlyDecision: { kind: "keep_watching", reason: "worker_observable", safeMessage: "watch" },
+      }) },
+    });
+    await service.projectRun({ runId: "synthetic-observation" });
+    const path = join(rootDir, "run-events", "events.ndjson");
+    const before = await readFile(path, "utf8");
+    expect(before.length).toBeGreaterThan(0);
+    await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
+    expect(await readFile(path, "utf8")).toBe(before);
+    f.item.workerAlive = true;
+    await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+  });
+
+  it.each([".project-authority", ".project-control", "durable-handoffs", "consumed-output-ledger", ".consumed-output-ledger-mutation-locks", "archives", "state", ".run-events"])("allows native container %s but never ignores its malformed job manifest", async (name) => {
     const f = await fixture();
     const root = join(f.input.registryRootDir, name); await mkdir(root);
     await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
@@ -567,7 +593,43 @@ describe("operation-bound retained output admission", () => {
     await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
   });
 
-  it.each(["unknown-directory", ".unknown-directory", "state-symlink", ".project-control-symlink", ".run-events-symlink"])("denies unknown or symlink registry container %s", async (name) => {
+  it("admits a configured native consumed-output parent while retaining manifest and liveness fences", async () => {
+    const f = await fixture();
+    const root = join(f.input.registryRootDir, "consumed-output");
+    const ledger = join(root, "ledger");
+    const archives = join(root, "archives");
+    await mkdir(join(ledger, "items"), { recursive: true });
+    await mkdir(archives);
+    await mkdir(join(root, ".consumed-output-ledger-mutation-locks"));
+    await expect(f.gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+    const input = { ...f.input, scope: { ...f.input.scope,
+      consumedOutputLedgerRoots: [ledger], consumedOutputEvidenceRoots: [archives] } };
+    const gate = codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" });
+    await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: true });
+    f.item.workerAlive = true;
+    await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+    f.item.workerAlive = false;
+    await writeFile(join(root, "job.json"), "{");
+    await expect(gate.evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+  });
+
+  it.each(["alias", "file", "denied ancestor", "denied descendant", "other name", "ancestor ledger", "sibling ledger"])("denies unsafe configured consumption container: %s", async (mutation) => {
+    const f = await fixture();
+    const root = join(f.input.registryRootDir, mutation === "other name" ? "arbitrary" : "consumed-output");
+    const ledger = mutation === "ancestor ledger" ? f.root : mutation === "sibling ledger" ? join(f.root, "consumed-output-other", "ledger") : join(root, "ledger");
+    const archives = join(root, "archives");
+    await mkdir(root);
+    await mkdir(join(ledger, "items"), { recursive: true });
+    if (mutation === "alias") await symlink(f.request.workspacePath, archives);
+    else if (mutation === "file") await writeFile(archives, "not a directory");
+    else await mkdir(archives);
+    const input = { ...f.input, scope: { ...f.input.scope, consumedOutputLedgerRoots: [ledger], consumedOutputEvidenceRoots: [archives],
+      ...(mutation === "denied ancestor" ? { deniedRoots: [f.input.registryRootDir] } : {}),
+      ...(mutation === "denied descendant" ? { deniedRoots: [join(root, "private")] } : {}) } };
+    await expect(codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" }).evaluate(f.request)).resolves.toMatchObject({ allowed: false });
+  });
+
+  it.each(["unknown-directory", ".unknown-directory", "state-symlink", ".project-control-symlink", ".run-events-symlink", "consumed-output-symlink"])("denies unknown or symlink registry container %s", async (name) => {
     const f = await fixture();
     if (name.endsWith("-symlink")) await symlink(f.request.workspacePath, join(f.input.registryRootDir, name.slice(0, -"-symlink".length)));
     else await mkdir(join(f.input.registryRootDir, name));
