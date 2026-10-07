@@ -1,3 +1,4 @@
+import * as readonlyKernel from "../hosted-readonly-host-kernel";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -60,19 +61,6 @@ vi.mock("../hosted-readonly-epoch-store", () => ({ HostedReadonlyEpochStore: cla
     expect(facts.locked).toBe(true); facts.order.push("publish"); facts.epoch = parseHostedCustodyEpoch(epoch);
   }
 } }));
-// Legacy readonly fixtures do not exercise protected managed-provider history.
-// Its new kernel back-edge re-enters a pending partial importOriginal mock.
-// Refuse this unrelated lane rather than simulate its native/origin evidence.
-vi.mock("../hosted-managed-provider-failure-recovery", () => {
-  const unexpectedHistoryCall = (): never => { throw new Error("unexpected managed-provider history in readonly fixture"); };
-  return {
-    parseHostedManagedProviderFailureReceipt: unexpectedHistoryCall,
-    assertHostedManagedProviderFailureCreator: unexpectedHistoryCall,
-    readOriginalHostedManagedProviderCreator: unexpectedHistoryCall,
-    readOriginalHostedManagedProviderDischargedReceipt: unexpectedHistoryCall,
-    readOriginalHostedManagedConsumerProviderDischargedReceipt: unexpectedHistoryCall,
-  } satisfies Record<keyof typeof import("../hosted-managed-provider-failure-recovery"), typeof unexpectedHistoryCall>;
-});
 // These legacy readonly fixtures must never execute the dependency cold protocol.
 // Its new import cycle reenters the kernel while the partial kernel mock awaits
 // importOriginal. Keep the real kernel helpers; refuse every cold call instead.
@@ -89,22 +77,21 @@ vi.mock("../hosted-dependency-cold-controller", () => {
     revokeOriginalHostedDependencyColdState: unexpectedColdCall,
   } satisfies Record<keyof typeof import("../hosted-dependency-cold-controller"), typeof unexpectedColdCall>;
 });
-vi.mock("../hosted-readonly-host-kernel", async original => ({
-  ...await original<typeof import("../hosted-readonly-host-kernel")>(),
-  readHostedReadonlyHostInventory: () => JSON.parse(inventoryBytes().toString()), HostedReadonlyHostKernel: class {
-  runtimeInvocation(_record: unknown, command: string, args: readonly string[]) { return { command, args }; }
-  verifyRuntimeOwner() {}
-  runtimeRole() { return "supervisor"; }
-  fenceCreator() { facts.order.push("fence"); facts.fence(); }
-  drainQueuedStart() { facts.order.push("drain"); facts.drain(); }
-  confirmTerminalDescendants() { facts.order.push("terminal"); facts.terminal(); }
-  assertRuntimeLaunch(...args: unknown[]) { facts.order.push("launch"); facts.launch(...args); }
-  verifyExclusiveInventory() { facts.order.push("inventory"); facts.inventory(); }
-  verifyDescriptorBoundary() { facts.order.push("descriptors"); facts.descriptors(); }
-  requestStop(...args: unknown[]) { facts.order.push("stop"); facts.stop(...args); }
-} }));
 beforeEach(() => {
   vi.restoreAllMocks(); vi.resetAllMocks(); facts.locked = false; facts.order = []; facts.activationPhase = "EXCLUSIVE";
+  // One actual class/namespace: imports caught inside cycles use these same spies.
+  const kernel = readonlyKernel.HostedReadonlyHostKernel.prototype;
+  vi.spyOn(readonlyKernel, "readHostedReadonlyHostInventory").mockImplementation(() => JSON.parse(inventoryBytes().toString()));
+  vi.spyOn(kernel, "runtimeInvocation").mockImplementation((_record, command, args) => ({ command, args }));
+  vi.spyOn(kernel, "verifyRuntimeOwner").mockImplementation(() => {});
+  vi.spyOn(kernel, "runtimeRole").mockReturnValue(readonlyKernel.HostedReadonlyRuntimeRole.Supervisor);
+  vi.spyOn(kernel, "fenceCreator").mockImplementation(() => { facts.order.push("fence"); facts.fence(); });
+  vi.spyOn(kernel, "drainQueuedStart").mockImplementation(() => { facts.order.push("drain"); facts.drain(); });
+  vi.spyOn(kernel, "confirmTerminalDescendants").mockImplementation(() => { facts.order.push("terminal"); facts.terminal(); });
+  vi.spyOn(kernel, "assertRuntimeLaunch").mockImplementation((...args: unknown[]) => { facts.order.push("launch"); facts.launch(...args); });
+  vi.spyOn(kernel, "verifyExclusiveInventory").mockImplementation(() => { facts.order.push("inventory"); facts.inventory(); });
+  vi.spyOn(kernel, "verifyDescriptorBoundary").mockImplementation(() => { facts.order.push("descriptors"); facts.descriptors(); });
+  vi.spyOn(kernel, "requestStop").mockImplementation((...args: unknown[]) => { facts.order.push("stop"); facts.stop(...args); });
   facts.epoch = parseHostedCustodyEpoch({ schemaVersion: 1, hostId: "host", bootId: "boot", supervisorId: "supervisor",
     outerRuntime: null, generation: 3, requirement: HostedCustodyRequirement.TestManagedQualification,
     phase: HostedCustodyPhase.Ready, revoked: false, reservations: [], identity: {
