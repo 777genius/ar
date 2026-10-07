@@ -151,7 +151,7 @@ function snapshot(plan: HostedDependencyInstallerPlan): string {
     }
   }
   for (const path of [join(plan.directory, "inputs/package.json"), join(plan.directory, "inputs/package-lock.json"),
-    join(plan.rootDirectory, "runtime/bootstrap.js"), join(plan.rootDirectory, "runtime/package.json"), join(plan.rootDirectory, "runtime/profile.json"), join(plan.rootDirectory, "runtime/npmrc"),
+    join(plan.rootDirectory, "runtime/bootstrap.js"), join(plan.rootDirectory, "runtime/package.json"), join(plan.rootDirectory, "runtime/profile.json"), join(plan.rootDirectory, "runtime/npmrc"), join(plan.rootDirectory, "runtime/global-npmrc"),
     ...Object.values(HostedDependencyInstallerNetworkInput).map(name => join(plan.rootDirectory, "etc", name))]) {
     const bytes = trustedFile(path); facts.push([path, createHash("sha256").update(bytes).digest("hex")]);
   }
@@ -177,7 +177,7 @@ export function createHostedDependencyInstallerPlan(startId: string, inputs: Hos
   directory(join(dir, "home"), 0o700, true); directory(join(dir, "cache"), 0o700, true);
   for (const relative of ["usr", "etc", "workspace", "home", "cache", "runtime", "dev", "proc", "tmp"])
     directory(join(root, relative), relative === "tmp" ? 0o1777 : 0o755);
-  directory(join(root, "home/installer")); directory(join(root, "etc/ssl")); directory(join(root, "etc/ssl/certs"));
+  directory(join(root, "home/installer")); directory(join(root, "etc/ssl"), 0o755); directory(join(root, "etc/ssl/certs"), 0o755);
   mkdirSync(join(root, staging.slice(1)), { recursive: true, mode: 0o755 });
   for (const target of [dirname(selected.nodePath), dirname(selected.privilegeDropper.path), selected.npmRootPath, "/usr/lib64", ...selectedLibraries.map(l => dirname(l.path))]) {
     mkdirSync(join(root, target.slice(1)), { recursive: true, mode: 0o755 });
@@ -222,8 +222,9 @@ export function createHostedDependencyInstallerPlan(startId: string, inputs: Hos
   writeFileSync(join(root, "runtime/profile.json"), JSON.stringify({ ...selected, stagingDirectory: staging, installArgv: hostedDependencyInstallerArgv,
     environment: dependencyTestNpmEnvironment, umask: dependencyTestNpmUmask }), { flag: "wx", mode: 0o644 });
   writeFileSync(join(root, "runtime/npmrc"), dependencyTestNpmConfig, { flag: "wx", mode: 0o644 });
+  writeFileSync(join(root, "runtime/global-npmrc"), dependencyTestNpmConfig, { flag: "wx", mode: 0o644 });
   // The enclosing retained record fsyncs all ancestry; sync payloads as well.
-  for (const p of [join(root, "runtime/bootstrap.js"), join(root, "runtime/package.json"), join(root, "runtime/profile.json"), join(root, "runtime/npmrc"),
+  for (const p of [join(root, "runtime/bootstrap.js"), join(root, "runtime/package.json"), join(root, "runtime/profile.json"), join(root, "runtime/npmrc"), join(root, "runtime/global-npmrc"),
     ...["hosts", "resolv.conf", "nsswitch.conf"].map(n => join(root, "etc", n))]) {
     const fd = openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW); try { fsyncSync(fd); } finally { closeSync(fd); }
   }
@@ -237,7 +238,7 @@ export function assertHostedDependencyInstallerPlan(plan: HostedDependencyInstal
 }
 export function hostedDependencyInstallerProperties(plan: HostedDependencyInstallerPlan): readonly string[] {
   assertHostedDependencyInstallerPlan(plan);
-  return ["Restart=no", "User=0", "Group=0", "NoNewPrivileges=yes", "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP", "AmbientCapabilities=",
+  return ["Restart=no", "User=0", "Group=0", "NoNewPrivileges=yes", "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP", "AmbientCapabilities=CAP_SETUID",
     "Environment=PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME=/home/installer",
     "UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES OPENSSL_CONF OPENSSL_MODULES NODE_V8_COVERAGE",
     "PrivateDevices=yes", "ProtectSystem=strict", "ProtectHome=yes", "RestrictSUIDSGID=yes", "MountAPIVFS=no",
