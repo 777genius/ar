@@ -11,6 +11,8 @@ import { readResearchProviderReservation } from "./research-launch-lifecycle";
 export enum ResearchRootMountAccess { ReadOnly = "read-only", ReadWrite = "read-write" }
 export enum ResearchRootReadRole { Dns = "dns", ScratchPolicy = "scratch-policy", PublicText = "public-text", CaBundle = "ca-bundle" }
 const publicTextNames = ["passwd", "group", "nsswitch.conf", "hosts", "resolv.conf", "gai.conf", "host.conf"] as const;
+const resolverConfNames = ["resolv.conf", "stub-resolv.conf"] as const;
+const resolverSockets = [{ name: "io.systemd.Resolve", mode: 0o666 }, { name: "io.systemd.Resolve.Monitor", mode: 0o600 }] as const;
 const caPath = "/etc/ssl/certs/ca-certificates.crt";
 function publicSnapshotPath(path: string, name: string): boolean {
   const prefix = researchAuthorityRoot + "/";
@@ -221,11 +223,23 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
     if (fields.length !== 7 || !Number.isSafeInteger(uid) || uid <= 0 || !Number.isSafeInteger(gid) || gid <= 0) researchInvalid();
     resolverOwner = uid;
     const resolverDirectory = observe("/run/systemd/resolve", uid);
+    const resolverEntries = [...host.entries("/run/systemd/resolve")].sort();
     if (resolverDirectory.gid !== gid || (resolverDirectory.mode & 0o7777) !== 0o755 ||
-        host.entries("/run/systemd/resolve").some(name => !["stub-resolv.conf", "resolv.conf"].includes(name))) researchInvalid();
+        resolverEntries.some(name => !resolverConfNames.some(conf => conf === name) && !resolverSockets.some(socket => socket.name === name))) researchInvalid();
+    // Daemon control sockets are authenticated omissions, never root bindings.
+    for (const name of resolverEntries) {
+      const socket = resolverSockets.find(candidate => candidate.name === name);
+      if (!socket) continue;
+      const path = join("/run/systemd/resolve", name), info = host.info(path), sourceBacking = backing(path, mounts);
+      if ((info.mode & constants.S_IFMT) !== constants.S_IFSOCK || (info.mode & 0o7777) !== socket.mode ||
+          info.uid !== uid || info.gid !== gid || info.nlink !== 1 || info.dev !== resolverDirectory.dev ||
+          nativeDevice(info) !== sourceBacking.device || host.canonical(path) !== path) researchInvalid();
+      observations.push([path, info.dev, info.ino, info.mode, info.uid, info.gid, info.nlink, sourceBacking]);
+    }
     observations.push([resolver, resolverInfo.dev, resolverInfo.ino, resolverInfo.mode, originalLink, researchHash(serviceBytes)]);
     fileLinks.push([resolver, "../run/systemd/resolve/" + destination.slice(destination.lastIndexOf("/") + 1)]);
-    for (const name of [...host.entries("/run/systemd/resolve")].sort()) {
+    for (const name of resolverConfNames) {
+      if (!resolverEntries.includes(name)) continue;
       const path = join("/run/systemd/resolve", name), entry = add(path, path, ResearchRootMountAccess.ReadOnly, uid), info = boundInfos.get(entry)!;
       if (!entry.file || info.gid !== gid || (info.mode & 0o7777) !== 0o644) researchInvalid();
       files.push({ target: path, bytes: host.regular(path, info), name: "resolver-" + name + ".snapshot", role: ResearchRootReadRole.Dns });
