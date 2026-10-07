@@ -4,7 +4,7 @@ import { DependencyGenerationContinuityKind, DependencyOwnerKind, isDependencyCo
   parseDependencyOwner } from "@vioxen/subscription-runtime/core";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { assertHostedDependencyQualifiedInventory, hostedDependencyJobsRoot, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { assertHostedDependencyQualifiedInventory, hostedDependencyJobsRoot, isHostedDependencyWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { assertHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
 import { assertOriginalHostedDependencyPhysicalRecordAccess } from "./hosted-current-dependency-origin";
 import { readHostedOrdinaryBirth } from "./hosted-installation-activation";
@@ -16,12 +16,13 @@ function held():never{throw new Error("hosted_dependency_parent_writer_ingress_h
  * and once-entry before submission. A nominal foreign cwd is not exclusion. */
 export function assertOriginalHostedDependencyParentWriterIngress(fence:HostedActivationFence,jobId:string,access:symbol):void {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
-  if(typeof jobId!=="string" || !/^TEST-[A-Za-z0-9_.-]{1,123}$/.test(jobId))held();
+  if(typeof jobId!=="string")held();
   const actual=readHostedOrdinaryBirth(jobId),kernel=new HostedReadonlyHostKernel(),session=kernel.operatorSession(),inventory=readHostedReadonlyHostInventory();
   if(session.bootId!==actual.activation.bootId || session.supervisorId!==actual.activation.supervisorId)held();
   const creator=inventory.ordinaryCreators.filter(value=>value.jobId===actual.birth.jobId && value.jobRootDir===actual.birth.jobRootDir && value.workspacePath===actual.birth.workspacePath);
   if(creator.length!==1)held();
   const selected=readHostedDependencyBinding(actual.birth.jobId);
+  if(!selected && isHostedDependencyWorkspace(actual.birth.workspacePath))held();
   if(selected?.version===2) {
     assertHostedDependencyQualifiedInventory();
     if(selected.installationId!==actual.installation.installationId || selected.runtimeSha!==actual.installation.runtimeSha ||
@@ -35,7 +36,7 @@ export function assertOriginalHostedDependencyParentWriterIngress(fence:HostedAc
   for(const job of jobs) {
     if(!job.isDirectory() || job.isSymbolicLink() || !/^TEST-[A-Za-z0-9_.-]{1,123}$/.test(job.name))held();
     const path=hostedDependencyJobsRoot+"/"+job.name+"/workspace",physical=lstatSync(path,{bigint:true}),binding=readHostedDependencyBinding(job.name);
-    if(!physical.isDirectory() || physical.isSymbolicLink() || physical.uid!==0n || physical.gid!==0n || realpathSync(path)!==path ||
+    if(!binding || !physical.isDirectory() || physical.isSymbolicLink() || physical.uid!==0n || physical.gid!==0n || realpathSync(path)!==path ||
       binding && (physical.dev.toString()!==binding.workspace.dev || physical.ino.toString()!==binding.workspace.ino))held();
     const name=`dependency-owners/${physical.dev}-${physical.ino}`;
     if(readHostedActivationBytes(name+".lock"))held();
