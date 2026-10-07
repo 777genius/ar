@@ -15,3 +15,5 @@ export type { RetainedScopeIdentity, ScopedStartCorrelation, ScopedInvocation, S
   ScopedTerminationOperation, ScopedTerminationObservation, ScopedTerminationReceipt, RuntimeValidatedTermination } from "./domain/scoped-termination";
 export * from "./ports/scoped-termination-port";
 export * from "./application/terminate-owned-scope";
+export * from "./domain/source-worker-service-ownership";
+export * from "./ports/source-worker-request-store-port";
