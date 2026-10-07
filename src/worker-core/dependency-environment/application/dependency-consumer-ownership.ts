@@ -16,7 +16,8 @@ export function claimDependencyConsumer(store: DependencyOwnerStore, workspace: 
   const epoch = (current?.epoch ?? 0) + 1;
   const attempt = { attemptId, epoch, launch };
   const next = parseDependencyOwner({ version: 2, workspace, revision: (current?.revision ?? 0) + 1,
-    epoch, owner: { kind: DependencyOwnerKind.Consumer, phase: DependencyOwnerPhase.ExclusiveMutation, attempt } });
+    epoch, owner: { kind: DependencyOwnerKind.Consumer, phase: DependencyOwnerPhase.ExclusiveMutation, attempt },
+    ...(current?.activity === undefined ? {} : { activity: current.activity }) });
   store.compareAndSwap(workspace, current?.revision ?? null, next);
   return attempt;
 }
@@ -30,9 +31,10 @@ export function assertDependencyConsumer(store: DependencyOwnerStore, workspace:
 }
 
 export function markDependencyConsumerRunning(store: DependencyOwnerStore, workspace: DependencyWorkspaceIdentity,
-  attempt: DependencyAttempt): void {
+  attempt: DependencyAttempt, observedAtMs: string | null = null): void {
   const current = assertDependencyConsumer(store, workspace, attempt, DependencyOwnerPhase.ExclusiveMutation);
   store.compareAndSwap(workspace, current.revision, { ...current, revision: current.revision + 1,
+    activity: { lastEntry: { epoch: attempt.epoch, atMs: observedAtMs }, lastRelease: current.activity?.lastRelease ?? null },
     owner: { kind: DependencyOwnerKind.Consumer, phase: DependencyOwnerPhase.Running, attempt } });
 }
 

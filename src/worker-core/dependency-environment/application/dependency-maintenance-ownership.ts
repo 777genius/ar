@@ -11,7 +11,8 @@ export function claimDependencyMaintenance(store: DependencyOwnerStore, workspac
   if (current?.owner) fail(Failure.Busy);
   const attempt = { operationId, epoch: (current?.epoch ?? 0) + 1, host };
   const next = parseDependencyOwner({ version: 2, workspace, revision: (current?.revision ?? 0) + 1,
-    epoch: attempt.epoch, owner: { kind: DependencyOwnerKind.Maintenance, phase: DependencyOwnerPhase.ExclusiveMutation, attempt } });
+    epoch: attempt.epoch, owner: { kind: DependencyOwnerKind.Maintenance, phase: DependencyOwnerPhase.ExclusiveMutation, attempt },
+    ...(current?.activity === undefined ? {} : { activity: current.activity }) });
   store.compareAndSwap(workspace, current?.revision ?? null, next);
   return attempt;
 }

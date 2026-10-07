@@ -121,7 +121,10 @@ export function registerDependencyConsumerAdmissionTests(input: {
         const current = store.read(p.binding.workspace);
         if (!current || !isDependencyConsumerOwner(current.owner)) throw new Error("missing TEST consumer");
         const path = input.local(`${hostedDependencyOwnerRoot}/${p.binding.workspace.dev}-${p.binding.workspace.ino}.json`);
-        writeFileSync(path, JSON.stringify({ ...current, version: 1, owner: { phase: current.owner.phase, attempt: current.owner.attempt } }) + "\n", { mode: 0o600 });
+        const legacy = { version: 1, workspace: current.workspace, revision: current.revision, epoch: current.epoch,
+          owner: { phase: current.owner.phase, attempt: current.owner.attempt } };
+        writeFileSync(path, JSON.stringify(legacy) + "\n", { mode: 0o600 });
+        expect(store.read(p.binding.workspace)).toEqual(legacy);
         const bytes = readFileSync(path), submit = vi.fn();
         expect(() => assertHostedDependencyExecutionWorkspace(workspacePath)).toThrow();
         expect(() => submitHostedOrdinaryProcess(providerInput(), submit)).toThrow();
