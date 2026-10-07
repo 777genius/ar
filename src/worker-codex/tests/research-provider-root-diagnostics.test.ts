@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { researchRead } from "../research-launch-files";
+import { researchHash, researchRead } from "../research-launch-files";
+import * as files from "../research-launch-files";
+import { signalResearchProvider } from "../research-launch-lifecycle";
 import { runResearchProviderService } from "../research-provider-service";
 import * as roots from "../research-provider-root";
 import { prepareHelper } from "./research-provider-service-fixture";
@@ -85,4 +87,82 @@ describe("private identity-bound root diagnostics", () => {
       expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
       expect(() => record(current, ".submission")).toThrow();
     });
+});
+
+describe("private synchronous root timing", () => {
+  it("counts the nested prepare assertion without summing inclusive labels", () => {
+    const current = prepareHelper(); let rows: readonly roots.ResearchProviderRootTiming[] = [];
+    const plan = roots.captureResearchProviderRootTiming(() =>
+      roots.prepareResearchProviderRoot(current.spec, current.provider, current.home), value => { rows = value; });
+    expect(plan.fixedRootDirectory).toBeDefined();
+    expect(rows.map(row => row.check)).toEqual(Object.values(roots.ResearchProviderRootCheck));
+    expect(rows.find(row => row.check === roots.ResearchProviderRootCheck.Prepare)?.count).toBe(1);
+    expect(rows.find(row => row.check === roots.ResearchProviderRootCheck.Assert)?.count).toBe(1);
+    expect(rows.find(row => row.check === roots.ResearchProviderRootCheck.Snapshot)?.count).toBe(2);
+    for (const row of rows) { expect(Number.isSafeInteger(row.count)).toBe(true); expect(row.count).toBeGreaterThanOrEqual(0);
+      expect(Number.isFinite(row.inclusiveElapsedMs)).toBe(true); expect(row.inclusiveElapsedMs).toBeGreaterThanOrEqual(0); }
+  });
+  it("restores an outer collector after a nested capture and preserves hostile failures", () => {
+    const current = prepareHelper(), getter = vi.fn(() => { throw Error("TEST-private-getter"); });
+    const frozen = Object.freeze(Error("TEST-private-error")), proxy = new Proxy(frozen, { get: getter });
+    for (const error of [frozen, proxy, "TEST-private-primitive", undefined]) {
+      let observed: unknown, outer: readonly roots.ResearchProviderRootTiming[] = [], inner: readonly roots.ResearchProviderRootTiming[] = [];
+      const rootHost: roots.ResearchProviderRootHost = { info: () => { throw error; }, read: path => fs.readFileSync(path, "utf8"),
+        canonical: getter, link: getter, entries: getter, mkdir: getter, symlink: getter, file: getter, regular: getter, snapshot: getter, publish: getter, record: getter };
+      try { roots.captureResearchProviderRootTiming(() => {
+        try { roots.captureResearchProviderRootTiming(() => roots.prepareResearchProviderRoot(current.spec, current.provider, current.home, undefined, rootHost),
+          value => { inner = value; throw Error("TEST-private-observer"); }); } catch { /* Exercise parent restoration. */ }
+        return roots.prepareResearchProviderRoot(current.spec, current.provider, current.home, undefined, rootHost);
+      }, value => { outer = value; throw Error("TEST-private-observer"); }); } catch (failure) { observed = failure; }
+      expect(observed === error).toBe(true);
+      for (const rows of [inner, outer]) expect(rows.find(row => row.check === roots.ResearchProviderRootCheck.Prepare)?.count).toBe(1);
+    }
+    expect(getter).not.toHaveBeenCalled();
+    expect(roots.captureResearchProviderRootTiming(() => 7, () => { throw Error("TEST-observer"); })).toBe(7);
+  });
+  it("publishes all three bounded scopes once before spawn, with no private content", async () => {
+    const current = prepareHelper(), error = Object.freeze(Error("TEST-private-spawn-error"));
+    const publish = files.researchPublish, attempts: string[] = [];
+    vi.spyOn(files, "researchPublish").mockImplementation((path, value, exclusive) => { if (path.endsWith("/provider-root-timing.json")) attempts.push(path); publish(path, value, exclusive); });
+    host.spawn.mockImplementationOnce(() => {
+      const text = researchRead(join(current.directory, "provider-root-timing.json")).toString(), receipt = JSON.parse(text);
+      expect(receipt).toMatchObject({ schemaVersion: 1, unit: current.provider, specSha256: researchHash(current.bytes), artifactSha256: current.spec.artifactSha256, phase: "systemd-submission" });
+      expect(Object.keys(receipt).sort()).toEqual(["artifactSha256", "phase", "schemaVersion", "scopes", "specSha256", "unit"]);
+      expect(receipt.scopes.map((scope: { scope: string; outcome: string }) => [scope.scope, scope.outcome])).toEqual([
+        ["prepare", "completed"], ["initial-launch", "completed"], ["submission-assert", "completed"]]);
+      for (const scope of receipt.scopes) { expect(Object.keys(scope).sort()).toEqual(["checks", "elapsedMs", "outcome", "scope"]);
+        for (const row of scope.checks) expect(Object.keys(row).sort()).toEqual(["check", "count", "inclusiveElapsedMs"]);
+        expect(scope.checks.map((row: { check: string }) => row.check)).toEqual(Object.values(roots.ResearchProviderRootCheck));
+        expect(Number.isFinite(scope.elapsedMs)).toBe(true); expect(scope.elapsedMs).toBeGreaterThanOrEqual(0); }
+      expect(text).not.toContain(current.home); expect(text).not.toContain(current.spec.runtimeDirectory); expect(text).not.toContain(error.message);
+      throw error;
+    });
+    let observed: unknown; try { await runResearchProviderService(current.jobId, current.provider, current.home); } catch (failure) { observed = failure; }
+    expect(observed === error).toBe(true); expect(attempts).toHaveLength(1); expect(host.spawn).toHaveBeenCalledTimes(1); expect(host.authReads).toBe(0);
+  });
+  it("honors a cancellation fence written during the private timing publication", async () => {
+    const current = prepareHelper(), publish = files.researchPublish, attempts = vi.fn();
+    vi.spyOn(files, "researchPublish").mockImplementation((path, value, exclusive) => {
+      publish(path, value, exclusive);
+      if (path.endsWith("/provider-root-timing.json")) { attempts(); signalResearchProvider(current.directory, current.provider); }
+    });
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow("hosted_research_launch_denied");
+    const receipt = JSON.parse(researchRead(join(current.directory, "provider-root-timing.json")).toString());
+    expect(receipt.scopes.map((scope: { scope: string; outcome: string }) => [scope.scope, scope.outcome])).toEqual([
+      ["prepare", "completed"], ["initial-launch", "completed"], ["submission-assert", "completed"]]);
+    expect(attempts).toHaveBeenCalledTimes(1); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(current.forward).not.toHaveBeenCalled();
+  });
+  it("attempts a failed receipt only once and preserves the service's original refusal", async () => {
+    const current = prepareHelper(), error = Object.freeze(Error("TEST-private-original-error")), publish = files.researchPublish, attempts = vi.fn();
+    vi.spyOn(roots, "prepareResearchProviderRoot").mockImplementationOnce(() => { throw error; });
+    vi.spyOn(files, "researchPublish").mockImplementation((path, value, exclusive) => {
+      if (path.endsWith("/provider-root-timing.json")) { attempts(value); throw Error("TEST-private-publish-error"); }
+      publish(path, value, exclusive);
+    });
+    let observed: unknown; try { await runResearchProviderService(current.jobId, current.provider, current.home); } catch (failure) { observed = failure; }
+    expect(observed === error).toBe(true); expect(attempts).toHaveBeenCalledTimes(1);
+    expect(attempts.mock.calls[0]![0].scopes.map((scope: { scope: string; outcome: string }) => [scope.scope, scope.outcome])).toEqual([["prepare", "failed"]]);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
 });

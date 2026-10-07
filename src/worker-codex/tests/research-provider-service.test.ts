@@ -379,6 +379,10 @@ describe("owned research provider cancellation (real files and streams; systemd/
     await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
     expect(host.spawn).not.toHaveBeenCalled(); expect(current.forward).not.toHaveBeenCalled();
     expect(record(current, ".submission").state).toBe("settled");
+    const timing = JSON.parse(researchRead(join(current.directory, "provider-root-timing.json")).toString());
+    expect(timing.scopes.map((scope: { scope: string; outcome: string }) => [scope.scope, scope.outcome])).toEqual([
+      ["prepare", "completed"], ["initial-launch", "completed"]]);
+    expect(timing.phase).toBe("submission-custody");
   });
   it("attempts stop after pending/no-MainPID kill failure and cancels the creator first", () => {
     const current = prepareHelper(), { submit } = providerProxy(current); submit();
@@ -578,7 +582,7 @@ describe("slow bounded material at research effect boundaries", () => {
     expect(diagnostic).not.toContain("private");
     expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
-  it.each([65_931, 98_727, 130_000])("holds bootstrap through %i ms setup despite three-second verification, then meets the 10s handoff", async setupMs => {
+  it.each([65_931, 98_727, 130_000])("holds bootstrap through %i ms setup despite three-second verification, then completes bounded handoff", async setupMs => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     const now = slowBoundedMaterial(); host.spawn.mockImplementation(submit);
     let readyAt = 0, releasedAt = 0;
@@ -597,7 +601,7 @@ describe("slow bounded material at research effect boundaries", () => {
     expect(record(current, ".owner").process.namespaces).toEqual(settledNamespaces);
     expect(record(current, ".submission").state).toBe("settled");
   });
-  it("performs bounded material verification once during the fixed 10s ready-to-bootstrap window", async () => {
+  it("performs bounded material verification once before bootstrap within the setup deadline", async () => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     const now = slowBoundedMaterial(); host.spawn.mockImplementation(submit);
     let readyAt = 0, releasedAt = 0;

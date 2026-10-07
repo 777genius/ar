@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { assertResearchProviderNotCancelled, readResearchProviderReservation, ResearchProviderSubmissionState,
   signalResearchProvider } from "./research-launch-lifecycle";
 import { captureResearchRuntime, researchCurrentStart } from "./research-launch-admission";
-import { isResearchDenialObservation, researchInvalid, researchPublish, type ResearchDenialObservation } from "./research-launch-files";
+import { isResearchDenialObservation, researchHash, researchInvalid, researchPublish, type ResearchDenialObservation } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
 import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
-import { assertResearchProviderRoot, prepareResearchProviderRoot, researchProviderRootFailureCheck, type ResearchProviderRootCheck } from "./research-provider-root";
+import { assertResearchProviderRoot, captureResearchProviderRootTiming, prepareResearchProviderRoot, researchProviderRootFailureCheck, type ResearchProviderRootCheck, type ResearchProviderRootTiming } from "./research-provider-root";
 
 const denialChecks = ["assertResearchInitialRoot", "assertResearchSharedHost", "researchCustody", "researchRead",
   "researchCurrentStart", "researchServiceIdentity", "researchCommand", "researchProcessIdentity",
@@ -111,10 +111,28 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
  * provider gets separate PID/user/mount namespaces and no host authority. */
 export async function runResearchProviderService(jobId: string, unit: string, selectedCodexHome: string): Promise<void> {
   if (!researchProviderUnitPattern.test(unit)) researchInvalid();
-  const { directory } = researchCurrentStart(jobId);
+  const { directory, spec, bytes } = researchCurrentStart(jobId);
   const state: { phase: ResearchProviderLaunchPhase } = { phase: "runtime-capture" };
-  try { await runAdmittedResearchProvider(jobId, unit, selectedCodexHome, next => { state.phase = next; }); }
+  const scopes: { scope: RootTimingScope; outcome: RootTimingOutcome; elapsedMs: number; checks: readonly ResearchProviderRootTiming[] }[] = [];
+  const capture = <T>(scope: RootTimingScope, operation: () => T): T => {
+    let returned = false, started = 0;
+    try { started = performance.now(); } catch { /* Observation only. */ }
+    return captureResearchProviderRootTiming(() => { const result = operation(); returned = true; return result; }, checks => {
+      const elapsed = performance.now() - started;
+      if (scopes.length < 3) scopes.push({ scope, outcome: returned ? RootTimingOutcome.Completed : RootTimingOutcome.Failed,
+        elapsedMs: Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0, checks });
+    });
+  };
+  let timingAttempted = false;
+  const publishTiming = (): void => {
+    if (timingAttempted) return; timingAttempted = true;
+    try { researchPublish(join(directory, "provider-root-timing.json"), { schemaVersion: 1, unit,
+      specSha256: researchHash(bytes), artifactSha256: spec.artifactSha256, phase: state.phase, scopes }); }
+    catch { /* Private observation failure never changes admission or causes a retry. */ }
+  };
+  try { await runAdmittedResearchProvider(jobId, unit, selectedCodexHome, next => { state.phase = next; }, capture, publishTiming); }
   catch (error) {
+    publishTiming();
     const phase = state.phase;
     // Root-private observation only, never authority. Retain a finite phase;
     // raw stderr/errors can contain credentials and must remain private.
@@ -130,18 +148,21 @@ export async function runResearchProviderService(jobId: string, unit: string, se
   }
 }
 
+enum RootTimingScope { Prepare = "prepare", InitialLaunch = "initial-launch", SubmissionAssert = "submission-assert" }
+enum RootTimingOutcome { Completed = "completed", Failed = "failed" }
+type RootTimingCapture = <T>(scope: RootTimingScope, operation: () => T) => T;
 type ResearchProviderLaunchPhase = "runtime-capture" | "reservation" | "service-plan" | "executable-custody" |
   "submission-custody" | "systemd-submission" | "ready-and-owner" | "native-forwarding";
 async function runAdmittedResearchProvider(jobId: string, unit: string, selectedCodexHome: string,
-  phase: (next: ResearchProviderLaunchPhase) => void): Promise<void> {
+  phase: (next: ResearchProviderLaunchPhase) => void, capture: RootTimingCapture, publishTiming: () => void): Promise<void> {
   const { spec, directory } = researchCurrentStart(jobId), request = spec.request;
   const captured = captureResearchRuntime(request, process.ppid);
   phase("reservation");
   const reservation = readResearchProviderReservation(directory, unit);
   assertResearchProviderNotCancelled(directory, unit);
   phase("service-plan");
-  const rootPlan = prepareResearchProviderRoot(spec, unit, selectedCodexHome);
-  const launch = trustedResearchProviderLaunch(spec, unit, selectedCodexHome, rootPlan);
+  const rootPlan = capture(RootTimingScope.Prepare, () => prepareResearchProviderRoot(spec, unit, selectedCodexHome));
+  const launch = capture(RootTimingScope.InitialLaunch, () => trustedResearchProviderLaunch(spec, unit, selectedCodexHome, rootPlan));
   phase("executable-custody");
   for (const path of [launch.command, "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
   const assertForwardPermission = (): void => {
@@ -160,8 +181,10 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
     // polling. Cancellation can race both the pending publication and the walk.
     captured.assertCurrent();
     assertForwardPermission();
-    assertResearchProviderRoot(rootPlan, spec, unit, selectedCodexHome);
+    capture(RootTimingScope.SubmissionAssert, () => assertResearchProviderRoot(rootPlan, spec, unit, selectedCodexHome));
     phase("systemd-submission");
+    publishTiming();
+    assertForwardPermission();
     const proxy = spawn(launch.command, launch.args, { env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdio: ["pipe", "pipe", "pipe"] });
     child = proxy;
     // Hold the provider bootstrap frame until the actual service PID/birth/boot is
