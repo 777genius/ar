@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -184,7 +184,7 @@ describe("retained terminal output path-disjoint admission", () => {
       const unknown = join(container, "retained", "unknown-worker");
       await mkdir(unknown);
       await expect(codexProjectAdmissionGate({ ...input, controllerJobId: "project-controller" }).evaluate(f.request)).resolves.toMatchObject({ allowed: false });
-      await rm(unknown);
+      await rmdir(unknown);
     }
     const hidden = join(ledgerRoot, "nested-unregistered-job");
     await mkdir(hidden);
