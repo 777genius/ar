@@ -54,8 +54,8 @@ export function runtimeDiagnostic(text: string) {
     })).slice(0, 16) };
 }
 export const digest = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
-export function command(file: string, args: readonly string[], timeout = 30000, cwd = "/"): string {
-  const result = spawnSync(file, [...args], { cwd, env: cleanEnv, encoding: "utf8", timeout,
+export function command(file: string, args: readonly string[], timeout = 30000, cwd = "/", tmpdir?: string): string {
+  const result = spawnSync(file, [...args], { cwd, env: tmpdir === undefined ? cleanEnv : { ...cleanEnv, TMPDIR: tmpdir }, encoding: "utf8", timeout,
     maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   assert(!result.error && result.status === 0 && result.signal === null,
     `TEST command failed: ${file}, status=${result.status}, signal=${result.signal}`);

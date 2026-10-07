@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, statSync, statfsSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { assembleCurrentFull as assemble } from "./assemble-current-full.js";
-import { fullNativeOsBase, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { fullNativeOsBase, fullNativeTmpDir, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { readCurrentFullOuterInput } from "./current-full-outer-input.js";
 import { configuredAuthNspawnBinding } from "./current-configured-auth-mount.js";
 import { prepareCurrentRealCodexCapsule } from "./prepare-current-real-codex-capsule.js";
@@ -27,7 +27,7 @@ function remaining(deadline: bigint, failure = "owned TEST shared monotonic work
   assert(value > 0, failure); return value;
 }
 function boundedCommand(file: string, args: readonly string[], deadline: bigint, timeout = 30000): string {
-  const output = runCommand(file, args, Math.min(timeout, remaining(deadline)));
+  const output = runCommand(file, args, Math.min(timeout, remaining(deadline)), "/", fullNativeTmpDir);
   remaining(deadline); return output;
 }
 
@@ -278,7 +278,7 @@ try {
           assert(["ActiveState", "SubState", "Result", "ExecMainCode", "ExecMainStatus"].includes(key)); properties[key] = value;
         }
         const journal = spawnSync("/usr/bin/journalctl", ["--unit", unit, "--no-pager", "--output=cat", "--lines=80"],
-          { env: cleanEnv, encoding: "utf8", timeout: Math.min(5000, remaining(deadline)), maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"] });
+          { env: { ...cleanEnv, TMPDIR: fullNativeTmpDir }, encoding: "utf8", timeout: Math.min(5000, remaining(deadline)), maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"] });
         evidence.ownedUnitFailure = { properties, journalDiagnostic: setupDiagnostic(journal.stdout ?? ""), journalStatus: journal.status };
         } catch { evidence.ownedUnitDiagnosticUnavailable = true; }
         try {

@@ -6,7 +6,8 @@ import { chmodSync, closeSync, constants, fchmodSync, fsyncSync, lstatSync, mkdi
 import { spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { readCurrentReviewedPublicCodex } from "./compose-current-real-codex.js";
-const staging = "/run/TEST-real-codex-public-download", capsule = "/run/TEST-real-codex-public-input/@openai";
+import { fullNativePublicDownloadBase, fullNativePublicCapsule, fullNativeTmpDir } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+const staging = fullNativePublicDownloadBase, capsule = fullNativePublicCapsule;
 const packages = [
   {name:"codex",version:"0.160.1",maximum:4904,sha512:"f1yrJhwgimKQI1kYQlxdPJcFwkNZxZrbz7Hf89EAcnLqkQ7TiESzr2FgSZn13Ga5RuHjlVUfurzwq10wk9zw2g=="},
   {name:"codex-linux-x64",version:"0.160.1-linux-x64",maximum:163294814,sha512:"sIDhqV+bsZKKVaVFVY5iB+pAzyOz2XRm3H1KXCsSJwGj5p98qnrT0Fweo1Hfe7WnyTp8mfBNdbVzUeO+mHYugA=="},
@@ -46,7 +47,7 @@ export async function prepareCurrentRealCodexCapsule(sourceSha: string) {
     const extraction=staging+"/"+pkg.name; mkdirSync(extraction,{mode:0o700});
     // Extraction sees only the exact SRI-verified immutable official archive.
     const result=spawnSync("/usr/bin/tar",["--extract","--gzip","--file",destination,"--directory",extraction,
-      "--no-same-owner","--no-same-permissions","--no-overwrite-dir"],{env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C"},
+      "--no-same-owner","--no-same-permissions","--no-overwrite-dir"],{env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",TMPDIR:fullNativeTmpDir},
       stdio:["ignore","ignore","ignore"],timeout:30000});
     assert(!result.error && result.status===0 && result.signal===null,"TEST public capsule extraction failed");
     const packageRoot=extraction+"/package"; directory(packageRoot);

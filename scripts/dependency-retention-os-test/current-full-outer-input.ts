@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { constants, closeSync, fstatSync, lstatSync, openSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
+import { fullNativeInputBase, fullNativeTmpDir } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { readHostedPrivateBytes } from "../../dist/worker-codex/hosted-readonly-inputs.js";
 import { isDependencyCustodyObject } from "../../dist/core/dependency-environment/dependency-custody-evidence.js";
 import { assertConfiguredAccountName } from "./current-configured-auth-mount.js";
@@ -18,16 +19,19 @@ export function readCurrentFullOuterInput() {
   assert.equal(v.sourceSha,process.env.TEST_SOURCE_SHA);assert(typeof v.accountName==="string");assertConfiguredAccountName(v.accountName);
   assert(typeof v.nodeSha256==="string" && /^[a-f0-9]{64}$/.test(v.nodeSha256));
   assert(typeof v.reviewReference==="string" && /^[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,255}$/.test(v.reviewReference));
-  const input="/var/lib/subscription-runtime-full-TEST-input/"+v.sourceSha,source=input+"/source",toolchain=input+"/toolchain";
+  const input=fullNativeInputBase+"/"+v.sourceSha,source=input+"/source",toolchain=input+"/toolchain";
   ancestry(source);ancestry(toolchain);ancestry(toolchain+"/bin");
+  for(const path of [fullNativeInputBase,input]) {
+    assert.equal(lstatSync(path).mode&0o7777,0o700);
+  }
   const executable=toolchain+"/bin/node";assert.equal(realpathSync(process.execPath),executable);assert.equal(realpathSync(executable),executable);
   const fd=openSync(executable,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
   try {const s=fstatSync(fd),named=lstatSync(executable);assert(s.isFile() && s.uid===0 && s.gid===0 && s.nlink===1 && !(s.mode&0o022));
     assert.equal(s.dev,named.dev);assert.equal(s.ino,named.ino);assert.equal(fileDigest(executable),v.nodeSha256);
     const after=fstatSync(fd);for(const key of ["dev","ino","size","mtimeMs","ctimeMs"] as const)assert.equal(after[key],s[key]);
   }finally{closeSync(fd);}
-  assert.equal(command("/usr/bin/git",["-C",source,"rev-parse","--verify","HEAD"]).trim(),v.sourceSha);
-  assert.equal(command("/usr/bin/git",["-C",source,"status","--porcelain","--untracked-files=no"]),"");
+  assert.equal(command("/usr/bin/git",["-C",source,"rev-parse","--verify","HEAD"],30000,"/",fullNativeTmpDir).trim(),v.sourceSha);
+  assert.equal(command("/usr/bin/git",["-C",source,"status","--porcelain","--untracked-files=no"],30000,"/",fullNativeTmpDir),"");
   for(const path of [source+"/dist/worker-codex/codex-goal-cli.js",source+"/scripts/dependency-retention-os-test/current-full-guest.js"]) {
     const s=lstatSync(path);assert(s.isFile() && !s.isSymbolicLink() && s.uid===0 && s.gid===0 && s.nlink===1 && !(s.mode&0o022));assert.equal(realpathSync(path),path);
   }

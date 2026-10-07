@@ -7,6 +7,10 @@ import { constants, closeSync, fsyncSync, writeFileSync, fstatSync, lstatSync, o
 import { basename, dirname } from "node:path";
 import { types } from "node:util";
 export const fullNativeJob="TEST-dependency-full-native-20261007-r1";
+export const fullNativeInputBase="/srv/workers/jobs/"+fullNativeJob+"/input";
+export const fullNativeTmpDir="/srv/workers/jobs/"+fullNativeJob+"/tmp";
+export const fullNativePublicDownloadBase="/srv/workers/jobs/"+fullNativeJob+"/public-codex-download";
+export const fullNativePublicCapsule="/srv/workers/jobs/"+fullNativeJob+"/public-codex-input/@openai";
 export const fullNativeOsBase="/srv/workers/jobs/TEST-dependency-full-native-20261007-r1/os-TEST";
 /** DATA path contract only; physical root custody is checked separately. */
 export function fullNativeGuestRoot(id:unknown,root:unknown):boolean {
@@ -87,12 +91,16 @@ function acquire(context:RootContext=RootContext.Launcher){
     check(r.accountName==="account-u" && typeof r.reviewReference==="string" && /^[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,255}$/.test(r.reviewReference));
     for(const key of ["nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256"])check(digest(r[key]));
     check(typeof r.systemdVersion==="string" && /^systemd 255 \(255\.4[A-Za-z0-9.+~-]{0,64}\)$/.test(r.systemdVersion));
-    const sourceSha=r.sourceSha,root="/var/lib/subscription-runtime-full-TEST-input/"+sourceSha,source=root+"/source",node=root+"/toolchain/bin/node";
+    const sourceSha=r.sourceSha,root=fullNativeInputBase+"/"+sourceSha,source=root+"/source",node=root+"/toolchain/bin/node";
+    pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);
+    pins.hold(fullNativeTmpDir,true,0o700);
+    pins.hold(fullNativeInputBase,true,0o700);
+    pins.hold(root,true,0o700);
     const modules=fullData(r.installedModules,["manager","contract","endpoint","storagePolicy","profiles","payloadGuard"]);
     for(const [path,key] of [["host-jobs/manager.mjs","manager"],["host-jobs/contract.mjs","contract"],["host-jobs/endpoint.mjs","endpoint"],["host-jobs/storage-policy.mjs","storagePolicy"],["managed-launcher/profiles.mjs","profiles"],["managed-launcher/payload-guard.mjs","payloadGuard"]] as const)pins.publicFile(integration+"/"+path,requireDigest(modules[key]));
     const tools=fullData(r.hostTools,["git","systemctl","systemdRun"]);
     for(const [path,key] of [["/usr/bin/git","git"],["/usr/bin/systemctl","systemctl"],[managedSystemdRunExecutable,"systemdRun"]] as const)pins.publicFile(path,requireDigest(tools[key]));
-    const systemdVersion=spawnSync("/usr/bin/systemctl",["--version"],{env:{PATH:"/usr/bin:/bin",LANG:"C"},encoding:"utf8",timeout:5000,maxBuffer:4096});
+    const systemdVersion=spawnSync("/usr/bin/systemctl",["--version"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:4096});
     check(!systemdVersion.error && systemdVersion.status===0 && systemdVersion.signal===null && systemdVersion.stdout.split("\n")[0]===r.systemdVersion);
     pins.publicFile(node,requireDigest(r.nodeSha256));pins.hold(node,false,0o755);pins.publicFile(integration+"/managed-launcher/launch.mjs",requireDigest(r.launcherSha256));
     pins.publicFile(integration+"/managed-launcher/dependency-full-native-TEST.mjs",requireDigest(r.moduleSha256));
@@ -122,7 +130,7 @@ function acquire(context:RootContext=RootContext.Launcher){
     for(const [path,key] of [["/run/TEST-full-outer-review/input.json","outerReviewSha256"],["/run/TEST-real-codex-public-review/input.json","publicReviewSha256"]] as const){pins.hold(dirname(path),true,0o700);pins.publicFile(path,requireDigest(r[key]));pins.hold(path,false,0o600);}
     pins.hold("/srv/worker-state/account-pools/live-codex-auth/account-u",true);
     pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);pins.hold("/srv/workers/jobs/"+fullNativeJob+"/tmp",true,0o700);pins.hold(fullNativeOsBase,true,0o700);
-    const git=spawnSync("/usr/bin/git",["-C",source,"rev-parse","--verify","HEAD^{tree}"],{env:{PATH:"/usr/bin:/bin",LANG:"C",GIT_CONFIG_NOSYSTEM:"1",GIT_CONFIG_GLOBAL:"/dev/null"},encoding:"utf8",timeout:5000,maxBuffer:4096});
+    const git=spawnSync("/usr/bin/git",["-C",source,"rev-parse","--verify","HEAD^{tree}"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir,GIT_CONFIG_NOSYSTEM:"1",GIT_CONFIG_GLOBAL:"/dev/null"},encoding:"utf8",timeout:5000,maxBuffer:4096});
     check(!git.error && git.status===0 && git.signal===null && git.stdout.trim()===r.sourceTree);
     const tuple=Object.freeze({sourceSha,source,root,node,parent,machineId:r.machineId,bootId:r.bootId,accountName:r.accountName});
     const namespace=readlinkSync("/proc/self/ns/mnt"),namespaceFd=pins.mountNamespace();
@@ -171,10 +179,12 @@ const erasedEnvironment=["NODE_OPTIONS","NODE_PATH","LD_PRELOAD","LD_LIBRARY_PAT
 const parentCapabilities="CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_KILL CAP_SETGID CAP_SETUID CAP_SETPCAP CAP_SYS_CHROOT CAP_SYS_PTRACE CAP_SYS_ADMIN CAP_MKNOD CAP_AUDIT_WRITE CAP_SETFCAP";
 export function fullNativeArguments(request:unknown){
   const custody=retainFullNativeLaunch(request);try{
+    const toolchain=fullNativeInputBase+"/"+custody.sourceSha+"/toolchain";
     const properties=["Slice=subscription-runtime-hosted.slice","KillMode=control-group","SendSIGKILL=yes","Delegate=no","Restart=no","RemainAfterExit=no","ProtectSystem=strict","NoNewPrivileges=yes","MemorySwapMax=0","LimitCORE=0","AmbientCapabilities=","PassEnvironment=","UnsetEnvironment="+erasedEnvironment,"CapabilityBoundingSet="+parentCapabilities,
       "CPUQuota=100%","CPUQuotaPeriodSec=100ms","MemoryMax=2G","TasksMax=128","RuntimeMaxSec=1800","TimeoutStopSec=180","StandardOutput=null","StandardError=null",
-      "ReadWritePaths="+fullNativeOsBase+" /var/lib/subscription-runtime-full-TEST-output /run/TEST-real-codex-public-download /run/TEST-real-codex-public-input /run/systemd/system /srv/workers/jobs/"+fullNativeJob,
-      "BindReadOnlyPaths="+custody.source+":"+custody.source+":norbind","BindReadOnlyPaths=/run/TEST-full-outer-review:/run/TEST-full-outer-review:norbind","BindReadOnlyPaths=/run/TEST-real-codex-public-review:/run/TEST-real-codex-public-review:norbind","BindReadOnlyPaths="+reviewRoot+":"+reviewRoot+":norbind","BindReadOnlyPaths=/srv/worker-state/account-pools/live-codex-auth/account-u:/srv/worker-state/account-pools/live-codex-auth/account-u:norbind"];
+      "ReadWritePaths="+fullNativeOsBase+" /var/lib/subscription-runtime-full-TEST-output /run/systemd/system /srv/workers/jobs/"+fullNativeJob,
+      "BindReadOnlyPaths="+custody.source+":"+custody.source+":norbind",
+      "BindReadOnlyPaths="+toolchain+":"+toolchain+":norbind","BindReadOnlyPaths=/run/TEST-full-outer-review:/run/TEST-full-outer-review:norbind","BindReadOnlyPaths=/run/TEST-real-codex-public-review:/run/TEST-real-codex-public-review:norbind","BindReadOnlyPaths="+reviewRoot+":"+reviewRoot+":norbind","BindReadOnlyPaths=/srv/worker-state/account-pools/live-codex-auth/account-u:/srv/worker-state/account-pools/live-codex-auth/account-u:norbind"];
     const args=Object.freeze(["--description=subscription-job:"+custody.fingerprint,"--unit="+fullNativeUnit,"--working-directory="+custody.source,"--service-type=exec","--expand-environment=no","--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID="+fullNativeJob,"--setenv=TEST_SOURCE_SHA="+custody.sourceSha,"--setenv=HOME=/srv/workers/jobs/"+fullNativeJob,"--setenv=TMPDIR=/srv/workers/jobs/"+fullNativeJob+"/tmp","--setenv=PATH=/usr/bin:/bin","--setenv=LANG=C.UTF-8",...properties.map(p=>"--property="+p),"--",custody.node,custody.parent]);
     custody.revalidate();return {args,custody};
   }catch{custody.close();refuse();}
@@ -186,7 +196,7 @@ export function retainCurrentFullParent(){
     const envKeys=Object.keys(process.env);check(envKeys.length<=32 && envKeys.every(key=>["PATH","LANG","LC_ALL","HOME","TMPDIR","USER","LOGNAME","SHELL","INVOCATION_ID","SYSTEMD_EXEC_PID","JOURNAL_STREAM","SUBSCRIPTION_RUNTIME_HOST_JOB_ID","TEST_SOURCE_SHA"].includes(key)));
     check(process.env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID===fullNativeJob && process.env.TEST_SOURCE_SHA===c.tuple.sourceSha && process.argv.length===2);
     check(readlinkSync("/proc/self/exe")===c.tuple.node);check(readFileSync("/proc/self/cmdline").equals(Buffer.from([c.tuple.node,c.tuple.parent,""].join("\u0000"))));
-    const observed=spawnSync("/usr/bin/systemctl",["show",fullNativeUnit,"--property=LoadState,ActiveState,SubState,InvocationID,MainPID,Description,ControlGroup,ProtectSystem"],{env:{PATH:"/usr/bin:/bin",LANG:"C"},encoding:"utf8",timeout:5000,maxBuffer:4096});
+    const observed=spawnSync("/usr/bin/systemctl",["show",fullNativeUnit,"--property=LoadState,ActiveState,SubState,InvocationID,MainPID,Description,ControlGroup,ProtectSystem"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:4096});
     check(!observed.error && observed.status===0 && observed.signal===null);const values:Record<string,string>={};
     for(const line of observed.stdout.trimEnd().split("\n")){const n=line.indexOf("=");check(n>0 && !Object.hasOwn(values,line.slice(0,n)));values[line.slice(0,n)]=line.slice(n+1);}
     check(Object.keys(values).sort().join(",")==="ActiveState,ControlGroup,Description,InvocationID,LoadState,MainPID,ProtectSystem,SubState");
@@ -212,7 +222,7 @@ export function retainCurrentFullParent(){
     },
     observeGuestInvocation(id:string,guestInvocationId:string){
       revalidate();check(id===guestId && guestHash && /^[a-f0-9]{32}$/.test(guestInvocationId));const unit="TEST-retention-os-"+id+".service";
-      const result=spawnSync("/usr/bin/systemctl",["show",unit,"--property=InvocationID","--value"],{env:{PATH:"/usr/bin:/bin",LANG:"C"},encoding:"utf8",timeout:5000,maxBuffer:256});
+      const result=spawnSync("/usr/bin/systemctl",["show",unit,"--property=InvocationID","--value"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:256});
       check(!result.error && result.status===0 && result.signal===null && result.stdout.trim()===guestInvocationId);revalidate();
       seal("current-full-pair-invocation.json",{schemaVersion:1,pairSha256:guestHash,parentInvocationId:invocation,unit,guestInvocationId});
     },close(){if(closed)return;closed=true;c.pins.close();}});}catch{c.pins.close();refuse();}

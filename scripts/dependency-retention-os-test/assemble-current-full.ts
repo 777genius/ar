@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
   readdirSync, readlinkSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync, type BigIntStats } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { fullNativeOsBase, fullNativeGuestRoot } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { fullNativeOsBase, fullNativeGuestRoot, fullNativeTmpDir } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { hostedDependencySystemdRunExecutable } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-systemd-command.js";
 import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
   SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/core/host-infrastructure/system-bus-infrastructure.js";
@@ -26,7 +26,7 @@ export function assembleCurrentFull(root: string, state: string, source: string,
     const remaining = remainingMs(); assert(Number.isSafeInteger(remaining) && remaining > 0); return remaining;
   };
   const command = (file: string, args: readonly string[], timeout = 30000): string => {
-    const output = runCommand(file, args, Math.min(timeout, checkBudget())); checkBudget(); return output;
+    const output = runCommand(file, args, Math.min(timeout, checkBudget()), "/", fullNativeTmpDir); checkBudget(); return output;
   };
   checkBudget();
   assert(fullNativeGuestRoot(basename(dirname(root)),root));
@@ -224,7 +224,7 @@ export function assembleCurrentFull(root: string, state: string, source: string,
 }
 
 function normalizeSignedUsrLayout(root: string, checkBudget: () => number) {
-  assert(/^\/var\/lib\/subscription-runtime-os-TEST\/[a-f0-9-]{36}\/root$/.test(root));
+  assert(fullNativeGuestRoot(basename(dirname(root)),root));
   const device = lstatSync(root, { bigint: true }).dev, deadline = process.hrtime.bigint() + 30000000000n;
   const manifest = createHash("sha256"); let visited = 0, moved = 0, bytes = 0n;
   const bound = () => { checkBudget(); assert(++visited <= 20000 && process.hrtime.bigint() < deadline); };

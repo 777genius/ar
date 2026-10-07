@@ -46,3 +46,27 @@ test("FULL guest roots refuse global and foreign staging prefixes",()=>{
   assert.equal(fullNativeGuestRoot("../"+id,root),false);
   assert.equal(fullNativeGuestRoot(id.toUpperCase(),root),false);
 });
+
+// Red if moving input under writable job scratch leaves either input writable,
+// or permits a mount/descriptor observation from another input root.
+test("FULL input readonly mounts override job scratch write access",()=>{
+  const job="/srv/workers/jobs/TEST-dependency-full-native-20261007-r1";
+  const input=job+"/input/"+"1".repeat(40);
+  const source=input+"/source",toolchain=input+"/toolchain";
+  const host="1 1 8:1 / / ro - ext4 /dev/root rw\n";
+  const scratch="2 1 8:1 /job "+job+" rw - ext4 /dev/root rw\n";
+  const sourceMount="3 2 8:1 /source "+source+" ro - ext4 /dev/root rw\n";
+  const toolchainMount="4 2 8:1 /toolchain "+toolchain+" ro - ext4 /dev/root rw\n";
+  const snapshot=host+scratch+sourceMount+toolchainMount;
+  assert.doesNotThrow(()=>fullReadonlyMountData(snapshot,source,"3","8:1"));
+  assert.doesNotThrow(()=>fullReadonlyMountData(snapshot,toolchain,"4","8:1"));
+  assert.throws(()=>fullReadonlyMountData(host+scratch+sourceMount,toolchain,"2","8:1"));
+  assert.throws(()=>fullReadonlyMountData(host+scratch+toolchainMount,source,"2","8:1"));
+  for(const writable of [toolchain,toolchain+"/bin"]) {
+    const masked=snapshot+"5 2 8:1 /masked "+writable+" rw - ext4 /dev/root rw\n";
+    assert.throws(()=>fullReadonlyMountData(masked,toolchain,"4","8:1"));
+  }
+  for(const foreign of ["/var/lib/subscription-runtime-full-TEST-input/"+"1".repeat(40)+"/toolchain","/srv/workers/jobs/TEST-other/input/"+"1".repeat(40)+"/toolchain"]) {
+    assert.throws(()=>fullReadonlyMountData(snapshot,foreign,"4","8:1"));
+  }
+});

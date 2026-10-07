@@ -41,7 +41,11 @@ function fixedFileBytes(path: string, maximum: number): Buffer {
  * This fixed TEST input file is distinct from the pending real R2 args handoff. */
 export function readDefaultTestRequestedModel(rootPrefix = ""): typeof requestedModel {
   try {
-    assert(rootPrefix === "" || /^\/var\/lib\/subscription-runtime-os-TEST\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\/root$/.test(rootPrefix));
+    // Keep this shared guest module self-contained: guest artifacts omit the
+    // host-only native launcher helper. Accept only its exact fixed FULL root.
+    assert(rootPrefix === "" ||
+      /^\/var\/lib\/subscription-runtime-os-TEST\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\/root$/.test(rootPrefix) ||
+      /^\/srv\/workers\/jobs\/TEST-dependency-full-native-20261007-r1\/os-TEST\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\/root$/.test(rootPrefix));
     return parseDefaultTestRequestedModel(fixedFileBytes(rootPrefix + runtime + "/scripts/dependency-retention-os-test/default-codex-requested-model.json",512));
   } catch { return invalid(); }
 }

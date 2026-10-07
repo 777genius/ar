@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync,
   readdirSync, readSync, realpathSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
+import { fullNativeGuestRoot, fullNativePublicCapsule } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { currentCodexPublicFiles } from "./current-codex-public-catalog.js";
 import { isDependencyCustodyObject } from "../../dist/core/dependency-environment/dependency-custody-evidence.js";
 import { readHostedPrivateBytes } from "../../dist/worker-codex/hosted-readonly-inputs.js";
 import { runtime } from "./common.ts";
-const capsule = "/run/TEST-real-codex-public-input/@openai";
+const capsule = fullNativePublicCapsule;
 const reviewPath = "/run/TEST-real-codex-public-review/input.json";
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 function directory(path: string): void {
@@ -44,7 +45,7 @@ export function readCurrentReviewedPublicCodex(sourceSha: string) {
  * and Linux native platform dependency. This function cannot issue that review. */
 export function composeCurrentRealCodex(root: string, sourceSha: string): void {
   assert.equal(process.getuid?.(), 0); assert.equal(process.geteuid?.(), 0);
-  assert(/^\/var\/lib\/subscription-runtime-os-TEST\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\/root$/.test(root));
+  assert(fullNativeGuestRoot(basename(dirname(root)),root));
   directory(root); ancestry(root); assert(/^[a-f0-9]{40}$/.test(sourceSha));
   absent(root + "/var/lib/subscription-runtime-host-policy/host-installation.json");
   const v = readCurrentReviewedPublicCodex(sourceSha);
