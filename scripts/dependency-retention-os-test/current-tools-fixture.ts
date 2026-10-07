@@ -79,8 +79,8 @@ export function prepareCurrentLocalInputs(jobId: string, observeLock?: (value: T
   assert.throws(() => lstatSync(workspace + "/node_modules"),(error:unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
   const lock = lstatSync(workspace + "/package-lock.json");
   assert(lock.isFile() && !lock.isSymbolicLink() && lock.uid===0 && lock.nlink===1 && lock.size>0 && lock.size<=8*1024*1024);
-  // The real npm output must reconcile the COMPLETE final TEST graph and prune
-  // the donor workspace. A successful child or copied seed alone is insufficient.
+  // The real npm output must reconcile the COMPLETE final TEST graph. npm10
+  // retains unlinked filesystem-target metadata marked extraneous in its lock.
   const lockPath = workspace + "/package-lock.json";
   const fd = openSync(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
@@ -102,7 +102,18 @@ export function prepareCurrentLocalInputs(jobId: string, observeLock?: (value: T
       assert(entry !== null && typeof entry === "object" && "version" in entry && entry.version===version);
     }
     assert(!("node_modules/@vioxen/agent-account-observability" in packages));
-    assert(!("packages/agent-account-observability" in packages));
+    const orphan: unknown = Reflect.get(packages,"packages/agent-account-observability");
+    if (orphan !== undefined) assert.deepEqual(orphan,{name:"@vioxen/agent-account-observability",version:"0.1.0",
+      license:"UNLICENSED",engines:{node:">=20"},devDependencies:{"@types/node":"^22.20.0",typescript:"^6.0.3",vitest:"^4.1.5"},extraneous:true});
+    // No surviving link or local resolved input may require the missing donor.
+    for (const entry of Object.values(packages)) {
+      assert(entry !== null && typeof entry === "object" && !("link" in entry));
+      if ("resolved" in entry) {
+        assert(typeof entry.resolved === "string");
+        if (entry.resolved.startsWith("file:")) assert(["file:packages/live",
+          "file:packages/packed/test-native-packed-1.0.0.tgz"].includes(entry.resolved));
+      }
+    }
     assert.notEqual(digest(bytes),testPublicLockSeedSha256);
   } finally { closeSync(fd); }
 
