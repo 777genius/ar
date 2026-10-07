@@ -82,7 +82,9 @@ vi.mock("node:fs", async original => {
       if (path.startsWith(root + "/")) { real.realpathSync(local(path)); return path; }
       return real.realpathSync(path);
     },
-    statfsSync: () => ({ type: 0xef53 }),
+    statfsSync: (path: string, options?: { bigint?: boolean }) => path === "/proc/self/fd"
+      ? real.statfsSync(path, options?.bigint ? { bigint: true } : undefined)
+      : { type: options?.bigint ? 0xef53n : 0xef53 },
     lstatSync: (path: string, options?: { bigint?: boolean }) => Object.assign(real.lstatSync(local(path), options as { bigint: true }), { uid: options?.bigint ? 0n : 0 }),
     fstatSync: (fd: number, options?: { bigint?: boolean }) => fd <= 2 ? { isFIFO: () => true, isSocket: () => false } : fd === 99 ?
       { isFile: () => true, isDirectory: () => false } : Object.assign(real.fstatSync(fd, options as { bigint: true }), { uid: options?.bigint ? 0n : 0 }),

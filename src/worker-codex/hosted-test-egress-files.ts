@@ -1,5 +1,5 @@
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
-import { fenceDependencyConsumer } from "@vioxen/subscription-runtime/worker-core";
+import { fenceDependencyConsumer, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedDependencyQualifiedInventory, hostedDependencyBindingName, hostedDependencyBindingRoot, hostedDependencyOwnerRoot, hostedDependencyJobsRoot, hostedDependencyJobRoot, isHostedDependencyWorkspace, parseHostedDependencyBinding, assertHostedDependencyPhysicalWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
@@ -253,6 +253,7 @@ export async function revokeHostedTestEgressGrant(jobId: string): Promise<void> 
       try {
         const owner = store.read(binding.workspace);
         if (owner?.owner) {
+          if (!isDependencyConsumerOwner(owner.owner)) throw new Error("dependency_maintenance_busy");
           const attempt = owner.owner.attempt;
           fenceDependencyConsumer(store, binding.workspace, attempt);
           createReadonlyPrivateRecord(`/var/lib/subscription-runtime-host-policy/dependency-attempt-fences/${attempt.launch.startId}.json`,

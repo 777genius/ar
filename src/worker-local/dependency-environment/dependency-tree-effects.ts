@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants, type BigIntStats } from "node:fs";
+import { constants, fstatSync, readFileSync, type BigIntStats } from "node:fs";
 import { lstat, open, readFile, rename, rmdir, statfs, unlink, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { DependencyReceiptState, sameDependencyTree, sameDependencyWorkspace,
@@ -25,6 +25,40 @@ export type ProtectedDependencyEvictionCommit = {
   readonly path: string; readonly identity: DependencyTreeIdentity; readonly sha256: string;
 };
 type Anchor = { handle: FileHandle; before: BigIntStats; mountId: string; parent?: Anchor; name?: Buffer };
+/** Opaque, local effect-session facts. JSON or a copied object is never genuine. */
+export type DependencyTreeEffectReferenceSession = Readonly<{ operationId: string }>;
+type ReferenceDescriptor = { readonly fd: number; readonly dev: string; readonly ino: string; readonly flags: string; readonly mountId: string };
+const referenceSessions = new WeakMap<object, { anchors: Anchors; input: DependencyTreeEffectInput;
+  birth: string; descriptors: readonly ReferenceDescriptor[] }>();
+function ownBirth(): string {
+  const text = readFileSync("/proc/self/stat", "utf8"), start = text.slice(text.lastIndexOf(")") + 2).split(" ")[19];
+  if (!start || !/^[0-9]+$/.test(start)) fail(DependencyTreeEffectFailure.Unsupported);
+  return `${process.pid}:${start}`;
+}
+function referenceDescriptor(item: Anchor): ReferenceDescriptor {
+  const stat = fstatSync(item.handle.fd, { bigint: true }), info = readFileSync(`/proc/self/fdinfo/${item.handle.fd}`, "utf8");
+  const flags = /^flags:\s*([0-7]+)\s*$/m.exec(info)?.[1], mountId = /^mnt_id:\s*([0-9]+)\s*$/m.exec(info)?.[1];
+  if (info.length > 65536 || !flags || !mountId || mountId !== item.mountId || !stat.isDirectory() || !stable(item.before, stat)) fail(DependencyTreeEffectFailure.IdentityChanged);
+  return { fd: item.handle.fd, ...identity(stat), flags, mountId };
+}
+function referenceSession(anchors: Anchors, input: DependencyTreeEffectInput): DependencyTreeEffectReferenceSession {
+  const session = Object.freeze({ operationId: input.trash.operationId });
+  referenceSessions.set(session, { anchors, input, birth: ownBirth(), descriptors: anchors.retained.map(referenceDescriptor) });
+  return session;
+}
+export function readDependencyTreeEffectReferenceAnchors(session: DependencyTreeEffectReferenceSession,
+  expected: { workspace: DependencyWorkspaceIdentity; trashPath: string; operationId: string }): readonly ReferenceDescriptor[] {
+  const retained = referenceSessions.get(session);
+  if (!retained || !retained.anchors.retained.length) fail(DependencyTreeEffectFailure.Closed);
+  retained.anchors.check();
+  if (retained.birth !== ownBirth() || retained.input.trash.operationId !== expected.operationId ||
+      !sameDependencyWorkspace(retained.input.workspace, expected.workspace) ||
+      `${retained.input.trash.destinationParent.canonicalPath}/${retained.input.trash.destinationName}` !== expected.trashPath ||
+      retained.anchors.retained.length !== retained.descriptors.length) fail(DependencyTreeEffectFailure.IdentityChanged);
+  const current = retained.anchors.retained.map(referenceDescriptor);
+  if (JSON.stringify(current) !== JSON.stringify(retained.descriptors)) fail(DependencyTreeEffectFailure.IdentityChanged);
+  return current;
+}
 const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 const pathFlags = 0x200000 | constants.O_NOFOLLOW;
 const key = (path: readonly string[]): string => JSON.stringify(path);
@@ -146,6 +180,7 @@ async function absent(parent: Anchor, name: Buffer): Promise<void> {
  * No overwrite or path-only fallback is provided for an uncontrolled boundary.
  */
 export async function openDependencyTreeRename(request: DependencyTreeEffectInput): Promise<{
+  readonly referenceSession: DependencyTreeEffectReferenceSession;
   rename(): Promise<{ readonly tree: DependencyTreeIdentity; readonly manifestDigest: string }>;
   close(): Promise<{ readonly closeFailures: number }>;
 }> {
@@ -161,7 +196,7 @@ export async function openDependencyTreeRename(request: DependencyTreeEffectInpu
     if (!sameDependencyTree(identity(tree.before), input.trash.originalTree) || tree.mountId !== source.mountId) fail(DependencyTreeEffectFailure.IdentityChanged);
     const target = Buffer.from(input.trash.destinationName);
     await absent(destination, target); await anchors.verify();
-    return { async rename() {
+    return { referenceSession: referenceSession(anchors, input), async rename() {
       if (finished || anchors.retained.length === 0) fail(DependencyTreeEffectFailure.Closed);
       finished = true; // Single-use, including an uncertain or failed publication.
       let settle!: () => void; running = new Promise<void>(done => { settle = done; });

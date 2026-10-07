@@ -1,7 +1,9 @@
 import { dependencyOwnedReservations, releaseHostedDependencyConsumer } from "./hosted-dependency-release";
-import { assertHostedDependencyQualifiedInventory, hostedDependencyOwnerRoot, isHostedDependencyWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { evictHostedDependencyCandidate, recoverHostedDependencyEviction, removeHostedDependencyCommittedTrash,
+  type HostedDependencyEvictionCandidate } from "./hosted-dependency-transactions";
+import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysicalWorkspace, hostedDependencyOwnerRoot, isHostedDependencyWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
-import { fenceDependencyConsumer } from "@vioxen/subscription-runtime/worker-core";
+import { fenceDependencyConsumer, isDependencyConsumerOwner } from "@vioxen/subscription-runtime/worker-core";
 import { scopedOrdinaryAuthority } from "./hosted-controller/scoped-termination-validation";
 import { ScopedTerminationRecords } from "./hosted-controller/scoped-termination-records";
 import { ScopedTerminationKind, type RuntimeValidatedOrdinaryTermination } from "../worker-core/hosted-custody/domain/scoped-termination";
@@ -29,6 +31,27 @@ import { createReadonlyPrivateRecord, readonlySupervisorRoot, readonlyRevokedRoo
 export class HostedInstallationActivationStore {
   private ordinaryLaunch: ReturnType<HostedInstallationActivationStore["reserveOrdinaryRuntime"]> | undefined;
   read(): HostedActivation { return readHostedInstallationActivation().activation; }
+
+  /** Candidate fields are comparisons only. Actual inspected operator/grant
+   * facts are resolved here, never supplied as a request authorization DTO. */
+  dependencyMaintenanceAuthority(fence: HostedActivationFence, jobId: string) {
+      assertHostedActivationFence(fence);
+      const kernel = new HostedReadonlyHostKernel(), session = kernel.operatorSession();
+      const origin = readHostedOrdinaryBirth(jobId);
+      assertInspectedInstallation(origin.installation); assertActivationSession(origin.activation, session);
+      const binding = readHostedDependencyBinding(jobId);
+      if (!binding || binding.installationId !== origin.installation.installationId || binding.runtimeSha !== origin.installation.runtimeSha ||
+          binding.workspace.canonicalPath !== origin.birth.workspacePath || binding.jobRootDir !== origin.birth.jobRootDir ||
+          assertNoManagedOrigin(origin.birth) !== binding.grantDigest) invalid();
+      const grantBytes = readHostedPrivateBytes(join(hostedTestEgressGrantRoot, digest(Buffer.from(jobId)) + ".json"), 4096);
+      if (!grantBytes || parseHostedTestEgressGrant(decodeHostedActivationBytes(grantBytes)).profileId !== CodexProviderEgressProfileId.TestNpmQualification) invalid();
+      assertHostedDependencyQualifiedInventory();
+      assertHostedDependencyPhysicalWorkspace(binding);
+      return { ...origin, binding, session };
+  }
+  evictDependencyCandidate(candidate: HostedDependencyEvictionCandidate) { return evictHostedDependencyCandidate(candidate); }
+  recoverDependencyEviction(jobId: string) { return recoverHostedDependencyEviction(jobId); }
+  removeDependencyCommittedTrash(jobId: string, revision: number) { return removeHostedDependencyCommittedTrash(jobId, revision); }
 
   serialized<T>(action: (fence: HostedActivationFence) => T): T {
     return withHostedActivationFence(fence => {
@@ -351,7 +374,9 @@ export class HostedInstallationActivationStore {
       if (!runtime || JSON.stringify(runtime) !== JSON.stringify(launch.reservation)) invalid();
       const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
       try {
-        const owner = store.read(binding.workspace), attempt = owner?.owner?.attempt;
+        const owner = store.read(binding.workspace);
+        if (owner?.owner && !isDependencyConsumerOwner(owner.owner)) invalid();
+        const attempt = owner && isDependencyConsumerOwner(owner.owner) ? owner.owner.attempt : undefined;
         if (attempt) {
           if (attempt.launch.startId !== runtime.startId || attempt.launch.grantDigest !== binding.grantDigest ||
               attempt.launch.installationId !== binding.installationId) invalid();

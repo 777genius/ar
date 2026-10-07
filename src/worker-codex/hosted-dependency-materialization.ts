@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
 import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, DependencyInstallProofKind,
-  DependencyNpmLockName, DependencyPreservationKind, DependencyReceiptParseStatus, DependencyReceiptState,
-  DependencyTreeObservationStatus, parseDependencyReceipt, sameDependencyTree, sameDependencyWorkspace,
+  DependencyNpmLockName, DependencyPreservationKind, DependencyReceiptState,
+  DependencyTreeObservationStatus, sameDependencyTree,
   type DependencyAttempt, type DependencyReceipt } from "@vioxen/subscription-runtime/worker-core";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { readHostedOrdinaryProcessOrigin } from "../provider-codex/app-server/adapters/hosted-process-activation";
@@ -13,10 +13,12 @@ import { buildTestNpmDependencyInstallKey } from "../worker-local/dependency-env
 import { observeDependencyTree } from "../worker-local/dependency-environment/observe-dependency-tree";
 import { readHostedDependencyAttempt, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
-import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 import { HostedDependencyInstaller, assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependency-installer";
 import { readHostedDependencyInstallerProfile } from "./hosted-dependency-installer-recipe";
 import { normalizeCapturedDependencyOutput, publishCapturedDependencyOutput } from "./hosted-dependency-staged-output";
+import { dependencyCoverageRevision, readHostedDependencyReceipt, publishHostedDependencyReceipt,
+  readHostedDependencyCommittedAbsent } from "./hosted-dependency-receipts";
+export { dependencyCoverageRevision, readHostedDependencyReceipt } from "./hosted-dependency-receipts";
 
 export const hostedDependencyObservationLimits = { maxEntries: 100000, maxTotalBytes: 2 * 1024 * 1024 * 1024,
   maxManifestBytes: 32 * 1024 * 1024, maxDurationMs: 30000 } as const;
@@ -30,12 +32,6 @@ function directory(path: string): void {
   if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o777) !== 0o700) fail();
   const fd = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try { fsyncSync(fd); } finally { closeSync(fd); }
-}
-function receiptRoot(binding: HostedDependencyBinding): string {
-  return `${root}/dependency-receipts/${binding.workspace.dev}-${binding.workspace.ino}`;
-}
-export function dependencyCoverageRevision(binding: HostedDependencyBinding): string {
-  return hash(encode(binding));
 }
 function assertOwner(binding: HostedDependencyBinding, attempt: DependencyAttempt): void {
   const origin = withHostedActivationFence(fence => {
@@ -58,7 +54,7 @@ function bytes(fd: number, name: string): Buffer {
     return value;
   } finally { closeSync(input); }
 }
-function keyInputs(binding: HostedDependencyBinding) {
+export function readHostedDependencyKeyInputs(binding: HostedDependencyBinding) {
   const fd = openSync(binding.workspace.canonicalPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
     if (!sameDependencyTree(identity(fstatSync(fd, { bigint: true })), binding.workspace)) fail();
@@ -66,39 +62,14 @@ function keyInputs(binding: HostedDependencyBinding) {
       try { lstatSync(`/proc/self/fd/${fd}/${name}`); fail(); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
     }
     const packageBytes = bytes(fd, "package.json"), lockBytes = bytes(fd, "package-lock.json");
-    const { schemaVersion: _version, networkInputs: _networkInputs, privilegeDropper: _dropper, recipeRevision: _recipe, ...toolchain } = readHostedDependencyInstallerProfile();
+    const { schemaVersion: _version, networkInputs: _networkInputs, privilegeDropper: _privilegeDropper,
+      recipeRevision: _recipeRevision, ...toolchain } = readHostedDependencyInstallerProfile();
     const key = buildTestNpmDependencyInstallKey({ packageBytes, lockBytes, lockName: DependencyNpmLockName.PackageLock,
       toolchain, maxInputBytes: 16 * 1024 * 1024, maxCanonicalBytes: 128 * 1024 });
     return { packageBytes, lockBytes, key };
   } finally { closeSync(fd); }
 }
 
-/** Protected state is immutable for this first fresh TEST materialization.
- * Installing without Ready is an unresolved intent; no cleanup or overwrite.
- * Subsequent eviction generations require their own later transaction adapter. */
-export function readHostedDependencyReceipt(binding: HostedDependencyBinding): DependencyReceipt | null {
-  const parent = `${root}/dependency-receipts`;
-  try { lstatSync(parent); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return null; throw e; }
-  const path = receiptRoot(binding);
-  try { lstatSync(path); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return null; throw e; }
-  const intent = readHostedPrivateBytes(path + "/installing.json", 16384), ready = readHostedPrivateBytes(path + "/ready.json", 16384);
-  if (!intent || !ready) fail();
-  const decode = (value: Buffer): unknown => {
-    try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(value)); }
-    catch { return fail(); }
-  };
-  const pending = parseDependencyReceipt(decode(intent));
-  const parsed = parseDependencyReceipt(decode(ready));
-  if (parsed.status !== DependencyReceiptParseStatus.Valid || parsed.receipt.state !== DependencyReceiptState.Ready ||
-      !sameDependencyWorkspace(parsed.receipt.workspace, binding.workspace) || parsed.receipt.coverageRevision !== dependencyCoverageRevision(binding)) fail();
-  if (pending.status !== DependencyReceiptParseStatus.Valid || pending.receipt.state !== DependencyReceiptState.Installing ||
-      pending.receipt.generation !== parsed.receipt.generation || pending.receipt.revision + 1 !== parsed.receipt.revision ||
-      !sameDependencyWorkspace(pending.receipt.workspace, parsed.receipt.workspace) ||
-      pending.receipt.coverageRevision !== parsed.receipt.coverageRevision || pending.receipt.requestedKey !== parsed.receipt.installKey ||
-      parsed.receipt.provenance.kind !== DependencyInstallProofKind.CompletedInstall ||
-      pending.receipt.operationId !== parsed.receipt.provenance.operationId) fail();
-  return parsed.receipt;
-}
 export function hasHostedDependencyFreshAbsence(binding: HostedDependencyBinding): boolean {
   try { lstatSync(`${root}/dependency-fresh-absence`); }
   catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return false; throw e; }
@@ -112,26 +83,33 @@ export function matchesHostedDependencyReady(binding: HostedDependencyBinding, r
   if (receipt.state !== DependencyReceiptState.Ready) fail();
   const tree = lstatSync(binding.workspace.canonicalPath + "/node_modules", { bigint: true });
   return tree.isDirectory() && sameDependencyTree(identity(tree), receipt.tree) && tree.uid === 0n &&
-    (tree.mode & 0o700n) === 0o700n && receipt.installKey === keyInputs(binding).key.installKey;
+    (tree.mode & 0o700n) === 0o700n && receipt.installKey === readHostedDependencyKeyInputs(binding).key.installKey;
 }
 
-export async function materializeHostedDependencyFreshAbsence(binding: HostedDependencyBinding, attempt: DependencyAttempt): Promise<void> {
+export async function materializeHostedDependencyAbsence(binding: HostedDependencyBinding, attempt: DependencyAttempt): Promise<void> {
   assertOwner(binding, attempt);
-  const absence = readHostedPrivateBytes(`${root}/dependency-fresh-absence/${binding.workspace.dev}-${binding.workspace.ino}.json`, 4096);
+  const previous = readHostedDependencyReceipt(binding);
+  const absence = previous ? null : readHostedPrivateBytes(`${root}/dependency-fresh-absence/${binding.workspace.dev}-${binding.workspace.ino}.json`, 4096);
   const expectedAbsence = encode({ version: 1, workspace: binding.workspace, coverageRevision: dependencyCoverageRevision(binding) });
-  if (!absence?.equals(expectedAbsence) || readHostedDependencyReceipt(binding)) fail();
-  const inputs = keyInputs(binding), generation = attempt.attemptId;
-  directory(`${root}/dependency-receipts`); directory(receiptRoot(binding)); directory(`${root}/dependency-manifests`);
-  const base = { version: 1 as const, revision: 1, generation, workspace: binding.workspace, coverageRevision: dependencyCoverageRevision(binding) };
+  if (previous ? previous.state !== DependencyReceiptState.Absent : !absence?.equals(expectedAbsence)) fail();
+  const committed = previous ? readHostedDependencyCommittedAbsent(binding, previous.revision) : null;
+  const inputs = readHostedDependencyKeyInputs(binding), generation = attempt.attemptId;
+  directory(`${root}/dependency-manifests`);
+  const base = { version: 1 as const, revision: (previous?.revision ?? 0) + 1, generation, workspace: binding.workspace, coverageRevision: dependencyCoverageRevision(binding) };
   const installing: DependencyReceipt = { ...base, state: DependencyReceiptState.Installing, operationId: generation,
-    requestedKey: inputs.key.installKey, preservation: { kind: DependencyPreservationKind.KnownFreshAbsence,
+    requestedKey: inputs.key.installKey, preservation: committed ? { kind: DependencyPreservationKind.CommittedAbsence,
       generation, workspace: binding.workspace, coverageRevision: base.coverageRevision, operationId: generation,
-      absenceEvidenceId: hash(absence) } };
+      prior: { generation: committed.receipt.generation, revision: committed.receipt.revision, operationId: committed.receipt.operationId,
+        installKey: committed.receipt.installKey, tree: committed.receipt.evictionCommit.tree,
+        manifestDigest: committed.receipt.evictionCommit.manifestDigest, commitEvidenceId: committed.receipt.evictionCommit.commitEvidenceId,
+        receipt: committed.reference } } : { kind: DependencyPreservationKind.KnownFreshAbsence,
+      generation, workspace: binding.workspace, coverageRevision: base.coverageRevision, operationId: generation,
+      absenceEvidenceId: hash(absence ?? fail()) } };
   withHostedActivationFence(fence => {
     const origin = readHostedOrdinaryProcessOrigin(fence);
     readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId), DependencyOwnerPhase.ExclusiveMutation);
     try { lstatSync(binding.workspace.canonicalPath + "/node_modules"); fail(); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
-    createReadonlyPrivateRecord(receiptRoot(binding) + "/installing.json", encode(installing));
+    publishHostedDependencyReceipt(binding, previous?.revision ?? null, installing);
   });
   const completed = await new HostedDependencyInstaller().install({ workspace: binding.workspace, attempt,
     lockName: DependencyNpmLockName.PackageLock, packageBytes: inputs.packageBytes, lockBytes: inputs.lockBytes });
@@ -143,7 +121,7 @@ export async function materializeHostedDependencyFreshAbsence(binding: HostedDep
   const normalized = await observeDependencyTree({ workspacePath: staged.workspace.canonicalPath, treeName: "node_modules",
     expectedWorkspace: staged.workspace, expectedTree: staged.tree, limits: hostedDependencyObservationLimits });
   if (normalized.status !== DependencyTreeObservationStatus.Complete || normalized.digest !== staged.digest) fail(Failure.UnsafeTree);
-  if (keyInputs(binding).key.installKey !== inputs.key.installKey) fail();
+  if (readHostedDependencyKeyInputs(binding).key.installKey !== inputs.key.installKey) fail();
   withHostedActivationFence(fence => {
     const origin = readHostedOrdinaryProcessOrigin(fence);
     readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId), DependencyOwnerPhase.ExclusiveMutation);
@@ -153,13 +131,13 @@ export async function materializeHostedDependencyFreshAbsence(binding: HostedDep
   const final = await observeDependencyTree({ workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
     expectedWorkspace: binding.workspace, expectedTree: normalized.tree, limits: hostedDependencyObservationLimits });
   if (final.status !== DependencyTreeObservationStatus.Complete || final.digest !== normalized.digest ||
-      keyInputs(binding).key.installKey !== inputs.key.installKey) fail(Failure.UnsafeTree);
+      readHostedDependencyKeyInputs(binding).key.installKey !== inputs.key.installKey) fail(Failure.UnsafeTree);
   const blobs = await LocalDependencyManifestBlobStore.open({ rootPath: `${root}/dependency-manifests`, maxManifestBytes: 32 * 1024 * 1024,
     maxStoredBytes: 512 * 1024 * 1024, maxBlobs: 2048 });
   try { if (await blobs.put(final.canonicalBytes) !== final.digest) fail(); } finally { await blobs.close(); }
   const proofBinding = { generation, workspace: binding.workspace, coverageRevision: base.coverageRevision,
     installKey: inputs.key.installKey, tree: final.tree, manifestDigest: final.digest };
-  const ready: DependencyReceipt = { ...base, revision: 2, state: DependencyReceiptState.Ready, ...proofBinding,
+  const ready: DependencyReceipt = { ...base, revision: base.revision + 1, state: DependencyReceiptState.Ready, ...proofBinding,
     provenance: { ...proofBinding, kind: DependencyInstallProofKind.CompletedInstall, operationId: generation,
       verificationEvidenceId: final.digest, installerDrainEvidenceId: completed.completionSha256 } };
   withHostedActivationFence(fence => {
@@ -167,6 +145,6 @@ export async function materializeHostedDependencyFreshAbsence(binding: HostedDep
     readHostedDependencyAttempt(binding, origin.start, String(origin.reservation.startId), DependencyOwnerPhase.ExclusiveMutation);
     assertHostedDependencyInstallerAttemptDrained(attempt);
     if (!matchesHostedDependencyReady(binding, ready)) fail();
-    createReadonlyPrivateRecord(receiptRoot(binding) + "/ready.json", encode(ready));
+    publishHostedDependencyReceipt(binding, installing.revision, ready);
   });
 }

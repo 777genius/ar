@@ -86,6 +86,18 @@ function preservation(value: unknown, receipt: RecordValue): boolean {
         && !sameDependencyTree(value.destinationParent, value.originalTree)
         && protectedDestination(value.destinationParent, receipt.workspace)
         && name(value.destinationName) && digest(value.mappingDigest) && id(value.commitEvidenceId);
+    case DependencyPreservationKind.CommittedAbsence: {
+      const prior = value.prior;
+      if (!exact(value, [...fields, "prior"]) || !record(prior) ||
+          !exact(prior, ["generation", "revision", "operationId", "installKey", "tree", "manifestDigest", "commitEvidenceId", "receipt"]) ||
+          !id(prior.generation) || prior.generation === value.generation || !id(prior.operationId) || prior.operationId === value.operationId ||
+          typeof prior.revision !== "number" || !Number.isSafeInteger(prior.revision) || prior.revision < 1 ||
+          prior.revision + 1 !== receipt.revision || !digest(prior.installKey) || !tree(prior.tree) ||
+          !digest(prior.manifestDigest) || !id(prior.commitEvidenceId) || !record(prior.receipt)) return false;
+      return exact(prior.receipt, ["path", "identity", "sha256"]) && path(prior.receipt.path) && workspace(receipt.workspace) &&
+        prior.receipt.path !== receipt.workspace.canonicalPath && !prior.receipt.path.startsWith(`${receipt.workspace.canonicalPath}/`) &&
+        tree(prior.receipt.identity) && digest(prior.receipt.sha256);
+    }
     default: return false;
   }
 }

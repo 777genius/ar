@@ -1,4 +1,4 @@
-import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, DependencyOwnerPhase,
+import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, DependencyOwnerPhase, DependencyOwnerKind, isDependencyConsumerOwner,
   parseDependencyOwner, sameDependencyAttempt, type DependencyAttempt, type DependencyLaunchBinding,
   type DependencyOwnerRecord } from "../domain/dependency-owner";
 import { sameDependencyWorkspace, type DependencyWorkspaceIdentity } from "../domain/dependency-receipt";
@@ -15,15 +15,16 @@ export function claimDependencyConsumer(store: DependencyOwnerStore, workspace: 
   if (current?.owner) fail(Failure.Busy);
   const epoch = (current?.epoch ?? 0) + 1;
   const attempt = { attemptId, epoch, launch };
-  const next = parseDependencyOwner({ version: 1, workspace, revision: (current?.revision ?? 0) + 1,
-    epoch, owner: { phase: DependencyOwnerPhase.ExclusiveMutation, attempt } });
-  return store.compareAndSwap(workspace, current?.revision ?? null, next).owner!.attempt;
+  const next = parseDependencyOwner({ version: 2, workspace, revision: (current?.revision ?? 0) + 1,
+    epoch, owner: { kind: DependencyOwnerKind.Consumer, phase: DependencyOwnerPhase.ExclusiveMutation, attempt } });
+  store.compareAndSwap(workspace, current?.revision ?? null, next);
+  return attempt;
 }
 
 export function assertDependencyConsumer(store: DependencyOwnerStore, workspace: DependencyWorkspaceIdentity,
   attempt: DependencyAttempt, expectedPhase: DependencyOwnerPhase): DependencyOwnerRecord {
   const current = store.read(workspace);
-  if (!current || !sameDependencyWorkspace(current.workspace, workspace) || !current.owner ||
+  if (!current || current.version !== 2 || !sameDependencyWorkspace(current.workspace, workspace) || !isDependencyConsumerOwner(current.owner) ||
       current.owner.phase !== expectedPhase || !sameDependencyAttempt(current.owner.attempt, attempt)) fail(Failure.StaleAttempt);
   return current;
 }
@@ -32,16 +33,16 @@ export function markDependencyConsumerRunning(store: DependencyOwnerStore, works
   attempt: DependencyAttempt): void {
   const current = assertDependencyConsumer(store, workspace, attempt, DependencyOwnerPhase.ExclusiveMutation);
   store.compareAndSwap(workspace, current.revision, { ...current, revision: current.revision + 1,
-    owner: { phase: DependencyOwnerPhase.Running, attempt } });
+    owner: { kind: DependencyOwnerKind.Consumer, phase: DependencyOwnerPhase.Running, attempt } });
 }
 
 export function fenceDependencyConsumer(store: DependencyOwnerStore, workspace: DependencyWorkspaceIdentity,
   attempt: DependencyAttempt): void {
   const current = store.read(workspace);
-  if (!current || !sameDependencyWorkspace(current.workspace, workspace) || !current.owner ||
+  if (!current || !sameDependencyWorkspace(current.workspace, workspace) || !isDependencyConsumerOwner(current.owner) ||
       !sameDependencyAttempt(current.owner.attempt, attempt)) fail(Failure.StaleAttempt);
   if (current.owner.phase === DependencyOwnerPhase.Fenced) return;
   store.compareAndSwap(workspace, current.revision, { ...current, revision: current.revision + 1,
-    owner: { phase: DependencyOwnerPhase.Fenced, attempt } });
+    owner: { ...(current.version === 2 ? { kind: DependencyOwnerKind.Consumer } : {}), phase: DependencyOwnerPhase.Fenced, attempt } });
 }
 function fail(reason: Failure): never { throw new DependencyAdmissionError(reason); }

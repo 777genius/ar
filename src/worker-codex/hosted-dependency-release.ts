@@ -1,7 +1,7 @@
 import { createReadonlyPrivateRecord, readonlySupervisorRoot } from "./hosted-readonly-custody";
 import { createHash } from "node:crypto";
 import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyOwnerPhase,
-  fenceDependencyConsumer, sameDependencyAttempt, type HostedActivation, type HostedOrdinaryStart,
+  fenceDependencyConsumer, sameDependencyAttempt, isDependencyConsumerOwner, type HostedActivation, type HostedOrdinaryStart,
   type HostedOrdinaryReservation, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, readHostedActivationBytes, decodeHostedActivationBytes,
   type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
@@ -31,6 +31,7 @@ export function releaseHostedDependencyConsumer(fence: HostedActivationFence,
   try {
     const owner = store.read(binding.workspace);
     if (!owner?.owner) return true;
+    if (!isDependencyConsumerOwner(owner.owner)) invalid();
     attempt = owner.owner.attempt;
     if (attempt.launch.startId !== reservation.startId || attempt.launch.installationId !== binding.installationId ||
         attempt.launch.bootId !== activation.bootId || attempt.launch.runtimeSha !== binding.runtimeSha ||
@@ -53,7 +54,7 @@ export function releaseHostedDependencyConsumer(fence: HostedActivationFence,
   store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
   try {
     const current = store.read(binding.workspace);
-    if (!current?.owner || current.owner.phase !== DependencyOwnerPhase.Fenced ||
+    if (!current || !isDependencyConsumerOwner(current.owner) || current.owner.phase !== DependencyOwnerPhase.Fenced ||
         !sameDependencyAttempt(current.owner.attempt, attempt)) invalid();
     store.compareAndSwap(binding.workspace, current.revision, { ...current, revision: current.revision + 1, owner: null });
   } finally { store.close(); }

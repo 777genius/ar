@@ -10,6 +10,7 @@ import { DependencyInstallProofKind as Install, DependencyPreservationKind as Pr
   type DependencyReceipt, type DependencyWorkspaceIdentity,
 } from "../../../worker-core/dependency-environment/domain/dependency-receipt";
 import { dependencyReceiptStorageName, DependencyReceiptStorageFailure as Failure, LocalDependencyReceiptStore as Store } from "../local-dependency-receipt-store";
+import type { DependencyCommittedAbsentReceipt } from "../../../worker-core/dependency-environment/ports/dependency-receipt-store";
 
 const run = promisify(execFile);
 const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
@@ -61,6 +62,15 @@ function rejected(action: () => unknown): string {
 }
 function publish(store: Store, workspace: DependencyWorkspaceIdentity): void {
   for (const record of lifecycle(workspace)) store.compareAndSwap(workspace, record.revision === 1 ? null : record.revision - 1, record);
+}
+function restoration(committed: DependencyCommittedAbsentReceipt): Extract<DependencyReceipt, { state: State.Installing }> {
+  const old = committed.receipt, generation = "TEST-restored", operationId = "TEST-restore-install";
+  return { version: 1, revision: old.revision + 1, generation, workspace: old.workspace, coverageRevision: old.coverageRevision,
+    state: State.Installing, operationId, requestedKey: "c".repeat(64), preservation: {
+      kind: Preserve.CommittedAbsence, generation, workspace: old.workspace, coverageRevision: old.coverageRevision, operationId,
+      prior: { generation: old.generation, revision: old.revision, operationId: old.operationId, installKey: old.installKey,
+        tree: old.evictionCommit.tree, manifestDigest: old.evictionCommit.manifestDigest,
+        commitEvidenceId: old.evictionCommit.commitEvidenceId, receipt: committed.reference } } };
 }
 async function child(rootPath: string, workspace: DependencyWorkspaceIdentity, mode = "read", next?: DependencyReceipt) {
   const helper = fileURLToPath(new URL("./fixtures/dependency-receipt-store-process.ts", import.meta.url));
@@ -148,6 +158,67 @@ describe.skipIf(process.platform !== "linux")("protected dependency receipts", (
       expect(rejected(() => f.store.getCommittedAbsent(f.workspace, 4))).toBe(Failure.Busy);
       expect(rejected(() => f.store.compareAndSwap(f.workspace, null, initial(f.workspace)))).toBe(Failure.Busy);
       expect(await readFile(f.mutex)).toEqual(intent); expect(await readFile(f.file)).toEqual(original);
+    } finally { await f.cleanup(); }
+  });
+
+  it("restores through authenticated committed absence and preserves original receipt history", async () => {
+    const f = await fixture(); let reopened: Store | undefined;
+    try {
+      publish(f.store, f.workspace); const committed = f.store.getCommittedAbsent(f.workspace, 4);
+      const retained = await Promise.all((await readdir(f.rootPath)).filter(name => name.endsWith(".receipt.json")).map(async name => {
+        const path = join(f.rootPath, name); return { path, bytes: await readFile(path), stat: await lstat(path, { bigint: true }) };
+      }));
+      const restore = restoration(committed);
+      expect(f.store.compareAndSwap(f.workspace, 4, restore)).toEqual(restore);
+      expect(f.store.getCommittedAbsent(f.workspace, 4)).toEqual(committed);
+      const originalReady = lifecycle(f.workspace)[1];
+      if (!originalReady || originalReady.state !== State.Ready || originalReady.provenance.kind !== Install.CompletedInstall) throw new Error("TEST fixture");
+      const ready: DependencyReceipt = { ...originalReady, revision: 6, generation: restore.generation, installKey: restore.requestedKey,
+        provenance: { ...originalReady.provenance, generation: restore.generation, installKey: restore.requestedKey, operationId: restore.operationId } };
+      expect(f.store.compareAndSwap(f.workspace, 5, ready)).toEqual(ready);
+      f.store.close(); reopened = Store.open({ rootPath: f.rootPath, maxRecordBytes: 16384, maxHistorySteps: 16 });
+      expect(reopened.read(f.workspace)).toEqual(ready);
+      expect(reopened.getCommittedAbsent(f.workspace, 4)).toEqual(committed);
+      for (const old of retained) {
+        expect(await readFile(old.path)).toEqual(old.bytes);
+        const stat = await lstat(old.path, { bigint: true }); expect([stat.dev, stat.ino]).toEqual([old.stat.dev, old.stat.ino]);
+      }
+      const absentBytes = await readFile(committed.reference.path);
+      await rename(committed.reference.path, committed.reference.path + ".retained");
+      await writeFile(committed.reference.path, absentBytes, { mode: 0o600 });
+      expect(rejected(() => reopened?.getCommittedAbsent(f.workspace, 4))).toBe(Failure.Corrupt);
+      expect(reopened.read(f.workspace)).toEqual(ready);
+      expect(await readFile(committed.reference.path + ".retained")).toEqual(absentBytes);
+      expect(await readFile(join(f.workspace.canonicalPath, "sentinel"), "utf8")).toBe("source original bytes");
+    } finally { reopened?.close(); await f.cleanup(); }
+  });
+
+  it("rejects forged prior bindings and receipt references before publishing restoration", async () => {
+    const f = await fixture();
+    try {
+      publish(f.store, f.workspace); const committed = f.store.getCommittedAbsent(f.workspace, 4), restore = restoration(committed);
+      const preservation = restore.preservation;
+      if (preservation.kind !== Preserve.CommittedAbsence) throw new Error("TEST fixture");
+      const prior = preservation.prior, bytes = await readFile(f.file), names = await readdir(f.rootPath);
+      const candidates = [
+        { ...prior, generation: "TEST-other-generation" }, { ...prior, operationId: "TEST-other-eviction" },
+        { ...prior, installKey: "d".repeat(64) }, { ...prior, tree: { ...prior.tree, ino: "123456789" } },
+        { ...prior, manifestDigest: "e".repeat(64) }, { ...prior, commitEvidenceId: "TEST-other-commit" },
+        { ...prior, receipt: { ...prior.receipt, path: prior.receipt.path + ".uncommitted" } },
+        { ...prior, receipt: { ...prior.receipt, identity: { ...prior.receipt.identity, dev: "123456789" } } },
+        { ...prior, receipt: { ...prior.receipt, identity: { ...prior.receipt.identity, ino: "123456789" } } },
+        { ...prior, receipt: { ...prior.receipt, sha256: "f".repeat(64) } },
+      ];
+      for (const forged of candidates) {
+        expect(rejected(() => f.store.compareAndSwap(f.workspace, 4, { ...restore, preservation: { ...preservation, prior: forged } })))
+          .toBe(Failure.InvalidTransition);
+        expect(await readFile(f.file)).toEqual(bytes); expect(await readdir(f.rootPath)).toEqual(names);
+      }
+      expect(f.store.getCommittedAbsent(f.workspace, 4)).toEqual(committed);
+      await writeFile(f.mutex, "TEST-retained-intent", { mode: 0o600 });
+      expect(rejected(() => f.store.compareAndSwap(f.workspace, 4, restore))).toBe(Failure.Busy);
+      expect(await readFile(f.mutex, "utf8")).toBe("TEST-retained-intent");
+      expect(await readFile(f.file)).toEqual(bytes);
     } finally { await f.cleanup(); }
   });
 
