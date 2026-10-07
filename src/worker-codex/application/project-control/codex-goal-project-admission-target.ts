@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir, realpath } from "node:fs/promises";
+import { lstat, opendir, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { ProjectOperation, type ProjectAccessScope, type ProjectAdmissionRequest } from "@vioxen/subscription-runtime/worker-core";
+import { consumedOutputRecordFromJson, ProjectOperation, type ProjectAccessScope, type ProjectAdmissionRequest } from "@vioxen/subscription-runtime/worker-core";
 import { readCodexGoalJob, type CodexGoalJobManifest, type CodexGoalJobManifestInput, type CodexGoalJobSummary } from "../../codex-goal-jobs";
 import type { CodexGoalLaunchInput } from "../../codex-goal-ops";
 import { projectControlWorkspaceLockRoot, type ProjectControlWorkspaceLease } from "../../codex-goal-project-workspace-lock";
@@ -14,6 +14,7 @@ import { assertProjectPreStartAdmissionLaunchBinding } from "./codex-goal-projec
 import { readBoundedFile } from "./codex-goal-project-pre-start-artifact-io";
 import { parseWorkerLaunchSpec } from "./worker-launch-spec";
 import { assertProjectControlledRuntimeInPlaceContinuation, type ProjectControlledRuntimeInPlaceContinuation } from "./codex-goal-project-in-place-continuation";
+import { LocalConsumedOutputLedgerSource } from "./codex-goal-consumed-output-ledger-io";
 
 // Only the broker's already-bound mutation ports supply these values. They are
 // not transport request fields and cannot be replaced by a caller's exemption flag.
@@ -43,24 +44,6 @@ const registryInfrastructure = new Set([
   ".project-authority", ".project-control", "durable-handoffs", "consumed-output-ledger",
   ".consumed-output-ledger-mutation-locks", "archives", "state", ".run-events",
 ]);
-
-// This legacy native parent is configured by the operator, not a generic
-// registry-name exemption. Ledger/epoch adapters still validate its contents.
-async function scopedConsumedOutputContainer(input: TargetInput, name: string): Promise<boolean> {
-  if (name !== "consumed-output") return false;
-  const root = resolve(input.registryRootDir, name);
-  const ledgers = input.scope.consumedOutputLedgerRoots ?? [];
-  const configured = [...ledgers, ...(input.scope.consumedOutputEvidenceRoots ?? [])]
-    .map((path) => resolve(path)).filter((path) => path !== root && pathInsideOrEqual(path, root));
-  if (!ledgers.some((path) => resolve(path) !== root && pathInsideOrEqual(resolve(path), root))) return false;
-  if (await realpath(root) !== root || (input.scope.deniedRoots ?? []).some((denied) =>
-    [root, ...configured].some((path) => pathInsideOrEqual(resolve(denied), path) || pathInsideOrEqual(path, resolve(denied))))) return false;
-  for (const path of configured) {
-    const status = await lstat(path);
-    if (!status.isDirectory() || status.isSymbolicLink() || await realpath(path) !== path) return false;
-  }
-  return true;
-}
 
 function sameOwnedPaths(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
   return Boolean(left?.length && right?.length && isDeepStrictEqual([...left].sort(), [...right].sort()) &&
@@ -264,6 +247,64 @@ async function trustedUnpublishedStage(input: TargetInput, jobId: string): Promi
   return true;
 }
 
+async function consumedOutputInfrastructure(input: TargetInput, path: string): Promise<boolean> {
+  if (basename(path) !== "consumed-output") return false;
+  const ledger = join(path, "ledger");
+  const archives = join(path, "archives");
+  if (!input.scope.consumedOutputLedgerRoots?.some((root) => resolve(root) === ledger) ||
+    !input.scope.consumedOutputEvidenceRoots?.some((root) => resolve(root) === archives)) return false;
+  const configured = [...(input.scope.consumedOutputLedgerRoots ?? []),
+    ...(input.scope.consumedOutputEvidenceRoots ?? [])]
+    .map((root) => resolve(root)).filter((root) => root !== path && pathInsideOrEqual(root, path));
+  if (await realpath(path) !== path || (input.scope.deniedRoots ?? []).some((denied) =>
+    [path, ...configured].some((root) => pathInsideOrEqual(resolve(denied), root) || pathInsideOrEqual(root, resolve(denied))))) return false;
+  for (const root of configured) {
+    const status = await lstat(root).catch((error: unknown) => {
+      // Native archive creation is lazy; no other missing configured root qualifies.
+      if (root === archives && (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (status && (!status.isDirectory() || status.isSymbolicLink() || await realpath(root) !== root)) return false;
+  }
+  // The native writer places mutation locks beside its scoped ledger root.
+  const nativeChildren = new Set(["ledger", "archives", ".consumed-output-ledger-mutation-locks"]);
+  // Ledger validation owns records; it does not discover nested job manifests.
+  // Inspect names, refusing aliases/cycles; only the exact native item uses its reader.
+  const pending = [path];
+  const visited = new Set<string>();
+  let inspected = 0;
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    const before = await lstat(directory);
+    if (!before.isDirectory() || before.isSymbolicLink()) throw new Error("consumed-output directory unsafe");
+    const identity = `${before.dev}:${before.ino}`;
+    if (visited.has(identity)) throw new Error("consumed-output directory alias");
+    visited.add(identity);
+    for await (const entry of await opendir(directory)) {
+      if (++inspected > 100_000) throw new Error("consumed-output inspection bound exceeded");
+      if (directory === path && (!nativeChildren.has(entry.name) || !entry.isDirectory() || entry.isSymbolicLink())) {
+        throw new Error(`unregistered consumed-output entry: ${entry.name}`);
+      }
+      if (entry.isSymbolicLink()) throw new Error("consumed-output entry symlink");
+      if (entry.name === "job.json") {
+        if (directory !== join(ledger, "items") || !entry.isFile()) throw new Error("unregistered job inside consumed-output");
+        const ledgerPath = join(directory, entry.name);
+        const source = new LocalConsumedOutputLedgerSource(input.scope.consumedOutputEvidenceRoots ?? []);
+        const loaded = await source.readEntries({ roots: [ledger] });
+        const nativeEntry = loaded.entries.find((item) => item.ledgerPath === ledgerPath);
+        const record = nativeEntry && await consumedOutputRecordFromJson({ ...nativeEntry, source });
+        if (!record || record.jobId !== "job") throw new Error("invalid native job ledger record");
+      }
+      if (entry.isDirectory()) pending.push(join(directory, entry.name));
+    }
+    const after = await lstat(directory);
+    if (!after.isDirectory() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) {
+      throw new Error("consumed-output directory changed");
+    }
+  }
+  return true;
+}
+
 export async function assertAdmissionRegistryComplete(input: TargetInput & {
   readonly summaries: readonly CodexGoalJobSummary[];
 }): Promise<void> {
@@ -281,7 +322,8 @@ export async function assertAdmissionRegistryComplete(input: TargetInput & {
     if (!entry.isDirectory()) continue;
     const manifestPath = join(input.registryRootDir, entry.name, "job.json");
     if (await absent(manifestPath)) {
-      if (registryInfrastructure.has(entry.name) || await scopedConsumedOutputContainer(input, entry.name) ||
+      if (registryInfrastructure.has(entry.name) ||
+        await consumedOutputInfrastructure(input, join(resolve(input.registryRootDir), entry.name)) ||
         await trustedUnpublishedStage(input, entry.name)) continue;
       throw new Error(`unregistered registry directory: ${entry.name}`);
     }
