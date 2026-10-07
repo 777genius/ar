@@ -2,6 +2,12 @@ name: Dependency retention CLOSED registration TEST
 
 on:
   workflow_dispatch:
+    inputs:
+      test_mode:
+        description: "Owned TEST registration topology, never Active qualification"
+        type: choice
+        options: [qualification, current-adoptable-backing]
+        default: qualification
   pull_request:
     paths:
       - 'scripts/dependency-retention-os-test/**'
@@ -44,6 +50,8 @@ jobs:
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.registration-emit.json
       - name: Check bounded TEST failure-observation privacy before OS launch
         run: node --experimental-strip-types --test scripts/dependency-retention-os-test/registration-failure-observation.node-test.ts
+      - name: Check finite native installer observation parsing
+        run: node --experimental-strip-types --test scripts/dependency-retention-os-test/native-installer-observations.node-test.ts
       - name: Check independent legacy manifest comparison on synthetic TEST trees
         run: |
           node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.legacy-comparison-emit.json
@@ -51,6 +59,7 @@ jobs:
       - name: Run one original CLOSED registration in a private PID1 OS
         env:
           TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TEST_GEOMETRY_MODE: ${{ github.event.inputs.test_mode || 'qualification' }}
         run: |
           TEST_NODE="$(readlink -f "$(command -v node)")"
           TEST_TOOLCHAIN="$(dirname "$(dirname "$TEST_NODE")")"
@@ -58,7 +67,7 @@ jobs:
             TEST_SOURCE_SHA="$TEST_SOURCE_SHA" \
             "$TEST_NODE" --experimental-strip-types \
             "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/registration-outer.ts" \
-            "$GITHUB_WORKSPACE" "$TEST_TOOLCHAIN" qualification
+            "$GITHUB_WORKSPACE" "$TEST_TOOLCHAIN" "$TEST_GEOMETRY_MODE"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

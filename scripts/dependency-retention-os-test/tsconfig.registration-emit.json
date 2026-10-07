@@ -17,6 +17,8 @@
   "files": [
     "./registration-guest.ts",
     "./native-registration-profile.ts",
-    "./reference-enrollment-assertions.ts"
+    "./reference-enrollment-assertions.ts",
+    "./native-installer-observations.ts",
+    "./native-installer-observations.node-test.ts"
   ]
 }

@@ -2,6 +2,7 @@ import { assertOuterIoUringPins, controlIoUringFixture, IoUringControlFailure } 
 /** The runner only operates one newly registered service/root. Guest creation
  * is not authority: all positive gates execute inside its actual kernel view. */
 import assert from "node:assert/strict";
+import { CurrentBackingGeometry, CurrentGeometryQualification, currentBackingStorage } from "./current-backing-geometry.js";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, statSync, statfsSync, writeFileSync, type BigIntStats } from "node:fs";
@@ -31,7 +32,9 @@ assert.match(process.env.TEST_SOURCE_SHA ?? "", /^[a-f0-9]{40}$/);
 assert.equal(boundedCommand("/usr/bin/lsb_release", ["--codename", "--short"], workDeadline).trim(), "noble");
 const source = resolve(process.argv[2] ?? ""), toolchain = resolve(process.argv[3] ?? "");
 const diagnostic = process.argv[4] === OwnedOsMode.BusDiagnostic;
-assert(process.argv.length === 4 || process.argv.length === 5 && (diagnostic || process.argv[4] === OwnedOsMode.Qualification));
+const geometry = process.argv[4] === CurrentBackingGeometry.Adoptable ? CurrentBackingGeometry.Adoptable : CurrentBackingGeometry.Existing;
+const qualification = geometry === CurrentBackingGeometry.Adoptable ? CurrentGeometryQualification.ClosedOnly : "native_current_reference_closed_registration_only";
+assert(process.argv.length === 4 || process.argv.length === 5 && (diagnostic || process.argv[4] === OwnedOsMode.Qualification || geometry === CurrentBackingGeometry.Adoptable));
 assert(source.startsWith("/home/runner/work/")); assert(toolchain.startsWith("/opt/hostedtoolcache/node/"));
 assert(existsSync(source + "/dist/worker-codex/codex-goal-cli.js"));
 assert.equal(dirname(dirname(process.execPath)), toolchain);
@@ -52,7 +55,7 @@ const diagnostic = scenario === OwnedOsMode.BusDiagnostic;
 const id = randomUUID(), owned = base + "/" + id; directory(owned);
 const root = owned + "/root", unit = `TEST-retention-os-${id}.service`;
 const machineId = randomUUID().replaceAll("-", ""), outerMachineId = readFileSync("/etc/machine-id", "utf8").trim();
-const evidence: Record<string, unknown> = { schemaVersion: 1, qualification: "native_current_reference_closed_registration_only",
+const evidence: Record<string, unknown> = { schemaVersion: 1, qualification,
   sourceSha: process.env.TEST_SOURCE_SHA, scenario, unit, machineId, outerMachineId, status: "failed", results: [],
   unsupported: ["legacy_local_comparison", "same_C_readonly_adoption", "ordinary_provider_factory_FDA_use", "live_account_model_availability", "hot_install_count_one", "committed_absent_cold_restore", "uncertain_creator_successor_drain", "full_N3_N5_qualification"] };
 let registered: ReturnType<typeof directoryIdentity> | undefined;
@@ -64,10 +67,11 @@ let deadline = earlier(workDeadline, scenarioStarted + milliseconds(22 * 60 * 10
 const command = (file: string, args: readonly string[], timeout = 30000): string => boundedCommand(file, args, deadline, timeout);
 try {
   remaining(deadline);
-  assemble(root, owned + "/apt", source, toolchain, process.env.TEST_SOURCE_SHA!, machineId, scenario, () => remaining(deadline));
+  assemble(root, owned + "/apt", source, toolchain, process.env.TEST_SOURCE_SHA!, machineId, scenario, () => remaining(deadline), geometry);
   remaining(deadline);
   let dataImage: string | undefined;
-  if (scenario === OwnedOsScenario.Readonly) {
+  const storage = geometry === CurrentBackingGeometry.Adoptable ? currentBackingStorage : readonlyStorage;
+  if (scenario === OwnedOsScenario.Readonly || geometry === CurrentBackingGeometry.Adoptable) {
     // Reserve real backing bytes before formatting, never a sparse capacity
     // claim. systemd owns the loop/mount solely in this exact service namespace.
     const bytes = 6n * 1024n * 1024n * 1024n, free = statfsSync(owned, { bigint: true });
@@ -120,7 +124,7 @@ try {
   evidence.launchRegistration = launch;
   const runtimeSeconds = Math.ceil(remaining(deadline) / 1000) + 90;
   const target = diagnostic ? "TEST-retention-bus-diagnostic.target" : "TEST-retention.target";
-  const fragment = `[Unit]\nDescription=Owned disposable dependency TEST OS ${id}\n[Service]\nType=exec\nDelegate=yes\nKillMode=control-group\nRestart=no\nRuntimeMaxSec=${runtimeSeconds}s\nTimeoutStopSec=30s\n${dataImage ? `MountImages=${dataImage}:${readonlyStorage}\n` : ""}Environment=SYSTEMD_NSPAWN_USE_CGNS=1\nExecStart=${nspawn} --directory=${root} --machine=TEST-retention-${id} --register=no --keep-unit --private-users=no --boot --console=pipe --resolv-conf=off --capability=CAP_SYS_ADMIN,CAP_MKNOD,CAP_SETPCAP,CAP_SETFCAP,CAP_SYS_PTRACE ${dataImage ? `--bind=${readonlyStorage} ` : ""}--setenv=SYSTEMD_UNIT_PATH=/etc/systemd/test-units:/run/systemd/system -- --unit=${target} --log-target=console\n`;
+  const fragment = `[Unit]\nDescription=Owned disposable dependency TEST OS ${id}\n[Service]\nType=exec\nDelegate=yes\nKillMode=control-group\nRestart=no\nRuntimeMaxSec=${runtimeSeconds}s\nTimeoutStopSec=30s\n${dataImage ? `MountImages=${dataImage}:${storage}\n` : ""}Environment=SYSTEMD_NSPAWN_USE_CGNS=1\nExecStart=${nspawn} --directory=${root} --machine=TEST-retention-${id} --register=no --keep-unit --private-users=no --boot --console=pipe --resolv-conf=off --capability=CAP_SYS_ADMIN,CAP_MKNOD,CAP_SETPCAP,CAP_SETFCAP,CAP_SYS_PTRACE ${dataImage ? `--bind=${storage} ` : ""}--setenv=SYSTEMD_UNIT_PATH=/etc/systemd/test-units:/run/systemd/system -- --unit=${target} --log-target=console\n`;
   const unitPath = "/run/systemd/system/" + unit;
   assert(!existsSync(unitPath)); writeFileSync(unitPath, fragment, { flag: "wx", mode: 0o644 });
   fragmentSha256 = fileDigest(unitPath);
@@ -178,7 +182,7 @@ try {
   const stat = lstatSync(path); assert(stat.isFile() && stat.uid === 0 && stat.size < 65536);
   const guest = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
   assert.equal(guest.sourceSha, process.env.TEST_SOURCE_SHA); assert.equal(guest.machineId, machineId);
-  assert.equal(guest.qualification, "native_current_reference_closed_registration_only");
+  assert.equal(guest.qualification, qualification);
   evidence.guest = guest; evidence.status = guest.status;
   const outputPath = root + runtime + "/guest-output-observation.json";
   const outputDeadline = earlier(deadline, process.hrtime.bigint() + milliseconds(2000));

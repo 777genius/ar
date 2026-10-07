@@ -1,6 +1,7 @@
 /** One owned OS, one ORIGINAL CLOSED C/reference registration. No consumer,
  * baseline install, comparison, R adoption, account or provider is invoked. */
 import assert from "node:assert/strict";
+import { CurrentBackingGeometry, CurrentGeometryQualification, readCurrentBackingGeometry, observeInitialCurrentBacking } from "./current-backing-geometry.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readlinkSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { HostedActivationPhase } from "../../dist/worker-core/index.js";
@@ -20,8 +21,9 @@ import { command, digest, directory, directoryIdentity, fileDigest, installedArt
 
 enum RegistrationStatus { Failed = "failed", PartialPass = "partial_pass" }
 enum RegistrationPhase { Bus = "actual_system_bus", Inputs = "initial_test_inputs", Profile = "actual_native_profiles", Git = "signed_root_git", Install = "original_closed_installation", Candidate = "original_current_candidate", Reference = "original_local_reference", Readback = "protected_readback" }
+const geometry = readCurrentBackingGeometry();
 const evidence: Record<string, unknown> = { schemaVersion: 1, sourceSha: process.env.TEST_SOURCE_SHA,
-  qualification: "native_current_reference_closed_registration_only", status: RegistrationStatus.Failed,
+  qualification: geometry === CurrentBackingGeometry.Adoptable ? CurrentGeometryQualification.ClosedOnly : "native_current_reference_closed_registration_only", status: RegistrationStatus.Failed,
   machineId: readFileSync("/etc/machine-id", "utf8").trim(), results: [],
   unsupported: ["legacy_local_comparison", "same_C_readonly_adoption", "ordinary_provider_factory_FDA_use",
     "live_account_model_availability", "hot_install_count_one", "committed_absent_cold_restore",
@@ -62,6 +64,8 @@ async function register(): Promise<void> {
   const candidateRoot = hostedDependencyJobRoot(candidateJobId), referenceRoot = hostedDependencyJobRoot(referenceJobId);
   const candidateWorkspace = candidateRoot + "/workspace", referenceWorkspace = referenceRoot + "/workspace";
   for (const path of [candidateRoot, candidateWorkspace, referenceRoot, referenceWorkspace]) directory(path);
+  if (geometry === CurrentBackingGeometry.Adoptable)
+    evidence.initialBacking = observeInitialCurrentBacking(candidateWorkspace, referenceWorkspace);
   assert.notEqual(candidateWorkspace, referenceWorkspace);
   assert.notDeepEqual(directoryIdentity(candidateWorkspace), directoryIdentity(referenceWorkspace));
   evidence.phase = RegistrationPhase.Inputs;

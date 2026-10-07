@@ -4,6 +4,7 @@ import { compileIoUringFixture } from "./io-uring.ts";
 /** Signed Ubuntu indexes and downloaded .deb extraction only. No dpkg install,
  * maintainer script, chroot command, or outer apt state mutation is permitted. */
 import assert from "node:assert/strict";
+import { CurrentBackingGeometry, currentBackingStorage, currentGeometryMarker } from "./current-backing-geometry.js";
 import { testPublicLockSeedSha256, testPublicLockSeedMaxBytes, testPublicLockSeedRelative } from "./current-tools-lock-seed.ts";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
@@ -15,7 +16,9 @@ import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTE
 import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, command as runCommand, directory, elfPackages, fileDigest, json, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, type OwnedOsFixtureScenario } from "./common.ts";
 
 export function assemble(root: string, state: string, source: string, toolchain: string, sourceSha: string, machineId: string,
-  scenario: OwnedOsFixtureScenario, remainingMs: () => number): void {
+  scenario: OwnedOsFixtureScenario, remainingMs: () => number, geometry: CurrentBackingGeometry = CurrentBackingGeometry.Existing): void {
+  assert(geometry === CurrentBackingGeometry.Existing || geometry === CurrentBackingGeometry.Adoptable);
+  if (geometry === CurrentBackingGeometry.Adoptable) assert.equal(scenario, OwnedOsScenario.CurrentDependency);
   // The caller owns one monotonic deadline across both fresh roots. Every
   // existing subprocess keeps its argv and is capped by the remaining budget.
   const checkBudget = (): number => {
@@ -143,7 +146,7 @@ export function assemble(root: string, state: string, source: string, toolchain:
   if (scenario !== OwnedOsMode.BusDiagnostic)
     cpSync(toolchain, root + runtime + "/toolchain", { recursive: true, dereference: false, verbatimSymlinks: true });
   checkBudget();
-  if (scenario === OwnedOsScenario.Readonly) {
+  if (scenario === OwnedOsScenario.Readonly || geometry === CurrentBackingGeometry.Adoptable) {
     // Real reviewed launcher artifacts and their finite static import closure.
     // These bytes are never replaced by a TEST launcher or generated alias.
     for (const path of ["managed-launcher/launch.mjs", "managed-launcher/payload-guard.mjs",
@@ -153,9 +156,10 @@ export function assemble(root: string, state: string, source: string, toolchain:
       command("/usr/bin/chown", ["0:0", root + "/opt/subscription-runtime/" + path]);
       chmodSync(root + "/opt/subscription-runtime/" + path, 0o644);
     }
-    directory(root + readonlyStorage, 0o700);
+    const storage = geometry === CurrentBackingGeometry.Adoptable ? currentBackingStorage : readonlyStorage;
+    directory(root + storage, 0o700);
     directory(root + "/etc/subscription-runtime", 0o755);
-    writeFileSync(root + "/etc/subscription-runtime/storage-root", readonlyStorage + "\n", { flag: "wx", mode: 0o600 });
+    writeFileSync(root + "/etc/subscription-runtime/storage-root", storage + "\n", { flag: "wx", mode: 0o600 });
   }
   // These are freshly extracted guest files only. Discard distro activation links
   // and use an explicit TEST-only unit search path, never mask an outer service.
@@ -197,6 +201,10 @@ export function assemble(root: string, state: string, source: string, toolchain:
   writeFileSync(units + "/TEST-retention-supervisor.service", `[Unit]\nDescription=Owned TEST issuer and retained supervisor\nDefaultDependencies=no\nRequires=dbus.service\nAfter=dbus.service\n[Service]\nType=exec\nSystemCallFilter=~io_uring_setup:ENOSYS io_uring_enter:ENOSYS io_uring_register:ENOSYS\nSystemCallArchitectures=native\nNoNewPrivileges=yes\nExecStart=${runtime}/toolchain/bin/node --experimental-strip-types ${runtime}/scripts/dependency-retention-os-test/common.ts supervisor\nEnvironment=TEST_SOURCE_SHA=${sourceSha}\nEnvironment=TEST_OS_SCENARIO=${scenario}\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin LANG=C LC_ALL=C\nRestart=no\nKillMode=control-group\nRuntimeMaxSec=25min\nTimeoutStopSec=20s\nStandardOutput=null\nStandardError=null\n`, { mode: 0o644 });
   }
   if (scenario !== OwnedOsMode.BusDiagnostic) directory(root + "/tmp", 0o1777);
+  if (geometry === CurrentBackingGeometry.Adoptable) {
+    assert.equal(scenario, OwnedOsScenario.CurrentDependency);
+    json(root + currentGeometryMarker, { schemaVersion: 1, geometry }, 0o644);
+  }
   // Recursively copied CI checkout files become root-owned immutable artifacts.
   command("/usr/bin/chown", ["-R", "0:0", root + runtime]);
   command("/usr/bin/chmod", ["-R", "go-w", root + runtime]);
