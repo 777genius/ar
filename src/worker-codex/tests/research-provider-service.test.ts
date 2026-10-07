@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { grantResearchLaunch, startResearchLaunch, revokeResearchLaunch } from "../research-launch-owner";
-import { admitResearchProcessFactory, bindResearchRuntime, researchCurrentStart } from "../research-launch-admission";
+import { bindResearchRuntime, researchCurrentStart } from "../research-launch-admission";
 import { researchHash, researchPublish, researchRead } from "../research-launch-files";
 import { researchProcessIdentity, researchServiceIdentity } from "../research-launch-host";
 import { cancelResearchLaunch, signalResearchProvider, statusResearchLaunch } from "../research-launch-lifecycle";
@@ -16,31 +16,12 @@ import * as scratch from "../host-scratch-temp";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import { trustedResearchProviderLaunch, trustedResearchRuntimeLaunch } from "../trusted-custody-systemd-launch";
 import { prepareResearchProviderRoot, type ResearchProviderRootPlan } from "../research-provider-root";
+import { prepareHelper } from "./research-provider-service-fixture";
 
 let previousExitCode: typeof process.exitCode;
 const streams = new Set<PassThrough>();
 beforeEach(() => { previousExitCode = process.exitCode; setupResearchFixture(); });
 afterEach(() => { for (const stream of streams) { stream.unpipe(); stream.destroy(); } streams.clear(); vi.useRealTimers(); process.exitCode = previousExitCode; cleanupResearchFixture(); });
-function prepareHelper(homeLeaf = "TEST-a") {
-  const req = request(); grantResearchLaunch(req.jobId, req.jobRootDir, req.workspacePath);
-  const start = startResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")));
-  host.group = `/system.slice/${start.unit}`; bindResearchRuntime(start.jobId, start.startId);
-  const current = researchCurrentStart(start.jobId);
-  const home = join(req.jobRootDir, "home", homeLeaf);
-  fs.mkdirSync(local(home), { recursive: true, mode: 0o700 });
-  const helper = admitResearchProcessFactory(req)({ command: req.codexBinaryPath, args: ["app-server"], cwd: req.workspacePath,
-    env: { HOME: join(req.jobRootDir, "home"), CODEX_HOME: home } });
-  const unit = fs.readdirSync(local(join(current.directory, "providers")))[0]!.slice(0, -5);
-  // Substitute the runtime parent observation, while invoking the real helper
-  // and retained-file protocol in this TEST process.
-  host.units.get(start.unit)!.pid = process.ppid;
-  researchPublish(join(current.directory, "binding.json"), { schemaVersion: 1, specSha256: researchHash(current.bytes),
-    process: researchProcessIdentity(process.ppid), service: researchServiceIdentity(start.unit) });
-  host.spawn.mockClear();
-  const held = helper.stdin as PassThrough;
-  const forward = vi.spyOn(process.stdin, "pipe").mockImplementation(destination => held.pipe(destination));
-  return { ...current, ...start, provider: unit, helper, forward, home };
-}
 const rootPlans = new WeakMap<ReturnType<typeof prepareHelper>, ResearchProviderRootPlan>();
 function providerLaunch(current: ReturnType<typeof prepareHelper>, home = current.home, scratchHost?: scratch.ScratchTempHost) {
   let root = rootPlans.get(current);
@@ -76,7 +57,7 @@ describe("private finite launch diagnostics", () => {
     const current = prepareHelper(), secretHome = "/TEST-never-log-this-home";
     await expect(runResearchProviderService(current.jobId, current.provider, secretHome)).rejects.toThrow();
     const bytes = researchRead(join(current.directory, "provider-failure.json")).toString();
-    expect(JSON.parse(bytes)).toEqual({ schemaVersion: 1, unit: current.provider, phase: "service-plan" });
+    expect(JSON.parse(bytes)).toEqual({ schemaVersion: 1, unit: current.provider, phase: "service-plan", check: "research-provider-root:snapshot" });
     expect(bytes).not.toContain(secretHome);
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
     expect(() => record(current, ".submission")).toThrow();
