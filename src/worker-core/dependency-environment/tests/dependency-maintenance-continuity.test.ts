@@ -28,14 +28,14 @@ for (const version of [2,3] as const) test(`Maintenance preserves v${version} co
   const attempt=claimDependencyMaintenance(store,workspace,host,"44444444-4444-4444-4444-444444444444");
   assert.equal(current.version,version);
   assert.notEqual(current.owner,null);
-  if (current.version===1) assert.fail("managed version lost");
+  assert.notEqual(current.version,1,"managed version lost");
   assert.deepEqual(current.generationContinuity,continuity);
   assert.deepEqual(current.activity,original.activity);
   if (current.version===3 && original.version===3) assert.deepEqual(current.custodyBinding,original.custodyBinding);
   releaseDependencyMaintenance(store,workspace,attempt);
   assert.equal(current.owner,null);
   assert.equal(current.revision,original.revision+2);
-  if (current.version===1) assert.fail("managed version lost");
+  assert.notEqual(current.version,1,"managed version lost");
   assert.deepEqual(current.generationContinuity,continuity);
   assert.deepEqual(current.activity,original.activity);
 });
