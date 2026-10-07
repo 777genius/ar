@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { DependencyGenerationContinuityKind, DependencyOwnerKind, DependencyOwnerPhase, isDependencyConsumerOwner,
   isDependencyCustodyObject, isDependencyProtectedReference, parseDependencyOwner, sameDependencyAttempt,
   sameDependencyProtectedReference } from "@vioxen/subscription-runtime/core";
-import { fenceDependencyConsumer, HostedCustodyPhase, HostedCustodyReservationState, parseHostedCustodyEpoch } from "@vioxen/subscription-runtime/worker-core";
+import { fenceDependencyConsumer, HostedCustodyPhase, HostedCustodyReservationState, parseHostedCustodyEpoch, type HostedCustodyEpoch, type HostedCustodyOuterRuntime } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, assertHostedActivationOperator, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedForegroundResult, readHostedForegroundLaunchObservation, type HostedForegroundResult } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
@@ -104,9 +104,29 @@ export function fenceOriginalHostedDependencyRSourceOwner(fence:HostedActivation
   const after=selected(fence,access);if(!encode(after.previous).equals(encode(expected)) || !encode(after.epoch).equals(encode(facts.epoch)))held();
   boundary(fence,access);
 }
+/** Reservations deliberately carry no generation. Select only their sealed
+ * producer birth, then retain all creator/completion/native checks below. */
+function providerRows(fence:HostedActivationFence,access:symbol,epoch:HostedCustodyEpoch,outer:HostedCustodyOuterRuntime) {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
+  return epoch.reservations.filter(row=>{
+    const pin=pinReferenceFile(`${root}/dependency-managed-provider-starts/${row.startId}.json`,16384),birth:unknown=JSON.parse(pin.bytes.toString("utf8"));
+    const common="attempt,bootId,custodyReference,executionJobId,generation,hostId,installationId,jobRootDir,logicalJobId,originReference,parentStartId,protectedProfile,providerStartId,qualification,runtimeSha,supervisorId,unit,version,workspace";
+    if(!isDependencyCustodyObject(birth,(common+",ready,readyRevision").split(",").sort().join(",")) &&
+        !isDependencyCustodyObject(birth,(common+",execution,unverified,unverifiedRevision").split(",").sort().join(",")))held();
+    if((birth.version!==1 && birth.version!==3) ||
+        !isDependencyCustodyObject(birth,(common+(birth.version===1?",ready,readyRevision":",execution,unverified,unverifiedRevision")).split(",").sort().join(",")) || !pin.bytes.equals(encode(birth)) || birth.providerStartId!==row.startId || birth.unit!==row.unit ||
+        row.creatorId!==row.startId || birth.hostId!==epoch.hostId || birth.bootId!==epoch.bootId || birth.supervisorId!==epoch.supervisorId ||
+        typeof birth.generation!=="number" || !Number.isSafeInteger(birth.generation) || birth.generation<1 || birth.generation>epoch.generation ||
+        typeof birth.parentStartId!=="string" || /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.exec(birth.parentStartId)?.[0]!==birth.parentStartId)held();
+    const sameParent=birth.parentStartId===outer.startId,sameGeneration=birth.generation===outer.generation;
+    if(sameParent!==sameGeneration)held();
+    if(!sameDependencyProtectedReference(pinReferenceFile(pin.reference.path,16384).reference,pin.reference))held();
+    return sameParent;
+  });
+}
 function oldProviders(fence:HostedActivationFence,access:symbol,value:unknown,facts:ReturnType<typeof selected>) {
   if(!Array.isArray(value) || value.length>128)held();
-  const current=facts.epoch.reservations.filter(row=>row.generation===facts.outer.generation);
+  const current=providerRows(fence,access,facts.epoch,facts.outer);
   if(value.length!==current.length)held();
   for(let index=0;index<value.length;index++) {
     const v:unknown=value[index],row=current[index]!;
@@ -122,7 +142,7 @@ function oldProviders(fence:HostedActivationFence,access:symbol,value:unknown,fa
           !sameDependencyProtectedReference(pinReferenceFile(ref.path,key==="preparation"?65536:16384).reference,ref))held();
     }
     const native=readOriginalHostedManagedProviderDischargedReceipt(fence,row.startId,access);
-    if(!encode(native.receipt).equals(encode(v.receipt)) || !sameDependencyProtectedReference(native.completion,v.completion))held();
+    if(!encode(native.receipt).equals(encode(v.receipt)) || !isDependencyProtectedReference(v.completion) || !sameDependencyProtectedReference(native.completion,v.completion))held();
   }
   return value;
 }
@@ -153,7 +173,7 @@ export function releaseOriginalHostedDependencyRSourceOwner(fence:HostedActivati
         v.version!==2 || !existing.equals(encode(v)))held();
     providers=oldProviders(fence,access,v.providers,before);
   }else {
-    providers=before.epoch.reservations.filter(row=>row.generation===before.outer.generation).map(row=>{
+    providers=providerRows(fence,access,before.epoch,before.outer).map(row=>{
       const proof=readOriginalHostedManagedProviderCreator(fence,row.startId,access);
       if(!encode(proof.attempt).equals(encode(before.attempt)) || !encode(proof.row).equals(encode(row)))held();
       before.kernel.drainQueuedStart(row);before.kernel.confirmTerminalDescendants(row);return proof;
@@ -283,7 +303,7 @@ function priorR(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActi
   const kernel=new HostedReadonlyHostKernel();kernel.fenceCreator(outer,epoch.bootId,fence);kernel.drainQueuedStart(outer);kernel.confirmTerminalDescendants(outer);
   // Reuse only the closed provider reference/native reader. It accepts no owner
   // scope or grant and cannot manufacture a missing positive completion.
-  const current=epoch.reservations.filter(row=>row.generation===outer.generation);
+  const current=providerRows(fence,access,epoch,outer);
   if(!Array.isArray(v.providers) || v.providers.length!==current.length || current.length>128)held();
   for(let i=0;i<current.length;i++) {
     const old:unknown=v.providers[i],row=current[i]!;
