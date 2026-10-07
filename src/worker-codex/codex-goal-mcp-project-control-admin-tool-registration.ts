@@ -12,6 +12,7 @@ import { projectControlAdoptPublishedIntegrationCommit,
   type PublishedAdoptionMcpArgs } from "./codex-goal-mcp-project-control-published-adoption";
 import { projectControlReconcilePublishedReviewedOutput,
   type PublishedReconciliationMcpArgs } from "./codex-goal-mcp-project-control-published-reconciliation";
+import { projectControlArchiveReviewedOutput } from "./codex-goal-mcp-project-control-reviewed-archive";
 import { projectControlLinkLegacyIntegrationTransport,
   type LegacyTransportLinkMcpArgs } from
   "./codex-goal-mcp-project-control-legacy-transport-link";
@@ -33,6 +34,13 @@ import {
 } from "./codex-goal-mcp-project-control-tool-schemas";
 
 export function registerCodexGoalProjectControlAdminTools(server: McpServer): void {
+  server.registerTool("codex_goal_project_archive_reviewed_output", {
+    title: "Archive Approved Reviewed Output",
+    description: "Root admin retained archive disposition for exact approved frozen output. Preview by default; immutable owner intent and confirmation required. Preserves approval and source; records no integration or rejection.",
+    inputSchema: { ...jobRegistryInputSchema(), controllerJobId: z.string().min(1),
+      reviewedOutputId: z.string().regex(/^[a-f0-9]{64}$/), permitFile: z.string().min(1),
+      expectedPermitSha256: z.string().regex(/^[a-f0-9]{64}$/), confirmArchive: z.boolean().optional() },
+  }, async (args) => withMcpErrors(async () => projectControlArchiveReviewedOutput(args)));
   server.registerTool("codex_goal_project_reconcile_published_reviewed_output", {
     title: "Reconcile Incorporated Reviewed Publication",
     description: "Root admin ledger-only reconciliation of approved frozen output incorporated in an authenticated historical canonical publication. Exact publication CI, review tree and immutable permit required; creates no integration attempt or Git write.",

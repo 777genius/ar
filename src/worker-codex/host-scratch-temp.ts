@@ -2,10 +2,11 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, statfsSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { inspectVisibleScratchMount, type ScratchMount } from "./host-scratch-mount.js";
 
 const CONFIG_PATH = "/etc/subscription-runtime/scratch-temp.json";
 type Info = { uid: number; mode: number; dev: number; ino: number; isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
-type Mount = { target?: string; uuid?: string; fsroot?: string };
+type Mount = ScratchMount;
 type Policy = { root: string; uuid: string; legacyTemps: Record<string, unknown> };
 export interface ScratchTempHost {
   lstat(path: string): Info;
@@ -24,14 +25,7 @@ const systemHost: ScratchTempHost = {
   lstat: lstatSync,
   realpath: realpathSync,
   read: (path) => readFileSync(path, "utf8"),
-  inspectMount(path) {
-    let output: string;
-    try { output = execFileSync("findmnt", ["--json", "--mountpoint", path, "--output", "TARGET,UUID,FSROOT"], { encoding: "utf8" }); }
-    catch (error) { if ((error as { status?: number }).status === 1) return undefined; throw error; }
-    const mounts = (JSON.parse(output) as { filesystems?: Mount[] }).filesystems;
-    if (mounts?.length !== 1) throw new Error("Ambiguous scratch mount inspection");
-    return mounts[0];
-  },
+  inspectMount: inspectVisibleScratchMount,
   statfs: statfsSync,
   mkdir: (path, mode) => { mkdirSync(path, { mode }); },
   chmod: chmodSync,
@@ -167,7 +161,11 @@ function bindTarget(policy: Policy, target: string, family: string, host: Scratc
   assertCanonical(target);
   const layout = sourceLayout(policy, hashInput, family, host);
   const checkExisting = () => {
-    if (preparedTarget(policy, target, layout, host) !== undefined) return true;
+    const prepared = preparedTarget(policy, target, layout, host);
+    if (prepared !== undefined) {
+      if (prepared) assertPreparedSourceIdentity(prepared, host);
+      return true;
+    }
     if (optionalInfo(target, host) && host.entries(target).length !== 0) throw new Error("Refusing to hide nonempty legacy scratch directory");
     return false;
   };
@@ -186,6 +184,7 @@ function bindTarget(policy: Policy, target: string, family: string, host: Scratc
     host.chmod(target, 0o701);
     host.bind(layout.source, target);
     if (!matchesScratchMount(policy, target, layout.fsroot, host.inspectMount(target))) throw new Error("Scratch bind mount verification failed");
+    assertPreparedSourceIdentity({ source: layout.source, target }, host);
   } finally { host.removeLock(lock); }
 }
 function optionalInfo(path: string, host: ScratchTempHost): Info | undefined {

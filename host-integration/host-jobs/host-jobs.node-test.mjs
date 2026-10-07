@@ -645,7 +645,7 @@ test('Node installer accepts both layouts and rejects untrusted paths before wri
     } finally { await rm(root, { recursive: true, force: true }); }
   }
 });
-test('transport reconnects a lost master once and does not retry endpoint errors', async () => {
+test('transport preserves unknown requests and reconnects only for a subsequent request', async () => {
   let checks = 0;
   let masters = 0;
   let requests = 0;
@@ -657,11 +657,17 @@ test('transport reconnects a lost master once and does not retry endpoint errors
       if (requests === 1) throw new Error('lost socket');
       return sshOutput(1, '{"ok":false,"error":"admission denied"}');
     } });
+  await assert.rejects(transport.request(request), /ssh request outcome unknown/);
+  assert.equal(checks, 1);
+  assert.equal(masters, 0);
+  assert.equal(requests, 1);
   await assert.rejects(transport.request(request), /admission denied/);
   assert.equal(checks, 2);
   assert.equal(masters, 1);
   assert.equal(requests, 2);
   await assert.rejects(transport.request(request), /admission denied/);
+  assert.equal(checks, 2);
+  assert.equal(masters, 1);
   assert.equal(requests, 3);
   await assert.rejects(transport.request({ operation: 'stop', jobId: request.jobId, machineId: 'b'.repeat(32) }), /machine identity/);
   assert.equal(requests, 3);

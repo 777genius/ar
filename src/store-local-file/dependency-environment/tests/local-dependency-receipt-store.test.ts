@@ -114,6 +114,20 @@ describe.skipIf(process.platform !== "linux")("protected dependency receipts", (
     } finally { await f.cleanup(); }
   });
 
+  it("accepts unchanged root custody when a real publisher changes its entries between open observations", async () => {
+    const f = await fixture();
+    try {
+      const helper = fileURLToPath(new URL("./fixtures/dependency-receipt-root-open-process.ts", import.meta.url));
+      const result = await run(process.execPath, ["--experimental-strip-types", helper,
+        resolve("dist/store-local-file/dependency-environment/local-dependency-receipt-store.js"), f.rootPath,
+        JSON.stringify(f.workspace), JSON.stringify(initial(f.workspace))], { timeout: 5000, maxBuffer: 4096 });
+      expect(JSON.parse(result.stdout)).toEqual({ status: "root_open_valid", custodyUnchanged: true,
+        directoryMetadataChanged: true, publishedRevision: 1 });
+      expect(f.store.read(f.workspace)).toEqual(initial(f.workspace));
+      expect(await readFile(join(f.workspace.canonicalPath, "sentinel"), "utf8")).toBe("source original bytes");
+    } finally { await f.cleanup(); }
+  });
+
   it("allows one cross-process publisher and never treats committed absence as fresh", async () => {
     const f = await fixture();
     try {
