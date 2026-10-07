@@ -14,7 +14,7 @@ describe("legacy dependency writer input boundary",()=>{
   ]) {
     it("rejects accessors without evaluating caller workspace or iterator",async()=>{
       let reads=0;
-      const input={get workspacePath(){reads++;throw new Error("unexpected_getter");}};
+      const input={get workspacePath():never{reads++;throw new Error("unexpected_getter");}};
       await expect(invoke(input)).rejects.toThrow();expect(reads).toBe(0);
       const proxy=new Proxy({workspacePath:"/unused"},{get(){reads++;throw new Error("unexpected_proxy");},getOwnPropertyDescriptor(){reads++;throw new Error("unexpected_descriptor");}});
       await expect(invoke(proxy)).rejects.toThrow();expect(reads).toBe(0);
@@ -22,7 +22,7 @@ describe("legacy dependency writer input boundary",()=>{
   }
   it("transaction refuses before workspace getter and action",async()=>{
     let reads=0,actions=0;
-    const input={get workspacePath(){reads++;throw new Error("unexpected_getter");},action:async()=>{actions++;return 1;}};
+    const input={get workspacePath():never{reads++;throw new Error("unexpected_getter");},action:async()=>{actions++;return 1;}};
     await expect(withDependencyBootstrapWorkspaceTransaction(input)).rejects.toThrow();
     expect(reads).toBe(0);expect(actions).toBe(0);
   });
