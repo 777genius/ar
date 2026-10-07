@@ -611,7 +611,25 @@ describe("slow bounded material at research effect boundaries", () => {
     expect(releasedAt - readyAt).toBeLessThan(10_000);
     expect(forwarded.length).toBeGreaterThan(0);
   });
-  it("keeps bootstrap held when valid material plus slow ownership exceed the fixed 10s handoff", async () => {
+  it("finishes real eleven-second ownership I/O before releasing bootstrap within the original setup deadline", async () => {
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current);
+    const sync = fs.fsyncSync; let verifiedAt = 0;
+    host.spawn.mockImplementation(submit);
+    vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
+      sync(fd);
+      if (host.fdPaths.get(fd)?.endsWith(current.provider + ".owner.json")) {
+        verifiedAt = performance.now();
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 11_000);
+      }
+    });
+    proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+    await runResearchProviderService(current.jobId, current.provider, current.home);
+    expect(performance.now() - verifiedAt).toBeGreaterThanOrEqual(11_000);
+    expect(record(current, ".owner").process.namespaces).toEqual(settledNamespaces);
+    expect(forwarded.length).toBeGreaterThan(0); expect(current.forward).toHaveBeenCalledOnce();
+    expect(record(current, ".submission").state).toBe("settled");
+  });
+  it("keeps bootstrap held when late readiness and final verification exceed the original 300s setup deadline", async () => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     const now = slowBoundedMaterial(), sync = fs.fsyncSync; host.spawn.mockImplementation(submit);
     vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
@@ -619,8 +637,8 @@ describe("slow bounded material at research effect boundaries", () => {
     });
     proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
     const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => false, () => true);
-    const readyAt = now(); proxy.stdout.write(readyFrame); await vi.advanceTimersByTimeAsync(0);
-    expect(await outcome).toBe(true); expect(now() - readyAt).toBeGreaterThan(10_000);
+    const waitingAt = now(); now.advance(295_000); proxy.stdout.write(readyFrame); await vi.advanceTimersByTimeAsync(0);
+    expect(await outcome).toBe(true); expect(now() - waitingAt).toBeGreaterThan(300_000);
     expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled();
     expect(record(current, ".submission").state).toBe("pending");
   });

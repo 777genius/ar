@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { assertHostedProcessDescriptors } from "./hosted-process-descriptors";
 import {
   decodeHostedAppServerLaunchFrame,
+  hostedResearchSetupTimeoutMs,
   type HostedAppServerLaunchFrame,
 } from "./hosted-app-server-launch-frame";
 
@@ -71,7 +72,7 @@ if (researchReady) {
   // Native provider/user code does not exist yet and cannot emit this frame.
   try { assertHostedProcessDescriptors(); }
   catch { fail("hosted_app_server_descriptor_boundary_invalid"); }
-  bootstrapDeadline = setTimeout(() => fail("hosted_app_server_research_bootstrap_timeout"), 10_000);
+  bootstrapDeadline = setTimeout(() => fail("hosted_app_server_research_bootstrap_timeout"), hostedResearchSetupTimeoutMs);
   process.stdout.on("error", () => fail("hosted_app_server_research_ready_failed"));
   process.stdout.write("subscription-runtime-research-provider-ready-v1\n");
   process.stdin.on("error", () => fail("hosted_app_server_research_input_failed"));
