@@ -16,7 +16,7 @@ const host = {installationId:"22222222-2222-2222-2222-222222222222",bootId:"3333
   runtimeSha:"b".repeat(40),inventoryDigest:"c".repeat(64),grantDigest:"d".repeat(64),supervisorId:"42:123"};
 for (const version of [2,3] as const) test(`Maintenance preserves v${version} continuity through claim and idle release`,() => {
   let current:DependencyOwnerRecord = parseDependencyOwner({version,workspace,revision:4,epoch:2,owner:null,generationContinuity:continuity,
-    ...(version===3 ? {custodyBinding:reference("custody")} : {}),activity:{lastEntry:{epoch:2,atMs:null},lastRelease:{epoch:2,atMs:null}});
+    ...(version===3 ? {custodyBinding:reference("custody")} : {}),activity:{lastEntry:{epoch:2,atMs:null},lastRelease:{epoch:2,atMs:null}}});
   const original=current;
   const store:DependencyOwnerStore = {
     read(selected) { assert.deepEqual(selected,workspace); return current; },
