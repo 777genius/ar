@@ -7,18 +7,40 @@ import { captureResearchRuntime, researchCurrentStart } from "./research-launch-
 import { isResearchDenialObservation, researchInvalid, researchPublish, type ResearchDenialObservation } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
 import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
-import { assertResearchProviderRoot, prepareResearchProviderRoot } from "./research-provider-root";
+import { assertResearchProviderRoot, prepareResearchProviderRoot, researchProviderRootFailureCheck, type ResearchProviderRootCheck } from "./research-provider-root";
 
 const denialChecks = ["assertResearchInitialRoot", "assertResearchSharedHost", "researchCustody", "researchRead",
   "researchCurrentStart", "researchServiceIdentity", "researchCommand", "researchProcessIdentity",
   "assertResearchServiceOwner", "assertResearchStartAuthority", "assertAuthorityCurrent", "captureResearchRuntime",
   "assertTransportPermission"] as const;
-type DenialCheck = typeof denialChecks[number];
+type DenialCheck = typeof denialChecks[number] | ResearchProviderRootCheck;
 const observedChecks = new WeakMap<Error, DenialCheck>();
-function denialCheck(error: unknown): DenialCheck | undefined {
-  if (!(error instanceof Error)) return undefined;
-  return observedChecks.get(error) ?? error.stack?.split("\n").flatMap(line =>
-    denialChecks.filter(name => [`at ${name} (`, `at Object.${name} (`].some(prefix => line.trimStart().startsWith(prefix))))[0];
+function ownErrorData(error: unknown, key: string): unknown {
+  try {
+    if (!(error instanceof Error)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(error, key);
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+  } catch { return undefined; }
+}
+function denialObservation(error: unknown): ResearchDenialObservation | undefined {
+  const cause = ownErrorData(error, "cause");
+  return isResearchDenialObservation(cause) ? cause : undefined;
+}
+function denialCheck(error: unknown, legacyFrames = true): DenialCheck | undefined {
+  const root = researchProviderRootFailureCheck(error);
+  if (root) return root;
+  // Root planning observations are identity-bound, never inferred from a stack
+  // supplied by an adapter. Preserve legacy native frames in the other phases.
+  if (!legacyFrames) return undefined;
+  try {
+    if (!(error instanceof Error)) return undefined;
+    const observed = observedChecks.get(error);
+    if (observed) return observed;
+    const stack = error.stack;
+    if (typeof stack !== "string" || stack.length > 65536) return undefined;
+    return stack.split("\n").slice(1, 65).flatMap(line => denialChecks.filter(name =>
+      [`at ${name} (`, `at Object.${name} (`].some(prefix => line.trimStart().startsWith(prefix))))[0];
+  } catch { return undefined; }
 }
 
 /** The first bytes belong solely to the fixed confined launcher, before it has
@@ -35,7 +57,7 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   // Rejection alone has no effect once ready has resolved. Keep the failure
   // latched until the synchronous transition to native protocol forwarding.
   const denied = (error?: unknown): void => {
-    if (error instanceof Error && isResearchDenialObservation(error.cause)) observation = error.cause;
+    observation = denialObservation(error) ?? observation;
     failed = true;
     refusal ??= new Error("hosted_research_launch_denied", { cause: observation });
     const check = denialCheck(error);
@@ -81,16 +103,18 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
 export async function runResearchProviderService(jobId: string, unit: string, selectedCodexHome: string): Promise<void> {
   if (!researchProviderUnitPattern.test(unit)) researchInvalid();
   const { directory } = researchCurrentStart(jobId);
-  let phase: ResearchProviderLaunchPhase = "runtime-capture";
-  try { await runAdmittedResearchProvider(jobId, unit, selectedCodexHome, next => { phase = next; }); }
+  const state: { phase: ResearchProviderLaunchPhase } = { phase: "runtime-capture" };
+  try { await runAdmittedResearchProvider(jobId, unit, selectedCodexHome, next => { state.phase = next; }); }
   catch (error) {
+    const phase = state.phase;
     // Root-private observation only, never authority. Retain a finite phase;
     // raw stderr/errors can contain credentials and must remain private.
     // Fixed internal frame labels only, never arbitrary stack/error text.
-    const check = denialCheck(error);
+    const check = denialCheck(error, phase !== "service-plan");
+    const observation = denialObservation(error);
     try { researchPublish(join(directory, "provider-failure.json"), { schemaVersion: 1, unit, phase,
       ...(check ? { check } : {}),
-      ...(error instanceof Error && isResearchDenialObservation(error.cause) ? { observation: error.cause } : {}),
+      ...(observation ? { observation } : {}),
     }); }
     catch { /* Original denial remains authoritative when observation fails. */ }
     throw error;
