@@ -8,6 +8,7 @@ import * as files from "../research-launch-files";
 import { signalResearchProvider } from "../research-launch-lifecycle";
 import { runResearchProviderService } from "../research-provider-service";
 import * as roots from "../research-provider-root";
+import * as mounts from "../host-scratch-mount";
 import { prepareHelper } from "./research-provider-service-fixture";
 
 beforeEach(setupResearchFixture);
@@ -28,9 +29,7 @@ describe("private identity-bound root diagnostics", () => {
       if (fault === "owner") host.foreign.add("/usr");
       else if (fault === "accounts") fs.writeFileSync("/etc/group", "TEST-private-account:TEST-private-password:0:\n");
       else {
-        const read = fs.readFileSync;
-        vi.spyOn(fs, "readFileSync").mockImplementation(((path: string, options: never) =>
-          path === "/proc/self/mountinfo" ? "TEST-private-mount-path" : read(path, options)) as typeof fs.readFileSync);
+        vi.spyOn(mounts, "readKernelMountTable").mockReturnValue("TEST-private-mount-path");
       }
       return prepare(...args);
     });

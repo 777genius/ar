@@ -14,10 +14,13 @@ function decode(value: string): string {
   if (/\\(?!040|011|012|134)/.test(value)) return fail();
   return value.replace(/\\(040|011|012|134)/g, (_, digits: string) => String.fromCharCode(parseInt(digits, 8)));
 }
-function mountRecord(id: number, table: string): Record {
+function originalMountRecordRow(id: number, table: string): string {
   const rows = table.trimEnd().split("\n").filter(line => line.split(" ", 1)[0] === String(id));
   if (rows.length !== 1) return fail();
-  const parts = rows[0]!.split(" "), separator = parts.indexOf("-");
+  return rows[0]!;
+}
+function mountRecord(id: number, table: string): Record {
+  const parts = originalMountRecordRow(id, table).split(" "), separator = parts.indexOf("-");
   if (separator < 6 || parts.length < separator + 4 || !parts[3] || !parts[4]) return fail();
   const root = decode(parts[3]), target = decode(parts[4]);
   if (!isAbsolute(root) || !isAbsolute(target) || resolve(target) !== target) return fail();
@@ -47,7 +50,7 @@ function boundedRead(path: string, maximum: number): string {
   const fd = openSync(path, constants.O_RDONLY), chunks: Buffer[] = [];
   let total = 0;
   try {
-    const buffer = Buffer.alloc(Math.min(maximum + 1, 64 * 1024));
+    const buffer = Buffer.alloc(Math.min(maximum + 1, 1024 * 1024));
     for (;;) {
       const n = readSync(fd, buffer, 0, Math.min(buffer.length, maximum + 1 - total), null);
       if (n === 0) return Buffer.concat(chunks, total).toString("utf8");
@@ -56,6 +59,8 @@ function boundedRead(path: string, maximum: number): string {
     }
   } finally { closeSync(fd); }
 }
+/** Fixed native Host observation; all consumers retain the complete bounded table. */
+export function readKernelMountTable(): string { return boundedRead("/proc/self/mountinfo", 8 * 1024 * 1024); }
 function opened(fd: number) {
   const info = fstatSync(fd), ids = [...boundedRead(`/proc/self/fdinfo/${fd}`, 4096).matchAll(/^mnt_id:\s+([1-9]\d*)$/gm)];
   if (!info.isDirectory() || ids.length !== 1) return fail();
@@ -79,18 +84,17 @@ export function inspectVisibleScratchMount(path: string): ScratchMount | undefin
   }
   let fresh: number | undefined;
   try {
-    const original = opened(fd), before = boundedRead("/proc/self/mountinfo", 8 * 1024 * 1024);
+    const original = opened(fd), before = readKernelMountTable();
     const record = mountRecord(original.mountId, before);
     let output: string;
     let snapshot: number | undefined;
     try {
-      // Reuse the bounded kernel snapshot. A fresh findmnt walk of mountinfo can
-      // exceed its deadline in a large systemd namespace; current FD/record and
-      // namespace identity are independently rechecked below after the query.
+      // Query only the untouched FD-selected row, unique in the full snapshot.
+      // Selection authority and later FD/record/namespace checks use full tables.
       // Linux O_TMPFILE keeps the snapshot unnamed; O_EXCL prevents relinking.
       // Node's default stdin is a socket that findmnt cannot reopen via procfs.
       snapshot = openSync("/tmp", 0x410000 | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_EXCL, 0o600);
-      writeFileSync(snapshot, before, { encoding: "utf8" });
+      writeFileSync(snapshot, originalMountRecordRow(original.mountId, before) + "\n", { encoding: "utf8" });
       output = execFileSync("findmnt", ["--kernel", "--tab-file", "/proc/self/fd/0", "--json", "--mountpoint", path, "--output", "ID,TARGET,UUID,FSROOT"],
         { stdio: [snapshot, "pipe", "pipe"], encoding: "utf8", timeout: 2000, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" });
     } catch (error) {
@@ -101,7 +105,7 @@ export function inspectVisibleScratchMount(path: string): ScratchMount | undefin
     const result = selectVisibleScratchMount(path, original.mountId, before, JSON.parse(output) as unknown);
     // A new bind of the same inode changes mount ID without changing named dev/inode.
     fresh = openSync(path, directoryFlags);
-    const after = boundedRead("/proc/self/mountinfo", 8 * 1024 * 1024);
+    const after = readKernelMountTable();
     if (!same(original, opened(fd)) || !same(original, opened(fresh)) || readlinkSync("/proc/self/ns/mnt") !== namespace ||
         JSON.stringify(record) !== JSON.stringify(mountRecord(original.mountId, after))) return fail();
     return result;
