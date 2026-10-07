@@ -15,6 +15,7 @@ import { issueActualSystemBusInfrastructure, issueNativeFdProfile, actualToolcha
 import { enrollReferenceAndAssert, ReferenceEnrollmentPublication } from "./reference-enrollment-assertions.js";
 import { prepareCurrentLocalInputs, registerCurrentTools, currentNativeRecipe } from "./current-tools-fixture.ts";
 import { publishDefaultTestCodexConfig } from "./default-codex-config.ts";
+import { observeRegistrationFailure, RegistrationInputStep } from "./registration-failure-observation.js";
 import { command, digest, directory, directoryIdentity, fileDigest, installedArtifactDigest, json, node, OwnedOsScenario, policy, runtime } from "./common.ts";
 
 enum RegistrationStatus { Failed = "failed", PartialPass = "partial_pass" }
@@ -26,8 +27,13 @@ const evidence: Record<string, unknown> = { schemaVersion: 1, sourceSha: process
     "live_account_model_availability", "hot_install_count_one", "committed_absent_cold_restore",
     "uncertain_creator_successor_drain", "full_N3_N5_qualification"] };
 
+let inputStep = RegistrationInputStep.None;
 try { await register(); evidence.status = RegistrationStatus.PartialPass; }
-catch { evidence.failure = "TEST_original_closed_registration_failed"; process.exitCode = 1; }
+catch (error: unknown) {
+  evidence.failure = "TEST_original_closed_registration_failed";
+  evidence.failureObservation = { inputStep, ...observeRegistrationFailure(error) };
+  process.exitCode = 1;
+}
 finally {
   assert(Buffer.byteLength(JSON.stringify(evidence)) <= 256 * 1024);
   json(runtime + "/guest-evidence.json", evidence, 0o644);
@@ -59,15 +65,22 @@ async function register(): Promise<void> {
   assert.notEqual(candidateWorkspace, referenceWorkspace);
   assert.notDeepEqual(directoryIdentity(candidateWorkspace), directoryIdentity(referenceWorkspace));
   evidence.phase = RegistrationPhase.Inputs;
+  inputStep = RegistrationInputStep.Prepare;
   prepareCurrentLocalInputs(candidateJobId);
+  inputStep = RegistrationInputStep.Sentinel;
   writeFileSync(candidateWorkspace + "/source-sentinel", "TEST initial owned C source\n", { flag: "wx", mode: 0o600 });
+  inputStep = RegistrationInputStep.GitIgnore;
   writeFileSync(candidateWorkspace + "/.gitignore", "node_modules/\n", { flag: "wx", mode: 0o600 });
+  inputStep = RegistrationInputStep.Config;
   evidence.defaultCommandFixture = publishDefaultTestCodexConfig({ workspace: candidateWorkspace, guestNamespaces: namespaces });
+  inputStep = RegistrationInputStep.Digest;
   evidence.runtimeManifestSha256 = installedArtifactDigest();
+  inputStep = RegistrationInputStep.RuntimePins;
   const runtimePackage = lstatSync(runtime + "/package.json");
   assert(runtimePackage.isFile() && !runtimePackage.isSymbolicLink() && runtimePackage.uid === 0 && runtimePackage.gid === 0 && runtimePackage.nlink === 1 && !(runtimePackage.mode & 0o022));
   evidence.installedRuntimeRootPackage = { sha256: fileDigest(runtime + "/package.json"), bytes: runtimePackage.size };
   evidence.runtimeDirectory = directoryIdentity(runtime);
+  inputStep = RegistrationInputStep.None;
   evidence.phase = RegistrationPhase.Profile;
   const { collectorProfile, rootGit } = await issueNativeFdProfile(evidence, bus);
   // The actual signed Git executable/ELF/descriptor profile precedes FIRST Git.

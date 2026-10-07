@@ -42,6 +42,8 @@ jobs:
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.catalog-emit.json
       - name: Emit finite registration closure before owned root copy and digest
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.registration-emit.json
+      - name: Check bounded TEST failure-observation privacy before OS launch
+        run: node --experimental-strip-types --test scripts/dependency-retention-os-test/registration-failure-observation.node-test.ts
       - name: Run one original CLOSED registration in a private PID1 OS
         env:
           TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
