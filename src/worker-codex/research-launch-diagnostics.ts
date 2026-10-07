@@ -17,6 +17,14 @@ export enum ResearchLaunchDiagnostic {
 export enum ResearchLaunchCause {
   None = "none", ArtifactDeadline = "artifact-deadline", FileDeadline = "file-deadline",
   HostCommandTimeout = "host-command-timeout", HostCommandFailed = "host-command-failed",
+  ScratchRoot = "scratch-root", ScratchTmp = "scratch-tmp", ScratchCache = "scratch-cache",
+}
+type ScratchMountInspectionCause = ResearchLaunchCause.ScratchRoot | ResearchLaunchCause.ScratchTmp | ResearchLaunchCause.ScratchCache;
+const scratchInspectionCauses = new WeakMap<object, ScratchMountInspectionCause>();
+/** Internal observation only; preserve the thrown value and all existing recovery facts. */
+export function annotateScratchMountInspectionFailure(error: unknown, cause: ScratchMountInspectionCause): unknown {
+  if (error && typeof error === "object") scratchInspectionCauses.set(error, cause);
+  return error;
 }
 const D = ResearchLaunchDiagnostic;
 // Order is the deployed numeric contract; append diagnostics without renumbering it.
@@ -53,7 +61,9 @@ function ownString(error: unknown, key: string): string | undefined {
 export function normalizeResearchLaunchFailure(error: unknown): Readonly<{
   legacyCode: number | "unclassified"; cause: ResearchLaunchCause; diagnostic: ResearchLaunchDiagnostic;
 }> {
-  const message = ownString(error, "message"), code = ownString(error, "code"), cause = ownString(error, "cause");
+  const inspectionCause = error && typeof error === "object" ? scratchInspectionCauses.get(error) : undefined;
+  const message = ownString(error, "message"), code = ownString(error, "code");
+  const cause = inspectionCause ?? ownString(error, "cause");
   const index = legacy.findIndex(known => known === message);
   return {
     legacyCode: index < 0 ? "unclassified" : index,
