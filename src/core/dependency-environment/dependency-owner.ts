@@ -2,7 +2,7 @@ import type { DependencyWorkspaceIdentity } from "./dependency-workspace";
 import { DependencyConsumerLaunchKind, isDependencyCustodyObject, isDependencyProtectedReference, sameDependencyProtectedReference,
   type DependencyProtectedReference } from "./dependency-custody-evidence";
 
-import { parseDependencyGenerationContinuityInvalidation, type DependencyGenerationContinuityInvalidation } from "./dependency-generation-continuity";
+import { parseDependencyGenerationContinuity, type DependencyGenerationContinuity } from "./dependency-generation-baseline";
 
 export enum DependencyOwnerPhase {
   ExclusiveMutation = "exclusive_mutation",
@@ -54,9 +54,9 @@ type DependencyOwnerFields = {
   };
 };
 export type DependencyOwnerRecord = DependencyOwnerFields & (
-  { readonly version: 1 } | { readonly version: 2; readonly generationContinuity?: DependencyGenerationContinuityInvalidation } |
+  { readonly version: 1 } | { readonly version: 2; readonly generationContinuity?: DependencyGenerationContinuity } |
   { readonly version: 3; readonly custodyBinding: DependencyProtectedReference;
-    readonly generationContinuity?: DependencyGenerationContinuityInvalidation }
+    readonly generationContinuity?: DependencyGenerationContinuity }
 );
 
 export enum DependencyAdmissionFailure {
@@ -92,7 +92,7 @@ export function parseDependencyOwner(value: unknown): DependencyOwnerRecord {
       !positive(value.revision) || !positive(value.epoch)) invalid();
   if (custody && !isDependencyProtectedReference(value.custodyBinding)) invalid();
   if (hasContinuity) {
-    try { parseDependencyGenerationContinuityInvalidation(value.generationContinuity); } catch { invalid(); }
+    try { parseDependencyGenerationContinuity(value.generationContinuity); } catch { invalid(); }
   }
   if (hasActivity) {
     const activity = value.activity, epoch = value.epoch;

@@ -9,7 +9,7 @@ import { assertDependencyPreclaimedConsumer, claimDependencyConsumer, HostedCust
   parseHostedCustodyEpoch, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, readHostedActivationBytes, decodeHostedActivationBytes, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readHostedReadonlyDependencyStart } from "../provider-codex/app-server/adapters/hosted-dependency-origin";
-import { assertCurrentHostedDependencyAttempt, CurrentHostedDependencyOriginKind, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { claimCurrentHostedReadonlyDependencyGeneration, assertCurrentHostedDependencyAttempt, CurrentHostedDependencyOriginKind, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { hostedDependencyOwnerRoot, hostedDependencyBindingName, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
@@ -54,15 +54,18 @@ export function preclaimHostedReadonlyDependencyReader(fence: HostedActivationFe
       start.value.unit !== outer.unit || start.value.readonlyJobId !== epoch.identity.jobId) invalid();
   const bindingPin = protectedPin(root+"/"+hostedDependencyBindingName(binding.jobId),16384);
   if (!bindingPin.bytes.equals(encode(binding)) || !sameDependencyProtectedReference(bindingPin.reference,material.evidence.candidate.binding)) invalid();
+  const activeClaim=claimCurrentHostedReadonlyDependencyGeneration(fence,startId);
   const store = LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
   try {
     const before = store.read(binding.workspace);
-    if (!before || before.version !== 3 || before.owner !== null || !sameDependencyProtectedReference(before.custodyBinding,material.reference)) invalid();
-    const attempt = claimDependencyConsumer(store,binding.workspace,{installationId:start.value.installationId,bootId:start.value.bootId,
+    if (!before || before.version !== 3 || (!activeClaim && before.owner!==null) ||
+        (activeClaim && (!isDependencyConsumerOwner(before.owner) || !sameDependencyAttempt(before.owner.attempt,activeClaim.attempt))) ||
+        !sameDependencyProtectedReference(before.custodyBinding,material.reference)) invalid();
+    const attempt = activeClaim?.attempt ?? claimDependencyConsumer(store,binding.workspace,{installationId:start.value.installationId,bootId:start.value.bootId,
       runtimeSha:start.value.runtimeSha,grantDigest:start.value.grantDigest,startId,unit:outer.unit,
       kind:DependencyConsumerLaunchKind.ManagedReadonlyLocalV1,association:material.reference,origin:start.reference},randomUUID());
     const held = store.read(binding.workspace);
-    if (!held || held.version !== 3 || held.revision !== before.revision+1 || !isDependencyConsumerOwner(held.owner) ||
+    if (!held || held.version !== 3 || held.revision !== before.revision+(activeClaim?0:1) || !isDependencyConsumerOwner(held.owner) ||
         held.owner.phase !== DependencyOwnerPhase.ExclusiveMutation || !sameDependencyAttempt(held.owner.attempt,attempt)) invalid();
     const receipt = readHostedDependencyEstablishedReceipt(binding); if (!receipt) invalid();
     const committed = receipt.state === DependencyReceiptState.Ready ? readHostedDependencyCommittedReady(binding,receipt.revision) :

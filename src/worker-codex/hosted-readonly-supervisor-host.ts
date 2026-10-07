@@ -1,6 +1,6 @@
 import { startCurrentHostedOrdinaryDependencySessionBootstrap } from "./hosted-ordinary-dependency-provider";
 import { preclaimHostedReadonlyDependencyReader } from "./hosted-readonly-dependency-reader-entry";
-import { CurrentHostedDependencyOriginKind, publishCurrentHostedManagedDependencyProvider, readCurrentHostedManagedDependencyProviderParent, spawnCurrentHostedManagedDependencyProvider, observeCurrentHostedManagedDependencyProviderFrame, remainingCurrentHostedManagedDependencyProviderSetup, releaseCurrentHostedManagedDependencyProviderFrame, invalidateCurrentHostedManagedDependencyProvider, readCurrentHostedDependencySessionRefreshParent, spawnCurrentHostedDependencySessionRefresh, spawnCurrentHostedDependencySessionModelProbe, observeCurrentHostedDependencySessionRefreshFrame, releaseCurrentHostedDependencySessionRefreshFrame, invalidateCurrentHostedDependencySessionRefresh, type CurrentHostedDependencySessionHome, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { fenceCurrentHostedReadonlyDependencySourceOwner, CurrentHostedDependencyOriginKind, publishCurrentHostedManagedDependencyProvider, readCurrentHostedManagedDependencyProviderParent, spawnCurrentHostedManagedDependencyProvider, observeCurrentHostedManagedDependencyProviderFrame, remainingCurrentHostedManagedDependencyProviderSetup, releaseCurrentHostedManagedDependencyProviderFrame, invalidateCurrentHostedManagedDependencyProvider, readCurrentHostedDependencySessionRefreshParent, spawnCurrentHostedDependencySessionRefresh, spawnCurrentHostedDependencySessionModelProbe, observeCurrentHostedDependencySessionRefreshFrame, releaseCurrentHostedDependencySessionRefreshFrame, invalidateCurrentHostedDependencySessionRefresh, type CurrentHostedDependencySessionHome, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import type { CodexAppServerChildProcess } from "../provider-codex/app-server/application/app-server-process-port";
 import { retryHostedFenceAcquisition } from "../provider-codex/app-server/adapters/hosted-fd-fence";
 import { assertHostedManagedDependencyToolParentFrame } from "./hosted-managed-dependency-tool-plan";
@@ -292,6 +292,7 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
             epoch.generation !== this.runtimeGeneration) denied();
       }
       this.kernel.drainQueuedStart(record); this.kernel.confirmTerminalDescendants(record);
+      if(result.exitCode===0 && isHostedDependencyWorkspace(epoch.identity.workspacePath))fenceCurrentHostedReadonlyDependencySourceOwner(fence,result);
       return action({ jobRootDir: epoch.identity.jobRootDir, args: readHostedReadonlyHostInventory().runtimeLaunch.args, fence });
     }));
   }

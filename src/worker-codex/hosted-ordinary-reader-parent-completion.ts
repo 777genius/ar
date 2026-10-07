@@ -132,10 +132,26 @@ export function readHostedOrdinaryReaderParentCompletion(fence:HostedActivationF
 export function fenceHostedOrdinaryReaderOwner(fence:HostedActivationFence,result:HostedForegroundResult):void {
   assertHostedForegroundResult(result);const observed=readHostedForegroundLaunchObservation(result),facts=selection(fence,observed.startId);
   if (facts.row.state!==HostedCustodyReservationState.Reserved || facts.row.unit!==observed.unit) held();
-  const owners=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
-  try {const owner=owners.read(facts.binding.workspace);if (!owner || !isDependencyConsumerOwner(owner.owner) ||
-      !sameDependencyAttempt(owner.owner.attempt,facts.attempt)) held();fenceDependencyConsumer(owners,facts.binding.workspace,facts.attempt);
-  } finally {owners.close();}
+  const reader=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+  let previous:ReturnType<LocalDependencyOwnerStore["read"]>;
+  try {previous=reader.read(facts.binding.workspace);}finally{reader.close();}
+  if(!previous || !isDependencyConsumerOwner(previous.owner) || !sameDependencyAttempt(previous.owner.attempt,facts.attempt))held();
+  const expected={...previous,revision:previous.revision+1,owner:{...previous.owner,phase:DependencyOwnerPhase.Fenced}};
+  // Fencing is containment, not discharge. The SAME genuine FDA result and
+  // selected parent are reauthenticated without store FDs before the mutex.
+  assertHostedForegroundResult(result);stable(fence,facts);
+  if(!encode(readHostedForegroundLaunchObservation(result)).equals(encode(observed)))held();
+  const owners=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384,generationBaselineVerifier:{
+    assertGenerationBaselineTransition({previousOwner,proposedOwner}) {
+      assertHostedActivationFence(fence);assertHostedForegroundResult(result);
+      if(!encode(previousOwner).equals(encode(previous)) || !encode(proposedOwner).equals(encode(expected)))held();
+    },
+  }});
+  try {fenceDependencyConsumer(owners,facts.binding.workspace,facts.attempt);
+    const written=owners.read(facts.binding.workspace);
+    if(!encode(written).equals(encode(previous.owner.phase===DependencyOwnerPhase.Fenced?previous:expected)))held();
+  }finally{owners.close();}
+  assertHostedForegroundResult(result);stable(fence,facts);
   ensureHostedDependencyDirectory(`${root}/dependency-attempt-fences`);
   createReadonlyPrivateRecord(`${root}/dependency-attempt-fences/${facts.row.startId}.json`,encode({version:1,startId:facts.row.startId,attemptId:facts.attempt.attemptId,epoch:facts.attempt.epoch}));
   stable(fence,facts);

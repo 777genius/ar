@@ -1,3 +1,6 @@
+import { readOriginalHostedDependencyGenerationNativeScope } from "./hosted-dependency-generation-native-scope";
+import { HostedReadonlyHostKernel } from "./hosted-readonly-host-kernel";
+import { assertOriginalHostedDependencyPhysicalRecordAccess, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
@@ -50,6 +53,27 @@ export function parseHostedManagedProviderFailureReceipt(bytes: Buffer): Failure
   if (!encode(terminal).equals(encode(t)) || !matchesManagedProviderProxyWait(terminal,value.invocationId,value.waitStatus)) held();
   return Object.freeze({schemaVersion:1,parentAttempt:value.parentAttempt,unit:value.unit,providerStartId:value.providerStartId,
     providerReference:value.providerReference,invocationId:value.invocationId,proxyBirth:value.proxyBirth,waitStatus:value.waitStatus,terminal});
+}
+
+/** Positive completion comes only from the existing private producer receipt.
+ * This parser does not replace birth/current-owner/native/queue joins below. */
+function parseZeroCompletion(bytes:Buffer) {
+  const value=decodeHostedActivationBytes(bytes);
+  if(!isDependencyCustodyObject(value,"invocationId,parentAttempt,providerReference,providerStartId,proxyBirth,schemaVersion,terminal,unit,waitStatus") ||
+      value.schemaVersion!==1 || !uuid(value.providerStartId) || value.unit!==`subscription-runtime-hosted-${value.providerStartId}.service` ||
+      !isDependencyProtectedReference(value.providerReference) || value.providerReference.path!==`${root}/dependency-managed-provider-starts/${value.providerStartId}.json` ||
+      typeof value.invocationId!=="string" || /^[a-f0-9]{32}$/.exec(value.invocationId)?.[0]!==value.invocationId ||
+      typeof value.proxyBirth!=="string" || /^[1-9][0-9]{0,9}:[1-9][0-9]{0,19}$/.exec(value.proxyBirth)?.[0]!==value.proxyBirth ||
+      value.waitStatus!==0 || !encode(value).equals(bytes))held();
+  let terminal:HostedManagedProviderTerminalFacts|null=null;
+  if(value.terminal!==null) {
+    const t=value.terminal;if(!isDependencyCustodyObject(t,"invocationId,kind,result,status,unit"))held();
+    terminal=parseHostedManagedProviderTerminalFacts(value.unit,`Id=${t.unit}\nInvocationID=${t.invocationId}\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\nJob=\nExecMainCode=${t.kind}\nExecMainStatus=${t.status}\nResult=${t.result}\n`);
+    if(!encode(terminal).equals(encode(t)))held();
+  }
+  if(!matchesManagedProviderProxyWait(terminal??undefined,value.invocationId,0))held();
+  return Object.freeze({schemaVersion:1 as const,parentAttempt:value.parentAttempt,unit:value.unit,providerStartId:value.providerStartId,
+    providerReference:value.providerReference,invocationId:value.invocationId,proxyBirth:value.proxyBirth,waitStatus:0,terminal});
 }
 
 function sameFile(a: BigIntStats,b: BigIntStats): boolean {
@@ -108,12 +132,21 @@ function boundary(fence: HostedActivationFence): void {
  * never publishes completion, acquires a fence or releases an owner/home/lease.
  * Caller still performs independent queue + recursive cgroup checks in order. */
 export function assertHostedManagedProviderFailureCreator(fence: HostedActivationFence,startId: string): void {
+  readFailureCreator(fence,startId,false);
+}
+/** Fixed original-source release can inspect its own already-Terminal child.
+ * The public recovery contract above still requires Reserved + held Consumer;
+ * no Terminal row is promoted into a completion or returned execution grant. */
+export function readOriginalHostedManagedProviderCreator(fence:HostedActivationFence,startId:string,access:symbol) {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);return readFailureCreator(fence,startId,true);
+}
+function readFailureCreator(fence:HostedActivationFence,startId:string,terminalReadback:boolean) {
   boundary(fence); if (!uuid(startId)) held();
   const epochPin = fixedPin(`${root}/readonly-epoch.json`,65536), epoch = parseHostedCustodyEpoch(wire(epochPin));
   const outer = epoch.outerRuntime, row = epoch.reservations.find(record => record.startId === startId);
   if (epoch.phase !== HostedCustodyPhase.Closed || epoch.revoked || epoch.bootId !== collectBootId() || !outer ||
       outer.state !== HostedCustodyReservationState.Terminal || epoch.generation <= outer.generation ||
-      !row || row.state !== HostedCustodyReservationState.Reserved || row.creatorId !== startId ||
+      !row || (row.state !== HostedCustodyReservationState.Reserved && !(terminalReadback && row.state === HostedCustodyReservationState.Terminal)) || row.creatorId !== startId ||
       row.unit !== `subscription-runtime-hosted-${startId}.service`) held();
   // Outer-first status0 is independently enforced by the unchanged supervisor.
   // Even an already-Terminal row cannot replace its protected creator receipt.
@@ -165,7 +198,9 @@ export function assertHostedManagedProviderFailureCreator(fence: HostedActivatio
     parentStartId:attempt.launch.startId,logicalJobId:binding.jobId,executionJobId:start.readonlyJobId,jobRootDir:binding.jobRootDir,
     workspace:binding.workspace,attempt,custodyReference:material.reference,originReference:parent.reference,...birthAdmission,qualification:qualification.reference,protectedProfile:profile.reference};
   if (!birth.bytes.equals(encode(expectedBirth))) held();
-  const receiptPin = fixedPin(`${root}/dependency-managed-provider-completions/${startId}.json`), receipt = parseHostedManagedProviderFailureReceipt(receiptPin.bytes);
+  const receiptPin = fixedPin(`${root}/dependency-managed-provider-completions/${startId}.json`),
+    decodedReceipt=wire(receiptPin),receipt = terminalReadback && isDependencyCustodyObject(decodedReceipt,"invocationId,parentAttempt,providerReference,providerStartId,proxyBirth,schemaVersion,terminal,unit,waitStatus") && decodedReceipt.waitStatus===0 ?
+      parseZeroCompletion(receiptPin.bytes) : parseHostedManagedProviderFailureReceipt(receiptPin.bytes);
   if (!sameDependencyProtectedReference(receipt.providerReference,birth.reference) || !encode(receipt.parentAttempt).equals(encode(attempt)) || receipt.unit !== row.unit) held();
   const pid = receipt.proxyBirth.slice(0,receipt.proxyBirth.indexOf(":"));
   try { lstatSync(`/proc/${pid}`); held(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -176,7 +211,7 @@ export function assertHostedManagedProviderFailureCreator(fence: HostedActivatio
         env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",SYSTEMD_COLORS:"0"}});
     if (observation.error || observation.status !== 0) held();
     const current = parseHostedManagedProviderTerminalFacts(row.unit,observation.stdout);
-    if (!encode(current).equals(encode(receipt.terminal))) held();
+    if (!matchesManagedProviderProxyWait(current,receipt.invocationId,receipt.waitStatus) || receipt.terminal!==null && !encode(current).equals(encode(receipt.terminal))) held();
   }
   // Every read FD is closed before the real descriptor collector; unchanged
   // protected bytes/references make the captured predecessor join stable.
@@ -188,4 +223,44 @@ export function assertHostedManagedProviderFailureCreator(fence: HostedActivatio
   const afterParent = readHostedReadonlyDependencyStart(fence,outer.startId), afterMaterial = readHostedReadonlyDependencyMaterial(fence,epoch.identity);
   if (!sameDependencyProtectedReference(afterParent.reference,parent.reference) || !sameDependencyProtectedReference(afterMaterial.reference,material.reference)) held();
   boundary(fence);
+  return Object.freeze({row,attempt,parent:parent.reference,material:material.reference,
+    preclaim:preclaim.reference,entry:entry.reference,preparation:preparation.reference,
+    qualification:qualification.reference,profile:profile.reference,birth:birth.reference,
+    completion:receiptPin.reference,receipt});
+}
+
+/** Historical facts only. Original SourceClosed must independently join every
+ * returned immutable reference to its actual prior release chain. This never
+ * creates a missing receipt or releases a child/owner/custody/HOME/use. */
+export function readOriginalHostedManagedProviderDischargedReceipt(fence:HostedActivationFence,startId:string,access:symbol) {
+  return dischargedReceipt(undefined,fence,startId,access);
+}
+export function readOriginalHostedManagedConsumerProviderDischargedReceipt(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,startId:string,access:symbol) {
+  return dischargedReceipt(context,fence,startId,access);
+}
+function dischargedBoundary(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,access:symbol):void {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
+  if(context)readOriginalHostedDependencyGenerationNativeScope(context,fence,access);else boundary(fence);
+}
+function dischargedReceipt(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,startId:string,access:symbol) {
+  dischargedBoundary(context,fence,access);if(!uuid(startId))held();
+  const epochPin=fixedPin(`${root}/readonly-epoch.json`,65536),epoch=parseHostedCustodyEpoch(wire(epochPin)),
+    row=epoch.reservations.find(v=>v.startId===startId),pin=fixedPin(`${root}/dependency-managed-provider-completions/${startId}.json`),v=wire(pin);
+  if(!row || row.state!==HostedCustodyReservationState.Terminal || row.unit!==`subscription-runtime-hosted-${startId}.service`)held();
+  const receipt=isDependencyCustodyObject(v,"invocationId,parentAttempt,providerReference,providerStartId,proxyBirth,schemaVersion,terminal,unit,waitStatus") && v.waitStatus===0 ?
+    parseZeroCompletion(pin.bytes):parseHostedManagedProviderFailureReceipt(pin.bytes);
+  if(receipt.unit!==row.unit || receipt.providerStartId!==startId)held();
+  const pid=receipt.proxyBirth.split(":")[0]!;
+  try{lstatSync(`/proc/${pid}`);held();}catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
+  if(!collectUnitNotFound(row.unit)) {
+    const observed=spawnSync("/usr/bin/systemctl",["show","--property=Id,InvocationID,ActiveState,SubState,MainPID,ControlPID,Job,ExecMainCode,ExecMainStatus,Result","--",row.unit],
+      {encoding:"utf8",stdio:["ignore","pipe","pipe"],timeout:5000,maxBuffer:4096,env:{PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",SYSTEMD_COLORS:"0"}});
+    if(observed.error || observed.status!==0)held();const terminal=parseHostedManagedProviderTerminalFacts(row.unit,observed.stdout);
+    if(!matchesManagedProviderProxyWait(terminal,receipt.invocationId,receipt.waitStatus) ||
+        receipt.terminal!==null && !encode(terminal).equals(encode(receipt.terminal)))held();
+  }
+  const kernel=new HostedReadonlyHostKernel();if(!context)kernel.operatorSession();kernel.drainQueuedStart(row);kernel.confirmTerminalDescendants(row);
+  if(!sameDependencyProtectedReference(fixedPin(pin.reference.path).reference,pin.reference) ||
+      !sameDependencyProtectedReference(fixedPin(epochPin.reference.path,65536).reference,epochPin.reference))held();
+  dischargedBoundary(context,fence,access);return Object.freeze({row,receipt,completion:pin.reference});
 }

@@ -7,11 +7,11 @@ import { isAbsolute, join, resolve } from "node:path";
 import {
   DependencyAdmissionError, DependencyAdmissionFailure as AdmissionFailure,
   parseDependencyOwner, sameDependencyOwnerIdentity, sameDependencyWorkspace,
-  DependencyOwnerPhase, DependencyOwnerKind, isDependencyConsumerOwner, sameDependencyProtectedReference,
+  DependencyOwnerPhase, DependencyOwnerKind, DependencyGenerationContinuityKind, assertDependencyGenerationBaselineTransition, dependencyGenerationContinuityRevision, isDependencyConsumerOwner, sameDependencyProtectedReference,
   type DependencyOwnerRecord, type DependencyOwnerStore, type DependencyWorkspaceIdentity,
 } from "@vioxen/subscription-runtime/worker-core";
 
-import type { DependencyGenerationRetirementVerifier } from "../../worker-core/dependency-environment/ports/dependency-generation-continuity";
+import type { DependencyGenerationRetirementVerifier, DependencyGenerationBaselineVerifier } from "../../worker-core/dependency-environment/ports/dependency-generation-continuity";
 
 export enum DependencyOwnerStorageFailure {
   Unsupported = "unsupported", InvalidConfig = "invalid_config", UnsafeRoot = "unsafe_root",
@@ -34,9 +34,10 @@ export class LocalDependencyOwnerStore implements DependencyOwnerStore {
     private readonly identity: BigIntStats,
     private readonly maxRecordBytes: number,
     private readonly generationRetirementVerifier?: DependencyGenerationRetirementVerifier,
+    private readonly generationBaselineVerifier?: DependencyGenerationBaselineVerifier,
   ) {}
 
-  static open(input: { readonly rootPath: string; readonly maxRecordBytes: number; readonly generationRetirementVerifier?: DependencyGenerationRetirementVerifier }): LocalDependencyOwnerStore {
+  static open(input: { readonly rootPath: string; readonly maxRecordBytes: number; readonly generationRetirementVerifier?: DependencyGenerationRetirementVerifier; readonly generationBaselineVerifier?: DependencyGenerationBaselineVerifier }): LocalDependencyOwnerStore {
     if (process.platform !== "linux") storageFailure(DependencyOwnerStorageFailure.Unsupported);
     if (!isAbsolute(input.rootPath) || resolve(input.rootPath) !== input.rootPath
       || !Number.isSafeInteger(input.maxRecordBytes) || input.maxRecordBytes < 1) {
@@ -50,7 +51,7 @@ export class LocalDependencyOwnerStore implements DependencyOwnerStore {
       if (!info.isDirectory() || !privateMode(info, 0o700n) || !sameIdentity(info, observed)) {
         storageFailure(DependencyOwnerStorageFailure.UnsafeRoot);
       }
-      return new LocalDependencyOwnerStore(input.rootPath, fd, info, input.maxRecordBytes, input.generationRetirementVerifier);
+      return new LocalDependencyOwnerStore(input.rootPath, fd, info, input.maxRecordBytes, input.generationRetirementVerifier, input.generationBaselineVerifier);
     } catch (error) { closeSync(fd); throw error; }
   }
 
@@ -118,15 +119,27 @@ export class LocalDependencyOwnerStore implements DependencyOwnerStore {
       if (current && current.version !== 1 && record.version !== 1) {
         const before = current.generationContinuity, after = record.generationContinuity;
         if (before && !after) admissionFailure(AdmissionFailure.InvalidRecord);
-        if (JSON.stringify(before) !== JSON.stringify(after)) {
+        const baseline = before?.kind === DependencyGenerationContinuityKind.BaselineAuthenticatedV1 ||
+          after?.kind === DependencyGenerationContinuityKind.BaselineAuthenticatedV1;
+        if (baseline) {
+          // Every claim/phase/null publication preserves the real exclusion
+          // interval, even when the serialized slot itself is unchanged.
+          try {
+            assertDependencyGenerationBaselineTransition(current,record);
+            if (!this.generationBaselineVerifier ||
+                this.generationBaselineVerifier.assertGenerationBaselineTransition({previousOwner:current,proposedOwner:record}) !== undefined) {
+              admissionFailure(AdmissionFailure.InvalidRecord);
+            }
+          } catch { admissionFailure(AdmissionFailure.InvalidRecord); }
+        } else if (JSON.stringify(before) !== JSON.stringify(after)) {
           // Retirement cannot release/change the held actual owner in this CAS.
           // The immutable receipt successor must already have been read back.
-          if (!after || current.version !== record.version || !current.owner || !record.owner || current.epoch !== record.epoch ||
+          if (!after || after.kind !== DependencyGenerationContinuityKind.RetiredReadyV1 || current.version !== record.version || !current.owner || !record.owner || current.epoch !== record.epoch ||
               current.owner.phase !== DependencyOwnerPhase.ExclusiveMutation ||
               record.owner.phase !== DependencyOwnerPhase.ExclusiveMutation ||
               !sameDependencyOwnerIdentity(current.owner, record.owner) ||
               after.operationId !== (current.owner.kind === DependencyOwnerKind.Maintenance ? current.owner.attempt.operationId : current.owner.attempt.attemptId) ||
-              (before && after.readyRevision <= before.unverifiedRevision) || !this.generationRetirementVerifier) {
+              (before && after.readyRevision <= dependencyGenerationContinuityRevision(before)) || !this.generationRetirementVerifier) {
             admissionFailure(AdmissionFailure.InvalidRecord);
           }
           try {

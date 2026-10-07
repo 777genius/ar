@@ -1,3 +1,14 @@
+import { claimOriginalHostedDependencyRGeneration } from "./hosted-dependency-generation-r-claim";
+import { fenceOriginalHostedDependencyRSourceOwner, releaseOriginalHostedDependencyRSourceOwner } from "./hosted-dependency-generation-r-source-closure";
+import { revokeOriginalHostedDependencyOriginResources } from "./hosted-dependency-original-revocation";
+import { releaseOriginalHostedDependencyCSourceOwner } from "./hosted-dependency-generation-source-closure";
+import { claimOriginalHostedDependencyCGeneration } from "./hosted-dependency-generation-c-claim";
+import { collectOriginalHostedDependencySnapshot } from "./hosted-dependency-original-snapshot";
+import type { OriginalHostedDependencyOriginEntry } from "./hosted-dependency-origin-entry";
+import { retireOriginalHostedDependencyGenerationSourceUse } from "./hosted-dependency-generation-source-retirement";
+import { readOriginalHostedDependencyPinnedRecord } from "./hosted-dependency-original-record-reader";
+import { beginOriginalHostedDependencyGenerationBarrier, assertOriginalHostedDependencyGenerationBarrier, markOriginalHostedDependencyGenerationRunning } from "./hosted-dependency-generation-controller";
+import { HostedDependencyGenerationBarrierPhase, HostedDependencySourceUsePhase, type HostedDependencyGenerationState } from "./hosted-dependency-generation-state";
 import { DependencyToolReadyReadStatus } from "../core/dependency-environment/dependency-tool-ready-reader";
 import { parseDependencyToolAdmissionQualification, dependencyToolAdmittedGuestConfig } from "../core/dependency-environment/dependency-tool-execution";
 import { readHostedDependencyUsableReceipt } from "./hosted-dependency-usable-receipt";
@@ -6,7 +17,7 @@ import { HostedDependencyWarmRetirementPhase, type HostedDependencyWarmRetiremen
 import { readHostedDependencyEstablishedReceipt, readHostedDependencyExistingCommittedReady } from "./hosted-dependency-receipts";
 import { retireOriginalHostedDependencySourceCleanup } from "./hosted-dependency-generation-retirement";
 import { openOriginalHostedDependencyRootDescriptorMaterial, openOriginalHostedManagedProviderDescriptorMaterial } from "./hosted-dependency-root-descriptor-opener";
-import { finishOriginalHostedDependencyColdTree, revokeOriginalHostedDependencyColdState } from "./hosted-dependency-cold-controller";
+import { finishOriginalHostedDependencyColdTree } from "./hosted-dependency-cold-controller";
 import { HostedDependencyColdPhase, HostedDependencyColdInstallerPhase, type HostedDependencyColdState } from "./hosted-dependency-cold-materialization-state";
 import { DependencyAdmissionError, DependencyAdmissionFailure } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedDependencyRetirementOwnerFacts } from "./hosted-dependency-retirement-facts";
@@ -23,7 +34,7 @@ import { captureManagedSessionArtifactFacts, captureManagedSessionMaterializatio
 import { formManagedDependencyProviderStartFacts } from "./hosted-managed-provider-start-facts";
 import { formManagedDependencyHomePreparationFacts } from "./hosted-managed-dependency-home-recipe-facts";
 import { assertHostedDependencyRootDirectoryPinFacts as assertDirectory } from "./hosted-dependency-root-physical-facts";
-import { requiresCurrentHostedDependencyRootPurpose as classifyCurrentHostedDependencyRootPurpose, isHostedManagedReadonlyOuterRuntime, collectCurrentHostedOrdinaryDependencyOrigin, rootIdentity, currentSessionModelExecutable, readHostedDependencyAttemptFacts as attemptFromFacts } from "./hosted-dependency-current-facts";
+import { requiresCurrentHostedDependencyRootPurpose as classifyCurrentHostedDependencyRootPurpose, isHostedManagedReadonlyOuterRuntime,  rootIdentity, currentSessionModelExecutable, readHostedDependencyAttemptFacts as attemptFromFacts } from "./hosted-dependency-current-facts";
 import { publishCurrentHostedManagedDependencyProvider } from "./hosted-managed-provider-start-record";
 import { publishOriginalHostedManagedProviderTerminal } from "./hosted-managed-provider-completion-record";
 import { OriginalHostedDependencyRootPurpose as RootPurposeFacade } from "./hosted-dependency-root-purpose-view";
@@ -40,7 +51,6 @@ import { awaitPrivateManagedProviderClose, HostedManagedProviderWaitDeadline } f
 import { preparePhysicalOriginalHostedDependencySessionHome } from "./hosted-managed-dependency-home-preparation";
 import { sameRootDescriptorStat as sameStat, readHostedDependencyRootDirectoryPin, assertHostedDependencyRootDescriptorMaterial, closePhysicalHostedDependencyRootDescriptor } from "./hosted-dependency-root-physical-facts";
 export { readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-physical-facts";
-import { collectActualHostedManagedReadonlyOrigin } from "./hosted-managed-readonly-origin-collector";
 import { createHostedManagedDependencySdkView } from "./hosted-managed-dependency-sdk-view";
 import { hostedManagedDependencyProviderInvocation, bindHostedDependencyToolChild, abandonHostedDependencyToolInvocation, assertHostedManagedDependencyToolRelease } from "./hosted-managed-dependency-tool-plan";
 import { spawnHostedFdChild, hostedFdLaunch } from "../provider-codex/app-server/adapters/hosted-fd-launch";
@@ -57,14 +67,12 @@ import { DependencyToolReadyProvenanceKind, DependencyOwnerPhase, isDependencyCo
 import { HostedCustodyReservationState } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
 import { assertHostedActivationFence, assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes, readHostedOrdinaryProcessOrigin, withHostedActivationFence, readHostedOrdinaryProviderFacts, HostedOrdinaryProviderReadPhase, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
-import { assertHostedRetainedToolDescriptors, type HostedRetainedToolFiles } from "../provider-codex/app-server/adapters/hosted-retained-tool-files";
+import { type HostedRetainedToolFiles } from "../provider-codex/app-server/adapters/hosted-retained-tool-files";
 import { observeHostedFdProcess } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { systemdObservationBudget } from "../provider-codex/app-server/adapters/systemd-service-arrays";
 import { assertHostedFdProcess, HostedFdLaunchKind } from "../provider-codex/app-server/adapters/hosted-fd-child";
 import { hostedDependencySystemdRunExecutable } from "../provider-codex/app-server/adapters/hosted-dependency-systemd-command";
 import { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
-import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { DependencyUnverifiedReason, DependencyReceiptState } from "../worker-core/dependency-environment/domain/dependency-receipt";
 import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
 import { dependencyToolQualificationRecordName, dependencyToolGuestConfigPath } from "../core/dependency-environment/dependency-tool-profile";
@@ -79,62 +87,35 @@ export type CurrentHostedDependencyOrigin = Readonly<{ [brand]: true }>;
 export enum CurrentHostedDependencyOriginKind { Ordinary = "ordinary", ManagedReadonlyLocal = "managed_readonly_local" }
 const hash = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 function invalid(): never { throw new Error("hosted_dependency_current_origin_unresolved"); }
-const contexts = new WeakMap<CurrentHostedDependencyOrigin, { digest: string; facts: CurrentHostedDependencyOriginFacts; scope?: HostedRetainedToolFiles; rootPurpose?: RootPurposeState; ordinaryEntry?: Readonly<{attempt: ReturnType<typeof attemptFromFacts>["attempt"]; producer:DependencyProtectedReference; entry:DependencyProtectedReference}>; ordinaryAdmitted?:boolean; cold?:HostedDependencyColdState; warmRetirement?:HostedDependencyWarmRetirementState }>();
+export function assertOriginalHostedDependencyPhysicalRecordAccess(access:symbol):void {if(access!==rootInternalAccess)invalid();}
+export function releaseCurrentHostedDependencyCSourceOwner(fence:HostedActivationFence,startId:string):void {
+  releaseOriginalHostedDependencyCSourceOwner(fence,startId,rootInternalAccess);
+}
+export function claimCurrentHostedReadonlyDependencyGeneration(fence:HostedActivationFence,startId:string) {
+  return claimOriginalHostedDependencyRGeneration(fence,startId,rootInternalAccess); }
+export function fenceCurrentHostedReadonlyDependencySourceOwner(fence:HostedActivationFence,result:import("../provider-codex/app-server/adapters/hosted-fd-launch").HostedForegroundResult):void {
+  fenceOriginalHostedDependencyRSourceOwner(fence,result,rootInternalAccess); }
+export function releaseCurrentHostedReadonlyDependencySourceOwner(fence:HostedActivationFence):void {
+  releaseOriginalHostedDependencyRSourceOwner(fence,rootInternalAccess); }
+export function claimCurrentHostedOrdinaryDependencyGeneration(fence:HostedActivationFence,startId:string) {
+  return claimOriginalHostedDependencyCGeneration(fence,startId,rootInternalAccess);
+}
+const contexts = new WeakMap<CurrentHostedDependencyOrigin, OriginalHostedDependencyOriginEntry>();
 let currentEntryOrigin:CurrentHostedDependencyOrigin|undefined;
 /** PRIVATE selected-path reader. Only names derived below from independently pinned start/installation are used; no exported arbitrary-path read port. */
-function selectedFile(path: string, maximum: number, privateFile = true) {
-  if (!/^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(path) || path.split("/").some(p => p === "." || p === "..")) invalid();
-  const ancestors: { path: string; stat: BigIntStats }[] = [];
-  for (let p = dirname(path);; p = dirname(p)) {
-    const stat = lstatSync(p, { bigint: true });
-    if (!stat.isDirectory() || stat.uid !== 0n || (stat.mode & 0o022n) ||
-        (privateFile && p === dirname(path) && (stat.mode & 0o077n))) invalid();
-    ancestors.push({ path: p, stat }); if (p === "/") break;
-  }
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const before = fstatSync(fd, { bigint: true }), entry = lstatSync(path, { bigint: true });
-    if (!before.isFile() || before.uid !== 0n || before.nlink !== 1n || (before.mode & (privateFile ? 0o077n : 0o022n)) ||
-        before.size < 1n || before.size > BigInt(maximum) || !sameStat(before,entry)) invalid();
-    const bytes = Buffer.alloc(Number(before.size) + 1); let length = 0;
-    while (length < bytes.length) { const count = readSync(fd,bytes,length,bytes.length-length,length); if (!count) break; length += count; }
-    if (BigInt(length) !== before.size || !sameStat(before,fstatSync(fd,{bigint:true})) || !sameStat(before,lstatSync(path,{bigint:true}))) invalid();
-    for (const p of ancestors) { const now = lstatSync(p.path,{bigint:true});
-      if (!now.isDirectory() || now.dev !== p.stat.dev || now.ino !== p.stat.ino || now.uid !== p.stat.uid || now.mode !== p.stat.mode) invalid(); }
-    const data = bytes.subarray(0,length), reference: DependencyProtectedReference = { path,
-      identity:{dev:String(before.dev),ino:String(before.ino)},sha256:hash(data) };
-    return { bytes:data, reference };
-  } finally { closeSync(fd); }
+function selectedFile(path:string,maximum:number,privateFile=true) {
+  return readOriginalHostedDependencyPinnedRecord(rootInternalAccess,path,maximum,privateFile);
 }
 function fixed(name: string, maximum = 65536) { return selectedFile(`${root}/${name}`,maximum); }
 function material(expected: DependencyProtectedReference, path: string, maximum = 262144, privateFile = true) {
   if (expected.path !== path) invalid(); const pin = selectedFile(path,maximum,privateFile);
   if (!sameDependencyProtectedReference(pin.reference,expected)) invalid(); return pin;
 }
-function assertSelectedDescriptors(scope:HostedRetainedToolFiles|undefined, purpose:RootPurposeState|undefined):void {
-  if (purpose?.descriptors.size) { if (scope !== undefined) invalid(); assertRootPurposeDescriptors(purpose); }
-  else if (scope === undefined) assertHostedProcessDescriptors(); else assertHostedRetainedToolDescriptors(scope);
-}
 function selectedSnapshot(fence: HostedActivationFence, scope?: HostedRetainedToolFiles, rootPurpose?: RootPurposeState,cold?:HostedDependencyColdState) {
-  assertHostedActivationFence(fence); assertHostedActivationOperator();
-  // Only the same privately retained actual FDA Installer role participates.
-  // Generic/regular FD census is unchanged; no supplied descriptor exemptions.
-  if(cold?.installerFrame && cold.installerPhase!==HostedDependencyColdInstallerPhase.Waited) {
-    const frame=cold.installerFrame;assertHostedFdProcess(frame.child,frame.unit,HostedFdLaunchKind.Installer,frame.command,frame.args);
-  }
-  const group = readFileSync("/proc/self/cgroup","utf8").trim();
-  if (/^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-[a-f0-9-]{36}\.service$/.test(group)) {
-    assertSelectedDescriptors(scope,rootPurpose);
-    const before = collectCurrentHostedOrdinaryDependencyOrigin(fence);
-    assertSelectedDescriptors(scope,rootPurpose);
-    const after = collectCurrentHostedOrdinaryDependencyOrigin(fence);
-    if (before.digest !== after.digest) invalid(); return after;
-  }
-  const before = collectActualHostedManagedReadonlyOrigin(fence);
-  assertSelectedDescriptors(scope,rootPurpose);
-  const after = collectActualHostedManagedReadonlyOrigin(fence);
-  if (after.digest !== before.digest) invalid();
-  return after;
+  return collectOriginalHostedDependencySnapshot(rootInternalAccess,fence,scope,rootPurpose,cold);
+}
+export function assertOriginalHostedDependencyRootPurposeDescriptorState(state:RootPurposeState,access:symbol):void {
+  if(access!==rootInternalAccess)invalid();assertRootPurposeDescriptors(state);
 }
 export type CurrentHostedDependencyOriginFacts = ReturnType<typeof selectedSnapshot>["facts"];
 /** Fixed process/history identity only; consumers still join actual owner. */
@@ -147,6 +128,8 @@ export function readCurrentHostedDependencyOrigin(fence: HostedActivationFence, 
 }
 export function assertCurrentHostedDependencyOrigin(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence): CurrentHostedDependencyOriginFacts {
   const retained = contexts.get(context); if (!retained) invalid();
+  if(retained.generation && (retained.generation.phase===HostedDependencyGenerationBarrierPhase.Retiring ||
+      retained.generation.phase===HostedDependencyGenerationBarrierPhase.Held))invalid();
   const current = selectedSnapshot(fence,retained.scope,retained.rootPurpose,retained.cold); if (current.digest !== retained.digest) invalid(); return current.facts;
 }
 /** Classification after preparation uses the SAME original authority and FD
@@ -187,18 +170,8 @@ export function consumeCurrentHostedOrdinaryDependencyExecution(fence:HostedActi
   retained.ordinaryAdmitted = true; return actual.attempt;
 }
 export function invalidateCurrentHostedDependencyOrigin(context: CurrentHostedDependencyOrigin): void {
-  const retained = contexts.get(context); let failure: unknown;
-  try {revokeOriginalHostedDependencyColdState(context,rootInternalAccess);}catch(error){failure=error;}
-  const provider = retained?.rootPurpose?.provider;
-  if (provider?.child) { provider.stopping = true;
-    try { hostedFdLaunch(provider.child).invalidate(); } catch (error) { failure = error; }
-  }
-  // Resource revocation is cleanup only. Delete authority even if physical close
-  // fails, so no failed revocation can leave a future helper permit alive.
-  try { for (const descriptor of [...(retained?.rootPurpose?.descriptors.keys() ?? [])]) {
-    try { descriptor.close(); } catch (error) { failure ??= error; }
-  } } finally { contexts.delete(context); if (currentEntryOrigin === context) currentEntryOrigin = undefined; if (currentRootOrigin === context) currentRootOrigin = undefined; }
-  if (failure !== undefined) throw failure;
+  try {revokeOriginalHostedDependencyOriginResources(context,contexts.get(context),rootInternalAccess);}
+  finally {contexts.delete(context);if(currentEntryOrigin===context)currentEntryOrigin=undefined;if(currentRootOrigin===context)currentRootOrigin=undefined;}
 }
 export type CurrentHostedManagedDependencyProvider = HostedDependencyManagedProviderFacts;
 function managedProviderBirth(context: CurrentHostedDependencyOrigin, fence: HostedActivationFence, unit: string): CurrentHostedManagedDependencyProvider {
@@ -241,6 +214,31 @@ export async function materializeCurrentHostedDependencyColdTree(context:Current
     retained.cold={phase:HostedDependencyColdPhase.Producing,binding:actual.binding,attempt:actual.attempt};
   });
   return finishOriginalHostedDependencyColdTree(context,rootInternalAccess);
+}
+/** The same original map arms exclusion before initial source/input reads. No
+ * request DTO can install state, coverage, an observation or a baseline. */
+export function armCurrentHostedDependencyGenerationBarrier(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence):void {
+  beginOriginalHostedDependencyGenerationBarrier(context,fence,rootInternalAccess);
+}
+export function markCurrentHostedDependencyGenerationRunning(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence):void {
+  markOriginalHostedDependencyGenerationRunning(context,fence,rootInternalAccess);
+}
+export function findOriginalHostedDependencyGenerationEntry(context:CurrentHostedDependencyOrigin,access:symbol):OriginalHostedDependencyOriginEntry {
+  if(access!==rootInternalAccess)invalid();const retained=contexts.get(context);if(!retained)invalid();return retained;
+}
+export function findOriginalHostedDependencyGenerationState(context:CurrentHostedDependencyOrigin,access:symbol):HostedDependencyGenerationState|undefined {
+  if(access!==rootInternalAccess)invalid();return contexts.get(context)?.generation;
+}
+export function prepareCurrentHostedDependencyGenerationSourceRetirement(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence):void {
+  retireOriginalHostedDependencyGenerationSourceUse(context,fence,rootInternalAccess);
+}
+export function holdCurrentHostedDependencyGenerationSourceUse(context:CurrentHostedDependencyOrigin):void {
+  const state=contexts.get(context)?.generation;if(state && state.phase!==HostedDependencyGenerationBarrierPhase.Unavailable){state.phase=HostedDependencyGenerationBarrierPhase.Held;state.sourceUse.phase=HostedDependencySourceUsePhase.Held;}
+}
+/** Internal actual-child selection only. Authenticate lexical access and the
+ * SAME original context before inspecting any retained native association. */
+export function assertCurrentHostedDependencyGenerationBarrier(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence):void {
+  assertOriginalHostedDependencyGenerationBarrier(context,fence,rootInternalAccess);
 }
 export { assertOriginalHostedDependencyColdProducer, readOriginalHostedDependencyColdSelection } from "./hosted-dependency-cold-controller";
 /** Internal association access only; no caller can create/replace a capture,

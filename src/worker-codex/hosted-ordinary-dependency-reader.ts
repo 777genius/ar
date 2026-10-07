@@ -21,7 +21,7 @@ import { ensureHostedDependencyDirectory, readHostedDependencyEstablishedReceipt
   readHostedDependencyCommittedAbsent, readHostedDependencyCommittedUnverified, readHostedDependencyReceipt,
   dependencyCoverageRevision, hostedDependencyReceiptHistoryRoot } from "./hosted-dependency-receipts";
 import { assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependency-installer";
-import { assertCurrentHostedDependencyAttempt, CurrentHostedDependencyOriginKind, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { assertCurrentHostedDependencyAttempt, claimCurrentHostedOrdinaryDependencyGeneration, CurrentHostedDependencyOriginKind, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { readCurrentHostedDependencySignedParentRecipe } from "./hosted-dependency-current-facts";
 
 const root = "/var/lib/subscription-runtime-host-policy";
@@ -80,7 +80,7 @@ export function assertHostedOrdinaryDependencyWriterBoundary(fence:HostedActivat
 /** Existing inspected producer invokes this after its exact parent reservation
  * and immutable start, before synchronous OS submission. The supplied startId
  * only selects the producer's actual start, never a workspace or permission. */
-export function preclaimHostedOrdinaryDependencyReader(fence:HostedActivationFence,startId:string):void {
+export function readHostedOrdinaryDependencyReaderProducerFacts(fence:HostedActivationFence,startId:string) {
   assertHostedActivationFence(fence); const original = pin(startName(startId)), start = parseHostedOrdinaryStart(decodeHostedActivationBytes(original.bytes));
   const actual = readHostedOrdinaryBirth(start.jobId), binding = readHostedDependencyBinding(start.jobId);
   if (binding?.version !== 2) return;
@@ -101,17 +101,27 @@ export function preclaimHostedOrdinaryDependencyReader(fence:HostedActivationFen
   if (creators.length !== 1) invalid(); const recipe = creators[0]!.launch;
   assertHostedDependencyParentRecipe(recipe.args,binding.jobRootDir,binding.workspace.canonicalPath);
   const bindingPin = pin(hostedDependencyBindingName(binding.jobId)); if (!bindingPin.bytes.equals(encode(binding))) invalid();
+  return Object.freeze({original,start,actual,binding,recipe,bindingPin});
+}
+/** Existing inspected producer selects its own fresh facts before any claim. */
+export function preclaimHostedOrdinaryDependencyReader(fence:HostedActivationFence,startId:string):void {
+  const selected=readHostedOrdinaryDependencyReaderProducerFacts(fence,startId);if(!selected)return;
+  const {original,start,actual,binding,recipe,bindingPin}=selected;
   // The genuine history store distinguishes factual null from broken history;
   // no project/NM traversal occurs here. Capture before opening the owner store.
   let receipt = receiptPin(binding);
-  const store = LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+  const active=claimCurrentHostedOrdinaryDependencyGeneration(fence,startId);
   let preclaim:DependencyConsumerPreclaim;
-  try {
-    const before = store.read(binding.workspace); if (before && before.version !== 2) invalid();
-    const attempt = claimDependencyConsumer(store,binding.workspace,{installationId:binding.installationId,bootId:start.bootId,
-      runtimeSha:binding.runtimeSha,grantDigest:binding.grantDigest,startId,unit:start.unit},randomUUID());
-    preclaim = captureDependencyConsumerPreclaim(store,binding.workspace,attempt);
-  } finally { store.close(); }
+  if(active)preclaim=active;
+  else {
+    const store = LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+    try {
+      const before = store.read(binding.workspace); if (before && before.version !== 2) invalid();
+      const attempt = claimDependencyConsumer(store,binding.workspace,{installationId:binding.installationId,bootId:start.bootId,
+        runtimeSha:binding.runtimeSha,grantDigest:binding.grantDigest,startId,unit:start.unit},randomUUID());
+      preclaim = captureDependencyConsumerPreclaim(store,binding.workspace,attempt);
+    } finally { store.close(); }
+  }
   if (!receipt) {
     // Protected legacy import is actual history publication, never an NM scan
     // or fabricated current Ready. The claim remains held through the import.

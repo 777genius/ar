@@ -24,3 +24,13 @@ export interface DependencyGenerationRetirementVerifier {
     readonly invalidation: DependencyGenerationContinuityInvalidation;
   }): void;
 }
+
+/** Fixed physical composition supplies a same-fence proof captured before
+ * opening store descriptors. The store supplies its OWN predecessor; this
+ * method must never reopen that store or perform a descriptor census. */
+export interface DependencyGenerationBaselineVerifier {
+  assertGenerationBaselineTransition(input: {
+    readonly previousOwner: Extract<DependencyOwnerRecord, { version: 2 | 3 }>;
+    readonly proposedOwner: Extract<DependencyOwnerRecord, { version: 2 | 3 }>;
+  }): void;
+}

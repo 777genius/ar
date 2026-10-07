@@ -9,6 +9,8 @@ import { LocalDependencyOwnerStore } from "../store-local-file/dependency-enviro
 import { hostedDependencyOwnerRoot, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { HostedReadonlyHostKernel } from "./hosted-readonly-host-kernel";
 import { assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependency-installer";
+import { DependencyGenerationContinuityKind } from "@vioxen/subscription-runtime/core";
+import { releaseCurrentHostedDependencyCSourceOwner } from "./hosted-current-dependency-origin";
 
 /** Called by the retained launch owner in the initial host supervisor, after
  * --wait. Fencing state denies future provider enqueues before ordered host
@@ -27,17 +29,25 @@ export function releaseHostedDependencyConsumer(fence: HostedActivationFence,
       session.bootId !== activation.bootId || session.supervisorId !== activation.supervisorId ||
       JSON.stringify(activation.ordinaryStarts.find(r => r.startId === reservation.startId)) !== JSON.stringify(reservation)) invalid();
   let store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
-  let attempt;
+  let attempt,active=false,alreadyReleased=false;
   try {
     const owner = store.read(binding.workspace);
-    if (!owner?.owner) return true;
-    if (!isDependencyConsumerOwner(owner.owner)) invalid();
-    attempt = owner.owner.attempt;
-    if (attempt.launch.startId !== reservation.startId || attempt.launch.installationId !== binding.installationId ||
-        attempt.launch.bootId !== activation.bootId || attempt.launch.runtimeSha !== binding.runtimeSha ||
-        attempt.launch.grantDigest !== binding.grantDigest) invalid();
-    fenceDependencyConsumer(store, binding.workspace, attempt);
+    active=!!owner && owner.version!==1 && owner.generationContinuity?.kind===DependencyGenerationContinuityKind.BaselineAuthenticatedV1;
+    if(!owner?.owner) {if(!active)return true;alreadyReleased=true;}
+    else {
+      if (!isDependencyConsumerOwner(owner.owner)) invalid();
+      attempt = owner.owner.attempt;
+      if (attempt.launch.startId !== reservation.startId || attempt.launch.installationId !== binding.installationId ||
+          attempt.launch.bootId !== activation.bootId || attempt.launch.runtimeSha !== binding.runtimeSha ||
+          attempt.launch.grantDigest !== binding.grantDigest) invalid();
+      // Selected Active C was fenced by its actual retained FDA final result.
+      // This release function cannot manufacture that association after loss.
+      if(active && owner.owner.phase!==DependencyOwnerPhase.Fenced)invalid();
+      fenceDependencyConsumer(store, binding.workspace, attempt);
+    }
   } finally { store.close(); }
+  if(alreadyReleased) {releaseCurrentHostedDependencyCSourceOwner(fence,reservation.startId);return true;}
+  if(!attempt)invalid();
   createReadonlyPrivateRecord(`${readonlySupervisorRoot}/dependency-attempt-fences/${reservation.startId}.json`,
     Buffer.from(JSON.stringify({ version: 1, startId: reservation.startId, attemptId: attempt.attemptId, epoch: attempt.epoch }) + "\n"));
   const owned = dependencyOwnedReservations(activation, reservation, attempt);
@@ -51,6 +61,10 @@ export function releaseHostedDependencyConsumer(fence: HostedActivationFence,
   // Installer is a separate sibling unit. Ordinary cgroup emptiness does not
   // cover it; a retained mapping needs its own consumed/fence/queue/empty proof.
   assertHostedDependencyInstallerAttemptDrained(attempt);
+  // The original fixed operation joins durable same-use revocation + native
+  // final proof before publication and captures its own store predecessor.
+  // No physical collector runs while this release store has open descriptors.
+  if(active) {releaseCurrentHostedDependencyCSourceOwner(fence,reservation.startId);return true;}
   store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
   try {
     const current = store.read(binding.workspace);

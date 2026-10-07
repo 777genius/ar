@@ -38,3 +38,5 @@ export * from "./host-infrastructure/fd-collector-profile";
 export * from "./dependency-environment/dependency-custody-evidence";
 
 export * from "./dependency-environment/dependency-generation-continuity";
+export * from "./dependency-environment/dependency-generation-baseline";
+export * from "./dependency-environment/dependency-generation-baseline-transition";

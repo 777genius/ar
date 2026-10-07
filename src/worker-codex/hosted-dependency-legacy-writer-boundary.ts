@@ -1,8 +1,9 @@
 import { constants, closeSync, lstatSync, openSync, readSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { types } from "node:util";
-import { DependencyAdmissionError, DependencyAdmissionFailure } from "@vioxen/subscription-runtime/core";
+import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyGenerationContinuityKind, isDependencyConsumerOwner, isDependencyCustodyObject, parseDependencyOwner } from "@vioxen/subscription-runtime/core";
 import { requiresCurrentHostedDependencyRootPurpose } from "./hosted-current-dependency-origin";
+import { readHostedActivationBytes, decodeHostedActivationBytes } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { hostedDependencyJobsRoot, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 
 function denied():never { throw new DependencyAdmissionError(DependencyAdmissionFailure.Unsupported); }
@@ -58,6 +59,32 @@ export function assertLegacyDependencyWriterWorkspace(path:string):string {
   if (!root.isDirectory() || root.uid!==0n || (root.mode&0o022n) || realpathSync(hostedDependencyJobsRoot)!==hostedDependencyJobsRoot) denied();
   const jobs=readdirSync(hostedDependencyJobsRoot,{withFileTypes:true});
   if(jobs.length>128)denied();
+  // An unmanaged evaluator has no positive indirect-write exclusion. A
+  // nominal unrelated cwd cannot preserve any enrolled Active generation.
+  for (const job of jobs) {
+    if (!job.isDirectory() || job.isSymbolicLink() || !/^TEST-[A-Za-z0-9_.-]{1,123}$/.test(job.name)) denied();
+    const binding=readHostedDependencyBinding(job.name);
+    const physical=lstatSync(`${hostedDependencyJobsRoot}/${job.name}/workspace`,{bigint:true});
+    if (!physical.isDirectory() || physical.isSymbolicLink() || physical.uid!==0n) denied();
+    if (binding && (String(physical.dev)!==binding.workspace.dev || String(physical.ino)!==binding.workspace.ino)) denied();
+    const name=`dependency-owners/${physical.dev}-${physical.ino}`;
+    if (readHostedActivationBytes(name+".lock")) denied();
+    const bytes=readHostedActivationBytes(name+".json");
+    if (bytes) { const owner=parseDependencyOwner(decodeHostedActivationBytes(bytes));
+      if (owner.version!==1 && owner.generationContinuity?.kind===DependencyGenerationContinuityKind.BaselineAuthenticatedV1) denied();
+      if(owner.owner && isDependencyConsumerOwner(owner.owner)) {
+        const pending=readHostedActivationBytes(`dependency-generation-barriers/pending/${owner.owner.attempt.attemptId}.json`);
+        if(pending) { const record=decodeHostedActivationBytes(pending);
+          if(!isDependencyCustodyObject(record,"actors,attempt,bindingSha256,version") || record.version!==1 ||
+              JSON.stringify(record.attempt)!==JSON.stringify(owner.owner.attempt))denied();
+          // Exact durable per-attempt denial remains while its real owner is
+          // held, even before a final observation/Active slot exists.
+          denied();
+        }
+      }
+    }
+    if (readHostedActivationBytes(name+".lock")) denied();
+  }
   let mountedScopeChecked=false;
   for(const job of jobs) {
     if(!job.isDirectory() || job.isSymbolicLink() || !/^TEST-[A-Za-z0-9_.-]{1,123}$/.test(job.name))denied();
