@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readdir, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,6 +14,12 @@ const trustedDependencyProviderLauncher = 'src/provider-codex/app-server/adapter
 // Additional code or imports in the leaf fail closed; consumers remain scanned.
 const trustedDependencyCommandLeaf = 'src/provider-codex/app-server/adapters/hosted-dependency-systemd-command.ts';
 const trustedDependencyCommandDeclaration = 'export const hostedDependencySystemdRunExecutable = "/usr/bin/systemd-run";\n';
+// Separate finite ROOT PUBLIC installation TCB, never a provider/job launch API.
+// Exact accepted39aa SOURCE and independent review bb1c09ce bind this one file.
+// Every byte edit requires fresh review and an explicit seal update; no directory exemption.
+const trustedPublicBootstrap = 'scripts/dependency-retention-os-test/bootstrap-public-stage-9ca.mts';
+const trustedPublicBootstrapBytes = 19090;
+const trustedPublicBootstrapSha256 = 'e0512bcc9ed4897e3f089f5d4b5ccf71433819b8bbdd498cb4c800b66d6d4fb1';
 const excludedDirectories = new Set(['node_modules', 'dist', '.git', 'docs', 'tests', '__tests__', 'fixtures', '__fixtures__', 'coverage']);
 const sourceExtension = /\.(?:[cm]?[jt]sx?|sh|bash|py)$/;
 const testFile = /(?:\.test\.|\.spec\.|\.node-test\.|-self-test\.)/;
@@ -104,12 +111,19 @@ export async function checkManagedLaunchBoundary(root = repositoryRoot) {
         if (name === launcher || name === trustedCustodyLauncher || name === trustedDependencyProviderLauncher ||
             name === 'scripts/check-managed-launch-boundary.mjs') continue;
         scanned++;
-        const source = await readFile(path, 'utf8');
+        const bytes = await readFile(path), source = bytes.toString('utf8');
+        const rawLaunches = findRawLaunches(source, name);
+        // Actual joined path avoids POSIX backslash-name aliases in normalized display names.
+        if (path === join(root, trustedPublicBootstrap)) {
+          if (bytes.length !== trustedPublicBootstrapBytes ||
+              createHash('sha256').update(bytes).digest('hex') !== trustedPublicBootstrapSha256) violations.push(`${name}:1`);
+          continue;
+        }
         if (name === trustedDependencyCommandLeaf) {
           if (source !== trustedDependencyCommandDeclaration) violations.push(`${name}:1`);
           continue;
         }
-        for (const line of findRawLaunches(source, name)) violations.push(`${name}:${line}`);
+        for (const line of rawLaunches) violations.push(`${name}:${line}`);
       }
     }
   }

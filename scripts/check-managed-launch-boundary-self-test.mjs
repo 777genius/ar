@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findRawLaunches, checkManagedLaunchBoundary } from './check-managed-launch-boundary.mjs';
@@ -59,6 +59,40 @@ try {
   await writeFile(join(adapters, 'unapproved-provider-launch.ts'), 'const command = "/usr/bin/systemd-run";\n');
   assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
     ['src/provider-codex/app-server/adapters/unapproved-provider-launch.ts:1']);
+  await rm(join(adapters, 'unapproved-provider-launch.ts'));
+  // Read the actual approved SOURCE bytes; never import or execute the ROOT installer.
+  const approved = await readFile(new URL('./dependency-retention-os-test/bootstrap-public-stage-9ca.mts', import.meta.url));
+  assert.ok(findRawLaunches(approved.toString('utf8'), 'bootstrap-public-stage-9ca.mts').length > 0);
+  const publicDirectory = join(root, 'scripts/dependency-retention-os-test');
+  await mkdir(publicDirectory);
+  const publicName = 'scripts/dependency-retention-os-test/bootstrap-public-stage-9ca.mts';
+  const bootstrap = join(root, publicName);
+  await writeFile(bootstrap, approved);
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, []);
+  const replacementCharacter = approved.indexOf(Buffer.from('SOURCE'));
+  assert.ok(replacementCharacter >= 0);
+  for (const changed of [
+    Buffer.concat([approved, Buffer.from('\nspawn("/usr/bin/systemd-run", process.argv.slice(2));\n')]),
+    Buffer.from('const harmless = true;\n'),
+    ...[0x80, 0x81].map(byte => { const copy = Buffer.from(approved); copy[replacementCharacter] = byte; return copy; }),
+  ]) {
+    await writeFile(bootstrap, changed);
+    assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, [`${publicName}:1`]);
+  }
+  await writeFile(bootstrap, approved);
+  const foreign = join(publicDirectory, 'unapproved-public-bootstrap.mts');
+  await writeFile(foreign, approved);
+  assert.ok((await checkManagedLaunchBoundary(root)).violations.some(name => name.startsWith('scripts/dependency-retention-os-test/unapproved-public-bootstrap.mts:')));
+  await writeFile(foreign, 'spawn("/usr/bin/systemd-run", args);\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, ['scripts/dependency-retention-os-test/unapproved-public-bootstrap.mts:1']);
+  await rm(foreign);
+  if (process.platform !== 'win32') {
+    const alias = join(root, 'scripts', 'dependency-retention-os-test\\bootstrap-public-stage-9ca.mts');
+    await writeFile(alias, approved);
+    assert.ok((await checkManagedLaunchBoundary(root)).violations.length > 0, 'POSIX backslash display alias is not the approved physical path');
+    await rm(alias);
+  }
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, []);
 } finally {
   await rm(root, { recursive: true, force: true });
 }
