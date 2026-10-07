@@ -1,3 +1,4 @@
+import * as readonlyKernel from "../hosted-readonly-host-kernel";
 import "./absent-host-scratch-fixture";
 import "./unmanaged-goal-host-fixture";
 import { createHash } from "node:crypto";
@@ -5,7 +6,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { codexGoalAccountSlots, runCodexGoal } from "../codex-goal-runner";
 import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
 import { FakeAppServerFactory } from "../../provider-codex/app-server/testing/fake-app-server";
@@ -70,19 +71,6 @@ vi.mock("../hosted-readonly-epoch-store", () => ({
     publishEpoch(epoch: HostedCustodyEpoch) { facts.epoch = parseHostedCustodyEpoch(epoch); }
   },
 }));
-// Legacy readonly fixtures do not exercise protected managed-provider history.
-// Its new kernel back-edge re-enters a pending partial importOriginal mock.
-// Refuse this unrelated lane rather than simulate its native/origin evidence.
-vi.mock("../hosted-managed-provider-failure-recovery", () => {
-  const unexpectedHistoryCall = (): never => { throw new Error("unexpected managed-provider history in readonly fixture"); };
-  return {
-    parseHostedManagedProviderFailureReceipt: unexpectedHistoryCall,
-    assertHostedManagedProviderFailureCreator: unexpectedHistoryCall,
-    readOriginalHostedManagedProviderCreator: unexpectedHistoryCall,
-    readOriginalHostedManagedProviderDischargedReceipt: unexpectedHistoryCall,
-    readOriginalHostedManagedConsumerProviderDischargedReceipt: unexpectedHistoryCall,
-  } satisfies Record<keyof typeof import("../hosted-managed-provider-failure-recovery"), typeof unexpectedHistoryCall>;
-});
 // These legacy readonly fixtures must never execute the dependency cold protocol.
 // Its new import cycle reenters the kernel while the partial kernel mock awaits
 // importOriginal. Keep the real kernel helpers; refuse every cold call instead.
@@ -99,24 +87,23 @@ vi.mock("../hosted-dependency-cold-controller", () => {
     revokeOriginalHostedDependencyColdState: unexpectedColdCall,
   } satisfies Record<keyof typeof import("../hosted-dependency-cold-controller"), typeof unexpectedColdCall>;
 });
-vi.mock("../hosted-readonly-host-kernel", async original => ({
-  ...await original<typeof import("../hosted-readonly-host-kernel")>(),
-  readHostedReadonlyHostInventory: () => JSON.parse(inventoryBytes().toString()),
-  HostedReadonlyHostKernel: class {
-    session() { return { hostId: "synthetic-host", bootId: "synthetic-boot", supervisorId: "synthetic-supervisor" }; }
-    verifyRuntimeOwner() {} // Explicit synthetic outer ownership.
-    verifyExclusiveInventory() {}
-    verifyDescriptorBoundary() {}
-    fenceCreator(reservation: { startId: string; unit: string; creatorId: string }) {
-      if (!facts.records.has(completionPath(reservation))) throw new Error("creator_not_fenced");
-    }
-    drainQueuedStart() {}
-    confirmTerminalDescendants() {}
-  },
-}));
 vi.mock("node:child_process", async original => ({
   ...await original<typeof import("node:child_process")>(), spawn: facts.spawn, spawnSync: facts.stop,
 }));
+beforeEach(() => {
+  // One actual class/namespace: imports caught inside cycles use these same spies.
+  const kernel = readonlyKernel.HostedReadonlyHostKernel.prototype;
+  vi.spyOn(readonlyKernel, "readHostedReadonlyHostInventory").mockImplementation(() => JSON.parse(inventoryBytes().toString()));
+  vi.spyOn(kernel, "session").mockImplementation(() => ({ hostId: "synthetic-host", bootId: "synthetic-boot", supervisorId: "synthetic-supervisor" }));
+  vi.spyOn(kernel, "verifyRuntimeOwner").mockImplementation(() => {}); // Explicit synthetic outer ownership.
+  vi.spyOn(kernel, "verifyExclusiveInventory").mockImplementation(() => {});
+  vi.spyOn(kernel, "verifyDescriptorBoundary").mockImplementation(() => {});
+  vi.spyOn(kernel, "fenceCreator").mockImplementation(reservation => {
+    if (!facts.records.has(completionPath(reservation))) throw new Error("creator_not_fenced");
+  });
+  vi.spyOn(kernel, "drainQueuedStart").mockImplementation(() => {});
+  vi.spyOn(kernel, "confirmTerminalDescendants").mockImplementation(() => {});
+});
 afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks(); });
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
