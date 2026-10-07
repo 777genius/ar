@@ -219,6 +219,7 @@ export function registerDependencyConsumerAdmissionTests(input: {
     });
     it("fenced owner after durable recovery reads denies private callback before session reread or runtime effects", async () => {
       const p = prepared(), attempt = running(p), providerInstanceId = "codex:TEST-managed-recovery";
+      expect(() => assertHostedDependencyExecutionWorkspace(workspacePath)).not.toThrow();
       const captured: runtimeFactory.FileBackendCodexWorkerRuntimeParts[] = [];
       const createRuntime = runtimeFactory.createFileBackendCodexWorkerRuntime;
       vi.spyOn(runtimeFactory, "createFileBackendCodexWorkerRuntime").mockImplementation(args => {
@@ -263,19 +264,27 @@ export function registerDependencyConsumerAdmissionTests(input: {
       try {
         await worker.start();
         const resumed = worker.resumeManagedRun({ runId, requestId, answer: "TEST answer", resumeHandle });
-        const refused = expect(resumed).rejects.toThrow("dependency_admission:stale_attempt");
+        const refused = expect(resumed).rejects.toThrow(/^dependency_admission:unsupported$/);
         await enteredRecord;
         expect(recordReads).toHaveBeenCalledOnce(); expect(reads).not.toHaveBeenCalled();
         allowRecord(); await enteredSession;
+        // Both real reads settled while the same selected start was admitted.
+        expect(() => assertHostedDependencyExecutionWorkspace(workspacePath)).not.toThrow();
         const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
-        try { fenceDependencyConsumer(store, p.binding.workspace, attempt); } finally { store.close(); }
+        try {
+          expect(store.read(p.binding.workspace)?.owner).toEqual({ phase: "running", attempt });
+          fenceDependencyConsumer(store, p.binding.workspace, attempt);
+          const fenced = store.read(p.binding.workspace);
+          expect(fenced?.workspace).toEqual(p.binding.workspace);
+          expect(fenced?.owner).toEqual({ phase: "fenced", attempt });
+        } finally { store.close(); }
         allowSession(); await refused;
         expect(reads.mock.calls.map(([args]) => args.purpose)).toEqual(["run"]);
         expect(refresh).not.toHaveBeenCalled(); expect(workspace).not.toHaveBeenCalled();
         expect(input.fixture.spawn).not.toHaveBeenCalled();
         expect(readFileSync(input.local(workspacePath + "/dirty-source"), "utf8")).toBe("original dirty TEST bytes\n");
         const retained = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
-        try { expect(retained.read(p.binding.workspace)?.owner?.phase).toBe("fenced"); } finally { retained.close(); }
+        try { expect(retained.read(p.binding.workspace)?.owner).toEqual({ phase: "fenced", attempt }); } finally { retained.close(); }
       } finally { allowRecord(); allowSession(); await worker.dispose(); }
     });
     it("profile environment cannot borrow the trusted sibling's workspace", () => {
