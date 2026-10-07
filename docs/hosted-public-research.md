@@ -245,8 +245,10 @@ before the synchronous switch to stdout/stdin forwarding. The explicit 300-secon
 budget matches the provider service TimeoutStartSec; the research-only outer
 app-server startup is 330 seconds to cover pre-submission verification and handoff. Once the complete ready frame is observed, a separate
 10-second handoff bound matches the fixed launcher's bootstrap deadline. Each
-material walk still enforces its original byte/file/time limits; timeout is denial,
-including a retained finite file/artifact deadline observation, never admission.
+artifact walk and each executable byte validation have a finite 30-second budget,
+including initial custody and fresh descriptor/path checks on cache hits. The
+original byte/file limits remain; timeout is denial, including a retained finite
+file/artifact deadline observation, never admission.
 These private helper changes introduce no composition or provider SPI. Genuine
 shared-Host/native-provider qualification remains a separate root-run gate.
 Pre-submission and transport denials retain a root-private `provider-failure.json`
