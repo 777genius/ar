@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants, type BigIntStats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, statfsSync, type BigIntStats } from "node:fs";
 import { lstat, open, readFile, statfs, type FileHandle } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -204,6 +204,113 @@ export async function captureNpmInstallInputs(input: {
     for (const anchor of [...files, ...directories.slice().reverse()]) {
       try { await anchor.handle.close(); } catch { closeFailed = true; }
     }
+    if (closeFailed) return { status: NpmInputCaptureStatus.Unknown, reason: NpmInputCaptureReason.Access };
+  }
+}
+
+export type QualifiedNpmInstallInputs = Extract<NpmInstallInputCapture, { status: NpmInputCaptureStatus.Qualified }>;
+export type NpmInputRevalidation = { readonly status: NpmInputCaptureStatus.Qualified }
+  | { readonly status: NpmInputCaptureStatus.Unsupported | NpmInputCaptureStatus.Unknown; readonly reason: NpmInputCaptureReason };
+
+/** Current selected-byte comparison for an actual final synchronous host fence.
+ * Fresh retained descriptors do not confer exclusion or authority. The caller
+ * must still hold the authentic physical owner and covered creator boundary.
+ * Unknown current bytes are compared directly, never hashed or returned.
+ */
+export function revalidateNpmInstallInputs(input: {
+  readonly capture: QualifiedNpmInstallInputs; readonly maxDurationMs: number;
+}): NpmInputRevalidation {
+  const retained: { fd: number; info: BigIntStats; mount: string; parent?: number; name?: string }[] = [];
+  const openedFiles: number[] = [];
+  try {
+    if (process.platform !== "linux" || statfsSync("/proc/self/fd", { bigint: true }).type !== 0x9fa0n) {
+      unknown(NpmInputCaptureReason.UnsupportedPlatform);
+    }
+    const captured = input.capture, path = captured.workspace.canonicalPath;
+    if (!isAbsolute(path) || resolve(path) !== path || path.length > 4096 || path.includes("\0") ||
+        Buffer.from(path).toString() !== path || !Object.values(DependencyNpmLockName).includes(captured.lockName) ||
+        !Number.isSafeInteger(input.maxDurationMs) || input.maxDurationMs <= 0 ||
+        !(captured.packageBytes instanceof Uint8Array) || !(captured.lockBytes instanceof Uint8Array) ||
+        captured.packageBytes.length + captured.lockBytes.length > 64 * 1024 * 1024) unknown(NpmInputCaptureReason.InvalidRequest);
+    const started = performance.now();
+    const check = (): void => { if (performance.now() - started > input.maxDurationMs) unknown(NpmInputCaptureReason.Bounds); };
+    const mounted = (fd: number): string => {
+      const info = readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"), id = /^mnt_id:\s*(\d+)\s*$/m.exec(info)?.[1];
+      if (!id || info.length > 65536) unknown(NpmInputCaptureReason.UnsafeInput);
+      return id;
+    };
+    const at = (fd: number, name: string): string => `/proc/self/fd/${fd}/${name}`;
+    const retain = (path: string, parent?: number, name?: string) => {
+      check();
+      const fd = openSync(path, directoryFlags);
+      openedFiles.push(fd);
+      const anchor = { fd, info: fstatSync(fd, { bigint: true }), mount: mounted(fd),
+        ...(parent !== undefined ? { parent } : {}), ...(name ? { name } : {}) };
+      retained.push(anchor);
+      return anchor;
+    };
+    let root = retain("/");
+    for (const name of path.split("/").filter(Boolean)) root = retain(at(root.fd, name), root.fd, name);
+    if (String(root.info.dev) !== captured.workspace.dev || String(root.info.ino) !== captured.workspace.ino) {
+      unknown(NpmInputCaptureReason.WorkspaceChanged);
+    }
+    const exists = (name: string): BigIntStats | null => {
+      try { return lstatSync(at(root.fd, name), { bigint: true }); }
+      catch (error) { if (code(error) === "ENOENT") return null; throw error; }
+    };
+    const membership = (): void => {
+      if (exists(".npmrc")) unsupported(NpmInputCaptureReason.ProjectConfig);
+      if (captured.lockName === DependencyNpmLockName.PackageLock && exists(DependencyNpmLockName.Shrinkwrap)) unknown(NpmInputCaptureReason.Unstable);
+    };
+    membership();
+    for (const file of [{ name: "package.json", bytes: captured.packageBytes, expected: captured.packageFile },
+      { name: captured.lockName, bytes: captured.lockBytes, expected: captured.lockFile }]) {
+      check();
+      const before = exists(file.name);
+      if (!before || !before.isFile() || before.nlink !== 1n || (before.mode & 0o022n) !== 0n ||
+          String(before.dev) !== file.expected.dev || String(before.ino) !== file.expected.ino ||
+          String(before.mode) !== file.expected.mode || String(before.size) !== file.expected.size ||
+          before.size !== BigInt(file.bytes.length)) unknown(NpmInputCaptureReason.Unstable);
+      const fd = openSync(at(root.fd, file.name), fileFlags);
+      openedFiles.push(fd);
+      if (!sameFile(before, fstatSync(fd, { bigint: true }))) unknown(NpmInputCaptureReason.Unstable);
+      if (mounted(fd) !== root.mount || mounted(fd) !== file.expected.mountId) unknown(NpmInputCaptureReason.MountCrossing);
+      const buffer = Buffer.alloc(Math.min(65536, Math.max(1, file.bytes.length)));
+      let offset = 0;
+      while (offset < file.bytes.length) {
+        check();
+        const count = readSync(fd, buffer, 0, Math.min(buffer.length, file.bytes.length - offset), offset);
+        if (!count || !buffer.subarray(0, count).equals(file.bytes.subarray(offset, offset + count))) unknown(NpmInputCaptureReason.Unstable);
+        offset += count;
+      }
+      const after = exists(file.name);
+      if (readSync(fd, buffer, 0, 1, offset) || !after || !sameFile(before, after) ||
+          !sameFile(before, fstatSync(fd, { bigint: true }))) unknown(NpmInputCaptureReason.Unstable);
+      const verify = openSync(at(root.fd, file.name), fileFlags);
+      openedFiles.push(verify);
+      if (!sameFile(before, fstatSync(verify, { bigint: true }))) unknown(NpmInputCaptureReason.Unstable);
+      if (mounted(fd) !== file.expected.mountId || mounted(verify) !== file.expected.mountId) unknown(NpmInputCaptureReason.MountCrossing);
+    }
+    for (const anchor of retained) {
+      check();
+      if (!identity(anchor.info, fstatSync(anchor.fd, { bigint: true }))) unknown(NpmInputCaptureReason.WorkspaceChanged);
+      if (mounted(anchor.fd) !== anchor.mount) unknown(NpmInputCaptureReason.MountCrossing);
+      if (anchor.parent !== undefined && anchor.name) {
+        const fd = openSync(at(anchor.parent, anchor.name), directoryFlags);
+        openedFiles.push(fd);
+        if (!identity(anchor.info, fstatSync(fd, { bigint: true }))) unknown(NpmInputCaptureReason.WorkspaceChanged);
+        if (mounted(fd) !== anchor.mount) unknown(NpmInputCaptureReason.MountCrossing);
+      }
+    }
+    membership(); check();
+    return { status: NpmInputCaptureStatus.Qualified };
+  } catch (error) {
+    if (error instanceof CaptureFailure) return { status: error.status, reason: error.reason };
+    return { status: NpmInputCaptureStatus.Unknown, reason: ["ELOOP", "ENOTDIR"].includes(code(error) ?? "")
+      ? NpmInputCaptureReason.UnsafeInput : NpmInputCaptureReason.Access };
+  } finally {
+    let closeFailed = false;
+    for (const fd of openedFiles.reverse()) { try { closeSync(fd); } catch { closeFailed = true; } }
     if (closeFailed) return { status: NpmInputCaptureStatus.Unknown, reason: NpmInputCaptureReason.Access };
   }
 }

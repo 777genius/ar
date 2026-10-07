@@ -24,6 +24,7 @@ import { HostedReadonlyEpochStore } from "./hosted-readonly-epoch-store";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { readHostedPrivateBytes, hostedReadonlyPolicyRoot } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot, readonlyRevokedRoot } from "./hosted-readonly-custody";
+import { issueFreshHostedManifestPlacement } from "./hosted-dependency-manifest-placement";
 
 /** Installation, origin and activation persistence under the common host fence.
  * Authority derives from independently staged inventory and actual kernel facts;
@@ -131,7 +132,7 @@ export class HostedInstallationActivationStore {
   /** Root installation migration derives its identity from the independently
    * staged same artifact and finite inventory. No caller-authored approval JSON. */
   install(): HostedActivation {
-    return withHostedActivationFence(() => {
+    return withHostedActivationFence(fence => {
       const kernel = new HostedReadonlyHostKernel(), session = kernel.operatorSession();
       kernel.verifyExclusiveInventory(); kernel.verifyDescriptorBoundary();
       const binding = inspectedInstallation();
@@ -151,14 +152,14 @@ export class HostedInstallationActivationStore {
         const path = join(readonlySupervisorRoot, directory), stat = lstatSync(path);
         if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o077) || readdirSync(path).length) invalid();
       }
-      return this.createInstallation(binding, session, null);
+      return this.createInstallation(binding, session, null, fence);
     });
   }
 
   /** Explicit migration of retained managed custody. No inferred empty history,
    * stage rebinding, grant creation, revocation removal or automatic activation. */
   installManaged(): HostedActivation {
-    return withHostedActivationFence(() => {
+    return withHostedActivationFence(fence => {
       const kernel = new HostedReadonlyHostKernel(), session = kernel.operatorSession();
       const binding = inspectedInstallation();
       kernel.verifyExclusiveInventory(); kernel.verifyDescriptorBoundary();
@@ -187,13 +188,14 @@ export class HostedInstallationActivationStore {
         const path = join(readonlySupervisorRoot, directory), stat = lstatSync(path);
         if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o077) || readdirSync(path).length) invalid();
       }
-      return this.createInstallation(binding, session, digest(enrollment));
+      return this.createInstallation(binding, session, digest(enrollment), fence);
     });
   }
 
   private createInstallation(binding: Omit<HostedInstallation, "schemaVersion" | "installationId">,
-    session: Pick<HostedActivation, "hostId" | "bootId" | "supervisorId">, enrollmentSha256: string | null): HostedActivation {
+    session: Pick<HostedActivation, "hostId" | "bootId" | "supervisorId">, enrollmentSha256: string | null, fence: HostedActivationFence): HostedActivation {
     const installation = parseHostedInstallation({ ...binding, schemaVersion: 1, installationId: randomUUID() });
+    issueFreshHostedManifestPlacement(fence, installation);
     const catalog = { schemaVersion: 1, installationId: installation.installationId, revision: 1, origins: [] };
     const catalogBytes = encoded(catalog);
     const activation = parseHostedActivation({ schemaVersion: 1, installationId: installation.installationId,

@@ -11,7 +11,8 @@ import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysica
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import { isHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import { hasHostedDependencyFreshAbsence, materializeHostedDependencyAbsence, matchesHostedDependencyReady,
-  readHostedDependencyReceipt, hostedDependencyObservationLimits } from "./hosted-dependency-materialization";
+  readHostedDependencyReceipt, hostedDependencyObservationLimits, readHostedDependencyKeyInputs,
+  assertHostedDependencyKeyInputsCurrent } from "./hosted-dependency-materialization";
 
 /** First supported profile: safe warm TEST reuse and fresh script-free npm.
  * Actual origin and private grant decide authority; request config carries none.
@@ -64,8 +65,11 @@ export async function admitHostedDependencyConsumer(config: CodexGoalRunConfig):
   });
   // Capture safety while durable ExclusiveMutation prevents other managed
   // consumers/materializers. Incomplete capture stays held, never legacy reuse.
+  const readyInputs = !admission.absent && admission.receipt?.state === DependencyReceiptState.Ready
+    ? await readHostedDependencyKeyInputs(admission.binding) : undefined;
   if (admission.absent) await materializeHostedDependencyAbsence(admission.binding, admission.attempt);
-  else if (admission.receipt?.state !== DependencyReceiptState.Ready || !matchesHostedDependencyReady(admission.binding, admission.receipt)) {
+  else if (!readyInputs || admission.receipt?.state !== DependencyReceiptState.Ready ||
+      !matchesHostedDependencyReady(admission.binding, admission.receipt, readyInputs)) {
     const observation = await observeDependencyTree({ workspacePath: admission.binding.workspace.canonicalPath,
       treeName: "node_modules", expectedWorkspace: admission.binding.workspace, limits: hostedDependencyObservationLimits });
     if (observation.status !== DependencyTreeObservationStatus.Complete) fail(Failure.UnsafeTree);
@@ -78,6 +82,7 @@ export async function admitHostedDependencyConsumer(config: CodexGoalRunConfig):
       DependencyOwnerPhase.ExclusiveMutation);
     const current = readHostedDependencyBinding(String(origin.start.jobId));
     if (!current || JSON.stringify(current) !== JSON.stringify(admission.binding)) fail(Failure.Unsupported);
+    if (readyInputs) assertHostedDependencyKeyInputsCurrent(admission.binding, readyInputs);
     const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
     try { markDependencyConsumerRunning(store, admission.binding.workspace, admission.attempt); }
     finally { store.close(); }

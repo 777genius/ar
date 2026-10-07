@@ -24,10 +24,11 @@ import { createHostedDependencyInstallerPlan, assertHostedDependencyInstallerPla
 
 export type HostedDependencyInstallerRequest = {
   readonly workspace: DependencyWorkspaceIdentity; readonly attempt: DependencyAttempt;
-  readonly lockName: DependencyNpmLockName.PackageLock;
+  readonly lockName: DependencyNpmLockName;
   readonly packageBytes: Buffer; readonly lockBytes: Buffer;
 };
 export type HostedDependencyInstallerCompletion = {
+  readonly lockName: DependencyNpmLockName;
   readonly recipe: HostedDependencyInstallerRecipe; readonly startId: string; readonly unit: string;
   readonly inputSha256: string; readonly profileSha256: string; readonly completionSha256: string;
   readonly output: DependencyWorkspaceIdentity;
@@ -136,8 +137,8 @@ export class HostedDependencyInstaller {
   /** Factual completion only. Unknown start/completion/drain retains every
    * partial output and the caller's durable ExclusiveMutation ownership. */
   async install(request: HostedDependencyInstallerRequest): Promise<HostedDependencyInstallerCompletion> {
-    if (request.lockName !== DependencyNpmLockName.PackageLock) fail();
-    const inputs = qualifyHostedDependencyInstallerInputs(request.packageBytes, request.lockBytes), startId = randomUUID();
+    if (!Object.values(DependencyNpmLockName).includes(request.lockName)) fail();
+    const inputs = qualifyHostedDependencyInstallerInputs(request.packageBytes, request.lockBytes, request.lockName), startId = randomUUID();
     const unit = `subscription-runtime-installer-${startId}.service`;
     const prepared = withHostedActivationFence(fence => {
       assertOwner(fence, request);
@@ -184,7 +185,7 @@ export class HostedDependencyInstaller {
         const opened = fstatSync(fd, { bigint: true }), after = lstatSync(path, { bigint: true });
         if (before.dev !== opened.dev || before.ino !== opened.ino || before.dev !== after.dev || before.ino !== after.ino) fail();
         createReadonlyPrivateRecord(join(prepared.plan.directory, "terminal.json"), encode({ schemaVersion: 1, startId, emptySha256, completionSha256: digest(completion), output: { dev: String(before.dev), ino: String(before.ino) } }));
-        return { recipe: HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1, startId, unit, inputSha256: inputs.sha256,
+        return { lockName: inputs.lockName, recipe: HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1, startId, unit, inputSha256: inputs.sha256,
           profileSha256: prepared.profileSha256, completionSha256: digest(completion), output: { canonicalPath: path, dev: String(before.dev), ino: String(before.ino) } };
       } finally { closeSync(fd); }
     });

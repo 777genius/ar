@@ -8,7 +8,7 @@ import {
   type DependencyTestNpmToolchain,
 } from "../../../worker-core/dependency-environment/domain/dependency-install-key";
 import { buildTestNpmDependencyInstallKey } from "../build-test-npm-dependency-install-key";
-import { captureNpmInstallInputs, NpmInputCaptureReason as Reason, NpmInputCaptureStatus as Status,
+import { captureNpmInstallInputs, revalidateNpmInstallInputs, NpmInputCaptureReason as Reason, NpmInputCaptureStatus as Status,
   type NpmInstallInputCapture } from "../capture-npm-install-inputs";
 
 // Mutable module wrapper permits a deterministic real-FS race barrier. All
@@ -178,6 +178,60 @@ describe.skipIf(process.platform !== "linux")("closed npm input capture", () => 
       expect(await fs.readFile(f.packagePath)).toEqual(packageBytes);
       expect(await fs.readFile(f.packageLock)).toEqual(lockBytes);
       expect(qualified(await f.capture()).lockBytes).toEqual(Uint8Array.from(lockBytes));
+    } finally { await f.cleanup(); }
+  });
+
+  it("revalidates current bytes and refuses same-inode same-size mutation despite restored mtime", async () => {
+    const f = await fixture();
+    try {
+      await fs.writeFile(f.shrinkwrap, encode(lock), { mode: 0o600 });
+      const captured = qualified(await f.capture()), old = await fs.lstat(f.shrinkwrap);
+      const check = () => revalidateNpmInstallInputs({ capture: captured, maxDurationMs: bounds.maxDurationMs });
+      expect(check()).toEqual({ status: Status.Qualified });
+      const changed = Buffer.from(captured.lockBytes);
+      const offset = changed.indexOf(Buffer.from('"version":"1.0.0"'));
+      expect(offset).toBeGreaterThanOrEqual(0);
+      changed[offset + '"version":"'.length] = "2".charCodeAt(0);
+      await fs.writeFile(f.shrinkwrap, changed);
+      await fs.utimes(f.shrinkwrap, old.atime, old.mtime);
+      expect((await fs.lstat(f.shrinkwrap)).ino).toBe(old.ino);
+      expect((await fs.lstat(f.shrinkwrap)).size).toBe(old.size);
+      expect(check()).toEqual({ status: Status.Unknown, reason: Reason.Unstable });
+      expect(await fs.readFile(f.shrinkwrap)).toEqual(changed);
+      expect(await fs.readFile(f.packageLock)).toEqual(encode(lock));
+    } finally { await f.cleanup(); }
+  });
+
+  it.each(["selection", "config", "replacement"])("final synchronous check refuses %s without modifying source", async (scenario) => {
+    const f = await fixture();
+    try {
+      const captured = qualified(await f.capture());
+      if (scenario === "selection") await fs.writeFile(f.shrinkwrap, encode(lock), { mode: 0o600 });
+      if (scenario === "config") await fs.writeFile(join(f.path, ".npmrc"), "TEST-private-config", { mode: 0o600 });
+      if (scenario === "replacement") {
+        await fs.rename(f.packageLock, join(f.path, "original-TEST-lock"));
+        await fs.writeFile(f.packageLock, encode(lock), { mode: 0o600 });
+      }
+      expect(revalidateNpmInstallInputs({ capture: captured, maxDurationMs: bounds.maxDurationMs })).toEqual(scenario === "config"
+        ? { status: Status.Unsupported, reason: Reason.ProjectConfig } : { status: Status.Unknown, reason: Reason.Unstable });
+      expect(await fs.readFile(f.packagePath)).toEqual(encode(pkg));
+      expect(await fs.readFile(f.packageLock)).toEqual(encode(lock));
+      if (scenario === "replacement") expect(await fs.readFile(join(f.path, "original-TEST-lock"))).toEqual(encode(lock));
+    } finally { await f.cleanup(); }
+  });
+
+  it("final selected shrinkwrap check ignores an unselected external symlink", async () => {
+    const f = await fixture();
+    try {
+      await fs.writeFile(f.shrinkwrap, encode(lock), { mode: 0o600 });
+      const captured = qualified(await f.capture());
+      const sentinel = join(f.path, "external-TEST-secret");
+      await fs.writeFile(sentinel, "private TEST sentinel", { mode: 0o600 });
+      await fs.rm(f.packageLock); await fs.symlink(sentinel, f.packageLock);
+      expect(revalidateNpmInstallInputs({ capture: captured, maxDurationMs: bounds.maxDurationMs })).toEqual({ status: Status.Qualified });
+      expect(await fs.readlink(f.packageLock)).toBe(sentinel);
+      expect(await fs.readFile(sentinel, "utf8")).toBe("private TEST sentinel");
+      expect(qualified(await f.capture()).closureDigest).toBe(captured.closureDigest);
     } finally { await f.cleanup(); }
   });
 
