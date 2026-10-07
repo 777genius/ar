@@ -33,6 +33,7 @@ export function readOriginalHostedDependencyWarmBaseline(context:CurrentHostedDe
   if(!sameDependencyProtectedReference(ready.reference,slot.previousReady) || !encode(ready.receipt).equals(encode(pins.baseline.ready)) ||
       ready.receipt.generation!==slot.generation || !sameDependencyTree(tree,ready.receipt.tree) || tree.dev!==workspace.dev || tree.mountId!==workspace.mountId ||
       !sameDependencyProtectedReference(pins.baselinePin.reference,slot.baseline) || !encode(pins.baseline.actors).equals(encode(state.actors)))held();
+  if(!isDependencyCustodyObject(pins.baseline.attempt,"attemptId,epoch,launch"))held();
   const launch=pins.baseline.attempt.launch;
   if(!isDependencyCustodyObject(launch,"bootId,grantDigest,installationId,runtimeSha,startId,unit") &&
       !isDependencyCustodyObject(launch,"association,bootId,grantDigest,installationId,kind,origin,runtimeSha,startId,unit"))held();

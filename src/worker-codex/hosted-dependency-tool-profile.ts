@@ -369,7 +369,7 @@ function currentAdmission(state:EntryState,fence:HostedActivationFence|undefined
   if(state.exposure)assertDependencySourceExposureCurrent(state.exposure);
   const q=readQualification(state.attempt);
   if(!q.bytes.equals(state.qualification.bytes) || q.dev!==state.qualification.dev || q.ino!==state.qualification.ino ||
-    q.ctimeNs!==state.qualification.ctimeNs || q.mtimeNs!==state.qualification.mtimeNs || q.qualification.version!== (state.kind===DependencyToolReadyReadStatus.Baseline?3:2) || q.qualification.version===1 ||
+    q.ctimeNs!==state.qualification.ctimeNs || q.mtimeNs!==state.qualification.mtimeNs || q.qualification.version!== (state.kind===DependencyToolReadyReadStatus.Baseline?3:2) ||
     !encode(q.qualification.execution).equals(encode(e)))fail();
   assertProfileFiles(e.profile,state.binding.jobRootDir);
   assertInstalledPins(state.binding.workspace.canonicalPath,e.profile,state.inputs.lockBytes);

@@ -88,7 +88,8 @@ export async function runOriginalHostedDependencyMaintenanceRename(context:Curre
     placement=await openHostedDependencyManifestPlacement();const bytes=await placement.get(state.header.ready.manifestDigest);
     await placement.close();placement=undefined;
     withHostedActivationFence(fence=>current(fence,state,access));
-    state.sourceLinks=openHostedDependencyReadySourceLinks(state.header.ready);
+    const sourceLinks=openHostedDependencyReadySourceLinks(state.header.ready);
+    if(sourceLinks)state.sourceLinks=sourceLinks;
     const keyInputs=await readHostedDependencyKeyInputs(withHostedActivationFence(fence=>current(fence,state,access)).binding);
     const a=withHostedActivationFence(fence=>{const a=current(fence,state,access);if(keyInputs.key.installKey!==state.header.ready.installKey)held();return a;});
     state.operation=await openDependencyTreeRename({workspace:a.binding.workspace,trash:state.header.trash,

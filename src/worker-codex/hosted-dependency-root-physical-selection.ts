@@ -78,7 +78,7 @@ export function readOriginalHostedDependencyRootPreparation(context:CurrentHoste
   const qualified=record.version===2 || record.version===3 ? undefined : readCurrentHostedDependencyRootQualification(fence);
   if(record.version!==2 && record.version!==3) {
     const status=record.version===6 || record.version===7 ? DependencyToolReadyReadStatus.Baseline : DependencyToolReadyReadStatus.Usable;
-    if(!qualified || qualified.status!==status || qualified.status===DependencyToolReadyReadStatus.Ready ||
+    if(!qualified || qualified.status!==status ||
       qualified.context!==context || qualified.phase!==phase || !sameDependencyAttempt(qualified.attempt,attempt) ||
       !encode(qualified.binding).equals(encode(binding)) || !encode(qualified.execution).equals(encode(record.execution)))invalid();
   }

@@ -20,7 +20,7 @@ export function assertRootQualificationFacts(record:HostedDependencyRootPreparat
   if(record.version===4 || record.version===5 || record.version===6 || record.version===7) {
     const baseline=record.version===6 || record.version===7,revision=record.version===6 || record.version===7 ? record.baselineReadyRevision : record.unverifiedRevision,
       reference=record.version===6 || record.version===7 ? record.baselineReady : record.unverified;
-    if(q.version!==(baseline?3:2) || q.version===1 || ready.state!==(baseline?DependencyReceiptState.Ready:DependencyReceiptState.Unverified) || q.execution.basis!==(baseline?DependencyToolExecutionBasis.BaselineAuthenticated:DependencyToolExecutionBasis.UsableUnverified) ||
+    if(q.version!==(baseline?3:2) || ready.state!==(baseline?DependencyReceiptState.Ready:DependencyReceiptState.Unverified) || q.execution.basis!==(baseline?DependencyToolExecutionBasis.BaselineAuthenticated:DependencyToolExecutionBasis.UsableUnverified) ||
       !encode(q.execution).equals(encode(record.execution)) || q.execution.receiptRevision!==revision ||
       ready.revision!==revision || !sameDependencyProtectedReference(q.execution.receipt,reference) ||
       q.execution.installationId!==binding.installationId || q.execution.runtimeSha!==binding.runtimeSha || q.execution.grantDigest!==binding.grantDigest ||
