@@ -4,14 +4,18 @@ import { normalizeResearchLaunchFailure } from '../dist/worker-codex/research-la
 let phase = "imports";
 try {
   if (process.argv.length !== 4) throw new Error();
-  const { bindResearchRuntime } = await import('../dist/worker-codex/research-launch-admission.js');
+  const { bindResearchRuntime, bindRegisteredResearchRuntime, researchCurrentStart, researchTerminalHandoffGuard, researchHandoffPublicationLease } = await import('../dist/worker-codex/research-launch-admission.js');
   const { researchRunConfig } = await import('../dist/worker-codex/research-launch-contract.js');
   const { runCodexGoal } = await import('../dist/worker-codex/codex-goal-runner.js');
   const { admitHostedTestEgress } = await import('../dist/worker-codex/hosted-test-egress-admission.js');
   phase = 'binding';
-  const spec = bindResearchRuntime(process.argv[2], process.argv[3]);
+  const registered = researchCurrentStart(process.argv[2]).spec.registeredHandoff !== undefined;
+  const spec = registered ? await bindRegisteredResearchRuntime(process.argv[2], process.argv[3])
+    : bindResearchRuntime(process.argv[2], process.argv[3]);
   phase = 'goal-admission';
   const result = await runCodexGoal(researchRunConfig(spec.request), {
+    ...(registered ? { assertTerminalHandoffPublicationAuthorized: researchTerminalHandoffGuard(process.argv[2], process.argv[3]),
+      withTerminalHandoffPublicationAuthority: researchHandoffPublicationLease(process.argv[2], process.argv[3]) } : {}),
     admitProviderEgress: async input => {
       phase = 'egress-admission';
       const policy = await admitHostedTestEgress(input);

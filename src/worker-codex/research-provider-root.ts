@@ -222,6 +222,10 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
   host: ResearchProviderRootHost, scratchHost?: ScratchTempHost): Snapshot {
   return observeRootFailure(ResearchProviderRootCheck.Snapshot, () => {
   const mounts = mountTable(host), observations: unknown[] = [], observed = new Set<string>(), bindings: Binding[] = [], layout: [string, string][] = [], fileLinks: [string, string][] = [], files: PublicFile[] = [];
+  const durable = spec.registeredHandoff?.durableDirectory;
+  const durableBacking = durable ? backing(durable.path, mounts) : undefined;
+  if (durable && durableBacking && (durableBacking.device !== durable.mountDevice ||
+      durableBacking.path !== join(durable.mountRoot, relative(durable.mountPoint, durable.path)))) researchInvalid();
   const boundInfos = new Map<Binding, Info>();
   let resolverOwner: number | undefined;
   const observe = (path: string, owner = 0, leafOnly = false, ownedAncestorRoot?: string): Info => observeRootFailure(ResearchProviderRootCheck.Observe, () => {
@@ -242,6 +246,11 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
     const info = observe(source, owner, leafOnly), canonicalTarget = normalize(target), sourceBacking = backing(source, mounts, source.startsWith(join(directory, "pins") + "/"));
     if (nativeDevice(info) !== sourceBacking.device) researchInvalid();
     const entry = { source, target, access, identity: [info.dev, info.ino] as const, backing: sourceBacking, file: info.isFile() };
+    // Every provider binding, including read-only runtime/package ancestors,
+    // excludes the durable sink's physical backing and nominal target. A bind
+    // alias cannot turn registry custody into provider-visible source data.
+    if (durable && durableBacking && (overlaps(canonicalTarget, durable.path) || backingOverlap(sourceBacking, durableBacking) ||
+        info.dev === durable.device && info.ino === durable.inode)) researchInvalid();
     if (access === ResearchRootMountAccess.ReadWrite) {
       const targetInfo = observe(target, 0, true);
       const scratchTarget = [join(spec.request.jobRootDir, "tmp"), join(home, "plugins/cache"), join(home, "cache/remote_plugin_catalog")].includes(target);
