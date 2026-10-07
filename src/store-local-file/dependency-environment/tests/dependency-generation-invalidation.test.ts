@@ -108,7 +108,7 @@ describe.skipIf(process.platform !== "linux")("inactive generation/preclaim stor
       expect(f.receipts.getCommittedReady(f.workspace, 2)).toEqual(committed);
     } finally { await f.close(); }
   });
-  it("ordinary v2 retirement preserves the held attempt and survives the next v2 claim without custody", async () => {
+  it.each([Reason.TreeChanged,Reason.BaselineMissing])("ordinary v2 %s retirement preserves the held attempt and survives the next claim", async (reason) => {
     const f=await fixture();
     try {
       const attempt=claimDependencyConsumer(f.owners,f.workspace,launch,randomUUID()), held=f.owners.read(f.workspace)!;
@@ -130,7 +130,8 @@ describe.skipIf(process.platform !== "linux")("inactive generation/preclaim stor
         },
       }});
       const result=invalidateDependencyGeneration({owners:f.owners,receipts:f.receipts,workspace:f.workspace,
-        expectedOwnerRevision:held.revision,expectedReceiptRevision:ready.receipt.revision,reason:Reason.TreeChanged});
+        expectedOwnerRevision:held.revision,expectedReceiptRevision:ready.receipt.revision,reason});
+      expect(result.retired.receipt.reason).toBe(reason);expect(result.retired.receipt.tree).toEqual(ready.receipt.tree);
       expect(receiptChecks).toBe(1); expect(ownerChecks).toBe(1); expect(result.owner.version).toBe(2);
       expect(result.owner.owner).toEqual(held.owner); expect(result.owner.generationContinuity?.operationId).toBe(attempt.attemptId);
       expect("custodyBinding" in result.owner).toBe(false); expect(await readFile(ready.reference.path)).toEqual(historical);
@@ -149,6 +150,19 @@ describe.skipIf(process.platform !== "linux")("inactive generation/preclaim stor
       expect(selected.generationContinuity).toEqual(result.owner.generationContinuity);
       expect(f.receipts.read(f.workspace)?.state).toBe(State.Unverified); expect(ownerChecks).toBe(1);
     } finally { await f.close(); }
+  });
+  it("BaselineMissing cannot replace the physical tree or call the factual verifier",async()=>{
+    const f=await fixture();
+    try {
+      const ready=publishLogicalReady(f);let checks=0;
+      const history=await readFile(ready.reference.path);
+      f.receipts.close();f.receipts=Receipts.open({rootPath:f.receiptRoot,maxRecordBytes:16384,maxHistorySteps:16,
+        generationReceiptVerifier:{assertFactualUnverified(){throw new Error("TEST unexpected creation");},assertReadyRetirement(){checks++;}}});
+      expect(()=>f.receipts.retireReady(f.workspace,ready.receipt.revision,ready.reference,
+        {...unverified(f,3),tree:{...f.tree,ino:String(BigInt(f.tree.ino)+1n)}})).toThrow();
+      expect(checks).toBe(0);expect(f.receipts.read(f.workspace)).toEqual(ready.receipt);
+      expect(await readFile(ready.reference.path)).toEqual(history);
+    }finally{await f.close();}
   });
   it("uncertain ordinary v2 retirement leaves the same held owner after the receipt committed", async () => {
     const f=await fixture();

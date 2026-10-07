@@ -1,3 +1,4 @@
+import { captureLegacyDependencyWriterInput, assertLegacyDependencyWriterWorkspace } from "./hosted-dependency-legacy-writer-boundary";
 import { lstat, readdir, readlink, realpath, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
@@ -27,6 +28,7 @@ type InternalNodeDependencyEnvironmentInspection = {
 export async function inspectNodeDependencyEnvironment(input: {
   readonly workspacePath: string;
 }): Promise<NodeDependencyEnvironmentInspection> {
+  input = captureLegacyDependencyWriterInput(input);
   const inspection = await inspectNodeDependencyEnvironmentInternal(input);
   return {
     dependencyRoots: inspection.dependencyRoots.map((path) =>
@@ -42,6 +44,7 @@ async function inspectNodeDependencyEnvironmentInternal(input: {
   readonly workspacePath: string;
 }): Promise<InternalNodeDependencyEnvironmentInspection> {
   const workspaceRealPath = await realpath(input.workspacePath);
+  assertLegacyDependencyWriterWorkspace(input.workspacePath);
   const dependencyRoots = await nodeDependencyRoots(workspaceRealPath);
   const unsafeDependencyRoots: string[] = [];
   for (const dependencyRoot of dependencyRoots) {
@@ -59,6 +62,7 @@ async function inspectNodeDependencyEnvironmentInternal(input: {
 export async function sanitizeNodeDependencyEnvironment(input: {
   readonly workspacePath: string;
 }): Promise<{ readonly removedPaths: readonly string[] }> {
+  input = captureLegacyDependencyWriterInput(input);
   const inspection = await inspectNodeDependencyEnvironmentInternal(input);
   const removedPaths: string[] = [];
   for (const dependencyRoot of inspection.unsafeDependencyRoots) {
@@ -70,6 +74,8 @@ export async function sanitizeNodeDependencyEnvironment(input: {
     ) {
       continue;
     }
+    assertLegacyDependencyWriterWorkspace(input.workspacePath);
+    assertLegacyDependencyWriterWorkspace(dependencyRoot);
     await rm(dependencyRoot, {
       recursive: true,
       force: false,

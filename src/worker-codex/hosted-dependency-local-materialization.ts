@@ -128,7 +128,7 @@ export type HostedDependencyLocalMaterializationResult = {
 export async function materializeHostedDependencyLocalAbsence(binding: HostedDependencyBinding, attempt: DependencyAttempt,capturedOrigin?:CurrentHostedDependencyOrigin,internalAccess?:symbol): Promise<HostedDependencyLocalMaterializationResult> {
   if(capturedOrigin) {if(internalAccess===undefined)fail();withHostedActivationFence(fence=>assertOriginalHostedDependencyColdProducer(capturedOrigin,fence,internalAccess));}
   else if(requiresCurrentHostedDependencyRootPurpose())fail();
-  const prepared = await beginHostedDependencyInstallation(binding, attempt,capturedOrigin), { inputs, installing } = prepared;
+  const prepared = await beginHostedDependencyInstallation(binding, attempt,capturedOrigin,internalAccess), { inputs, installing } = prepared;
   // Registry continues its existing recipe with this same actual capture and
   // legal Installing transition. Local retains its initial physical pins.
   if (inputs.recipe === Recipe.NpmRegistryNoScriptsV1) return { inputs, installing, cold: undefined };

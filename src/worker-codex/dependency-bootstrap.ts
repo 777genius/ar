@@ -1,3 +1,4 @@
+import { captureLegacyDependencyWriterInput, assertLegacyDependencyWriterWorkspace } from "./hosted-dependency-legacy-writer-boundary";
 import { createHash } from "node:crypto";
 import {
   access,
@@ -102,7 +103,9 @@ export type DependencyBootstrapInput = {
 export async function runDependencyBootstrap(
   input: DependencyBootstrapInput,
 ): Promise<DependencyPreflightResult> {
+  input = captureLegacyDependencyWriterInput(input);
   const canonicalWorkspacePath = await realpath(input.workspacePath);
+  assertLegacyDependencyWriterWorkspace(input.workspacePath);
   return runDependencyBootstrapUnlocked({
     ...input,
     workspacePath: canonicalWorkspacePath,
@@ -112,6 +115,7 @@ export async function runDependencyBootstrap(
 async function runDependencyBootstrapUnlocked(
   input: DependencyBootstrapInput,
 ): Promise<DependencyPreflightResult> {
+  assertLegacyDependencyWriterWorkspace(input.workspacePath);
   const mode = input.mode ?? "preflight";
   const preflight = await inspectDependencyBootstrap(input.workspacePath, mode);
   if (mode === "off") {
@@ -145,6 +149,7 @@ async function runDependencyBootstrapUnlocked(
   }
 
   try {
+    assertLegacyDependencyWriterWorkspace(input.workspacePath);
     const install = await runPackageManagerInstall({
       workspacePath: input.workspacePath,
       packageManager: withCommand.packageManager,
@@ -215,6 +220,7 @@ export async function inspectDependencyBootstrap(
   workspacePath: string,
   mode: DependencyBootstrapMode = "preflight",
 ): Promise<DependencyPreflightResult> {
+  assertLegacyDependencyWriterWorkspace(workspacePath);
   const dependencySafety = await inspectNodeDependencyEnvironment({
     workspacePath,
   });
@@ -297,6 +303,7 @@ async function runPackageManagerInstall(input: {
                 workspacePath: input.workspacePath,
               });
         for (const command of commands) {
+          assertLegacyDependencyWriterWorkspace(input.workspacePath);
           await runCommand(command[0] ?? "", command.slice(1), {
             cwd: input.workspacePath,
             timeoutMs: 120_000,
@@ -422,6 +429,7 @@ async function defaultRunCommand(
   args: readonly string[],
   options: { readonly cwd: string; readonly timeoutMs: number },
 ): Promise<void> {
+  assertLegacyDependencyWriterWorkspace(options.cwd);
   await execFileAsync(command, [...args], {
     cwd: options.cwd,
     timeout: options.timeoutMs,

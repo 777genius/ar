@@ -1,14 +1,16 @@
-import { closeSync, constants, fsyncSync, openSync, writeFileSync, readFileSync } from "node:fs";
+import { closeSync, constants, fsyncSync, openSync, writeFileSync, readFileSync, lstatSync, type Stats } from "node:fs";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { DependencyOwnerPhase, isDependencyConsumerOwner, sameDependencyAttempt, sameDependencyProtectedReference,
   sameDependencyWorkspace, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { assertDependencyPreclaimedConsumer, captureDependencyConsumerPreclaim, claimDependencyConsumer,
-  HostedActivationPhase, HostedCustodyReservationState, parseHostedOrdinaryStart, DependencyReceiptState, type DependencyConsumerPreclaim } from "@vioxen/subscription-runtime/worker-core";
+  HostedActivationPhase, HostedCustodyReservationState, parseHostedOrdinaryStart, DependencyReceiptState, DependencyUnverifiedReason, type DependencyReceipt, type DependencyConsumerPreclaim } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedDependencyPhysicalWorkspace, assertHostedDependencyQualifiedInventory, hostedDependencyOwnerRoot,
   hostedDependencyBindingName, readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { assertHostedDependencyParentRecipe, assertHostedDependencyParentEnvironment } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
+import { readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-physical-facts";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
@@ -16,7 +18,8 @@ import { readHostedOrdinaryBirth, readHostedOrdinaryRuntime } from "./hosted-ins
 import { HostedReadonlyHostKernel, readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
 import { pinReferenceFile } from "./hosted-dependency-legacy-reference-records";
 import { ensureHostedDependencyDirectory, readHostedDependencyEstablishedReceipt, readHostedDependencyCommittedReady,
-  readHostedDependencyCommittedAbsent, readHostedDependencyCommittedUnverified } from "./hosted-dependency-receipts";
+  readHostedDependencyCommittedAbsent, readHostedDependencyCommittedUnverified, readHostedDependencyReceipt,
+  dependencyCoverageRevision, hostedDependencyReceiptHistoryRoot } from "./hosted-dependency-receipts";
 import { assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependency-installer";
 import { assertCurrentHostedDependencyAttempt, CurrentHostedDependencyOriginKind, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { readCurrentHostedDependencySignedParentRecipe } from "./hosted-dependency-current-facts";
@@ -100,7 +103,7 @@ export function preclaimHostedOrdinaryDependencyReader(fence:HostedActivationFen
   const bindingPin = pin(hostedDependencyBindingName(binding.jobId)); if (!bindingPin.bytes.equals(encode(binding))) invalid();
   // The genuine history store distinguishes factual null from broken history;
   // no project/NM traversal occurs here. Capture before opening the owner store.
-  const receipt = receiptPin(binding);
+  let receipt = receiptPin(binding);
   const store = LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
   let preclaim:DependencyConsumerPreclaim;
   try {
@@ -109,6 +112,13 @@ export function preclaimHostedOrdinaryDependencyReader(fence:HostedActivationFen
       runtimeSha:binding.runtimeSha,grantDigest:binding.grantDigest,startId,unit:start.unit},randomUUID());
     preclaim = captureDependencyConsumerPreclaim(store,binding.workspace,attempt);
   } finally { store.close(); }
+  if (!receipt) {
+    // Protected legacy import is actual history publication, never an NM scan
+    // or fabricated current Ready. The claim remains held through the import.
+    readHostedDependencyReceipt(binding);
+    receipt = receiptPin(binding);
+    if (!receipt) receipt = publishInitialUnverified(fence,binding,preclaim);
+  }
   const record:ReaderStart = {version:1,kind:HostedOrdinaryDependencyReaderKind.OrdinaryDependencyReaderV1,
     origin:original.reference,binding:bindingPin.reference,recipeSha256:hash(encode(recipe)),preclaim,receipt};
   ensureHostedDependencyDirectory(`${root}/dependency-reader-starts`);
@@ -118,6 +128,56 @@ export function preclaimHostedOrdinaryDependencyReader(fence:HostedActivationFen
       !encode(receiptPin(binding)).equals(encode(receipt))) invalid();
   const owner = LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
   try { assertDependencyPreclaimedConsumer(owner,binding.workspace,preclaim); } finally { owner.close(); }
+}
+/** Lexical fixed producer phase. A directory pin is factual only; no caller
+ * tree/receipt/verifier arrives here. Null + genuine absence keeps the cold
+ * branch. Existing mutable NM becomes committed Unverified BEFORE start IO. */
+function publishInitialUnverified(fence:HostedActivationFence,binding:HostedDependencyBinding,
+  preclaim:DependencyConsumerPreclaim):ReceiptPin {
+  const path=binding.workspace.canonicalPath+"/node_modules";
+  let stat:Stats;
+  try {stat=lstatSync(path);} catch (error) {
+    if ((error as NodeJS.ErrnoException).code!=="ENOENT") throw error;
+    assertClaim(); assertHostedDependencyPhysicalWorkspace(binding); return null;
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid!==0 || stat.gid!==0 ||
+      (stat.mode & 0o700)!==0o700 || (stat.mode & 0o022)) invalid();
+  const tree=readHostedDependencyRootDirectoryPin(path),workspace=readHostedDependencyRootDirectoryPin(binding.workspace.canonicalPath);
+  if (tree.dev!==binding.workspace.dev || tree.mountId!==workspace.mountId) invalid();
+  const proposed:Extract<DependencyReceipt,{state:DependencyReceiptState.Unverified}>={version:1,revision:1,
+    generation:preclaim.attempt.attemptId,workspace:binding.workspace,coverageRevision:dependencyCoverageRevision(binding),
+    state:DependencyReceiptState.Unverified,tree:{dev:tree.dev,ino:tree.ino},reason:DependencyUnverifiedReason.BaselineMissing};
+  function assertClaim():void {
+    assertHostedActivationFence(fence);
+    const owners=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
+    try {const held=assertDependencyPreclaimedConsumer(owners,binding.workspace,preclaim);
+      if (held.version!==1 && held.generationContinuity) invalid();
+    } finally {owners.close();}
+  }
+  function assertPhysical():void {
+    assertClaim(); assertHostedDependencyPhysicalWorkspace(binding);
+    if (!encode(readHostedDependencyRootDirectoryPin(path)).equals(encode(tree)) ||
+        !encode(readHostedDependencyRootDirectoryPin(binding.workspace.canonicalPath)).equals(encode(workspace))) invalid();
+    const now=lstatSync(path);
+    if (!now.isDirectory() || now.uid!==stat.uid || now.gid!==stat.gid || now.mode!==stat.mode) invalid();
+  }
+  assertPhysical();
+  const receipts=LocalDependencyReceiptStore.open({rootPath:hostedDependencyReceiptHistoryRoot,maxRecordBytes:16384,maxHistorySteps:2048,
+    generationReceiptVerifier:{assertReadyRetirement(){invalid();},assertFactualUnverified({proposedUnverified}){
+      assertHostedActivationFence(fence); assertClaim();
+      if (!encode(proposedUnverified).equals(encode(proposed))) invalid();
+    }}});
+  let committed:ReturnType<LocalDependencyReceiptStore["getCommittedUnverified"]>;
+  try {
+    committed=receipts.publishFactualUnverified(binding.workspace,proposed);
+    if (!sameDependencyProtectedReference(receipts.getCommittedUnverified(binding.workspace,proposed.revision).reference,committed.reference)) invalid();
+    if (!encode(committed.receipt).equals(encode(proposed))) invalid();
+  } finally {receipts.close();}
+  // No receipt/root/owner descriptor survives into the final physical census.
+  assertPhysical(); assertHostedDependencyQualifiedInventory();
+  if (!sameDependencyProtectedReference(readHostedDependencyCommittedUnverified(binding,1).reference,committed.reference)) invalid();
+  assertPhysical();
+  return {state:DependencyReceiptState.Unverified,revision:1,reference:committed.reference};
 }
 function parseReaderStart(bytes:Buffer):ReaderStart {
   const record = decodeHostedActivationBytes(bytes) as ReaderStart;

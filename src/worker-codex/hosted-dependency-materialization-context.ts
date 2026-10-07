@@ -4,7 +4,7 @@ import { DependencyAdmissionError, DependencyAdmissionFailure as Failure, Depend
   sameDependencyTree, DependencyPreservationKind, DependencyReceiptState, type DependencyReceipt, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt, type CurrentHostedDependencyOrigin, assertOriginalHostedDependencyColdProducer, requiresCurrentHostedDependencyRootPurpose } from "./hosted-current-dependency-origin";
 import { type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { buildTestNpmDependencyInstallKey, buildTestNpmLocalDependencyInstallKey } from "../worker-local/dependency-environment/build-test-npm-dependency-install-key";
 import { captureNpmInstallInputs, revalidateNpmInstallInputs, NpmInputCaptureStatus as Status, NpmInputCaptureReason as Reason,
@@ -105,7 +105,9 @@ export function sameHostedDependencyKeyInputs(before: HostedDependencyKeyInputs,
 /** The existing legal absence/preservation transition. Owns its actual capture
  * and reads protected prior history; no caller key/record supplies authority.
  * The returned private-flow baseline is retained through subsequent awaits. */
-export async function beginHostedDependencyInstallation(binding: HostedDependencyBinding, attempt: DependencyAttempt,capturedOrigin?:CurrentHostedDependencyOrigin) {
+export async function beginHostedDependencyInstallation(binding: HostedDependencyBinding, attempt: DependencyAttempt,capturedOrigin?:CurrentHostedDependencyOrigin,internalAccess?:symbol) {
+  if(capturedOrigin) {if(internalAccess===undefined)fail();withHostedActivationFence(fence=>assertOriginalHostedDependencyColdProducer(capturedOrigin,fence,internalAccess));}
+  else if(requiresCurrentHostedDependencyRootPurpose())fail();
   assertHostedDependencyMaterializationOwner(binding, attempt,capturedOrigin);
   const previous = readHostedDependencyReceipt(binding), root = "/var/lib/subscription-runtime-host-policy";
   const encode = (value: unknown): Buffer => Buffer.from(JSON.stringify(value) + "\n");
@@ -125,6 +127,8 @@ export async function beginHostedDependencyInstallation(binding: HostedDependenc
       generation, workspace: binding.workspace, coverageRevision: base.coverageRevision, operationId: generation,
       absenceEvidenceId: createHash("sha256").update(absence ?? fail()).digest("hex") } };
   withHostedActivationFence(fence => {
+    if(capturedOrigin)assertOriginalHostedDependencyColdProducer(capturedOrigin,fence,internalAccess ?? fail());
+    else if(requiresCurrentHostedDependencyRootPurpose())fail();
     assertHostedDependencyMaterializationOwnerUnderFence(fence, binding, attempt,capturedOrigin);
     assertHostedDependencyKeyInputsCurrent(binding, inputs);
     try { lstatSync(binding.workspace.canonicalPath + "/node_modules"); fail(); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }

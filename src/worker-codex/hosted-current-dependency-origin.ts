@@ -1,8 +1,12 @@
+import { retireOriginalHostedDependencyWarmReady } from "./hosted-dependency-generation-retirement";
+import { HostedDependencyWarmRetirementPhase, type HostedDependencyWarmRetirementState } from "./hosted-dependency-warm-retirement-state";
+import { readHostedDependencyEstablishedReceipt, readHostedDependencyExistingCommittedReady } from "./hosted-dependency-receipts";
+import { retireOriginalHostedDependencySourceCleanup } from "./hosted-dependency-generation-retirement";
 import { openOriginalHostedDependencyRootDescriptorMaterial, openOriginalHostedManagedProviderDescriptorMaterial } from "./hosted-dependency-root-descriptor-opener";
 import { finishOriginalHostedDependencyColdTree, revokeOriginalHostedDependencyColdState } from "./hosted-dependency-cold-controller";
 import { HostedDependencyColdPhase, HostedDependencyColdInstallerPhase, type HostedDependencyColdState } from "./hosted-dependency-cold-materialization-state";
 import { DependencyAdmissionError, DependencyAdmissionFailure } from "@vioxen/subscription-runtime/worker-core";
-import { assertHostedDependencyRetirementOwnerFacts, assertHostedDependencyRetirementSuccessorFacts } from "./hosted-dependency-retirement-facts";
+import { assertHostedDependencyRetirementOwnerFacts } from "./hosted-dependency-retirement-facts";
 import { createOriginalHostedSessionRuntimeComposition, type OriginalHostedSessionRuntimeCompositionInput } from "./hosted-managed-dependency-runtime-composition";
 import { OriginalHostedOrdinaryProviderTerminal } from "./hosted-ordinary-provider-terminal-view";
 import { publishOriginalHostedOrdinaryProviderCompletion, assertOriginalHostedOrdinaryProviderCompletion } from "./hosted-ordinary-provider-completion-record";
@@ -58,7 +62,6 @@ import { assertHostedFdProcess, HostedFdLaunchKind } from "../provider-codex/app
 import { hostedDependencySystemdRunExecutable } from "../provider-codex/app-server/adapters/hosted-dependency-systemd-command";
 import { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
-import { invalidateDependencyGeneration } from "../worker-core/dependency-environment/application/invalidate-dependency-generation";
 import { DependencyUnverifiedReason, DependencyReceiptState } from "../worker-core/dependency-environment/domain/dependency-receipt";
 import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
 import { dependencyToolQualificationRecordName, dependencyToolGuestConfig, dependencyToolGuestConfigPath, parseDependencyToolQualification } from "../core/dependency-environment/dependency-tool-profile";
@@ -73,7 +76,7 @@ export type CurrentHostedDependencyOrigin = Readonly<{ [brand]: true }>;
 export enum CurrentHostedDependencyOriginKind { Ordinary = "ordinary", ManagedReadonlyLocal = "managed_readonly_local" }
 const hash = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 function invalid(): never { throw new Error("hosted_dependency_current_origin_unresolved"); }
-const contexts = new WeakMap<CurrentHostedDependencyOrigin, { digest: string; facts: CurrentHostedDependencyOriginFacts; scope?: HostedRetainedToolFiles; rootPurpose?: RootPurposeState; ordinaryEntry?: Readonly<{attempt: ReturnType<typeof attemptFromFacts>["attempt"]; producer:DependencyProtectedReference; entry:DependencyProtectedReference}>; ordinaryAdmitted?:boolean; cold?:HostedDependencyColdState }>();
+const contexts = new WeakMap<CurrentHostedDependencyOrigin, { digest: string; facts: CurrentHostedDependencyOriginFacts; scope?: HostedRetainedToolFiles; rootPurpose?: RootPurposeState; ordinaryEntry?: Readonly<{attempt: ReturnType<typeof attemptFromFacts>["attempt"]; producer:DependencyProtectedReference; entry:DependencyProtectedReference}>; ordinaryAdmitted?:boolean; cold?:HostedDependencyColdState; warmRetirement?:HostedDependencyWarmRetirementState }>();
 let currentEntryOrigin:CurrentHostedDependencyOrigin|undefined;
 /** PRIVATE selected-path reader. Only names derived below from independently pinned start/installation are used; no exported arbitrary-path read port. */
 function selectedFile(path: string, maximum: number, privateFile = true) {
@@ -574,49 +577,40 @@ export function assertCurrentHostedDependencyRetiredReady(context: HostedDepende
   return held.scope;
 }
 /** One concrete retirement producer under the actual synchronous host fence. Store verifier inputs are the stores' own captured predecessor facts. Neither callbacks, baseline records nor expected revisions arrive from the caller. An uncertain receipt/CAS is held, never released or implicitly retried. */
-export function retireCurrentHostedDependencySourceCleanup(context: HostedDependencyRootPurposeContext, reason: DependencyUnverifiedReason.TreeChanged | DependencyUnverifiedReason.InputsChanged): void {
-  resolveRootPurpose(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,rootInternalAccess);
-  withHostedActivationFence(fence => {
-    const held = rootScope(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,fence,DependencyOwnerPhase.ExclusiveMutation);
-    assertHostedDependencyRetirementOwnerFacts(held.state.record,held.owner);
-    if ((reason !== DependencyUnverifiedReason.TreeChanged && reason !== DependencyUnverifiedReason.InputsChanged) ||
-        !encode(currentRootReady(held.origin,fence,DependencyOwnerPhase.ExclusiveMutation)).equals(encode(held.state.ready))) invalid();
-    // No collectors run with store FDs open. The same genuine fence brackets publication/readback; owner verifier uses its own CAS predecessor.
-    const assertRetained = () => {
-      assertHostedActivationFence(fence);
-      const resolved = resolveRootPurpose(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,rootInternalAccess);
-      if (resolved.origin !== held.origin || resolved.state !== held.state) invalid();
-    };
-    const receipts = LocalDependencyReceiptStore.open({rootPath:hostedDependencyReceiptHistoryRoot,maxRecordBytes:16384,maxHistorySteps:2048,
-      generationReceiptVerifier:{
-        assertReadyRetirement({previousReady,previousReference,proposedUnverified}) {
-          assertRetained(); const owner = currentOwnerForRoot(held.actual.binding);
-          if (!encode(owner).equals(encode(held.owner)) || !encode(previousReady).equals(encode(held.state.ready.receipt)) ||
-              !sameDependencyProtectedReference(previousReference,held.state.ready.reference) || proposedUnverified.revision !== previousReady.revision+1 ||
-              proposedUnverified.generation !== previousReady.generation || proposedUnverified.reason !== reason ||
-              !sameDependencyWorkspace(proposedUnverified.workspace,held.actual.binding.workspace)) invalid();
-        },
-        assertFactualUnverified() { invalid(); },
-      }});
-    let owners: LocalDependencyOwnerStore | undefined;
-    try {
-      owners = LocalDependencyOwnerStore.open({rootPath:root+"/dependency-owners",maxRecordBytes:16384,
-        generationRetirementVerifier:{assertGenerationRetirement({previousOwner,proposedOwner,invalidation}) {
-          assertRetained();
-          if (!encode(previousOwner).equals(encode(held.owner))) invalid();
-          assertHostedDependencyRetirementSuccessorFacts(held.state.record,previousOwner,proposedOwner,invalidation,
-            held.actual.attempt.attemptId,held.state.ready);
-          const current = receipts.read(held.actual.binding.workspace);
-          if (!current || current.state !== DependencyReceiptState.Unverified || current.revision !== invalidation.unverifiedRevision ||
-              current.generation !== invalidation.generation || current.reason !== reason) invalid();
-          const committed = receipts.getCommittedUnverified(held.actual.binding.workspace,current.revision);
-          if (!encode(committed.receipt).equals(encode(current)) || !sameDependencyProtectedReference(committed.reference,invalidation.retiredUnverified)) invalid();
-        }}});
-      invalidateDependencyGeneration({owners,receipts,workspace:held.actual.binding.workspace,expectedOwnerRevision:held.owner.revision,
-        expectedReceiptRevision:held.state.ready.receipt.revision,reason});
-    } finally { try { owners?.close(); } finally { receipts.close(); } }
-    assertCurrentHostedDependencyRetiredReady(context,fence);
-  });
+export function retireCurrentHostedDependencySourceCleanup(context:HostedDependencyRootPurposeContext,reason:DependencyUnverifiedReason.TreeChanged|DependencyUnverifiedReason.InputsChanged):void {
+  retireOriginalHostedDependencySourceCleanup(context,reason,rootInternalAccess);
+}
+/** Private fixed composition only; access is checked before caller/context IO. */
+export function readOriginalHostedDependencySourceCleanupAssociation(context:HostedDependencyRootPurposeContext,access:symbol) {
+  if(access!==rootInternalAccess)invalid();return resolveRootPurpose(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,access);
+}
+export function readOriginalHostedDependencySourceCleanupScope(context:HostedDependencyRootPurposeContext,fence:HostedActivationFence,access:symbol) {
+  if(access!==rootInternalAccess)invalid();return rootScope(context,HostedDependencyRootPurpose.DependencySourceCleanupV1,fence,DependencyOwnerPhase.ExclusiveMutation);
+}
+export function readOriginalHostedDependencyRetirementOwner(binding:HostedDependencyBinding,access:symbol) {
+  if(access!==rootInternalAccess)invalid();return currentOwnerForRoot(binding);
+}
+/** Factual revocation only: no current Ready, purpose or writer permit is issued. */
+export function retireCurrentHostedDependencyWarmReady(context:CurrentHostedDependencyOrigin):void {retireOriginalHostedDependencyWarmReady(context,rootInternalAccess);}
+export function readOriginalHostedDependencyWarmRetirement(context:CurrentHostedDependencyOrigin,access:symbol) {
+  if(access!==rootInternalAccess)invalid();const retained=contexts.get(context);if(!retained)invalid();return retained.warmRetirement;
+}
+/** SAME original map captures genuine Ready BEFORE retirement; unsupported
+ * continuity stays held, never interpreted as missing baseline authority. */
+export function captureOriginalHostedDependencyWarmRetirement(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol) {
+  if(access!==rootInternalAccess)invalid();const retained=contexts.get(context);if(!retained)invalid();
+  if(retained.warmRetirement)return retained.warmRetirement;
+  const actual=assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation),{binding,attempt}=actual;
+  if(binding.version!==2 || retained.cold || retained.rootPurpose || actual.facts.kind===CurrentHostedDependencyOriginKind.Ordinary && !retained.ordinaryAdmitted)invalid();
+  const owner=currentOwnerForRoot(binding);if(owner.version===1 || !isDependencyConsumerOwner(owner.owner) || !sameDependencyAttempt(owner.owner.attempt,attempt))invalid();
+  const receipt=readHostedDependencyEstablishedReceipt(binding);if(!receipt || receipt.state!==DependencyReceiptState.Ready)invalid();
+  if(owner.generationContinuity){const slot=parseDependencyGenerationContinuityInvalidation(owner.generationContinuity);if(slot.readyRevision>=receipt.revision)invalid();}
+  const ready=readHostedDependencyExistingCommittedReady(fence,binding,receipt.revision),tree=lstatSync(binding.workspace.canonicalPath+"/node_modules",{bigint:true});
+  if(!encode(ready.receipt).equals(encode(receipt)) || !tree.isDirectory() || tree.uid!==0n || tree.gid!==0n || (tree.mode&0o700n)!==0o700n ||
+    tree.dev.toString()!==receipt.tree.dev || tree.ino.toString()!==receipt.tree.ino)invalid();
+  const after=assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+  if(!sameDependencyAttempt(after.attempt,attempt) || !encode(currentOwnerForRoot(binding)).equals(encode(owner)))invalid();
+  return retained.warmRetirement={phase:HostedDependencyWarmRetirementPhase.Captured,binding,attempt:freezeFacts(attempt),owner:freezeFacts(owner),ready:freezeFacts(ready)};
 }
 /** Protected config facts only, bounded retained FD and root ancestry. Actual issuer/admission selects workspace first; this function cannot mint a purpose. */
 export { readHostedDependencyRootGitConfigPin } from "./hosted-dependency-current-facts";
