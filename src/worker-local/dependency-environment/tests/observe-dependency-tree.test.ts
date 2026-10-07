@@ -1,12 +1,14 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { DependencyManifestEntryKind as Kind, DependencyTreeObservationFailure as Failure,
-  DependencyTreeObservationStatus as Status, type DependencyCapturedTreeObservation } from "../../../worker-core/dependency-environment/domain/dependency-tree-manifest";
+  DependencyTreeObservationStatus as Status, DependencyTreeAllocationBasis as AllocationBasis,
+  type DependencyCapturedTreeObservation } from "../../../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import { observeDependencyDirectoryRoot, observeDependencyTree } from "../observe-dependency-tree";
 import { observeDependencyPinnedFile } from "../observe-dependency-pinned-file";
 
@@ -27,6 +29,15 @@ function complete(value: DependencyCapturedTreeObservation) {
   if (value.status !== Status.Complete) throw new Error(`TEST incomplete:${value.reason}`);
   return value;
 }
+async function allocatedByDu(path: string): Promise<bigint> {
+  // Independent installed OS utility oracle; neither follows symlinks nor uses
+  // the observer's entries, arithmetic helper or canonical bytes as expectation.
+  const { stdout } = await run("du", ["--block-size=1", "--summarize", "--no-dereference", "--", path],
+    { timeout: 5000, maxBuffer: 65536 });
+  const decimal = /^(\d+)\s/.exec(stdout)?.[1];
+  if (!decimal) throw new Error("TEST du did not report allocated bytes");
+  return BigInt(decimal);
+}
 
 // Regression boundary: full synthetic TEST filesystem behavior. No install,
 // runtime, project launch, actual credentials, or real user tree is exercised.
@@ -44,6 +55,58 @@ describe.skipIf(process.platform !== "linux")("dependency full-tree inventory", 
       expect(createHash("sha256").update(left.canonicalBytes).digest("hex")).toBe(left.digest);
       expect(complete(await observeDependencyDirectoryRoot({ parentPath: a.path, name: "node_modules", limits })).digest).toBe(left.digest);
     } finally { await a.cleanup(); await b.cleanup(); }
+  });
+
+  // Red if logical length is presented as allocated bytes, or physical block
+  // changes leak into content identity and prevent independent-install dedup.
+  it("measures a real sparse inode separately from content and observes content-stable fallocate", async () => {
+    const f = await fixture();
+    const sparse = join(f.tree, "sparse.bin"), length = 1024 * 1024;
+    const observe = () => observeDependencyTree({ workspacePath: f.path, treeName: "node_modules",
+      limits: { ...limits, maxTotalBytes: 2 * length } });
+    try {
+      const handle = await open(sparse, "w", 0o644);
+      try { await handle.truncate(length); } finally { await handle.close(); }
+      const started = performance.now();
+      const hole = complete(await observe());
+      const elapsed = Math.ceil(performance.now() - started);
+      expect(hole.measurement.allocationBasis).toBe(AllocationBasis.RetainedInodeBlocks512);
+      expect(BigInt(hole.measurement.allocationByKind[Kind.File].allocatedBytesEstimate)).toBeLessThan(BigInt(hole.totalBytes));
+      expect(BigInt(hole.measurement.observedScanDurationMs)).toBeGreaterThan(0n);
+      expect(BigInt(hole.measurement.observedScanDurationMs)).toBeLessThanOrEqual(BigInt(elapsed));
+      expect(BigInt(hole.measurement.allocatedBytesEstimate)).toBe(await allocatedByDu(f.tree));
+      await run("fallocate", ["--length", String(length), "--", sparse], { timeout: 5000 });
+      const reserved = complete(await observe());
+      expect(reserved.canonicalBytes).toEqual(hole.canonicalBytes);
+      expect(reserved.digest).toBe(hole.digest);
+      expect(reserved.totalBytes).toBe(hole.totalBytes);
+      expect(BigInt(reserved.measurement.allocationByKind[Kind.File].allocatedBytesEstimate))
+        .toBeGreaterThan(BigInt(hole.measurement.allocationByKind[Kind.File].allocatedBytesEstimate));
+      expect(BigInt(reserved.measurement.allocatedBytesEstimate)).toBe(await allocatedByDu(f.tree));
+    } finally { await f.cleanup(); }
+  });
+
+  // Red if target root/directories/link inodes are omitted, if link targets are
+  // double-counted, or if opening ancestor anchors adds their allocation/counts.
+  it("matches independent target du with directories and symlink inode counted without following it", async () => {
+    const f = await fixture();
+    const alias = join(f.tree, "internal"), outside = join(f.path, "outside.bin");
+    try {
+      await writeFile(outside, Buffer.alloc(1024 * 1024, 23));
+      await symlink(`pkg/${"./".repeat(40)}index.js`, alias);
+      const observed = complete(await f.observe());
+      const total = await allocatedByDu(f.tree), file = await allocatedByDu(f.file), link = await allocatedByDu(alias);
+      const categories = observed.measurement.allocationByKind;
+      expect(BigInt(observed.measurement.allocatedBytesEstimate)).toBe(total);
+      expect(BigInt(categories[Kind.File].allocatedBytesEstimate)).toBe(file);
+      expect(BigInt(categories[Kind.Symlink].allocatedBytesEstimate)).toBe(link);
+      expect(BigInt(categories[Kind.Directory].allocatedBytesEstimate)).toBe(total - file - link);
+      expect(categories[Kind.Directory].inodeCount).toBe("2");
+      expect(categories[Kind.File].inodeCount).toBe("1");
+      expect(categories[Kind.Symlink].inodeCount).toBe("1");
+      expect(await allocatedByDu(outside)).toBeGreaterThan(total);
+      expect(await readFile(alias, "utf8")).toBe("abc");
+    } finally { await f.cleanup(); }
   });
 
   it.each(["delete", "add", "same-size-old-mtime", "mode"])("detects %s from actual contents", async (change) => {

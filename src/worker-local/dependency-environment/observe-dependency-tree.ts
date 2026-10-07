@@ -5,7 +5,7 @@ import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import {
   DependencyManifestEntryKind as Kind, DependencyTreeObservationFailure as Failure,
-  DependencyTreeObservationStatus as Status, encodeDependencyTreeManifest,
+  DependencyTreeObservationStatus as Status, DependencyTreeAllocationBasis as AllocationBasis, encodeDependencyTreeManifest,
   type DependencyManifestEntry, type DependencyObservedEntryIdentity,
   type DependencyCapturedTreeObservation, type DependencyTreeObservationLimits,
 } from "../../worker-core/dependency-environment/domain/dependency-tree-manifest";
@@ -24,6 +24,14 @@ const same = (a: BigIntStats, b: BigIntStats): boolean => a.dev === b.dev && a.i
   a.mode === b.mode && a.size === b.size && a.nlink === b.nlink && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
 const sameDirectoryIdentity = (a: BigIntStats, b: BigIntStats): boolean => a.isDirectory() && b.isDirectory() &&
   a.dev === b.dev && a.ino === b.ino && a.mode === b.mode;
+const blocks = (info: BigIntStats): bigint => {
+  if (typeof info.blocks !== "bigint" || info.blocks < 0n) fail(Failure.InvalidAllocation);
+  return info.blocks;
+};
+const sameAllocation = (a: BigIntStats, b: BigIntStats): void => {
+  const before = blocks(a), after = blocks(b);
+  if (a.dev === b.dev && a.ino === b.ino && before !== after) fail(Failure.AllocationChanged);
+};
 const anchored = (parent: FileHandle, name: Buffer): Buffer => Buffer.concat([Buffer.from(`/proc/self/fd/${parent.fd}/`), name]);
 const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
@@ -67,13 +75,14 @@ async function observeNamedRoot(input: {
     if ((await statfs("/proc/self/fd", { bigint: true })).type !== 0x9fa0n) fail(Failure.UnsupportedPlatform);
     const start = performance.now();
     const checkTime = (): void => { if (performance.now() - start > input.limits.maxDurationMs) fail(Failure.Bounds); };
-    const retainDirectory = async (path: string | Buffer, parent?: FileHandle, name?: Buffer): Promise<Anchor> => {
+    const retainDirectory = async (path: string | Buffer, parent?: FileHandle, name?: Buffer, target = false): Promise<Anchor> => {
       checkTime();
       const before = await lstat(path, { bigint: true });
       if (!before.isDirectory()) fail(Failure.UnsafeNamespace);
       const handle = await open(path, directoryFlags);
       try {
         const current = await handle.stat({ bigint: true });
+        if (target) sameAllocation(before, current);
         if (!same(before, current)) fail(Failure.IdentityChanged);
         const mountId = await mount(handle);
         const item: Anchor = { handle, before: current, mountId,
@@ -92,7 +101,7 @@ async function observeNamedRoot(input: {
         !expected(workspaceAnchor.before, input.expectedWorkspace))) fail(Failure.IdentityChanged);
     const treeName = Buffer.from(input.treeName);
     const treeAnchorIndex = anchors.length;
-    const root = await retainDirectory(anchored(workspaceAnchor.handle, treeName), workspaceAnchor.handle, treeName);
+    const root = await retainDirectory(anchored(workspaceAnchor.handle, treeName), workspaceAnchor.handle, treeName, true);
     if (root.mountId !== workspaceAnchor.mountId) fail(Failure.MountCrossing);
     if (input.expectedTree && !expected(root.before, input.expectedTree)) fail(Failure.IdentityChanged);
     const entries: DependencyManifestEntry[] = [];
@@ -100,11 +109,17 @@ async function observeNamedRoot(input: {
     const checked: CheckedEntry[] = [];
     let totalBytes = 0;
     let manifestEstimate = 26;
+    const allocated = { [Kind.Directory]: 0n, [Kind.File]: 0n, [Kind.Symlink]: 0n };
+    const inodeCounts = { [Kind.Directory]: 0n, [Kind.File]: 0n, [Kind.Symlink]: 0n };
     const add = (entry: DependencyManifestEntry, info: BigIntStats, mountId: string): void => {
       checkTime();
       if (entries.length >= input.limits.maxEntries) fail(Failure.Bounds);
       manifestEstimate += Buffer.byteLength(JSON.stringify(entry)) + 1;
       if (manifestEstimate > input.limits.maxManifestBytes) fail(Failure.Bounds);
+      // Only entries emitted below the retained target root are counted. Opening
+      // ancestor anchors or validating a symlink target never adds their blocks.
+      allocated[entry.kind] += blocks(info) * 512n;
+      inodeCounts[entry.kind] += 1n;
       entries.push(entry);
       identities.push({ path: entry.path, identity: identity(info), mountId });
     };
@@ -136,7 +151,8 @@ async function observeNamedRoot(input: {
         if (mountId !== root.mountId) fail(Failure.MountCrossing);
         const child = [...path, name.toString("base64")];
         if (info.isDirectory()) {
-          const retained = await retainDirectory(childPath, dir.handle, name);
+          const retained = await retainDirectory(childPath, dir.handle, name, true);
+          sameAllocation(info, retained.before);
           if (!same(info, retained.before) || retained.mountId !== root.mountId) fail(Failure.Unstable);
           await walk(retained, child);
         } else {
@@ -146,7 +162,9 @@ async function observeNamedRoot(input: {
             if (info.size > BigInt(input.limits.maxTotalBytes - totalBytes)) fail(Failure.Bounds);
             const handle = await open(childPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
             try {
-              if (!same(info, await handle.stat({ bigint: true })) || await mount(handle) !== root.mountId) fail(Failure.Unstable);
+              const opened = await handle.stat({ bigint: true });
+              sameAllocation(info, opened);
+              if (!same(info, opened) || await mount(handle) !== root.mountId) fail(Failure.Unstable);
               const digest = createHash("sha256");
               const buffer = Buffer.alloc(64 * 1024);
               let offset = 0;
@@ -157,8 +175,10 @@ async function observeNamedRoot(input: {
                 digest.update(buffer.subarray(0, bytesRead));
                 offset += bytesRead;
               }
-              if ((await handle.read(buffer, 0, 1, offset)).bytesRead !== 0 ||
-                  !same(info, await handle.stat({ bigint: true }))) fail(Failure.Unstable);
+              if ((await handle.read(buffer, 0, 1, offset)).bytesRead !== 0) fail(Failure.Unstable);
+              const after = await handle.stat({ bigint: true });
+              sameAllocation(info, after);
+              if (!same(info, after)) fail(Failure.Unstable);
               totalBytes += offset;
               add({ path: child, kind: Kind.File, mode, size: String(info.size), sha256: digest.digest("hex") }, info, mountId);
             } finally { await handle.close(); }
@@ -172,8 +192,10 @@ async function observeNamedRoot(input: {
         }
       }
       const afterNames = await names(dir.handle);
+      const after = await dir.handle.stat({ bigint: true });
+      sameAllocation(dir.before, after);
       if (beforeNames.length !== afterNames.length || beforeNames.some((name, i) => !name.equals(afterNames[i]!)) ||
-          !same(dir.before, await dir.handle.stat({ bigint: true }))) fail(Failure.Unstable);
+          !same(dir.before, after)) fail(Failure.Unstable);
     };
     await walk(root, []);
     validateSymlinks(entries);
@@ -183,19 +205,25 @@ async function observeNamedRoot(input: {
       checkTime();
       const handle = await open(anchored(item.parent, item.name), pathFlags);
       try {
-        if (!same(item.before, await handle.stat({ bigint: true }))) fail(Failure.Unstable);
+        const current = await handle.stat({ bigint: true });
+        sameAllocation(item.before, current);
+        if (!same(item.before, current)) fail(Failure.Unstable);
         if (await mount(handle) !== item.mountId) fail(Failure.MountCrossing);
       } finally { await handle.close(); }
     }
     for (const [index, item] of anchors.entries()) {
       checkTime();
       const equal = index >= treeAnchorIndex ? same : sameDirectoryIdentity;
-      if (!equal(item.before, await item.handle.stat({ bigint: true }))) fail(Failure.Unstable);
+      const current = await item.handle.stat({ bigint: true });
+      if (index >= treeAnchorIndex) sameAllocation(item.before, current);
+      if (!equal(item.before, current)) fail(Failure.Unstable);
       if (await mount(item.handle) !== item.mountId) fail(Failure.MountCrossing);
       if (item.parent && item.name) {
         const handle = await open(anchored(item.parent, item.name), directoryFlags);
         try {
-          if (!equal(item.before, await handle.stat({ bigint: true }))) fail(Failure.IdentityChanged);
+          const reopened = await handle.stat({ bigint: true });
+          if (index >= treeAnchorIndex) sameAllocation(item.before, reopened);
+          if (!equal(item.before, reopened)) fail(Failure.IdentityChanged);
           if (await mount(handle) !== item.mountId) fail(Failure.MountCrossing);
         } finally { await handle.close(); }
       }
@@ -203,8 +231,17 @@ async function observeNamedRoot(input: {
     const canonicalBytes = Buffer.from(encodeDependencyTreeManifest(entries));
     if (canonicalBytes.length > input.limits.maxManifestBytes) fail(Failure.Bounds);
     checkTime();
+    const digest = hash(canonicalBytes);
+    checkTime();
     return { status: Status.Complete, workspace, tree: identity(root.before), mountId: root.mountId,
-      entries, identities, canonicalBytes, digest: hash(canonicalBytes), totalBytes: String(totalBytes) };
+      entries, identities, canonicalBytes, digest, totalBytes: String(totalBytes),
+      measurement: { allocationBasis: AllocationBasis.RetainedInodeBlocks512,
+        allocatedBytesEstimate: String(allocated[Kind.Directory] + allocated[Kind.File] + allocated[Kind.Symlink]),
+        allocationByKind: {
+          [Kind.Directory]: { inodeCount: String(inodeCounts[Kind.Directory]), allocatedBytesEstimate: String(allocated[Kind.Directory]) },
+          [Kind.File]: { inodeCount: String(inodeCounts[Kind.File]), allocatedBytesEstimate: String(allocated[Kind.File]) },
+          [Kind.Symlink]: { inodeCount: String(inodeCounts[Kind.Symlink]), allocatedBytesEstimate: String(allocated[Kind.Symlink]) },
+        }, observedScanDurationMs: String(Math.ceil(performance.now() - start)) } };
   } catch (error) {
     return { status: Status.Incomplete, reason: error instanceof ObservationError ? error.reason : Failure.Access };
   } finally {
