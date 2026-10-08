@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { assertHostedProcessDescriptors } from "@vioxen/subscription-runtime/provider-codex";
-import { runHostedOrdinaryBootstrap, runHostedRuntimeForeground } from "./hosted-readonly-foreground";
+import { runHostedOrdinaryBootstrap, runHostedRuntimeForeground, runHostedReadonlyCliForeground } from "./hosted-readonly-foreground";
+import { readHostedInstallationActivation } from "./hosted-installation-activation";
+import { HostedActivationPhase } from "@vioxen/subscription-runtime/worker-core";
 import { hostedForegroundExitCode } from "./hosted-foreground-result";
 import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 
@@ -19,7 +21,13 @@ try {
     // sink. Valid legacy selection retains its existing diagnostic contract.
     writeFailure = readHostedFdProfile() === undefined;
     if (separator !== "--" || !command) throw new Error();
-    process.exitCode = hostedForegroundExitCode(await runHostedRuntimeForeground(command, args, process.cwd(), process.env));
+    if (readHostedInstallationActivation().activation.phase === HostedActivationPhase.Ordinary) {
+      process.exitCode = hostedForegroundExitCode(await runHostedRuntimeForeground(command, args, process.cwd(), process.env));
+    } else {
+      const outcome = await runHostedReadonlyCliForeground(command, args, process.cwd(), process.env);
+      process.exitCode = hostedForegroundExitCode(outcome.result);
+      if (outcome.signal) process.kill(process.pid, outcome.signal);
+    }
   } else {
   if (mode !== "legacy" || separator !== "--" || !command) throw new Error();
   const submit = () => spawn(command, args, { cwd: process.cwd(), env: process.env, stdio: "inherit" });

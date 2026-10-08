@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, readlinkSync, lstatSync } from "node:fs";
 import { researchInvalid, researchId, researchHash, researchCustody, researchRead, researchFileDigest } from "./research-launch-files";
+import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
 
 export const researchRuntimeUnitPattern = /^subscription-runtime-research-([a-f0-9-]{36})\.service$/;
 export const researchProviderUnitPattern = /^subscription-runtime-research-provider-([a-f0-9-]{36})\.service$/;
@@ -9,8 +10,12 @@ export function researchCommand(command: string, args: readonly string[]): strin
   researchCustody(command);
   // Type=exec submission waits for startup; manager reads can queue behind it.
   // Allow finite Host contention only for these control-plane commands.
-  const timeout = command === "/usr/bin/systemctl" && (args[0] === "show" || args[0] === "list-jobs") ? 30_000
-    : /^\/usr\/bin\/systemd-run$/.test(command) ? 60_000 : 15_000;
+  const isSystemdRun = /^\/usr\/bin\/systemd-run$/.test(command);
+  const ownedRuntimeStart = isSystemdRun && args.some(arg => arg.startsWith("--unit=") &&
+    researchRuntimeUnitPattern.test(arg.slice("--unit=".length)));
+  const timeout = ownedRuntimeStart ? researchProviderSetupTimeoutMs + 30_000
+    : command === "/usr/bin/systemctl" && (args[0] === "show" || args[0] === "list-jobs") ? 30_000
+    : isSystemdRun ? 60_000 : 15_000;
   const result = spawnSync(command, [...args], { encoding: "utf8", timeout, maxBuffer: 1024 * 1024,
     env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdio: ["ignore", "pipe", "pipe"] });
   if (result.error || result.status !== 0) researchInvalid((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"

@@ -1,5 +1,9 @@
 export const fdCollectorProfilePath = "/var/lib/subscription-runtime-host-policy/fd-collector-profile.v1.json" as const;
 export enum FdCollectorRenderer { SsV61Signed = "ss-v6.1-int32" }
+export enum FdCollectorPeerStatus { Known = "known", Unresolved = "unresolved" }
+export type FdCollectorPeer =
+  | Readonly<{ status: FdCollectorPeerStatus.Known; inode: string }>
+  | Readonly<{ status: FdCollectorPeerStatus.Unresolved }>;
 export type FdCollectorProfilePin = Readonly<{ path: typeof fdCollectorProfilePath; sha256: string }>;
 export type FdFilePin = Readonly<{ path: string; sha256: string }>;
 export type FdExecutablePin = FdFilePin & Readonly<{ elfFiles: readonly FdFilePin[] }>;
@@ -65,7 +69,7 @@ export function parseFdCollectorProfile(value: unknown): FdCollectorProfile {
     "hosted-readonly-host-launch-cli.js", "hosted-readonly-runtime-bootstrap.js"];
   if (new Set(bootstraps.map(pin => pin.path)).size !== bootstraps.length ||
       required.some(name => names.filter(candidate => candidate === name).length !== 1)) invalid();
-  const limits = object(row.limits, "setupTimeoutMs,collectorTimeoutMs,maxOutputBytes,maxRows,maxBufferedInputBytes,maxEventPoll,maxEventFd,maxPipeEndpoints,maxDevNullReserves");
+  const limits = { ...object(row.limits, "setupTimeoutMs,collectorTimeoutMs,maxOutputBytes,maxRows,maxBufferedInputBytes,maxEventPoll,maxEventFd,maxPipeEndpoints,maxDevNullReserves") };
   const maxima = { setupTimeoutMs: 60_000, collectorTimeoutMs: 5_000, maxOutputBytes: 4 * 1024 * 1024,
     maxRows: 65_536, maxBufferedInputBytes: 4 * 1024 * 1024, maxEventPoll: 8, maxEventFd: 8,
     maxPipeEndpoints: 32, maxDevNullReserves: 8 };
@@ -80,25 +84,34 @@ export function parseFdCollectorProfile(value: unknown): FdCollectorProfile {
 }
 
 /** The pinned v6.1 renderer prints uint32 kernel inodes through signed int.
- * Names cannot enter these rows: the fixed collector filters before rendering. */
-export function parseFdCollectorRows(text: string, maxRows: number): ReadonlyMap<string, string> {
+ * Names cannot enter these rows: the fixed collector filters before rendering.
+ * Peer0 loses absent/orphan/fallback provenance; retain it without peer authority. */
+export function parseFdCollectorRows(text: string, maxRows: number): ReadonlyMap<string, FdCollectorPeer> {
   if (!/^[\x09\x0a\x20-\x7e]*$/.test(text)) invalid();
   const lines = text.trim() ? text.trim().split("\n") : [];
   if (lines.length > maxRows) invalid();
   const inode = (s: string): string => {
     if (!/^(?:0|[1-9][0-9]*|-[1-9][0-9]*)$/.test(s)) invalid();
     const n = Number(s);
-    if (!Number.isSafeInteger(n) || n < -2147483648 || n > 2147483647 || n === 0) invalid();
+    if (!Number.isSafeInteger(n) || n < -2147483648 || n > 2147483647) invalid();
     return String(n < 0 ? n + 4294967296 : n);
   };
-  const rows = new Map<string, string>();
+  const rows = new Map<string, FdCollectorPeer>();
   for (const line of lines) {
     const columns = line.trim().split(/[\t ]+/);
     if (columns.length !== 6 || columns[2] !== "*" || columns[4] !== "*" ||
         !columns.slice(0, 2).every(s => /^(?:0|[1-9][0-9]{0,9})$/.test(s) && Number(s) <= 4294967295)) invalid();
     const local = inode(columns[3]!), peer = inode(columns[5]!);
-    if (rows.has(local)) invalid();
-    rows.set(local, peer);
+    if (local === "0" || rows.has(local)) invalid();
+    const fact: FdCollectorPeer = peer === "0" ?
+      { status: FdCollectorPeerStatus.Unresolved } : { status: FdCollectorPeerStatus.Known, inode: peer };
+    rows.set(local, Object.freeze(fact));
   }
   return rows;
+}
+
+/** A positive rendered inode is a fact, not ownership or a release permit. */
+export function knownFdCollectorPeer(rows: ReadonlyMap<string, FdCollectorPeer>, local: string): string | undefined {
+  const peer = rows.get(local);
+  return peer?.status === FdCollectorPeerStatus.Known ? peer.inode : undefined;
 }
