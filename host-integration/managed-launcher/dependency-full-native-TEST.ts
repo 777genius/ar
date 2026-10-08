@@ -53,6 +53,20 @@ export function fullNativeIntended(value:unknown):boolean {
   const descriptors=Object.getOwnPropertyDescriptors(value);check(Object.values(descriptors).every(d=>Object.hasOwn(d,"value")));
   const d=Object.getOwnPropertyDescriptor(value,"jobId");return !!d && Object.hasOwn(d,"value") && d.value===fullNativeJob;
 }
+export enum FullRestoreConsumer { Ordinary="ordinary", Readonly="readonly" }
+/** Finite TEST case selection only. It carries no identity or launch authority. */
+export function fullNativeRestoreConsumer(value:unknown):FullRestoreConsumer {
+  if(value===undefined)return FullRestoreConsumer.Ordinary;
+  check(value===FullRestoreConsumer.Ordinary || value===FullRestoreConsumer.Readonly);return value;
+}
+const fullReviewKeys=["schemaVersion","sourceBaseSha","sourceSha","sourceTree","machineId","bootId","nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256","accountName","reviewReference","hostTools","systemdVersion","installedModules"];
+function fullReviewData(value:unknown) {
+  check(value!==null && typeof value==="object" && !types.isProxy(value) && Object.getPrototypeOf(value)===Object.prototype);
+  const selected=Object.hasOwn(value,"restoreConsumer");
+  const review=fullData(value,selected ? [...fullReviewKeys,"restoreConsumer"] : fullReviewKeys);
+  if(selected)check(review.restoreConsumer===FullRestoreConsumer.Ordinary || review.restoreConsumer===FullRestoreConsumer.Readonly);
+  return review;
+}
 enum RootContext {Launcher="Launcher",Parent="Parent"}
 function initialRoot(context:RootContext){
   const limits=readFileSync("/proc/self/limits","utf8");check(Buffer.byteLength(limits)<=16384);
@@ -128,12 +142,13 @@ function acquire(context:RootContext=RootContext.Launcher){
   initialRoot(context);const pins=new Pins();
   try{
     pins.hold(reviewRoot,true,0o700);
-    const r=fullData(pins.json(reviewPath,32768),["schemaVersion","sourceBaseSha","sourceSha","sourceTree","machineId","bootId","nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256","accountName","reviewReference","hostTools","systemdVersion","installedModules"]);
+    const r=fullReviewData(pins.json(reviewPath,32768));
     check(r.schemaVersion===1 && r.sourceBaseSha===sourceBase && sha(r.sourceSha) && sha(r.sourceTree));
     check(typeof r.machineId==="string" && /^[a-f0-9]{32}$/.test(r.machineId) && typeof r.bootId==="string" && /^[a-f0-9-]{36}$/.test(r.bootId));
     check(r.accountName==="account-u" && typeof r.reviewReference==="string" && /^[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,255}$/.test(r.reviewReference));
     for(const key of ["nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256"])check(digest(r[key]));
     check(typeof r.systemdVersion==="string" && /^systemd 255 \(255\.4[A-Za-z0-9.+~-]{0,64}\)$/.test(r.systemdVersion));
+    const restoreConsumer=fullNativeRestoreConsumer(r.restoreConsumer);
     const sourceSha=r.sourceSha,root=fullNativeInputBase+"/"+sourceSha,source=root+"/source",node=root+"/toolchain/bin/node";
     pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);
     pins.hold(fullNativeTmpDir,true,0o700);
@@ -194,7 +209,7 @@ function acquire(context:RootContext=RootContext.Launcher){
     pins.hold("/srv/workers/jobs/"+fullNativeJob,true,0o700);pins.hold("/srv/workers/jobs/"+fullNativeJob+"/tmp",true,0o700);pins.hold(fullNativeOsBase,true,0o700);
     const git=spawnSync("/usr/bin/git",["-C",source,"rev-parse","--verify","HEAD^{tree}"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir,GIT_CONFIG_NOSYSTEM:"1",GIT_CONFIG_GLOBAL:"/dev/null"},encoding:"utf8",timeout:5000,maxBuffer:4096});
     check(!git.error && git.status===0 && git.signal===null && git.stdout.trim()===r.sourceTree);
-    const tuple=Object.freeze({sourceSha,source,root,node,parent,machineId:r.machineId,bootId:r.bootId,accountName:r.accountName});
+    const tuple=Object.freeze({sourceSha,source,root,node,parent,machineId:r.machineId,bootId:r.bootId,accountName:r.accountName,restoreConsumer});
     const namespace=readlinkSync("/proc/self/ns/mnt"),namespaceFd=pins.mountNamespace();
     if(context===RootContext.Parent)check(namespace!==readlinkSync("/proc/1/ns/mnt"));
     const validate=()=>{initialRoot(context);check(readlinkSync("/proc/self/ns/mnt")===namespace && readlinkSync(`/proc/self/fd/${namespaceFd}`)===namespace);pins.validate();check(readFileSync("/etc/machine-id","utf8").trim()===tuple.machineId && readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim()===tuple.bootId);};
@@ -236,7 +251,7 @@ export function retainFullNativeLaunch(request:unknown){
       const fd=openSync(`/proc/self/fd/${directory}/${name}`,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
       try{writeFileSync(fd,bytes);fsyncSync(fd);}finally{closeSync(fd);}fsyncSync(directory);return bytes;
     }
-    return Object.freeze({node:c.tuple.node,parent:c.tuple.parent,source:c.tuple.source,sourceSha:c.tuple.sourceSha,fingerprint:data.fingerprint,revalidate,
+    return Object.freeze({node:c.tuple.node,parent:c.tuple.parent,source:c.tuple.source,sourceSha:c.tuple.sourceSha,restoreConsumer:c.tuple.restoreConsumer,fingerprint:data.fingerprint,revalidate,
       beforeSubmit(){
         revalidate();check(!prepared);const shown=spawnSync("/usr/bin/systemctl",["show",fullNativeUnit,"--property=LoadState","--value"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:256});
         check(!shown.error && (shown.status===0 || shown.status===4) && shown.signal===null && shown.stdout.trim()==="not-found");
@@ -298,13 +313,14 @@ const parentCapabilities="CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_K
 const fullMonitorCapabilities=parentCapabilities;
 export function fullNativeArguments(request:unknown){
   const custody=retainFullNativeLaunch(request);try{
-    const toolchain=fullNativeInputBase+"/"+custody.sourceSha+"/toolchain";
+    const toolchain=fullNativeInputBase+"/"+custody.sourceSha+"/toolchain",
+      selector=custody.restoreConsumer===FullRestoreConsumer.Readonly ? ["--setenv=TEST_FULL_RESTORE_CONSUMER="+custody.restoreConsumer] : [];
     const properties=["Slice=subscription-runtime-hosted.slice","KillMode=control-group","SendSIGKILL=yes","Delegate=no","Restart=no","RemainAfterExit=no","ProtectSystem=strict","NoNewPrivileges=yes","MemorySwapMax=0","LimitCORE=0","LimitNOFILE=65536","AmbientCapabilities=","PassEnvironment=","UnsetEnvironment="+erasedEnvironment,"CapabilityBoundingSet="+parentCapabilities,
       "CPUQuota=100%","CPUQuotaPeriodSec=100ms","MemoryMax=2G","TasksMax=128","RuntimeMaxSec=1800","TimeoutStopSec=180","StandardOutput=null","StandardError=null",
       "ReadWritePaths="+fullNativeOsBase+" /var/lib/subscription-runtime-full-TEST-output /run/systemd/system /srv/workers/jobs/"+fullNativeJob,
       "BindReadOnlyPaths="+custody.source+":"+custody.source+":norbind",
       "BindReadOnlyPaths="+toolchain+":"+toolchain+":norbind","BindReadOnlyPaths=/run/TEST-full-outer-review:/run/TEST-full-outer-review:norbind","BindReadOnlyPaths=/run/TEST-real-codex-public-review:/run/TEST-real-codex-public-review:norbind","BindReadOnlyPaths="+reviewRoot+":"+reviewRoot+":norbind","BindReadOnlyPaths=/srv/worker-state/account-pools/live-codex-auth/account-u:/srv/worker-state/account-pools/live-codex-auth/account-u:norbind"];
-    const args=Object.freeze(["--description=subscription-job:"+custody.fingerprint,"--unit="+fullNativeUnit,"--working-directory="+custody.source,"--service-type=exec","--expand-environment=no","--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID="+fullNativeJob,"--setenv=TEST_SOURCE_SHA="+custody.sourceSha,"--setenv=HOME=/srv/workers/jobs/"+fullNativeJob,"--setenv=TMPDIR=/srv/workers/jobs/"+fullNativeJob+"/tmp","--setenv=PATH=/usr/bin:/bin","--setenv=LANG=C.UTF-8",...properties.map(p=>"--property="+p),"--",custody.node,custody.parent]);
+    const args=Object.freeze(["--description=subscription-job:"+custody.fingerprint,"--unit="+fullNativeUnit,"--working-directory="+custody.source,"--service-type=exec","--expand-environment=no","--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID="+fullNativeJob,"--setenv=TEST_SOURCE_SHA="+custody.sourceSha,...selector,"--setenv=HOME=/srv/workers/jobs/"+fullNativeJob,"--setenv=TMPDIR=/srv/workers/jobs/"+fullNativeJob+"/tmp","--setenv=PATH=/usr/bin:/bin","--setenv=LANG=C.UTF-8",...properties.map(p=>"--property="+p),"--",custody.node,custody.parent]);
     custody.revalidate();return {args,custody};
   }catch{custody.close();refuse();}
 }
@@ -381,7 +397,8 @@ export function retainCurrentFullParent():FullParentSession {
   const revalidate=()=>{check(!closed);liveProc();c.validate();
     const ackDeadline=process.hrtime.bigint()+5000000000n;
     while(record(c,true).phase!==FullParentPhase.Started){check(process.hrtime.bigint()<ackDeadline);Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);}
-    const envKeys=Object.keys(process.env);check(envKeys.length<=32 && envKeys.every(key=>["PATH","LANG","LC_ALL","HOME","TMPDIR","USER","LOGNAME","SHELL","INVOCATION_ID","SYSTEMD_EXEC_PID","JOURNAL_STREAM","SUBSCRIPTION_RUNTIME_HOST_JOB_ID","TEST_SOURCE_SHA"].includes(key)));
+    const envKeys=Object.keys(process.env);check(envKeys.length<=32 && envKeys.every(key=>["PATH","LANG","LC_ALL","HOME","TMPDIR","USER","LOGNAME","SHELL","INVOCATION_ID","SYSTEMD_EXEC_PID","JOURNAL_STREAM","SUBSCRIPTION_RUNTIME_HOST_JOB_ID","TEST_SOURCE_SHA","TEST_FULL_RESTORE_CONSUMER"].includes(key)));
+    check(fullNativeRestoreConsumer(process.env.TEST_FULL_RESTORE_CONSUMER)===c.tuple.restoreConsumer);
     check(process.env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID===fullNativeJob && process.env.TEST_SOURCE_SHA===c.tuple.sourceSha && process.argv.length===2);
     check(readlinkSync("/proc/self/exe")===c.tuple.node);check(readFileSync("/proc/self/cmdline").equals(Buffer.from([c.tuple.node,c.tuple.parent,""].join("\u0000"))));
     const observed=spawnSync("/usr/bin/systemctl",["show",fullNativeUnit,"--property=LoadState,ActiveState,SubState,InvocationID,MainPID,Description,ControlGroup,ProtectSystem"],{env:{PATH:"/usr/bin:/bin",LANG:"C",TMPDIR:fullNativeTmpDir},encoding:"utf8",timeout:5000,maxBuffer:4096});
@@ -500,7 +517,7 @@ export function retainCurrentFullParent():FullParentSession {
         if(!row.path.startsWith("host-integration/") || ["host-integration/managed-launcher/dependency-full-native-TEST.js","host-integration/managed-launcher/launch.mjs","host-integration/managed-launcher/profiles.mjs","host-integration/managed-launcher/payload-guard.mjs","host-integration/host-jobs/storage-policy.mjs"].includes(row.path))c.pins.publicFile(guestRuntime+"/"+row.path,row.sha256);
         if(["host-integration/managed-launcher/launch.mjs","host-integration/managed-launcher/payload-guard.mjs","host-integration/managed-launcher/profiles.mjs","host-integration/host-jobs/storage-policy.mjs"].includes(row.path))c.pins.publicFile(root+"/opt/subscription-runtime/"+row.path.slice("host-integration/".length),row.sha256);
       }
-      c.pins.publicFile(guestRuntime+"/toolchain/bin/node",requireDigest(fullData(c.pins.json(reviewPath,32768),["schemaVersion","sourceBaseSha","sourceSha","sourceTree","machineId","bootId","nodeSha256","launcherSha256","moduleSha256","parentSha256","catalogSha256","outerReviewSha256","publicReviewSha256","accountName","reviewReference","hostTools","systemdVersion","installedModules"]).nodeSha256));
+      c.pins.publicFile(guestRuntime+"/toolchain/bin/node",requireDigest(fullReviewData(c.pins.json(reviewPath,32768)).nodeSha256));
       const elfFd=c.pins.hold(guestRuntime+"/os-signed-elf-pins.json"),elfBytes=readFd(elfFd);check(elfBytes.length<=256*1024);
       const os=fullData(JSON.parse(elfBytes.toString("utf8")),["schemaVersion","pins"]);check(os.schemaVersion===1 && Array.isArray(os.pins));
       const guestSources:{path:string;sha256:string}[]=[{path:"/opt/subscription-runtime-dependency-os-TEST/toolchain/bin/node",sha256:hash(readFd(c.pins.hold(guestRuntime+"/toolchain/bin/node")))}];

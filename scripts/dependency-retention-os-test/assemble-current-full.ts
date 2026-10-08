@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
   readdirSync, readlinkSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync, type BigIntStats } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { fullNativeOsBase, fullNativeGuestRoot, fullNativeTmpDir } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { fullNativeRestoreConsumer, fullNativeOsBase, fullNativeGuestRoot, fullNativeTmpDir } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { hostedDependencySystemdRunExecutable } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-systemd-command.js";
 import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
   SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/core/host-infrastructure/system-bus-infrastructure.js";
@@ -18,6 +18,7 @@ import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, comman
 
 export function assembleCurrentFull(root: string, state: string, source: string, toolchain: string, sourceSha: string, machineId: string,
   scenario: OwnedOsFixtureScenario, remainingMs: () => number, geometry: CurrentBackingGeometry = CurrentBackingGeometry.Existing): void {
+  fullNativeRestoreConsumer(process.env.TEST_FULL_RESTORE_CONSUMER);
   assert(geometry === CurrentBackingGeometry.Existing || geometry === CurrentBackingGeometry.Adoptable);
   if (geometry === CurrentBackingGeometry.Adoptable) assert.equal(scenario, OwnedOsScenario.CurrentDependency);
   // The caller owns one monotonic deadline across both fresh roots. Every
@@ -232,7 +233,7 @@ export function assembleCurrentFull(root: string, state: string, source: string,
     writeFileSync(units + "/TEST-retention-bus-diagnostic.target", "[Unit]\nDescription=Unqualified TEST daemon stderr observation\nDefaultDependencies=no\nRequires=dbus.service\nAfter=dbus.service\n", { flag: "wx", mode: 0o644 });
   } else {
   writeFileSync(units + "/TEST-retention.target", "[Unit]\nDescription=Owned dependency TEST OS\nDefaultDependencies=no\nRequires=dbus.service TEST-retention-supervisor.service\nAfter=dbus.service TEST-retention-supervisor.service\n", { mode: 0o644 });
-  writeFileSync(units + "/TEST-retention-supervisor.service", `[Unit]\nDescription=Owned TEST issuer and retained supervisor\nDefaultDependencies=no\nRequires=dbus.service\nAfter=dbus.service\n[Service]\nType=exec\nSystemCallFilter=~io_uring_setup:ENOSYS io_uring_enter:ENOSYS io_uring_register:ENOSYS\nSystemCallArchitectures=native\nNoNewPrivileges=yes\nExecStart=${runtime}/toolchain/bin/node --experimental-strip-types ${runtime}/scripts/dependency-retention-os-test/current-full-supervisor.js supervisor\nEnvironment=TEST_SOURCE_SHA=${sourceSha}\nEnvironment=TEST_OS_SCENARIO=${scenario}\nPassEnvironment=SUBSCRIPTION_RUNTIME_HOST_JOB_ID\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin LANG=C LC_ALL=C\nRestart=no\nKillMode=control-group\nRuntimeMaxSec=25min\nTimeoutStopSec=20s\nStandardOutput=null\nStandardError=null\n`, { mode: 0o644 });
+  writeFileSync(units + "/TEST-retention-supervisor.service", `[Unit]\nDescription=Owned TEST issuer and retained supervisor\nDefaultDependencies=no\nRequires=dbus.service\nAfter=dbus.service\n[Service]\nType=exec\nSystemCallFilter=~io_uring_setup:ENOSYS io_uring_enter:ENOSYS io_uring_register:ENOSYS\nSystemCallArchitectures=native\nNoNewPrivileges=yes\nExecStart=${runtime}/toolchain/bin/node --experimental-strip-types ${runtime}/scripts/dependency-retention-os-test/current-full-supervisor.js supervisor\nEnvironment=TEST_SOURCE_SHA=${sourceSha}\nEnvironment=TEST_OS_SCENARIO=${scenario}\nPassEnvironment=SUBSCRIPTION_RUNTIME_HOST_JOB_ID TEST_FULL_RESTORE_CONSUMER\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin LANG=C LC_ALL=C\nRestart=no\nKillMode=control-group\nRuntimeMaxSec=25min\nTimeoutStopSec=20s\nStandardOutput=null\nStandardError=null\n`, { mode: 0o644 });
   }
   if (scenario !== OwnedOsMode.BusDiagnostic) directory(root + "/tmp", 0o1777);
   if (geometry === CurrentBackingGeometry.Adoptable) {

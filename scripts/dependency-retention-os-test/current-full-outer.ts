@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, statSync, statfsSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { assembleCurrentFull as assemble } from "./assemble-current-full.js";
-import { fullNativeOsBase, fullNativeTmpDir, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
+import { FullRestoreConsumer, fullNativeRestoreConsumer, fullNativeOsBase, fullNativeTmpDir, retainCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { readCurrentFullOuterInput } from "./current-full-outer-input.js";
 import { configuredAuthNspawnBinding } from "./current-configured-auth-mount.js";
 import { prepareCurrentRealCodexCapsule } from "./prepare-current-real-codex-capsule.js";
@@ -42,7 +42,11 @@ const managedParent=retainCurrentFullParent();
 const fullInput=readCurrentFullOuterInput(),{source,toolchain}=fullInput;
 assert.equal(boundedCommand("/usr/bin/lsb_release",["--codename","--short"],workDeadline).trim(),"noble");
 const diagnostic=false,geometry=CurrentBackingGeometry.Adoptable;
-const qualification="native_actual_c_cold_hot_committed_absent_restore_coldv2_r_entries_only";
+const restoreConsumer=fullNativeRestoreConsumer(process.env.TEST_FULL_RESTORE_CONSUMER);
+const qualification=restoreConsumer===FullRestoreConsumer.Readonly
+  ? "native_actual_c_cold_hot_committed_absent_first_r_restore_only"
+  : "native_actual_c_cold_hot_committed_absent_restore_coldv2_r_entries_only";
+const restoreConsumerMarker=restoreConsumer===FullRestoreConsumer.Readonly ? `--setenv=TEST_FULL_RESTORE_CONSUMER=${restoreConsumer} ` : "";
 const inheritedHostJobId=process.env.SUBSCRIPTION_RUNTIME_HOST_JOB_ID;
 if(inheritedHostJobId!==undefined)assert(/^TEST-[A-Za-z0-9_.-]{1,123}$/.test(inheritedHostJobId));
 const inheritedHostMarker=inheritedHostJobId===undefined?"":`--setenv=SUBSCRIPTION_RUNTIME_HOST_JOB_ID=${inheritedHostJobId} `;
@@ -173,7 +177,7 @@ try {
   const target = diagnostic ? "TEST-retention-bus-diagnostic.target" : "TEST-retention.target";
   managedParent.revalidate();
   const parentLiveBindings=managedParent.liveBindings().join(" ");
-  const fragment = `[Unit]\nBindsTo=${managedParent.unit}\nAfter=${managedParent.unit}\nPartOf=${managedParent.unit}\nDescription=Owned disposable dependency TEST OS ${id}\n[Service]\nType=exec\nNoNewPrivileges=yes\nAmbientCapabilities=\nPassEnvironment=\nUnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_PROFILE\nCapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_KILL CAP_SETGID CAP_SETUID CAP_SETPCAP CAP_SYS_CHROOT CAP_SYS_PTRACE CAP_SYS_ADMIN CAP_MKNOD CAP_AUDIT_WRITE CAP_SETFCAP\nStandardInput=null\nStandardOutput=null\nStandardError=null\nMemoryMax=6G\nMemorySwapMax=0\nTasksMax=1024\nCPUQuota=400%\nCPUQuotaPeriodSec=100ms\nDelegate=yes\nKillMode=control-group\nRestart=no\nRuntimeMaxSec=${runtimeSeconds}s\nTimeoutStopSec=30s\n${dataImage ? `MountImages=${dataImage}:${storage}\n` : ""}Environment=SYSTEMD_NSPAWN_USE_CGNS=1\nExecStart=${nspawn} --directory=${root} --machine=TEST-retention-${id} --register=no --keep-unit --private-users=no --settings=no --link-journal=no --boot --console=pipe --resolv-conf=off --capability=CAP_SYS_ADMIN,CAP_MKNOD,CAP_SETPCAP,CAP_SETFCAP,CAP_SYS_PTRACE ${dataImage ? `--bind=${storage} ` : ""}${inheritedHostMarker}${authBinding} ${parentLiveBindings} --bind-ro=${fullReviewed}:/run/TEST-full-flow-input --bind-ro=${publicReviewed}:/run/TEST-real-codex-review --bind=${outbox}:/run/TEST-full-flow-outbox --bind-ro=${reviewed}:/run/user/0/subscription-runtime-host-policy/codex-readonly-reviewed --setenv=SYSTEMD_UNIT_PATH=/etc/systemd/test-units:/run/systemd/system -- --unit=${target} --log-target=console\n`;
+  const fragment = `[Unit]\nBindsTo=${managedParent.unit}\nAfter=${managedParent.unit}\nPartOf=${managedParent.unit}\nDescription=Owned disposable dependency TEST OS ${id}\n[Service]\nType=exec\nNoNewPrivileges=yes\nAmbientCapabilities=\nPassEnvironment=\nUnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_PROFILE\nCapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_KILL CAP_SETGID CAP_SETUID CAP_SETPCAP CAP_SYS_CHROOT CAP_SYS_PTRACE CAP_SYS_ADMIN CAP_MKNOD CAP_AUDIT_WRITE CAP_SETFCAP\nStandardInput=null\nStandardOutput=null\nStandardError=null\nMemoryMax=6G\nMemorySwapMax=0\nTasksMax=1024\nCPUQuota=400%\nCPUQuotaPeriodSec=100ms\nDelegate=yes\nKillMode=control-group\nRestart=no\nRuntimeMaxSec=${runtimeSeconds}s\nTimeoutStopSec=30s\n${dataImage ? `MountImages=${dataImage}:${storage}\n` : ""}Environment=SYSTEMD_NSPAWN_USE_CGNS=1\nExecStart=${nspawn} --directory=${root} --machine=TEST-retention-${id} --register=no --keep-unit --private-users=no --settings=no --link-journal=no --boot --console=pipe --resolv-conf=off --capability=CAP_SYS_ADMIN,CAP_MKNOD,CAP_SETPCAP,CAP_SETFCAP,CAP_SYS_PTRACE ${dataImage ? `--bind=${storage} ` : ""}${inheritedHostMarker}${restoreConsumerMarker}${authBinding} ${parentLiveBindings} --bind-ro=${fullReviewed}:/run/TEST-full-flow-input --bind-ro=${publicReviewed}:/run/TEST-real-codex-review --bind=${outbox}:/run/TEST-full-flow-outbox --bind-ro=${reviewed}:/run/user/0/subscription-runtime-host-policy/codex-readonly-reviewed --setenv=SYSTEMD_UNIT_PATH=/etc/systemd/test-units:/run/systemd/system -- --unit=${target} --log-target=console\n`;
   const unitPath = "/run/systemd/system/" + unit;
   assert(!existsSync(unitPath)); writeFileSync(unitPath, fragment, { flag: "wx", mode: 0o644 });
   fragmentSha256 = fileDigest(unitPath);
@@ -297,7 +301,7 @@ try {
   const stat = lstatSync(path); assert(stat.isFile() && stat.uid === 0 && stat.size < 65536);
   const guest = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
   assert.equal(guest.sourceSha, process.env.TEST_SOURCE_SHA); assert.equal(guest.machineId, machineId);
-  assert.equal(guest.qualification, qualification);
+  assert.equal(guest.qualification, qualification);assert.equal(guest.restoreConsumer,restoreConsumer);
   evidence.guest = guest; evidence.status = guest.status;
   const outputPath = root + runtime + "/guest-output-observation.json";
   const outputDeadline = earlier(deadline, process.hrtime.bigint() + milliseconds(2000));
