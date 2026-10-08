@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync } from "node:fs";
+import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { DependencyInstallProofKind, DependencyReceiptParseStatus, DependencyReceiptState,
   DependencyOwnerKind, DependencyOwnerPhase, parseDependencyOwner, isDependencyConsumerOwner, sameDependencyAttempt,
@@ -134,6 +134,24 @@ export function readHostedDependencyReceipt(binding: HostedDependencyBinding): D
     validateBinding(latest, binding);
     return latest;
   } finally { store.close(); }
+}
+/** Current worker-only established read. It cannot initialize/migrate history
+ * and independently authenticates local output/completion through validateBinding.
+ * Every temporary store/source/proof descriptor is closed before return. */
+export function readHostedDependencyEstablishedReceipt(binding: HostedDependencyBinding): DependencyReceipt | null {
+  assertReadonlyHostOperator();
+  for (let path = hostedDependencyReceiptHistoryRoot;; path = dirname(path)) {
+    const stat = lstatSync(path);
+    if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o022) || realpathSync(path) !== path ||
+        (path === hostedDependencyReceiptHistoryRoot && (stat.mode & 0o777) !== 0o700)) fail();
+    if (path === "/") break;
+  }
+  const store = LocalDependencyReceiptStore.open({ rootPath: hostedDependencyReceiptHistoryRoot,
+    maxRecordBytes: 16384, maxHistorySteps: 2048 });
+  let receipt: DependencyReceipt | null;
+  try { receipt = store.read(binding.workspace); } finally { store.close(); }
+  validateBinding(receipt, binding);
+  return receipt;
 }
 export function publishHostedDependencyReceipt(binding: HostedDependencyBinding, expectedRevision: number | null,
   next: DependencyReceipt): DependencyReceipt {

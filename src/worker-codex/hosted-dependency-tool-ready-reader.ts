@@ -1,10 +1,12 @@
-import { DependencyToolReadyReadStatus, DependencyToolReadyProvenanceKind, sameDependencyAttempt,
+import { DependencyToolReadyReadStatus, DependencyToolReadyProvenanceKind, DependencyOwnerPhase, sameDependencyAttempt,
   type DependencyToolReadyReader, type DependencyToolReadyRead } from "@vioxen/subscription-runtime/core";
 import { DependencyInstallProofKind, DependencyReceiptState } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, readHostedOrdinaryProcessOrigin, readHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readHostedDependencyAttempt, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { readHostedDependencyCommittedHistory, HostedDependencyHistoryStatus } from "./hosted-dependency-committed-history";
+import { assertHostedDependencyQualifiedToolEntry, readHostedDependencyQualifiedToolEntry,
+  type HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value) + "\n");
 const unknown: DependencyToolReadyRead = Object.freeze({ status: DependencyToolReadyReadStatus.Unknown });
@@ -14,7 +16,7 @@ function fail(): never { throw new Error("hosted_dependency_tool_reader_changed"
  * No writable store, root selector or local-verification callback escapes. */
 export function captureHostedDependencyToolReadyReader(fence: HostedActivationFence, identity: {
   readonly jobId: string; readonly jobRootDir: string; readonly workspacePath: string;
-}): Readonly<{ reader: DependencyToolReadyReader; assertCurrent: (fence: HostedActivationFence) => void }> | undefined {
+}, entry?: HostedDependencyQualifiedToolEntry): Readonly<{ reader: DependencyToolReadyReader; assertCurrent: (fence: HostedActivationFence) => void }> | undefined {
   assertHostedActivationFence(fence);
   const origin = readHostedOrdinaryProcessOrigin(fence), binding = readHostedDependencyBinding(String(origin.start.jobId));
   if (!binding || binding.version === 1) return undefined;
@@ -33,6 +35,12 @@ export function captureHostedDependencyToolReadyReader(fence: HostedActivationFe
   const reader: DependencyToolReadyReader = Object.freeze({ readCurrent(): DependencyToolReadyRead {
     try {
       assertAttempt();
+      if (entry) {
+        const facts = readHostedDependencyQualifiedToolEntry(entry);
+        if (!encode(facts.workspace).equals(encode(binding.workspace))) fail();
+        assertAttempt();
+        return Object.freeze({ status: DependencyToolReadyReadStatus.Ready, facts });
+      }
       const history = readHostedDependencyCommittedHistory(identity.jobId);
       if (history.status !== HostedDependencyHistoryStatus.Known || !encode(history.binding).equals(encode(binding))) return unknown;
       const receipt = history.receipt;
@@ -50,6 +58,7 @@ export function captureHostedDependencyToolReadyReader(fence: HostedActivationFe
     const current = readHostedOrdinaryProcessOrigin(held);
     if (current.reservation.startId !== startId || !encode(current.start).equals(startBytes)) fail();
     assertAttempt();
+    if (entry) assertHostedDependencyQualifiedToolEntry(entry, held, DependencyOwnerPhase.Running);
     if (reader.readCurrent().status !== DependencyToolReadyReadStatus.Ready) fail();
   };
   assertCurrent(fence);
