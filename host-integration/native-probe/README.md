@@ -5,7 +5,8 @@ DATA decoding and its SOURCE checks. It has not been executed or qualified by
 this integration. A request contains exactly allocationDigest/jobId/kind/machineId/
 operation, uses sorted canonical JSON without LF, and authenticates nothing.
 `nativeFoundationOnly` and installed/native/model/positive-terminal authority
-remain unavailable. The original nondumpable helper association seam is open.
+remain unavailable. The original nondumpable helper association now has a
+private N1a SOURCE implementation; actual Linux seal evidence remains required.
 
 The three active hooks are `typecheck:native-probe`,
 `typecheck:native-probe:root-source`, and `test:native-probe`. They use strict
@@ -85,11 +86,10 @@ Still required for the full accepted A0 source implementation:
   load paths, CPU delegation, deterministic parent slices and protected backing
   filesystem. Inventory real infrastructure births, including generator-runner
   tasks despite empty generator executable directories, before any effects.
-* Native owner registry and serialized finite dispatcher, trusted fixed helper
-  fork/exec, post-exec Node/addon sealing/TSYNC, original namespace/privilege/
-  endpoint association and independent parent lifetime. Fixture Node thread/filter
-  compatibility is measured; the actual admitted installed Node closure, complete
-  privilege boundary and privilege-requiring negative cases remain unqualified.
+* Qualify the new private N1a original registry/fixed helper fork/exec and native
+  postexec seal on a separately admitted Linux fixture. The installed Node/loader/
+  library closure, complete privilege boundary and privileged negatives still
+  require actual evidence. The serialized resource dispatcher remains N2.
 * Compose the finite stock sd-bus and paired-cgroup mechanisms into the original
   native owner with protected load-path/search/drop-in/generator admission, actual
   finite infrastructure births (including reload generator runners), Source and
@@ -119,11 +119,91 @@ The normal root check's required package build is preserved; no dependency,
 source alias or production package configuration is changed. Historical predecessor evidence is separate; the current integration needs fresh
 strict graph, actual C/Node contracts and root-source results.
 
-A remaining native association boundary needs care: the current birth primitive
-reopens the helper's proc namespace entries for live revalidation. Once the real
-65532 helper is nondumpable and the executor excludes CAP_SYS_PTRACE, that proc
-access cannot be assumed. The original owner must commit the actual retained
-namespace objects together with the enforced immutable helper seal, then verify
-that original association without reacquiring a protected process handle or
-granting inspection rights. The current root-UID contract client does not prove
-that future boundary. Source handoff stays unavailable until it is implemented.
+The v1 birth primitive still reopens helper proc namespace entries and refuses
+unavailable revalidation. N1a has a distinct private committed association over
+the originally held pidfd/nsfs, native seal and authenticated live channel. It
+does not turn proc EACCES into acceptance or grant inspection rights. Actual
+65532/nondumpable evidence is required before claiming this boundary accepted.
+
+### N1a private SOURCE checkpoint
+
+`original-owner.c/.h`, the fixed native entry, protected addon and MTS helper
+implement one process-local original registry. Creation consumes its issuance
+before any setup, preserves the same 120s/180s anchor and reserves a 10s startup
+cutoff. Observations intersect 2s with those original ends; closure reserves one
+attempt capped at 60s and the original cleanup end. Equal-to-cutoff refuses.
+Public JSON snapshots carry only DATA. None can recreate a registry or select a
+PID, descriptor, endpoint, generation, executable or source callback.
+
+Trusted setup pins the fixed Node/helper/addon regular files through root-owned,
+non-writable, no-symlink ancestry. The original child is held while the parent
+pins its pidfd/time namespaces and compares them against the issuer. Only that
+parent relays its held startup files over the original channel. Child setup
+closes all other descriptors, reduces real identities/capabilities and installs
+the unchanged preexec filter before its sole exec through the held Node file.
+The protected bootstrap consumes the held script/addon, closes their startup
+descriptors, restores endpoint CLOEXEC, verifies the actual seal and applies the
+unchanged full TSYNC filter before native HELLO. Neither JS nor a seal boolean
+can issue that HELLO through the protected bridge.
+
+The parent consumes v1 kernel credentials/sequence/rights/truncation checks and
+commits only its fixed sealed original birth. Postcommit checks inspect retained
+objects and live pidfd without reopening the nondumpable helper. The original
+issuer namespaces/boot/clock continue to be checked. Duplicate/foreign/wrong
+protocol, death, EOF or environment disposal permanently close admission.
+NAPI methods require the exact original environment, wrapper and generation;
+copied receivers, arguments and another environment lose admission.
+
+Environment disposal sends a native loss prefix and waits at most 2s for the
+original parent's observation ACK. Failed ACK remains loss, never a replacement
+or authority. Parent retains original descriptors independently and uses only
+its exact child wait obligation. Repeated close preserves the first loss and
+attempt end. Disposal before original child wait is refused; wait/exit does not
+prove owned-domain empty or resource retirement. No resource effect is present.
+
+Startup additionally carries one root-created sealed memfd at fixed fd7. Its
+private record contains magic, original generation/issuer/anchor/cold end; root
+ownership, no links, exact size and all WRITE/GROW/SHRINK/SEAL locks are checked.
+The original parent sends its held memo with the fixed launch-file packet. This
+packet may release the child before the second startup frame is queued, so the
+ordinary frame alone cannot convey a deadline before its own blocking receipt.
+Before reading any payload, postexec C checks AF_UNIX/SEQPACKET and actual root
+parent SO_PEERCRED. It rejects absent, foreign, malformed or unsealed memo and
+uses nonblocking receive/poll against that original absolute cold end, including
+backward/equality checks after receipt. It does not repin or renew authority.
+The exec FD census is stdio, endpoint3, Node4 (CLOEXEC), script5, addon6 and memo7;
+all higher descriptors close before reduction. Script5/addon6/memo7 close before
+the full seal/Source. The parent retains its original memo until original join.
+Neither copied memo DATA nor a foreign environment can construct the registry.
+
+The existing harness now compiles the C targets with C17 warnings-as-errors
+and emits/typechecks the MTS closure through the existing strict hooks. No new
+package/CI hook or library dependency is introduced. It preserves the original
+27 cases and adds actual missing-startup/foreign-environment, silent/wrong-peer
+refusal and fixed-entry/no-selector contracts. A separately compiled source
+fixture uses owned silent sockets/original child handles only; production has
+no fixture selector. Timeout closes only its own socket and naturally joins,
+retaining a RED result rather than retrying. It runs the real seal only when Root supplies
+`SR_NATIVE_PROBE_ORIGINAL_OWNER_FIXTURE=65532-seal-admitted` in a freshly admitted
+NEWTEST trusted privileged setup. That harness flag does not grant privilege or
+change production policy. `SR_NATIVE_PROBE_TMP` must be a positively owned
+root-protected scratch directory; shared writable ancestors such as `/tmp` are
+refused. A cap0 UID0 generic fixture cannot perform the required reduction by
+itself. A skipped seal case is explicitly unproved, not N1a acceptance.
+
+Exact Linux compilation, strict native/root source gates, all retained v1
+contracts, genuine 65532 seal/loss and independent code/evidence reviews remain
+required. Source closure hashes constrain bytes; N1b still owns installed
+issuer/launch custody, complete loader/library admission and measured topology.
+N2 Source/DAG/resource operations and the later barrier/retirement chain stay
+unavailable here.
+
+Failed/unresolved checks retain their emitted/native/fixture tree. The harness
+records a unique attempt, original tree inode/device/UID, available artifact
+hashes/modes, process handles/statuses and separate raw stdout/stderr. Privileged
+owner attempts retain started/result records and original observed loss/join
+prefixes. Cleanup requires passing stable-input checks, natural process/pipe
+closure and positive original join for every attempted owner, followed by an
+immediate original tree identity check. A skipped privileged case records no
+original join credit. Cleanup disposition is a separate create-only record;
+failed cleanup has no automatic retry.
