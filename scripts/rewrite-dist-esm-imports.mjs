@@ -17,10 +17,13 @@ const explicitExtensions = new Set([
   ".node",
 ]);
 
+const importsOnly = process.argv.length === 3 && process.argv[2] === "--imports-only";
+if (process.argv.length !== 2 && !importsOnly) throw new Error("unsupported dist rewrite arguments");
 let rewritten = 0;
 walk("dist");
 // One TypeScript authority for runtime and the standalone installed Host.
-writeFileSync("host-integration/managed-launcher/hosted-host-policy.mjs",
+// Partial source-contract builds explicitly request only import rewriting.
+if (!importsOnly) writeFileSync("host-integration/managed-launcher/hosted-host-policy.mjs",
   "// Generated from src/provider-codex/app-server/adapters/hosted-host-policy.ts.\n" +
   readFileSync("dist/provider-codex/app-server/adapters/hosted-host-policy.js", "utf8")
     .replace(/^\/\/# sourceMappingURL=.*$/m, ""));

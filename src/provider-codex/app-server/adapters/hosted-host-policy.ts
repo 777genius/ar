@@ -66,7 +66,7 @@ function optionalBytes(path: string, maxBytes: number, privateFile: boolean): Bu
       if (length !== before.size || after.size !== before.size || !same(before, after) || !same(after, named)) invalid();
       check(); return bytes.subarray(0, length);
     } finally { closeSync(fd); }
-  } catch { invalid(); }
+  } catch { return invalid(); }
   finally { for (const entry of ancestry.reverse()) closeSync(entry.fd); }
 }
 
