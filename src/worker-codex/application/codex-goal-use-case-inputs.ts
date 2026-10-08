@@ -12,6 +12,8 @@ import type { CodexGoalMimoAccountSlot } from "../codex-goal-mimo-account-slots"
 export type CodexGoalInput = {
   readonly jobId?: string;
   readonly configPath?: string;
+  readonly sessionHomeProfile?: CodexGoalRunConfig["sessionHomeProfile"];
+  readonly storage?: CodexGoalRunConfig["storage"];
   readonly jobRootDir?: string;
   readonly durableHandoffRootDir?: string;
   readonly authRootDir?: string;

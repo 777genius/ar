@@ -1,3 +1,4 @@
+import { assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./codex-goal-storage-data";
 import { childConfigFromRecord, assertChildGoalConfig } from "../child-execution-confinement";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "../codex-worker-defaults";
 import { readFile } from "node:fs/promises";
@@ -50,7 +51,13 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
   const fileConfig = args.configPath
     ? await readGoalConfigFile(resolvePath(cwd, args.configPath))
     : {};
+  // Validate each explicit source before merging; partial/malformed NEW data
+  // must not disappear behind an override and silently become a legacy run.
+  parseCodexGoalStorageData(fileConfig);
+  parseCodexGoalStorageData(args);
   const merged = mergeDefined(fileConfig, args);
+  const storageData = parseCodexGoalStorageData(merged);
+  assertCodexGoalStorageTransportSupported(merged);
   const jobRootDir = requiredString(merged.jobRootDir, "jobRootDir", cwd);
   const durableHandoffRootDir = stringValue(merged.durableHandoffRootDir);
   const taskId = requiredRawString(merged.taskId, "taskId");
@@ -88,7 +95,10 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     "maxAccountCycles",
   ) ?? 5;
   const config: CodexGoalRunConfig = {
+    ...storageData,
     ...childConfigFromRecord(merged),
+    ...(storageData.storage ? { runtimeHomeRootDir: join(jobRootDir, "home"),
+      durableHandoffRootDir: join(jobRootDir, "durable-handoffs") } : {}),
     ...(jobId === undefined ? {} : { jobId }),
     jobRootDir,
     ...(durableHandoffRootDir === undefined
@@ -111,12 +121,12 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     outputPath: resolvePath(
       cwd,
       stringValue(merged.outputPath) ??
-        join(jobRootDir, `${taskId}.latest-result.json`),
+        join(storageData.storage ? join(jobRootDir, "output") : jobRootDir, `${taskId}.latest-result.json`),
     ),
     progressPath: resolvePath(
       cwd,
       stringValue(merged.progressPath) ??
-        codexGoalProgressPath({ jobRootDir, taskId }),
+        (storageData.storage ? join(jobRootDir, "output", `${taskId}.progress.json`) : codexGoalProgressPath({ jobRootDir, taskId })),
     ),
     model: stringValue(merged.model) ?? CODEX_WORKER_DEFAULT_MODEL,
     reasoningEffort:
@@ -148,7 +158,7 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
       ? {}
       : { workerReportMode: workerReportModeValue(merged.workerReportMode) }),
   };
-  const stateRootDir = stringValue(merged.stateRootDir);
+  const stateRootDir = stringValue(merged.stateRootDir) ?? (storageData.storage ? join(jobRootDir, "state") : undefined);
   const finalConfig = stateRootDir
     ? { ...config, stateRootDir: resolvePath(cwd, stateRootDir) }
     : config;
