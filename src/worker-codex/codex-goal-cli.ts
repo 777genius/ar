@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { mapManagedGoalLayout } from "./managed-goal-admission";
 import { routeHostedRuntimeCommand } from "./hosted-readonly-foreground";
+import { tryRunHostedLegacyReference } from "./hosted-dependency-legacy-reference";
 import { CodexGoalLaunchState } from "./codex-goal-ops";
 import type { HostedGoalLifecycleRequest } from "./application/codex-goal-foreground-command";
 import { buildCodexGoalCliLaunchInput, parseHostedGoalLifecycleRequest, runHostedGoalLifecycleCommand } from "./hosted-readonly-lifecycle-cli";
@@ -359,6 +360,8 @@ export async function runCodexGoalCli(
     const outerStatus = await routeHostedGoalLaunch(cliLaunchInput(command));
     if (outerStatus !== undefined) return outerStatus;
     await upsertRunCommandManifest(command);
+    const reference = await tryRunHostedLegacyReference(command.config);
+    if (reference) { writeJsonOrText(command.format, reference, io); return 0; }
     const result = await runCodexGoal(command.config);
     writeJsonOrText(command.format, result, io);
     return result.status === "completed" ? 0 : 1;

@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { closeSync, constants, fstatSync, openSync, readlinkSync, readSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
-export type ScratchMount = { target?: string; uuid?: string; fsroot?: string };
-type Record = { id: number; root: string; target: string };
+export type ScratchMount = { target?: string; uuid?: string; fsroot?: string; mountId?: number; isPrivate?: boolean };
+type Record = { id: number; root: string; target: string; propagation: string[] };
 const fail = (): never => { throw new Error("Ambiguous scratch mount inspection"); };
 const integer = (value: unknown): number => {
   const n = typeof value === "number" ? value : typeof value === "string" && /^[1-9]\d*$/.test(value) ? Number(value) : NaN;
@@ -25,7 +25,16 @@ function parseMountRecord(id: number, line: string): Record {
   if (separator < 6 || parts.length < separator + 4 || !parts[3] || !parts[4]) return fail();
   const root = decode(parts[3]), target = decode(parts[4]);
   if (!isAbsolute(root) || !isAbsolute(target) || resolve(target) !== target) return fail();
-  return { id, root, target };
+  const propagation = parts.slice(6, separator), known = new Set<string>();
+  for (const field of propagation) {
+    const tag = field.split(":")[0]!;
+    if (["shared", "master", "propagate_from", "unbindable"].includes(tag)) {
+      if (known.has(tag) || (tag === "unbindable" ? field !== tag : !/^[a-z_]+:[1-9]\d*$/.test(field))) return fail();
+      if (tag !== "unbindable") integer(field.slice(tag.length + 1));
+      known.add(tag);
+    }
+  }
+  return { id, root, target, propagation };
 }
 function mountRecord(id: number, table: string): Record {
   return parseMountRecord(id, mountLine(id, table));
@@ -48,7 +57,8 @@ export function selectVisibleScratchMount(path: string, mountId: number, table: 
   const row: unknown = selected[0]!.row;
   if (!row || typeof row !== "object" || !("target" in row) || row.target !== path ||
       !("fsroot" in row) || row.fsroot !== visible.root || !("uuid" in row) || row.uuid !== null && typeof row.uuid !== "string") return fail();
-  return { target: path, fsroot: visible.root, ...(typeof row.uuid === "string" ? { uuid: row.uuid } : {}) };
+  return { target: path, fsroot: visible.root, mountId: visible.id, isPrivate: visible.propagation.length === 0,
+    ...(typeof row.uuid === "string" ? { uuid: row.uuid } : {}) };
 }
 function boundedRead(path: string, maximum: number): string {
   const fd = openSync(path, constants.O_RDONLY), chunks: Buffer[] = [];

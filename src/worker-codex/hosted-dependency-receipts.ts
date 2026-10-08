@@ -5,7 +5,7 @@ import { DependencyInstallProofKind, DependencyReceiptParseStatus, DependencyRec
   DependencyOwnerKind, DependencyOwnerPhase, parseDependencyOwner, isDependencyConsumerOwner, sameDependencyAttempt,
   parseDependencyReceipt, sameDependencyWorkspace, type DependencyReceipt } from "@vioxen/subscription-runtime/worker-core";
 import { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
-import type { DependencyCommittedAbsentReceipt } from "../worker-core/dependency-environment/ports/dependency-receipt-store";
+import type { DependencyCommittedReadyReceipt, DependencyCommittedUnverifiedReceipt, DependencyCommittedAbsentReceipt } from "../worker-core/dependency-environment/ports/dependency-receipt-store";
 import type { HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { assertReadonlyHostOperator } from "./hosted-readonly-authority";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
@@ -16,6 +16,8 @@ import { assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependen
 import { hostedDependencyInstallerRoot } from "./hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRecipe } from "./hosted-dependency-installer-inputs";
 import { assertHostedDependencyLocalOutputProof } from "./hosted-dependency-output-proof";
+
+import { assertHostedDependencyLegacyComparedReady, assertHostedDependencyLegacyComparisonTransition } from "./hosted-dependency-legacy-comparison-record";
 
 import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
 export { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
@@ -35,7 +37,8 @@ export function ensureHostedDependencyDirectory(path: string): void {
 function openStore(): LocalDependencyReceiptStore {
   ensureHostedDependencyDirectory(hostedDependencyReceiptHistoryRoot);
   return LocalDependencyReceiptStore.open({ rootPath: hostedDependencyReceiptHistoryRoot, maxRecordBytes: 16384, maxHistorySteps: 2048,
-    localInstallVerifier: { assertCompletedLocalInstall(receipt) { sourceStore().assertCompletedLocalInstall(receipt); } } });
+    localInstallVerifier: { assertCompletedLocalInstall(receipt) { sourceStore().assertCompletedLocalInstall(receipt); } },
+    legacyComparisonVerifier: { assertLegacyComparison: assertHostedDependencyLegacyComparisonTransition } });
 }
 function sourceStore(): LocalDependencySourceBindingStore {
   assertReadonlyHostOperator();
@@ -167,9 +170,30 @@ export function readHostedDependencyCommittedAbsent(binding: HostedDependencyBin
     return result;
   } finally { store.close(); }
 }
+/** Reference producer seals the actual store-captured committed output. */
+export function readHostedDependencyCommittedReady(binding: HostedDependencyBinding, revision: number): DependencyCommittedReadyReceipt {
+  const store = openStore();
+  try {
+    const result = store.getCommittedReady(binding.workspace, revision);
+    validateBinding(result.receipt, binding);
+    return result;
+  } finally { store.close(); }
+}
+/** Issuer receives immutable facts only; CAS captures its own predecessor again. */
+export function readHostedDependencyCommittedUnverified(binding: HostedDependencyBinding, revision: number): DependencyCommittedUnverifiedReceipt {
+  const store = openStore();
+  try {
+    const result = store.getCommittedUnverified(binding.workspace, revision);
+    validateBinding(result.receipt, binding);
+    return result;
+  } finally { store.close(); }
+}
 function validateBinding(receipt: DependencyReceipt | null, binding: HostedDependencyBinding): void {
   if (receipt && (!sameDependencyWorkspace(receipt.workspace, binding.workspace) ||
       receipt.coverageRevision !== dependencyCoverageRevision(binding))) fail();
+  if (receipt?.state === DependencyReceiptState.Ready && receipt.provenance.kind === DependencyInstallProofKind.LegacyCompared) {
+    assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance });
+  }
   if (receipt?.state === DependencyReceiptState.Ready && receipt.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1) {
     sourceStore().assertCompletedLocalInstall({ ...receipt, provenance: receipt.provenance });
   }

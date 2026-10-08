@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { assertResearchProviderNotCancelled, readResearchProviderReservation, ResearchProviderSubmissionState,
   signalResearchProvider } from "./research-launch-lifecycle";
 import { captureResearchRuntime, researchCurrentStart } from "./research-launch-admission";
-import { isResearchDenialObservation, researchHash, researchInvalid, researchPublish, type ResearchDenialObservation } from "./research-launch-files";
+import { copyResearchHostCommandFailure, researchHostCommandFailure, isResearchDenialObservation, researchHash, researchInvalid,
+  researchPublish, type ResearchDenialObservation } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
 import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
 import { assertResearchProviderRoot, captureResearchProviderRootTiming, prepareResearchProviderRoot, researchProviderRootFailureCheck, type ResearchProviderRootCheck, type ResearchProviderRootTiming } from "./research-provider-root";
@@ -67,7 +68,10 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   const denied = (error?: unknown): void => {
     observation = denialObservation(error) ?? observation;
     failed = true;
-    refusal ??= new Error("hosted_research_launch_denied", { cause: observation });
+    if (!refusal) {
+      refusal = new Error("hosted_research_launch_denied", { cause: observation });
+      copyResearchHostCommandFailure(error, refusal);
+    }
     const check = denialCheck(error);
     if (check && !observedChecks.has(refusal)) observedChecks.set(refusal, check);
     rejectReady(refusal);
@@ -139,9 +143,11 @@ export async function runResearchProviderService(jobId: string, unit: string, se
     // Fixed internal frame labels only, never arbitrary stack/error text.
     const check = denialCheck(error, phase !== "service-plan");
     const observation = denialObservation(error);
+    const hostCommand = researchHostCommandFailure(error);
     try { researchPublish(join(directory, "provider-failure.json"), { schemaVersion: 1, unit, phase,
       ...(check ? { check } : {}),
       ...(observation ? { observation } : {}),
+      ...(hostCommand ? { hostCommand } : {}),
     }); }
     catch { /* Original denial remains authoritative when observation fails. */ }
     throw error;
