@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Fixed closed initial-root operator service bootstrap. No environment admission.
-import { normalizeResearchLaunchFailure } from '../dist/worker-codex/research-launch-diagnostics.js';
+import { normalizeResearchMaterialFailure } from '../dist/worker-codex/research-launch-diagnostics.js';
 let phase = "imports";
 try {
   if (process.argv.length !== 4) throw new Error();
@@ -22,7 +22,7 @@ try {
   process.exitCode = result.status === 'completed' ? 0 : 1;
 } catch (error) {
   // Finite observations only. Never expose arbitrary errors, paths or stderr.
-  const { legacyCode, cause, diagnostic } = normalizeResearchLaunchFailure(error);
-  process.stderr.write(`hosted_research_runtime_launch_denied:${phase}:${legacyCode}:${cause}:${diagnostic}\n`);
+  const { legacyCode, cause, diagnostic, materialRole } = normalizeResearchMaterialFailure(error);
+  process.stderr.write(`hosted_research_runtime_launch_denied:${phase}:${legacyCode}:${cause}:${diagnostic}:${materialRole}\n`);
   process.exitCode = 70;
 }
