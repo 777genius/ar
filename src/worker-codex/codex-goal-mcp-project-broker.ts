@@ -1,5 +1,5 @@
 import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
-import { isHostedGoalLaunch, stopHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
+import { isHostedGoalLaunch, isHostedActivatedGoalLaunch, stopHostedGoalLaunch, routeHostedGoalLaunch } from "./hosted-readonly-goal-launch";
 import { CodexGoalLaunchState, buildCodexGoalNoTmuxCommand } from "./codex-goal-ops";
 import { appendFile, mkdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
@@ -494,18 +494,19 @@ function codexProjectControlPorts(
         if (!stopPolicy.allowed) {
           throw new Error(stopPolicy.reason);
         }
-        if (isHostedGoalLaunch(input.stopLaunch)) {
+        if (isHostedActivatedGoalLaunch(input.stopLaunch)) {
           stopHostedGoalLaunch(input.stopLaunch);
           return operationResult("hosted stop requested; terminal custody remains unproven");
         }
+        const { tmuxSession: _tmuxSession, ...foregroundLaunch } = input.stopLaunch;
         const preserved = await preserveTerminalCodexGoalHandoffBeforeStop({
-          launch: input.stopLaunch,
+          launch: isHostedGoalLaunch(input.stopLaunch) ? foregroundLaunch : input.stopLaunch,
           status,
           forceAfterMaterializationFailure: Boolean(
             input.forceStopAfterMaterializationFailure,
           ),
         });
-        if (input.stopLaunch.tmuxSession) {
+        if (input.stopLaunch.tmuxSession && !isHostedGoalLaunch(input.stopLaunch)) {
           const evidence = durableHandoffStopEvidence(preserved);
           return status.tmuxAlive === false &&
             !("status" in preserved.stopResult &&
