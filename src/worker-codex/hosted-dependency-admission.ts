@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { claimDependencyConsumer, markDependencyConsumerRunning, DependencyAdmissionError,
   DependencyAdmissionFailure as Failure, DependencyOwnerPhase, DependencyReceiptState, DependencyTreeObservationStatus, type DependencyAttempt } from "@vioxen/subscription-runtime/worker-core";
+import { sameDependencyAttempt } from "@vioxen/subscription-runtime/core";
 import { withHostedActivationFence, CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { readHostedOrdinaryProcessOrigin } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
@@ -10,7 +11,8 @@ import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysica
   readHostedDependencyBinding, readHostedDependencyAttempt, assertHostedDependencyStartAllowed } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import { isHostedOrdinaryRuntime } from "./hosted-installation-activation";
-import { qualifyHostedDependencyToolClosure } from "./hosted-dependency-tool-profile";
+import { qualifyHostedDependencyToolClosure, assertHostedDependencyQualifiedToolEntry, markHostedDependencyQualifiedToolEntryRunning,
+  invalidateHostedDependencyQualifiedToolEntry, type HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 import { hasHostedDependencyFreshAbsence, materializeHostedDependencyAbsence, matchesHostedDependencyReady,
   readHostedDependencyReceipt, hostedDependencyObservationLimits, readHostedDependencyKeyInputs,
   assertHostedDependencyKeyInputsCurrent } from "./hosted-dependency-materialization";
@@ -19,6 +21,13 @@ import { hasHostedDependencyFreshAbsence, materializeHostedDependencyAbsence, ma
  * Actual origin and private grant decide authority; request config carries none.
  */
 export async function admitHostedDependencyConsumer(config: CodexGoalRunConfig): Promise<DependencyAttempt | undefined> {
+  return (await admitHostedDependencyEntry(config))?.attempt;
+}
+/** Internal worker composition retains the qualifier's one real context.
+ * The public attempt-only wrapper cannot reconstruct or convey that relation. */
+export async function admitHostedDependencyEntry(config: CodexGoalRunConfig): Promise<Readonly<{
+  attempt: DependencyAttempt; toolEntry?: HostedDependencyQualifiedToolEntry;
+}> | undefined> {
   const selected = isHostedDependencyWorkspace(config.workspacePath);
   if (!isHostedOrdinaryRuntime()) {
     if (selected) fail(Failure.Unsupported);
@@ -66,32 +75,38 @@ export async function admitHostedDependencyConsumer(config: CodexGoalRunConfig):
   });
   // Capture safety while durable ExclusiveMutation prevents other managed
   // consumers/materializers. Incomplete capture stays held, never legacy reuse.
-  const readyInputs = !admission.absent && admission.receipt?.state === DependencyReceiptState.Ready
+  const readyInputs = admission.binding.version === 1 && !admission.absent && admission.receipt?.state === DependencyReceiptState.Ready
     ? await readHostedDependencyKeyInputs(admission.binding) : undefined;
   if (admission.absent) await materializeHostedDependencyAbsence(admission.binding, admission.attempt);
-  else if (!readyInputs || admission.receipt?.state !== DependencyReceiptState.Ready ||
-      !matchesHostedDependencyReady(admission.binding, admission.receipt, readyInputs)) {
+  else if (admission.binding.version === 1 && (!readyInputs || admission.receipt?.state !== DependencyReceiptState.Ready ||
+      !matchesHostedDependencyReady(admission.binding, admission.receipt, readyInputs))) {
     const observation = await observeDependencyTree({ workspacePath: admission.binding.workspace.canonicalPath,
       treeName: "node_modules", expectedWorkspace: admission.binding.workspace, limits: hostedDependencyObservationLimits });
     if (observation.status !== DependencyTreeObservationStatus.Complete) fail(Failure.UnsafeTree);
   }
   // Explicit N3 profile only: authenticate its installed executable graph while
   // still exclusive. Generic Ready reuse keeps its existing hash-free path.
-  await qualifyHostedDependencyToolClosure(admission.binding, admission.attempt);
+  const toolEntry = await qualifyHostedDependencyToolClosure(admission.binding, admission.attempt);
+  if (admission.binding.version === 2 && !toolEntry) fail(Failure.Unsupported);
+  try {
   withHostedActivationFence(fence => {
     const origin = readHostedOrdinaryProcessOrigin(fence);
-    readHostedDependencyAttempt(admission.binding, origin.start, String(origin.reservation.startId),
+    const heldAttempt = readHostedDependencyAttempt(admission.binding, origin.start, String(origin.reservation.startId),
       // Final ownership remains exclusive until either warm safety capture or
       // contained install verification has completed.
       DependencyOwnerPhase.ExclusiveMutation);
+    if (!sameDependencyAttempt(heldAttempt, admission.attempt)) fail(Failure.StaleAttempt);
     const current = readHostedDependencyBinding(String(origin.start.jobId));
     if (!current || JSON.stringify(current) !== JSON.stringify(admission.binding)) fail(Failure.Unsupported);
     if (readyInputs) assertHostedDependencyKeyInputsCurrent(admission.binding, readyInputs);
+    if (toolEntry) assertHostedDependencyQualifiedToolEntry(toolEntry, fence, DependencyOwnerPhase.ExclusiveMutation);
     const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
     try { markDependencyConsumerRunning(store, admission.binding.workspace, admission.attempt, String(Date.now())); }
     finally { store.close(); }
+    if (toolEntry) markHostedDependencyQualifiedToolEntryRunning(toolEntry, fence);
   });
-  return admission.attempt;
+  return Object.freeze({ attempt: admission.attempt, ...(toolEntry ? { toolEntry } : {}) });
+  } catch (error) { invalidateHostedDependencyQualifiedToolEntry(toolEntry); throw error; }
 }
 
 /** A project cannot configure executable filters/hooks/fsmonitor for privileged

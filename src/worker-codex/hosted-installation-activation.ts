@@ -51,6 +51,23 @@ export class HostedInstallationActivationStore {
       assertHostedDependencyPhysicalWorkspace(binding);
       return { ...origin, binding, session };
   }
+  /** Finite authenticated read model only; does not enroll, claim or recover. */
+  dependencyReportOrigins(fence: HostedActivationFence) {
+    assertHostedActivationFence(fence);
+    const { installation, activation } = readHostedInstallationActivation();
+    assertInspectedInstallation(installation);
+    assertActivationSession(activation, new HostedReadonlyHostKernel().operatorSession());
+    if (activation.phase !== HostedActivationPhase.Ordinary) invalid();
+    assertHostedDependencyQualifiedInventory();
+    const catalog = readOrdinaryCatalog(installation, activation.ordinaryOriginsSha256);
+    return Object.freeze({ revision: catalog.revision, sha256: activation.ordinaryOriginsSha256,
+      jobIds: Object.freeze(catalog.origins.map(row => row.jobId)) });
+  }
+  /** Lazy adapter boundary avoids importing the report back into lifecycle initialization. */
+  async reportDependencyRetention(jobId?: string) {
+    const { collectHostedDependencyRetentionFacts } = await import("./hosted-dependency-retention-facts");
+    return collectHostedDependencyRetentionFacts(jobId);
+  }
   evictDependencyCandidate(candidate: HostedDependencyEvictionCandidate) { return evictHostedDependencyCandidate(candidate); }
   recoverDependencyEviction(jobId: string) { return recoverHostedDependencyEviction(jobId); }
   removeDependencyCommittedTrash(jobId: string, revision: number) { return removeHostedDependencyCommittedTrash(jobId, revision); }
