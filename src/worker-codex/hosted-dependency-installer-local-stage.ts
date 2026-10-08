@@ -1,24 +1,25 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, join } from "node:path";
-import type { DependencyLocalClosureKind, DependencyLocalEdge, DependencyLocalInstallLayout } from "../worker-core/dependency-environment/domain/dependency-local-closure";
-import type { DependencyNpmLockName } from "../worker-core/dependency-environment/domain/dependency-install-key";
 
 // Node-builtins-only: this exact compiled module is also mounted readonly next
 // to the contained bootstrap. These are observations, never launch/Ready proof.
 export enum HostedDependencyStageEntryKind { Directory = "directory", File = "file" }
-export type HostedDependencyLocalInputCommitment = {
-  readonly version: 1; readonly lockName: DependencyNpmLockName; readonly root: string; readonly lock: string;
-  readonly layout: DependencyLocalInstallLayout;
-  readonly packages: readonly { readonly path: string; readonly kind: DependencyLocalClosureKind; readonly package: string;
-    readonly directories: readonly string[]; readonly files: readonly { readonly path: string; readonly mode: number; readonly bytes: number; readonly sha256: string }[] }[];
-  readonly edges: readonly DependencyLocalEdge[];
-};
+export type HostedDependencyLocalInputCommitment = import("../worker-local/dependency-environment/build-test-npm-dependency-install-key").DependencyLocalInputCommitment;
 export type HostedDependencyLocalStageEntry = { readonly path: string; readonly kind: HostedDependencyStageEntryKind.Directory; readonly mode: 0o755 } |
   { readonly path: string; readonly kind: HostedDependencyStageEntryKind.File; readonly mode: number; readonly bytes: number; readonly sha256: string };
 export type HostedDependencyLocalStage = { readonly version: 1; readonly entries: readonly HostedDependencyLocalStageEntry[];
   readonly commitment: HostedDependencyLocalInputCommitment };
 export type HostedDependencyLocalStageFile = { readonly path: string; readonly mode: number; readonly bytes: Uint8Array };
+/** Independent contained constants; no host key/domain runtime dependency. */
+export function hostedDependencyLocalSelectionVerificationArgv(stage: HostedDependencyLocalStage): readonly string[] {
+  if (stage.commitment.version !== 2) fail();
+  const argv = ["ls", "--all", "--json", "--ignore-scripts", "--package-lock-only=false", "--install-strategy=hoisted", "--install-links=true",
+    "--include=dev", "--include=optional", "--include=peer", "--strict-peer-deps=false", "--legacy-peer-deps=false", "--workspaces=false"];
+  if (stage.commitment.layout === "root_only") return Object.freeze(argv);
+  if (stage.commitment.layout !== "root_with_literal_workspace_inputs") fail();
+  return Object.freeze([...argv.slice(0, -1), "--workspaces=true", "--include-workspace-root=true"]);
+}
 const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 function fail(): never { throw new Error("dependency_local_stage_changed"); }
 function coordinate(path: string): void {
@@ -116,10 +117,27 @@ export function observeHostedDependencyLocalStage(root: string, stage: HostedDep
     if (wantedFiles.size !== observedFiles.size || [...observedFiles.keys()].some(path => !wantedFiles.has(path)) ||
         entries.filter(entry => entry.kind === HostedDependencyStageEntryKind.Directory).length !== wantedDirectories.size ||
         [...wantedDirectories].some(path => expected.get(path)?.kind !== HostedDependencyStageEntryKind.Directory)) fail();
-    const actual = { version: 1, lockName: c.lockName, root: file("package.json").sha256, lock: file(c.lockName).sha256,
+    if (![1, 2].includes(c.version) || Object.keys(c).sort().join(",") !==
+        (c.version === 2 ? "edges,layout,lock,lockName,packages,registrySelection,root,version" : "edges,layout,lock,lockName,packages,root,version")) fail();
+    if (c.version === 2) {
+      const selection = c.registrySelection;
+      if (!selection || Object.keys(selection).sort().join(",") !== "absentOptionalPeers,arch,excludedScriptPackages,libc,platform,revision" ||
+          selection.revision !== "linux_x64_glibc_optional_absent_v1" || selection.platform !== "linux" || selection.arch !== "x64" || selection.libc !== "glibc" ||
+          !Array.isArray(selection.excludedScriptPackages) || !Array.isArray(selection.absentOptionalPeers) ||
+          !selection.excludedScriptPackages.length && !selection.absentOptionalPeers.length) fail();
+      if (selection.excludedScriptPackages.length > 8192 || selection.absentOptionalPeers.length > 8192 ||
+          selection.excludedScriptPackages.some(path => typeof path !== "string" || path.length > 4096 || !path.startsWith("node_modules/"))) fail();
+      for (const peer of selection.absentOptionalPeers) {
+        if (!peer || Object.keys(peer).sort().join(",") !== "declaringPath,name,resolutionSearchPaths,spec" ||
+            typeof peer.declaringPath !== "string" || typeof peer.name !== "string" || typeof peer.spec !== "string" || peer.spec.length > 4096 ||
+            !Array.isArray(peer.resolutionSearchPaths) || peer.resolutionSearchPaths.length > 128 ||
+            peer.resolutionSearchPaths.some((path: unknown) => typeof path !== "string" || path.length > 4096 || !path.startsWith("node_modules/"))) fail();
+      }
+    }
+    const actual = { version: c.version, lockName: c.lockName, root: file("package.json").sha256, lock: file(c.lockName).sha256,
       layout: c.layout, packages: c.packages.map(local => ({ path: local.path, kind: local.kind, package: file(local.path + "/package.json").sha256,
         directories: local.directories, files: local.files.map(copied => { const value = file(local.path + "/" + copied.path);
-          return { path: copied.path, mode: value.mode, bytes: value.bytes, sha256: value.sha256 }; }) })), edges: c.edges };
+          return { path: copied.path, mode: value.mode, bytes: value.bytes, sha256: value.sha256 }; }) })), edges: c.edges, ...(c.version === 2 ? { registrySelection: c.registrySelection } : {}) };
     if (hash(Buffer.from(JSON.stringify(actual) + "\n")) !== inputSha256 || JSON.stringify(actual) !== JSON.stringify(c)) fail();
     // Re-enumerate after all content reads to deny an added/removed input.
     for (const entry of entries) if (entry.kind === HostedDependencyStageEntryKind.Directory) {

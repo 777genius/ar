@@ -7,11 +7,14 @@ import { fileURLToPath } from 'node:url';
 import { prepareManagedJobLayout } from '../host-jobs/storage-policy.mjs';
 import { PAYLOAD_GUARD_PATH } from './payload-guard.mjs';
 import { requireTrustedExecutable, profileProperties } from './profiles.mjs';
+import { hasHostedActivationOrigin, HostedActivationMode, readHostedActivationMode } from './hosted-host-policy.mjs';
 
 export const MANAGED_LAUNCHER_PATH = '/opt/subscription-runtime/managed-launcher/launch.mjs';
 const denied = () => { throw new Error('managed launcher: unsupported invocation'); };
 const fdUnsetEnvironment = 'NODE_OPTIONS NODE_PATH NODE_V8_COVERAGE NODE_EXTRA_CA_CERTS NODE_REDIRECT_WARNINGS OPENSSL_CONF OPENSSL_MODULES LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GCONV_PATH LOCPATH GLIBC_TUNABLES';
-function governedFdProfile() {
+function governedFdProfile(request) {
+  if (readHostedActivationMode() === HostedActivationMode.Disabled && !hasHostedActivationOrigin() &&
+      request.readonlyPaths === undefined) return false;
   const root = '/var/lib/subscription-runtime-host-policy';
   try { lstatSync(root + '/readonly-inventory.json'); }
   catch (error) { if (error.code === 'ENOENT') return false; throw error; }
@@ -42,7 +45,7 @@ const UNSHARE_PATH = '/usr/bin/unshare';
 const SETPRIV_PATH = '/usr/bin/setpriv';
 const TINI_PATH = '/usr/bin/tini';
 // Namespace setup has its own finite budget, before Type=exec starts runtime accounting.
-const JOB_STARTUP_SECONDS = 300;
+const MANAGED_STARTUP_SECONDS = 300;
 // setpriv execs Tini as namespace PID 1; Node remains its supervised child.
 const bootstrap = [UNSHARE_PATH, '--map-user=65532', '--map-group=65532', '--keep-caps', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', SETPRIV_PATH, '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', TINI_PATH, '--'];
 
@@ -67,7 +70,7 @@ export function parseInvocation(request) {
     if (!/^subscription-runtime-hosted-[a-f0-9-]{36}\.service$/.test(unit) ||
         !payload[0].endsWith('/node') || !safePath(payload[1])) denied();
     if (!payload[1].endsWith('/hosted-app-server-launcher.js') ||
-        !(payload.length === 2 || (payload.length === 3 && payload[2] === '--fd-ready-v1' && governedFdProfile()))) denied();
+        !(payload.length === 2 || (payload.length === 3 && payload[2] === '--fd-ready-v1' && governedFdProfile(request)))) denied();
     trusted = payload.slice(0, 2);
   }
   if (request.readonlyPaths !== undefined) {
@@ -96,14 +99,16 @@ export async function buildSystemdInvocation(request, admit = prepareManagedJobL
   }
   const properties = [
     'Slice=subscription-runtime-hosted.slice', 'KillMode=control-group', 'SendSIGKILL=yes', 'Delegate=no', 'Restart=no',
+    `TimeoutStartSec=${MANAGED_STARTUP_SECONDS}`,
     ...(operation === 'job' ? [`CPUQuota=${request.limits.cpuPercent}%`, `MemoryMax=${request.limits.memoryMiB}M`, `TasksMax=${request.limits.tasksMax}`,
-      `RuntimeMaxSec=${request.limits.runtimeSeconds}`, `TimeoutStopSec=${request.limits.stopSeconds}`,
-      `TimeoutStartSec=${JOB_STARTUP_SECONDS}`] :
+      `RuntimeMaxSec=${request.limits.runtimeSeconds}`, `TimeoutStopSec=${request.limits.stopSeconds}`] :
       ['CPUQuota=200%', 'MemoryHigh=2G', 'MemoryMax=4G', 'TasksMax=512', 'RuntimeMaxSec=8h', 'TimeoutStopSec=30s']), 'IOWeight=25',
     ...['/', policy.storageRoot].flatMap(path => ['IOReadBandwidthMax=' + path + ' 40M', 'IOReadIOPSMax=' + path + ' 3000', 'IOWriteBandwidthMax=' + path + ' 20M', 'IOWriteIOPSMax=' + path + ' 1500']),
     'ProtectControlGroups=yes',
     ...profileProperties(),
-    ...(governedFdProfile() ? ['FileDescriptorStoreMax=0', 'PassEnvironment=', `UnsetEnvironment=${fdUnsetEnvironment}`] : []),
+    ...(governedFdProfile(request) ? ['FileDescriptorStoreMax=0', 'PassEnvironment=', `UnsetEnvironment=${fdUnsetEnvironment}`,
+      'SystemCallFilter=~io_uring_setup:ENOSYS io_uring_enter:ENOSYS io_uring_register:ENOSYS',
+      'SystemCallArchitectures=native', 'NoNewPrivileges=yes'] : []),
     ...(operation === 'job' ? ['StandardOutput=null', 'StandardError=null'] : []),
     'ProtectSystem=strict', `ReadWritePaths=${policy.jobRoot}`, `RequiresMountsFor=${policy.storageRoot}`,
     'TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M',

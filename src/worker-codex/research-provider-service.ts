@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { assertResearchProviderNotCancelled, readResearchProviderReservation, ResearchProviderSubmissionState,
   signalResearchProvider } from "./research-launch-lifecycle";
 import { captureResearchRuntime, researchCurrentStart } from "./research-launch-admission";
-import { isResearchDenialObservation, researchHash, researchInvalid, researchPublish, type ResearchDenialObservation } from "./research-launch-files";
+import { copyResearchHostCommandFailure, researchHostCommandFailure, isResearchDenialObservation, researchHash, researchInvalid,
+  researchPublish, type ResearchDenialObservation } from "./research-launch-files";
 import { researchExecutableDigest, researchProcessIdentity, researchProviderUnitPattern, researchServiceIdentity } from "./research-launch-host";
-import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
+import { researchProviderSetupAllowanceMs } from "./research-launch-contract";
 import { assertResearchProviderRoot, captureResearchProviderRootTiming, prepareResearchProviderRoot, researchProviderRootFailureCheck, type ResearchProviderRootCheck, type ResearchProviderRootTiming } from "./research-provider-root";
 
 const denialChecks = ["assertResearchInitialRoot", "assertResearchSharedHost", "researchCustody", "researchRead",
@@ -67,7 +68,10 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
   const denied = (error?: unknown): void => {
     observation = denialObservation(error) ?? observation;
     failed = true;
-    refusal ??= new Error("hosted_research_launch_denied", { cause: observation });
+    if (!refusal) {
+      refusal = new Error("hosted_research_launch_denied", { cause: observation });
+      copyResearchHostCommandFailure(error, refusal);
+    }
     const check = denialCheck(error);
     if (check && !observedChecks.has(refusal)) observedChecks.set(refusal, check);
     rejectReady(refusal);
@@ -139,9 +143,11 @@ export async function runResearchProviderService(jobId: string, unit: string, se
     // Fixed internal frame labels only, never arbitrary stack/error text.
     const check = denialCheck(error, phase !== "service-plan");
     const observation = denialObservation(error);
+    const hostCommand = researchHostCommandFailure(error);
     try { researchPublish(join(directory, "provider-failure.json"), { schemaVersion: 1, unit, phase,
       ...(check ? { check } : {}),
       ...(observation ? { observation } : {}),
+      ...(hostCommand ? { hostCommand } : {}),
     }); }
     catch { /* Original denial remains authoritative when observation fails. */ }
     throw error;
@@ -195,7 +201,7 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
       proxy.once("error", failed);
       proxy.once("exit", (code, signal) => { proxyExited = true; clearTimeout(terminalTimer); process.exitCode = signal ? 70 : code ?? 70; resolve(); });
       // systemd has its own maximum; bound this direct stream transport as well.
-      terminalTimer = setTimeout(failed, request.taskTimeoutMs + 30_000);
+      terminalTimer = setTimeout(failed, researchProviderSetupAllowanceMs(request) + request.taskTimeoutMs + 30_000);
       proxy.stdout.once("error", failed); proxy.stderr.once("error", failed);
       proxy.stdin.on("error", error => {
         if (!inputReleased || (error as NodeJS.ErrnoException).code !== "EPIPE") failed();
@@ -208,7 +214,7 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
     // Selected TEST chains observed 98.7s; native systemd setup alone took 119.2s.
     // Bound OS setup and ownership together within the outer app-server
     // startup budget; retain all fences and hold bootstrap throughout.
-    const deadline = performance.now() + researchProviderSetupTimeoutMs;
+    const deadline = performance.now() + researchProviderSetupAllowanceMs(request);
     const assertTransportPermission = (): void => {
       assertForwardPermission();
       if (performance.now() >= deadline) throw transportDenial("research-provider-transport:setup-deadline");

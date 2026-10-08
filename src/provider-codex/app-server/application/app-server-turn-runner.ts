@@ -58,6 +58,8 @@ export class AppServerTurnRunner {
       const threadId =
         preparedThread?.threadId ?? (await this.options.client.startThread({ ...input, usageLease }));
       usageLease.retain(threadId);
+      this.options.client.assertExecutionActive(input.abortSignal);
+      this.options.client.executionLifetime?.markReady(threadId);
       let emittedText = false;
       const onTextDelta = input.onTextDelta === undefined
         ? undefined

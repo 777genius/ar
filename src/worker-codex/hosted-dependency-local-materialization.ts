@@ -9,7 +9,7 @@ import type { DependencyCompletedLocalReady, DependencyLocalOutputEvidence, Depe
 import { encodeDependencyTreeManifest } from "../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { observeDependencyTree } from "../worker-local/dependency-environment/observe-dependency-tree";
+import { observeDependencyTree, observeDependencyTreeWithLocalRegistrySelection, assertDependencyLocalRegistrySelectionAbsent, closeDependencySourceExposure, type DependencySourceExposure } from "../worker-local/dependency-environment/observe-dependency-tree";
 import { capturedDependencySourceBindingOutputBody, openCapturedDependencySourceLinks, closeDependencySourceLinkSession,
   readDependencySourceLinkSession, readDependencyProtectedReference } from "../worker-local/dependency-environment/dependency-source-binding";
 import { assertHostedDependencyMaterializationOwner as assertOwner, assertHostedDependencyMaterializationOwnerUnderFence as assertOwnerUnderFence,
@@ -131,21 +131,28 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
       completed.profileSha256 !== inputs.profileSha256 || completed.completionSha256 !== chain.completion.reference.sha256 ||
       completed.installKey !== inputs.key.installKey || completed.closureDigest !== inputs.capture.closureDigest ||
       completed.output.canonicalPath !== `${stagePath}/node_modules` || !sameDependencyTree(completed.output, chain.tree)) fail();
-  const stagedSession = openCapturedDependencySourceLinks(inputs.capture, stageWorkspace), originalSession = openCapturedDependencySourceLinks(inputs.capture);
+  const stagedSession = openCapturedDependencySourceLinks(inputs.capture, stageWorkspace);
+  let ownedOriginalSession: ReturnType<typeof openCapturedDependencySourceLinks> | undefined;
+  let stagedExposure: DependencySourceExposure | undefined, finalExposure: DependencySourceExposure | undefined;
   try {
-    const staged = await observeDependencyTree({ workspacePath: stagePath, expectedWorkspace: stageWorkspace, treeName: "node_modules",
+    const originalSession = openCapturedDependencySourceLinks(inputs.capture); ownedOriginalSession = originalSession;
+    const staged = await observeDependencyTreeWithLocalRegistrySelection({ workspacePath: stagePath, expectedWorkspace: stageWorkspace, treeName: "node_modules",
       expectedTree: chain.tree, sourceLinkSession: stagedSession, limits: hostedDependencyObservationLimits });
     if (staged.status !== DependencyTreeObservationStatus.Complete) fail(Failure.UnsafeTree);
+    stagedExposure = staged.exposure;
     withHostedActivationFence(fence => { assertOwnerUnderFence(fence, binding, attempt); current(); currentChain(chain, attempt);
+      assertDependencyLocalRegistrySelectionAbsent(staged.exposure, stagedSession, stageWorkspace, chain.tree);
       normalizeCapturedDependencyOutput(staged, 0, stagedSession); });
+    closeDependencySourceExposure(staged.exposure); stagedExposure = undefined;
     const normalized = await observeDependencyTree({ workspacePath: stagePath, expectedWorkspace: stageWorkspace, treeName: "node_modules",
       expectedTree: chain.tree, sourceLinkSession: stagedSession, limits: hostedDependencyObservationLimits });
     if (normalized.status !== DependencyTreeObservationStatus.Complete || !Buffer.from(normalized.canonicalBytes).equals(Buffer.from(staged.canonicalBytes)) ||
         !sameHostedDependencyKeyInputs(inputs, await readHostedDependencyKeyInputs(binding))) fail(Failure.UnsafeTree);
     withHostedActivationFence(fence => { assertOwnerUnderFence(fence, binding, attempt); current(); currentChain(chain, attempt);
       publishCapturedDependencyOutput(normalized, binding.workspace, { staged: stagedSession, original: originalSession }); });
-    const final = await observeDependencyTree({ workspacePath: binding.workspace.canonicalPath, expectedWorkspace: binding.workspace,
+    const final = await observeDependencyTreeWithLocalRegistrySelection({ workspacePath: binding.workspace.canonicalPath, expectedWorkspace: binding.workspace,
       treeName: "node_modules", expectedTree: chain.tree, sourceLinkSession: originalSession, limits: hostedDependencyObservationLimits });
+    if (final.status === DependencyTreeObservationStatus.Complete) finalExposure = final.exposure;
     if (final.status !== DependencyTreeObservationStatus.Complete || !Buffer.from(final.canonicalBytes).equals(Buffer.from(normalized.canonicalBytes)) ||
         !sameHostedDependencyKeyInputs(inputs, await readHostedDependencyKeyInputs(binding))) fail(Failure.UnsafeTree);
     assertOwner(binding, attempt);
@@ -156,6 +163,7 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
     withHostedActivationFence(fence => {
       assertOwnerUnderFence(fence, binding, attempt); current(); currentChain(chain, attempt); assertRoot(binding.workspace, final.tree);
       readDependencySourceLinkSession(originalSession, binding.workspace, "node_modules"); blobs.assertCurrent(fence);
+      assertDependencyLocalRegistrySelectionAbsent(final.exposure, originalSession, binding.workspace, final.tree);
       const proofBinding = { generation: installing.generation, workspace: binding.workspace, coverageRevision: installing.coverageRevision,
         installKey: inputs.key.installKey, tree: final.tree, manifestDigest: final.digest };
       const body = capturedDependencySourceBindingOutputBody(inputs.capture, proofBinding, chain.completion.reference.sha256);
@@ -174,8 +182,13 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
       const protectedSession = openHostedDependencySourceLinks(ready); closeDependencySourceLinkSession(protectedSession);
       assertOwnerUnderFence(fence, binding, attempt); current(); currentChain(chain, attempt); assertRoot(binding.workspace, final.tree);
       readDependencySourceLinkSession(originalSession, binding.workspace, "node_modules"); blobs.assertCurrent(fence);
+      assertDependencyLocalRegistrySelectionAbsent(final.exposure, originalSession, binding.workspace, final.tree);
       publishHostedDependencyReceipt(binding, installing.revision, ready);
     });
-  } finally { closeDependencySourceLinkSession(stagedSession); closeDependencySourceLinkSession(originalSession); }
+  } finally {
+    if (stagedExposure) closeDependencySourceExposure(stagedExposure);
+    if (finalExposure) closeDependencySourceExposure(finalExposure);
+    closeDependencySourceLinkSession(stagedSession); if (ownedOriginalSession) closeDependencySourceLinkSession(ownedOriginalSession);
+  }
   return null;
 }

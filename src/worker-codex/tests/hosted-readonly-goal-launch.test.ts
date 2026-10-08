@@ -7,7 +7,11 @@ import { routeHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import { runHostedReadonlyForeground } from "../hosted-readonly-foreground";
 
 const f = vi.hoisted(() => ({ role: vi.fn(), launch: vi.fn(), close: vi.fn(), receipt: vi.fn(),
-  upsert: vi.fn(), spawn: vi.fn(), mkdir: vi.fn(), exec: vi.fn(), admit: vi.fn(), run: vi.fn(), events: [] as string[] }));
+  upsert: vi.fn(), spawn: vi.fn(), mkdir: vi.fn(), exec: vi.fn(), admit: vi.fn(), run: vi.fn(), events: [] as string[], activationEnabled: true }));
+vi.mock("../../provider-codex/app-server/adapters/hosted-host-policy", async original => {
+  const policy = await original<typeof import("../../provider-codex/app-server/adapters/hosted-host-policy")>();
+  return { ...policy, readHostedActivationMode: () => f.activationEnabled ? policy.HostedActivationMode.Required : policy.HostedActivationMode.Disabled };
+});
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(),
   spawn: f.spawn, execFile: f.exec }));
 vi.mock("node:fs/promises", async original => ({ ...await original<typeof import("node:fs/promises")>(), mkdir: f.mkdir,
@@ -37,6 +41,8 @@ function child() {
 }
 beforeEach(() => {
   vi.resetAllMocks(); f.events.length = 0;
+  f.activationEnabled = true;
+  vi.spyOn(process, "platform", "get").mockReturnValue("linux"); vi.spyOn(process, "getuid").mockReturnValue(0);
   f.role.mockReturnValue("supervisor");
   f.launch.mockImplementation((_command, _args, _cwd, submit) => { f.events.push("reserve"); return submit({ command: "/usr/bin/systemd-run", args: ["--wait", "--pipe"] }); });
   f.close.mockImplementation(() => { f.events.push("close"); });
@@ -80,6 +86,7 @@ describe("actual shared managed start route (synthetic host/process facts)", () 
     expect(f.launch).not.toHaveBeenCalled();
   });
   it("keeps ordinary launches on their existing path after admission", async () => {
+    f.activationEnabled = false; // Separate, explicitly unenrolled local Host.
     expect(await routeHostedGoalLaunch({ ...input, config: { ...input.config, sourceEnv: {} } })).toBeUndefined();
     expect(f.admit).toHaveBeenCalledOnce(); expect(f.role).not.toHaveBeenCalled();
   });

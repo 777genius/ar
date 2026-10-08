@@ -3,14 +3,18 @@ import { vi } from "vitest";
 import * as fs from "node:fs";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
-import { grantResearchLaunch, startResearchLaunch } from "../research-launch-owner";
+import { grantOwnedMimoWorkerLaunch, grantResearchLaunch, startResearchLaunch } from "../research-launch-owner";
+import { parseResearchOperatorRequest, type ResearchOperatorRequest } from "../research-launch-contract";
+import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { admitResearchProcessFactory, bindResearchRuntime, researchCurrentStart } from "../research-launch-admission";
 import { researchHash, researchPublish, researchRead } from "../research-launch-files";
 import { researchProcessIdentity, researchServiceIdentity } from "../research-launch-host";
 
 /** Authenticated TEST runtime/reservation shared by service and diagnostics suites. */
-export function prepareHelper(homeLeaf = "TEST-a") {
-  const req = request(); grantResearchLaunch(req.jobId, req.jobRootDir, req.workspacePath);
+export function prepareHelper(homeLeaf = "TEST-a", selected?: ResearchOperatorRequest) {
+  const req = parseResearchOperatorRequest(selected ?? request());
+  (req.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan ? grantOwnedMimoWorkerLaunch : grantResearchLaunch)(req.jobId, req.jobRootDir, req.workspacePath);
+  fs.writeFileSync(local("/TEST-operator/request.json"), JSON.stringify(req), { mode: 0o600 });
   const start = startResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")));
   host.group = `/system.slice/${start.unit}`; bindResearchRuntime(start.jobId, start.startId);
   const current = researchCurrentStart(start.jobId);

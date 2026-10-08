@@ -17,6 +17,8 @@ import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import { trustedResearchProviderLaunch, trustedResearchRuntimeLaunch } from "../trusted-custody-systemd-launch";
 import { prepareResearchProviderRoot, type ResearchProviderRootPlan } from "../research-provider-root";
 import { prepareHelper } from "./research-provider-service-fixture";
+import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
+import { parseResearchOperatorRequest } from "../research-launch-contract";
 
 let previousExitCode: typeof process.exitCode;
 const streams = new Set<PassThrough>();
@@ -51,7 +53,6 @@ function providerProxy(current: ReturnType<typeof prepareHelper>, accept = true,
 }
 const record = (current: ReturnType<typeof prepareHelper>, suffix: string) =>
   JSON.parse(researchRead(join(current.directory, "providers", current.provider + suffix + ".json")).toString());
-
 describe("authenticated prepared scratch visibility (synthetic Host, no OS mounts)", () => {
   it("carries all three selected physical sources so independent providers see runtime-private data", async () => {
     const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
@@ -322,7 +323,6 @@ describe("authenticated prepared scratch visibility (synthetic Host, no OS mount
     expect(forwarded.length).toBeGreaterThan(0); expect(current.forward).toHaveBeenCalledOnce(); expect(f.mutations).toEqual([]);
   });
 });
-
 describe("owned research provider cancellation (real files and streams; systemd/proc substituted)", () => {
   it("consumes fixed readiness and forwards the held frame only after retaining settled ownership", async () => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current);
@@ -523,7 +523,6 @@ describe("owned research provider cancellation (real files and streams; systemd/
     expect(cancelResearchLaunch(current.jobId)).toMatchObject({ terminal: true });
   });
 });
-
 /** Model a three-second artifact traversal on slow Host I/O, still inside its
  * finite thirty-second bound. All retained bytes/digests remain real; only the
  * Host clock and directory-observation latency are substituted. */
@@ -538,8 +537,22 @@ function slowBoundedMaterial() {
   }) as typeof fs.readdirSync);
   return Object.assign(() => performance.now(), { advance: (elapsed: number) => { materialTime += elapsed; } });
 }
-
 describe("slow bounded material at research effect boundaries", () => {
+  // RED: provider transport and its service reject at 300s despite the sealed allocation.
+  it.each([[600_000, 1_200_000, 600], [600_000, 400_000, 400]])("shares owned MiMo startup %s / task %s allowance with the actual provider transport", async (startup, task, seconds) => {
+    const current = prepareHelper("TEST-mimo", parseResearchOperatorRequest({ ...request(), accounts: ["account-q"], modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+      model: codexMimoDefaultModel, maxAccountCycles: 1, prewarmOnStart: false, appServerStartupTimeoutMs: startup, taskTimeoutMs: task }));
+    const { proxy, forwarded, submit } = providerProxy(current, true, false);
+    const now = slowBoundedMaterial(); host.spawn.mockImplementation(submit);
+    expect(trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes)).args).toContain("--property=TimeoutStartSec=300s");
+    const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => true, () => false);
+    expect(host.spawn.mock.calls[0]?.[1]).toContain(`--property=TimeoutStartSec=${seconds}s`);
+    proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+    now.advance(310_000); proxy.stdout.write(readyFrame); await vi.advanceTimersByTimeAsync(0);
+    expect(await outcome).toBe(true);
+    expect(forwarded.length).toBeGreaterThan(0);
+    expect(record(current, ".submission").state).toBe("settled");
+  });
   it.each(["timeout", "nonzero"])("retains a closed Host command %s observation before bootstrap", async fault => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     const original = processes.spawnSync;

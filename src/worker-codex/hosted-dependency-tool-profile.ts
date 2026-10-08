@@ -13,20 +13,23 @@ export { createHostedDependencyToolProfile } from "./hosted-dependency-tool-prof
 import { assertHostedActivationFence, readHostedOrdinaryProcessOrigin, readHostedActivationBytes, decodeHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readHostedDependencyAttempt, readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { observeDependencyTree, captureDependencySourceExposure, assertDependencySourceExposureCurrent,
+import { observeDependencyTree, observeDependencyTreeWithLocalRegistrySelection, assertDependencyLocalRegistrySelectionAbsent, captureDependencyLocalRootOnlySourceExposure, assertDependencySourceExposureCurrent,
   closeDependencySourceExposure, type DependencySourceExposure } from "../worker-local/dependency-environment/observe-dependency-tree";
 import { dependencySourceLinkProof, openCapturedDependencySourceLinks, closeDependencySourceLinkSession,
-  readDependencySourceLinkSession, capturedDependencySourceBindingOutputBody } from "../worker-local/dependency-environment/dependency-source-binding";
+  readDependencySourceLinkSession, capturedDependencySourceBindingOutputBody, capturedDependencyLegacyLocalSourceFields } from "../worker-local/dependency-environment/dependency-source-binding";
 import { encodeDependencySourceBindingOutputBody } from "../worker-core/dependency-environment/domain/dependency-source-binding-record";
 import { encodeDependencyTreeManifest } from "../worker-core/dependency-environment/domain/dependency-tree-manifest";
-import type { DependencyCompletedLocalReady } from "../worker-core/dependency-environment/ports/dependency-source-binding";
 import { HostedDependencyInstallerRecipe } from "./hosted-dependency-installer-inputs";
-import { openHostedDependencySourceLinks, readHostedDependencyEstablishedReceipt } from "./hosted-dependency-receipts";
+import { readHostedDependencyEstablishedReceipt } from "./hosted-dependency-receipts";
 import { openHostedDependencyManifestPlacement } from "./hosted-dependency-manifest-placement";
 import { readHostedDependencyKeyInputs, readHostedDependencyReceipt, assertHostedDependencyKeyInputsCurrent, sameHostedDependencyKeyInputs,
   hostedDependencyObservationLimits, matchesHostedDependencyReady } from "./hosted-dependency-materialization";
 import { isHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import type { HostedDependencyKeyInputs } from "./hosted-dependency-materialization-context";
+
+import { openHostedDependencyReadySourceLinks, readHostedDependencyComparedSourceProof } from "./hosted-dependency-ready-source-links";
+
+import { assertHostedDependencyLegacyComparedReady } from "./hosted-dependency-legacy-comparison-record";
 
 const policyRoot = "/var/lib/subscription-runtime-host-policy";
 const encode = (v: unknown): Buffer => Buffer.from(JSON.stringify(v) + "\n");
@@ -78,12 +81,12 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   const before = await readHostedDependencyKeyInputs(binding); assertExclusive();
   const receipt = readHostedDependencyReceipt(binding);
   if (!receipt || receipt.state !== DependencyReceiptState.Ready || !matchesHostedDependencyReady(binding, receipt, before)) fail(DependencyAdmissionFailure.NeedsInstall);
-  const local = receipt.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1;
+  const local = receipt.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1 || verifiedLocalComparison(receipt);
   if (local ? before.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1 :
-      receipt.provenance.kind !== DependencyInstallProofKind.CompletedInstall || before.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1) fail();
-  const source = receipt.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1
-    ? openHostedDependencySourceLinks({ ...receipt, provenance: receipt.provenance }) : undefined;
-  let exposure: DependencySourceExposure | undefined;
+      !verifiedRegistry(receipt) || before.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1) fail();
+  const source = openHostedDependencyReadySourceLinks(receipt);
+  let exposure: DependencySourceExposure | undefined, nodeModulesExposure: DependencySourceExposure | undefined;
+  let capturedSource: ReturnType<typeof openCapturedDependencySourceLinks> | undefined;
   try {
   const readonlySources = currentSources(before, receipt);
   const deadline = performance.now() + hostedDependencyObservationLimits.maxDurationMs;
@@ -91,9 +94,20 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   let manifest: Uint8Array;
   try { assertExclusive(); manifest = await placement.get(receipt.manifestDigest); assertExclusive(); }
   finally { await placement.close(); assertExclusive(); }
-  const observed = await observeDependencyTree({ workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
-    expectedWorkspace: binding.workspace, expectedTree: receipt.tree, limits: hostedDependencyObservationLimits,
-    ...(source ? { sourceLinkSession: source } : {}) });
+  const observationInput = { workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
+    expectedWorkspace: binding.workspace, expectedTree: receipt.tree, limits: { ...hostedDependencyObservationLimits, maxDurationMs: Math.floor(deadline - performance.now()) },
+    ...(source ? { sourceLinkSession: source } : {}) } as const;
+  if (local) {
+    if (before.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1 || !source) fail();
+    capturedSource = openCapturedDependencySourceLinks(before.capture);
+  }
+  let observed: Awaited<ReturnType<typeof observeDependencyTree>>;
+  if (capturedSource && source) {
+    const localObserved = await observeDependencyTreeWithLocalRegistrySelection({ ...observationInput,
+      sourceLinkSession: capturedSource, protectedSourceLinkSession: source });
+    if (localObserved.status === DependencyTreeObservationStatus.Complete) nodeModulesExposure = localObserved.exposure;
+    observed = localObserved;
+  } else observed = await observeDependencyTree(observationInput);
   assertExclusive();
   if (observed.status !== DependencyTreeObservationStatus.Complete || observed.digest !== receipt.manifestDigest ||
       !Buffer.from(manifest).equals(observed.canonicalBytes)) fail(DependencyAdmissionFailure.UnsafeTree);
@@ -106,7 +120,7 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
       maxDurationMs: Math.floor(deadline - performance.now()) };
     if ([remaining.maxEntries, remaining.maxTotalBytes, remaining.maxManifestBytes, remaining.maxDurationMs]
         .some(value => !Number.isSafeInteger(value) || value <= 0)) fail(DependencyAdmissionFailure.UnsafeTree);
-    const captured = await captureDependencySourceExposure({ roots: readonlySources.map(root => ({
+    const captured = await captureDependencyLocalRootOnlySourceExposure({ roots: readonlySources.map(root => ({
       parentPath: dirname(root.canonicalPath), name: root.canonicalPath.slice(dirname(root.canonicalPath).length + 1), expectedTree: root.identity })), limits: remaining });
     assertExclusive();
     if (captured.status !== DependencyTreeObservationStatus.Complete) fail(DependencyAdmissionFailure.UnsafeTree);
@@ -127,6 +141,9 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
     assertHostedDependencyKeyInputsCurrent(binding, before); placement.assertCurrent(fence);
     if (!encode(currentSources(before, receipt)).equals(encode(readonlySources))) fail();
     if (exposure) assertDependencySourceExposureCurrent(exposure);
+    if (local && (!nodeModulesExposure || !capturedSource)) fail(DependencyAdmissionFailure.UnsafeTree);
+    if (nodeModulesExposure && capturedSource) assertDependencyLocalRegistrySelectionAbsent(nodeModulesExposure, capturedSource,
+      binding.workspace, observed.tree, Math.floor(deadline - performance.now()));
     assertProfileFiles(profile, binding.jobRootDir);
     const current = lstatSync(`${binding.workspace.canonicalPath}/node_modules`, { bigint: true });
     if (!current.isDirectory() || String(current.dev) !== observed.tree.dev || String(current.ino) !== observed.tree.ino) fail();
@@ -145,31 +162,45 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   exposure = undefined; // The one private entry now owns the logical baseline.
   return entry;
   } finally {
+    if (nodeModulesExposure) closeDependencySourceExposure(nodeModulesExposure);
+    if (capturedSource) closeDependencySourceLinkSession(capturedSource);
     if (source) closeDependencySourceLinkSession(source);
     if (exposure) closeDependencySourceExposure(exposure);
   }
 }
 
 function currentSources(inputs: HostedDependencyKeyInputs, receipt: Ready): readonly DependencyToolSourceRoot[] {
-  if (receipt.provenance.kind === DependencyInstallProofKind.CompletedInstall) {
+  if (verifiedRegistry(receipt)) {
     if (inputs.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1) fail();
     return Object.freeze([]);
   }
-  if (receipt.provenance.kind !== DependencyInstallProofKind.CompletedLocalInstallV1 || inputs.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1) fail();
-  const local: DependencyCompletedLocalReady = { ...receipt, provenance: receipt.provenance };
-  const protectedSession = openHostedDependencySourceLinks(local);
+  if (inputs.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1) fail();
+  const compared = verifiedLocalComparison(receipt);
+  if (!compared && receipt.provenance.kind !== DependencyInstallProofKind.CompletedLocalInstallV1) fail();
+  const protectedSession = openHostedDependencyReadySourceLinks(receipt);
+  if (!protectedSession) fail();
   let capturedSession: ReturnType<typeof openCapturedDependencySourceLinks> | undefined;
   try {
     capturedSession = openCapturedDependencySourceLinks(inputs.capture);
-    const proof = dependencySourceLinkProof(protectedSession), record = proof.record;
-    if (record.version !== 2) fail();
     const binding = { generation: receipt.generation, workspace: receipt.workspace, coverageRevision: receipt.coverageRevision,
       installKey: receipt.installKey, tree: receipt.tree, manifestDigest: receipt.manifestDigest };
-    const expected = capturedDependencySourceBindingOutputBody(inputs.capture, binding, record.installerCompletionSha256);
-    const { outputReference: _outputReference, ...body } = record;
-    if (encodeDependencySourceBindingOutputBody(expected) !== encodeDependencySourceBindingOutputBody(body) ||
-        !encode(readDependencySourceLinkSession(capturedSession, receipt.workspace, "node_modules"))
-          .equals(encode(readDependencySourceLinkSession(protectedSession, receipt.workspace, "node_modules")))) fail(DependencyAdmissionFailure.UnsafeTree);
+    const record = compared ? readHostedDependencyComparedSourceProof(protectedSession).record : dependencySourceLinkProof(protectedSession).record;
+    if (compared) {
+      const proof = readHostedDependencyComparedSourceProof(protectedSession), mapping = proof.record;
+      // Capture-derived facts contain no fabricated candidate completion.
+      const expected = capturedDependencyLegacyLocalSourceFields(inputs.capture);
+      if (!encode(mapping.candidate).equals(encode(binding)) || mapping.closureDigest !== expected.closureDigest ||
+          !encode(mapping.sourceLinks).equals(encode(expected.sourceLinks)) || !encode(mapping.directories).equals(encode(expected.directories)) ||
+          !encode(mapping.ancestors).equals(encode(expected.ancestors))) fail(DependencyAdmissionFailure.UnsafeTree);
+    } else {
+      const installed = dependencySourceLinkProof(protectedSession).record;
+      if (installed.version !== 2) fail();
+      const expected = capturedDependencySourceBindingOutputBody(inputs.capture, binding, installed.installerCompletionSha256);
+      const { outputReference: _outputReference, ...body } = installed;
+      if (encodeDependencySourceBindingOutputBody(expected) !== encodeDependencySourceBindingOutputBody(body)) fail(DependencyAdmissionFailure.UnsafeTree);
+    }
+    if (!encode(readDependencySourceLinkSession(capturedSession, receipt.workspace, "node_modules"))
+        .equals(encode(readDependencySourceLinkSession(protectedSession, receipt.workspace, "node_modules")))) fail(DependencyAdmissionFailure.UnsafeTree);
     const roots = [...new Set(record.sourceLinks.map(link => link.sourcePath))].sort().map(path => {
       const pin = record.directories.find(directory => directory.path === path);
       if (!pin || !path) fail();
@@ -213,7 +244,13 @@ function currentEntry(state: EntryState, phase: DependencyOwnerPhase.ExclusiveMu
     installKey: receipt.installKey, tree: receipt.tree, manifestDigest: receipt.manifestDigest };
   if (receipt.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1) return Object.freeze({ ...identity,
     provenance: Object.freeze({ kind: DependencyToolReadyProvenanceKind.LocalCompleted, sourceBinding: receipt.provenance.sourceBinding, readonlySources: state.readonlySources }) });
-  if (receipt.provenance.kind !== DependencyInstallProofKind.CompletedInstall) fail();
+  if (receipt.provenance.kind === DependencyInstallProofKind.LegacyCompared) {
+    const comparison = assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance });
+    if (comparison.version === 2) return Object.freeze({ ...identity, provenance: Object.freeze({
+      kind: DependencyToolReadyProvenanceKind.LocalCompared, comparisonEvidenceId: receipt.provenance.comparisonEvidenceId,
+      sourceBinding: comparison.candidateSourceBinding, readonlySources: state.readonlySources }) });
+  }
+  if (!verifiedRegistry(receipt)) fail();
   return Object.freeze({ ...identity, provenance: Object.freeze({ kind: DependencyToolReadyProvenanceKind.RegistryCompleted }) });
 }
 /** Called under the genuine final fence, after all temporary descriptors close. */
@@ -267,7 +304,7 @@ export function readAdmittedHostedDependencyToolConfig(workspacePath: string | u
 export function hostedDependencyToolInstruction(config: DependencyToolGuestConfig, entry?: HostedDependencyQualifiedToolEntry): string {
   const quote = (v: string) => `'${v.replaceAll("'", `'\\''`)}'`;
   const command = `${quote(config.profile.node.path)} ${quote(config.profile.helper.path)}`;
-  const local = entry && readHostedDependencyQualifiedToolEntry(entry).provenance.kind === DependencyToolReadyProvenanceKind.LocalCompleted;
+  const local = entry && [DependencyToolReadyProvenanceKind.LocalCompleted, DependencyToolReadyProvenanceKind.LocalCompared].includes(readHostedDependencyQualifiedToolEntry(entry).provenance.kind);
   return ["This admitted task supports config-free Node checks and dependency optimization.",
     `Run ${command} optimize or ${command} test using the native exec tool.`,
     `Registered test files: ${config.profile.testFiles.join(", ")}. Registered optimizer dependencies: ${config.profile.optimizerDependencies.join(", ")}.`,
@@ -281,11 +318,21 @@ function assertQualification(q: DependencyToolQualification, binding: HostedDepe
   if (q.installationId !== binding.installationId || q.runtimeSha !== binding.runtimeSha || q.grantDigest !== binding.grantDigest ||
       !encode(q.workspace).equals(encode(binding.workspace)) || q.startId !== attempt.launch.startId || q.attemptId !== attempt.attemptId || q.epoch !== attempt.epoch ||
       !receipt || receipt.state !== DependencyReceiptState.Ready ||
-      (receipt.provenance.kind !== DependencyInstallProofKind.CompletedInstall &&
-        (receipt.provenance.kind !== DependencyInstallProofKind.CompletedLocalInstallV1 || !entry)) ||
+      (!verifiedRegistry(receipt) &&
+        ((receipt.provenance.kind !== DependencyInstallProofKind.CompletedLocalInstallV1 && !verifiedLocalComparison(receipt)) || !entry)) ||
       q.readyRevision !== receipt.revision || q.installKey !== receipt.installKey || q.manifestDigest !== receipt.manifestDigest ||
       q.tree.dev !== receipt.tree.dev || q.tree.ino !== receipt.tree.ino || !tree.isDirectory() || String(tree.dev) !== q.tree.dev || String(tree.ino) !== q.tree.ino ||
       !encode(q.profile).equals(encode(hostedDependencyToolProfile(binding)))) fail();
+}
+/** Every projection reauthenticates the fixed immutable comparison evidence. */
+function verifiedRegistry(receipt: Ready): boolean {
+  if (receipt.provenance.kind === DependencyInstallProofKind.CompletedInstall) return true;
+  if (receipt.provenance.kind !== DependencyInstallProofKind.LegacyCompared) return false;
+  return assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance }).version === 1;
+}
+function verifiedLocalComparison(receipt: Ready): boolean {
+  return receipt.provenance.kind === DependencyInstallProofKind.LegacyCompared &&
+    assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance }).version === 2;
 }
 function assertInstalledPins(workspace: string, profile: DependencyToolProfile, lockBytes: Uint8Array): void {
   const lock: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(lockBytes));

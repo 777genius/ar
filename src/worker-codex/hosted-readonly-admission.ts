@@ -4,7 +4,7 @@ import { HostedCustodyLaunchKind, HostedCustodySupervisor } from "@vioxen/subscr
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
 import { admitHostedOrdinaryIdentity, isHostedOrdinaryRuntime } from "./hosted-installation-activation";
 import { admittedReadonlyCodexProcessFactory, admittedDependencyToolCodexProcessFactory, CodexProviderEgressProfileId, requiresHostedProcessAdmission,
-  type CodexAppServerProcessFactory, type CodexProviderEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
+  CodexModelBackend, type CodexAppServerProcessFactory, type CodexProviderEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
 import type { HostedTestEgressIdentity } from "./hosted-test-egress-contract";
 import { assertReadonlyHostOperator, decodePrivateJson, readReadonlyManagedGrant,
   readReadonlyReview, readonlyIdentityName } from "./hosted-readonly-authority";
@@ -14,6 +14,7 @@ import { readonlyCustodyRoot, readonlyCustodySnapshot, readonlyRevokedRoot,
 
 import type { CodexWorkerExecutionEngine } from "./file-backend-codex-runtime-factory";
 import { admitResearchProcessFactory, admitResearchRuntime, assertResearchRuntimeEngine } from "./research-launch-admission";
+import { assertHostedBaselineIdentity, isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
 import { withHostedActivationFence, readHostedOrdinaryProcessOrigin, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { captureHostedDependencyToolReadyReader } from "./hosted-dependency-tool-ready-reader";
@@ -57,11 +58,12 @@ export function assertReadonlyAdmittedFactory(factory: CodexAppServerProcessFact
 export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
   readonly providerEgressPolicy: CodexProviderEgressPolicy;
   readonly executionEngine?: CodexWorkerExecutionEngine;
+  readonly modelBackend?: CodexModelBackend;
   readonly sourceEnv: Readonly<Record<string, string | undefined>>;
 }, toolEntry?: HostedDependencyQualifiedToolEntry): CodexAppServerProcessFactory | undefined {
   const research = admitResearchRuntime(input);
   if (research) {
-    assertResearchRuntimeEngine(input);
+    assertResearchRuntimeEngine(input, research);
     if (input.providerEgressPolicy.profileId !== research) throw new Error("hosted_research_launch_denied");
     return admitResearchProcessFactory(input);
   }
@@ -71,6 +73,15 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
     return undefined;
   }
   const hosted = requiresHostedProcessAdmission(input.sourceEnv);
+  if (!hosted && !managed) {
+    assertHostedBaselineIdentity(input.jobId);
+    if (isHostedContainment(input.sourceEnv) &&
+        (input.providerEgressPolicy.profileId !== CodexProviderEgressProfileId.FullInternetV1 ||
+         !["app-server", "app-server-goal"].includes(input.executionEngine ?? "app-server-goal"))) {
+      throw new Error("hosted_permission_profiles_engine_unsupported");
+    }
+    return undefined;
+  }
   if (hosted && isHostedOrdinaryRuntime()) {
     const profile = admitHostedOrdinaryIdentity(input);
     if (managed || input.providerEgressPolicy.profileId !== profile ||

@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { lstatSync, realpathSync } from "node:fs";
 import { LocalDependencyReceiptStore } from "../store-local-file/dependency-environment/local-dependency-receipt-store";
-import { DependencyInstallProofKind, sameDependencyWorkspace, DependencyReceiptState,
+import { sameDependencyWorkspace, DependencyReceiptState,
   type DependencyReceipt } from "../worker-core/dependency-environment/domain/dependency-receipt";
 import { hostedDependencyReceiptHistoryRoot } from "../provider-codex/app-server/adapters/hosted-dependency-history-path";
 import { assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { assertHostedDependencyPhysicalWorkspace, readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+
+import { assertHostedDependencyReadySourceHistory } from "./hosted-dependency-ready-source-links";
 
 export enum HostedDependencyHistoryStatus { Known = "known", Unknown = "unknown" }
 export enum HostedDependencyHistoryFailure { Unresolved = "unresolved" }
@@ -38,9 +40,9 @@ export function readHostedDependencyCommittedHistory(jobId: string): HostedDepen
     let receipt: DependencyReceipt | null;
     try { receipt = store.read(binding.workspace); } finally { store.close(); }
     if (!receipt || !sameDependencyWorkspace(receipt.workspace, binding.workspace) || receipt.coverageRevision !== hash(encode(binding)) ||
-        (receipt.state === DependencyReceiptState.Ready && receipt.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1) ||
         !encode(readHostedDependencyBinding(jobId)).equals(encode(binding)) ||
         !readHostedActivationBytes("host-installation.json")?.equals(installed) || !readHostedActivationBytes("host-activation.json")?.equals(enrolled)) throw new Error();
+    if (receipt.state === DependencyReceiptState.Ready) assertHostedDependencyReadySourceHistory(receipt);
     assertHostedDependencyPhysicalWorkspace(binding);
     return Object.freeze({ status: HostedDependencyHistoryStatus.Known, binding, receipt });
   } catch {

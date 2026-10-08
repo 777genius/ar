@@ -19,13 +19,16 @@ import { assertHostedDependencyInstallerAttemptDrained } from "./hosted-dependen
 import { hostedDependencyInstallerRoot } from "./hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRecipe } from "./hosted-dependency-installer-inputs";
 import { DependencyInstallProofKind } from "../worker-core/dependency-environment/domain/dependency-receipt";
-import type { DependencyCompletedLocalReady } from "../worker-core/dependency-environment/ports/dependency-source-binding";
 import { closeDependencySourceLinkSession, type DependencySourceLinkSession } from "../worker-local/dependency-environment/dependency-source-binding";
 import { hostedDependencyObservationLimits as limits, readHostedDependencyKeyInputs,
   assertHostedDependencyKeyInputsCurrent, sameHostedDependencyKeyInputs } from "./hosted-dependency-materialization";
 import { ensureHostedDependencyDirectory, readHostedDependencyReceipt, publishHostedDependencyReceipt,
-  readHostedDependencyCommittedAbsent, openHostedDependencySourceLinks } from "./hosted-dependency-receipts";
+  readHostedDependencyCommittedAbsent } from "./hosted-dependency-receipts";
 import { assertHostedDependencyReferenceVeto, DependencyReferenceEffect } from "./hosted-dependency-reference-veto";
+
+import { openHostedDependencyReadySourceLinks, assertHostedDependencyReadySourceHistory } from "./hosted-dependency-ready-source-links";
+
+import { assertHostedDependencyLegacyComparedReady } from "./hosted-dependency-legacy-comparison-record";
 
 export type HostedDependencyEvictionCandidate = { readonly jobId: string; readonly revision: number;
   readonly generation: string; readonly installKey: string };
@@ -38,6 +41,23 @@ const encode = (v: unknown): Buffer => Buffer.from(JSON.stringify(v) + "\n");
 const hash = (v: Uint8Array): string => createHash("sha256").update(v).digest("hex");
 const owns = () => LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
 type Authority = ReturnType<HostedInstallationActivationStore["dependencyMaintenanceAuthority"]>;
+/** Concrete N5 reuse of the existing actual operator/controller exclusion.
+ * These methods reread protected authority; no supplied owner predicate grants
+ * mutation rights. Caller owns this exact durable Maintenance across awaits. */
+export function claimHostedDependencyComparisonMaintenance(jobId: string, operationId: string): DependencyMaintenanceAttempt {
+  if (!uuid.test(operationId)) fail();
+  return withHostedActivationFence(fence => {
+    const a = new HostedInstallationActivationStore().dependencyMaintenanceAuthority(fence, jobId), store = owns();
+    try { return claimDependencyMaintenance(store, a.binding.workspace, host(a), operationId); } finally { store.close(); }
+  });
+}
+export function assertHostedDependencyComparisonMaintenanceUnderFence(fence: import("../provider-codex/app-server/adapters/hosted-process-activation").HostedActivationFence,
+  jobId: string, attempt: DependencyMaintenanceAttempt): Authority { return maintenanceUnderFence(fence, jobId, attempt); }
+export function assertHostedDependencyComparisonQuiescent(jobId: string, attempt: DependencyMaintenanceAttempt): Authority {
+  const a = guard(jobId, attempt), groups = covered(a);
+  assertHostedDependencyReferenceVeto(a.binding.workspace, `${operations}/${attempt.operationId}.reference.json`, groups, DependencyReferenceEffect.Eviction);
+  return guard(jobId, attempt);
+}
 function authority(jobId: string): Authority {
   return withHostedActivationFence(fence => new HostedInstallationActivationStore().dependencyMaintenanceAuthority(fence, jobId));
 }
@@ -54,14 +74,16 @@ function host(a: Authority): DependencyMaintenanceAttempt["host"] {
     runtimeSha: a.installation.runtimeSha, inventoryDigest: a.installation.inventorySha256, grantDigest: a.binding.grantDigest };
 }
 function guard(jobId: string, attempt: DependencyMaintenanceAttempt, requireEnabled = false): Authority {
-  return withHostedActivationFence(fence => {
+  return withHostedActivationFence(fence => maintenanceUnderFence(fence, jobId, attempt, requireEnabled));
+}
+function maintenanceUnderFence(fence: import("../provider-codex/app-server/adapters/hosted-process-activation").HostedActivationFence,
+  jobId: string, attempt: DependencyMaintenanceAttempt, requireEnabled = false): Authority {
     const a = new HostedInstallationActivationStore().dependencyMaintenanceAuthority(fence, jobId);
     if (!sameDependencyMaintenanceAttempt(attempt, { ...attempt, host: host(a) }) || (requireEnabled && !enabled()) ||
         readHostedPrivateBytes(`${operations}/${attempt.operationId}.close-unresolved.json`, 4096)) fail();
     const store = owns();
     try { assertDependencyMaintenance(store, a.binding.workspace, attempt); } finally { store.close(); }
     return a;
-  });
 }
 function release(jobId: string, attempt: DependencyMaintenanceAttempt): void {
   withHostedActivationFence(fence => {
@@ -140,9 +162,19 @@ async function baseline(ready: Pick<Ready, "manifestDigest">) {
   try { return { bytes: await placement.get(ready.manifestDigest), placement }; } finally { await placement.close(); }
 }
 function sourceLinks(header: Header, detached = false): DependencySourceLinkSession | undefined {
-  if (header.ready.provenance.kind !== DependencyInstallProofKind.CompletedLocalInstallV1) return undefined;
-  const ready: DependencyCompletedLocalReady = { ...header.ready, provenance: header.ready.provenance };
-  return openHostedDependencySourceLinks(ready, detached ? { workspace: header.trash.destinationParent, name: header.trash.destinationName } : undefined);
+  authenticateHistoricalReady(header.ready);
+  if (header.ready.provenance.kind === DependencyInstallProofKind.CompletedInstall) return undefined;
+  if (header.ready.provenance.kind === DependencyInstallProofKind.LegacyCompared &&
+      assertHostedDependencyLegacyComparedReady({ ...header.ready, provenance: header.ready.provenance }).version === 1) return undefined;
+  if (!detached) return openHostedDependencyReadySourceLinks(header.ready);
+  // A target DTO cannot grant subset traversal. Bind the actual protected
+  // operation header before the source adapter authenticates detached custody.
+  const path = headerPath(header.attempt), before = lstatSync(path, { bigint: true }), bytes = readHostedPrivateBytes(path, 32768), after = lstatSync(path, { bigint: true });
+  if (!bytes || !bytes.equals(encode(header)) || !before.isFile() || before.uid !== 0n || before.nlink !== 1n ||
+      (before.mode & 0o7777n) !== 0o600n || before.dev !== after.dev || before.ino !== after.ino ||
+      before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs) fail();
+  return openHostedDependencyReadySourceLinks(header.ready, { workspace: header.trash.destinationParent, name: header.trash.destinationName,
+    reference: { path, identity: { dev: String(before.dev), ino: String(before.ino) }, sha256: hash(bytes) } });
 }
 function input(binding: HostedDependencyBinding, header: Header, bytes: Uint8Array, sourceLinkSession?: DependencySourceLinkSession): DependencyTreeEffectInput {
   return { workspace: binding.workspace, trash: header.trash, manifestCanonicalBytes: bytes, manifestDigest: header.ready.manifestDigest, limits,
@@ -153,8 +185,14 @@ function renamedEvidence(header: Header): Buffer {
     epoch: header.attempt.epoch, tree: header.ready.tree, trash: header.trash, manifestDigest: header.ready.manifestDigest };
   // Registry v1 bytes remain exact. A local commit also binds the original
   // protected Ready/header, independently of future Ready or Absent revisions.
-  return header.ready.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1
-    ? encode({ ...body, version: 2, headerSha256: hash(encode(header)), sourceBinding: header.ready.provenance.sourceBinding }) : encode(body);
+  if (header.ready.provenance.kind === DependencyInstallProofKind.CompletedLocalInstallV1)
+    return encode({ ...body, version: 2, headerSha256: hash(encode(header)), sourceBinding: header.ready.provenance.sourceBinding });
+  if (header.ready.provenance.kind === DependencyInstallProofKind.LegacyCompared) {
+    const comparison = assertHostedDependencyLegacyComparedReady({ ...header.ready, provenance: header.ready.provenance });
+    if (comparison.version === 2) return encode({ ...body, version: 3, headerSha256: hash(encode(header)),
+      comparisonEvidenceId: header.ready.provenance.comparisonEvidenceId, sourceBinding: comparison.candidateSourceBinding });
+  }
+  return encode(body);
 }
 function historicalHeader(receipt: Extract<DependencyReceipt, { state: State.Absent }>): Header {
   const proof = receipt.evictionCommit, bytes = readHostedPrivateBytes(`${operations}/${proof.operationId}.json`, 32768);
@@ -172,7 +210,12 @@ function historicalHeader(receipt: Extract<DependencyReceipt, { state: State.Abs
   validateTrash(header.trash, proof.operationId);
   const evidence = readHostedPrivateBytes(`${operations}/${proof.operationId}.renamed.json`, 16384);
   if (!evidence || !evidence.equals(renamedEvidence(header)) || hash(evidence) !== proof.commitEvidenceId) fail();
+  authenticateHistoricalReady(header.ready);
   return header;
+}
+/** Historical authentication never requires the old tree/stage/current inputs. */
+function authenticateHistoricalReady(ready: Ready): void {
+  assertHostedDependencyReadySourceHistory(ready);
 }
 function headerPath(attempt: DependencyMaintenanceAttempt): string { return `${operations}/${attempt.operationId}.json`; }
 function validateTrash(trash: DependencyTrashIntent, operationId: string): void {
@@ -188,8 +231,9 @@ async function finish(jobId: string, header: Header): Promise<{ outcome: HostedD
   validateTrash(header.trash, header.attempt.operationId);
   let a = guard(jobId, header.attempt), receipt = readHostedDependencyReceipt(a.binding);
   const { bytes, placement } = await baseline(header.ready), destination = header.trash.destinationParent.canonicalPath + "/" + header.trash.destinationName;
-  const originalLinks = sourceLinks(header), detachedLinks = sourceLinks(header, true);
+  let originalLinks: DependencySourceLinkSession | undefined, detachedLinks: DependencySourceLinkSession | undefined;
   try {
+  originalLinks = sourceLinks(header); detachedLinks = sourceLinks(header, true);
   if (!receipt) fail();
   if (receipt.state === State.Absent && receipt.operationId === header.attempt.operationId) {
     const proof = receipt.evictionCommit, evidence = readHostedPrivateBytes(`${operations}/${header.attempt.operationId}.renamed.json`, 16384);
@@ -339,6 +383,7 @@ export async function recoverHostedDependencyEviction(jobId: string) {
     operationId: attempt.operationId, installKey: parsed.receipt.installKey, tree: parsed.receipt.tree,
     manifestDigest: parsed.receipt.manifestDigest, trash: header.trash });
   if (intent.status !== DependencyReceiptParseStatus.Valid) fail();
+  authenticateHistoricalReady(header.ready);
   return finish(jobId, header);
 }
 export async function removeHostedDependencyCommittedTrash(jobId: string, revision: number) {
