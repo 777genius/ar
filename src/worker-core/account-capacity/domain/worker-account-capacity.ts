@@ -26,6 +26,7 @@ export const defaultWorkerAccountLimitReasons = [
   "rate_limit_threshold",
   "quota_limited",
   "account_exhausted",
+  "provider_session_invalid",
 ] as const;
 
 export function defaultAccountIdFromCapacityDetails(
@@ -93,7 +94,11 @@ export function normalizeWorkerAccountCapacitySignal(
 ): WorkerCapacitySnapshot | null {
   const accountId = normalizeWorkerAccountId(input.accountId);
   if (!accountId) return null;
-  const capacity = input.capacity;
+  // Confirmed session invalidation has no time-based recovery.
+  const { cooldownUntil: _cooldown, ...sessionCapacity } = input.capacity;
+  const capacity: WorkerCapacitySnapshot = input.capacity.reason === "provider_session_invalid"
+    ? { ...sessionCapacity, availability: "disabled" }
+    : input.capacity;
   if (!isPersistableWorkerAccountCapacity(capacity)) return null;
   if (
     !input.retainExpiredForRecheck &&
@@ -148,13 +153,15 @@ export function isWorkerAccountLimitCapacity(
 export function isPersistableWorkerAccountCapacity(
   capacity: WorkerCapacitySnapshot,
 ): boolean {
-  return isPersistableWorkerAccountAvailability(capacity.availability);
+  return capacity.availability === "cooldown" ||
+    capacity.availability === "quota_exhausted" ||
+    (capacity.availability === "disabled" && capacity.reason === "provider_session_invalid");
 }
 
 export function isPersistableWorkerAccountAvailability(
   value: unknown,
 ): value is WorkerCapacitySnapshot["availability"] {
-  return value === "cooldown" || value === "quota_exhausted";
+  return value === "cooldown" || value === "quota_exhausted" || value === "disabled";
 }
 
 export function mergeWorkerAndAccountCapacity(

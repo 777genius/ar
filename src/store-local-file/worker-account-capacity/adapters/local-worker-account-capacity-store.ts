@@ -215,6 +215,9 @@ export class LocalFileWorkerAccountCapacityStore
       if (currentState.revision !== input.state.revision) {
         return { status: WorkerAccountCapacityClaimStatus.Conflict } as const;
       }
+      if (currentState.capacity.reason === "provider_session_invalid") {
+        return { status: WorkerAccountCapacityClaimStatus.NotDue, state: currentState } as const;
+      }
       if (
         input.mode === WorkerAccountCapacityRecheckMode.DueOnly &&
         currentState.phase === WorkerAccountCapacityPhase.RecheckDue
@@ -764,6 +767,7 @@ function parsePersistedCapacity(
   value: PersistedWorkerCapacitySnapshot,
 ): WorkerCapacitySnapshot | null {
   if (!isPersistableWorkerAccountAvailability(value.availability)) return null;
+  if (value.availability === "disabled" && value.reason !== "provider_session_invalid") return null;
   if (value.reason !== undefined && typeof value.reason !== "string") return null;
   const cooldownUntil = optionalDate(value.cooldownUntil);
   const lastLimitSignalAt = optionalDate(value.lastLimitSignalAt);

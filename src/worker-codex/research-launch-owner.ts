@@ -9,6 +9,7 @@ import { assertResearchDirectory, researchArtifactDigest, researchAuthorityRoot,
   researchHash, researchId, researchInvalid, researchJson, researchPath, researchPrivateDirectory, researchPublish, researchRead, researchCustody, researchPromptBytes } from "./research-launch-files";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { terminalResearchStart } from "./research-launch-lifecycle";
+import { annotateResearchLaunchStage, ResearchLaunchStage } from "./research-launch-diagnostics";
 
 /** Initial-host-root only. The request is closed operator data, never a worker
  * environment, managed/TEST grant, project tag or pre-start observation. */
@@ -59,24 +60,31 @@ export function startResearchLaunch(requestPath: string, expectedRequestSha256: 
   researchPublish(join(job, "active.json"), { schemaVersion: 1, startId, specSha256 }, true);
   // Never undo an uncertain launch. The retained active slot identifies exactly
   // what status/cancel must reconcile; no replacement job or shared-scope kill.
-  for (const [name, identity] of [["job", jobDirectory], ["workspace", workspaceDirectory]] as const) {
-    const pin = join(directory, "pins", name); researchPrivateDirectory(pin);
-    assertResearchDirectory(identity);
-    researchCommand("/usr/bin/mount", ["--bind", identity.path, pin]);
-    assertResearchDirectory(identity); assertResearchDirectory(identity, pin);
-    researchCommand("/usr/bin/mount", ["--make-private", pin]);
-  }
-  researchPromptBytes(jobDirectory, request.promptPath, join(directory, "pins", "job"));
-  for (const name of ["state", "home", "tmp"]) {
-    const path = join(directory, "pins", "job", name);
-    if (!existsSync(path)) mkdirSync(path, { mode: 0o700 });
-    researchDirectoryIdentity(path);
-  }
-  const launch = trustedResearchRuntimeLaunch(spec, specSha256);
-  assertResearchSharedHost();
-  researchCommand(launch.command, launch.args);
-  // A successful submission is a request, not evidence of provider/turn success.
-  const current = researchCurrentStart(request.jobId);
-  if (!current.bytes.equals(specBytes)) researchInvalid();
-  return { jobId: request.jobId, unit, startId, specSha256 };
+  let stage = ResearchLaunchStage.PinPreparation;
+  try {
+    for (const [name, identity] of [["job", jobDirectory], ["workspace", workspaceDirectory]] as const) {
+      const pin = join(directory, "pins", name); researchPrivateDirectory(pin);
+      assertResearchDirectory(identity);
+      researchCommand("/usr/bin/mount", ["--bind", identity.path, pin]);
+      assertResearchDirectory(identity); assertResearchDirectory(identity, pin);
+      researchCommand("/usr/bin/mount", ["--make-private", pin]);
+    }
+    stage = ResearchLaunchStage.InputPreparation;
+    researchPromptBytes(jobDirectory, request.promptPath, join(directory, "pins", "job"));
+    for (const name of ["state", "home", "tmp"]) {
+      const path = join(directory, "pins", "job", name);
+      if (!existsSync(path)) mkdirSync(path, { mode: 0o700 });
+      researchDirectoryIdentity(path);
+    }
+    stage = ResearchLaunchStage.LaunchPlan;
+    const launch = trustedResearchRuntimeLaunch(spec, specSha256);
+    stage = ResearchLaunchStage.HostSubmission;
+    assertResearchSharedHost();
+    researchCommand(launch.command, launch.args);
+    // A successful submission is a request, not evidence of provider/turn success.
+    stage = ResearchLaunchStage.StartReadback;
+    const current = researchCurrentStart(request.jobId);
+    if (!current.bytes.equals(specBytes)) researchInvalid();
+    return { jobId: request.jobId, unit, startId, specSha256 };
+  } catch (error) { throw annotateResearchLaunchStage(error, stage); }
 }
