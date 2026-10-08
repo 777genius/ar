@@ -4,6 +4,10 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import type { BigIntStats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { spawn } from 'node:child_process';
 import { acquireStoragePin, awaitStorageActivation } from './payload-guard.mjs';
 import { parseNativeUnitProperties } from './launch.mjs';
@@ -196,6 +200,93 @@ test('an alias to the same inode backing is unsupported and releases every pre-s
   await assert.rejects(captureManagedStoragePin(jobId, value.capability, value.options), /alias or nested mount/);
   assert.equal(value.closed.length, value.handles.size);
   assert.equal(value.handles.size > 1, true);
+});
+
+/** Real disposable directory handles; only Host mount/root-device facts are
+ * projected. This is a parser/lifetime contract, not native mount authority. */
+async function physicalPinFixture() {
+  const root = await mkdtemp(join(tmpdir(), 'TEST-pin-nsfs-'));
+  const physical = (path: string) => path.startsWith('/proc/self/fd/') ? path : join(root, path);
+  const handles: FileHandle[] = [];
+  await mkdir(physical('/etc'), { mode: 0o700 }); await mkdir(physical('/volume'), { mode: 0o700 });
+  await writeFile(physical('/etc/policy'), '/volume\n', { mode: 0o600 });
+  const storage = await lstat(physical('/volume'), { bigint: true });
+  const device = `${((storage.dev >> 8n) & 0xfffn) | ((storage.dev >> 32n) & ~0xfffn)}:${(storage.dev & 0xffn) | ((storage.dev >> 12n) & ~0xffn)}`;
+  const base = `1 0 0:1 / / rw - ext4 root rw\n2 1 ${device} / /volume rw - ext4 /dev/TEST-scratch rw\n`;
+  let mounts = base;
+  const openDirectory = async (path: string) => {
+    const handle = await open(physical(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    handles.push(handle); return handle;
+  };
+  const probe = {
+    lstat: (path: string) => lstat(physical(path), { bigint: true }),
+    stat: async (path: string) => Object.assign(await lstat(physical(path), { bigint: true }),
+      path === '/' ? { dev: storage.dev ^ 1n } : {}),
+    realpath: async (path: string) => await realpath(physical(path)) === physical(path) ? path : 'TEST-noncanonical',
+    statfs: async () => ({ bavail: 5368709120n, bsize: 1n, ffree: 50000n }),
+    readStorageRoot: (path: string) => readFile(physical(path), 'utf8'), readMountInfo: async () => mounts,
+  };
+  return { handles, probe, base, device, setMounts: (text: string) => { mounts = text; },
+    options: { configPath: '/etc/policy', probe, expectedUid: storage.uid, openDirectory,
+      create: (path: string) => mkdir(physical(path), { mode: 0o700 }), fdMountId: async () => '2' },
+    capability: { storageRoot: '/volume', filesystemRoot: '/', blockSource: '/dev/TEST-scratch',
+      filesystemUuid: witness.filesystemUuid, capabilitySha256: witness.capabilitySha256 },
+    acquired: { openDirectory, readMountId: async () => '9' },
+    dispose: async () => { try { await Promise.all(handles.map(handle => handle.close())); }
+      finally { await rm(root, { recursive: true, force: true }); } },
+  };
+}
+const namespaceRow = (root = 'net:[4026531840]', target = '/run/TEST-namespace', device = '0:4', type = 'nsfs', source = 'nsfs', id = '20') =>
+  `${id} 1 ${device} ${root} ${target} rw - ${type} ${source} rw\n`;
+
+// Old-red: either capture or the final parser rejects the legitimate opaque
+// ROOT before its unrelated target can be admitted. No row may be skipped.
+test('unrelated finite namespace roots preserve actual retained FD capture and final verification', async () => {
+  const value = await physicalPinFixture();
+  try {
+    const rows = ['cgroup', 'ipc', 'mnt', 'net', 'pid', 'time', 'user', 'uts'].map((name, index) =>
+      namespaceRow(`${name}:[${4026531840 + index}]`, `/run/TEST-namespace-${name}`, '0:4', 'nsfs', 'nsfs', String(20 + index))).join('') +
+      namespaceRow('net:[4294967295]', '/run/TEST-upper-bound', '0:1048575', 'nsfs', 'nsfs', '28');
+    value.setMounts(value.base + rows);
+    const pin = await captureManagedStoragePin(jobId, value.capability, value.options);
+    try {
+      const retained = await pin.handle.stat({ bigint: true });
+      assert.equal(retained.dev.toString(), pin.witness.device); assert.equal(retained.ino.toString(), pin.witness.inode);
+      value.setMounts(value.base + `9 2 ${value.device} ${pin.witness.filesystemRoot} ${pin.layout.jobRoot} rw - ext4 /dev/TEST-scratch rw\n` + rows);
+      const result = await requireAcquiredStoragePin(pin.witness, value.probe, value.acquired);
+      assert.equal(result.mountId, '9'); assert.equal(result.inode, retained.ino.toString());
+    } finally { await pin.close(); }
+    for (const handle of value.handles) await assert.rejects(handle.stat());
+  } finally { await value.dispose(); }
+});
+
+test('nested namespace rows and malformed opaque roots remain denied without losing directory handles', async () => {
+  const value = await physicalPinFixture();
+  const invalid = [namespaceRow('net:[4026531840]', witness.jobRoot + '/workspace/TEST-namespace'),
+    ...['unknown:[1]', 'pid_for_children:[1]', 'net:[0]', 'net:[01]', 'net:[4294967296]', 'net:[1]/child', 'relative/root'].map(root => namespaceRow(root)),
+    ...['0:0', '0:04', '0:1048576', '8:1'].map(device => namespaceRow('net:[1]', '/run/TEST-namespace', device)),
+    namespaceRow('net:[1]', '/run/TEST-namespace', '0:4', 'ext4'),
+    namespaceRow('net:[1]', '/run/TEST-namespace', '0:4', 'nsfs', '/dev/TEST-foreign'), namespaceRow('net:[1]', 'relative/target')];
+  try {
+    for (const row of invalid) {
+      value.setMounts(value.base + row);
+      await assert.rejects(captureManagedStoragePin(jobId, value.capability, value.options), /storage admission/);
+      for (const handle of value.handles) await assert.rejects(handle.stat());
+    }
+    value.setMounts(value.base);
+    const pin = await captureManagedStoragePin(jobId, value.capability, value.options);
+    try {
+      const acquired = `9 2 ${value.device} ${pin.witness.filesystemRoot} ${pin.layout.jobRoot} rw - ext4 /dev/TEST-scratch rw\n`;
+      for (const row of invalid) {
+        value.setMounts(value.base + acquired + row);
+        await assert.rejects(requireAcquiredStoragePin(pin.witness, value.probe, value.acquired), /storage admission/);
+        assert.equal((await pin.handle.stat({ bigint: true })).ino.toString(), pin.witness.inode);
+      }
+      value.setMounts(value.base + namespaceRow('net:[1]', pin.layout.jobRoot, '0:4', 'nsfs', 'nsfs', '9'));
+      await assert.rejects(requireAcquiredStoragePin(pin.witness, value.probe, value.acquired), /provenance mismatch/);
+    } finally { await pin.close(); }
+    for (const handle of value.handles) await assert.rejects(handle.stat());
+  } finally { await value.dispose(); }
 });
 
 test('caller intent participates in immutable request identity and never supplies a qualification', () => {
