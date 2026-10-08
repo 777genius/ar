@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync } from "node:fs";
 import { sameDependencyProtectedReference, ScopedTerminationExtent, parseScopedProviderOnlyReceipt, type ScopedProviderOnlyReceipt } from "@vioxen/subscription-runtime/core";
-import { readHostedOrdinaryProviderFacts, HostedOrdinaryProviderReadPhase, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { decodeHostedActivationBytes, readHostedOrdinaryProviderFacts, HostedOrdinaryProviderReadPhase, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { CurrentHostedDependencyOriginKind, readOriginalHostedManagedProviderWaitFacts, readCurrentHostedManagedDependencyProviderParent,
   type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { readOriginalHostedOrdinaryProviderBirthFacts } from "./hosted-ordinary-dependency-provider-facts";
 import { collectHostedManagedProviderDrain } from "./hosted-managed-provider-drain-observation";
-import { matchesManagedProviderProxyWait } from "./hosted-managed-provider-terminal-facts";
+import { HostedManagedProviderResult, HostedManagedProviderWaitKind, matchesManagedProviderProxyWait } from "./hosted-managed-provider-terminal-facts";
 import { readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-physical-facts";
 import { pinReferenceFile } from "./hosted-dependency-legacy-reference-records";
 import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
@@ -29,20 +29,43 @@ function collected(context:CurrentHostedDependencyOrigin,fence:HostedActivationF
   if (!encode(selected).equals(encode(after))) invalid();
   return {selected,birth,ordinary,terminal};
 }
+function completionBytes(facts:ReturnType<typeof collected>,unit:string,terminal:unknown):Buffer {
+  const {selected,birth}=facts;
+  return encode({schemaVersion:2,parentAttempt:selected.parent.attempt,unit,providerStartId:birth.providerStartId,
+    providerReference:selected.reference,ordinaryProviderReference:birth.ordinaryProviderReference,parentReference:birth.originReference,
+    relation:birth.ordinaryRelation,invocationId:selected.invocationId,proxyBirth:selected.birth,waitStatus:selected.waitStatus,
+    home:selected.home,use:selected.use,terminal});
+}
+function assertCompletionBytes(bytes:Buffer,facts:ReturnType<typeof collected>,unit:string):void {
+  const stored=decodeHostedActivationBytes(bytes);
+  if (!stored || typeof stored!=="object" || Array.isArray(stored)) invalid();
+  const terminal=(stored as Record<string,unknown>).terminal;
+  if (!bytes.equals(completionBytes(facts,unit,terminal))) invalid();
+  if (facts.terminal) {
+    if (!encode(terminal).equals(encode(facts.terminal))) invalid();
+  } else {
+    // NotFound is current collector proof, not a replacement for saved facts.
+    // Its successful private wait may rejoin only this invocation's success.
+    if (facts.selected.waitStatus!==0 || terminal!==null && !encode(terminal).equals(encode({
+      unit,invocationId:facts.selected.invocationId,kind:HostedManagedProviderWaitKind.Exited,
+      status:0,result:HostedManagedProviderResult.Success}))) invalid();
+  }
+}
 /** Writes truthful C native completion only after the same privately captured
  * child/current origin/future fence/queue/cgroup/FD proof. A nonzero outcome may
  * discharge this child; unknown proof never becomes ordinary zero or a grant. */
 export function publishOriginalHostedOrdinaryProviderCompletion(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,unit:string):ScopedProviderOnlyReceipt {
   const facts=collected(context,fence,unit,HostedOrdinaryProviderReadPhase.Reserved),{selected,birth,ordinary,terminal}=facts;
-  const bytes=encode({schemaVersion:2,parentAttempt:selected.parent.attempt,unit,providerStartId:birth.providerStartId,
-    providerReference:selected.reference,ordinaryProviderReference:birth.ordinaryProviderReference,parentReference:birth.originReference,
-    relation:birth.ordinaryRelation,invocationId:selected.invocationId,proxyBirth:selected.birth,waitStatus:selected.waitStatus,
-    home:selected.home,use:selected.use,terminal:terminal ?? null});
+  let bytes=completionBytes(facts,unit,terminal ?? null);
   const directory=`${root}/dependency-ordinary-provider-completions`;
   try {mkdirSync(directory,{mode:0o700});} catch(error) {if ((error as NodeJS.ErrnoException).code!=="EEXIST") throw error;}
   const pin=readHostedDependencyRootDirectoryPin(directory),rootPin=readHostedDependencyRootDirectoryPin(root),stat=lstatSync(directory);
   if (stat.uid!==0 || stat.gid!==0 || (stat.mode & 0o7777)!==0o700 || pin.dev!==rootPin.dev || pin.mountId!==rootPin.mountId) invalid();
-  const path=`${directory}/${birth.providerStartId}.json`;createReadonlyPrivateRecord(path,bytes);
+  const path=`${directory}/${birth.providerStartId}.json`;
+  // A retry after manager GC must preserve the originally published evidence.
+  try {const previous=pinReferenceFile(path,16384);assertCompletionBytes(previous.bytes,facts,unit);bytes=previous.bytes;}
+  catch(error) {if ((error as NodeJS.ErrnoException).code!=="ENOENT") throw error;}
+  createReadonlyPrivateRecord(path,bytes);
   const completion=pinReferenceFile(path,16384);if (!completion.bytes.equals(bytes)) invalid();
   if (selected.waitStatus===0) createReadonlyPrivateRecord(`${root}/ordinary-completed/${birth.providerStartId}.json`,encode({schemaVersion:1,startId:birth.providerStartId,startSha256:birth.ordinaryProviderReference.sha256,waitStatus:0}));
   const parent=selected.parent.facts;if (parent.kind!==CurrentHostedDependencyOriginKind.Ordinary) invalid();
@@ -59,7 +82,7 @@ export function publishOriginalHostedOrdinaryProviderCompletion(context:CurrentH
  * its own Terminal readback. No saved receipt alone authorizes a transition. */
 export function assertOriginalHostedOrdinaryProviderCompletion(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,unit:string,
   receipt:ScopedProviderOnlyReceipt,phase:HostedOrdinaryProviderReadPhase):void {
-  const facts=collected(context,fence,unit,phase),{selected,birth,ordinary,terminal}=facts;
+  const facts=collected(context,fence,unit,phase),{selected,birth,ordinary}=facts;
   const parent=selected.parent.facts; if (parent.kind!==CurrentHostedDependencyOriginKind.Ordinary) invalid();
   const generation=parent.ordinary.activation.generation; if (typeof generation!=="number" || !Number.isSafeInteger(generation) || generation<1) invalid();
   const exact=(row:Readonly<Record<string,unknown>>,member:ScopedProviderOnlyReceipt["parent"])=>
@@ -71,10 +94,9 @@ export function assertOriginalHostedOrdinaryProviderCompletion(context:CurrentHo
       (phase===HostedOrdinaryProviderReadPhase.Reserved ? receipt.publicationGeneration!==generation+1 :
         receipt.publicationGeneration>generation)) invalid();
   const completion=pinReferenceFile(`${root}/dependency-ordinary-provider-completions/${birth.providerStartId}.json`,16384);
-  if (!sameDependencyProtectedReference(completion.reference,receipt.completion) || !completion.bytes.equals(encode({schemaVersion:2,parentAttempt:selected.parent.attempt,
-      unit,providerStartId:birth.providerStartId,providerReference:selected.reference,ordinaryProviderReference:birth.ordinaryProviderReference,parentReference:birth.originReference,
-      relation:birth.ordinaryRelation,invocationId:selected.invocationId,proxyBirth:selected.birth,waitStatus:selected.waitStatus,home:selected.home,use:selected.use,terminal:terminal ?? null})) ||
-      !encode(selected.home).equals(encode(receipt.home)) || !encode(selected.use).equals(encode(receipt.use)) ||
+  if (!sameDependencyProtectedReference(completion.reference,receipt.completion)) invalid();
+  assertCompletionBytes(completion.bytes,facts,unit);
+  if (!encode(selected.home).equals(encode(receipt.home)) || !encode(selected.use).equals(encode(receipt.use)) ||
       !sameDependencyProtectedReference(birth.originReference,receipt.parent.start) || !sameDependencyProtectedReference(birth.ordinaryProviderReference,receipt.provider.start) ||
       birth.providerStartId!==receipt.provider.startId || birth.parentStartId!==receipt.parent.startId || birth.generation!==receipt.provider.generation ||
       selected.parent.attempt.attemptId!==receipt.attempt.attemptId || selected.parent.attempt.epoch!==receipt.attempt.epoch) invalid();

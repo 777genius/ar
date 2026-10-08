@@ -1,3 +1,4 @@
+import { freezeFacts } from "./hosted-dependency-immutable-facts";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readSync, statSync, type BigIntStats } from "node:fs";
@@ -151,6 +152,9 @@ export function collectActualHostedManagedReadonlyOrigin(fence: HostedActivation
   const digest = hash(JSON.stringify([installationPin.reference,activationPin.reference,
     {hostId:epoch.hostId,bootId:epoch.bootId,supervisorId:epoch.supervisorId,generation:epoch.generation,identity:epoch.identity,outerRuntime:epoch.outerRuntime},enrollmentPin.reference,inventoryPin.reference,
     startPin.reference,association.reference,self.birth,parent.birth,supervisorProcess.birth,unit.invocation]));
+  // Raw pinned bytes stay in this collector; authoritative facts contain only
+  // detached immutable metadata, never a mutable Buffer/TypedArray view.
+  const associationFacts = freezeFacts(structuredClone({reference:association.reference,evidence:association.evidence}));
   return {digest,facts:Object.freeze({kind:CurrentHostedDependencyOriginKind.ManagedReadonlyLocal,installation,activation,epoch,inventory,
-    start,originReference:startPin.reference,association,binding,owner,selfBirth:self.birth,parentBirth:parent.birth,unitInvocation:unit.invocation})};
+    start,originReference:startPin.reference,association:associationFacts,binding,owner,selfBirth:self.birth,parentBirth:parent.birth,unitInvocation:unit.invocation})};
 }

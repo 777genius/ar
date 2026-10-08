@@ -1,9 +1,11 @@
 import { hostedDependencyLocalSelectionVerificationArgv, type HostedDependencyLocalStage } from "../../../worker-codex/hosted-dependency-installer-local-stage";
 import { openCapturedDependencySourceLinks, closeDependencySourceLinkSession, type DependencySourceLinkSession } from "../dependency-source-binding";
-import { observeDependencyTreeWithLocalRegistrySelection, assertDependencyLocalRegistrySelectionAbsent,
+import { observeDependencyTree, observeDependencyTreeWithLocalRegistrySelection, assertDependencyLocalRegistrySelectionAbsent,
+  assertDependencySourceExposureCurrent,
   captureDependencyPhysicalTreeExposure, captureDependencyLocalRootOnlySourceExposure, closeDependencySourceExposure,
   type DependencySourceExposure } from "../observe-dependency-tree";
-import { DependencyTreeObservationStatus as Observed } from "../../../worker-core/dependency-environment/domain/dependency-tree-manifest";
+import { DependencyTreeObservationStatus as Observed, DependencyTreeObservationFailure as Failure,
+  DependencyManifestEntryKind as EntryKind } from "../../../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -398,6 +400,51 @@ describe.skipIf(process.platform !== "linux")("actual original selection/source 
     return { root, capture, tree: { dev: String(tree.dev), ino: String(tree.ino) } };
   }
   const observationLimits = { maxEntries: 2048, maxTotalBytes: 1048576, maxManifestBytes: 1048576, maxDurationMs: 30000 };
+
+  // Red if V2 physical limits reject an ordinary V1 tree or alter its manifest.
+  it("preserves ordinary V1 bytes beyond 512 directories without granting physical exposure", async () => {
+    const root = await fixture(), capture = await qualified(root);
+    expect(capture.closure.version).toBe(1);
+    await mkdir(join(root, "node_modules")); await mkdir(join(root, "node_modules/b"));
+    await symlink("../packages/a", join(root, "node_modules/a"));
+    await writeFile(join(root, "node_modules/b/index.js"), "module.exports = 'TEST installed bytes';\n");
+    for (let i = 0; i < 511; i++) await mkdir(join(root, "node_modules", `directory-${i}`));
+    const stat = await lstat(join(root, "node_modules"), { bigint: true }), tree = { dev: String(stat.dev), ino: String(stat.ino) };
+    const session = openCapturedDependencySourceLinks(capture);
+    let exposure: DependencySourceExposure | undefined;
+    try {
+      const input = { workspacePath: root, treeName: "node_modules" as const, expectedWorkspace: capture.workspace,
+        expectedTree: tree, sourceLinkSession: session, limits: observationLimits };
+      const ordinary = await observeDependencyTree(input);
+      expect(ordinary.status).toBe(Observed.Complete); if (ordinary.status !== Observed.Complete) throw new Error("TEST ordinary V1 refused");
+      expect(ordinary.measurement.allocationByKind[EntryKind.Directory].inodeCount).toBe("513");
+      const observed = await observeDependencyTreeWithLocalRegistrySelection(input);
+      expect(observed.status).toBe(Observed.Complete); if (observed.status !== Observed.Complete) throw new Error("TEST selected V1 refused");
+      exposure = observed.exposure;
+      expect(observed.canonicalBytes).toEqual(ordinary.canonicalBytes); expect(observed.digest).toBe(ordinary.digest);
+      expect(() => assertDependencyLocalRegistrySelectionAbsent(exposure!, session, capture.workspace, tree)).not.toThrow();
+      expect(() => assertDependencySourceExposureCurrent(exposure!)).toThrow();
+      expect(() => assertDependencyLocalRegistrySelectionAbsent({} as DependencySourceExposure, session, capture.workspace, tree)).toThrow();
+      expect(() => assertDependencyLocalRegistrySelectionAbsent(exposure!, {} as DependencySourceLinkSession, capture.workspace, tree)).toThrow();
+      expect(() => assertDependencyLocalRegistrySelectionAbsent(exposure!, session, capture.workspace, { ...tree, ino: "1" })).toThrow();
+      await writeFile(join(root, "packages/a/package.json"), encode({ ...workspacePackage, version: "2.0.0" }));
+      expect(() => assertDependencyLocalRegistrySelectionAbsent(exposure!, session, capture.workspace, tree)).toThrow();
+    } finally { if (exposure) closeDependencySourceExposure(exposure); closeDependencySourceLinkSession(session); }
+    expect(() => assertDependencyLocalRegistrySelectionAbsent(exposure!, session, capture.workspace, tree)).toThrow();
+  });
+
+  // Red if selecting V1 ordinary traversal also removes the V2 physical bound.
+  it("withholds V2 exposure and manifest when its real tree exceeds 512 directories", async () => {
+    const f = await selectedFixture(), session = openCapturedDependencySourceLinks(f.capture);
+    expect(f.capture.closure.version).toBe(2);
+    for (let i = 0; i < 510; i++) await mkdir(join(f.root, "node_modules", `directory-${i}`));
+    try {
+      const result = await observeDependencyTreeWithLocalRegistrySelection({ workspacePath: f.root, expectedWorkspace: f.capture.workspace,
+        treeName: "node_modules", expectedTree: f.tree, sourceLinkSession: session, limits: observationLimits });
+      expect(result).toEqual({ status: Observed.Incomplete, reason: Failure.Bounds });
+      expect(await readFile(join(f.root, "source-sentinel"), "utf8")).toBe("TEST authored source must survive\n");
+    } finally { closeDependencySourceLinkSession(session); }
+  });
 
   // Red if a structural envelope/DTO or closed/foreign session can assert real absence.
   it("keeps same-walk canonical bytes with genuine private baseline and rejects forgery, close and later membership", async () => {
