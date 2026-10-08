@@ -272,8 +272,8 @@ function createCodexAgentDriver(input: {
   const sourceEnv = hostedGlobalScanGuard ? {
     ...requestedSourceEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job",
   } : requestedSourceEnv;
-  const resolverReadPaths = hostedCodexResolverReadPaths(sourceEnv);
   const projectReadBoundary = hostedGlobalScanGuard || options.enforceProjectReadBoundary === true;
+  const resolverReadPaths = hostedCodexResolverReadPaths(sourceEnv, projectReadBoundary);
   assertHostedDependencyToolAdmittedFactory(options.appServerProcessFactory, options.workspacePath);
   const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(options.workspacePath,
     readHostedDependencyToolFactoryEntry(options.appServerProcessFactory, options.workspacePath));
@@ -329,7 +329,7 @@ function createCodexAgentDriver(input: {
     : undefined;
   const projectConfigToml = projectReadBoundary && !hostedGlobalScanGuard
     ? projectReadBoundaryConfigToml(providerEgressPolicy, executableReadPath,
-        modelBackend, mimoApiKeyEnvVarName, sourceEnv.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE, dependencyToolConfig)
+        modelBackend, mimoApiKeyEnvVarName, sourceEnv.SUBSCRIPTION_RUNTIME_MIMO_KEY_FILE, dependencyToolConfig, resolverReadPaths)
     : undefined;
   const mimoConfigToml = workspaceToolsProfile?.configToml ??
     (hostedGlobalScanGuard
@@ -458,7 +458,7 @@ function createCodexAgentDriver(input: {
             configToml: hostedGlobalScanGuard
               ? hostedGlobalScanConfigToml(providerEgressPolicy, executableReadPath, undefined, undefined, dependencyToolConfig, resolverReadPaths)
               : projectReadBoundaryConfigToml(providerEgressPolicy, executableReadPath,
-                  modelBackend, mimoApiKeyEnvVarName, undefined, dependencyToolConfig),
+                  modelBackend, mimoApiKeyEnvVarName, undefined, dependencyToolConfig, resolverReadPaths),
           }
         : {}),
     }),
@@ -489,10 +489,11 @@ function projectReadBoundaryConfigToml(
   mimoApiKeyEnvVarName = codexMimoApiKeyEnvVarDefault,
   privateKeyFilePath?: string,
   dependencyTools?: DependencyToolGuestConfig,
+  resolverReadPaths: readonly string[] = [],
 ): string {
   return codexJsonHomeConfigToml({ providerEgressPolicy, namedPermissions: true,
     modelBackend, mimoApiKeyEnvVarName }) +
-    "\n" + hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath, privateKeyFilePath, dependencyTools);
+    "\n" + hostedCodexPermissionProfilesToml(providerEgressPolicy, executableReadPath, privateKeyFilePath, dependencyTools, resolverReadPaths);
 }
 
 function hostedGlobalScanConfigToml(
