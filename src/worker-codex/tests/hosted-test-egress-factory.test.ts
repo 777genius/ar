@@ -177,7 +177,8 @@ describe("factory admitted policy propagation", () => {
     })).toThrow("hosted_permission_profiles_engine_unsupported");
   });
 
-  it("enforces native project permissions for a brokered job without a hosted marker", async () => {
+  it.each([CodexProviderEgressProfileId.ProviderApi, CodexProviderEgressProfileId.FullInternetV1])(
+    "enforces native project permissions without a hosted marker for %s", async profileId => {
     const root = await mkdtemp(join(tmpdir(), "scoped-permissions-"));
     const fake = new FakeAppServerFactory({ goalStatusesAfterTurns: ["complete"] });
     const launches: Parameters<typeof fake.create>[0][] = [];
@@ -186,6 +187,7 @@ describe("factory admitted policy propagation", () => {
       codexBinaryPath: "/synthetic/codex", encryptionKey: new Uint8Array(32),
       executionEngine: "app-server-goal", warmupPrompt: false,
       sourceEnv: { PATH: "/synthetic/bin" }, enforceProjectReadBoundary: true,
+      providerEgressPolicy: codexProviderEgressPolicy(profileId),
       appServerProcessFactory: input => { launches.push(input); return fake.create(input); },
     });
     const driver = parts.agentDriver as CodexJsonAgentDriver;

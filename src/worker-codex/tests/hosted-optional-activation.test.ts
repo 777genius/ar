@@ -12,7 +12,7 @@ import { admitHostedReadonlyInputs } from "../hosted-readonly-admission";
 import { isHostedGoalLaunch, routeHostedGoalLaunch } from "../hosted-readonly-goal-launch";
 import { codexGoalStatusInputFromLaunch } from "../application/codex-goal-status-input";
 import { buildCodexGoalExecutorOptions } from "../codex-goal-runner";
-import { AccessBoundary } from "@vioxen/subscription-runtime/worker-core";
+import { AccessBoundary, NetworkAccessMode } from "@vioxen/subscription-runtime/worker-core";
 
 // Real disposable records, directory handles and no-follow reads. Only fixed
 // host paths/principal and one cgroup fact are projected; effects are captured.
@@ -187,6 +187,19 @@ describe("optional host activation with real records and projected Host principa
     const options = buildCodexGoalExecutorOptions({ config: launch.config, stateRootDir: join(f.root, "state"), encryptionKey: new Uint8Array(32) });
     expect(options.accounts[0]!.worker.sourceEnv).toMatchObject({ SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId });
     expect(f.spawn).not.toHaveBeenCalled();
+  });
+  it("honours unrestricted native project egress only after baseline authority checks", async () => {
+    const native = { ...identity, sourceEnv: {}, executionEngine: "app-server-goal" as const,
+      accessBoundary: AccessBoundary.IsolatedWorkspaceWrite, networkAccess: NetworkAccessMode.Unrestricted,
+      projectAccessScope: { projectId: "TEST-native", isolatedWorkspaceRoot: identity.workspacePath,
+        workspaceRoots: [identity.workspacePath] } };
+    expect((await admitHostedTestEgress(native)).profileId).toBe("codex-full-internet-v1");
+    expect((await admitHostedTestEgress({ ...native, networkAccess: NetworkAccessMode.Restricted })).profileId)
+      .toBe("codex-provider-api");
+    const { projectAccessScope: omitted, ...unscoped } = native;
+    expect((await admitHostedTestEgress(unscoped)).profileId).toBe("codex-provider-api");
+    put(policy + "/host-installation.json", "retained TEST authority");
+    await expect(admitHostedTestEgress(native)).rejects.toThrow("managed_grant_required");
   });
   it("preserves an unmarked native job's accepted project boundary and source environment", () => {
     const sourceEnv = { PATH: "/TEST/bin" };
