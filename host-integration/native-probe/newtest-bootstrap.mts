@@ -115,9 +115,23 @@ function copyTree(from:string,to:string):void{
   protectedPath(from,true);mkdirSync(to,{recursive:true,mode:0o755});protectedPath(to,true);
   for(const row of tree(from)){const target=join(to,row.path);mkdirSync(resolve(target,".."),{recursive:true,mode:0o755});durable(target,measured(join(from,row.path)),row.mode);}
 }
+// Supplementary v1 hierarchies carry no bootstrap authority. Require one
+// well-formed unified row and preserve its exact fixed service path.
+export function assertBootstrapCgroup(text:string,c:NewtestConfig):void{
+  let unified:string|undefined;
+  for(const line of text.replace(/\n$/, "").split("\n")){
+    const row=/^(0|[1-9][0-9]*):([^:]*):(\/[^\0\r\n]*)$/.exec(line);
+    if(!row)throw new Error("fixed NEWTEST service required");
+    const [,hierarchy,controllers,group]=row;
+    if(hierarchy==="0"){
+      if(controllers!==""||unified!==undefined)throw new Error("fixed NEWTEST service required");
+      unified=group!;
+    }else if(!/^(?:[a-zA-Z0-9_-]+|name=[a-zA-Z0-9_.-]+)(?:,(?:[a-zA-Z0-9_-]+|name=[a-zA-Z0-9_.-]+))*$/.test(controllers!))throw new Error("fixed NEWTEST service required");
+  }
+  if(unified!==`/system.slice/${bootstrapUnit(c)}`)throw new Error("fixed NEWTEST service required");
+}
 async function serviceIdentity(c:NewtestConfig,end:bigint):Promise<string>{
-  const group=readFileSync("/proc/self/cgroup","utf8").trim();
-  if(group!==`0::/system.slice/${bootstrapUnit(c)}`)throw new Error("fixed NEWTEST service required");
+  assertBootstrapCgroup(readFileSync("/proc/self/cgroup","utf8"),c);
   const r=await must("/usr/bin/systemctl",["show",bootstrapUnit(c),"--property=MainPID,InvocationID,ActiveState,SubState,Restart,KillMode,RuntimeMaxUSec"],observationEnd(end),end);
   const fields=Object.fromEntries(r.stdout.toString().trim().split("\n").map(line=>{const i=line.indexOf("=");return[line.slice(0,i),line.slice(i+1)];}));
   if(fields.MainPID!==String(process.pid)||fields.ActiveState!=="active"||fields.SubState!=="running"||fields.Restart!=="no"||fields.KillMode!=="control-group"||fields.RuntimeMaxUSec!=="20min"||!fields.InvocationID)throw new Error("wrong NEWTEST supervisor profile");

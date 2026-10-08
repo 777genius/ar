@@ -6,12 +6,47 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { retainedResourceDigest } from "../../src/core/scoped-retained-resource-contract.js";
 import { elfInputs, tree, verifyTree } from "./assemble-newtest.mjs";
-import { boundedCommand, NewtestCommandFailure, claimOnce, decodeConfig, type NewtestConfig } from "./newtest-bootstrap.mjs";
+import { boundedCommand, NewtestCommandFailure, claimOnce, decodeConfig, assertBootstrapCgroup, type NewtestConfig } from "./newtest-bootstrap.mjs";
 import { finitePermit, managerFacts, unwrapManagedJob } from "./newtest-guest.mjs";
 const fixture=(directory:string):NewtestConfig=>decodeConfig({version:1,kind:"NativeOriginalNewtest",runId:"a".repeat(16),machineId:"b".repeat(32),sourceCommit:"c".repeat(40),storageRoot:directory,artifactDirectory:directory,artifactDigest:"d".repeat(64),baseArchive:directory+"/base",node:process.execPath,nodeSha256:"e".repeat(64),preparationEndNs:"900000000000",cleanupEndNs:"1200000000000"});
 if(process.argv[2]==="claim-child"){
   try{const directory=process.argv[3]!;claimOnce(directory,fixture(directory),1n,"f".repeat(32));process.exitCode=0;}catch{process.exitCode=77;}
 }else{
+  // Red: valid host supplementary membership refuses, or an ambiguous/foreign
+  // unified row grants the fixed bootstrap DATA admission. This is not Origin.
+  test("bootstrap membership requires one exact v2 service alongside host v1 rows",()=>{
+    const config={...fixture("/fixture"),runId:"284e13e813e17671"};
+    const group="/system.slice/subscription-runtime-native-newtest-284e13e813e17671.service";
+    const unified=`0::${group}\n`;
+    assert.doesNotThrow(()=>assertBootstrapCgroup(`1:name=systemd:/\n${unified}`,config));
+    assert.doesNotThrow(()=>assertBootstrapCgroup(`${unified}1:name=systemd:/\n2:cpu,cpuacct:/\n`,config));
+    assert.doesNotThrow(()=>assertBootstrapCgroup(unified,config));
+    assert.doesNotThrow(()=>assertBootstrapCgroup(unified.slice(0,-1),config));
+    const invalid=[
+      ["actual host PID1", "1:name=systemd:/\n0::/init.scope\n"],
+      ["actual host journald", "1:name=systemd:/\n0::/system.slice/systemd-journald.service\n"],
+      ["approved-looking v1 only", `1:name=systemd:${group}\n`],
+      ["approved-looking v1 with foreign v2", `1:name=systemd:${group}\n0::/foreign.service\n`],
+      ["descendant", `0::${group}/payload\n`],
+      ["similar unit", `0::${group}.other\n`],
+      ["unnormalized path", `0::/system.slice/..${group}\n`],
+      ["duplicate identical", unified+unified],
+      ["duplicate conflicting", unified+"0::/\n"],
+      ["duplicate reversed", "0::/\n"+unified],
+      ["missing path", "0::\n"],
+      ["relative path", "0::system.slice/service\n"],
+      ["v2 controllers", `0:name=systemd:${group}\n`],
+      ["leading whitespace", " "+unified],
+      ["malformed supplementary", "1:name=systemd\n"+unified],
+      ["empty v1 controllers", "1::/\n"+unified],
+      ["malformed controller list", "1:cpu,,cpuacct:/\n"+unified],
+      ["blank row", unified+"\n"],
+      ["carriage return", `0::${group}\r\n`],
+      ["NUL path", `0::${group}\0\n`],
+      ["empty text", ""],
+    ] as const;
+    for(const [fault,text] of invalid)assert.throws(()=>assertBootstrapCgroup(text,config),/fixed NEWTEST service required/,fault);
+  });
   // Red: the actual candidate omits its required CJS codec, cannot require it,
   // or packages an obsolete small/lenient decoder instead of the checked body.
   test("actual candidate standalone CJS codec decodes finite inventory DATA",()=>{
