@@ -153,6 +153,23 @@ describe.skipIf(process.platform !== "linux")("actual retained volume observatio
     const mounts = await readFile("/proc/self/mountinfo", "utf8"); expect(mounts.length).toBeGreaterThan(0);
     expect(mounts).not.toMatch(/ (?:shared|master):[0-9]+(?: |$)/m);
   }
+  // A valid unrelated namespace handle must not make an ext4 target unmeasured.
+  // Dropping its row from the full snapshot would miss the later unmount.
+  it.skipIf(process.env.SUBSCRIPTION_RUNTIME_TEST_MOUNT_NAMESPACE !== "1")("accepts unrelated kernel nsfs handles and still detects their mount drift", async () => {
+    await requireOwnedNamespace(); const f = await fixture(), handlePath = join(f.top, "TEST-net-handle");
+    let observer: RetainedDependencyVolume | undefined, mounted = false;
+    try {
+      await writeFile(handlePath, ""); await run("mount", ["--bind", "/proc/self/ns/net", handlePath]); mounted = true;
+      expect(statfsSync(handlePath, { bigint: true }).type).toBe(0x6e736673n);
+      expect(await readFile("/proc/self/mountinfo", "utf8")).toMatch(/ net:\[[1-9][0-9]*\] .* - nsfs nsfs /m);
+      observer = retain(f.handle); expect(sample(observer).status).toBe(Status.Measured);
+      await run("umount", [handlePath]); mounted = false;
+      expect(observer.observe()).toEqual({ status: Status.Unmeasured, reason: Failure.MountChanged });
+    } finally {
+      observer?.close(); if (mounted) await run("umount", [handlePath]); await f.cleanup();
+    }
+  });
+
   // Optional only under the existing explicitly owned disposable namespace CI
   // launcher. No fake mount callback or manufactured host authority is used.
   it.skipIf(process.env.SUBSCRIPTION_RUNTIME_TEST_MOUNT_NAMESPACE !== "1")("blocks real mount drift and same-device bind alias reassignment", async () => {

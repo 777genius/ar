@@ -174,6 +174,19 @@ test('mount table rejects foreign nested binds below the admitted job and ignore
   }
 });
 
+test('busy-host mount tables remain fully validated within a bounded eight MiB read', async () => {
+  const { probe } = fakeStorage();
+  const base = await probe.readMountInfo();
+  const unrelated = '3 1 0:1 / /unrelated rw - ext4 root rw\n';
+  const large = base + unrelated.repeat(Math.ceil(5 * 1024 * 1024 / unrelated.length));
+  probe.readMountInfo = async () => large;
+  await requireHostStorage('/volume/job/workspace', '/policy.json', probe);
+  probe.readMountInfo = async () => large + '4 2 0:1 /root /volume/job/workspace/cache rw - ext4 root rw\n';
+  await assert.rejects(requireHostStorage('/volume/job/workspace', '/policy.json', probe), /nested filesystem forbidden/);
+  probe.readMountInfo = async () => base + unrelated.repeat(Math.ceil(8 * 1024 * 1024 / unrelated.length));
+  await assert.rejects(loadManagedStorageRoot('/policy.json', probe), /invalid mount table/);
+});
+
 test('trusted policy export returns frozen configuration only after root admission', async () => {
   const { probe, policy, calls } = fakeStorage();
   const loaded = await loadManagedStorageRoot('/policy.json', probe);
@@ -645,7 +658,7 @@ test('Node installer accepts both layouts and rejects untrusted paths before wri
     } finally { await rm(root, { recursive: true, force: true }); }
   }
 });
-test('transport reconnects a lost master once and does not retry endpoint errors', async () => {
+test('transport preserves unknown requests and reconnects only for a subsequent request', async () => {
   let checks = 0;
   let masters = 0;
   let requests = 0;
@@ -657,11 +670,17 @@ test('transport reconnects a lost master once and does not retry endpoint errors
       if (requests === 1) throw new Error('lost socket');
       return sshOutput(1, '{"ok":false,"error":"admission denied"}');
     } });
+  await assert.rejects(transport.request(request), /ssh request outcome unknown/);
+  assert.equal(checks, 1);
+  assert.equal(masters, 0);
+  assert.equal(requests, 1);
   await assert.rejects(transport.request(request), /admission denied/);
   assert.equal(checks, 2);
   assert.equal(masters, 1);
   assert.equal(requests, 2);
   await assert.rejects(transport.request(request), /admission denied/);
+  assert.equal(checks, 2);
+  assert.equal(masters, 1);
   assert.equal(requests, 3);
   await assert.rejects(transport.request({ operation: 'stop', jobId: request.jobId, machineId: 'b'.repeat(32) }), /machine identity/);
   assert.equal(requests, 3);
