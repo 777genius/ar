@@ -380,3 +380,39 @@ it.each([false, true].flatMap(global => [false, true].map(alias => ({ global, al
     expect(secondResult.nativeWeb?.turns[0]?.records.map(item => item.itemId)).toEqual(global ? [] : ['second-after']);
   } finally { await f.close(); }
 });
+
+// Exact ACK failures must fence before binding, even without early identity/thread ownership.
+// Every case also proves an unrelated active turn retains later evidence.
+const preAckFenceCases = ['turn/aborted', 'error'].flatMap(method =>
+  [false, true].flatMap(noStarted => [false, true].flatMap(withThread =>
+    [false, true].map(populated => ({ method, noStarted, withThread, populated })))));
+it.each(preAckFenceCases)('pre-ACK exact terminal fence $method noStarted=$noStarted withThread=$withThread populated=$populated', async ({ method, noStarted, withThread, populated }) => {
+  const f = await fixture((thread, ack, output) => ack.endsWith('turn-1') ? [
+    { method: 'turn/started', params: { threadId: thread, turn: { id: output } } },
+    completed(thread, ack, web('unrelated-before')),
+  ] : [
+    ...(populated ? [completed(thread, ack, web('before'))] : []),
+    completed(thread, output, web('alias-before')),
+    { method, params: { turnId: ack, ...(withThread ? { threadId: thread } : {}), reason: 'TEST terminal', error: { message: 'TEST terminal' } } },
+    completed(thread, ack, web('after')), completed(thread, output, web('alias-after')),
+    completed('thread-1', 'response-turn-1', web('unrelated-after')),
+    { method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: noStarted ? 'response-turn-1' : 'turn-1', status: 'completed' } } },
+  ], { early: true, alias: true, noStarted, rejectTurn: 1 });
+  try {
+    const firstThread = await f.client.startThread(f.input);
+    const secondThread = await f.client.startThread(f.input);
+    let outputObserved!: () => void;
+    const active = new Promise<void>(resolve => { outputObserved = resolve; });
+    const first = f.client.startTurn({ ...f.input, threadId: firstThread, onTextDelta: outputObserved });
+    await active;
+    const result = await f.client.startTurn({ ...f.input, threadId: secondThread });
+    const unrelated = await first;
+    expect(result.error?.message).toMatch(/codex_app_server_(turn_aborted|error)/);
+    expect(result.acknowledgedTurnId).toBe('response-turn-2');
+    expect(result.nativeWeb?.turns[0]?.acknowledgedTurnId).toBe('response-turn-2');
+    expect(result.nativeWeb?.turns[0]?.records.map(item => item.itemId)).toEqual(populated ? ['before'] : []);
+    if (populated) expect(result.nativeWeb?.turns[0]?.records[0]?.resultSummary).toEqual(opaqueSummary);
+    expect(unrelated.error).toBeNull();
+    expect(unrelated.nativeWeb?.turns[0]?.records.map(item => item.itemId)).toEqual(['unrelated-before', 'unrelated-after']);
+  } finally { await f.close(); }
+});

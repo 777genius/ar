@@ -751,8 +751,13 @@ export class CodexAppServerClient {
     }
     if (record.method === "item/completed") {
       const threadId = stringField(params, "threadId");
-      if (threadId) this.nativeWebCaptures.get(threadId)?.observe(params, false);
       const turnId = stringField(params, "turnId");
+      // A specific pre-ACK failure already owns its TurnState, even when no
+      // notification identifies the capture. Reject later input by that fact;
+      // only the response ACK may admit the retained preterminal buffer.
+      if (threadId && !(turnId && this.findTurn(turnId)?.error)) {
+        this.nativeWebCaptures.get(threadId)?.observe(params, false);
+      }
       const item = readRecord(params?.item);
       if (item?.type === "agentMessage") {
         const text = agentMessageText(item);
@@ -804,7 +809,7 @@ export class CodexAppServerClient {
       const error = new Error(
         `codex_app_server_turn_aborted:${reason}:${turnId ?? "unknown"}`,
       );
-      this.failTurnOrAll(turnId, error);
+      this.failTurnOrAll(turnId, error, stringField(params, "threadId"));
       return;
     }
     if (record.method === "error") {
@@ -819,7 +824,7 @@ export class CodexAppServerClient {
         "codex_app_server_error",
         errorPayload,
       );
-      this.failTurnOrAll(turnId, error);
+      this.failTurnOrAll(turnId, error, stringField(params, "threadId"));
     }
   }
 
@@ -942,12 +947,12 @@ export class CodexAppServerClient {
     for (const waiter of waiters) waiter(turn);
   }
 
-  private failTurnOrAll(turnId: string | null | undefined, error: Error): void {
+  private failTurnOrAll(turnId: string | null | undefined, error: Error, threadId?: string | null): void {
     const canonicalTurnId = turnId ? this.turnIdAliases.get(turnId) ?? turnId : "";
     // Seal capture input synchronously, before any failure waiter can settle.
     // Early/output identities select the owner; only response ACK binds receipts.
     for (const [thread, capture] of this.nativeWebCaptures) {
-      if (!turnId || capture.matchesAcknowledgedTurn(canonicalTurnId) ||
+      if (!turnId || thread === threadId || capture.matchesAcknowledgedTurn(canonicalTurnId) ||
         this.pendingTurnIdsByThread.get(thread) === canonicalTurnId ||
         this.earlyTurnIdsByThread.get(thread) === turnId) capture.finish();
     }

@@ -10,7 +10,7 @@ export const web = (id = 'web-1', extra: Record<string, unknown> = {}) => ({ typ
 type Frame = { method: string; params: Record<string, unknown> };
 type Script = (threadId: string, acknowledged: string, alias: string) => Frame[];
 export const completed = (threadId: string, turnId: string, item: unknown): Frame => ({ method: 'item/completed', params: { threadId, turnId, item } });
-export async function fixture(script: Script, options: { early?: boolean; alias?: boolean; late?: Script; failed?: boolean; goals?: readonly string[]; ackId?: string; rejectTurn?: number; outputText?: string; usage?: Record<string, unknown> } = {}) {
+export async function fixture(script: Script, options: { early?: boolean; alias?: boolean; noStarted?: boolean; late?: Script; failed?: boolean; goals?: readonly string[]; ackId?: string; rejectTurn?: number; outputText?: string; usage?: Record<string, unknown> } = {}) {
   const workspace = await mkdtemp(join(tmpdir(), 'native-web-receipt-TEST-'));
   let goalRead = 0;
   const factory = new FakeAppServerFactory({ emitTurnEventsWithStartResponse: true,
@@ -40,7 +40,7 @@ export async function fixture(script: Script, options: { early?: boolean; alias?
         const terminal = frames.pop(); terminal.params.threadId = threadId;
         if (options.failed) { terminal.params.turn.status = 'failed'; terminal.params.turn.error = { message: 'fixture failure' }; }
         const usage = options.usage === undefined ? [] : [{ method: 'thread/tokenUsage/updated', params: { threadId, turnId: ackId, tokenUsage: { total: options.usage, last: options.usage } } }];
-        const body = [...frames, ...usage, ...script(threadId, ackId, actual), ...(options.rejectTurn === Number(ackId.split("-").at(-1)) ? [] : [terminal]), ...(options.late?.(threadId, ackId, actual) ?? [])];
+        const body = [...frames.filter(frame => !options.noStarted || frame.method !== 'turn/started'), ...usage, ...script(threadId, ackId, actual), ...(options.rejectTurn === Number(ackId.split("-").at(-1)) ? [] : [terminal]), ...(options.late?.(threadId, ackId, actual) ?? [])];
         return emit(event, [...(options.early ? [...body, ack] : [ack, ...body])].map(frame => JSON.stringify(frame)).join('\n') + '\n');
       });
     } });
