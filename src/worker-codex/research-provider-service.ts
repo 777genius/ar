@@ -12,9 +12,17 @@ import { assertResearchProviderRoot, captureResearchProviderRootTiming, prepareR
 const denialChecks = ["assertResearchInitialRoot", "assertResearchSharedHost", "researchCustody", "researchRead",
   "researchCurrentStart", "researchServiceIdentity", "researchCommand", "researchProcessIdentity",
   "assertResearchServiceOwner", "assertResearchStartAuthority", "assertAuthorityCurrent", "captureResearchRuntime",
-  "assertTransportPermission"] as const;
-type DenialCheck = typeof denialChecks[number] | ResearchProviderRootCheck;
+  "assertResearchProviderNotCancelled", "assertTransportPermission"] as const;
+type TransportDenialCheck = "research-provider-transport:setup-deadline" | "research-provider-transport:proxy-exited" |
+  "research-provider-transport:transport-failed" | "research-provider-transport:stdin-destroyed" |
+  "research-provider-transport:stdout-destroyed" | "research-provider-transport:stdout-ended";
+type DenialCheck = typeof denialChecks[number] | ResearchProviderRootCheck | TransportDenialCheck;
 const observedChecks = new WeakMap<Error, DenialCheck>();
+function transportDenial(check: TransportDenialCheck): Error {
+  const error = new Error("hosted_research_launch_denied");
+  observedChecks.set(error, check);
+  return error;
+}
 function ownErrorData(error: unknown, key: string): unknown {
   try {
     if (!(error instanceof Error)) return undefined;
@@ -61,7 +69,7 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
     failed = true;
     refusal ??= new Error("hosted_research_launch_denied", { cause: observation });
     const check = denialCheck(error);
-    if (check) observedChecks.set(refusal, check);
+    if (check && !observedChecks.has(refusal)) observedChecks.set(refusal, check);
     rejectReady(refusal);
   };
   const check = (): boolean => {
@@ -84,16 +92,20 @@ function monitorResearchReady(proxy: ReturnType<typeof spawn>, assertPermission:
     }
   };
   const timer = setInterval(check, 25); // Fence/timeout polling, never proof of readiness.
-  stream.on("data", onData); stream.once("end", denied); stream.once("close", denied); stream.once("error", denied);
-  proxy.once("exit", denied); proxy.once("error", denied);
+  const onEnd = (): void => denied(transportDenial("research-provider-transport:stdout-ended"));
+  const onClose = (): void => denied(stream.destroyed ? transportDenial("research-provider-transport:stdout-destroyed") : undefined);
+  const onError = (): void => denied(transportDenial("research-provider-transport:transport-failed"));
+  const onExit = (): void => denied(transportDenial("research-provider-transport:proxy-exited"));
+  stream.on("data", onData); stream.once("end", onEnd); stream.once("close", onClose); stream.once("error", onError);
+  proxy.once("exit", onExit); proxy.once("error", onError);
   check();
   return {
     ready,
     assertCurrent: (): void => { if (!check()) { if (refusal) throw refusal; researchInvalid(observation); } },
     stop: (): void => {
       clearInterval(timer);
-      stream.off("data", onData); stream.off("end", denied); stream.off("close", denied); stream.off("error", denied);
-      proxy.off("exit", denied); proxy.off("error", denied);
+      stream.off("data", onData); stream.off("end", onEnd); stream.off("close", onClose); stream.off("error", onError);
+      proxy.off("exit", onExit); proxy.off("error", onError);
     },
   };
 }
@@ -202,7 +214,12 @@ async function runAdmittedResearchProvider(jobId: string, unit: string, selected
     const deadline = performance.now() + researchProviderSetupTimeoutMs;
     const assertTransportPermission = (): void => {
       assertForwardPermission();
-      if (performance.now() >= deadline || proxyExited || transportFailed || proxy.stdin.destroyed || proxy.stdout.destroyed || proxy.stdout.readableEnded) researchInvalid();
+      if (performance.now() >= deadline) throw transportDenial("research-provider-transport:setup-deadline");
+      if (proxyExited) throw transportDenial("research-provider-transport:proxy-exited");
+      if (transportFailed) throw transportDenial("research-provider-transport:transport-failed");
+      if (proxy.stdin.destroyed) throw transportDenial("research-provider-transport:stdin-destroyed");
+      if (proxy.stdout.destroyed) throw transportDenial("research-provider-transport:stdout-destroyed");
+      if (proxy.stdout.readableEnded) throw transportDenial("research-provider-transport:stdout-ended");
     };
     phase("ready-and-owner");
     const readiness = monitorResearchReady(proxy, assertTransportPermission, deadline);

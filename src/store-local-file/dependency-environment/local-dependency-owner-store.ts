@@ -7,6 +7,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import {
   DependencyAdmissionError, DependencyAdmissionFailure as AdmissionFailure,
   parseDependencyOwner, sameDependencyOwnerIdentity, sameDependencyWorkspace,
+  DependencyOwnerPhase, isDependencyConsumerOwner,
   type DependencyOwnerRecord, type DependencyOwnerStore, type DependencyWorkspaceIdentity,
 } from "@vioxen/subscription-runtime/worker-core";
 
@@ -97,6 +98,7 @@ export class LocalDependencyOwnerStore implements DependencyOwnerStore {
       if (record.owner && !current?.owner && record.epoch !== (current?.epoch ?? 0) + 1) {
         admissionFailure(AdmissionFailure.StaleAttempt);
       }
+      assertActivitySuccessor(current, record);
 
       if (current?.version === 1 && record.version === 2) {
         // Idle-only upgrade retains the exact original bytes before replacement.
@@ -255,6 +257,27 @@ export class LocalDependencyOwnerStore implements DependencyOwnerStore {
 
 function privateMode(info: BigIntStats, mode: bigint): boolean {
   return (info.mode & 0o7777n) === mode && info.uid === BigInt(process.geteuid!());
+}
+function assertActivitySuccessor(current: DependencyOwnerRecord | null, next: DependencyOwnerRecord): void {
+  const before = current?.activity, after = next.activity;
+  if (before !== undefined && after === undefined) admissionFailure(AdmissionFailure.InvalidRecord);
+  const consumer = current && isDependencyConsumerOwner(current.owner) ? current.owner : null;
+  const entry = consumer?.phase === DependencyOwnerPhase.ExclusiveMutation &&
+    isDependencyConsumerOwner(next.owner) && next.owner.phase === DependencyOwnerPhase.Running;
+  if (entry) {
+    if (!after?.lastEntry || after.lastEntry.epoch !== next.epoch ||
+        (before?.lastEntry && after.lastEntry.epoch <= before.lastEntry.epoch) ||
+        JSON.stringify(after.lastRelease) !== JSON.stringify(before?.lastRelease ?? null)) admissionFailure(AdmissionFailure.InvalidRecord);
+    return;
+  }
+  const release = consumer !== null && next.owner === null &&
+    before?.lastEntry?.epoch === current?.epoch;
+  if (release) {
+    if (consumer.phase !== DependencyOwnerPhase.Fenced || !after?.lastRelease || after.lastRelease.epoch !== current!.epoch ||
+        JSON.stringify(after.lastEntry) !== JSON.stringify(before!.lastEntry)) admissionFailure(AdmissionFailure.InvalidRecord);
+    return;
+  }
+  if (JSON.stringify(before) !== JSON.stringify(after)) admissionFailure(AdmissionFailure.InvalidRecord);
 }
 export function dependencyOwnerStorageName(workspace: DependencyWorkspaceIdentity): string { return `${ownerKey(workspace)}.json`; }
 function ownerKey(workspace: DependencyWorkspaceIdentity): string {

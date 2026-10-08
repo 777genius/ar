@@ -56,7 +56,12 @@ export function releaseHostedDependencyConsumer(fence: HostedActivationFence,
     const current = store.read(binding.workspace);
     if (!current || !isDependencyConsumerOwner(current.owner) || current.owner.phase !== DependencyOwnerPhase.Fenced ||
         !sameDependencyAttempt(current.owner.attempt, attempt)) invalid();
-    store.compareAndSwap(binding.workspace, current.revision, { ...current, revision: current.revision + 1, owner: null });
+    const previousActivity = current.activity;
+    const activity = previousActivity && previousActivity.lastEntry?.epoch === attempt.epoch ? {
+      lastEntry: previousActivity.lastEntry, lastRelease: { epoch: attempt.epoch, atMs: String(Date.now()) },
+    } : undefined;
+    store.compareAndSwap(binding.workspace, current.revision, { ...current, revision: current.revision + 1, owner: null,
+      ...(activity === undefined ? {} : { activity }) });
   } finally { store.close(); }
   return true;
 }
