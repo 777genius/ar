@@ -115,7 +115,7 @@ export function captureDependencyPhysicalTreeExposure(input: {
  * at most a stricter remaining deadline, not a path, DTO or permission callback. */
 export function assertDependencySourceExposureCurrent(exposure: DependencySourceExposure, maxDurationMs?: number): void {
   const state = sourceExposures.get(exposure);
-  if (!state || state.closed) fail(Failure.InvalidRequest);
+  if (!state || state.closed || state.roots.length === 0) fail(Failure.InvalidRequest);
   const duration = maxDurationMs ?? state.limits.maxDurationMs, started = performance.now();
   if (!Number.isSafeInteger(duration) || duration <= 0 || duration > state.limits.maxDurationMs) { state.closed = true; fail(Failure.Bounds); }
   const checkTime = () => { if (performance.now() - started > duration) fail(Failure.Bounds); };
@@ -230,7 +230,8 @@ export async function observeDependencyTreeWithPhysicalExposure(input: {
   }
 }
 
-/** One original hashing walk with privately retained physical membership. */
+/** One original hashing walk. V2 retains physical membership; V1 retains only
+ * its authentic current source session, never a physical exposure proof. */
 export async function observeDependencyTreeWithLocalRegistrySelection(input: {
   readonly workspacePath: string; readonly treeName: "node_modules"; readonly expectedWorkspace: DependencyWorkspaceIdentity;
   readonly expectedTree: DependencyTreeIdentity; readonly sourceLinkSession: DependencySourceLinkSession;
@@ -240,19 +241,20 @@ export async function observeDependencyTreeWithLocalRegistrySelection(input: {
   const started = performance.now();
   let owned: DependencySourceExposure | undefined;
   try {
-    if (Object.entries(exposureCeilings).some(([key, ceiling]) => {
+    const selection = readDependencySourceRegistrySelection(input.sourceLinkSession, input.expectedWorkspace);
+    if (selection && Object.entries(exposureCeilings).some(([key, ceiling]) => {
       const n = input.limits[key as keyof DependencyTreeObservationLimits]; return !Number.isSafeInteger(n) || n <= 0 || n > ceiling;
     })) fail(Failure.InvalidRequest);
-    readDependencySourceRegistrySelection(input.sourceLinkSession, input.expectedWorkspace);
     if (input.protectedSourceLinkSession && JSON.stringify(readDependencySourceLinkSession(input.sourceLinkSession, input.expectedWorkspace, "node_modules")) !==
         JSON.stringify(readDependencySourceLinkSession(input.protectedSourceLinkSession, input.expectedWorkspace, "node_modules"))) fail(Failure.SourceBinding);
-    const physical: PhysicalRoot = { pins: [], storageBytes: 0, namespace: null, ancestorBudget: 512, directoryBudget: 512 };
+    const physical: PhysicalRoot | undefined = selection ?
+      { pins: [], storageBytes: 0, namespace: null, ancestorBudget: 512, directoryBudget: 512 } : undefined;
     const remaining = { ...input.limits, maxDurationMs: Math.floor(input.limits.maxDurationMs - (performance.now() - started)) };
     const observed = await observeNamedRoot({ ...input, limits: remaining }, physical);
     if (observed.status !== Status.Complete) return observed;
-    if (!physical.namespace || remaining.maxDurationMs <= 0) fail(Failure.Bounds);
+    if ((physical && !physical.namespace) || remaining.maxDurationMs <= 0) fail(Failure.Bounds);
     const exposure: DependencySourceExposure = Object.freeze({ [sourceExposureBrand]: true }); owned = exposure;
-    sourceExposures.set(exposure, { roots: [physical], limits: Object.freeze({ ...input.limits }), closed: false,
+    sourceExposures.set(exposure, { roots: physical ? [physical] : [], limits: Object.freeze({ ...input.limits }), closed: false,
       selectedRoot: { workspace: { ...observed.workspace }, tree: { ...observed.tree }, session: input.sourceLinkSession } });
     assertDependencyLocalRegistrySelectionAbsent(exposure, input.sourceLinkSession, observed.workspace, observed.tree,
       Math.floor(input.limits.maxDurationMs - (performance.now() - started)));
@@ -263,17 +265,22 @@ export async function observeDependencyTreeWithLocalRegistrySelection(input: {
       error instanceof DependencySourceBindingError ? Failure.SourceBinding : Failure.Access };
   }
 }
-/** Additional refusal on original physical facts, never Ready or creator exclusion. */
+/** Current authentic V1 session or additional V2 refusal on original physical
+ * facts, never Ready or creator exclusion. */
 export function assertDependencyLocalRegistrySelectionAbsent(exposure: DependencySourceExposure, sourceSession: DependencySourceLinkSession,
   workspace: DependencyWorkspaceIdentity, expectedTree: DependencyTreeIdentity, maxDurationMs?: number): void {
   const state = sourceExposures.get(exposure), root = state?.selectedRoot;
-  if (!state || state.closed || !root || state.roots.length !== 1 ||
+  if (!state || state.closed || !root || state.roots.length > 1 ||
       root.workspace.canonicalPath !== workspace.canonicalPath || root.workspace.dev !== workspace.dev || root.workspace.ino !== workspace.ino ||
       root.tree.dev !== expectedTree.dev || root.tree.ino !== expectedTree.ino || root.session && root.session !== sourceSession) fail(Failure.InvalidRequest);
   const started = performance.now(), duration = maxDurationMs ?? state.limits.maxDurationMs;
   if (!Number.isSafeInteger(duration) || duration <= 0 || duration > state.limits.maxDurationMs) fail(Failure.Bounds);
   const selection = readDependencySourceRegistrySelection(sourceSession, workspace);
   const remaining = () => { const value = Math.floor(duration - (performance.now() - started)); if (value <= 0) fail(Failure.Bounds); return value; };
+  if (state.roots.length === 0) {
+    if (selection || root.session !== sourceSession) fail(Failure.SourceBinding);
+    readDependencySourceLinkSession(sourceSession, workspace, "node_modules"); remaining(); return;
+  }
   assertDependencySourceExposureCurrent(exposure, remaining());
   const prefix = [...workspace.canonicalPath.split("/").filter(Boolean), "node_modules"].map(part => Buffer.from(part));
   const physical = state.roots[0]!;

@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { grantResearchLaunch, startResearchLaunch, revokeResearchLaunch } from "../research-launch-owner";
-import { admitResearchProcessFactory, bindResearchRuntime, researchCurrentStart } from "../research-launch-admission";
+import { bindResearchRuntime, researchCurrentStart } from "../research-launch-admission";
 import { researchHash, researchPublish, researchRead } from "../research-launch-files";
 import { researchProcessIdentity, researchServiceIdentity } from "../research-launch-host";
 import { cancelResearchLaunch, signalResearchProvider, statusResearchLaunch } from "../research-launch-lifecycle";
@@ -16,31 +16,12 @@ import * as scratch from "../host-scratch-temp";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import { trustedResearchProviderLaunch, trustedResearchRuntimeLaunch } from "../trusted-custody-systemd-launch";
 import { prepareResearchProviderRoot, type ResearchProviderRootPlan } from "../research-provider-root";
+import { prepareHelper } from "./research-provider-service-fixture";
 
 let previousExitCode: typeof process.exitCode;
 const streams = new Set<PassThrough>();
 beforeEach(() => { previousExitCode = process.exitCode; setupResearchFixture(); });
 afterEach(() => { for (const stream of streams) { stream.unpipe(); stream.destroy(); } streams.clear(); vi.useRealTimers(); process.exitCode = previousExitCode; cleanupResearchFixture(); });
-function prepareHelper(homeLeaf = "TEST-a") {
-  const req = request(); grantResearchLaunch(req.jobId, req.jobRootDir, req.workspacePath);
-  const start = startResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")));
-  host.group = `/system.slice/${start.unit}`; bindResearchRuntime(start.jobId, start.startId);
-  const current = researchCurrentStart(start.jobId);
-  const home = join(req.jobRootDir, "home", homeLeaf);
-  fs.mkdirSync(local(home), { recursive: true, mode: 0o700 });
-  const helper = admitResearchProcessFactory(req)({ command: req.codexBinaryPath, args: ["app-server"], cwd: req.workspacePath,
-    env: { HOME: join(req.jobRootDir, "home"), CODEX_HOME: home } });
-  const unit = fs.readdirSync(local(join(current.directory, "providers")))[0]!.slice(0, -5);
-  // Substitute the runtime parent observation, while invoking the real helper
-  // and retained-file protocol in this TEST process.
-  host.units.get(start.unit)!.pid = process.ppid;
-  researchPublish(join(current.directory, "binding.json"), { schemaVersion: 1, specSha256: researchHash(current.bytes),
-    process: researchProcessIdentity(process.ppid), service: researchServiceIdentity(start.unit) });
-  host.spawn.mockClear();
-  const held = helper.stdin as PassThrough;
-  const forward = vi.spyOn(process.stdin, "pipe").mockImplementation(destination => held.pipe(destination));
-  return { ...current, ...start, provider: unit, helper, forward, home };
-}
 const rootPlans = new WeakMap<ReturnType<typeof prepareHelper>, ResearchProviderRootPlan>();
 function providerLaunch(current: ReturnType<typeof prepareHelper>, home = current.home, scratchHost?: scratch.ScratchTempHost) {
   let root = rootPlans.get(current);
@@ -71,35 +52,19 @@ function providerProxy(current: ReturnType<typeof prepareHelper>, accept = true,
 const record = (current: ReturnType<typeof prepareHelper>, suffix: string) =>
   JSON.parse(researchRead(join(current.directory, "providers", current.provider + suffix + ".json")).toString());
 
-describe("private finite launch diagnostics", () => {
-  it("identifies pre-submission plan denial without persisting paths or the selected home", async () => {
-    const current = prepareHelper(), secretHome = "/TEST-never-log-this-home";
-    await expect(runResearchProviderService(current.jobId, current.provider, secretHome)).rejects.toThrow();
-    const bytes = researchRead(join(current.directory, "provider-failure.json")).toString();
-    expect(JSON.parse(bytes)).toEqual({ schemaVersion: 1, unit: current.provider, phase: "service-plan" });
-    expect(bytes).not.toContain(secretHome);
-    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
-    expect(() => record(current, ".submission")).toThrow();
-  });
-  it("keeps a changed runtime binding denied and records only the capture phase", async () => {
-    const current = prepareHelper();
-    const bindingPath = join(current.directory, "binding.json");
-    const binding = JSON.parse(researchRead(bindingPath).toString()); binding.process.pid++;
-    researchPublish(bindingPath, binding);
-    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
-    expect(JSON.parse(researchRead(join(current.directory, "provider-failure.json")).toString())).toEqual({
-      schemaVersion: 1, unit: current.provider, phase: "runtime-capture", check: "captureResearchRuntime",
-    });
-    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
-  });
-});
-
 describe("authenticated prepared scratch visibility (synthetic Host, no OS mounts)", () => {
   it("carries all three selected physical sources so independent providers see runtime-private data", async () => {
     const current = prepareHelper(), f = await preparedResearchScratch(current.spec.request.jobRootDir, current.home);
     const plan = providerLaunch(current, current.home, f.host);
     expect(plan.args).toContain("--property=TimeoutStartSec=300s");
     const runtime = trustedResearchRuntimeLaunch(current.spec, researchHash(current.bytes));
+    expect(runtime.args).toContain("--property=MountFlags=private");
+    expect(plan.args).toContain("--property=MountFlags=private");
+    // Propagation is installed policy; caller input cannot replace it or append properties.
+    for (const injected of [{ ...current.spec, mountFlags: "shared" }, { ...current.spec, systemdProperties: ["MountFlags=shared"] }]) {
+      expect(() => trustedResearchRuntimeLaunch(injected, researchHash(current.bytes))).toThrow("hosted_research_launch_denied");
+      expect(() => trustedResearchProviderLaunch(injected, current.provider, current.home, rootPlans.get(current)!)).toThrow("hosted_research_launch_denied");
+    }
     const pinBinds = runtime.args.filter(arg => arg.startsWith("--property=BindPaths="));
     const selected = [
       { source: "/TEST-nvme/runtime-tmp/8794cd8e3d7d92468efc8cef6960bd97fd9e40dd0460e297c3004b12a3ec7a5c", target: join(current.spec.request.jobRootDir, "tmp") },
@@ -391,6 +356,10 @@ describe("owned research provider cancellation (real files and streams; systemd/
     await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
     expect(host.spawn).not.toHaveBeenCalled(); expect(current.forward).not.toHaveBeenCalled();
     expect(record(current, ".submission").state).toBe("settled");
+    const timing = JSON.parse(researchRead(join(current.directory, "provider-root-timing.json")).toString());
+    expect(timing.scopes.map((scope: { scope: string; outcome: string }) => [scope.scope, scope.outcome])).toEqual([
+      ["prepare", "completed"], ["initial-launch", "completed"]]);
+    expect(timing.phase).toBe("submission-custody");
   });
   it("attempts stop after pending/no-MainPID kill failure and cancels the creator first", () => {
     const current = prepareHelper(), { submit } = providerProxy(current); submit();
@@ -556,7 +525,7 @@ describe("owned research provider cancellation (real files and streams; systemd/
 });
 
 /** Model a three-second artifact traversal on slow Host I/O, still inside its
- * unchanged four-second bound. All retained bytes/digests remain real; only the
+ * finite thirty-second bound. All retained bytes/digests remain real; only the
  * Host clock and directory-observation latency are substituted. */
 function slowBoundedMaterial() {
   vi.useFakeTimers();
@@ -590,7 +559,7 @@ describe("slow bounded material at research effect boundaries", () => {
     expect(diagnostic).not.toContain("private");
     expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
   });
-  it.each([65_931, 98_727, 130_000])("holds bootstrap through %i ms setup despite three-second verification, then meets the 10s handoff", async setupMs => {
+  it.each([65_931, 98_727, 130_000])("holds bootstrap through %i ms setup despite three-second verification, then completes bounded handoff", async setupMs => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     const now = slowBoundedMaterial(); host.spawn.mockImplementation(submit);
     let readyAt = 0, releasedAt = 0;
@@ -602,14 +571,14 @@ describe("slow bounded material at research effect boundaries", () => {
     for (const part of [readyFrame.slice(0, 7), readyFrame.slice(7, 28), readyFrame.slice(28)]) proxy.stdout.write(part);
     await vi.advanceTimersByTimeAsync(0);
     const success = await outcome;
-    console.info(`TEST substituted Host: success=${success}, ready-to-bootstrap=${releasedAt ? releasedAt - readyAt : "held"}ms; artifact walk=3000ms (bound=4000ms)`);
+    console.info(`TEST substituted Host: success=${success}, ready-to-bootstrap=${releasedAt ? releasedAt - readyAt : "held"}ms; artifact walk=3000ms (bound=30000ms)`);
     expect(success).toBe(true);
     expect(releasedAt - readyAt).toBeLessThan(10_000);
     expect(forwarded.length).toBeGreaterThan(0); expect(current.forward).toHaveBeenCalledOnce();
     expect(record(current, ".owner").process.namespaces).toEqual(settledNamespaces);
     expect(record(current, ".submission").state).toBe("settled");
   });
-  it("performs bounded material verification once during the fixed 10s ready-to-bootstrap window", async () => {
+  it("performs bounded material verification once before bootstrap within the setup deadline", async () => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     const now = slowBoundedMaterial(); host.spawn.mockImplementation(submit);
     let readyAt = 0, releasedAt = 0;
@@ -618,12 +587,30 @@ describe("slow bounded material at research effect boundaries", () => {
     readyAt = now(); proxy.stdout.write(readyFrame);
     await vi.advanceTimersByTimeAsync(0);
     const success = await outcome;
-    console.info(`TEST substituted Host: success=${success}, ready-to-bootstrap=${releasedAt ? releasedAt - readyAt : "held"}ms; artifact walk=3000ms (bound=4000ms)`);
+    console.info(`TEST substituted Host: success=${success}, ready-to-bootstrap=${releasedAt ? releasedAt - readyAt : "held"}ms; artifact walk=3000ms (bound=30000ms)`);
     expect(success).toBe(true);
     expect(releasedAt - readyAt).toBeLessThan(10_000);
     expect(forwarded.length).toBeGreaterThan(0);
   });
-  it("keeps bootstrap held when valid material plus slow ownership exceed the fixed 10s handoff", async () => {
+  it("finishes real eleven-second ownership I/O before releasing bootstrap within the original setup deadline", async () => {
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current);
+    const sync = fs.fsyncSync; let verifiedAt = 0;
+    host.spawn.mockImplementation(submit);
+    vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
+      sync(fd);
+      if (host.fdPaths.get(fd)?.endsWith(current.provider + ".owner.json")) {
+        verifiedAt = performance.now();
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 11_000);
+      }
+    });
+    proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
+    await runResearchProviderService(current.jobId, current.provider, current.home);
+    expect(performance.now() - verifiedAt).toBeGreaterThanOrEqual(11_000);
+    expect(record(current, ".owner").process.namespaces).toEqual(settledNamespaces);
+    expect(forwarded.length).toBeGreaterThan(0); expect(current.forward).toHaveBeenCalledOnce();
+    expect(record(current, ".submission").state).toBe("settled");
+  });
+  it("keeps bootstrap held when late readiness and final verification exceed the original 300s setup deadline", async () => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
     const now = slowBoundedMaterial(), sync = fs.fsyncSync; host.spawn.mockImplementation(submit);
     vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
@@ -631,8 +618,8 @@ describe("slow bounded material at research effect boundaries", () => {
     });
     proxy.stdin.once("data", () => { proxy.exitCode = 0; proxy.emit("exit", 0, null); });
     const outcome = runResearchProviderService(current.jobId, current.provider, current.home).then(() => false, () => true);
-    const readyAt = now(); proxy.stdout.write(readyFrame); await vi.advanceTimersByTimeAsync(0);
-    expect(await outcome).toBe(true); expect(now() - readyAt).toBeGreaterThan(10_000);
+    const waitingAt = now(); now.advance(295_000); proxy.stdout.write(readyFrame); await vi.advanceTimersByTimeAsync(0);
+    expect(await outcome).toBe(true); expect(now() - waitingAt).toBeGreaterThan(300_000);
     expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled();
     expect(record(current, ".submission").state).toBe("pending");
   });
@@ -686,11 +673,11 @@ describe("slow bounded material at research effect boundaries", () => {
     vi.spyOn(fs, "fsyncSync").mockImplementation(fd => { sync(fd); if (host.fdPaths.get(fd)?.endsWith(current.provider + ".owner.json")) ownerPublished = true; });
     const readDirectory = fs.readdirSync, stat = fs.lstatSync;
     vi.spyOn(fs, "readdirSync").mockImplementation(((path: string, options: never) => {
-      if (ownerPublished && observation === "artifact-deadline" && path === "/TEST-artifact/dist") elapsed += 4_001;
+      if (ownerPublished && observation === "artifact-deadline" && path === "/TEST-artifact/dist") elapsed += 31_000;
       return readDirectory(path, options);
     }) as typeof fs.readdirSync);
     vi.spyOn(fs, "lstatSync").mockImplementation(((path: string) => {
-      if (ownerPublished && observation === "file-deadline" && path === process.execPath) elapsed += 4_001;
+      if (ownerPublished && observation === "file-deadline" && path === process.execPath) elapsed += 31_000;
       return stat(path);
     }) as typeof fs.lstatSync);
     const error = await runResearchProviderService(current.jobId, current.provider, current.home).then(() => undefined, error => error as Error);
@@ -825,7 +812,7 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
     expect(record(current, ".cancel").unit).toBe(current.provider);
     expect(host.calls.filter(c => ["kill", "stop"].includes(c.args[0]!))).toHaveLength(0);
   });
-  it.each(["native-output", "oversize", "extra-output", "eof", "close", "stdout-error", "stderr-error", "stdin-error", "stdin-epipe", "spawn-error", "exit", "signal", "timeout", "cancel"])(
+  it.each(["native-output", "oversize", "extra-output", "eof", "close", "stdout-error", "stderr-error", "stdin-error", "stdin-epipe", "stdin-destroyed", "spawn-error", "exit", "signal", "timeout", "cancel"])(
     "fails closed before owner/bootstrap/auth on readiness %s", async fault => {
       if (fault === "timeout") vi.useFakeTimers();
       const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
@@ -841,6 +828,7 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
           if (fault === "stderr-error") proxy.stderr.emit("error", new Error("TEST stderr failure"));
           if (fault === "stdin-error") proxy.stdin.emit("error", new Error("TEST stdin failure"));
           if (fault === "stdin-epipe") proxy.stdin.emit("error", Object.assign(new Error("TEST closed stdin"), { code: "EPIPE" }));
+          if (fault === "stdin-destroyed") proxy.stdin.destroy();
           if (fault === "spawn-error") proxy.emit("error", new Error("TEST transport failure"));
           if (fault === "exit") { proxy.exitCode = 0; proxy.emit("exit", 0, null); }
           if (fault === "signal") { proxy.signalCode = "SIGTERM"; proxy.emit("exit", null, "SIGTERM"); }
@@ -855,7 +843,32 @@ describe("bounded confined-launcher readiness (real streams; settled proc/system
       expect(() => record(current, ".owner")).toThrow(); expect(record(current, ".cancel").unit).toBe(current.provider);
       expect(proxy.kill).toHaveBeenCalledWith("SIGTERM");
       expect(record(current, ".submission").state).toBe(["exit", "signal"].includes(fault) ? "settled" : "pending");
+      const checks: Record<string, string> = {
+        eof: "research-provider-transport:stdout-ended", close: "research-provider-transport:stdout-destroyed",
+        "stdout-error": "research-provider-transport:transport-failed", "stderr-error": "research-provider-transport:transport-failed",
+        "stdin-error": "research-provider-transport:transport-failed", "stdin-epipe": "research-provider-transport:transport-failed",
+        "stdin-destroyed": "research-provider-transport:stdin-destroyed", "spawn-error": "research-provider-transport:transport-failed",
+        exit: "research-provider-transport:proxy-exited", signal: "research-provider-transport:proxy-exited",
+        timeout: "research-provider-transport:setup-deadline", cancel: "assertResearchProviderNotCancelled",
+      };
+      if (checks[fault]) expect(JSON.parse(researchRead(join(current.directory, "provider-failure.json")).toString()))
+        .toEqual({ schemaVersion: 1, unit: current.provider, phase: "ready-and-owner", check: checks[fault] });
     });
+  it("does not trust adapter error text, stack or cause as a finite transport observation", async () => {
+    const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current, true, false);
+    const error = new Error("TEST private adapter payload", { cause: "artifact-deadline" });
+    error.stack = "Error: TEST private adapter payload\n    at research-provider-transport:setup-deadline (TEST)";
+    host.spawn.mockImplementation(() => {
+      const result = submit(); queueMicrotask(() => proxy.emit("error", error)); return result;
+    });
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow("hosted_research_launch_denied");
+    const bytes = researchRead(join(current.directory, "provider-failure.json")).toString();
+    expect(JSON.parse(bytes)).toEqual({ schemaVersion: 1, unit: current.provider, phase: "ready-and-owner",
+      check: "research-provider-transport:transport-failed" });
+    expect(bytes).not.toContain("private adapter"); expect(bytes).not.toContain("artifact-deadline");
+    expect(forwarded).toHaveLength(0); expect(current.forward).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(() => record(current, ".owner")).toThrow();
+  });
   it("refuses an errored stream after owner publication before releasing any input", async () => {
     const current = prepareHelper(), { proxy, forwarded, submit } = providerProxy(current); host.spawn.mockImplementation(submit);
     const sync = fs.fsyncSync;
