@@ -63,7 +63,13 @@ napi_value napi_register_module_v1(napi_env env, napi_value exports) {
     (void)napi_throw_error(env, NULL, "original native environment refused"); return NULL;
   }
   binding.issued = true; binding.env = env; binding.pid = getpid();
-  if (napi_create_reference(env, exports, 1, &binding.wrapper) != 0 || napi_add_env_cleanup_hook(env, loss, &binding) != 0 || np_original_helper_start_v1(&binding.generation)) {
+  if (napi_create_reference(env, exports, 1, &binding.wrapper) != 0 || napi_add_env_cleanup_hook(env, loss, &binding) != 0 ||
+#ifdef NP_ASSOCIATED_ORIGIN_V2
+      np_original_helper_start_associated_v2(&binding.generation)
+#else
+      np_original_helper_start_v1(&binding.generation)
+#endif
+      ) {
     binding.disposed = true; np_original_helper_loss_v1();
     (void)pthread_mutex_unlock(&lock);
     (void)napi_throw_error(env, NULL, "original native startup refused"); return NULL;

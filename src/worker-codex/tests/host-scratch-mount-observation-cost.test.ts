@@ -89,7 +89,7 @@ test("large NEWTEST topology sends only the original FD-selected row to libmount
     `${1000 + index} 1 0:44 net:[4026533000] /NEWTEST-unrelated/${index} rw - nsfs nsfs rw`);
   native.before = [row(10, target, "/NEWTEST-hidden"), ...background, selected].join("\n") + "\n";
   native.after = native.before;
-  assert.deepEqual(inspectVisibleScratchMount(target), { target, uuid, fsroot: "/runtime-tmp/NEWTEST-source" });
+  assert.deepEqual(inspectVisibleScratchMount(target), { target, uuid, fsroot: "/runtime-tmp/NEWTEST-source", mountId: 30, isPrivate: true });
   assert.deepEqual(native.inputs, [selected + "\n"]);
   assert.equal(native.mountReads, 2); assert.equal(native.targetOpens, 2); assert.equal(native.namespaceReads, 2);
 });
@@ -143,7 +143,7 @@ test("original escaped row is passed unchanged while query authority uses decode
   const original = `${row(30, escaped, "/runtime-tmp/NEW\\040TEST").replace(" rw - ", " rw shared:7 - ")}\n`;
   native.before = native.after = original;
   native.query = { filesystems: [{ id: "30", target: spaced, uuid, fsroot: "/runtime-tmp/NEW TEST" }] };
-  assert.deepEqual(inspectVisibleScratchMount(spaced), { target: spaced, uuid, fsroot: "/runtime-tmp/NEW TEST" });
+  assert.deepEqual(inspectVisibleScratchMount(spaced), { target: spaced, uuid, fsroot: "/runtime-tmp/NEW TEST", mountId: 30, isPrivate: false });
   assert.deepEqual(native.inputs, [original]);
 });
 

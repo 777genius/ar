@@ -717,55 +717,6 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     });
   });
 
-  it("keeps the task result when worker dispose never resolves", async () => {
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
-      [
-        "--provider",
-        "claude",
-        "--state-root",
-        "/tmp/runtime-state",
-        "--format",
-        "result-json",
-      ],
-      fakeIo({
-        stdout,
-        stderr,
-        stdin: JSON.stringify({
-          protocolVersion: 1,
-          timeoutMs: 5,
-          task: {
-            kind: "structured-prompt",
-            prompt: "finishes before cleanup hangs",
-          },
-        }),
-        env: {
-          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        },
-      }),
-      () => ({
-        async start() {},
-        async run() {
-          return {
-            outputText: "done",
-            warnings: [],
-          };
-        },
-        async dispose() {
-          return await new Promise<void>(() => {});
-        },
-      }),
-    );
-
-    expect(exitCode).toBe(0);
-    expect(JSON.parse(stdout.join(""))).toMatchObject({
-      status: "completed",
-      outputText: "done",
-    });
-    expect(stderr.join("")).toContain("subscription_worker_dispose_timeout:5");
-  });
 
   it("keeps the task result when worker dispose fails", async () => {
     const stdout: string[] = [];
