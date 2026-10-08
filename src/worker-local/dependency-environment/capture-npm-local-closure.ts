@@ -1,16 +1,16 @@
-import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readFileSync, readSync, statfsSync, type BigIntStats } from "node:fs";
 import { lstat, open, opendir, readFile, statfs, type FileHandle } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { detectSecretLikeContent } from "../../worker-core/secret-detection";
-import { DependencyInstallKeyError, DependencyNpmLockName } from "../../worker-core/dependency-environment/domain/dependency-install-key";
+import { DependencyInstallKeyError, DependencyNpmLockName, type DependencyTestNpmToolchain } from "../../worker-core/dependency-environment/domain/dependency-install-key";
 import {
   DependencyLocalClosureKind as Kind, describeDependencyLocalManifest, qualifyDependencyNpmLocalClosure,
   resolveDependencyLocalFileSpec, validateDependencyLocalCopiedInput,
   type DependencyLocalCopiedFile, type DependencyLocalPackage, type DependencyNpmLocalClosure,
 } from "../../worker-core/dependency-environment/domain/dependency-local-closure";
 import type { DependencyWorkspaceIdentity } from "../../worker-core/dependency-environment/domain/dependency-receipt";
+import { encodeDependencyLocalInputCommitment, validateDependencyTestNpmToolchain } from "./build-test-npm-dependency-install-key";
 import { NpmInputCaptureStatus as Status, NpmInputCaptureReason as Reason, type NpmInputRevalidation } from "./capture-npm-install-inputs";
 
 export enum NpmLocalPinKind { Directory = "directory", File = "file" }
@@ -26,7 +26,7 @@ export type QualifiedNpmLocalInputs = {
   readonly ancestorPins: readonly NpmLocalInputPin[];
   readonly absentPaths: readonly string[];
   readonly watches: readonly { readonly path: string; readonly kind: NpmLocalWatchKind; readonly names: readonly string[] }[];
-  readonly closureDigest: string;
+  readonly closureDigest: string; readonly selectionToolchain?: DependencyTestNpmToolchain;
 };
 export type NpmLocalInputCapture = QualifiedNpmLocalInputs |
   { readonly status: Status.Unsupported | Status.Unknown; readonly reason: Reason };
@@ -38,7 +38,6 @@ function unsupported(reason: Reason = Reason.UnsupportedClosure): never { throw 
 const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 const fileFlags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 const at = (fd: number, name: string): string => `/proc/self/fd/${fd}${name ? "/" + name : ""}`;
-const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 const same = (a: BigIntStats, b: BigIntStats): boolean => a.dev === b.dev && a.ino === b.ino && a.mode === b.mode;
 const sameFile = (a: BigIntStats, b: BigIntStats): boolean => same(a, b) && a.nlink === b.nlink &&
   a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
@@ -68,7 +67,7 @@ type Captured = { anchor: Anchor; info: BigIntStats; mount: string; path: string
  * verification. The caller must hold real source/creator exclusion; this
  * observation never supplies admission or permits running a lifecycle. */
 export async function captureNpmLocalClosure(input: {
-  readonly workspacePath: string; readonly expectedWorkspace?: DependencyWorkspaceIdentity;
+  readonly workspacePath: string; readonly selectionToolchain?: DependencyTestNpmToolchain; readonly expectedWorkspace?: DependencyWorkspaceIdentity;
   readonly maxInputBytes: number; readonly maxEntries: number; readonly maxPackages: number; readonly maxDurationMs: number;
 }): Promise<NpmLocalInputCapture> {
   const anchors: Anchor[] = [], retainedFiles: Captured[] = [], directories = new Map<string, Anchor>();
@@ -78,6 +77,7 @@ export async function captureNpmLocalClosure(input: {
         input.workspacePath.length > 4096 || input.workspacePath.includes("\0") || Buffer.from(input.workspacePath).toString() !== input.workspacePath ||
         ![input.maxInputBytes, input.maxEntries, input.maxPackages, input.maxDurationMs].every((n) => Number.isSafeInteger(n) && n > 0) ||
         input.maxInputBytes > 64 * 1024 * 1024 || input.maxEntries > 16384 || input.maxPackages > 128) unknown(Reason.InvalidRequest);
+    const selectionToolchain = input.selectionToolchain ? validateDependencyTestNpmToolchain(input.selectionToolchain) : undefined;
     const started = performance.now(); let bytesUsed = 0, entriesUsed = 0;
     const check = (): void => { if (performance.now() - started > input.maxDurationMs) unknown(Reason.Bounds); };
     const mount = async (fd: number): Promise<string> => {
@@ -187,7 +187,10 @@ export async function captureNpmLocalClosure(input: {
       if (physical.has(physicalId)) unsupported(); physical.add(physicalId);
       const kind = workspacePaths.has(path) ? Kind.PureWorkspaceLink : Kind.PackedDirectory;
       await config(parent, true, kind === Kind.PackedDirectory);
-      for (let intermediate = parent.parent; intermediate && intermediate !== root; intermediate = intermediate.parent) await config(intermediate, false, false);
+      await refuse(parent, "node_modules");
+      for (let intermediate = parent.parent; intermediate && intermediate !== root; intermediate = intermediate.parent) {
+        await config(intermediate, false, false); await refuse(intermediate, "node_modules");
+      }
       const packageFile = await captureFile(parent, "package.json", true);
       if (!packageFile.bytes) unknown(Reason.InvalidInputs);
       const description = describeDependencyLocalManifest(packageFile.bytes, kind);
@@ -228,7 +231,7 @@ export async function captureNpmLocalClosure(input: {
       locals.set(path, { path, kind, packageBytes: packageFile.bytes, directories: [...packDirectories].sort(),
         files: [...copied.values()].sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path))) });
     }
-    const closure = qualifyDependencyNpmLocalClosure({ packageBytes: pkg.bytes, lockBytes: lock.bytes, packages: [...locals.values()] });
+    const closure = qualifyDependencyNpmLocalClosure({ packageBytes: pkg.bytes, lockBytes: lock.bytes, packages: [...locals.values()], ...(selectionToolchain ? { selectionToolchain } : {}) });
     for (const file of retainedFiles) {
       check(); const fresh = await present(at(file.anchor.handle.fd, file.name));
       if (!fresh || !sameFile(file.info, fresh) || !file.handle || !sameFile(file.info, await file.handle.stat({ bigint: true }))) unknown(Reason.Unstable);
@@ -257,13 +260,12 @@ export async function captureNpmLocalClosure(input: {
     const pins: NpmLocalInputPin[] = [...directories.values()].map(pin);
     for (const file of retainedFiles) pins.push({ path: file.path, kind: NpmLocalPinKind.File, dev: String(file.info.dev), ino: String(file.info.ino),
       mode: String(file.info.mode), mountId: file.mount, size: String(file.info.size) });
-    const closureDigest = hash(Buffer.from(JSON.stringify({ version: 1, lockName, root: hash(pkg.bytes), lock: hash(lock.bytes),
-      layout: closure.layout, packages: closure.packages.map((local) => ({ path: local.path, kind: local.kind, package: hash(local.packageBytes),
-        directories: local.directories, files: local.files.map((file) => ({ path: file.path, mode: file.mode, bytes: file.bytes.length, sha256: hash(file.bytes) })) })),
-      edges: closure.edges }) + "\n"));
+    const closureDigest = encodeDependencyLocalInputCommitment({ packageBytes: pkg.bytes, lockBytes: lock.bytes, lockName, closure,
+      ...(selectionToolchain ? { selectionToolchain } : {}) }).sha256;
     check();
     return { status: Status.Qualified, workspace, lockName, packageBytes: Uint8Array.from(pkg.bytes), lockBytes: Uint8Array.from(lock.bytes),
-      closure, pins, ancestorPins: ancestors.map(pin), absentPaths: [...absentPaths].sort(), watches, closureDigest };
+      closure, pins, ancestorPins: ancestors.map(pin), absentPaths: [...absentPaths].sort(), watches, closureDigest,
+      ...(selectionToolchain ? { selectionToolchain } : {}) };
   } catch (error) {
     if (error instanceof CaptureFailure) return { status: error.status, reason: error.reason };
     if (error instanceof DependencyInstallKeyError) return { status: Status.Unsupported, reason: Reason.UnsupportedClosure };
@@ -349,7 +351,13 @@ export function revalidateNpmLocalClosure(input: { readonly capture: QualifiedNp
     const pinPaths = new Set(capture.pins.map((pin) => pin.path));
     if (pinPaths.size !== capture.pins.length || [...bytes.keys()].some((path) =>
         !capture.pins.some((pin) => pin.path === path && pin.kind === NpmLocalPinKind.File))) unknown(Reason.InvalidRequest);
-    qualifyDependencyNpmLocalClosure({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes, packages: capture.closure.packages });
+    const commitment = encodeDependencyLocalInputCommitment({ packageBytes: capture.packageBytes, lockBytes: capture.lockBytes,
+      lockName: capture.lockName, closure: capture.closure, ...(capture.selectionToolchain ? { selectionToolchain: capture.selectionToolchain } : {}) });
+    if (commitment.sha256 !== capture.closureDigest) unknown(Reason.InvalidInputs);
+    const requiredAbsence = new Set<string>();
+    for (const local of capture.closure.packages) for (let path = local.path; path; path = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "")
+      requiredAbsence.add(path + "/node_modules");
+    if ([...requiredAbsence].some(path => !capture.absentPaths.includes(path))) unknown(Reason.InvalidInputs);
     membership();
     for (const pin of capture.pins) {
       if (pin.kind === NpmLocalPinKind.Directory) { directory(pin.path); continue; }

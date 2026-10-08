@@ -11,7 +11,7 @@ import {
 } from "../../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import type { DependencyTreeIdentity, DependencyWorkspaceIdentity } from "../../worker-core/dependency-environment/domain/dependency-receipt";
 import { DependencySourceBindingError, readDependencySourceLinkSession, dependencySourceLinkAllowsSubset,
-  type DependencySourceLinkSession } from "./dependency-source-binding";
+  readDependencySourceRegistrySelection, type DependencySourceLinkSession } from "./dependency-source-binding";
 
 const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 // Linux O_PATH retains even a symlink inode without following it or opening a
@@ -26,7 +26,7 @@ type PhysicalRoot = { readonly pins: PhysicalPin[]; storageBytes: number; namesp
 const sourceExposureBrand = Symbol("dependency_source_exposure");
 export type DependencySourceExposure = Readonly<{ [sourceExposureBrand]: true }>;
 const sourceExposures = new WeakMap<DependencySourceExposure, { readonly roots: readonly PhysicalRoot[];
-  readonly limits: DependencyTreeObservationLimits; closed: boolean }>();
+  readonly limits: DependencyTreeObservationLimits; readonly selectedRoot?: { workspace: DependencyWorkspaceIdentity; tree: DependencyTreeIdentity; session?: DependencySourceLinkSession }; closed: boolean }>();
 const exposureCeilings = { maxEntries: 100000, maxTotalBytes: 2 * 1024 ** 3, maxManifestBytes: 32 * 1024 ** 2, maxDurationMs: 30000 };
 class ObservationError extends Error { constructor(readonly reason: Failure) { super(reason); } }
 function fail(reason: Failure): never { throw new ObservationError(reason); }
@@ -51,10 +51,10 @@ const samePhysical = (a: BigIntStats, b: BigIntStats, full: boolean): boolean =>
 
 /** Actual source walk only. This opaque in-process relation is neither install
  * provenance nor writer exclusion; no Complete DTO can create one. */
-export async function captureDependencySourceExposure(input: {
-  readonly roots: readonly { readonly parentPath: string; readonly name: string; readonly expectedTree: DependencyTreeIdentity }[];
+async function captureExposure(input: {
+  readonly roots: readonly { readonly parentPath: string; readonly name: string; readonly expectedTree: DependencyTreeIdentity; readonly expectedWorkspace?: DependencyWorkspaceIdentity }[];
   readonly limits: DependencyTreeObservationLimits;
-}): Promise<{ readonly status: Status.Complete; readonly exposure: DependencySourceExposure } |
+}, rawPhysical = false, localRootOnly = false): Promise<{ readonly status: Status.Complete; readonly exposure: DependencySourceExposure } |
   { readonly status: Status.Incomplete; readonly reason: Failure }> {
   try {
     if (!Array.isArray(input.roots) || input.roots.length === 0 || input.roots.length > 128 ||
@@ -62,7 +62,7 @@ export async function captureDependencySourceExposure(input: {
           const n = input.limits[k as keyof DependencyTreeObservationLimits]; return !Number.isSafeInteger(n) || n <= 0 || n > ceiling;
         })) fail(Failure.InvalidRequest);
     const limits = Object.freeze({ ...input.limits }), selectedRoots = input.roots.map(root => ({
-      parentPath: root.parentPath, name: root.name, expectedTree: { ...root.expectedTree } }));
+      parentPath: root.parentPath, name: root.name, expectedTree: { ...root.expectedTree }, ...(root.expectedWorkspace ? { expectedWorkspace: { ...root.expectedWorkspace } } : {}) }));
     const started = performance.now(), roots: PhysicalRoot[] = [], paths: string[] = [];
     let entries = 0, bytes = 0, storage = 0, ancestors = 0, directories = 0;
     for (const root of selectedRoots) {
@@ -75,7 +75,7 @@ export async function captureDependencySourceExposure(input: {
         maxManifestBytes: limits.maxManifestBytes - storage, maxDurationMs: Math.floor(limits.maxDurationMs - (performance.now() - started)) };
       if (Object.values(remaining).some(n => n <= 0)) fail(Failure.Bounds);
       const physical: PhysicalRoot = { pins: [], storageBytes: 0, namespace: null, ancestorBudget: 512 - ancestors, directoryBudget: 512 - directories };
-      const observed = await observeNamedRoot({ workspacePath: root.parentPath, treeName: root.name, expectedTree: root.expectedTree, limits: remaining }, physical);
+      const observed = await observeNamedRoot({ workspacePath: root.parentPath, treeName: root.name, expectedTree: root.expectedTree, ...(root.expectedWorkspace ? { expectedWorkspace: root.expectedWorkspace } : {}), limits: remaining }, physical, rawPhysical, localRootOnly);
       if (observed.status !== Status.Complete) return observed;
       if (!physical.namespace) fail(Failure.UnsafeNamespace);
       entries += observed.entries.length; bytes += Number(observed.totalBytes); storage += observed.canonicalBytes.length + physical.storageBytes;
@@ -84,18 +84,38 @@ export async function captureDependencySourceExposure(input: {
       roots.push(physical);
     }
     const exposure: DependencySourceExposure = Object.freeze({ [sourceExposureBrand]: true });
-    sourceExposures.set(exposure, { roots, limits, closed: false });
+    sourceExposures.set(exposure, { roots, limits, closed: false, ...(rawPhysical && selectedRoots.length === 1 && selectedRoots[0]?.name === "node_modules" && selectedRoots[0].expectedWorkspace ?
+      { selectedRoot: { workspace: selectedRoots[0].expectedWorkspace, tree: selectedRoots[0].expectedTree } } : {}) });
     try { assertDependencySourceExposureCurrent(exposure, Math.floor(limits.maxDurationMs - (performance.now() - started))); }
     catch (error) { closeDependencySourceExposure(exposure); throw error; }
     return { status: Status.Complete, exposure };
   } catch (error) { return { status: Status.Incomplete, reason: error instanceof ObservationError ? error.reason : Failure.Access }; }
 }
 
+/** Existing generic entry remains strict about all symlink destinations. */
+export function captureDependencySourceExposure(input: {
+  readonly roots: readonly { readonly parentPath: string; readonly name: string; readonly expectedTree: DependencyTreeIdentity }[];
+  readonly limits: DependencyTreeObservationLimits;
+}) { return captureExposure(input); }
+/** Fixed local source inventory: refuse descendant resolution roots before opening them. */
+export function captureDependencyLocalRootOnlySourceExposure(input: Parameters<typeof captureDependencySourceExposure>[0]) {
+  return captureExposure(input, false, true);
+}
+/** Fixed original node_modules physical facts only. Raw links are never followed
+ * or returned as a qualified manifest; only the private opaque baseline escapes. */
+export function captureDependencyPhysicalTreeExposure(input: {
+  readonly workspace: DependencyWorkspaceIdentity; readonly expectedTree: DependencyTreeIdentity;
+  readonly limits: DependencyTreeObservationLimits;
+}) {
+  return captureExposure({ roots: [{ parentPath: input.workspace.canonicalPath, name: "node_modules", expectedTree: input.expectedTree, expectedWorkspace: input.workspace }],
+    limits: input.limits }, true);
+}
+
 /** Reopens the ORIGINAL private baseline, never recaptures it. Caller supplies
  * at most a stricter remaining deadline, not a path, DTO or permission callback. */
 export function assertDependencySourceExposureCurrent(exposure: DependencySourceExposure, maxDurationMs?: number): void {
   const state = sourceExposures.get(exposure);
-  if (!state || state.closed) fail(Failure.InvalidRequest);
+  if (!state || state.closed || state.roots.length === 0) fail(Failure.InvalidRequest);
   const duration = maxDurationMs ?? state.limits.maxDurationMs, started = performance.now();
   if (!Number.isSafeInteger(duration) || duration <= 0 || duration > state.limits.maxDurationMs) { state.closed = true; fail(Failure.Bounds); }
   const checkTime = () => { if (performance.now() - started > duration) fail(Failure.Bounds); };
@@ -184,6 +204,88 @@ export async function observeDependencyTree(input: {
   return observeNamedRoot(input);
 }
 
+/** One original hashing walk. V2 retains physical membership; V1 retains only
+ * its authentic current source session, never a physical exposure proof. */
+export async function observeDependencyTreeWithLocalRegistrySelection(input: {
+  readonly workspacePath: string; readonly treeName: "node_modules"; readonly expectedWorkspace: DependencyWorkspaceIdentity;
+  readonly expectedTree: DependencyTreeIdentity; readonly sourceLinkSession: DependencySourceLinkSession;
+  readonly protectedSourceLinkSession?: DependencySourceLinkSession; readonly limits: DependencyTreeObservationLimits;
+}): Promise<(Extract<DependencyCapturedTreeObservation, { status: Status.Complete }> & { readonly exposure: DependencySourceExposure }) |
+  Extract<DependencyCapturedTreeObservation, { status: Status.Incomplete }>> {
+  const started = performance.now();
+  let owned: DependencySourceExposure | undefined;
+  try {
+    const selection = readDependencySourceRegistrySelection(input.sourceLinkSession, input.expectedWorkspace);
+    if (selection && Object.entries(exposureCeilings).some(([key, ceiling]) => {
+      const n = input.limits[key as keyof DependencyTreeObservationLimits]; return !Number.isSafeInteger(n) || n <= 0 || n > ceiling;
+    })) fail(Failure.InvalidRequest);
+    if (input.protectedSourceLinkSession && JSON.stringify(readDependencySourceLinkSession(input.sourceLinkSession, input.expectedWorkspace, "node_modules")) !==
+        JSON.stringify(readDependencySourceLinkSession(input.protectedSourceLinkSession, input.expectedWorkspace, "node_modules"))) fail(Failure.SourceBinding);
+    const physical: PhysicalRoot | undefined = selection ?
+      { pins: [], storageBytes: 0, namespace: null, ancestorBudget: 512, directoryBudget: 512 } : undefined;
+    const remaining = { ...input.limits, maxDurationMs: Math.floor(input.limits.maxDurationMs - (performance.now() - started)) };
+    const observed = await observeNamedRoot({ ...input, limits: remaining }, physical);
+    if (observed.status !== Status.Complete) return observed;
+    if ((physical && !physical.namespace) || remaining.maxDurationMs <= 0) fail(Failure.Bounds);
+    const exposure: DependencySourceExposure = Object.freeze({ [sourceExposureBrand]: true }); owned = exposure;
+    sourceExposures.set(exposure, { roots: physical ? [physical] : [], limits: Object.freeze({ ...input.limits }), closed: false,
+      selectedRoot: { workspace: { ...observed.workspace }, tree: { ...observed.tree }, session: input.sourceLinkSession } });
+    assertDependencyLocalRegistrySelectionAbsent(exposure, input.sourceLinkSession, observed.workspace, observed.tree,
+      Math.floor(input.limits.maxDurationMs - (performance.now() - started)));
+    owned = undefined; return { ...observed, exposure };
+  } catch (error) {
+    if (owned) closeDependencySourceExposure(owned);
+    return { status: Status.Incomplete, reason: error instanceof ObservationError ? error.reason :
+      error instanceof DependencySourceBindingError ? Failure.SourceBinding : Failure.Access };
+  }
+}
+/** Current authentic V1 session or additional V2 refusal on original physical
+ * facts, never Ready or creator exclusion. */
+export function assertDependencyLocalRegistrySelectionAbsent(exposure: DependencySourceExposure, sourceSession: DependencySourceLinkSession,
+  workspace: DependencyWorkspaceIdentity, expectedTree: DependencyTreeIdentity, maxDurationMs?: number): void {
+  const state = sourceExposures.get(exposure), root = state?.selectedRoot;
+  if (!state || state.closed || !root || state.roots.length > 1 ||
+      root.workspace.canonicalPath !== workspace.canonicalPath || root.workspace.dev !== workspace.dev || root.workspace.ino !== workspace.ino ||
+      root.tree.dev !== expectedTree.dev || root.tree.ino !== expectedTree.ino || root.session && root.session !== sourceSession) fail(Failure.InvalidRequest);
+  const started = performance.now(), duration = maxDurationMs ?? state.limits.maxDurationMs;
+  if (!Number.isSafeInteger(duration) || duration <= 0 || duration > state.limits.maxDurationMs) fail(Failure.Bounds);
+  const selection = readDependencySourceRegistrySelection(sourceSession, workspace);
+  const remaining = () => { const value = Math.floor(duration - (performance.now() - started)); if (value <= 0) fail(Failure.Bounds); return value; };
+  if (state.roots.length === 0) {
+    if (selection || root.session !== sourceSession) fail(Failure.SourceBinding);
+    readDependencySourceLinkSession(sourceSession, workspace, "node_modules"); remaining(); return;
+  }
+  assertDependencySourceExposureCurrent(exposure, remaining());
+  const prefix = [...workspace.canonicalPath.split("/").filter(Boolean), "node_modules"].map(part => Buffer.from(part));
+  const physical = state.roots[0]!;
+  const pins = new Map(physical.pins.map(pin => [physicalKey(pin.path), pin]));
+  const tree = pins.get(physicalKey(prefix));
+  if (!tree || !tree.full || !tree.before.isDirectory() || String(tree.before.dev) !== expectedTree.dev || String(tree.before.ino) !== expectedTree.ino) fail(Failure.IdentityChanged);
+  if (selection) {
+    const excludedNames = selection.excludedScriptPackages.map(path => path.slice(path.lastIndexOf("node_modules/") + "node_modules/".length));
+    for (const pin of physical.pins) {
+      remaining(); if (!pin.full) continue;
+      const relative = pin.path.slice(prefix.length), components = relative.map(part => {
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(part); if (!Buffer.from(text).equals(part)) fail(Failure.UnsafeNamespace); return text;
+      });
+      const index = components.lastIndexOf("node_modules"), tail = index < 0 ? components : components.slice(index + 1);
+      if (excludedNames.some(name => JSON.stringify(name.split("/")) === JSON.stringify(tail))) fail(Failure.SourceBinding);
+      // A scope or nested node_modules alias can manufacture a resolution coordinate.
+      if (pin.before.isSymbolicLink() && (components.at(-1) === "node_modules" || tail.length === 1 && tail[0]!.startsWith("@"))) fail(Failure.SourceBinding);
+    }
+    for (const peer of selection.absentOptionalPeers) for (const path of peer.resolutionSearchPaths) {
+      remaining(); const parts = [...workspace.canonicalPath.split("/").filter(Boolean), ...path.split("/")].map(part => Buffer.from(part));
+      for (let i = prefix.length; i <= parts.length; i++) {
+        const pin = pins.get(physicalKey(parts.slice(0, i)));
+        if (pin && (i === parts.length || !pin.before.isDirectory())) fail(Failure.SourceBinding);
+        const parent = pins.get(physicalKey(parts.slice(0, i - 1)));
+        if (parent?.names?.some(name => name.equals(parts[i - 1]!)) && !pin) fail(Failure.UnsafeNamespace);
+      }
+    }
+  }
+  readDependencySourceRegistrySelection(sourceSession, workspace); remaining();
+}
+
 /** Same inventory contract for a pinned npm tool directory. No install claim. */
 export async function observeDependencyDirectoryRoot(input: {
   readonly parentPath: string; readonly name: string; readonly limits: DependencyTreeObservationLimits;
@@ -200,7 +302,7 @@ async function observeNamedRoot(input: {
   readonly expectedWorkspace?: DependencyWorkspaceIdentity; readonly expectedTree?: DependencyTreeIdentity;
   readonly limits: DependencyTreeObservationLimits;
   readonly sourceLinkSession?: DependencySourceLinkSession;
-}, exposure?: PhysicalRoot): Promise<DependencyCapturedTreeObservation> {
+}, exposure?: PhysicalRoot, rawPhysical = false, localRootOnly = false): Promise<DependencyCapturedTreeObservation> {
   const anchors: Anchor[] = [];
   let sourceNamespace: FileHandle | undefined;
   try {
@@ -302,6 +404,7 @@ async function observeNamedRoot(input: {
       }
       for (const name of beforeNames) {
         checkTime();
+        if (localRootOnly && name.equals(Buffer.from("node_modules"))) fail(Failure.SourceBinding);
         const childPath = anchored(dir.handle, name);
         const metadataHandle = await open(childPath, pathFlags);
         let info: BigIntStats;
@@ -362,7 +465,7 @@ async function observeNamedRoot(input: {
     if (exposure) for (const [index, anchor] of anchors.slice(0, treeAnchorIndex).entries())
       remember(prefix.slice(0, index), anchor.before, anchor.mountId, false);
     await walk(root, []);
-    const presentSourceLinks = validateSymlinks(entries, sourceLinks,
+    const presentSourceLinks = rawPhysical && exposure ? undefined : validateSymlinks(entries, sourceLinks,
       input.sourceLinkSession ? dependencySourceLinkAllowsSubset(input.sourceLinkSession) : false);
     // Re-open every leaf through its retained directory. A same-device bind
     // substitution is observable in fdinfo even when dev/ino remain identical.

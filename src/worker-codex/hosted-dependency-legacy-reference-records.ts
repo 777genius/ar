@@ -4,10 +4,10 @@ import { dirname } from "node:path";
 import { DependencyOwnerKind, DependencyOwnerPhase, DependencyReceiptState, DependencyReceiptParseStatus,
   parseDependencyOwner, parseDependencyReceipt, isDependencyConsumerOwner, type DependencyAttempt,
   HostedCustodyReservationState, type DependencyMaintenanceAttempt, type HostedOrdinaryReservation } from "@vioxen/subscription-runtime/worker-core";
-import { DependencyNpmLockName } from "../worker-core/dependency-environment/domain/dependency-install-key";
+import { DependencyInstallProfile, DependencyNpmLockName } from "../worker-core/dependency-environment/domain/dependency-install-key";
 import type { DependencyCommittedReceiptReference as Ref, DependencyCommittedUnverifiedReceipt } from "../worker-core/dependency-environment/ports/dependency-receipt-store";
-import type { DependencyLegacyComparisonRecord } from "../worker-core/dependency-environment/domain/dependency-legacy-comparison";
-import { parseHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { DependencyLegacyComparisonRecipe, type DependencyLegacyComparisonRecord } from "../worker-core/dependency-environment/domain/dependency-legacy-comparison";
+import { HostedDependencyReferenceKind, parseHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 
@@ -20,21 +20,22 @@ export function referencePath(operationId: string, suffix: "reference" | "refere
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(operationId)) referenceFailure();
   return `${legacyComparisonRoot}/${operationId}.${suffix}.json`;
 }
-export type ReferenceRelation = {
-  readonly version: 1; readonly operationId: string;
+type ReferenceRelationFields = { readonly operationId: string;
   readonly candidate: { readonly binding: HostedDependencyBinding; readonly maintenance: DependencyMaintenanceAttempt;
     readonly original: DependencyCommittedUnverifiedReceipt };
   readonly reference: { readonly binding: Extract<HostedDependencyBinding, { version: 3 }>; readonly staging: DependencyMaintenanceAttempt };
   readonly inputs: { readonly lockName: DependencyNpmLockName; readonly installKey: string; readonly inputSha256: string;
     readonly profileSha256: string; readonly closureDigest: string; readonly packageSha256: string; readonly lockSha256: string };
 };
+export type ReferenceRelation = ReferenceRelationFields & ({readonly version:1} | {readonly version:2;readonly recipe:DependencyLegacyComparisonRecipe.NpmLocalNoLifecycleV1;readonly profile:DependencyInstallProfile.TestNpmLocalNoLifecycleV1});
 export type ReferenceStart = { readonly version: 1; readonly operationId: string; readonly relation: Ref;
   readonly startId: string; readonly start: Ref; readonly reservation: HostedOrdinaryReservation };
 export type ReferenceEntry = { readonly version: 1; readonly operationId: string; readonly relation: Ref;
   readonly referenceStart: Ref; readonly attempt: DependencyAttempt };
-export type ReferenceResult = { readonly version: 1; readonly operationId: string; readonly relation: Ref;
-  readonly referenceStart: Ref; readonly referenceEntry: Ref; readonly reference: DependencyLegacyComparisonRecord["reference"];
+type ReferenceResultFields = { readonly operationId: string; readonly relation: Ref;
+  readonly referenceStart: Ref; readonly referenceEntry: Ref;
   readonly installKey: string; readonly inputSha256: string; readonly profileSha256: string };
+export type ReferenceResult = ReferenceResultFields & ({readonly version:1;readonly reference:Extract<DependencyLegacyComparisonRecord,{version:1}>["reference"]} | {readonly version:2;readonly recipe:DependencyLegacyComparisonRecipe.NpmLocalNoLifecycleV1;readonly profile:DependencyInstallProfile.TestNpmLocalNoLifecycleV1;readonly closureDigest:string;readonly reference:Extract<DependencyLegacyComparisonRecord,{version:2}>["reference"]});
 export type ReferenceRelease = { readonly version: 1; readonly operationId: string; readonly referenceResult: Ref;
   readonly attempt: DependencyAttempt; readonly startId: string; readonly ordinaryStart: Ref; readonly ordinaryCompletion: Ref;
   readonly attemptFence: Ref; readonly ownerRevision: number };
@@ -63,14 +64,16 @@ function attempt(v: unknown, workspace: HostedDependencyBinding["workspace"]): a
   if (!isDependencyConsumerOwner(parsed.owner)) referenceFailure();
 }
 export function parseReferenceRelation(v: unknown): ReferenceRelation {
-  exact(v, "version,operationId,candidate,reference,inputs");
-  if (v.version !== 1 || !uuid(v.operationId)) referenceFailure();
+  if (!object(v)) referenceFailure();
+  exact(v, v.version===2?"version,operationId,candidate,reference,inputs,recipe,profile":"version,operationId,candidate,reference,inputs");
+  if ((v.version !== 1 && v.version!==2) || !uuid(v.operationId)) referenceFailure();
   referencePath(v.operationId, "reference"); exact(v.candidate, "binding,maintenance,original"); exact(v.reference, "binding,staging");
   const candidate = parseHostedDependencyBinding(v.candidate.binding), reference = parseHostedDependencyBinding(v.reference.binding);
   if (candidate.version === 3 || reference.version !== 3 || reference.reference.operationId !== v.operationId ||
       candidate.workspace.canonicalPath === reference.workspace.canonicalPath ||
       candidate.workspace.dev === reference.workspace.dev && candidate.workspace.ino === reference.workspace.ino ||
       candidate.installationId !== reference.installationId || candidate.runtimeSha !== reference.runtimeSha) referenceFailure();
+  if (v.version===2 ? v.recipe!==DependencyLegacyComparisonRecipe.NpmLocalNoLifecycleV1 || v.profile!==DependencyInstallProfile.TestNpmLocalNoLifecycleV1 || reference.reference.kind!==HostedDependencyReferenceKind.LegacyLocalNoLifecycleV1 : reference.reference.kind!==HostedDependencyReferenceKind.LegacyRegistryV1) referenceFailure();
   maintenance(v.candidate.maintenance, candidate); maintenance(v.reference.staging, reference);
   if (v.candidate.maintenance.operationId !== v.operationId || v.reference.staging.operationId !== v.operationId) referenceFailure();
   exact(v.candidate.original, "receipt,reference"); ref(v.candidate.original.reference);
@@ -80,6 +83,7 @@ export function parseReferenceRelation(v: unknown): ReferenceRelation {
   exact(v.inputs, "lockName,installKey,inputSha256,profileSha256,closureDigest,packageSha256,lockSha256");
   if (v.inputs.lockName !== DependencyNpmLockName.PackageLock && v.inputs.lockName !== DependencyNpmLockName.Shrinkwrap ||
       ![v.inputs.installKey,v.inputs.inputSha256,v.inputs.profileSha256,v.inputs.closureDigest,v.inputs.packageSha256,v.inputs.lockSha256].every(sha)) referenceFailure();
+  if (v.version===2 && v.inputs.inputSha256!==v.inputs.closureDigest) referenceFailure();
   return v as unknown as ReferenceRelation;
 }
 export function parseReferenceStart(v: unknown): ReferenceStart {
@@ -97,12 +101,20 @@ export function parseReferenceEntry(v: unknown, workspace: HostedDependencyBindi
   return v as unknown as ReferenceEntry;
 }
 export function parseReferenceResult(v: unknown): ReferenceResult {
-  exact(v,"version,operationId,relation,referenceStart,referenceEntry,reference,installKey,inputSha256,profileSha256");
-  if (v.version !== 1 || !uuid(v.operationId) || ![v.installKey,v.inputSha256,v.profileSha256].every(sha)) referenceFailure();
+  if (!object(v)) referenceFailure();
+  exact(v,v.version===2?"version,operationId,relation,referenceStart,referenceEntry,reference,installKey,inputSha256,profileSha256,recipe,profile,closureDigest":"version,operationId,relation,referenceStart,referenceEntry,reference,installKey,inputSha256,profileSha256");
+  if ((v.version !== 1 && v.version!==2) || !uuid(v.operationId) || ![v.installKey,v.inputSha256,v.profileSha256].every(sha)) referenceFailure();
   ref(v.relation); ref(v.referenceStart); ref(v.referenceEntry);
-  exact(v.reference,"workspace,generation,coverageRevision,tree,manifestVersion,manifestDigest,installationId,output,mapping,start,creator,completion,terminal");
+  exact(v.reference,v.version===2?"workspace,generation,coverageRevision,tree,manifestVersion,manifestDigest,installationId,output,mapping,start,creator,completion,terminal,sourceBinding":"workspace,generation,coverageRevision,tree,manifestVersion,manifestDigest,installationId,output,mapping,start,creator,completion,terminal");
+  if (v.version===2) {ref(v.reference.sourceBinding);if (v.recipe!==DependencyLegacyComparisonRecipe.NpmLocalNoLifecycleV1 || v.profile!==DependencyInstallProfile.TestNpmLocalNoLifecycleV1 || !sha(v.closureDigest) || v.inputSha256!==v.closureDigest) referenceFailure();}
   for (const name of ["output","mapping","start","creator","completion","terminal"]) ref(v.reference[name]);
-  if (v.reference.manifestVersion !== 1 || !sha(v.reference.manifestDigest) || !uuid(v.reference.generation) ||
+  if (v.version===2) {
+    exact(v.reference.workspace,"canonicalPath,dev,ino");exact(v.reference.tree,"dev,ino");
+    if (typeof v.reference.workspace.canonicalPath!=="string" || !/^\/(?:[^\x00-\x20/]+\/)*[^\x00-\x20/]+$/.test(v.reference.workspace.canonicalPath) ||
+        v.reference.workspace.canonicalPath.split("/").some(part=>part==="." || part==="..") ||
+        ![v.reference.workspace.dev,v.reference.workspace.ino,v.reference.tree.dev,v.reference.tree.ino].every(n=>typeof n==="string" && /^(0|[1-9][0-9]{0,39})$/.test(n))) referenceFailure();
+  }
+  if (v.reference.manifestVersion !== (v.version===2?2:1) || !sha(v.reference.manifestDigest) || !uuid(v.reference.generation) ||
       !uuid(v.reference.installationId) || !sha(v.reference.coverageRevision)) referenceFailure();
   return v as unknown as ReferenceResult;
 }

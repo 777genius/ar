@@ -48,7 +48,7 @@ export function captureHostedDependencyToolReadyReader(fence: HostedActivationFe
       const receipt = history.receipt;
       if (receipt.state !== DependencyReceiptState.Ready) return unknown;
       if (receipt.provenance.kind === DependencyInstallProofKind.LegacyCompared) {
-        assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance });
+        if (assertHostedDependencyLegacyComparedReady({ ...receipt, provenance: receipt.provenance }).version !== 1) return unknown;
       } else if (receipt.provenance.kind !== DependencyInstallProofKind.CompletedInstall) return unknown;
       assertAttempt();
       return Object.freeze({ status: DependencyToolReadyReadStatus.Ready, facts: Object.freeze({

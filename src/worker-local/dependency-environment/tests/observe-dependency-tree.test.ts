@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import { DependencyManifestEntryKind as Kind, DependencyTreeObservationFailure as Failure,
   DependencyTreeObservationStatus as Status, DependencyTreeAllocationBasis as AllocationBasis,
   type DependencyCapturedTreeObservation } from "../../../worker-core/dependency-environment/domain/dependency-tree-manifest";
-import { observeDependencyDirectoryRoot, observeDependencyTree, captureDependencySourceExposure,
+import { observeDependencyDirectoryRoot, observeDependencyTree, captureDependencySourceExposure, captureDependencyPhysicalTreeExposure,
   assertDependencySourceExposureCurrent, closeDependencySourceExposure, type DependencySourceExposure } from "../observe-dependency-tree";
 import { observeDependencyPinnedFile } from "../observe-dependency-pinned-file";
 
@@ -384,5 +384,56 @@ describe.skipIf(process.platform !== "linux")("private source exposure after sca
       expect(await readFile(f.file, "utf8")).toBe("abc");
     } finally { if (mounted) await run("umount", [f.file], { timeout: 5000 });
       if (handle) closeDependencySourceExposure(handle); await f.cleanup(); }
+  });
+});
+
+// Red if physical capture requires logical qualification, weakens generic
+// observation, resets either baseline, or leaves a closed handle usable.
+describe.skipIf(process.platform !== "linux")("raw local comparison baselines", () => {
+  it("retains hardlink and entry bounds on the fixed physical entry", async () => {
+    const f = await fixture();
+    try {
+      const workspace = await lstat(f.path, { bigint: true }), tree = await lstat(f.tree, { bigint: true });
+      const input = { workspace: { canonicalPath: f.path, dev: String(workspace.dev), ino: String(workspace.ino) },
+        expectedTree: { dev: String(tree.dev), ino: String(tree.ino) }, limits };
+      expect(await captureDependencyPhysicalTreeExposure({ ...input, limits: { ...limits, maxEntries: 1 } }))
+        .toEqual({ status: Status.Incomplete, reason: Failure.Bounds });
+      await link(f.file, join(f.path, "outside-hardlink"));
+      expect(await captureDependencyPhysicalTreeExposure(input)).toEqual({ status: Status.Incomplete, reason: Failure.Hardlink });
+      expect(await readFile(f.file, "utf8")).toBe("abc");
+    } finally { await f.cleanup(); }
+  });
+  it("pins each separate tree across closed scans without following external links", async () => {
+    const candidate = await fixture(), reference = await fixture();
+    const handles: DependencySourceExposure[] = [];
+    try {
+      for (const f of [candidate, reference]) {
+        await writeFile(join(f.path, "outside"), "TEST outside source");
+        await symlink("../outside", join(f.tree, "local"));
+        const root = await lstat(f.path, { bigint: true }), tree = await lstat(f.tree, { bigint: true });
+        const value = await captureDependencyPhysicalTreeExposure({ workspace: { canonicalPath: f.path, dev: String(root.dev), ino: String(root.ino) },
+          expectedTree: { dev: String(tree.dev), ino: String(tree.ino) }, limits });
+        expect(value.status).toBe(Status.Complete);
+        if (value.status !== Status.Complete) throw new Error(`TEST physical incomplete:${value.reason}`);
+        handles.push(value.exposure);
+        expect(Object.keys(value)).toEqual(["status", "exposure"]);
+        expect(await f.observe()).toEqual({ status: Status.Incomplete, reason: Failure.ExternalSymlink });
+        expect(await captureDependencySourceExposure({ roots: [{ parentPath: f.path, name: "node_modules",
+          expectedTree: { dev: String(tree.dev), ino: String(tree.ino) } }], limits }))
+          .toEqual({ status: Status.Incomplete, reason: Failure.ExternalSymlink });
+      }
+      expect(() => assertDependencySourceExposureCurrent(handles[0]!)).not.toThrow();
+      expect(() => assertDependencySourceExposureCurrent(handles[1]!)).not.toThrow();
+      await writeFile(reference.file, "xyz");
+      expect(() => assertDependencySourceExposureCurrent(handles[1]!)).toThrow();
+      expect(() => assertDependencySourceExposureCurrent(handles[0]!)).not.toThrow();
+      await rm(join(candidate.tree, "local")); await symlink("../other", join(candidate.tree, "local"));
+      expect(() => assertDependencySourceExposureCurrent(handles[0]!)).toThrow();
+      expect(await readFile(join(reference.path, "outside"), "utf8")).toBe("TEST outside source");
+      expect(await readFile(join(candidate.path, "outside"), "utf8")).toBe("TEST outside source");
+    } finally {
+      for (const handle of handles) { closeDependencySourceExposure(handle); expect(() => assertDependencySourceExposureCurrent(handle)).toThrow(); }
+      await candidate.cleanup(); await reference.cleanup();
+    }
   });
 });
