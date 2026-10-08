@@ -3,9 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { researchProcessIdentity, researchUnitFromCurrentProcess } from "../research-launch-host";
-import { admitResearchRuntime, bindResearchRuntime, captureResearchRuntime, researchCurrentStart } from "../research-launch-admission";
+import { admitResearchRuntime, assertResearchStartMaterial, bindResearchRuntime, captureResearchRuntime, researchCurrentStart } from "../research-launch-admission";
 import { grantResearchLaunch, startResearchLaunch } from "../research-launch-owner";
 import { researchHash, researchRead } from "../research-launch-files";
+import * as files from "../research-launch-files";
+import * as materialHost from "../research-launch-host";
+import { normalizeResearchMaterialFailure, ResearchMaterialRole as R, ResearchLaunchCause as C, ResearchLaunchDiagnostic as D } from "../research-launch-diagnostics";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 
 beforeEach(setupResearchFixture);
@@ -81,5 +84,47 @@ describe("kernel cgroup membership at the research authority boundary", () => {
     expect(() => bindResearchRuntime(current.jobId, current.startId)).toThrow("hosted_research_launch_denied");
     expect(fs.existsSync(local(join(researchCurrentStart(current.jobId).directory, "binding.json")))).toBe(false);
     expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+});
+
+describe("private material role at the existing byte guards", () => {
+  it.each([R.RuntimeArtifact, R.NodeExecutable, R.CodexExecutable])("retains an actual cached file deadline and short-circuit at %s", role => {
+    const current = researchCurrentStart(start().jobId), spec = current.spec, order: R[] = [];
+    let original: unknown, observed: unknown, clock = 0;
+    const artifact = files.researchArtifactDigest, executable = materialHost.researchExecutableDigest, open = fs.openSync;
+    vi.spyOn(files, "researchArtifactDigest").mockImplementation(path => { order.push(R.RuntimeArtifact);
+      try { return artifact(path); } catch (error) { original = error; throw error; } });
+    vi.spyOn(materialHost, "researchExecutableDigest").mockImplementation(path => { order.push(path === process.execPath ? R.NodeExecutable : R.CodexExecutable);
+      try { return executable(path); } catch (error) { original = error; throw error; } });
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    vi.spyOn(fs, "openSync").mockImplementation(((path, flags, mode) => {
+      const fd = open(path, flags, mode);
+      if (role === R.RuntimeArtifact ? typeof path === "string" && path.startsWith(spec.runtimeDirectory + "/")
+        : path === (role === R.NodeExecutable ? process.execPath : spec.request.codexBinaryPath)) clock = files.researchByteValidationTimeoutMs + 1;
+      return fd;
+    }) as typeof fs.openSync);
+    const reads = vi.spyOn(fs, "readSync");
+    try { assertResearchStartMaterial(spec); } catch (error) { observed = error; }
+    expect(original).toBeDefined(); expect(observed === original).toBe(true);
+    expect(normalizeResearchMaterialFailure(observed)).toEqual({ legacyCode: 0, cause: C.FileDeadline, diagnostic: D.ResearchAdmission, materialRole: role });
+    expect(order).toEqual([R.RuntimeArtifact, R.NodeExecutable, R.CodexExecutable].slice(0, [R.RuntimeArtifact, R.NodeExecutable, R.CodexExecutable].indexOf(role) + 1));
+    expect(reads).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(JSON.stringify(normalizeResearchMaterialFailure(observed))).not.toContain(spec.runtimeDirectory);
+  });
+  it("retains original order and rejects digest mismatches in their precise scope", () => {
+    const spec = researchCurrentStart(start().jobId).spec, artifact = vi.spyOn(files, "researchArtifactDigest"), executable = vi.spyOn(materialHost, "researchExecutableDigest");
+    expect(() => assertResearchStartMaterial(spec)).not.toThrow(); expect(artifact).toHaveBeenCalledTimes(1);
+    expect(executable.mock.calls.map(call => call[0])).toEqual([process.execPath, spec.request.codexBinaryPath]);
+    for (const [field, role, expectedCalls] of [["artifactSha256", R.RuntimeArtifact, 0], ["nodeSha256", R.NodeExecutable, 1], ["codexSha256", R.CodexExecutable, 2]] as const) {
+      executable.mockClear(); artifact.mockClear(); let failure: unknown;
+      const changed = { ...spec, [field]: (spec[field][0] === "0" ? "1" : "0") + spec[field].slice(1) };
+      try { assertResearchStartMaterial(changed); } catch (error) { failure = error; }
+      expect(normalizeResearchMaterialFailure(failure)).toEqual({ legacyCode: 0, cause: C.None, diagnostic: D.ResearchAdmission, materialRole: role });
+      expect(artifact).toHaveBeenCalledTimes(1); expect(executable).toHaveBeenCalledTimes(expectedCalls);
+    }
+    executable.mockClear(); artifact.mockClear(); let failure: unknown;
+    try { assertResearchStartMaterial({ ...spec, runtimeDirectory: "/TEST-private-invalid-runtime" }); } catch (error) { failure = error; }
+    expect(normalizeResearchMaterialFailure(failure).materialRole).toBe(R.Unknown);
+    expect(artifact).not.toHaveBeenCalled(); expect(executable).not.toHaveBeenCalled();
   });
 });
