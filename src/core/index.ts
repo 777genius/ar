@@ -30,3 +30,4 @@ export {
 export * from "./scoped-retained-resource-validation";
 export * from "./dependency-environment/dependency-owner";
 export * from "./dependency-environment/dependency-workspace";
+export * from "./host-infrastructure/system-bus-infrastructure";
