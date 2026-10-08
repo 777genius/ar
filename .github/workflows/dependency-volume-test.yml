@@ -34,9 +34,9 @@ jobs:
           # No Git metadata, credentials or real projects enter the TEST copy.
           cp -a src packages node_modules package.json vitest.config.ts tsconfig.json "$volume_test_root/"
           mkdir "$volume_test_root/home" "$volume_test_root/temp"
-          sudo -n chown -R 0:0 "$volume_test_root"
           volume_test_node=$(command -v node)
           cd "$volume_test_root"
+          sudo -n chown -R 0:0 "$volume_test_root"
           sudo -n /usr/bin/env -i \
             PATH=/usr/bin:/bin HOME="$volume_test_root/home" \
             TMPDIR="$volume_test_root/temp" XDG_CONFIG_HOME="$volume_test_root/home" \
