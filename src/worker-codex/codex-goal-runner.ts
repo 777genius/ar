@@ -1,3 +1,4 @@
+import { nativeWebFromSafeExecutionResult, nativeWebFromManagedError } from "./codex-goal-run-result";
 import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
@@ -861,12 +862,15 @@ async function codexRuntimeResultInput(input: {
   const artifacts = handoff?.artifacts ?? [];
   assertDirtyTerminalHandoffAvailable(workspace.changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
+  const nativeWeb = nativeWebFromSafeExecutionResult(input.result);
+  const nativeWebDetails = nativeWeb === undefined ? {} : { nativeWeb };
   const details = runtimeResultDetails({
     ...("failureDetails" in input.result && input.result.failureDetails
       ? { failureDetails: input.result.failureDetails }
       : {}),
     ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
     handoffDetails: terminalCodexGoalHandoffResultDetails(handoff),
+    ...nativeWebDetails,
   });
   return {
     status,
@@ -919,6 +923,8 @@ async function codexExceptionRuntimeResultInput(input: {
   const artifacts = handoff?.artifacts ?? [];
   assertDirtyTerminalHandoffAvailable(changedFiles, handoff, artifacts);
   const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
+  const nativeWeb = nativeWebFromManagedError(input.error);
+  const nativeWebDetails = nativeWeb === undefined ? {} : { nativeWeb };
   const details = runtimeResultDetails({
     failureDetails: {
       errorName: input.error instanceof Error ? input.error.name : "unknown",
@@ -928,6 +934,7 @@ async function codexExceptionRuntimeResultInput(input: {
     },
     ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
     handoffDetails: terminalCodexGoalHandoffResultDetails(handoff),
+    ...nativeWebDetails,
   });
   return {
     status: changedFiles.length > 0 ? "partial" : "failed",

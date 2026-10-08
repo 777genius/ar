@@ -27,6 +27,8 @@ export function usageFromError(error: unknown): AgentUsage | undefined {
   return undefined;
 }
 
+/** The outer bounded aggregate is authoritative; callers must merge a rejected
+ * turn before wrapping, rather than double-counting the cause chain. */
 export function nativeWebFromError(error: unknown): NativeWebEvidence | undefined {
   const seen = new Set<Error>();
   while (error instanceof Error && !seen.has(error)) {

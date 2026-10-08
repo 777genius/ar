@@ -1,14 +1,12 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { web, completed, fixture } from "./native-web-test-support";
+import * as nativeJson from "../../app-server/application/app-server-native-web-json";
+import { createHash } from "node:crypto";
+import { AppServerNativeWebCapture } from "../../app-server/application/app-server-native-web";
 import { expect, it, vi } from "vitest";
 import { DefaultRedactor, NativeWebAction, NativeWebItemStatus, anonymousWebUrl, appendNativeWebEvidence, parseNativeWebEvidence, type NativeWebEvidence, type ProviderTaskResult } from "@vioxen/subscription-runtime/core";
-import { CodexAppServerClient } from "../../app-server/application/app-server-client";
 import { AppServerTurnRunner } from "../../app-server/application/app-server-turn-runner";
 import { AppServerGoalRunner } from "../../app-server/application/app-server-goal-runner";
 import { redactCompletedAppServerResult } from "../../app-server/application/app-server-result-redactor";
-import { FakeAppServerFactory } from "../../app-server/testing/fake-app-server";
-import { resolveCodexExecutionProfile } from "../../codex-execution-profile";
 import { providerTaskResultToAgentTaskResult, agentTaskResultToProviderTaskResult, parseAgentTaskResult, providerTaskEventToAgentTaskEvent, parseAgentTaskEvent } from "../../../agent-task/codec";
 import { providerTaskResultToAgentRuntimeTaskResult, agentRuntimeTaskResultToProviderTaskResult, parseAgentRuntimeTaskResult, providerTaskEventToAgentRuntimeTaskEvent, parseAgentRuntimeTaskEvent } from "../../../agent-runtime-task/codec";
 import { CodexAppServerExecutionEngine } from "../../codex-app-server-execution-engine";
@@ -17,52 +15,7 @@ import { AgentRuntimeThreadOutcome } from "../../../agent-runtime-task/types";
 import { RecordingManagedRunStore, StaticRunner } from "../codex-provider-test-support";
 import { AppServerUsageError, nativeWebFromError, safeNativeWebFromError } from "../../app-server/domain/app-server-usage-error";
 
-const web = (id = 'web-1', extra: Record<string, unknown> = {}) => ({ type: 'webSearch', id, query: 'PRIVATE QUERY', action: { type: 'openPage', url: 'https://example.org/docs' }, results: [{ secret: 'PRIVATE SNIPPET' }], ...extra });
-type Frame = { method: string; params: Record<string, unknown> };
-type Script = (threadId: string, acknowledged: string, alias: string) => Frame[];
-const completed = (threadId: string, turnId: string, item: unknown): Frame => ({ method: 'item/completed', params: { threadId, turnId, item } });
-async function fixture(script: Script, options: { early?: boolean; alias?: boolean; late?: Script; failed?: boolean; goals?: readonly string[]; ackId?: string } = {}) {
-  const workspace = await mkdtemp(join(tmpdir(), 'native-web-receipt-TEST-'));
-  let goalRead = 0;
-  const factory = new FakeAppServerFactory({ emitTurnEventsWithStartResponse: true,
-    mismatchTurnStartResponseId: options.alias ?? false,
-    ...(options.goals ? { goalStatusesAfterTurns: options.goals } : {}),
-    onRequest: request => {
-      if (request.method === 'thread/goal/get' && options.goals) {
-        const stdout = factory.processes.at(-1)!.stdout; const emit = stdout.emit.bind(stdout);
-        vi.spyOn(stdout, 'emit').mockImplementationOnce((event, ...args) => {
-          const frame = JSON.parse(String(args[0]));
-          frame.result.goal.status = options.goals![goalRead++] ?? 'complete';
-          frame.result.goal.tokensUsed = 50;
-          return emit(event, JSON.stringify(frame) + '\n');
-        });
-        return;
-      }
-      if (request.method !== 'turn/start') return;
-      const stdout = factory.processes.at(-1)!.stdout; const emit = stdout.emit.bind(stdout);
-      vi.spyOn(stdout, 'emit').mockImplementationOnce((event, ...args) => {
-        const frames = String(args[0]).trim().split('\n').map(line => JSON.parse(line));
-        const ack = frames.shift();
-        if (options.ackId !== undefined) ack.result.turn.id = options.ackId;
-        const threadId = String(request.params?.threadId);
-        const actual = frames.find(frame => frame.method === 'turn/started').params.turn.id;
-        const ackId = ack.result.turn.id;
-        const terminal = frames.pop(); terminal.params.threadId = threadId;
-        if (options.failed) { terminal.params.turn.status = 'failed'; terminal.params.turn.error = { message: 'fixture failure' }; }
-        const body = [...frames, ...script(threadId, ackId, actual), terminal, ...(options.late?.(threadId, ackId, actual) ?? [])];
-        return emit(event, [...(options.early ? [...body, ack] : [ack, ...body])].map(frame => JSON.stringify(frame)).join('\n') + '\n');
-      });
-    } });
-  const abortSignal = new AbortController().signal;
-  const client = new CodexAppServerClient({ codexBinaryPath: '/fake/codex', sourceEnv: {}, processFactory: factory.create,
-    signalChildProcess: (child, signal) => { child.kill(signal); },
-    session: { home: workspace, codexHome: workspace, env: {}, release: async () => undefined },
-    workspacePath: workspace, executionProfile: resolveCodexExecutionProfile(undefined),
-    timeoutMs: 2_000, startupTimeoutMs: 2_000, reconnectGraceMs: 100, maxOutputBytes: 4096, abortSignal });
-  await client.start();
-  const input = { workspacePath: workspace, model: 'test', reasoningEffort: 'low' as const, sandboxMode: 'read-only' as const, timeoutMs: 2_000, abortSignal, prompt: 'TEST' };
-  return { client, input, factory, close: async () => { await client.stop(); await rm(workspace, { recursive: true, force: true }); vi.restoreAllMocks(); } };
-}
+const opaqueSummary = { shape: 'array', count: 1, observedJsonBytes: Buffer.byteLength(JSON.stringify(web().results)), sha256: createHash('sha256').update(JSON.stringify(web().results)).digest('hex'), digestScope: 'complete_reserialized_json', truncated: false };
 
 // Regression: old item/completed silently discarded native items, including those before ACK.
 it.each([false, true])('captures exact acknowledged native items with early=%s and fresh lifetime', async early => {
@@ -72,7 +25,7 @@ it.each([false, true])('captures exact acknowledged native items with early=%s a
     for (let n = 1; n <= 2; n++) {
       const result = await f.client.startTurn({ ...f.input, threadId });
       expect(result.nativeWeb?.turns).toHaveLength(1);
-      expect(result.nativeWeb?.turns[0]).toEqual({ threadId, acknowledgedTurnId: `turn-${n}`, records: [{ itemId: 'web-1', status: NativeWebItemStatus.CompletionOnly, action: NativeWebAction.OpenPage, requestedUrl: 'https://example.org/docs' }, { itemId: `only-turn-${n}`, status: NativeWebItemStatus.CompletionOnly, action: NativeWebAction.OpenPage, requestedUrl: 'https://example.org/docs' }], unknown: false, truncated: false });
+      expect(result.nativeWeb?.turns[0]).toEqual({ threadId, acknowledgedTurnId: `turn-${n}`, records: [{ itemId: 'web-1', status: NativeWebItemStatus.CompletionOnly, action: NativeWebAction.OpenPage, resultSummary: opaqueSummary, requestedUrl: 'https://example.org/docs' }, { itemId: `only-turn-${n}`, status: NativeWebItemStatus.CompletionOnly, action: NativeWebAction.OpenPage, resultSummary: opaqueSummary, requestedUrl: 'https://example.org/docs' }], unknown: false, truncated: false });
       expect(JSON.stringify(result.nativeWeb)).not.toMatch(/PRIVATE/);
       expect(result.nativeWeb?.truncated).toBe(false);
     }
@@ -84,6 +37,7 @@ it('rejects arbitrary early alias, wrong thread/turn, model text and outer stdou
   const f = await fixture((thread, ack, alias) => [
     completed(thread, alias, web('alias')), completed('wrong-thread', ack, web('wrong-thread')),
     completed(thread, 'wrong-turn', web('wrong-turn')),
+    completed(thread, 'wrong-turn', web('bad id')),
     completed(thread, ack, { type: 'agentMessage', text: JSON.stringify(web('spoof')) }),
     completed(thread, ack, { type: 'commandExecution', id: 'exec', aggregatedOutput: JSON.stringify(web('stdout')), items: [web('nested-guess')] }),
     completed(thread, ack, web('trusted')),
@@ -93,6 +47,7 @@ it('rejects arbitrary early alias, wrong thread/turn, model text and outer stdou
     const result = await f.client.startTurn({ ...f.input, threadId });
     expect(result.acknowledgedTurnId).toBe('response-turn-1');
     expect(result.nativeWeb?.turns[0]?.records.map(item => item.itemId)).toEqual(['trusted']);
+    expect(result.nativeWeb?.turns[0]?.unknown).toBe(true); // alias terminal still fences exact ACK
   } finally { await f.close(); }
 });
 
@@ -136,7 +91,7 @@ it('drops ref_id and unsafe request URLs without inventing source results', asyn
   const f = await fixture((thread, turn) => [completed(thread, turn, web('ref', { action: { type: 'openPage', url: 'turn0search0' } })), completed(thread, turn, web('unsafe', { action: { type: 'openPage', url: 'https://user:pass@example.org/?secret=yes' } }))]);
   try {
     const threadId = await f.client.startThread(f.input); const result = await f.client.startTurn({ ...f.input, threadId });
-    expect(result.nativeWeb?.turns[0]?.records).toEqual(['ref', 'unsafe'].map(itemId => ({ itemId, status: NativeWebItemStatus.CompletionOnly, action: NativeWebAction.OpenPage })));
+    expect(result.nativeWeb?.turns[0]?.records).toEqual(['ref', 'unsafe'].map(itemId => ({ itemId, status: NativeWebItemStatus.CompletionOnly, action: NativeWebAction.OpenPage, resultSummary: opaqueSummary })));
   } finally { await f.close(); }
 });
 
@@ -195,8 +150,8 @@ it('validates finite codec records instead of trusting opaque JSON; aggregate ca
 });
 
 // Full result path: framed client -> runner -> engine -> driver -> Host task envelope.
-it.each([false, true])('preserves actual native transport through engine/driver for logical=%s', async logical => {
-  const f = await fixture((thread, turn) => [completed(thread, turn, web())], { goals: ['complete'] });
+it.each([{ logical: false, large: false }, { logical: true, large: false }, { logical: false, large: true }])('preserves actual native transport through engine/driver for logical=$logical/large=$large', async ({ logical, large }) => {
+  const f = await fixture((thread, turn) => [completed(thread, turn, web('web-1', large ? { results: ['PRIVATE'.repeat(20_000)] } : {}))], { goals: ['complete'] });
   const engine = new CodexAppServerExecutionEngine({ codexBinaryPath: '/fake/codex', sourceEnv: {}, processFactory: f.factory.create, cleanThreadPrewarm: false, goalMode: logical, maxGoalTurns: 2 });
   const driver = new CodexJsonAgentDriver({ engine, model: 'test', reasoningEffort: 'low', sessionMaterializer: {
     mode: 'ephemeral', materialize: async () => ({ home: f.input.workspacePath, codexHome: f.input.workspacePath, env: {}, release: async () => {} }),
@@ -206,6 +161,8 @@ it.each([false, true])('preserves actual native transport through engine/driver 
       ...(logical ? { logicalThread: { threadId: 'TEST-logical', onCheckpoint: async () => {} } } : {}),
     });
     expect(result.status).toBe('completed');
+    expect(result.telemetry?.nativeWeb?.turns[0]?.records[0]?.resultSummary?.digestScope).toBe(large ? 'prefix_reserialized_json' : 'complete_reserialized_json');
+    expect(result.telemetry?.nativeWeb?.truncated).toBe(large);
     expect(result.telemetry?.nativeWeb?.turns[0]?.records[0]?.status).toBe(NativeWebItemStatus.CompletionOnly);
     const host = providerTaskResultToAgentRuntimeTaskResult(result);
     expect(agentRuntimeTaskResultToProviderTaskResult(parseAgentRuntimeTaskResult(JSON.parse(JSON.stringify(host)))).telemetry?.nativeWeb).toEqual(result.telemetry?.nativeWeb);
@@ -236,4 +193,134 @@ it.each(['bad id', '../turn', 'a'.repeat(129)])('rejects malformed ACK %s', asyn
     await expect(f.client.startTurn({ ...f.input, threadId })).rejects.toThrow(/turn_id_missing/);
     await expect(f.client.startTurn({ ...f.input, threadId: 'bad thread' })).rejects.toThrow(/thread_id_invalid/);
   } finally { await f.close(); }
+});
+
+// d38 discarded opaque results and rejected serde Option/default omissions.
+it('distinguishes absent, null, empty, populated and invalid results through framed transport', async () => {
+  const absent = web('absent'); delete (absent as Record<string, unknown>).results; delete (absent as Record<string, unknown>).action;
+  const f = await fixture((thread, turn) => [absent, web('null', { results: null, action: null }), web('empty', { results: [], action: { type: 'search' } }), web('populated'), web('invalid', { results: {} }), web('nested', { action: { type: 'findInPage' } })].map(item => completed(thread, turn, item)));
+  try {
+    const threadId = await f.client.startThread(f.input);
+    const result = await f.client.startTurn({ ...f.input, threadId });
+    const records = result.nativeWeb!.turns[0]!.records;
+    expect(records.map(item => item.status)).toEqual(['completion_only', 'completion_only', 'completion_only', 'completion_only', 'unknown', 'completion_only']);
+    expect(records.map(item => item.resultSummary?.shape)).toEqual(['absent', 'null', 'array', 'array', 'invalid', 'array']);
+    expect(records[2]?.resultSummary).toEqual({ shape: 'array', count: 0, observedJsonBytes: 2, sha256: createHash('sha256').update('[]').digest('hex'), digestScope: 'complete_reserialized_json', truncated: false });
+    expect(records[3]?.resultSummary).toEqual(opaqueSummary);
+    expect(JSON.stringify(records)).not.toMatch(/PRIVATE|secret/);
+    expect(parseNativeWebEvidence(JSON.parse(JSON.stringify(result.nativeWeb)))).toEqual(result.nativeWeb);
+  } finally { await f.close(); }
+});
+
+// A prefix is an observation, never a complete hash/byte count or an empty array.
+it('exports truthful bounded UTF-8 prefixes and bounds repeated duplicate work', () => {
+  const capture = new AppServerNativeWebCapture('thread'); capture.bind('turn');
+  const results = ['é'.repeat(100_000)];
+  capture.observe({ threadId: 'thread', turnId: 'wrong', item: web('wrong', { results }) }, false);
+  capture.observe({ threadId: 'thread', turnId: 'turn', item: web('large', { results }) }, false);
+  const serialized = Buffer.from(JSON.stringify(results)); const prefix = serialized.subarray(0, 64 * 1024);
+  expect(capture.result()?.turns[0]?.records[0]?.resultSummary).toEqual({ shape: 'array', count: 1, observedJsonBytes: prefix.length, sha256: createHash('sha256').update(prefix).digest('hex'), digestScope: 'prefix_reserialized_json', truncated: true });
+  expect(capture.result()).toMatchObject({ truncated: true, turns: [{ unknown: true, truncated: true }] });
+  for (let n = 0; n < 300; n++) capture.observe({ threadId: 'thread', turnId: 'turn', item: web('large', { results }) }, false);
+  expect(capture.result()?.turns[0]?.records).toEqual([{ itemId: 'large', status: 'unknown', action: 'unknown' }]);
+  // Once processing budget is consumed a new item cannot masquerade as observed.
+  capture.observe({ threadId: 'thread', turnId: 'turn', item: web('after-budget') }, false);
+  expect(capture.result()?.turns[0]?.records).toHaveLength(1);
+});
+
+// Logical failure wrapping previously returned the prior aggregate, hiding the
+// rejecting turn's real client timeout after exact ACK/native notifications.
+it.each([1, 2])('retains native observations when turn %s rejects after notifications', async rejectTurn => {
+  const f = await fixture((thread, turn) => [completed(thread, turn, web(`web-${turn}`))], { rejectTurn, goals: ['active', 'complete'] });
+  try {
+    const goal = new AppServerGoalRunner({ client: f.client, runStore: new RecordingManagedRunStore() });
+    const error = await goal.runLogicalThreadGoal({ ...f.input, redactor: new DefaultRedactor(), maxGoalTurns: 2, goalContinuePrompt: 'continue' }).catch(error => error);
+    expect(error).toBeInstanceOf(AppServerUsageError);
+    const evidence = nativeWebFromError(error);
+    expect(evidence?.turns).toHaveLength(rejectTurn);
+    expect(evidence?.turns.at(-1)?.records[0]).toMatchObject({ itemId: `web-turn-${rejectTurn}`, resultSummary: opaqueSummary });
+    expect(parseNativeWebEvidence(evidence)).toEqual(evidence);
+    expect(JSON.stringify(evidence)).not.toMatch(/PRIVATE/);
+  } finally { await f.close(); }
+});
+
+// Admission must reject foreign identity and unique overflow before hashing;
+// duplicate storms must terminate bounded processing even for identical items.
+it('admits identities and caps before spending its finite processing budget', () => {
+  const digest = vi.spyOn(nativeJson, 'boundedNativeWebJson');
+  try {
+    const capture = new AppServerNativeWebCapture('thread'); capture.bind('turn');
+    for (let n = 0; n < 300; n++) capture.observe({ threadId: 'thread', turnId: 'foreign', item: web() }, false);
+    capture.observe({ threadId: 'foreign', turnId: 'turn', item: web() }, false);
+    expect(digest).not.toHaveBeenCalled();
+    for (let n = 0; n < 64; n++) capture.observe({ threadId: 'thread', turnId: 'turn', item: web(`item-${n}`) }, false);
+    expect(digest).toHaveBeenCalledTimes(128);
+    for (let n = 0; n < 300; n++) capture.observe({ threadId: 'thread', turnId: 'turn', item: web(`overflow-${n}`) }, false);
+    expect(digest).toHaveBeenCalledTimes(128);
+    for (let n = 0; n < 300; n++) capture.observe({ threadId: 'thread', turnId: 'turn', item: web('item-0') }, false);
+    expect(digest.mock.calls.length).toBeLessThanOrEqual(512);
+    expect(capture.result()).toMatchObject({ truncated: true, turns: [{ records: expect.any(Array), unknown: true, truncated: true }] });
+    expect(capture.result()?.turns[0]?.records).toHaveLength(64);
+  } finally { digest.mockRestore(); }
+});
+
+it.each([
+  { type: 'search', query: [] }, { type: 'search', queries: [1] },
+  { type: 'openPage', url: false }, { type: 'findInPage', pattern: 1 },
+])('does not normalize invalid present action members to completion (%j)', action => {
+  const capture = new AppServerNativeWebCapture('thread'); capture.bind('turn');
+  capture.observe({ threadId: 'thread', turnId: 'turn', item: web('invalid-action', { action }) }, false);
+  expect(capture.result()?.turns[0]).toMatchObject({ unknown: true, records: [{ status: 'unknown' }] });
+});
+
+// Finite summary contract cannot smuggle payloads or claim a prefix is complete.
+it('rejects summary payload injection and inconsistent digest/cap semantics at codecs', () => {
+  const capture = new AppServerNativeWebCapture('thread'); capture.bind('turn');
+  capture.observe({ threadId: 'thread', turnId: 'turn', item: web() }, false);
+  const evidence = capture.result()!;
+  for (const change of [{ body: 'PRIVATE' }, { count: -1 }, { observedJsonBytes: 65_537 }, { digestScope: 'raw_wire' }, { sha256: 'bad' }, { truncated: true }, { shape: 'null' }]) {
+    const forged = { ...evidence, turns: [{ ...evidence.turns[0]!, records: [{ ...evidence.turns[0]!.records[0]!, resultSummary: { ...opaqueSummary, ...change } }] }] };
+    expect(() => parseNativeWebEvidence(forged)).toThrow('native_web_evidence_invalid');
+  }
+});
+
+// Independently isolates gap 1: all optional members are present and valid,
+// so d38 fails solely because it discards the returned opaque result payload.
+it('summarizes populated opaque results independently of optional normalization', async () => {
+  const f = await fixture((thread, turn) => [completed(thread, turn, web())]);
+  try {
+    const threadId = await f.client.startThread(f.input);
+    const result = await f.client.startTurn({ ...f.input, threadId });
+    expect(result.nativeWeb?.turns[0]?.records[0]?.resultSummary).toEqual(opaqueSummary);
+    expect(JSON.stringify(result.nativeWeb)).not.toMatch(/PRIVATE|secret/);
+  } finally { await f.close(); }
+});
+
+it('filters malformed pre-ACK items by exact turn before marking unknown', async () => {
+  const f = await fixture((thread, turn) => [completed(thread, 'foreign', web('bad id')), completed(thread, turn, web())], { early: true });
+  try {
+    const threadId = await f.client.startThread(f.input);
+    const result = await f.client.startTurn({ ...f.input, threadId });
+    expect(result.nativeWeb?.turns[0]).toMatchObject({ unknown: false, truncated: false, records: [{ itemId: 'web-1' }] });
+  } finally { await f.close(); }
+});
+
+// JSON bytes/digests are reserialized UTF-8 observations, including escapes and
+// surrogate pairs. Depth loss is explicit, and opaque unsafe URLs stay opaque.
+it('bounds depth and hashes complete reserialized JSON without extracting opaque URLs', () => {
+  const results = [{ text: 'é😀\n"\\', url: 'https://user:password@example.org/?token=PRIVATE', nested: [null, false, 0] }];
+  const capture = new AppServerNativeWebCapture('thread'); capture.bind('turn');
+  capture.observe({ threadId: 'thread', turnId: 'turn', item: web('utf8', { results }) }, false);
+  expect(capture.result()?.turns[0]?.records[0]?.resultSummary).toEqual({ shape: 'array', count: 1, observedJsonBytes: Buffer.byteLength(JSON.stringify(results)), sha256: createHash('sha256').update(JSON.stringify(results)).digest('hex'), digestScope: 'complete_reserialized_json', truncated: false });
+  expect(JSON.stringify(capture.result())).not.toMatch(/user:password|token=|PRIVATE|\"text\"|\"nested\"/);
+  let deep: unknown = null; for (let n = 0; n < 200; n++) deep = [deep];
+  const bounded = new AppServerNativeWebCapture('thread'); bounded.bind('turn');
+  bounded.observe({ threadId: 'thread', turnId: 'turn', item: web('deep', { results: [deep] }) }, false);
+  expect(bounded.result()).toMatchObject({ truncated: true, turns: [{ unknown: true, truncated: true, records: [{ resultSummary: { count: 1, digestScope: 'prefix_reserialized_json', truncated: true } }] }] });
+  expect(parseNativeWebEvidence(bounded.result())).toEqual(bounded.result());
+  // JSON.parse can overflow a numeric exponent to Infinity; never normalize
+  // that malformed observation to a complete JSON null payload digest.
+  const nonfinite = new AppServerNativeWebCapture('thread'); nonfinite.bind('turn');
+  nonfinite.observe({ threadId: 'thread', turnId: 'turn', item: web('nonfinite', { results: JSON.parse('[1e999]') }) }, false);
+  expect(nonfinite.result()).toMatchObject({ truncated: true, turns: [{ unknown: true, records: [{ resultSummary: { count: 1, observedJsonBytes: 1, digestScope: 'prefix_reserialized_json', truncated: true } }] }] });
 });

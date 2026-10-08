@@ -36,7 +36,7 @@ it('exports a recognized native transport completion delivered before turn/start
     const threadId = await client.startThread(input);
     const result = await client.startTurn({ ...input, threadId, prompt: 'TEST' });
     expect(result).toHaveProperty('nativeWeb', { truncated: false, turns: [{ threadId, acknowledgedTurnId: 'turn-1', unknown: false, truncated: false,
-      records: [{ itemId: 'web-1', status: 'completion_only', action: 'open_page' }] }] });
+      records: [{ itemId: 'web-1', status: 'completion_only', action: 'open_page', resultSummary: { shape: 'null', truncated: false } }] }] });
   } finally { await client.stop(); await rm(workspace, { recursive: true, force: true }); vi.restoreAllMocks(); }
 });
 

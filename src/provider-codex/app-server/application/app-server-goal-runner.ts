@@ -1,6 +1,6 @@
 import { appendNativeWebEvidence, type NativeWebEvidence } from "@vioxen/subscription-runtime/core";
 import { ChildLifetimeError, ChildLifetimeFailure } from "@vioxen/subscription-runtime/core";
-import { AppServerUsageError, usageFromError } from "../domain/app-server-usage-error";
+import { AppServerUsageError, usageFromError, nativeWebFromError } from "../domain/app-server-usage-error";
 import type {
   AgentUsage,
   ManagedRunInputRequest,
@@ -326,6 +326,7 @@ export class AppServerGoalRunner {
           })
           .catch((error: unknown) => {
             turnUsage = mergeAgentUsage(turnUsage, usageFromError(error));
+            nativeWeb = appendNativeWebEvidence(nativeWeb, nativeWebFromError(error));
             throw turnFailureError(error, {
               phase: "turn_start_rejected",
               turnNumber,
