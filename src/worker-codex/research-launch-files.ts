@@ -7,6 +7,10 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 // Existing managed namespaces already hide all of /run/user, including this
 // authority. It is separate from /run/user/0's TEST/global policy directories.
 export const researchAuthorityRoot = "/run/user/subscription-runtime-research-v1";
+// Fresh byte validation includes every custody/descriptor/path check, even on
+// cache hits. Four seconds expired on the shared Host before provider startup;
+// retain a finite per-artifact/executable budget without reusing authority.
+export const researchByteValidationTimeoutMs = 30_000;
 export const researchHash = (bytes: string | Buffer): string => createHash("sha256").update(bytes).digest("hex");
 export type ResearchDenialObservation = "artifact-deadline" | "file-deadline" | "host-command-timeout" | "host-command-failed";
 export function isResearchDenialObservation(value: unknown): value is ResearchDenialObservation {
@@ -116,7 +120,7 @@ export function researchFileDigest(path: string, options: {
   const checkTime = (): void => { if (performance.now() > options.deadline) researchInvalid("file-deadline"); };
   if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 0 || !Number.isFinite(options.deadline) ||
       !Number.isSafeInteger(options.cacheEntries) || options.cacheEntries < 1) researchInvalid();
-  checkTime(); researchCustody(path);
+  checkTime(); researchCustody(path); checkTime();
   const pathStat = lstatSync(path), fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = fstatSync(fd), signature = researchFileSignature(before);
@@ -153,15 +157,16 @@ export function researchFileDigest(path: string, options: {
 /** Hash executable bytes, never .source-commit or deployment assertions. Internal
  * dependency links are permitted only inside the same immutable artifact. */
 export function researchArtifactDigest(runtimeDirectory: string): string {
+  const deadline = performance.now() + researchByteValidationTimeoutMs;
   researchCustody(runtimeDirectory);
   const rows: string[] = [];
-  const visited = new Set<string>(), startedAt = performance.now();
+  const visited = new Set<string>();
   let entries = 0, totalBytes = 0;
   const visit = (path: string): void => {
     if (visited.has(path)) return;
     visited.add(path);
     if (++entries > 50000) researchInvalid();
-    if (performance.now() - startedAt > 4000) researchInvalid("artifact-deadline");
+    if (performance.now() > deadline) researchInvalid("artifact-deadline");
     const stat = lstatSync(path), name = relative(runtimeDirectory, path);
     if (stat.uid !== 0 || (!stat.isSymbolicLink() && (stat.mode & 0o022))) researchInvalid();
     if (stat.isSymbolicLink()) {
@@ -175,13 +180,13 @@ export function researchArtifactDigest(runtimeDirectory: string): string {
     } else if (stat.isFile()) {
       totalBytes += stat.size;
       if (totalBytes > 512 * 1024 * 1024 || stat.nlink !== 1) researchInvalid();
-      const digest = researchFileDigest(path, { maxBytes: 512 * 1024 * 1024, deadline: startedAt + 4000,
+      const digest = researchFileDigest(path, { maxBytes: 512 * 1024 * 1024, deadline,
         cache: artifactFileHashes, cacheEntries: 50000, expected: stat });
       rows.push(`${name}:${stat.mode & 0o777}:${digest}`);
     } else researchInvalid();
   };
   for (const name of ["dist", "host-integration", "node_modules", "package.json"]) visit(join(runtimeDirectory, name));
-  if (performance.now() - startedAt > 4000) researchInvalid("artifact-deadline");
+  if (performance.now() > deadline) researchInvalid("artifact-deadline");
   return researchHash(JSON.stringify(rows));
 }
 const artifactFileHashes: ResearchFileHashCache = new Map();

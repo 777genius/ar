@@ -6,7 +6,8 @@ export const MANAGED_STORAGE_ROOT_CONFIG = '/etc/subscription-runtime/storage-ro
 export const MINIMUM_FREE_BYTES = 5368709120n;
 export const MINIMUM_FREE_INODES = 50000n;
 const LIMIT = 16384;
-const MOUNT_LIMIT = 1024 * 1024;
+// Busy hosts can exceed four MiB. Read the full table, retaining a hard bound.
+const MOUNT_LIMIT = 8 * 1024 * 1024;
 const denied = reason => new Error(`storage admission: ${reason}`);
 export function deriveManagedJobLayout(storageRoot, jobId) {
   if (typeof jobId !== 'string' || jobId !== jobId.trim() || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(jobId) ||
