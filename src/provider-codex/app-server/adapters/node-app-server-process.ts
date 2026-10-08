@@ -1,4 +1,3 @@
-import { assertHostedFdProcess } from "./hosted-fd-child";
 import { hostedDependencyProviderInvocation } from "./hosted-dependency-provider-launch";
 import type { DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -13,7 +12,7 @@ import type {
 import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait, releaseHostedOrdinaryProcess,
   type HostedActivationFence } from "./hosted-process-activation";
 import { readHostedFdProfile } from "./hosted-fd-observation";
-import { spawnHostedFdChild, hostedFdLaunch, HostedFdLaunchKind } from "./hosted-fd-launch";
+import { spawnHostedFdChild, hostedFdLaunch, hostedFdCleanupUnit, HostedFdLaunchKind } from "./hosted-fd-launch";
 import { retryHostedFenceAcquisition } from "./hosted-fd-fence";
 import { abandonHostedDependencyToolInvocation, bindHostedDependencyToolChild } from "./hosted-dependency-tool-plan";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
@@ -284,8 +283,7 @@ export function signalCodexAppServerChildGroup(
   child: CodexAppServerChildProcess,
   signal: NodeJS.Signals,
 ): void {
-  let fdUnit: string | undefined;
-  try { const guard = hostedFdLaunch(child); assertHostedFdProcess(guard.child,guard.unit,guard.kind); fdUnit = guard.unit; } catch { /* Existing generic route below. */ }
+  const fdUnit = hostedFdCleanupUnit(child);
   invalidateHostedOrdinaryWait(child);
   const researchSignal = researchSignals.get(child);
   if (researchSignal) { researchSignal(signal); return; }
