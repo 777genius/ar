@@ -39,10 +39,11 @@ export function registerCodexGoalAccountTools(server: McpServer): void {
     {
       title: "Codex Goal Account Status",
       description:
-        "Inspect a stored job's configured account slots by jobId. Optional recheckDueCapacity performs a claimed, due-only quota read and updates shared capacity; it does not enable liveCheck or exec probes.",
+        "Inspect a stored job's configured account slots by jobId. quotaOnlyLiveCheck reads fresh main Codex quota even during cooldown, updates shared quota capacity through guarded Refresh, and never runs exec probes; it takes precedence over liveCheck and recheckDueCapacity. recheckDueCapacity performs a claimed, due-only quota read.",
       inputSchema: {
         ...jobIdInputSchema(),
         liveCheck: z.boolean().optional(),
+        quotaOnlyLiveCheck: z.boolean().optional(),
         recheckDueCapacity: z.boolean().optional(),
         codexBinaryPath: z.string().optional(),
         liveCheckTimeoutMs: z.number().int().positive().optional(),
@@ -55,6 +56,7 @@ export function registerCodexGoalAccountTools(server: McpServer): void {
         jobId: loaded.manifest.jobId,
         ...(await codexGoalAccountStatusPayload(loaded.launch, {
           liveCheck: booleanValue(args.liveCheck) ?? false,
+          quotaOnlyLiveCheck: booleanValue(args.quotaOnlyLiveCheck) ?? false,
           recheckDueCapacity: booleanValue(args.recheckDueCapacity) ?? false,
           ...(stringValue(args.codexBinaryPath)
             ? { codexBinaryPath: stringValue(args.codexBinaryPath) as string }
@@ -184,7 +186,7 @@ export function registerCodexGoalAccountTools(server: McpServer): void {
     {
       title: "Codex Account Slot Status",
       description:
-        "Inspect Codex account slots without printing tokens. Follows auth-root symlinks. Optional recheckDueCapacity performs a claimed, due-only quota read and updates shared capacity; it does not enable liveCheck or exec probes.",
+        "Inspect Codex account slots without printing tokens. Follows auth-root symlinks. quotaOnlyLiveCheck reads fresh main Codex quota even during cooldown, updates shared quota capacity through guarded Refresh, and never runs exec probes; it takes precedence over liveCheck and recheckDueCapacity. recheckDueCapacity performs a claimed, due-only quota read.",
       inputSchema: {
         poolRootDir: z.string().optional(),
         pool: z.string().optional(),
@@ -192,6 +194,7 @@ export function registerCodexGoalAccountTools(server: McpServer): void {
         stateRootDir: z.string().optional(),
         accounts: z.union([z.string(), z.array(z.string())]).optional(),
         liveCheck: z.boolean().optional(),
+        quotaOnlyLiveCheck: z.boolean().optional(),
         recheckDueCapacity: z.boolean().optional(),
         codexBinaryPath: z.string().optional(),
         liveCheckTimeoutMs: z.number().int().positive().optional(),
@@ -207,6 +210,7 @@ export function registerCodexGoalAccountTools(server: McpServer): void {
           ? { stateRootDir: resolvePath(process.cwd(), stringValue(args.stateRootDir) as string) }
           : {}),
         liveCheck: booleanValue(args.liveCheck) ?? false,
+        quotaOnlyLiveCheck: booleanValue(args.quotaOnlyLiveCheck) ?? false,
         recheckDueCapacity: booleanValue(args.recheckDueCapacity) ?? false,
         ...(stringValue(args.codexBinaryPath)
           ? { codexBinaryPath: stringValue(args.codexBinaryPath) as string }
