@@ -96,12 +96,16 @@ it('preserves resumed transport evidence when final structured output is invalid
 });
 
 // Existing runner/engine and snapshot ports arm a one-shot lifetime assertion
-// only after actual transport return. No timing, private source or synthetic result.
+// only after actual transport return. Closing the lifetime aborts the joined wait;
+// unresolved peer cleanup must not replace cancellation or release session custody.
+// Driver return separately proves the driver's ownership after engine success.
 it.each(['engine-return', 'driver-return', 'snapshot', 'empty'] as const)('retains observed receipts without changing cancellation at %s', async window => {
-  const f = await fixture((thread, turn) => window === 'empty' ? [] : [completed(thread, turn, web())], { goals: ['complete'], usage: { inputTokens: 30, outputTokens: 10, totalTokens: 40 } });
+  const f = await fixture((thread, turn) => window === 'empty' ? [] : [completed(thread, turn, web())], { goals: ['complete'], usage: { inputTokens: 30, outputTokens: 10, totalTokens: 40 }, late: (thread, turn) => [completed(thread, turn, web('late'))] });
   const lifetime = new AppServerExecutionLifetime({ deadlineEpochMs: Date.now() + 60_000, maxGoalTurns: 2, binding: { allocationId: 'TEST-allocation', incarnationId: 'TEST-incarnation' } });
   const cancellation = new Error('codex_app_server_aborted');
-  const arm = () => vi.spyOn(lifetime, 'assertActive').mockImplementationOnce(() => { throw cancellation; });
+  const originalAssertActive = lifetime.assertActive.bind(lifetime);
+  const cancel = (signal?: AbortSignal) => { lifetime.close(cancellation); originalAssertActive(signal); };
+  const arm = () => vi.spyOn(lifetime, 'assertActive').mockImplementationOnce(cancel);
   const engine = new CodexAppServerExecutionEngine({ codexBinaryPath: '/fake/codex', sourceEnv: {}, processFactory: f.factory.create, cleanThreadPrewarm: false, goalMode: true, maxGoalTurns: 2, nativeToolSurface: 'disabled', executionLifetime: lifetime });
   if (window === 'engine-return') {
     const original = AppServerGoalRunner.prototype.runGoal;
@@ -115,17 +119,21 @@ it.each(['engine-return', 'driver-return', 'snapshot', 'empty'] as const)('retai
     mode: 'ephemeral', materialize: async () => ({ home: f.input.workspacePath, codexHome: f.input.workspacePath, env: {}, release: released,
       ...(window === 'snapshot' ? { snapshotSession: async () => {
         await Promise.resolve();
-        const original = lifetime.assertActive.bind(lifetime);
-        vi.spyOn(lifetime, 'assertActive').mockImplementationOnce(original).mockImplementationOnce(original).mockImplementationOnce(() => { throw cancellation; });
+        vi.spyOn(lifetime, 'assertActive').mockImplementationOnce(originalAssertActive).mockImplementationOnce(originalAssertActive).mockImplementationOnce(cancel);
         return null;
       } } : {}),
     }),
   } });
   try {
     const result = await driver.runTask({ session: { kind: 'opaque-bytes', providerId: 'codex', formatVersion: 'TEST', bytes: new Uint8Array(), contentType: 'application/octet-stream' }, task: { kind: 'structured-prompt', prompt: 'TEST' }, workspace: { path: f.input.workspacePath }, runner: new StaticRunner(''), redactor: new DefaultRedactor(), abortSignal: f.input.abortSignal });
-    expect(result).toMatchObject({ status: 'failed', failure: { code: window === 'engine-return' ? 'unknown_runtime_failure' : 'task_cancelled' } });
+    expect(lifetime.signal.aborted).toBe(true);
+    expect(lifetime.signal.reason).toBe(cancellation);
+    expect(result).toMatchObject({ status: 'failed', failure: { code: 'task_cancelled' } });
     expect(result.telemetry?.usage).toMatchObject({ inputTokens: 30, outputTokens: 10, totalTokens: 40 });
+    expect(result.telemetry?.nativeWeb).toMatchObject({ truncated: false, turns: [{ threadId: 'thread-1', acknowledgedTurnId: 'turn-1', unknown: false, truncated: false }] });
+    expect(result.telemetry?.nativeWeb?.turns).toHaveLength(1);
     expect(result.telemetry?.nativeWeb?.turns[0]?.records).toHaveLength(window === 'empty' ? 0 : 1);
+    if (window !== 'empty') expect(result.telemetry?.nativeWeb?.turns[0]?.records).toMatchObject([{ itemId: 'web-1', status: 'completion_only', action: 'open_page', requestedUrl: 'https://example.org/docs', resultSummary: { shape: 'array', count: 1, truncated: false } }]);
     await assertNativeWebHostExport(result);
     expect(f.factory.requests.filter(request => request.method === 'turn/start')).toHaveLength(1);
     expect(released).not.toHaveBeenCalled();
