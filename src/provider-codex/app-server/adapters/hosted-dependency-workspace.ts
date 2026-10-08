@@ -2,15 +2,19 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyOwnerPhase,
-  sameDependencyWorkspace, parseDependencyOwner, isDependencyConsumerOwner, type DependencyWorkspaceIdentity, type DependencyAttempt } from "@vioxen/subscription-runtime/core";
+  sameDependencyWorkspace, parseDependencyOwner, isDependencyConsumerOwner, readSystemBusInfrastructureField, readFdCollectorProfileField,
+  type DependencyWorkspaceIdentity, type DependencyAttempt } from "@vioxen/subscription-runtime/core";
+import { verifySystemBusInfrastructure } from "./system-bus-infrastructure";
+import { readHostedFdProfile } from "./hosted-fd-observation";
+import { dependencyToolCachePath, parseDependencyToolProfile, type DependencyToolProfile } from "../../../core/dependency-environment/dependency-tool-profile";
+import { assertHostedDependencyParentRecipe } from "./hosted-dependency-parent-recipe";
 import { assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes } from "./hosted-process-activation";
 
 export const hostedDependencyPolicyRoot = "/var/lib/subscription-runtime-host-policy";
 export const hostedDependencyJobsRoot = `${hostedDependencyPolicyRoot}/dependency-test-jobs/jobs`;
 export const hostedDependencyBindingRoot = `${hostedDependencyPolicyRoot}/dependency-bindings`;
 export const hostedDependencyOwnerRoot = `${hostedDependencyPolicyRoot}/dependency-owners`;
-export type HostedDependencyBinding = {
-  readonly version: 1;
+type HostedDependencyBindingFields = {
   readonly jobId: string;
   readonly jobRootDir: string;
   readonly workspace: DependencyWorkspaceIdentity;
@@ -18,6 +22,15 @@ export type HostedDependencyBinding = {
   readonly runtimeSha: string;
   readonly grantDigest: string;
 };
+export type HostedDependencyBinding = HostedDependencyBindingFields & (
+  | { readonly version: 1 }
+  | { readonly version: 2; readonly toolProfile: DependencyToolProfile }
+);
+/** Closed configuration compatibility only. Revision4 is necessary for v2;
+ * actual installation/profile/fence proofs are separately required below. */
+export function assertHostedDependencyBindingInventoryRevision(binding: HostedDependencyBinding, revision: unknown): void {
+  if ((revision !== 2 && revision !== 3 && revision !== 4) || binding.version === 2 && revision !== 4) invalid();
+}
 const hash = (v: string) => createHash("sha256").update(v).digest("hex");
 export function hostedDependencyJobRoot(jobId: string): string {
   if (!/^TEST-[A-Za-z0-9_.-]{1,123}$/.test(jobId)) invalid();
@@ -35,8 +48,9 @@ export function hostedDependencyBindingName(jobId: string): string {
 export function parseHostedDependencyBinding(value: unknown): HostedDependencyBinding {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
   const v = value as HostedDependencyBinding;
-  if (Object.keys(v).sort().join(",") !== "grantDigest,installationId,jobId,jobRootDir,runtimeSha,version,workspace" ||
-      v.version !== 1 || typeof v.jobId !== "string" || v.jobRootDir !== hostedDependencyJobRoot(v.jobId) ||
+  if ((v.version !== 1 && v.version !== 2) || Object.keys(v).sort().join(",") !==
+      (v.version === 2 ? "grantDigest,installationId,jobId,jobRootDir,runtimeSha,toolProfile,version,workspace" : "grantDigest,installationId,jobId,jobRootDir,runtimeSha,version,workspace") ||
+      typeof v.jobId !== "string" || v.jobRootDir !== hostedDependencyJobRoot(v.jobId) ||
       !v.workspace || Object.keys(v.workspace).sort().join(",") !== "canonicalPath,dev,ino" ||
       v.workspace.canonicalPath !== `${v.jobRootDir}/workspace` ||
       typeof v.workspace.dev !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(v.workspace.dev) ||
@@ -44,6 +58,11 @@ export function parseHostedDependencyBinding(value: unknown): HostedDependencyBi
       typeof v.installationId !== "string" || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v.installationId) ||
       typeof v.runtimeSha !== "string" || !/^[a-f0-9]{40}$/.test(v.runtimeSha) ||
       typeof v.grantDigest !== "string" || !/^[a-f0-9]{64}$/.test(v.grantDigest)) invalid();
+  if (v.version === 2) {
+    const toolProfile = parseDependencyToolProfile(v.toolProfile);
+    if (toolProfile.cache.canonicalPath !== dependencyToolCachePath(v.jobRootDir)) invalid();
+    return Object.freeze({ ...v, workspace: Object.freeze({ ...v.workspace }), toolProfile });
+  }
   return Object.freeze({ ...v, workspace: Object.freeze({ ...v.workspace }) });
 }
 
@@ -93,8 +112,35 @@ export function assertHostedDependencyQualifiedInventory(): void {
   if (!installationBytes || !inventoryBytes || !activationBytes) invalid();
   const installation = object(decodeHostedActivationBytes(installationBytes)),
     inventory = object(decodeHostedActivationBytes(inventoryBytes)), activation = object(decodeHostedActivationBytes(activationBytes));
-  if (installation.inventorySha256 !== hash(inventoryBytes.toString("utf8")) || inventory.schemaVersion !== 2 ||
+  if (installation.inventorySha256 !== hash(inventoryBytes.toString("utf8")) || (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4) ||
       !Array.isArray(inventory.ordinaryCreators) || !inventory.ordinaryCreators.length || !Array.isArray(activation.ordinaryStarts)) invalid();
+  // Revision 3 cannot be downgraded or smuggle an ignored infrastructure role
+  // into the qualified installed-artifact hash. Revision 2 keeps its contract.
+  const systemBusInfrastructure = readSystemBusInfrastructureField(inventory);
+  const collectorProfile = readFdCollectorProfileField(inventory);
+  if (collectorProfile && !readHostedFdProfile()) invalid();
+  if (systemBusInfrastructure) {
+    if (Object.keys(inventory).sort().join(",") !== (collectorProfile ? "collectorProfile," : "") + "disabledCreators,hostId,ordinaryCreators,runtimeLaunch,schemaVersion,supervisorUnit,systemBusInfrastructure,units" ||
+        inventory.supervisorUnit === "dbus.service" || !Array.isArray(inventory.units) || !inventory.units.length || inventory.units.length > 128 ||
+        typeof inventory.hostId !== "string" || !/^[a-f0-9]{32}$/.test(inventory.hostId)) invalid();
+    const units = inventory.units.map(value => {
+      const row = object(value);
+      if (Object.keys(row).sort().join(",") !== "controlGroup,fragmentSha256,name" || typeof row.name !== "string" ||
+          !/^[A-Za-z0-9_@.-]+\.(service|scope)$/.test(row.name) || row.name.startsWith("subscription-runtime-hosted-") ||
+          typeof row.controlGroup !== "string" || !/^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(row.controlGroup) ||
+          row.controlGroup.split("/").some(part => part === "." || part === "..") || typeof row.fragmentSha256 !== "string" ||
+          !/^[a-f0-9]{64}$/.test(row.fragmentSha256)) invalid();
+      return row;
+    });
+    if (new Set(units.map(row => row.name)).size !== units.length || new Set(units.map(row => row.controlGroup)).size !== units.length ||
+        !units.some(row => row.name === inventory.supervisorUnit) || !units.some(row => row.name === "dbus.service" &&
+          row.controlGroup === systemBusInfrastructure.service.controlGroup && row.fragmentSha256 === systemBusInfrastructure.service.fragmentSha256) ||
+        !Array.isArray(inventory.disabledCreators) || inventory.disabledCreators.length > 128 ||
+        new Set(inventory.disabledCreators).size !== inventory.disabledCreators.length || inventory.disabledCreators.some(name =>
+          typeof name !== "string" || name.length > 200 || !/^[A-Za-z0-9_@.-]+\.(service|socket|timer)$/.test(name) ||
+          name === "dbus.socket" || units.some(row => row.name === name))) invalid();
+    verifySystemBusInfrastructure(systemBusInfrastructure);
+  }
   for (const value of inventory.ordinaryCreators) {
     if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
     const v = value as Record<string, unknown>;
@@ -109,6 +155,14 @@ export function assertHostedDependencyQualifiedInventory(): void {
     for (const [index, arg] of launch.args.entries()) {
       if (arg === "--registry-root" && launch.args[index + 1] !== `${v.jobRootDir}/state/registry`) invalid();
       if (arg.startsWith("--registry-root=")) invalid(); // Not an accepted parser option form.
+    }
+    const binding = readHostedDependencyBinding(v.jobId);
+    if (binding) assertHostedDependencyBindingInventoryRevision(binding, inventory.schemaVersion);
+    if (binding?.version === 2) {
+      // This executes during enrollment/reservation, before the root CLI. A
+      // legacy direct stdin.end(frame) must never reach an opted N3 writer.
+      if (!collectorProfile || !readHostedFdProfile()) invalid();
+      assertHostedDependencyParentRecipe(launch.args as string[], binding.jobRootDir, binding.workspace.canonicalPath);
     }
   }
   // The separately inventoried outer entry cannot provide a legacy bypass.

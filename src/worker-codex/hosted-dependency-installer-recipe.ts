@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 import { assertReadonlyHostOperator, decodePrivateJson } from "./hosted-readonly-authority";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { readonlySupervisorRoot } from "./hosted-readonly-custody";
-import { hostedDependencyInstallerArgv, type HostedDependencyInstallerInputs } from "./hosted-dependency-installer-inputs";
+import { hostedDependencyInstallerArgv, HostedDependencyInstallerRecipe, isHostedDependencyLocalInstallerInputs, qualifyHostedDependencyLocalInstallerInputs,
+  type HostedDependencyInstallerQualifiedInputs, type HostedDependencyLocalInstallerInputs } from "./hosted-dependency-installer-inputs";
+import { observeHostedDependencyLocalStage, writeHostedDependencyLocalStage, type HostedDependencyLocalStage } from "./hosted-dependency-installer-local-stage";
 import { hostedDependencyInstallerUid } from "./hosted-dependency-installer-identity";
 import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyNpmLockName, DependencyToolRootKind, dependencyTestNpmConfig, dependencyTestNpmEnvironment, dependencyTestNpmUmask,
   type DependencyTestNpmToolchain } from "../worker-core/dependency-environment/domain/dependency-install-key";
@@ -22,8 +24,10 @@ export type HostedDependencyInstallerProfile = DependencyTestNpmToolchain & { re
   readonly privilegeDropper: { readonly path: "/usr/bin/setpriv"; readonly sha256: string; readonly version: "2.39.3";
     readonly libraries: DependencyTestNpmToolchain["toolRoots"] } };
 const plans = new WeakMap<object, string>();
+const localInputs = new WeakMap<object, HostedDependencyLocalInstallerInputs>();
 export type HostedDependencyInstallerPlan = Readonly<{ startId: string; directory: string; rootDirectory: string;
-  stagingDirectory: string; lockName: DependencyNpmLockName; inputSha256: string; profile: HostedDependencyInstallerProfile }>;
+  stagingDirectory: string; lockName: DependencyNpmLockName; inputSha256: string; profile: HostedDependencyInstallerProfile;
+  recipe: HostedDependencyInstallerRecipe; localStage?: HostedDependencyLocalStage; installKey?: string; closureDigest?: string }>;
 function fail(): never { throw new Error("dependency_installer_recipe_unsupported"); }
 export function installerPath(value: string): string {
   if (!/^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(value) ||
@@ -150,8 +154,14 @@ function snapshot(plan: HostedDependencyInstallerPlan): string {
       facts.push([path, stat.dev, stat.ino, stat.mode, stat.isSymbolicLink() ? readlinkSync(path) : null]);
     }
   }
-  for (const path of [join(plan.directory, "inputs/package.json"), join(plan.directory, "inputs", plan.lockName),
-    join(plan.rootDirectory, "runtime/bootstrap.js"), join(plan.rootDirectory, "runtime/package.json"), join(plan.rootDirectory, "runtime/profile.json"), join(plan.rootDirectory, "runtime/npmrc"), join(plan.rootDirectory, "runtime/global-npmrc"),
+  if (plan.localStage) {
+    if (readFileSync("/proc/self/mountinfo", "utf8").split("\n").some(line => {
+      const mounted = line.split(" ")[4]; return mounted === plan.stagingDirectory || mounted?.startsWith(plan.stagingDirectory + "/");
+    })) fail();
+    facts.push([JSON.stringify(plan.localStage), observeHostedDependencyLocalStage(plan.stagingDirectory, plan.localStage, plan.inputSha256)]);
+  }
+  for (const path of [...(plan.localStage ? [] : [join(plan.directory, "inputs/package.json"), join(plan.directory, "inputs", plan.lockName)]),
+    join(plan.rootDirectory, "runtime/bootstrap.js"), join(plan.rootDirectory, "runtime/hosted-dependency-installer-local-stage.js"), join(plan.rootDirectory, "runtime/package.json"), join(plan.rootDirectory, "runtime/profile.json"), join(plan.rootDirectory, "runtime/npmrc"), join(plan.rootDirectory, "runtime/global-npmrc"),
     ...Object.values(HostedDependencyInstallerNetworkInput).map(name => join(plan.rootDirectory, "etc", name))]) {
     const bytes = trustedFile(path); facts.push([path, createHash("sha256").update(bytes).digest("hex")]);
   }
@@ -162,11 +172,14 @@ function snapshot(plan: HostedDependencyInstallerPlan): string {
  * Root/profile/source bytes are retained before enqueue; nothing guest writable
  * selects an executable or changes mount policy. Private parent is never granted.
  */
-export function createHostedDependencyInstallerPlan(startId: string, inputs: HostedDependencyInstallerInputs): HostedDependencyInstallerPlan {
+export function createHostedDependencyInstallerPlan(startId: string, inputs: HostedDependencyInstallerQualifiedInputs): HostedDependencyInstallerPlan {
   assertReadonlyHostOperator();
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(startId)) fail();
   if (!Object.values(DependencyNpmLockName).includes(inputs.lockName)) fail();
   const selected = readHostedDependencyInstallerProfile(), selectedLibraries = libraries(selected);
+  const local = isHostedDependencyLocalInstallerInputs(inputs) ? qualifyHostedDependencyLocalInstallerInputs(inputs.capture, selected) : undefined;
+  if ("recipe" in inputs && !local) fail();
+  if (local) inputs = local;
   mkdirSync(hostedDependencyInstallerRoot, { recursive: true, mode: 0o700 });
   for (let p = hostedDependencyInstallerRoot;; p = dirname(p)) {
     const s = lstatSync(p); if (!s.isDirectory() || s.isSymbolicLink() || s.uid !== 0 || (s.mode & 0o022) ||
@@ -174,7 +187,8 @@ export function createHostedDependencyInstallerPlan(startId: string, inputs: Hos
     if (p === "/") break;
   }
   const dir = join(hostedDependencyInstallerRoot, startId), root = join(dir, "root"), staging = join(dir, "staging");
-  directory(dir); directory(root, 0o755); directory(join(dir, "inputs")); directory(staging, 0o700, true);
+  directory(dir); directory(root, 0o755); directory(join(dir, "inputs")); directory(staging, local ? 0o755 : 0o700, !local);
+  if (local) directory(join(staging, "node_modules"), 0o755, true);
   directory(join(dir, "home"), 0o700, true); directory(join(dir, "cache"), 0o700, true);
   for (const relative of ["usr", "etc", "workspace", "home", "cache", "runtime", "dev", "proc", "tmp"])
     directory(join(root, relative), relative === "tmp" ? 0o1777 : 0o755);
@@ -210,7 +224,8 @@ export function createHostedDependencyInstallerPlan(startId: string, inputs: Hos
     const bytes = trustedNetworkInput(name, selected.networkInputs[name]);
     writeFileSync(join(root, "etc", name), bytes, { flag: "wx", mode: 0o644 });
   }
-  for (const [name, bytes] of [["package.json", inputs.packageBytes], [inputs.lockName, inputs.lockBytes]] as const) {
+  if (local) writeHostedDependencyLocalStage(staging, local.stage, local.files);
+  else for (const [name, bytes] of [["package.json", inputs.packageBytes], [inputs.lockName, inputs.lockBytes]] as const) {
     writeFileSync(join(dir, "inputs", name), bytes, { flag: "wx", mode: 0o644 });
     const fd = openSync(join(dir, "inputs", name), constants.O_RDONLY | constants.O_NOFOLLOW);
     try { fsyncSync(fd); } finally { closeSync(fd); }
@@ -219,23 +234,33 @@ export function createHostedDependencyInstallerPlan(startId: string, inputs: Hos
   const bootstrap = fileURLToPath(new URL("./hosted-dependency-installer-bootstrap.js", import.meta.url));
   const bytes = trustedFile(bootstrap);
   writeFileSync(join(root, "runtime/bootstrap.js"), bytes, { flag: "wx", mode: 0o644 });
+  writeFileSync(join(root, "runtime/hosted-dependency-installer-local-stage.js"), trustedFile(fileURLToPath(new URL("./hosted-dependency-installer-local-stage.js", import.meta.url))), { flag: "wx", mode: 0o644 });
   writeFileSync(join(root, "runtime/package.json"), '{"type":"module"}\n', { flag: "wx", mode: 0o644 });
   writeFileSync(join(root, "runtime/profile.json"), JSON.stringify({ ...selected, stagingDirectory: staging,
-    lockName: inputs.lockName, inputSha256: inputs.sha256, installArgv: hostedDependencyInstallerArgv,
+    lockName: inputs.lockName, inputSha256: inputs.sha256, installArgv: local ? local.installArgv : hostedDependencyInstallerArgv,
+    ...(local ? { localStage: local.stage } : {}),
     environment: dependencyTestNpmEnvironment, umask: dependencyTestNpmUmask }), { flag: "wx", mode: 0o644 });
   writeFileSync(join(root, "runtime/npmrc"), dependencyTestNpmConfig, { flag: "wx", mode: 0o644 });
   writeFileSync(join(root, "runtime/global-npmrc"), dependencyTestNpmConfig, { flag: "wx", mode: 0o644 });
   // The enclosing retained record fsyncs all ancestry; sync payloads as well.
-  for (const p of [join(root, "runtime/bootstrap.js"), join(root, "runtime/package.json"), join(root, "runtime/profile.json"), join(root, "runtime/npmrc"), join(root, "runtime/global-npmrc"),
+  for (const p of [join(root, "runtime/bootstrap.js"), join(root, "runtime/hosted-dependency-installer-local-stage.js"), join(root, "runtime/package.json"), join(root, "runtime/profile.json"), join(root, "runtime/npmrc"), join(root, "runtime/global-npmrc"),
     ...["hosts", "resolv.conf", "nsswitch.conf"].map(n => join(root, "etc", n))]) {
     const fd = openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW); try { fsyncSync(fd); } finally { closeSync(fd); }
   }
   const plan = Object.freeze({ startId, directory: dir, rootDirectory: root, stagingDirectory: staging,
-    lockName: inputs.lockName, inputSha256: inputs.sha256, profile: selected });
+    lockName: inputs.lockName, inputSha256: inputs.sha256, profile: selected,
+    recipe: local ? HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1 : HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1,
+    ...(local ? { localStage: local.stage, installKey: local.installKey, closureDigest: local.sha256 } : {}) });
+  if (local) localInputs.set(plan, local);
   plans.set(plan, snapshot(plan)); return plan;
 }
 export function assertHostedDependencyInstallerPlan(plan: HostedDependencyInstallerPlan): void {
   assertReadonlyHostOperator();
+  const local = localInputs.get(plan);
+  if (local) {
+    const current = qualifyHostedDependencyLocalInstallerInputs(local.capture, readHostedDependencyInstallerProfile());
+    if (current.sha256 !== plan.inputSha256 || current.installKey !== plan.installKey || current.sha256 !== plan.closureDigest) fail();
+  }
   if (plans.get(plan) !== snapshot(plan) || JSON.stringify(readHostedDependencyInstallerProfile()) !== JSON.stringify(plan.profile)) fail();
 }
 export function hostedDependencyInstallerProperties(plan: HostedDependencyInstallerPlan): readonly string[] {
@@ -247,9 +272,15 @@ export function hostedDependencyInstallerProperties(plan: HostedDependencyInstal
     "InaccessiblePaths=-/proc -/sys -/run", "RuntimeMaxSec=20min", "TimeoutStopSec=30s", "TasksMax=256", "LimitCORE=0",
     `RootDirectory=${plan.rootDirectory}`, `BindReadOnlyPaths=${plan.profile.nodePath}:${plan.profile.nodePath}:norbind ${plan.profile.privilegeDropper.path}:${plan.profile.privilegeDropper.path}:norbind ${plan.profile.npmRootPath}:${plan.profile.npmRootPath}:norbind /etc/ssl/certs:/etc/ssl/certs:norbind`,
     ...libraries(plan.profile).map(l => `BindReadOnlyPaths=${l.path}:${l.path}:norbind`),
-    `BindPaths=${plan.stagingDirectory}:${plan.stagingDirectory}:norbind ${join(plan.directory, "home")}:/home/installer:norbind ${join(plan.directory, "cache")}:/cache:norbind`,
-    `BindReadOnlyPaths=${join(plan.directory, "inputs/package.json")}:${plan.stagingDirectory}/package.json:norbind ${join(plan.directory, "inputs", plan.lockName)}:${plan.stagingDirectory}/${plan.lockName}:norbind`,
-    `ReadWritePaths=${plan.stagingDirectory} /home/installer /cache`, "TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M"];
+    ...(plan.localStage ? [
+      `BindReadOnlyPaths=${plan.stagingDirectory}:${plan.stagingDirectory}:norbind`,
+      `BindPaths=${join(plan.stagingDirectory, "node_modules")}:${plan.stagingDirectory}/node_modules:norbind ${join(plan.directory, "home")}:/home/installer:norbind ${join(plan.directory, "cache")}:/cache:norbind`,
+      `ReadWritePaths=${plan.stagingDirectory}/node_modules /home/installer /cache`,
+    ] : [
+      `BindPaths=${plan.stagingDirectory}:${plan.stagingDirectory}:norbind ${join(plan.directory, "home")}:/home/installer:norbind ${join(plan.directory, "cache")}:/cache:norbind`,
+      `BindReadOnlyPaths=${join(plan.directory, "inputs/package.json")}:${plan.stagingDirectory}/package.json:norbind ${join(plan.directory, "inputs", plan.lockName)}:${plan.stagingDirectory}/${plan.lockName}:norbind`,
+      `ReadWritePaths=${plan.stagingDirectory} /home/installer /cache`,
+    ]), "TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M"];
 }
 export function hostedDependencyInstallerBootstrapCommand(plan: HostedDependencyInstallerPlan): readonly string[] {
   assertHostedDependencyInstallerPlan(plan);

@@ -3,6 +3,8 @@ import { constants } from "node:fs";
 import { access, open, readFile, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import { readHostedForegroundResultRecord } from "./hosted-foreground-result";
+import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 
 const execFileAsync = promisify(execFile);
 const gitStatusTimeoutMs = 5_000;
@@ -14,17 +16,24 @@ export const CODEX_GOAL_RUNTIME_EVENT_MAX_READ_BYTES = 256 * 1024;
 export async function readCodexGoalResultSummary(path: string): Promise<{
   readonly status?: string;
   readonly reason?: string;
+  readonly foregroundOutput?: Readonly<{ unit: string; exitCode: number; stdout: string; stderr: string }>;
 }> {
+  let governed = false;
   try {
-    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    governed = readHostedFdProfile() !== undefined;
+    const record = governed ? readHostedForegroundResultRecord(path) : undefined;
+    const parsed: unknown = record ? record.value : JSON.parse(await readFile(path, "utf8"));
     if (!isRecord(parsed)) return {};
+    const foregroundOutput = record?.output;
     return {
       ...(typeof parsed.status === "string" ? { status: parsed.status } : {}),
       ...(typeof parsed.reason === "string"
         ? { reason: redactStatusText(parsed.reason) }
         : {}),
+      ...(foregroundOutput ? { foregroundOutput } : {}),
     };
   } catch {
+    if (governed) throw new Error("hosted_foreground_result_unresolved");
     return {};
   }
 }
