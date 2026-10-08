@@ -6,6 +6,16 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 
 export const runtime = "/opt/subscription-runtime-dependency-os-TEST";
+// Exact load-only static closure of the CurrentDependency backing collector.
+// This runtime-relative catalog is separate from the installed launcher profile.
+export const currentBackingRuntimeModules = [
+  "host-integration/managed-launcher/dependency-full-native-TEST.js",
+  "host-integration/managed-launcher/launch.mjs",
+  "host-integration/managed-launcher/profiles.mjs",
+  "host-integration/managed-launcher/payload-guard.mjs",
+  "host-integration/host-jobs/storage-policy.mjs",
+  "src/worker-codex/hosted-full-backing-proc.js",
+] as const;
 export const policy = "/var/lib/subscription-runtime-host-policy";
 export const node = runtime + "/toolchain/bin/node";
 // Closed TEST modes use erasable syntax supported by the existing pinned runner.
@@ -95,6 +105,7 @@ export function installedArtifactDigest(): string {
     }
   }
   for (const name of ["dist", "packages", "node_modules", "scripts", "package.json", "toolchain"]) walk(runtime + "/" + name);
+  for (const relative of currentBackingRuntimeModules) walk(runtime + "/" + relative);
   return digest(JSON.stringify(entries));
 }
 

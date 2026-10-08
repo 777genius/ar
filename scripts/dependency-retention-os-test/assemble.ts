@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { hostedDependencySystemdRunExecutable } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-systemd-command.js";
 import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
   SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/core/host-infrastructure/system-bus-infrastructure.js";
-import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, command as runCommand, directory, elfPackages, fileDigest, json, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, type OwnedOsFixtureScenario } from "./common.ts";
+import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, command as runCommand, currentBackingRuntimeModules, directory, elfPackages, fileDigest, json, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, type OwnedOsFixtureScenario } from "./common.ts";
 
 export function assemble(root: string, state: string, source: string, toolchain: string, sourceSha: string, machineId: string,
   scenario: OwnedOsFixtureScenario, remainingMs: () => number, geometry: CurrentBackingGeometry = CurrentBackingGeometry.Existing): void {
@@ -127,6 +127,36 @@ export function assemble(root: string, state: string, source: string, toolchain:
     checkBudget();
   }
   if (scenario === OwnedOsScenario.CurrentDependency) {
+    // Copy only the exact collector import closure, before ROOT publication.
+    for (const relative of currentBackingRuntimeModules) {
+      checkBudget();
+      const path = source + "/" + relative, before = lstatSync(path, { bigint: true });
+      assert.equal(realpathSync(path), path);
+      assert(before.isFile() && !before.isSymbolicLink() && before.nlink === 1n &&
+        before.size > 0n && before.size <= 1024n * 1024n);
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const bytes = Buffer.alloc(Number(before.size));
+        assert.equal(readSync(fd, bytes, 0, bytes.length, 0), bytes.length);
+        const unchanged = (): void => {
+          for (const stat of [fstatSync(fd, { bigint: true }), lstatSync(path, { bigint: true })])
+            assert(stat.isFile() && stat.dev === before.dev && stat.ino === before.ino && stat.nlink === 1n &&
+              stat.mode === before.mode && stat.uid === before.uid && stat.gid === before.gid &&
+              stat.size === before.size && stat.mtimeNs === before.mtimeNs && stat.ctimeNs === before.ctimeNs);
+        };
+        unchanged();
+        const target = root + runtime + "/" + relative;
+        directory(dirname(target), 0o755); assert.equal(realpathSync(dirname(target)), dirname(target));
+        const output = openSync(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644);
+        try {
+          writeFileSync(output, bytes); fsyncSync(output);
+          const held = fstatSync(output, { bigint: true }), named = lstatSync(target, { bigint: true });
+          assert(held.isFile() && held.nlink === 1n && held.size === before.size &&
+            held.dev === named.dev && held.ino === named.ino && held.dev === lstatSync(root, { bigint: true }).dev);
+        } finally { closeSync(output); }
+        unchanged(); checkBudget();
+      } finally { closeSync(fd); }
+    }
     // Exact owned source input, never an installed tree or admission witness.
     const path = source + "/package-lock.json", before = lstatSync(path, { bigint: true });
     assert(before.isFile() && !before.isSymbolicLink() && before.nlink === 1n &&
