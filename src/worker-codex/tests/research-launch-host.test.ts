@@ -100,7 +100,7 @@ describe("private material role at the existing byte guards", () => {
     vi.spyOn(fs, "openSync").mockImplementation(((path, flags, mode) => {
       const fd = open(path, flags, mode);
       if (role === R.RuntimeArtifact ? typeof path === "string" && path.startsWith(spec.runtimeDirectory + "/")
-        : path === (role === R.NodeExecutable ? process.execPath : spec.request.codexBinaryPath)) clock = 5000;
+        : path === (role === R.NodeExecutable ? process.execPath : spec.request.codexBinaryPath)) clock = files.researchByteValidationTimeoutMs + 1;
       return fd;
     }) as typeof fs.openSync);
     const reads = vi.spyOn(fs, "readSync");
