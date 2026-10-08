@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, statfsSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { inspectVisibleScratchMount, type ScratchMount } from "./host-scratch-mount.js";
-import { annotateScratchMountInspectionFailure, ResearchLaunchCause } from "./research-launch-diagnostics.js";
+import { annotateScratchCapacityFailure, annotateScratchMountInspectionFailure, ResearchLaunchCause, ScratchCapacityVolumeRole } from "./research-launch-diagnostics.js";
 
 const CONFIG_PATH = "/etc/subscription-runtime/scratch-temp.json";
 type Info = { uid: number; mode: number; dev: number; ino: number; isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
@@ -59,7 +59,11 @@ function readPolicy(host: ScratchTempHost): Policy | undefined {
   for (const volume of ["/", root]) {
     const { bavail, bsize } = host.statfs(volume);
     const available = bavail * bsize;
-    if (!Number.isFinite(available) || bavail < 0 || bsize <= 0 || available < 5 * 1024 ** 3) throw new Error(`Scratch launch requires at least 5 GiB available on ${volume}`);
+    if (!Number.isFinite(available) || bavail < 0 || bsize <= 0 || available < 5 * 1024 ** 3) {
+      throw annotateScratchCapacityFailure(new Error(`Scratch launch requires at least 5 GiB available on ${volume}`),
+        volume === "/" ? ScratchCapacityVolumeRole.RootControl : ScratchCapacityVolumeRole.ScratchPayload,
+        available, 5 * 1024 ** 3);
+    }
   }
   return { root, uuid, legacyTemps: legacyTemps as Record<string, unknown> };
 }

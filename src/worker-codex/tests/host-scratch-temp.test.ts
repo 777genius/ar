@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "vitest";
 import { prepareHostScratchCaches, prepareHostScratchTemp, resolveHostScratchTempRoot, type ScratchTempHost } from "../host-scratch-temp";
+import { normalizeResearchMaterialFailure, ResearchLaunchCause, ResearchLaunchDiagnostic, ResearchMaterialRole, ScratchCapacityVolumeRole } from "../research-launch-diagnostics";
 
 const root = "/srv/workers";
 const uuid = "d0f2cac1-2009-4e9d-a710-e156f417938f";
@@ -61,7 +62,19 @@ test("invalid mount and independent volume pressure reject before mutation", asy
   for (const lowVolume of ["/", root]) {
     const f = fixture();
     f.host.statfs = (path) => ({ bavail: (path === lowVolume ? 4 : 10) * 1024 ** 3, bsize: 1 });
-    await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host), /5 GiB/);
+    // RED on old code: the real failed volume and byte counts are absent.
+    await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /5 GiB/);
+      const observation = normalizeResearchMaterialFailure(new Error("TEST-private envelope", { cause: error }));
+      assert.deepEqual(observation, { legacyCode: "unclassified", cause: ResearchLaunchCause.None,
+        diagnostic: ResearchLaunchDiagnostic.ScratchSpace, materialRole: ResearchMaterialRole.Unknown,
+        scratchCapacity: { volumeRole: lowVolume === "/" ? ScratchCapacityVolumeRole.RootControl : ScratchCapacityVolumeRole.ScratchPayload,
+          availableBytes: 4 * 1024 ** 3, requiredBytes: 5 * 1024 ** 3 } });
+      assert.equal(normalizeResearchMaterialFailure(error).scratchCapacity, observation.scratchCapacity);
+      assert.ok(!JSON.stringify(observation).includes("TEST-private"));
+      return true;
+    });
     assert.deepEqual(f.mutations, []);
   }
   const atFloor = fixture();

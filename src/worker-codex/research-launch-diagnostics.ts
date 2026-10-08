@@ -31,6 +31,22 @@ export enum ResearchMaterialRole {
 }
 type KnownMaterialRole = Exclude<ResearchMaterialRole, ResearchMaterialRole.Unknown>;
 const materialRoles = new WeakMap<object, KnownMaterialRole>();
+export enum ScratchCapacityVolumeRole { RootControl = "RootControl", ScratchPayload = "ScratchPayload" }
+type ScratchCapacityObservation = Readonly<{
+  volumeRole: ScratchCapacityVolumeRole; availableBytes: number; requiredBytes: number;
+}>;
+const scratchCapacityObservations = new WeakMap<object, ScratchCapacityObservation>();
+/** Actual failed admission only; caller error properties never supply these facts. */
+export function annotateScratchCapacityFailure(error: unknown, volumeRole: ScratchCapacityVolumeRole,
+  availableBytes: number, requiredBytes: number): unknown {
+  if (error && typeof error === "object" && !scratchCapacityObservations.has(error)
+    && Object.values(ScratchCapacityVolumeRole).includes(volumeRole)
+    && Number.isSafeInteger(availableBytes) && availableBytes >= 0
+    && Number.isSafeInteger(requiredBytes) && requiredBytes > availableBytes) {
+    scratchCapacityObservations.set(error, Object.freeze({ volumeRole, availableBytes, requiredBytes }));
+  }
+  return error;
+}
 export function annotateResearchMaterialFailure(error: unknown, role: KnownMaterialRole): unknown {
   try { if (error && typeof error === "object" && !materialRoles.has(error)) materialRoles.set(error, role); }
   catch { /* Observation only; retain the original thrown identity. */ }
@@ -125,13 +141,16 @@ export function normalizeResearchLaunchFailure(error: unknown): ReturnType<typeo
 /** Keep the deployed failure contract unchanged; add only an identity-bound private role. */
 export function normalizeResearchMaterialFailure(error: unknown) {
   let materialRole = ResearchMaterialRole.Unknown, current = error;
+  let scratchCapacity: ScratchCapacityObservation | undefined;
   const seen = new Set<unknown>();
   for (let depth = 0; depth < 8 && current && typeof current === "object" && !seen.has(current); depth++) {
     seen.add(current);
     const role = materialRoles.get(current);
-    if (role) { materialRole = role; break; }
+    if (role && materialRole === ResearchMaterialRole.Unknown) materialRole = role;
+    scratchCapacity ??= scratchCapacityObservations.get(current);
+    if (materialRole !== ResearchMaterialRole.Unknown && scratchCapacity) break;
     if (types.isProxy(current)) break;
     current = ownData(current, "cause");
   }
-  return { ...normalizeResearchLaunchFailure(error), materialRole };
+  return { ...normalizeResearchLaunchFailure(error), materialRole, ...(scratchCapacity ? { scratchCapacity } : {}) };
 }
