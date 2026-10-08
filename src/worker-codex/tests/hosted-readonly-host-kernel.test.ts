@@ -8,7 +8,8 @@ import type { HostedOrdinaryStart } from "@vioxen/subscription-runtime/worker-co
 const os = vi.hoisted(() => ({ files: new Map<string, string>(), fileErrors: new Map<string, string>(), records: new Map<string, Buffer>(),
   groups: new Map<string, string[]>(), units: "", jobs: "", show: new Map<string, string>(),
   descriptors: vi.fn(), operator: vi.fn(), systemctl: vi.fn(),
-  externalExec: vi.fn<typeof import("node:child_process").execFile>(() => { throw new Error("TEST external exec forbidden"); }) }));
+  externalExec: vi.fn<(...args: Parameters<typeof import("node:child_process").execFile>) => ReturnType<typeof import("node:child_process").execFile>>(
+    () => { throw new Error("TEST external exec forbidden"); }) }));
 vi.mock("node:fs", async original => ({
   ...await original<typeof import("node:fs")>(),
   readFileSync: (path: string) => {
