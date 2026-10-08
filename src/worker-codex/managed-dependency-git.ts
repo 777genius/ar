@@ -7,7 +7,7 @@ import { HostedDependencyRootPurpose, captureCurrentHostedDependencyRootPurpose,
   assertCurrentHostedDependencyRootPurpose, type HostedDependencyRootPurposeContext,
   isHostedDependencySignedTaskId, requiresCurrentHostedDependencyRootPurpose,
   type HostedDependencyManagedGitScope } from "./hosted-dependency-root-purpose";
-import { HostedDependencyPrivateScratch, readManagedDependencyPrivateIndex } from "./hosted-dependency-private-scratch";
+import { readHostedDependencyPrivateScratchOperations, type HostedDependencyPrivateScratch, readManagedDependencyPrivateIndex } from "./hosted-dependency-private-scratch";
 import { parsePatchCoverage } from "./git-patch-content-coverage";
 import { promisify } from "node:util";
 import type { SafeExecutionCommandRunner } from "@vioxen/subscription-runtime/worker-core";
@@ -255,10 +255,10 @@ export async function runManagedDependencyGitBuffer(context: HostedDependencyRoo
   readonly input?: Buffer;
 } = {}): Promise<{ stdout: Buffer; stderr: Buffer }> {
   const kind = classifyManagedDependencyGitArgs(args);
-  const scope = assertManagedDependencyGitContext(context);
   const snapshot = options.indexSnapshot;
-  if (snapshot !== undefined && !(snapshot instanceof HostedDependencyPrivateScratch)) throw new Error("dependency_private_scratch_held");
+  const privateScratch = snapshot === undefined ? undefined : readHostedDependencyPrivateScratchOperations(snapshot);
   if (kind === ManagedDependencyGitOperation.PrivateIndex && snapshot === undefined) throw new Error("dependency_host_git_private_index_required");
+  const scope = assertManagedDependencyGitContext(context);
   if (args[0] === "apply" && (options.input === undefined || options.input.length > 16 * 1024 * 1024) ||
       args[0] !== "apply" && options.input !== undefined) throw new Error("dependency_host_git_input_invalid");
   if (options.input !== undefined) {
@@ -274,7 +274,7 @@ export async function runManagedDependencyGitBuffer(context: HostedDependencyRoo
   const submit = async (fixedArgs: readonly string[]): Promise<{ stdout: Buffer; stderr: Buffer }> => {
       const operation = withHostedActivationFence(fence => {
         const fresh = assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
-        const objects = repositoryObjects(fresh), privatePaths = snapshot?.pathsWithHeldFence(context, fence);
+        const objects = repositoryObjects(fresh), privatePaths = privateScratch?.pathsWithHeldFence(context, fence);
         const env = { ...cleanEnvironment(), TMPDIR: privatePaths?.temporaryDirectory ?? fresh.scratchParent.canonicalPath, ...(privatePaths ? { GIT_INDEX_FILE: privatePaths.indexPath,
           GIT_OBJECT_DIRECTORY: privatePaths.objectDirectory, GIT_ALTERNATE_OBJECT_DIRECTORIES: objects } : {}) };
         const result = execute(fresh.rootGit.executable.path,
@@ -284,7 +284,7 @@ export async function runManagedDependencyGitBuffer(context: HostedDependencyRoo
           { cwd: fresh.workspace.canonicalPath, env, encoding: "buffer", timeout, maxBuffer: maximum,
             ...(options.abortSignal === undefined ? {} : { signal: options.abortSignal }) });
         if (fixedArgs[0] === "apply") result.child.stdin?.end(options.input);
-        snapshot?.observeChild(context, result.child);
+        privateScratch?.observeChild(context, result.child);
         let stderrBytes = 0, stderrLimit = false;
         result.child.stderr?.on("data", (chunk: Buffer) => {
           stderrBytes += chunk.length;
@@ -304,7 +304,7 @@ export async function runManagedDependencyGitBuffer(context: HostedDependencyRoo
         if (operation.exceededStderr()) throw new Error("dependency_host_git_output_limit_exceeded");
         throw error;
       } finally {
-        snapshot?.settleChild(context, operation.result.child);
+        privateScratch?.settleChild(context, operation.result.child);
         assertManagedDependencyGitContext(context);
       }
   };

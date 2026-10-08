@@ -1,3 +1,5 @@
+import { types } from "node:util";
+
 /** Closed startup observations; error payloads never become output. */
 export enum ResearchLaunchDiagnostic {
   Unknown = "unknown", ResearchAdmission = "research-admission", CheckpointAdmission = "checkpoint-admission",
@@ -17,6 +19,40 @@ export enum ResearchLaunchDiagnostic {
 export enum ResearchLaunchCause {
   None = "none", ArtifactDeadline = "artifact-deadline", FileDeadline = "file-deadline",
   HostCommandTimeout = "host-command-timeout", HostCommandFailed = "host-command-failed",
+  ScratchRoot = "scratch-root", ScratchTmp = "scratch-tmp", ScratchCache = "scratch-cache",
+}
+export enum ResearchLaunchStage {
+  Unknown = "unknown", PinPreparation = "pin-preparation", InputPreparation = "input-preparation",
+  LaunchPlan = "launch-plan", HostSubmission = "host-submission", StartReadback = "start-readback",
+}
+/** Private material scope only; never a member path, cache state or authority. */
+export enum ResearchMaterialRole {
+  Unknown = "unknown", RuntimeArtifact = "runtime-artifact", NodeExecutable = "node-executable", CodexExecutable = "codex-executable",
+}
+type KnownMaterialRole = Exclude<ResearchMaterialRole, ResearchMaterialRole.Unknown>;
+const materialRoles = new WeakMap<object, KnownMaterialRole>();
+export function annotateResearchMaterialFailure(error: unknown, role: KnownMaterialRole): unknown {
+  try { if (error && typeof error === "object" && !materialRoles.has(error)) materialRoles.set(error, role); }
+  catch { /* Observation only; retain the original thrown identity. */ }
+  return error;
+}
+const operatorStartStages = new WeakMap<object, ResearchLaunchStage>();
+/** Observe the same failed attempt without changing its error or recovery ownership. */
+export function annotateResearchLaunchStage(error: unknown, stage: ResearchLaunchStage): unknown {
+  if (error && typeof error === "object") operatorStartStages.set(error, stage);
+  return error;
+}
+export function normalizeResearchOperatorFailure(error: unknown) {
+  return { stage: error && typeof error === "object"
+    ? operatorStartStages.get(error) ?? ResearchLaunchStage.Unknown : ResearchLaunchStage.Unknown,
+  ...normalizeResearchLaunchFailure(error) };
+}
+type ScratchMountInspectionCause = ResearchLaunchCause.ScratchRoot | ResearchLaunchCause.ScratchTmp | ResearchLaunchCause.ScratchCache;
+const scratchInspectionCauses = new WeakMap<object, ScratchMountInspectionCause>();
+/** Internal observation only; preserve the thrown value and all existing recovery facts. */
+export function annotateScratchMountInspectionFailure(error: unknown, cause: ScratchMountInspectionCause): unknown {
+  if (error && typeof error === "object") scratchInspectionCauses.set(error, cause);
+  return error;
 }
 const D = ResearchLaunchDiagnostic;
 // Order is the deployed numeric contract; append diagnostics without renumbering it.
@@ -43,17 +79,23 @@ const exact = new Map<string, ResearchLaunchDiagnostic>([
 const prefixes = [["Scratch launch requires at least 5 GiB available on ", D.ScratchSpace],
   ["Unsafe scratch directory: ", D.ScratchDirectoryUnsafe], ["Unsafe scratch source permissions: ", D.ScratchSourceUnsafe]] as const;
 const errno = [D.ENOENT, D.EACCES, D.EPERM, D.EAGAIN, D.ENOSPC, D.EMFILE, D.ETIMEDOUT] as const;
-function ownString(error: unknown, key: string): string | undefined {
+function ownData(error: unknown, key: string): unknown {
   try {
     if (!error || typeof error !== "object") return undefined;
     const descriptor = Object.getOwnPropertyDescriptor(error, key);
-    return descriptor && "value" in descriptor && typeof descriptor.value === "string" ? descriptor.value : undefined;
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
   } catch { return undefined; }
 }
-export function normalizeResearchLaunchFailure(error: unknown): Readonly<{
+function ownString(error: unknown, key: string): string | undefined {
+  const value = ownData(error, key);
+  return typeof value === "string" ? value : undefined;
+}
+function normalizeOwnFailure(error: unknown): Readonly<{
   legacyCode: number | "unclassified"; cause: ResearchLaunchCause; diagnostic: ResearchLaunchDiagnostic;
 }> {
-  const message = ownString(error, "message"), code = ownString(error, "code"), cause = ownString(error, "cause");
+  const inspectionCause = error && typeof error === "object" ? scratchInspectionCauses.get(error) : undefined;
+  const message = ownString(error, "message"), code = ownString(error, "code");
+  const cause = inspectionCause ?? ownString(error, "cause");
   const index = legacy.findIndex(known => known === message);
   return {
     legacyCode: index < 0 ? "unclassified" : index,
@@ -61,4 +103,35 @@ export function normalizeResearchLaunchFailure(error: unknown): Readonly<{
     diagnostic: exact.get(message ?? "") ?? prefixes.find(([prefix]) => message?.startsWith(prefix))?.[1]
       ?? errno.find(known => known === code) ?? D.Unknown,
   };
+}
+/** Fill only unknown observations from bounded own-data causes. The deployed
+ * numeric code always describes the outer error, never a nested provider error. */
+export function normalizeResearchLaunchFailure(error: unknown): ReturnType<typeof normalizeOwnFailure> {
+  const outer = normalizeOwnFailure(error);
+  let { cause, diagnostic } = outer;
+  let current = error;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 8 && current && typeof current === "object" && !seen.has(current); depth += 1) {
+    seen.add(current);
+    const observation = depth === 0 ? outer : normalizeOwnFailure(current);
+    if (cause === ResearchLaunchCause.None) cause = observation.cause;
+    if (diagnostic === D.Unknown) diagnostic = observation.diagnostic;
+    if (cause !== ResearchLaunchCause.None && diagnostic !== D.Unknown) break;
+    current = ownData(current, "cause");
+  }
+  return { ...outer, cause, diagnostic };
+}
+
+/** Keep the deployed failure contract unchanged; add only an identity-bound private role. */
+export function normalizeResearchMaterialFailure(error: unknown) {
+  let materialRole = ResearchMaterialRole.Unknown, current = error;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 8 && current && typeof current === "object" && !seen.has(current); depth++) {
+    seen.add(current);
+    const role = materialRoles.get(current);
+    if (role) { materialRole = role; break; }
+    if (types.isProxy(current)) break;
+    current = ownData(current, "cause");
+  }
+  return { ...normalizeResearchLaunchFailure(error), materialRole };
 }

@@ -23,6 +23,7 @@ import { assertHostedDependencyToolProfileFiles, trustedFile } from "../provider
 import { observeHostedFdProcess, observeHostedFdUnit, readHostedFdProfile, hostedFdGroupPids, assertHostedFdBootstrap, assertHostedFdConfinement, assertHostedFdInternals, type HostedFdProcess, type HostedFdUnit } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { hostedFdLaunch } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import type { CodexAppServerProcessInvocation } from "../provider-codex/app-server/adapters/node-app-server-process";
+import { readCurrentHostedDependencyRootQualification } from "./hosted-dependency-tool-profile";
 import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRecipe } from "../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
 import { isHostedManagedReadonlyOuterRuntime, assertCurrentHostedDependencyAttempt, readCurrentHostedManagedDependencyProvider,
   prepareCurrentHostedManagedDependencyProviderTools, readCurrentHostedManagedDependencyProviderTools,
@@ -287,6 +288,12 @@ export function assertHostedManagedDependencyToolRelease(child: ChildProcess, fe
 function validatePlan(fence: HostedActivationFence, plan: Plan): void {
   assertHostedActivationFence(fence);
   if (plan.closed) fail();
+  // Recheck the original private qualifier's inputs and physical source walk,
+  // both before and after asynchronous setup's namespace observations. Cached
+  // Ready facts alone cannot detect source members or inner links changing.
+  const qualified = readCurrentHostedDependencyRootQualification(fence);
+  if (qualified.context !== plan.managedOrigin || qualified.phase !== DependencyOwnerPhase.Running ||
+      !encode(qualified.binding).equals(encode(plan.binding)) || !sameDependencyAttempt(qualified.attempt, plan.attempt)) fail();
   const managed = readCurrentHostedManagedDependencyProviderTools(plan.managedOrigin,fence,plan.unit);
   const q = plan.qualification, binding = plan.binding;
   const root = lstatSync(plan.root, { bigint: true }), parentDirectory = lstatSync(dirname(plan.root), { bigint: true });
@@ -299,7 +306,8 @@ function validatePlan(fence: HostedActivationFence, plan: Plan): void {
   // The admitted worker-owned reader opens only established history and closes
   // every temporary descriptor before the FD-table checks below. It is retained
   // with this actual invocation/child, never reconstructed from serialized facts.
-  const ready = {status:DependencyToolReadyReadStatus.Ready,facts:managed.ready} as const;
+  const ready = {status:DependencyToolReadyReadStatus.Ready,facts:qualified.providerReady} as const;
+  if (!encode(ready.facts).equals(encode(managed.ready))) fail();
   const expected = { workspace: binding.workspace, coverageRevision: hash(encode(binding)),
     revision: q.readyRevision, installKey: q.installKey, tree: q.tree, manifestDigest: q.manifestDigest };
   if (ready.status !== DependencyToolReadyReadStatus.Ready ||

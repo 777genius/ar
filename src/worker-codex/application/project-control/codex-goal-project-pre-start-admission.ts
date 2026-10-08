@@ -263,7 +263,7 @@ export async function validateStoredProjectPreStartAdmission(input: {
 }
 
 export async function assertProjectPreStartAdmissionLaunchBinding(input: {
-  readonly manifest: CodexGoalJobManifest;
+  readonly manifest: CodexGoalJobManifest | CodexGoalJobManifestInput;
   readonly scope: ProjectAccessScope;
   readonly expectedInputPatchArtifactSha256?: string;
   readonly workspaceMode?: ProjectPreStartAdmissionLaunchWorkspaceMode;
@@ -349,7 +349,7 @@ export async function assertProjectPreStartAdmissionLaunchBinding(input: {
         ? verifiedInputPatchBindingValid(binding, verifiedInputPatch)
         : binding.workspaceStatus === "";
   const inputPatchBindingValid = admittedInputPatchRuntimeContinuation
-      ? await controlledRuntimeInputPatchBindingValid({
+      ? "schemaVersion" in input.manifest && await controlledRuntimeInputPatchBindingValid({
         manifest: input.manifest,
         builtin: isBuiltinDescriptor(descriptor),
         contract,

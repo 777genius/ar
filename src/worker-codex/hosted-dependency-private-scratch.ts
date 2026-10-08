@@ -8,6 +8,8 @@ import { HostedDependencyRootPurpose, assertCurrentHostedDependencyRootPurpose,
 
 export enum HostedDependencyScratchStrategy { PrivateUnmountedV1 = "private_unmounted_v1" }
 type DirectoryPin = HostedDependencyManagedGitScope["scratchParent"];
+type ScratchOperations = Readonly<Pick<HostedDependencyPrivateScratch, "paths" | "pathsWithHeldFence" | "observeChild" | "settleChild">>;
+const scratchOperations = new WeakMap<HostedDependencyPrivateScratch, ScratchOperations>();
 function fail(): never { throw new Error("dependency_private_scratch_held"); }
 function kernelText(path: string, maximum: number): string {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -88,16 +90,26 @@ export class HostedDependencyPrivateScratch {
           mkdirSync(join(path, "objects"), { mode: 0o700 });
           const objects = directory(context, fence, join(path, "objects")); objects.resource.close();
           assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
-          return new HostedDependencyPrivateScratch(context, child.pin, child.resource);
+          const snapshot = new HostedDependencyPrivateScratch(context, child.pin, child.resource); Object.freeze(snapshot);
+          scratchOperations.set(snapshot, Object.freeze({ paths: fixedScratchMethods.paths.bind(snapshot),
+            pathsWithHeldFence: fixedScratchMethods.pathsWithHeldFence.bind(snapshot), observeChild: fixedScratchMethods.observeChild.bind(snapshot),
+            settleChild: fixedScratchMethods.settleChild.bind(snapshot) }));
+          return snapshot;
         } catch (error) { child.resource.close(); throw error; }
       } finally { parent.resource.close(); }
     });
   }
   paths(context: HostedDependencyRootPurposeContext): Readonly<{ temporaryDirectory: string; indexPath: string; objectDirectory: string }> {
+    return this.#paths(context);
+  }
+  #paths(context: HostedDependencyRootPurposeContext): Readonly<{ temporaryDirectory: string; indexPath: string; objectDirectory: string }> {
     if (context !== this.#context || this.#closed) return fail();
-    return withHostedActivationFence(fence => this.pathsWithHeldFence(context, fence));
+    return withHostedActivationFence(fence => this.#pathsWithHeldFence(context, fence));
   }
   pathsWithHeldFence(context: HostedDependencyRootPurposeContext, fence: HostedActivationFence): Readonly<{ temporaryDirectory: string; indexPath: string; objectDirectory: string }> {
+    return this.#pathsWithHeldFence(context, fence);
+  }
+  #pathsWithHeldFence(context: HostedDependencyRootPurposeContext, fence: HostedActivationFence): Readonly<{ temporaryDirectory: string; indexPath: string; objectDirectory: string }> {
     if (context !== this.#context || this.#closed) return fail();
       const scope = assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
       if (!this.#pin.canonicalPath.startsWith(scope.scratchParent.canonicalPath + "/git-")) return fail();
@@ -111,7 +123,7 @@ export class HostedDependencyPrivateScratch {
         indexPath: join(this.#pin.canonicalPath, "index"), objectDirectory: join(this.#pin.canonicalPath, "objects") });
   }
   copyLiveIndex(context: HostedDependencyRootPurposeContext, sourceIndexPath: string, sharedIndexPath?: string): void {
-    const paths = this.paths(context);
+    const paths = this.#paths(context);
     withHostedActivationFence(fence => {
       const scope = assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
       if (sourceIndexPath !== join(scope.workspace.canonicalPath, ".git/index") || sharedIndexPath !== undefined &&
@@ -156,10 +168,10 @@ export class HostedDependencyPrivateScratch {
     if (context !== this.#context || this.#closed) return fail();
     const record = this.#children.get(child);
     if (!record || !record.closed || child.exitCode === null || child.signalCode !== null) this.#uncertain = true;
-    try { this.paths(context); } catch (error) { this.#uncertain = true; throw error; }
+    try { this.#paths(context); } catch (error) { this.#uncertain = true; throw error; }
   }
   close(context: HostedDependencyRootPurposeContext): void {
-    this.paths(context);
+    this.#paths(context);
     if (this.#uncertain) return fail();
     withHostedActivationFence(fence => {
       assertCurrentHostedDependencyRootPurpose(context, HostedDependencyRootPurpose.ManagedGitReadV1, fence);
@@ -208,6 +220,14 @@ export class HostedDependencyPrivateScratch {
     });
   }
 }
+// Capture the fixed implementation once, before consumers can mutate public
+// prototypes. Issued bound operations never dispatch through caller properties.
+const fixedScratchMethods: ScratchOperations = Object.freeze({ paths: HostedDependencyPrivateScratch.prototype.paths,
+  pathsWithHeldFence: HostedDependencyPrivateScratch.prototype.pathsWithHeldFence,
+  observeChild: HostedDependencyPrivateScratch.prototype.observeChild, settleChild: HostedDependencyPrivateScratch.prototype.settleChild });
+export function readHostedDependencyPrivateScratchOperations(snapshot: HostedDependencyPrivateScratch): ScratchOperations {
+  const operations = scratchOperations.get(snapshot); if (!operations) return fail(); return operations;
+}
 export function prepareHostedDependencyPrivateScratch(context: HostedDependencyRootPurposeContext): HostedDependencyPrivateScratch {
   return HostedDependencyPrivateScratch.prepare(context);
 }
@@ -216,12 +236,12 @@ const environments = new WeakMap<NodeJS.ProcessEnv, { context: HostedDependencyR
 /** Environment is a fixed data projection of an actual retained resource. It
  * grants nothing without fresh authentication of the same B context. */
 export function managedDependencyPrivateIndexEnvironment(context: HostedDependencyRootPurposeContext, snapshot: HostedDependencyPrivateScratch): NodeJS.ProcessEnv {
-  const paths = snapshot.paths(context);
+  const paths = readHostedDependencyPrivateScratchOperations(snapshot).paths(context);
   const env = Object.freeze({ GIT_INDEX_FILE: paths.indexPath, GIT_OBJECT_DIRECTORY: paths.objectDirectory });
   environments.set(env, { context, snapshot }); return env;
 }
 export function readManagedDependencyPrivateIndex(context: HostedDependencyRootPurposeContext, env: NodeJS.ProcessEnv): HostedDependencyPrivateScratch {
   const actual = environments.get(env);
   if (!actual || actual.context !== context) return fail();
-  actual.snapshot.paths(context); return actual.snapshot;
+  readHostedDependencyPrivateScratchOperations(actual.snapshot).paths(context); return actual.snapshot;
 }
