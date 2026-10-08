@@ -32,6 +32,7 @@ import {
   createCodexGoalMcpServer,
   projectControllerPendingGuidancePromptContext,
 } from "../codex-goal-mcp";
+import { materializeCodexGoalHandoffArtifacts } from "../codex-goal-handoff-artifacts";
 import { localProjectControlEvidenceCustodySupported } from
   "../../worker-local/project-control-evidence-custody-local-adapter";
 import {
@@ -370,11 +371,23 @@ describe("codex goal MCP server", () => {
       const heldJobRoot = join(root, "worker-jobs", heldJobId);
       await mkdir(join(heldWorkspace, "src", "held"), { recursive: true });
       await writeFile(join(heldWorkspace, "src", "held", "output.ts"), "export const held = true;\n");
-      await writeFile(
-        join(heldJobRoot, `${heldJobId}.latest-result.json`),
-        `${JSON.stringify({ status: "completed" })}\n`,
-      );
-
+      const heldResultPath = join(heldJobRoot, `${heldJobId}.latest-result.json`);
+      const stoppedPid = Number((await execFileAsync(process.execPath, ["-p", "process.pid"], { cwd: root })).stdout.trim());
+      await writeFile(join(heldJobRoot, `${heldJobId}.progress.json`), JSON.stringify({
+        taskId: heldJobId, status: "completed", resultStatus: "done", pid: stoppedPid,
+      }));
+      await writeFile(heldResultPath, `${JSON.stringify({ status: "completed" })}\n`);
+      await expect(refill("infinity-context-disjoint-v1", ["src/disjoint/"])).resolves.toMatchObject({
+        ok: false, error: "project_control_admission_denied:output_debt_present",
+      });
+      const handoff = await materializeCodexGoalHandoffArtifacts({ workerJobId: heldJobId,
+        taskId: heldJobId, workspacePath: heldWorkspace, jobRootDir: heldJobRoot });
+      if (!handoff) throw new Error("native held output required");
+      await writeFile(heldResultPath, JSON.stringify({ status: "done", changedFiles: handoff.changedPaths,
+        evidence: [], blockers: [], nextAction: "review_completed", artifacts: handoff.artifacts,
+        details: { baseCommit: handoff.baseCommit } }));
+      const retainedPaths = [heldResultPath, handoff.manifestPath, handoff.patchPath, join(heldWorkspace, "src", "held", "output.ts")];
+      const retainedBytes = await Promise.all(retainedPaths.map((path) => readFile(path)));
       await expect(
         refill("infinity-context-disjoint-v1", ["src/disjoint/"]),
       ).resolves.toMatchObject({ ok: true });
@@ -388,6 +401,7 @@ describe("codex goal MCP server", () => {
       });
       await expect(access(join(worktreeRoot, "infinity-context-overlap-v1")))
         .rejects.toMatchObject({ code: "ENOENT" });
+      expect(await Promise.all(retainedPaths.map((path) => readFile(path)))).toEqual(retainedBytes);
     } finally {
       await client.close();
       await server.close();

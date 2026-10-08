@@ -17,6 +17,7 @@ import { assertHostedDependencyRootDirectoryFacts } from "./hosted-dependency-ro
 import { rootIdentity } from "./hosted-dependency-current-facts";
 import { sameRootDescriptorStat as sameStat } from "./hosted-dependency-root-physical-facts";
 import { assertRootQualificationFacts, assertRootConfigAncestorFacts, parseRootPreparationFacts, parseOrdinaryRootPreparationFacts } from "./hosted-dependency-root-provenance-facts";
+import { freezeFacts } from "./hosted-dependency-immutable-facts";
 const root = "/var/lib/subscription-runtime-host-policy";
 const hash = (bytes:Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const encode = (value:unknown) => Buffer.from(JSON.stringify(value)+"\n");
@@ -59,7 +60,7 @@ export function readOriginalHostedDependencyRootReady(context:CurrentHostedDepen
     committed=receipts.getCommittedReady(binding.workspace,current.revision); if (!encode(current).equals(encode(committed.receipt))) invalid();
   } finally { receipts.close(); }
   if (!sameDependencyAttempt(assertCurrentHostedDependencyAttempt(context,fence,phase).attempt,actual.attempt)) invalid();
-  return committed;
+  return freezeFacts(committed);
 }
 /** Fixed current-origin physical read model. No record/path/profile/FD DTO or
  * callback is accepted. All selected material comes from the actual parent and
@@ -87,5 +88,7 @@ export function readOriginalHostedDependencyRootPreparation(context:CurrentHoste
   assertRootConfigAncestorFacts(record,binding);
   const after = assertCurrentHostedDependencyAttempt(context,fence,phase);
   if (!sameDependencyAttempt(after.attempt,attempt) || !encode(readOriginalHostedDependencyRootReady(context,fence,phase)).equals(encode(ready)) || !fixed(`dependency-root-preparations/${attempt.launch.startId}.json`,65536).bytes.equals(selected.bytes) || remaining() <= 0) invalid();
-  return {record,reference:selected.reference,ready,identity,rootGit};
+  // Freeze validated JSON baselines before private retention or public aliases.
+  // Raw bytes, descriptor handles and mutable provider/session state stay separate.
+  return {record:freezeFacts(record),reference:freezeFacts(selected.reference),ready,identity,rootGit};
 }

@@ -93,6 +93,9 @@ export interface AgentDriver {
     readonly logicalThread?: ProviderLogicalThreadExecution;
   }): Promise<ProviderTaskResult>;
 
+  /** Finalizes only the original private terminal entry for this exact use. */
+  finalizeTaskSession?(use:SessionExecutionUse):Promise<Exclude<ProviderTaskResult,{status:"waiting_for_input"}>>;
+  retireTaskSession?(use:SessionExecutionUse):Promise<void>;
   classifyRunFailure(error: unknown): ProviderFailure;
 }
 
@@ -178,6 +181,9 @@ export interface SessionStorePort {
     readonly nextArtifact: SessionArtifact;
     readonly idempotencyKey: string;
     readonly leaseId: string;
+    /** Sanitized custody annotations. Callers requiring persistence verify
+     * the accepted envelope; credentials belong only in the artifact. */
+    readonly metadata?: Readonly<Record<string, string>>;
   }): Promise<SessionWriteResult>;
 
   delete?(input: {

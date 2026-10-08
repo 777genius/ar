@@ -1,3 +1,7 @@
+// The fixed research handshake includes OS setup, retained ownership and the
+// final material/authority checks. Readiness does not start a shorter budget.
+export const hostedResearchSetupTimeoutMs = 300_000;
+
 export type HostedAppServerLaunchFrame = {
   readonly schemaVersion: 1;
   readonly command: string;
