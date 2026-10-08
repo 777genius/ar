@@ -122,3 +122,59 @@ export function observeTestNpmLockResult(result: unknown): TestNpmLockObservatio
   return freeze({ status, signal: signalClass, spawnClass, ...codeFacts, stderrShape,
     fixedTextLiteral: typeof stderr === "string" ? lockFixedText(stderr) : LockFixedText.Unknown });
 }
+
+enum AdministrativeSignal { Unknown = "unknown", None = "none", Term = "sigterm", Kill = "sigkill", Other = "other" }
+enum AdministrativeSpawnError {
+  Unknown = "unknown", None = "none", Timeout = "timeout_code_literal", Missing = "enoent_code_literal",
+  Access = "eacces_code_literal", Buffer = "maxbuffer_code_literal", Other = "other_native_code",
+}
+enum AdministrativeStdout { Unknown = "unknown", ExactDenied = "exact_denied", Empty = "empty", Other = "other" }
+enum AdministrativeStderr { Unknown = "unknown", Empty = "empty", Present = "present" }
+// Subset of existing common.setupDiagnostic/runtimeDiagnostic classes. Literal
+// membership describes private captured text, never a cause or bus readiness.
+const administrativeSetupClasses = ["error while loading shared libraries", "cannot open shared object file",
+  "Failed to start transient service unit", "Failed to create bus connection", "Failed to connect to bus",
+  "Failed to execute", "Failed at step", "ERR_MODULE_NOT_FOUND", "ERR_UNKNOWN_FILE_EXTENSION", "AssertionError"] as const;
+export type TestAdministrativeCommandObservation = Readonly<{
+  status: number | null; signal: AdministrativeSignal; spawnError: AdministrativeSpawnError;
+  stdout: AdministrativeStdout; stderr: AdministrativeStderr; stderrClasses: readonly (typeof administrativeSetupClasses)[number][];
+}>;
+const unknownAdministrativeCommand: TestAdministrativeCommandObservation = freeze({ status: null,
+  signal: AdministrativeSignal.Unknown, spawnError: AdministrativeSpawnError.Unknown,
+  stdout: AdministrativeStdout.Unknown, stderr: AdministrativeStderr.Unknown, stderrClasses: freeze([]) });
+/** One bounded native command-result projection. Reject Proxy/accessor data
+ * before reading it; no raw streams, error text, paths, stack or callbacks. */
+export function observeTestAdministrativeCommandResult(result: unknown): TestAdministrativeCommandObservation {
+  if (result === null || typeof result !== "object" || isProxy(result)) return unknownAdministrativeCommand;
+  const fields: unknown[] = [];
+  for (const key of ["status", "signal", "stdout", "stderr", "error"] as const) {
+    const own = descriptor(result, key);
+    if (!own && key === "error") { fields.push(undefined); continue; }
+    if (!own || !hasOwn(own, "value")) return unknownAdministrativeCommand;
+    fields.push(own.value);
+  }
+  const [status, signal, stdout, stderr, error] = fields;
+  if (!(status === null || typeof status === "number" && Number.isSafeInteger(status) && status >= 0 && status <= 255) ||
+      !(signal === null || typeof signal === "string" && signal.length <= 16) ||
+      !(stdout === null || typeof stdout === "string" && stdout.length <= 16384) ||
+      !(stderr === null || typeof stderr === "string" && stderr.length <= 16384)) return unknownAdministrativeCommand;
+  let spawnError = error === undefined ? AdministrativeSpawnError.None : AdministrativeSpawnError.Unknown;
+  if (error !== null && typeof error === "object" && !isProxy(error) && isNativeError(error)) {
+    const code = descriptor(error, "code");
+    if (code && hasOwn(code, "value") && typeof code.value === "string" && code.value.length <= 64) {
+      switch (code.value) {
+        case "ETIMEDOUT": spawnError = AdministrativeSpawnError.Timeout; break;
+        case "ENOENT": spawnError = AdministrativeSpawnError.Missing; break;
+        case "EACCES": spawnError = AdministrativeSpawnError.Access; break;
+        case "ENOBUFS": case "ERR_CHILD_PROCESS_STDIO_MAXBUFFER": spawnError = AdministrativeSpawnError.Buffer; break;
+        default: spawnError = AdministrativeSpawnError.Other;
+      }
+    }
+  }
+  return freeze({ status, signal: signal === null ? AdministrativeSignal.None : signal === "SIGTERM" ?
+    AdministrativeSignal.Term : signal === "SIGKILL" ? AdministrativeSignal.Kill : AdministrativeSignal.Other,
+    spawnError, stdout: stdout === null ? AdministrativeStdout.Unknown : stdout === "DENIED_ACTUAL_NATIVE_ORIGIN\n" ?
+      AdministrativeStdout.ExactDenied : stdout === "" ? AdministrativeStdout.Empty : AdministrativeStdout.Other,
+    stderr: stderr === null ? AdministrativeStderr.Unknown : stderr === "" ? AdministrativeStderr.Empty : AdministrativeStderr.Present,
+    stderrClasses: freeze(typeof stderr === "string" ? administrativeSetupClasses.filter(value => stderr.includes(value)) : []) });
+}

@@ -17,6 +17,7 @@ import {
   FullBackingExposure, readOriginalAdministrativeTaskReferences, retainFullProcProcess, sampleFullProcDescriptors
 }
 from "./current-full-backing-collector.js";
+import { observeTestAdministrativeCommandResult, type TestAdministrativeCommandObservation } from "./registration-failure-observation.js";
 const control="/srv/workers/public-intake/TEST-dependency-full-native-20261007-r1/control";
 const actorUnit="subscription-runtime-installer-10000000-0000-4000-8000-9ca302fabd07.service";
 const forgedUnit="TEST-administrative-forgery.service";
@@ -28,7 +29,7 @@ const env={
 ;
 export enum AdministrativeInstallationTestPhase {
   NotStarted="not_started", Handshake="original_parent_handshake",
-  ForgedLaunch="forged_application_launch", ForgedTerminal="forged_application_terminal",
+  ForgedLaunch="forged_application_launch", ForgedSentinel="forged_application_stdout_verification", ForgedTerminal="forged_application_terminal",
   ProducerRetain="retain_original_producer", SubmitReady="original_submit_and_ready",
   OriginReadback="read_actual_origin", TargetBirth="new_target_birth",
   NativeAnchor="retain_actual_actor_tasks", CopiedProc="reject_copied_proc",
@@ -39,6 +40,9 @@ export enum AdministrativeInstallationTestPhase {
 let currentPhase=AdministrativeInstallationTestPhase.NotStarted;
 /** Finite TEST progress only; it grants no source/admission or retry authority. */
 export function observeAdministrativeInstallationTestPhase():AdministrativeInstallationTestPhase { return currentPhase; }
+let forgedCommandObservation:TestAdministrativeCommandObservation|undefined;
+/** The first fixed forged call's finite TEST facts, never admission or retry. */
+export function observeAdministrativeForgedCommandResult():TestAdministrativeCommandObservation|undefined { return forgedCommandObservation; }
 const deadline=process.hrtime.bigint()+120n*1000000000n;
 function budget():void{
   assert(process.hrtime.bigint()<deadline);
@@ -49,6 +53,8 @@ function command(path:string,args:string[],notFound=false):string{
     env,cwd:"/",encoding:"utf8",timeout:5000,maxBuffer:16384,stdio:["ignore","pipe","pipe"]
   }
   );
+  if(currentPhase===AdministrativeInstallationTestPhase.ForgedLaunch && forgedCommandObservation===undefined)
+    forgedCommandObservation=observeTestAdministrativeCommandResult(r);
   assert(!r.error && (r.status===0 || (notFound && r.status===4)) && r.signal===null);
   return r.stdout;
 }
@@ -107,6 +113,7 @@ export async function runAdministrativeInstallationRegression():Promise<Readonly
   absent(control+"/administrative-ready.json");
   currentPhase=AdministrativeInstallationTestPhase.ForgedLaunch;
   const denied=command("/usr/bin/systemd-run",["--collect","--wait","--pipe","--unit="+forgedUnit,"--service-type=exec","--property=User=0","--property=Group=0","--property=NoNewPrivileges=yes","--property=CapabilityBoundingSet=","--property=AmbientCapabilities=","--property=ProtectSystem=strict","--property=RuntimeMaxSec=5s","--property=WorkingDirectory=/","--",node,runtime+"/scripts/dependency-retention-os-test/administrative-forgery-native-TEST.js"]);
+  currentPhase=AdministrativeInstallationTestPhase.ForgedSentinel;
   assert.equal(denied,"DENIED_ACTUAL_NATIVE_ORIGIN\n");
   currentPhase=AdministrativeInstallationTestPhase.ForgedTerminal;
   await terminal(forgedUnit);

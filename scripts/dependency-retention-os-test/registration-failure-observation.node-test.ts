@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { lookupNpmPublicSourcePart0 } from "./registration-npm-public-catalog-0.js";
 import { lookupNpmPublicSourcePart1 } from "./registration-npm-public-catalog-1.js";
 import { observePinnedTestNpmFrame, observePublicTestNpmFrame } from "./registration-npm-frame-observation.js";
-import { observeRegistrationFailure, observeTestNpmLockResult } from "./registration-failure-observation.js";
+import { observeRegistrationFailure, observeTestAdministrativeCommandResult, observeTestNpmLockResult } from "./registration-failure-observation.js";
 
 test("closed observations drop arbitrary text and non-native counterfeits", () => {
   const secret = "TEST-secret-path-token-not-for-evidence";
@@ -30,6 +30,45 @@ test("own data literals and assertion-code observations remain distinct", () => 
     assert.deepEqual(observeRegistrationFailure(new Error(message)), { errorClass: "native_error", fixedLiteral });
   const failure = new assert.AssertionError({ actual: "TEST-secret", expected: "different", operator: "strictEqual" });
   assert.deepEqual(observeRegistrationFailure(failure), { errorClass: "native_error", fixedLiteral: "assertion_code_literal" });
+});
+
+test("fixed administrative result keeps bounded facts and drops private captured text", () => {
+  const secret = "TEST-private-command-path-token", result = { status: 1, signal: null, stdout: secret,
+    stderr: "Failed to start transient service unit: " + secret };
+  const observed = observeTestAdministrativeCommandResult(result);
+  assert.deepEqual(observed, { status: 1, signal: "none", spawnError: "none", stdout: "other",
+    stderr: "present", stderrClasses: ["Failed to start transient service unit"] });
+  assert(!JSON.stringify(observed).includes(secret)); assert(Object.isFrozen(observed)); assert(Object.isFrozen(observed.stderrClasses));
+  assert.equal(observeTestAdministrativeCommandResult({ ...result, stdout: "DENIED_ACTUAL_NATIVE_ORIGIN\n" }).stdout, "exact_denied");
+  assert.equal(observeTestAdministrativeCommandResult({ ...result, stdout: "", stderr: "" }).stdout, "empty");
+  for (const [code, expected] of [["ETIMEDOUT", "timeout_code_literal"], ["ENOENT", "enoent_code_literal"],
+    ["EACCES", "eacces_code_literal"], ["ENOBUFS", "maxbuffer_code_literal"], ["ERR_CHILD_PROCESS_STDIO_MAXBUFFER", "maxbuffer_code_literal"],
+    ["TEST_UNKNOWN", "other_native_code"]] as const) {
+    const error = new Error(secret); Object.defineProperty(error, "code", { value: code });
+    const actual = observeTestAdministrativeCommandResult({ ...result, status: null, signal: "SIGTERM", error });
+    assert.equal(actual.spawnError, expected); assert.equal(actual.signal, "sigterm"); assert.equal(actual.status, null);
+    assert(!JSON.stringify(actual).includes(secret));
+  }
+  assert.equal(observeTestAdministrativeCommandResult({ ...result, signal: "SIGKILL" }).signal, "sigkill");
+  assert.equal(observeTestAdministrativeCommandResult({ ...result, signal: "SIGABRT" }).signal, "other");
+  const unknown = observeTestAdministrativeCommandResult(null);
+  for (const changed of [{ status: 256 }, { status: -1 }, { status: 0.5 }, { stdout: "x".repeat(16385) }, { stderr: "x".repeat(16385) }])
+    assert.deepEqual(observeTestAdministrativeCommandResult({ ...result, ...changed }), unknown);
+});
+
+test("administrative result rejects accessor Proxy and counterfeit errno without caller calls", () => {
+  let calls = 0; const trap = (): never => { ++calls; throw new Error("TEST-caller-trap"); };
+  const result = { status: 0, signal: null, stdout: "", stderr: "" };
+  const unknown = observeTestAdministrativeCommandResult(null);
+  const proxy = new Proxy(result, { get: trap, getOwnPropertyDescriptor: trap, ownKeys: trap, getPrototypeOf: trap });
+  const revoked = Proxy.revocable(result, {}); revoked.revoke();
+  const accessors = Object.create(null); for (const key of ["status", "signal", "stdout", "stderr", "error"])
+    Object.defineProperty(accessors, key, { get: trap });
+  for (const value of [proxy, revoked.proxy, accessors]) assert.deepEqual(observeTestAdministrativeCommandResult(value), unknown);
+  const native = new Error(); Object.defineProperty(native, "code", { get: trap });
+  for (const error of [native, { code: "ETIMEDOUT" }, new Proxy(new Error(), { getOwnPropertyDescriptor: trap, get: trap })])
+    assert.equal(observeTestAdministrativeCommandResult({ ...result, error }).spawnError, "unknown");
+  assert.equal(calls, 0);
 });
 
 test("Proxy, revoked Proxy, accessor and inherited literals make zero caller calls", () => {
