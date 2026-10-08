@@ -10,15 +10,15 @@ permissions:
 
 jobs:
   build-reviewed-artifact:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     timeout-minutes: 20
     env:
-      SOURCE_SHA: c0e4fda029fddecb314daef0d3b755baa8125fe4
+      SOURCE_SHA: 36080ca77350d5473ab04c3120ec62fb9b23eac8
     steps:
       # Fixed reviewed source, independent of the workflow PR's merge tree.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: c0e4fda029fddecb314daef0d3b755baa8125fe4
+          ref: 36080ca77350d5473ab04c3120ec62fb9b23eac8
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -54,7 +54,7 @@ jobs:
       # Build output only: no launch, installation, credentials or native receipt.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: reviewed-research-runtime-c0e4-${{ github.run_id }}-${{ github.run_attempt }}
+          name: reviewed-research-runtime-3608-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ env.ARTIFACT_OUTPUT }}/*.tgz
             ${{ env.ARTIFACT_OUTPUT }}/runtime-dependencies.tar.gz
