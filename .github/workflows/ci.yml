@@ -105,6 +105,39 @@ jobs:
           cache: npm
       - name: Fetch locked TEST dependencies
         run: for i in 1 2 3; do npm ci --ignore-scripts && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+      - run: npm run build:packages
+      - name: Typecheck scratch preparation and the native TEST helper
+        run: |
+          node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json
+          node node_modules/typescript/bin/tsc -p scripts/test-scratch-mount-propagation.tsconfig.json
+      - name: Require scratch preparation and adjacent research contracts
+        run: |
+          npm run build
+          node node_modules/vitest/vitest.mjs run --maxWorkers=1 \
+            src/worker-codex/tests/host-scratch-temp.test.ts \
+            src/worker-codex/tests/host-scratch-mount.test.ts \
+            src/worker-codex/tests/host-scratch-mount-observation-cost.test.ts \
+            src/worker-codex/tests/research-provider-service.test.ts \
+            src/worker-codex/tests/research-provider-root.test.ts \
+            src/worker-codex/tests/research-launch-diagnostics.test.ts \
+            src/worker-codex/tests/research-launch-diagnostics-privacy.test.ts
+      - name: Require real shared-source leaf isolation in a fresh TEST namespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir scratch-mount-evidence
+          sudo -n /usr/bin/env -i PATH=/usr/bin:/bin \
+            /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
+            /usr/bin/unshare --mount --propagation private \
+            "$(command -v node)" --experimental-strip-types scripts/test-scratch-mount-propagation.mts \
+            | tee scratch-mount-evidence/result.json
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: scratch-mount-propagation-evidence
+          path: scratch-mount-evidence/result.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Typecheck the focused namespace helper
         run: node node_modules/typescript/bin/tsc -p scripts/test-dependency-observer-mount-namespace.tsconfig.json
       - name: Require actual observer mount negatives and FD-close oracle

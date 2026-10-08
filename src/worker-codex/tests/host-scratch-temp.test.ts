@@ -15,6 +15,7 @@ function fixture() {
   const mounts = new Map<string, ReturnType<ScratchTempHost["inspectMount"]>>([[root, { target: root, uuid, fsroot: "/" }]]);
   const contents = new Map<string, string[]>();
   const mutations: string[] = [];
+  let mountId = 20;
   const host: ScratchTempHost = {
     uid: 0,
     realpath: (path) => path,
@@ -32,8 +33,11 @@ function fixture() {
     entries: (path) => contents.get(path) ?? [],
     bind(source, target) {
       mutations.push(`bind ${source} ${target}`);
-      mounts.set(target, { target, uuid, fsroot: source.slice(root.length) });
+      mounts.set(target, { target, uuid, fsroot: source.slice(root.length), mountId: mountId++, isPrivate: false });
+      nodes.set(target, { ...nodes.get(source)! });
     },
+    makePrivate(target) { mutations.push(`private ${target}`); mounts.set(target, { ...mounts.get(target), isPrivate: true }); },
+    unmount(target) { mutations.push(`unmount ${target}`); mounts.delete(target); },
   };
   return { host, nodes, mounts, contents, mutations, directory, setConfig: (value: unknown) => { config = JSON.stringify(value); } };
 }
@@ -92,6 +96,7 @@ test("distinct jobs bind distinct sources while retaining logical tmp targets", 
   assert.deepEqual(f.mutations, []);
   await prepareHostScratchTemp("/jobs/a", { SUBSCRIPTION_RUNTIME_TMPDIR: "/jobs/a/tmp" }, f.host);
   assert.equal(f.mounts.get("/jobs/a/tmp")?.fsroot, a.fsroot);
+  assert.equal(f.mounts.get("/jobs/a/tmp")?.isPrivate, true);
   assert.equal(f.nodes.get(a.source)?.mode, 0o701);
   assert.equal(f.nodes.get("/jobs/a/tmp")?.mode, 0o701);
   const before = [...f.mutations];
@@ -216,4 +221,81 @@ test("new bind must establish physical source identity before preparation succee
   await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host), /Prepared scratch source identity changed/);
   assert.equal(f.mutations.filter(action => action.startsWith("bind ")).length, 1);
   assert.ok(![...f.nodes.keys()].some(path => path.endsWith(".lock")));
+});
+
+// RED: a successful bind remains shared or a failed private transition leaks its own leaf.
+test.each(["command-failure", "postcondition-failure"])("new leaf rolls back its verified mount after %s", async failure => {
+  const f = fixture();
+  f.host.makePrivate = () => { if (failure === "command-failure") throw new Error("NEWTEST private denied"); };
+  await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host));
+  assert.equal(f.mounts.has("/jobs/a/tmp"), false);
+  assert.deepEqual(f.mutations.filter(action => action.startsWith("unmount ")), ["unmount /jobs/a/tmp"]);
+  assert.ok(![...f.nodes.keys()].some(path => path.endsWith(".lock")));
+});
+
+// RED: an existing shared mount is reconfigured as if this invocation created it.
+test("adopted shared leaves retain propagation and mount identity without mutation", async () => {
+  const f = fixture();
+  await prepareHostScratchTemp("/jobs/a", {}, f.host);
+  const existing = { ...f.mounts.get("/jobs/a/tmp")!, isPrivate: false };
+  f.mounts.set("/jobs/a/tmp", existing);
+  const before = [...f.mutations];
+  await prepareHostScratchTemp("/jobs/a", {}, f.host);
+  assert.deepEqual(f.mutations, before);
+  assert.equal(f.mounts.get("/jobs/a/tmp"), existing);
+});
+
+// RED: tuple-only cleanup removes a replacement mount or changed backing directory.
+test.each(["mount-id", "source-inode", "target-inode", "missing", "ambiguous"])("rollback retains target after %s drift", async drift => {
+  const f = fixture(), layout = resolveHostScratchTempRoot("/jobs/a", f.host)!, target = "/jobs/a/tmp";
+  f.host.makePrivate = () => {
+    if (drift === "mount-id") f.mounts.set(target, { ...f.mounts.get(target), mountId: 99, isPrivate: true });
+    if (drift === "source-inode") f.nodes.set(layout.source, { ...f.nodes.get(layout.source)!, ino: 99 });
+    if (drift === "target-inode") f.nodes.set(target, { ...f.nodes.get(target)!, ino: 99 });
+    if (drift === "missing") f.mounts.delete(target);
+    if (drift === "ambiguous") {
+      const inspect = f.host.inspectMount;
+      f.host.inspectMount = path => { if (path === target) throw new Error("NEWTEST ambiguous mount"); return inspect(path); };
+    }
+    throw new Error("NEWTEST private denied");
+  };
+  await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host));
+  assert.ok(!f.mutations.some(action => action.startsWith("unmount ")));
+  if (drift !== "missing") assert.ok(f.mounts.has(target));
+});
+
+// RED: bind failure/unknown inspection is mistaken for owned rollback authority.
+test.each(["uncertain-bind", "unknown-id", "foreign-root"])("unverified %s never permits private or rollback", async failure => {
+  const f = fixture(), bind = f.host.bind;
+  f.host.bind = (source, target) => {
+    bind(source, target);
+    if (failure === "uncertain-bind") throw new Error("NEWTEST uncertain bind");
+    const { mountId: _id, ...withoutId } = f.mounts.get(target)!;
+    f.mounts.set(target, failure === "unknown-id" ? withoutId : { ...f.mounts.get(target), fsroot: "/foreign" });
+  };
+  await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host));
+  assert.ok(f.mounts.has("/jobs/a/tmp"));
+  assert.ok(!f.mutations.some(action => /^(private|unmount) /.test(action)));
+});
+
+// RED: EBUSY is retried with a destructive lazy/force fallback, or masks preparation failure.
+test("busy normal unmount retains the leaf and both failure causes", async () => {
+  const f = fixture(), preparation = Error("NEWTEST private denied"), busy = Object.assign(Error("NEWTEST busy"), { code: "EBUSY" });
+  f.host.makePrivate = () => { throw preparation; };
+  let attempts = 0;
+  f.host.unmount = target => { assert.equal(target, "/jobs/a/tmp"); attempts++; throw busy; };
+  await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host), error => error instanceof AggregateError &&
+    error.errors.length === 2 && error.errors[0] === preparation && error.errors[1] === busy);
+  assert.equal(attempts, 1); assert.ok(f.mounts.has("/jobs/a/tmp"));
+});
+
+// RED: failure of the second cache leaf tears down a previously prepared independent leaf.
+test("second cache private failure rolls back only its newly created leaf", async () => {
+  const f = fixture(), makePrivate = f.host.makePrivate;
+  const first = "/home/codex/plugins/cache", second = "/home/codex/cache/remote_plugin_catalog";
+  f.host.makePrivate = target => { if (target === second) throw Error("NEWTEST second cache private denied"); makePrivate(target); };
+  await assert.rejects(prepareHostScratchCaches("/home/codex", {}, f.host), /second cache private denied/);
+  const retained = f.mounts.get(first); assert.ok(retained); assert.equal(retained.isPrivate, true);
+  assert.equal(f.mounts.has(second), false);
+  assert.deepEqual(f.mutations.filter(action => action.startsWith("unmount ")), [`unmount ${second}`]);
 });
