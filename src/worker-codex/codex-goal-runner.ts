@@ -1,5 +1,6 @@
 import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { hostedGoalAdmissionIdentity, withHostedGoalIdentity } from "./hosted-readonly-goal-launch";
 import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
@@ -233,6 +234,7 @@ export async function runCodexGoal(
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   config = mapManagedGoalLayout({ config }).config;
   assertCodexGoalRunConfig(config);
+  config = withHostedGoalIdentity(config);
   const admission = await admitHostedDependencyEntry(config), toolEntry = admission?.toolEntry;
   try {
   const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(config.workspacePath, toolEntry);
@@ -240,11 +242,7 @@ export async function runCodexGoal(
   assertCodexGoalAccessLaunchAllowed(config);
   const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const admittedEgress = await (deps.admitProviderEgress ?? admitHostedTestEgress)({
-    jobId: config.jobId ?? config.taskId,
-    jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath,
-    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
-    sourceEnv: config.sourceEnv ?? process.env,
+    ...hostedGoalAdmissionIdentity(config),
     ...(isMimo ? { modelBackend: config.modelBackend } : {}),
   });
   const providerEgressPolicy = isMimo
@@ -254,12 +252,8 @@ export async function runCodexGoal(
     throw new Error("codex_goal_provider_egress_admission_mismatch");
   }
   const appServerProcessFactory = admitHostedReadonlyInputs({
-    jobId: config.jobId ?? config.taskId,
-    jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath,
+    ...hostedGoalAdmissionIdentity(config),
     providerEgressPolicy,
-    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
-    sourceEnv: config.sourceEnv ?? process.env,
   }, toolEntry);
   const baseCommit = await readLocalGitHeadCommit(config.workspacePath);
   const checkpointRootExists = await lstat(join(config.jobRootDir, "turn-checkpoints"))
@@ -501,7 +495,7 @@ export function buildCodexGoalExecutorOptions(input: {
   readonly controlInbox?: WorkerControlService;
   readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
 }): FileBackendCodexSafeExecutorOptions {
-  const { config } = input;
+  const config = withHostedGoalIdentity(input.config);
   const dependencyGit = isHostedDependencyWorkspace(config.workspacePath) ? new ManagedDependencyGitRunner() : undefined;
   const runtimeHomeRootDir = dependencyGit ? join(config.jobRootDir, "home") : config.runtimeHomeRootDir;
   const assertProviderAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
