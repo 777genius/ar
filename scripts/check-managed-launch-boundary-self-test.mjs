@@ -92,6 +92,39 @@ try {
     assert.ok((await checkManagedLaunchBoundary(root)).violations.length > 0, 'POSIX backslash display alias is not the approved physical path');
     await rm(alias);
   }
+  // The newly reviewed producer/native TEST are sealed individually, not
+  // exempted by their directory or native-TEST suffix. Read only SOURCE bytes.
+  for (const basename of ['current-administrative-installation.ts', 'administrative-installation-native-TEST.ts']) {
+    const source = await readFile(new URL(`./dependency-retention-os-test/${basename}`, import.meta.url));
+    assert.ok(findRawLaunches(source.toString('utf8'), basename).length > 0);
+    const name = `scripts/dependency-retention-os-test/${basename}`, path = join(root, name);
+    await writeFile(path, source);
+    assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, []);
+    const sameSize = Buffer.from(source); sameSize[0] = sameSize[0] === 47 ? 32 : 47;
+    for (const changed of [sameSize, Buffer.concat([source, Buffer.from('\nspawn("/usr/bin/systemd-run", process.argv.slice(2));\n')]),
+      Buffer.from('const harmless = true;\n')]) {
+      await writeFile(path, changed);
+      assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, [`${name}:1`]);
+    }
+    await writeFile(path, source);
+    const copied = join(publicDirectory, `unapproved-${basename}`);
+    await writeFile(copied, source);
+    assert.ok((await checkManagedLaunchBoundary(root)).violations.some(value =>
+      value.startsWith(`scripts/dependency-retention-os-test/unapproved-${basename}:`)));
+    await rm(copied);
+    if (process.platform !== 'win32') {
+      const alias = join(root, 'scripts', `dependency-retention-os-test\\${basename}`);
+      await writeFile(alias, source);
+      assert.ok((await checkManagedLaunchBoundary(root)).violations.length > 0,
+        'POSIX backslash display alias is not an approved physical path');
+      await rm(alias);
+    }
+  }
+  const unrelatedTest = join(publicDirectory, 'unapproved-native-TEST.ts');
+  await writeFile(unrelatedTest, 'spawn("/usr/bin/systemd-run", args);\n');
+  assert.deepEqual((await checkManagedLaunchBoundary(root)).violations,
+    ['scripts/dependency-retention-os-test/unapproved-native-TEST.ts:1']);
+  await rm(unrelatedTest);
   assert.deepEqual((await checkManagedLaunchBoundary(root)).violations, []);
 } finally {
   await rm(root, { recursive: true, force: true });
