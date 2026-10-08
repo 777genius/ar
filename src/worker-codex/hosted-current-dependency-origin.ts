@@ -28,13 +28,14 @@ import { freezeFacts } from "./hosted-dependency-immutable-facts";
 import { OriginalHostedDependencyRootDescriptor as RootDescriptor } from "./hosted-dependency-root-resource-view";
 import { awaitPrivateManagedProviderClose, HostedManagedProviderWaitDeadline } from "./hosted-managed-provider-wait-deadline";
 import { preparePhysicalOriginalHostedDependencySessionHome } from "./hosted-managed-dependency-home-preparation";
-import { sameRootDescriptorStat as sameStat, readHostedDependencyRootDirectoryPin, rootDescriptorPhysicalInfo as info, sameRootDescriptorDirectory as sameDirectory, sameRootDescriptorFile as sameFile, assertHostedDependencyRootDescriptorMaterial, closePhysicalHostedDependencyRootDescriptor } from "./hosted-dependency-root-physical-facts";
+import { readHostedDependencyRootDirectoryPin, rootDescriptorPhysicalInfo as info, sameRootDescriptorDirectory as sameDirectory, sameRootDescriptorFile as sameFile, assertHostedDependencyRootDescriptorMaterial, closePhysicalHostedDependencyRootDescriptor } from "./hosted-dependency-root-physical-facts";
 export { readHostedDependencyRootDirectoryPin } from "./hosted-dependency-root-physical-facts";
 import type { ManagedProviderState, ManagedSessionHomeState } from "./hosted-managed-dependency-session-state";
 import { collectActualHostedManagedReadonlyOrigin } from "./hosted-managed-readonly-origin-collector";
 import { createHostedManagedDependencySdkView } from "./hosted-managed-dependency-sdk-view";
 import { selectHostedDependencyRootDescriptorPath } from "./hosted-dependency-root-descriptor-selection";
 import { hostedManagedDependencyProviderInvocation, bindHostedDependencyToolChild, abandonHostedDependencyToolInvocation, assertHostedManagedDependencyToolRelease } from "./hosted-managed-dependency-tool-plan";
+import { sameHostedDependencyStatFacts as sameStat } from "./hosted-dependency-stat-facts";
 import { spawnHostedFdChild, hostedFdLaunch } from "../provider-codex/app-server/adapters/hosted-fd-launch";
 import { retryHostedFenceAcquisition } from "../provider-codex/app-server/adapters/hosted-fd-fence";
 import { signalHostedSystemdUnit, type CodexAppServerChildProcess } from "../provider-codex/app-server/adapters/node-app-server-process";
@@ -76,7 +77,8 @@ export enum CurrentHostedDependencyOriginKind { Ordinary = "ordinary", ManagedRe
 const hash = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 function invalid(): never { throw new Error("hosted_dependency_current_origin_unresolved"); }
 const contexts = new WeakMap<CurrentHostedDependencyOrigin, { digest: string; facts: CurrentHostedDependencyOriginFacts; scope?: HostedRetainedToolFiles; rootPurpose?: RootPurposeState }>();
-/** PRIVATE selected-path reader. Only names derived below from independently pinned start/installation are used; no exported arbitrary-path read port. */
+/** PRIVATE selected-path reader. Only names derived below from independently
+ * pinned start/installation are used; no exported arbitrary-path read port. */
 function selectedFile(path: string, maximum: number, privateFile = true) {
   if (!/^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(path) || path.split("/").some(p => p === "." || p === "..")) invalid();
   const ancestors: { path: string; stat: BigIntStats }[] = [];

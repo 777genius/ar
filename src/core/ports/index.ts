@@ -181,6 +181,9 @@ export interface SessionStorePort {
     readonly nextArtifact: SessionArtifact;
     readonly idempotencyKey: string;
     readonly leaseId: string;
+    /** Sanitized custody annotations. Callers requiring persistence verify
+     * the accepted envelope; credentials belong only in the artifact. */
+    readonly metadata?: Readonly<Record<string, string>>;
   }): Promise<SessionWriteResult>;
 
   delete?(input: {

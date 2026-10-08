@@ -15,6 +15,9 @@ import { revokeHostedToolFilesForChild } from "./hosted-retained-tool-files";
 export { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
 export { HostedFdLaunchKind } from "./hosted-fd-child";
 const launches = new WeakMap<object, HostedFdLaunch>();
+// Cleanup identity survives revocation of execution/release permission. Only
+// the completed fixed constructor can associate its actual child with a unit.
+const cleanupUnits = new WeakMap<object, string>();
 export enum HostedForegroundArtifactKind { Stdout = "hosted_foreground_stdout", Stderr = "hosted_foreground_stderr" }
 export type HostedForegroundResult = Readonly<{ exitCode: number; unit: string; startId: string;
   artifacts: readonly Readonly<{ kind: HostedForegroundArtifactKind; path: string; dev: string; ino: string; byteLength: number; sha256: string }>[] }>;
@@ -384,7 +387,7 @@ export class HostedFdLaunch {
     child.once("error", () => {}); // A synchronous setup failure must not leave an unhandled spawn error.
     try {
       const launch = new HostedFdLaunch(child, unit, kind, profile, before, command, args);
-      launches.set(child, launch); Object.freeze(launch); return child;
+      launches.set(child, launch); cleanupUnits.set(child, unit); Object.freeze(launch); return child;
     } catch (error) {
       invalidateHostedFdProcess(child);
       child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy(); child.kill("SIGTERM");
@@ -409,6 +412,10 @@ export function hostedFdLaunch(child: object): HostedFdLaunch {
   if (!launch) invalid();
   if (!(child instanceof ChildProcess) || launch.child !== child) invalid();
   return launch;
+}
+/** Cleanup only: this lookup never authenticates execution or service drain. */
+export function hostedFdCleanupUnit(child: object): string | undefined {
+  return cleanupUnits.get(child);
 }
 export function hostedFdInvocationUnit(args: readonly string[]): string {
   const units = args.filter(arg => arg.startsWith("--unit="));
