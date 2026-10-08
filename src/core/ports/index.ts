@@ -93,6 +93,9 @@ export interface AgentDriver {
     readonly logicalThread?: ProviderLogicalThreadExecution;
   }): Promise<ProviderTaskResult>;
 
+  /** Finalizes only the original private terminal entry for this exact use. */
+  finalizeTaskSession?(use:SessionExecutionUse):Promise<Exclude<ProviderTaskResult,{status:"waiting_for_input"}>>;
+  retireTaskSession?(use:SessionExecutionUse):Promise<void>;
   classifyRunFailure(error: unknown): ProviderFailure;
 }
 

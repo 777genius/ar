@@ -101,7 +101,7 @@ export class FileBackendCodexSessionSeeder {
     return true;
   }
 
-  async exportAuthJsonFileQuietly(context: "prewarm" | "run"): Promise<void> {
+  async exportAuthJsonFileQuietly(context: "prewarm" | "run", requireAcknowledgement = false): Promise<void> {
     this.options.assertProviderAdmission?.();
     if (!this.authJsonPath) return;
     try {
@@ -110,7 +110,7 @@ export class FileBackendCodexSessionSeeder {
         expectedProviderId: "codex",
         purpose: "health-check",
       });
-      if (!session) return;
+      if (!session) { if (requireAcknowledgement) throw new Error("codex_auth_path_export_failed"); return; }
       const authJsonBytes = codexAuthJsonFromArtifact(session.artifact);
       validateCodexAuthJsonBytes({ authJsonBytes });
       const existing = await readFile(this.authJsonPath, "utf8").catch(() => null);
@@ -128,6 +128,7 @@ export class FileBackendCodexSessionSeeder {
         storeId: this.options.sessionStore.storeId,
         metadata: { context },
       });
+      if (requireAcknowledgement) throw new Error("codex_auth_path_export_failed");
     }
   }
 

@@ -94,6 +94,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
 > {
   readonly workerId: string;
   private workerState: SubscriptionWorkerState = "created";
+  private disposing:Promise<void>|undefined;
   private readonly redactor: RedactorPort = new DefaultRedactor();
   private readonly runner: FileBackendCodexWorkerRuntimeParts["runner"];
   private readonly observability: ObservabilityPort;
@@ -166,8 +167,8 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
       clock: this.clock,
       recordFailure: (failure) => this.recordFailure(failure),
       recordSuccessfulRun: () => this.recordSuccessfulRun(),
-      exportAuthJsonFileQuietly: (context) =>
-        this.sessionSeeder.exportAuthJsonFileQuietly(context),
+      exportAuthJsonFileQuietly: (context,requireAcknowledgement) =>
+        this.sessionSeeder.exportAuthJsonFileQuietly(context,requireAcknowledgement),
       runRecoveryJob: async (job) => await this.run(job),
     });
     this.prewarmer = new FileBackendCodexPrewarmer({
@@ -407,15 +408,17 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
 
   async dispose(): Promise<void> {
     if (this.workerState === "disposed") return;
+    if (this.disposing) return await this.disposing;
     this.workerState = "draining";
-    try {
-      if ("dispose" in this.agentDriver) {
-        await this.agentDriver.dispose();
-      }
-    } finally {
+    const pending = (async () => {
+      await this.runtime.retryPendingTaskFinalizations();
+      await this.managedRuns.cancelRetainedSessions();
+      if ("dispose" in this.agentDriver) await this.agentDriver.dispose();
       await this.ownedWorkspace?.dispose();
       this.workerState = "disposed";
-    }
+    })();
+    this.disposing = pending;
+    try { await pending; } finally { if (this.disposing === pending) this.disposing = undefined; }
   }
 
   capacity(): WorkerCapacitySnapshot {
@@ -452,6 +455,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   }
 
   private assertStarted(): void {
+    if (this.workerState === "draining") throw new SubscriptionWorkerError("subscription_worker_disposed","Codex worker is draining.");
     if (this.workerState === "disposed") {
       throw new SubscriptionWorkerError(
         "subscription_worker_disposed",

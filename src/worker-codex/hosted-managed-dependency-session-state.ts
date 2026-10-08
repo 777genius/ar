@@ -34,6 +34,7 @@ export type ManagedSessionUseState = {
   home?: CurrentHostedDependencySessionHome; materialized?: CodexMaterializedSession; release?: Promise<void>;
   account?:string; restoredHash?:string; snapshot?:{readonly artifact:SessionArtifact;readonly hash:string}; writebackKey?:string; acquiring?: true; lease?: { readonly leaseId: string; readonly providerInstanceId: string; readonly restoredHash:string; terminal: boolean };
   modelCatalogObserved?: {readonly kind:ManagedSessionModelCatalogEvidence;readonly model:string;readonly authSha256:string;readonly profile:DependencyProtectedReference;readonly executable:DependencyProtectedReference};
+  pendingWrite?: {readonly input:Parameters<SessionStorePort["write"]>[0];readonly hash:string}; writePending?: true; writeRetrying?: true;
   credentialUnknown?: true; writing?: true; writeStatus?: "accepted" | "idempotent_replay" | "stale_generation";
 };
 export type ManagedSessionRuntimeState = {

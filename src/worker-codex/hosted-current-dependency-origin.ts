@@ -1,8 +1,8 @@
 import { copyBoundedHostedByteInput } from "./hosted-bounded-byte-input";
-import { captureManagedSessionArtifactFacts, captureManagedSessionMaterializationInput } from "./hosted-managed-dependency-session-artifact-facts";
+import { captureManagedSessionArtifactFacts, captureManagedSessionMaterializationInput, captureManagedSessionWriteIntent, assertManagedSessionCredentialWritebackFacts, assertManagedSessionDischargedFacts as assertSessionExecutionUseDischarged } from "./hosted-managed-dependency-session-artifact-facts";
 import { formManagedDependencyProviderStartFacts } from "./hosted-managed-provider-start-facts";
 import { formManagedDependencyHomePreparationFacts } from "./hosted-managed-dependency-home-recipe-facts";
-import { assertHostedDependencyRootDirectoryPinFacts as assertDirectory } from "./hosted-dependency-root-physical-facts";
+import { assertHostedDependencyRootDirectoryPinFacts as assertDirectory, assertHostedDependencyRootDescriptorCensus as assertRootPurposeDescriptors } from "./hosted-dependency-root-physical-facts";
 import { rootIdentity, currentSessionModelExecutable, readHostedDependencyAttemptFacts as attemptFromFacts } from "./hosted-dependency-current-facts";
 import { publishCurrentHostedManagedDependencyProvider } from "./hosted-managed-provider-start-record";
 import { publishOriginalHostedManagedProviderCompletion } from "./hosted-managed-provider-completion-record";
@@ -44,7 +44,7 @@ import { codexProviderEgressPolicy, CodexProviderEgressProfileId } from "../prov
 import { HostedReadonlyEpochStore } from "./hosted-readonly-epoch-store";
 import { collectUnitInvocation } from "./hosted-readonly-linux-collector";
 import { type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, writeFileSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readSync, realpathSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
 import { DependencyToolReadyProvenanceKind, DependencyOwnerPhase, isDependencyConsumerOwner, parseDependencyOwner, sameDependencyProtectedReference, sameDependencyWorkspace, sameDependencyAttempt, parseDependencyGenerationContinuityInvalidation, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { terminalHostedCustodyStart, HostedCustodyReservationState } from "../worker-core/hosted-custody/domain/hosted-custody-epoch";
@@ -116,7 +116,7 @@ function selectedSnapshot(fence: HostedActivationFence, scope?: HostedRetainedTo
   const before = collectActualHostedManagedReadonlyOrigin(fence);
   // Descriptor authority stays solely in this actual original-map entry.
   if (rootPurpose?.descriptors.size) {
-    if (scope !== undefined) invalid(); assertRootPurposeDescriptors(rootPurpose);
+    if (scope !== undefined) invalid(); assertRootPurposeDescriptors([...rootPurpose.descriptors.values()]);
   } else if (scope === undefined) assertHostedProcessDescriptors(); else assertHostedRetainedToolDescriptors(scope);
   const after = collectActualHostedManagedReadonlyOrigin(fence);
   if (after.digest !== before.digest) invalid();
@@ -394,21 +394,6 @@ export function closeOriginalHostedDependencyRootDescriptor(resource: RootDescri
   try { closePhysicalHostedDependencyRootDescriptor(material); material.closed = true; state?.descriptors.delete(resource); }
   catch (error) { contexts.delete(origin); if (currentRootOrigin === origin) currentRootOrigin = undefined; throw error; }
 }
-function assertRootPurposeDescriptors(state: RootPurposeState): void {
-  if (state.descriptors.size > 256) invalid();
-  for (const material of state.descriptors.values()) assertHostedDependencyRootDescriptorMaterial(material);
-  for (const fd of [0,1,2]) { const stat = fstatSync(fd); if (!stat.isFIFO() && !stat.isSocket()) invalid(); }
-  const names = readdirSync("/proc/self/fd"); if (names.length > 512) invalid();
-  for (const name of names) {
-    if (!/^(?:0|[1-9][0-9]{0,5})$/.test(name)) invalid(); const fd = Number(name); if (fd <= 2) continue;
-    try {
-      const stat = fstatSync(fd); if (!stat.isFile() && !stat.isDirectory()) continue;
-      const associated = [...state.descriptors.values()].find(material => material.fd === fd ||
-        [...material.ancestors,...material.dependencies].some(anchor => anchor.fd === fd));
-      if (!associated) invalid(); assertHostedDependencyRootDescriptorMaterial(associated);
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EBADF") throw error; }
-  }
-}
 let currentRootOrigin: CurrentHostedDependencyOrigin | undefined;
 const encode = (value: unknown): Buffer => Buffer.from(JSON.stringify(value)+"\n");
 function currentOwnerForRoot(binding: HostedDependencyBinding) {
@@ -669,6 +654,7 @@ export function createCurrentHostedDependencySessionRuntime(context: CurrentHost
         if (result.status === "committed" || result.status === "idempotent_replay") selected.use.lease!.terminal = true; return result;
       } catch (error) { selected.use.credentialUnknown = true; throw error; } },
     release:async input => { input = Object.freeze({...input}); const selected = owned(input.leaseId); assertSessionExecutionUseDischarged(selected);
+      if (selected.use.phase !== ManagedSessionUsePhase.Begun || selected.use.home) assertManagedSessionCredentialWritebackFacts(selected.use);
       try { await release(input); checked(selected); selected.use.lease!.terminal = true; }
       catch (error) { selected.use.credentialUnknown = true; throw error; } },
   });
@@ -677,13 +663,18 @@ export function createCurrentHostedDependencySessionRuntime(context: CurrentHost
       if (sessionRuntime(context).runtime !== selected.runtime) invalid();
       if (result) { const captured = captureManagedSessionArtifactFacts(result.artifact); if (result.providerInstanceId !== input.providerInstanceId || result.generationHash !== captured.hash) invalid(); selected.runtime.sessionReads.set(result.artifact,{account:input.providerInstanceId,hash:captured.hash}); } return result; },
     write:async input => { input = Object.freeze({...input}); const selected = sessionRuntime(context), use = selected.runtime.use;
-      if (use) { const ownedUse = owned(); assertSessionExecutionUseDischarged(ownedUse); if (use.account !== input.providerInstanceId || !use.snapshot || use.snapshot.artifact !== input.nextArtifact) invalid(); const captured = captureManagedSessionArtifactFacts(input.nextArtifact); if (captured.hash !== use.snapshot.hash) invalid(); input = {...input,nextArtifact:captured.artifact};
-        if (use.lease && (use.lease.leaseId !== input.leaseId || use.lease.providerInstanceId !== input.providerInstanceId)) invalid(); use.writing = true;
+      if (use) { const ownedUse = use.writePending ? currentSessionExecutionUse(context) : owned();
+        if (ownedUse.use !== use || use.credentialUnknown || use.acquiring || use.writeRetrying || use.writePending && (!use.writing || !use.pendingWrite)) invalid();
+        assertSessionExecutionUseDischarged(ownedUse);
+        const captured = captureManagedSessionWriteIntent(input,use); input = captured.input; use.pendingWrite = captured.intent;
+        if (use.writePending) use.writeRetrying = true; use.writing = true;
       } else { if (selected.state.sessionHome?.leased || selected.state.provider || selected.state.preparingHome) invalid(); selected.runtime.idleWrites++; }
       try { const result = await write(input); const after = sessionRuntime(context);
         if (after.runtime !== selected.runtime || after.runtime.use !== use) invalid();
-        if (use) { if (result.status !== "stale_generation" && result.generationHash !== use.snapshot!.hash) invalid(); delete use.writing; use.writeStatus = result.status; use.writebackKey = input.idempotencyKey; } else selected.runtime.idleWrites--; return result;
-      } catch (error) { if (use) use.credentialUnknown = true; throw error; } },
+        if (use) { if (result.status !== "stale_generation" && result.generationHash !== use.pendingWrite!.hash) invalid(); delete use.writeRetrying;
+          if (result.status === "accepted" || result.status === "idempotent_replay") { delete use.writing; delete use.writePending; } else use.writePending = true;
+          use.writeStatus = result.status; use.writebackKey = input.idempotencyKey; } else selected.runtime.idleWrites--; return result;
+      } catch (error) { if (use) { delete use.writeRetrying; use.writePending = true; } throw error; } },
     delete:async input => { input = Object.freeze({...input}); const selected = sessionRuntime(context);
       if (selected.runtime.use || selected.runtime.idleWrites || selected.state.sessionHome?.leased || selected.state.provider) invalid();
       selected.runtime.idleWrites++; try { await remove(input); if (sessionRuntime(context).runtime !== selected.runtime) invalid(); selected.runtime.idleWrites--; }
@@ -707,11 +698,6 @@ function currentSessionExecutionUse(context:CurrentHostedDependencyOrigin, handl
   if (!retained || !use || use.phase === ManagedSessionUsePhase.Complete || handle !== undefined && use.handle !== handle) invalid();
   const selected = sessionRuntime(context,fence); if (selected.runtime !== retained || selected.runtime.use !== use) invalid(); return {...selected,use};
 }
-function assertSessionExecutionUseDischarged(selected:ReturnType<typeof currentSessionExecutionUse>):void {
-  const {state,use} = selected;
-  if (use.phase === ManagedSessionUsePhase.Begun && !use.home && !state.preparingHome && !state.sessionHome?.leased && !state.provider) return;
-  if (use.phase !== ManagedSessionUsePhase.Released || !use.home || state.sessionHome?.facade !== use.home || state.sessionHome.leased || state.provider || state.preparingHome) invalid();
-}
 async function completeSessionExecutionUse(context:CurrentHostedDependencyOrigin, handle:SessionExecutionUse):Promise<SessionExecutionUseDisposition> {
   const selected = currentSessionExecutionUse(context,handle), {runtime,use} = selected;
   if (use.credentialUnknown || use.acquiring || use.writing || use.lease && !use.lease.terminal) invalid();
@@ -721,7 +707,7 @@ async function completeSessionExecutionUse(context:CurrentHostedDependencyOrigin
     return SessionExecutionUseDisposition.Retained;
   }
   assertSessionExecutionUseDischarged(selected);
-  if (use.phase !== ManagedSessionUsePhase.Begun && !use.lease && (!use.writeStatus && runtime.driver.sessionExecutionNeedsWriteback(handle) !== false)) invalid();
+  if (selected.use.phase !== ManagedSessionUsePhase.Begun || selected.use.home) assertManagedSessionCredentialWritebackFacts(selected.use);
   if (currentSessionExecutionUse(context,handle).use !== use) invalid();
   use.phase = ManagedSessionUsePhase.Complete; runtime.retired = use; delete runtime.use; use.unlock(); return SessionExecutionUseDisposition.Discharged;
 }
@@ -745,10 +731,22 @@ export function materializeCurrentHostedDependencySession(context:CurrentHostedD
       try { await drainCurrentHostedDependencySessionProvider(home); currentSessionExecutionUse(context,use.handle);
         const artifact = sessionArtifactFromCodexAuthJson(snapshotCurrentHostedDependencySessionAuth(home)); use.snapshot = {artifact,hash:captureManagedSessionArtifactFacts(artifact).hash}; return artifact; }
       catch (error) { use.credentialUnknown = true; throw error; } },
-    release:() => use.release ??= (async () => { const before = currentSessionExecutionUse(context,use.handle);
-      if (before.use !== use || use.materialized !== materialized || use.phase !== ManagedSessionUsePhase.Active) invalid();
-      await releaseCurrentHostedDependencySessionHome(home); const after = currentSessionExecutionUse(context,use.handle);
-      if (after.use !== use || after.use.phase !== ManagedSessionUsePhase.Released) invalid(); })(),
+    release:async () => {
+      if (use.release) return await use.release;
+      const before = currentSessionExecutionUse(context,use.handle);
+      if (before.use !== use || use.materialized !== materialized || use.credentialUnknown) invalid();
+      if (use.phase === ManagedSessionUsePhase.Released) { assertSessionExecutionUseDischarged(before); return; }
+      if (use.phase !== ManagedSessionUsePhase.Active) invalid();
+      const pending = (async () => { await releaseCurrentHostedDependencySessionHome(home);
+        const after = currentSessionExecutionUse(context,use.handle); if (after.use !== use || after.use.phase !== ManagedSessionUsePhase.Released) invalid(); })();
+      use.release = pending;
+      try { await pending; } catch (error) {
+        try { const after = currentSessionExecutionUse(context,use.handle);
+          if (after.use === use && use.materialized === materialized && !use.credentialUnknown && (use.phase === ManagedSessionUsePhase.Active || use.phase === ManagedSessionUsePhase.Released) && use.release === pending) delete use.release;
+        } catch { /* Unknown original owner keeps the failed release held. */ }
+        throw error;
+      }
+    },
   });
   use.materialized = materialized; use.phase = ManagedSessionUsePhase.Active; return materialized;
 }
@@ -837,7 +835,7 @@ export async function releaseCurrentHostedDependencySessionHome(home: CurrentHos
     const after = sessionHome(home,fence);
     if (after.home !== held.home || after.state.provider || !sameDependencyAttempt(after.actual.attempt,held.actual.attempt)) invalid();
     const use = after.state.sessionRuntime?.use;
-    if (!use || use.home !== home || use.phase !== ManagedSessionUsePhase.Active) invalid();
+    if (!use || use.home !== home || use.phase !== ManagedSessionUsePhase.Active || !use.snapshot || use.credentialUnknown) invalid();
     after.home.leased = false; use.phase = ManagedSessionUsePhase.Released;
   }),5000);
 }
