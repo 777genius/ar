@@ -36,7 +36,10 @@ vi.mock("../hosted-readonly-inputs", async original => ({
   ...await original<typeof import("../hosted-readonly-inputs")>(),
   readHostedPrivateBytes: (path: string) => os.records.get(path) ?? null,
 }));
-vi.mock("@vioxen/subscription-runtime/provider-codex", () => ({ assertHostedProcessDescriptors: os.descriptors }));
+vi.mock("@vioxen/subscription-runtime/provider-codex", async original => ({
+  ...await original<typeof import("@vioxen/subscription-runtime/provider-codex")>(),
+  assertHostedProcessDescriptors: os.descriptors,
+}));
 const root = "/var/lib/subscription-runtime-host-policy";
 const hostId = "a".repeat(32), bootId = "11111111-1111-4111-8111-111111111111";
 const startId = "22222222-2222-4222-8222-222222222222";
