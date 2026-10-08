@@ -22,6 +22,7 @@ import {
   isCodexGoalProjectTerminalCapacityPause,
 } from "../application/project-control/codex-goal-project-stop-policy";
 import { callToolJson, hasTmux } from "./codex-goal-mcp-test-support";
+import { inspectCodexGoalProcessSnapshot } from "../codex-goal-process-snapshot";
 
 const execFileAsync = promisify(execFile);
 
@@ -110,6 +111,11 @@ describe("project worker stop policy", () => {
         childWorkspace,
         "sleep 300",
       ]);
+      const { stdout: workerPidOutput } = await execFileAsync("tmux", [
+        "display-message", "-p", "-t", `${tmuxSession}:0.0`, "#{pane_pid}",
+      ]);
+      const workerPid = Number(workerPidOutput.trim());
+      expect(Number.isSafeInteger(workerPid) && workerPid > 0).toBe(true);
       await Promise.all([
         server.connect(serverTransport),
         client.connect(clientTransport),
@@ -156,6 +162,7 @@ describe("project worker stop policy", () => {
           schemaVersion: 1,
           taskId: "project-child",
           status: "running",
+          pid: workerPid,
           updatedAt: new Date().toISOString(),
         })}\n`,
       );
@@ -215,11 +222,17 @@ describe("project worker stop policy", () => {
           schemaVersion: 1,
           taskId: "project-child",
           status: "running",
+          pid: workerPid,
           updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(),
         })}\n`,
       );
       await writeFile(join(childWorkspace, "safe-output.txt"), "preserve me\n");
       await execFileAsync("tmux", ["kill-session", "-t", tmuxSession]);
+      // Missing tmux alone is not a process-absence proof. Retain the actual
+      // fixture PID and wait for the same OS observation used by the stop guard.
+      await expect.poll(() => inspectCodexGoalProcessSnapshot(workerPid), {
+        timeout: 5_000,
+      }).toMatchObject({ alive: false });
       await expect(
         broker.stopWorker({
           jobId: "project-child",
@@ -261,6 +274,14 @@ describe("project worker stop policy", () => {
         "new-session", "-d", "-s", tmuxSession, "-c", childWorkspace,
         "sleep 300",
       ]);
+      const { stdout: restartedPidOutput } = await execFileAsync("tmux", [
+        "display-message", "-p", "-t", `${tmuxSession}:0.0`, "#{pane_pid}",
+      ]);
+      const restartedPid = Number(restartedPidOutput.trim());
+      expect(Number.isSafeInteger(restartedPid) && restartedPid > 0).toBe(true);
+      await writeFile(join(childJobRoot, "project-child.progress.json"),
+        `${JSON.stringify({ schemaVersion: 1, taskId: "project-child", status: "running",
+          pid: restartedPid, updatedAt: new Date(Date.now() - 11 * 60_000).toISOString() })}\n`);
       await writeFile(join(childWorkspace, ".env"), "unsafe=secret\n");
       const degradedStop = await callToolJson(client, "codex_goal_project_stop", {
         registryRootDir,

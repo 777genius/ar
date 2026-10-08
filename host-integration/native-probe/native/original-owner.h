@@ -25,4 +25,11 @@ int np_original_owner_dispose_v1(struct np_original_owner *owner);
 int np_original_helper_start_v1(uint64_t *generation);
 int np_original_helper_message_v1(uint16_t kind);
 void np_original_helper_loss_v1(void);
+#ifdef NP_ASSOCIATED_ORIGIN_V2
+struct np_origin_child;
+int np_original_owner_prefix_v2(struct np_original_owner *, char *, size_t);
+int np_original_owner_poll_fd_v2(struct np_original_owner *);
+int np_original_owner_from_origin_fork_v2(struct np_origin_child *, struct np_original_owner **);
+int np_original_helper_start_associated_v2(uint64_t *);
+#endif
 #endif
