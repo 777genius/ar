@@ -38,7 +38,8 @@ import {
   type CodexGoalRunConfig,
 } from "../codex-goal-runner";
 
-export const CODEX_GOAL_DEFAULT_TIMEOUT_MS = 72 * 60 * 60 * 1000;
+import { CODEX_GOAL_DEFAULT_TIMEOUT_MS } from "./codex-goal-launch-defaults";
+export { CODEX_GOAL_DEFAULT_TIMEOUT_MS } from "./codex-goal-launch-defaults";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 

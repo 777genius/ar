@@ -27,7 +27,7 @@ export function registerCodexGoalProjectControlActionTools(server: McpServer): v
       inputSchema: {
         ...jobIdInputSchema(),
         controllerJobId: z.string().optional(),
-        storedStartBinding: z.preprocess(parseStoredProjectStartBinding, z.object({
+        storedStartBinding: z.object({
           schemaVersion: z.literal(1),
           controllerManifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
           workerManifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -36,7 +36,7 @@ export function registerCodexGoalProjectControlActionTools(server: McpServer): v
           promptSha256: z.string().regex(/^[a-f0-9]{64}$/),
           preStart: z.object({ contractSha256: z.string().regex(/^[a-f0-9]{64}$/),
             stateSha256: z.string().regex(/^[a-f0-9]{64}$/), receiptSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().nullable(),
-        }).strict()).optional(),
+        }).strict().optional(),
         reviewedOutputId: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
         continuationAccounts: z
           .union([z.string(), z.array(z.string())])
@@ -49,9 +49,11 @@ export function registerCodexGoalProjectControlActionTools(server: McpServer): v
         staleAfterMs: z.number().int().positive().optional(),
       },
     },
-    async (args) => withMcpErrors(async () =>
-      projectControlStartStoredJob(args as ProjectControlMcpArgs),
-    ),
+    async (args) => withMcpErrors(async () => {
+      const request = args as ProjectControlMcpArgs;
+      if (request.storedStartBinding !== undefined) parseStoredProjectStartBinding(request.storedStartBinding);
+      return projectControlStartStoredJob(request);
+    }),
   );
 
   server.registerTool(

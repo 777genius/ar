@@ -1,3 +1,4 @@
+import { custodyEnrollmentJobId, managedReservations, assertActivationSession, ordinaryUnitGroup } from "./hosted-activation-validation";
 import type { HostedForegroundRequest } from "./hosted-foreground-request-custody";
 import type { ChildProcess } from "node:child_process";
 import { assertOrdinaryInstallationRuntimeWait, retainOrdinaryInstallationReservation, retainOrdinaryInstallationChild, bindOrdinaryInstallationReady, ordinaryInstallationSpawnCustody } from "./hosted-ordinary-installation-owned";
@@ -895,9 +896,7 @@ function readRetainedOrdinaryRuntime(fence: HostedActivationFence) {
 }
 function parseHostedCustodyEnrollment(bytes: Buffer): string {
   const birth = parseHostedCustodyEpoch(decodeHostedActivationBytes(bytes));
-  if (birth.generation !== 1 || birth.phase !== HostedCustodyPhase.Closed || birth.revoked ||
-      birth.reservations.length || birth.outerRuntime !== null) invalid();
-  return birth.identity.jobId;
+  return custodyEnrollmentJobId(birth);
 }
 function required(name: string): Buffer {
   const bytes = readHostedActivationBytes(name);
@@ -987,17 +986,6 @@ export function admitHostedOrdinaryIdentity(identity: { readonly jobId: string; 
   });
 }
 
-function managedReservations(epoch: HostedCustodyEpoch | undefined) {
-  return epoch ? [...epoch.reservations, ...(epoch.outerRuntime ? [epoch.outerRuntime] : [])] : [];
-}
-function assertActivationSession(activation: HostedActivation, session: { hostId: string; bootId: string; supervisorId: string }): void {
-  if (activation.hostId !== session.hostId || activation.bootId !== session.bootId || activation.supervisorId !== session.supervisorId) invalid();
-}
-function ordinaryUnitGroup(row: HostedOrdinaryReservation): string {
-  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(row.startId) ||
-      ![`subscription-runtime-ordinary-${row.startId}.service`, `subscription-runtime-hosted-${row.startId}.service`].includes(row.unit)) invalid();
-  return `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${row.unit}`;
-}
 
 /** Scheduling admission supplements, never replaces, managed material/owner
  * checks. Both outer launch and every provider spawn call this production gate. */
