@@ -68,6 +68,7 @@ export function trustedResearchRuntimeLaunch(value: ResearchStartSpec, specSha25
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "MemoryMax=6G", "TasksMax=1024", "CPUQuota=300%", "MemorySwapMax=0", "LimitCORE=0",
     `BindPaths=${join(directory, "pins", "job")}:${request.jobRootDir}:norbind`,
     `BindPaths=${join(directory, "pins", "workspace")}:${request.workspacePath}:norbind`,
+    ...(spec.registeredHandoff ? [`BindPaths=${join(directory, "pins", "durable-handoff")}:${spec.registeredHandoff.durableDirectory.path}:norbind`] : []),
     "StandardOutput=journal", "StandardError=journal"];
   return { command: "/usr/bin/systemd-run", args: ["--quiet", `--unit=${spec.unit}`,
     `--description=${researchDescription(request.jobId, specSha256)}`, "--service-type=exec", "--expand-environment=no", "--working-directory=/",
