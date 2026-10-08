@@ -1,3 +1,8 @@
+import { decodeHostedInventoryBytes, parseHostedInventoryV5, type HostedInventorySupervisor } from "../core/host-infrastructure/host-inventory";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
+import { readHostedActivationBytes } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { parseResearchStartSpec, researchProviderSetupTimeoutMs, type ResearchStartSpec } from "./research-launch-contract";
@@ -9,6 +14,50 @@ import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hoste
 import { hostedFdSystemdProperties } from "../provider-codex/app-server/adapters/hosted-fd-prelude";
 
 export enum TrustedCustodyLaunchRole { Outer = "outer", Ordinary = "ordinary", Installer = "installer" }
+
+/** Protected original clocks only limit an existing operation. These bytes do
+ * not import the issuer's private funding/qualification/Store authority. */
+export function ordinaryInstallationRemainingMs(supervisor: HostedInventorySupervisor, cleanup = false): number {
+  const held = (): never => { throw new Error("hosted_ordinary_installation_held"); };
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(supervisor.operationId)) held();
+  const root = "/var/lib/subscription-runtime-host-policy", guestEntry = "/dist/worker-codex/hosted-ordinary-installation-qualification-guest.js";
+  const guest = supervisor.bootstrap.path.endsWith(guestEntry);
+  const bytes = readHostedPrivateBytes(guest ? root + "/ordinary-qualification/funded-operation.json" :
+    `${root}/ordinary-installations/${supervisor.operationId}/operation.json`, 65536);
+  if (!bytes || !guest && !readHostedPrivateBytes(`${root}/ordinary-installations/${supervisor.operationId}.json`, 65536)?.equals(bytes)) held();
+  const packet = JSON.parse(bytes.toString("utf8")) as { schemaVersion: number; operationId: string; hostId: string; bootId: string;
+    issuedEpochMs: number; issuedMonotonicNs: string; workEndEpochMs: number; cleanupEndEpochMs: number; runtimeDirectory: string;
+    node: { path: string; sha256: string }; bootstrap: { path: string; sha256: string };
+    preparedFixture: { guestMachineId: string; guestHostname: string; guestEntrySha256: string; inputSha256: string } };
+  if (packet.schemaVersion !== 2 || packet.operationId !== supervisor.operationId ||
+      packet.workEndEpochMs !== supervisor.workEndEpochMs || packet.cleanupEndEpochMs !== supervisor.cleanupEndEpochMs ||
+      !Number.isSafeInteger(packet.issuedEpochMs) || !Number.isSafeInteger(packet.workEndEpochMs) || !Number.isSafeInteger(packet.cleanupEndEpochMs) ||
+      packet.issuedEpochMs >= packet.workEndEpochMs || packet.workEndEpochMs >= packet.cleanupEndEpochMs ||
+      typeof packet.issuedMonotonicNs !== "string" || !/^[0-9]{1,30}$/.test(packet.issuedMonotonicNs) ||
+      packet.node?.path !== supervisor.executable.path || packet.node.sha256 !== supervisor.executable.sha256) held();
+  if (guest) {
+    const input = readHostedPrivateBytes(root + "/ordinary-qualification/input.json", 65536), fixture = packet.preparedFixture;
+    if (supervisor.bootstrap.path !== packet.runtimeDirectory + guestEntry || !fixture || supervisor.bootstrap.sha256 !== fixture.guestEntrySha256 ||
+        readFileSync("/etc/machine-id", "utf8").trim() !== fixture.guestMachineId || readFileSync("/etc/hostname", "utf8").trim() !== fixture.guestHostname ||
+        !input || createHash("sha256").update(input).digest("hex") !== fixture.inputSha256) held();
+    const projection = JSON.parse(input.toString("utf8")) as { operation?: { operationId: string; workEndEpochMs: number; cleanupEndEpochMs: number } };
+    if (projection.operation?.operationId !== packet.operationId || projection.operation.workEndEpochMs !== packet.workEndEpochMs || projection.operation.cleanupEndEpochMs !== packet.cleanupEndEpochMs) held();
+  } else if (supervisor.bootstrap.path !== packet.runtimeDirectory + "/dist/worker-codex/hosted-ordinary-installation-bootstrap.js" ||
+      packet.bootstrap?.path !== supervisor.bootstrap.path || packet.bootstrap.sha256 !== supervisor.bootstrap.sha256 ||
+      readFileSync("/etc/machine-id", "utf8").trim() !== packet.hostId || readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== packet.bootId) held();
+  const now = Date.now(), elapsed = Number((process.hrtime.bigint() - BigInt(packet.issuedMonotonicNs)) / 1_000_000n);
+  if (!Number.isSafeInteger(elapsed) || elapsed < 0 || now < packet.issuedEpochMs || now < packet.issuedEpochMs + elapsed - 1000) held();
+  const end = cleanup ? packet.cleanupEndEpochMs : packet.workEndEpochMs, ms = Math.min(end - now, end - packet.issuedEpochMs - elapsed);
+  if (ms < 1) held(); return Math.floor(ms);
+}
+/** Relative manager fallback reserves its complete start/job and stop allowance.
+ * The original owner's absolute work timer remains decisive, not closure proof. */
+export function ordinaryInstallationManagerProperties(workMs: number, cleanupMs: number): readonly string[] {
+  if (!Number.isSafeInteger(workMs) || !Number.isSafeInteger(cleanupMs) || workMs < 2 || cleanupMs <= workMs) throw new Error("hosted_ordinary_installation_held");
+  const setupMs = Math.min(300_000, Math.floor(workMs / 2)), stopMs = Math.min(30_000, cleanupMs - workMs);
+  return [`JobTimeoutSec=${setupMs / 1000}`, `TimeoutStartSec=${setupMs / 1000}`, `RuntimeMaxSec=${(workMs - setupMs) / 1000}`,
+    `TimeoutStopSec=${stopMs / 1000}`, "Restart=no"];
+}
 
 /** Custody services retain their independent authority/cgroup contract. This
  * adapter accepts no executable, payload, environment or systemd properties. */
@@ -51,7 +100,12 @@ export function hostedFdCustodySystemdLaunch(role: TrustedCustodyLaunchRole, sta
   if (!readHostedFdProfile()) return launch;
   const at = launch.args.indexOf("--");
   if (at < 0) throw new Error("hosted_custody_kernel_evidence_invalid");
-  return { command: launch.command, args: [...launch.args.slice(0, at),
+  const bytes = readHostedActivationBytes("readonly-inventory.json"), inventory = bytes ? decodeHostedInventoryBytes(bytes) as Record<string, unknown> : undefined;
+  const v5 = inventory?.schemaVersion === 5 ? parseHostedInventoryV5(inventory) : undefined;
+  const originalProperties = v5 ? ordinaryInstallationManagerProperties(ordinaryInstallationRemainingMs(v5.supervisor),
+    ordinaryInstallationRemainingMs(v5.supervisor, true)).map(p => role === TrustedCustodyLaunchRole.Installer && p.startsWith("RuntimeMaxSec=") ?
+      `RuntimeMaxSec=${Math.min(1200, Number(p.slice("RuntimeMaxSec=".length)))}` : p).map(p => "--property=" + p) : [];
+  return { command: launch.command, args: [...launch.args.slice(0, at).filter(arg => !v5 || arg !== "--collect" && !/^--property=(?:JobTimeoutSec|TimeoutStartSec|RuntimeMaxSec|TimeoutStopSec|Restart)=/.test(arg)), ...originalProperties,
     ...hostedFdSystemdProperties.map(p => "--property=" + p), ...launch.args.slice(at),
     ...(role === TrustedCustodyLaunchRole.Installer ? ["--fd-ready-v1"] : [])] };
 }

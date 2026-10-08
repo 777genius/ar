@@ -6,6 +6,7 @@ import {
   type ProjectControlMcpArgs,
 } from "./codex-goal-mcp-inputs";
 import { withMcpErrors } from "./codex-goal-mcp-response";
+import { parseStoredProjectStartBinding } from "./stored-start-planning";
 import {
   projectControlCreateWorktree,
   projectControlIntegrateCommit,
@@ -26,6 +27,16 @@ export function registerCodexGoalProjectControlActionTools(server: McpServer): v
       inputSchema: {
         ...jobIdInputSchema(),
         controllerJobId: z.string().optional(),
+        storedStartBinding: z.preprocess(parseStoredProjectStartBinding, z.object({
+          schemaVersion: z.literal(1),
+          controllerManifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+          workerManifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+          scopeSha256: z.string().regex(/^[a-f0-9]{64}$/),
+          launchSha256: z.string().regex(/^[a-f0-9]{64}$/),
+          promptSha256: z.string().regex(/^[a-f0-9]{64}$/),
+          preStart: z.object({ contractSha256: z.string().regex(/^[a-f0-9]{64}$/),
+            stateSha256: z.string().regex(/^[a-f0-9]{64}$/), receiptSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().nullable(),
+        }).strict()).optional(),
         reviewedOutputId: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
         continuationAccounts: z
           .union([z.string(), z.array(z.string())])

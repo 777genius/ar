@@ -51,6 +51,12 @@ export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLa
     ? await readGoalConfigFile(resolvePath(cwd, args.configPath))
     : {};
   const merged = mergeDefined(fileConfig, args);
+  return goalLaunchInputFromRecord(merged, cwd);
+}
+
+/** Stored manifests have no config-file transport. Keep their planning pure,
+ * sharing every resolved default with the asynchronous public loader. */
+export function goalLaunchInputFromRecord(merged: JsonObject, cwd: string): CodexGoalLaunchInput {
   const jobRootDir = requiredString(merged.jobRootDir, "jobRootDir", cwd);
   const durableHandoffRootDir = stringValue(merged.durableHandoffRootDir);
   const taskId = requiredRawString(merged.taskId, "taskId");

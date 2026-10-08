@@ -1,3 +1,4 @@
+import { decodeHostedInventoryBytes, parseHostedInventoryV5 } from "../../../core/host-infrastructure/host-inventory";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
@@ -29,7 +30,7 @@ export type HostedDependencyBinding = HostedDependencyBindingFields & (
 /** Closed configuration compatibility only. Revision4 is necessary for v2;
  * actual installation/profile/fence proofs are separately required below. */
 export function assertHostedDependencyBindingInventoryRevision(binding: HostedDependencyBinding, revision: unknown): void {
-  if ((revision !== 2 && revision !== 3 && revision !== 4) || binding.version === 2 && revision !== 4) invalid();
+  if ((revision !== 2 && revision !== 3 && revision !== 4 && revision !== 5) || binding.version === 2 && revision !== 4 && revision !== 5) invalid();
 }
 const hash = (v: string) => createHash("sha256").update(v).digest("hex");
 export function hostedDependencyJobRoot(jobId: string): string {
@@ -111,15 +112,20 @@ export function assertHostedDependencyQualifiedInventory(): void {
     activationBytes = readHostedActivationBytes("host-activation.json");
   if (!installationBytes || !inventoryBytes || !activationBytes) invalid();
   const installation = object(decodeHostedActivationBytes(installationBytes)),
-    inventory = object(decodeHostedActivationBytes(inventoryBytes)), activation = object(decodeHostedActivationBytes(activationBytes));
-  if (installation.inventorySha256 !== hash(inventoryBytes.toString("utf8")) || (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4) ||
+    inventory = object(decodeHostedInventoryBytes(inventoryBytes)), activation = object(decodeHostedActivationBytes(activationBytes));
+  if (installation.inventorySha256 !== hash(inventoryBytes.toString("utf8")) || (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4 && inventory.schemaVersion !== 5) ||
       !Array.isArray(inventory.ordinaryCreators) || !inventory.ordinaryCreators.length || !Array.isArray(activation.ordinaryStarts)) invalid();
   // Revision 3 cannot be downgraded or smuggle an ignored infrastructure role
   // into the qualified installed-artifact hash. Revision 2 keeps its contract.
   const systemBusInfrastructure = readSystemBusInfrastructureField(inventory);
   const collectorProfile = readFdCollectorProfileField(inventory);
   if (collectorProfile && !readHostedFdProfile()) invalid();
-  if (systemBusInfrastructure) {
+  if (inventory.schemaVersion === 5) {
+    parseHostedInventoryV5(inventory);
+    if (!collectorProfile || !readHostedFdProfile()) invalid();
+    verifySystemBusInfrastructure(systemBusInfrastructure!);
+  }
+  if (systemBusInfrastructure && inventory.schemaVersion !== 5) {
     if (Object.keys(inventory).sort().join(",") !== (collectorProfile ? "collectorProfile," : "") + "disabledCreators,hostId,ordinaryCreators,runtimeLaunch,schemaVersion,supervisorUnit,systemBusInfrastructure,units" ||
         inventory.supervisorUnit === "dbus.service" || !Array.isArray(inventory.units) || !inventory.units.length || inventory.units.length > 128 ||
         typeof inventory.hostId !== "string" || !/^[a-f0-9]{32}$/.test(inventory.hostId)) invalid();
