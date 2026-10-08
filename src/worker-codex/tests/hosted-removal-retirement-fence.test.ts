@@ -1,4 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { HostedRemovalRetirementReferences } from "../../provider-codex/app-server/adapters/hosted-removal-retirement-mutex";
 const state = vi.hoisted(() => ({ root: "", boot: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", paths: new Map<number,string>(),
   unknown: undefined as number | undefined, archiveCalls: 0, replacement: false, busy: false, archiveReplyLost: false, renamed:false, failArchiveSync:false, synced:[] as string[] }));
@@ -97,7 +99,7 @@ const refs:HostedRemovalRetirementReferences={claim:ref(".removal-claim.json"),a
   lock:ref(".remove.lock"),completion:ref(".removal-session-closed.json")};
 const platformDescriptor=Object.getOwnPropertyDescriptor(process,"platform")!;
 const canonical=()=>state.root+`/readonly-epoch.${state.boot}.lock`;
-beforeEach(()=>{state.root=raw.mkdtempSync("/private/tmp/TEST-retirement-fence-contract-");state.paths.clear();state.archiveCalls=0;
+beforeEach(()=>{state.root=raw.mkdtempSync(join(tmpdir(),"TEST-retirement-fence-contract-"));state.paths.clear();state.archiveCalls=0;
   domain.terminal=true;domain.queueEmpty=true;domain.cgroupEmpty=true;domain.census=true;domain.casLocked=false;domain.pins=[];
   state.unknown=undefined;state.replacement=false;state.busy=false;state.archiveReplyLost=false;state.renamed=false;state.failArchiveSync=false;state.synced=[];Object.defineProperty(process,"platform",{...platformDescriptor,value:"linux"});
   vi.spyOn(process,"getuid").mockReturnValue(0);});
