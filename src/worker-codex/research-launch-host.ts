@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, readlinkSync, lstatSync } from "node:fs";
-import { researchInvalid, researchId, researchHash, researchCustody, researchRead, researchFileDigest } from "./research-launch-files";
+import { researchInvalid, researchId, researchHash, researchCustody, researchRead, researchFileDigest, researchByteValidationTimeoutMs } from "./research-launch-files";
 import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
 
 export const researchRuntimeUnitPattern = /^subscription-runtime-research-([a-f0-9-]{36})\.service$/;
@@ -110,7 +110,7 @@ export function assertResearchServiceOwner(processIdentity: ResearchProcessIdent
       service.description !== description) researchInvalid();
 }
 export function researchExecutableDigest(path: string): string {
-  return researchFileDigest(path, { maxBytes: 512 * 1024 * 1024, deadline: performance.now() + 4000,
+  return researchFileDigest(path, { maxBytes: 512 * 1024 * 1024, deadline: performance.now() + researchByteValidationTimeoutMs,
     cache: executableHashes, cacheEntries: 32, executable: true });
 }
 const executableHashes = new Map<string, { signature: string; digest: string }>();
