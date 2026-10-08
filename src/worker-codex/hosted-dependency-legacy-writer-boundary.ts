@@ -6,11 +6,12 @@ import { requiresCurrentHostedDependencyRootPurpose } from "./hosted-current-dep
 import { hostedDependencyJobsRoot, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 
 function denied():never { throw new DependencyAdmissionError(DependencyAdmissionFailure.Unsupported); }
+const mountInfoLimit = 8 * 1024 * 1024;
 function assertNoNestedMount(path:string):void {
   // Fixed actual mount table, bounded metadata only. A foreign cwd never makes
   // a nested bind mount of a governed root into an unmanaged writer scope.
   if(process.platform!=="linux")denied();
-  const fd=openSync("/proc/self/mountinfo",constants.O_RDONLY|constants.O_NOFOLLOW),bytes=Buffer.alloc(262145);
+  const fd=openSync("/proc/self/mountinfo",constants.O_RDONLY|constants.O_NOFOLLOW),bytes=Buffer.alloc(mountInfoLimit+1);
   let length=0;
   try {while(length<bytes.length){const count=readSync(fd,bytes,length,bytes.length-length,null);if(!count)break;length+=count;}}
   finally {closeSync(fd);}
