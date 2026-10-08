@@ -8,9 +8,59 @@ import { researchAuthorityRoot, researchHash, researchInvalid, researchName, res
 import { researchProviderUnitPattern } from "./research-launch-host";
 import { readResearchProviderReservation } from "./research-launch-lifecycle";
 
+/** Private finite observations only; never execution authority or error payloads. */
+export enum ResearchProviderRootCheck {
+  MountTable = "research-provider-root:mountTable", Backing = "research-provider-root:backing",
+  Snapshot = "research-provider-root:snapshot", Observe = "research-provider-root:observe",
+  Add = "research-provider-root:add", CapturePublic = "research-provider-root:capturePublic",
+  CorroborateHome = "research-provider-root:corroborateHome", Accounts = "research-provider-root:validateAccounts",
+  CaBundle = "research-provider-root:validateCaBundle", Regular = "research-provider-root:regular",
+  SkeletonEntries = "research-provider-root:skeletonEntries", SkeletonIdentity = "research-provider-root:skeletonIdentity",
+  Custody = "research-provider-root:rootCustody", Prepare = "research-provider-root:prepareResearchProviderRoot",
+  Assert = "research-provider-root:assertResearchProviderRoot",
+}
+export type ResearchProviderRootTiming = Readonly<{ check: ResearchProviderRootCheck; count: number; inclusiveElapsedMs: number }>;
+let rootTimings: Map<ResearchProviderRootCheck, { count: number; inclusiveElapsedMs: number }> | undefined;
+/** Synchronous private observations; neither the callback nor timing failures affect the root operation. */
+export function captureResearchProviderRootTiming<T>(operation: () => T,
+  receive: (checks: readonly ResearchProviderRootTiming[]) => void): T {
+  const previous = rootTimings;
+  const timings = new Map(Object.values(ResearchProviderRootCheck).map(check => [check, { count: 0, inclusiveElapsedMs: 0 }] as const));
+  rootTimings = timings;
+  try { return operation(); }
+  finally {
+    rootTimings = previous;
+    try { receive([...timings].map(([check, value]) => ({ check, ...value }))); } catch { /* Observation only. */ }
+  }
+}
+const rootFailureChecks = new WeakMap<object, ResearchProviderRootCheck>();
+export function researchProviderRootFailureCheck(error: unknown): ResearchProviderRootCheck | undefined {
+  return error && typeof error === "object" ? rootFailureChecks.get(error) : undefined;
+}
+function observeRootFailure<T>(check: ResearchProviderRootCheck, operation: () => T): T {
+  const timings = rootTimings; let started: number | undefined;
+  try { if (timings) started = performance.now(); } catch { /* Observation only. */ }
+  try { return operation(); }
+  catch (error) {
+    if (error && typeof error === "object" && !rootFailureChecks.has(error)) rootFailureChecks.set(error, check);
+    throw error;
+  } finally {
+    try {
+      const value = timings?.get(check), elapsed = started === undefined ? 0 : performance.now() - started;
+      if (value) {
+        if (Number.isSafeInteger(value.count + 1)) value.count++;
+        const total = value.inclusiveElapsedMs + (Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0);
+        if (Number.isFinite(total)) value.inclusiveElapsedMs = total;
+      }
+    } catch { /* Observation only; preserve the original return or thrown identity. */ }
+  }
+}
+
 export enum ResearchRootMountAccess { ReadOnly = "read-only", ReadWrite = "read-write" }
 export enum ResearchRootReadRole { Dns = "dns", ScratchPolicy = "scratch-policy", PublicText = "public-text", CaBundle = "ca-bundle" }
 const publicTextNames = ["passwd", "group", "nsswitch.conf", "hosts", "resolv.conf", "gai.conf", "host.conf"] as const;
+const resolverConfNames = ["resolv.conf", "stub-resolv.conf"] as const;
+const resolverSockets = [{ name: "io.systemd.Resolve", mode: 0o666 }, { name: "io.systemd.Resolve.Monitor", mode: 0o600 }] as const;
 const caPath = "/etc/ssl/certs/ca-certificates.crt";
 function publicSnapshotPath(path: string, name: string): boolean {
   const prefix = researchAuthorityRoot + "/";
@@ -35,6 +85,7 @@ const nativeHost: ResearchProviderRootHost = {
   mkdir: (path, mode) => { mkdirSync(path, { mode }); }, symlink: symlinkSync,
   file: path => { writeFileSync(path, "", { mode: 0o644, flag: "wx" }); },
   regular(path, expected, role = ResearchRootReadRole.Dns) {
+    return observeRootFailure(ResearchProviderRootCheck.Regular, () => {
     if (role === ResearchRootReadRole.ScratchPolicy ? path !== "/etc/subscription-runtime/scratch-temp.json" :
         role === ResearchRootReadRole.PublicText ? !publicTextNames.some(name => path === "/etc/" + name || publicSnapshotPath(path, "public-" + name + ".snapshot")) :
         role === ResearchRootReadRole.CaBundle ? path !== caPath && !publicSnapshotPath(path, "public-ca-certificates.crt.snapshot") :
@@ -51,6 +102,7 @@ const nativeHost: ResearchProviderRootHost = {
           leafSignature(lstatSync(path)) !== leafSignature(before) || used !== before.size) researchInvalid();
       try { return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, used)); } catch { researchInvalid(); }
     } finally { closeSync(fd); }
+    });
   },
   snapshot(path, bytes) {
     const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o444);
@@ -58,13 +110,15 @@ const nativeHost: ResearchProviderRootHost = {
   },
   publish: (path, value) => researchPublish(path, value, true), record: path => researchRead(path).toString("utf8"),
 };
-type Mount = { point: string; root: string; device: string; id: string; parent: string };
+enum MountRootKind { Path = "path", Opaque = "opaque" }
+type Mount = { point: string; root: string; rootKind: MountRootKind; device: string; id: string; parent: string };
 type Backing = { device: string; path: string; mount: Mount; ancestors: Mount[] };
 type Binding = { source: string; target: string; access: ResearchRootMountAccess; identity: readonly [number, number]; backing: Backing; file: boolean };
 type OmittedCache = { source: string; target: string; identity: readonly [number, number]; backing: Backing; mounted: Backing; base: Backing };
 type PublicFile = { target: string; bytes: string; name: string; role: ResearchRootReadRole };
 type Snapshot = { omittedCaches: OmittedCache[]; bindings: Binding[]; aliases: [string, string][]; fileLinks: [string, string][]; observations: unknown[]; files: PublicFile[] };
 function validateAccounts(bytes: string, group: boolean): void {
+  return observeRootFailure(ResearchProviderRootCheck.Accounts, () => {
   const names = new Set<string>();
   const records = bytes.trimEnd().split("\n");
   if (!records.length || records.some(line => {
@@ -75,8 +129,10 @@ function validateAccounts(bytes: string, group: boolean): void {
     if (!(group ? [fields[2]] : [fields[2], fields[3]]).every(field => /^\d+$/.test(field!) && Number.isSafeInteger(Number(field)))) return true;
     return group && fields[3] !== "" && !fields[3]!.split(",").every(member => /^[a-zA-Z_][a-zA-Z0-9_.-]*\$?$/.test(member));
   })) researchInvalid();
+  });
 }
 function validateCaBundle(bytes: string): void {
+  return observeRootFailure(ResearchProviderRootCheck.CaBundle, () => {
   const pattern = /-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]+)-----END CERTIFICATE-----/g;
   const blocks = [...bytes.matchAll(pattern)];
   if (!blocks.length || bytes.replace(pattern, "").trim()) researchInvalid();
@@ -88,6 +144,7 @@ function validateCaBundle(bytes: string): void {
       if (!certificate.ca || !certificate.raw.equals(der)) researchInvalid();
     }
   } catch { researchInvalid(); }
+  });
 }
 const rootPlanBrand: unique symbol = Symbol("research-provider-root");
 /** Opaque retained receipt; its DTO fields cannot confer execution authority. */
@@ -110,23 +167,44 @@ export function researchProviderProtectedPaths(authRoot: string): string[] {
     "/run/podman/podman.sock", "/etc/subscription-runtime/secrets", authRoot];
 }
 function mountTable(host: ResearchProviderRootHost): Mount[] {
+  return observeRootFailure(ResearchProviderRootCheck.MountTable, () => {
   const bytes = host.read("/proc/self/mountinfo");
   if (bytes.length > 8 * 1024 * 1024) researchInvalid();
   const lines = bytes.trimEnd().split("\n");
   if (!lines.length || lines.length > 32768) researchInvalid();
   const decode = (field: string): string => field.replace(/\\(040|011|012|134)/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)));
+  const normalizedAbsolute = (path: string): boolean => path.startsWith("/") && resolve(path) === path;
   return lines.map(line => {
     const fields = line.split(" "), separator = fields.indexOf("-");
     if (separator < 6 || fields.length !== separator + 4 || !/^\d+:\d+$/.test(fields[2] ?? "") ||
         !/^\d+$/.test(fields[0] ?? "") || !/^\d+$/.test(fields[1] ?? "")) researchInvalid();
     const point = decode(fields[4]!), root = decode(fields[3]!);
-    if (!point.startsWith("/") || resolve(point) !== point || !root.startsWith("/") || resolve(root) !== root) researchInvalid();
-    return { point, root, device: fields[2]!, id: fields[0]!, parent: fields[1]! };
+    if (!normalizedAbsolute(point)) researchInvalid();
+    const mount: Mount = { point, root, rootKind: MountRootKind.Path, device: fields[2]!, id: fields[0]!, parent: fields[1]! };
+    if (normalizedAbsolute(root)) return mount;
+    // Linux's generic show_path -> seq_dentry -> dentry_path appends exactly
+    // "//deleted" to an unlinked non-root dentry. ext4 has no show_path override.
+    // Retain this opaque ROOT in the graph; never normalize it into path backing.
+    const deletedPrefix = root.endsWith("//deleted") ? root.slice(0, -9) : undefined;
+    if (fields[separator + 1] === "ext4" && deletedPrefix !== undefined && deletedPrefix !== "/" &&
+        normalizedAbsolute(deletedPrefix) &&
+        /^(?:[^\\\x00 \t\n]|\\(?:040|011|012|134))+$/.test(fields[3]!)) return { ...mount, rootKind: MountRootKind.Opaque };
+    // Linux nsfs show_path emits namespace type:[unsigned namespace inode],
+    // on its anonymous major-zero device and the kern_mount source "nsfs".
+    // Keep these rows in the graph; their handles can never be path backing.
+    const handle = /^(?:cgroup|ipc|mnt|net|pid|time|user|uts):\[([1-9]\d{0,9})\]$/.exec(root);
+    const device = /^0:([1-9]\d{0,6})$/.exec(mount.device);
+    if (fields[separator + 1] !== "nsfs" || fields[separator + 2] !== "nsfs" || !handle ||
+        Number(handle[1]) > 0xffffffff || !device || Number(device[1]) > 0xfffff) researchInvalid();
+    return { ...mount, rootKind: MountRootKind.Opaque };
+  });
   });
 }
 function backing(path: string, mounts: Mount[], intentionalAlias = false): Backing {
+  return observeRootFailure(ResearchProviderRootCheck.Backing, () => {
   const ancestors = mounts.filter(m => contains(m.point, path)).sort((a, b) => b.point.length - a.point.length);
-  if (!ancestors.length || new Set(ancestors.map(m => m.point)).size !== ancestors.length) researchInvalid();
+  if (!ancestors.length || ancestors.some(m => m.rootKind === MountRootKind.Opaque) ||
+      new Set(ancestors.map(m => m.point)).size !== ancestors.length) researchInvalid();
   const mount = ancestors[0]!;
   const result = { device: mount.device, path: join(mount.root, relative(mount.point, path)), mount, ancestors };
   if (!intentionalAlias) {
@@ -134,6 +212,7 @@ function backing(path: string, mounts: Mount[], intentionalAlias = false): Backi
     if (containing.length ? containing.some(ancestor => join(ancestor.root, relative(ancestor.point, path)) !== result.path) : mount.root !== "/") researchInvalid();
   }
   return result;
+  });
 }
 function nativeDevice(info: Info): string {
   const device = BigInt(info.dev), major = (device >> 8n & 0xfffn) | (device >> 32n & 0xfffff000n), minor = (device & 0xffn) | (device >> 12n & 0xffffff00n);
@@ -141,10 +220,11 @@ function nativeDevice(info: Info): string {
 }
 function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home: string,
   host: ResearchProviderRootHost, scratchHost?: ScratchTempHost): Snapshot {
+  return observeRootFailure(ResearchProviderRootCheck.Snapshot, () => {
   const mounts = mountTable(host), observations: unknown[] = [], observed = new Set<string>(), bindings: Binding[] = [], layout: [string, string][] = [], fileLinks: [string, string][] = [], files: PublicFile[] = [];
   const boundInfos = new Map<Binding, Info>();
   let resolverOwner: number | undefined;
-  const observe = (path: string, owner = 0, leafOnly = false, ownedAncestorRoot?: string): Info => {
+  const observe = (path: string, owner = 0, leafOnly = false, ownedAncestorRoot?: string): Info => observeRootFailure(ResearchProviderRootCheck.Observe, () => {
     researchPath(path);
     let leaf: Info | undefined;
     for (let current = path;; current = dirname(current)) {
@@ -157,8 +237,8 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
       if (!observed.has(current)) { observed.add(current); observations.push([current, info.dev, info.ino, info.mode, info.uid, info.gid]); }
       if (current === "/") return leaf!;
     }
-  };
-  const add = (source: string, target: string, access: ResearchRootMountAccess, owner = 0, leafOnly = false): Binding => {
+  });
+  const add = (source: string, target: string, access: ResearchRootMountAccess, owner = 0, leafOnly = false): Binding => observeRootFailure(ResearchProviderRootCheck.Add, () => {
     const info = observe(source, owner, leafOnly), canonicalTarget = normalize(target), sourceBacking = backing(source, mounts, source.startsWith(join(directory, "pins") + "/"));
     if (nativeDevice(info) !== sourceBacking.device) researchInvalid();
     const entry = { source, target, access, identity: [info.dev, info.ino] as const, backing: sourceBacking, file: info.isFile() };
@@ -168,7 +248,7 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
       if (info.dev !== targetInfo.dev || info.ino !== targetInfo.ino || !sameBacking(sourceBacking, backing(canonicalTarget, mounts, scratchTarget))) researchInvalid();
     }
     boundInfos.set(entry, info); bindings.push(entry); return entry;
-  };
+  });
   const normalize = (path: string): string => {
     researchPath(path);
     const alias = layout.find(([from]) => contains(from, path));
@@ -186,13 +266,13 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
   }
   // Only fixed public leaves enter /etc. Their immutable snapshots, rather
   // than the Host directory or mutable original files, become root bindings.
-  const capturePublic = (path: string, name: string, role = ResearchRootReadRole.PublicText): string => {
+  const capturePublic = (path: string, name: string, role = ResearchRootReadRole.PublicText): string => observeRootFailure(ResearchProviderRootCheck.CapturePublic, () => {
     const info = observe(path);
     if (!info.isFile() || info.gid !== 0 || (info.mode & 0o7777) !== 0o644 || info.nlink !== 1) researchInvalid();
     const entry = add(path, path, ResearchRootMountAccess.ReadOnly);
     if (leafSignature(boundInfos.get(entry)!) !== leafSignature(info)) researchInvalid();
     const bytes = host.regular(path, info, role); files.push({ target: path, bytes, name, role }); return bytes;
-  };
+  });
   const passwdBytes = capturePublic("/etc/passwd", "public-passwd.snapshot"); validateAccounts(passwdBytes, false);
   validateAccounts(capturePublic("/etc/group", "public-group.snapshot"), true);
   for (const name of ["nsswitch.conf", "hosts"]) capturePublic("/etc/" + name, "public-" + name + ".snapshot");
@@ -221,11 +301,23 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
     if (fields.length !== 7 || !Number.isSafeInteger(uid) || uid <= 0 || !Number.isSafeInteger(gid) || gid <= 0) researchInvalid();
     resolverOwner = uid;
     const resolverDirectory = observe("/run/systemd/resolve", uid);
+    const resolverEntries = [...host.entries("/run/systemd/resolve")].sort();
     if (resolverDirectory.gid !== gid || (resolverDirectory.mode & 0o7777) !== 0o755 ||
-        host.entries("/run/systemd/resolve").some(name => !["stub-resolv.conf", "resolv.conf"].includes(name))) researchInvalid();
+        resolverEntries.some(name => !resolverConfNames.some(conf => conf === name) && !resolverSockets.some(socket => socket.name === name))) researchInvalid();
+    // Daemon control sockets are authenticated omissions, never root bindings.
+    for (const name of resolverEntries) {
+      const socket = resolverSockets.find(candidate => candidate.name === name);
+      if (!socket) continue;
+      const path = join("/run/systemd/resolve", name), info = host.info(path), sourceBacking = backing(path, mounts);
+      if ((info.mode & constants.S_IFMT) !== constants.S_IFSOCK || (info.mode & 0o7777) !== socket.mode ||
+          info.uid !== uid || info.gid !== gid || info.nlink !== 1 || info.dev !== resolverDirectory.dev ||
+          nativeDevice(info) !== sourceBacking.device || host.canonical(path) !== path) researchInvalid();
+      observations.push([path, info.dev, info.ino, info.mode, info.uid, info.gid, info.nlink, sourceBacking]);
+    }
     observations.push([resolver, resolverInfo.dev, resolverInfo.ino, resolverInfo.mode, originalLink, researchHash(serviceBytes)]);
     fileLinks.push([resolver, "../run/systemd/resolve/" + destination.slice(destination.lastIndexOf("/") + 1)]);
-    for (const name of [...host.entries("/run/systemd/resolve")].sort()) {
+    for (const name of resolverConfNames) {
+      if (!resolverEntries.includes(name)) continue;
       const path = join("/run/systemd/resolve", name), entry = add(path, path, ResearchRootMountAccess.ReadOnly, uid), info = boundInfos.get(entry)!;
       if (!entry.file || info.gid !== gid || (info.mode & 0o7777) !== 0o644) researchInvalid();
       files.push({ target: path, bytes: host.regular(path, info), name: "resolver-" + name + ".snapshot", role: ResearchRootReadRole.Dns });
@@ -246,10 +338,10 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
       workspaceBind.identity[0] !== spec.workspaceDirectory.device || workspaceBind.identity[1] !== spec.workspaceDirectory.inode) researchInvalid();
   if (!home.startsWith(join(job, "home") + "/")) researchInvalid();
   // Preserve nominal home custody through the captured job; project ancestors remain data.
-  const corroborateHome = (candidate: string): void => {
+  const corroborateHome = (candidate: string): void => observeRootFailure(ResearchProviderRootCheck.CorroborateHome, () => {
     const nominal = observe(candidate, 0, true, job), pinned = join(pins, "job", relative(job, candidate)), original = observe(pinned);
     if (!nominal.isDirectory() || !original.isDirectory() || nominal.dev !== original.dev || nominal.ino !== original.ino || !sameBacking(backing(candidate, mounts), backing(pinned, mounts, true))) researchInvalid();
-  };
+  });
   corroborateHome(home);
   const scratch = resolvePreparedHostScratchBinds(job, home, scratchHost);
   const scratchTargets = [join(job, "tmp"), join(home, "plugins/cache"), join(home, "cache/remote_plugin_catalog")];
@@ -334,9 +426,11 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
     return false;
   });
   return { omittedCaches, bindings: unique, aliases: layout, fileLinks, observations, files };
+  });
 }
 
 function skeletonEntries(root: string, snapshot: Snapshot): Map<string, "directory" | "file" | string> {
+  return observeRootFailure(ResearchProviderRootCheck.SkeletonEntries, () => {
   const entries = new Map<string, "directory" | "file" | string>([[root, "directory"]]);
   const add = (path: string, kind: "directory" | "file" | string): void => {
     const absolute = researchPath(join(root, path.slice(1))), previous = entries.get(absolute);
@@ -347,14 +441,17 @@ function skeletonEntries(root: string, snapshot: Snapshot): Map<string, "directo
       entries.set(parent, "directory"); if (parent === root) break;
     }
   };
-  for (const path of ["/run", "/proc", "/sys", "/dev", "/tmp", "/var/tmp"]) add(path, "directory");
+  // ProtectSystem=strict prepares this empty anchor; it never binds Host /root.
+  for (const path of ["/run", "/proc", "/sys", "/dev", "/root", "/tmp", "/var/tmp"]) add(path, "directory");
   for (const bind of snapshot.bindings) add(bind.target, bind.file ? "file" : "directory");
   for (const [path, target] of snapshot.aliases) add(path, target.slice(1));
   for (const [path, link] of snapshot.fileLinks) add(path, link);
   if (entries.size > 512) researchInvalid();
   return entries;
+  });
 }
 function skeletonIdentity(entries: Map<string, string>, host: ResearchProviderRootHost): string {
+  return observeRootFailure(ResearchProviderRootCheck.SkeletonIdentity, () => {
   const roots = [...entries.keys()], root = roots[0]!, mounts = mountTable(host);
   if (mounts.some(m => contains(root, m.point))) researchInvalid();
   return JSON.stringify(roots.sort().map(path => {
@@ -366,8 +463,10 @@ function skeletonIdentity(entries: Map<string, string>, host: ResearchProviderRo
             !info.isSymbolicLink() || host.link(path) !== kind)) researchInvalid();
     return [path, kind, info.dev, info.ino, info.mode];
   }));
+  });
 }
 function rootCustody(directory: string, host: ResearchProviderRootHost): string {
+  return observeRootFailure(ResearchProviderRootCheck.Custody, () => {
   const rows: unknown[] = [];
   for (let path = directory;; path = dirname(path)) {
     const info = host.info(path);
@@ -376,9 +475,11 @@ function rootCustody(directory: string, host: ResearchProviderRootHost): string 
     rows.push([path, info.dev, info.ino, info.mode]); if (path === "/") break;
   }
   return JSON.stringify(rows);
+  });
 }
 export function prepareResearchProviderRoot(value: ResearchStartSpec, unit: string, home: string,
   scratchHost?: ScratchTempHost, host: ResearchProviderRootHost = nativeHost): ResearchProviderRootPlan {
+  return observeRootFailure(ResearchProviderRootCheck.Prepare, () => {
   const spec = parseResearchStartSpec(value);
   if (!researchProviderUnitPattern.test(unit)) researchInvalid();
   const directory = join(researchAuthorityRoot, researchName(spec.request.jobId), "starts", spec.startId);
@@ -420,8 +521,10 @@ export function prepareResearchProviderRoot(value: ResearchStartSpec, unit: stri
   const plan: ResearchProviderRootPlan = freezeFacts({ fixedRootDirectory: root, bindings: materialized, [rootPlanBrand]: true as const });
   retained.set(plan, { spec, unit, home, scratchHost, host, directory, snapshot: serialized, skeleton, custody, record, materialized: materializedBytes });
   assertResearchProviderRoot(plan, spec, unit, home); return plan;
+  });
 }
 export function assertResearchProviderRoot(plan: ResearchProviderRootPlan, value: ResearchStartSpec, unit: string, home: string): void {
+  return observeRootFailure(ResearchProviderRootCheck.Assert, () => {
   const state = retained.get(plan), spec = parseResearchStartSpec(value);
   if (!state || state.unit !== unit || state.home !== home || JSON.stringify(state.spec) !== JSON.stringify(spec)) researchInvalid();
   const reservation = readResearchProviderReservation(state.directory, unit);
@@ -439,4 +542,5 @@ export function assertResearchProviderRoot(plan: ResearchProviderRootPlan, value
   if (JSON.stringify(current) !== state.snapshot || JSON.stringify(plan.bindings) !== state.materialized || skeletonIdentity(skeletonEntries(plan.fixedRootDirectory, current), state.host) !== state.skeleton ||
       rootCustody(dirname(plan.fixedRootDirectory), state.host) !== state.custody || [...state.host.entries(dirname(plan.fixedRootDirectory))].sort().join(",") !== names ||
       state.host.record(join(dirname(plan.fixedRootDirectory), "plan.json")) !== state.record) researchInvalid();
+  });
 }
