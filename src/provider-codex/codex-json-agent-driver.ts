@@ -1,4 +1,5 @@
 import { safeNativeWebFromError } from "./app-server/domain/app-server-usage-error";
+import { AppServerReturnedEvidence } from "./app-server/application/app-server-returned-evidence";
 import { CodexAppServerExecutionEngine, type AppServerExecutionLifetime } from "./codex-app-server-execution-engine";
 import { join } from "node:path";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -231,6 +232,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
 
     let materialized: CodexMaterializedSession | null = null;
     let engineEntered = false;
+    const returned = new AppServerReturnedEvidence();
     const outputAbortController = new AbortController();
     const outputAbortSignal = AbortSignal.any([
       input.abortSignal,
@@ -329,6 +331,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
         logicalThreadResult === undefined
           ? await this.engine.run(engineInput)
           : logicalThreadResult;
+      returned.capture(result);
       this.executionLifetime?.assertActive(outputAbortSignal);
       textDeltaRedactor?.flush();
       if (result.status === "waiting_for_input") {
@@ -377,6 +380,7 @@ export class CodexJsonAgentDriver implements AgentDriver {
         warnings: [...result.warnings, ...snapshot.warnings],
       };
     } catch (error) {
+      error = returned.retain(error);
       textDeltaRedactor?.discard();
       const outputFailure =
         !input.abortSignal.aborted && outputAbortController.signal.aborted

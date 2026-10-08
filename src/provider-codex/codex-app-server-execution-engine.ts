@@ -4,6 +4,7 @@ import { parseAppServerOutputWithUsage } from "./app-server/application/app-serv
 import { isAppServerAdmissionError } from "./app-server/application/app-server-admission";
 import { assertHostedAppServerEngineOptions } from "./codex-app-server-hosted-admission";
 import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
+import { AppServerReturnedEvidence } from "./app-server/application/app-server-returned-evidence";
 import type {
   ManagedRunResumeHandle,
   ManagedRunStorePort,
@@ -207,18 +208,21 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   }
   async run(input: CodexExecutionInput): Promise<CodexExecutionResult> {
     this.options.childBudget?.beginInvocation();
-    const pending = this.runInvocation(input);
-    return this.executionLifetime ? await this.executionLifetime.wait(pending, input.abortSignal) : await pending;
+    const returned = new AppServerReturnedEvidence();
+    const pending = this.runInvocation(input, returned);
+    try { return this.executionLifetime ? await this.executionLifetime.wait(pending, input.abortSignal) : await pending; }
+    catch (error) { throw returned.retain(error); }
   }
 
-  private async runInvocation(input: CodexExecutionInput): Promise<CodexExecutionResult> {
+  private async runInvocation(input: CodexExecutionInput, returned: AppServerReturnedEvidence): Promise<CodexExecutionResult> {
     this.executionLifetime?.beginInvocation(input.abortSignal);
     const lifetime = this.executionLifetime;
     if (lifetime) input = { ...input, session: bindAppServerSessionLifetime(input.session, lifetime),
       abortSignal: AbortSignal.any([input.abortSignal, lifetime.signal]) };
     const schemaPlan = input.outputSchemaPlan ?? prepareCodexOutputSchemaPlan(input.outputSchema);
     try {
-      const result = await this.runViaAppServer(input, schemaPlan);
+      const result = await this.runViaAppServer(input, schemaPlan, returned);
+      returned.capture(result);
       this.executionLifetime?.assertActive(input.abortSignal);
       if (result.status === "waiting_for_input") return result;
       const parsed = await parseAppServerOutputWithUsage({ result, requested: Boolean(input.outputSchema), ...(schemaPlan ? { schemaPlan } : {}), goalMode: this.options.goalMode, ...(input.runId ? { runId: input.runId } : {}), runStore: this.runStore });
@@ -226,6 +230,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       this.options.childBudget?.remainingMs();
       return parsed;
     } catch (error) {
+      error = returned.retain(error);
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       await this.disposeFailedSession(input.session, error, "codex_app_server_run_cleanup_failed");
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
@@ -383,7 +388,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     catch (cleanupError) { throw new AggregateError([error, cleanupError], message); }
   }
   private async runViaAppServer(input: CodexExecutionInput,
-    schemaPlan: CodexStructuredOutputSchemaPlan | undefined): Promise<CodexExecutionResult> {
+    schemaPlan: CodexStructuredOutputSchemaPlan | undefined, returned: AppServerReturnedEvidence): Promise<CodexExecutionResult> {
     this.options.childBudget?.remainingMs();
     const slot = await this.slotPool.ensureSlot(input);
     this.executionLifetime?.assertActive(input.abortSignal);
@@ -423,6 +428,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
             this.options.goalContinuePrompt ?? defaultGoalContinuePrompt,
         })
       : await slot.turnRunner.runCleanTurn(common);
+    returned.capture(result);
     this.executionLifetime?.assertActive(input.abortSignal);
     return redactCompletedAppServerResult({
       result,

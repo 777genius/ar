@@ -150,6 +150,9 @@ export function nativeWebFromManagedError(error: unknown): NativeWebEvidence | u
   return undefined;
 }
 export function nativeWebFromSafeExecutionResult(result: SafeExecutionRunResult<FileBackendCodexWorkerResult>): NativeWebEvidence | undefined {
+  // The runner owns this flag. Opaque durable JSON cannot supply ephemeral
+  // provider observations for the Host's current execution generation.
+  if (result.status === 'completed' && result.replayed) return undefined;
   if ('result' in result && result.result?.nativeWeb !== undefined) return parseNativeWebEvidence(result.result.nativeWeb);
   return 'error' in result ? nativeWebFromManagedError(result.error) : undefined;
 }
