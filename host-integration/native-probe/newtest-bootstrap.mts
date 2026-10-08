@@ -150,7 +150,7 @@ export async function runBootstrap():Promise<void>{
     mkdirSync(join(rootfs,"usr/sbin"),{recursive:true,mode:0o755});durable(join(rootfs,"usr/sbin/policy-rc.d"),Buffer.from("#!/bin/sh\nexit 101\n"),0o755);
     const provision=["--quiet",`--directory=${rootfs}`,"--register=no","--settings=no","--private-users=no","--link-journal=no","--setenv=DEBIAN_FRONTEND=noninteractive","--"];
     await step("/usr/bin/systemd-nspawn",[...provision,"/usr/bin/apt-get","update"],prep);
-    await step("/usr/bin/systemd-nspawn",[...provision,"/usr/bin/apt-get","--yes","--no-install-recommends","install","systemd","systemd-sysv","dbus-daemon","dbus-system-bus","libsystemd0","libpam-systemd","sudo","tini","util-linux","libstdc++6"],prep);
+    await step("/usr/bin/systemd-nspawn",[...provision,"/usr/bin/apt-get","--yes","--no-install-recommends","install","systemd","systemd-sysv","dbus-daemon","dbus-system-bus","libsystemd0","libpam-systemd","openssh-client","sudo","tini","util-linux","libstdc++6"],prep);
     const packages=await step("/usr/bin/systemd-nspawn",[...provision,"/usr/bin/dpkg-query","--show","--showformat=${binary:Package} ${Version}\\n"],prep);
     durable(join(directory,"stock-packages.txt"),packages.stdout);
     const version=await step("/usr/bin/systemd-nspawn",[...provision,"/usr/bin/systemctl","--version"],prep);
