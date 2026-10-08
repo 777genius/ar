@@ -12,6 +12,9 @@ import { claimDependencyConsumer, fenceDependencyConsumer, markDependencyConsume
 import { withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { LocalDependencyOwnerStore } from "../../store-local-file/dependency-environment/local-dependency-owner-store";
 import { hostedDependencyBindingName, hostedDependencyJobRoot, hostedDependencyOwnerRoot, parseHostedDependencyBinding } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import * as dependencyWorkspace from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { HostedDependencyReferenceKind } from "../../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { tryRunHostedLegacyReference } from "../hosted-dependency-legacy-reference";
 import { submitHostedOrdinaryProcess } from "../../provider-codex/app-server/adapters/hosted-process-activation";
 import { admitHostedDependencyConsumer, assertHostedDependencyExecutionWorkspace } from "../hosted-dependency-admission";
 import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
@@ -111,6 +114,38 @@ export function registerDependencyConsumerAdmissionTests(input: {
       // real descriptor I/O while the outer fixture supplies finite /proc facts.
       vi.spyOn(fs, "readFileSync").mockImplementation((path, options) =>
         typeof path === "number" ? real.readFileSync(path, options) : fixtureReadFile(path, options));
+    });
+    it("reference purpose denies generic entry before qualification, even with no requested workspace", async () => {
+      // Regression: accepting the new binding without the mandatory generic
+      // veto would call qualification/bootstrap before failing on later facts.
+      // Keep the real private binding/files; this spy observes, never grants G1.
+      const p=prepared(),binding=parseHostedDependencyBinding({...p.binding,version:3,
+        reference:{kind:HostedDependencyReferenceKind.LegacyRegistryV1,operationId:randomUUID()}});
+      input.put(hostedDependencyBindingName(jobId),binding);
+      const qualification=vi.spyOn(dependencyWorkspace,"assertHostedDependencyQualifiedInventory");
+      const original=readFileSync(input.local(workspacePath+"/dirty-source"));
+      await expect(admitHostedDependencyConsumer({taskId:jobId,jobId,jobRootDir,workspacePath,
+        authRootDir:jobRootDir+"/auth",promptPath:jobRootDir+"/prompt.md",accounts:[]})).rejects.toThrow();
+      expect(()=>assertHostedDependencyExecutionWorkspace(undefined)).toThrow();
+      expect(()=>assertHostedDependencyExecutionWorkspace("/unselected-TEST-workspace")).toThrow();
+      expect(qualification).not.toHaveBeenCalled();
+      expect(readdirSync(input.local(hostedDependencyOwnerRoot))).toEqual([]);
+      expect(input.fixture.spawn).not.toHaveBeenCalled();
+      expect(readFileSync(input.local(workspacePath+"/dirty-source"))).toEqual(original);
+    });
+    it("a reference purpose with missing protected relation never falls back to a normal CLI entry", async () => {
+      // A parser/purpose label or the genuine ordinary start alone cannot
+      // authorize a reference install. Missing relation must reject before
+      // any consumer claim, dependency read or submission, not return undefined.
+      const p=prepared(),binding=parseHostedDependencyBinding({...p.binding,version:3,
+        reference:{kind:HostedDependencyReferenceKind.LegacyRegistryV1,operationId:randomUUID()}});
+      input.put(hostedDependencyBindingName(jobId),binding);
+      await expect(tryRunHostedLegacyReference({taskId:jobId,jobId,jobRootDir,workspacePath,
+        authRootDir:jobRootDir+"/auth",promptPath:jobRootDir+"/prompt.md",accounts:[]})).rejects.toThrow();
+      expect(readdirSync(input.local(hostedDependencyOwnerRoot))).toEqual([]);
+      expect(input.fixture.spawn).not.toHaveBeenCalled();
+      expect(fs.existsSync(input.local(workspacePath+"/node_modules"))).toBe(false);
+      expect(readFileSync(input.local(workspacePath+"/dirty-source"),"utf8")).toBe("original dirty TEST bytes\n");
     });
     it("active legacy v1 cannot admit a provider but its exact release fence remains available", () => {
       // A new parser must not reinterpret an old Running owner as new authority.

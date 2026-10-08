@@ -23,14 +23,16 @@ type HostedDependencyBindingFields = {
   readonly runtimeSha: string;
   readonly grantDigest: string;
 };
+export enum HostedDependencyReferenceKind { LegacyRegistryV1 = "legacy_registry_reference_v1" }
 export type HostedDependencyBinding = HostedDependencyBindingFields & (
   | { readonly version: 1 }
   | { readonly version: 2; readonly toolProfile: DependencyToolProfile }
+  | { readonly version: 3; readonly reference: { readonly kind: HostedDependencyReferenceKind.LegacyRegistryV1; readonly operationId: string } }
 );
-/** Closed configuration compatibility only. Revision4 is necessary for v2;
+/** Closed configuration compatibility only. Revisions4/5 are necessary for v2/v3;
  * actual installation/profile/fence proofs are separately required below. */
 export function assertHostedDependencyBindingInventoryRevision(binding: HostedDependencyBinding, revision: unknown): void {
-  if ((revision !== 2 && revision !== 3 && revision !== 4 && revision !== 5) || binding.version === 2 && revision !== 4 && revision !== 5) invalid();
+  if ((revision !== 2 && revision !== 3 && revision !== 4 && revision !== 5) || binding.version !== 1 && revision !== 4 && revision !== 5) invalid();
 }
 const hash = (v: string) => createHash("sha256").update(v).digest("hex");
 export function hostedDependencyJobRoot(jobId: string): string {
@@ -49,8 +51,9 @@ export function hostedDependencyBindingName(jobId: string): string {
 export function parseHostedDependencyBinding(value: unknown): HostedDependencyBinding {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
   const v = value as HostedDependencyBinding;
-  if ((v.version !== 1 && v.version !== 2) || Object.keys(v).sort().join(",") !==
-      (v.version === 2 ? "grantDigest,installationId,jobId,jobRootDir,runtimeSha,toolProfile,version,workspace" : "grantDigest,installationId,jobId,jobRootDir,runtimeSha,version,workspace") ||
+  if ((v.version !== 1 && v.version !== 2 && v.version !== 3) || Object.keys(v).sort().join(",") !==
+      (v.version === 2 ? "grantDigest,installationId,jobId,jobRootDir,runtimeSha,toolProfile,version,workspace" :
+        v.version === 3 ? "grantDigest,installationId,jobId,jobRootDir,reference,runtimeSha,version,workspace" : "grantDigest,installationId,jobId,jobRootDir,runtimeSha,version,workspace") ||
       typeof v.jobId !== "string" || v.jobRootDir !== hostedDependencyJobRoot(v.jobId) ||
       !v.workspace || Object.keys(v.workspace).sort().join(",") !== "canonicalPath,dev,ino" ||
       v.workspace.canonicalPath !== `${v.jobRootDir}/workspace` ||
@@ -63,6 +66,12 @@ export function parseHostedDependencyBinding(value: unknown): HostedDependencyBi
     const toolProfile = parseDependencyToolProfile(v.toolProfile);
     if (toolProfile.cache.canonicalPath !== dependencyToolCachePath(v.jobRootDir)) invalid();
     return Object.freeze({ ...v, workspace: Object.freeze({ ...v.workspace }), toolProfile });
+  }
+  if (v.version === 3) {
+    if (!v.reference || typeof v.reference !== "object" || Array.isArray(v.reference) || Object.keys(v.reference).sort().join(",") !== "kind,operationId" ||
+        v.reference.kind !== HostedDependencyReferenceKind.LegacyRegistryV1 || typeof v.reference.operationId !== "string" ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(v.reference.operationId)) invalid();
+    return Object.freeze({ ...v, workspace: Object.freeze({ ...v.workspace }), reference: Object.freeze({ ...v.reference }) });
   }
   return Object.freeze({ ...v, workspace: Object.freeze({ ...v.workspace }) });
 }
@@ -164,7 +173,7 @@ export function assertHostedDependencyQualifiedInventory(): void {
     }
     const binding = readHostedDependencyBinding(v.jobId);
     if (binding) assertHostedDependencyBindingInventoryRevision(binding, inventory.schemaVersion);
-    if (binding?.version === 2) {
+    if (binding && binding.version !== 1) {
       // This executes during enrollment/reservation, before the root CLI. A
       // legacy direct stdin.end(frame) must never reach an opted N3 writer.
       if (!collectorProfile || !readHostedFdProfile()) invalid();
@@ -194,6 +203,9 @@ export function assertHostedDependencyQualifiedInventory(): void {
 
 export function readHostedDependencyAttempt(binding: HostedDependencyBinding,
   start: Readonly<Record<string, unknown>>, startId: string, phase = DependencyOwnerPhase.Running): DependencyAttempt {
+  // Reference has no Running/provider entry. Its only supported owner is the
+  // actual consumed Exclusive attempt used by the fixed materializer.
+  if (binding.version === 3 && phase !== DependencyOwnerPhase.ExclusiveMutation) invalid();
   assertHostedDependencyQualifiedInventory();
   assertHostedDependencyPhysicalWorkspace(binding);
   assertHostedDependencyStartAllowed(startId);
