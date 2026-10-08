@@ -1,5 +1,5 @@
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
-import { isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
+import { hostedGoalAdmissionIdentity, withHostedGoalIdentity } from "./hosted-readonly-goal-launch";
 import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
@@ -239,11 +239,7 @@ export async function runCodexGoal(
   assertCodexGoalAccessLaunchAllowed(config);
   const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const admittedEgress = await (deps.admitProviderEgress ?? admitHostedTestEgress)({
-    jobId: config.jobId ?? config.taskId,
-    jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath,
-    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
-    sourceEnv: config.sourceEnv ?? process.env,
+    ...hostedGoalAdmissionIdentity(config),
     ...(isMimo ? { modelBackend: config.modelBackend } : {}),
   });
   const providerEgressPolicy = isMimo
@@ -253,12 +249,8 @@ export async function runCodexGoal(
     throw new Error("codex_goal_provider_egress_admission_mismatch");
   }
   const appServerProcessFactory = admitHostedReadonlyInputs({
-    jobId: config.jobId ?? config.taskId,
-    jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath,
+    ...hostedGoalAdmissionIdentity(config),
     providerEgressPolicy,
-    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
-    sourceEnv: config.sourceEnv ?? process.env,
   });
   const baseCommit = await readLocalGitHeadCommit(config.workspacePath);
   const checkpointRootExists = await lstat(join(config.jobRootDir, "turn-checkpoints"))
@@ -654,19 +646,6 @@ export function buildCodexGoalExecutorOptions(input: {
 
 export function codexGoalProgressPath(config: Pick<CodexGoalRunConfig, "jobRootDir" | "taskId" | "progressPath">): string {
   return config.progressPath ?? join(config.jobRootDir, `${config.taskId}.progress.json`);
-}
-
-/** Transport identity from validated goal configuration. It selects no policy
- * or writable mount; the installed launcher independently validates its layout. */
-function withHostedGoalIdentity(config: CodexGoalRunConfig): CodexGoalRunConfig {
-  const env = config.sourceEnv ?? process.env;
-  if (!isHostedContainment(env)) return config;
-  const jobId = config.jobId ?? config.taskId;
-  if (env.SUBSCRIPTION_RUNTIME_JOB_ID !== undefined && env.SUBSCRIPTION_RUNTIME_JOB_ID !== jobId) {
-    throw new Error("hosted_managed_job_identity_mismatch");
-  }
-  return { ...config, sourceEnv: { ...env, SUBSCRIPTION_RUNTIME_JOB_ID: jobId,
-    SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } };
 }
 
 export function codexGoalOutputPath(

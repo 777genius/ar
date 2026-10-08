@@ -1,4 +1,5 @@
 import type { CodexGoalLaunchInput } from "./codex-goal-ops";
+import type { CodexGoalRunConfig } from "./codex-goal-runner";
 import { buildCodexGoalForegroundArgv, type HostedGoalLifecycleRequest } from "./application/codex-goal-foreground-command";
 import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
 import { HostedReadonlySupervisorHost } from "./hosted-readonly-supervisor-host";
@@ -9,6 +10,29 @@ import { requiresHostedProcessAdmission } from "@vioxen/subscription-runtime/pro
 import { HostedInstallationActivationStore, isHostedOrdinaryRuntime, readHostedInstallationActivation } from "./hosted-installation-activation";
 import { hostedForegroundExitCode } from "./hosted-foreground-result";
 import { isHostedContainment } from "../provider-codex/app-server/adapters/hosted-host-policy";
+
+/** Transport identity from validated goal configuration. It selects no policy
+ * or writable mount; the installed launcher independently validates its layout. */
+export function withHostedGoalIdentity(config: CodexGoalRunConfig): CodexGoalRunConfig {
+  const env = config.sourceEnv ?? process.env;
+  if (!isHostedContainment(env)) return config;
+  const jobId = config.jobId ?? config.taskId;
+  if (env.SUBSCRIPTION_RUNTIME_JOB_ID !== undefined && env.SUBSCRIPTION_RUNTIME_JOB_ID !== jobId) {
+    throw new Error("hosted_managed_job_identity_mismatch");
+  }
+  return { ...config, sourceEnv: { ...env, SUBSCRIPTION_RUNTIME_JOB_ID: jobId,
+    SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } };
+}
+
+export function hostedGoalAdmissionIdentity(config: CodexGoalRunConfig) {
+  return {
+    jobId: config.jobId ?? config.taskId,
+    jobRootDir: config.jobRootDir,
+    workspacePath: config.workspacePath,
+    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
+    sourceEnv: config.sourceEnv ?? process.env,
+  };
+}
 
 export function isHostedGoalLaunch(input: CodexGoalLaunchInput): boolean {
   return isHostedContainment(input.config.sourceEnv ?? process.env) || isHostedActivatedGoalLaunch(input);
