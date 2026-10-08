@@ -1,6 +1,6 @@
 import type { CodexSandboxMode } from "./codex-json-execution-engine";
 import { codexProviderEgressPolicy, CodexProviderEgressProfileId, type CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { dependencyToolCachePath, dependencyToolGuestConfigPath, parseDependencyToolGuestConfig, type DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
 
@@ -62,12 +62,42 @@ function trustedCodexInstallationPath(path: string): boolean {
   return true;
 }
 
+/** Only immutable public DNS leaves already admitted by the outer fixed root. */
+export function hostedCodexResolverReadPaths(sourceEnv: Readonly<Record<string, string | undefined>>): readonly string[] {
+  if (sourceEnv.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== "hosted-codex-job") return [];
+  let info;
+  try { info = lstatSync("/etc/resolv.conf"); }
+  catch { throw new Error("hosted_permission_resolver_unavailable"); }
+  if (info.isFile()) return []; // Already covered by the minimal /etc read root.
+  if (!info.isSymbolicLink()) throw new Error("hosted_permission_resolver_custody_invalid");
+  let target: string;
+  try { target = realpathSync("/etc/resolv.conf"); }
+  catch { throw new Error("hosted_permission_resolver_unavailable"); }
+  if (!["/run/systemd/resolve/stub-resolv.conf", "/run/systemd/resolve/resolv.conf"].includes(target)) {
+    throw new Error("hosted_permission_resolver_path_invalid");
+  }
+  let leaf, canonical: string;
+  try { leaf = lstatSync(target); canonical = realpathSync(target); }
+  catch { throw new Error("hosted_permission_resolver_unavailable"); }
+  // UID values differ across the provider's user namespace. The outer root
+  // already admits these public regular files as immutable read-only snapshots.
+  if (!leaf.isFile() || canonical !== target || (leaf.mode & 0o022) !== 0) {
+    throw new Error("hosted_permission_resolver_custody_invalid");
+  }
+  return [target];
+}
+
 export function hostedCodexPermissionProfilesToml(
   policy: CodexProviderEgressPolicy,
   executableReadPath?: string,
   privateKeyFilePath?: string,
   dependencyTools?: DependencyToolGuestConfig,
+  resolverReadPaths: readonly string[] = [],
 ): string {
+  if (resolverReadPaths.some(path => !["/run/systemd/resolve/stub-resolv.conf", "/run/systemd/resolve/resolv.conf"].includes(path))) {
+    throw new Error("hosted_permission_resolver_path_invalid");
+  }
+  const resolverRules = [...new Set(resolverReadPaths)].map(path => `${JSON.stringify(path)} = "read"`);
   const tools = dependencyTools === undefined ? undefined : parseDependencyToolGuestConfig(dependencyTools);
   if (tools && tools.profile.cache.canonicalPath !== dependencyToolCachePath(dirname(tools.workspace.canonicalPath))) {
     throw new Error("hosted_permission_tool_layout_invalid");
@@ -104,6 +134,7 @@ export function hostedCodexPermissionProfilesToml(
     '":root" = "deny"',
     '":minimal" = "read"',
     ...executableRules,
+    ...resolverRules,
     ...privateRules,
     ...toolRules,
     "",
@@ -119,6 +150,7 @@ export function hostedCodexPermissionProfilesToml(
     '":root" = "deny"',
     '":minimal" = "read"',
     ...executableRules,
+    ...resolverRules,
     ...privateRules,
     ...toolRules,
     "",
