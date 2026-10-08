@@ -55,10 +55,34 @@ seals dumpability, retained pidfd and namespace descriptors must remain held,
 but a later pathname-based proc lookup cannot silently replace their admission
 association. A capability-free parent must refuse unavailable revalidation;
 skipping the failure would falsely qualify the future Source helper boundary.
-This case deliberately exposes the unfinished committed-seal handoff seam.
+This case preserves the ordinary v1 refusal independently of the new private
+committed-seal handoff. It must never be rewritten to bypass nondumpability.
 
 Before extending the DATA grammar contract: accepting duplicate or escaped keys,
 LF/whitespace, malformed JSON, forbidden field types or malformed/oversized IDs
 is red. Independent literal canonical bytes must decode into frozen DATA, while
 all argv/environment/FD/PID/manager/path/unit/declaration/budget selectors remain
 refused. This supplies no issuer, retained handle, native clock or terminal fact.
+
+Before the N1a cases: an ordinary nonprivileged process, selected entry argument,
+or actual fresh Node environment without the original kernel endpoint must not
+launch/register a helper. Actual addon bytes and copied DATA alone cannot mint
+the original native environment. These refusal cases need no privileged setup.
+
+The genuine sealed-child case is red if native HELLO resets anchor/ends, merely
+claims seal without real 65532/cap0/locked securebits/NNP/nondumpability/TSYNC,
+accepts another child or reopens protected helper proc as its positive authority.
+It is also red if actual environment disposal drops parent-held pidfd/nsfs,
+permits fresh admission, changes its first loss/cleanup end, or a timer/exit
+message substitutes for original child wait and both stdio closes. The nearest
+case consumes real parent/helper/cleanup observations and postseal libuv work.
+Its 65532 setup is mandatory for acceptance and is explicitly skipped without a
+separately admitted privileged NEWTEST fixture. Same-UID mocks are forbidden.
+
+Existing v1 real foreign credentials, duplicate/out-of-order, truncation,
+SCM_RIGHTS, immutable clock, namespace and TSYNC/refusal cases remain valuable.
+New owner coupling additionally requires exact-code Linux evidence of malformed
+precommit seal/generation/slot, copied receiver/foreign environment disposal,
+actual owner death and cutoff equality. These are unproved until the admitted
+native fixture supplies independent original-object observations; source reads
+and a passing compile cannot be counted as those scenarios.
