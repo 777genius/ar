@@ -2,7 +2,6 @@ import { publicTestCa, host, local, request, setupResearchFixture, cleanupResear
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as processes from "node:child_process";
-import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { grantResearchLaunch, startResearchLaunch, revokeResearchLaunch } from "../research-launch-owner";
@@ -17,9 +16,9 @@ import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import { trustedResearchProviderLaunch, trustedResearchRuntimeLaunch } from "../trusted-custody-systemd-launch";
 import { prepareResearchProviderRoot, ResearchRootMountAccess, type ResearchProviderRootPlan } from "../research-provider-root";
 import { prepareHelper } from "./research-provider-service-fixture";
+import { streams, readyFrame, settledNamespaces, providerProxy, record } from "./research-provider-service-protocol-fixture";
 
 let previousExitCode: typeof process.exitCode;
-const streams = new Set<PassThrough>();
 beforeEach(() => { previousExitCode = process.exitCode; setupResearchFixture(); });
 afterEach(() => { for (const stream of streams) { stream.unpipe(); stream.destroy(); } streams.clear(); vi.useRealTimers(); process.exitCode = previousExitCode; cleanupResearchFixture(); });
 const rootPlans = new WeakMap<ReturnType<typeof prepareHelper>, ResearchProviderRootPlan>();
@@ -31,29 +30,6 @@ function providerLaunch(current: ReturnType<typeof prepareHelper>, home = curren
 function writableBindings(current: ReturnType<typeof prepareHelper>) {
   return rootPlans.get(current)!.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite);
 }
-const readyFrame = "subscription-runtime-research-provider-ready-v1\n";
-const settledNamespaces = { user: "TEST-provider-user", mnt: "TEST-provider-mnt", pid: "TEST-host", net: "TEST-host" };
-function providerProxy(current: ReturnType<typeof prepareHelper>, accept = true, ready = true) {
-  const proxy = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
-    exitCode: null as number | null, signalCode: null as NodeJS.Signals | null, kill: vi.fn(() => true) });
-  const forwarded: Buffer[] = [];
-  for (const stream of [proxy.stdin, proxy.stdout, proxy.stderr]) streams.add(stream);
-  proxy.stdin.on("data", chunk => forwarded.push(Buffer.from(chunk)));
-  const submit = () => {
-    if (accept) {
-      host.units.set(current.provider, { pid: 424242, description: `subscription-runtime-research-provider:${current.startId}:${current.provider}`,
-        invocation: "d".repeat(32), active: true });
-      host.processGroups.set(424242, `/system.slice/${current.provider}`);
-      host.processNamespaces.set(424242, settledNamespaces);
-      fs.writeFileSync(local(`/run/systemd/transient/${current.provider}`), "TEST provider fragment", { mode: 0o644 });
-    }
-    if (ready) queueMicrotask(() => proxy.stdout.write(readyFrame));
-    return proxy;
-  };
-  return { proxy, forwarded, submit };
-}
-const record = (current: ReturnType<typeof prepareHelper>, suffix: string) =>
-  JSON.parse(researchRead(join(current.directory, "providers", current.provider + suffix + ".json")).toString());
 
 describe("authenticated prepared scratch visibility (synthetic Host, no OS mounts)", () => {
   it("carries all three selected physical sources so independent providers see runtime-private data", async () => {

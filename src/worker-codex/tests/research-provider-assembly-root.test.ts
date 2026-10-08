@@ -6,7 +6,9 @@ import { cleanupResearchFixture, host, local } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import { dirname, join } from "node:path";
-import { readResearchProviderAssemblyRoot, type ResearchProviderAssemblyRoot } from "../research-provider-root";
+import { assertResearchProviderAssemblyContext, readResearchProviderAssemblyRoot, type ResearchProviderAssemblyRoot } from "../research-provider-root";
+import { researchHash, researchPublish, researchRead } from "../research-launch-files";
+import type { ResearchInitialHostContext } from "../research-launch-host";
 
 beforeEach(setupPrivateRootAssemblyFixture);
 afterEach(cleanupResearchFixture);
@@ -21,6 +23,95 @@ function snapshotWrite(path: string, bytes: string): void {
 }
 
 describe("sealed provider assembly reader over native TEST descriptors", () => {
+  // RED if reader authority is replaced by a structural context or its own
+  // reduced-role assertion still needs a foreign namespace read.
+  it("uses the genuine sealed Host witness and refuses a copied reader", () => {
+    const f = preparePrivateRootAssemblyFixture(), root = readResearchProviderAssemblyRoot(f.jobId, assemblyUnit, f.home, f.seal.sha256);
+    const initial = { user: "user:[4026531837]", mnt: "mnt:[4026531841]", pid: "pid:[4026531836]", net: "net:[4026531840]" };
+    const readlink = fs.readlinkSync;
+    try {
+      expect(root.initialHostContext).toEqual({ bootId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", machineId: "b".repeat(32), namespaces: initial });
+      host.processNamespaces.set(process.pid, { ...initial, mnt: "mnt:[4026532841]" });
+      vi.spyOn(fs, "readlinkSync").mockImplementation(((path: fs.PathLike, options?: Parameters<typeof fs.readlinkSync>[1]) => {
+        if (typeof path === "string" && /^\/proc\/(?:1|[0-9]+)\/ns\//.test(path) && !path.startsWith(`/proc/${process.pid}/`))
+          throw Object.assign(new Error("TEST foreign namespace unavailable"), { code: "EACCES" });
+        return readlink(path, options);
+      }) as typeof fs.readlinkSync);
+      const calls = host.calls.length;
+      expect(() => assertResearchProviderAssemblyContext(root)).not.toThrow();
+      expect(() => assertResearchProviderAssemblyContext({ ...root })).toThrow(denied);
+      expect(host.calls).toHaveLength(calls); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    } finally { root.close(); }
+    expect(() => assertResearchProviderAssemblyContext(root)).toThrow(denied);
+  });
+
+  // Exercise the fixed reader parser beyond the generic digest fence: these
+  // corruptions start from a genuine creator record and have a self-consistent
+  // caller digest, which still cannot mint a valid context or branded creator.
+  it.each(["missing", "duplicate", "wrong-label", "extra-field"] as const)("rejects a %s sealed reference before pinning assembly sources", fault => {
+    const f = preparePrivateRootAssemblyFixture(), path = join(dirname(f.plan.fixedRootDirectory), "plan.json");
+    const record = JSON.parse(researchRead(path).toString()) as { captured: { observations: unknown[] } };
+    const entry = record.captured.observations.find(value => Array.isArray(value) && value[0] === "initial-host-context");
+    if (!Array.isArray(entry)) throw new Error("Missing genuine TEST creator reference");
+    if (fault === "missing") record.captured.observations = record.captured.observations.filter(value => value !== entry);
+    if (fault === "duplicate") record.captured.observations.push(entry);
+    const context = entry[1] as ResearchInitialHostContext;
+    if (fault === "wrong-label") entry[1] = { ...context, namespaces: { ...context.namespaces, mnt: "user:[4026531841]" } };
+    if (fault === "extra-field") entry[1] = { ...context, skipRoot: true };
+    researchPublish(path, record);
+    const open = vi.spyOn(fs, "openSync"), calls = host.calls.length;
+    expect(() => readResearchProviderAssemblyRoot(f.jobId, assemblyUnit, f.home, researchHash(researchRead(path)))).toThrow(denied);
+    expect(open.mock.calls.some(([selected]) => selected === f.plan.fixedRootDirectory || f.plan.bindings.some(bind => bind.source === selected))).toBe(false);
+    expect(host.calls).toHaveLength(calls); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+
+  // RED if a valid captured reference is treated as evidence about changed self
+  // context rather than compared with current kernel observations before effects.
+  it.each(["boot", "machine", "user", "pid", "net", "host-mnt", "stat-unavailable", "cgroup-malformed", "shared"] as const)("rejects changed own %s through the genuine reader", fault => {
+    const f = preparePrivateRootAssemblyFixture(), root = readResearchProviderAssemblyRoot(f.jobId, assemblyUnit, f.home, f.seal.sha256);
+    const own = { ...root.initialHostContext.namespaces, mnt: "mnt:[4026532841]" };
+    try {
+      host.processNamespaces.set(process.pid, own);
+      expect(() => assertResearchProviderAssemblyContext(root)).not.toThrow();
+      if (fault === "boot") host.boot = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+      if (fault === "machine" || fault === "stat-unavailable" || fault === "cgroup-malformed") {
+        const read = fs.readFileSync;
+        vi.spyOn(fs, "readFileSync").mockImplementation(((path: fs.PathOrFileDescriptor, options?: Parameters<typeof fs.readFileSync>[1]) => {
+          if (fault === "machine" && path === "/etc/machine-id") return "c".repeat(32);
+          if (fault === "stat-unavailable" && path === `/proc/${process.pid}/stat`) throw Object.assign(new Error("TEST process disappeared"), { code: "ESRCH" });
+          if (fault === "cgroup-malformed" && path === `/proc/${process.pid}/cgroup`) return "0::relative\n";
+          return read(path, options);
+        }) as typeof fs.readFileSync);
+      }
+      if (fault === "shared") {
+        const open = fs.openSync;
+        vi.spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, flags: Parameters<typeof fs.openSync>[1], mode?: Parameters<typeof fs.openSync>[2]) => {
+          const fd = open(path, flags, mode);
+          if (path === "/proc/self/mountinfo") fs.writeFileSync(join(host.root, "mountinfo"), fs.readFileSync(join(host.root, "mountinfo"), "utf8").replace("rw - ext4", "rw shared:1 - ext4"));
+          return fd;
+        }) as typeof fs.openSync);
+      }
+      if (fault === "host-mnt") own.mnt = root.initialHostContext.namespaces.mnt;
+      if (fault === "user" || fault === "pid" || fault === "net") own[fault] = `${fault}:[4026533000]`;
+      const calls = host.calls.length;
+      expect(() => assertResearchProviderAssemblyContext(root)).toThrow(fault === "stat-unavailable" ? "TEST process disappeared" : denied);
+      expect(host.calls).toHaveLength(calls); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    } finally { root.close(); }
+  });
+
+  it("denies changed sealed bytes through the reduced-role admission path", () => {
+    const f = preparePrivateRootAssemblyFixture(), root = readResearchProviderAssemblyRoot(f.jobId, assemblyUnit, f.home, f.seal.sha256);
+    try {
+      host.processNamespaces.set(process.pid, { ...root.initialHostContext.namespaces, mnt: "mnt:[4026532841]" });
+      expect(() => assertResearchProviderAssemblyContext(root)).not.toThrow();
+      const planPath = join(dirname(root.root), "plan.json"), before = fs.lstatSync(planPath);
+      snapshotWrite(planPath, researchRead(planPath).toString() + " ");
+      expect(fs.lstatSync(planPath).ino).toBe(before.ino);
+      expect(() => assertResearchProviderAssemblyContext(root)).toThrow(denied);
+      expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    } finally { root.close(); }
+  });
+
   // Red if readFileSync(fd) consumes a public snapshot: construction leaves the
   // held FD at EOF, so the next unchanged guard falsely denies a valid root.
   it("revalidates nonempty public bytes repeatedly without consuming the held FD offset", () => {

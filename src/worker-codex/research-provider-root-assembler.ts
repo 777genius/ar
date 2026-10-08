@@ -2,13 +2,13 @@ import { spawn, spawnSync } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertResearchCurrentAuthority, assertResearchStartMaterial, readResearchStartBinding, researchCurrentStart } from "./research-launch-admission";
+import { assertResearchProviderCurrentAuthority, assertResearchProviderStartMaterial, readResearchStartBinding, researchCurrentStart } from "./research-launch-admission";
 import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
-import { assertResearchInitialRoot, assertResearchServiceOwner, researchExecutableDigest, researchProcessIdentity, researchServiceIdentity } from "./research-launch-host";
+import { assertResearchProviderRootIdentity, assertResearchServiceOwner, researchDescription, researchExecutableDigest, researchProcessIdentity, researchProcessLifetime, researchServiceIdentity } from "./research-launch-host";
 import { assertResearchProviderNotCancelled, readResearchProviderReservation } from "./research-launch-lifecycle";
 import { researchHash, researchInvalid, researchPath, researchRead } from "./research-launch-files";
 import { readKernelMountTable } from "./host-scratch-mount";
-import { readResearchProviderAssemblyRoot, researchProviderProtectedPaths, ResearchRootMountAccess } from "./research-provider-root";
+import { assertResearchProviderAssemblyContext, readResearchProviderAssemblyRoot, researchProviderProtectedPaths, ResearchRootMountAccess } from "./research-provider-root";
 
 const now = (): number => Number(process.hrtime.bigint() / 1_000_000n);
 const environment = Object.freeze({ PATH: "/usr/bin:/usr/sbin", LANG: "C", LC_ALL: "C" });
@@ -37,38 +37,43 @@ export function researchProviderRootTransition(root: string): Readonly<{ command
  * unshare --mount --propagation private prelude; no request supplies a recipe.
  * The creator's skeleton stays unmounted in its independent namespace. */
 export async function assembleResearchProviderRoot(jobId: string, unit: string, home: string, seal: string, deadline: number): Promise<number> {
-  assertResearchInitialRoot();
-  if (!Number.isSafeInteger(deadline) || deadline <= now() || deadline - now() > researchProviderSetupTimeoutMs ||
-      readlinkSync("/proc/self/ns/mnt") === readlinkSync("/proc/1/ns/mnt")) researchInvalid();
-  const mountRows = readKernelMountTable().trimEnd().split("\n");
-  if (mountRows.some(row => row.split(" - ")[0]!.split(" ").slice(6).some(field => /^(?:shared|master|propagate_from):/.test(field)))) researchInvalid();
+  assertResearchProviderRootIdentity();
+  if (!Number.isSafeInteger(deadline) || deadline <= now() || deadline - now() > researchProviderSetupTimeoutMs) researchInvalid();
   const current = researchCurrentStart(jobId), reservation = readResearchProviderReservation(current.directory, unit);
   if (reservation.specSha256 !== researchHash(current.bytes)) researchInvalid();
   const service = researchServiceIdentity(unit), own = researchProcessIdentity();
   assertResearchServiceOwner(own, service, reservation.description);
   const binding = readResearchStartBinding(current.directory);
   const bindingBytes = researchRead(join(current.directory, "binding.json"));
+  if (binding.specSha256 !== reservation.specSha256 || binding.service.unit !== current.spec.unit) researchInvalid();
+  assertResearchServiceOwner(binding.process, binding.service, researchDescription(jobId, reservation.specSha256));
+  // Foreign namespace freshness belongs to the full-root creator's transport
+  // fences. This role still observes actual PID lifetime and service identity.
+  const { namespaces: _runtimeNamespaces, ...runtimeLifetime } = binding.process;
   const assertAuthority = (): void => {
     if (now() >= deadline) researchInvalid();
     const fresh = researchCurrentStart(jobId);
     if (!fresh.bytes.equals(current.bytes) || fresh.directory !== current.directory ||
         JSON.stringify(readResearchStartBinding(current.directory)) !== JSON.stringify(binding) ||
-        JSON.stringify(researchProcessIdentity(binding.process.pid)) !== JSON.stringify(binding.process) ||
+        JSON.stringify(researchProcessLifetime(binding.process.pid)) !== JSON.stringify(runtimeLifetime) ||
         JSON.stringify(researchServiceIdentity(current.spec.unit)) !== JSON.stringify(binding.service) ||
         JSON.stringify(researchProcessIdentity()) !== JSON.stringify(own) || JSON.stringify(researchServiceIdentity(unit)) !== JSON.stringify(service)) researchInvalid();
     assertResearchProviderNotCancelled(current.directory, unit);
   };
-  assertAuthority(); assertResearchStartMaterial(current.spec); assertAuthority();
-  for (const path of ["/usr/bin/mount", "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
+  assertAuthority();
   const root = readResearchProviderAssemblyRoot(jobId, unit, home, seal);
-  if (JSON.stringify(root.spec) !== JSON.stringify(current.spec)) { root.close(); researchInvalid(); }
+  try {
+  if (JSON.stringify(root.spec) !== JSON.stringify(current.spec)) researchInvalid();
+  assertResearchProviderAssemblyContext(root);
   const finalAuthority = (): void => {
     // Reuse the established grant/closing/shared-policy/root/pin checks after
     // blocking material walks, at each synchronous mount/spawn boundary.
-    assertResearchCurrentAuthority(jobId, current, bindingBytes);
+    assertResearchProviderCurrentAuthority(jobId, current, root, bindingBytes);
     assertResearchProviderNotCancelled(current.directory, unit);
     if (now() >= deadline) researchInvalid();
   };
+  assertAuthority(); assertResearchProviderStartMaterial(root); assertAuthority(); finalAuthority();
+  for (const path of ["/usr/bin/mount", "/usr/bin/unshare", "/usr/bin/setpriv", "/usr/bin/tini"]) researchExecutableDigest(path);
   const check = (): void => { assertAuthority(); root.assertCurrent(); finalAuthority(); };
   const descriptors = new Map<number, Readonly<{ path: string; identity: string }>>([
     [root.rootFd, { path: root.root, identity: descriptorIdentity(root.rootFd) }],
@@ -139,7 +144,6 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
     const fd = targetFd(target, false);
     try { command(["-t", "tmpfs", "-o", options, "tmpfs", "/proc/self/fd/3"], [fd]); } finally { closeTarget(fd); }
   };
-  try {
     // Nonrecursive self-bind creates only our private root mount. Later target
     // descriptors are opened through that new mount, never the covered lower FD.
     command(["--bind", "/proc/self/fd/3", "/proc/self/fd/3"], [root.rootFd]);
@@ -196,11 +200,11 @@ export async function assembleResearchProviderRoot(jobId: string, unit: string, 
     descriptors.set(liveRoot, { path: root.root, identity: descriptorIdentity(liveRoot) });
     try { protectMount(liveRoot, "/", true, false, [...new Set([...flags(liveRoot), "nosuid", "nodev"])]); } finally { closeTarget(liveRoot); }
     check();
+    assertAuthority(); finalAuthority();
   } finally { root.close(); }
   // No source/root/target FD is inherited. The only supplied descriptors are
   // the existing transport pipes; the final launcher independently refuses
   // regular/directory inherited FDs before emitting READY or reading bootstrap.
-  assertAuthority(); finalAuthority();
   const transition = researchProviderRootTransition(root.root);
   const child = spawn(transition.command, [...transition.args, process.execPath,
     join(current.spec.runtimeDirectory, "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js"), "--research-ready-v1"],

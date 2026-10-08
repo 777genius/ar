@@ -265,6 +265,22 @@ before each effect. Creator-private cache observations remain creator checks;
 the independent assembler checks their explicit physical source/backing graph.
 The creator's skeleton remains unmounted in its own namespace.
 
+The plan contains one fixed `initial-host-context` observation with boot/machine
+identity and initial Host user/mount/PID/network namespaces. The full-root creator
+captures and re-observes it; the genuine sealed reader authenticates it through
+the existing custody, seal and private WeakMap. The reduced assembler reads only
+its own namespace links, requiring Host user/PID/network identity and a distinct
+private mount namespace without shared propagation. It checks live runtime PID
+lifetime/cgroup, fresh service identity and all existing documents and material;
+the reference never claims current foreign namespace observation. Ordinary
+operator/creator InitialRoot checks and live foreign namespace fences remain.
+Creator submission, READY monitoring, settled ownership and final forwarding
+reject runtime namespace drift before accepted readiness, bootstrap, protocol
+forwarding or account/model effects. Bounded owned setup/mounts, inert raw READY
+and retained recovery records can precede the creator's observation of drift.
+The standalone primitive uses the compiled context guard with an operator TEST
+tuple for mechanics only; it does not qualify sealed authority or the full adapter.
+
 The fixed adapter supplies bounded private tmp, run, sys, device and pts views,
 read-only root/dependencies, selected writable destinations and protected-path
 omissions. Non-filesystem device policy and raw-IO/module syscall denial retain

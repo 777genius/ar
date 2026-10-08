@@ -369,7 +369,7 @@ jobs:
       contents: read
     if: ${{ always() }}
     needs: [crash-boundary-shards]
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
       - name: Verify every crash-boundary shard lane passed
         env:
@@ -379,7 +379,7 @@ jobs:
   test:
     if: ${{ always() }}
     needs: [quality, unit-tests, observer-mount-tests, archive-root-tests, package, native-probe-source, crash-boundary-shards-complete]
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
       - name: Verify all CI gates passed
         env:

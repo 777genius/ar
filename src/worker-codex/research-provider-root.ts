@@ -5,7 +5,7 @@ import { hostedCodexExecutableReadClosure } from "../provider-codex/hosted-codex
 import { resolvePreparedHostScratchBinds, resolvePreparedHostScratchCacheBinds, type ScratchTempHost } from "./host-scratch-temp";
 import { parseResearchStartSpec, researchProviderSetupTimeoutMs, type ResearchStartSpec } from "./research-launch-contract";
 import { researchAuthorityRoot, researchHash, researchId, researchInvalid, researchJson, researchName, researchPath, researchPublish, researchRead, researchRecord } from "./research-launch-files";
-import { researchProviderUnitPattern } from "./research-launch-host";
+import { assertResearchProviderInitialRoot, parseResearchInitialHostContext, researchProviderUnitPattern, type ResearchInitialHostContext } from "./research-launch-host";
 import { readResearchProviderReservation } from "./research-launch-lifecycle";
 import { readKernelMountTable } from "./host-scratch-mount";
 
@@ -223,6 +223,10 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
   host: ResearchProviderRootHost, scratchHost?: ScratchTempHost): Snapshot {
   return observeRootFailure(ResearchProviderRootCheck.Snapshot, () => {
   const mounts = mountTable(host), observations: unknown[] = [], observed = new Set<string>(), bindings: Binding[] = [], layout: [string, string][] = [], fileLinks: [string, string][] = [], files: PublicFile[] = [];
+  observations.push(["initial-host-context", parseResearchInitialHostContext({
+    bootId: host.read("/proc/sys/kernel/random/boot_id").trim(), machineId: host.read("/etc/machine-id").trim(),
+    namespaces: { user: host.link("/proc/1/ns/user"), mnt: host.link("/proc/1/ns/mnt"), pid: host.link("/proc/1/ns/pid"), net: host.link("/proc/1/ns/net") },
+  })]);
   const durable = spec.registeredHandoff?.durableDirectory;
   const durableBacking = durable ? backing(durable.path, mounts) : undefined;
   if (durable && durableBacking && (durableBacking.device !== durable.mountDevice ||
@@ -575,8 +579,16 @@ export function researchProviderRootSeal(plan: ResearchProviderRootPlan, spec: R
 type PinnedAssemblyBinding = Readonly<{ source: string; target: string; access: ResearchRootMountAccess; file: boolean; fd: number }>;
 export type ResearchProviderAssemblyRoot = Readonly<{
   spec: ResearchStartSpec; root: string; rootFd: number; bindings: readonly PinnedAssemblyBinding[];
+  initialHostContext: ResearchInitialHostContext;
   assertCurrent(): void; close(): void;
 }>;
+const assemblyContexts = new WeakMap<ResearchProviderAssemblyRoot, () => void>();
+/** Only a genuine, still-current sealed reader can enter provider admission. */
+export function assertResearchProviderAssemblyContext(root: ResearchProviderAssemblyRoot): void {
+  const assertContext = assemblyContexts.get(root);
+  if (!assertContext) researchInvalid();
+  assertContext();
+}
 const descriptorSignature = (info: Stats): string => [leafSignature(info), info.size, info.mtimeMs, info.ctimeMs].join(":");
 const pinnedSignature = (info: Stats): string => info.isFile() ? descriptorSignature(info) : [info.dev, info.ino, info.uid, info.gid, info.mode].join(":");
 function positionedPublicBytes(fd: number, expected: Stats): string {
@@ -611,6 +623,9 @@ export function readResearchProviderAssemblyRoot(jobId: string, unit: string, ho
   const captured = researchRecord(record.captured, "omittedCaches,bindings,aliases,fileLinks,observations,files") as unknown as Snapshot;
   if (![captured.bindings, captured.files, captured.aliases, captured.fileLinks, captured.observations, captured.omittedCaches, record.materialized]
     .every(list => Array.isArray(list) && list.length <= 512)) researchInvalid();
+  const contexts = captured.observations.filter(value => Array.isArray(value) && value[0] === "initial-host-context");
+  if (contexts.length !== 1 || !Array.isArray(contexts[0]) || contexts[0].length !== 2) researchInvalid();
+  const initialHostContext = parseResearchInitialHostContext(contexts[0][1]);
   const bindings = record.materialized as Binding[];
   if (!bindings.length || bindings.length > 64 || bindings.length !== captured.bindings.length ||
       new Set(bindings.map(bind => bind.target)).size !== bindings.length ||
@@ -658,6 +673,8 @@ export function readResearchProviderAssemblyRoot(jobId: string, unit: string, ho
       if (JSON.stringify(companion) !== JSON.stringify(closure?.companion ? ["codex-companion", closure.companion] : undefined)) researchInvalid();
     };
     assertCurrent();
-    return Object.freeze({ spec, root, rootFd, bindings: Object.freeze(pinned), assertCurrent, close });
+    const receipt = Object.freeze({ spec, root, rootFd, bindings: Object.freeze(pinned), initialHostContext, assertCurrent, close });
+    assemblyContexts.set(receipt, () => { assertCurrent(); assertResearchProviderInitialRoot(initialHostContext); });
+    return receipt;
   } catch (error) { close(); throw error; }
 }

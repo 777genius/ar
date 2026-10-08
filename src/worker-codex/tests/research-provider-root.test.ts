@@ -127,6 +127,18 @@ const deletedMount = (point: string, root = "/jobs/TEST-foreign/.research/.cache
   `900 1 8:1 ${root} ${point} rw - ${filesystem} /dev/TEST rw`;
 
 describe("closed provider root graph (native adapter over disposable TEST files)", () => {
+  // RED if the creator retains a stale initial Host witness while its other
+  // sealed filesystem observations remain unchanged.
+  it("re-observes the Host mount namespace before a branded root can be sealed again", () => {
+    const f = captured(), observed = observingHost();
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).not.toThrow();
+    const effects = [...observed.effects];
+    host.processNamespaces.set(1, { user: "user:[4026531837]", mnt: "mnt:[4026533000]", pid: "pid:[4026531836]", net: "net:[4026531840]" });
+    expect(() => assertResearchProviderRoot(plan, f.spec, unit, f.home)).toThrow("hosted_research_launch_denied");
+    expect(() => trustedResearchProviderLaunch(f.spec, unit, f.home, plan)).toThrow("hosted_research_launch_denied");
+    expect(observed.effects).toEqual(effects); expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
   // Regression: Linux emits unrelated NSFS descriptors and deleted roots in
   // mountinfo. Rejecting the entire table prevents every admitted root plan.
   it("retains unrelated opaque kernel mount roots without importing them", () => {

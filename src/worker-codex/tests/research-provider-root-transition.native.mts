@@ -6,10 +6,26 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Explicit hosted-only operator primitive. No grants, account reads, model,
 // request/admission records or READY token; this is not full adapter proof.
+// Its operator tuple qualifies the compiled context guard's mechanics only.
 type Prelude = Pick<typeof import("../research-provider-root-assembler"), "researchProviderRootTransition">;
+type ContextGuard = Pick<typeof import("../research-launch-host"), "assertResearchProviderInitialRoot">;
 type DescriptorGuard = Pick<typeof import("../../provider-codex/app-server/adapters/hosted-process-descriptors"), "assertHostedProcessDescriptors">;
 type Mode = "clean" | "file" | "directory";
-type Expected = Readonly<{ schemaVersion: 1; hostUser: string; hostPid: string; outside: string; sentinelSha256: string; inside: string }>;
+type Expected = Readonly<{ schemaVersion: 1; hostUser: string; hostPid: string; initialHostContext: import("../research-launch-host").ResearchInitialHostContext; outside: string; sentinelSha256: string; inside: string }>;
+const phases = ["arguments", "custody", "initial-caps", "no-new-privileges", "provider-context", "import", "bind", "remount", "transition", "child-oracle", "oracle-inputs", "oracle-isolation", "oracle-leak", "oracle-descriptors", "receipt", "userns-capset", "userns-root", "private-proc"] as const;
+type Target = "none" | "operator" | "root" | "runtime" | "expected" | "usr" | "node" | "probe" | "guard" | "bin" | "sbin" | "lib" | "lib64" | "outside-file" | "outside-directory";
+let phase: typeof phases[number] = "arguments", target: Target = "none", role: "operator" | "assembler" | "oracle" = "operator", activeMode: Mode | null = null;
+let failedCommand: ReturnType<typeof spawnSync> | undefined;
+const mark = (next: typeof phases[number], selected: Target = "none"): true => { phase = next; target = selected; failedCommand = undefined; return true; };
+const errno = (error: unknown) => (["ENOENT", "EACCES", "EPERM", "EINVAL", "ENOTDIR", "ELOOP", "EBADF", "EIO", "ETIMEDOUT", "EINTR", "ENOMEM", "ENOSPC", "ENOSYS"] as const).find(code => code === (error as NodeJS.ErrnoException | undefined)?.code) ?? null;
+const mountFailure = (): "fstab-lookup" | "permission" | "invalid-argument" | "other" | null => {
+  if (!failedCommand || (phase !== "bind" && phase !== "remount")) return null;
+  const stderr = failedCommand.stderr?.toString("utf8") ?? "";
+  return /can't find in (?:\/etc\/)?fstab|not found in (?:\/etc\/)?fstab/.test(stderr) ? "fstab-lookup" : /permission denied|operation not permitted|must be superuser/.test(stderr) ? "permission" : /invalid argument|bad option/.test(stderr) ? "invalid-argument" : "other";
+};
+const failure = (error: unknown) => ({ schemaVersion: 1, mode: activeMode, primitiveFailed: true, role, phase, target, errno: errno(error) ?? errno(failedCommand?.error),
+  exitCode: Number.isSafeInteger(failedCommand?.status) && failedCommand!.status! >= 0 && failedCommand!.status! <= 255 ? failedCommand!.status : null,
+  signal: (["SIGKILL", "SIGTERM", "SIGINT", "SIGABRT", "SIGSEGV", "SIGBUS", "SIGPIPE", "SIGILL"] as const).find(value => value === failedCommand?.signal) ?? null, mountFailure: mountFailure() });
 const script = fileURLToPath(import.meta.url), env = { PATH: "/usr/bin:/usr/sbin", LANG: "C", LC_ALL: "C", NODE_DISABLE_COMPILE_CACHE: "1", NODE_NO_WARNINGS: "1" };
 const sha = (bytes: string | Buffer): string => createHash("sha256").update(bytes).digest("hex");
 const requireFact = (fact: unknown): void => { if (!fact) throw new Error("TEST_root_transition_denied"); };
@@ -34,12 +50,15 @@ function call(command: string, args: readonly string[], deadline: number, fds: r
 }
 function mount(args: readonly string[], deadline: number, fds: readonly number[] = []): void {
   const result = call("/usr/bin/mount", ["--no-canonicalize", "--no-mtab", ...args], deadline, fds);
+  if (result.error || result.signal || result.status !== 0) failedCommand = result;
   requireFact(!result.error && !result.signal && result.status === 0);
 }
 
 async function oracle(mode: Mode): Promise<void> {
+  role = "oracle"; activeMode = mode; mark("oracle-inputs", "expected");
   const expected = JSON.parse(readFileSync("/expected.json", "utf8")) as Expected;
   requireFact(expected.schemaVersion === 1 && /^[a-f0-9]{64}$/.test(expected.sentinelSha256));
+  mark("oracle-isolation", "root");
   const status = readFileSync("/proc/self/status", "utf8");
   const capabilitiesZero = ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"].every(key => new RegExp(`^${key}:\\s+0+$`, "m").test(status));
   const insideReadable = readFileSync("/inside.txt", "utf8") === expected.inside;
@@ -52,10 +71,12 @@ async function oracle(mode: Mode): Promise<void> {
   requireFact(process.getuid?.() === 65532 && process.getgid?.() === 65532 && mapsCorrect && capabilitiesZero && /^NoNewPrivs:\s+1$/m.test(status) && insideReadable && rootClosed && pidPrivate && userPrivate);
   let leakAccessible = false;
   if (mode !== "clean") {
+    mark("oracle-leak", mode === "file" ? "outside-file" : "outside-directory");
     // The negative is a real retained outside TEST object, not a mocked guard.
     const bytes = readFileSync(mode === "file" ? "/proc/self/fd/3" : "/proc/self/fd/3/sentinel.txt");
     leakAccessible = sha(bytes) === expected.sentinelSha256; requireFact(leakAccessible);
   }
+  mark("oracle-descriptors", "guard");
   const guard = await import(pathToFileURL("/guard.mjs").href) as DescriptorGuard;
   let leakDenied = false;
   try { guard.assertHostedProcessDescriptors(); }
@@ -66,15 +87,21 @@ async function oracle(mode: Mode): Promise<void> {
 }
 
 async function assemble(root: string, runtime: string, expectedPath: string, mode: Mode, deadline: number): Promise<void> {
-  trusted(root); trusted(runtime); trusted(expectedPath);
+  role = "assembler"; activeMode = mode;
+  mark("custody", "root"); trusted(root); mark("custody", "runtime"); trusted(runtime); mark("custody", "expected"); trusted(expectedPath);
+  mark("initial-caps", "root");
   const ownStatus = readFileSync("/proc/self/status", "utf8");
-  requireFact(/^CapBnd:\s+0000000080200100$/m.test(ownStatus) && /^NoNewPrivs:\s+1$/m.test(ownStatus) &&
-    readlinkSync("/proc/self/ns/mnt") !== readlinkSync("/proc/1/ns/mnt") &&
-    !readFileSync("/proc/self/mountinfo", "utf8").split("\n").some(row => /(?: shared:| master:| propagate_from:)/.test(row.split(" - ")[0]!)));
+  requireFact(/^CapBnd:\s+0000000080200100$/m.test(ownStatus) && mark("no-new-privileges", "root") && /^NoNewPrivs:\s+1$/m.test(ownStatus));
+  mark("import", "runtime");
   const transitionModule = join(runtime, "dist/worker-codex/research-provider-root-assembler.js"), transitionSha256 = sha(readFileSync(transitionModule));
   const module = await import(pathToFileURL(transitionModule).href) as Prelude;
-  const bind = (source: string, target: string, directory: boolean): void => {
+  const hostGuardModule = join(runtime, "dist/worker-codex/research-launch-host.js"), hostGuardSha256 = sha(readFileSync(hostGuardModule));
+  const guard = await import(pathToFileURL(hostGuardModule).href) as ContextGuard, expected = JSON.parse(readFileSync(expectedPath, "utf8")) as Expected;
+  mark("provider-context", "root"); guard.assertResearchProviderInitialRoot(expected.initialHostContext);
+  const bind = (source: string, target: string, directory: boolean, selected: Target): void => {
+    mark("custody", selected);
     trusted(source); const destination = join(root, target.slice(1));
+    mark("bind", selected);
     const a = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const b = openSync(destination, 0x200000 | constants.O_NOFOLLOW);
     try { mount(["--bind", "/proc/self/fd/3", "/proc/self/fd/4"], deadline, [a, b]); } finally { closeSync(a); closeSync(b); }
@@ -82,41 +109,51 @@ async function assemble(root: string, runtime: string, expectedPath: string, mod
     try {
       const bound = fstatSync(fd), original = lstatSync(source);
       requireFact(bound.dev === original.dev && bound.ino === original.ino && bound.isDirectory() === directory);
-      mount(["-o", "remount,bind,ro,nosuid,nodev", "/proc/self/fd/3"], deadline, [fd]);
+      mark("remount", selected); mount(["-o", "remount,bind,ro,nosuid,nodev", "/proc/self/fd/3"], deadline, [fd]);
     } finally { closeSync(fd); }
   };
   // This primitive applies only a small public closure, not the production
   // provider's complete captured graph/API/device/protected policy.
-  bind("/usr", "/usr", true);
-  if (!process.execPath.startsWith("/usr/")) bind(process.execPath, process.execPath, false);
-  bind(script, "/probe.mts", false); bind(expectedPath, "/expected.json", false);
-  bind(join(runtime, "dist/provider-codex/app-server/adapters/hosted-process-descriptors.js"), "/guard.mjs", false);
-  for (const alias of ["bin", "sbin", "lib", "lib64"]) {
+  bind("/usr", "/usr", true, "usr");
+  if (!process.execPath.startsWith("/usr/")) bind(process.execPath, process.execPath, false, "node");
+  bind(script, "/probe.mts", false, "probe"); bind(expectedPath, "/expected.json", false, "expected");
+  bind(join(runtime, "dist/provider-codex/app-server/adapters/hosted-process-descriptors.js"), "/guard.mjs", false, "guard");
+  for (const alias of ["bin", "sbin", "lib", "lib64"] as const) {
+    mark("custody", alias);
     const source = "/" + alias;
     try { lstatSync(source); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
-    if (!lstatSync(source).isSymbolicLink()) bind(source, source, true);
+    if (!lstatSync(source).isSymbolicLink()) bind(source, source, true, alias);
   }
-  const transition = module.researchProviderRootTransition(root), expected = JSON.parse(readFileSync(expectedPath, "utf8")) as Expected;
+  mark("transition", "root");
+  const transition = module.researchProviderRootTransition(root);
+  mark("child-oracle", mode === "clean" ? "none" : mode === "file" ? "outside-file" : "outside-directory");
   const held = mode === "clean" ? undefined : openSync(mode === "file" ? expected.outside : dirname(expected.outside), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
+    mark("child-oracle", "root");
     const result = call(transition.command, [...transition.args, process.execPath, "/probe.mts", "oracle", mode], deadline, held === undefined ? [] : [held]);
     if (result.status !== 0 || result.error || result.signal) {
+      failedCommand = result;
       const stderr = result.stderr?.toString("utf8") ?? "";
       const phase = /capset failed/.test(stderr) ? "userns-capset" : /cannot change root/.test(stderr) ? "userns-root" : /mount .*proc.* failed/.test(stderr) ? "private-proc" : "child-oracle";
-      process.stdout.write(JSON.stringify({ schemaVersion: 1, mode, primitiveFailed: true, phase, exitCode: result.status, signal: result.signal }) + "\n"); process.exitCode = 70; return;
+      let oracleFailure: { phase: typeof phases[number]; errno: ReturnType<typeof errno> } | undefined;
+      try { if (result.stdout.length < 4096) { const child = JSON.parse(result.stdout.toString("utf8")) as Record<string, unknown>;
+        const selected = phases.find(value => value === child.phase); if (child.primitiveFailed === true && child.role === "oracle" && selected?.startsWith("oracle-")) oracleFailure = { phase: selected, errno: errno({ code: child.errno }) }; } } catch { /* Closed diagnostic only. */ }
+      process.stdout.write(JSON.stringify({ ...failure(result.error), phase, oracleFailure }) + "\n"); process.exitCode = 70; return;
     }
-    requireFact(result.stdout.length < 4096 && sha(readFileSync(transitionModule)) === transitionSha256);
+    requireFact(result.stdout.length < 4096 && sha(readFileSync(transitionModule)) === transitionSha256 && sha(readFileSync(hostGuardModule)) === hostGuardSha256);
     const report = JSON.parse(result.stdout.toString("utf8")) as Record<string, unknown>;
-    process.stdout.write(JSON.stringify({ ...report, runtime, transitionSha256 }) + "\n");
+    process.stdout.write(JSON.stringify({ ...report, runtime, transitionSha256, hostGuardSha256 }) + "\n");
   } finally { if (held !== undefined) closeSync(held); }
 }
 
 async function run(operator: string, runtime: string): Promise<void> {
+  mark("custody", "operator");
   requireFact(process.platform === "linux" && process.getuid?.() === 0 && readFileSync("/etc/machine-id", "utf8").trim() === "d856d40da5ad4e23b4f67773e5942842");
   trusted(operator); trusted(runtime); requireFact(lstatSync(operator).dev === 66305 && (lstatSync(operator).mode & 0o777) === 0o700);
   const scratchDevice = lstatSync(realpathSync("/dev/disk/by-uuid/d0f2cac1-2009-4e9d-a710-e156f417938f"));
   requireFact(scratchDevice.isBlockDevice() && scratchDevice.rdev === lstatSync(operator).dev && realpathSync("/srv/workers") === "/srv/workers" && lstatSync("/srv/workers").dev === 66305);
   const transitionSha256 = sha(readFileSync(join(runtime, "dist/worker-codex/research-provider-root-assembler.js"))), fixtureSha256 = sha(readFileSync(script));
+  const hostGuardSha256 = sha(readFileSync(join(runtime, "dist/worker-codex/research-launch-host.js")));
   const resources = (): Readonly<{ observedAt: string; rootFreeBytes: number; scratchFreeBytes: number; memAvailableKiB: number; swapUsedKiB: number }> => {
     const root = statfsSync("/"), scratch = statfsSync(operator), memory = readFileSync("/proc/meminfo", "utf8");
     const value = (key: string): number => { const match = new RegExp(`^${key}:\\s+(\\d+) kB$`, "m").exec(memory); requireFact(match); return Number(match![1]); };
@@ -127,6 +164,8 @@ async function run(operator: string, runtime: string): Promise<void> {
   const outside = join(directory, "outside"); mkdirSync(outside, { mode: 0o700 });
   const sentinel = join(outside, "sentinel.txt"); writeFileSync(sentinel, "PUBLIC-TEST-outside-root\n", { mode: 0o600, flag: "wx" });
   const expectedPath = join(directory, "expected.json"), expected: Expected = { schemaVersion: 1, hostUser: readlinkSync("/proc/self/ns/user"), hostPid: readlinkSync("/proc/self/ns/pid"),
+    initialHostContext: { bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(), machineId: readFileSync("/etc/machine-id", "utf8").trim(),
+      namespaces: { user: readlinkSync("/proc/1/ns/user"), mnt: readlinkSync("/proc/1/ns/mnt"), pid: readlinkSync("/proc/1/ns/pid"), net: readlinkSync("/proc/1/ns/net") } },
     outside: sentinel, sentinelSha256: sha(readFileSync(sentinel)), inside: "PUBLIC-TEST-inside-root\n" };
   writeFileSync(expectedPath, JSON.stringify(expected) + "\n", { mode: 0o600, flag: "wx" });
   const receipts: unknown[] = [];
@@ -141,7 +180,8 @@ async function run(operator: string, runtime: string): Promise<void> {
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
     const baseline = tree(root), unit = "subscription-runtime-TEST-root-transition-" + randomUUID() + ".service", deadline = Number(process.hrtime.bigint() / 1_000_000n) + 300_000;
-    requireFact(sha(readFileSync(script)) === fixtureSha256 && sha(readFileSync(join(runtime, "dist/worker-codex/research-provider-root-assembler.js"))) === transitionSha256);
+    requireFact(sha(readFileSync(script)) === fixtureSha256 && sha(readFileSync(join(runtime, "dist/worker-codex/research-provider-root-assembler.js"))) === transitionSha256 &&
+      sha(readFileSync(join(runtime, "dist/worker-codex/research-launch-host.js"))) === hostGuardSha256);
     const before = resources(); requireFact(before.rootFreeBytes >= 5 * 1024 ** 3 && before.scratchFreeBytes >= 5 * 1024 ** 3 && before.memAvailableKiB >= 1024 ** 2);
     const result = call("/usr/bin/systemd-run", ["--quiet", "--wait", "--pipe", "--collect", "--service-type=exec", "--expand-environment=no", "--working-directory=/", "--unit=" + unit,
       "--property=KillMode=control-group", "--property=SendSIGKILL=yes", "--property=Restart=no", "--property=Delegate=no", "--property=TimeoutStartSec=300s", "--property=RuntimeMaxSec=90s",
@@ -149,16 +189,19 @@ async function run(operator: string, runtime: string): Promise<void> {
       "--property=CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP", "--property=AmbientCapabilities=", "--property=DevicePolicy=closed", "--property=SystemCallFilter=~@raw-io @module",
       "--", "/usr/bin/unshare", "--mount", "--propagation", "private", process.execPath, script, "assemble", root, runtime, expectedPath, mode, String(deadline)], deadline);
     const creatorUnchanged = tree(root) === baseline && !readFileSync("/proc/self/mountinfo", "utf8").split("\n").some(row => row.split(" ")[4]?.startsWith(root));
+    mark("receipt", "root");
     let report: Record<string, unknown> | undefined;
     try { if (result.stdout.length < 4096) report = JSON.parse(result.stdout.toString("utf8")) as Record<string, unknown>; } catch { /* Empty output still retains a finite failed attempt receipt below. */ }
     receipts.push({ unit, mode, before, exitCode: result.status, signal: result.signal, transportError: Boolean(result.error), creatorUnchanged, report });
     writeFileSync(join(directory, "receipt-" + mode + ".json"), JSON.stringify(receipts.at(-1)) + "\n", { mode: 0o600, flag: "wx" });
-    requireFact(!result.error && !result.signal && result.status === 0 && creatorUnchanged && report?.mode === mode && report.runtime === runtime && report.transitionSha256 === transitionSha256 &&
+    if (result.error || result.signal || result.status !== 0) failedCommand = result;
+    requireFact(!result.error && !result.signal && result.status === 0 && creatorUnchanged && report?.mode === mode && report.runtime === runtime && report.transitionSha256 === transitionSha256 && report.hostGuardSha256 === hostGuardSha256 &&
       report.insideReadable === true && report.rootClosed === true && report.capabilitiesZero === true && report.userPrivate === true && report.pidPrivate === true && report.mapsCorrect === true && report.noNewPrivileges === true &&
       report.leakDenied === (mode !== "clean") && report.leakAccessible === (mode !== "clean"));
   }
-  requireFact(sha(readFileSync(script)) === fixtureSha256 && sha(readFileSync(join(runtime, "dist/worker-codex/research-provider-root-assembler.js"))) === transitionSha256);
-  process.stdout.write(JSON.stringify({ schemaVersion: 1, directory, runtime, fixtureSha256, transitionSha256, descriptorGuardSha256: sha(readFileSync(join(runtime, "dist/provider-codex/app-server/adapters/hosted-process-descriptors.js"))), receipts }) + "\n");
+  requireFact(sha(readFileSync(script)) === fixtureSha256 && sha(readFileSync(join(runtime, "dist/worker-codex/research-provider-root-assembler.js"))) === transitionSha256 &&
+    sha(readFileSync(join(runtime, "dist/worker-codex/research-launch-host.js"))) === hostGuardSha256);
+  process.stdout.write(JSON.stringify({ schemaVersion: 1, directory, runtime, fixtureSha256, transitionSha256, hostGuardSha256, descriptorGuardSha256: sha(readFileSync(join(runtime, "dist/provider-codex/app-server/adapters/hosted-process-descriptors.js"))), receipts }) + "\n");
 }
 
 try {
@@ -167,4 +210,4 @@ try {
   else if (command === "assemble" && args.length === 5 && ["clean", "file", "directory"].includes(args[3]!)) await assemble(path(args[0]!), path(args[1]!), path(args[2]!), args[3] as Mode, Number(args[4]));
   else if (command === "oracle" && args.length === 1 && ["clean", "file", "directory"].includes(args[0]!)) await oracle(args[0] as Mode);
   else throw new Error("TEST_root_transition_arguments_invalid");
-} catch { process.exitCode = 70; }
+} catch (error) { process.stdout.write(JSON.stringify(failure(error)) + "\n"); process.exitCode = 70; }
