@@ -255,7 +255,7 @@ export function readHostedOrdinaryProcessOrigin(fence: HostedActivationFence, de
   // PR1 prepares the independent reader; later lifecycle PRs must supply
   // bounded controller/child authority before activation can open.
   if (profileId === CodexProviderEgressProfileId.MimoTokenPlan) throw new Error("hosted_mimo_activation_closed");
-  return { activation, start, reservation, profileId, childBound: creator.childSlotSha256 !== undefined };
+  return { installation, activation, start, reservation, profileId, childBound: creator.childSlotSha256 !== undefined };
 }
 
 /** Same fixed private-file reader as production, with a path seam for synthetic

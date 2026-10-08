@@ -110,6 +110,8 @@ export function prepareHostedDependencyToolPlan(fence: HostedActivationFence, un
   root: string, writable: readonly string[], sources: readonly string[], readyReader?: DependencyToolReadyReader): { readonly mounts: readonly string[]; readonly cache: string; readonly sourcePaths: readonly string[] } | undefined {
   assertHostedActivationFence(fence);
   if (binding.version === 1) return undefined;
+  // Reference purpose has no N3/provider path, even with a supplied reader.
+  if (binding.version === 3) fail();
   if (!readyReader) fail();
   if (pending.has(unit)) fail();
   const origin = readHostedOrdinaryProcessOrigin(fence);
