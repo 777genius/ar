@@ -31,6 +31,7 @@ import {
   resolveConsumedOutputMaintenanceLedgerRoot,
 } from "../application/project-control/codex-goal-consumed-output-ledger-epoch";
 import { LocalConsumedOutputLedgerWriter } from "../../worker-local/consumed-output-ledger-local-adapter";
+import { localProjectControlEvidenceCustodySupported } from "../../worker-local/project-control-evidence-custody-local-adapter";
 import {
   acquireConsumedOutputLedgerMaintenanceLock,
   releaseConsumedOutputLedgerMaintenanceLock,
@@ -39,6 +40,18 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe("consumed-output ledger epoch migration", () => {
+  it.runIf(localProjectControlEvidenceCustodySupported)("R2 refuses native terminal publication through symlinked items", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "sr-ledger-items-TEST-")));
+    const ledgerRoot = join(root, "TEST-ledger"), outside = join(root, "TEST-outside-ledger");
+    await mkdir(ledgerRoot); await mkdir(outside); await symlink(outside, join(ledgerRoot, "items"));
+    try {
+      await expect(new LocalConsumedOutputLedgerWriter().record({ ledgerRoot, decision: {
+        schemaVersion: 1, jobId: "TEST-terminal", status: "archived", closedAt: "2026-10-06T13:00:00.000Z",
+        note: "TEST confinement", backup: { workspace: root, statusPath: join(root, "TEST-status.txt") },
+      } })).rejects.toThrow();
+      expect(await readdir(outside)).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it("accepts exact 377+57 quarantine debt and preserves 676 consumed infos", () => {
     expect(() => assertConsumedOutputLedgerEpochAdmissionTransition({
       plan: {
