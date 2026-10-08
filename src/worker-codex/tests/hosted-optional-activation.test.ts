@@ -158,23 +158,23 @@ describe("optional host activation with real records and projected Host principa
     const policy = await admitHostedTestEgress({ ...identity, sourceEnv });
     expect(policy.profileId).toBe("codex-full-internet-v1");
     expect(admitHostedReadonlyInputs({ ...identity, sourceEnv, providerEgressPolicy: policy })).toBeUndefined();
-    const launch = { config: { ...identity, taskId: identity.jobId, authRootDir: "/TEST/auth",
+    const launch = { config: { ...identity, taskId: identity.jobId, authRootDir: join(f.root, "auth"),
       promptPath: "/TEST/prompt", accounts: [{ name: "TEST-account" }], sourceEnv },
       cliCommand: ["/TEST/node", "/TEST/cli"], cwd: identity.workspacePath, logPath: "/TEST/log", tmuxSession: "foreign" };
     expect(isHostedGoalLaunch(launch)).toBe(true);
     expect(await routeHostedGoalLaunch(launch)).toBeUndefined();
     expect(codexGoalStatusInputFromLaunch(launch)).not.toHaveProperty("tmuxSession");
-    const options = buildCodexGoalExecutorOptions({ config: launch.config, stateRootDir: "/TEST/state", encryptionKey: new Uint8Array(32) });
+    const options = buildCodexGoalExecutorOptions({ config: launch.config, stateRootDir: join(f.root, "state"), encryptionKey: new Uint8Array(32) });
     expect(options.accounts[0]!.worker.sourceEnv).toMatchObject({ SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId });
     expect(f.spawn).not.toHaveBeenCalled();
   });
   it("preserves an unmarked native job's accepted project boundary and source environment", () => {
     const sourceEnv = { PATH: "/TEST/bin" };
-    const config = { ...identity, taskId: identity.jobId, authRootDir: "/TEST/auth",
+    const config = { ...identity, taskId: identity.jobId, authRootDir: join(f.root, "auth"),
       promptPath: "/TEST/prompt", accounts: [{ name: "TEST-account" }], sourceEnv,
       accessBoundary: AccessBoundary.IsolatedWorkspaceWrite,
       projectAccessScope: { projectId: "TEST-native", readRoots: [identity.workspacePath], isolatedWorkspaceRoot: identity.workspacePath } };
-    const options = buildCodexGoalExecutorOptions({ config, stateRootDir: "/TEST/state", encryptionKey: new Uint8Array(32) });
+    const options = buildCodexGoalExecutorOptions({ config, stateRootDir: join(f.root, "state"), encryptionKey: new Uint8Array(32) });
     expect(options.accounts[0]!.worker.sourceEnv).toBe(sourceEnv);
     expect(options.accounts[0]!.worker.enforceProjectReadBoundary).toBe(true);
     expect(options.accounts[0]!.worker.sourceEnv).not.toHaveProperty("SUBSCRIPTION_RUNTIME_SANDBOX_KIND");
