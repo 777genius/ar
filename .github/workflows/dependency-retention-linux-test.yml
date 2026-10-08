@@ -33,6 +33,15 @@ jobs:
       - run: npm run build
       - name: Typecheck handwritten qualification harness
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-test/tsconfig.json
+      - name: Typecheck directory OFD kernel contract
+        run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-test/tsconfig.directory-ofd.json
+      - name: Qualify inherited directory OFD on owned ext4 TEST scratch
+        timeout-minutes: 2
+        env:
+          TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          mkdir -p dependency-retention-evidence
+          node --experimental-strip-types scripts/dependency-retention-test/run-directory-ofd-ci.mts
       - name: Typecheck and emit inactive original issuer assertion helper
         run: node node_modules/typescript/bin/tsc -p scripts/dependency-retention-os-test/tsconfig.reference-enrollment-emit.json
       - name: Prepare fresh root-owned TEST artifact and toolchain
