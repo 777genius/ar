@@ -13,6 +13,7 @@ import { JobStorageCapabilityStatus as Capability, JobStorageHomeStateRequiremen
 import type { JobStorageGenerationAuthority, JobStorageSourceHandoffPort } from "../../../worker-core/job-storage/ports/job-storage-ports";
 import { JobStorageStoreFailure as Failure, LocalJobStorageSettlementStore as Store, settlementFenceName,
   settlementIntentName, settlementRecordName, type LocalJobStorageSettlementOptions } from "../index";
+import { withCompiledTestFixture } from "../../tests/compiled-test-fixture";
 
 const runFile = promisify(execFile), digest = "a".repeat(64);
 async function fixture(continuation = false) {
@@ -194,9 +195,11 @@ describe.skipIf(process.platform !== "linux")("persistent job storage settlement
     try {
       await f.store.createService(unsupportedHandoff).observeTerminal(f.identity, 0); await f.store.close();
       const helper = fileURLToPath(new URL("./fixtures/settlement-crash-process.ts", import.meta.url));
-      await expect(runFile(process.execPath, ["--experimental-strip-types", helper,
-        resolve("dist/store-local-file/job-storage-settlement/index.js"), JSON.stringify(f.options.controlRoot), JSON.stringify(f.receipt)],
-      { timeout: 10000 })).rejects.toMatchObject({ code: 23 });
+      await withCompiledTestFixture(helper, f.payload, async compiledHelper => {
+        await expect(runFile(process.execPath, [compiledHelper,
+          resolve("dist/store-local-file/job-storage-settlement/index.js"), JSON.stringify(f.options.controlRoot), JSON.stringify(f.receipt)],
+        { timeout: 10000 })).rejects.toMatchObject({ code: 23 });
+      });
       const retained = await readFile(join(f.control, settlementFenceName));
       for (let attempt = 0; attempt < 2; attempt++) await expect(Store.open(f.options)).rejects.toMatchObject({ reason: Failure.Busy });
       expect(await readFile(join(f.control, settlementFenceName))).toEqual(retained);
