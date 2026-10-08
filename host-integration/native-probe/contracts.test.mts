@@ -25,6 +25,13 @@ async function fixture(body: (root: string) => Promise<void>): Promise<void> {
   finally { await rm(root, { recursive: true, force: true }); }
 }
 function observedNumber(value: unknown): number { assert.ok(typeof value === "number" && Number.isSafeInteger(value)); return value; }
+function observedNanoseconds(value: unknown): bigint {
+  assert.ok(typeof value === "string", "native clock nanoseconds require exact decimal string transport");
+  assert.match(value, /^(?:0|[1-9][0-9]{0,18})$/);
+  const result = BigInt(value);
+  assert.ok(result <= 9223372036854775807n, "native clock nanoseconds exceed signed int64");
+  return result;
+}
 async function publication(mode: string, root: string, inspect: (facts: Record<string, unknown>, child: ChildProcessWithoutNullStreams) => Promise<string>): Promise<Record<string, unknown>> {
   const child = spawn(client!, [mode, root], { stdio: ["pipe", "pipe", "pipe"], signal: AbortSignal.timeout(5000) });
   let errors = ""; child.stderr.on("data", (chunk: Buffer) => { errors += chunk.toString(); });
@@ -67,10 +74,20 @@ test("actual synchronized filter covers existing and new libc threads", async ()
 // Red: a delayed observation creates a new receipt-time allowance. These are
 // actual retained nsfs descriptors and original CLOCK_MONOTONIC samples.
 test("common clock retains original issuance ends while observation delay is charged", async () => {
-  const facts = await native("clock"); const anchor = BigInt(observedNumber(facts.anchor));
-  assert.equal(BigInt(observedNumber(facts.preparationEnd)) - anchor, 120000000000n);
-  assert.equal(BigInt(observedNumber(facts.cleanupEnd)) - anchor, 180000000000n);
-  assert.ok(observedNumber(facts.elapsed) >= 15000000); assert.equal(facts.unchanged, true);
+  const facts = await native("clock"); const anchor = observedNanoseconds(facts.anchor);
+  assert.equal(observedNanoseconds(facts.preparationEnd) - anchor, 120000000000n);
+  assert.equal(observedNanoseconds(facts.cleanupEnd) - anchor, 180000000000n);
+  assert.ok(observedNanoseconds(facts.elapsed) >= 15000000n); assert.equal(facts.unchanged, true);
+});
+// Red: the native JSON serializer or consumer rounds through Number above 2^53,
+// or unsigned overflow becomes a valid native clock observation. Actual C DATA
+// crosses exec/stdout/JSON parsing; no kernel clock or native authority is mocked.
+test("native clock DATA preserves high integers and refuses signed overflow", async () => {
+  const facts = await native("clock-data-boundary");
+  assert.equal(observedNanoseconds(facts.anchor), 2n ** 53n + 1n);
+  assert.equal(observedNanoseconds(facts.preparationEnd), 2n ** 63n - 2n);
+  assert.equal(observedNanoseconds(facts.cleanupEnd), 2n ** 63n - 1n);
+  assert.throws(() => observedNanoseconds(facts.elapsed), /native clock nanoseconds exceed signed int64/);
 });
 // Red: canonical bytes differ, rename replaces an existing leaf, durability is
 // inferred from a pathname, or the native original inode is discarded on success.

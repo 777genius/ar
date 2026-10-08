@@ -137,10 +137,20 @@ static int publication_test(const char *mode, const char *root) {
   else { int retry = np_fragment_publish_v1(&publication, &gate); printf("{\"repeated\":%s,\"error\":%d}\n", retry == 0 ? "true" : "false", errno); }
   np_publication_release_v1(&publication); np_directory_release_v1(&stage); np_directory_release_v1(&final); np_clock_release_v1(&clock); return 0;
 }
+static void clock_data(uint64_t anchor, uint64_t preparation_end, uint64_t cleanup_end, uint64_t elapsed, bool unchanged) {
+  printf("{\"anchor\":\"%llu\",\"preparationEnd\":\"%llu\",\"cleanupEnd\":\"%llu\",\"elapsed\":\"%llu\",\"unchanged\":%s}\n", (unsigned long long)anchor, (unsigned long long)preparation_end, (unsigned long long)cleanup_end, (unsigned long long)elapsed, unchanged ? "true" : "false");
+}
+static int clock_data_boundary(void) {
+  /* Transport-only C fixture, sharing the real sample's serializer. No clock,
+   * namespace, owner or allowance is fabricated. Odd high integers expose a
+   * Number intermediate even on a low-uptime host; signed overflow must refuse. */
+  clock_data((UINT64_C(1) << 53) + 1, INT64_MAX - 1, INT64_MAX, UINT64_C(1) << 63, true);
+  return 0;
+}
 static int clock_test(void) {
   struct np_clock clock; require(np_clock_pin_v1(&clock) == 0, "retained clock namespaces"); uint64_t anchor = clock.anchor, before, after;
   require(np_clock_sample_v1(&clock, &before) == 0, "original high water"); usleep(20000); require(np_clock_sample_v1(&clock, &after) == 0, "charged delay");
-  printf("{\"anchor\":%llu,\"preparationEnd\":%llu,\"cleanupEnd\":%llu,\"elapsed\":%llu,\"unchanged\":%s}\n", (unsigned long long)anchor, (unsigned long long)clock.preparation_end, (unsigned long long)clock.cleanup_end, (unsigned long long)(after - before), clock.anchor == anchor ? "true" : "false"); np_clock_release_v1(&clock); return 0;
+  clock_data(anchor, clock.preparation_end, clock.cleanup_end, after - before, clock.anchor == anchor); np_clock_release_v1(&clock); return 0;
 }
 static int node_contract(const char *node, const char *script, const char *addon) {
   struct np_clock clock; require(np_clock_pin_v1(&clock) == 0, "Node original clock");
@@ -220,6 +230,7 @@ int main(int argc, char **argv) {
   if (!strcmp(argv[1], "manager-refusal")) return manager_refusal();
   if (!strcmp(argv[1], "nondumpable")) return nondumpable_association();
   if (!strcmp(argv[1], "clock")) return clock_test();
+  if (!strcmp(argv[1], "clock-data-boundary")) return clock_data_boundary();
   if (!strcmp(argv[1], "forgery")) return forgery_test();
   if (!strcmp(argv[1], "filter")) return filter_test();
   if (!strcmp(argv[1], "profile")) { printf("{\"refused\":%s}\n", np_helper_verify_v1() < 0 ? "true" : "false"); return 0; }
