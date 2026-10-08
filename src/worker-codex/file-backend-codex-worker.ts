@@ -44,6 +44,7 @@ import {
 } from "./file-backend-codex-runtime-factory";
 import { FileBackendCodexPrewarmer } from "./file-backend-codex-prewarm";
 import { FileBackendCodexSessionSeeder } from "./file-backend-codex-session-seeding";
+import { FileBackendCodexSessionBinding } from "./file-backend-codex-session-binding";
 
 import type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker-options";
 export type { FileBackendCodexWorkerOptions } from "./file-backend-codex-worker-options";
@@ -94,6 +95,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
 > {
   readonly workerId: string;
   private workerState: SubscriptionWorkerState = "created";
+  private disposing:Promise<void>|undefined;
   private readonly redactor: RedactorPort = new DefaultRedactor();
   private readonly runner: FileBackendCodexWorkerRuntimeParts["runner"];
   private readonly observability: ObservabilityPort;
@@ -106,6 +108,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   private readonly sessionSeeder: FileBackendCodexSessionSeeder;
   private readonly managedRuns: FileBackendCodexManagedRunCoordinator;
   private readonly prewarmer: FileBackendCodexPrewarmer;
+  private readonly sessionBinding: FileBackendCodexSessionBinding;
 
   constructor(private readonly options: FileBackendCodexWorkerOptions) {
     assertHostedDependencyExecutionWorkspace(options.workspacePath);
@@ -124,6 +127,9 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
     this.runner = runtimeParts.runner;
     this.clock = runtimeParts.clock;
     this.agentDriver = runtimeParts.agentDriver;
+    const managedDriver = this.agentDriver instanceof CodexJsonAgentDriver ? this.agentDriver : undefined;
+    this.sessionBinding = new FileBackendCodexSessionBinding(
+      managedDriver ? (runId) => managedDriver.hasManagedRunSession(runId) : undefined);
     this.sessionStore = runtimeParts.sessionStore;
     this.runtime = runtimeParts.runtime;
     this.ownedWorkspace = runtimeParts.ownedWorkspace;
@@ -153,6 +159,9 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
       onFailure: (failure) => this.recordFailure(failure),
       rememberQuotaGroup: (session) => this.rememberQuotaGroup(session),
       onAuthImported: () => this.capacityTracker.recordAuthImported(),
+      // Local invalidation suppresses writeback; the seeder independently binds
+      // publication to its source and fences concurrent runtime writers.
+      shouldExportAuth: () => !this.capacityTracker.sessionInvalid,
     });
     this.managedRuns = new FileBackendCodexManagedRunCoordinator({
       providerInstanceId: options.providerInstanceId,
@@ -166,9 +175,11 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
       clock: this.clock,
       recordFailure: (failure) => this.recordFailure(failure),
       recordSuccessfulRun: () => this.recordSuccessfulRun(),
-      exportAuthJsonFileQuietly: (context) =>
-        this.sessionSeeder.exportAuthJsonFileQuietly(context),
-      runRecoveryJob: async (job) => await this.run(job),
+      exportAuthJsonFileQuietly: (context,requireAcknowledgement) =>
+        this.sessionSeeder.exportAuthJsonFileQuietly(context,requireAcknowledgement),
+      // Recovery is part of the already admitted resume operation and keeps
+      // its binding reservation through failure handling and writeback.
+      runRecoveryJob: async (job) => await this.runWithSessionBinding(job, {}, false),
     });
     this.prewarmer = new FileBackendCodexPrewarmer({
       providerInstanceId: options.providerInstanceId,
@@ -183,6 +194,10 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
       exportAuthJsonFileQuietly: (context) =>
         this.sessionSeeder.exportAuthJsonFileQuietly(context),
       rememberQuotaGroup: (session) => this.rememberQuotaGroup(session),
+      onFailure: (error) => {
+        const failure = this.agentDriver.classifyRunFailure(error);
+        if (failure.code === "provider_session_invalid") this.recordFailure(failure);
+      },
     });
   }
 
@@ -208,16 +223,20 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   }
 
   async seedCodexAuthJsonFile(authJsonPath: string): Promise<void> {
-    await this.sessionSeeder.seedAuthJsonFile(authJsonPath);
+    await this.sessionBinding.reserve(() => this.sessionSeeder.seedAuthJsonFile(authJsonPath));
   }
 
   async seedCodexAuthJson(authJson: string): Promise<boolean> {
-    return await this.sessionSeeder.seedAuthJson(authJson);
+    return await this.sessionBinding.reserve(() => this.sessionSeeder.seedAuthJson(authJson));
   }
 
   async prewarm(): Promise<SubscriptionWorkerPrewarmResult> {
     assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
     this.assertStarted();
+    return await this.sessionBinding.reserve(() => this.prewarmWithSessionBinding());
+  }
+
+  private async prewarmWithSessionBinding(): Promise<SubscriptionWorkerPrewarmResult> {
     this.workerState = "prewarming";
     try {
       const result = await this.prewarmer.prewarm();
@@ -235,10 +254,21 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   ): Promise<FileBackendCodexWorkerResult> {
     assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
     this.assertStarted();
+    return await this.sessionBinding.reserve(() => this.runWithSessionBinding(job, options));
+  }
+
+  private async runWithSessionBinding(
+    job: FileBackendCodexWorkerJob,
+    options: SubscriptionWorkerRunOptions = {},
+    importSource = true,
+  ): Promise<FileBackendCodexWorkerResult> {
+    assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
+    this.assertStarted();
     assertProviderTaskSystemPrompt(job.systemPrompt, "job.systemPrompt");
-    await this.sessionSeeder.importAuthJsonFileIfChanged("run");
+    if (importSource) await this.sessionSeeder.importAuthJsonFileIfChanged("run");
     await this.rememberStoredQuotaGroup();
     const runId = job.runId ?? `local-${randomUUID()}`;
+    this.sessionBinding.trackManagedRun(runId);
     const abort = combineAbortSignals(job.abortSignal, options.abortSignal);
     const abortSignal = abort.signal;
     const startedAt = this.clock.monotonicMs();
@@ -302,6 +332,9 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
         }
 
         if (result.status === "completed") {
+          if (result.task.status === "waiting_for_input") {
+            this.sessionBinding.trackManagedRun(result.task.runId);
+          }
           return await this.managedRuns.taskResultToOutput(result.task, {
             kind: "run",
             runId,
@@ -338,7 +371,9 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   ): Promise<FileBackendCodexWorkerResult> {
     assertHostedDependencyExecutionWorkspace(this.options.workspacePath);
     this.assertStarted();
-    return await this.managedRuns.resume(input);
+    return await this.sessionBinding.reserveResume(input.runId,
+      () => this.sessionSeeder.importAuthJsonFileIfChanged("run"),
+      () => this.managedRuns.resume(input));
   }
 
   async health(): Promise<SubscriptionWorkerHealth> {
@@ -407,21 +442,24 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
 
   async dispose(): Promise<void> {
     if (this.workerState === "disposed") return;
+    if (this.disposing) return await this.disposing;
     this.workerState = "draining";
-    try {
-      if ("dispose" in this.agentDriver) {
-        await this.agentDriver.dispose();
-      }
-    } finally {
+    const pending = (async () => {
+      await this.runtime.retryPendingTaskFinalizations();
+      await this.managedRuns.cancelRetainedSessions();
+      if ("dispose" in this.agentDriver) await this.agentDriver.dispose();
       await this.ownedWorkspace?.dispose();
       this.workerState = "disposed";
-    }
+    })();
+    this.disposing = pending;
+    try { await pending; } finally { if (this.disposing === pending) this.disposing = undefined; }
   }
 
   capacity(): WorkerCapacitySnapshot {
     return this.capacityTracker.snapshot({
       workerState: this.workerState,
-      authSourceChanged: this.sessionSeeder.authJsonFileChanged(),
+      authSourceChanged: !this.sessionBinding.isInUse() &&
+        this.sessionSeeder.authJsonFileChanged(),
     });
   }
 
@@ -430,7 +468,25 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   }
 
   private recordFailure(failure: ProviderFailure): void {
+    if (failure.code === "provider_session_invalid") {
+      this.sessionSeeder.rememberBoundSeedQuotaGroup();
+    }
     this.capacityTracker.recordFailure(failure);
+    if (failure.code === "provider_session_invalid") {
+      const invalidSeed = this.capacityTracker.snapshot({
+        workerState: this.workerState, authSourceChanged: false,
+      });
+      this.options.onSessionInvalid?.(invalidSeed);
+      // A cached refresh can rotate the token while the login source stays
+      // unchanged. Fence both that actual session and its source lineage.
+      this.sessionSeeder.rememberBoundSourceQuotaGroup();
+      const invalidSource = this.capacityTracker.snapshot({
+        workerState: this.workerState, authSourceChanged: false,
+      });
+      if (invalidSource.details?.capacitySessionId !== invalidSeed.details?.capacitySessionId) {
+        this.options.onSessionInvalid?.(invalidSource);
+      }
+    }
   }
 
   private recordBlocked(reason: string): void {
@@ -452,6 +508,7 @@ export class FileBackendCodexWorker implements CapacityAwareSubscriptionWorker<
   }
 
   private assertStarted(): void {
+    if (this.workerState === "draining") throw new SubscriptionWorkerError("subscription_worker_disposed","Codex worker is draining.");
     if (this.workerState === "disposed") {
       throw new SubscriptionWorkerError(
         "subscription_worker_disposed",
