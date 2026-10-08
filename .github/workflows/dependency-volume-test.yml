@@ -1,0 +1,48 @@
+name: Retained dependency volume TEST qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/dependency-volume-test.yml'
+      - 'src/worker-local/dependency-environment/retained-dependency-volume.ts'
+      - 'src/worker-local/dependency-environment/tests/retained-dependency-volume.test.ts'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+jobs:
+  owned-volume:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - run: npm run build:packages
+      - name: Qualify volume observations only in a fresh private TEST namespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          volume_test_root=$(mktemp -d /tmp/sr-volume-ci-TEST-XXXXXX)
+          trap 'sudo -n /bin/rm -rf --one-file-system -- "$volume_test_root"' EXIT
+          # No Git metadata, credentials or real projects enter the TEST copy.
+          cp -a src packages node_modules package.json vitest.config.ts tsconfig.json "$volume_test_root/"
+          mkdir "$volume_test_root/home" "$volume_test_root/temp"
+          sudo -n chown -R 0:0 "$volume_test_root"
+          volume_test_node=$(command -v node)
+          cd "$volume_test_root"
+          sudo -n /usr/bin/env -i \
+            PATH=/usr/bin:/bin HOME="$volume_test_root/home" \
+            TMPDIR="$volume_test_root/temp" XDG_CONFIG_HOME="$volume_test_root/home" \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            SUBSCRIPTION_RUNTIME_TEST_MOUNT_NAMESPACE=1 \
+            /usr/bin/unshare --user --map-root-user --mount --propagation private \
+            "$volume_test_node" node_modules/vitest/vitest.mjs run \
+            src/worker-local/dependency-environment/tests/retained-dependency-volume.test.ts \
+            --maxWorkers=1 --no-cache --configLoader runner
