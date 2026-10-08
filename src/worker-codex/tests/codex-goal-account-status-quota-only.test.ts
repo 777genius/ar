@@ -181,12 +181,14 @@ describe.each(tools)("%s quota-only live status", (tool) => {
       rateLimitReachedType: "five_hour_limit",
     } } }, async ({ status, store, resetAt }) => {
       const observedAt = new Date(Date.now() + 60_000);
+      store.clear({ accountId: "account-a" });
       store.observe({ accountId: "account-a", observedAt, capacity: {
         availability: "quota_exhausted", reason: "quota_limited", cooldownUntil: resetAt,
         lastLimitSignalAt: observedAt, details: { capacitySource: "codex_app_server_live_quota" },
       } });
       const now = new Date();
       const before = store.readState({ accountId: "account-a", now });
+      expect(before?.capacity.lastLimitSignalAt).toEqual(observedAt);
       expect(await status()).toMatchObject({ ok: false, available: 0,
         slots: [{ availability: "limited", schedulerEligible: false,
           limitResetAt: resetAt.toISOString(), capacityCooldownUntil: resetAt.toISOString() }],
