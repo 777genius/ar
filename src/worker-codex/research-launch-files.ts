@@ -16,8 +16,31 @@ export type ResearchDenialObservation = "artifact-deadline" | "file-deadline" | 
 export function isResearchDenialObservation(value: unknown): value is ResearchDenialObservation {
   return value === "artifact-deadline" || value === "file-deadline" || value === "host-command-timeout" || value === "host-command-failed";
 }
-export function researchInvalid(observation?: ResearchDenialObservation): never {
-  throw new Error("hosted_research_launch_denied", { cause: observation });
+export enum ResearchHostCommandOperation {
+  SystemctlShow = "systemctl-show", SystemctlListJobs = "systemctl-list-jobs", SystemdRun = "unit-submit", Unknown = "unknown",
+}
+export enum ResearchHostCommandUnitRole { Runtime = "runtime", Provider = "provider", Unknown = "unknown" }
+export type ResearchHostCommandFailure = Readonly<{
+  operation: ResearchHostCommandOperation; unitRole: ResearchHostCommandUnitRole; elapsedMs: number;
+}>;
+const hostCommandFailures = new WeakMap<object, ResearchHostCommandFailure>();
+export function researchHostCommandFailure(error: unknown): ResearchHostCommandFailure | undefined {
+  return error !== null && typeof error === "object" ? hostCommandFailures.get(error) : undefined;
+}
+export function copyResearchHostCommandFailure(original: unknown, replacement: Error): void {
+  const failure = researchHostCommandFailure(original);
+  if (failure && !hostCommandFailures.has(replacement)) hostCommandFailures.set(replacement, failure);
+}
+export function researchInvalid(observation?: ResearchDenialObservation, operation?: ResearchHostCommandOperation,
+  unitRole?: ResearchHostCommandUnitRole, elapsedMs?: number): never {
+  const error = new Error("hosted_research_launch_denied", { cause: observation });
+  try {
+    if (operation !== undefined && Object.values(ResearchHostCommandOperation).includes(operation) &&
+        unitRole !== undefined && Object.values(ResearchHostCommandUnitRole).includes(unitRole) &&
+        elapsedMs !== undefined && Number.isFinite(elapsedMs)) hostCommandFailures.set(error,
+      Object.freeze({ operation, unitRole, elapsedMs: Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, elapsedMs)) }));
+  } catch { /* Diagnostic failure cannot replace the original refusal. */ }
+  throw error;
 }
 export function researchName(jobId: string): string { return researchHash(jobId); }
 export function researchPath(value: unknown): string {
