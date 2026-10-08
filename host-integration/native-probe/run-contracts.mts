@@ -83,9 +83,16 @@ try {
     "// Generated from src/provider-codex/app-server/adapters/hosted-host-policy.ts.\n" +
     (await readFile(join(build, "src/provider-codex/app-server/adapters/hosted-host-policy.js"), "utf8"))
       .replace(/^\/\/# sourceMappingURL=.*$/m, ""));
-  for (const name of ["hosted-native-probe/ingress.js", "hosted-native-probe/protocol.js", "worker-core/hosted-custody/domain/native-probe.js", "core/scoped-retained-resource-contract.js", "core/scoped-termination-contract.js"]) {
+  for (const name of ["hosted-native-probe/ingress.js", "hosted-native-probe/protocol.js", "hosted-native-probe/original-owner-client.js", "hosted-native-probe/original-owner-adapter.js", "worker-core/hosted-custody/ports/native-probe.js", "worker-core/hosted-custody/application/native-probe.js", "worker-core/hosted-custody/domain/native-probe.js", "core/scoped-retained-resource-contract.js", "core/scoped-termination-contract.js"]) {
     const destination = join(rawDirectory, "native-probe", name); await mkdir(resolve(destination, ".."), { recursive: true }); await copyFile(join(build, "src", name), destination);
   }
+  // This separate emitted TEST closure binds the actual C client to our
+  // disposable socket. The production client constant/source stays fixed.
+  const endpointClient = join(rawDirectory, "native-probe/hosted-native-probe/original-owner-client.js");
+  const emittedClient = await readFile(endpointClient,"utf8");
+  const fixedClient = '"/opt/subscription-runtime/native-probe/native-root-client"';
+  if(!emittedClient.includes(fixedClient))throw new Error("missing fixed emitted DATA client");
+  await writeFile(endpointClient,emittedClient.replace(fixedClient,JSON.stringify(ipcClient)));
   await run(process.execPath, ["--test", join(build, "host-integration/native-probe/ingress-client-contracts.test.mjs")], { NP_DATA_CLIENT: dataClient, NP_DATA_CODEC: dataCodec, NP_DATA_IPC: ipcFixture });
   const addon = join(temporary, "node-contract.node");
   await run("/usr/bin/cc", ["-std=c17", "-Wall", "-Wextra", "-Werror", "-Wpedantic", "-pthread", "-shared", "-fPIC", join(native, "helper-profile.c"), join(native, "node-contract-addon.c"), "-o", addon]);
@@ -101,6 +108,27 @@ try {
   await run("/usr/bin/cc", [...strictC, "-shared", "-fPIC", ...ownerSources, join(native, "original-owner-addon.c"), "-o", ownerAddon]);
   const refusalFixture = join(temporary, "original-owner-refusal-fixture");
   await run("/usr/bin/cc", [...strictC, ...ownerSources, join(native, "original-owner-entry.c"), "-DNP_OWNER_REFUSAL_FIXTURE", `-DNP_OWNER_NODE=${JSON.stringify(ownerNode)}`, `-DNP_OWNER_TEST_SCRIPT=${JSON.stringify(join(build, "host-integration/native-probe/original-owner-contracts.test.mjs"))}`, `-DNP_OWNER_ADDON=${JSON.stringify(ownerAddon)}`, "-o", refusalFixture]);
+  const producer = join(temporary,"root-producer-entry"), associatedAddon = join(temporary,"original-owner-associated.node"), gateFixture = join(temporary,"root-origin-gate-test");
+  const producerSources = ["clock.c","channel.c","helper-profile.c","publication.c","original-owner.c","native-root-control.c","root-producer-native.c","root-managed-launch.c"].map(file=>join(native,file));
+  const associated = [...strictC,"-DNP_ASSOCIATED_ORIGIN_V2"];
+  await run("/usr/bin/cc",[...associated,...producerSources,join(native,"root-producer-entry.c"),"-Wl,-l:libsystemd.so.0","-o",producer]);
+  await run("/usr/bin/cc",[...associated,"-shared","-fPIC",...producerSources,join(native,"original-owner-addon.c"),"-Wl,-l:libsystemd.so.0","-o",associatedAddon]);
+  await run("/usr/bin/cc",[...associated,...producerSources,join(native,"root-origin-gate-test.c"),"-Wl,-l:libsystemd.so.0","-o",gateFixture]);
+  await run(process.execPath,["--test",join(build,"host-integration/native-probe/root-producer-contracts.test.mjs")],{NP_ROOT_PRODUCER_ENTRY:producer,NP_ROOT_ORIGIN_GATE:gateFixture,TMPDIR:temporary});
+  // Retain actual reviewed Source candidates for the later separate Root
+  // installation gate. This does not create an image, permit or Origin.
+  const candidate = join(evidence,`${attempt}-root-producer-source-candidate`);
+  await mkdir(candidate,{mode:0o700});
+  for(const [from,name] of [[producer,"root-producer-entry"],[associatedAddon,"original-owner-associated.node"],[dataClient,"native-root-client"],[ownerScript,"original-owner-helper.mjs"]])await copyFile(from!,join(candidate,name!));
+  const admin = join(candidate,"admin");await mkdir(admin,{recursive:true});
+  // Preserve the compiler's import layout; each actual emitted leaf is in the
+  // retained candidate inventory and the checked source input graph.
+  async function copyTree(from:string,to:string):Promise<void>{await mkdir(to,{recursive:true});for(const name of await readdir(from)){const path=join(from,name),s=await lstat(path);if(s.isDirectory())await copyTree(path,join(to,name));else if(s.isFile())await copyFile(path,join(to,name));else throw new Error("nonregular emitted admin input");}}
+  await copyTree(join(build,"src"),join(admin,"src"));
+  await mkdir(join(admin,"host-integration/native-probe"),{recursive:true});
+  for(const name of ["root-origin-operator.mjs","install-root-producer.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(admin,"host-integration/native-probe",name));
+  await copyFile(join(build,"package.json"),join(admin,"package.json"));
+  await writeFile(join(candidate,"source-artifacts.json"),JSON.stringify({kind:"SOURCE_CANDIDATE_ONLY",authorityIssued:false,physicalQualified:false,inputs,artifacts:await inventory(candidate)},null,2)+"\n",{flag:"wx"});
   ownerFixture = process.env.SR_NATIVE_PROBE_ORIGINAL_OWNER_FIXTURE === "65532-seal-admitted";
   if (ownerFixture) {
     if (process.geteuid?.() !== 0) throw new Error("admitted original owner fixture lacks trusted initial privilege");

@@ -12,10 +12,14 @@ import { hostedDependencyOwnerRoot } from "../provider-codex/app-server/adapters
 import { readHostedDependencyCommittedHistory, HostedDependencyHistoryStatus } from "./hosted-dependency-committed-history";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
 import { isDependencyConsumerOwner, type DependencyOwnerRecord } from "../core/dependency-environment/dependency-owner";
-import { DependencyReceiptState, sameDependencyTree, sameDependencyWorkspace, type DependencyReceipt } from "../worker-core/dependency-environment/domain/dependency-receipt";
+import { DependencyInstallProofKind, DependencyReceiptState, sameDependencyTree, sameDependencyWorkspace, type DependencyReceipt } from "../worker-core/dependency-environment/domain/dependency-receipt";
 import { DependencyTreeObservationStatus, type DependencyCapturedTreeObservation } from "../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import { DependencyRetentionFactState, DependencyRetentionHold, DependencyRetentionPressure, selectDependencyRetentionReport,
   type DependencyRetentionCandidateFact } from "../worker-core/dependency-environment/domain/dependency-retention-policy";
+import { openHostedDependencyReadySourceLinks } from "./hosted-dependency-ready-source-links";
+import { assertHostedDependencyLegacyComparedReady } from "./hosted-dependency-legacy-comparison-record";
+import { closeDependencySourceLinkSession, readDependencySourceLinkSession, dependencyComparedSourceLinkProof,
+  capturedDependencyLegacyLocalSourceFields, type DependencySourceLinkSession } from "../worker-local/dependency-environment/dependency-source-binding";
 import { observeDependencyTree } from "../worker-local/dependency-environment/observe-dependency-tree";
 import { RetainedDependencyVolume, DependencyVolumeStatus, deduplicateDependencyPhysicalTrees,
   type DependencyPhysicalTreeObservation, type DependencyVolumeObservation } from "../worker-local/dependency-environment/retained-dependency-volume";
@@ -40,7 +44,7 @@ type Frame = { readonly authority: Authority; readonly owner: DependencyOwnerRec
   readonly policy: HostedRetentionPolicyObservation; readonly revision: string; readonly costMs: number };
 type Captured = { readonly frame: Frame; readonly observer: RetainedDependencyVolume; readonly tree: DependencyPhysicalTreeObservation;
   inputs?: HostedDependencyKeyInputs; scan?: Extract<DependencyCapturedTreeObservation, { status: DependencyTreeObservationStatus.Complete }>;
-  mutated?: boolean; costMs: number; closed?: boolean };
+  sourceSession?: DependencySourceLinkSession; mutated?: boolean; costMs: number; closed?: boolean };
 type VolumeReport = Readonly<{ volume: DependencyVolumeObservation["volume"]; diagnosticAllocatedBytes: string;
   candidates: readonly DependencyRetentionCandidateFact[]; policy: ReturnType<typeof selectDependencyRetentionReport> }>;
 export type HostedDependencyRetentionFacts =
@@ -119,6 +123,7 @@ export async function collectHostedDependencyRetentionFacts(jobId?: string): Pro
     let failed = false; for (const item of retained) {
       if (item.closed) continue;
       const closing = performance.now();
+      try { if (item.sourceSession) closeDependencySourceLinkSession(item.sourceSession); } catch { failed = true; }
       try { item.observer.close(); } catch { failed = true; }
       finally { item.closed = true; item.costMs += performance.now() - closing; }
     }
@@ -164,12 +169,23 @@ export async function collectHostedDependencyRetentionFacts(jobId?: string): Pro
     for (const item of retained) {
       bounded(); const scanStarted = performance.now(), ready = item.frame.receipt as Ready, binding = item.frame.authority.binding;
       const inputs = await readHostedDependencyKeyInputs(binding);
-      if (inputs.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1) fail(HostedRetentionDiagnosticReason.UnsupportedProfile);
+      const compared = ready.provenance.kind === DependencyInstallProofKind.LegacyCompared
+        ? assertHostedDependencyLegacyComparedReady({ ...ready, provenance: ready.provenance }) : undefined;
+      if (compared?.version === 2) {
+        if (inputs.recipe !== HostedDependencyInstallerRecipe.NpmLocalNoLifecycleV1) fail(HostedRetentionDiagnosticReason.UnsupportedProfile);
+        const session = openHostedDependencyReadySourceLinks(ready);
+        if (!session) fail(HostedRetentionDiagnosticReason.HistoryUnresolved);
+        item.sourceSession = session;
+        const mapping = dependencyComparedSourceLinkProof(session).record, fields = capturedDependencyLegacyLocalSourceFields(inputs.capture);
+        if (mapping.closureDigest !== fields.closureDigest || !equal(mapping.sourceLinks, fields.sourceLinks) ||
+            !equal(mapping.directories, fields.directories) || !equal(mapping.ancestors, fields.ancestors)) fail(HostedRetentionDiagnosticReason.Changed);
+      } else if (inputs.recipe !== HostedDependencyInstallerRecipe.NpmRegistryNoScriptsV1) fail(HostedRetentionDiagnosticReason.UnsupportedProfile);
       if (inputs.key.installKey !== ready.installKey) fail(HostedRetentionDiagnosticReason.PreservationRequired);
       if (!placement) fail(HostedRetentionDiagnosticReason.HistoryUnresolved);
       const baseline = await placement.get(ready.manifestDigest);
       const scan = await observeDependencyTree({ workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
-        expectedWorkspace: binding.workspace, expectedTree: ready.tree, limits: hostedDependencyObservationLimits });
+        expectedWorkspace: binding.workspace, expectedTree: ready.tree, limits: hostedDependencyObservationLimits,
+        ...(item.sourceSession ? { sourceLinkSession: item.sourceSession } : {}) });
       if (scan.status !== DependencyTreeObservationStatus.Complete) fail(HostedRetentionDiagnosticReason.Changed);
       if (!sameDependencyTree(scan.tree, item.tree.identity) || scan.mountId !== item.tree.volume.mountId) fail(HostedRetentionDiagnosticReason.Changed);
       const after = await readHostedDependencyKeyInputs(binding);
@@ -194,6 +210,7 @@ export async function collectHostedDependencyRetentionFacts(jobId?: string): Pro
         const validationStarted = performance.now();
         if (!item.inputs || !item.scan) fail(HostedRetentionDiagnosticReason.Unmeasured);
         assertHostedDependencyKeyInputsCurrent(item.frame.authority.binding, item.inputs);
+        if (item.sourceSession) readDependencySourceLinkSession(item.sourceSession, item.frame.authority.binding.workspace, "node_modules");
         const fresh = physical(item.observer), sample = measured(item.observer);
         if (!equal(fresh, item.tree) || !sameDependencyTree(item.scan.tree, fresh.identity)) fail(HostedRetentionDiagnosticReason.Changed);
         const cohort: { samples: DependencyVolumeObservation[]; items: Captured[] } = cohorts.get(sample.volume.volumeId) ?? { samples: [], items: [] };
