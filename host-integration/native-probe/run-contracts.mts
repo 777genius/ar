@@ -126,8 +126,36 @@ try {
   async function copyTree(from:string,to:string):Promise<void>{await mkdir(to,{recursive:true});for(const name of await readdir(from)){const path=join(from,name),s=await lstat(path);if(s.isDirectory())await copyTree(path,join(to,name));else if(s.isFile())await copyFile(path,join(to,name));else throw new Error("nonregular emitted admin input");}}
   await copyTree(join(build,"src"),join(admin,"src"));
   await mkdir(join(admin,"host-integration/native-probe"),{recursive:true});
-  for(const name of ["root-origin-operator.mjs","install-root-producer.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(admin,"host-integration/native-probe",name));
+  for(const name of ["root-origin-operator.mjs","install-root-producer.mjs","assemble-newtest.mjs","newtest-bootstrap.mjs","newtest-guest.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(admin,"host-integration/native-probe",name));
   await copyFile(join(build,"package.json"),join(admin,"package.json"));
+  // Retain an independently executable fixed NEWTEST v1 closure. These
+  // binaries are never run by Source CI and cannot select production paths.
+  const physical = join(candidate,"physical");await mkdir(physical,{mode:0o755});
+  const fixedPhysical = "/opt/native-newtest/artifact/physical";
+  const fixedScript = fixedPhysical + "/host-integration/native-probe/original-owner-helper.mjs";
+  const fixedAddon = fixedPhysical + "/original-owner.node";
+  const physicalPins = [`-DNP_OWNER_NODE=${JSON.stringify("/opt/subscription-runtime/runtime/node")}`,`-DNP_OWNER_SCRIPT=${JSON.stringify(fixedScript)}`,`-DNP_OWNER_ADDON=${JSON.stringify(fixedAddon)}`];
+  await run("/usr/bin/cc",[...strictC,...ownerSources,join(native,"original-owner-entry.c"),...physicalPins,"-o",join(physical,"original-owner")]);
+  await run("/usr/bin/cc",[...strictC,"-shared","-fPIC",...ownerSources,join(native,"original-owner-addon.c"),"-o",join(physical,"original-owner.node")]);
+  await run("/usr/bin/cc",[...strictC,...ownerSources,join(native,"original-owner-entry.c"),"-DNP_OWNER_REFUSAL_FIXTURE",...physicalPins,`-DNP_OWNER_TEST_SCRIPT=${JSON.stringify(fixedPhysical+"/host-integration/native-probe/original-owner-contracts.test.mjs")}`,"-o",join(physical,"original-owner-refusal-fixture")]);
+  await chmod(join(physical,"original-owner"),0o755);await chmod(join(physical,"original-owner.node"),0o644);await chmod(join(physical,"original-owner-refusal-fixture"),0o755);
+  await copyTree(join(build,"src"),join(physical,"src"));
+  await mkdir(join(physical,"host-integration/native-probe"),{recursive:true,mode:0o755});
+  for(const name of ["original-owner-helper.mjs","original-owner-contracts.test.mjs","root-producer-contracts.test.mjs","install-root-producer.mjs","root-origin-operator.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(physical,"host-integration/native-probe",name));
+  await copyFile(join(build,"package.json"),join(physical,"package.json"));
+  // Fixed installer inputs and emitted ingress closure retain normal layout.
+  const source = join(candidate,"runtime-source");await mkdir(source,{mode:0o755});
+  for(const [directory,names] of [["host-jobs",["install","contract.mjs","manager.mjs","read-request.mjs","endpoint.mjs","storage-policy.mjs","ssh-endpoint","ssh-ingress-shell"]],["managed-launcher",["install","install-policy","install-policy.mjs","launch.mjs","profiles.mjs","payload-guard.mjs"]],["native-probe",["installed-data-package.json"]]] as const){
+    const target=join(source,"host-integration",directory);await mkdir(target,{recursive:true,mode:0o755});
+    for(const name of names)await copyFile(join(workspace,"host-integration",directory,name),join(target,name));
+  }
+  await copyFile(join(managedDirectory,"hosted-host-policy.mjs"),join(source,"host-integration/managed-launcher/hosted-host-policy.mjs"));
+  await copyTree(join(build,"src"),join(source,"dist"));
+  // Fixture JS is readable by the actual sealed/helper and managed identities;
+  // actual content remains separately hashed in the candidate census.
+  async function readableTree(path:string):Promise<void>{const metadata=await lstat(path);if(metadata.isDirectory()){await chmod(path,0o755);for(const name of await readdir(path))await readableTree(join(path,name));}else if(metadata.isFile())await chmod(path,(metadata.mode&0o111)?0o755:0o644);else throw new Error("foreign physical fixture input");}
+  await readableTree(physical);await readableTree(source);
+  await run(process.execPath,["--test",join(build,"host-integration/native-probe/newtest-contracts.test.mjs")]);
   await writeFile(join(candidate,"source-artifacts.json"),JSON.stringify({kind:"SOURCE_CANDIDATE_ONLY",authorityIssued:false,physicalQualified:false,inputs,artifacts:await inventory(candidate)},null,2)+"\n",{flag:"wx"});
   ownerFixture = process.env.SR_NATIVE_PROBE_ORIGINAL_OWNER_FIXTURE === "65532-seal-admitted";
   if (ownerFixture) {
