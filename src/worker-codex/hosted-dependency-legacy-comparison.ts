@@ -18,7 +18,7 @@ import { claimHostedDependencyComparisonMaintenance,
   assertHostedDependencyComparisonMaintenanceUnderFence, assertHostedDependencyComparisonQuiescent } from "./hosted-dependency-transactions";
 import { prepareHostedLegacyReference, assertHostedLegacyReferenceSourcesCurrent,
   closeHostedLegacyReferencePreparation, openHostedLegacyReferenceSourceLinks } from "./hosted-dependency-legacy-reference";
-import { observeDependencyTree, captureDependencyPhysicalTreeExposure, assertDependencySourceExposureCurrent,
+import { assertDependencyLocalRegistrySelectionAbsent, observeDependencyTree, captureDependencyPhysicalTreeExposure, assertDependencySourceExposureCurrent,
   closeDependencySourceExposure, type DependencySourceExposure } from "../worker-local/dependency-environment/observe-dependency-tree";
 import { openHostedDependencyManifestPlacement } from "./hosted-dependency-manifest-placement";
 import { DependencyInstallProfile } from "../worker-core/dependency-environment/domain/dependency-install-key";
@@ -67,6 +67,8 @@ export async function compareHostedLegacyDependency(input: { readonly candidateJ
   assertDependencySourceExposureCurrent(candidateBaseline);
   if (originalInputs.recipe===Recipe.NpmLocalNoLifecycleV1) candidateSession=openCapturedDependencySourceLinks(originalInputs.capture);
   assertDependencySourceExposureCurrent(candidateBaseline);
+  const candidateAbsent=()=>{if (candidateSession) assertDependencyLocalRegistrySelectionAbsent(candidateBaseline,candidateSession,selected.candidate.binding.workspace,originalTree);};
+  candidateAbsent();
   const initial=await observeDependencyTree({workspacePath:selected.candidate.binding.workspace.canonicalPath,treeName:"node_modules",
     expectedWorkspace:selected.candidate.binding.workspace,expectedTree:originalTree,...(candidateSession?{sourceLinkSession:candidateSession}:{}),limits});
   assertDependencySourceExposureCurrent(candidateBaseline);assertHostedDependencyKeyInputsCurrent(selected.candidate.binding,originalInputs);
@@ -77,7 +79,7 @@ export async function compareHostedLegacyDependency(input: { readonly candidateJ
     return withHostedActivationFence(fence => {
       assertHostedDependencyComparisonMaintenanceUnderFence(fence,input.candidateJobId,cm);assertHostedDependencyComparisonMaintenanceUnderFence(fence,input.referenceJobId,staging);
       assertHostedDependencyKeyInputsCurrent(selected.candidate.binding,originalInputs);
-      assertDependencySourceExposureCurrent(candidateBaseline);
+      assertDependencySourceExposureCurrent(candidateBaseline);candidateAbsent();
       if (!encode(readHostedDependencyReceipt(selected.candidate.binding)).equals(encode(selected.prior))) fail();
       const store=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
       try {releaseDependencyMaintenance(store,selected.candidate.binding.workspace,cm);releaseDependencyMaintenance(store,selected.reference.binding.workspace,staging);} finally {store.close();}
@@ -136,7 +138,9 @@ export async function compareHostedLegacyDependency(input: { readonly candidateJ
   if (capturedReference.status!==Observed.Complete) return {outcome:HostedLegacyComparisonOutcome.Incomplete,reason:capturedReference.reason,held:true};
   const currentReferenceBaseline=capturedReference.exposure;
   if (originalInputs.recipe===Recipe.NpmLocalNoLifecycleV1) referenceSession=openHostedLegacyReferenceSourceLinks(op);
-  const current=(fence?:Parameters<typeof assertHostedLegacyReferenceSourcesCurrent>[0])=>{assertDependencySourceExposureCurrent(candidateBaseline);assertDependencySourceExposureCurrent(currentReferenceBaseline);
+  const bothAbsent=()=>{candidateAbsent();if (referenceSession) assertDependencyLocalRegistrySelectionAbsent(currentReferenceBaseline,referenceSession,referenceBinding.workspace,result.reference.tree);};
+  bothAbsent();
+  const current=(fence?:Parameters<typeof assertHostedLegacyReferenceSourcesCurrent>[0])=>{bothAbsent();assertDependencySourceExposureCurrent(candidateBaseline);assertDependencySourceExposureCurrent(currentReferenceBaseline);
     assertHostedDependencyKeyInputsCurrent(selected.candidate.binding,originalInputs);if (fence) assertHostedLegacyReferenceSourcesCurrent(fence,op);else withHostedActivationFence(fence=>assertHostedLegacyReferenceSourcesCurrent(fence,op));};
   assertDependencySourceExposureCurrent(candidateBaseline);assertDependencySourceExposureCurrent(currentReferenceBaseline);
   const candidate=await observeDependencyTree({workspacePath:selected.candidate.binding.workspace.canonicalPath,treeName:"node_modules",
@@ -163,7 +167,7 @@ export async function compareHostedLegacyDependency(input: { readonly candidateJ
     return withHostedActivationFence(fence => {
       assertHostedDependencyComparisonMaintenanceUnderFence(fence,input.candidateJobId,cm);assertHostedDependencyComparisonMaintenanceUnderFence(fence,input.referenceJobId,rm);
       originalCurrent();assertHostedLegacyReferenceSourcesCurrent(fence,op);
-      assertDependencySourceExposureCurrent(candidateBaseline);assertDependencySourceExposureCurrent(currentReferenceBaseline);placement.assertCurrent(fence);
+      assertDependencySourceExposureCurrent(candidateBaseline);assertDependencySourceExposureCurrent(currentReferenceBaseline);bothAbsent();placement.assertCurrent(fence);
       if (!encode(readHostedDependencyReceipt(selected.candidate.binding)).equals(encode(unverified)) ||
           !encode(readHostedDependencyCommittedUnverified(selected.candidate.binding,unverified.revision)).equals(encode(original))) fail();
       const currentReference=readHostedDependencyReceipt(referenceBinding);
@@ -209,7 +213,7 @@ export async function compareHostedLegacyDependency(input: { readonly candidateJ
       const ready:DependencyLegacyComparedReady={version:1,revision:unverified.revision+1,state:State.Ready,...proofBinding,
         treeMeasurement:candidate.measurement,provenance:{...proofBinding,kind:Proof.LegacyCompared,comparisonEvidenceId:op,referenceInstallationId:evidence.referenceInstallationId}};
       originalCurrent();assertHostedLegacyReferenceSourcesCurrent(fence,op);
-      assertDependencySourceExposureCurrent(candidateBaseline);assertDependencySourceExposureCurrent(currentReferenceBaseline);placement.assertCurrent(fence);
+      assertDependencySourceExposureCurrent(candidateBaseline);assertDependencySourceExposureCurrent(currentReferenceBaseline);bothAbsent();placement.assertCurrent(fence);
       publishHostedDependencyReceipt(selected.candidate.binding,unverified.revision,ready);
       const committed=readHostedDependencyReceipt(selected.candidate.binding);if (!encode(committed).equals(encode(ready))) fail();
       assertHostedDependencyLegacyComparedReady(ready);current(fence);
