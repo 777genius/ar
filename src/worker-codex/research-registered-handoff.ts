@@ -3,7 +3,7 @@ import { lstatSync, mkdirSync } from "node:fs";
 import { loadJobLaunch, loadProjectControlController } from "./codex-goal-mcp-project-control-deps";
 import { readAuthorizedProjectPreStartLaunchReceipt, readCurrentAuthorizedProjectPreStartLaunchReceipt } from "./application/project-control/codex-goal-project-pre-start-launch-authorization";
 import { AccessBoundary, createAccessPolicyService } from "@vioxen/subscription-runtime/worker-core";
-import { parseResearchOperatorRequest, researchHashRequest, type ResearchOperatorRequest, type ResearchRegisteredHandoff } from "./research-launch-contract";
+import { parseResearchOperatorRequest, researchHashRequest, type ResearchOperatorRequest, type ResearchRegisteredHandoff, type ResearchRegisteredExecution } from "./research-launch-contract";
 import { assertResearchInitialRoot } from "./research-launch-host";
 import { researchCustody, researchHash, researchId, researchInvalid, researchPath, researchRead, researchRecord } from "./research-launch-files";
 import { assertResearchDurableDirectory, researchDurableDirectory, sameResearchDurableBacking } from "./research-durable-handoff-directory";
@@ -13,6 +13,9 @@ import { withCurrentControllerScopeActivity } from "./application/project-contro
 import { projectControlWorkspaceLocks, withValidatedProjectWorkspaceLock } from "./codex-goal-project-workspace-lock";
 import { withCodexGoalRegistryMutation } from "./codex-goal-job-manifest-revision";
 import { installedResearchRuntimeDirectory } from "./research-launch-admission";
+import type { CodexGoalLaunchInput } from "./codex-goal-ops";
+import { assertCodexProjectReservedLaunchAuthority, consumeCodexProjectReservedLaunchAuthority } from "./application/project-control/codex-goal-project-account-reservation";
+import { assertRegisteredResearchExecutionSupported, researchRegisteredExecutionFromReservation } from "./research-registered-execution";
 import { hostedCodexExecutableReadPath } from "../provider-codex/hosted-codex-permissions";
 
 /** Root adapters must already hold the registered action's activity/workspace
@@ -30,7 +33,7 @@ export class RegisteredResearchSinkPreparationUnresolved extends Error {
   constructor() { super("hosted_research_registered_sink_preparation_unresolved"); }
 }
 
-async function registeredHandoffInputs(registryRootDir: string, controllerJobId: string, request: ResearchOperatorRequest, preStart = false) {
+async function registeredHandoffInputs(registryRootDir: string, controllerJobId: string, request: ResearchOperatorRequest, preStart = false, execution?: ResearchRegisteredExecution) {
   const controllerPath = codexGoalJobManifestPath({ registryRootDir, jobId: controllerJobId });
   const manifestPath = codexGoalJobManifestPath({ registryRootDir, jobId: request.jobId });
   const controllerBytes = researchRead(controllerPath), manifestBytes = researchRead(manifestPath);
@@ -58,6 +61,7 @@ async function registeredHandoffInputs(registryRootDir: string, controllerJobId:
     ...(codexPackage ? [codexPackage] : []), "/run/user", "/etc", "/usr", "/var/lib", controller.controller.jobRootDir]) {
     if (overlaps(sink, path)) researchInvalid();
   }
+  assertRegisteredResearchExecutionSupported({ registryRootDir, manifest, controller: controller.controller, launch, request, execution });
   researchCustody(manifest.projectPreStartAdmission.receiptPath, true);
   const { receipt, receiptSha256 } = preStart
     ? await readAuthorizedProjectPreStartLaunchReceipt({ manifest, scope: controller.scope })
@@ -72,7 +76,7 @@ async function registeredHandoffInputs(registryRootDir: string, controllerJobId:
   const boundRequest = parseResearchOperatorRequest({ ...request, durableHandoffRootDir: sink });
   const binding = Object.freeze({ registryRootDir, controllerJobId,
     manifestSha256: digest(manifest), scopeSha256: digest(controller.scope), receiptSha256,
-    requestSha256: researchHashRequest(boundRequest) });
+    requestSha256: researchHashRequest(boundRequest), ...(execution ? { registeredExecution: execution } : {}) });
   // Awaited receipt/loader work can overlap a revocation. Re-read supported
   // metadata and finish with a nofollow, private exact-byte custody witness.
   const freshManifest = await loadJobLaunch({ registryRootDir, jobId: request.jobId });
@@ -95,8 +99,12 @@ async function registeredHandoffInputs(registryRootDir: string, controllerJobId:
     installedResearchRuntimeDirectory(), ...(codexPackage ? [readDirectory(codexPackage)] : []), readDirectory(process.execPath),
     controller.controller.jobRootDir, "/usr", "/etc"] };
 }
-async function currentRegisteredHandoff(registryRootDir: string, controllerJobId: string, request: ResearchOperatorRequest, preStart = false) {
-  const current = await registeredHandoffInputs(registryRootDir, controllerJobId, request, preStart);
+async function currentRegisteredHandoff(registryRootDir: string, controllerJobId: string, request: ResearchOperatorRequest, preStart = false,
+  execution?: ResearchRegisteredExecution, beforeSinkEffects?: () => void) {
+  const current = await registeredHandoffInputs(registryRootDir, controllerJobId, request, preStart, execution);
+  // The supported reservation is historical and single-use. Consume only after
+  // current receipt/unsupported-field validation and before any sink effects.
+  beforeSinkEffects?.();
   const sink = current.request.durableHandoffRootDir!;
   const parentBacking = researchDurableDirectory(registryRootDir);
   let existing: ReturnType<typeof researchDurableDirectory> | undefined;
@@ -121,7 +129,7 @@ async function currentRegisteredHandoff(registryRootDir: string, controllerJobId
     // Only the fixed leaf under this currently authorized registry can be
     // prepared. Never chmod an existing directory or create ancestor paths.
     const parent = researchDurableDirectory(registryRootDir);
-    const before = await registeredHandoffInputs(registryRootDir, controllerJobId, request);
+    const before = await registeredHandoffInputs(registryRootDir, controllerJobId, request, false, execution);
     if (digest(before.binding) !== digest(current.binding)) researchInvalid();
     assertResearchDurableDirectory(parent);
     before.assertAuthorityBytes();
@@ -130,7 +138,7 @@ async function currentRegisteredHandoff(registryRootDir: string, controllerJobId
     try {
       assertResearchDurableDirectory(parent);
       researchCustody(sink, true);
-      const after = await registeredHandoffInputs(registryRootDir, controllerJobId, request);
+      const after = await registeredHandoffInputs(registryRootDir, controllerJobId, request, false, execution);
       if (digest(after.binding) !== digest(current.binding)) researchInvalid();
       assertResearchDurableDirectory(parent);
       after.assertAuthorityBytes();
@@ -143,7 +151,7 @@ async function currentRegisteredHandoff(registryRootDir: string, controllerJobId
 }
 export async function authorizeRegisteredResearchHandoff(input: {
   readonly registryRootDir: string; readonly controllerJobId: string;
-  readonly request: ResearchOperatorRequest;
+  readonly request: ResearchOperatorRequest; readonly reservedLaunch: CodexGoalLaunchInput;
 }): Promise<RegisteredResearchHandoffAuthorization> {
   assertResearchInitialRoot(true);
   const request = parseResearchOperatorRequest(input.request);
@@ -154,7 +162,12 @@ export async function authorizeRegisteredResearchHandoff(input: {
   const registry = researchDurableDirectory(registryRootDir);
   return await withCodexGoalRegistryMutation({ registryRootDir, requireExistingRegistryRoot: true, effect: async () => {
     assertResearchDurableDirectory(registry);
-    const current = await currentRegisteredHandoff(registryRootDir, controllerJobId, request, true);
+    const loaded = await loadJobLaunch({ registryRootDir, jobId: request.jobId });
+    const reserved = { manifest: loaded.manifest, sourceLaunch: loaded.launch, reservedLaunch: input.reservedLaunch };
+    const authority = assertCodexProjectReservedLaunchAuthority(reserved);
+    const execution = researchRegisteredExecutionFromReservation(authority, input.reservedLaunch);
+    const current = await currentRegisteredHandoff(registryRootDir, controllerJobId, request, true, execution,
+      () => { consumeCodexProjectReservedLaunchAuthority(reserved); });
     const authorization = Object.freeze({ request: current.request });
     authorizations.set(authorization, current.binding);
     return authorization;
@@ -172,7 +185,7 @@ export async function consumeRegisteredResearchHandoffAuthorization(
 }
 export async function assertRegisteredResearchHandoffCurrent(binding: ResearchRegisteredHandoff, request: ResearchOperatorRequest): Promise<void> {
   assertResearchInitialRoot();
-  const current = await currentRegisteredHandoff(binding.registryRootDir, binding.controllerJobId, request);
+  const current = await currentRegisteredHandoff(binding.registryRootDir, binding.controllerJobId, request, false, binding.registeredExecution);
   if (digest(current.binding) !== digest(binding)) researchInvalid();
   assertResearchDurableDirectory(binding.durableDirectory);
   current.assertAuthorityBytes();
