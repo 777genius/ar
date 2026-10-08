@@ -3,7 +3,7 @@ import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFi
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DependencyAdmissionError, DependencyAdmissionFailure } from "@vioxen/subscription-runtime/core";
-import { hostedCodexExecutableReadPath } from "../../hosted-codex-permissions";
+import { hostedCodexExecutableReadClosure } from "../../hosted-codex-permissions";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
 import { assertHostedActivationFence, readHostedOrdinaryProcessOrigin, readHostedActivationBytes,
   decodeHostedActivationBytes, type HostedActivationFence } from "./hosted-process-activation";
@@ -43,8 +43,8 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
   if (provider.unit !== unit || provider.creatorId !== start.creatorId || provider.originSha256 !== start.originSha256 ||
       provider.grantSha256 !== binding.grantDigest || provider.workspacePath !== binding.workspace.canonicalPath) invalid();
 
-  const packageRoot = hostedCodexExecutableReadPath({ codexBinaryPath: input.command, sourceEnv: input.env });
-  if (!packageRoot) invalid();
+  const executableClosure = hostedCodexExecutableReadClosure({ codexBinaryPath: input.command, sourceEnv: input.env });
+  if (!executableClosure) invalid();
   const executable = resolveExecutable(input.command, input.env.PATH);
   const node = trusted(realpathSync(process.execPath));
   const launcher = trusted(fileURLToPath(new URL("./hosted-app-server-launcher.js", import.meta.url)));
@@ -55,7 +55,7 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
   mkdirSync(root, { mode: 0o700 });
   const launcherSupport = ["hosted-process-descriptors.js", "hosted-app-server-launch-frame.js", "hosted-fd-prelude.js"]
     .map(name => trusted(`${dirname(launcher)}/${name}`));
-  const readOnly = new Set<string>(["/usr", packageRoot, executable, node, launcher, ...launcherSupport]);
+  const readOnly = new Set<string>(["/usr", ...executableClosure.paths, executable, node, launcher, ...launcherSupport]);
   for (const alias of ["/bin", "/sbin", "/lib", "/lib64"]) {
     let info;
     try { info = lstatSync(alias); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") continue; throw e; }
@@ -112,6 +112,7 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
     toolCache = tools.cache; mounts.push(...tools.mounts);
   }
   syncDirectory(root);
+  if (JSON.stringify(hostedCodexExecutableReadClosure({ codexBinaryPath: input.command, sourceEnv: input.env })) !== JSON.stringify(executableClosure)) invalid();
   // The old launcher profiles hide this backing prefix wholesale. This finite
   // root exposes only the exact admitted job; host policy siblings do not exist.
   const properties = ["Slice=subscription-runtime-hosted.slice", "KillMode=control-group", "SendSIGKILL=yes",

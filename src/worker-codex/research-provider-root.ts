@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, symlinkSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { X509Certificate } from "node:crypto";
-import { hostedCodexExecutableReadPath } from "../provider-codex/hosted-codex-permissions";
+import { hostedCodexExecutableReadClosure } from "../provider-codex/hosted-codex-permissions";
 import { resolvePreparedHostScratchBinds, resolvePreparedHostScratchCacheBinds, type ScratchTempHost } from "./host-scratch-temp";
 import { parseResearchStartSpec, type ResearchStartSpec } from "./research-launch-contract";
 import { researchAuthorityRoot, researchHash, researchInvalid, researchName, researchPath, researchPublish, researchRead } from "./research-launch-files";
@@ -339,9 +339,13 @@ function snapshot(spec: ResearchStartSpec, directory: string, unit: string, home
     const info = observe(executable); if (!info.isFile() || !(info.mode & 0o111)) researchInvalid();
     if (!contains("/usr", executable) && !contains(spec.runtimeDirectory, executable)) add(executable, executable, ResearchRootMountAccess.ReadOnly);
   }
-  const packageRoot = hostedCodexExecutableReadPath({ codexBinaryPath: spec.request.codexBinaryPath, sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } });
-  if (!packageRoot && !contains("/usr", spec.request.codexBinaryPath)) researchInvalid();
-  if (packageRoot && !contains("/usr", packageRoot) && !contains(spec.runtimeDirectory, packageRoot) && packageRoot !== spec.request.codexBinaryPath) add(packageRoot, packageRoot, ResearchRootMountAccess.ReadOnly);
+  const executableClosure = hostedCodexExecutableReadClosure({ codexBinaryPath: spec.request.codexBinaryPath, sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } });
+  if (!executableClosure && !contains("/usr", spec.request.codexBinaryPath)) researchInvalid();
+  for (const path of executableClosure?.paths ?? []) {
+    if (!contains("/usr", path) && !contains(spec.runtimeDirectory, path) && path !== spec.request.codexBinaryPath) add(path, path, ResearchRootMountAccess.ReadOnly);
+  }
+  // The retained graph also binds companion bytes, including same-inode changes.
+  if (executableClosure?.companion) observations.push(["codex-companion", executableClosure.companion]);
   const { jobRootDir: job, workspacePath: workspace, authRootDir } = spec.request;
   const pins = join(directory, "pins"), jobBind = add(join(pins, "job"), job, ResearchRootMountAccess.ReadWrite), workspaceBind = add(join(pins, "workspace"), workspace, ResearchRootMountAccess.ReadWrite);
   if (jobBind.identity[0] !== spec.jobDirectory.device || jobBind.identity[1] !== spec.jobDirectory.inode ||

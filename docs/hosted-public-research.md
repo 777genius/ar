@@ -743,6 +743,50 @@ provider-only sandbox. This is neither Assembly adoption nor migration and
 imposes no GM dependency. Accepted ADR bytes are unchanged. Existing module
 boundaries/import checks remain the authority; there is no universal manager.
 
+The native executable-closure extension was compared with the current CMS at
+GM commit `8fe924d56392f8f567324d2975aa2bb2d5aa499b`, document SHA-256
+`49d08b6d1762e94308157fb59b3aa82ac1630c91f529f6efcd4915dfffee7ba7`.
+Its fixed dependency/private-helper guidance still classifies this mechanism
+as a static typed provider adapter, without an Assembly adoption pin or graph
+node. The earlier classification reference and accepted ADR remain unchanged.
+
+### Native Codex executable closure
+
+For the trusted Linux x64/arm64 npm native layout
+`node_modules/@openai/codex-<platform>/vendor/<matching-musl-target>/bin/codex`,
+the finite closure consists of `codex` and its exact `codex-code-mode-host`
+sibling. The research root, ordinary dependency root and named read/write
+permission profiles use the same closure; registered handoff also protects it
+from durable-sink overlap. No vendor/bin directory or additional sibling is
+granted. The existing singular executable-read API, unrelated standalone
+executables and npm-wrapper package-root behavior are preserved. This does not
+qualify a wrapper's Node/PATH transport or an implementation task's tool effects.
+Codex 0.159.2 requires this sibling for Code Mode; recognized native layouts
+without it are deliberately unsupported, including older package versions.
+
+A recognized native installation with a missing or unsafe helper fails before
+root creation or dispatch, including beneath the existing `/usr` read grant.
+The helper must be a canonical root-owned executable regular file with one
+link and no group/world-writable ancestry. Its bounded descriptor read retains
+a SHA-256 digest; revalidation checks fresh descriptor/path custody and metadata
+before using a cached hash. A changed signature rehashes bytes, and the retained
+root/ordinary launch comparison rejects a changed digest before handoff.
+
+The nearest rejecting tests cover missing/unsafe helper custody, same-inode
+byte mutation and compatibility. A separate hosted-only disposable enclosure
+fixture executes the fixture binary and sibling using actual production-plan
+bindings and rejects accidental exposure of an unrelated sibling. It requires
+root-owned TEST files and `/usr/bin/bwrap`; unavailable prerequisites fail,
+without silently skipping the physical contract. No model/account is used.
+
+Run the physical fixture only on an owned disposable hosted TEST root with
+isolated TMPDIR/cache and root privilege:
+`node node_modules/vitest/vitest.mjs run --config src/worker-codex/tests/fixtures/research-native-codex-enclosure.config.ts`.
+Run the same fixture and the same-inode currentness test against unchanged
+old production source to retain meaningful RED evidence, then against the
+accepted patch for GREEN. Ordinary unit CI runs the custody/profile/currentness
+cases; this explicit physical qualification does not imply a live model turn.
+
 Shared-Host TEST qualification observed 44.3 seconds of fixed namespace setup
 with 3,929 root mount records. This is one bounded observation, not a latency SLO
 or proof of the underlying kernel cause. A later fully selected no-account TEST chain reached readiness in98.726s and

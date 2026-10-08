@@ -1,6 +1,7 @@
 import type { CodexSandboxMode } from "./codex-json-execution-engine";
 import { codexProviderEgressPolicy, CodexProviderEgressProfileId, type CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync, type Stats } from "node:fs";
+import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { dependencyToolCachePath, dependencyToolGuestConfigPath, parseDependencyToolGuestConfig, type DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
 
@@ -51,6 +52,60 @@ export function hostedCodexExecutableReadPath(input: {
   return undefined;
 }
 
+export interface HostedCodexExecutableReadClosure {
+  readonly paths: readonly string[];
+  readonly companion?: Readonly<{ path: string; sha256: string }>;
+}
+const companionHashes = new Map<string, { signature: string; sha256: string }>();
+const companionSignature = (info: Stats): string =>
+  [info.dev, info.ino, info.uid, info.gid, info.mode, info.nlink, info.size, info.ctimeMs, info.mtimeMs].join(":");
+
+/** Native Codex resolves Code Mode beside itself. Keep npm-wrapper admission
+ * unchanged, but never promote a native vendor/bin directory to a read root. */
+export function hostedCodexExecutableReadClosure(input: Parameters<typeof hostedCodexExecutableReadPath>[0]):
+  HostedCodexExecutableReadClosure | undefined {
+  const path = hostedCodexExecutableReadPath(input);
+  if (!path) return undefined;
+  const nativeLayout = /\/node_modules\/@openai\/codex-(linux-x64|linux-arm64)\/vendor\/([^/]+)\/bin\/codex$/.exec(path);
+  if (!nativeLayout) return Object.freeze({ paths: Object.freeze([path]) });
+  const target = nativeLayout[1] === "linux-x64" ? "x86_64-unknown-linux-musl" : "aarch64-unknown-linux-musl";
+  if (nativeLayout[2] !== target) throw new Error("hosted_codex_native_companion_invalid");
+  const companion = join(dirname(path), "codex-code-mode-host"), sha256 = nativeCompanionDigest(companion);
+  if (!sha256) throw new Error("hosted_codex_native_companion_invalid");
+  return Object.freeze({ paths: Object.freeze([path, companion]), companion: Object.freeze({ path: companion, sha256 }) });
+}
+
+function nativeCompanionDigest(path: string): string | undefined {
+  const deadline = performance.now() + 30_000;
+  let fd: number | undefined;
+  try {
+    if (realpathSync(path) !== path || !trustedCodexInstallationPath(path)) return undefined;
+    const expected = lstatSync(path);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const before = fstatSync(fd), signature = companionSignature(before);
+    if (!before.isFile() || before.uid !== 0 || (before.mode & 0o022) || !(before.mode & 0o111) ||
+        before.nlink !== 1 || before.size > 512 * 1024 * 1024 || signature !== companionSignature(expected)) return undefined;
+    let sha256 = companionHashes.get(path)?.signature === signature ? companionHashes.get(path)!.sha256 : undefined;
+    if (sha256 === undefined) {
+      const hash = createHash("sha256"), buffer = Buffer.alloc(65536); let used = 0;
+      while (used < before.size) {
+        if (performance.now() > deadline) return undefined;
+        const count = readSync(fd, buffer, 0, Math.min(buffer.length, before.size - used), used);
+        if (!count) return undefined;
+        hash.update(buffer.subarray(0, count)); used += count;
+      }
+      if (readSync(fd, buffer, 0, 1, used) !== 0) return undefined;
+      sha256 = hash.digest("hex");
+    }
+    if (companionSignature(fstatSync(fd)) !== signature || companionSignature(lstatSync(path)) !== signature ||
+        realpathSync(path) !== path || !trustedCodexInstallationPath(path) || performance.now() > deadline) return undefined;
+    if (companionHashes.size >= 32 && !companionHashes.has(path)) companionHashes.clear();
+    companionHashes.set(path, { signature, sha256 });
+    return sha256;
+  } catch { return undefined; }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
+
 function trustedCodexInstallationPath(path: string): boolean {
   if (!isAbsolute(path) || path === "/" ||
       !["/opt/", "/usr/local/", "/usr/lib/"].some(prefix => path.startsWith(prefix))) return false;
@@ -64,7 +119,7 @@ function trustedCodexInstallationPath(path: string): boolean {
 
 export function hostedCodexPermissionProfilesToml(
   policy: CodexProviderEgressPolicy,
-  executableReadPath?: string,
+  executableReadPath?: string | readonly string[],
   privateKeyFilePath?: string,
   dependencyTools?: DependencyToolGuestConfig,
 ): string {
@@ -86,7 +141,8 @@ export function hostedCodexPermissionProfilesToml(
     if (info.isFile() && (info.mode & 0o111) !== 0 &&
         trustedCodexInstallationPath(resolved)) nodeExecutableReadPath = resolved;
   } catch { /* An unresolved executable cannot expand the read boundary. */ }
-  const executableRules = [...new Set([executableReadPath, nodeExecutableReadPath]
+  const executablePaths = typeof executableReadPath === "string" ? [executableReadPath] : executableReadPath ?? [];
+  const executableRules = [...new Set([...executablePaths, nodeExecutableReadPath]
     .filter((path): path is string => path !== undefined))]
     .map(path => `${JSON.stringify(path)} = "read"`);
   const privateRoot = "/etc/subscription-runtime/secrets";
