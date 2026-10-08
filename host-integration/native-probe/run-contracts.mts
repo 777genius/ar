@@ -155,7 +155,7 @@ try {
   // actual content remains separately hashed in the candidate census.
   async function readableTree(path:string):Promise<void>{const metadata=await lstat(path);if(metadata.isDirectory()){await chmod(path,0o755);for(const name of await readdir(path))await readableTree(join(path,name));}else if(metadata.isFile())await chmod(path,(metadata.mode&0o111)?0o755:0o644);else throw new Error("foreign physical fixture input");}
   await readableTree(physical);await readableTree(source);
-  await run(process.execPath,["--test",join(build,"host-integration/native-probe/newtest-contracts.test.mjs")]);
+  await run(process.execPath,["--test",join(build,"host-integration/native-probe/newtest-contracts.test.mjs"),join(build,"host-integration/native-probe/managed-original-ends-contracts.test.mjs")]);
   await writeFile(join(candidate,"source-artifacts.json"),JSON.stringify({kind:"SOURCE_CANDIDATE_ONLY",authorityIssued:false,physicalQualified:false,inputs,artifacts:await inventory(candidate)},null,2)+"\n",{flag:"wx"});
   ownerFixture = process.env.SR_NATIVE_PROBE_ORIGINAL_OWNER_FIXTURE === "65532-seal-admitted";
   if (ownerFixture) {

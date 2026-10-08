@@ -89,10 +89,8 @@ async function runGuest():Promise<void>{
     interface Managed {start(request:unknown):Promise<unknown>;status(id:string,machine:string):Promise<unknown>}
     type ManagedRun=(command:string,args:readonly string[])=>Promise<string>;
     const Constructor=module.HostJobs as new(options:{stateDir:string;run:ManagedRun})=>Managed;
-    const installedLauncher:unknown=await import(pathToFileURL("/opt/subscription-runtime/managed-launcher/launch.mjs").href);
     const installedContract:unknown=await import(pathToFileURL("/opt/subscription-runtime/host-jobs/contract.mjs").href);
-    if(!installedLauncher||typeof installedLauncher!=="object"||!("buildSystemdInvocation" in installedLauncher)||typeof installedLauncher.buildSystemdInvocation!=="function"||!installedContract||typeof installedContract!=="object"||!("fingerprint" in installedContract)||typeof installedContract.fingerprint!=="function"||!("unitFor" in installedContract)||typeof installedContract.unitFor!=="function")throw new Error("missing installed managed builder/contract");
-    const build=installedLauncher.buildSystemdInvocation as (request:unknown)=>Promise<{command:string;args:readonly string[]}>;
+    if(!installedContract||typeof installedContract!=="object"||!("fingerprint" in installedContract)||typeof installedContract.fingerprint!=="function"||!("unitFor" in installedContract)||typeof installedContract.unitFor!=="function")throw new Error("missing installed managed contract");
     const fingerprint=installedContract.fingerprint as (request:unknown)=>string,unitFor=installedContract.unitFor as (jobId:string)=>string;
     const jobId=c.name+"-ordinary-refusal",payload=Object.freeze([node,join(artifact,"admin/host-integration/native-probe/newtest-guest.mjs"),"--ordinary-refusal"]),limits=Object.freeze({runtimeSeconds:60,stopSeconds:10,memoryMiB:512,tasksMax:64,cpuPercent:100});
     const startRequest=Object.freeze({operation:"start",jobId,machineId:c.machineId,argv:payload,...limits});
@@ -106,17 +104,18 @@ async function runGuest():Promise<void>{
       if(!launch&&command!=="/usr/bin/systemctl")throw new Error("foreign installed managed command");
       const name=`managed-command-${managedIndex++}`;
       try{
-        // The installed builder uses ALL real default trust, executable and
-        // storage admission. No substitute callback or overrides are supplied.
-        const beforeBuild=process.hrtime.bigint();
-        if(launch&&(beforeBuild+360_000_000_000n>=work||beforeBuild+370_000_000_000n>=end))throw new Error("original managed preparation reservation expired");
-        const invocation=launch?await build(unwrapManagedJob(command,args,expectedLauncher)):{command,args};
-        if(launch&&(invocation.command!=="/usr/bin/systemd-run"||!Array.isArray(invocation.args)||invocation.args.some(arg=>typeof arg!=="string")))throw new Error("wrong installed systemd invocation");
+        const beforeLaunch=process.hrtime.bigint();
+        if(launch&&(beforeLaunch+360_000_000_000n>=work||beforeLaunch+370_000_000_000n>=end))throw new Error("original managed preparation reservation expired");
+        let actualArgs=args;
+        if(launch){
+          unwrapManagedJob(command,args,expectedLauncher);
+          actualArgs=[...args,"--original-ends-v1",JSON.stringify({version:1,kind:"ManagedOriginalEnds",timeNamespace:c.timeNamespace,workEndNs:work.toString(),cleanupEndNs:end.toString()})];
+        }
         const now=process.hrtime.bigint(),cutoff=launch?work:minimum(work,now+2_000_000_000n);
-        // Reserve startup300/runtime60/stop10 AFTER awaited preparation and
-        // executable admission, immediately before actual systemd-run spawn.
-        const r=await boundedCommand(invocation.command,invocation.args,cutoff,undefined,{XDG_RUNTIME_DIR:"/run/user/0"},end,launch?{workNs:360_000_000_000n,cleanupNs:370_000_000_000n}:undefined);
-        durable(join(state,name+".stdout"),r.stdout);durable(join(state,name+".stderr"),r.stderr);durable(join(state,name+".json"),{command,args,actualCommand:invocation.command,actualArgs:invocation.args,code:r.code,signal:r.signal,custody:r.custody,naturalClose:r.naturalClose});
+        // Direct custody is the installed Node launcher and its inherited raw
+        // channels. It owns real default admission and the final effect veto.
+        const r=await boundedCommand(command,actualArgs,cutoff,undefined,{XDG_RUNTIME_DIR:"/run/user/0"},end,launch?{workNs:360_000_000_000n,cleanupNs:370_000_000_000n}:undefined);
+        durable(join(state,name+".stdout"),r.stdout);durable(join(state,name+".stderr"),r.stderr);durable(join(state,name+".json"),{command,args,actualCommand:command,actualArgs,code:r.code,signal:r.signal,custody:r.custody,naturalClose:r.naturalClose});
         const stdout=r.stdout.toString();
         if(r.signal!==null||(r.code!==0&&!(command==="/usr/bin/systemctl"&&args.includes("show")&&r.code===4&&stdout.includes("LoadState=not-found"))))throw Object.assign(new Error("installed managed command refused"),{code:r.code,stdout,stderr:r.stderr.toString()});
         return stdout;

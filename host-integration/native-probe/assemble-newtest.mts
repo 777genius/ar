@@ -63,41 +63,77 @@ export function verifyTree(root: string, expected: string): readonly TreeLeaf[] 
 // supported x86-64 little-endian ELF ABI and stock guest library search apply.
 export function elfInputs(b: Buffer): { interpreter: string | null; needed: readonly string[] } {
   const fail = (): never => { throw new Error("unsupported ELF closure"); };
-  if (b.length < 64 || !b.subarray(0, 4).equals(Buffer.from([127, 69, 76, 70])) || b[4] !== 2 || b[5] !== 1 || b.readUInt16LE(18) !== 62 || b.readUInt32LE(20) !== 1) fail();
+  if (b.length < 64 || b.length > 256 * 1024 * 1024 || !b.subarray(0, 4).equals(Buffer.from([127, 69, 76, 70])) || b[4] !== 2 || b[5] !== 1 || b.readUInt16LE(18) !== 62 || b.readUInt32LE(20) !== 1) fail();
   const number = (offset: number): number => { const n = b.readBigUInt64LE(offset); if (n > BigInt(b.length)) fail(); return Number(n); };
   const range = (offset: number, size: number): void => { if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset + size > b.length) fail(); };
   const string = (offset: number, maximum: number): string => {
-    range(offset, maximum); const end = b.indexOf(0, offset);
-    if (end < offset || end >= offset + maximum) fail();
-    const bytes = b.subarray(offset, end); if (bytes.some(c => c < 32 || c > 126)) fail(); return bytes.toString("ascii");
+    range(offset, maximum);
+    // Names/installed paths are at most 255 bytes, independent of dynstr size.
+    const bytes = b.subarray(offset, offset + Math.min(maximum, 256)), end = bytes.indexOf(0);
+    if (end < 0) fail();
+    const name = bytes.subarray(0, end); if (name.some(c => c < 32 || c > 126)) fail(); return name.toString("ascii");
   };
   const ph = number(32), size = b.readUInt16LE(54), count = b.readUInt16LE(56);
   if (size !== 56 || !count || count > 256) fail(); range(ph, count * size);
-  const segments: Array<{ type: number; offset: number; address: bigint; bytes: number }> = [];
+  const page = 4096n, addressLimit = 1n << 64n;
+  const pageStart = (n: bigint): bigint => n / page * page;
+  const pageEnd = (n: bigint): bigint => (n + page - 1n) / page * page;
+  const segments: Array<{ type: number; flags: number; offset: number; address: bigint; bytes: number; memory: bigint }> = [];
   for (let i = 0; i < count; i++) {
-    const p = ph + i * size, segment = { type: b.readUInt32LE(p), offset: number(p + 8), address: b.readBigUInt64LE(p + 16), bytes: number(p + 32) };
-    range(segment.offset, segment.bytes); segments.push(segment);
+    const p = ph + i * size, segment = { type: b.readUInt32LE(p), flags: b.readUInt32LE(p + 4),
+      offset: number(p + 8), address: b.readBigUInt64LE(p + 16), bytes: number(p + 32), memory: b.readBigUInt64LE(p + 40) };
+    range(segment.offset, segment.bytes);
+    if (segment.address + BigInt(segment.bytes) > addressLimit) fail();
+    if (segment.type === 1 && (BigInt(segment.bytes) > segment.memory ||
+      segment.address + segment.memory > addressLimit || (segment.flags & ~7) ||
+      BigInt(segment.offset) % page !== segment.address % page)) fail();
+    segments.push(segment);
   }
-  const interpreter = segments.find(s => s.type === 3);
-  const dynamic = segments.find(s => s.type === 2);
-  const needed: number[] = []; let address = 0n, strings = 0;
+  const interpreters = segments.filter(s => s.type === 3), dynamics = segments.filter(s => s.type === 2);
+  if (interpreters.length > 1 || dynamics.length > 1) fail();
+  const interpreter = interpreters[0], dynamic = dynamics[0];
+  const needed: number[] = []; let address: bigint | undefined, strings: number | undefined;
   if (dynamic) {
     if (dynamic.bytes % 16) fail();
+    let terminated = false;
     for (let i = 0; i < dynamic.bytes; i += 16) {
       const p = dynamic.offset + i, tag = b.readBigInt64LE(p), value = b.readBigUInt64LE(p + 8);
-      if (!tag) break;
-      if (tag === 1n) { if (value > 65536n || needed.length >= 64) fail(); needed.push(Number(value)); }
-      if (tag === 5n) address = value;
-      if (tag === 10n) { if (value > 1048576n) fail(); strings = Number(value); }
+      if (!tag) { terminated = true; break; }
+      if (tag === 1n) { if (value >= BigInt(b.length) || needed.length >= 64) fail(); needed.push(Number(value)); }
+      if (tag === 5n) { if (address !== undefined) fail(); address = value; }
+      // DT_STRSZ measures all dynamic symbol names, not only dependency names.
+      // Bound it by the measured file and a complete file-backed PT_LOAD below.
+      if (tag === 10n) { if (strings !== undefined || !value || value > BigInt(b.length)) fail(); strings = Number(value); }
       // A foreign search override needs its own admitted profile.
       if (tag === 15n || tag === 29n) fail();
     }
+    if (!terminated) fail();
   }
-  const load = segments.find(s => s.type === 1 && address >= s.address && address + BigInt(strings) <= s.address + BigInt(s.bytes));
-  if (needed.length && (!load || !strings)) fail();
-  const start = load ? load.offset + Number(address - load.address) : 0;
+  const loads = address === undefined || strings === undefined ? [] : segments.filter(s =>
+    s.type === 1 && address! >= s.address && address! + BigInt(strings!) <= s.address + BigInt(s.bytes));
+  if ((address !== undefined || strings !== undefined || needed.length) && loads.length !== 1) fail();
+  const load = loads[0], start = load ? load.offset + Number(address! - load.address) : 0;
+  if (load) {
+    const begin = address!, end = begin + BigInt(strings!);
+    const intersects = (a: bigint, z: bigint): boolean => a < z && a < end && begin < z;
+    if (end > addressLimit || !(load.flags & 4)) fail();
+    for (const s of segments.filter(s => s.type === 1)) {
+      const fileEnd = s.address + BigInt(s.bytes), memoryEnd = s.address + s.memory;
+      const mappedStart = pageStart(s.address), mappedEnd = pageEnd(fileEnd);
+      if (mappedEnd > addressLimit || pageEnd(memoryEnd) > addressLimit) fail();
+      // Linux/glibc map whole file pages. Even zero filesz at an unaligned
+      // address can cover a file page in glibc; conflicting coverage refuses.
+      if (s !== load && intersects(mappedStart, mappedEnd) &&
+        (BigInt(s.offset) - s.address !== BigInt(load.offset) - load.address || s.flags !== load.flags)) fail();
+      if (s !== load && s.bytes > 0 && intersects(s.address, fileEnd)) fail();
+      // Include Linux's tail-to-page zeroing and glibc's anonymous BSS pages.
+      const zeroStart = s.bytes ? fileEnd : mappedStart;
+      if (s.memory > BigInt(s.bytes) && intersects(zeroStart, pageEnd(memoryEnd))) fail();
+    }
+  }
+  if (strings !== undefined) range(start, strings);
   return { interpreter: interpreter ? string(interpreter.offset, interpreter.bytes) : null, needed: needed.map(i => {
-    if (i >= strings) fail(); const name = string(start + i, strings - i);
+    if (strings === undefined || i >= strings) return fail(); const name = string(start + i, strings - i);
     if (!/^[A-Za-z0-9_+.-]+\.so(?:\.[0-9]+)*$/.test(name)) fail(); return name;
   }) };
 }

@@ -89,10 +89,62 @@ if(process.argv[2]==="claim-child"){
     for(const invalid of [stock.replace("Job=\n",""),stock+"Job=\n",stock.replace("Job=\n","Job=0\n"),stock.replace("Job=\n","Job=42\n"),stock+"Unknown=x\n",stock.replace("MainPID=123","MainPID=0"),stock.replace("SubState=running","SubState=dead")])assert.throws(()=>managerFacts(Buffer.from(invalid),true));
     assert.equal(managerFacts(Buffer.from(stock.replace("Job=\n","")),false).MainPID,"123");
   });
-  // Red: foreign ELF search policy or truncated offsets escape measured closure.
+  // Red: real Node's large file-backed dynstr refuses, or byte/offset changes,
+  // missing dynamic termination and foreign names escape measured closure.
   test("actual Linux Node ELF inputs reject byte and offset substitutions",t=>{
     if(process.platform!=="linux"||process.arch!=="x64"){t.skip("supported Linux ELF ABI required");return;}
-    const original=readFileSync(process.execPath),actual=elfInputs(original);assert.match(actual.interpreter??"",/^\/.*ld.*\.so\.[0-9]+$/);assert.ok(actual.needed.includes("libc.so.6"));const corrupt=Buffer.from(original);corrupt[0]=0;assert.throws(()=>elfInputs(corrupt));const offset=Buffer.from(original);offset.writeBigUInt64LE(BigInt(original.length)+1n,32);assert.throws(()=>elfInputs(offset));assert.throws(()=>elfInputs(original.subarray(0,40)));
+    const original=readFileSync(process.execPath),actual=elfInputs(original);
+    assert.match(actual.interpreter??"",/^\/.*ld.*\.so\.[0-9]+$/);assert.ok(actual.needed.includes("libc.so.6"));
+    const corrupt=Buffer.from(original);corrupt[0]=0;assert.throws(()=>elfInputs(corrupt));
+    const offset=Buffer.from(original);offset.writeBigUInt64LE(BigInt(original.length)+1n,32);assert.throws(()=>elfInputs(offset));
+    assert.throws(()=>elfInputs(original.subarray(0,40)));
+    // Locate metadata in the actual executable, without generating a mirrored
+    // ELF positive or executing the candidate bytes. Mutations must fail closed.
+    const ph=Number(original.readBigUInt64LE(32)),size=original.readUInt16LE(54),count=original.readUInt16LE(56);
+    const headers=Array.from({length:count},(_,i)=>ph+i*size);
+    const dynamic=headers.find(p=>original.readUInt32LE(p)===2);assert.notEqual(dynamic,undefined);
+    const start=Number(original.readBigUInt64LE(dynamic!+8)),bytes=Number(original.readBigUInt64LE(dynamic!+32));
+    const tags=Array.from({length:bytes/16},(_,i)=>start+i*16);
+    const strsz=tags.find(p=>original.readBigInt64LE(p)===10n),strtab=tags.find(p=>original.readBigInt64LE(p)===5n);
+    const needed=tags.find(p=>original.readBigInt64LE(p)===1n);assert.ok(strsz!==undefined&&strtab!==undefined&&needed!==undefined);
+    const oversized=Buffer.from(original);oversized.writeBigUInt64LE(BigInt(original.length)+1n,strsz!+8);assert.throws(()=>elfInputs(oversized));
+    const unbacked=Buffer.from(original);unbacked.writeBigUInt64LE(BigInt(original.length),strsz!+8);assert.throws(()=>elfInputs(unbacked));
+    const unmapped=Buffer.from(original);unmapped.writeBigUInt64LE((1n<<64n)-1n,strtab!+8);assert.throws(()=>elfInputs(unmapped));
+    const unterminated=Buffer.from(original),nulls=tags.filter(p=>original.readBigInt64LE(p)===0n);assert.ok(nulls.length>0);
+    for(const p of nulls)unterminated.writeBigInt64LE(12n,p);assert.throws(()=>elfInputs(unterminated));
+    const stringAddress=original.readBigUInt64LE(strtab!+8);
+    const load=headers.find(p=>original.readUInt32LE(p)===1&&stringAddress>=original.readBigUInt64LE(p+16)&&
+      stringAddress+original.readBigUInt64LE(strsz!+8)<=original.readBigUInt64LE(p+16)+original.readBigUInt64LE(p+32));assert.notEqual(load,undefined);
+    const table=Number(original.readBigUInt64LE(load!+8)+stringAddress-original.readBigUInt64LE(load!+16));
+    const name=table+Number(original.readBigUInt64LE(needed!+8)),tableEnd=table+Number(original.readBigUInt64LE(strsz!+8));
+    // Red: a second LOAD maps a proper dynstr subrange to different file bytes,
+    // even while the original LOAD remains the unique complete table container.
+    const spare=headers.find(p=>![1,2,3].includes(original.readUInt32LE(p)));assert.notEqual(spare,undefined);
+    assert.ok(original.readBigUInt64LE(strsz!+8)>1n&&table+1!==0);
+    const overlapping=Buffer.from(original);overlapping.writeUInt32LE(1,spare!);overlapping.writeUInt32LE(4,spare!+4);
+    overlapping.writeBigUInt64LE(0n,spare!+8);overlapping.writeBigUInt64LE(stringAddress+1n,spare!+16);
+    overlapping.writeBigUInt64LE(stringAddress+1n,spare!+24);overlapping.writeBigUInt64LE(1n,spare!+32);
+    overlapping.writeBigUInt64LE(1n,spare!+40);overlapping.writeBigUInt64LE(1n,spare!+48);
+    assert.throws(()=>elfInputs(overlapping));
+    // Red: nominal file ranges miss page-rounded remapping and anonymous BSS.
+    // Both use actual Node metadata and offset/vaddr-congruent LOAD headers.
+    const page=4096n,stringEnd=stringAddress+original.readBigUInt64LE(strsz!+8),firstPage=stringAddress/page*page;
+    assert.ok(stringAddress%page!==0n||stringEnd%page!==0n,"actual dynstr needs a partial page for page-only fault");
+    const pageAddress=stringAddress%page!==0n?firstPage:stringEnd;
+    const mappedFilePage=(BigInt(table)+pageAddress-stringAddress)/page*page;
+    const conflictingOffset=(mappedFilePage===0n?page:0n)+pageAddress%page;
+    assert.ok(pageAddress+1n<=stringAddress||pageAddress>=stringEnd);assert.equal(conflictingOffset%page,pageAddress%page);
+    const pageOnly=Buffer.from(original);pageOnly.writeUInt32LE(1,spare!);pageOnly.writeUInt32LE(4,spare!+4);
+    pageOnly.writeBigUInt64LE(conflictingOffset,spare!+8);pageOnly.writeBigUInt64LE(pageAddress,spare!+16);
+    pageOnly.writeBigUInt64LE(pageAddress,spare!+24);pageOnly.writeBigUInt64LE(1n,spare!+32);
+    pageOnly.writeBigUInt64LE(1n,spare!+40);pageOnly.writeBigUInt64LE(page,spare!+48);
+    assert.throws(()=>elfInputs(pageOnly));
+    const bss=Buffer.from(original);bss.writeUInt32LE(1,spare!);bss.writeUInt32LE(6,spare!+4);
+    bss.writeBigUInt64LE(0n,spare!+8);bss.writeBigUInt64LE(firstPage,spare!+16);bss.writeBigUInt64LE(firstPage,spare!+24);
+    bss.writeBigUInt64LE(0n,spare!+32);bss.writeBigUInt64LE(page,spare!+40);bss.writeBigUInt64LE(page,spare!+48);
+    assert.throws(()=>elfInputs(bss));
+    const foreign=Buffer.from(original);foreign[name]=47;assert.throws(()=>elfInputs(foreign));
+    const noNameEnd=Buffer.from(original);noNameEnd.fill(65,name,Math.min(name+256,tableEnd));assert.throws(()=>elfInputs(noNameEnd));
   });
   // Red: permit writer extends inherited guest ends or accepts an exhausted
   // cleanup margin. DATA hashes never count as admission in this pure codec.
