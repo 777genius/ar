@@ -36,6 +36,11 @@ export type DependencyOwnerRecord = {
   readonly revision: number;
   readonly epoch: number;
   readonly owner: null | DependencyConsumerOwner | DependencyMaintenanceOwner;
+  // Protected transition facts for ranking only, never TTL/drain authority.
+  readonly activity?: {
+    readonly lastEntry: { readonly epoch: number; readonly atMs: string | null } | null;
+    readonly lastRelease: { readonly epoch: number; readonly atMs: string | null } | null;
+  };
 };
 
 export enum DependencyAdmissionFailure {
@@ -58,8 +63,23 @@ const object = (v: unknown, keys: string): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v) && Object.keys(v).sort().join(",") === keys;
 export function parseDependencyOwner(value: unknown): DependencyOwnerRecord {
   function invalid(): never { throw new DependencyAdmissionError(DependencyAdmissionFailure.InvalidRecord); }
-  if (!object(value, "epoch,owner,revision,version,workspace") || (value.version !== 1 && value.version !== 2) ||
+  const hasActivity = typeof value === "object" && value !== null && Object.hasOwn(value, "activity");
+  if (!object(value, hasActivity ? "activity,epoch,owner,revision,version,workspace" : "epoch,owner,revision,version,workspace") ||
+      ("activity" in value && !hasActivity) || (value.version !== 1 && value.version !== 2) ||
       !positive(value.revision) || !positive(value.epoch)) invalid();
+  if (hasActivity) {
+    const activity = value.activity, epoch = value.epoch;
+    const closed = (v: unknown, keys: string): v is Record<string, unknown> =>
+      object(v, keys) && Reflect.ownKeys(v).length === keys.split(",").length;
+    const event = (v: unknown): v is { epoch: number; atMs: string | null } =>
+      closed(v, "atMs,epoch") && positive(v.epoch) && v.epoch <= epoch &&
+      (v.atMs === null || (typeof v.atMs === "string" && /^(?:0|[1-9][0-9]{0,127})$/.test(v.atMs)));
+    if (value.version !== 2 || !closed(activity, "lastEntry,lastRelease") ||
+        (activity.lastEntry !== null && !event(activity.lastEntry)) ||
+        (activity.lastRelease !== null && !event(activity.lastRelease))) invalid();
+    if (activity.lastRelease !== null && (activity.lastEntry === null ||
+        activity.lastRelease.epoch > activity.lastEntry.epoch)) invalid();
+  }
   const workspace = value.workspace;
   if (!object(workspace, "canonicalPath,dev,ino") || typeof workspace.canonicalPath !== "string" ||
       workspace.canonicalPath.length > 4096 || !workspace.canonicalPath.startsWith("/") || workspace.canonicalPath === "/" ||
