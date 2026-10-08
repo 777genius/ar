@@ -1,4 +1,5 @@
 import { hostedDependencyProviderInvocation } from "./hosted-dependency-provider-launch";
+import type { DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -13,6 +14,7 @@ import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidate
 import { readHostedFdProfile } from "./hosted-fd-observation";
 import { spawnHostedFdChild, hostedFdLaunch, HostedFdLaunchKind } from "./hosted-fd-launch";
 import { retryHostedFenceAcquisition } from "./hosted-fd-fence";
+import { abandonHostedDependencyToolInvocation, bindHostedDependencyToolChild } from "./hosted-dependency-tool-plan";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
 import { hostedReadonlyMountProperties, type HostedReadonlyMounts } from "./hosted-readonly-mounts";
 import { codexProviderEgressProfileEnvVar, CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
@@ -169,6 +171,17 @@ export function spawnCodexAppServerProcess(input: {
   return spawnInvocation(input, invocation);
 }
 
+/** Trusted worker composition captures established Ready history. The worker
+ * executor separately brands this exact returned factory; accepting this port
+ * as a public caller option is never sufficient for v2 admission. */
+export function admittedDependencyToolCodexProcessFactory(readyReader: DependencyToolReadyReader): CodexAppServerProcessFactory {
+  return input => submitHostedOrdinaryProcess(input, (unit, _identity, fence) => {
+    const invocation = hostedDependencyProviderInvocation(fence, unit, input, readyReader);
+    if (!invocation) throw new Error("hosted_dependency_tool_binding_required");
+    return spawnInvocation(input, invocation, (child, release) => releaseHostedOrdinaryProcess(child, release));
+  });
+}
+
 function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
   invocation: CodexAppServerProcessInvocation,
   finalRelease?: (child: CodexAppServerChildProcess, release: (fence: HostedActivationFence, revalidate: () => void) => void) => void): CodexAppServerChildProcess {
@@ -183,8 +196,12 @@ function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<R
       request.payload = [...request.payload, "--fd-ready-v1"];
       args = [args[0]!, args[1]!, JSON.stringify(request)];
     }
-    const child = spawnHostedFdChild(invocation.command, args, { cwd: input.cwd, detached: process.platform !== "win32" },
-      invocation.systemdUnit, HostedFdLaunchKind.Provider) as ChildProcessWithoutNullStreams;
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawnHostedFdChild(invocation.command, args, { cwd: input.cwd, detached: process.platform !== "win32" },
+        invocation.systemdUnit, HostedFdLaunchKind.Provider) as ChildProcessWithoutNullStreams;
+      bindHostedDependencyToolChild(invocation, child);
+    } catch (error) { abandonHostedDependencyToolInvocation(invocation); throw error; }
     hostedSystemdUnits.set(child, invocation.systemdUnit);
     const guard = hostedFdLaunch(child);
     void guard.observe().then(() => retryHostedFenceAcquisition(() =>

@@ -1,4 +1,5 @@
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { type ChildProcess, type SpawnOptions } from "node:child_process";
+import { spawnHostedFdProcess, invalidateHostedFdProcess, HostedFdLaunchKind } from "./hosted-fd-child";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { Writable, PassThrough } from "node:stream";
@@ -7,10 +8,12 @@ import { assertHostedFdBootstrap, assertHostedFdConfinement, assertHostedFdManag
   observeHostedFdUnit, readHostedFdProfile, type HostedFdFact, type HostedFdProcess, type HostedFdUnit } from "./hosted-fd-observation";
 import { knownFdCollectorPeer, type FdCollectorProfile } from "@vioxen/subscription-runtime/core";
 import { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
+import { assertHostedDependencyToolParentFrame, assertHostedDependencyToolRelease } from "./hosted-dependency-tool-plan";
 import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-provider-launch";
+import { revokeHostedToolFilesForChild } from "./hosted-retained-tool-files";
 
 export { hostedFdReadyMarker, hostedInstallerReleaseMarker } from "./hosted-fd-prelude";
-export enum HostedFdLaunchKind { Foreground = "foreground", Provider = "provider", Installer = "installer" }
+export { HostedFdLaunchKind } from "./hosted-fd-child";
 const launches = new WeakMap<ChildProcess, HostedFdLaunch>();
 export enum HostedForegroundArtifactKind { Stdout = "hosted_foreground_stdout", Stderr = "hosted_foreground_stderr" }
 export type HostedForegroundResult = Readonly<{ exitCode: number; unit: string; startId: string;
@@ -188,6 +191,8 @@ export class HostedFdLaunch {
     }
   }
   invalidate(): void {
+    invalidateHostedFdProcess(this.child);
+    revokeHostedToolFilesForChild(this.child);
     this.outputFailed = true;
     this.closeStreams();
   }
@@ -325,6 +330,16 @@ export class HostedFdLaunch {
     // run. The actual authority owner and own live setup budget are rechecked
     // after collection, inside the very same fence, immediately before enqueue.
     revalidateOwner();
+    if (this.kind === HostedFdLaunchKind.Foreground) {
+      assertHostedDependencyToolParentFrame(fence, this.unit, frame);
+      revalidateOwner();
+    }
+    if (this.kind === HostedFdLaunchKind.Provider) {
+      assertHostedDependencyToolRelease(this.child, fence, current.bootstrap, current.unit);
+      // N3's synchronous namespace/file observations are also bounded by the
+      // real owner lifetime and this same one-shot release fence.
+      revalidateOwner();
+    }
     this.remaining();
     this.input.write(frame);
     this.released = true;
@@ -339,13 +354,13 @@ export class HostedFdLaunch {
     if (command === profile.node.path && !profile.bootstraps.some(pin => pin.path === args[0] &&
         pin.path === "/opt/subscription-runtime/managed-launcher/launch.mjs")) invalid();
     const before = hostedFdTable(process.pid);
-    const child = spawn(command, args, { ...options, env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
-      stdio: kind === HostedFdLaunchKind.Installer ? ["pipe", "ignore", "ignore"] : ["pipe", "pipe", "pipe"] });
+    const child = spawnHostedFdProcess(command, args, options, unit, kind);
     child.once("error", () => {}); // A synchronous setup failure must not leave an unhandled spawn error.
     try {
       const launch = new HostedFdLaunch(child, unit, kind, profile, before, command, args);
       launches.set(child, launch); return child;
     } catch (error) {
+      invalidateHostedFdProcess(child);
       child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy(); child.kill("SIGTERM");
       // The persisted reservation remains held; killing this exact returned
       // proxy never proves the owned service/cgroup terminal or permits retry.
