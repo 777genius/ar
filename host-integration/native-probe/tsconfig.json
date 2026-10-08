@@ -17,6 +17,7 @@
     "../../src/worker-core/hosted-custody/ports/native-probe.ts",
     "../../src/worker-core/hosted-custody/application/native-probe.ts",
     "../../src/hosted-native-probe/*.ts",
+    "../../src/provider-codex/app-server/adapters/hosted-host-policy.ts",
     "../host-jobs/read-request.d.mts"
   ],
   "exclude": [

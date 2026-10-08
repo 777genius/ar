@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, readlinkSync, lstatSync } from "node:fs";
-import { researchInvalid, researchId, researchHash, researchCustody, researchRead, researchFileDigest, researchByteValidationTimeoutMs } from "./research-launch-files";
+import { researchInvalid, researchId, researchHash, researchCustody, researchRead, researchFileDigest, researchByteValidationTimeoutMs,
+  ResearchHostCommandOperation, ResearchHostCommandUnitRole } from "./research-launch-files";
 import { researchProviderSetupTimeoutMs } from "./research-launch-contract";
 
 export const researchRuntimeUnitPattern = /^subscription-runtime-research-([a-f0-9-]{36})\.service$/;
@@ -16,10 +17,31 @@ export function researchCommand(command: string, args: readonly string[]): strin
   const timeout = ownedRuntimeStart ? researchProviderSetupTimeoutMs + 30_000
     : command === "/usr/bin/systemctl" && (args[0] === "show" || args[0] === "list-jobs") ? 30_000
     : isSystemdRun ? 60_000 : 15_000;
+  let started: number | undefined;
+  try { started = performance.now(); } catch { /* Observation only. */ }
   const result = spawnSync(command, [...args], { encoding: "utf8", timeout, maxBuffer: 1024 * 1024,
     env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdio: ["ignore", "pipe", "pipe"] });
-  if (result.error || result.status !== 0) researchInvalid((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
-    ? "host-command-timeout" : "host-command-failed");
+  if (result.error || result.status !== 0) {
+    let operation = ResearchHostCommandOperation.Unknown, unitRole = ResearchHostCommandUnitRole.Unknown, elapsedMs = 0;
+    try {
+      const elapsed = started === undefined ? 0 : performance.now() - started;
+      if (Number.isFinite(elapsed)) elapsedMs = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, elapsed));
+    } catch { /* Observation only. */ }
+    try {
+      const show = command === "/usr/bin/systemctl" && args[0] === "show";
+      operation = show ? ResearchHostCommandOperation.SystemctlShow
+        : command === "/usr/bin/systemctl" && args[0] === "list-jobs" ? ResearchHostCommandOperation.SystemctlListJobs
+        : isSystemdRun ? ResearchHostCommandOperation.SystemdRun : ResearchHostCommandOperation.Unknown;
+      const unit = show ? args[1] : isSystemdRun && args[0] === "--quiet"
+        ? args[1]?.startsWith("--unit=") ? args[1].slice(7)
+          : args[1] === "--wait" && args[2] === "--pipe" && args[3] === "--collect" && args[4]?.startsWith("--unit=") ? args[4].slice(7) : undefined
+        : undefined;
+      unitRole = unit && researchRuntimeUnitPattern.test(unit) ? ResearchHostCommandUnitRole.Runtime
+        : unit && researchProviderUnitPattern.test(unit) ? ResearchHostCommandUnitRole.Provider : ResearchHostCommandUnitRole.Unknown;
+    } catch { /* Diagnostic failure never changes command admission. */ }
+    researchInvalid((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
+      ? "host-command-timeout" : "host-command-failed", operation, unitRole, elapsedMs);
+  }
   return result.stdout;
 }
 export function assertResearchInitialRoot(operator = false): void {
