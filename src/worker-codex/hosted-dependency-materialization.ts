@@ -60,7 +60,8 @@ export async function materializeHostedDependencyAbsenceForToolEntry(binding: Ho
     if(!sameDependencyAttempt(actual.attempt,attempt) || !encode(actual.binding).equals(encode(binding)))fail(Failure.StaleAttempt);
   });
   if (!requiresCurrentHostedDependencyRootPurpose()) {
-    return produceFreshDependencyTree(context);
+    await produceFreshDependencyTree(context);
+    return undefined;
   }
   withHostedActivationFence(fence => {
     assertCurrentHostedDependencyAttempt(context, fence, DependencyOwnerPhase.ExclusiveMutation);
