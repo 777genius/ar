@@ -4,9 +4,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/syscall.h>
+#include <sys/prctl.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -16,7 +18,45 @@ static uint64_t now(void){
   assert(!clock_gettime(CLOCK_MONOTONIC,&t));
   return (uint64_t)t.tv_sec*NP_ORIGIN_SECOND+(uint64_t)t.tv_nsec;
 }
-int main(void) {
+static uint64_t fixture_end;
+static void owned_child(pid_t parent) {
+  /* An assertion in the original fixture parent cannot strand a pipe holder. */
+  assert(!prctl(PR_SET_PDEATHSIG,SIGKILL));
+  if(getppid()!=parent)_exit(78);
+}
+static ssize_t read_one(int fd,char *byte) {
+  for(;;){
+    if(now()>=fixture_end){errno=ETIMEDOUT;return -1;}
+    struct pollfd p={.fd=fd,.events=POLLIN};
+    int ready=poll(&p,1,10);
+    if(ready>0)return read(fd,byte,1);
+    if(ready<0&&errno!=EINTR)return -1;
+  }
+}
+static pid_t wait_original(pid_t child,int *status) {
+  for(;;){
+    pid_t result=waitpid(child,status,WNOHANG);
+    if(result==child||result<0)return result;
+    if(now()>=fixture_end){errno=ETIMEDOUT;return -1;}
+    struct timespec nap={.tv_nsec=1000000};
+    (void)nanosleep(&nap,NULL);
+  }
+}
+int main(int argc,char **argv) {
+  fixture_end=now()+4*NP_ORIGIN_SECOND;
+  /* Test-only real orphaned pipe holder: the MTS runner must bound this
+   * known failure without claiming any original Native closure. */
+  if(argc==2&&!strcmp(argv[1],"orphan-pipe")){
+    int ready[2];assert(!pipe(ready));
+    pid_t holder=fork();assert(holder>=0);
+    if(!holder){close(ready[0]);assert(write(ready[1],"R",1)==1);pause();_exit(1);}
+    close(ready[1]);char byte;assert(read_one(ready[0],&byte)==1&&byte=='R');
+    close(ready[0]);puts("orphan-pipe-holder-ready");fflush(stdout);_exit(77);
+  }
+  assert(argc==1);
+  alarm(6);
+  pid_t parent=getpid();
+  fputs("gate-stage: robust-owner-death\n",stderr);
   /* Red if the selected actual fork path loses robust owner-death state or
   * retries a lock with a renewed allowance. This is no NativeRoot fixture. */
   pthread_mutex_t *mutex=mmap(NULL,sizeof *mutex,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_ANONYMOUS,-1,0);
@@ -27,6 +67,7 @@ int main(void) {
   pid_t child=fork();
   assert(child>=0);
   if(!child){
+    owned_child(parent);
     close(pipefd[0]);
     assert(!np_origin_mutex_take_v1(mutex,now()+NP_ORIGIN_SECOND));
     assert(write(pipefd[1],"L",1)==1);
@@ -39,19 +80,20 @@ int main(void) {
   ;
   assert(poll(&held,1,2000)==1);
   char byte;
-  assert(read(pipefd[0],&byte,1)==1&&byte=='L');
+  assert(read_one(pipefd[0],&byte)==1&&byte=='L');
   uint64_t start=now(),end=start+UINT64_C(50000000);
   assert(np_origin_mutex_take_v1(mutex,end)==ETIMEDOUT);
   assert(now()>=end&&now()-start<NP_ORIGIN_SECOND);
   assert(!kill(child,SIGKILL));
   int status;
-  assert(waitpid(child,&status,0)==child&&WIFSIGNALED(status));
-  assert(read(pipefd[0],&byte,1)==0);
+  assert(wait_original(child,&status)==child&&WIFSIGNALED(status));
+  assert(read_one(pipefd[0],&byte)==0);
   assert(np_origin_mutex_take_v1(mutex,now()+NP_ORIGIN_SECOND)==EOWNERDEAD);
   /* Deliberately omit consistent(): this original gate is never repaired. */
   assert(!pthread_mutex_unlock(mutex));
   assert(np_origin_mutex_take_v1(mutex,now()+NP_ORIGIN_SECOND)==ENOTRECOVERABLE);
   close(pipefd[0]);
+  fputs("gate-stage: independent-cleanup\n",stderr);
   /* Red on the previous gate-dependent cleanup: ENOTRECOVERABLE must not
    * prevent original-cutoff observation, exact child signal/wait and pipe EOF.
    * These kernel primitives construct no NativeRoot or privileged success. */
@@ -62,7 +104,7 @@ int main(void) {
   assert(!pipe(pipefd));
   child=fork();
   assert(child>=0);
-  if(!child){close(pipefd[0]);
+  if(!child){owned_child(parent);close(pipefd[0]);
   pause();
   _exit(1);
   }
@@ -73,8 +115,8 @@ int main(void) {
   assert(np_origin_mutex_take_v1(mutex,cutoff)==ENOTRECOVERABLE);
   assert(!np_cleanup_clock_sample_v1(&clock,boot,boot_id,cutoff,&high_water,&sample));
   assert(!syscall(SYS_pidfd_send_signal,pidfd,SIGKILL,NULL,0));
-  assert(waitpid(child,&status,0)==child&&WIFSIGNALED(status));
-  assert(read(pipefd[0],&byte,1)==0);
+  assert(wait_original(child,&status)==child&&WIFSIGNALED(status));
+  assert(read_one(pipefd[0],&byte)==0);
   assert(!np_cleanup_clock_sample_v1(&clock,boot,boot_id,cutoff,&high_water,&sample));
   uint64_t original_high_water=high_water;
   assert(np_cleanup_clock_sample_v1(&clock,boot,boot_id,sample,&high_water,&sample)==-1);
@@ -85,6 +127,7 @@ int main(void) {
   close(boot);
   np_clock_release_v1(&clock);
   assert(!munmap(mutex,sizeof *mutex));
+  fputs("gate-stage: pending-admission-close\n",stderr);
   /* Red if emergency close can be overwritten by a pending associated commit.
    * Real fork/IPC exercises the production transition and independently checks
    * no effect file, original child wait and EOF. No Origin is constructed. */
@@ -97,10 +140,11 @@ int main(void) {
   child=fork();
   assert(child>=0);
   if(!child){
+    owned_child(parent);
     close(pipefd[0]);close(release[1]);
     assert(!np_origin_mutex_take_v1(&gate->mutex,now()+NP_ORIGIN_SECOND));
     assert(write(pipefd[1],"P",1)==1);
-    assert(read(release[0],&byte,1)==1&&byte=='C');
+    assert(read_one(release[0],&byte)==1&&byte=='C');
     int claimed=np_origin_admission_claim_v1(&gate->admission);
     if(!claimed){int effect=open("late-commit-effect",O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);assert(effect>=0);close(effect);}
     assert(!pthread_mutex_unlock(&gate->mutex));
@@ -108,18 +152,19 @@ int main(void) {
   }
   close(pipefd[1]);close(release[0]);
   held.fd=pipefd[0];held.revents=0;
-  assert(poll(&held,1,2000)==1&&read(pipefd[0],&byte,1)==1&&byte=='P');
+  assert(poll(&held,1,2000)==1&&read_one(pipefd[0],&byte)==1&&byte=='P');
   assert(np_origin_mutex_take_v1(&gate->mutex,now()+UINT64_C(50000000))==ETIMEDOUT);
   np_origin_admission_close_v1(&gate->admission);
   assert(write(release[1],"C",1)==1);
   close(release[1]);
-  assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==77);
-  assert(read(pipefd[0],&byte,1)==0);
+  assert(wait_original(child,&status)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==77);
+  assert(read_one(pipefd[0],&byte)==0);
   errno=0;assert(access("late-commit-effect",F_OK)==-1&&errno==ENOENT);
   assert(np_origin_admission_claim_v1(&gate->admission)==-1);
   close(pipefd[0]);
   assert(!pthread_mutex_destroy(&gate->mutex));
   assert(!munmap(gate,sizeof *gate));
+  fputs("gate-stage: durable-prefix\n",stderr);
   /* Actual bounded private DATA artifact boundary. No Origin is constructed. */
   int directory=open(".",O_RDONLY|O_DIRECTORY|O_CLOEXEC);
   assert(directory>=0);

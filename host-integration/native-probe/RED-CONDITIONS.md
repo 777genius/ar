@@ -126,3 +126,11 @@ HELD while owned cleanup continues. A real foreign API peer's directed matching
 JobRemoved must enter neither the job journal nor job completion; the original
 held direct-manager event at its exact object path must still complete. These
 physical cases remain pending, not supplied by the source gate fixture.
+
+R4 subprocess boundary is red if an exited fixture parent leaves a real orphan
+holding stdout/stderr and the original invocation end does not kill its owned
+process group and observe pipe closure. A dedicated fork fixture exercises this
+actual failure; it does not mint Origin or prove Native closure. Default native
+gate children arm parent-death SIGKILL, all IPC/child waits have one finite end,
+and stage/assertion stderr is returned on failure. Failed cwd artifacts remain
+under the job-owned scratch temporary tree for remote diagnosis.

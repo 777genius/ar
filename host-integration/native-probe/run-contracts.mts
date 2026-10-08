@@ -108,7 +108,7 @@ try {
   await run("/usr/bin/cc",[...associated,...producerSources,join(native,"root-producer-entry.c"),"-Wl,-l:libsystemd.so.0","-o",producer]);
   await run("/usr/bin/cc",[...associated,"-shared","-fPIC",...producerSources,join(native,"original-owner-addon.c"),"-Wl,-l:libsystemd.so.0","-o",associatedAddon]);
   await run("/usr/bin/cc",[...associated,...producerSources,join(native,"root-origin-gate-test.c"),"-Wl,-l:libsystemd.so.0","-o",gateFixture]);
-  await run(process.execPath,["--test",join(build,"host-integration/native-probe/root-producer-contracts.test.mjs")],{NP_ROOT_PRODUCER_ENTRY:producer,NP_ROOT_ORIGIN_GATE:gateFixture});
+  await run(process.execPath,["--test",join(build,"host-integration/native-probe/root-producer-contracts.test.mjs")],{NP_ROOT_PRODUCER_ENTRY:producer,NP_ROOT_ORIGIN_GATE:gateFixture,TMPDIR:temporary});
   // Retain actual reviewed Source candidates for the later separate Root
   // installation gate. This does not create an image, permit or Origin.
   const candidate = join(evidence,`${attempt}-root-producer-source-candidate`);
