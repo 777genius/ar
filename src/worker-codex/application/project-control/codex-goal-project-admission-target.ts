@@ -250,11 +250,14 @@ async function trustedUnpublishedStage(input: TargetInput, jobId: string): Promi
 async function consumedOutputInfrastructure(input: TargetInput, path: string): Promise<boolean> {
   const ledgers = (input.scope.consumedOutputLedgerRoots ?? []).map((root) => resolve(root))
     .filter((root) => root === path || (basename(path) === "consumed-output" && pathInsideOrEqual(root, path)));
-  const evidenceRoots = input.scope.consumedOutputEvidenceRoots ?? [];
-  if (ledgers.length === 0 || evidenceRoots.length === 0) return false;
+  const evidenceRoots = (input.scope.consumedOutputEvidenceRoots ?? []).map((root) => resolve(root));
+  const evidence = evidenceRoots.filter((root) => root === path || pathInsideOrEqual(root, path));
+  // The combined native container still requires its ledger; split evidence
+  // containers qualify only through an exact scoped root or its parent branch.
+  if (evidenceRoots.length === 0 || (ledgers.length === 0 &&
+    (basename(path) === "consumed-output" || evidence.length === 0))) return false;
   const archives = join(path, "archives");
-  const configured = [...ledgers, ...evidenceRoots.map((root) => resolve(root))
-    .filter((root) => root !== path && pathInsideOrEqual(root, path))];
+  const configured = [...ledgers, ...evidence];
   if (await realpath(path) !== path || (input.scope.deniedRoots ?? []).some((denied) =>
     [path, ...configured].some((root) => pathInsideOrEqual(resolve(denied), root) || pathInsideOrEqual(root, resolve(denied))))) return false;
   for (const root of configured) {
@@ -272,7 +275,7 @@ async function consumedOutputInfrastructure(input: TargetInput, path: string): P
   // Only true parent branches need a configured-child census. Data interiors
   // still receive the full bounded hidden-manifest/type/alias scan below.
   const nativeParents = new Set<string>();
-  if (!ledgers.includes(path)) nativeParents.add(path);
+  if (!configured.includes(path)) nativeParents.add(path);
   for (const root of configured.filter((root) => root !== path)) {
     for (let parent = dirname(root); parent !== path; parent = dirname(parent)) {
       if (configured.some((dataRoot) => pathInsideOrEqual(parent, dataRoot))) break;
