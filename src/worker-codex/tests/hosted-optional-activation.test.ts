@@ -1,4 +1,4 @@
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -120,6 +120,26 @@ describe("optional host activation with real records and projected Host principa
     expect(() => spawnCodexAppServerProcess({ ...input, env: { SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId } }))
       .toThrow("managed_grant_required");
     expect(f.spawn).not.toHaveBeenCalled();
+  });
+  it.each(["codex-readonly-custody", "codex-readonly-revoked"])("retained %s refuses an unmarked raw spawn without job identity", directory => {
+    const path = join(policy, directory, name);
+    const bytes = JSON.stringify({ schemaVersion: 1, jobId: identity.jobId,
+      jobRootDir: identity.jobRootDir, workspacePath: identity.workspacePath,
+      revoked: directory === "codex-readonly-revoked" }) + "\n";
+    put(path, bytes);
+    const before = lstatSync(path);
+    expect(before.isFile()).toBe(true);
+    expect(before.mode & 0o777).toBe(0o600);
+    for (const global of ["host-installation.json", "host-activation.json", "host-activation.next",
+      "ordinary-origins.json", "ordinary-origins.next", "readonly-enrollment.json", "readonly-epoch.json", "readonly-epoch.next"]) {
+      expect(existsSync(local(join(policy, global)))).toBe(false);
+    }
+    expect(() => spawnCodexAppServerProcess({ ...input, env: {} })).toThrow("managed_grant_required");
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(readFileSync(path, "utf8")).toBe(bytes);
+    const after = lstatSync(path);
+    expect([after.dev, after.ino, after.mode, after.uid, after.nlink, after.size, after.ctimeMs, after.mtimeMs])
+      .toEqual([before.dev, before.ino, before.mode, before.uid, before.nlink, before.size, before.ctimeMs, before.mtimeMs]);
   });
   it("rejects interrupted global installation before an unmarked raw spawn with no job identity", () => {
     put(policy + "/host-installation.json", "partial TEST bytes");

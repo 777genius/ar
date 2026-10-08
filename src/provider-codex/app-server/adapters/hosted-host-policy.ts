@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readFileSync, readSync, type Stats } from "node:fs";
 import { dirname, basename, join } from "node:path";
 
 // Private Host policy, also emitted into the independently installed launcher.
@@ -16,7 +16,7 @@ const same = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino && a.uid
 /** Optional fixed records only. Missing ancestors are absence only after every
  * existing ancestor is pinned, checked and reread. The strict custody reader
  * deliberately retains its stronger requirement for complete private ancestry. */
-function optionalBytes(path: string, maxBytes: number, privateFile: boolean): Buffer | null {
+function optionalBytes(path: string, maxBytes: number, privateFile: boolean, emptyDirectory = false): Buffer | null {
   const parent = dirname(path), directories: string[] = [];
   for (let p = parent;; p = dirname(p)) { directories.unshift(p); if (p === "/") break; }
   const ancestry: { path: string; stat: Stats; fd: number }[] = [];
@@ -46,11 +46,28 @@ function optionalBytes(path: string, maxBytes: number, privateFile: boolean): Bu
     }
     const anchored = `/proc/self/fd/${ancestry[ancestry.length - 1]!.fd}/${basename(path)}`;
     let fd: number;
-    try { fd = openSync(anchored, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+    try { fd = openSync(anchored, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | (emptyDirectory ? constants.O_DIRECTORY : 0)); }
     catch (error) { if (missing(error)) return absent(path); throw error; }
     try {
       check();
       const before = fstatSync(fd);
+      if (emptyDirectory) {
+        const privateDirectory = (stat: Stats) => {
+          directory(path, stat);
+          if (stat.mode & 0o077) invalid();
+        };
+        privateDirectory(before);
+        const stream = opendirSync(`/proc/self/fd/${fd}`, { bufferSize: 1 });
+        let occupied: boolean;
+        try { occupied = stream.readSync() !== null; }
+        finally { stream.closeSync(); }
+        const after = fstatSync(fd), named = lstatSync(path);
+        privateDirectory(after); privateDirectory(named);
+        if (!same(before, after) || !same(after, named)) invalid();
+        check();
+        // A one-byte presence marker retains the existing refusal boundary.
+        return occupied ? Buffer.alloc(1) : null;
+      }
       const file = (stat: Stats) => {
         if (!stat.isFile() || stat.uid !== 0 || stat.nlink !== 1 ||
             (stat.mode & (privateFile ? 0o077 : 0o022)) || stat.size > maxBytes) invalid();
@@ -112,5 +129,13 @@ export function assertHostedBaselineIdentity(jobId?: string): void {
   }
   for (const path of paths) if (optionalBytes(path, 4 * 1024 * 1024, true)) {
     throw new Error("hosted_readonly_managed_grant_required");
+  }
+  if (jobId === undefined) {
+    const directories = [join(volatileRoot, "codex-egress"), join(volatileRoot, "codex-readonly"),
+      ...["codex-readonly-custody", "codex-readonly-revoked", "ordinary-origins", "dependency-bindings"]
+        .map(root => join(policyRoot, root))];
+    for (const directory of directories) if (optionalBytes(directory, 0, true, true)) {
+      throw new Error("hosted_readonly_managed_grant_required");
+    }
   }
 }
