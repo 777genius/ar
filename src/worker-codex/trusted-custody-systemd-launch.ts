@@ -18,7 +18,7 @@ export enum TrustedCustodyLaunchRole { Outer = "outer", Ordinary = "ordinary", I
 /** Protected original clocks only limit an existing operation. These bytes do
  * not import the issuer's private funding/qualification/Store authority. */
 export function ordinaryInstallationRemainingMs(supervisor: HostedInventorySupervisor, cleanup = false): number {
-  const held = (): never => { throw new Error("hosted_ordinary_installation_held"); };
+  function held(): never { throw new Error("hosted_ordinary_installation_held"); }
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(supervisor.operationId)) held();
   const root = "/var/lib/subscription-runtime-host-policy", guestEntry = "/dist/worker-codex/hosted-ordinary-installation-qualification-guest.js";
   const guest = supervisor.bootstrap.path.endsWith(guestEntry);
