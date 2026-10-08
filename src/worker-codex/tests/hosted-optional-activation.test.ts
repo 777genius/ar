@@ -102,6 +102,14 @@ describe("optional host activation with real records and projected Host principa
     expect(() => spawnCodexAppServerProcess({ ...input, env: {} })).toThrow();
     expect(f.spawn).not.toHaveBeenCalled();
   });
+  it.each(["codex-provider-api", "codex-full-internet-v1"])("actual research cgroup cannot enter baseline via %s with absent authority roots", profile => {
+    f.group = "0::/subscription.slice/subscription-runtime-research-provider-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.service\n";
+    expect(requiresHostedProcessAdmission({})).toBe(false); // Research keeps its separate admitted lifetime.
+    expect(() => spawnCodexAppServerProcess({ ...input, env: { SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE: profile } }))
+      .toThrow("hosted_research_launch_denied");
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(f.privateReads).toBe(0);
+  });
   it.each(["host-installation.json", "host-activation.json", "host-activation.next", "ordinary-origins.json", "ordinary-origins.next",
     "readonly-enrollment.json", "readonly-epoch.json", "readonly-epoch.next",
     "codex-readonly-custody/" + name, "codex-readonly-revoked/" + name, "ordinary-origins/" + name,

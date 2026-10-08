@@ -94,6 +94,9 @@ export function hasHostedActivationOrigin(): boolean {
 /** No explicit enrollment can become a baseline launch after grant loss,
  * revocation or disabling the optional host feature. No records are created. */
 export function assertHostedBaselineIdentity(jobId?: string): void {
+  if (process.platform === "linux" && /\/subscription-runtime-research-/.test(readFileSync("/proc/self/cgroup", "utf8"))) {
+    throw new Error("hosted_research_launch_denied");
+  }
   if (readHostedActivationMode() !== HostedActivationMode.Disabled || hasHostedActivationOrigin()) {
     throw new Error("hosted_activation_authority_required");
   }
