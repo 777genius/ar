@@ -384,23 +384,22 @@ int np_origin_mutex_init_v1(pthread_mutex_t *mutex) {
 }
 int np_origin_mutex_take_v1(pthread_mutex_t *mutex,uint64_t end) {
   uint64_t now;
-  if(monotonic(&now)||now>INT64_MAX-OBS){
-    return ESTALE;
-  }
+  if(monotonic(&now)||now>INT64_MAX-OBS)return ESTALE;
   uint64_t observation=minimum(end,now+OBS);
-  for(;;){
-    if(monotonic(&now)||now>=observation){
-      return ETIMEDOUT;
-    }
-    int result=pthread_mutex_trylock(mutex);
-    if(result!=EBUSY){
-      return result;
-    }
-    struct timespec nap={
-      .tv_nsec=1000000}
-    ;
-    (void)nanosleep(&nap,NULL);
+  if(now>=observation)return ETIMEDOUT;
+  /* Supported GNU/Linux glibc >=2.30. Its clocklock robust path releases
+   * the futex on ENOTRECOVERABLE; the trylock path can leave it busy.
+   * No realtime conversion, retry, consistency repair or renewed allowance. */
+  struct timespec absolute={.tv_sec=(time_t)(observation/NP_ORIGIN_SECOND),.tv_nsec=(long)(observation%NP_ORIGIN_SECOND)};
+  int result=pthread_mutex_clocklock(mutex,CLOCK_MONOTONIC,&absolute);
+  if(!result){
+    uint64_t after;
+    if(monotonic(&after)||after<now){pthread_mutex_unlock(mutex);return ESTALE;}
+    if(after>=observation){pthread_mutex_unlock(mutex);return ETIMEDOUT;}
   }
+  /* EOWNERDEAD retains the acquired inconsistent gate for the caller's
+   * irreversible close/unlock. It is never returned as positive admission. */
+  return result;
 }
 int np_origin_admission_claim_v1(_Atomic unsigned *admission) {
   unsigned open=0;

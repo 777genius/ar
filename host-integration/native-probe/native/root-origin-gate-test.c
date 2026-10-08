@@ -18,6 +18,12 @@ static uint64_t now(void){
   assert(!clock_gettime(CLOCK_MONOTONIC,&t));
   return (uint64_t)t.tv_sec*NP_ORIGIN_SECOND+(uint64_t)t.tv_nsec;
 }
+static void expect_mutex(pthread_mutex_t *mutex,uint64_t end,int expected,const char *phase) {
+  uint64_t before=now();
+  int result=np_origin_mutex_take_v1(mutex,end);
+  if(result!=expected)fprintf(stderr,"mutex-result: phase=%s rc=%d expected=%d before=%llu after=%llu end=%llu\n",phase,result,expected,(unsigned long long)before,(unsigned long long)now(),(unsigned long long)end);
+  assert(result==expected);
+}
 static uint64_t fixture_end;
 static void owned_child(pid_t parent) {
   /* An assertion in the original fixture parent cannot strand a pipe holder. */
@@ -91,7 +97,7 @@ int main(int argc,char **argv) {
   assert(np_origin_mutex_take_v1(mutex,now()+NP_ORIGIN_SECOND)==EOWNERDEAD);
   /* Deliberately omit consistent(): this original gate is never repaired. */
   assert(!pthread_mutex_unlock(mutex));
-  assert(np_origin_mutex_take_v1(mutex,now()+NP_ORIGIN_SECOND)==ENOTRECOVERABLE);
+  expect_mutex(mutex,now()+NP_ORIGIN_SECOND,ENOTRECOVERABLE,"initial-unrecoverable");
   close(pipefd[0]);
   fputs("gate-stage: independent-cleanup\n",stderr);
   /* Red on the previous gate-dependent cleanup: ENOTRECOVERABLE must not
@@ -112,7 +118,7 @@ int main(int argc,char **argv) {
   int pidfd=(int)syscall(SYS_pidfd_open,child,0);
   assert(pidfd>=0);
   uint64_t high_water=now(),cutoff=high_water+NP_ORIGIN_SECOND,sample;
-  assert(np_origin_mutex_take_v1(mutex,cutoff)==ENOTRECOVERABLE);
+  expect_mutex(mutex,cutoff,ENOTRECOVERABLE,"independent-cleanup-unrecoverable");
   assert(!np_cleanup_clock_sample_v1(&clock,boot,boot_id,cutoff,&high_water,&sample));
   assert(!syscall(SYS_pidfd_send_signal,pidfd,SIGKILL,NULL,0));
   assert(wait_original(child,&status)==child&&WIFSIGNALED(status));
@@ -121,7 +127,7 @@ int main(int argc,char **argv) {
   uint64_t original_high_water=high_water;
   assert(np_cleanup_clock_sample_v1(&clock,boot,boot_id,sample,&high_water,&sample)==-1);
   assert(high_water==original_high_water);
-  assert(np_origin_mutex_take_v1(mutex,cutoff)==ENOTRECOVERABLE);
+  expect_mutex(mutex,cutoff,ENOTRECOVERABLE,"independent-cleanup-unrecoverable");
   close(pidfd);
   close(pipefd[0]);
   close(boot);
@@ -135,6 +141,12 @@ int main(int argc,char **argv) {
   assert(gate!=MAP_FAILED);
   assert(!np_origin_mutex_init_v1(&gate->mutex));
   atomic_init(&gate->admission,0);
+  /* Red if GNU clocklock's immediate free-lock path accepts an expired
+   * original end. Refusal must leave this actual mutex unacquired. */
+  uint64_t expired=now();
+  expect_mutex(&gate->mutex,expired,ETIMEDOUT,"expired-free-gate");
+  assert(!pthread_mutex_trylock(&gate->mutex));
+  assert(!pthread_mutex_unlock(&gate->mutex));
   int release[2];
   assert(!pipe(pipefd)&&!pipe(release));
   child=fork();
@@ -153,7 +165,10 @@ int main(int argc,char **argv) {
   close(pipefd[1]);close(release[0]);
   held.fd=pipefd[0];held.revents=0;
   assert(poll(&held,1,2000)==1&&read_one(pipefd[0],&byte)==1&&byte=='P');
-  assert(np_origin_mutex_take_v1(&gate->mutex,now()+UINT64_C(50000000))==ETIMEDOUT);
+  /* Red if a future original end replaces the single <=2s observation cap. */
+  uint64_t observation_start=now(),wide_end=observation_start+3*NP_ORIGIN_SECOND;
+  expect_mutex(&gate->mutex,wide_end,ETIMEDOUT,"observation-cap");
+  assert(now()>=observation_start+2*NP_ORIGIN_SECOND&&now()<wide_end);
   np_origin_admission_close_v1(&gate->admission);
   assert(write(release[1],"C",1)==1);
   close(release[1]);
