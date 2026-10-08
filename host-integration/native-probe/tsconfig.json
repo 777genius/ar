@@ -15,7 +15,9 @@
     "./*.mts",
     "../../src/worker-core/hosted-custody/domain/native-probe.ts",
     "../../src/worker-core/hosted-custody/ports/native-probe.ts",
-    "../../src/worker-core/hosted-custody/application/native-probe.ts"
+    "../../src/worker-core/hosted-custody/application/native-probe.ts",
+    "../../src/hosted-native-probe/*.ts",
+    "../host-jobs/read-request.d.mts"
   ],
   "exclude": [
     "./bootstrap-source-checks.mts",
