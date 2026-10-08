@@ -10,6 +10,8 @@ import { prepareResearchProviderRoot, assertResearchProviderRoot, researchProvid
 import { trustedResearchProviderLaunch } from "../trusted-custody-systemd-launch";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import type { ResearchStartSpec } from "../research-launch-contract";
+import { parseResearchOperatorRequest } from "../research-launch-contract";
+import { researchDurableDirectory } from "../research-durable-handoff-directory";
 import * as scratchAdapter from "../host-scratch-temp";
 
 beforeEach(setupResearchFixture);
@@ -38,6 +40,19 @@ function captured(job = request().jobRootDir, runtime = "/TEST-artifact", extern
     specSha256, description: `subscription-runtime-research-provider:${spec.startId}:${unit}` }, true);
   host.spawn.mockClear();
   return { spec, directory: current.directory, home: join(job, "home/TEST-a") };
+}
+function withRegisteredSink(f: ReturnType<typeof captured>, registryRootDir: string) {
+  const sink = join(registryRootDir, "durable-handoffs");
+  fs.mkdirSync(local(sink), { recursive: true, mode: 0o700 });
+  const request = parseResearchOperatorRequest({ ...f.spec.request, durableHandoffRootDir: sink });
+  const spec: ResearchStartSpec = { ...f.spec, request, registeredHandoff: { registryRootDir,
+    controllerJobId: "TEST-controller", manifestSha256: "a".repeat(64), scopeSha256: "b".repeat(64),
+    receiptSha256: "c".repeat(64), requestSha256: researchHash(JSON.stringify(request)), durableDirectory: researchDurableDirectory(sink) } };
+  researchPublish(join(f.directory, "spec.json"), spec);
+  const specSha256 = researchHash(researchRead(join(f.directory, "spec.json")));
+  researchPublish(join(f.directory, "providers", unit + ".json"), { schemaVersion: 1, unit, runtimeUnit: spec.unit,
+    specSha256, description: `subscription-runtime-research-provider:${spec.startId}:${unit}` });
+  return { ...f, spec, sink };
 }
 function observingHost() {
   const effects: string[] = [], extraMounts: string[] = [], overrides = new Map<string, ReturnType<ResearchProviderRootHost["info"]>>();
@@ -173,6 +188,32 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     observed.extraMounts.push(`900 1 ${device} ${root} /TEST-unrelated rw - ${filesystem} ${source} rw`);
     expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow("hosted_research_launch_denied");
     expectNoRootEffects(f, observed);
+  });
+  it("a registered sink is absent from every provider RO/RW binding and skeleton", () => {
+    const f = withRegisteredSink(captured(), "/TEST-project/registry"), observed = observingHost();
+    const plan = prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter);
+    expect(plan.bindings.some(bind => bind.target === f.sink || bind.source === f.sink)).toBe(false);
+    expect(plan.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite).map(bind => bind.target))
+      .toEqual([f.spec.request.jobRootDir, f.spec.request.workspacePath]);
+    expect(fs.existsSync(join(plan.fixedRootDirectory, f.sink))).toBe(false);
+    expect(trustedResearchProviderLaunch(f.spec, unit, f.home, plan).args.some(arg => arg.includes(f.sink))).toBe(false);
+  });
+  it("refuses a sink under a provider-readable runtime ancestor before skeleton effects", () => {
+    const f = withRegisteredSink(captured(), "/TEST-artifact/registry"), observed = observingHost();
+    expect(() => prepareResearchProviderRoot(f.spec, unit, f.home, undefined, observed.adapter)).toThrow();
+    expect(observed.effects).toEqual([]);
+  });
+  it("refuses a nominally separate sink whose mount backing aliases provider-writable source", () => {
+    const f = withRegisteredSink(captured(), "/TEST-project/registry"), observed = observingHost();
+    const path = join(f.spec.request.jobRootDir, "durable-handoffs");
+    observed.extraMounts.push(`50 1 8:1 ${path} ${f.sink} rw - ext4 /dev/TEST rw`);
+    const spec: ResearchStartSpec = { ...f.spec, registeredHandoff: { ...f.spec.registeredHandoff!,
+      durableDirectory: { ...f.spec.registeredHandoff!.durableDirectory, mountId: 50, mountPoint: f.sink, mountRoot: path } } };
+    researchPublish(join(f.directory, "spec.json"), spec);
+    researchPublish(join(f.directory, "providers", unit + ".json"), { schemaVersion: 1, unit, runtimeUnit: spec.unit,
+      specSha256: researchHash(researchRead(join(f.directory, "spec.json"))), description: `subscription-runtime-research-provider:${spec.startId}:${unit}` });
+    expect(() => prepareResearchProviderRoot(spec, unit, f.home, undefined, observed.adapter)).toThrow();
+    expect(observed.effects).toEqual([]);
   });
   // Regression: Linux's deleted dentry ROOT is opaque, but an unrelated cache
   // mount must not prevent a plan. Dropping it would lose graph/reassert vetoes.

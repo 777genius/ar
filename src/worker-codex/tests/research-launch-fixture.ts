@@ -13,7 +13,7 @@ const fixture = vi.hoisted(() => ({ root: "", group: "/user.slice/TEST-session.s
     state?: "inactive" | "failed" | "activating" | "deactivating"; dropIns?: string }>(),
   processGroups: new Map<number, string>(), killFailures: new Set<string>(), stopFailures: new Set<string>(),
   processNamespaces: new Map<number, Record<"user" | "mnt" | "pid" | "net", string>>(), showFailures: new Set<string>(),
-  jobs: new Set<string>(), spawn: vi.fn(), authReads: 0,
+  jobs: new Set<string>(), spawn: vi.fn(), authReads: 0, findmntHook: undefined as (() => void) | undefined,
   scratchNodes: new Map<string, import("../host-scratch-temp").ScratchTempHost extends { lstat(path: string): infer Info } ? Info : never>(),
   scratchMounts: new Map<string, { target?: string; uuid?: string; fsroot?: string } | undefined>() }));
 export const host = fixture;
@@ -37,6 +37,7 @@ export const publicTestCa = "-----BEGIN CERTIFICATE-----\nMIIFazCCA1OgAwIBAgIRAI
 // Upstream test-crypto-x509.js independently asserts !x509.ca for this certificate.
 export const publicTestLeaf = "-----BEGIN CERTIFICATE-----\nMIID6DCCAtCgAwIBAgIUFH02wcL3Qgben6tfIibXitsApCYwDQYJKoZIhvcNAQEL\nBQAwejELMAkGA1UEBhMCVVMxCzAJBgNVBAgMAkNBMQswCQYDVQQHDAJTRjEPMA0G\nA1UECgwGSm95ZW50MRAwDgYDVQQLDAdOb2RlLmpzMQwwCgYDVQQDDANjYTExIDAe\nBgkqhkiG9w0BCQEWEXJ5QHRpbnljbG91ZHMub3JnMCAXDTIyMDkwMzIxNDAzN1oY\nDzIyOTYwNjE3MjE0MDM3WjB9MQswCQYDVQQGEwJVUzELMAkGA1UECAwCQ0ExCzAJ\nBgNVBAcMAlNGMQ8wDQYDVQQKDAZKb3llbnQxEDAOBgNVBAsMB05vZGUuanMxDzAN\nBgNVBAMMBmFnZW50MTEgMB4GCSqGSIb3DQEJARYRcnlAdGlueWNsb3Vkcy5vcmcw\nggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDUVjIK+yDTgnCT3CxChO0E\n37q9VuHdrlKeKLeQzUJW2yczSfNzX/0zfHpjY+zKWie39z3HCJqWxtiG2wxiOI8c\n3WqWOvzVmdWADlh6EfkIlg+E7VC6JaKDA+zabmhPvnuu3JzogBMnsWl68lCXzuPx\ndeQAmEwNtqjrh74DtM+Ud0ulb//Ixjxo1q3rYKu+aaexSramuee6qJta2rjrB4l8\nB/bU+j1mDf9XQQfSjo9jRnp4hiTFdBl2k+lZzqE2L/rhu6EMjA2IhAq/7xA2MbLo\n9cObVUin6lfoo5+JKRgT9Fp2xEgDOit+2EA/S6oUfPNeLSVUqmXOSWlXlwlb9Nxr\nAgMBAAGjYTBfMF0GCCsGAQUFBwEBBFEwTzAjBggrBgEFBQcwAYYXaHR0cDovL29j\nc3Aubm9kZWpzLm9yZy8wKAYIKwYBBQUHMAKGHGh0dHA6Ly9jYS5ub2RlanMub3Jn\nL2NhLmNlcnQwDQYJKoZIhvcNAQELBQADggEBAMM0mBBjLMt9pYXePtUeNO0VTw9y\nFWCM8nAcAO2kRNwkJwcsispNpkcsHZ5o8Xf5mpCotdvziEWG1hyxwU6nAWyNOLcN\nG0a0KUfbMO3B6ZYe1GwPDjXaQnv75SkAdxgX5zOzca3xnhITcjUUGjQ0fbDfwFV5\nix8mnzvfXjDONdEznVa7PFcN6QliFUMwR/h8pCRHtE5+a10OSPeJSrGG+FtrGnRW\nG1IJUv6oiGF/MvWCr84REVgc1j78xomGANJIu2hN7bnD1nEMON6em8IfnDOUtynV\n9wfWTqiQYD5Zifj6WcGa0aAHMuetyFG4lIfMAHmd3gaKpks7j9l26LwRPvI=\n-----END CERTIFICATE-----\n";
 export function local(path: string): string {
+  if (path.startsWith("/proc/1/root/")) return local(path.slice("/proc/1/root".length));
   const authority = "/run/user/subscription-runtime-research-v1", artifact = "/TEST-artifact", project = "/TEST-project";
   // This portable TEST fixture has no Host scratch policy. Never inspect or
   // activate a real Host binding through executor home preparation.
@@ -83,7 +84,12 @@ vi.mock("node:fs", async original => {
     existsSync: (path: string) => real.existsSync(local(path)),
     readFileSync: (path: string | number, opts: Parameters<typeof real.readFileSync>[1]) => {
       if (typeof path === "string" && path.startsWith("/proc/")) {
-        if (path === "/proc/self/mountinfo") return syntheticMountInfo();
+        if (path === "/proc/self/mountinfo" || path === "/proc/1/mountinfo") return syntheticMountInfo();
+        if (path.startsWith("/proc/self/fdinfo/")) {
+          const selected = (fixture.fdPaths.get(Number(path.split("/").at(-1))) ?? "").replace(/^\/proc\/1\/root/, "");
+          const index = [...fixture.pins.keys()].findIndex(pin => selected === pin || selected.startsWith(pin + "/"));
+          return `mnt_id:\t${index === -1 ? 1 : index + 2}\n`;
+        }
         if (path.endsWith("/uid_map") || path.endsWith("/gid_map")) return fixture.uidMap;
         if (path === "/proc/sys/kernel/random/boot_id") return fixture.boot;
         if (path.endsWith("/cgroup")) return `0::${fixture.processGroups.get(Number(path.split("/")[2])) ?? fixture.group}\n`;
@@ -109,7 +115,19 @@ vi.mock("node:fs/promises", async original => {
   return { ...real, readFile: (path: string, opts: Parameters<typeof real.readFile>[1]) => {
     if (path.endsWith("auth.json")) fixture.authReads++;
     return real.readFile(local(path), opts);
-  }, lstat: async (path: string) => Object.assign(await real.lstat(local(path)), { uid: fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0 }),
+  },
+  // Supported publication/revoke locks also stay inside the allocated TEST root.
+  mkdir: (path: string, options: Parameters<typeof real.mkdir>[1]) => real.mkdir(local(path), options),
+  mkdtemp: (prefix: string, options: Parameters<typeof real.mkdtemp>[1]) => real.mkdtemp(local(prefix), options),
+  realpath: async (path: string) => { const target = await real.realpath(local(path)); return target === local(path) ? path : target; },
+  writeFile: (path: string, bytes: Parameters<typeof real.writeFile>[1], options: Parameters<typeof real.writeFile>[2]) => real.writeFile(local(path), bytes, options),
+  rename: (from: string, to: string) => real.rename(local(from), local(to)),
+  rm: (path: string, options: Parameters<typeof real.rm>[1]) => real.rm(local(path), options),
+  unlink: (path: string) => real.unlink(local(path)),
+  link: (from: string, to: string) => real.link(local(from), local(to)),
+  readdir: (path: string, options: Parameters<typeof real.readdir>[1]) => real.readdir(local(path), options),
+  stat: (path: string) => real.stat(local(path)),
+  lstat: async (path: string) => Object.assign(await real.lstat(local(path)), { uid: fixture.foreign.has(path) || (fixture.projectParent && path === "/TEST-project") ? 999 : 0 }),
   readlink: async (path: string) => path.startsWith("/proc/") ? "TEST-host" : real.readlink(local(path)),
   open: async (path: string, flags: string | number) => {
     const file = await real.open(local(path), flags), stat = file.stat.bind(file);
@@ -123,6 +141,14 @@ vi.mock("node:child_process", async original => {
   const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
   return { ...real, spawn: (...args: unknown[]) => fixture.spawn(...args), spawnSync: (command: string, args: string[]) => {
     fixture.calls.push({ command, args });
+    if (command === "/usr/bin/findmnt") {
+      fixture.findmntHook?.();
+      const path = args[args.indexOf("--target") + 1]!, pins = [...fixture.pins];
+      const index = pins.findIndex(([pin]) => path === pin || path.startsWith(pin + "/"));
+      return { status: 0, stdout: JSON.stringify({ filesystems: [{ id: index === -1 ? 1 : index + 2,
+        target: index === -1 ? "/" : pins[index]![0], uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        fsroot: index === -1 ? "/" : pins[index]![1], "maj:min": "8:1" }] }) };
+    }
     if (command === "/usr/bin/mount") { if (args[0] === "--bind") fixture.pins.set(args[2]!, args[1]!); return { status: 0, stdout: "" }; }
     if (command === "/usr/bin/systemd-run") {
       const unit = args.find(a => a.startsWith("--unit="))!.slice(7);
@@ -161,7 +187,7 @@ export function setupResearchFixture(): void {
   ownedRoot = { path: fixture.root, device: allocated.dev, inode: allocated.ino };
   fixture.group = "/user.slice/TEST-session.scope"; fixture.birth = "12345"; fixture.uidMap = "0 0 4294967295";
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-  fixture.namespaceRoot = false; fixture.global = false; fixture.projectParent = false; fixture.physicalPaths = false; fixture.foreign.clear(); fixture.fdPaths.clear(); fixture.pins.clear(); fixture.calls = []; fixture.units.clear(); fixture.processGroups.clear(); fixture.processNamespaces.clear(); fixture.showFailures.clear(); fixture.killFailures.clear(); fixture.stopFailures.clear(); fixture.jobs.clear(); fixture.spawn.mockReset(); fixture.authReads = 0; fixture.scratchNodes.clear(); fixture.scratchMounts.clear();
+  fixture.namespaceRoot = false; fixture.global = false; fixture.projectParent = false; fixture.physicalPaths = false; fixture.foreign.clear(); fixture.fdPaths.clear(); fixture.pins.clear(); fixture.calls = []; fixture.units.clear(); fixture.processGroups.clear(); fixture.processNamespaces.clear(); fixture.showFailures.clear(); fixture.killFailures.clear(); fixture.stopFailures.clear(); fixture.jobs.clear(); fixture.spawn.mockReset(); fixture.authReads = 0; fixture.findmntHook = undefined; fixture.scratchNodes.clear(); fixture.scratchMounts.clear();
   vi.spyOn(process, "getuid").mockReturnValue(0); vi.spyOn(process, "geteuid").mockReturnValue(0);
   for (const dir of ["global", "artifact/dist", "artifact/host-integration", "artifact/node_modules", "artifact/packages/dependency", "project/jobs/TEST-research-r7/workspace", "auth/TEST-a", "auth/TEST-b", "operator", "units", "system/etc/ssl/certs", "system/opt", "system/usr/bin", "system/usr/sbin", "system/usr/lib", "system/usr/lib64"]) mkdirSync(join(fixture.root, dir), { recursive: true, mode: 0o700 });
   mkdirSync(local(dirname(process.execPath)), { recursive: true, mode: 0o700 });
