@@ -211,6 +211,9 @@ export function assemble(root: string, state: string, source: string, toolchain:
   directory(root + "/etc/ssl/certs", 0o755);
   snapshotPublicFile("/etc/ssl/certs/ca-certificates.crt", root + "/etc/ssl/certs/ca-certificates.crt", 1024 * 1024);
   const units = root + "/etc/systemd/test-units";
+  // Unchanged transient services require sysinit.target through DefaultDependencies.
+  // This TEST target is inert; vendor initialization services stay outside the unit path.
+  writeFileSync(units + "/sysinit.target", "[Unit]\nDescription=Owned TEST system initialization target\nDefaultDependencies=no\n", { flag: "wx", mode: 0o644 });
   directory(root + dirname(SYSTEM_BUS_CONFIG_PATH), 0o755);
   writeFileSync(root + SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_CONFIG, { flag: "wx", mode: 0o600 });
   writeFileSync(units + "/dbus.service", SYSTEM_BUS_SERVICE_FRAGMENT, { flag: "wx", mode: 0o644 });
