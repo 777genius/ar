@@ -7,7 +7,8 @@ import type { HostedOrdinaryStart } from "@vioxen/subscription-runtime/worker-co
 // run unchanged; no host inventory, systemd manager or credentials are accessed.
 const os = vi.hoisted(() => ({ files: new Map<string, string>(), fileErrors: new Map<string, string>(), records: new Map<string, Buffer>(),
   groups: new Map<string, string[]>(), units: "", jobs: "", show: new Map<string, string>(),
-  descriptors: vi.fn(), operator: vi.fn(), systemctl: vi.fn() }));
+  descriptors: vi.fn(), operator: vi.fn(), systemctl: vi.fn(),
+  externalExec: vi.fn<typeof import("node:child_process").execFile>(() => { throw new Error("TEST external exec forbidden"); }) }));
 vi.mock("node:fs", async original => ({
   ...await original<typeof import("node:fs")>(),
   readFileSync: (path: string) => {
@@ -23,7 +24,10 @@ vi.mock("node:fs", async original => ({
   readSync: (_fd: number, buffer: Buffer) => { buffer.write("reviewed"); return 8; },
   closeSync: () => {},
 }));
-vi.mock("node:child_process", () => ({ spawnSync: (...args: unknown[]) => os.systemctl(...args) }));
+vi.mock("node:child_process", () => ({
+  execFile: os.externalExec,
+  spawnSync: (...args: unknown[]) => os.systemctl(...args),
+}));
 vi.mock("../hosted-readonly-authority", async original => ({
   ...await original<typeof import("../hosted-readonly-authority")>(), assertReadonlyHostOperator: os.operator,
 }));

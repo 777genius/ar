@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { codexGoalAccountSlots, runCodexGoal } from "../codex-goal-runner";
 import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
 import { FakeAppServerFactory } from "../../provider-codex/app-server/testing/fake-app-server";
@@ -24,7 +24,7 @@ const inventoryBytes = () => Buffer.from(JSON.stringify({ schemaVersion: 2, host
 const facts = vi.hoisted(() => ({
   policy: vi.fn(), bytes: vi.fn(), grant: vi.fn(), grantFile: vi.fn(), review: vi.fn(),
   epoch: null as HostedCustodyEpoch | null, activationPhase: "EXCLUSIVE", records: new Map<string, Buffer>(),
-  snapshot: vi.fn(), reserve: vi.fn(), spawn: vi.fn(), stop: vi.fn(),
+  snapshot: vi.fn(), reserve: vi.fn(), spawn: vi.fn(), stop: vi.fn(), session: vi.fn(),
 }));
 vi.mock("@vioxen/subscription-runtime/provider-codex", async original => ({
   ...await original<typeof import("@vioxen/subscription-runtime/provider-codex")>(),
@@ -73,21 +73,27 @@ vi.mock("../hosted-readonly-epoch-store", () => ({
 vi.mock("../hosted-readonly-host-kernel", async original => ({
   ...await original<typeof import("../hosted-readonly-host-kernel")>(),
   readHostedReadonlyHostInventory: () => JSON.parse(inventoryBytes().toString()),
-  HostedReadonlyHostKernel: class {
-    session() { return { hostId: "synthetic-host", bootId: "synthetic-boot", supervisorId: "synthetic-supervisor" }; }
-    verifyRuntimeOwner() {} // Explicit synthetic outer ownership.
-    verifyExclusiveInventory() {}
-    verifyDescriptorBoundary() {}
-    fenceCreator(reservation: { startId: string; unit: string; creatorId: string }) {
-      if (!facts.records.has(completionPath(reservation))) throw new Error("creator_not_fenced");
-    }
-    drainQueuedStart() {}
-    confirmTerminalDescendants() {}
-  },
 }));
 vi.mock("node:child_process", async original => ({
   ...await original<typeof import("node:child_process")>(), spawn: facts.spawn, spawnSync: facts.stop,
 }));
+beforeEach(async () => {
+  // Partial-module imports can capture this real class through the research /
+  // supervisor cycle. Keep that class and replace only this fixture's finite
+  // OS observations on its actual prototype, including already-created instances.
+  const { HostedReadonlyHostKernel } = await vi.importActual<typeof import("../hosted-readonly-host-kernel")>("../hosted-readonly-host-kernel");
+  const prototype = HostedReadonlyHostKernel.prototype;
+  facts.session.mockReturnValue({ hostId: "synthetic-host", bootId: "synthetic-boot", supervisorId: "synthetic-supervisor" });
+  vi.spyOn(prototype, "session").mockImplementation(facts.session);
+  vi.spyOn(prototype, "verifyRuntimeOwner").mockImplementation(() => {});
+  vi.spyOn(prototype, "verifyExclusiveInventory").mockImplementation(() => {});
+  vi.spyOn(prototype, "verifyDescriptorBoundary").mockImplementation(() => {});
+  vi.spyOn(prototype, "fenceCreator").mockImplementation(reservation => {
+    if (!facts.records.has(completionPath(reservation))) throw new Error("creator_not_fenced");
+  });
+  vi.spyOn(prototype, "drainQueuedStart").mockImplementation(() => {});
+  vi.spyOn(prototype, "confirmTerminalDescendants").mockImplementation(() => {});
+});
 afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks(); });
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
@@ -190,6 +196,7 @@ it.each(["none", "revoked", "CLOSED", "ORDINARY", "missing"])("rechecks real adm
         })),
       });
     } });
+    expect(facts.session).toHaveBeenCalled();
     expect(result.attempts[0]?.failureReason).toBe("quota_limited");
     expect(facts.spawn).toHaveBeenCalledTimes(revoke ? 1 : 2);
     expect(serviceRecords()).toHaveLength(revoke ? 1 : 2);
