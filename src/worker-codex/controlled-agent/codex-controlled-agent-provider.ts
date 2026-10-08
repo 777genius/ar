@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { publishCodexEffectiveSeed, type CodexEffectiveSeed } from "../codex-effective-seed";
 
 import {
   DefaultRedactor,
@@ -62,6 +63,9 @@ export type CodexControlledAgentProviderOptions = {
   readonly controllerObjective?: string;
   readonly controllerRegistryRootDir?: string;
   readonly maxGoalTurns?: number;
+  /** Host-side login lineage captured by the supported runtime seed reader. */
+  readonly seedSource?: CodexEffectiveSeed;
+  readonly onSessionInvalid?: () => void;
 };
 
 type AttachedCodexControllerRun = {
@@ -150,8 +154,20 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
       runner: noShellRunner,
       redactor,
       abortSignal: abortController.signal,
-    }).then((result) => {
+    }).then(async (result) => {
       if (abortController.signal.aborted) return;
+      if (result.status === "failed" && result.failure.code === "provider_session_invalid") {
+        this.options.onSessionInvalid?.();
+      }
+      if (result.status === "completed" && result.sessionUpdate && this.options.seedSource) {
+        try {
+          await publishCodexEffectiveSeed(this.options.seedSource, codexAuthJsonFromArtifact(result.sessionUpdate));
+        } catch {
+          // The materialized controller home is retained by its existing
+          // lifecycle. Do not announce completion after losing shared custody.
+          throw new Error("Codex refresh publication failed; controller session home retained.");
+        }
+      }
       active.status = result.status === "completed"
         ? ControlledAgentRunStatus.Completed
         : result.status === "waiting_for_input"
@@ -164,6 +180,7 @@ export class CodexControlledAgentProvider implements ControlledAgentProviderPort
         : result.failure.safeMessage;
       active.completedAt = new Date().toISOString();
     }).catch((error: unknown) => {
+      if (driver.classifyRunFailure(error).code === "provider_session_invalid") this.options.onSessionInvalid?.();
       active.status = abortController.signal.aborted
         ? ControlledAgentRunStatus.Stopped
         : ControlledAgentRunStatus.Failed;

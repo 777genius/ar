@@ -35,7 +35,11 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-console.log(`dist contains ${requiredDistFiles.size} package entrypoints.`);
+const policy = await readFile(join(rootDir, "dist/provider-codex/app-server/adapters/hosted-host-policy.js"), "utf8");
+const generatedPolicy = await readFile(join(rootDir, "host-integration/managed-launcher/hosted-host-policy.mjs"), "utf8");
+if (generatedPolicy !== "// Generated from src/provider-codex/app-server/adapters/hosted-host-policy.ts.\n" +
+    policy.replace(/^\/\/# sourceMappingURL=.*$/m, "")) throw new Error("installed Host policy differs from its TypeScript authority");
+console.log(`dist contains ${requiredDistFiles.size} package entrypoints; installed Host policy matches.`);
 
 function collectExportDistPaths(exportTarget) {
   if (typeof exportTarget === "string") {

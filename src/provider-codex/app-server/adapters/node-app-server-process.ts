@@ -1,4 +1,3 @@
-import { assertHostedFdProcess } from "./hosted-fd-child";
 import { hostedDependencyProviderInvocation } from "./hosted-dependency-provider-launch";
 import type { DependencyToolReadyReader } from "../../../core/dependency-environment/dependency-tool-ready-reader";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -13,12 +12,13 @@ import type {
 import { requiresHostedProcessAdmission, submitHostedOrdinaryProcess, invalidateHostedOrdinaryWait, releaseHostedOrdinaryProcess,
   type HostedActivationFence } from "./hosted-process-activation";
 import { readHostedFdProfile } from "./hosted-fd-observation";
-import { spawnHostedFdChild, hostedFdLaunch, HostedFdLaunchKind } from "./hosted-fd-launch";
+import { spawnHostedFdChild, hostedFdLaunch, hostedFdCleanupUnit, HostedFdLaunchKind } from "./hosted-fd-launch";
 import { retryHostedFenceAcquisition } from "./hosted-fd-fence";
 import { abandonHostedDependencyToolInvocation, bindHostedDependencyToolChild } from "./hosted-dependency-tool-plan";
 import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-frame";
 import { hostedReadonlyMountProperties, type HostedReadonlyMounts } from "./hosted-readonly-mounts";
 import { codexProviderEgressProfileEnvVar, CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
+import { assertHostedBaselineIdentity, isHostedContainment } from "./hosted-host-policy";
 
 const hostedSandboxKind = "hosted-codex-job";
 const managedLauncherNodePath = process.execPath;
@@ -105,7 +105,7 @@ export function codexAppServerProcessInvocation(input: {
 }, admittedMounts?: HostedReadonlyMounts): CodexAppServerProcessInvocation {
   if (
     (input.platform ?? process.platform) !== "linux" ||
-    input.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== hostedSandboxKind
+    (input.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND !== hostedSandboxKind && !isHostedContainment(input.env))
   ) {
     if (admittedMounts) throw new Error("hosted_readonly_engine_unsupported");
     return { command: input.command, args: input.args };
@@ -130,7 +130,7 @@ export function codexAppServerProcessInvocation(input: {
       command: input.command,
       args: input.args,
       cwd: input.cwd,
-      env: { ...input.env, SUBSCRIPTION_RUNTIME_JOB_ID: jobId },
+      env: { ...input.env, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: hostedSandboxKind, SUBSCRIPTION_RUNTIME_JOB_ID: jobId },
     }),
     args: [
       managedLauncherPath,
@@ -149,7 +149,8 @@ export function spawnCodexAppServerProcess(input: {
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
 }, admittedMounts?: HostedReadonlyMounts, reservedSystemdUnit?: string, submission?: object): CodexAppServerChildProcess {
-  if (requiresHostedProcessAdmission(input.env) &&
+  const contained = isHostedContainment(input.env);
+  if (contained &&
       input.env[codexProviderEgressProfileEnvVar] === CodexProviderEgressProfileId.MimoTokenPlan) {
     throw new Error("hosted_mimo_activation_closed");
   }
@@ -166,8 +167,23 @@ export function spawnCodexAppServerProcess(input: {
     command: input.command, args: input.args, cwd: input.cwd, env: input.env,
     ...(reservedSystemdUnit ? { systemdUnit: reservedSystemdUnit } : {}),
   }, admittedMounts);
-  if (invocation.systemdUnit !== undefined && (!submission || !hostedSubmissions.delete(submission))) {
-    throw new Error("hosted_custody_synchronous_fence_required");
+  if (invocation.systemdUnit !== undefined) {
+    if (submission) {
+      if (!hostedSubmissions.delete(submission)) throw new Error("hosted_custody_synchronous_fence_required");
+    } else {
+      if (admittedMounts || reservedSystemdUnit) throw new Error("hosted_custody_synchronous_fence_required");
+      const frame = JSON.parse(invocation.stdinBootstrap!) as { env: Record<string, string> };
+      if (input.env[codexProviderEgressProfileEnvVar] !== undefined &&
+          ![CodexProviderEgressProfileId.ProviderApi, CodexProviderEgressProfileId.FullInternetV1]
+            .includes(input.env[codexProviderEgressProfileEnvVar] as CodexProviderEgressProfileId)) {
+        throw new Error("hosted_activation_authority_required");
+      }
+      assertHostedBaselineIdentity(frame.env.SUBSCRIPTION_RUNTIME_JOB_ID!);
+    }
+  } else if (process.platform === "linux" && process.getuid?.() === 0 && !submission) {
+    // An interrupted installation is authority even before a per-job origin
+    // exists. Unmarked native jobs retain their layout only on unenrolled Hosts.
+    assertHostedBaselineIdentity(input.env.SUBSCRIPTION_RUNTIME_JOB_ID);
   }
   return spawnInvocation(input, invocation);
 }
@@ -186,7 +202,7 @@ export function admittedDependencyToolCodexProcessFactory(readyReader: Dependenc
 function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
   invocation: CodexAppServerProcessInvocation,
   finalRelease?: (child: CodexAppServerChildProcess, release: (fence: HostedActivationFence, revalidate: () => void) => void) => void): CodexAppServerChildProcess {
-  const fdProfile = invocation.systemdUnit ? readHostedFdProfile() : undefined;
+  const fdProfile = invocation.systemdUnit && finalRelease ? readHostedFdProfile() : undefined;
   if (fdProfile) {
     if (!finalRelease || !invocation.systemdUnit || invocation.stdinBootstrap === undefined) {
       throw new Error("hosted_fd_final_authority_required");
@@ -284,8 +300,7 @@ export function signalCodexAppServerChildGroup(
   child: CodexAppServerChildProcess,
   signal: NodeJS.Signals,
 ): void {
-  let fdUnit: string | undefined;
-  try { const guard = hostedFdLaunch(child); assertHostedFdProcess(guard.child,guard.unit,guard.kind); fdUnit = guard.unit; } catch { /* Existing generic route below. */ }
+  const fdUnit = hostedFdCleanupUnit(child);
   invalidateHostedOrdinaryWait(child);
   const researchSignal = researchSignals.get(child);
   if (researchSignal) { researchSignal(signal); return; }

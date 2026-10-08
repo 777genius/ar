@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readdirSync, realpathSync, type BigIntStats } from "node:fs";
 import { dirname } from "node:path";
 import type { HostedDependencyRootDirectoryPin } from "../provider-codex/app-server/adapters/hosted-dependency-root-purpose-record";
 import type { HostedDependencyRootDescriptorMaterial } from "../provider-codex/app-server/adapters/hosted-dependency-root-descriptor-material";
@@ -85,4 +85,21 @@ export function sameRootDescriptorStat(a: BigIntStats, b: BigIntStats): boolean 
 export function assertHostedDependencyRootDirectoryPinFacts(pin:HostedDependencyRootDirectoryPin):void {
   if (!pin || Object.keys(pin).sort().join(",") !== "canonicalPath,dev,ino,mountId" ||
       JSON.stringify(readHostedDependencyRootDirectoryPin(pin.canonicalPath)) !== JSON.stringify(pin)) invalid();
+}
+
+/** Fixed current FD census over the genuine owner-selected descriptor material. No registration or issuer. */
+export function assertHostedDependencyRootDescriptorCensus(materials:readonly HostedDependencyRootDescriptorMaterial[]): void {
+  if (materials.length > 256) invalid();
+  for (const material of materials.values()) assertHostedDependencyRootDescriptorMaterial(material);
+  for (const fd of [0,1,2]) { const stat = fstatSync(fd); if (!stat.isFIFO() && !stat.isSocket()) invalid(); }
+  const names = readdirSync("/proc/self/fd"); if (names.length > 512) invalid();
+  for (const name of names) {
+    if (!/^(?:0|[1-9][0-9]{0,5})$/.test(name)) invalid(); const fd = Number(name); if (fd <= 2) continue;
+    try {
+      const stat = fstatSync(fd); if (!stat.isFile() && !stat.isDirectory()) continue;
+      const associated = materials.find(material => material.fd === fd ||
+        [...material.ancestors,...material.dependencies].some(anchor => anchor.fd === fd));
+      if (!associated) invalid(); assertHostedDependencyRootDescriptorMaterial(associated);
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EBADF") throw error; }
+  }
 }
