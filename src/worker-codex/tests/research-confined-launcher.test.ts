@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
+import { hostedResearchSetupTimeoutMs } from "../../provider-codex/app-server/adapters/hosted-app-server-launch-frame";
 
 // Execute the actual adapter source in fresh Node children with real pipe/fd
 // checks. Only TS syntax/import suffixes are translated; no systemd/unshare,
@@ -18,7 +19,7 @@ beforeAll(() => {
   // Only the module invocation is observed; no admission/service/provider runs.
   writeFileSync(join(helper, "dist/worker-codex/research-provider-service.js"),
     'export async function runResearchProviderService(...args) { process.stdout.write(JSON.stringify(args)); }');
-  for (const name of ["hosted-app-server-launcher", "hosted-app-server-launch-frame", "hosted-process-descriptors"]) {
+  for (const name of ["hosted-app-server-launcher", "hosted-app-server-launch-frame", "hosted-process-descriptors", "hosted-fd-prelude"]) {
     const source = readFileSync(join(process.cwd(), "src/provider-codex/app-server/adapters", name + ".ts"), "utf8");
     const translated = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText
       .replace(/from "\.\/(hosted-[a-z-]+)"/g, 'from "./$1.mjs"');
@@ -68,6 +69,18 @@ describe("fixed pre-bootstrap ready mode in the actual launcher (real isolated c
       expect(probe.output()).toEqual({ stdout: ready + "TEST-native:request\n", stderr: "" });
     } finally { if (probe.child.exitCode === null) probe.child.kill("SIGTERM"); }
   });
+  it("keeps the real launcher ready while final Host verification takes more than ten seconds", async () => {
+    const probe = launch();
+    try {
+      expect(await probe.first).toBe(ready);
+      await new Promise(resolve => setTimeout(resolve, 11_000));
+      expect(probe.child.exitCode).toBeNull();
+      expect(probe.output()).toEqual({ stdout: ready, stderr: "" });
+      probe.child.stdin!.end(bootstrap() + "verified\n");
+      expect(await probe.exited).toBe(0);
+      expect(probe.output()).toEqual({ stdout: ready + "TEST-native:verified\n", stderr: "" });
+    } finally { if (probe.child.exitCode === null) probe.child.kill("SIGTERM"); }
+  });
   it("keeps the ordinary no-argument protocol free of ready frames", async () => {
     const probe = launch([]); probe.child.stdin!.end(bootstrap() + "ordinary\n");
     expect(await probe.exited).toBe(0); expect(probe.output().stdout).toBe("TEST-native:ordinary\n");
@@ -101,5 +114,5 @@ describe("fixed pre-bootstrap ready mode in the actual launcher (real isolated c
       expect(probe.output().stderr).toContain(fault === "timeout" ? "research_bootstrap_timeout" :
         fault === "eof" ? "launch_frame_missing" : fault === "oversize" ? "launch_frame_too_large" : "launch_frame_invalid");
     } finally { if (probe.child.exitCode === null) probe.child.kill("SIGTERM"); }
-  });
+  }, hostedResearchSetupTimeoutMs + 10_000);
 });

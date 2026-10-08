@@ -1,7 +1,7 @@
-import { fstatSync, readdirSync } from "node:fs";
+import { fstatSync, readFileSync, readlinkSync, readdirSync } from "node:fs";
 
-/** Fixed launch-boundary check. Node's explicit three-pipe spawn also closes all
- * other descriptors in the child. Reject file/directory handles before provider
+/** Legacy launch-boundary check. Explicit stdio alone does not establish peer
+ * provenance or close every inherited FD. Reject file/directory handles before provider
  * code runs, including readonly and O_PATH handles reopenable through procfs. */
 export function assertHostedProcessDescriptors(): void {
   for (const descriptor of [0, 1, 2]) {
@@ -20,5 +20,38 @@ export function assertHostedProcessDescriptors(): void {
       // handle is ignored merely because its readlink target looks harmless.
       if ((error as NodeJS.ErrnoException).code !== "EBADF") throw error;
     }
+  }
+}
+
+/** Additional self check in the fixed schema4 prelude, before its ready marker.
+ * Actual retained parent peer/closure/qualified-count proof is still required.
+ * These finite maxima cannot grant an inherited socket or generic anon_inode. */
+export function assertHostedFdPreludeDescriptors(): void {
+  assertHostedProcessDescriptors();
+  const count = { eventPoll: 0, eventFd: 0, pipe: 0, devNull: 0 };
+  const names = readdirSync("/proc/self/fd");
+  if (names.length > 256) throw new Error("hosted_fd_prelude_descriptors_denied");
+  for (const name of names) {
+    if (!/^(?:0|[1-9][0-9]{0,5})$/.test(name)) throw new Error("hosted_fd_prelude_descriptors_denied");
+    const fd = Number(name);
+    if (fd <= 2) continue;
+    try {
+      const stat = fstatSync(fd), target = readlinkSync(`/proc/self/fd/${fd}`);
+      const flags = /^flags:\s+([0-7]{1,12})$/m.exec(readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"));
+      const value = flags ? Number.parseInt(flags[1]!, 8) : 0;
+      if (!flags || !(value & 0o2000000) || value & 0o10000000) throw new Error("hosted_fd_prelude_descriptors_denied");
+      if (target === "anon_inode:[eventpoll]" && !stat.isSocket() && !stat.isFile() && !stat.isDirectory()) count.eventPoll++;
+      else if (target === "anon_inode:[eventfd]" && !stat.isSocket() && !stat.isFile() && !stat.isDirectory()) count.eventFd++;
+      else if (stat.isFIFO() && /^pipe:\[[1-9][0-9]*\]$/.test(target)) count.pipe++;
+      else if (stat.isCharacterDevice() && stat.rdev === 259 && (value & 3) === 0) count.devNull++;
+      else throw new Error("hosted_fd_prelude_descriptors_denied");
+    } catch (error) {
+      try { fstatSync(fd); }
+      catch (closed) { if ((closed as NodeJS.ErrnoException).code === "EBADF") continue; }
+      throw error;
+    }
+  }
+  if (count.eventPoll > 8 || count.eventFd > 8 || count.pipe > 32 || count.devNull > 8) {
+    throw new Error("hosted_fd_prelude_descriptors_denied");
   }
 }

@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { DependencyAdmissionError, DependencyAdmissionFailure, DependencyOwnerPhase,
-  sameDependencyWorkspace, parseDependencyOwner, isDependencyConsumerOwner, type DependencyWorkspaceIdentity, type DependencyAttempt } from "@vioxen/subscription-runtime/core";
+  sameDependencyWorkspace, parseDependencyOwner, isDependencyConsumerOwner, readSystemBusInfrastructureField, readFdCollectorProfileField,
+  type DependencyWorkspaceIdentity, type DependencyAttempt } from "@vioxen/subscription-runtime/core";
+import { verifySystemBusInfrastructure } from "./system-bus-infrastructure";
+import { readHostedFdProfile } from "./hosted-fd-observation";
 import { assertHostedActivationOperator, decodeHostedActivationBytes, readHostedActivationBytes } from "./hosted-process-activation";
 
 export const hostedDependencyPolicyRoot = "/var/lib/subscription-runtime-host-policy";
@@ -93,8 +96,35 @@ export function assertHostedDependencyQualifiedInventory(): void {
   if (!installationBytes || !inventoryBytes || !activationBytes) invalid();
   const installation = object(decodeHostedActivationBytes(installationBytes)),
     inventory = object(decodeHostedActivationBytes(inventoryBytes)), activation = object(decodeHostedActivationBytes(activationBytes));
-  if (installation.inventorySha256 !== hash(inventoryBytes.toString("utf8")) || inventory.schemaVersion !== 2 ||
+  if (installation.inventorySha256 !== hash(inventoryBytes.toString("utf8")) || (inventory.schemaVersion !== 2 && inventory.schemaVersion !== 3 && inventory.schemaVersion !== 4) ||
       !Array.isArray(inventory.ordinaryCreators) || !inventory.ordinaryCreators.length || !Array.isArray(activation.ordinaryStarts)) invalid();
+  // Revision 3 cannot be downgraded or smuggle an ignored infrastructure role
+  // into the qualified installed-artifact hash. Revision 2 keeps its contract.
+  const systemBusInfrastructure = readSystemBusInfrastructureField(inventory);
+  const collectorProfile = readFdCollectorProfileField(inventory);
+  if (collectorProfile && !readHostedFdProfile()) invalid();
+  if (systemBusInfrastructure) {
+    if (Object.keys(inventory).sort().join(",") !== (collectorProfile ? "collectorProfile," : "") + "disabledCreators,hostId,ordinaryCreators,runtimeLaunch,schemaVersion,supervisorUnit,systemBusInfrastructure,units" ||
+        inventory.supervisorUnit === "dbus.service" || !Array.isArray(inventory.units) || !inventory.units.length || inventory.units.length > 128 ||
+        typeof inventory.hostId !== "string" || !/^[a-f0-9]{32}$/.test(inventory.hostId)) invalid();
+    const units = inventory.units.map(value => {
+      const row = object(value);
+      if (Object.keys(row).sort().join(",") !== "controlGroup,fragmentSha256,name" || typeof row.name !== "string" ||
+          !/^[A-Za-z0-9_@.-]+\.(service|scope)$/.test(row.name) || row.name.startsWith("subscription-runtime-hosted-") ||
+          typeof row.controlGroup !== "string" || !/^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(row.controlGroup) ||
+          row.controlGroup.split("/").some(part => part === "." || part === "..") || typeof row.fragmentSha256 !== "string" ||
+          !/^[a-f0-9]{64}$/.test(row.fragmentSha256)) invalid();
+      return row;
+    });
+    if (new Set(units.map(row => row.name)).size !== units.length || new Set(units.map(row => row.controlGroup)).size !== units.length ||
+        !units.some(row => row.name === inventory.supervisorUnit) || !units.some(row => row.name === "dbus.service" &&
+          row.controlGroup === systemBusInfrastructure.service.controlGroup && row.fragmentSha256 === systemBusInfrastructure.service.fragmentSha256) ||
+        !Array.isArray(inventory.disabledCreators) || inventory.disabledCreators.length > 128 ||
+        new Set(inventory.disabledCreators).size !== inventory.disabledCreators.length || inventory.disabledCreators.some(name =>
+          typeof name !== "string" || name.length > 200 || !/^[A-Za-z0-9_@.-]+\.(service|socket|timer)$/.test(name) ||
+          name === "dbus.socket" || units.some(row => row.name === name))) invalid();
+    verifySystemBusInfrastructure(systemBusInfrastructure);
+  }
   for (const value of inventory.ordinaryCreators) {
     if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
     const v = value as Record<string, unknown>;

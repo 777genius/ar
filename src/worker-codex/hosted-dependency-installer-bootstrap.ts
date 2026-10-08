@@ -2,6 +2,27 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, writeSync } from "node:fs";
 
+// This exact switch is emitted only by the protected schema4 recipe. EOF on
+// the one newly-created private stdin is the release boundary. No profile,
+// package, lock or npm input is read before it; legacy all-ignore stays intact.
+if (process.argv.length !== 2 && !(process.argv.length === 3 && process.argv[2] === "--fd-ready-v1")) process.exit(70);
+if (process.argv.length === 3) {
+  await new Promise<void>((resolve, reject) => {
+    let bytes = Buffer.alloc(0);
+    const timer = setTimeout(() => reject(new Error("dependency_installer_release_timeout")), 60_000);
+    process.stdin.on("data", (chunk: Buffer) => {
+      if (bytes.length + chunk.length > 128) { clearTimeout(timer); reject(new Error("dependency_installer_release_denied")); return; }
+      bytes = Buffer.concat([bytes, chunk]);
+    });
+    process.stdin.once("error", error => { clearTimeout(timer); reject(error); });
+    process.stdin.once("end", () => {
+      clearTimeout(timer);
+      if (!bytes.equals(Buffer.from("subscription-runtime-installer-fd-release-v1\n"))) reject(new Error("dependency_installer_release_denied"));
+      else resolve();
+    });
+  }).catch(() => process.exit(70));
+}
+
 /** Fixed unprivileged contained payload. It has no launch/store authority and
  * reads only its readonly closed profile plus package/lock staging mounts. */
 const groups = process.getgroups?.(); // Node appends effective GID to this API.

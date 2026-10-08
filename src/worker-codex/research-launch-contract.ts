@@ -5,10 +5,11 @@ import { join } from "node:path";
 import { researchHash, researchId, researchInvalid, researchPath, researchRecord, type ResearchDirectoryIdentity } from "./research-launch-files";
 import type { ResearchProcessIdentity, ResearchServiceIdentity } from "./research-launch-host";
 import { parseResearchDurableDirectory, type ResearchDurableDirectory } from "./research-durable-handoff-directory";
+import { hostedResearchSetupTimeoutMs } from "../provider-codex/app-server/adapters/hosted-app-server-launch-frame";
 
 // Host-owned finite bound: systemd namespace setup timed out at 179.984s before
 // provider exec; allow five minutes for OS setup and readiness/ownership handoff.
-export const researchProviderSetupTimeoutMs = 300_000;
+export const researchProviderSetupTimeoutMs = hostedResearchSetupTimeoutMs;
 
 export type ResearchOperatorRequest = Readonly<{
   schemaVersion: 1; jobId: string; taskId: string; jobRootDir: string; workspacePath: string;

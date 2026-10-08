@@ -105,7 +105,24 @@ export function admitHostedReadonlyInputs(input: HostedTestEgressIdentity & {
       });
       return child;
     });
-  });
+  }, (unit, _child, release) => withReadonlyCustodyLock(identity.jobId, () => {
+    const revalidate = () => {
+    const fresh = readHostedReadonlyPolicy(identity.jobId);
+    if (!fresh || !fresh.bytes.equals(initial.bytes) || readHostedPrivateBytes(join(readonlyRevokedRoot, name), 4096) ||
+        !readHostedPrivateBytes(join(readonlyCustodyRoot, name), 4096)?.equals(leaseBytes) ||
+        !readReadonlyManagedGrant(identity).equals(grantBytes)) throw new Error("hosted_readonly_admission_changed");
+    const currentReview = readReadonlyReview(fresh.policy);
+    if (!currentReview.reviewBytes.equals(review.reviewBytes) || !currentReview.stageBytes.equals(review.stageBytes) ||
+        readonlyCustodySnapshot(fresh.policy) !== snapshot) throw new Error("hosted_readonly_custody_changed");
+    const retained = readHostedPrivateBytes(join(readonlyServiceRoot, name, unit + ".json"), 4096);
+    if (!retained || JSON.stringify(decodePrivateJson(retained)) !== JSON.stringify({ schemaVersion: 1, jobId: identity.jobId, unit })) {
+      throw new Error("hosted_readonly_admission_changed");
+    }
+    };
+    revalidate();
+    host.releaseProviderFrame(unit, identity, (fence, revalidateHost) =>
+      release(fence, () => { revalidate(); revalidateHost(); }));
+  }));
   const factory: CodexAppServerProcessFactory = launch => withReadonlyCustodyLock(identity.jobId, () => {
     assertReadonlyHostOperator();
     const fresh = readHostedReadonlyPolicy(identity.jobId);
