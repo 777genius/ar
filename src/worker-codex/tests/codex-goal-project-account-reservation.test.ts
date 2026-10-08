@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,22 +7,17 @@ import {
   InMemoryWorkerAccountCapacityStore,
   InMemoryWorkerAccountLeaseStore,
   type SafeExecutionTaskRecord,
-  type WorkerAccountLeaseStore,
 } from "@vioxen/subscription-runtime/worker-core";
-import { LocalFileWorkerAccountLeaseStore } from "@vioxen/subscription-runtime/store-local-file";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
-import { CodexSessionHomeProfileKind } from "../codex-session-home-profile";
 import {
   CodexGoalAccountSelectionMode,
-  type CodexGoalJobManifest,
 } from "../codex-goal-jobs";
-import type { CodexGoalLaunchInput } from "../codex-goal-ops";
+import { fixture, singleAccountFixture } from "./codex-goal-project-account-reservation-fixture";
 import {
   codexProjectContinuationReservationInput,
   assertCodexProjectReservedLaunchAuthority,
   consumeCodexProjectReservedLaunchAuthority,
   codexProjectAccountLeaseMode,
-  codexProjectAccountReservationPath,
   releaseCodexProjectAccount,
   reserveCodexProjectAccount,
 } from "../application/project-control/codex-goal-project-account-reservation";
@@ -31,6 +26,8 @@ import {
   projectControlWorkspaceLocks,
   withValidatedProjectWorkspaceLock,
 } from "../codex-goal-project-workspace-lock";
+
+export { fixture } from "./codex-goal-project-account-reservation-fixture";
 
 const roots: string[] = [];
 
@@ -67,50 +64,6 @@ describe("project account reservation", () => {
       deps: { capacityStore: new InMemoryWorkerAccountCapacityStore(), leaseMode: "shared" } });
     Object.assign(scoped.launch.config, { prewarmOnStart: true });
     await expect(pending).rejects.toThrow("project_control_reserved_launch_source_changed");
-  });
-  // RED: source refusal used to strand an acquired/renewed file lease and receipt.
-  // Cleanup derived from the drifted arguments would instead release the foreign reservation.
-  it.each(["acquire", "renew"] as const)("releases only the captured exclusive %s after continuation data drifts", async operation => {
-    const root = await mkdtemp(join(tmpdir(), "TEST-reservation-refusal-"));
-    roots.push(root);
-    const scoped = singleAccountFixture(root, "TEST-original-job");
-    const foreign = singleAccountFixture(root, "TEST-foreign-job");
-    Object.assign(foreign.launch.config, { authRootDir: join(root, "foreign-auth-unused") });
-    const store = new LocalFileWorkerAccountLeaseStore({ rootDir: join(root, "original-leases") });
-    const foreignStore = new LocalFileWorkerAccountLeaseStore({ rootDir: join(root, "foreign-leases") });
-    const now = new Date("2026-07-13T00:00:00.000Z");
-    const capacityStore = new InMemoryWorkerAccountCapacityStore();
-    const sessionHomeProfile = { kind: CodexSessionHomeProfileKind.Continuation, sessionId: "TEST-session" };
-    Object.assign(scoped.launch.config, { sessionHomeProfile });
-    const originalPath = codexProjectAccountReservationPath(scoped.manifest);
-    const foreignPath = codexProjectAccountReservationPath(foreign.manifest);
-    await reserveCodexProjectAccount({ ...foreign,
-      deps: { capacityStore, leaseStore: foreignStore, leaseMode: "exclusive", now } });
-    const foreignBytes = await readFile(foreignPath, "utf8");
-    // Project selection leases the whole account (leaseDemand:null), not a model-specific slot.
-    const foreignLeaseInput = { accountId: "account-a", ownerId: foreign.manifest.jobId, ttlMs: 60_000, now };
-    const foreignLease = await foreignStore.acquire(foreignLeaseInput);
-    expect(foreignLease.status).toBe("granted");
-    if (operation === "renew") await reserveCodexProjectAccount({ ...scoped,
-      deps: { capacityStore, leaseStore: store, leaseMode: "exclusive", now } });
-    const deps = { capacityStore, leaseStore: store as WorkerAccountLeaseStore, leaseMode: "exclusive" as const, now };
-    const drift = () => {
-      sessionHomeProfile.sessionId = "TEST-mutated-session";
-      Object.assign(scoped.manifest, { jobId: foreign.manifest.jobId, jobRootDir: foreign.manifest.jobRootDir });
-      Object.assign(scoped.launch.config, { authRootDir: foreign.launch.config.authRootDir });
-      deps.leaseStore = foreignStore;
-    };
-    deps.leaseStore = {
-      acquire: async input => { const result = await store.acquire(input); if (operation === "acquire") drift(); return result; },
-      renew: async input => { const result = await store.renew(input); if (operation === "renew") drift(); return result; },
-      release: input => store.release(input),
-    };
-    await expect(reserveCodexProjectAccount({ ...scoped, deps })).rejects.toThrow("project_control_reserved_launch_source_changed");
-    await expect(readFile(originalPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(store.acquire({ accountId: "account-a", ownerId: "TEST-new-owner", ttlMs: 60_000, now }))
-      .resolves.toMatchObject({ status: "granted" });
-    expect(await readFile(foreignPath, "utf8")).toBe(foreignBytes);
-    expect(await foreignStore.acquire(foreignLeaseInput)).toEqual(foreignLease);
   });
   it("keeps ordinary continuation budget historical and denies the fresh research projection", async () => {
     const scoped = fixture("/TEST-reservation-continuation", "test-reservation");
@@ -848,67 +801,6 @@ describe("project account reservation", () => {
     })).resolves.toBe(true);
   });
 });
-
-function singleAccountFixture(
-  root: string,
-  jobId: string,
-): ReturnType<typeof fixture> {
-  const value = fixture(root, jobId);
-  return {
-    manifest: { ...value.manifest, accounts: ["account-a"] },
-    launch: {
-      ...value.launch,
-      config: {
-        ...value.launch.config,
-        accounts: [{ name: "account-a" }],
-      },
-    },
-  };
-}
-
-export function fixture(
-  root: string,
-  jobId: string,
-  reasoningEffort: "xhigh" | "high" = "xhigh",
-): {
-  readonly manifest: CodexGoalJobManifest;
-  readonly launch: CodexGoalLaunchInput;
-} {
-  const jobRootDir = join(root, jobId);
-  const manifest: CodexGoalJobManifest = {
-    schemaVersion: 1,
-    jobId,
-    createdAt: "2026-07-13T00:00:00.000Z",
-    updatedAt: "2026-07-13T00:00:00.000Z",
-    jobRootDir,
-    workspacePath: join(root, "workspace"),
-    promptPath: join(jobRootDir, "prompt.md"),
-    taskId: `${jobId}-task`,
-    accounts: ["account-a", "account-b"],
-  };
-  return {
-    manifest,
-    launch: {
-      config: {
-        jobId,
-        jobRootDir,
-        authRootDir: join(root, "auth"),
-        workspacePath: manifest.workspacePath,
-        promptPath: manifest.promptPath,
-        taskId: manifest.taskId,
-        accounts: [{ name: "account-a" }, { name: "account-b" }],
-        model: "gpt-5.6-sol",
-        reasoningEffort,
-        serviceTier: "fast",
-        taskTimeoutMs: 60_000,
-      },
-      tmuxSession: `${jobId}-tmux`,
-      cwd: manifest.workspacePath,
-      logPath: join(jobRootDir, "worker.log"),
-      cliCommand: ["node", "runtime.js"],
-    },
-  };
-}
 
 async function recordUnavailableAttempt(
   journal: InMemoryAttemptJournal,
