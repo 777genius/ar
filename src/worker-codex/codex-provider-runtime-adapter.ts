@@ -1,7 +1,7 @@
 import { admitHostedControllerLaunch } from "./hosted-readonly-controller-admission";
 import { withControlledAgentEgress } from "./controlled-agent/codex-controlled-agent-profile";
 import { createCodexGoalObservationContext } from "./application/codex-goal-observation-context";
-import { readFile } from "node:fs/promises";
+import { readCodexEffectiveSeed, type CodexEffectiveSeed } from "./codex-effective-seed";
 import { resolve } from "node:path";
 import type { SessionArtifact } from "@vioxen/subscription-runtime/core";
 import {
@@ -11,6 +11,7 @@ import {
 } from "@vioxen/subscription-runtime/provider-codex";
 import {
   RunEventProviderKind,
+  WorkerAccountCapacitySignalScope,
   type ProjectAccessScope,
   type ProviderControlledAgentInput,
   type ProviderControlledAgentResult,
@@ -38,6 +39,8 @@ import {
   selectProjectControllerCodexAccountSlot,
 } from "./application/project-control/codex-goal-project-controller-account-selection";
 import type { ProjectControllerOptions } from "./application/project-control/codex-goal-project-controller-options";
+import { codexSessionCapacityAccountId } from "./codex-session-capacity-identity";
+import { codexAccountCapacityStore } from "./application/codex-account-capacity-store";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -137,6 +140,8 @@ class CodexProviderRuntimeAdapter implements ProviderRuntimeAdapter {
         processFactory: admitted.processFactory,
         sourceEnv: launch.config.sourceEnv ?? process.env,
         sessionArtifact: account.sessionArtifact,
+        ...(account.seedSource ? { seedSource: account.seedSource } : {}),
+        ...(account.onSessionInvalid ? { onSessionInvalid: account.onSessionInvalid } : {}),
         modelBackend,
         ...(account.mimoApiKeyEnvVarName === undefined
           ? {}
@@ -158,6 +163,7 @@ class CodexProviderRuntimeAdapter implements ProviderRuntimeAdapter {
       }),
       account: {
         name: account.name,
+        ...(account.capacitySessionId ? { capacitySessionId: account.capacitySessionId } : {}),
         ...(account.authJsonSha256Prefix === undefined
           ? {}
           : { authJsonSha256Prefix: account.authJsonSha256Prefix }),
@@ -186,13 +192,18 @@ function codexControllerProfile(
   };
 }
 
-async function controlledAgentCodexAccount(input: {
+/** Scoped host-side controller seed reader. It supplies data and captured
+ * invalidation linkage; it grants no launch or provider admission authority. */
+export async function controlledAgentCodexAccount(input: {
   readonly scope: ProjectAccessScope;
   readonly launch: CodexGoalLaunchInput;
 }): Promise<{
   readonly name: string;
+  readonly capacitySessionId?: string;
   readonly authJsonSha256Prefix?: string;
   readonly sessionArtifact: SessionArtifact | null;
+  readonly seedSource?: CodexEffectiveSeed;
+  readonly onSessionInvalid?: () => void;
   readonly mimoApiKeyEnvVarName?: string;
 }> {
   if (!input.scope.authRoot) {
@@ -236,12 +247,27 @@ async function controlledAgentCodexAccount(input: {
         : { mimoApiKeyEnvVarName: selected.envVarName }),
     };
   }
-  const authJsonBytes = await readFile(selected.authJsonPath, "utf8");
+  const seedSource = await readCodexEffectiveSeed(selected.authJsonPath);
+  const authJsonBytes = seedSource.bytes;
+  const capacitySessionId = codexSessionCapacityAccountId(JSON.parse(authJsonBytes));
   return {
     name: selected.name,
+    ...(capacitySessionId ? { capacitySessionId } : {}),
     ...(selected.authJsonSha256Prefix === undefined
       ? {}
       : { authJsonSha256Prefix: selected.authJsonSha256Prefix }),
     sessionArtifact: sessionArtifactFromCodexAuthJson(authJsonBytes),
+    seedSource,
+    onSessionInvalid: () => {
+      // Fence both captured identities; never reread a concurrent new login.
+      const store = codexAccountCapacityStore(input.launch.config.authRootDir);
+      for (const bytes of [seedSource.bytes, seedSource.source]) {
+        const sessionId = codexSessionCapacityAccountId(JSON.parse(bytes));
+        if (sessionId) store.observe({ accountId: sessionId,
+          scope: WorkerAccountCapacitySignalScope.AccountWide,
+          capacity: { availability: "disabled", reason: "provider_session_invalid", details: { capacitySessionId: sessionId } },
+          observedAt: new Date() });
+      }
+    },
   };
 }

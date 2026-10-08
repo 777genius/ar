@@ -35,6 +35,7 @@ import {
   subscriptionWorkerUsageFromError,
   SubscriptionWorkerError,
   WorkerControlService,
+  WorkerAccountCapacitySignalScope,
   type AttemptJournal,
   type SafeExecutionPolicy,
   type SafeExecutionRunResult,
@@ -245,7 +246,7 @@ export class FileBackendCodexSafeExecutor {
       slotSelector: ({ slots }) => this.selectRoundRobinSlot(slots),
       workerFactory: accountCapacityAwareWorkerFactory({
         accountCapacityStore: this.accountCapacityStore,
-        accountWideLimitReasons: ["quota_limited"],
+        accountWideLimitReasons: ["quota_limited", "provider_session_invalid"],
         requireCapacityRecheckWhenDue: true,
         recheckClaimTtlMs: 5 * 60_000,
         recheckFailureCooldownMs: 60_000,
@@ -276,6 +277,16 @@ export class FileBackendCodexSafeExecutor {
           }
           const worker = new FileBackendCodexWorker({
             ...account.worker,
+            onSessionInvalid: (capacity) => {
+              this.accountCapacityStore.observe({
+                accountId: account.worker.capacityAccountId ?? safeExecutorAccountLabel(account, slotIndex),
+                scope: WorkerAccountCapacitySignalScope.AccountWide,
+                capacity,
+                observedAt: capacity.lastLimitSignalAt ?? options.clock?.now() ?? new Date(),
+                sourceWorkerId: workerId,
+              });
+              account.worker.onSessionInvalid?.(capacity);
+            },
             ...(options.runtimeHomeRootDir === undefined
               ? {}
               : { runtimeHomeRootDir: options.runtimeHomeRootDir }),
