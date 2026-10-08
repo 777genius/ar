@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, fstatSync, openSync, readlinkSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readlinkSync, readSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 export type ScratchMount = { target?: string; uuid?: string; fsroot?: string };
@@ -14,14 +14,21 @@ function decode(value: string): string {
   if (/\\(?!040|011|012|134)/.test(value)) return fail();
   return value.replace(/\\(040|011|012|134)/g, (_, digits: string) => String.fromCharCode(parseInt(digits, 8)));
 }
-function mountRecord(id: number, table: string): Record {
-  const rows = table.trimEnd().split("\n").filter(line => line.split(" ", 1)[0] === String(id));
+function mountLine(id: number, table: string): string {
+  const prefix = String(id) + " ";
+  const rows = table.trimEnd().split("\n").filter(line => line.startsWith(prefix));
   if (rows.length !== 1) return fail();
-  const parts = rows[0]!.split(" "), separator = parts.indexOf("-");
+  return rows[0]!;
+}
+function parseMountRecord(id: number, line: string): Record {
+  const parts = line.split(" "), separator = parts.indexOf("-");
   if (separator < 6 || parts.length < separator + 4 || !parts[3] || !parts[4]) return fail();
   const root = decode(parts[3]), target = decode(parts[4]);
   if (!isAbsolute(root) || !isAbsolute(target) || resolve(target) !== target) return fail();
   return { id, root, target };
+}
+function mountRecord(id: number, table: string): Record {
+  return parseMountRecord(id, mountLine(id, table));
 }
 /** Kernel record contract: hidden rows grant no mount authority at the named directory. */
 export function selectVisibleScratchMount(path: string, mountId: number, table: string, query: unknown): ScratchMount | undefined {
@@ -47,7 +54,7 @@ function boundedRead(path: string, maximum: number): string {
   const fd = openSync(path, constants.O_RDONLY), chunks: Buffer[] = [];
   let total = 0;
   try {
-    const buffer = Buffer.alloc(Math.min(maximum + 1, 64 * 1024));
+    const buffer = Buffer.alloc(Math.min(maximum + 1, 1024 * 1024));
     for (;;) {
       const n = readSync(fd, buffer, 0, Math.min(buffer.length, maximum + 1 - total), null);
       if (n === 0) return Buffer.concat(chunks, total).toString("utf8");
@@ -56,6 +63,8 @@ function boundedRead(path: string, maximum: number): string {
     }
   } finally { closeSync(fd); }
 }
+/** Fixed native Host observation; all consumers retain the complete bounded table. */
+export function readKernelMountTable(): string { return boundedRead("/proc/self/mountinfo", 8 * 1024 * 1024); }
 function opened(fd: number) {
   const info = fstatSync(fd), ids = [...boundedRead(`/proc/self/fdinfo/${fd}`, 4096).matchAll(/^mnt_id:\s+([1-9]\d*)$/gm)];
   if (!info.isDirectory() || ids.length !== 1) return fail();
@@ -79,21 +88,34 @@ export function inspectVisibleScratchMount(path: string): ScratchMount | undefin
   }
   let fresh: number | undefined;
   try {
-    const original = opened(fd), before = boundedRead("/proc/self/mountinfo", 8 * 1024 * 1024);
-    const record = mountRecord(original.mountId, before);
-    let output: string;
-    try {
-      output = execFileSync("findmnt", ["--json", "--mountpoint", path, "--output", "ID,TARGET,UUID,FSROOT"],
-        { encoding: "utf8", timeout: 2000, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" });
-    } catch (error) {
-      const status = error && typeof error === "object" ? Object.getOwnPropertyDescriptor(error, "status") : undefined;
-      if (!status || !("value" in status) || status.value !== 1) throw error;
-      output = '{"filesystems":[]}';
-    }
-    const result = selectVisibleScratchMount(path, original.mountId, before, JSON.parse(output) as unknown);
+    const original = opened(fd), before = readKernelMountTable();
+    const line = mountLine(original.mountId, before), record = parseMountRecord(original.mountId, line);
+    let result: ScratchMount | undefined;
+    if (record.target === path) {
+      let output: string;
+      let snapshot: number | undefined;
+      try {
+        // Only the unique FD-selected original row needs libmount's UUID query.
+        // The full table remains the topology/duplicate-ID witness before and
+        // after the query; hidden same-target rows never supply authority.
+        // Linux O_TMPFILE keeps the snapshot unnamed; O_EXCL prevents relinking.
+        // Node's default stdin is a socket that findmnt cannot reopen via procfs.
+        snapshot = openSync("/tmp", 0x410000 | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_EXCL, 0o600);
+        writeFileSync(snapshot, line + "\n", { encoding: "utf8" });
+        output = execFileSync("findmnt", ["--kernel", "--tab-file", "/proc/self/fd/0", "--json", "--mountpoint", path, "--output", "ID,TARGET,UUID,FSROOT"],
+          { stdio: [snapshot, "pipe", "pipe"], encoding: "utf8", timeout: 2000, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" });
+      } catch (error) {
+        const status = error && typeof error === "object" ? Object.getOwnPropertyDescriptor(error, "status") : undefined;
+        if (!status || !("value" in status) || status.value !== 1) throw error;
+        output = '{"filesystems":[]}';
+      } finally { if (snapshot !== undefined) closeSync(snapshot); }
+      result = selectVisibleScratchMount(path, original.mountId, before, JSON.parse(output) as unknown);
+    } else if (record.target !== "/" && !path.startsWith(record.target + "/")) return fail();
+    // An authenticated containing ancestor means absence. It still requires
+    // the same current FD, named mount ID, namespace and full-table rechecks.
     // A new bind of the same inode changes mount ID without changing named dev/inode.
     fresh = openSync(path, directoryFlags);
-    const after = boundedRead("/proc/self/mountinfo", 8 * 1024 * 1024);
+    const after = readKernelMountTable();
     if (!same(original, opened(fd)) || !same(original, opened(fresh)) || readlinkSync("/proc/self/ns/mnt") !== namespace ||
         JSON.stringify(record) !== JSON.stringify(mountRecord(original.mountId, after))) return fail();
     return result;

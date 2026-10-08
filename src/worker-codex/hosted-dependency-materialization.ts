@@ -13,7 +13,7 @@ import { HostedDependencyInstaller, assertHostedDependencyInstallerAttemptDraine
 import { hostedDependencyInstallerRoot } from "./hosted-dependency-installer-recipe";
 import { qualifyHostedDependencyInstallerInputs } from "./hosted-dependency-installer-inputs";
 import { normalizeCapturedDependencyOutput, publishCapturedDependencyOutput } from "./hosted-dependency-staged-output";
-import { closeDependencySourceLinkSession, type DependencySourceLinkSession } from "../worker-local/dependency-environment/dependency-source-binding";
+import { closeDependencySourceLinkSession, readDependencySourceRegistrySelection, type DependencySourceLinkSession } from "../worker-local/dependency-environment/dependency-source-binding";
 import { dependencyCoverageRevision, publishHostedDependencyReceipt, readHostedDependencyCommittedReady } from "./hosted-dependency-receipts";
 export { dependencyCoverageRevision, readHostedDependencyReceipt } from "./hosted-dependency-receipts";
 import { assertHostedDependencyMaterializationOwner as assertOwner, assertHostedDependencyMaterializationOwnerUnderFence as assertOwnerUnderFence,
@@ -52,7 +52,14 @@ export async function materializeHostedDependencyAbsenceForToolEntry(binding: Ho
   const prepared = await materializeHostedDependencyLocalAbsence(binding, attempt);
   if (prepared.cold) {
     const { ready, observed, source, exposure } = prepared.cold;
-    try { return retainCold(binding, attempt, prepared.inputs, ready, observed, source, exposure); }
+    try {
+      // V1 retains logical source pins, without a current installed-byte witness.
+      // Qualify its published Ready through the existing fresh canonical walk.
+      if (!readDependencySourceRegistrySelection(source, binding.workspace)) {
+        closeDependencySourceExposure(exposure); closeDependencySourceLinkSession(source); return undefined;
+      }
+      return retainCold(binding, attempt, prepared.inputs, ready, observed, source, exposure);
+    }
     catch (error) { closeDependencySourceExposure(exposure); closeDependencySourceLinkSession(source); throw error; }
   }
   const { inputs, installing } = prepared, generation = installing.generation;
