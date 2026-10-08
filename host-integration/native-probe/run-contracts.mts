@@ -122,6 +122,21 @@ try {
   const candidate = join(evidence,`${attempt}-root-producer-source-candidate`);
   await mkdir(candidate,{mode:0o700});
   for(const [from,name] of [[producer,"root-producer-entry"],[associatedAddon,"original-owner-associated.node"],[dataClient,"native-root-client"],[ownerScript,"original-owner-helper.mjs"]])await copyFile(from!,join(candidate,name!));
+  // A1 gets a distinct binary/profile/artifact tuple. No A0 proof qualifies
+  // these new resource effects; this is a Source candidate only.
+  const retainedEntry=join(temporary,"retained-v2-entry");
+  const retainedSources=[...producerSources,...["resources.c","stock-manager.c","retained-v2.c","retained-v2-publication.c"].map(file=>join(native,file))];
+  await run("/usr/bin/cc",[...associated,"-DNP_RETAINED_V2_A1",...retainedSources,join(native,"retained-v2-entry.c"),"-Wl,-l:libsystemd.so.0","-o",retainedEntry]);
+  const retainedCandidate=join(evidence,`${attempt}-retained-v2-source-candidate`);await mkdir(retainedCandidate,{mode:0o700});
+  for(const [from,name] of [[retainedEntry,"retained-v2-entry"],[associatedAddon,"original-owner-associated.node"],[dataClient,"native-root-client"],[ownerScript,"original-owner-helper.mjs"]])await copyFile(from!,join(retainedCandidate,name!));
+  await writeFile(join(retainedCandidate,"expected-helper-policy.json"),'{"kind":"NativeRetainedV2ExpectedLeafV1","postExec":"np_helper_filter_v1","preExec":"np_helper_preexec_filter_v1","source":false,"work":false}\n',{flag:"wx",mode:0o644});
+  await run(process.execPath,["--test",join(build,"host-integration/native-probe/retained-v2-refusal-contracts.test.mjs")],{NP_RETAINED_V2_ENTRY:retainedEntry});
+  const retainedAdmin=join(retainedCandidate,"admin");
+  await mkdir(join(retainedAdmin,"host-integration/native-probe"),{recursive:true});await mkdir(join(retainedAdmin,"src/core"),{recursive:true});
+  for(const name of ["retained-v2-operator.mjs","install-root-producer.mjs","assemble-newtest.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(retainedAdmin,"host-integration/native-probe",name));
+  for(const name of ["scoped-retained-resource-contract.js","scoped-termination-contract.js"])await copyFile(join(build,"src/core",name),join(retainedAdmin,"src/core",name));
+  await copyFile(join(build,"package.json"),join(retainedAdmin,"package.json"));
+  await writeFile(join(retainedCandidate,"source-profile.json"),JSON.stringify({schemaVersion:1,profile:"NativeRetainedV2A1",closed:true,source:false,work:false,physicalQualified:false,inputs},null,2)+"\n",{flag:"wx"});
   const admin = join(candidate,"admin");await mkdir(admin,{recursive:true});
   // Preserve the compiler's import layout; each actual emitted leaf is in the
   // retained candidate inventory and the checked source input graph.
@@ -143,7 +158,7 @@ try {
   await chmod(join(physical,"original-owner"),0o755);await chmod(join(physical,"original-owner.node"),0o644);await chmod(join(physical,"original-owner-refusal-fixture"),0o755);
   await copyTree(join(build,"src"),join(physical,"src"));
   await mkdir(join(physical,"host-integration/native-probe"),{recursive:true,mode:0o755});
-  for(const name of ["original-owner-helper.mjs","original-owner-contracts.test.mjs","root-producer-contracts.test.mjs","install-root-producer.mjs","root-origin-operator.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(physical,"host-integration/native-probe",name));
+  for(const name of ["original-owner-helper.mjs","original-owner-contracts.test.mjs","root-producer-contracts.test.mjs","install-root-producer.mjs","root-origin-operator.mjs","retained-v2-operator.mjs"])await copyFile(join(build,"host-integration/native-probe",name),join(physical,"host-integration/native-probe",name));
   await copyFile(join(build,"package.json"),join(physical,"package.json"));
   // Fixed installer inputs and emitted ingress closure retain normal layout.
   const source = join(candidate,"runtime-source");await mkdir(source,{mode:0o755});
