@@ -10,7 +10,7 @@ import { prepareResearchProviderRoot, assertResearchProviderRoot, researchProvid
 import { trustedResearchProviderLaunch } from "../trusted-custody-systemd-launch";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import type { ResearchStartSpec } from "../research-launch-contract";
-import { parseResearchOperatorRequest, researchHashRequest } from "../research-launch-contract";
+import { parseResearchOperatorRequest } from "../research-launch-contract";
 import { researchDurableDirectory } from "../research-durable-handoff-directory";
 import * as scratchAdapter from "../host-scratch-temp";
 
@@ -47,7 +47,7 @@ function withRegisteredSink(f: ReturnType<typeof captured>, registryRootDir: str
   const request = parseResearchOperatorRequest({ ...f.spec.request, durableHandoffRootDir: sink });
   const spec: ResearchStartSpec = { ...f.spec, request, registeredHandoff: { registryRootDir,
     controllerJobId: "TEST-controller", manifestSha256: "a".repeat(64), scopeSha256: "b".repeat(64),
-    receiptSha256: "c".repeat(64), requestSha256: researchHashRequest(request), durableDirectory: researchDurableDirectory(sink) } };
+    receiptSha256: "c".repeat(64), requestSha256: researchHash(JSON.stringify(request)), durableDirectory: researchDurableDirectory(sink) } };
   researchPublish(join(f.directory, "spec.json"), spec);
   const specSha256 = researchHash(researchRead(join(f.directory, "spec.json")));
   researchPublish(join(f.directory, "providers", unit + ".json"), { schemaVersion: 1, unit, runtimeUnit: spec.unit,

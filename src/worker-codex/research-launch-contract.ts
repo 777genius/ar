@@ -15,11 +15,25 @@ export type ResearchOperatorRequest = Readonly<{
   promptPath: string; authRootDir: string; accounts: readonly string[]; codexBinaryPath: string;
   model: string; reasoningEffort: CodexReasoningEffort; serviceTier: CodexServiceTier; taskTimeoutMs: number;
   durableHandoffRootDir?: string;
+  projectId?: string;
+  maxAccountCycles?: number; prewarmOnStart?: boolean; appServerStartupTimeoutMs?: number;
 }>;
-export const researchHashRequest = (request: ResearchOperatorRequest): string => researchHash(JSON.stringify(request));
+export const researchExecutionOptions = (request: ResearchOperatorRequest) => ({
+  maxAccountCycles: request.maxAccountCycles ?? 5, prewarmOnStart: request.prewarmOnStart ?? true,
+  appServerStartupTimeoutMs: request.appServerStartupTimeoutMs ?? researchProviderSetupTimeoutMs + 30_000,
+});
+export const researchHashRequest = (request: ResearchOperatorRequest): string => {
+  const { projectId: _projectId, maxAccountCycles: _cycles, prewarmOnStart: _prewarm, appServerStartupTimeoutMs: _startup, ...base } = request;
+  return researchHash(JSON.stringify({ ...base, projectId: request.projectId ?? request.jobId, ...researchExecutionOptions(request) }));
+};
 export function parseResearchOperatorRequest(value: unknown): ResearchOperatorRequest {
-  const optional = value !== null && typeof value === "object" && Object.hasOwn(value, "durableHandoffRootDir");
-  const r = researchRecord(value, "schemaVersion,jobId,taskId,jobRootDir,workspacePath,promptPath,authRootDir,accounts,codexBinaryPath,model,reasoningEffort,serviceTier,taskTimeoutMs" + (optional ? ",durableHandoffRootDir" : ""));
+  const has = (key: string): boolean => value !== null && typeof value === "object" && Object.hasOwn(value, key);
+  const optional = ["durableHandoffRootDir", "projectId", "maxAccountCycles", "prewarmOnStart", "appServerStartupTimeoutMs"].filter(has);
+  const r = researchRecord(value, "schemaVersion,jobId,taskId,jobRootDir,workspacePath,promptPath,authRootDir,accounts,codexBinaryPath,model,reasoningEffort,serviceTier,taskTimeoutMs" + optional.map(key => "," + key).join(""));
+  for (const [key, max] of [["maxAccountCycles", 256], ["appServerStartupTimeoutMs", 86400000]] as const) {
+    if (has(key) && (!Number.isSafeInteger(r[key]) || (r[key] as number) < 1 || (r[key] as number) > max)) researchInvalid();
+  }
+  if (has("prewarmOnStart") && typeof r.prewarmOnStart !== "boolean") researchInvalid();
   if (r.schemaVersion !== 1 || typeof r.model !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(r.model) ||
       !["none", "minimal", "low", "medium", "high", "xhigh"].includes(r.reasoningEffort as string) ||
       !["default", "fast", "flex", "priority"].includes(r.serviceTier as string) ||
@@ -27,7 +41,7 @@ export function parseResearchOperatorRequest(value: unknown): ResearchOperatorRe
       !Array.isArray(r.accounts) || !r.accounts.length || r.accounts.length > 16 || new Set(r.accounts).size !== r.accounts.length) researchInvalid();
   const jobRootDir = researchPath(r.jobRootDir), workspacePath = researchPath(r.workspacePath), promptPath = researchPath(r.promptPath);
   const authRootDir = researchPath(r.authRootDir);
-  const durableHandoffRootDir = optional ? researchPath(r.durableHandoffRootDir) : undefined;
+  const durableHandoffRootDir = has("durableHandoffRootDir") ? researchPath(r.durableHandoffRootDir) : undefined;
   if (jobRootDir === workspacePath || jobRootDir.startsWith(workspacePath + "/") ||
       workspacePath.startsWith(join(jobRootDir, "state") + "/") || workspacePath === join(jobRootDir, "state") ||
       workspacePath.startsWith(join(jobRootDir, "home") + "/") || workspacePath === join(jobRootDir, "home") ||
@@ -35,6 +49,10 @@ export function parseResearchOperatorRequest(value: unknown): ResearchOperatorRe
       [jobRootDir, workspacePath].some(path => authRootDir === path || authRootDir.startsWith(path + "/") || path.startsWith(authRootDir + "/"))) researchInvalid();
   return Object.freeze({ schemaVersion: 1, jobId: researchId(r.jobId), taskId: researchId(r.taskId), jobRootDir, workspacePath,
     promptPath, authRootDir, ...(durableHandoffRootDir === undefined ? {} : { durableHandoffRootDir }),
+    ...(has("projectId") ? { projectId: researchId(r.projectId) } : {}),
+    ...(has("maxAccountCycles") ? { maxAccountCycles: r.maxAccountCycles as number } : {}),
+    ...(has("prewarmOnStart") ? { prewarmOnStart: r.prewarmOnStart as boolean } : {}),
+    ...(has("appServerStartupTimeoutMs") ? { appServerStartupTimeoutMs: r.appServerStartupTimeoutMs as number } : {}),
     accounts: Object.freeze(r.accounts.map(researchId)), codexBinaryPath: researchPath(r.codexBinaryPath),
     model: r.model, reasoningEffort: r.reasoningEffort as CodexReasoningEffort, serviceTier: r.serviceTier as CodexServiceTier, taskTimeoutMs: r.taskTimeoutMs as number });
 }
@@ -48,14 +66,31 @@ export type ResearchRegisteredHandoff = Readonly<{
   registryRootDir: string; controllerJobId: string; manifestSha256: string;
   scopeSha256: string; receiptSha256: string; requestSha256: string;
   durableDirectory: ResearchDurableDirectory;
+  registeredExecution?: ResearchRegisteredExecution;
 }>;
+export type ResearchRegisteredExecution = Readonly<{
+  sourceConfigSha256: string; reservedConfigSha256: string; selectedAccountSha256: string;
+  accountId: string; projectId: string; maxAccountCycles: 1; prewarmOnStart: boolean; appServerStartupTimeoutMs: number;
+}>;
+export function parseResearchRegisteredExecution(value: unknown): ResearchRegisteredExecution {
+  const r = researchRecord(value, "sourceConfigSha256,reservedConfigSha256,selectedAccountSha256,accountId,projectId,maxAccountCycles,prewarmOnStart,appServerStartupTimeoutMs");
+  for (const key of ["sourceConfigSha256", "reservedConfigSha256", "selectedAccountSha256"] as const) {
+    if (typeof r[key] !== "string" || !/^[a-f0-9]{64}$/.test(r[key])) researchInvalid();
+  }
+  if (r.maxAccountCycles !== 1 || typeof r.prewarmOnStart !== "boolean" ||
+      !Number.isSafeInteger(r.appServerStartupTimeoutMs) || (r.appServerStartupTimeoutMs as number) < 1 ||
+      (r.appServerStartupTimeoutMs as number) > 86400000) researchInvalid();
+  return Object.freeze({ ...r, accountId: researchId(r.accountId), projectId: researchId(r.projectId) }) as ResearchRegisteredExecution;
+}
 export function parseResearchRegisteredHandoff(value: unknown): ResearchRegisteredHandoff {
-  const r = researchRecord(value, "registryRootDir,controllerJobId,manifestSha256,scopeSha256,receiptSha256,requestSha256,durableDirectory");
+  const execution = value !== null && typeof value === "object" && Object.hasOwn(value, "registeredExecution");
+  const r = researchRecord(value, "registryRootDir,controllerJobId,manifestSha256,scopeSha256,receiptSha256,requestSha256,durableDirectory" + (execution ? ",registeredExecution" : ""));
   const registryRootDir = researchPath(r.registryRootDir), controllerJobId = researchId(r.controllerJobId);
   for (const key of ["manifestSha256", "scopeSha256", "receiptSha256", "requestSha256"]) {
     if (typeof r[key] !== "string" || !/^[a-f0-9]{64}$/.test(r[key] as string)) researchInvalid();
   }
   return Object.freeze({ ...r, registryRootDir, controllerJobId,
+    ...(execution ? { registeredExecution: parseResearchRegisteredExecution(r.registeredExecution) } : {}),
     durableDirectory: parseResearchDurableDirectory(r.durableDirectory, join(registryRootDir, "durable-handoffs")) }) as ResearchRegisteredHandoff;
 }
 export function parseResearchGrant(value: unknown): ResearchGrant {
@@ -92,7 +127,11 @@ export function parseResearchStartSpec(value: unknown): ResearchStartSpec {
   const registeredHandoff = optional ? parseResearchRegisteredHandoff(r.registeredHandoff) : undefined;
   if ((request.durableHandoffRootDir !== undefined) !== optional ||
       (registeredHandoff && (request.durableHandoffRootDir !== registeredHandoff.durableDirectory.path ||
-        researchHashRequest(request) !== registeredHandoff.requestSha256))) researchInvalid();
+        (registeredHandoff.registeredExecution ? researchHashRequest(request) : researchHash(JSON.stringify(request))) !== registeredHandoff.requestSha256))) researchInvalid();
+  const execution = registeredHandoff?.registeredExecution;
+  if (execution && (request.accounts.length !== 1 || request.accounts[0] !== execution.accountId || request.projectId !== execution.projectId ||
+      request.maxAccountCycles !== execution.maxAccountCycles || request.prewarmOnStart !== execution.prewarmOnStart ||
+      request.appServerStartupTimeoutMs !== execution.appServerStartupTimeoutMs)) researchInvalid();
   for (const [key, path] of [["jobDirectory", request.jobRootDir], ["workspaceDirectory", request.workspacePath]] as const) {
     parseResearchDirectory(r[key], path);
   }
@@ -113,8 +152,8 @@ export function researchRunConfig(request: ResearchOperatorRequest): CodexGoalRu
     accessBoundary: AccessBoundary.IsolatedWorkspaceWrite, networkAccess: NetworkAccessMode.Unrestricted,
     // Derive only the admitted workspace; job state, homes and Host authority
     // stay outside the project scope. Agent temp uses the fixed temp contract.
-    projectAccessScope: { projectId: request.jobId, isolatedWorkspaceRoot: request.workspacePath, authRoot: request.authRootDir },
-    prewarmOnStart: true, appServerStartupTimeoutMs: researchProviderSetupTimeoutMs + 30_000,
+    projectAccessScope: { projectId: request.projectId ?? request.jobId, isolatedWorkspaceRoot: request.workspacePath, authRoot: request.authRootDir },
+    ...researchExecutionOptions(request),
     sourceEnv: { PATH: "/usr/bin:/bin", HOME: join(request.jobRootDir, "home"),
       SUBSCRIPTION_RUNTIME_JOB_ROOT: request.jobRootDir, SUBSCRIPTION_RUNTIME_TMPDIR: runtimeTempRoot,
       TMPDIR: agentTempRoot, TMP: agentTempRoot, TEMP: agentTempRoot,

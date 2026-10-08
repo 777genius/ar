@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { AccessBoundary, AccessDecisionReason, LaunchPlanStatus, NetworkAccessMode, createAccessPolicyService } from "@vioxen/subscription-runtime/worker-core";
+import { AccessBoundary, AccessDecisionReason, LaunchPlanStatus, NetworkAccessMode, InMemoryWorkerAccountCapacityStore, createAccessPolicyService } from "@vioxen/subscription-runtime/worker-core";
 import { CodexProviderEgressProfileId, codexProviderEgressPolicy } from "@vioxen/subscription-runtime/provider-codex";
-import { parseResearchOperatorRequest, researchRunConfig, type ResearchOperatorRequest } from "../research-launch-contract";
+import { parseResearchOperatorRequest, researchRunConfig, researchHashRequest, type ResearchOperatorRequest } from "../research-launch-contract";
 import { assertCodexGoalAccessLaunchAllowed, codexGoalControlsForAccessBoundary } from "../codex-goal-access-plan";
+import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
+import { FakeAppServerFactory, StaticRunner, codexAuthJson, gitWorkspace } from "./file-backend-codex-worker-test-support";
 import { buildCodexGoalExecutorOptions } from "../codex-goal-runner";
 import { ensureCodexAgentTempRoot } from "../../provider-codex/codex-runtime-temp";
 import { appServerThreadStartParams } from "../../provider-codex/app-server/application/app-server-thread-start-params";
@@ -119,6 +121,69 @@ describe("closed research launch configuration (source checks, no native launch)
       expect(thread.params.config.features).not.toHaveProperty("fast_mode");
     }
   });
+
+  // RED: native projection silently retries five times, prewarms, or uses the
+  // native startup default instead of the reserved registered execution tuple.
+  it("forwards the finite execution tuple into the real executor composition", () => {
+    const config = researchRunConfig(parseResearchOperatorRequest({ ...request, maxAccountCycles: 1,
+      prewarmOnStart: false, appServerStartupTimeoutMs: 120_000 }));
+    const options = buildCodexGoalExecutorOptions({ config, stateRootDir: config.stateRootDir!, encryptionKey: new Uint8Array(32) });
+    expect(options.maxAccountCycles).toBe(1);
+    expect(options.prewarmOnStart).toBe(false);
+    expect(options.accounts.every(account => account.worker.appServerStartupTimeoutMs === 120_000)).toBe(true);
+  });
+  // RED: the former native hardcoded five retries produce five synthetic
+  // quota attempts even though the supported reservation authorizes only one.
+  it("stops the real executor after one reserved synthetic quota attempt", async () => {
+    const workspace = await gitWorkspace("TEST-research-reserved-cycle-");
+    const server = new FakeAppServerFactory({ emitTopLevelErrorOnTurn: "You've hit your usage limit." });
+    const config = researchRunConfig(parseResearchOperatorRequest({ ...request, workspacePath: workspace,
+      accounts: ["TEST-account-a"], maxAccountCycles: 1, prewarmOnStart: false, appServerStartupTimeoutMs: 120_000 }));
+    const projected = buildCodexGoalExecutorOptions({ config, stateRootDir: config.stateRootDir!, encryptionKey: new Uint8Array(32) });
+    // The quota fixture exercises the real executor, not native scratch
+    // provisioning. Materialize regular private TEST cache leaves through the
+    // existing home preparation port; no mount can outlive suite cleanup.
+    const prepareCaches = vi.spyOn(await import("../host-scratch-temp"), "prepareHostScratchCaches").mockImplementation(async home => {
+      expect(home.startsWith(join(request.jobRootDir, "home") + "/")).toBe(true);
+      for (const leaf of ["plugins/cache", "cache/remote_plugin_catalog"]) {
+        await mkdir(join(home, leaf), { recursive: true, mode: 0o700 });
+      }
+    });
+    const executor = new FileBackendCodexSafeExecutor({ ...projected,
+      accountCapacityStore: new InMemoryWorkerAccountCapacityStore(),
+      accounts: projected.accounts.map(({ codexAuthJsonPath: _authPath, ...account }) => ({ ...account,
+        codexAuthJson: codexAuthJson("TEST-account-a"), worker: { ...account.worker, appServerProcessFactory: server.create,
+          runner: new StaticRunner({ exitCode: 1, stdout: "", stderr: "You've hit your usage limit." }),
+          capacityPolicy: { quotaCooldownMs: 0 } },
+      })),
+    });
+    try {
+      const result = await executor.run({ taskId: request.taskId, prompt: "TEST synthetic quota fixture", controls: { editMode: "allow-edits" } });
+      expect(result.status).toBe("waiting_capacity");
+      expect(result.attempts).toHaveLength(1);
+      expect(server.prompts).toHaveLength(1);
+      expect(prepareCaches).toHaveBeenCalled();
+    } finally {
+      try { await executor.dispose(); } finally { prepareCaches.mockRestore(); }
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+  it("preserves legacy defaults and hashes omitted or explicit defaults identically", () => {
+    const config = researchRunConfig(request);
+    const options = buildCodexGoalExecutorOptions({ config, stateRootDir: config.stateRootDir!, encryptionKey: new Uint8Array(32) });
+    expect(options.maxAccountCycles).toBe(5);
+    expect(options.prewarmOnStart).toBe(true);
+    expect(options.accounts.every(account => account.worker.appServerStartupTimeoutMs === 330_000)).toBe(true);
+    expect(researchHashRequest(request)).toBe(researchHashRequest(parseResearchOperatorRequest({ ...request,
+      projectId: request.jobId, maxAccountCycles: 5, prewarmOnStart: true, appServerStartupTimeoutMs: 330_000 })));
+    expect(researchHashRequest(request)).not.toBe(researchHashRequest(parseResearchOperatorRequest({ ...request, maxAccountCycles: 1 })));
+  });
+  it.each([{ projectId: undefined }, { projectId: "/TEST-project" }, { maxAccountCycles: 1.5 }, { maxAccountCycles: 0 }, { maxAccountCycles: undefined },
+    { prewarmOnStart: "false" }, { prewarmOnStart: undefined }, { appServerStartupTimeoutMs: 0 },
+    { appServerStartupTimeoutMs: undefined }, { appServerStartupTimeoutMs: Number.MAX_SAFE_INTEGER }])(
+    "rejects malformed finite execution fields before configuration: %j", fields => {
+      expect(() => parseResearchOperatorRequest({ ...request, ...fields })).toThrow();
+    });
 
   it.each(["projectAccessScope", "sourceEnv", "mounts"])("rejects a caller-controlled %s bag before deriving configuration", field => {
     expect(() => parseResearchOperatorRequest({ ...request, [field]: { root: "/" } })).toThrow();

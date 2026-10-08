@@ -16,10 +16,13 @@ import {
 import type { CodexGoalLaunchInput } from "../codex-goal-ops";
 import {
   codexProjectContinuationReservationInput,
+  assertCodexProjectReservedLaunchAuthority,
+  consumeCodexProjectReservedLaunchAuthority,
   codexProjectAccountLeaseMode,
   releaseCodexProjectAccount,
   reserveCodexProjectAccount,
 } from "../application/project-control/codex-goal-project-account-reservation";
+import { researchRegisteredExecutionFromReservation } from "../research-registered-execution";
 import {
   projectControlWorkspaceLocks,
   withValidatedProjectWorkspaceLock,
@@ -34,6 +37,45 @@ afterEach(async () => {
 });
 
 describe("project account reservation", () => {
+  // RED: cloning, mutating, or replaying a supported selection would mint a
+  // fresh execution budget without the original immutable reservation lineage.
+  it("binds original selection, declared config and nested account metadata once", async () => {
+    const scoped = fixture("/TEST-reservation-authority", "test-reservation");
+    const reservation = await reserveCodexProjectAccount({ ...scoped,
+      deps: { capacityStore: new InMemoryWorkerAccountCapacityStore(), leaseMode: "shared" } });
+    const input = { manifest: scoped.manifest, sourceLaunch: scoped.launch, reservedLaunch: reservation.launch };
+    const authority = assertCodexProjectReservedLaunchAuthority(input);
+    expect(authority).toMatchObject({ maxAccountCycles: 1, fresh: true, accountId: reservation.accountId });
+    expect(() => assertCodexProjectReservedLaunchAuthority({ ...input, reservedLaunch: { ...reservation.launch } })).toThrow();
+    Object.assign(scoped.launch.config, { model: "TEST-mutated" });
+    expect(() => assertCodexProjectReservedLaunchAuthority(input)).toThrow();
+    Object.assign(scoped.launch.config, { model: "gpt-5.6-sol" });
+    const selected = reservation.launch.config.accounts[0]!;
+    Object.assign(selected, { envVarName: "TEST_FOREIGN_AUTH" });
+    expect(() => assertCodexProjectReservedLaunchAuthority(input)).toThrow();
+    delete (selected as { envVarName?: string }).envVarName;
+    expect(consumeCodexProjectReservedLaunchAuthority(input)).toBe(authority);
+    expect(() => consumeCodexProjectReservedLaunchAuthority(input)).toThrow();
+  });
+  it("does not bless declared config mutation across asynchronous selection", async () => {
+    const scoped = fixture("/TEST-reservation-drift", "test-reservation");
+    const pending = reserveCodexProjectAccount({ ...scoped,
+      deps: { capacityStore: new InMemoryWorkerAccountCapacityStore(), leaseMode: "shared" } });
+    Object.assign(scoped.launch.config, { prewarmOnStart: true });
+    await expect(pending).rejects.toThrow("project_control_reserved_launch_source_changed");
+  });
+  it("keeps ordinary continuation budget historical and denies the fresh research projection", async () => {
+    const scoped = fixture("/TEST-reservation-continuation", "test-reservation");
+    const reservation = await reserveCodexProjectAccount({ ...scoped, continuation: { previousAttemptCount: 3 },
+      deps: { capacityStore: new InMemoryWorkerAccountCapacityStore(), leaseMode: "shared" } });
+    const authority = assertCodexProjectReservedLaunchAuthority({ manifest: scoped.manifest,
+      sourceLaunch: scoped.launch, reservedLaunch: reservation.launch });
+    expect(reservation.launch.config.maxAccountCycles).toBe(4);
+    expect(authority.fresh).toBe(false);
+    expect(() => researchRegisteredExecutionFromReservation(authority, reservation.launch)).toThrow(
+      "hosted_research_registered_execution_unsupported");
+  });
+
   it("keeps explicit first choice until a recorded failure allows continuation", async () => {
     const root = await mkdtemp(join(tmpdir(), "project-explicit-continuation-"));
     roots.push(root);
