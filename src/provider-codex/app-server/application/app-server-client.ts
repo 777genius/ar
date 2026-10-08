@@ -752,10 +752,10 @@ export class CodexAppServerClient {
     if (record.method === "item/completed") {
       const threadId = stringField(params, "threadId");
       const turnId = stringField(params, "turnId");
-      // A specific pre-ACK failure already owns its TurnState, even when no
-      // notification identifies the capture. Reject later input by that fact;
-      // only the response ACK may admit the retained preterminal buffer.
-      if (threadId && !(turnId && this.findTurn(turnId)?.error)) {
+      // A terminal TurnState fences input even before capture ownership is known.
+      // Only the response ACK may admit the retained preterminal buffer.
+      const state = turnId ? this.findTurn(turnId) : null;
+      if (threadId && !state?.completed && !state?.error) {
         this.nativeWebCaptures.get(threadId)?.observe(params, false);
       }
       const item = readRecord(params?.item);
@@ -780,8 +780,12 @@ export class CodexAppServerClient {
       if (turnId) this.publicResearchTools.endTurnId(this.turnIdAliases.get(turnId) ?? turnId);
       if (turnId) this.dynamicTools.cancelTurn(turnId);
       const state = this.ensureTurn(turnId);
-      for (const [thread, pendingId] of this.pendingTurnIdsByThread) {
-        if (pendingId === (this.turnIdAliases.get(turnId ?? "") ?? turnId)) this.nativeWebCaptures.get(thread)?.finish();
+      const canonicalTurnId = turnId ? this.turnIdAliases.get(turnId) ?? turnId : "";
+      // Completion is specific: never seal unrelated captures for an unknown ID.
+      for (const [thread, capture] of this.nativeWebCaptures) {
+        if (turnId && (capture.matchesAcknowledgedTurn(canonicalTurnId) ||
+          this.pendingTurnIdsByThread.get(thread) === canonicalTurnId ||
+          this.earlyTurnIdsByThread.get(thread) === turnId)) capture.finish();
       }
       state.completed = true;
       const status = readRecord(turn?.status);

@@ -416,3 +416,39 @@ it.each(preAckFenceCases)('pre-ACK exact terminal fence $method noStarted=$noSta
     expect(unrelated.nativeWeb?.turns[0]?.records.map(item => item.itemId)).toEqual(['unrelated-before', 'unrelated-after']);
   } finally { await f.close(); }
 });
+
+// Omitted terminal threadId must fence without turning notification aliases into ACKs.
+const completionFenceCases = [false, true].flatMap(failed =>
+  ['pre', 'burst', 'continued'].flatMap(timing => [false, true].flatMap(noStarted =>
+    [false, true].flatMap(alias => [false, true].map(populated => ({ failed, timing, noStarted, alias, populated, terminalAlias: false }))))));
+completionFenceCases.push(...[false, true].flatMap(failed => ['pre', 'burst'].flatMap(timing =>
+  [false, true].map(populated => ({ failed, timing, noStarted: false, alias: true, populated, terminalAlias: true })))));
+it.each(completionFenceCases)('omitted-thread completion fence failed=$failed timing=$timing noStarted=$noStarted alias=$alias populated=$populated terminalAlias=$terminalAlias', async ({ failed, timing, noStarted, alias, populated, terminalAlias }) => {
+  const f = await fixture((thread, ack, output) => ack.endsWith('turn-1') ? [
+    { method: 'turn/started', params: { threadId: thread, turn: { id: output } } },
+    completed(thread, ack, web('unrelated-before')),
+  ] : [
+    { method: 'turn/completed', params: { turn: { id: 'unknown-owner', status: 'completed' } } },
+    { method: 'turn/completed', params: { turn: { status: 'completed' } } },
+    ...(populated ? [completed(thread, ack, web('before'))] : []),
+    ...(alias ? [completed(thread, output, web('alias-before'))] : []),
+    { method: 'turn/completed', params: { turn: { id: terminalAlias ? output : ack, status: failed ? 'failed' : 'completed', ...(failed ? { error: { message: 'TEST failed completion' } } : {}) } } },
+    completed(thread, ack, web('after')), ...(alias ? [completed(thread, output, web('alias-after'))] : []),
+    completed('thread-1', alias ? 'response-turn-1' : 'turn-1', web('unrelated-after')),
+    { method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: alias ? 'response-turn-1' : 'turn-1', status: 'completed' } } },
+  ], { early: timing === 'pre', afterAck: timing === 'continued', alias, noStarted, omitTerminalThread: true, rejectTurn: 1, failed });
+  try {
+    const firstThread = await f.client.startThread(f.input); const secondThread = await f.client.startThread(f.input);
+    let outputObserved!: () => void; const active = new Promise<void>(resolve => { outputObserved = resolve; });
+    const first = f.client.startTurn({ ...f.input, threadId: firstThread, onTextDelta: outputObserved }); await active;
+    const result = await f.client.startTurn({ ...f.input, threadId: secondThread }); const unrelated = await first;
+    if (failed) expect(result.error?.message).toMatch(/codex_app_server_turn_failed/); else expect(result.error).toBeNull();
+    expect(result.completed).toBe(true);
+    expect(result.acknowledgedTurnId).toBe(alias ? 'response-turn-2' : 'turn-2');
+    expect(result.nativeWeb?.turns[0]?.acknowledgedTurnId).toBe(result.acknowledgedTurnId);
+    expect(result.nativeWeb?.turns[0]?.records.map(item => item.itemId)).toEqual(populated ? ['before'] : []);
+    if (populated) expect(result.nativeWeb?.turns[0]?.records[0]?.resultSummary).toEqual(opaqueSummary);
+    expect(unrelated.error).toBeNull();
+    expect(unrelated.nativeWeb?.turns[0]?.records.map(item => item.itemId)).toEqual(['unrelated-before', 'unrelated-after']);
+  } finally { await f.close(); }
+});
