@@ -1,5 +1,6 @@
 import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { hostedGoalAdmissionIdentity, withHostedGoalIdentity } from "./hosted-readonly-goal-launch";
 import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
@@ -220,6 +221,7 @@ export async function runCodexGoal(
   deps: CodexGoalRunDeps = {},
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   config = mapManagedGoalLayout({ config }).config;
+  config = withHostedGoalIdentity(config);
   if (config.storage) config = snapshotCodexGoalStorageConfig(config);
   assertCodexGoalRunConfig(config);
   return withCodexGoalStorage(config, deps.storageAdmission,
@@ -237,11 +239,7 @@ async function runCodexGoalWithStorage(config: CodexGoalRunConfig, deps: CodexGo
   assertCodexGoalAccessLaunchAllowed(config);
   const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const admittedEgress = await (deps.admitProviderEgress ?? admitHostedTestEgress)({
-    jobId: config.jobId ?? config.taskId,
-    jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath,
-    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
-    sourceEnv: config.sourceEnv ?? process.env,
+    ...hostedGoalAdmissionIdentity(config),
     ...(isMimo ? { modelBackend: config.modelBackend } : {}),
   });
   storageLease?.assertCurrent();
@@ -252,12 +250,8 @@ async function runCodexGoalWithStorage(config: CodexGoalRunConfig, deps: CodexGo
     throw new Error("codex_goal_provider_egress_admission_mismatch");
   }
   const appServerProcessFactory = admitHostedReadonlyInputs({
-    jobId: config.jobId ?? config.taskId,
-    jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath,
+    ...hostedGoalAdmissionIdentity(config),
     providerEgressPolicy,
-    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
-    sourceEnv: config.sourceEnv ?? process.env,
   }, toolEntry);
   return await withCodexGoalCheckpointWriter(config, deps, storageLease,
     baseCommit => runCodexGoalAdmitted(config, deps, providerEgressPolicy,
@@ -477,7 +471,7 @@ async function runCodexGoalAdmitted(
 }
 
 export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInput): FileBackendCodexSafeExecutorOptions {
-  const { config } = input;
+  const config = withHostedGoalIdentity(input.config);
   assertCodexSessionHomeProfile(config.sessionHomeProfile);
   if (config.sessionHomeProfile?.kind === CodexSessionHomeProfileKind.OneShot) {
     throw new JobStorageCapabilityUnavailableError(JobStorageUnavailableCapability.OneShotDisposal);

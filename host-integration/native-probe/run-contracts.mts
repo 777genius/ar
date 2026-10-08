@@ -59,7 +59,7 @@ try {
   const build = join(temporary, "dist"), client = join(temporary, "contract-client");
   await run(process.execPath, [compiler, "-p", config, "--skipLibCheck", "false", "--noEmit", "false", "--outDir", build]);
   await writeFile(join(build, "package.json"), '{"type":"module"}\n');
-  await run(process.execPath, [join(workspace, "scripts/rewrite-dist-esm-imports.mjs")], {}, true, temporary);
+  await run(process.execPath, [join(workspace, "scripts/rewrite-dist-esm-imports.mjs"), "--imports-only"], {}, true, temporary);
   const native = join(workspace, "host-integration/native-probe/native");
   await run("/usr/bin/cc", ["-std=c17", "-Wall", "-Wextra", "-Werror", "-Wpedantic", "-pthread", ...["clock.c", "channel.c", "helper-profile.c", "publication.c", "resources.c", "stock-manager.c", "contract-client.c"].map(file => join(native, file)), "-Wl,-l:libsystemd.so.0", "-o", client]);
   const dataCodec = join(temporary, "native-root-codec-test");
@@ -77,6 +77,12 @@ try {
   for (const name of ["read-request.mjs", "endpoint.mjs", "manager.mjs", "contract.mjs", "storage-policy.mjs"]) await copyFile(join(workspace, "host-integration/host-jobs", name), join(rawDirectory, name));
   const managedDirectory = join(build, "host-integration/managed-launcher"); await mkdir(managedDirectory, { recursive: true });
   for (const name of ["launch.mjs", "profiles.mjs", "payload-guard.mjs"]) await copyFile(join(workspace, "host-integration/managed-launcher", name), join(managedDirectory, name));
+  // The staged launcher receives the policy emitted by this same checked source
+  // graph, without depending on the workspace's independently built dist.
+  await writeFile(join(managedDirectory, "hosted-host-policy.mjs"),
+    "// Generated from src/provider-codex/app-server/adapters/hosted-host-policy.ts.\n" +
+    (await readFile(join(build, "src/provider-codex/app-server/adapters/hosted-host-policy.js"), "utf8"))
+      .replace(/^\/\/# sourceMappingURL=.*$/m, ""));
   for (const name of ["hosted-native-probe/ingress.js", "hosted-native-probe/protocol.js", "worker-core/hosted-custody/domain/native-probe.js", "core/scoped-retained-resource-contract.js", "core/scoped-termination-contract.js"]) {
     const destination = join(rawDirectory, "native-probe", name); await mkdir(resolve(destination, ".."), { recursive: true }); await copyFile(join(build, "src", name), destination);
   }
