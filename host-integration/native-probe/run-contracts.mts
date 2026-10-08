@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, writeFile, rm, chmod, realpath, lstat, readdir, readFile, readlink } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, copyFile, rm, chmod, realpath, lstat, readdir, readFile, readlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -62,6 +62,25 @@ try {
   await run(process.execPath, [join(workspace, "scripts/rewrite-dist-esm-imports.mjs")], {}, true, temporary);
   const native = join(workspace, "host-integration/native-probe/native");
   await run("/usr/bin/cc", ["-std=c17", "-Wall", "-Wextra", "-Werror", "-Wpedantic", "-pthread", ...["clock.c", "channel.c", "helper-profile.c", "publication.c", "resources.c", "stock-manager.c", "contract-client.c"].map(file => join(native, file)), "-Wl,-l:libsystemd.so.0", "-o", client]);
+  const dataCodec = join(temporary, "native-root-codec-test");
+  await run("/usr/bin/cc", ["-std=c17", "-Wall", "-Wextra", "-Werror", "-Wpedantic", join(native, "native-root-control.c"), join(native, "native-root-codec-test.c"), "-o", dataCodec]);
+  const dataClient = join(temporary, "native-root-client");
+  await run("/usr/bin/cc", ["-std=c17", "-Wall", "-Wextra", "-Werror", "-Wpedantic", join(native, "clock.c"), join(native, "publication.c"), join(native, "native-root-control.c"), join(native, "native-root-client.c"), "-o", dataClient]);
+  const ipcDirectory = join(temporary, "data-ipc"); await mkdir(ipcDirectory, { mode: 0o700 });
+  const ipcClient = join(temporary, "native-root-disposable-client"), ipcFixture = join(temporary, "native-root-ipc-test");
+  const ipcPins = [`-DNP_ROOT_DIRECTORY=${JSON.stringify(ipcDirectory)}`, `-DNP_ROOT_SOCKET=${JSON.stringify(join(ipcDirectory, "control.sock"))}`];
+  const ipcSources = ["clock.c", "publication.c", "native-root-control.c"].map(name => join(native, name));
+  await run("/usr/bin/cc", ["-std=c17", "-Wall", "-Wextra", "-Werror", "-Wpedantic", ...ipcPins, ...ipcSources, join(native, "native-root-client.c"), "-o", ipcClient]);
+  await run("/usr/bin/cc", ["-std=c17", "-Wall", "-Wextra", "-Werror", "-Wpedantic", ...ipcPins, `-DNP_ROOT_TEST_CLIENT=${JSON.stringify(ipcClient)}`, ...ipcSources, join(native, "native-root-ipc-test.c"), "-o", ipcFixture]);
+  const rawDirectory = join(build, "host-integration/host-jobs");
+  await mkdir(rawDirectory, { recursive: true });
+  for (const name of ["read-request.mjs", "endpoint.mjs", "manager.mjs", "contract.mjs", "storage-policy.mjs"]) await copyFile(join(workspace, "host-integration/host-jobs", name), join(rawDirectory, name));
+  const managedDirectory = join(build, "host-integration/managed-launcher"); await mkdir(managedDirectory, { recursive: true });
+  for (const name of ["launch.mjs", "profiles.mjs", "payload-guard.mjs"]) await copyFile(join(workspace, "host-integration/managed-launcher", name), join(managedDirectory, name));
+  for (const name of ["hosted-native-probe/ingress.js", "hosted-native-probe/protocol.js", "worker-core/hosted-custody/domain/native-probe.js", "core/scoped-retained-resource-contract.js", "core/scoped-termination-contract.js"]) {
+    const destination = join(rawDirectory, "native-probe", name); await mkdir(resolve(destination, ".."), { recursive: true }); await copyFile(join(build, "src", name), destination);
+  }
+  await run(process.execPath, ["--test", join(build, "host-integration/native-probe/ingress-client-contracts.test.mjs")], { NP_DATA_CLIENT: dataClient, NP_DATA_CODEC: dataCodec, NP_DATA_IPC: ipcFixture });
   const addon = join(temporary, "node-contract.node");
   await run("/usr/bin/cc", ["-std=c17", "-Wall", "-Wextra", "-Werror", "-Wpedantic", "-pthread", "-shared", "-fPIC", join(native, "helper-profile.c"), join(native, "node-contract-addon.c"), "-o", addon]);
   await run(process.execPath, ["--test", join(build, "host-integration/native-probe/contracts.test.mjs")], { NP_CLIENT: client, NP_FIXTURES: temporary, NP_NODE_SCRIPT: join(build, "host-integration/native-probe/node-contract.mjs"), NP_NODE_ADDON: addon });

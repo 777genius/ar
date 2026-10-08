@@ -124,6 +124,18 @@ describe("closed research launch configuration (source checks, no native launch)
     expect(() => parseResearchOperatorRequest({ ...request, [field]: { root: "/" } })).toThrow();
   });
 
+  it("preserves the finite durable sink without adding it to worker permissions", () => {
+    const sink = join(root, "TEST-registry/durable-handoffs");
+    const config = researchRunConfig(parseResearchOperatorRequest({ ...request, durableHandoffRootDir: sink }));
+    expect(config.durableHandoffRootDir).toBe(sink);
+    const policy = createAccessPolicyService({ boundary: config.accessBoundary!, scope: config.projectAccessScope! });
+    expect(policy.canReadPath({ path: sink }).allowed).toBe(false);
+    expect(policy.canWritePath({ path: sink }).allowed).toBe(false);
+    expect(researchRunConfig(request)).not.toHaveProperty("durableHandoffRootDir");
+    expect(() => parseResearchOperatorRequest({ ...request, durableHandoffRootDir: undefined })).toThrow();
+    expect(() => parseResearchOperatorRequest({ ...request, durableHandoffRootDir: "/TEST-registry/../auth" })).toThrow();
+  });
+
   it("denies provider requests to expand the scoped permission roots", () => {
     const config = researchRunConfig(request);
     assertCodexGoalAccessLaunchAllowed(config);
