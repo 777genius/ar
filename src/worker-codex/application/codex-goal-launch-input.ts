@@ -47,15 +47,17 @@ const defaultAuthRoot = defaultCodexGoalAuthRoot;
 const defaultTimeoutMs = CODEX_GOAL_DEFAULT_TIMEOUT_MS;
 
 export async function goalLaunchInput(args: CodexGoalInput): Promise<CodexGoalLaunchInput> {
-  const cwd = resolvePath(process.cwd(), args.cwd ?? process.cwd());
-  const fileConfig = args.configPath
-    ? await readGoalConfigFile(resolvePath(cwd, args.configPath))
+  // Capture the caller's closed pair before config-file IO can yield control.
+  const argumentStorage = parseCodexGoalStorageData(args);
+  const argumentSnapshot = { ...args, ...argumentStorage };
+  const cwd = resolvePath(process.cwd(), argumentSnapshot.cwd ?? process.cwd());
+  const fileConfig = argumentSnapshot.configPath
+    ? await readGoalConfigFile(resolvePath(cwd, argumentSnapshot.configPath))
     : {};
   // Validate each explicit source before merging; partial/malformed NEW data
   // must not disappear behind an override and silently become a legacy run.
   parseCodexGoalStorageData(fileConfig);
-  parseCodexGoalStorageData(args);
-  const merged = mergeDefined(fileConfig, args);
+  const merged = mergeDefined(fileConfig, argumentSnapshot);
   const storageData = parseCodexGoalStorageData(merged);
   assertCodexGoalStorageTransportSupported(merged);
   const jobRootDir = requiredString(merged.jobRootDir, "jobRootDir", cwd);

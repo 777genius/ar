@@ -1,4 +1,5 @@
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { join } from "node:path";
 import { optionalCodexGoalModelBackend } from "../codex-goal-model-backend";
 import {
   assertJobStorageIntent,
@@ -84,11 +85,16 @@ export function assertCodexGoalStorageBindingUnchanged(previous: unknown, next: 
 function providerBinding(record: object): unknown {
   assertCodexGoalStorageTransportSupported(record);
   const accounts = ownValue(record, "accounts");
+  const jobRootDir = ownValue(record, "jobRootDir"), taskId = ownValue(record, "taskId");
+  if (typeof jobRootDir !== "string" || typeof taskId !== "string") invalid();
   return { backend: optionalCodexGoalModelBackend(ownValue(record, "modelBackend")).modelBackend ?? CodexModelBackend.OpenAiChatGpt,
     engine: ownValue(record, "executionEngine") ?? "app-server-goal",
     accounts: Array.isArray(accounts) ? accounts.map(account => typeof account === "string" ? account : ownValue(account, "name")) : accounts,
-    jobId: ownValue(record, "jobId"), taskId: ownValue(record, "taskId"),
-    jobRootDir: ownValue(record, "jobRootDir"), workspacePath: ownValue(record, "workspacePath") };
+    jobId: ownValue(record, "jobId"), taskId, jobRootDir, workspacePath: ownValue(record, "workspacePath"),
+    stateRootDir: ownValue(record, "stateRootDir") ?? join(jobRootDir, "state"),
+    outputPath: ownValue(record, "outputPath") ?? join(jobRootDir, "output", `${taskId}.latest-result.json`),
+    progressPath: ownValue(record, "progressPath") ?? join(jobRootDir, "output", `${taskId}.progress.json`),
+    durableHandoffRootDir: ownValue(record, "durableHandoffRootDir") ?? join(jobRootDir, "durable-handoffs") };
 }
 
 function unsupportedProvider(): never { throw new Error("codex_goal_storage_provider_transport_unsupported"); }

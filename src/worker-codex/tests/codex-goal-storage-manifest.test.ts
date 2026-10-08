@@ -167,6 +167,51 @@ describe("ordinary storage data manifest chain", () => {
     expect(await pending).toMatchObject(continuation);
   });
 
+  // Without the effective layout comparison, each actual publication succeeds
+  // and replaces bytes that the later NEW runtime layout guard cannot accept.
+  it("refuses four NEW layout rebindings through update, overwrite and upsert without changing manifest bytes", async () => {
+    const f = await fixture(continuation), root = f.launch.config.jobRootDir;
+    const defaults = { stateRootDir: join(root, "state"),
+      outputPath: join(root, "output", "TEST-task.latest-result.json"),
+      progressPath: join(root, "output", "TEST-task.progress.json"),
+      durableHandoffRootDir: join(root, "durable-handoffs") };
+    const stored = await upsertCodexGoalLaunchManifest({ registryRootDir: f.registryRootDir, launch: f.launch });
+    const path = codexGoalJobManifestPath({ registryRootDir: f.registryRootDir, jobId: "TEST-job" });
+    const before = await readFile(path, "utf8");
+    for (const field of ["stateRootDir", "outputPath", "progressPath", "durableHandoffRootDir"] as const) {
+      const patch: Pick<CodexGoalJobManifestPatch, keyof typeof defaults> = { [field]: join(root, "TEST-changed-" + field) };
+      await expect(updateCodexGoalJob({ registryRootDir: f.registryRootDir, jobId: "TEST-job", patch }))
+        .rejects.toThrow("codex_goal_storage_manifest_binding_changed");
+      expect(await readFile(path, "utf8")).toBe(before);
+      await expect(createCodexGoalJob({ registryRootDir: f.registryRootDir, manifest: { ...stored, ...patch }, overwrite: true }))
+        .rejects.toThrow("codex_goal_storage_manifest_binding_changed");
+      expect(await readFile(path, "utf8")).toBe(before);
+      await expect(upsertCodexGoalLaunchManifest({ registryRootDir: f.registryRootDir,
+        launch: { ...f.launch, config: { ...f.launch.config, ...patch } } }))
+        .rejects.toThrow("codex_goal_storage_manifest_binding_changed");
+      expect(await readFile(path, "utf8")).toBe(before);
+    }
+    expect(await updateCodexGoalJob({ registryRootDir: f.registryRootDir, jobId: "TEST-job",
+      patch: { ...defaults, description: "same effective NEW layout" } })).toMatchObject(defaults);
+    expect((await loadJobLaunch({ registryRootDir: f.registryRootDir, jobId: "TEST-job" })).launch.config)
+      .toMatchObject({ ...continuation, ...defaults });
+  });
+
+  // The real config-file await must not select a later caller-owned generation
+  // or session, and malformed explicit input must fail before reading any file.
+  it("captures the caller storage pair before config-file IO", async () => {
+    const f = await fixture(), configPath = join(f.root, "TEST-config.json");
+    await writeFile(configPath, JSON.stringify({ ...f.launch.config, accounts: ["TEST-account"] }));
+    const args = { configPath, ...structuredClone(continuation) };
+    const pending = goalLaunchInput(args);
+    Object.assign(args.storage, { generationId: "TEST-mutated",
+      intent: { kind: JobStorageIntentKind.Continuation, sessionId: "TEST-mutated" } });
+    Object.assign(args.sessionHomeProfile, { sessionId: "TEST-mutated" });
+    expect((await pending).config).toMatchObject(continuation);
+    await expect(goalLaunchInput({ configPath: join(f.root, "TEST-missing.json"), storage: continuation.storage }))
+      .rejects.toThrow("codex_goal_storage_data_profile_required");
+  });
+
   it("keeps omitted legacy fields and defaults across publication, reload and argv", async () => {
     const f = await fixture();
     await upsertCodexGoalLaunchManifest({ registryRootDir: f.registryRootDir, launch: f.launch });
