@@ -9,6 +9,7 @@ import { createHash, randomUUID } from "node:crypto";
 const workspace = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const compiler = join(workspace, "node_modules/typescript/bin/tsc");
 const config = join(workspace, "host-integration/native-probe/tsconfig.json");
+const codecConfig = join(workspace, "tsconfig.host-inventory-codec.json");
 const evidence = resolve(process.env.SR_NATIVE_PROBE_EVIDENCE ?? join(workspace, "delivery/a0-native-probe"));
 await mkdir(evidence, { recursive: true });
 const attempt = randomUUID();
@@ -53,7 +54,8 @@ async function ownerJoined(): Promise<boolean> {
 let inputs: readonly CheckedInput[] = [], inputsStable = false, passed = false;
 let ownerFixture = false, originalOwnerJoined = false, originalOwnerSettled = false;
 try {
-  const graph = await run(process.execPath, [compiler, "--listFilesOnly", "-p", config], {}, false);
+  const graph = (await run(process.execPath, [compiler, "--listFilesOnly", "-p", config], {}, false)).trim() + "\n" +
+    (await run(process.execPath, [compiler, "--listFilesOnly", "-p", codecConfig], {}, false)).trim();
   inputs = await checkInputs(workspace, graph);
   await run(process.execPath, [compiler, "--noEmit", "--skipLibCheck", "false", "-p", config]);
   const build = join(temporary, "dist"), client = join(temporary, "contract-client");
@@ -149,13 +151,22 @@ try {
     const target=join(source,"host-integration",directory);await mkdir(target,{recursive:true,mode:0o755});
     for(const name of names)await copyFile(join(workspace,"host-integration",directory,name),join(target,name));
   }
+  // Compile the installer's standalone CommonJS codec from this checked graph,
+  // never from the workspace's independently generated installation artifact.
+  const codecBuild = join(temporary,"host-inventory-codec");
+  await run(process.execPath,[compiler,"-p",codecConfig,"--outDir",codecBuild]);
+  const codecBytes = await readFile(join(codecBuild,"host-inventory.js"));
+  // Same standalone-closure criterion as scripts/package-host-inventory-codec.mts.
+  if(/\brequire\s*\(|\bimport\s*(?:\(|[^\n]*\bfrom\b)/.test(codecBytes.toString("utf8")))throw new Error("host_inventory_codec_runtime_import");
+  const candidateCodec = join(source,"host-integration/managed-launcher/host-inventory-codec.cjs");
+  await writeFile(candidateCodec,codecBytes,{flag:"wx"});
   await copyFile(join(managedDirectory,"hosted-host-policy.mjs"),join(source,"host-integration/managed-launcher/hosted-host-policy.mjs"));
   await copyTree(join(build,"src"),join(source,"dist"));
   // Fixture JS is readable by the actual sealed/helper and managed identities;
   // actual content remains separately hashed in the candidate census.
   async function readableTree(path:string):Promise<void>{const metadata=await lstat(path);if(metadata.isDirectory()){await chmod(path,0o755);for(const name of await readdir(path))await readableTree(join(path,name));}else if(metadata.isFile())await chmod(path,(metadata.mode&0o111)?0o755:0o644);else throw new Error("foreign physical fixture input");}
   await readableTree(physical);await readableTree(source);
-  await run(process.execPath,["--test",join(build,"host-integration/native-probe/newtest-contracts.test.mjs"),join(build,"host-integration/native-probe/managed-original-ends-contracts.test.mjs")]);
+  await run(process.execPath,["--test",join(build,"host-integration/native-probe/newtest-contracts.test.mjs"),join(build,"host-integration/native-probe/managed-original-ends-contracts.test.mjs")],{NP_HOST_INVENTORY_CODEC:candidateCodec});
   await writeFile(join(candidate,"source-artifacts.json"),JSON.stringify({kind:"SOURCE_CANDIDATE_ONLY",authorityIssued:false,physicalQualified:false,inputs,artifacts:await inventory(candidate)},null,2)+"\n",{flag:"wx"});
   ownerFixture = process.env.SR_NATIVE_PROBE_ORIGINAL_OWNER_FIXTURE === "65532-seal-admitted";
   if (ownerFixture) {

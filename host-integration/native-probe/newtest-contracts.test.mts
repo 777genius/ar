@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createRequire } from "node:module";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +12,28 @@ const fixture=(directory:string):NewtestConfig=>decodeConfig({version:1,kind:"Na
 if(process.argv[2]==="claim-child"){
   try{const directory=process.argv[3]!;claimOnce(directory,fixture(directory),1n,"f".repeat(32));process.exitCode=0;}catch{process.exitCode=77;}
 }else{
+  // Red: the actual candidate omits its required CJS codec, cannot require it,
+  // or packages an obsolete small/lenient decoder instead of the checked body.
+  test("actual candidate standalone CJS codec decodes finite inventory DATA",()=>{
+    const codecPath=process.env.NP_HOST_INVENTORY_CODEC;assert.ok(codecPath,"Source candidate codec required");
+    const codec=createRequire(import.meta.url)(codecPath) as typeof import("../../src/core/host-infrastructure/host-inventory.js");
+    const units=Array.from({length:300},(_,i)=>({category:i===0?"supervisor":"borrowed",name:`fixture-${i}.service`,aliases:[],controlGroup:`/fixture-${i}.service`,
+      fragmentPath:`/fixture/fixture-${i}.service`,fragmentSha256:"a".repeat(64),dropIns:[{path:`/fixture/fixture-${i}.service.d/ordered.conf`,sha256:"b".repeat(64)}],
+      loadState:"loaded",activeState:i===0?"active":"inactive",unitFileState:"static",invocationId:i===0?"c".repeat(32):"",mainPidBirth:i===0?"100:200":null,job:"",delegate:false}));
+    const launch={command:"/fixture/node",args:["/fixture/cli.js","--json"],cwd:"/fixture/jobs/TEST-codec/workspace"};
+    const input={schemaVersion:5,hostId:"d".repeat(32),bootId:"11111111-1111-1111-1111-111111111111",supervisorUnit:units[0]!.name,units,
+      cgroups:[{path:"",parent:null,ownerUnit:null,dev:"1",ino:"1",members:[]},...units.map((u,i)=>({path:u.controlGroup,parent:"",ownerUnit:u.name,dev:"1",ino:String(i+2),members:i===0?[{birth:"100:200",controlGroup:u.controlGroup}]:[]}))],
+      activators:[],supervisor:{birth:"100:200",executable:{path:"/fixture/node",sha256:"e".repeat(64)},bootstrap:{path:"/fixture/bootstrap.js",sha256:"f".repeat(64)},operationId:"11111111-1111-1111-1111-111111111111",workEndEpochMs:1000,cleanupEndEpochMs:2000},
+      ordinaryCreators:[{creatorId:"fixture-creator",jobId:"TEST-codec",jobRootDir:"/fixture/jobs/TEST-codec",workspacePath:launch.cwd,launch}],disabledCreators:[],runtimeLaunch:launch,
+      collectorProfile:{path:"/var/lib/subscription-runtime-host-policy/fd-collector-profile.v1.json",sha256:"a".repeat(64)},systemBusInfrastructure:{}};
+    const bytes=Buffer.from(JSON.stringify(input));assert.ok(bytes.length>64*1024);
+    const decoded=codec.decodeHostedInventoryBytes(bytes) as import("../../src/core/host-infrastructure/host-inventory.js").HostedInventoryV5;
+    assert.equal(decoded.units.length,300);assert.equal(decoded.units[299]!.dropIns[0]!.path,"/fixture/fixture-299.service.d/ordered.conf");
+    assert.ok(Object.isFrozen(decoded.units[299]!.dropIns[0]));assert.ok(Object.isFrozen(decoded.cgroups[1]!.members[0]));
+    assert.throws(()=>codec.decodeHostedInventoryBytes(Buffer.from(JSON.stringify({...input,ignoredAuthority:true}))),/hosted_inventory_invalid/);
+    assert.throws(()=>codec.decodeHostedInventoryBytes(Buffer.from([0xff])),/hosted_inventory_invalid/);
+    assert.throws(()=>codec.decodeHostedInventoryBytes(new Uint8Array(4*1024*1024+1)),/hosted_inventory_invalid/);
+  });
   // Red: modified bytes or links into an unreviewed tree pass artifact admission.
   test("actual protected artifact content and symlink drift refuse",t=>{
     if(process.getuid?.()!==0){t.skip("Root filesystem fixture unavailable");return;}
