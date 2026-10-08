@@ -20,6 +20,7 @@
 #include <sys/quota.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
+#include "storage-mountinfo.h"
 #include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
@@ -164,14 +165,9 @@ static void capacity(void) {
 }
 static void private_scratch_mount(void) {
   struct statx s;ok((int)syscall(SYS_statx,SCRATCH,"",AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW,STATX_MNT_ID,&s));require(s.stx_mask & STATX_MNT_ID,"unsupported");
-  FILE *info=fopen("/proc/self/mountinfo","re");require(info!=NULL,"unsupported");char line[4096];size_t total=0;bool found=false;
-  while(fgets(line,sizeof(line),info)){size_t length=strlen(line);total+=length;require(total<=2U*1024*1024 && strchr(line,'\n')!=NULL,"unsupported");
-    char *end;errno=0;uint64_t id=strtoull(line,&end,10);require(errno==0 && end!=line && *end==' ',"identity");
-    if(id!=s.stx_mnt_id)continue;
-    char *separator=strstr(line," - ");require(separator!=NULL,"identity");*separator='\0';
-    require(strstr(line," shared:")==NULL && strstr(line," master:")==NULL && strstr(line," propagate_from:")==NULL,"unsupported");found=true;break;
-  }
-  require(!ferror(info) && found,"unsupported");fclose(info);
+  FILE *info=fopen("/proc/self/mountinfo","re");require(info!=NULL,"unsupported");
+  enum storage_mount_result result=storage_private_mount(info,s.stx_mnt_id);fclose(info);
+  require(result!=STORAGE_MOUNT_IDENTITY,"identity");require(result==STORAGE_MOUNT_PRIVATE,"unsupported");
 }
 
 enum native_phase { N_INTENT = 1, N_IMAGE = 2, N_LOOP = 3, N_FORMAT = 4, N_MOUNT = 5, N_PREPARED = 6 };
