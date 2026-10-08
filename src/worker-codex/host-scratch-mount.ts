@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, fstatSync, openSync, readlinkSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readlinkSync, readSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 export type ScratchMount = { target?: string; uuid?: string; fsroot?: string };
@@ -82,14 +82,22 @@ export function inspectVisibleScratchMount(path: string): ScratchMount | undefin
     const original = opened(fd), before = boundedRead("/proc/self/mountinfo", 8 * 1024 * 1024);
     const record = mountRecord(original.mountId, before);
     let output: string;
+    let snapshot: number | undefined;
     try {
-      output = execFileSync("findmnt", ["--json", "--mountpoint", path, "--output", "ID,TARGET,UUID,FSROOT"],
-        { encoding: "utf8", timeout: 2000, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" });
+      // Reuse the bounded kernel snapshot. A fresh findmnt walk of mountinfo can
+      // exceed its deadline in a large systemd namespace; current FD/record and
+      // namespace identity are independently rechecked below after the query.
+      // Linux O_TMPFILE keeps the snapshot unnamed; O_EXCL prevents relinking.
+      // Node's default stdin is a socket that findmnt cannot reopen via procfs.
+      snapshot = openSync("/tmp", 0x410000 | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_EXCL, 0o600);
+      writeFileSync(snapshot, before, { encoding: "utf8" });
+      output = execFileSync("findmnt", ["--kernel", "--tab-file", "/proc/self/fd/0", "--json", "--mountpoint", path, "--output", "ID,TARGET,UUID,FSROOT"],
+        { stdio: [snapshot, "pipe", "pipe"], encoding: "utf8", timeout: 2000, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" });
     } catch (error) {
       const status = error && typeof error === "object" ? Object.getOwnPropertyDescriptor(error, "status") : undefined;
       if (!status || !("value" in status) || status.value !== 1) throw error;
       output = '{"filesystems":[]}';
-    }
+    } finally { if (snapshot !== undefined) closeSync(snapshot); }
     const result = selectVisibleScratchMount(path, original.mountId, before, JSON.parse(output) as unknown);
     // A new bind of the same inode changes mount ID without changing named dev/inode.
     fresh = openSync(path, directoryFlags);

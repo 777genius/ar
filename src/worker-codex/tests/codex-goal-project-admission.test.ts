@@ -105,7 +105,7 @@ describe("Codex project admission snapshot", () => {
     }
   });
 
-  it("admits only path-disjoint producers past terminal output debt", async () => {
+  it("keeps legacy reviewed paths blocking without complete retained terminal evidence", async () => {
     const root = await mkdtemp(join(tmpdir(), "subscription-runtime-terminal-path-admission-"));
     const heldWorkspace = join(root, "worktrees", "project-held-output");
     const nextWorkspace = join(root, "worktrees", "project-next-producer");
@@ -163,11 +163,10 @@ describe("Codex project admission snapshot", () => {
       expect(snapshot.debt).toEqual([expect.objectContaining({
         reason: ProjectDebtReason.UnconsumedCompletedJob,
         subject: heldWorkspace,
-        affectedPaths: ["src/held/output.ts"],
       })]);
+      expect(snapshot.debt[0]).not.toHaveProperty("affectedPaths");
       await expect(gate.evaluate(request(["src/new/"]))).resolves.toMatchObject({
-        allowed: true,
-        debt: [],
+        allowed: false,
       });
       await expect(gate.evaluate(request(["src/held/"]))).resolves.toMatchObject({
         allowed: false,
