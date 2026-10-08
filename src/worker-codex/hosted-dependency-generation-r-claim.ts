@@ -1,3 +1,4 @@
+import { readOriginalHostedDependencyRemovalIdle } from "./hosted-dependency-removal-history";
 import { readOriginalHostedDependencyMaintenanceIdle } from "./hosted-dependency-active-maintenance";
 import { readOriginalHostedDependencyColdCustodyTransfer } from "./hosted-dependency-cold-custody-transfer";
 import { randomUUID } from "node:crypto";
@@ -29,10 +30,13 @@ export function claimOriginalHostedDependencyRGeneration(fence:HostedActivationF
   const reader=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
   let previous:ReturnType<LocalDependencyOwnerStore["read"]>;
   try{previous=reader.read(workspace);}finally{reader.close();}
-  if(!previous || previous.version===1 || previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1)return undefined;
-  const proof=readOriginalHostedDependencyMaintenanceIdle(fence,workspace,access) ?? readOriginalHostedDependencyColdCustodyTransfer(fence,material,previous,access) ??
+  if(!previous || previous.version===1)return undefined;
+  const retired=previous.generationContinuity?.kind===DependencyGenerationContinuityKind.RetiredEvictingV1;
+  if(!retired && previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1)return undefined;
+  const proof=retired ? readOriginalHostedDependencyRemovalIdle(fence,workspace,access) ?? readOriginalHostedDependencyColdCustodyTransfer(fence,material,previous,access) :
+    readOriginalHostedDependencyMaintenanceIdle(fence,workspace,access) ?? readOriginalHostedDependencyColdCustodyTransfer(fence,material,previous,access) ??
     readOriginalHostedDependencyRIdleGeneration(fence,access),actors=readHostedDependencyActiveActorFacts(fence,access);
-  if(previous.version!==3 || !encode(proof.previous).equals(encode(previous)) || !actors || !readOriginalHostedDependencyOperatorNativeCensus(fence,access))held();
+  if(previous.version!==3 || !proof || !encode(proof.previous).equals(encode(previous)) || !actors || !readOriginalHostedDependencyOperatorNativeCensus(fence,access))held();
   const launch={installationId:start.value.installationId,bootId:start.value.bootId,runtimeSha:start.value.runtimeSha,
     grantDigest:start.value.grantDigest,startId,unit:outer.unit,kind:DependencyConsumerLaunchKind.ManagedReadonlyLocalV1,
     association:material.reference,origin:start.reference},attemptId=randomUUID(),attempt={attemptId,epoch:previous.epoch+1,launch},

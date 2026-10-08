@@ -18,7 +18,7 @@ import { assertHostedOrdinaryDependencyNotAdopted } from "../provider-codex/app-
 import { dependencyOwnedReservations, releaseHostedDependencyConsumer } from "./hosted-dependency-release";
 import { assertHostedLegacyReferenceReservationPrepared, sealHostedLegacyReferenceStart,
   retainHostedLegacyReferenceRelease } from "./hosted-dependency-legacy-reference";
-import { evictHostedDependencyCandidate, recoverHostedDependencyEviction, removeHostedDependencyCommittedTrash,
+import { evictHostedDependencyCandidate, recoverHostedDependencyEviction, removeHostedDependencyCommittedTrash, recoverHostedDependencyCommittedTrash,
   type HostedDependencyEvictionCandidate } from "./hosted-dependency-transactions";
 import { assertHostedDependencyQualifiedInventory, assertHostedDependencyPhysicalWorkspace, hostedDependencyOwnerRoot, isHostedDependencyWorkspace, readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
@@ -91,6 +91,7 @@ export class HostedInstallationActivationStore {
   evictDependencyCandidate(candidate: HostedDependencyEvictionCandidate) { return evictHostedDependencyCandidate(candidate); }
   recoverDependencyEviction(jobId: string) { return recoverHostedDependencyEviction(jobId); }
   removeDependencyCommittedTrash(jobId: string, revision: number) { return removeHostedDependencyCommittedTrash(jobId, revision); }
+  recoverDependencyCommittedTrash(jobId:string,revision:number) {return recoverHostedDependencyCommittedTrash(jobId,revision);}
   /** Closed TEST reference operation; selection remains operator policy. */
   async compareLegacyDependency(input: { readonly candidateJobId: string; readonly referenceJobId: string; readonly expectedRevision: number | null }) {
     const { compareHostedLegacyDependency } = await import("./hosted-dependency-legacy-comparison");

@@ -1,3 +1,5 @@
+import { DependencyGenerationContinuityKind } from "@vioxen/subscription-runtime/core";
+import { selectOriginalHostedDependencyAbsentCustodyCandidate, readOriginalHostedDependencyAbsentCandidate } from "./hosted-dependency-absent-custody";
 import { randomUUID } from "node:crypto";
 import { DependencyCustodyEvidenceKind, DependencyOwnerKind, DependencyOwnerPhase, parseDependencyOwner,
   parseDependencyCustodyEvidence, sameDependencyProtectedReference, type DependencyOwnerRecord } from "@vioxen/subscription-runtime/core";
@@ -11,7 +13,7 @@ import { LocalDependencyOwnerStore } from "../store-local-file/dependency-enviro
 import { assertOriginalHostedDependencyPhysicalRecordAccess } from "./hosted-current-dependency-origin";
 import { selectOriginalHostedDependencyColdCustodyCandidate, reassertOriginalHostedDependencyColdCustodyCandidate } from "./hosted-dependency-cold-custody-selection";
 import { captureHostedDependencyColdCustodyPolicy, parseHostedDependencyColdCustodyIntent, coldCustodyRoot,
-  type HostedDependencyColdCustodyIntent } from "./hosted-dependency-cold-custody-intent";
+  HostedDependencyColdCustodyIntentKind, type HostedDependencyColdCustodyIntent } from "./hosted-dependency-cold-custody-intent";
 import { HostedInstallationActivationStore } from "./hosted-installation-activation";
 import { readHostedInstallationActivation } from "./hosted-installation-origin-facts";
 import { HostedReadonlyHostKernel } from "./hosted-readonly-host-kernel";
@@ -64,12 +66,15 @@ function readIntent(workspace:DependencyOwnerRecord["workspace"]) {
   if(!pin.bytes.equals(encode(intent)) || !equal(intent.originalIdle.workspace,workspace))held();return {pin,intent};
 }
 function reassert(fence:HostedActivationFence,intent:HostedDependencyColdCustodyIntent,access:symbol) {
-  boundary(fence,access);const selected=reassertOriginalHostedDependencyColdCustodyCandidate(fence,intent.candidate,access),
+  boundary(fence,access);const selected=intent.version===2 ? readOriginalHostedDependencyAbsentCandidate(fence,intent.removalRelease,access) :
+    reassertOriginalHostedDependencyColdCustodyCandidate(fence,intent.candidate,access),
     session=new HostedReadonlyHostKernel().operatorSession(),installation=readHostedInstallationActivation().installation,claimed=intent.claimedOwner;
   if(claimed.version!==2 || claimed.owner?.kind!==DependencyOwnerKind.Maintenance || claimed.owner.phase!==DependencyOwnerPhase.ExclusiveMutation)held();
   const host=claimed.owner.attempt.host;
   if(host.bootId!==session.bootId || host.supervisorId!==session.supervisorId || host.installationId!==installation.installationId ||
       host.runtimeSha!==installation.runtimeSha || host.inventoryDigest!==installation.inventorySha256 || host.grantDigest!==selected.binding.grantDigest)held();
+  if(intent.version===2 && (!("candidate" in selected) || !equal(selected.candidate,intent.candidate) || !("priorAbsent" in selected) || !equal(selected.priorAbsent,intent.priorAbsent) ||
+    !("previous" in selected) || !equal(selected.previous,intent.originalIdle)))held();
   const policyPin=pinReferenceFile(intent.policyInput.path,16384);
   if(!sameDependencyProtectedReference(policyPin.reference,intent.policyInput))held();
   const configured=policyScope(JSON.parse(policyPin.bytes.toString("utf8")));
@@ -89,7 +94,8 @@ export function prepareOriginalHostedDependencyColdCustody(input:unknown,access:
       intent=readIntent(binding.workspace).intent;const selected=reassert(fence,intent,access);
       if(!equal(selected.policy,policy) || ![intent.originalIdle,intent.claimedOwner].some(v=>equal(owner(binding.workspace),v)))held();
     }else {
-      const selected=selectOriginalHostedDependencyColdCustodyCandidate(fence,binding.jobId,access),previous=selected.previous,
+      const actualOwner=owner(binding.workspace),selected=actualOwner?.version!==1 && actualOwner?.generationContinuity?.kind===DependencyGenerationContinuityKind.RetiredEvictingV1 ?
+        selectOriginalHostedDependencyAbsentCustodyCandidate(fence,binding.jobId,access) : selectOriginalHostedDependencyColdCustodyCandidate(fence,binding.jobId,access),previous=selected.previous,
         session=new HostedReadonlyHostKernel().operatorSession(),operationId=randomUUID(),maintenance={operationId,epoch:previous.epoch+1,
           host:{installationId:actual.installation.installationId,bootId:session.bootId,runtimeSha:actual.installation.runtimeSha,
             inventoryDigest:actual.installation.inventorySha256,grantDigest:binding.grantDigest,supervisorId:session.supervisorId}},
@@ -100,7 +106,8 @@ export function prepareOriginalHostedDependencyColdCustody(input:unknown,access:
         if(readHostedPrivateBytes(path,16384))held();
       ensureHostedDependencyDirectory(coldCustodyRoot);
       const policyInput=writeReferenceOnce(`${coldCustodyRoot}/${operationId}.policy.json`,policy);
-      intent=parseHostedDependencyColdCustodyIntent({version:1,operationId,candidate:selected.candidate,originalIdle:previous,claimedOwner,policyInput});
+      intent=parseHostedDependencyColdCustodyIntent({operationId,candidate:selected.candidate,originalIdle:previous,claimedOwner,policyInput,
+        ...("removalRelease" in selected ? {version:2,kind:HostedDependencyColdCustodyIntentKind.AbsentRestoration,removalRelease:selected.removalRelease,priorAbsent:selected.priorAbsent} : {version:1})});
       writeReferenceOnce(intentPath(binding.workspace),intent);
     }
     reassert(fence,intent,access);
@@ -166,7 +173,8 @@ export function completeOriginalHostedDependencyColdCustody(jobId:string,access:
         !sameDependencyProtectedReference(pinReferenceFile(intentPin.reference.path,65536).reference,intentPin.reference) ||
         !sameDependencyProtectedReference(pinReferenceFile(association.path,16384).reference,association) ||
         !equal(new HostedReadonlyEpochStore().readEpoch(),epoch))held();
-    writeReferenceOnce(`${coldCustodyRoot}/${intent.operationId}.transfer.json`,{version:1,intent:intentPin.reference,association,
+    writeReferenceOnce(`${coldCustodyRoot}/${intent.operationId}.transfer.json`,{intent:intentPin.reference,association,
+      ...(intent.version===2 ? {version:2,kind:HostedDependencyColdCustodyIntentKind.AbsentRestoration,removalRelease:intent.removalRelease,priorAbsent:intent.priorAbsent} : {version:1}),
       candidate:intent.candidate,originalIdle:intent.originalIdle,claimedOwner:claimed,fencedOwner:fenced,releasedOwner:idle,migratedOwner:migrated});
     reassert(fence,intent,access);if(!equal(owner(binding.workspace),migrated))held();
   });

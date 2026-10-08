@@ -15,6 +15,12 @@ export function parseHostedOrdinaryReaderTerminalFacts(unit:string,text:string):
     throw new Error("hosted_dependency_provider_terminal_unresolved");
   return parseTerminalFacts(unit,text);
 }
+/** Separate remover grammar; provider/ordinary record names stay exact. */
+export function parseHostedDependencyRemoverTerminalFacts(unit:string,text:string):HostedManagedProviderTerminalFacts {
+  if (typeof unit !== "string" || /^subscription-runtime-dependency-remove-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.service$/.exec(unit)?.[0] !== unit)
+    throw new Error("hosted_dependency_remover_terminal_unresolved");
+  return parseTerminalFacts(unit,text);
+}
 function parseTerminalFacts(unit: string, text: string): HostedManagedProviderTerminalFacts {
   const fail = (): never => { throw new Error("hosted_dependency_provider_terminal_unresolved"); };
   if (typeof text !== "string" || text.length > 4096 || text.includes("\0") || text.includes("\r") ||

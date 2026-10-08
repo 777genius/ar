@@ -13,9 +13,14 @@ import { hostedReadonlyPolicyRoot, parseHostedReadonlyPolicy, readHostedPrivateB
 import { createReadonlyPrivateRecord, inspectReadonlyInputs, readonlyCustodyRoot,
   readonlyCustodySnapshot, readonlyRevokedRoot, readonlyServiceRoot, withReadonlyCustodyLock } from "./hosted-readonly-custody";
 
+import { HostedDependencyOperatorAction, dispatchHostedDependencyOperatorAction } from "./hosted-dependency-operator-actions";
 const [operation, operand, ...extra] = process.argv.slice(2);
 async function runReadonlyOperator(): Promise<void> {
   assertReadonlyHostOperator();
+  if(Object.values(HostedDependencyOperatorAction).some(action=>action===operation)) {
+    const result=await dispatchHostedDependencyOperatorAction(operation!,process.argv.slice(3));
+    process.stdout.write(JSON.stringify({operation,result})+"\n");return;
+  }
   if (["enroll-child-slot", "install-host", "install-managed-host", "enroll-ordinary", "resume-ordinary", "enter-exclusive", "leave-exclusive", "finish-exclusive", "finish-closed"].includes(operation ?? "")) {
     if (extra.length || (["enroll-ordinary", "enroll-child-slot"].includes(operation!) ? !operand : operand !== undefined)) throw new Error();
     for (const root of ["/var/lib/subscription-runtime-host-policy", "/var/lib/subscription-runtime-host-policy/ordinary-origins",

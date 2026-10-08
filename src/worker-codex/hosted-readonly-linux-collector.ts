@@ -105,7 +105,7 @@ export function requestScopedManagerEffect(args: readonly string[], remainingMs:
 /** Missing directories, parse failures and changed directory identities throw.
  * A retained cgroup and every descendant must positively report empty. */
 export function collectScopedRecursiveEmpty(group: string, remainingMs: number): { empty: boolean; digest: string; nodes: readonly ScopedCgroupNode[] } {
-  if (!/^\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-(?:ordinary|hosted)-[a-f0-9-]{36}\.service$/.test(group)) invalid();
+  if (!/^\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-(?:ordinary|hosted|dependency-remove)-[a-f0-9-]{36}\.service$/.test(group)) invalid();
   const end = performance.now() + remainingMs, tree: ScopedCgroupNode[] = []; let empty = true, count = 0;
   const walk = (path: string): void => {
     if (++count > 256 || performance.now() >= end) invalid();

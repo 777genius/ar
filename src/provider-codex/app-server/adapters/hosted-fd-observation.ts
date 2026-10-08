@@ -176,7 +176,7 @@ export function decodeHostedFdUnitFields(text: string, facts?: readonly SystemdE
 }
 
 export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[], remaining: SystemdObservationRemaining): HostedFdUnit {
-  if (!/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider)-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
+  if (!/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider|dependency-remove)-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
   const installed = readInstalledFdInventory(remaining);
   if (!installed) invalid();
   const bus = readSystemBusInfrastructureField(installed.inventory);
@@ -247,12 +247,14 @@ export function assertHostedFdInternals(process: HostedFdProcess, profile: FdCol
 
 export function assertHostedFdBootstrap(process: HostedFdProcess, profile: FdCollectorProfile, remaining?: SystemdObservationRemaining): void {
   const installer = process.argv[1] === "/runtime/bootstrap.js";
+  const remover = process.argv[1]?.endsWith("/hosted-dependency-remover-bootstrap.js") === true;
   const script = profile.bootstraps.find(pin => installer ?
     pin.path.endsWith("/hosted-dependency-installer-bootstrap.js") : pin.path === process.argv[1]);
   if (process.exe !== profile.node.path || process.argv[0] !== profile.node.path ||
       !script ||
       !(process.argv.length === 2 || (process.argv.length === 3 &&
-        (process.argv[2] === "ordinary-bootstrap" || process.argv[2] === "--research-ready-v1" || process.argv[2] === "--fd-ready-v1"))) ||
+        (process.argv[2] === "ordinary-bootstrap" || process.argv[2] === "--research-ready-v1" || process.argv[2] === "--fd-ready-v1" ||
+          remover && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(process.argv[2]!)))) ||
       process.net !== readlinkSync("/proc/self/ns/net")) invalid();
   for (const pin of profile.node.elfFiles) protectedBytes(pin, false, `/proc/${process.pid}/root`, remaining);
   protectedBytes(installer ? { ...script, path: "/runtime/bootstrap.js" } : script, false, `/proc/${process.pid}/root`, remaining);

@@ -8,8 +8,8 @@ import { DependencyReceiptState as State, parseDependencyReceipt, DependencyRece
 import { assertHostedActivationFence, assertHostedActivationOperator, withHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { hostedDependencyOwnerRoot } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
-import { assertOriginalHostedDependencyPhysicalRecordAccess, readOriginalHostedDependencyMaintenanceRenameState,
-  type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
+import { assertOriginalHostedDependencyPhysicalRecordAccess } from "./hosted-current-dependency-origin";
+import { readOriginalHostedDependencyMaintenanceRenameState, type OriginalHostedDependencyMaintenanceOrigin } from "./hosted-dependency-maintenance-origin";
 import { assertOriginalHostedDependencyMaintenance, readOriginalHostedDependencyMaintenanceDischargedGroups } from "./hosted-dependency-active-maintenance";
 import { readHostedDependencyExistingCommittedReady } from "./hosted-dependency-receipts";
 import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
@@ -66,7 +66,7 @@ export function selectOriginalHostedDependencyMaintenanceRename(fence:HostedActi
 }
 /** Exact physical adapter association, never a supplied FD allowlist. Native
  * readers reach this only through the defining original map's current entry. */
-export function assertOriginalHostedDependencyMaintenanceRenameDescriptors(context:CurrentHostedDependencyOrigin,fence:HostedActivationFence,access:symbol):void {
+export function assertOriginalHostedDependencyMaintenanceRenameDescriptors(context:OriginalHostedDependencyMaintenanceOrigin,fence:HostedActivationFence,access:symbol):void {
   const state=readOriginalHostedDependencyMaintenanceRenameState(context,access),a=current(fence,state,access),
     expected={workspace:a.binding.workspace,trashPath:root+"/dependency-trash/"+state.header.trash.destinationName,operationId:state.attempt.operationId},
     anchors=state.session ? readDependencyTreeEffectReferenceAnchors(state.session,expected):[];
@@ -81,7 +81,7 @@ export function assertOriginalHostedDependencyMaintenanceRenameDescriptors(conte
   }
   if(state.session)readDependencyTreeEffectReferenceAnchors(state.session,expected);current(fence,state,access);
 }
-export async function runOriginalHostedDependencyMaintenanceRename(context:CurrentHostedDependencyOrigin,access:symbol) {
+export async function runOriginalHostedDependencyMaintenanceRename(context:OriginalHostedDependencyMaintenanceOrigin,access:symbol) {
   const state=readOriginalHostedDependencyMaintenanceRenameState(context,access);let placement:Awaited<ReturnType<typeof openHostedDependencyManifestPlacement>>|undefined;
   try {
     withHostedActivationFence(fence=>{current(fence,state,access);readOriginalHostedDependencyMaintenanceDischargedGroups(fence,state.jobId,state.attempt,access);});

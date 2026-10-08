@@ -21,7 +21,8 @@ const root="/var/lib/subscription-runtime-host-policy",encode=(v:unknown)=>Buffe
 /** Every completed R closes custody. The SAME real supervisor must rotate,
  * fence, drain, authenticate material/FDs and release this source before Ready.
  * CLI recover is EnteringExclusive-only and is deliberately not used here. */
-export async function runCurrentReadonlyEntry(roots:CurrentColdHotRoots) {
+export async function runCurrentReadonlyEntry(roots:CurrentColdHotRoots,kind=FullEntryKind.Hot) {
+  assert(kind===FullEntryKind.Hot || kind===FullEntryKind.Restored);
   assertRootScope(roots);assert.equal(readHostedInstallationActivation().activation.phase,HostedActivationPhase.Exclusive);
   const host=new HostedReadonlySupervisorHost(),before=host.readEpoch();
   assert.equal(before.identity.jobId,roots.readonlyJobId);assert.equal(before.identity.jobRootDir,roots.jobRoot);
@@ -42,7 +43,7 @@ export async function runCurrentReadonlyEntry(roots:CurrentColdHotRoots) {
   assert(ready.reservations.every(row=>row.state===HostedCustodyReservationState.Terminal));
   const content=readCurrentEntryContentObservation(roots.candidateJobId,result);
   assert(content.state===EntryObservationState.Measured);assert.equal(content.startId,native.startId);assert.equal(content.invocationId,native.invocationId);
-  assert.equal(content.attempted,0);assert.equal(content.completed,0);assert.equal(content.finalRoot,0);
+  const cold=kind===FullEntryKind.Restored;assert.equal(content.attempted,cold?3:0);assert.equal(content.completed,cold?3:0);assert.equal(content.finalRoot,cold?1:0);
   const providers=withHostedActivationFence(fence=>{
     // This current-revision join is measurement only; it cannot authorize IO.
     const binding=readHostedDependencyBinding(roots.candidateJobId);assert(binding && binding.version===2);
@@ -71,7 +72,8 @@ export async function runCurrentReadonlyEntry(roots:CurrentColdHotRoots) {
     assert(pinReferenceFile(closure.reference.path,65536).bytes.equals(closure.bytes));assert(pinReferenceFile(idle.reference.path,16384).bytes.equals(idle.bytes));
     return selected;
   });
-  return Object.freeze({result,observation:Object.freeze({kind:FullEntryKind.Hot,startId:native.startId,attemptId:content.attemptId,
+  return Object.freeze({result,observation:Object.freeze({kind,startId:native.startId,attemptId:content.attemptId,epoch:content.epoch,
+    preclaim:pinReferenceFile(`${root}/dependency-reader-starts/${native.startId}.json`,16384).reference,
     invocationId:native.invocationId,scopeSha256:content.scopeSha256,sourceClosedSha256:content.sourceClosedSha256,
     attempted:content.attempted,completed:content.completed,finalRoot:content.finalRoot,providers:Object.freeze(providers)})});
 }

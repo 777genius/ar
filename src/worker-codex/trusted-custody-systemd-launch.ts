@@ -8,14 +8,22 @@ import { hostedDependencyInstallerProperties, hostedDependencyInstallerBootstrap
 import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { hostedFdSystemdProperties } from "../provider-codex/app-server/adapters/hosted-fd-prelude";
 
-export enum TrustedCustodyLaunchRole { Outer = "outer", Ordinary = "ordinary", Installer = "installer" }
+export enum TrustedCustodyLaunchRole { Outer = "outer", Ordinary = "ordinary", Installer = "installer", Remover = "remover" }
 
 /** Custody services retain their independent authority/cgroup contract. This
  * adapter accepts no executable, payload, environment or systemd properties. */
 export function trustedCustodySystemdLaunch(role: TrustedCustodyLaunchRole, startId: string, cwd: string, installer?: HostedDependencyInstallerPlan):
   { command: string; args: readonly string[] } {
-  if (!/^[a-f0-9-]{36}$/.test(startId) || !/^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(cwd)) {
+  if (!/^[a-f0-9-]{36}$/.test(startId) || !(role === TrustedCustodyLaunchRole.Remover && cwd === "/") && !/^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(cwd)) {
     throw new Error("hosted_custody_kernel_evidence_invalid");
+  }
+  if (role === TrustedCustodyLaunchRole.Remover) {
+    if (installer || cwd !== "/" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(startId)) throw new Error("hosted_custody_kernel_evidence_invalid");
+    const bootstrap = fileURLToPath(new URL("./hosted-dependency-remover-bootstrap.js", import.meta.url)), profile = readHostedFdProfile();
+    if (!profile || profile.node.path !== process.execPath || !profile.bootstraps.some(pin => pin.path === bootstrap)) throw new Error("dependency_remover_profile_unsupported");
+    return { command: "/usr/bin/systemd-run", args: ["--quiet", "--wait", "--pipe", `--unit=subscription-runtime-dependency-remove-${startId}.service`,
+      "--service-type=exec", "--expand-environment=no", "--property=Slice=subscription-runtime-hosted.slice", "--property=KillMode=control-group",
+      "--property=SendSIGKILL=yes", "--property=Delegate=no", "--property=Restart=no", "--working-directory=/", "--", profile.node.path, bootstrap, startId] };
   }
   let bootstrap: readonly string[];
   if (role === TrustedCustodyLaunchRole.Installer) {

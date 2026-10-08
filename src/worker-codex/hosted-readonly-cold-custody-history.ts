@@ -4,7 +4,7 @@ import { DependencyOwnerKind, DependencyOwnerPhase, DependencyGenerationContinui
   type DependencyReadonlyColdBaselineAdoptionEvidence } from "@vioxen/subscription-runtime/core";
 import { DependencyInstallProofKind } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedActivationFence, type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { hostedDependencyBindingName, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { pinReferenceFile, encodeReference as encode } from "./hosted-dependency-legacy-reference-records";
 import { readHostedDependencyCommittedReady } from "./hosted-dependency-receipts";
 const root="/var/lib/subscription-runtime-host-policy";
@@ -14,13 +14,21 @@ function held():never{throw new Error("hosted_readonly_dependency_custody_unreso
  * Current execution must separately consume its own original-map admission. */
 export function readHostedReadonlyColdCustodyHistory(fence:HostedActivationFence,binding:HostedDependencyBinding,
   evidence:DependencyReadonlyColdBaselineAdoptionEvidence) {
-  assertHostedActivationFence(fence);const c=evidence.candidate,slot=c.generationBaseline;
+  return readHostedReadonlyColdCandidateHistory(fence,binding,evidence.candidate);
+}
+/** The immutable pre-eviction candidate is history, independently of a current
+ * V2 enrollment. It cannot authorize the current Retired owner by itself. */
+export function readHostedReadonlyColdCandidateHistory(fence:HostedActivationFence,binding:HostedDependencyBinding,
+  c:DependencyReadonlyColdBaselineAdoptionEvidence["candidate"]) {
+  assertHostedActivationFence(fence);const slot=c.generationBaseline;
   if(binding.version!==2 || c.jobId!==binding.jobId || slot.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1)held();
   const pins:ReturnType<typeof pinReferenceFile>[]=[];
   const reference=(expected:unknown,path:string,maximum=16384)=>{
     if(!isDependencyProtectedReference(expected) || expected.path!==path)held();
     const pin=pinReferenceFile(path,maximum);if(!sameDependencyProtectedReference(pin.reference,expected))held();pins.push(pin);return pin;
   };
+  const bindingPin=reference(c.binding,`${root}/${hostedDependencyBindingName(binding.jobId)}`);
+  if(!bindingPin.bytes.equals(encode(binding)))held();
   const baseline=reference(slot.baseline,`${root}/dependency-generation-baselines/${slot.operationId}.json`,65536),v:unknown=JSON.parse(baseline.bytes.toString("utf8")),
     committed=readHostedDependencyCommittedReady(binding,slot.readyRevision),ready=committed.receipt;
   if(!isDependencyCustodyObject(v,"actors,attempt,barrier,binding,inputClosureDigest,installerMappingSha256,ready,readyReference,version") ||

@@ -1,5 +1,9 @@
-/** Distinct fresh C-only TEST slice. Frozen four-entry/R mode stays unchanged. */
+/** Distinct fresh TEST lifecycle. Frozen four-entry mode stays unchanged. */
 import assert from "node:assert/strict";
+import { prepareCurrentHostedDependencyColdCustody, completeCurrentHostedDependencyColdCustody } from "../../dist/worker-codex/hosted-current-dependency-origin.js";
+import { readHostedReadonlyHostInventory } from "../../dist/worker-codex/hosted-readonly-host-kernel.js";
+import { readonlyIdentityName } from "../../dist/worker-codex/hosted-readonly-authority.js";
+import { runCurrentReadonlyEntry } from "./current-full-r-entry.js";
 import { existsSync } from "node:fs";
 import { setTimeout as wait } from "node:timers/promises";
 import { HostedActivationPhase } from "../../dist/worker-core/index.js";
@@ -9,7 +13,7 @@ import { HostedDependencyTransactionOutcome } from "../../dist/worker-codex/host
 import { readHostedDependencyEvictionEnabled } from "../../dist/worker-codex/hosted-dependency-eviction-enabled-policy.js";
 import { pinReferenceFile } from "../../dist/worker-codex/hosted-dependency-legacy-reference-records.js";
 import { withHostedActivationFence } from "../../dist/provider-codex/app-server/adapters/hosted-process-activation.js";
-import { assertCurrentConfiguredAuth, assertRootScope, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
+import { assertCurrentConfiguredAuth, assertRootScope, readCurrentIndependentColdPolicy, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
 import { assertCurrentClosedEntry } from "./current-closed-entry.js";
 import { mountCurrentConfiguredAuth } from "./current-configured-auth-mount.js";
 import { FullEntryKind, FullRequestPhase, runCurrentOrdinaryEntry, requestCurrentNextWork,
@@ -18,8 +22,8 @@ import { editCurrentPureLinkedLeaf } from "./current-full-warm-edit.js";
 import { NativeInstallerTraceState, startNativeInstallerTrace } from "./native-installer-observations.js";
 import { prepareEvictRestoreSentinels, captureEvictRestoreSentinels, assertEvictRestoreSentinels } from "./current-evict-restore-sentinels.js";
 import { readEvictRestoreReady, readEvictRestoreAbsent, assertPathAbsent, assertRetainedEvictionProof,
-  assertSameRootFinalGateRestore } from "./current-evict-restore-readback.js";
-import { directory, json } from "./common.ts";
+  assertSameRootFinalGateRestore, assertSameRootReadonlyFinalGateRestore } from "./current-evict-restore-readback.js";
+import { command, node, runtime, directory, json } from "./common.ts";
 const policyPath="/var/lib/subscription-runtime-host-policy/dependency-retention-policy.json";
 export enum EvictRestorePhase { Cold="cold", Hot="hot", RootPolicyInput="root_policy_input", Evict="evict",
   Provenance="provenance_before_unlink", Remove="committed_trash_remove", Restore="same_root_final_gate_restore", Close="close" }
@@ -45,7 +49,10 @@ function measuredInstall(trace:ReturnType<typeof startNativeInstallerTrace>,prio
  * owner publication. Unknown launch/effect is never retried. Failure retains
  * auth, proofs, holds and partial trash for original owned-OS teardown; earlier
  * protected provider/runtime result records are never rewritten by this test. */
-export async function runCurrentFullEvictRestoreFlow(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void) {
+enum RestoreConsumer { Ordinary = "ordinary", Readonly = "readonly" }
+export function runCurrentFullEvictRestoreFlow(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void) {return run(roots,progress,RestoreConsumer.Ordinary);}
+export function runCurrentFullEvictReadonlyRestoreFlow(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void) {return run(roots,progress,RestoreConsumer.Readonly);}
+async function run(roots:CurrentColdHotRoots,progress:(phase:EvictRestorePhase)=>void,consumer:RestoreConsumer) {
   assertRootScope(roots);assert.equal(readHostedInstallationActivation().activation.phase,HostedActivationPhase.Closed);
   const deadline=performance.now()+27*60*1000,store=new HostedInstallationActivationStore();
   const auth=mountCurrentConfiguredAuth(roots.jobRoot,roots.accountName);assertCurrentConfiguredAuth(roots);
@@ -90,15 +97,29 @@ export async function runCurrentFullEvictRestoreFlow(roots:CurrentColdHotRoots,p
     const restoreRequest=await requestCurrentNextWork(roots,FullRequestPhase.ColdRestore);
     const remaining=Math.floor(deadline-performance.now());assert(remaining>0);
     openTrace=startNativeInstallerTrace(roots.candidateJobId,remaining);
-    progress(EvictRestorePhase.Restore);const restored=await runCurrentOrdinaryEntry(roots,FullEntryKind.Restored);
+    progress(EvictRestorePhase.Restore);let transferOperationId:string|undefined;
+    if(consumer===RestoreConsumer.Readonly) {
+      json("/run/TEST-full-flow-outbox/cold-policy-request.json",{schemaVersion:1,candidateJobId:roots.candidateJobId,readonlyJobId:roots.readonlyJobId,
+        jobRoot:roots.jobRoot,workspace:roots.workspaceIdentity,runtimeSha:roots.sourceSha,runtimeManifestSha256:roots.runtimeManifestSha256,
+        readonlyPaths:["packages/live","packages/packed","TEST-readonly-local-custody"].map(path=>roots.workspace+"/"+path),
+        runtimeLaunch:readHostedReadonlyHostInventory().runtimeLaunch},0o600);
+      const review=`/run/user/0/subscription-runtime-host-policy/codex-readonly-reviewed/${readonlyIdentityName(roots.readonlyJobId)}`;
+      while(!existsSync(review)){assert(performance.now()+500<deadline,"TEST independent Absent custody review deadline");await wait(500);}
+      const preparation=prepareCurrentHostedDependencyColdCustody(readCurrentIndependentColdPolicy(roots));transferOperationId=preparation.operationId;
+      store.enterExclusive();const cli=runtime+"/dist/worker-codex/hosted-readonly-inputs-cli.js";
+      command(node,[cli,"enroll",preparation.policyPath],120000);completeCurrentHostedDependencyColdCustody(roots.candidateJobId);
+      command(node,[cli,"recover",roots.readonlyJobId],120000);store.finishExclusive();
+    }
+    const restored=consumer===RestoreConsumer.Readonly ? await runCurrentReadonlyEntry(roots,FullEntryKind.Restored) : await runCurrentOrdinaryEntry(roots,FullEntryKind.Restored);
     const restoreDelivery=await assertCurrentNextWorkDelivered(roots,restoreRequest);
-    const restore=assertSameRootFinalGateRestore(roots,ready,proof,restored);assertDistinctCurrentEntries([cold,hot,restored]);
+    const restore=consumer===RestoreConsumer.Readonly ? assertSameRootReadonlyFinalGateRestore(roots,ready,proof,restored) :
+      assertSameRootFinalGateRestore(roots,ready,proof,restored);assertDistinctCurrentEntries([cold,hot,restored]);
     assert(BigInt(restored.observation.epoch)>BigInt(hot.observation.epoch));
     const preserved=assertEvictRestoreSentinels(roots,sentinels),restoreTrace=openTrace;openTrace=undefined;
     const restoreInstaller=measuredInstall(restoreTrace,1);
     assert.equal(new Set([...initialInstaller.invocationIds,...restoreInstaller.invocationIds]).size,2);
-    progress(EvictRestorePhase.Close);store.finishClosed();auth.close(restored.result);
-    return Object.freeze({qualification:"native_actual_c_cold_hot_committed_absent_restore_only",status:"partial_pass",
+    progress(EvictRestorePhase.Close);if(consumer===RestoreConsumer.Readonly)store.revokeManaged(roots.readonlyJobId);store.finishClosed();auth.close(restored.result);
+    return Object.freeze({qualification:consumer===RestoreConsumer.Readonly ? "native_actual_c_cold_hot_committed_absent_first_r_restore_only" : "native_actual_c_cold_hot_committed_absent_restore_only",consumer,transferOperationId,status:"partial_pass",
       fullPlanQualification:"pending",entries:[cold,hot,restored].map(entry=>entry.observation),warmEdit,
       cases:["EVICT-COMMIT-ABSENT","COMMITTED-TRASH-PROVENANCE-REMOVE","FINAL-GATE-COLD-RESTORE"],
       remaining:["UNVERIFIED-REUSE","G1-ALL-READERS-STALE-DOWNGRADE","TRUTHFUL-WARM-AND-MUTATION-KEYS",

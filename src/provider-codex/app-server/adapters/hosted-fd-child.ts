@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { readFileSync } from "node:fs";
-export enum HostedFdLaunchKind { Foreground = "foreground", Provider = "provider", Installer = "installer" }
+export enum HostedFdLaunchKind { Foreground = "foreground", Provider = "provider", Installer = "installer", Remover = "remover" }
 type Birth = Readonly<{ unit: string; kind: HostedFdLaunchKind; birth: string; command: string; args: readonly string[] }>;
 const births = new WeakMap<ChildProcess, Birth>();
 function fail(): never { throw new Error("hosted_fd_child_unresolved"); }

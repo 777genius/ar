@@ -1,3 +1,4 @@
+import { readOriginalHostedDependencyRemovalIdle } from "./hosted-dependency-removal-history";
 import { readOriginalHostedDependencyMaintenanceIdle } from "./hosted-dependency-active-maintenance";
 import { randomUUID } from "node:crypto";
 import { DependencyGenerationContinuityKind, DependencyOwnerKind, DependencyOwnerPhase, parseDependencyOwner } from "@vioxen/subscription-runtime/core";
@@ -21,10 +22,13 @@ export function claimOriginalHostedDependencyCGeneration(fence:HostedActivationF
   const reader=LocalDependencyOwnerStore.open({rootPath:hostedDependencyOwnerRoot,maxRecordBytes:16384});
   let previous:ReturnType<LocalDependencyOwnerStore["read"]>;
   try{previous=reader.read(selected.binding.workspace);}finally{reader.close();}
-  if(!previous || previous.version===1 || previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1)return undefined;
+  if(!previous || previous.version===1)return undefined;
+  const retired=previous.generationContinuity?.kind===DependencyGenerationContinuityKind.RetiredEvictingV1;
+  if(!retired && previous.generationContinuity?.kind!==DependencyGenerationContinuityKind.BaselineAuthenticatedV1)return undefined;
   if(previous.version!==2 || previous.owner)held();
-  const proof=readOriginalHostedDependencyMaintenanceIdle(fence,selected.binding.workspace,access) ?? readOriginalHostedDependencyCIdleGeneration(fence,selected.binding.jobId,access),actors=readHostedDependencyActiveActorFacts(fence,access);
-  if(!encode(proof.previous).equals(encode(previous)) || !actors || !readOriginalHostedDependencyOperatorNativeCensus(fence,access))held();
+  const proof=retired ? readOriginalHostedDependencyRemovalIdle(fence,selected.binding.workspace,access) :
+    readOriginalHostedDependencyMaintenanceIdle(fence,selected.binding.workspace,access) ?? readOriginalHostedDependencyCIdleGeneration(fence,selected.binding.jobId,access),actors=readHostedDependencyActiveActorFacts(fence,access);
+  if(!proof || retired && !encode(proof.binding).equals(encode(selected.binding)) || !encode(proof.previous).equals(encode(previous)) || !actors || !readOriginalHostedDependencyOperatorNativeCensus(fence,access))held();
   const launch={installationId:selected.binding.installationId,bootId:selected.start.bootId,runtimeSha:selected.binding.runtimeSha,
     grantDigest:selected.binding.grantDigest,startId,unit:selected.start.unit},attemptId=randomUUID(),attempt={attemptId,epoch:previous.epoch+1,launch},
     expected=parseDependencyOwner({...previous,revision:previous.revision+1,epoch:attempt.epoch,

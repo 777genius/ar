@@ -7,10 +7,12 @@ import { currentFullEnvironment } from "./current-full-env.js";
 assert.equal(process.platform,"linux");assert.equal(process.getuid?.(),0);assert.equal(process.argv.length,3);assert.equal(process.argv[2],"supervisor");
 assert.equal(process.argv[1],runtime+"/scripts/dependency-retention-os-test/current-full-supervisor.js");
 assert.match(process.env.TEST_SOURCE_SHA??"",/^[a-f0-9]{40}$/);
+const restoreConsumer=process.env.TEST_FULL_RESTORE_CONSUMER;
+assert(restoreConsumer===undefined || restoreConsumer==="ordinary" || restoreConsumer==="readonly");
 json(runtime+"/guest-started.json",{schemaVersion:1,purpose:"TEST_bootstrap_observation_only",sourceSha:process.env.TEST_SOURCE_SHA,
   machineId:readFileSync("/etc/machine-id","utf8").trim(),pid:process.pid});
 const child=spawn(node,[runtime+"/scripts/dependency-retention-os-test/current-full-guest.js","qualify"],
-  {env:{...currentFullEnvironment(),TEST_SOURCE_SHA:process.env.TEST_SOURCE_SHA},stdio:["pipe","pipe","pipe"]});
+  {env:{...currentFullEnvironment(),TEST_SOURCE_SHA:process.env.TEST_SOURCE_SHA,...(restoreConsumer===undefined?{}:{TEST_FULL_RESTORE_CONSUMER:restoreConsumer})},stdio:["pipe","pipe","pipe"]});
 // Real pipes satisfy the unchanged descriptor boundary. Never persist output.
 child.stdin.on("error",()=>{});child.stdin.end();child.stdout.resume();child.stderr.resume();
 const timeout=setTimeout(()=>child.kill("SIGTERM"),27*60*1000);

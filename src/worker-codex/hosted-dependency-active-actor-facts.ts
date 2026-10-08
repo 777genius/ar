@@ -13,6 +13,7 @@ import { pinReferenceFile, referencePath, parseReferenceStart, parseReferenceEnt
   parseReferenceRelease, readReferenceRelation, encodeReference } from "./hosted-dependency-legacy-reference-records";
 import { HostedCustodyReservationState } from "@vioxen/subscription-runtime/worker-core";
 import { assertOriginalHostedDependencyPhysicalRecordAccess } from "./hosted-current-dependency-origin";
+import { assertOriginalHostedDependencyRemoverLock } from "./hosted-dependency-removal-context";
 
 const digest = (bytes:Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 function invalid():never { throw new Error("hosted_dependency_active_actor_unresolved"); }
@@ -29,7 +30,8 @@ export function readHostedDependencyActiveActorFacts(fence:HostedActivationFence
   const operations="/var/lib/subscription-runtime-host-policy/dependency-transactions";
   try {
     const before=lstatSync(operations,{bigint:true});if(!before.isDirectory() || before.uid!==0n || (before.mode&0o7777n)!==0o700n)invalid();
-    const names=readdirSync(operations);if(names.length>4096)invalid();if(names.some(name=>name.endsWith(".remove.lock")))return undefined;
+    const names=readdirSync(operations);if(names.length>4096)invalid();
+    for(const name of names.filter(name=>name.endsWith(".remove.lock")))if(!assertOriginalHostedDependencyRemoverLock(`${operations}/${name}`,fence,access))return undefined;
     const after=lstatSync(operations,{bigint:true});if(before.dev!==after.dev || before.ino!==after.ino || before.mtimeNs!==after.mtimeNs || before.ctimeNs!==after.ctimeNs)invalid();
   }catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
   assertHostedDependencyQualifiedInventory();

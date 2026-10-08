@@ -14,6 +14,8 @@ import { readHostedReadonlyHostInventory, HostedReadonlyHostKernel } from "./hos
 import { readOriginalHostedDependencyGenerationNativeScope } from "./hosted-dependency-generation-native-scope";
 import { assertOriginalHostedDependencyOperatorDescriptors, assertOriginalHostedDependencyPhysicalRecordAccess, type CurrentHostedDependencyOrigin } from "./hosted-current-dependency-origin";
 import { collectCgroupProcesses, collectFutureCreatorShow, collectJobs, collectUnitShow } from "./hosted-readonly-linux-collector";
+import { readOriginalHostedDependencyRemoverScope } from "./hosted-dependency-removal-context";
+import { readOriginalHostedDependencyDischargedRemovalUnits } from "./hosted-dependency-removal-history";
 import { assertExactUnitGroup, observedJobUnits } from "./hosted-readonly-observations";
 
 /** A current census is one required factual part of the interval, not a seal,
@@ -29,6 +31,7 @@ export function readOriginalHostedDependencyOperatorNativeCensus(fence:HostedAct
 function scope(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,access:symbol) {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
   if(context)return readOriginalHostedDependencyGenerationNativeScope(context,fence,access);
+  const remover=readOriginalHostedDependencyRemoverScope(fence,access);if(remover)return remover;
   assertHostedActivationOperator();assertOriginalHostedDependencyOperatorDescriptors(fence,access);
   const units:readonly string[]=[];
   return {units,operator:new HostedReadonlyHostKernel().operatorSession()};
@@ -51,7 +54,7 @@ function census(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActi
     if(line.trim().split(/\s+/)[0]!=="dbus.socket")invalid();
   }
   const observed=lines(systemctl(["list-units","--all","--type=service,scope","--state=active,activating,reloading,deactivating,failed","--no-legend","--plain","--no-pager"]));
-  let eligible=true;const discharged=new Set<string>(readHostedDependencyActiveReferenceUnits(fence,access));
+  let eligible=true;const discharged=new Set<string>([...readHostedDependencyActiveReferenceUnits(fence,access),...readOriginalHostedDependencyDischargedRemovalUnits(fence,access)]);
   for(const line of observed) {
     const name=line.trim().split(/\s+/)[0];if(name==="init.scope")continue;
     if(!unit(name))invalid();
@@ -110,7 +113,7 @@ function fragment(input:string):Buffer {
     if(length!==before.size || length>65536 || before.ctimeMs!==after.ctimeMs || before.size!==after.size)invalid();return bytes.subarray(0,length);
   }finally{closeSync(fd);}
 }
-function group(name:string):string {if(!/^subscription-runtime-(?:ordinary|outer|hosted|installer)-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.service$/.test(name))invalid();return `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${name}`;}
+function group(name:string):string {if(!/^subscription-runtime-(?:ordinary|outer|hosted|installer|dependency-remove)-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.service$/.test(name))invalid();return `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${name}`;}
 function unit(v:unknown):v is string{return typeof v==="string" && v.length<=200 && /^[A-Za-z0-9_@.-]+\.(service|scope)$/.test(v);}
 function path(v:unknown):v is string{return typeof v==="string" && v.length<=4096 && /^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(v) && !v.split("/").some(p=>p==="." || p==="..");}
 function lines(v:string):string[]{return v.split("\n").filter(line=>line.trim());}

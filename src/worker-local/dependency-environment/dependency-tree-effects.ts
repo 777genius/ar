@@ -336,7 +336,7 @@ export async function openDependencyTreeRename(request: DependencyTreeEffectInpu
   } catch (error) { await anchors.close(); throw error; }
 }
 
-async function committed(input: DependencyTreeEffectInput, commit: ProtectedDependencyEvictionCommit, anchors: Anchors): Promise<void> {
+async function committed(input: DependencyTreeEffectInput, commit: ProtectedDependencyEvictionCommit, anchors: Anchors): Promise<Anchor> {
   if (commit.path.startsWith(input.workspace.canonicalPath + "/") ||
       commit.path.startsWith(`${input.trash.destinationParent.canonicalPath}/${input.trash.destinationName}/`) ||
       !/^[a-f0-9]{64}$/.test(commit.sha256)) fail(DependencyTreeEffectFailure.InvalidCommit);
@@ -368,6 +368,7 @@ async function committed(input: DependencyTreeEffectInput, commit: ProtectedDepe
     if (!stable(stat, await file.stat({ bigint: true }))) fail(DependencyTreeEffectFailure.InvalidCommit);
   } finally { await file.close(); }
   await anchors.verify();
+  return parent;
 }
 
 /** Only a verified remaining subset of an independently captured original full
@@ -385,6 +386,51 @@ export type DependencyCommittedTrashRemovalSteps = Readonly<{
   progress(): DependencyCommittedTrashRemovalProgress;
   removeNext(): DependencyCommittedTrashRemovalProgress;
 }>;
+/** Separate name-negative observer for last-unlink recovery. It reports only
+ * a durable absence fact; the host must join authenticated v2 intent, revoked
+ * actor lifetime and actual owner before publishing recovered completion.
+ * The ordinary removal opener still requires an existing named root. */
+export async function openCommittedDependencyTrashAbsence(request: DependencyTreeEffectInput & {
+  readonly commit: ProtectedDependencyEvictionCommit;
+}): Promise<Readonly<{ referenceSession: DependencyTreeEffectReferenceSession; confirmAbsence(): Readonly<{ operationId: string }>;
+  close(): Promise<{ readonly closeFailures: number }> }>> {
+  const input = { ...detach(request), commit: { ...request.commit, identity: { ...request.commit.identity } } }, anchors = new Anchors(input.limits);
+  validate(input); manifest(input, true); let closed = false, held = false;
+  try {
+    if ((await statfs("/proc/self/fd", { bigint: true })).type !== 0x9fa0n) fail(DependencyTreeEffectFailure.Unsupported);
+    const parent = await anchors.path(input.trash.destinationParent.canonicalPath, input.trash.destinationParent); await protectTrash(parent);
+    const commitParent = await committed(input, input.commit, anchors); await anchors.verify();
+    const name = Buffer.from(input.trash.destinationName), negative = () => {
+      try { lstatSync(anchored(parent, name)); fail(DependencyTreeEffectFailure.Conflict); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    };
+    negative();
+    const commitCurrent = () => {
+      const path = anchored(commitParent, Buffer.from(basename(input.commit.path))), fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      let failed = false;
+      try {
+        const before = fstatSync(fd, { bigint: true }), buffer = Buffer.alloc(16385);
+        if (!before.isFile() || before.size < 1n || before.size > 16384n || before.nlink !== 1n || before.uid !== BigInt(process.geteuid!()) ||
+            (before.mode & 0o7777n) !== 0o600n || !sameDependencyTree(identity(before), input.commit.identity) || mountSync(fd) !== commitParent.mountId)
+          fail(DependencyTreeEffectFailure.InvalidCommit);
+        const count = readSync(fd, buffer, 0, buffer.length, 0), after = fstatSync(fd, { bigint: true }), named = lstatSync(path, { bigint: true });
+        if (BigInt(count) !== before.size || digest(buffer.subarray(0, count)) !== input.commit.sha256 || !stable(before, after) || !stable(before, named) ||
+            before.size !== after.size || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs || before.nlink !== named.nlink ||
+            before.size !== named.size || before.ctimeNs !== named.ctimeNs || before.mtimeNs !== named.mtimeNs)
+          fail(DependencyTreeEffectFailure.InvalidCommit);
+      } catch (error) { failed = true; throw error; }
+      finally { anchors.closeTemporary(fd, failed); }
+    };
+    const session = referenceSession(anchors, input);
+    return Object.freeze({ referenceSession: session, confirmAbsence() {
+      if (closed || held) fail(DependencyTreeEffectFailure.Closed);
+      try {
+        anchors.verifySync(); commitCurrent(); negative(); fsyncSync(parent.handle.fd); anchors.verifySync(); commitCurrent(); negative();
+        return Object.freeze({ operationId: input.trash.operationId });
+      } catch (error) { held = true; throw error; }
+    }, async close() { closed = true; return anchors.close(); } });
+  } catch (error) { await anchors.close(); throw error; }
+}
 export async function openCommittedDependencyTrashRemoval(request: DependencyTreeEffectInput & {
   readonly commit: ProtectedDependencyEvictionCommit; readonly maxRemovals: number;
 }): Promise<{

@@ -1,3 +1,5 @@
+import { readHostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { removeCurrentHostedDependencyCommittedTrash, recoverCurrentHostedDependencyCommittedTrash } from "./hosted-current-dependency-origin";
 import { readHostedDependencyEvictionEnabled as enabled } from "./hosted-dependency-eviction-enabled-policy";
 import { readCurrentHostedDependencyMaintenanceAuthority, claimCurrentHostedDependencyMaintenance,
   assertCurrentHostedDependencyMaintenance, retireCurrentHostedDependencyEviction, releaseCurrentHostedDependencyMaintenance,
@@ -34,6 +36,8 @@ import { assertHostedDependencyReferenceVeto, DependencyReferenceEffect } from "
 import { openHostedDependencyReadySourceLinks, assertHostedDependencyReadySourceHistory } from "./hosted-dependency-ready-source-links";
 
 import { assertHostedDependencyLegacyComparedReady } from "./hosted-dependency-legacy-comparison-record";
+import { assertOriginalHostedDependencyPhysicalRecordAccess } from "./hosted-current-dependency-origin";
+import { pinReferenceFile } from "./hosted-dependency-legacy-reference-records";
 
 export type HostedDependencyEvictionCandidate = { readonly jobId: string; readonly revision: number;
   readonly generation: string; readonly installKey: string };
@@ -205,6 +209,23 @@ function historicalHeader(receipt: Extract<DependencyReceipt, { state: State.Abs
   if (!evidence || !evidence.equals(renamedEvidence(header)) || hash(evidence) !== proof.commitEvidenceId) fail();
   authenticateHistoricalReady(header.ready);
   return header;
+}
+export function readOriginalHostedDependencyRemovalHeader(receipt:Extract<DependencyReceipt,{state:State.Absent}>,access:symbol):Header {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);return historicalHeader(receipt);
+}
+/** Internal factual capture of original committed eviction custody. Neither
+ * a supplied receipt nor a parser result can replace this protected history. */
+export function readOriginalHostedDependencyRemovalCommittedHistory(jobId: string, revision: number, access: symbol) {
+  assertOriginalHostedDependencyPhysicalRecordAccess(access);
+  return withHostedActivationFence(fence => readOriginalHostedDependencyRemovalCommittedHistoryWithFence(fence, jobId, revision, access));
+}
+export function readOriginalHostedDependencyRemovalCommittedHistoryWithFence(fence: import("../provider-codex/app-server/adapters/hosted-process-activation").HostedActivationFence,
+  jobId: string, revision: number, access: symbol) {
+    assertOriginalHostedDependencyPhysicalRecordAccess(access);
+    const actual = readCurrentHostedDependencyMaintenanceAuthority(fence, jobId), committed = readHostedDependencyCommittedAbsent(actual.binding, revision),
+      header = historicalHeader(committed.receipt), pin = pinReferenceFile(headerPath(header.attempt), 32768);
+    if (!pin.bytes.equals(encode(header))) fail();
+    return { actual, committed, header, headerReference: pin.reference };
 }
 /** Historical authentication never requires the old tree/stage/current inputs. */
 function authenticateHistoricalReady(ready: Ready): void {
@@ -387,6 +408,11 @@ export async function recoverHostedDependencyEviction(jobId: string) {
   return finish(jobId, header);
 }
 export async function removeHostedDependencyCommittedTrash(jobId: string, revision: number) {
+  const binding=readHostedDependencyBinding(jobId);
+  return binding?.version===1 ? removeLegacyHostedDependencyCommittedTrash(jobId,revision) : removeCurrentHostedDependencyCommittedTrash(jobId,revision);
+}
+export function recoverHostedDependencyCommittedTrash(jobId:string,revision:number) {return recoverCurrentHostedDependencyCommittedTrash(jobId,revision);}
+async function removeLegacyHostedDependencyCommittedTrash(jobId: string, revision: number) {
   const a = authority(jobId);
   if (!enabled()) return { outcome: HostedDependencyTransactionOutcome.Skipped };
   const committed = readHostedDependencyCommittedAbsent(a.binding, revision), proof = committed.receipt.evictionCommit;

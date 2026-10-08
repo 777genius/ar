@@ -1,6 +1,8 @@
+import { runOriginalHostedDependencyTrashRemovalParent, recoverOriginalHostedDependencyTrashRemovalParent } from "./hosted-dependency-removal-parent";
 import { readOriginalHostedManagedProviderTools, assertOriginalHostedManagedCapsuleCopy } from "./hosted-managed-provider-descriptor-validation";
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
-import { HostedDependencyMaintenanceOriginKind, selectOriginalHostedDependencyMaintenanceRename, runOriginalHostedDependencyMaintenanceRename, assertOriginalHostedDependencyMaintenanceRenameDescriptors, type OriginalHostedDependencyMaintenanceRenameState } from "./hosted-dependency-maintenance-rename";
+import { renameOriginalHostedDependencyMaintenanceTree, assertOriginalHostedDependencyMaintenanceDescriptors } from "./hosted-dependency-maintenance-origin";
+import { readOriginalHostedDependencyRemoverScope, runOriginalHostedDependencyRemoverActor } from "./hosted-dependency-removal-context";
 import { assertOriginalHostedDependencyRootDescriptorCensus } from "./hosted-dependency-root-descriptor-census";
 import { readOriginalHostedDependencyMaintenanceAuthority, claimOriginalHostedDependencyMaintenance, assertOriginalHostedDependencyMaintenance,
   retireOriginalHostedDependencyEviction, releaseOriginalHostedDependencyMaintenance } from "./hosted-dependency-active-maintenance";
@@ -113,8 +115,7 @@ export function releaseCurrentHostedReadonlyDependencySourceOwner(fence:HostedAc
 export function claimCurrentHostedOrdinaryDependencyGeneration(fence:HostedActivationFence,startId:string) {
   return claimOriginalHostedDependencyCGeneration(fence,startId,rootInternalAccess);
 }
-const contexts = new WeakMap<CurrentHostedDependencyOrigin, OriginalHostedDependencyOriginEntry | OriginalHostedDependencyMaintenanceRenameState>();
-let currentMaintenanceOrigin:CurrentHostedDependencyOrigin|undefined;
+const contexts = new WeakMap<CurrentHostedDependencyOrigin, OriginalHostedDependencyOriginEntry>();
 function consumerEntry(context:CurrentHostedDependencyOrigin):OriginalHostedDependencyOriginEntry|undefined {
   const entry=contexts.get(context);if(entry && "kind" in entry)invalid();return entry;
 }
@@ -982,19 +983,18 @@ export function releaseCurrentHostedDependencyMaintenance(fence:HostedActivation
 
 /** Fixed physical producer; comparisons cannot register anchors or state. */
 export async function renameCurrentHostedDependencyMaintenanceTree(jobId:string,attempt:import("@vioxen/subscription-runtime/core").DependencyMaintenanceAttempt) {
-  const context=withHostedActivationFence(fence=>{
-    if(currentMaintenanceOrigin)invalid();const state=selectOriginalHostedDependencyMaintenanceRename(fence,jobId,attempt,rootInternalAccess);if(!state)return undefined;
-    const context=Object.freeze({[brand]:true as const});contexts.set(context,state);currentMaintenanceOrigin=context;return context;
-  });
-  if(!context)return undefined;
-  try{return await runOriginalHostedDependencyMaintenanceRename(context,rootInternalAccess);}
-  finally {contexts.delete(context);if(currentMaintenanceOrigin===context)currentMaintenanceOrigin=undefined;}
-}
-export function readOriginalHostedDependencyMaintenanceRenameState(context:CurrentHostedDependencyOrigin,access:symbol):OriginalHostedDependencyMaintenanceRenameState {
-  assertOriginalHostedDependencyPhysicalRecordAccess(access);const state=contexts.get(context);
-  if(context!==currentMaintenanceOrigin || !state || !("kind" in state) || state.kind!==HostedDependencyMaintenanceOriginKind.OperatorMaintenance)invalid();return state;
+  return renameOriginalHostedDependencyMaintenanceTree(jobId,attempt,rootInternalAccess);
 }
 export function assertOriginalHostedDependencyOperatorDescriptors(fence:HostedActivationFence,access:symbol):void {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
-  if(currentMaintenanceOrigin)assertOriginalHostedDependencyMaintenanceRenameDescriptors(currentMaintenanceOrigin,fence,access);else assertHostedProcessDescriptors();
+  if(readOriginalHostedDependencyRemoverScope(fence,access))return;
+  assertOriginalHostedDependencyMaintenanceDescriptors(fence,access);
 }
+export function runCurrentHostedDependencyRemoverActor(operationId:string):Promise<void> {
+  return runOriginalHostedDependencyRemoverActor(operationId,rootInternalAccess);
+}
+
+export function removeCurrentHostedDependencyCommittedTrash(jobId:string,revision:number) {
+  return runOriginalHostedDependencyTrashRemovalParent(jobId,revision,rootInternalAccess);
+}
+export function recoverCurrentHostedDependencyCommittedTrash(jobId:string,revision:number) {return recoverOriginalHostedDependencyTrashRemovalParent(jobId,revision,rootInternalAccess);}

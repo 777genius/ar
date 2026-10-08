@@ -1,6 +1,7 @@
 import { readOriginalHostedDependencyColdCustodyTransfer } from "./hosted-dependency-cold-custody-transfer";
 import { readOriginalHostedDependencyRetiredInterval } from "./hosted-dependency-retired-interval-facts";
 import { readOriginalHostedDependencyOperatorNativeCensus } from "./hosted-dependency-generation-native-census";
+import { readOriginalHostedDependencyRemoverScope } from "./hosted-dependency-removal-context";
 import { readHostedDependencyActiveActorFacts } from "./hosted-dependency-active-actor-facts";
 import { readOriginalHostedDependencyGenerationNativeScope } from "./hosted-dependency-generation-native-scope";
 import { createHash } from "node:crypto";
@@ -302,7 +303,7 @@ export function readOriginalHostedDependencyConsumerPriorRSourceClosure(context:
 }
 function historicalBoundary(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,access:symbol):void {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);
-  if(context)readOriginalHostedDependencyGenerationNativeScope(context,fence,access);else {assertHostedActivationOperator();assertOriginalHostedDependencyOperatorDescriptors(fence,access);new HostedReadonlyHostKernel().operatorSession();}
+  if(context)readOriginalHostedDependencyGenerationNativeScope(context,fence,access);else {assertHostedActivationOperator();assertOriginalHostedDependencyOperatorDescriptors(fence,access);if(!readOriginalHostedDependencyRemoverScope(fence,access))new HostedReadonlyHostKernel().operatorSession();}
 }
 function priorR(context:CurrentHostedDependencyOrigin|undefined,fence:HostedActivationFence,unit:string,access:symbol):readonly string[]|undefined {
   historicalBoundary(context,fence,access);const match=/^subscription-runtime-(?:outer|hosted)-([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\.service$/.exec(unit);

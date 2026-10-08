@@ -12,7 +12,7 @@ import { assertReadonlyHostOperator } from "../../dist/worker-codex/hosted-reado
 import { prepareCurrentFullColdHotRoots, assertRootScope, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
 import { assertConfiguredAccountName } from "./current-configured-auth-mount.js";
 import { CurrentBackingGeometry, readCurrentBackingGeometry } from "./current-backing-geometry.js";
-import { runCurrentFullEvictRestoreFlow, EvictRestorePhase } from "./current-full-evict-restore-flow.js";
+import { runCurrentFullEvictRestoreFlow, runCurrentFullEvictReadonlyRestoreFlow, EvictRestorePhase } from "./current-full-evict-restore-flow.js";
 import { runCurrentFullReadonlyContinuation } from "./current-full-r-continuation.js";
 import { FullFlowPhase } from "./current-full-flow.js";
 import { assertDistinctCurrentEntries } from "./current-full-entry.js";
@@ -25,6 +25,7 @@ import { pinReferenceFile } from "../../dist/worker-codex/hosted-dependency-lega
 import { withHostedActivationFence } from "../../dist/provider-codex/app-server/adapters/hosted-process-activation.js";
 import { observeRegistrationFailure } from "./registration-failure-observation.js";
 import { json, runtime } from "./common.ts";
+enum FullGuestRestoreConsumer { Ordinary="ordinary", Readonly="readonly" }
 enum FullGuestStatus { Failed="failed", PartialPass="partial_pass" }
 enum FullGuestSetup { Input="independent_input", Root="original_fresh_current_root", Policy="root_test_eviction_policy" }
 const evidence:Record<string,unknown>={schemaVersion:1,sourceSha:process.env.TEST_SOURCE_SHA,
@@ -61,6 +62,9 @@ try {
   assert.equal(process.argv.length,3);assert.equal(process.argv[2],"qualify");assertReadonlyHostOperator();
   assert.equal(readCurrentBackingGeometry(),CurrentBackingGeometry.Adoptable);
   assert.match(process.env.TEST_SOURCE_SHA??"",/^[a-f0-9]{40}$/);
+  const consumer=process.env.TEST_FULL_RESTORE_CONSUMER??FullGuestRestoreConsumer.Ordinary;
+  assert(consumer===FullGuestRestoreConsumer.Ordinary || consumer===FullGuestRestoreConsumer.Readonly);evidence.restoreConsumer=consumer;
+  if(consumer===FullGuestRestoreConsumer.Readonly)evidence.qualification="native_actual_c_cold_hot_committed_absent_first_r_restore_only";
   const fullDeadline=performance.now()+27*60*1000;
   evidence.phase=FullGuestSetup.Input;
   const bytes=readHostedPrivateBytes("/run/TEST-full-flow-input/input.json",4096);assert(bytes);
@@ -87,13 +91,13 @@ try {
     assertOriginalFullBackingPreparation();assert(performance.now()<fullDeadline);await new Promise(resolve=>setTimeout(resolve,100));
   }
   evidence.phase=FullGuestSetup.Policy;evidence.testEvictionPolicy=prepareCurrentTestEvictionPolicy(roots,inputPin.reference);
-  const evictRestore=await runCurrentFullEvictRestoreFlow(roots,(phase:EvictRestorePhase)=>{evidence.phase={flow:"evict_restore",phase};});
+  const evictRestore=await (consumer===FullGuestRestoreConsumer.Readonly ? runCurrentFullEvictReadonlyRestoreFlow : runCurrentFullEvictRestoreFlow)(roots,(phase:EvictRestorePhase)=>{evidence.phase={flow:"evict_restore",phase};});
   // Preserve observed C slice if later independent review/R continuation fails.
   evidence.evictRestore=evictRestore;
   const restored=evictRestore.entries.at(-1);assert(restored);
-  const readonlyContinuation=await runCurrentFullReadonlyContinuation(roots,restored,Math.floor(fullDeadline-performance.now()),
+  const readonlyContinuation=consumer===FullGuestRestoreConsumer.Readonly ? undefined : await runCurrentFullReadonlyContinuation(roots,restored,Math.floor(fullDeadline-performance.now()),
     (phase:FullFlowPhase)=>{evidence.phase={flow:"readonly_continuation",phase};});
-  const entries=[...evictRestore.entries,...readonlyContinuation.entries];
+  const entries=[...evictRestore.entries,...(readonlyContinuation?.entries??[])];
   assertDistinctCurrentEntries(entries.map(observation=>({observation})));
   evidence.flow=Object.freeze({evictRestore,readonlyContinuation,entries,cumulativeInstalls:2});
   // Original store/flow already performed drain and recovery. Reobserve the

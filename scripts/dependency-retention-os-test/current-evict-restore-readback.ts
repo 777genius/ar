@@ -15,6 +15,9 @@ import { readHostedDependencyEstablishedReceipt, readHostedDependencyExistingCom
 import { pinReferenceFile } from "../../dist/worker-codex/hosted-dependency-legacy-reference-records.js";
 import { HostedOrdinaryDependencyReaderKind } from "../../dist/worker-codex/hosted-ordinary-dependency-reader.js";
 import { assertRootScope, type CurrentColdHotRoots } from "./current-cold-hot-root.js";
+import { readHostedReadonlyDependencyStart } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-origin.js";
+import { DependencyConsumerLaunchKind } from "../../dist/core/index.js";
+import { type runCurrentReadonlyEntry } from "./current-full-r-entry.js";
 import { type runCurrentOrdinaryEntry } from "./current-full-entry.js";
 const policyRoot="/var/lib/subscription-runtime-host-policy";
 const encode=(value:unknown)=>Buffer.from(JSON.stringify(value)+"\n");
@@ -99,7 +102,7 @@ export function assertSameRootFinalGateRestore(roots:CurrentColdHotRoots,old:Ret
   assert(isDependencyCustodyObject(row,"binding,kind,origin,preclaim,receipt,recipeSha256,version"));
   assert(row.version===1 && row.kind===HostedOrdinaryDependencyReaderKind.OrdinaryDependencyReaderV1 && encode(row).equals(record.bytes));
   assert(isDependencyProtectedReference(row.origin) && isDependencyProtectedReference(row.binding));
-  assert.deepEqual(row.origin,start.reference);assert.deepEqual(row.binding,pinReferenceFile(hostedDependencyBindingName(selected.jobId),16384).reference);
+  assert.deepEqual(row.origin,start.reference);assert.deepEqual(row.binding,pinReferenceFile(policyRoot+"/"+hostedDependencyBindingName(selected.jobId),16384).reference);
   assert.deepEqual(row.receipt,{state:DependencyReceiptState.Absent,revision:proof.absent.receipt.revision,reference:proof.absent.reference});
   assert(isDependencyCustodyObject(row.preclaim,"attempt,ownerRevision,ownerSha256,version,workspace") && row.preclaim.version===1);
   assert.deepEqual(row.preclaim.workspace,roots.workspaceIdentity);
@@ -114,4 +117,26 @@ export function assertSameRootFinalGateRestore(roots:CurrentColdHotRoots,old:Ret
   // authenticated fresh install are required; unequal inode numbers are not.
   return Object.freeze({readerSha256:record.reference.sha256,selectedAbsent:proof.absent.reference,
     restoredReady:restored.reference,generation:restored.receipt.generation});
+}
+
+/** Actual first R preclaim captured the SAME committed Absent before submission;
+ * historical public V2 candidate is not reported as the current Ready. */
+export function assertSameRootReadonlyFinalGateRestore(roots:CurrentColdHotRoots,old:ReturnType<typeof readEvictRestoreReady>,
+  proof:ReturnType<typeof readEvictRestoreAbsent>,entry:Awaited<ReturnType<typeof runCurrentReadonlyEntry>> | Awaited<ReturnType<typeof runCurrentOrdinaryEntry>>) {
+  const native=readHostedForegroundLaunchObservation(entry.result),record=pinReferenceFile(`${policyRoot}/dependency-reader-starts/${native.startId}.json`,16384),v:unknown=JSON.parse(record.bytes.toString("utf8"));
+  assert.deepEqual(record.reference,entry.observation.preclaim);
+  assert(isDependencyCustodyObject(v,"attempt,binding,custody,kind,origin,ownerRevision,ownerSha256,receipt,version,workspace") && v.version===1 && encode(v).equals(record.bytes));
+  assert.equal(v.kind,DependencyConsumerLaunchKind.ManagedReadonlyLocalV1);assert.deepEqual(v.workspace,roots.workspaceIdentity);
+  const start=withHostedActivationFence(fence=>readHostedReadonlyDependencyStart(fence,native.startId));
+  assert.equal(start.value.readonlyJobId,roots.readonlyJobId);assert.equal(start.value.candidateJobId,roots.candidateJobId);
+  assert.equal(start.value.unit,native.unit);assert.deepEqual(v.origin,start.reference);assert.deepEqual(v.custody,start.value.association);
+  assert.deepEqual(v.receipt,{state:DependencyReceiptState.Absent,revision:proof.absent.receipt.revision,reference:proof.absent.reference});
+  assert(isDependencyCustodyObject(v.attempt,"attemptId,epoch,launch"));assert.equal(v.attempt.attemptId,entry.observation.attemptId);assert.equal(String(v.attempt.epoch),entry.observation.epoch);
+  assert(isDependencyCustodyObject(v.attempt.launch,"association,bootId,grantDigest,installationId,kind,origin,runtimeSha,startId,unit"));
+  assert.equal(v.attempt.launch.kind,DependencyConsumerLaunchKind.ManagedReadonlyLocalV1);assert.equal(v.attempt.launch.startId,native.startId);
+  assert.deepEqual(v.attempt.launch.association,start.value.association);assert.deepEqual(v.attempt.launch.origin,start.reference);
+  const restored=readEvictRestoreReady(roots);assert.equal(restored.receipt.revision,proof.absent.receipt.revision+2);
+  assert.equal(restored.receipt.generation,entry.observation.attemptId);assert.notEqual(restored.receipt.generation,old.receipt.generation);
+  assert.equal(restored.receipt.installKey,old.receipt.installKey);assertRetainedEvictionProof(proof);
+  return Object.freeze({readerSha256:record.reference.sha256,selectedAbsent:proof.absent.reference,restoredReady:restored.reference,generation:restored.receipt.generation});
 }

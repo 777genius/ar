@@ -1,18 +1,22 @@
+import { DependencyReceiptParseStatus, DependencyReceiptState, parseDependencyReceipt, type DependencyReceipt } from "@vioxen/subscription-runtime/worker-core";
 import { types } from "node:util";
 import { DependencyGenerationContinuityKind, isDependencyCustodyObject, isDependencyProtectedReference,
   parseDependencyGenerationContinuity, parseDependencyOwner, DependencyOwnerKind, DependencyOwnerPhase,
   type DependencyOwnerRecord, type DependencyReadonlyColdBaselineAdoptionEvidence, type DependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { parseHostedReadonlyPolicy } from "./hosted-readonly-inputs";
 export const coldCustodyRoot="/var/lib/subscription-runtime-host-policy/readonly-dependency-cold-adoptions";
-export type HostedDependencyColdCustodyIntent=Readonly<{
-  version:1; operationId:string; candidate:DependencyReadonlyColdBaselineAdoptionEvidence["candidate"];
+export enum HostedDependencyColdCustodyIntentKind { AbsentRestoration = "absent_restoration" }
+type IntentFields=Readonly<{ operationId:string; candidate:DependencyReadonlyColdBaselineAdoptionEvidence["candidate"];
   originalIdle:DependencyOwnerRecord; claimedOwner:DependencyOwnerRecord; policyInput:DependencyProtectedReference;
 }>;
+export type HostedDependencyColdCustodyIntent=IntentFields & (Readonly<{version:1}> | Readonly<{version:2;kind:HostedDependencyColdCustodyIntentKind.AbsentRestoration;
+  removalRelease:DependencyProtectedReference;priorAbsent:Readonly<{receipt:Extract<DependencyReceipt,{state:DependencyReceiptState.Absent}>;reference:DependencyProtectedReference}>}>);
 function held():never{throw new Error("hosted_dependency_cold_custody_held");}
 /** Syntax only; the original producer independently rejoins the protected C
  * closure, current owner and actual operator under the same real fence. */
 export function parseHostedDependencyColdCustodyIntent(input:unknown):HostedDependencyColdCustodyIntent {
-  if(!isDependencyCustodyObject(input,"candidate,claimedOwner,operationId,originalIdle,policyInput,version") || input.version!==1 ||
+  const absent=isDependencyCustodyObject(input,"candidate,claimedOwner,kind,operationId,originalIdle,policyInput,priorAbsent,removalRelease,version") && input.version===2 && input.kind===HostedDependencyColdCustodyIntentKind.AbsentRestoration;
+  if(!(absent || isDependencyCustodyObject(input,"candidate,claimedOwner,operationId,originalIdle,policyInput,version") && input.version===1) ||
       typeof input.operationId!=="string" || /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.exec(input.operationId)?.[0]!==input.operationId ||
       !isDependencyProtectedReference(input.policyInput) || input.policyInput.path!==`${coldCustodyRoot}/${input.operationId}.policy.json` ||
       !isDependencyCustodyObject(input.candidate,"binding,closedStartId,generationBaseline,idle,jobId,sourceClosed,sourceMapping"))held();
@@ -26,10 +30,19 @@ export function parseHostedDependencyColdCustodyIntent(input:unknown):HostedDepe
       claimedOwner.epoch!==originalIdle.epoch+1 || claimedOwner.owner?.kind!==DependencyOwnerKind.Maintenance ||
       claimedOwner.owner.phase!==DependencyOwnerPhase.ExclusiveMutation || claimedOwner.owner.attempt.operationId!==input.operationId ||
       JSON.stringify(originalIdle.workspace)!==JSON.stringify(claimedOwner.workspace) ||
-      JSON.stringify(originalIdle.generationContinuity)!==JSON.stringify(generationBaseline) ||
-      JSON.stringify(claimedOwner.generationContinuity)!==JSON.stringify(generationBaseline))held();
-  return {version:1,operationId:input.operationId,originalIdle,claimedOwner,policyInput:input.policyInput,
+      JSON.stringify(originalIdle.generationContinuity)!==JSON.stringify(claimedOwner.generationContinuity) ||
+      (!absent && JSON.stringify(originalIdle.generationContinuity)!==JSON.stringify(generationBaseline) || absent && originalIdle.generationContinuity?.kind!==DependencyGenerationContinuityKind.RetiredEvictingV1))held();
+  const fields={operationId:input.operationId,originalIdle,claimedOwner,policyInput:input.policyInput,
     candidate:{jobId:c.jobId,closedStartId:c.closedStartId,binding:c.binding,idle:c.idle,sourceClosed:c.sourceClosed,sourceMapping:c.sourceMapping,generationBaseline}};
+  if(!absent)return {version:1,...fields};
+  if(!isDependencyProtectedReference(input.removalRelease) || !isDependencyCustodyObject(input.priorAbsent,"receipt,reference") || !isDependencyProtectedReference(input.priorAbsent.reference))held();
+  const prior=parseDependencyReceipt(input.priorAbsent.receipt);
+  if(prior.status!==DependencyReceiptParseStatus.Valid || prior.receipt.state!==DependencyReceiptState.Absent ||
+    originalIdle.generationContinuity?.kind!==DependencyGenerationContinuityKind.RetiredEvictingV1 || prior.receipt.operationId!==originalIdle.generationContinuity.operationId ||
+    JSON.stringify(prior.receipt.workspace)!==JSON.stringify(originalIdle.workspace))held();
+  return {version:2,kind:HostedDependencyColdCustodyIntentKind.AbsentRestoration,...fields,removalRelease:input.removalRelease,
+    priorAbsent:{receipt:prior.receipt,reference:input.priorAbsent.reference}};
+
 }
 /** Caller configuration is copied without getters/iterators before any IO.
  * The actual fixed operator later checks it against the selected installation. */

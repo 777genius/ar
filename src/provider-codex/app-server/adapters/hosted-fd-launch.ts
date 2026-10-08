@@ -22,6 +22,15 @@ export type HostedForegroundLaunchObservation = Readonly<{unit:string;startId:st
 // Existing result association retains only actual fixed-launch observations.
 // These are factual inputs; kernel/current creator/drain checks grant authority.
 const foregroundResults = new WeakMap<object,Readonly<{launch:HostedFdLaunch;observation:HostedForegroundLaunchObservation}>>();
+export type HostedRemoverActorObservation = Readonly<{ unit: HostedFdUnit; actor: HostedFdProcess; proxy: HostedFdProcess }>;
+export type HostedRemoverCloseResult = Readonly<{ unit: string; invocationId: string; actorBirth: string; proxyBirth: string;
+  exitCode: number | null; signal: NodeJS.Signals | null }>;
+const removerCloses = new WeakMap<object, HostedFdLaunch>();
+/** A close result is produced only by the exact physical child retained here.
+ * It supplies creator discharge facts; it never declares the unit terminal. */
+export function assertHostedRemoverCloseResultForChild(result: HostedRemoverCloseResult, child: ChildProcess): void {
+  if (removerCloses.get(result) !== launches.get(child) || !removerCloses.has(result)) invalid();
+}
 export function readHostedForegroundLaunchObservation(result:HostedForegroundResult):HostedForegroundLaunchObservation {
   const observed=foregroundResults.get(result); if (!observed) invalid(); return observed.observation;
 }
@@ -62,6 +71,8 @@ export class HostedFdLaunch {
   #outputFailed = false;
   #exitStatus = 70;
   #signalTerminated = true;
+  #closeExitCode: number | null = null;
+  #closeSignal: NodeJS.Signals | null = null;
   #pending = Buffer.alloc(0);
   readonly #filtered = new PassThrough();
   readonly #logs: readonly { path: string; fd: number; dev: number; ino: number }[];
@@ -96,6 +107,7 @@ export class HostedFdLaunch {
     child.once("error", () => this.invalidate());
     child.once("exit", () => { if (!this.#released) this.invalidate(); });
     child.once("close", (code, signal) => { this.#closed = true; this.#signalTerminated = signal !== null;
+      this.#closeExitCode = code; this.#closeSignal = signal;
       this.#exitStatus = signal === null ? code ?? 70 : 70; this.#closeStreams(); });
     this.#input.on("error", () => this.invalidate());
     if (kind !== HostedFdLaunchKind.Installer) {
@@ -224,6 +236,21 @@ export class HostedFdLaunch {
     return this.#profile.limits.setupTimeoutMs - elapsed;
   }
   remainingSetupMs(): number { return this.#remaining(); }
+  removerActorObservation(): HostedRemoverActorObservation {
+    if (this.kind !== HostedFdLaunchKind.Remover || !this.#proof || this.#released) invalid();
+    const actual = this.#collect(), previous = this.#proof;
+    if (actual.bootstrap.birth !== previous.bootstrap.birth || actual.proxy.birth !== previous.proxy.birth ||
+        JSON.stringify(actual.unit) !== JSON.stringify(previous.unit) || actual.endpoints.join(",") !== previous.endpoints.join(",")) invalid();
+    this.#proof = actual;
+    return Object.freeze({ unit: actual.unit, actor: actual.bootstrap, proxy: actual.proxy });
+  }
+  removerCloseResult(): HostedRemoverCloseResult {
+    if (this.kind !== HostedFdLaunchKind.Remover || !this.#closed || !this.#released || this.#outputFailed || !this.#proof ||
+        launches.get(this.#physicalChild) !== this || this.#proof.proxy.birth !== this.#proxyBirth) invalid();
+    const result = Object.freeze({ unit: this.unit, invocationId: this.#proof.unit.invocation, actorBirth: this.#proof.bootstrap.birth,
+      proxyBirth: this.#proxyBirth, exitCode: this.#closeExitCode, signal: this.#closeSignal });
+    removerCloses.set(result, this); return result;
+  }
   /** Called after the real --wait proxy closes all streams, and only after the
    * owner has separately proved its exact unit/cgroup terminal under its fence. */
   foregroundResult(): HostedForegroundResult {
@@ -299,9 +326,10 @@ export class HostedFdLaunch {
     if (proxy.birth !== this.#proxyBirth || proxy.net !== observeHostedFdProcess(process.pid).net) invalid();
     if (proxy.exe !== profile.node.path && !profile.wrappers.some(pin => pin.path === proxy.exe)) invalid();
     const candidates = hostedFdGroupPids(unit.group).map(observeHostedFdProcess);
-    const targetNames = ["hosted-readonly-runtime-bootstrap.js", "hosted-readonly-host-launch-cli.js", "hosted-app-server-launcher.js"];
+    const targetNames = this.kind === HostedFdLaunchKind.Remover ? ["hosted-dependency-remover-bootstrap.js"] :
+      ["hosted-readonly-runtime-bootstrap.js", "hosted-readonly-host-launch-cli.js", "hosted-app-server-launcher.js"];
     const bootstraps = candidates.filter(p => p.exe === profile.node.path &&
-      (targetNames.some(name => p.argv[1]?.endsWith("/" + name)) || p.argv[1] === "/runtime/bootstrap.js"));
+      (targetNames.some(name => p.argv[1]?.endsWith("/" + name)) || this.kind !== HostedFdLaunchKind.Remover && p.argv[1] === "/runtime/bootstrap.js"));
     if (bootstraps.length !== 1 || !candidates.some(p => p.pid === unit.mainPid)) invalid();
     for (const p of candidates) {
       if (p.group !== `0::${unit.group}`) invalid();
@@ -377,6 +405,8 @@ export class HostedFdLaunch {
       // real owner lifetime and this same one-shot release fence.
       revalidateOwner();
     }
+    if (this.kind === HostedFdLaunchKind.Remover && (!end ||
+        !Buffer.from(frame).equals(Buffer.from("subscription-runtime-remover-fd-release-v1\n")))) invalid();
     this.#remaining();
     this.#input.write(frame);
     this.#released = true;
@@ -385,7 +415,8 @@ export class HostedFdLaunch {
 
   static spawn(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
     unit: string, kind: HostedFdLaunchKind): ChildProcess {
-    if (!/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider)-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
+    if (!/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider|dependency-remove)-[a-f0-9-]{36}\.service$/.test(unit) ||
+        (kind === HostedFdLaunchKind.Remover) !== /^subscription-runtime-dependency-remove-/.test(unit)) invalid();
     const profile = readHostedFdProfile();
     if (!profile || (command !== profile.node.path && command !== hostedDependencySystemdRunExecutable)) invalid();
     if (command === profile.node.path && !profile.bootstraps.some(pin => pin.path === args[0] &&
@@ -408,7 +439,7 @@ export class HostedFdLaunch {
 
 /** Only this fixed three-channel constructor can register a launch. */
 export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
-  unit: string, kind: HostedFdLaunchKind.Provider | HostedFdLaunchKind.Foreground): ChildProcessWithoutNullStreams;
+  unit: string, kind: HostedFdLaunchKind.Provider | HostedFdLaunchKind.Foreground | HostedFdLaunchKind.Remover): ChildProcessWithoutNullStreams;
 export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,
   unit: string, kind: HostedFdLaunchKind): ChildProcess;
 export function spawnHostedFdChild(command: string, args: readonly string[], options: Pick<SpawnOptions, "cwd" | "detached">,

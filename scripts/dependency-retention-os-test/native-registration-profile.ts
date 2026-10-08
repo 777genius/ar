@@ -126,7 +126,7 @@ export async function issueNativeFdProfile(evidence: Record<string, unknown>, bu
   assert.equal(command(ss.path, ["--version"]).trim(), "ss utility, iproute2-6.1.0");
   const bootstraps = ["provider-codex/app-server/adapters/hosted-app-server-launcher.js",
     "worker-codex/hosted-dependency-installer-bootstrap.js", "worker-codex/hosted-readonly-host-launch-cli.js",
-    "worker-codex/hosted-readonly-runtime-bootstrap.js", "worker-codex/hosted-readonly-foreground.js"]
+    "worker-codex/hosted-readonly-runtime-bootstrap.js", "worker-codex/hosted-readonly-foreground.js", "worker-codex/hosted-dependency-remover-bootstrap.js"]
     .map(path => pin(runtime + "/dist/" + path));
   if (process.env.TEST_OS_SCENARIO === OwnedOsScenario.Readonly) {
     for (const path of ["managed-launcher/launch.mjs", "managed-launcher/payload-guard.mjs", "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs"])

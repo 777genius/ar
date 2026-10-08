@@ -27,11 +27,14 @@ import { ensureHostedDependencyDirectory, readHostedDependencyCommittedAbsent } 
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { pinReferenceFile, writeReferenceOnce, encodeReference as encode } from "./hosted-dependency-legacy-reference-records";
 import { assertHostedProcessDescriptors } from "../provider-codex/app-server/adapters/hosted-process-descriptors";
+import { readOriginalHostedDependencyRemoverScope, readOriginalHostedDependencyRemoverAuthority, readOriginalHostedDependencyRemoverEffectState } from "./hosted-dependency-removal-context";
+import { readOriginalHostedDependencyRemovalIdle } from "./hosted-dependency-removal-history";
 const root="/var/lib/subscription-runtime-host-policy",records=root+"/dependency-generation-maintenance";
 function held():never{throw new Error("hosted_dependency_active_maintenance_held");}
 function equal(a:unknown,b:unknown):boolean{return encode(a).equals(encode(b));}
 function boundary(fence:HostedActivationFence,access:symbol,closedDescriptors=true):void {
   assertOriginalHostedDependencyPhysicalRecordAccess(access);assertHostedActivationFence(fence);assertHostedActivationOperator();
+  if(readOriginalHostedDependencyRemoverScope(fence,access))return;
   new HostedReadonlyHostKernel().operatorSession();
   if(closedDescriptors)assertOriginalHostedDependencyOperatorDescriptors(fence,access);
 }
@@ -41,6 +44,7 @@ export function readOriginalHostedDependencyMaintenanceAuthority(fence:HostedAct
   return selectedAuthority(fence,jobId,access,false);
 }
 function selectedAuthority(fence:HostedActivationFence,jobId:string,access:symbol,historicalClaim:boolean) {
+  const remover=readOriginalHostedDependencyRemoverAuthority(fence,jobId,access);if(remover)return remover;
   boundary(fence,access,false);const actual=readHostedInstallationActivation(),kernel=new HostedReadonlyHostKernel(),session=kernel.operatorSession();
   assertInspectedInstallation(actual.installation);assertActivationSession(actual.activation,session);
   if(actual.activation.phase===HostedActivationPhase.Ordinary)
@@ -131,6 +135,9 @@ export function claimOriginalHostedDependencyMaintenance(fence:HostedActivationF
  * descriptors open. After retirement, exact owner/history checks remain and
  * the existing fixed effect's real reference-session veto owns FD inspection. */
 export function assertOriginalHostedDependencyMaintenance(fence:HostedActivationFence,jobId:string,attempt:DependencyMaintenanceAttempt,access:symbol) {
+  const remover=readOriginalHostedDependencyRemoverAuthority(fence,jobId,access);
+  if(remover){const state=readOriginalHostedDependencyRemoverEffectState(access);if(state.selected.claim.claimed.owner?.kind!==DependencyOwnerKind.Maintenance ||
+      !sameDependencyMaintenanceAttempt(state.selected.claim.claimed.owner.attempt,attempt))held();return remover;}
   const a=readOriginalHostedDependencyMaintenanceAuthority(fence,jobId,access),current=owner(a.binding.workspace);
   if(!current || current.owner?.kind!==DependencyOwnerKind.Maintenance || (current.owner.phase!==DependencyOwnerPhase.ExclusiveMutation && current.owner.phase!==DependencyOwnerPhase.Fenced) ||
       !sameDependencyMaintenanceAttempt(current.owner.attempt,attempt) || !sameDependencyMaintenanceAttempt(attempt,{...attempt,host:host(a)}))held();
@@ -215,6 +222,7 @@ export function releaseOriginalHostedDependencyMaintenance(fence:HostedActivatio
 /** Fixed exact own Maintenance null predecessor for a later C/R Consumer.
  * No store-current null or old Consumer leaf alone reconstructs this history. */
 export function readOriginalHostedDependencyMaintenanceIdle(fence:HostedActivationFence,workspace:DependencyOwnerRecord["workspace"],access:symbol) {
+  const removal=readOriginalHostedDependencyRemovalIdle(fence,workspace,access);if(removal)return removal;
   boundary(fence,access);const previous=owner(workspace);if(!previous || previous.version===1 || previous.owner)return undefined;
   const path=`${records}/${workspace.dev}-${workspace.ino}-${previous.revision}.idle.json`,bytes=readHostedPrivateBytes(path,16384);
   if(!bytes)return undefined;const pin=pinReferenceFile(path,16384),v:unknown=JSON.parse(pin.bytes.toString("utf8"));
