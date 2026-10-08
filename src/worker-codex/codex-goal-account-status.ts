@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readCodexEffectiveSeed, materializeCodexEffectiveSeed } from "./codex-effective-seed";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
@@ -242,12 +243,15 @@ async function inspectCodexGoalAccount(input: {
     };
   }
   try {
-    const authJsonBytes = await readFile(authJsonPath, "utf8");
+    const effective = await readCodexEffectiveSeed(authJsonPath);
+    const authJsonBytes = effective.bytes;
     const validation = validateCodexAuthJsonBytes({ authJsonBytes });
     const freshness = readCodexAuthJsonFreshness({ authJsonBytes });
     const identity = sanitizedCodexIdentity(validation.parsed.tokens.id_token);
     const verifiedCapacityAccountId = codexCapacityAccountIdFromAuthJson({
-      authJson: validation.parsed,
+      // Capacity aliases track independent login authorization, not refresh
+      // publication or the probe's temporary home.
+      authJson: JSON.parse(effective.source),
       slotAlias: input.name,
       authJsonPath,
     });
@@ -509,7 +513,9 @@ function codexGoalAccountAvailability(input: {
     ? workerCapacityToDiagnosticSignal(input.capacity)
     : null;
   const availability =
-    input.observedAvailability ?? capacitySignal?.availability ?? "available";
+    capacitySignal?.reason === "provider_session_invalid"
+      ? capacitySignal.availability
+      : input.observedAvailability ?? capacitySignal?.availability ?? "available";
   return {
     availability,
     schedulerEligible: isSchedulerEligible(availability),
@@ -578,7 +584,10 @@ async function inspectCodexAccountLiveStatus(input: {
   readonly safeMessage: string;
   readonly observation?: AccountObservation;
 }> {
+  let effective: Awaited<ReturnType<typeof materializeCodexEffectiveSeed>> | undefined;
+  let healthy = false;
   try {
+    effective = await materializeCodexEffectiveSeed(input.authJsonPath);
     const observer = new CodexAccountObserver({
       appServerReader: new CodexAppServerQuotaReader({
         clientFactory: new CodexAppServerClientFactory({
@@ -601,8 +610,8 @@ async function inspectCodexAccountLiveStatus(input: {
       account: {
         provider: AgentProvider.Codex,
         slotId: input.name,
-        authHome: input.codexHome,
-        authJsonPath: input.authJsonPath,
+        authHome: effective.home,
+        authJsonPath: effective.authJsonPath,
         ...(input.codexBinaryPath
           ? { codexBinaryPath: input.codexBinaryPath }
           : {}),
@@ -610,12 +619,16 @@ async function inspectCodexAccountLiveStatus(input: {
       now: new Date(),
       ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
     });
+    healthy = liveDecisionOk(observation.decision);
+    await effective.finish(healthy);
+    effective = undefined;
     return {
-      ok: liveDecisionOk(observation.decision),
+      ok: healthy,
       safeMessage: safeMessageForLiveDecision(observation.decision),
       observation,
     };
   } catch {
+    if (effective && !healthy) await effective.finish(false);
     return { ok: false, safeMessage: "codex account live observation failed" };
   }
 }

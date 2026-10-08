@@ -52,6 +52,43 @@ jobs:
           fi
           restic version
       - run: npm test
+        env:
+          SR_ARCHIVE_TEST_PRIVILEGE: nonroot
+
+  archive-root-tests:
+    # Only the fixed disposable TEST command is elevated, on an ephemeral host.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: for i in 1 2 3; do npm ci && break; [ $i -eq 3 ] && exit 1; sleep 10; done
+      - run: npm run build:packages
+      - name: Qualify every native archive positive and race on disposable TEST identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_test_root=$(mktemp -d /tmp/sr-archive-ci-TEST-XXXXXX)
+          trap 'sudo -n /bin/rm -rf --one-file-system -- "$archive_test_root"' EXIT
+          # No checkout Git metadata, HOME, credentials or real job data enters
+          # the TEST copy. Fixtures create their own root-owned 0600 permits.
+          cp -a src packages node_modules package.json vitest.config.ts tsconfig.json "$archive_test_root/"
+          mkdir "$archive_test_root/home" "$archive_test_root/temp"
+          archive_test_node=$(command -v node)
+          cd "$archive_test_root"
+          sudo -n /usr/bin/env -i \
+            PATH=/usr/bin:/bin HOME="$archive_test_root/home" \
+            TMPDIR="$archive_test_root/temp" XDG_CONFIG_HOME="$archive_test_root/home" \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            SR_ARCHIVE_TEST_PRIVILEGE=root \
+            "$archive_test_node" node_modules/vitest/vitest.mjs run \
+            src/worker-codex/tests/codex-goal-mcp-project-reviewed-archive.test.ts \
+            --maxWorkers=1 --no-cache --configLoader runner
 
   package:
     runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
@@ -118,18 +155,20 @@ jobs:
 
   test:
     if: ${{ always() }}
-    needs: [quality, unit-tests, package, crash-boundary-shards-complete]
+    needs: [quality, unit-tests, archive-root-tests, package, crash-boundary-shards-complete]
     runs-on: ${{ vars.RUNNER || 'arc-runner-set' }}
     steps:
       - name: Verify all CI gates passed
         env:
           QUALITY_RESULT: ${{ needs.quality.result }}
           UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
+          ARCHIVE_ROOT_TESTS_RESULT: ${{ needs.archive-root-tests.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
           CRASH_BOUNDARY_SHARDS_RESULT: ${{ needs.crash-boundary-shards-complete.result }}
         run: |
           if [ "$QUALITY_RESULT" = "success" ] && \
              [ "$UNIT_TESTS_RESULT" = "success" ] && \
+             [ "$ARCHIVE_ROOT_TESTS_RESULT" = "success" ] && \
              [ "$PACKAGE_RESULT" = "success" ] && \
              [ "$CRASH_BOUNDARY_SHARDS_RESULT" = "success" ]; then
             exit 0
@@ -137,6 +176,7 @@ jobs:
 
           echo "quality: $QUALITY_RESULT"
           echo "unit-tests: $UNIT_TESTS_RESULT"
+          echo "archive-root-tests: $ARCHIVE_ROOT_TESTS_RESULT"
           echo "package: $PACKAGE_RESULT"
           echo "crash-boundary-shards-complete: $CRASH_BOUNDARY_SHARDS_RESULT"
           exit 1
