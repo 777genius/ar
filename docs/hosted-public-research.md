@@ -357,6 +357,18 @@ replacement starts. Safe status authenticates retained service ownership and
 reports startId, artifact/grant digests and the finite provider unit list. It
 never reads provider environments, command lines or credential payloads.
 
+Failed owned operator actions retain exit code 1 and the stderr marker
+`hosted_research_operator_action_failed`, followed by one JSON object containing
+only `operation`, `stage`, `diagnostic`, `cause` and `legacyCode`. Start failures
+after active-slot publication observe the current `pin-preparation`,
+`input-preparation`, `launch-plan`, `host-submission` or `start-readback` stage.
+Earlier failures, other operations and opaque primitive errors have stage
+`unknown`. Diagnostic/cause values use the existing finite launch vocabulary;
+legacy numeric codes keep their existing numbering. Raw errors, messages,
+stacks, paths, command arguments and stderr are never included. This records
+the original failed attempt without replay or an execution repair. A submission
+failure remains uncertain; reconcile its retained ownership before a new start.
+
 ```sh
 node /canonical/installed/runtime/host-integration/codex-research-egress.mjs revoke-owned-research TEST-research-r7
 node /canonical/installed/runtime/host-integration/codex-research-egress.mjs cancel-owned-research TEST-research-r7
