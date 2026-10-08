@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
+import { closeSync, constants, openSync } from "node:fs";
 import { test } from "vitest";
-import { selectVisibleScratchMount } from "../host-scratch-mount";
+import { inspectVisibleScratchMount, selectVisibleScratchMount } from "../host-scratch-mount";
 
 const target = "/jobs/NEWTEST/tmp", uuid = "d0f2cac1-2009-4e9d-a710-e156f417938f";
 const hidden = { id: 10, target, uuid, fsroot: "/runtime-tmp/test" };
@@ -17,6 +18,27 @@ test("FD containing ancestor excludes the covered singleton and segment-prefix i
   for (const corrupt of [null, { id: "bad" }, { id: 0 }]) {
     assert.throws(() => selectVisibleScratchMount(target, 20, table, query(corrupt)), /Ambiguous/);
   }
+});
+
+// RED: socket transport denies a supported root; unsupported anonymous files
+// must raise the kernel error instead of returning a tuple or an absent mount.
+test.runIf(process.platform === "linux")("real adapter preserves the root or rejects unsupported anonymous files", () => {
+  let probe: number;
+  try {
+    // Independent kernel capability probe, not a filesystem-name assumption.
+    // Linux O_TMPFILE|O_RDWR creates an unnamed inode, reclaimed on close.
+    probe = openSync("/tmp", 0x410000 | constants.O_RDWR, 0o600);
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOTSUP" ||
+        !("syscall" in error) || error.syscall !== "open" || !("path" in error) || error.path !== "/tmp") throw error;
+    assert.throws(() => inspectVisibleScratchMount("/"), { code: "ENOTSUP", syscall: "open", path: "/tmp" });
+    return;
+  }
+  closeSync(probe);
+  const result = inspectVisibleScratchMount("/");
+  assert.ok(result);
+  assert.equal(result.target, "/");
+  assert.ok(result.fsroot?.startsWith("/"));
 });
 
 // RED: rejecting every multirow query prevents use of the real rebound directory.
