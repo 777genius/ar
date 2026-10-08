@@ -3,14 +3,18 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { HostJobs } from './manager.mjs';
 import { readRequestBytes } from './read-request.mjs';
+import { installedNativeProbe } from './native-probe/hosted-native-probe/original-owner-adapter.js';
 import { routeProbeIngress } from './native-probe/hosted-native-probe/ingress.js';
 
 // This fixed endpoint receives data only on stdin, never executable shell text.
 try {
   const routed = routeProbeIngress(await readRequestBytes(process.stdin));
-  // SOURCE checkpoint has no genuine pre-admitted infrastructure supplier.
-  // Refuse before legacy manager construction or any managed submission.
-  if (routed.native) throw new Error('NativeProbe original producer unavailable');
+  if (routed.native) {
+    let result;
+    try { result = await installedNativeProbe(routed.request); }
+    catch { throw new Error("NativeProbe original producer unavailable"); }
+    process.stdout.write(JSON.stringify({ ok: true, result }) + '\n');
+  } else {
   const request = routed.request;
   const manager = new HostJobs({ stateDir: join(homedir(), '.local/state/subscription-runtime/host-jobs') });
   let result;
@@ -21,6 +25,7 @@ try {
     default: throw new Error('unknown operation');
   }
   process.stdout.write(JSON.stringify({ ok: true, result }) + '\n');
+  }
 } catch (error) {
   process.stdout.write(JSON.stringify({ ok: false, error: error.message }) + '\n');
   process.exitCode = 1;

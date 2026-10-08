@@ -38,7 +38,11 @@ export default defineConfig({
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler.test.ts",
       "src/worker-codex/tests/codex-goal-ledger-epoch-handler-crash-shard-*.test.ts",
     ],
-    fileParallelism: false,
+    // Keep each file isolated while bounding process and memory pressure.
+    pool: "forks",
+    isolate: true,
+    fileParallelism: true,
+    maxWorkers: 2,
     globals: true,
     testTimeout: 60_000,
   },

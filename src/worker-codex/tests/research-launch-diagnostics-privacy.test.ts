@@ -3,6 +3,7 @@ import { annotateResearchMaterialFailure, normalizeResearchMaterialFailure, Rese
 import { prepareHostScratchTemp } from "../host-scratch-temp";
 import { preparedResearchScratch } from "./fixtures/research-scratch-host";
 import { annotateResearchLaunchStage, normalizeResearchOperatorFailure, ResearchLaunchStage as S } from "../research-launch-diagnostics";
+import { annotateScratchCapacityFailure, ScratchCapacityVolumeRole as V } from "../research-launch-diagnostics";
 
 describe("startup diagnostic privacy", () => {
   const sensitive = "TEST-FAKE-api-key=/private/TEST-home/auth.json\nTEST-FAKE-cookie=secret";
@@ -89,6 +90,35 @@ describe("startup diagnostic privacy", () => {
 });
 
 describe("identity-bound material role privacy", () => {
+  // RED: error-owned provider values become capacity facts or getters leak secrets.
+  it("accepts only finite identity-bound capacity and ignores forged fields", () => {
+    const original = Object.freeze(new Error("TEST-private capacity"));
+    const descriptors = Object.getOwnPropertyDescriptors(original);
+    expect(annotateScratchCapacityFailure(original, V.RootControl, 4, 5)).toBe(original);
+    const capacity = normalizeResearchMaterialFailure(original).scratchCapacity;
+    expect(capacity).toEqual({ volumeRole: V.RootControl, availableBytes: 4, requiredBytes: 5 });
+    expect(Object.isFrozen(capacity)).toBe(true);
+    expect(Object.getOwnPropertyDescriptors(original)).toEqual(descriptors);
+    annotateScratchCapacityFailure(original, V.ScratchPayload, 1, 5);
+    expect(normalizeResearchMaterialFailure(original).scratchCapacity).toBe(capacity);
+    let reads = 0;
+    const forged = { volumeRole: V.RootControl, availableBytes: 4, requiredBytes: 5, path: "TEST-secret" };
+    const accessor = Object.defineProperty({}, "scratchCapacity", { get() { reads++; throw Error("TEST-secret"); } });
+    const proxy = new Proxy({}, { getOwnPropertyDescriptor: (_target, key) => key === "cause"
+      ? { configurable: true, value: original } : undefined });
+    for (const error of [{ scratchCapacity: forged }, Object.assign(Error("TEST-private provider"), forged), accessor, proxy]) {
+      expect(normalizeResearchMaterialFailure(error).scratchCapacity).toBeUndefined();
+      expect(JSON.stringify(normalizeResearchMaterialFailure(error))).not.toContain("TEST-");
+    }
+    expect(reads).toBe(0);
+    for (const [role, available, required] of [["TEST-secret", 4, 5], [V.RootControl, NaN, 5],
+      [V.RootControl, Infinity, 5], [V.RootControl, -1, 5], [V.RootControl, 4, Infinity],
+      [V.RootControl, 5, 5], [V.RootControl, Number.MAX_SAFE_INTEGER + 1, Number.MAX_SAFE_INTEGER + 2]] as const) {
+      const error = Error("TEST-private invalid observation");
+      annotateScratchCapacityFailure(error, role as V, available, required);
+      expect(normalizeResearchMaterialFailure(error).scratchCapacity).toBeUndefined();
+    }
+  });
   it("keeps old normalized fields, original opaque identities and first trusted role", () => {
     let reads = 0;
     const getter = Object.defineProperty({}, "cause", { get() { reads++; throw Error("TEST-private-getter"); } });

@@ -10,6 +10,38 @@ continue a task without prior chat context.
 For a short copy-paste handoff, give another agent
 `docs/codex-worker-agent-quickstart.md` first, then this runbook for details.
 
+## Optional Host activation
+
+Host activation is disabled by default on an unenrolled Linux Host. Only the
+protected, root-owned `/etc/subscription-runtime/host-activation-mode` containing
+exactly `required\n` enables Required admission. A missing file or safe missing
+ancestor means Disabled; unsafe ancestry, aliases, unreadable files, changed
+records and any other contents deny admission. Environment variables, job
+configuration and CLI flags cannot select or disable this mode.
+
+Disabled does not remove existing authority. Retained installation, activation,
+ordinary-origin, enrollment or epoch records, including pending records, require
+strict recovery. Per-job grants, custody, revocation and dependency records also
+cannot become baseline authority after volatile state is lost. Removing the mode
+file does not unenroll a Host. Inventory presence alone does not enable activation.
+
+An already contained job keeps the installed managed launcher, namespace,
+filesystem, credential and named-permission guards in Disabled mode. Its default
+Codex policy is `codex-full-internet-v1`; supported app-server engines and the
+global scan guard remain required. Foreground routing and status do not depend on
+activation, and do not consult a foreign tmux session. Live baseline direct-run
+stop currently refuses an unowned process; use the existing provider/inbox
+interrupt path. Required ordinary and managed lifetimes retain their fenced stop
+and FD release protocols.
+
+Unmarked native jobs keep their existing layout and lifecycle, including accepted
+project read boundaries, named permissions and separate materialized auth homes.
+This setting does not migrate them to the managed OS namespace. Linux non-root
+local jobs retain their existing API policy without reading Host-private roots.
+The launcher receives a generated copy of the TypeScript policy authority; build,
+archive and installer gates verify its presence and byte parity. Source checks do
+not replace disposable Linux namespace/systemd qualification before installation.
+
 ## When to use this workflow
 
 Use the pool workflow when a task is long-running, writes code, benefits from a
