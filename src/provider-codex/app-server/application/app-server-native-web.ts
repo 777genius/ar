@@ -30,6 +30,7 @@ export class AppServerNativeWebCapture {
     this.acknowledgedTurnId = turnId;
     for (const event of this.pending) this.accept(event);
     this.pending.length = 0;
+    if (this.inputClosed) this.closed = true;
   }
   observe(params: Record<string, unknown> | null | undefined, completed: boolean): void {
     if (this.inputClosed || params?.threadId !== this.threadId) return;
@@ -104,7 +105,12 @@ export class AppServerNativeWebCapture {
     this.unknown ||= receipt.status === NativeWebItemStatus.Unknown;
     this.records.set(receipt.itemId, event.item);
   }
-  finish(): void { this.closed = true; this.inputClosed = true; }
+  matchesAcknowledgedTurn(turnId: string): boolean { return this.acknowledgedTurnId === turnId; }
+  finish(): void {
+    this.inputClosed = true;
+    // A later ACK must still filter and admit already buffered preterminal items.
+    if (this.acknowledgedTurnId) this.closed = true;
+  }
   result(): NativeWebEvidence | undefined {
     if (!this.acknowledgedTurnId || !nativeWebId(this.threadId)) return undefined;
     return { turns: [{ threadId: this.threadId, acknowledgedTurnId: this.acknowledgedTurnId, records: [...this.records.values()].map(value => value.receipt), unknown: this.unknown, truncated: this.truncated }], truncated: this.truncated };

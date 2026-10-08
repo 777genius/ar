@@ -943,6 +943,14 @@ export class CodexAppServerClient {
   }
 
   private failTurnOrAll(turnId: string | null | undefined, error: Error): void {
+    const canonicalTurnId = turnId ? this.turnIdAliases.get(turnId) ?? turnId : "";
+    // Seal capture input synchronously, before any failure waiter can settle.
+    // Early/output identities select the owner; only response ACK binds receipts.
+    for (const [thread, capture] of this.nativeWebCaptures) {
+      if (!turnId || capture.matchesAcknowledgedTurn(canonicalTurnId) ||
+        this.pendingTurnIdsByThread.get(thread) === canonicalTurnId ||
+        this.earlyTurnIdsByThread.get(thread) === turnId) capture.finish();
+    }
     if (!turnId) {
       for (const thread of this.startingTurnThreads) this.publicResearchTools.endTurn(thread);
       for (const thread of this.pendingTurnIdsByThread.keys()) this.publicResearchTools.endTurn(thread);

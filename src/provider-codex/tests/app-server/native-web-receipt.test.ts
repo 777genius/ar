@@ -324,3 +324,59 @@ it('bounds depth and hashes complete reserialized JSON without extracting opaque
   nonfinite.observe({ threadId: 'thread', turnId: 'turn', item: web('nonfinite', { results: JSON.parse('[1e999]') }) }, false);
   expect(nonfinite.result()).toMatchObject({ truncated: true, turns: [{ unknown: true, records: [{ resultSummary: { count: 1, observedJsonBytes: 1, digestScope: 'prefix_reserialized_json', truncated: true } }] }] });
 });
+
+// Terminal failures fence same-burst trailing input, retaining only preterminal ACK items.
+const failureFenceCases = ['turn/aborted', 'turn_aborted', 'error', 'global'].flatMap(method =>
+  [false, true].flatMap(early => [false, true].flatMap(alias => [false, true].map(populated => ({ method, early, alias, populated })))));
+it.each(failureFenceCases)('terminal native fence $method early=$early alias=$alias populated=$populated', async ({ method, early, alias, populated }) => {
+  const f = await fixture((thread, ack, output) => [
+    ...(populated ? [completed(thread, ack, web('before')), completed(thread, output, web('alias-before'))] : []),
+    { method: method === 'global' ? 'error' : method, params: { threadId: thread, ...(method === 'global' ? {} : { turnId: output }), reason: 'TEST terminal', error: { message: 'TEST terminal' } } },
+    completed(thread, ack, web('after')), completed(thread, output, web('alias-after')),
+  ], { early, alias });
+  try {
+    const threadId = await f.client.startThread(f.input);
+    const result = await f.client.startTurn({ ...f.input, threadId });
+    expect(result.error?.message).toMatch(/codex_app_server_(turn_aborted|error)/);
+    expect(result.acknowledgedTurnId).toBe(alias ? 'response-turn-1' : 'turn-1');
+    expect(result.nativeWeb?.turns[0]?.acknowledgedTurnId).toBe(result.acknowledgedTurnId);
+    expect(result.nativeWeb?.turns[0]?.records.map(item => item.itemId)).toEqual(populated ? (alias ? ['before'] : ['before', 'alias-before']) : []);
+    if (populated) expect(result.nativeWeb?.turns[0]?.records[0]?.resultSummary).toEqual(opaqueSummary);
+  } finally { await f.close(); }
+});
+
+// Reconnect is progress: sealing here would discard legitimate following ACK evidence.
+it.each([false, true])('terminal native fence keeps reconnect open early=%s', async early => {
+  const f = await fixture((thread, ack) => [
+    { method: 'error', params: { turnId: ack, error: { message: 'Reconnecting... 2/5' } } },
+    completed(thread, ack, web('after-reconnect')),
+  ], { early });
+  try {
+    const threadId = await f.client.startThread(f.input);
+    const result = await f.client.startTurn({ ...f.input, threadId });
+    expect(result.error).toBeNull();
+    expect(result.nativeWeb?.turns[0]?.records.map(item => item.itemId)).toEqual(['after-reconnect']);
+  } finally { await f.close(); }
+});
+
+// Two real active turns distinguish global sealing from specific-turn isolation.
+it.each([false, true].flatMap(global => [false, true].map(alias => ({ global, alias }))))('terminal native fence concurrent global=$global alias=$alias', async ({ global, alias }) => {
+  const f = await fixture((thread, ack) => ack.endsWith('turn-1') ? [completed(thread, ack, web('first-before'))] : [
+    { method: 'error', params: { ...(global ? {} : { turnId: 'turn-1' }), error: { message: 'TEST terminal' } } },
+    completed('thread-1', alias ? 'response-turn-1' : 'turn-1', web('first-after')), completed(thread, ack, web('second-after')),
+  ], { rejectTurn: 1, alias });
+  try {
+    const firstThread = await f.client.startThread(f.input);
+    const secondThread = await f.client.startThread(f.input);
+    let outputObserved!: () => void;
+    const active = new Promise<void>(resolve => { outputObserved = resolve; });
+    const first = f.client.startTurn({ ...f.input, threadId: firstThread, onTextDelta: outputObserved });
+    await active;
+    const secondResult = await f.client.startTurn({ ...f.input, threadId: secondThread });
+    const firstResult = await first;
+    expect(firstResult.error?.message).toMatch(/codex_app_server_error/);
+    expect(firstResult.nativeWeb?.turns[0]?.records.map(item => item.itemId)).toEqual(['first-before']);
+    expect(Boolean(secondResult.error)).toBe(global);
+    expect(secondResult.nativeWeb?.turns[0]?.records.map(item => item.itemId)).toEqual(global ? [] : ['second-after']);
+  } finally { await f.close(); }
+});
