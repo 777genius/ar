@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { researchHash, researchRead } from "../research-launch-files";
+import { researchHash, researchPublish, researchRead } from "../research-launch-files";
 import * as files from "../research-launch-files";
 import { signalResearchProvider } from "../research-launch-lifecycle";
 import { runResearchProviderService } from "../research-provider-service";
@@ -14,6 +14,29 @@ beforeEach(setupResearchFixture);
 afterEach(cleanupResearchFixture);
 const record = (current: ReturnType<typeof prepareHelper>, suffix: string) =>
   JSON.parse(researchRead(join(current.directory, "providers", current.provider + suffix + ".json")).toString());
+
+describe("private finite launch diagnostics", () => {
+  it("identifies pre-submission plan denial without persisting paths or the selected home", async () => {
+    const current = prepareHelper(), secretHome = "/TEST-never-log-this-home";
+    await expect(runResearchProviderService(current.jobId, current.provider, secretHome)).rejects.toThrow();
+    const bytes = researchRead(join(current.directory, "provider-failure.json")).toString();
+    expect(JSON.parse(bytes)).toEqual({ schemaVersion: 1, unit: current.provider, phase: "service-plan", check: "research-provider-root:snapshot" });
+    expect(bytes).not.toContain(secretHome);
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+    expect(() => record(current, ".submission")).toThrow();
+  });
+  it("keeps a changed runtime binding denied and records only the capture phase", async () => {
+    const current = prepareHelper();
+    const bindingPath = join(current.directory, "binding.json");
+    const binding = JSON.parse(researchRead(bindingPath).toString()); binding.process.pid++;
+    researchPublish(bindingPath, binding);
+    await expect(runResearchProviderService(current.jobId, current.provider, current.home)).rejects.toThrow();
+    expect(JSON.parse(researchRead(join(current.directory, "provider-failure.json")).toString())).toEqual({
+      schemaVersion: 1, unit: current.provider, phase: "runtime-capture", check: "captureResearchRuntime",
+    });
+    expect(host.spawn).not.toHaveBeenCalled(); expect(host.authReads).toBe(0);
+  });
+});
 
 describe("private identity-bound root diagnostics", () => {
   // A real root guard must identify its finite check; the selected private
