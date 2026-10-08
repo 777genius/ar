@@ -1,13 +1,20 @@
+import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
 import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
+import { hostedGoalAdmissionIdentity, withHostedGoalIdentity } from "./hosted-readonly-goal-launch";
 import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
-import { admitHostedDependencyConsumer } from "./hosted-dependency-admission";
-import { readAdmittedHostedDependencyToolConfig, hostedDependencyToolInstruction } from "./hosted-dependency-tool-profile";
+import { admitHostedDependencyEntry, assertHostedDependencyExecutionWorkspace } from "./hosted-dependency-admission";
+import { readAdmittedHostedDependencyToolConfig, hostedDependencyToolInstruction,
+  invalidateHostedDependencyQualifiedToolEntry, type HostedDependencyQualifiedToolEntry } from "./hosted-dependency-tool-profile";
 import type { DependencyToolGuestConfig } from "../core/dependency-environment/dependency-tool-profile";
 import { codexProviderHasPublicSources } from "@vioxen/subscription-runtime/provider-codex";
 import { researchProviderAdmissionGuard } from "./research-launch-admission";
-import { prepareHostScratchTemp } from "./host-scratch-temp";
+import { snapshotCodexGoalStorageConfig, withCodexGoalStorage, withCodexGoalCheckpointWriter, type CodexGoalNewStorage } from "./job-storage/codex-goal-storage-admission";
+import { assertCodexSessionHomeProfile, CodexSessionHomeProfileKind, type CodexSessionHomeProfile } from "./codex-session-home-profile";
+import { JobStorageCapabilityUnavailableError, JobStorageUnavailableCapability, type JobStorageWriteLease } from "@vioxen/subscription-runtime/worker-core";
+import type { CodexGoalExecutor, CodexGoalExecutorOptionsInput, CodexGoalRunDeps } from "./job-storage/codex-goal-runner-contracts";
+export type { CodexGoalExecutor, CodexGoalRunDeps } from "./job-storage/codex-goal-runner-contracts";
 import { assertVerifiedHostedChildConfig } from "./hosted-child-slot-files";
 import { ChildExecutionBudget, type ChildLifetime } from "@vioxen/subscription-runtime/core";
 import { assertChildGoalConfig } from "./child-execution-confinement";
@@ -16,6 +23,7 @@ export { codexWorkerReportSchemaName, codexWorkerReportSchema, codexWorkerReport
 import { admitHostedReadonlyInputs } from "./hosted-readonly-admission";
 import { assertHostedMimoGoalConfinement } from "./hosted-mimo-goal-confinement";
 import { admitHostedTestEgress, hostedTestEgressEvidence } from "./hosted-test-egress-admission";
+import { codexGoalNativeEgressConfig } from "./codex-goal-native-egress";
 import {
   CodexModelBackend,
   AppServerExecutionLifetime,
@@ -27,7 +35,7 @@ import {
   type CodexProviderEgressPolicy,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { mapManagedGoalLayout, usesManagedJobLayout } from "./managed-goal-admission";
 import { dirname, join } from "node:path";
 import type { ObservabilityPort } from "@vioxen/subscription-runtime/core";
@@ -62,7 +70,6 @@ import type {
   CodexServiceTier,
 } from "@vioxen/subscription-runtime/provider-codex";
 import { LocalFileWorkerControlInboxStore } from "@vioxen/subscription-runtime/store-local-file";
-import { LocalTerminalCheckpointAdmission } from "@vioxen/subscription-runtime/store-local-file";
 import {
   FileBackendCodexSafeExecutor,
   type FileBackendCodexSafeExecutorOptions,
@@ -86,8 +93,7 @@ import {
   codexGoalControlsForAccessBoundary,
   codexGoalHostedExecutionBoundary,
 } from "./codex-goal-access-plan";
-import { readLocalGitHeadCommit } from "./codex-goal-git-revision";
-import { assertCodexGoalTurnCheckpointHistory, createCodexGoalTurnCheckpoint, codexGoalTurnCheckpointSocketPublisher, type CodexGoalTurnCheckpointPublisher } from "./codex-goal-turn-checkpoint";
+import { createCodexGoalTurnCheckpoint, codexGoalTurnCheckpointSocketPublisher, type CodexGoalTurnCheckpointPublisher } from "./codex-goal-turn-checkpoint";
 import { createCodexGoalResultRecorder } from "./codex-goal-runtime-result-io";
 import { writeCodexGoalProgress } from "./codex-goal-progress-io";
 import {
@@ -129,6 +135,9 @@ export type CodexGoalRunConfig = {
   readonly durableHandoffRootDir?: string;
   readonly stateRootDir?: string;
   readonly runtimeHomeRootDir?: string;
+  /** Explicit NEW-storage opt-in. Omission retains legacy placement/lifecycle. */
+  readonly storage?: CodexGoalNewStorage;
+  readonly sessionHomeProfile?: CodexSessionHomeProfile;
   readonly encryptionKeyPath?: string;
   readonly authRootDir: string;
   readonly workspacePath: string;
@@ -208,42 +217,36 @@ export type CodexGoalProgressSnapshot = {
   readonly currentAccount?: string;
 };
 
-export type CodexGoalRunDeps = import("./codex-goal-terminal-handoff-materialization").TerminalHandoffPublicationDependencies & {
-  /** Trusted adapter port, never supplied by serialized job configuration. */
-  readonly admitProviderEgress?: typeof admitHostedTestEgress;
-  readonly createExecutor?: (
-    options: FileBackendCodexSafeExecutorOptions,
-  ) => CodexGoalExecutor;
-  readonly observability?: ObservabilityPort;
-  readonly checkpointPublisher?: CodexGoalTurnCheckpointPublisher;
-};
-
-export type CodexGoalExecutor = {
-  run(
-    input: Parameters<FileBackendCodexSafeExecutor["run"]>[0],
-  ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>>;
-  dispose(): Promise<void>;
-};
-
 export async function runCodexGoal(
   config: CodexGoalRunConfig,
   deps: CodexGoalRunDeps = {},
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+  // Reference purpose is a separate closed CLI entry, never a fabricated task.
+  assertHostedDependencyExecutionWorkspace(undefined);
   config = mapManagedGoalLayout({ config }).config;
+  config = withHostedGoalIdentity(config);
+  if (config.storage) config = snapshotCodexGoalStorageConfig(config);
   assertCodexGoalRunConfig(config);
-  await admitHostedDependencyConsumer(config);
-  const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(config.workspacePath);
+  return withCodexGoalStorage(config, deps.storageAdmission,
+    lease => runCodexGoalWithStorage(config, deps, lease));
+}
+
+async function runCodexGoalWithStorage(config: CodexGoalRunConfig, deps: CodexGoalRunDeps,
+  storageLease?: JobStorageWriteLease): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
+  storageLease?.assertCurrent();
+  const admission = await admitHostedDependencyEntry(config), toolEntry = admission?.toolEntry;
+  try {
+  storageLease?.assertCurrent();
+  const dependencyToolConfig = readAdmittedHostedDependencyToolConfig(config.workspacePath, toolEntry);
   assertHostedMimoGoalConfinement(config);
   assertCodexGoalAccessLaunchAllowed(config);
   const isMimo = config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan;
   const admittedEgress = await (deps.admitProviderEgress ?? admitHostedTestEgress)({
-    jobId: config.jobId ?? config.taskId,
-    jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath,
-    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
-    sourceEnv: config.sourceEnv ?? process.env,
+    ...hostedGoalAdmissionIdentity(config),
+    ...codexGoalNativeEgressConfig(config),
     ...(isMimo ? { modelBackend: config.modelBackend } : {}),
   });
+  storageLease?.assertCurrent();
   const providerEgressPolicy = isMimo
     ? codexMimoTokenPlanEgressPolicy()
     : codexProviderEgressPolicy(admittedEgress.profileId);
@@ -251,34 +254,13 @@ export async function runCodexGoal(
     throw new Error("codex_goal_provider_egress_admission_mismatch");
   }
   const appServerProcessFactory = admitHostedReadonlyInputs({
-    jobId: config.jobId ?? config.taskId,
-    jobRootDir: config.jobRootDir,
-    workspacePath: config.workspacePath,
+    ...hostedGoalAdmissionIdentity(config),
     providerEgressPolicy,
-    ...(config.executionEngine ? { executionEngine: config.executionEngine } : {}),
-    sourceEnv: config.sourceEnv ?? process.env,
-  });
-  const baseCommit = await readLocalGitHeadCommit(config.workspacePath);
-  const checkpointRootExists = await lstat(join(config.jobRootDir, "turn-checkpoints"))
-    .then(() => true, (error: unknown) => {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
-      throw error;
-    });
-  if ((config.checkpointRequired || checkpointRootExists) &&
-    !config.checkpointPublisherSocketPath && !deps.checkpointPublisher) {
-    throw new Error("checkpoint_publisher_required");
-  }
-  if (config.checkpointPublisherSocketPath || deps.checkpointPublisher) {
-    if (!baseCommit) throw new Error("checkpoint_initial_base_required");
-    await assertCodexGoalTurnCheckpointHistory({ jobId: config.jobId ?? config.taskId,
-      taskId: config.taskId, jobRootDir: config.jobRootDir, initialBaseCommit: baseCommit });
-  }
-  return new LocalTerminalCheckpointAdmission(config.jobRootDir).withWriter(
-    async () => {
-      await prepareHostScratchTemp(config.jobRootDir, config.sourceEnv ?? process.env);
-      return runCodexGoalAdmitted(config, deps, providerEgressPolicy, appServerProcessFactory, baseCommit, dependencyToolConfig);
-    },
-  );
+  }, toolEntry);
+  return await withCodexGoalCheckpointWriter(config, deps, storageLease,
+    baseCommit => runCodexGoalAdmitted(config, deps, providerEgressPolicy,
+      appServerProcessFactory, baseCommit, dependencyToolConfig, toolEntry, storageLease));
+  } finally { invalidateHostedDependencyQualifiedToolEntry(toolEntry); }
 }
 
 async function runCodexGoalAdmitted(
@@ -288,12 +270,15 @@ async function runCodexGoalAdmitted(
   appServerProcessFactory: CodexAppServerProcessFactory | undefined,
   baseCommit: string | undefined,
   dependencyToolConfig: DependencyToolGuestConfig | undefined,
+  toolEntry: HostedDependencyQualifiedToolEntry | undefined,
+  storageLease?: JobStorageWriteLease,
 ): Promise<SafeExecutionRunResult<FileBackendCodexWorkerResult>> {
   const prompt = await readFile(config.promptPath, "utf8");
+  storageLease?.assertCurrent();
   const progressPath = codexGoalProgressPath(config);
   const runtimeEventsPath = codexGoalRuntimeEventsPath(config);
   const outputPath = codexGoalOutputPath(config);
-  const executionGeneration = randomUUID();
+  const executionGeneration = storageLease?.receipt.attemptId ?? randomUUID();
   const resultRecorder = createCodexGoalResultRecorder({ outputPath,
     terminalCheckpointJobRootDir: config.jobRootDir });
   const progressHeartbeat = createCodexGoalProgressHeartbeat({
@@ -320,6 +305,7 @@ async function runCodexGoalAdmitted(
     config,
     prompt,
   });
+  storageLease?.assertCurrent();
   if (linkedWorktreeHandoff.enabled) {
     await runtimeEvents.write("linked_worktree_handoff_guardrail", {
       accessBoundary: config.accessBoundary ?? "",
@@ -334,12 +320,16 @@ async function runCodexGoalAdmitted(
       guidance: "edit_test_handoff_only",
     });
   }
+  storageLease?.assertCurrent();
   await progressHeartbeat.write({ status: "starting" });
+  storageLease?.assertCurrent();
   const encryptionKey = await readOrCreateCodexGoalEncryptionKey(
     config.encryptionKeyPath ?? join(config.jobRootDir, "encryption-key.hex"),
   );
   const stateRootDir = config.stateRootDir ?? join(config.jobRootDir, "state");
+  storageLease?.assertCurrent();
   await mkdir(stateRootDir, { recursive: true, mode: 0o700 });
+  storageLease?.assertCurrent();
   const agentTempRoot = await ensureCodexAgentTempRoot({
     sourceEnv: config.sourceEnv,
     sandboxTraverse: config.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan &&
@@ -357,6 +347,7 @@ async function runCodexGoalAdmitted(
 
   let executor: CodexGoalExecutor;
   try {
+    storageLease?.assertCurrent();
     executor = (
       deps.createExecutor ??
       ((options) => new FileBackendCodexSafeExecutor(options))
@@ -368,6 +359,7 @@ async function runCodexGoalAdmitted(
       ...(appServerProcessFactory ? { appServerProcessFactory } : {}),
       stateRootDir,
       executionGeneration,
+      ...(storageLease ? { assertStorageAdmission: () => storageLease.assertCurrent() } : {}),
       encryptionKey,
       observability,
       controlInbox,
@@ -415,7 +407,7 @@ async function runCodexGoalAdmitted(
       },
       systemPrompt: codexGoalRunSystemPrompt(config, {
         linkedWorktreeHandoff: linkedWorktreeHandoff.enabled,
-        ...(dependencyToolConfig ? { dependencyToolInstruction: hostedDependencyToolInstruction(dependencyToolConfig) } : {}),
+        ...(dependencyToolConfig ? { dependencyToolInstruction: hostedDependencyToolInstruction(dependencyToolConfig, toolEntry) } : {}),
       }),
       metadata: {
         goal: config.goalSummary ?? config.taskId,
@@ -482,24 +474,17 @@ async function runCodexGoalAdmitted(
   }
 }
 
-export function buildCodexGoalExecutorOptions(input: {
-  readonly config: CodexGoalRunConfig;
-  readonly initialBaseCommit?: string;
-  readonly checkpointPublisher?: CodexGoalTurnCheckpointPublisher;
-  readonly executionLifetime?: AppServerExecutionLifetime;
-  readonly providerEgressPolicy?: CodexProviderEgressPolicy;
-  readonly appServerProcessFactory?: CodexAppServerProcessFactory;
-  readonly stateRootDir: string;
-  readonly executionGeneration?: string;
-  readonly encryptionKey: Uint8Array;
-  readonly observability?: ObservabilityPort;
-  readonly controlInbox?: WorkerControlService;
-  readonly activeAttemptRegistry?: InMemoryActiveAttemptRegistry;
-}): FileBackendCodexSafeExecutorOptions {
-  const { config } = input;
+export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInput): FileBackendCodexSafeExecutorOptions {
+  const config = withHostedGoalIdentity(input.config);
+  assertCodexSessionHomeProfile(config.sessionHomeProfile);
+  if (config.sessionHomeProfile?.kind === CodexSessionHomeProfileKind.OneShot) {
+    throw new JobStorageCapabilityUnavailableError(JobStorageUnavailableCapability.OneShotDisposal);
+  }
   const dependencyGit = isHostedDependencyWorkspace(config.workspacePath) ? new ManagedDependencyGitRunner() : undefined;
   const runtimeHomeRootDir = dependencyGit ? join(config.jobRootDir, "home") : config.runtimeHomeRootDir;
-  const assertProviderAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
+  const researchAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
+  const assertProviderAdmission = input.assertStorageAdmission || researchAdmission
+    ? () => { input.assertStorageAdmission?.(); researchAdmission?.(); } : undefined;
   assertProviderAdmission?.();
   const publicSourceReader = input.providerEgressPolicy && codexProviderHasPublicSources(input.providerEgressPolicy)
     ? createPublicResearchSourceReader(input.providerEgressPolicy) : undefined;
@@ -549,6 +534,7 @@ export function buildCodexGoalExecutorOptions(input: {
     ...(completedTurnCheckpoint ? { completedTurnCheckpoint } : {}),
     ...(input.executionGeneration === undefined ? {} : { executionGeneration: input.executionGeneration }),
     ...(runtimeHomeRootDir === undefined ? {} : { runtimeHomeRootDir }),
+    ...(config.sessionHomeProfile === undefined ? {} : { sessionHomeProfile: config.sessionHomeProfile }),
     accountCapacityStore: isMimo
       ? codexAccountCapacityStore(config.authRootDir, {
           ...(input.observability ? { observability: input.observability } : {}),
@@ -824,58 +810,6 @@ function createCodexGoalProgressHeartbeat(input: {
       await writes;
     },
   };
-}
-
-function progressFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): Omit<CodexGoalProgressSnapshot, "schemaVersion" | "taskId" | "updatedAt" | "pid"> {
-  const attempts = attemptsFromResult(result);
-  const lastAttempt = attempts.at(-1);
-  return {
-    status: progressStatusFromResult(result.status),
-    resultStatus: result.status,
-    ...("reason" in result && typeof result.reason === "string"
-      ? { reason: result.reason }
-      : {}),
-    attemptCount: attempts.length,
-    ...(lastAttempt && "accountId" in lastAttempt && typeof lastAttempt.accountId === "string"
-      ? { currentAccount: lastAttempt.accountId }
-      : {}),
-  };
-}
-
-function attemptsFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-) {
-  const attempts = "attempts" in result && Array.isArray(result.attempts)
-    ? result.attempts
-    : [];
-  return attempts;
-}
-
-function attemptCountFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): number {
-  return attemptsFromResult(result).length;
-}
-
-function currentAccountFromResult(
-  result: SafeExecutionRunResult<FileBackendCodexWorkerResult>,
-): string | undefined {
-  const lastAttempt = attemptsFromResult(result).at(-1);
-  return lastAttempt && "accountId" in lastAttempt &&
-    typeof lastAttempt.accountId === "string"
-    ? lastAttempt.accountId
-    : undefined;
-}
-
-function progressStatusFromResult(status: string): CodexGoalProgressStatus {
-  if (status === "completed") return "completed";
-  if (status === "waiting_capacity") return "blocked";
-  if (status === "partial") return "partial";
-  if (status === "failed") return "failed";
-  if (status === "aborted") return "aborted";
-  return "failed";
 }
 
 async function codexRuntimeResultInput(input: {

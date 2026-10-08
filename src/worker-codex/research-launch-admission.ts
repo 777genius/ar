@@ -77,7 +77,7 @@ function assertResearchCurrentAuthorityBytes(jobId: string, initial: ReturnType<
       (bindingBytes !== undefined && !researchRead(join(initial.directory, "binding.json")).equals(bindingBytes)) ||
       researchHash(researchRead(join(researchJobAuthority(jobId), "grant.json"))) !== initial.spec.grantSha256) researchInvalid();
 }
-function assertResearchCurrentAuthority(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
+export function assertResearchCurrentAuthority(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
   assertResearchCurrentAuthorityBytes(jobId, initial, bindingBytes, allowClosing);
   assertResearchStartAuthority(initial.spec);
   // No blocking observations follow the final mutable authority read.

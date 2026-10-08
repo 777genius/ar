@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { parseResearchStartSpec, researchProviderSetupTimeoutMs, type ResearchStartSpec } from "./research-launch-contract";
 import { researchDescription, researchProviderUnitPattern } from "./research-launch-host";
 import { researchInvalid, researchName, researchPath } from "./research-launch-files";
-import { assertResearchProviderRoot, researchProviderProtectedPaths, ResearchRootMountAccess, type ResearchProviderRootPlan } from "./research-provider-root";
+import { researchProviderRootSeal, type ResearchProviderRootPlan } from "./research-provider-root";
 import { hostedDependencyInstallerProperties, hostedDependencyInstallerBootstrapCommand, type HostedDependencyInstallerPlan } from "./hosted-dependency-installer-recipe";
 import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
 import { hostedFdSystemdProperties } from "../provider-codex/app-server/adapters/hosted-fd-prelude";
@@ -81,24 +81,18 @@ export function trustedResearchProviderLaunch(value: ResearchStartSpec, unit: st
   if (!researchProviderUnitPattern.test(unit)) researchInvalid();
   const home = researchPath(selectedCodexHome);
   if (!rootPlan) researchInvalid();
-  assertResearchProviderRoot(rootPlan, spec, unit, home);
-  const properties = ["Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no", "MountFlags=private",
+  const seal = researchProviderRootSeal(rootPlan, spec, unit, home);
+  // No filesystem-namespace property belongs here: PID1 must exec the finite
+  // early-private adapter before copying or protecting the captured root.
+  const properties = ["Slice=system.slice", "KillMode=control-group", "SendSIGKILL=yes", "Delegate=no", "Restart=no",
     `BindsTo=${spec.unit}`, `PartOf=${spec.unit}`, `After=${spec.unit}`, "CPUQuota=200%", "MemoryHigh=2G", "MemoryMax=4G", "TasksMax=512",
     `TimeoutStartSec=${researchProviderSetupTimeoutMs / 1000}s`,
     "RuntimeMaxSec=24h", "TimeoutStopSec=30s", "IOWeight=25", "MemorySwapMax=0", "LimitCORE=0",
-    "ProtectControlGroups=yes", "PrivateDevices=yes", "ProtectKernelModules=yes", "RestrictSUIDSGID=yes", "AmbientCapabilities=",
-    "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP", "NoNewPrivileges=yes", "ProtectSystem=strict",
-    `RootDirectory=${rootPlan.fixedRootDirectory}`, "MountAPIVFS=yes",
-    ...rootPlan.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadOnly)
-      .map(({ source, target }) => `BindReadOnlyPaths=${researchPath(source)}:${researchPath(target)}:norbind`),
-    ...rootPlan.bindings.filter(bind => bind.access === ResearchRootMountAccess.ReadWrite)
-      .map(({ source, target }) => `BindPaths=${researchPath(source)}:${researchPath(target)}:norbind`),
-    `ReadWritePaths=${request.jobRootDir} ${request.workspacePath}`,
-    "TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M",
-    `InaccessiblePaths=${researchProviderProtectedPaths(request.authRootDir).map(path => "-" + path).join(" ")}`];
+    "DevicePolicy=closed", "DeviceAllow=/dev/tty rw", "DeviceAllow=/dev/ptmx rw", "DeviceAllow=char-pts rw",
+    "SystemCallFilter=~@raw-io @module", "RestrictSUIDSGID=yes", "AmbientCapabilities=",
+    "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP", "NoNewPrivileges=yes"];
   return { command: "/usr/bin/systemd-run", args: ["--quiet", "--wait", "--pipe", "--collect", `--unit=${unit}`,
     `--description=subscription-runtime-research-provider:${spec.startId}:${unit}`, "--service-type=exec", "--expand-environment=no", "--working-directory=/",
-    ...properties.map(p => `--property=${p}`), "--", "/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
-    "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "/usr/bin/tini", "--", process.execPath,
-    join(spec.runtimeDirectory, "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js"), "--research-ready-v1"] };
+    ...properties.map(p => `--property=${p}`), "--", "/usr/bin/unshare", "--mount", "--propagation", "private", process.execPath,
+    join(spec.runtimeDirectory, "dist/worker-codex/research-provider-root-assembler.js"), request.jobId, unit, home, seal.sha256, String(seal.deadline)] };
 }

@@ -413,9 +413,14 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     expect(fs.lstatSync(plan.fixedRootDirectory).mode & 0o777).toBe(0o755);
     expect(fs.readlinkSync(join(plan.fixedRootDirectory, "lib"))).toBe("usr/lib");
     const launch = trustedResearchProviderLaunch(f.spec, unit, f.home, plan);
-    expect(launch.args).toContain("--property=ProtectSystem=strict"); expect(launch.args).toContain("--property=MountAPIVFS=yes");
-    expect(launch.args).toContain(`--property=RootDirectory=${plan.fixedRootDirectory}`);
-    expect(launch.args.filter(arg => arg.startsWith("--property=BindReadOnlyPaths=")).every(arg => arg.endsWith(":norbind"))).toBe(true);
+    expect(launch.args.slice(launch.args.indexOf("--") + 1, launch.args.indexOf("--") + 5)).toEqual(["/usr/bin/unshare", "--mount", "--propagation", "private"]);
+    expect(launch.args).toContain("--property=DevicePolicy=closed");
+    expect(launch.args).toContain("--property=SystemCallFilter=~@raw-io @module");
+    expect(launch.args).toContain("--property=NoNewPrivileges=yes");
+    expect(launch.args).toContain("--property=CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP");
+    const namespaceProperties = /^(?:RootDirectory|RootImage|BindPaths|BindReadOnlyPaths|TemporaryFileSystem|MountFlags|MountAPIVFS|ProtectSystem|PrivateDevices|ProtectControlGroups|ProtectKernelModules|ReadWritePaths|ReadOnlyPaths|InaccessiblePaths|PrivateTmp|PrivateMounts)=/;
+    expect(launch.args.filter(arg => arg.startsWith("--property=")).some(arg => namespaceProperties.test(arg.slice("--property=".length)))).toBe(false);
+    expect(launch.args.slice(-5, -2)).toEqual([f.spec.request.jobId, unit, f.home]);
     expect(fs.readdirSync(join(f.directory, "providers"))).toEqual([unit + ".json"]);
     expect(() => assertResearchProviderRoot({ ...plan }, f.spec, unit, f.home)).toThrow();
     expect(() => { (plan.bindings[0] as { source: string }).source = "/"; }).toThrow();

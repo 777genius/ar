@@ -13,7 +13,7 @@ const fixture = vi.hoisted(() => ({ root: "", group: "/user.slice/TEST-session.s
     state?: "inactive" | "failed" | "activating" | "deactivating"; dropIns?: string }>(),
   processGroups: new Map<number, string>(), killFailures: new Set<string>(), stopFailures: new Set<string>(),
   processNamespaces: new Map<number, Record<"user" | "mnt" | "pid" | "net", string>>(), showFailures: new Set<string>(),
-  jobs: new Set<string>(), spawn: vi.fn(), authReads: 0, findmntHook: undefined as (() => void) | undefined,
+  jobs: new Set<string>(), spawn: vi.fn(), authReads: 0, taskTimeoutMs: 3600000, findmntHook: undefined as (() => void) | undefined,
   scratchNodes: new Map<string, import("../host-scratch-temp").ScratchTempHost extends { lstat(path: string): infer Info } ? Info : never>(),
   scratchMounts: new Map<string, { target?: string; uuid?: string; fsroot?: string } | undefined>() }));
 export const host = fixture;
@@ -180,7 +180,12 @@ export const request = () => ({ schemaVersion: 1, jobId: "TEST-research-r7", tas
   workspacePath: fixture.physicalPaths ? join(fixture.root, "project/jobs/TEST-research-r7/workspace") : "/TEST-project/jobs/TEST-research-r7/workspace",
   promptPath: fixture.physicalPaths ? join(fixture.root, "project/jobs/TEST-research-r7/prompt.md") : "/TEST-project/jobs/TEST-research-r7/prompt.md",
   authRootDir: fixture.physicalPaths ? join(fixture.root, "auth") : "/TEST-auth", accounts: ["TEST-a", "TEST-b"],
-  codexBinaryPath: "/usr/bin/TEST-codex", model: "gpt-6.1-sol", reasoningEffort: "xhigh", serviceTier: "default", taskTimeoutMs: 3600000 });
+  codexBinaryPath: "/usr/bin/TEST-codex", model: "gpt-6.1-sol", reasoningEffort: "xhigh", serviceTier: "default", taskTimeoutMs: fixture.taskTimeoutMs });
+/** Configure retained TEST operator input before any grant or start is issued. */
+export function configureResearchFixtureTaskTimeout(taskTimeoutMs: number): void {
+  fixture.taskTimeoutMs = taskTimeoutMs;
+  writeFileSync(local("/TEST-operator/request.json"), JSON.stringify(request()) + "\n", { mode: 0o600 });
+}
 export function setupResearchFixture(): void {
   fixture.root = nativeFs.mkdtempSync(join(tmpdir(), "TEST-research-launch-r7-"));
   const allocated = nativeFs.lstatSync(fixture.root);
@@ -188,6 +193,7 @@ export function setupResearchFixture(): void {
   fixture.group = "/user.slice/TEST-session.scope"; fixture.birth = "12345"; fixture.uidMap = "0 0 4294967295";
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
   fixture.namespaceRoot = false; fixture.global = false; fixture.projectParent = false; fixture.physicalPaths = false; fixture.foreign.clear(); fixture.fdPaths.clear(); fixture.pins.clear(); fixture.calls = []; fixture.units.clear(); fixture.processGroups.clear(); fixture.processNamespaces.clear(); fixture.showFailures.clear(); fixture.killFailures.clear(); fixture.stopFailures.clear(); fixture.jobs.clear(); fixture.spawn.mockReset(); fixture.authReads = 0; fixture.findmntHook = undefined; fixture.scratchNodes.clear(); fixture.scratchMounts.clear();
+  fixture.taskTimeoutMs = 3600000;
   vi.spyOn(process, "getuid").mockReturnValue(0); vi.spyOn(process, "geteuid").mockReturnValue(0);
   for (const dir of ["global", "artifact/dist", "artifact/host-integration", "artifact/node_modules", "artifact/packages/dependency", "project/jobs/TEST-research-r7/workspace", "auth/TEST-a", "auth/TEST-b", "operator", "units", "system/etc/ssl/certs", "system/opt", "system/usr/bin", "system/usr/sbin", "system/usr/lib", "system/usr/lib64"]) mkdirSync(join(fixture.root, dir), { recursive: true, mode: 0o700 });
   mkdirSync(local(dirname(process.execPath)), { recursive: true, mode: 0o700 });

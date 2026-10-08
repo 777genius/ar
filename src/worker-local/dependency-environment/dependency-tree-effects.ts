@@ -8,7 +8,7 @@ import { parseDependencyReceipt, DependencyReceiptParseStatus } from "../../work
 import { DependencyManifestEntryKind as Kind, DependencyTreeObservationStatus as Status, encodeDependencyTreeManifest,
   type DependencyCapturedTreeObservation, type DependencyManifestEntry, type DependencyTreeObservationLimits } from "../../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import type { DependencyLogicalSourceLink } from "../../worker-core/dependency-environment/domain/dependency-tree-manifest";
-import { dependencySourceLinkProof, type DependencySourceLinkSession } from "./dependency-source-binding";
+import { dependencySourceLinkEffectProof, DependencySourceLinkEffectProofKind, readDependencySourceLinkSession, type DependencySourceLinkSession } from "./dependency-source-binding";
 import { observeDependencyDirectoryRoot } from "./observe-dependency-tree";
 import { observeDependencyPinnedFile } from "./observe-dependency-pinned-file";
 
@@ -84,7 +84,17 @@ function component(value: string): Buffer {
       bytes.equals(Buffer.from(".")) || bytes.equals(Buffer.from("..")) || bytes.equals(Buffer.from(".git"))) fail(DependencyTreeEffectFailure.Unsupported);
   return bytes;
 }
-function manifest(input: DependencyTreeEffectInput): Map<string, DependencyManifestEntry> {
+/** Exact target join for a genuine compared protected session. Detached
+ * comparison authority was independently authenticated by its store opener. */
+function sourceProof(input: DependencyTreeEffectInput, detached = false) {
+  if (!input.sourceLinkSession) fail(DependencyTreeEffectFailure.ManifestMismatch);
+  const proof = dependencySourceLinkEffectProof(input.sourceLinkSession);
+  if (proof.kind === DependencySourceLinkEffectProofKind.InstalledLocal) return proof.record;
+  readDependencySourceLinkSession(input.sourceLinkSession,
+    detached ? input.trash.destinationParent : input.workspace, detached ? input.trash.destinationName : "node_modules");
+  return { ...proof.record.candidate, sourceLinks: proof.record.sourceLinks };
+}
+function manifest(input: DependencyTreeEffectInput, detached = false): Map<string, DependencyManifestEntry> {
   if (!input.manifestCanonicalBytes.length || input.manifestCanonicalBytes.length > input.limits.maxManifestBytes ||
       digest(input.manifestCanonicalBytes) !== input.manifestDigest) fail(DependencyTreeEffectFailure.ManifestMismatch);
   let value: { version: number; entries: DependencyManifestEntry[]; sourceLinks?: DependencyLogicalSourceLink[] };
@@ -94,10 +104,10 @@ function manifest(input: DependencyTreeEffectInput): Map<string, DependencyManif
       Object.keys(value).sort().join(",") !== (value.version === 1 ? "entries,version" : "entries,sourceLinks,version")) fail(DependencyTreeEffectFailure.ManifestMismatch);
   if (value.version === 2) {
     if (!input.sourceLinkSession || !Array.isArray(value.sourceLinks)) fail(DependencyTreeEffectFailure.ManifestMismatch);
-    const proof = dependencySourceLinkProof(input.sourceLinkSession);
-    if (proof.record.manifestDigest !== input.manifestDigest || !sameDependencyWorkspace(proof.record.workspace, input.workspace) ||
-        !sameDependencyTree(proof.record.tree, input.trash.originalTree) ||
-        JSON.stringify(proof.record.sourceLinks) !== JSON.stringify(value.sourceLinks)) fail(DependencyTreeEffectFailure.ManifestMismatch);
+    const record = sourceProof(input, detached);
+    if (record.manifestDigest !== input.manifestDigest || !sameDependencyWorkspace(record.workspace, input.workspace) ||
+        !sameDependencyTree(record.tree, input.trash.originalTree) ||
+        JSON.stringify(record.sourceLinks) !== JSON.stringify(value.sourceLinks)) fail(DependencyTreeEffectFailure.ManifestMismatch);
   } else if (input.sourceLinkSession) fail(DependencyTreeEffectFailure.ManifestMismatch);
   const result = new Map<string, DependencyManifestEntry>();
   for (const entry of value.entries) {
@@ -214,7 +224,7 @@ export async function openDependencyTreeRename(request: DependencyTreeEffectInpu
       let settle!: () => void; running = new Promise<void>(done => { settle = done; });
       try {
       await anchors.verify(); await observe(input, source, "node_modules", original, false); await anchors.verify(); await absent(destination, target);
-      if (input.sourceLinkSession) dependencySourceLinkProof(input.sourceLinkSession);
+      if (input.sourceLinkSession) sourceProof(input);
       await rename(anchored(source, Buffer.from("node_modules")), anchored(destination, target));
       finished = true; // Any post-publication error preserves intent for reconciliation.
       const moved = await open(anchored(destination, target), directoryFlags);
@@ -253,7 +263,7 @@ async function committed(input: DependencyTreeEffectInput, commit: ProtectedDepe
         !sameDependencyWorkspace(receipt.evictionCommit.trash.destinationParent, input.trash.destinationParent) ||
         receipt.evictionCommit.trash.destinationName !== input.trash.destinationName) fail(DependencyTreeEffectFailure.InvalidCommit);
     if (input.sourceLinkSession) {
-      const { record } = dependencySourceLinkProof(input.sourceLinkSession);
+      const record = sourceProof(input, true);
       if (record.generation !== receipt.generation || record.coverageRevision !== receipt.coverageRevision || record.installKey !== receipt.installKey ||
           record.manifestDigest !== receipt.evictionCommit.manifestDigest || !sameDependencyTree(record.tree, receipt.evictionCommit.tree)) fail(DependencyTreeEffectFailure.InvalidCommit);
     }
@@ -270,7 +280,7 @@ export async function openCommittedDependencyTrashRemoval(request: DependencyTre
   readonly commit: ProtectedDependencyEvictionCommit; readonly maxRemovals: number;
 }): Promise<{ remove(): Promise<{ readonly operationId: string; readonly removedEntries: number }>; close(): Promise<{ readonly closeFailures: number }> }> {
   const input = { ...detach(request), commit: { ...request.commit, identity: { ...request.commit.identity } }, maxRemovals: request.maxRemovals };
-  validate(input); const original = manifest(input), anchors = new Anchors(input.limits); let finished = false, running: Promise<void> | undefined;
+  validate(input); const original = manifest(input, true), anchors = new Anchors(input.limits); let finished = false, running: Promise<void> | undefined;
   if (!Number.isSafeInteger(input.maxRemovals) || input.maxRemovals < 1) fail(DependencyTreeEffectFailure.Bounds);
   try {
     if ((await statfs("/proc/self/fd", { bigint: true })).type !== 0x9fa0n) fail(DependencyTreeEffectFailure.Unsupported);
@@ -311,7 +321,7 @@ export async function openCommittedDependencyTrashRemoval(request: DependencyTre
       for (const entry of [...current.entries].reverse()) {
         anchors.check(); if (removed >= input.maxRemovals) fail(DependencyTreeEffectFailure.Bounds);
         await anchors.verify(anchors.retained.filter(item => !deleted.has(item)));
-        if (input.sourceLinkSession) dependencySourceLinkProof(input.sourceLinkSession);
+        if (input.sourceLinkSession) sourceProof(input, true);
         const owner = entry.path.length ? directories.get(key(entry.path.slice(0, -1)))! : parent;
         const path = entry.path.length ? anchored(owner, component(entry.path[entry.path.length - 1]!)) : anchored(parent, name);
         const pin = await open(path, pathFlags);

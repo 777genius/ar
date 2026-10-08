@@ -253,6 +253,30 @@ original byte/file limits remain; timeout is denial, including a retained finite
 file/artifact deadline observation, never admission.
 These private helper changes introduce no composition or provider SPI. Genuine
 shared-Host/native-provider qualification remains a separate root-run gate.
+
+The provider-only first exec now enters `unshare --mount --propagation private`
+before the artifact's fixed root assembler runs. PID1 receives no provider
+filesystem-namespace properties; the outer runtime recipe remains unchanged.
+The assembler reads the creator-sealed private plan and holds exact source and
+target descriptors through nonrecursive bind/remount effects. It corroborates
+mounted inode, mount identity, access and inherited safety flags, then rechecks
+the existing grant, closing/shared-policy and cancellation fences immediately
+before each effect. Creator-private cache observations remain creator checks;
+the independent assembler checks their explicit physical source/backing graph.
+The creator's skeleton remains unmounted in its own namespace.
+
+The fixed adapter supplies bounded private tmp, run, sys, device and pts views,
+read-only root/dependencies, selected writable destinations and protected-path
+omissions. Non-filesystem device policy and raw-IO/module syscall denial retain
+the original initial-namespace capability bound and NoNewPrivileges. All
+assembly commands share one monotonic 300-second deadline; readiness and the
+330-second outer startup deadline are unchanged. The subsequent user/PID/root
+transition and capability drop are private Host mechanics, not a new SPI or
+public admission profile. A source/typecheck receipt is insufficient: the
+disposable physical TEST must prove the closed root, private PID/proc view,
+user/group mapping, zero child capabilities, no old-root/FD escape and no creator
+mount mutation before native tooling qualification. No such PASS is inferred
+from this implementation description.
 Pre-submission and transport denials retain a root-private `provider-failure.json`
 with only a closed phase identifier and reserved unit. This observation carries
 no authority and never records raw errors, stderr, paths or credential contents.
@@ -529,6 +553,11 @@ TEST build root. Run `check-boundaries.mjs`, `check-boundaries-self-test.mjs`,
 `check-managed-launch-boundary-self-test.mjs` and
 `check-managed-launch-boundary.mjs` individually. The three operator/runtime/
 provider MJS entrypoints also pass `node --check`.
+
+For current reruns in these disposable TEST build roots, pass `--imports-only`
+to the rewriter. Full package builds run it without that flag and also generate
+the installed Host policy helper; that installation output does not belong to
+these partial source-verification trees.
 
 The writer's newly created TMPDIR/TEST_ROOT is
 `/srv/worker-state/jobs/subscription-runtime/research-network-v1/jobs/sr-research-network-writer-20261001-r7/tmp/agent/TEST-research-r7`.
